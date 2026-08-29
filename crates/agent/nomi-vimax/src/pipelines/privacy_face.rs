@@ -314,7 +314,7 @@ pub(crate) async fn ensure_seedance_privacy_face(
     Ok(PrivacyFaceOutcome::Rewritten)
 }
 
-/// Paths that typically carry human faces in multi-ref R2V (cast / continuity / cameo).
+/// Paths that typically carry human faces in multi-ref R2V (cast / continuity).
 /// Env/prop plates are lower priority and skipped in blind sweeps to save cost.
 pub(crate) fn is_likely_face_bearing_ref(path: &Path) -> bool {
     let s = path.to_string_lossy().to_ascii_lowercase();
@@ -325,6 +325,16 @@ pub(crate) fn is_likely_face_bearing_ref(path: &Path) -> bool {
         || s.contains("first_frame")
         || s.contains("last_frame")
         || s.contains("portrait")
+}
+
+/// Cameo identity plates are privacy-handled at bind time; skip render preflight.
+fn is_cameo_identity_plate(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name.ends_with("_cameo.png") && !name.contains("atmosphere")
 }
 
 fn cameo_privacy_marker_path(path: &Path) -> PathBuf {
@@ -351,6 +361,9 @@ fn has_seedance_privacy_at_least_soft(path: &Path) -> bool {
 }
 
 pub(crate) fn should_preflight_video_ref(path: &Path) -> bool {
+    if is_cameo_identity_plate(path) {
+        return false;
+    }
     if has_cameo_privacy_marker(path) {
         return false;
     }
@@ -720,15 +733,10 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
     }
 
     #[test]
-    fn preflight_skips_cameo_privacy_marker() {
+    fn preflight_skips_cameo_identity_plate() {
         let dir = tempfile::tempdir().unwrap();
         let plate = dir.path().join("Alice_cameo.png");
         std::fs::write(&plate, b"png").unwrap();
-        std::fs::write(
-            super::cameo_privacy_marker_path(&plate),
-            b"fp",
-        )
-        .unwrap();
         assert!(!should_preflight_video_ref(&plate));
     }
 

@@ -203,22 +203,33 @@ fn is_cjk_char(ch: char) -> bool {
     matches!(ch as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
 }
 
+fn is_path_safe_ideograph(c: char) -> bool {
+    let u = c as u32;
+    (0x4E00..=0x9FFF).contains(&u)
+        || (0x3400..=0x4DBF).contains(&u)
+        || (0x3040..=0x30FF).contains(&u)
+        || (0xAC00..=0xD7AF).contains(&u)
+}
+
 fn safe_file_stem(s: &str) -> String {
-    let raw: String = s
+    let mut out: String = s
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || is_path_safe_ideograph(c) {
                 c
             } else {
                 '_'
             }
         })
         .collect();
-    let trimmed = raw.trim_matches('_');
-    if trimmed.is_empty() {
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    let out = out.trim_matches('_').chars().take(80).collect::<String>();
+    if out.is_empty() {
         "asset".into()
     } else {
-        trimmed.chars().take(48).collect()
+        out
     }
 }
 

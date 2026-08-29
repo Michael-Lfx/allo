@@ -1,23 +1,18 @@
 //! Bind session Cameo photos into the film-root portrait registry.
 //!
-//! After copy, **only plates that contain a real human face** are privacy-anonymized
-//! via AI face sanitization (vision description + text-to-image) to generate a completely
-//! new AI image that maintains character essence while having no photographic fingerprints.
-//! This is more reliable for passing video model content moderation than img2img.
+//! After copy, **only plates that contain a real photographic human face** are
+//! privacy-anonymized via AI face sanitization (vision description + text-to-image).
+//! Anime / cartoon / illustrated / CGI faces keep the original upload — they are
+//! not “real person” identity and must not be rewritten into a live-action T2I plate.
 //!
-//! Animal / toy / non-human character refs keep the original upload — never invent
-//! a human face on a dog body.
+//! Animal / toy / non-human character refs also keep the original upload.
 //!
-//! Separately, people-free **atmosphere** plates are generated for world-asset
-//! (env/prop) img2img style locking — never feed portrait Cameo into vacant
-//! plates, or Seedream may bake faces into “props” like group photos.
-//! Atmosphere is skipped when the Cameo has no human face (nothing to strip).
+//! World env/prop style locking uses classified environment/prop/style uploads and
+//! text `[CAMEO SCENE LOCK]` hints — not generated people-free atmosphere plates.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use serde::Deserialize;
 
 use crate::agents::{
     heuristic_classification, load_classification_report, ReferenceClassificationReport,
@@ -26,14 +21,13 @@ use crate::agents::{
 use crate::backends::{VimaxChat, VimaxImage};
 use crate::domain::CharacterInScene;
 use crate::error::{VimaxError, VimaxResult};
-use crate::json_util::complete_vision_and_parse_llm_json;
 use crate::media_local::{copy_image_file_atomic, is_usable_image_file};
 use crate::session::cameo::{self, CameoPhotoEntry};
 
 use super::{ai_face_sanitizer, resolve_film_root, safe_component};
 
 /// Img2img edit: cinematic fictional face (mild denoise) — not cartoon, not exact real-person still.
-/// Only used after [`image_has_real_human_face`] returns true.
+/// Only used after photographic-face detection returns true.
 #[allow(dead_code)]
 pub(crate) const CAMEO_FACE_PRIVACY_PROMPT: &str = "\
 Mild img2img edit of this reference into a fictional movie character. \
@@ -45,18 +39,13 @@ Stay live-action movie-still — do NOT convert to anime, cartoon, manga, comic,
 Avoid: photorealistic photograph, real person, selfie, realistic skin texture. \
 No text, watermark, or logo.";
 
-/// Marker payload when face swap is skipped (no real human face in the upload).
+/// Marker payload when face swap is skipped (no real photographic human face in the upload).
 const PRIVACY_SKIP_NO_FACE_PREFIX: &str = "skip_no_human_face:";
 
-/// Img2img: strip every person from a Cameo photo; keep only vacant scene/atmosphere.
-pub(crate) const CAMEO_ATMOSPHERE_PROMPT: &str = "\
-Using this photo only as a scene and style reference, generate a completely people-free atmosphere plate. \
-Erase every person, face, body, hand, silhouette, crowd, mannequin, and human figure — leave no human trace. \
-Keep only the empty environment: architecture, furniture, set dressing, materials, color palette, lighting mood, \
-weather, and era. If the source is a close-up portrait, invent a matching vacant interior/exterior of the same era \
-and palette instead of keeping a face crop. Photorealistic vacant location plate. \
-No group photos, no portraits, no framed photos of people, no reflections of people, no posters of faces. \
-No text, watermark, or logo.";
+const REG_PRIVACY: &str = "privacy";
+const REG_SOURCE_FP: &str = "source_fp";
+const PRIVACY_SKIP: &str = "skip_no_face";
+const PRIVACY_SANITIZED: &str = "sanitized";
 
 /// Session working root that owns `cameo/` (parent of idea2video/script2video/novel2video).
 pub(crate) fn resolve_session_root(working_dir: &Path) -> PathBuf {
@@ -224,8 +213,7 @@ pub(crate) async fn apply_session_cameos(
         Arc::clone(&chat),
     )
     .await?;
-    // Vacant atmosphere plates for env/prop style lock (never pass portrait Cameo).
-    ensure_cameo_atmosphere_plates(&film_root, &registry, image).await?;
+    scrub_redundant_portrait_artifacts(&film_root, &mut registry);
 
     crate::session::write_json_artifact(&registry_path, &registry).await?;
     if film_root != working_dir {
@@ -238,22 +226,17 @@ pub(crate) async fn apply_session_cameos(
     Ok(())
 }
 
-/// Run AI face sanitization for bound Cameo plates that contain a **real human face**.
+/// Run AI face sanitization for bound Cameo plates that contain a **real photographic face**.
 ///
-/// Uses vision description + text-to-image pipeline to generate a completely new AI image
-/// that maintains character essence while having no photographic fingerprints.
-/// This is more reliable for passing video model content moderation than img2img.
-///
-/// Keeps `{id}_cameo_raw.png` as the user upload. When a human face is present, generates
-/// a privacy-safe `{id}_cameo.png` (AI face). When the subject is an animal / non-human
-/// (no real human face), copies the raw plate through unchanged — never invents a human face.
+/// Anime / cartoon / illustrated faces keep `{id}_cameo.png` as the user upload.
+/// A `{id}_cameo_raw.png` backup is created only when a real face is rewritten.
 async fn anonymize_bound_cameo_faces(
     film_root: &Path,
     registry: &mut HashMap<String, HashMap<String, HashMap<String, String>>>,
     image: Arc<dyn VimaxImage>,
     chat: Arc<dyn VimaxChat>,
 ) -> VimaxResult<()> {
-    let mut updates: Vec<(String, String)> = Vec::new();
+    let mut updates: Vec<(String, String, String, String)> = Vec::new();
     for (identifier, views) in registry.iter() {
         let Some(item) = views.get("cameo") else {
             continue;
@@ -266,41 +249,72 @@ async fn anonymize_bound_cameo_faces(
             continue;
         }
         let raw_path = cameo_raw_path(&plate);
-        let marker = cameo_privacy_marker(&plate);
-        ensure_cameo_raw_plate(&plate, &raw_path)?;
-
-        let raw_fp = file_fingerprint(&raw_path).unwrap_or_default();
-        if privacy_marker_matches(&marker, &raw_fp) {
+        let source = if is_usable_image_file(&raw_path) {
+            raw_path.clone()
+        } else {
+            plate.clone()
+        };
+        let source_fp = file_fingerprint(&source).unwrap_or_default();
+        let cached_privacy = item.get(REG_PRIVACY).map(String::as_str);
+        let cached_fp = item.get(REG_SOURCE_FP).map(String::as_str);
+        if cached_fp == Some(source_fp.as_str())
+            && matches!(cached_privacy, Some(PRIVACY_SKIP) | Some(PRIVACY_SANITIZED))
+        {
             continue;
         }
 
-        let has_face = match ai_face_sanitizer::detect_human_face(Arc::clone(&chat), &raw_path).await {
-            Ok(v) => v,
-            Err(err) => {
-                // Prefer keeping the original animal/non-human plate over inventing a human face.
-                tracing::warn!(
-                    character = %identifier,
-                    error = %err,
-                    "human-face detection failed; skipping face AI sanitization"
-                );
-                false
-            }
-        };
+        // Migrate leftover `{plate}.privacy_safe` from older runs into registry state.
+        let legacy_marker = cameo_privacy_marker(&plate);
+        if privacy_marker_matches(&legacy_marker, &source_fp) {
+            let privacy = if privacy_marker_is_skip_no_face(&legacy_marker) {
+                PRIVACY_SKIP
+            } else {
+                PRIVACY_SANITIZED
+            };
+            let desc = if privacy == PRIVACY_SKIP {
+                non_human_face_registry_description(identifier, item)
+            } else {
+                ai_sanitized_registry_description(identifier, item)
+            };
+            let _ = std::fs::remove_file(&legacy_marker);
+            updates.push((
+                identifier.clone(),
+                desc,
+                privacy.to_string(),
+                source_fp,
+            ));
+            continue;
+        }
+
+        let has_face =
+            match ai_face_sanitizer::detect_human_face(Arc::clone(&chat), &source).await {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::warn!(
+                        character = %identifier,
+                        error = %err,
+                        "photographic-face detection failed; skipping face AI sanitization"
+                    );
+                    false
+                }
+            };
 
         if !has_face {
             tracing::info!(
                 character = %identifier,
-                raw = %raw_path.display(),
-                "no real human face in Cameo; keeping original identity plate (no face swap)"
+                plate = %plate.display(),
+                "no photographic human face in Cameo; keeping original identity plate"
             );
-            copy_image_file_atomic(&raw_path, &plate)?;
-            let _ = std::fs::write(
-                &marker,
-                format!("{PRIVACY_SKIP_NO_FACE_PREFIX}{raw_fp}").as_bytes(),
-            );
+            if source != plate {
+                copy_image_file_atomic(&source, &plate)?;
+            }
+            let _ = std::fs::remove_file(&raw_path);
+            scrub_cameo_clutter(&plate, false);
             updates.push((
                 identifier.clone(),
                 non_human_face_registry_description(identifier, item),
+                PRIVACY_SKIP.to_string(),
+                source_fp,
             ));
             continue;
         }
@@ -309,57 +323,56 @@ async fn anonymize_bound_cameo_faces(
             character = %identifier,
             raw = %raw_path.display(),
             out = %plate.display(),
-            "AI sanitizing human face on Cameo using vision description + T2I"
+            "AI sanitizing photographic human face on Cameo using vision description + T2I"
         );
+        ensure_cameo_raw_plate(&plate, &raw_path)?;
 
-        // Use AI face sanitizer: vision description + T2I generation
         let (_, outcome) = ai_face_sanitizer::ai_sanitize_face_image(
             Arc::clone(&image),
             Arc::clone(&chat),
             &raw_path,
             &plate,
-            "", // Empty style - let the model decide based on description
+            "",
         )
         .await?;
 
         match outcome {
-            ai_face_sanitizer::AiSanitizerOutcome::Generated => {
-                tracing::info!(
-                    character = %identifier,
-                    "AI face sanitization completed successfully"
-                );
-                let _ = std::fs::write(&marker, raw_fp.as_bytes());
-                updates.push((identifier.clone(), ai_sanitized_registry_description(identifier, item)));
-            }
-            ai_face_sanitizer::AiSanitizerOutcome::Cached => {
-                tracing::info!(
-                    character = %identifier,
-                    "using cached AI sanitized face"
-                );
-                updates.push((identifier.clone(), ai_sanitized_registry_description(identifier, item)));
+            ai_face_sanitizer::AiSanitizerOutcome::Generated
+            | ai_face_sanitizer::AiSanitizerOutcome::Cached => {
+                scrub_cameo_clutter(&plate, true);
+                updates.push((
+                    identifier.clone(),
+                    ai_sanitized_registry_description(identifier, item),
+                    PRIVACY_SANITIZED.to_string(),
+                    source_fp,
+                ));
             }
             ai_face_sanitizer::AiSanitizerOutcome::NoFace => {
-                // Shouldn't happen since we detected face above, but handle gracefully
                 tracing::warn!(
                     character = %identifier,
-                    "AI sanitizer reported no face (inconsistent detection)"
+                    "AI sanitizer reported no photographic face (inconsistent detection)"
                 );
                 copy_image_file_atomic(&raw_path, &plate)?;
-                let _ = std::fs::write(
-                    &marker,
-                    format!("{PRIVACY_SKIP_NO_FACE_PREFIX}{raw_fp}").as_bytes(),
-                );
-                updates.push((identifier.clone(), non_human_face_registry_description(identifier, item)));
+                let _ = std::fs::remove_file(&raw_path);
+                scrub_cameo_clutter(&plate, false);
+                updates.push((
+                    identifier.clone(),
+                    non_human_face_registry_description(identifier, item),
+                    PRIVACY_SKIP.to_string(),
+                    source_fp,
+                ));
             }
         }
     }
 
-    for (identifier, desc) in updates {
+    for (identifier, desc, privacy, source_fp) in updates {
         if let Some(item) = registry
             .get_mut(&identifier)
             .and_then(|views| views.get_mut("cameo"))
         {
             item.insert("description".into(), desc);
+            item.insert(REG_PRIVACY.into(), privacy);
+            item.insert(REG_SOURCE_FP.into(), source_fp);
         }
     }
     Ok(())
@@ -390,41 +403,6 @@ not a real-person photograph — maintains character essence without photographi
     )
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct HumanFaceDetectResp {
-    #[serde(default)]
-    has_real_human_face: bool,
-}
-
-/// Vision gate: true only when the image shows at least one real human face.
-#[allow(dead_code)]
-async fn image_has_real_human_face(
-    chat: Arc<dyn VimaxChat>,
-    image_path: &Path,
-) -> VimaxResult<bool> {
-    let system = "\
-You are a strict gate for privacy face-swap. Decide whether the image contains a real human face \
-(a living or photographic person's face). Animals, cartoons, plush toys, statues, empty scenes, \
-and non-human characters are false even if they are the story's protagonist.";
-    let user = "\
-Does this image contain at least one real human face (including a partial face that is clearly human)?
-
-Answer false for: dogs, cats, other animals, anime/cartoon faces without photoreal human identity, \
-toys, sculptures, landscapes, props-only shots.
-
-Reply JSON only:
-{\"has_real_human_face\": true|false, \"reason\": \"short\"}";
-    let resp: HumanFaceDetectResp = complete_vision_and_parse_llm_json(
-        chat.as_ref(),
-        system,
-        user,
-        &[image_path],
-    )
-    .await?;
-    Ok(resp.has_real_human_face)
-}
-
 fn privacy_marker_matches(marker: &Path, raw_fp: &str) -> bool {
     let Ok(raw) = std::fs::read_to_string(marker) else {
         return false;
@@ -443,90 +421,102 @@ fn privacy_marker_is_skip_no_face(marker: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Build people-free atmosphere plates used as style refs for env/prop generation.
-///
-/// Never fails the Cameo bind pipeline: on image-model errors we log and continue so
-/// planning can still proceed with text-only `[CAMEO SCENE LOCK]` hints.
-async fn ensure_cameo_atmosphere_plates(
+/// Drop leftover atmosphere plates, privacy sidecars, prompt txt, and three-view
+/// sheets that duplicate a bound Cameo.
+fn scrub_redundant_portrait_artifacts(
     film_root: &Path,
-    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
-    image: Arc<dyn VimaxImage>,
-) -> VimaxResult<()> {
+    registry: &mut HashMap<String, HashMap<String, HashMap<String, String>>>,
+) {
+    let portraits = film_root.join("character_portraits");
+    if portraits.is_dir() {
+        if let Ok(read) = std::fs::read_dir(&portraits) {
+            for entry in read.flatten() {
+                let dir = entry.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                scrub_portrait_dir_clutter(&dir);
+            }
+        }
+    }
+    let mut drop_sheet: Vec<String> = Vec::new();
     for (identifier, views) in registry.iter() {
-        let Some(item) = views.get("cameo") else {
+        let Some(cameo) = views.get("cameo").and_then(|i| i.get("path")) else {
             continue;
         };
-        let Some(path_raw) = item.get("path") else {
-            continue;
-        };
-        let plate = crate::session::resolve_stored_asset_path(path_raw, film_root);
+        let plate = crate::session::resolve_stored_asset_path(cameo, film_root);
         if !is_usable_image_file(&plate) {
             continue;
         }
-        let raw_path = cameo_raw_path(&plate);
-        let _ = ensure_cameo_raw_plate(&plate, &raw_path);
-        // Animal / non-human identity plates: no human to strip; atmosphere img2img
-        // would invent empty rooms or distort the subject — skip.
-        if privacy_marker_is_skip_no_face(&cameo_privacy_marker(&plate)) {
-            continue;
+        let keep_raw = views
+            .get("cameo")
+            .and_then(|i| i.get(REG_PRIVACY))
+            .map(|s| s.as_str() == PRIVACY_SANITIZED)
+            .unwrap_or(false);
+        scrub_cameo_clutter(&plate, keep_raw);
+        if views.get("sheet").is_some() {
+            drop_sheet.push(identifier.clone());
         }
-        let source = if is_usable_image_file(&raw_path) {
-            raw_path.clone()
-        } else {
-            plate.clone()
-        };
-        let atmos = cameo_atmosphere_path(&plate);
-        let marker = cameo_atmosphere_marker(&atmos);
-        let src_fp = file_fingerprint(&source).unwrap_or_default();
-        if is_usable_image_file(&atmos)
-            && marker.exists()
-            && std::fs::read_to_string(&marker)
-                .map(|s| s.trim() == src_fp)
-                .unwrap_or(false)
-        {
-            continue;
-        }
-
-        tracing::info!(
-            character = %identifier,
-            source = %source.display(),
-            out = %atmos.display(),
-            "generating people-free Cameo atmosphere plate for world-asset style lock"
-        );
-        let tmp = atmos.with_extension("atmosphere_tmp.png");
-        if let Err(err) = image
-            .generate(CAMEO_ATMOSPHERE_PROMPT, &[source.as_path()], &tmp)
-            .await
-        {
-            let _ = std::fs::remove_file(&tmp);
-            tracing::warn!(
-                character = %identifier,
-                error = %err,
-                "cameo atmosphere plate failed; world assets will use text scene lock only"
-            );
-            continue;
-        }
-        if !is_usable_image_file(&tmp) {
-            let _ = std::fs::remove_file(&tmp);
-            tracing::warn!(
-                character = %identifier,
-                "cameo atmosphere plate produced no image; skipping style ref"
-            );
-            continue;
-        }
-        if let Err(err) = copy_image_file_atomic(&tmp, &atmos) {
-            let _ = std::fs::remove_file(&tmp);
-            tracing::warn!(
-                character = %identifier,
-                error = %err,
-                "failed to persist cameo atmosphere plate"
-            );
-            continue;
-        }
-        let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::write(&marker, src_fp.as_bytes());
     }
-    Ok(())
+    for identifier in drop_sheet {
+        if let Some(views) = registry.get_mut(&identifier) {
+            if let Some(sheet) = views.remove("sheet") {
+                if let Some(path) = sheet.get("path") {
+                    let p = crate::session::resolve_stored_asset_path(path, film_root);
+                    let _ = std::fs::remove_file(&p);
+                    let _ = std::fs::remove_file(p.with_extension("txt"));
+                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                        let prompt = p.with_file_name(format!("{stem}_generation_prompt.txt"));
+                        let _ = std::fs::remove_file(prompt);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn scrub_portrait_dir_clutter(dir: &Path) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let names: Vec<String> = read
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    let has_cameo = names.iter().any(|n| n.ends_with("_cameo.png"));
+    for name in names {
+        let path = dir.join(&name);
+        let drop = name.ends_with("_three_view_generation_prompt.txt")
+            || name.ends_with(".privacy_safe")
+            || name.ends_with(".atmosphere_safe")
+            || name.ends_with(".vision_desc")
+            || name.ends_with(".ai_sanitized")
+            || name.ends_with("_cameo_atmosphere.png")
+            || name.ends_with("atmosphere_tmp.png")
+            || name.ends_with("ai_sanitize_tmp.png")
+            || (has_cameo
+                && (name.ends_with("_three_view.png") || name == "asset_three_view.png"));
+        if drop {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Remove leftover sidecars next to a Cameo plate. `keep_raw` retains `{id}_cameo_raw.png`
+/// only when a photographic face was actually rewritten.
+fn scrub_cameo_clutter(plate: &Path, keep_raw: bool) {
+    let _ = std::fs::remove_file(cameo_privacy_marker(plate));
+    let atmos = cameo_atmosphere_path(plate);
+    let _ = std::fs::remove_file(cameo_atmosphere_marker(&atmos));
+    let _ = std::fs::remove_file(&atmos);
+    let _ = std::fs::remove_file(PathBuf::from(format!("{}.vision_desc", plate.display())));
+    let _ = std::fs::remove_file(PathBuf::from(format!("{}.ai_sanitized", plate.display())));
+    let raw = cameo_raw_path(plate);
+    let _ = std::fs::remove_file(PathBuf::from(format!("{}.vision_desc", raw.display())));
+    let _ = std::fs::remove_file(PathBuf::from(format!("{}.ai_sanitized", raw.display())));
+    if !keep_raw {
+        let _ = std::fs::remove_file(&raw);
+    }
 }
 
 fn cameo_raw_path(plate: &Path) -> PathBuf {
@@ -636,9 +626,9 @@ fn non_human_face_registry_description(
         format!(" Features: {feats}.")
     };
     format!(
-        "File = USER CAMEO identity plate for <{identifier}> (original upload; no human face \
-detected — face privacy swap skipped). Match species, breed/type, markings, pose, wardrobe/props, \
-and overall look exactly. Do NOT replace the subject with a human or invent a human face.{extra}"
+        "File = USER CAMEO identity plate for <{identifier}> (original upload; no photographic \
+human face — anime/cartoon/illustration/non-human kept as-is). Match the reference exactly. \
+Do NOT replace the subject with a live-action person or invent a different face.{extra}"
     )
 }
 
@@ -665,11 +655,31 @@ pub(crate) fn bind_cameos_to_registry(
     for photo in photos {
         let matched = match_cameo_to_character(photo, &visible, &used_chars)?;
         used_chars.insert(matched.identifier_in_scene.clone());
-        let dest = write_cameo_portrait(film_root, matched, photo)?;
+        let dest = write_cameo_portrait(
+            film_root,
+            matched,
+            photo,
+            registry.get(&matched.identifier_in_scene).and_then(|v| v.get("cameo")),
+        )?;
+        let src = session_photo_abs(film_root, photo)?;
+        let src_fp = file_fingerprint(&src).unwrap_or_default();
         let desc = cameo_registry_description(matched, photo, &dest);
         let mut item = HashMap::new();
         item.insert("path".into(), dest.to_string_lossy().to_string());
         item.insert("description".into(), desc);
+        if let Some(prior) = registry
+            .get(&matched.identifier_in_scene)
+            .and_then(|v| v.get("cameo"))
+        {
+            if cameo_privacy_reusable(&dest, &src_fp, prior) {
+                if let Some(p) = prior.get(REG_PRIVACY) {
+                    item.insert(REG_PRIVACY.into(), p.clone());
+                }
+                if let Some(fp) = prior.get(REG_SOURCE_FP) {
+                    item.insert(REG_SOURCE_FP.into(), fp.clone());
+                }
+            }
+        }
         registry
             .entry(matched.identifier_in_scene.clone())
             .or_default()
@@ -1104,6 +1114,7 @@ fn write_cameo_portrait(
     film_root: &Path,
     character: &CharacterInScene,
     photo: &CameoPhotoEntry,
+    prior: Option<&HashMap<String, String>>,
 ) -> VimaxResult<PathBuf> {
     let src = session_photo_abs(film_root, photo)?;
     if !is_usable_image_file(&src) {
@@ -1122,22 +1133,37 @@ fn write_cameo_portrait(
         "{}_cameo.png",
         safe_component(&character.identifier_in_scene)
     ));
-    let raw = cameo_raw_path(&dest);
-    let marker = cameo_privacy_marker(&dest);
+    let src_fp = file_fingerprint(&src).unwrap_or_default();
+    if prior.is_some_and(|p| cameo_privacy_reusable(&dest, &src_fp, p)) {
+        return Ok(dest);
+    }
     // Cameo uploads are already normalized PNG — copy instead of decode/re-encode
     // (phone photos are often 20–50MP; re-encoding OOM / Windows rename flakes).
-    copy_image_file_atomic(&src, &raw)?;
-    let raw_fp = file_fingerprint(&raw).unwrap_or_default();
-    let keep_anonymized = is_usable_image_file(&dest)
-        && marker.exists()
-        && std::fs::read_to_string(&marker)
-            .map(|s| s.trim() == raw_fp)
-            .unwrap_or(false);
-    if !keep_anonymized {
-        copy_image_file_atomic(&src, &dest)?;
-        let _ = std::fs::remove_file(&marker);
-    }
+    copy_image_file_atomic(&src, &dest)?;
+    scrub_cameo_clutter(&dest, false);
     Ok(dest)
+}
+
+fn cameo_privacy_reusable(
+    dest: &Path,
+    src_fp: &str,
+    prior: &HashMap<String, String>,
+) -> bool {
+    if prior.get(REG_SOURCE_FP).map(String::as_str) != Some(src_fp) {
+        return false;
+    }
+    if !is_usable_image_file(dest) {
+        return false;
+    }
+    match prior.get(REG_PRIVACY).map(String::as_str) {
+        Some(PRIVACY_SANITIZED) => {
+            let raw = cameo_raw_path(dest);
+            is_usable_image_file(&raw)
+                && file_fingerprint(&raw).ok().as_deref() == Some(src_fp)
+        }
+        Some(PRIVACY_SKIP) => file_fingerprint(dest).ok().as_deref() == Some(src_fp),
+        _ => false,
+    }
 }
 
 fn session_photo_abs(film_root: &Path, photo: &CameoPhotoEntry) -> VimaxResult<PathBuf> {
@@ -1279,8 +1305,8 @@ pub(crate) fn cameo_style_lock_token(session_root: &Path) -> String {
 
 /// Collect Cameo style refs + scene hint + lock token for world-asset generation.
 ///
-/// Style refs prefer: (1) people-free atmosphere plates from character Cameos,
-/// (2) user environment/prop/style uploads directly (already non-cast).
+/// Style refs are user environment/prop/style uploads (already non-cast). Portrait Cameo
+/// is never passed into vacant env/prop img2img.
 pub(crate) fn world_cameo_context(working_dir: &Path) -> (Vec<PathBuf>, String, String) {
     let film_root = resolve_film_root(working_dir);
     let session_root = resolve_session_root(working_dir);
@@ -1773,17 +1799,18 @@ mod tests {
     }
 
     #[test]
-    fn write_cameo_keeps_raw_sidecar() {
+    fn write_cameo_does_not_create_raw_sidecar() {
         let dir = tempfile::tempdir().unwrap();
         let session = dir.path();
         let film = session.join("idea2video");
         std::fs::create_dir_all(&film).unwrap();
         cameo::upload_photo(session, &jpeg_bytes(), "Alice", "").unwrap();
         let photos = cameo::list_photos(session).unwrap();
-        let dest = write_cameo_portrait(&film, &char(0, "Alice"), &photos[0]).unwrap();
+        let dest = write_cameo_portrait(&film, &char(0, "Alice"), &photos[0], None).unwrap();
         assert!(is_usable_image_file(&dest));
-        assert!(is_usable_image_file(&cameo_raw_path(&dest)));
+        assert!(!is_usable_image_file(&cameo_raw_path(&dest)));
         assert!(!cameo_privacy_marker(&dest).exists());
+        assert!(!cameo_atmosphere_path(&dest).exists());
     }
 
     #[test]
@@ -1840,6 +1867,60 @@ mod tests {
     }
 
     #[test]
+    fn scrub_drops_redundant_cameo_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let film = dir.path();
+        let char_dir = film.join("character_portraits").join("0_小表姐");
+        std::fs::create_dir_all(&char_dir).unwrap();
+        let plate = char_dir.join("小表姐_cameo.png");
+        let img = jpeg_bytes();
+        std::fs::write(&plate, &img).unwrap();
+        std::fs::write(cameo_raw_path(&plate), &img).unwrap();
+        std::fs::write(cameo_atmosphere_path(&plate), &img).unwrap();
+        std::fs::write(cameo_privacy_marker(&plate), b"fp").unwrap();
+        std::fs::write(
+            cameo_atmosphere_marker(&cameo_atmosphere_path(&plate)),
+            b"fp",
+        )
+        .unwrap();
+        std::fs::write(char_dir.join("asset_three_view.png"), &img).unwrap();
+        std::fs::write(
+            char_dir.join("asset_three_view_generation_prompt.txt"),
+            b"prompt",
+        )
+        .unwrap();
+
+        let mut registry = HashMap::new();
+        let mut views = HashMap::new();
+        let mut item = HashMap::new();
+        item.insert("path".into(), plate.to_string_lossy().to_string());
+        item.insert(REG_PRIVACY.into(), PRIVACY_SKIP.to_string());
+        views.insert("cameo".into(), item);
+        let mut sheet = HashMap::new();
+        sheet.insert(
+            "path".into(),
+            char_dir
+                .join("asset_three_view.png")
+                .to_string_lossy()
+                .to_string(),
+        );
+        views.insert("sheet".into(), sheet);
+        registry.insert("小表姐".into(), views);
+
+        scrub_redundant_portrait_artifacts(film, &mut registry);
+
+        assert!(is_usable_image_file(&plate));
+        assert!(!cameo_raw_path(&plate).exists());
+        assert!(!cameo_atmosphere_path(&plate).exists());
+        assert!(!cameo_privacy_marker(&plate).exists());
+        assert!(!char_dir.join("asset_three_view.png").exists());
+        assert!(!char_dir
+            .join("asset_three_view_generation_prompt.txt")
+            .exists());
+        assert!(registry.get("小表姐").unwrap().get("sheet").is_none());
+    }
+
+    #[test]
     fn non_human_description_forbids_human_face() {
         let mut prior = HashMap::new();
         prior.insert(
@@ -1847,8 +1928,9 @@ mod tests {
             "File = x. Features: golden retriever.".into(),
         );
         let desc = non_human_face_registry_description("旺财", &prior);
-        assert!(desc.contains("no human face"));
-        assert!(desc.contains("Do NOT replace the subject with a human"));
+        assert!(desc.contains("no photographic"));
+        assert!(desc.contains("anime/cartoon"));
         assert!(desc.contains("golden retriever"));
+        assert!(desc.contains("Do NOT replace"));
     }
 }
