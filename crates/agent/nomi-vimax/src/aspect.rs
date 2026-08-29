@@ -73,6 +73,30 @@ pub fn aspect_prompt_clause(ratio: &str) -> String {
     }
 }
 
+/// Seedance R2V framing line from the user's session ratio (never hardcode 9:16).
+///
+/// Portrait ratios get an extra keep-in-frame hint so large figures are not cropped
+/// off the tall canvas. The API `ratio` field is still the real lock; this is a
+/// composition hint for the prompt.
+pub fn video_aspect_framing_clause(ratio: &str) -> String {
+    let r = normalize_aspect_ratio(ratio);
+    let label = match r.as_str() {
+        "9:16" => "9:16 vertical",
+        "1:1" => "1:1 square",
+        "4:3" => "4:3 landscape",
+        "3:4" => "3:4 portrait",
+        "21:9" => "21:9 ultrawide",
+        _ => "16:9 landscape",
+    };
+    let keep = match r.as_str() {
+        "9:16" | "3:4" => {
+            "Keep the full subject in frame, including large creatures — fit the entire figure inside the portrait edges."
+        }
+        _ => "Keep the full subject in frame.",
+    };
+    format!("Frame: {label}. {keep}")
+}
+
 /// DashScope-style `W*H` size (~Seedream 2K-class posters).
 pub fn aspect_to_dashscope_size(ratio: &str) -> &'static str {
     match normalize_aspect_ratio(ratio).as_str() {
@@ -160,5 +184,25 @@ mod tests {
         assert_eq!(aspect_to_seedream_size("16:9"), "2816x1584");
         assert_eq!(aspect_to_dashscope_size("9:16"), "1584*2816");
         assert_eq!(aspect_to_upload_dims("16:9"), (1280, 720));
+    }
+
+    #[test]
+    fn video_framing_clause_follows_user_ratio_not_hardcoded_916() {
+        let vertical = video_aspect_framing_clause("9:16");
+        assert!(vertical.contains("9:16 vertical"), "{vertical}");
+        assert!(vertical.contains("large creatures"), "{vertical}");
+        assert!(!vertical.contains("16:9"), "{vertical}");
+
+        let portrait_34 = video_aspect_framing_clause("3:4");
+        assert!(portrait_34.contains("3:4 portrait"), "{portrait_34}");
+        assert!(portrait_34.contains("large creatures"), "{portrait_34}");
+
+        let landscape = video_aspect_framing_clause("16:9");
+        assert!(landscape.contains("16:9 landscape"), "{landscape}");
+        assert!(!landscape.contains("vertical"), "{landscape}");
+        assert!(!landscape.contains("large creatures"), "{landscape}");
+
+        let alias = video_aspect_framing_clause("portrait");
+        assert!(alias.contains("9:16 vertical"), "{alias}");
     }
 }

@@ -41,6 +41,8 @@ The user will provide the following input.
   - Two characters exchange a meaningful glance
   - Expression changes from neutral to shocked
   DO NOT include multiple unrelated actions in one clip.
+- visual_desc should be a filmable beat (composition + action), NOT a costume bible. Face/body/wardrobe encyclopedias belong in character sheets; the renderer locks identity from reference images. Keep names in <angle brackets> and at most one short visible tag.
+- Action-only shots (no dialogue) should usually be 5–8s. Do not write a 12s empty walk. When a beat needs ~8s+, prefer timed motion later in decompose (0-3s / 3-8s).
 - Plan visual_desc and audio_desc as a pair for the SAME duration: spoken lines in audio_desc MUST be finishable clearly inside that shot (Seedance 5–12s hard max). Put dialogue in 「」 / quotes so duration estimation ignores SFX/BGM. Typical spoken budget for an 8s beat is ≲20 Chinese chars / ≲14 English words; hard max for a 12s clip is ≲33 Chinese chars / ≲23 English words (after ~1s lead-in + ~1s tail). If a speech beat is longer, SPLIT into another shot or shorten the line — never leave unfinished sentences, dangling mid-actions, or dialogue that forces time-compressed speech.
 - audio_desc is REQUIRED on every shot (never null/empty). Include spoken dialogue when present; otherwise write ambient SFX + BGM intent. Do NOT leave dialogue only in visual_desc.
 - BGM CONTINUITY (CRITICAL): All shots in this scene share ONE continuous underscore. Reuse the SAME music phrase (motif / tempo / instrumentation / volume intent) in every audio_desc. Forbidden: inventing a new music style, key, or energy per shot that would make cuts feel musically abrupt.

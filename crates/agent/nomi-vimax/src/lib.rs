@@ -27,7 +27,7 @@ pub use creative::{
 pub use aspect::{
     DEFAULT_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS, aspect_prompt_clause, aspect_to_dashscope_size,
     aspect_to_seedream_size, aspect_to_upload_dims, image_request_extra_for_aspect,
-    normalize_aspect_ratio,
+    normalize_aspect_ratio, video_aspect_framing_clause,
 };
 
 pub use video_quality::{

@@ -119,6 +119,74 @@ pub fn write_image_bytes_atomic(bytes: &[u8], out_path: &Path) -> VimaxResult<()
     replace_file_atomic(&part, out_path)
 }
 
+/// Sidecar for the front (left) panel of a three-view bible, used as a Seedance identity ref.
+const THREE_VIEW_VIDEO_FRONT_SUFFIX: &str = "_video_front.png";
+
+/// Crop the left panel of a three-view turnaround for video identity refs.
+///
+/// Full front/side/back sheets confuse Seedance into split-screens or extra people.
+/// Cameo photos and non-strip images are returned unchanged. Failures fall back to `sheet`.
+pub fn ensure_three_view_front_panel(sheet: &Path) -> PathBuf {
+    let Some(name) = sheet.file_name().and_then(|s| s.to_str()) else {
+        return sheet.to_path_buf();
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("video_front") {
+        return sheet.to_path_buf();
+    }
+    if !lower.contains("three_view") && !lower.contains("three-view") {
+        return sheet.to_path_buf();
+    }
+    let stem = sheet
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("asset");
+    let dest = sheet.with_file_name(format!("{stem}{THREE_VIEW_VIDEO_FRONT_SUFFIX}"));
+    if is_usable_image_file(&dest) {
+        return dest;
+    }
+    match crop_three_view_front_panel(sheet, &dest) {
+        Ok(()) if is_usable_image_file(&dest) => dest,
+        Ok(()) => sheet.to_path_buf(),
+        Err(e) => {
+            tracing::debug!(
+                path = %sheet.display(),
+                error = %e,
+                "three-view front panel crop skipped; using full sheet"
+            );
+            sheet.to_path_buf()
+        }
+    }
+}
+
+fn crop_three_view_front_panel(src: &Path, dest: &Path) -> VimaxResult<()> {
+    let img = image::open(src).map_err(|e| {
+        VimaxError::Media(format!("decode three-view {}: {e}", src.display()))
+    })?;
+    let w = img.width();
+    let h = img.height();
+    if w < 48 || h < 16 {
+        return Err(VimaxError::Media("three-view too small to crop".into()));
+    }
+    // Turnaround sheets are landscape strips. Portrait singles stay as-is.
+    if w < h.saturating_mul(3) / 2 {
+        return Err(VimaxError::Media("three-view is not a landscape strip".into()));
+    }
+    let panel = (w / 3).max(16);
+    let inset = (panel / 25).max(2);
+    let crop_w = panel.saturating_sub(inset).max(16);
+    let cropped = img.crop_imm(0, 0, crop_w, h);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| VimaxError::Media(e.to_string()))?;
+    }
+    cropped
+        .save_with_format(dest, image::ImageFormat::Png)
+        .map_err(|e| {
+            VimaxError::Media(format!("save three-view front {}: {e}", dest.display()))
+        })?;
+    Ok(())
+}
+
 /// Copy an on-disk image into place without re-encoding (cameo photos are already PNG).
 pub fn copy_image_file_atomic(src: &Path, out_path: &Path) -> VimaxResult<()> {
     if !src.is_file() {
@@ -1466,6 +1534,37 @@ mod tests {
         let strip = dir.path().join("strip.png");
         compose_reference_strip(&[jpeg_as_png.as_path(), out.as_path()], &strip).unwrap();
         assert!(strip.exists());
+    }
+
+    #[test]
+    fn three_view_front_panel_crops_left_third() {
+        use image::{Rgb, RgbImage};
+        let dir = tempfile::tempdir().unwrap();
+        let sheet = dir.path().join("hero_three_view.png");
+        // 180×60 landscape strip: left third red, rest green.
+        let mut img = RgbImage::from_pixel(180, 60, Rgb([0, 255, 0]));
+        for x in 0..60 {
+            for y in 0..60 {
+                img.put_pixel(x, y, Rgb([255, 0, 0]));
+            }
+        }
+        img.save(&sheet).unwrap();
+        let front = ensure_three_view_front_panel(&sheet);
+        assert_ne!(front, sheet);
+        assert!(front
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .contains("video_front"));
+        let cropped = image::open(&front).unwrap();
+        assert!(cropped.width() <= 60, "front panel should be ~left third");
+        assert_eq!(cropped.height(), 60);
+        // Cameo / non-strip names are unchanged.
+        let cameo = dir.path().join("hero_cameo.png");
+        RgbImage::from_pixel(40, 40, Rgb([0, 0, 255]))
+            .save(&cameo)
+            .unwrap();
+        assert_eq!(ensure_three_view_front_panel(&cameo), cameo);
     }
 
     #[test]
