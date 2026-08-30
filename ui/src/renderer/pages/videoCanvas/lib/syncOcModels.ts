@@ -1,6 +1,6 @@
 /**
  * Sync open-ai-canvas config store models from allo catalogs.
- * - Image / video: `/api/media/models`
+ * - Image / video / TTS: `/api/media/models` (Flowy category 6 / 4 / 8)
  * - Text (Agent): `modelProfile.resolve({ task: 'chat' })` + provider list
  */
 
@@ -17,6 +17,7 @@ import {
   type ModelCapability,
   type ModelChannel,
 } from '@oc/stores/use-config-store';
+import { FLOWY_CLOUD_CHANNEL_NAME, rewriteCatalogIconUrl } from './catalogIcon';
 
 const ALLO_MEDIA_CHANNEL_ID = 'allo-media';
 const ALLO_CHAT_CHANNEL_ID = 'allo-chat';
@@ -33,13 +34,14 @@ function encodeOptions(models: IMediaModelOption[], channelId: string) {
 
 function costEntries(
   models: Array<{ id: string; name?: string; icon?: string }>,
-  capability: ModelCapability
+  capability: ModelCapability,
+  serverBaseUrl?: string
 ): NonNullable<ModelChannel['modelCosts']> {
   return models
     .map((m) => {
       const model = (m.id || m.name || '').trim();
       if (!model) return null;
-      const icon = m.icon?.trim();
+      const icon = rewriteCatalogIconUrl(m.icon, serverBaseUrl);
       return {
         model,
         displayName: (m.name || m.id || model).trim(),
@@ -48,12 +50,31 @@ function costEntries(
         billingMode: 'fixed_request' as const,
         unitPriceMicrocredits: 0,
         ...(capability === 'text' ? { protocol: 'chat-completion' as const } : {}),
+        ...(capability === 'audio' ? { protocol: 'openai-audio' as const } : {}),
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
 }
 
-async function fetchAlloChatModels(): Promise<Array<{ id: string; name: string }>> {
+function catalogIconFromProviderDetail(
+  providers: Array<{
+    id: string;
+    models_detail?: Array<{ model: string; params?: unknown }>;
+  }>,
+  providerId: string,
+  modelId: string
+): string | undefined {
+  const detail = providers
+    .find((p) => p.id === providerId)
+    ?.models_detail?.find((row) => row.model === modelId);
+  const params = detail?.params;
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return undefined;
+  const icon = (params as Record<string, unknown>).icon
+    ?? (params as Record<string, unknown>)._flowy_catalog_icon;
+  return typeof icon === 'string' ? icon : undefined;
+}
+
+async function fetchAlloChatModels(): Promise<Array<{ id: string; name: string; icon?: string }>> {
   const [resolved, providers] = await Promise.all([
     ipcBridge.modelProfile.resolve.invoke({ task: 'chat' }),
     ipcBridge.mode.listProviders.invoke(),
@@ -63,57 +84,76 @@ async function fetchAlloChatModels(): Promise<Array<{ id: string; name: string }
     (providers ?? []).map((p) => [p.id, p.name || p.id] as const)
   );
   const seen = new Set<string>();
-  const models: Array<{ id: string; name: string }> = [];
+  const models: Array<{ id: string; name: string; icon?: string }> = [];
   for (const ref of refs) {
     const id = (ref.model || '').trim();
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    const desc = (providers ?? []).find((p) => p.id === ref.provider_id)?.model_descriptions?.[id];
+    const provider = (providers ?? []).find((p) => p.id === ref.provider_id);
+    const desc = provider?.model_descriptions?.[id];
     const providerLabel = labelByProvider.get(ref.provider_id);
+    const icon = catalogIconFromProviderDetail(providers ?? [], ref.provider_id, id);
     models.push({
       id,
       name: (desc || (providerLabel ? `${providerLabel} · ${id}` : id)).trim(),
+      ...(icon ? { icon } : {}),
     });
   }
   return models;
 }
 
-export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
-  const [mediaList, chatModels] = await Promise.all([
-    fetchMediaModels().catch(() => ({ image_models: [], video_models: [] })),
-    fetchAlloChatModels().catch((err) => {
-      console.warn('[videoCanvas] fetchAlloChatModels failed', err);
-      return [] as Array<{ id: string; name: string }>;
-    }),
-  ]);
+export type AlloCatalogModels = {
+  image: IMediaModelOption[];
+  video: IMediaModelOption[];
+  audio: IMediaModelOption[];
+  chat: Array<{ id: string; name: string; icon?: string }>;
+  /** Flowy API origin used to resolve relative catalog `icon` paths. */
+  serverBaseUrl?: string;
+};
 
-  const imageModels = mediaList.image_models || [];
-  const videoModels = mediaList.video_models || [];
-  if (!imageModels.length && !videoModels.length && !chatModels.length) return;
-
-  const store = useConfigStore.getState();
-  const config = store.config;
+/** Merge Flowy / local catalogs into a canvas `AiConfig`. Returns null when nothing to apply. */
+export function mergeAlloCatalogIntoConfig(
+  config: AiConfig,
+  catalog: AlloCatalogModels
+): AiConfig | null {
+  const imageModels = catalog.image;
+  const videoModels = catalog.video;
+  const audioModels = catalog.audio;
+  const chatModels = catalog.chat;
+  const serverBaseUrl = catalog.serverBaseUrl;
+  if (!imageModels.length && !videoModels.length && !audioModels.length && !chatModels.length) {
+    return null;
+  }
 
   const imageOptions = encodeOptions(imageModels, ALLO_MEDIA_CHANNEL_ID);
   const videoOptions = encodeOptions(videoModels, ALLO_MEDIA_CHANNEL_ID);
+  const audioOptions = encodeOptions(audioModels, ALLO_MEDIA_CHANNEL_ID);
   const mediaRawIds = unique([
     ...imageModels.map((m) => m.id || m.name),
     ...videoModels.map((m) => m.id || m.name),
+    ...audioModels.map((m) => m.id || m.name),
   ]);
   const mediaCosts = [
     ...costEntries(
       imageModels.map((m) => ({ id: m.id || m.name, name: m.name, icon: m.icon })),
-      'image'
+      'image',
+      serverBaseUrl
     ),
     ...costEntries(
       videoModels.map((m) => ({ id: m.id || m.name, name: m.name, icon: m.icon })),
-      'video'
+      'video',
+      serverBaseUrl
+    ),
+    ...costEntries(
+      audioModels.map((m) => ({ id: m.id || m.name, name: m.name, icon: m.icon })),
+      'audio',
+      serverBaseUrl
     ),
   ];
 
   const alloMediaChannel = createModelChannel({
     id: ALLO_MEDIA_CHANNEL_ID,
-    name: 'Allo Media',
+    name: FLOWY_CLOUD_CHANNEL_NAME,
     models: mediaRawIds,
     baseUrl: config.baseUrl || 'http://127.0.0.1',
     apiKey: 'system',
@@ -128,7 +168,7 @@ export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
   const textOptions = unique(chatModels.map((m) => encodeChannelModel(ALLO_CHAT_CHANNEL_ID, m.id)));
   const alloChatChannel = createModelChannel({
     id: ALLO_CHAT_CHANNEL_ID,
-    name: 'Flowy Cloud',
+    name: FLOWY_CLOUD_CHANNEL_NAME,
     models: chatRawIds,
     baseUrl: ALLO_CHAT_LLM_BASE_URL,
     apiKey: 'system',
@@ -137,7 +177,7 @@ export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
     scope: 'system',
     enabled: true,
     hasApiKey: true,
-    modelCosts: costEntries(chatModels, 'text'),
+    modelCosts: costEntries(chatModels, 'text', serverBaseUrl),
   });
 
   const otherChannels = (config.channels || []).filter(
@@ -152,14 +192,16 @@ export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
   const next: Partial<AiConfig> = {
     ...config,
     channels,
-    models: unique([...textOptions, ...imageOptions, ...videoOptions]),
+    models: unique([...textOptions, ...imageOptions, ...videoOptions, ...audioOptions]),
     imageModels: imageOptions,
     videoModels: videoOptions,
+    audioModels: audioOptions,
     textModels: textOptions,
     imageModel: imageOptions[0] || config.imageModel,
     videoModel: videoOptions[0] || config.videoModel,
+    audioModel: audioOptions[0] || config.audioModel,
     textModel: textOptions[0] || config.textModel,
-    model: imageOptions[0] || videoOptions[0] || textOptions[0] || config.model,
+    model: imageOptions[0] || videoOptions[0] || audioOptions[0] || textOptions[0] || config.model,
   };
 
   const normalized = normalizeConfigSnapshot({ config: next });
@@ -173,12 +215,19 @@ export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
       ? normalized.config.textModel
       : textOptions[0] || normalized.config.textModel;
 
-  const merged: AiConfig = {
+  return {
     ...normalized.config,
     channels,
-    models: unique([...textOptions, ...imageOptions, ...videoOptions, ...keepForeignModels]),
+    models: unique([
+      ...textOptions,
+      ...imageOptions,
+      ...videoOptions,
+      ...audioOptions,
+      ...keepForeignModels,
+    ]),
     imageModels: imageOptions.length ? imageOptions : normalized.config.imageModels,
     videoModels: videoOptions.length ? videoOptions : normalized.config.videoModels,
+    audioModels: audioOptions.length ? audioOptions : normalized.config.audioModels,
     textModels: textOptions.length ? textOptions : normalized.config.textModels,
     imageModel: imageOptions.includes(normalized.config.imageModel)
       ? normalized.config.imageModel
@@ -186,13 +235,37 @@ export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
     videoModel: videoOptions.includes(normalized.config.videoModel)
       ? normalized.config.videoModel
       : videoOptions[0] || normalized.config.videoModel,
+    audioModel: audioOptions.includes(normalized.config.audioModel)
+      ? normalized.config.audioModel
+      : audioOptions[0] || normalized.config.audioModel,
     textModel: preferredText,
     model:
       imageOptions[0] ||
       videoOptions[0] ||
+      audioOptions[0] ||
       preferredText ||
       normalized.config.model,
   };
+}
 
-  store.replaceConfig(merged);
+export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
+  const [mediaList, chatModels, whoami] = await Promise.all([
+    fetchMediaModels().catch(() => ({ image_models: [], video_models: [], audio_models: [] })),
+    fetchAlloChatModels().catch((err) => {
+      console.warn('[videoCanvas] fetchAlloChatModels failed', err);
+      return [] as Array<{ id: string; name: string; icon?: string }>;
+    }),
+    ipcBridge.cloud.whoami.invoke().catch(() => null),
+  ]);
+
+  const merged = mergeAlloCatalogIntoConfig(useConfigStore.getState().config, {
+    image: mediaList.image_models || [],
+    video: mediaList.video_models || [],
+    audio: mediaList.audio_models || [],
+    chat: chatModels,
+    serverBaseUrl: whoami?.serverBaseUrl,
+  });
+  if (!merged) return;
+
+  useConfigStore.getState().replaceConfig(merged);
 }

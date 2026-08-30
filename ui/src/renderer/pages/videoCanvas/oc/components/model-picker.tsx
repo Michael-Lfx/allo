@@ -10,6 +10,7 @@ import { cn } from "@oc/lib/utils";
 import { modelDisplayName, modelIconUrl, modelOptionLabel, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
+import { isMonochromeLogo, resolveModelFallbackIcon } from "@renderer/pages/videoCanvas/lib/catalogIcon";
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -46,13 +47,12 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             .map((channel) => ({
                 key: channel.id,
                 label: channel.name || canvasT("videoCanvas.model.unnamedChannel", "未命名渠道"),
-                scope: channel.scope === "system" ? canvasT("videoCanvas.model.systemChannel", "系统渠道") : canvasT("videoCanvas.model.customChannel", "自定义渠道"),
                 models: options.filter((model) => resolveModelChannel(config, model).id === channel.id),
             }))
             .filter((group) => group.models.length);
         const groupedModels = new Set(channelGroups.flatMap((group) => group.models));
         const ungroupedModels = options.filter((model) => !groupedModels.has(model));
-        return ungroupedModels.length ? [...channelGroups, { key: "ungrouped", label: canvasT("videoCanvas.model.otherModels", "其他模型"), scope: canvasT("videoCanvas.model.unspecifiedChannel", "未指定渠道"), models: ungroupedModels }] : channelGroups;
+        return ungroupedModels.length ? [...channelGroups, { key: "ungrouped", label: canvasT("videoCanvas.model.otherModels", "其他模型"), models: ungroupedModels }] : channelGroups;
     }, [config, options]);
     const current = value || "";
     const currentPrice = modelMenuPrice(config, current);
@@ -135,9 +135,6 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     <section key={group.key} className="canvas-model-picker-group min-w-0 overflow-hidden">
                         <div className="canvas-model-picker-group-label" style={{ color: theme.node.muted }}>
                             <span className="truncate">{group.label}</span>
-                            <span className="shrink-0" style={{ color: theme.node.muted }}>
-                                {group.scope}
-                            </span>
                         </div>
                         <div className="grid min-w-0 gap-1">
                             {group.models.map((model) => {
@@ -296,17 +293,18 @@ function modelMenuMeta(model: string, capability?: ModelCapability): { descripti
 
 export function ModelIcon({ config, model }: { config?: AiConfig; model: string }) {
     const catalogIcon = config ? modelIconUrl(config, model) : "";
-    const fallbackIcon = resolveModelIcon(modelOptionName(model));
+    const fallbackIcon = resolveModelFallbackIcon(modelOptionName(model));
     const [src, setSrc] = useState(catalogIcon || fallbackIcon);
     useEffect(() => {
         setSrc(catalogIcon || fallbackIcon);
     }, [catalogIcon, fallbackIcon]);
-    const monochrome = src === "/icons/openai.svg" || src === "/icons/grok.svg";
+    const monochrome = isMonochromeLogo(src);
     if (!src) return <Cpu className="size-3.5 shrink-0 opacity-70" />;
     return (
         <img
             src={src}
             alt=""
+            referrerPolicy="no-referrer"
             className={cn("size-3.5 shrink-0 object-contain", monochrome && "dark:invert")}
             onError={() => {
                 if (catalogIcon && src === catalogIcon && fallbackIcon && fallbackIcon !== catalogIcon) {
@@ -320,15 +318,5 @@ export function ModelIcon({ config, model }: { config?: AiConfig; model: string 
 }
 
 export function resolveModelIcon(model: string) {
-    const name = model.toLowerCase();
-    if (name.includes("claude") || name.includes("anthropic")) return "/icons/claude.svg";
-    // Flow2API 短名：Nano Banana / Imagen / Veo / Omni 均属 Google Gemini 系。
-    if (name.includes("gemini") || name.includes("google") || name.includes("nano banana") || name.includes("nanobanana") || name.includes("imagen") || name.includes("veo") || name.includes("omni flash") || name.includes("omni-flash")) {
-        return "/icons/gemini.svg";
-    }
-    if (name.includes("gpt") || name.includes("openai") || name.includes("dall-e") || name.includes("dalle")) return "/icons/openai.svg";
-    if (name.includes("grok")) return "/icons/grok.svg";
-    if (name.includes("deepseek")) return "/icons/deepseek.svg";
-    if (name.includes("glm") || name.includes("chatglm")) return "/icons/glm.svg";
-    return "";
+    return resolveModelFallbackIcon(model);
 }

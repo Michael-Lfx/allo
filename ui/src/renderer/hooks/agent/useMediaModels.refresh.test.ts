@@ -17,6 +17,7 @@ describe('useMediaModels catalog refresh wiring', () => {
     expect(text.includes('void revalidate()')).toBe(true);
     expect(text.includes('MEDIA_MODELS_CACHE_TTL_MS')).toBe(true);
     expect(text.includes('mediaModelsInflight')).toBe(true);
+    expect(text.includes('audio_models: []')).toBe(true);
     // No SWR for the model list.
     expect(text.includes('useSWR')).toBe(false);
     expect(text.includes('MEDIA_MODELS_SWR_KEY')).toBe(false);
