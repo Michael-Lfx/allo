@@ -785,6 +785,12 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   gap: 8px;
 }
 
+.conversation-error-report-modal .nomifun-modal-structured-footer {
+  box-sizing: border-box;
+  margin-top: 0;
+  padding: 12px 20px 16px;
+}
+
 .conversation-error-report__button {
   box-sizing: border-box;
   min-width: 96px;
@@ -1023,6 +1029,10 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
     padding: 4px 16px 16px;
   }
 
+  .conversation-error-report-modal .nomifun-modal-structured-footer {
+    padding: 10px 16px 14px;
+  }
+
   .support-chat-composer {
     padding: 8px 12px 12px;
   }
@@ -1079,6 +1089,47 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
     width: 40px;
     height: 40px;
   }
+}
+
+/* The Edge matrix cannot change the host pointer media feature per case. The
+ * probe sets this attribute so the same 40px touch geometry is exercised in
+ * a deterministic browser run instead of being inferred from a fine pointer.
+ */
+html[data-support-probe-pointer='coarse'] .nomifun-modal-structured-header > button {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  flex-basis: 40px;
+}
+
+html[data-support-probe-pointer='coarse'] .support-chat-composer button[data-button-shape='circle'] {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  flex-basis: 40px;
+}
+
+html[data-support-probe-pointer='coarse'] .support-chat-composer__toolbar {
+  height: 40px;
+  flex-basis: 40px;
+}
+
+html[data-support-probe-pointer='coarse'] .support-chat-composer__attachment-menu button {
+  min-height: 40px;
+}
+
+html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
+  top: -12px;
+  right: -12px;
+  width: 40px;
+  height: 40px;
+}
+
+html[data-support-probe-pointer='coarse'] .conversation-error-report__textarea,
+html[data-support-probe-pointer='coarse'] .conversation-error-report__upload,
+html[data-support-probe-pointer='coarse'] .conversation-error-report__button,
+html[data-support-probe-pointer='coarse'] .support-chat-composer__text-action {
+  min-height: 40px;
 }
 
 @media (prefers-reduced-motion: reduce) {

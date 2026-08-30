@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { SupportMessage } from '../api/supportChatTypes';
 import { supportImagePreviewCache } from '../state/supportImagePreviewCache';
@@ -28,12 +28,77 @@ function dayKey(iso: string): string {
   return date.toLocaleDateString();
 }
 
+type SupportMessageImageProps = {
+  localPreviewUrl?: string;
+  remoteUrl?: string;
+  clientMsgId?: string | null;
+  alt: string;
+  className: string;
+  onClick: () => void;
+};
+
+const SupportMessageImage: React.FC<SupportMessageImageProps> = ({
+  localPreviewUrl,
+  remoteUrl,
+  clientMsgId,
+  alt,
+  className,
+  onClick,
+}) => {
+  const [src, setSrc] = useState(localPreviewUrl || remoteUrl);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrc(localPreviewUrl || remoteUrl);
+
+    if (
+      !clientMsgId ||
+      !localPreviewUrl ||
+      !remoteUrl ||
+      localPreviewUrl === remoteUrl ||
+      !/^https?:\/\//i.test(remoteUrl)
+    ) {
+      return undefined;
+    }
+
+    // Preload the CDN image before releasing the local URL. This keeps the
+    // zero-flash transition while giving the cache a deterministic owner.
+    const remoteImage = new Image();
+    remoteImage.onload = () => {
+      if (cancelled) return;
+      supportImagePreviewCache.release(clientMsgId);
+      setSrc(remoteUrl);
+    };
+    remoteImage.onerror = () => {
+      // Keep the local preview until the message surface is left.
+    };
+    remoteImage.src = remoteUrl;
+
+    return () => {
+      cancelled = true;
+      remoteImage.onload = null;
+      remoteImage.onerror = null;
+    };
+  }, [clientMsgId, localPreviewUrl, remoteUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (clientMsgId) supportImagePreviewCache.release(clientMsgId);
+    };
+  }, [clientMsgId]);
+
+  if (!src) return null;
+  return <img src={src} alt={alt} className={className} onClick={onClick} />;
+};
+
 const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoadOlder, onRetry }) => {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const loadingOlderRef = useRef(false);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   // 历史消息前插时的锚点：在 DOM 提交后（useLayoutEffect）同步补偿滚动位置，
   // 避免在旧 scrollHeight 上计算导致跳顶。
   const prependAnchorRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
@@ -51,6 +116,19 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
       el.scrollTop = el.scrollHeight;
     }
   }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      // Pending previews remain owned by their retryable pending message. A
+      // server image can safely fall back to its remote URL after this list
+      // is closed, so release only those cache entries here.
+      for (const item of messagesRef.current) {
+        if (item.kind === 'server' && item.message.msgType === 'image') {
+          supportImagePreviewCache.release(item.message.clientMsgId);
+        }
+      }
+    };
+  }, []);
 
   const handleScroll = () => {
     const el = containerRef.current;
@@ -140,17 +218,21 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
               ? t('common.supportChat.recalled', { defaultValue: '消息已撤回' })
               : item.message.content;
         // 图片消息：pending 用本地预览；服务端优先用本会话缓存的预览（免 CDN 重载闪烁），否则 payload.url。
-        const imageUrl = recalled
+        const localPreviewUrl = recalled
           ? undefined
           : item.kind === 'pending'
             ? item.msgType === 'image'
               ? item.previewUrl || item.payload?.url
               : undefined
             : item.message.msgType === 'image'
-              ? supportImagePreviewCache.get(item.message.clientMsgId) ||
-                item.message.payload?.url ||
-                undefined
+              ? supportImagePreviewCache.get(item.message.clientMsgId)
               : undefined;
+        const remoteImageUrl = recalled
+          ? undefined
+          : item.kind === 'server'
+            ? item.message.payload?.url
+            : item.payload?.url;
+        const imageUrl = localPreviewUrl || remoteImageUrl;
         // 连续己方消息成组：状态行（发送中/已送达）只挂在每组最后一条；失败始终单独显示。
         const next = messages[index + 1];
         const nextIsUser =
@@ -176,16 +258,16 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
                 <div className='text-11px text-t-tertiary px-4px'>{formatTime(createdAt)}</div>
               ) : null}
               {imageUrl ? (
-                <img
-                  src={imageUrl}
+                <SupportMessageImage
+                  localPreviewUrl={localPreviewUrl}
+                  remoteUrl={remoteImageUrl}
+                  clientMsgId={item.kind === 'server' ? item.message.clientMsgId : undefined}
                   alt={t('common.supportChat.imageMessage', { defaultValue: '图片' })}
                   className='max-w-160px max-h-160px rd-12px border border-solid border-[var(--color-border-2)] object-cover cursor-zoom-in bg-fill-1'
                   onClick={() => {
                     // 本地预览 URL 不外开；远端 CDN 图片新开查看（文档 §3.1）。
-                    const remoteUrl =
-                      item.kind === 'server' ? item.message.payload?.url : item.payload?.url;
-                    if (remoteUrl && /^https?:\/\//.test(remoteUrl)) {
-                      window.open(remoteUrl, '_blank', 'noopener,noreferrer');
+                    if (remoteImageUrl && /^https?:\/\//.test(remoteImageUrl)) {
+                      window.open(remoteImageUrl, '_blank', 'noopener,noreferrer');
                     }
                   }}
                 />

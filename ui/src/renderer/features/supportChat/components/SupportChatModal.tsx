@@ -57,6 +57,7 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
         maxHeight: 'min(680px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}
+      unmountOnExit
       onCancel={closeSupportChat}
     >
       <div className='support-chat-modal__body flex min-h-0 flex-col'>

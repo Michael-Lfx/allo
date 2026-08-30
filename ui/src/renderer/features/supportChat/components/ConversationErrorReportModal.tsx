@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Caution, Close } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
@@ -81,13 +81,13 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
     };
   }, []);
 
-  const revokeDraftScreenshots = (items: SupportImagePreviewItem[]) => {
+  const revokeDraftScreenshots = useCallback((items: SupportImagePreviewItem[]) => {
     for (const screenshot of items) {
       if (!providerOwnedPreviewUrlsRef.current.has(screenshot.url)) {
         revokeSupportImagePreview(screenshot);
       }
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!context) return;
@@ -106,7 +106,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
     } else {
       focus();
     }
-  }, [context]);
+  }, [context, revokeDraftScreenshots]);
 
   const removeScreenshot = (id: string) => {
     setScreenshots((current) => {
@@ -290,6 +290,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
         maxHeight: 'min(760px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}
+      unmountOnExit
       autoFocus={false}
     >
       {context && diagnostic ? (

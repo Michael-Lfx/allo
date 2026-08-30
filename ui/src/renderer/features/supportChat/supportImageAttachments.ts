@@ -4,9 +4,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { ICloudImAttachmentPayload, ICloudImLogUploadResponse } from '@/common/adapter/ipcBridge';
+
 export const MAX_SUPPORT_IMAGES = 4;
 export const MAX_SUPPORT_IMAGE_BYTES = 5 * 1024 * 1024;
 export const SUPPORT_IMAGE_ACCEPT = 'image/png,image/jpeg,.png,.jpg,.jpeg';
+
+export function buildSupportImagePayload(
+  uploaded: ICloudImLogUploadResponse,
+  fallback: { fileName: string; contentType?: string; byteSize: number }
+): ICloudImAttachmentPayload {
+  return {
+    ...(uploaded.url ? { url: uploaded.url } : {}),
+    ...(uploaded.objectKey ? { objectKey: uploaded.objectKey } : {}),
+    name: uploaded.name || fallback.fileName,
+    contentType: uploaded.contentType || fallback.contentType || 'image/png',
+    byteSize: uploaded.byteSize || fallback.byteSize,
+  };
+}
 
 export type SupportImagePreviewItem = {
   id: string;

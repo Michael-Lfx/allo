@@ -22,18 +22,17 @@ import { configService } from '@/common/config/configService';
 import type {
   ICloudImAttachmentPayload,
   ICloudImConversation,
-  ICloudImLogUploadResponse,
 } from '@/common/adapter/ipcBridge';
 import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
 import { supportChatApi } from './api/supportChatApi';
 import { collectSupportDeviceInfo } from './collectSupportDeviceInfo';
 import { collectSupportLogUserInfo } from './collectSupportLogUserInfo';
 import {
-  buildConversationErrorReportMetadata,
   type ConversationErrorReportDraft,
   type ConversationErrorReportContext,
   type ConversationErrorReportSubmitResult,
 } from './conversationErrorReport';
+import { submitConversationErrorReport as submitConversationErrorReportFlow } from './conversationErrorReportSubmission';
 import type { SupportChatState, SupportMessage, SupportPendingMessage } from './api/supportChatTypes';
 import {
   collectNotifiableSysUserMessages,
@@ -44,6 +43,7 @@ import {
 import { createSupportPollController } from './supportPollController';
 import { createPendingMessage } from './state/supportMessageMerge';
 import { supportImagePreviewCache } from './state/supportImagePreviewCache';
+import { buildSupportImagePayload } from './supportImageAttachments';
 import { initialSupportChatState, supportChatReducer } from './state/supportChatReducer';
 import SupportChatModal from './components/SupportChatModal';
 import { supportAttentionId, supportNotifyDeepLink } from '@renderer/hooks/system/desktopNotifyDeepLink';
@@ -92,28 +92,28 @@ function errorMessage(error: unknown): string {
   return '暂时无法连接客服';
 }
 
-function buildImagePayload(
-  uploaded: ICloudImLogUploadResponse,
-  fallback: { fileName: string; contentType?: string; byteSize: number }
-): ICloudImAttachmentPayload {
-  return {
-    ...(uploaded.url ? { url: uploaded.url } : {}),
-    ...(uploaded.objectKey ? { objectKey: uploaded.objectKey } : {}),
-    name: uploaded.name || fallback.fileName,
-    contentType: uploaded.contentType || fallback.contentType || 'image/png',
-    byteSize: uploaded.byteSize || fallback.byteSize,
-  };
-}
-
 export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { t } = useTranslation();
-  const { status: cloudStatus, whoami } = useCloudAuth();
+  const { status: cloudStatus, authState, whoami } = useCloudAuth();
+  const authAccountId =
+    cloudStatus === 'authenticated'
+      ? authState.phase === 'authenticated'
+        ? authState.accountId
+        : authState.phase === 'offline'
+          ? authState.previousAccountId || whoami?.userId || 'authenticated-account'
+          : whoami?.userId || 'authenticated-account'
+      : null;
   const [state, dispatch] = useReducer(supportChatReducer, initialSupportChatState);
   const [modalOpen, setModalOpen] = useState(false);
   const [conversationErrorReportContext, setConversationErrorReportContext] =
     useState<ConversationErrorReportContext | null>(null);
+  const [reportModalInstanceKey, setReportModalInstanceKey] = useState(0);
   const stateRef = useRef(state);
   const modalOpenRef = useRef(modalOpen);
+  const cloudStatusRef = useRef(cloudStatus);
+  const authAccountIdRef = useRef<string | null>(authAccountId);
+  const reportGenerationRef = useRef(0);
+  const reportAccountIdRef = useRef<string | null>(null);
   // 串行发送队列：保证多条消息（含后台图片）按入队顺序发送，不丢弃。
   const sendQueueRef = useRef<Promise<void>>(Promise.resolve());
   const loadingOlderRef = useRef(false);
@@ -129,6 +129,8 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   stateRef.current = state;
   modalOpenRef.current = modalOpen;
+  cloudStatusRef.current = cloudStatus;
+  authAccountIdRef.current = authAccountId;
 
   useEffect(() => {
     if (state.status === 'ready') {
@@ -187,14 +189,35 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [whoami?.userId]
   );
 
+  const invalidateReportSession = useCallback(() => {
+    reportGenerationRef.current += 1;
+    setConversationErrorReportContext(null);
+    setReportModalInstanceKey((key) => key + 1);
+    supportImagePreviewCache.clear();
+  }, []);
+
   useEffect(() => {
-    if (cloudStatus !== 'authenticated') {
+    const previousAccountId = reportAccountIdRef.current;
+    if (cloudStatus !== 'authenticated' || !authAccountId) {
+      if (previousAccountId !== null) {
+        invalidateReportSession();
+      }
+      reportAccountIdRef.current = null;
       dispatch({ type: 'reset' });
       setModalOpen(false);
       snapshotRef.current = null;
       pollBridgeRef.current = {};
       return;
     }
+
+    if (previousAccountId !== null && previousAccountId !== authAccountId) {
+      invalidateReportSession();
+      dispatch({ type: 'reset' });
+      setModalOpen(false);
+      snapshotRef.current = null;
+      pollBridgeRef.current = {};
+    }
+    reportAccountIdRef.current = authAccountId;
 
     const controller = createSupportPollController({
       getConversation: () => supportChatApi.getConversation(),
@@ -290,7 +313,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       pollBridgeRef.current = {};
       controller.dispose();
     };
-  }, [cloudStatus, notifyNewMessages, fetchConversationSnapshot]);
+  }, [authAccountId, cloudStatus, fetchConversationSnapshot, invalidateReportSession, notifyNewMessages]);
 
   useEffect(() => {
     pollBridgeRef.current.setModalOpen?.(modalOpen);
@@ -362,6 +385,14 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [cloudStatus, fetchConversationSnapshot]);
 
   const closeSupportChat = useCallback(() => {
+    const current = stateRef.current;
+    if (current.status === 'ready') {
+      for (const item of current.messages) {
+        if (item.kind === 'server' && item.message.msgType === 'image') {
+          supportImagePreviewCache.release(item.message.clientMsgId);
+        }
+      }
+    }
     setModalOpen(false);
     dispatch({ type: 'close' });
   }, []);
@@ -374,9 +405,14 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
         msgType?: 'text' | 'image';
         payload?: ICloudImAttachmentPayload;
         logPayload?: ICloudImAttachmentPayload;
+        /** Report-only guard; prevents queued work crossing an auth boundary. */
+        shouldContinue?: () => boolean;
       }
     ) => {
       const task = sendQueueRef.current.then(async () => {
+        if (options?.shouldContinue && !options.shouldContinue()) {
+          throw new Error('support operation cancelled');
+        }
         try {
           const message = await supportChatApi.sendMessage({
             clientMsgId,
@@ -385,8 +421,15 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
             payload: options?.payload,
             logPayload: options?.logPayload,
           });
+          if (options?.shouldContinue && !options.shouldContinue()) return;
           dispatch({ type: 'pending-replaced', clientMsgId, message });
+          if (options?.msgType === 'image' && !modalOpenRef.current) {
+            supportImagePreviewCache.release(clientMsgId);
+          }
         } catch (error) {
+          if (options?.shouldContinue && !options.shouldContinue()) {
+            throw error;
+          }
           dispatch({ type: 'pending-failed', clientMsgId });
           if (isAuthExpiredHttpError(error)) {
             dispatch({ type: 'auth-required' });
@@ -440,6 +483,15 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       context: ConversationErrorReportContext,
       draft: ConversationErrorReportDraft
     ): Promise<ConversationErrorReportSubmitResult> => {
+      const operationGeneration = reportGenerationRef.current;
+      const operationAccountId = authAccountId;
+      const isCurrentReportOperation = () =>
+        reportGenerationRef.current === operationGeneration &&
+        cloudStatusRef.current === 'authenticated' &&
+        authAccountIdRef.current === operationAccountId;
+
+      if (!isCurrentReportOperation()) return { status: 'preparation-failed' };
+
       const isSupportChatReady = () => stateRef.current.status === 'ready';
       if (!isSupportChatReady()) {
         try {
@@ -448,6 +500,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
           // existing pending/failed/retry flow can also represent a report
           // submitted from an error card.
           const snapshot = await fetchConversationSnapshot();
+          if (!isCurrentReportOperation()) return { status: 'preparation-failed' };
           if (!isSupportChatReady()) {
             dispatch({ type: 'ready', conversation: snapshot.conversation, messages: snapshot.messages });
           }
@@ -459,124 +512,32 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }
       }
 
-      const description = draft.description.trim();
-      const content =
-        description ||
-        t('settings.bugReportDefaultContent', {
-          defaultValue: '提交了一个对话问题，请协助排查',
-        });
-
-      try {
-        const [packed, device, screenshotUploads] = await Promise.all([
-          supportChatApi.packLogs({ turnId: context.turnId ?? context.messageId }),
-          collectSupportDeviceInfo(),
-          Promise.all(
-            draft.screenshots.map(async (screenshot) => {
-              const uploaded = await supportChatApi.uploadScreenshot({
-                file: screenshot.file,
-                fileName: screenshot.fileName,
-              });
-              return {
-                screenshot,
-                payload: buildImagePayload(uploaded, {
-                  fileName: screenshot.fileName,
-                  contentType: screenshot.file.type,
-                  byteSize: screenshot.file.size,
-                }),
-              };
-            })
-          ),
-        ]);
-        const uploadedLog = await supportChatApi.uploadLogFromPath({
-          zipPath: packed.zipPath,
-          fileName: packed.fileName,
-        });
-        const logPayload: ICloudImAttachmentPayload = {
-          ...(uploadedLog.url ? { url: uploadedLog.url } : {}),
-          ...(uploadedLog.objectKey ? { objectKey: uploadedLog.objectKey } : {}),
-          name: uploadedLog.name || packed.fileName,
-          contentType: uploadedLog.contentType || 'application/zip',
-          byteSize: uploadedLog.byteSize || packed.byteSize,
-          account: collectSupportLogUserInfo(whoami),
-          device,
-          report: buildConversationErrorReportMetadata(context),
-        };
-
-        const createdAt = Date.now();
-        const reportEntry = {
-          clientMsgId: crypto.randomUUID(),
-          content,
-          createdAt: new Date(createdAt).toISOString(),
-          msgType: 'text' as const,
-          logPayload,
-        };
-        const screenshotEntries = screenshotUploads.map(({ screenshot, payload }, index) => ({
-          clientMsgId: crypto.randomUUID(),
-          content: '',
-          createdAt: new Date(createdAt + index + 1).toISOString(),
-          msgType: 'image' as const,
-          payload,
-          screenshot,
-        }));
-        const entries = [reportEntry, ...screenshotEntries];
-
-        for (const entry of entries) {
-          if (entry.msgType === 'image') {
-            supportImagePreviewCache.set(entry.clientMsgId, entry.screenshot.previewUrl);
-            dispatch({
-              type: 'pending-added',
-              message: createPendingMessage(
-                entry.clientMsgId,
-                entry.content,
-                entry.createdAt,
-                'sending',
-                undefined,
-                {
-                  payload: entry.payload,
-                  previewUrl: entry.screenshot.previewUrl,
-                  file: entry.screenshot.file,
-                  fileName: entry.screenshot.fileName,
-                }
-              ),
-            });
-          } else {
-            dispatch({
-              type: 'pending-added',
-              message: createPendingMessage(
-                entry.clientMsgId,
-                entry.content,
-                entry.createdAt,
-                'sending',
-                entry.logPayload
-              ),
-            });
+      return submitConversationErrorReportFlow(context, draft, {
+        isCurrent: isCurrentReportOperation,
+        packLogs: (params) => supportChatApi.packLogs(params),
+        collectDevice: collectSupportDeviceInfo,
+        uploadScreenshot: (params) => supportChatApi.uploadScreenshot(params),
+        uploadLogFromPath: (params) => supportChatApi.uploadLogFromPath(params),
+        account: collectSupportLogUserInfo(whoami),
+        addPending: (message) => {
+          if (message.msgType === 'image' && message.previewUrl) {
+            supportImagePreviewCache.set(message.clientMsgId, message.previewUrl);
           }
-        }
-
-        for (let index = 0; index < entries.length; index += 1) {
-          const entry = entries[index];
-          try {
-            await sendWithClientMsgId(entry.clientMsgId, entry.content, {
-              msgType: entry.msgType,
-              payload: entry.msgType === 'image' ? entry.payload : undefined,
-              logPayload: entry.msgType === 'text' ? entry.logPayload : undefined,
-            });
-          } catch {
-            for (const remaining of entries.slice(index + 1)) {
-              dispatch({ type: 'pending-failed', clientMsgId: remaining.clientMsgId });
-            }
-            return { status: 'partial-failure' };
-          }
-        }
-        return { status: 'success' };
-      } catch (error) {
-        if (isAuthExpiredHttpError(error)) {
+          dispatch({ type: 'pending-added', message });
+        },
+        markPendingFailed: (clientMsgId) => {
+          dispatch({ type: 'pending-failed', clientMsgId });
+        },
+        send: sendWithClientMsgId,
+        onAuthExpired: () => {
           dispatch({ type: 'auth-required' });
-        }
-        return { status: 'preparation-failed' };
-      }
+        },
+        defaultContent: t('settings.bugReportDefaultContent', {
+          defaultValue: '提交了一个对话问题，请协助排查',
+        }),
+      });
     },
-    [fetchConversationSnapshot, sendWithClientMsgId, t, whoami]
+    [authAccountId, fetchConversationSnapshot, sendWithClientMsgId, t, whoami]
   );
 
   // 图片发送：同步挂出全部 pending 气泡（本地预览秒上屏），
@@ -614,7 +575,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
             });
             return {
               entry,
-              payload: buildImagePayload(uploaded, {
+              payload: buildSupportImagePayload(uploaded, {
                 fileName: entry.fileName,
                 contentType: entry.file.type,
                 byteSize: entry.file.size,
@@ -681,7 +642,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
             file: pending.file,
             fileName: pending.fileName || 'screenshot.png',
           });
-          payload = buildImagePayload(uploaded, {
+          payload = buildSupportImagePayload(uploaded, {
             fileName: pending.fileName || 'screenshot.png',
             contentType: pending.file.type,
             byteSize: pending.file.size,
@@ -770,6 +731,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       {children}
       <SupportChatModal />
       <ConversationErrorReportModal
+        key={reportModalInstanceKey}
         context={conversationErrorReportContext}
         onCancel={closeConversationErrorReport}
         onSubmit={(draft) => {
