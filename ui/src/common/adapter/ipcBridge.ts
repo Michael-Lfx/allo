@@ -7433,6 +7433,8 @@ export interface IMediaModelOption {
 export interface IMediaModelList {
   image_models: IMediaModelOption[];
   video_models: IMediaModelOption[];
+  /** TTS models from Flowy `availableListClaw?category=8`. */
+  audio_models?: IMediaModelOption[];
 }
 
 export interface IMediaWorkflowHistoryItem {

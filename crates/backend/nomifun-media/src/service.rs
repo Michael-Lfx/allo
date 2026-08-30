@@ -7,21 +7,25 @@ use nomi_config::{
 };
 use nomi_media::workflows::store::{WorkflowRunRecord, WorkflowRunStore};
 use nomifun_api_types::{
-    MediaCreditsCheckinResponse, MediaCreditsResponse, MediaSettingsResponse,
-    MediaTurnCreditUsage, MediaTurnCreditUsageCall, MediaWorkflowHistoryItem,
-    MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
+    MediaCreditsCheckinResponse, MediaCreditsResponse, MediaModelListResponse,
+    MediaSettingsResponse, MediaTurnCreditUsage, MediaTurnCreditUsageCall,
+    MediaWorkflowHistoryItem, MediaWorkflowHistoryResponse, UpdateMediaSettingsRequest,
 };
-use nomifun_cloud::{FlowyApiClient, MODEL_CATEGORY_IMAGE, MODEL_CATEGORY_VIDEO, ensure_gateway_defaults};
+use nomifun_cloud::{
+    FlowyApiClient, MODEL_CATEGORY_IMAGE, MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO,
+    ensure_gateway_defaults,
+};
 use nomifun_common::AppError;
 
 /// Short-lived catalog cache so first-enter UI / Canvas sync / preferences
-/// popovers do not each pay two Flowy round-trips.
+/// popovers do not each pay three Flowy catalog round-trips (image / video / TTS).
 const MODELS_CACHE_TTL: Duration = Duration::from_secs(120);
 
 struct ModelsCatalogCache {
     fetched_at: Instant,
     image: Vec<nomifun_api_types::MediaModelOption>,
     video: Vec<nomifun_api_types::MediaModelOption>,
+    audio: Vec<nomifun_api_types::MediaModelOption>,
 }
 
 pub struct MediaApiService {
@@ -285,22 +289,19 @@ impl MediaApiService {
         MediaWorkflowHistoryResponse { runs }
     }
 
-    /// Fetch the latest image/video model catalog from the cloud.
-    /// Image and video catalogs are fetched in parallel and cached briefly
-    /// (`MODELS_CACHE_TTL`) to absorb concurrent first-enter callers.
-    pub async fn list_models(
-        &self,
-    ) -> Result<
-        (
-            Vec<nomifun_api_types::MediaModelOption>,
-            Vec<nomifun_api_types::MediaModelOption>,
-        ),
-        AppError,
-    > {
+    /// Fetch the latest image / video / TTS catalog from the cloud.
+    /// Image, video, and TTS (`category=8`) catalogs are fetched in parallel and
+    /// cached briefly (`MODELS_CACHE_TTL`) to absorb concurrent first-enter callers.
+    /// A TTS fetch failure is soft: image/video still return.
+    pub async fn list_models(&self) -> Result<MediaModelListResponse, AppError> {
         if let Ok(guard) = self.models_cache.lock() {
             if let Some(cached) = guard.as_ref() {
                 if cached.fetched_at.elapsed() < MODELS_CACHE_TTL {
-                    return Ok((cached.image.clone(), cached.video.clone()));
+                    return Ok(MediaModelListResponse {
+                        image_models: cached.image.clone(),
+                        video_models: cached.video.clone(),
+                        audio_models: cached.audio.clone(),
+                    });
                 }
             }
         }
@@ -312,26 +313,58 @@ impl MediaApiService {
                 media_provider = %cfg.media.provider,
                 "media list_models: Flowy media not exposed; returning empty catalog"
             );
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(MediaModelListResponse {
+                image_models: Vec::new(),
+                video_models: Vec::new(),
+                audio_models: Vec::new(),
+            });
         }
         let api = FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
         let session = nomifun_cloud::ServerSession::from_config(&cfg.server, &self.data_dir);
-        let (image_res, video_res) = tokio::join!(
+        let server_base = cfg.server.base_url.trim().trim_end_matches('/').to_string();
+        let (image_res, video_res, tts_res) = tokio::join!(
             api.get_available_models_claw(&session, Some(MODEL_CATEGORY_IMAGE)),
             api.get_available_models_claw(&session, Some(MODEL_CATEGORY_VIDEO)),
+            api.get_available_models_claw(&session, Some(MODEL_CATEGORY_TTS)),
         );
         let image = image_res.map_err(|e| AppError::Internal(e.to_string()))?;
         let video = video_res.map_err(|e| AppError::Internal(e.to_string()))?;
-        let image_models: Vec<_> = image.cloud.into_iter().map(to_media_model_option).collect();
-        let video_models: Vec<_> = video.cloud.into_iter().map(to_media_model_option).collect();
+        let image_models: Vec<_> = image
+            .cloud
+            .into_iter()
+            .map(|entry| to_media_model_option(entry, &server_base))
+            .collect();
+        let video_models: Vec<_> = video
+            .cloud
+            .into_iter()
+            .map(|entry| to_media_model_option(entry, &server_base))
+            .collect();
+        let audio_models: Vec<_> = match tts_res {
+            Ok(tts) => tts
+                .cloud
+                .into_iter()
+                .map(|entry| to_media_model_option(entry, &server_base))
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch Flowy TTS catalog (category=8): {e}; returning media models without TTS"
+                );
+                Vec::new()
+            }
+        };
         if let Ok(mut guard) = self.models_cache.lock() {
             *guard = Some(ModelsCatalogCache {
                 fetched_at: Instant::now(),
                 image: image_models.clone(),
                 video: video_models.clone(),
+                audio: audio_models.clone(),
             });
         }
-        Ok((image_models, video_models))
+        Ok(MediaModelListResponse {
+            image_models,
+            video_models,
+            audio_models,
+        })
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -350,7 +383,36 @@ fn record_to_item(record: WorkflowRunRecord) -> MediaWorkflowHistoryItem {
     }
 }
 
-fn to_media_model_option(entry: nomifun_cloud::ClawModelEntry) -> nomifun_api_types::MediaModelOption {
+fn rewrite_catalog_icon_url(icon: &str, server_base: &str) -> String {
+    let icon = icon.trim();
+    if icon.is_empty() {
+        return String::new();
+    }
+    if icon.starts_with("https://")
+        || icon.starts_with("http://")
+        || icon.starts_with("data:")
+        || icon.starts_with("blob:")
+    {
+        return icon.to_string();
+    }
+    if let Some(rest) = icon.strip_prefix("//") {
+        return format!("https://{rest}");
+    }
+    let base = server_base.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return icon.to_string();
+    }
+    if icon.starts_with('/') {
+        format!("{base}{icon}")
+    } else {
+        format!("{base}/{icon}")
+    }
+}
+
+fn to_media_model_option(
+    entry: nomifun_cloud::ClawModelEntry,
+    server_base: &str,
+) -> nomifun_api_types::MediaModelOption {
     let id = entry.api_model_id();
     let name = {
         let n = entry.name.trim();
@@ -366,7 +428,7 @@ fn to_media_model_option(entry: nomifun_cloud::ClawModelEntry) -> nomifun_api_ty
     nomifun_api_types::MediaModelOption {
         id,
         name,
-        icon: entry.icon.trim().to_string(),
+        icon: rewrite_catalog_icon_url(&entry.icon, server_base),
     }
 }
 
@@ -443,5 +505,25 @@ mod tests {
         assert!(raw.contains(DEFAULT_WECHAT_FLOWY_SERVER_BASE));
         assert!(raw.contains("new-image"));
         assert!(svc.settings().flowy_media_exposed);
+    }
+
+    #[test]
+    fn rewrite_catalog_icon_url_joins_relative_paths() {
+        assert_eq!(
+            rewrite_catalog_icon_url(
+                "/static/seedream.png",
+                "https://api.flowy.example/"
+            ),
+            "https://api.flowy.example/static/seedream.png"
+        );
+        assert_eq!(
+            rewrite_catalog_icon_url("https://cdn.example/a.png", "https://api.flowy.example"),
+            "https://cdn.example/a.png"
+        );
+        assert_eq!(
+            rewrite_catalog_icon_url("//cdn.example/a.png", ""),
+            "https://cdn.example/a.png"
+        );
+        assert!(rewrite_catalog_icon_url("  ", "https://api.flowy.example").is_empty());
     }
 }

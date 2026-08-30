@@ -132,7 +132,7 @@ pub struct MediaWorkflowHistoryResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaModelOption {
-    /// Flowy catalog id — pass as image/video request `model`.
+    /// Flowy catalog id — pass as image / video / TTS request `model`.
     pub id: String,
     /// Human-readable catalog name for UI labels.
     pub name: String,
@@ -145,4 +145,36 @@ pub struct MediaModelOption {
 pub struct MediaModelListResponse {
     pub image_models: Vec<MediaModelOption>,
     pub video_models: Vec<MediaModelOption>,
+    /// TTS models from `availableListClaw?category=8`. Omitted by older servers.
+    #[serde(default)]
+    pub audio_models: Vec<MediaModelOption>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_model_list_defaults_audio_models_when_omitted() {
+        let parsed: MediaModelListResponse =
+            serde_json::from_str(r#"{"image_models":[],"video_models":[]}"#).unwrap();
+        assert!(parsed.audio_models.is_empty());
+    }
+
+    #[test]
+    fn media_model_list_roundtrips_tts_catalog_entries() {
+        let body = MediaModelListResponse {
+            image_models: vec![],
+            video_models: vec![],
+            audio_models: vec![MediaModelOption {
+                id: "AIPC-qwen3-tts".into(),
+                name: "qwen3-tts".into(),
+                icon: String::new(),
+            }],
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["audio_models"][0]["id"], "AIPC-qwen3-tts");
+        let parsed: MediaModelListResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.audio_models[0].id, "AIPC-qwen3-tts");
+    }
 }
