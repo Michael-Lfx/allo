@@ -32,4 +32,28 @@ describe('splitStreamingMarkdown', () => {
     expect(result.codeLanguage).toBe('tsx');
     expect(result.codeContent).toBe('const value = <Panel />');
   });
+
+  test('keeps the stable prefix fixed while a paragraph grows token by token', () => {
+    const prefix = '## Generated prompt\n\n';
+    const tail = 'A premium vertical infographic poster about a Border Collie dog breed';
+    let source = prefix;
+
+    for (const token of tail) {
+      source += token;
+      const result = splitStreamingMarkdown(source);
+
+      expect(result.stablePrefix).toBe(prefix);
+      expect(result.tail).toBe(source.slice(prefix.length));
+      expect(result.tailKind).toBe('text');
+    }
+  });
+
+  test('promotes a completed paragraph exactly once when its blank line arrives', () => {
+    const partial = splitStreamingMarkdown('Intro\n\nThe final line is still growing');
+    const completed = splitStreamingMarkdown('Intro\n\nThe final line is now complete\n\nNext block');
+
+    expect(partial.stablePrefix).toBe('Intro\n\n');
+    expect(completed.stablePrefix).toBe('Intro\n\nThe final line is now complete\n\n');
+    expect(completed.tail).toBe('Next block');
+  });
 });

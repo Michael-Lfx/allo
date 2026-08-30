@@ -74,11 +74,18 @@ describe('MessageText process action chrome', () => {
     expect(codeBranch.includes('isStreaming')).toBe(true);
   });
 
-  test('renders streaming prose through one MarkdownView so tables and lists do not restyle on promotion', () => {
+  test('renders streaming prose through a stable Markdown prefix and lightweight tail', () => {
     const streamingBlock = source.match(/<StreamingText[\s\S]*?<\/StreamingText>/)?.[0] ?? '';
+    const proseStart = source.indexOf(') : streamingParts ? (');
+    const proseEnd = source.indexOf(') : (\n                <MarkdownView', proseStart);
+    const proseBranch = source.slice(proseStart, proseEnd);
+
     expect(streamingBlock.includes("streamingParts.tailKind === 'code'")).toBe(true);
-    expect(streamingBlock.includes("className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}")).toBe(false);
-    expect(streamingBlock.includes('{data}')).toBe(true);
+    expect(streamingBlock.includes("className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}")).toBe(true);
+    expect(streamingBlock.includes('{streamingParts.stablePrefix}')).toBe(true);
+    expect(streamingBlock.includes('{streamingParts.tail}')).toBe(true);
+    expect(proseBranch.includes('{data}')).toBe(false);
+    expect(proseBranch.includes('isStreaming')).toBe(false);
   });
 
   test('does not pretty-rebalance wrap points on the live streaming tail', () => {

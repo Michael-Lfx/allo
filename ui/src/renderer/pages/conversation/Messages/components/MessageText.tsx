@@ -811,15 +811,23 @@ const MessageText: React.FC<{
                   </CodeBlock>
                 </>
               ) : streamingParts ? (
-                <MarkdownView
-                  codeStyle={CODE_STYLE}
-                  fontSize={MESSAGE_BODY_FONT_SIZE}
-                  lineHeight={MESSAGE_BODY_LINE_HEIGHT}
-                  allowUnverifiedImages={isUserMessage}
-                  isStreaming
-                >
-                  {data}
-                </MarkdownView>
+                <>
+                  {streamingParts.stablePrefix ? (
+                    <MarkdownView
+                      codeStyle={CODE_STYLE}
+                      fontSize={MESSAGE_BODY_FONT_SIZE}
+                      lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                      allowUnverifiedImages={isUserMessage}
+                    >
+                      {streamingParts.stablePrefix}
+                    </MarkdownView>
+                  ) : null}
+                  {streamingParts.tail ? (
+                    <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>
+                      {streamingParts.tail}
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <MarkdownView
                   codeStyle={CODE_STYLE}
