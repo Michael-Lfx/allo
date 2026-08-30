@@ -77,6 +77,7 @@ import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
 import ButtonLayoutProbe from './pages/test/ButtonLayoutProbe';
 import ErrorSurfaceProbe from './pages/test/ErrorSurfaceProbe';
+import SupportSurfaceProbe from './pages/test/SupportSurfaceProbe';
 import { refreshDetectedAgentsIfStale } from './hooks/agent/useAgents';
 import { clearAvailableModelsCache } from './hooks/agent/useModelProviderList';
 import {
@@ -422,6 +423,7 @@ void registerPwa();
 const root = createRoot(document.getElementById('root')!);
 const isButtonLayoutProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout';
 const isErrorSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/error-surface';
+const isSupportSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/support-surface';
 
 // Keep browser-only visual gates independent from auth/backend startup. They
 // still use this real renderer entry and global Arco styles, but must be able
@@ -432,6 +434,8 @@ root.render(
     <ButtonLayoutProbe />
   ) : isErrorSurfaceProbe ? (
     <ErrorSurfaceProbe />
+  ) : isSupportSurfaceProbe ? (
+    <SupportSurfaceProbe />
   ) : (
     <RouteErrorBoundary scope='application'>
       <AppProviders>

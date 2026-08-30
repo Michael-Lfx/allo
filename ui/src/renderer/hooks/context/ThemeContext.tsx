@@ -15,7 +15,7 @@ import { application } from '@/common/adapter/ipcBridge';
  * Theme context value interface 主题上下文值接口
  * Separates light/dark mode from color schemes 分离明暗模式和配色方案
  */
-interface ThemeContextValue {
+export interface ThemeContextValue {
   // Resolved light/dark mode, already applied to the DOM. Components that only
   // need to style for the current scheme read this and are unaffected by the
   // 'system' preference. 明暗模式（已解析并应用到 DOM）
@@ -35,7 +35,7 @@ interface ThemeContextValue {
   setFontScale: (scale: number) => Promise<void>;
 }
 
-const ThemeContext = createContext<ThemeContextValue | null>(null);
+export const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 /**
  * Theme provider component 主题提供者组件
