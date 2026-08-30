@@ -818,6 +818,7 @@ const MessageText: React.FC<{
                       fontSize={MESSAGE_BODY_FONT_SIZE}
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                       allowUnverifiedImages={isUserMessage}
+                      isStreaming={isStreaming}
                     >
                       {streamingParts.stablePrefix}
                     </MarkdownView>

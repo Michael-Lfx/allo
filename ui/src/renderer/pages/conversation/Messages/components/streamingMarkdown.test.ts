@@ -56,4 +56,12 @@ describe('splitStreamingMarkdown', () => {
     expect(completed.stablePrefix).toBe('Intro\n\nThe final line is now complete\n\n');
     expect(completed.tail).toBe('Next block');
   });
+
+  test('does not promote a paragraph or list on a single trailing newline', () => {
+    const result = splitStreamingMarkdown('- first item\n');
+
+    expect(result.stablePrefix).toBe('');
+    expect(result.tail).toBe('- first item\n');
+    expect(result.tailKind).toBe('text');
+  });
 });

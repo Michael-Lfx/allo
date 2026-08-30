@@ -64,7 +64,7 @@ export const splitStreamingMarkdown = (source: string): StreamingMarkdownParts =
           start: offset,
         };
         fenceStart = offset;
-      } else if (line.trim() === '' && offset > 0) {
+      } else if (line.trim() === '' && offset > 0 && offset < source.length) {
         stableBoundary = nextOffset;
       }
     }

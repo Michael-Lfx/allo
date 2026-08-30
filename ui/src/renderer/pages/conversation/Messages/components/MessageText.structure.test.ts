@@ -85,7 +85,7 @@ describe('MessageText process action chrome', () => {
     expect(streamingBlock.includes('{streamingParts.stablePrefix}')).toBe(true);
     expect(streamingBlock.includes('{streamingParts.tail}')).toBe(true);
     expect(proseBranch.includes('{data}')).toBe(false);
-    expect(proseBranch.includes('isStreaming')).toBe(false);
+    expect(proseBranch.includes('isStreaming={isStreaming}')).toBe(true);
   });
 
   test('does not pretty-rebalance wrap points on the live streaming tail', () => {
