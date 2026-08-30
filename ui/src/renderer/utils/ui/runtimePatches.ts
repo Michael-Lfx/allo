@@ -95,12 +95,16 @@ const patchResizeObserver = () => {
   if (!window.__NomiSafeResizeObserver__ && typeof ResizeObserver !== 'undefined') {
     const NativeResizeObserver = window.ResizeObserver;
     class SafeResizeObserver extends NativeResizeObserver {
+      private scheduledFrame: number | null = null;
+      private callbackGeneration = 0;
+
       constructor(callback: ResizeObserverCallback) {
-        let frame = 0;
         super((entries, observer) => {
-          if (frame) cancelAnimationFrame(frame);
-          frame = requestAnimationFrame(() => {
-            frame = 0;
+          const generation = this.callbackGeneration;
+          if (this.scheduledFrame !== null) cancelAnimationFrame(this.scheduledFrame);
+          this.scheduledFrame = requestAnimationFrame(() => {
+            this.scheduledFrame = null;
+            if (generation !== this.callbackGeneration) return;
             try {
               callback(entries, observer);
             } catch (error) {
@@ -110,6 +114,15 @@ const patchResizeObserver = () => {
             }
           });
         });
+      }
+
+      disconnect() {
+        this.callbackGeneration += 1;
+        if (this.scheduledFrame !== null) {
+          cancelAnimationFrame(this.scheduledFrame);
+          this.scheduledFrame = null;
+        }
+        super.disconnect();
       }
     }
     window.ResizeObserver = SafeResizeObserver as typeof ResizeObserver;
