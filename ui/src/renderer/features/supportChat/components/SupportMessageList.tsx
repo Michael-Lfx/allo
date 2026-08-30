@@ -80,7 +80,7 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
 
   if (messages.length === 0) {
     return (
-      <div className='flex-1 overflow-auto flex items-center justify-center'>
+      <div className='support-message-list min-h-0 flex-1 overflow-auto flex items-center justify-center px-16px py-20px'>
         <div className='max-w-260px text-center text-13px text-t-secondary leading-22px'>
           {t('common.supportChat.emptyHint', {
             defaultValue: '请描述你遇到的问题。客服查看后会在这里回复。',
@@ -96,7 +96,7 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
   return (
     <div
       ref={containerRef}
-      className='flex-1 overflow-auto flex flex-col gap-12px'
+      className='support-message-list min-h-0 flex-1 overflow-auto flex flex-col gap-12px px-16px py-16px'
       onScroll={handleScroll}
       aria-live='polite'
     >
@@ -168,7 +168,10 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
             {showDay ? (
               <div className='text-11px text-t-tertiary text-center pt-8px pb-4px'>{day}</div>
             ) : null}
-            <div className={isUser ? 'flex flex-col items-end gap-4px' : 'flex flex-col items-start gap-4px'}>
+            <div
+              className={isUser ? 'flex flex-col items-end gap-4px' : 'flex flex-col items-start gap-4px'}
+              data-delivery={item.kind === 'pending' ? item.delivery : undefined}
+            >
               {showTime ? (
                 <div className='text-11px text-t-tertiary px-4px'>{formatTime(createdAt)}</div>
               ) : null}

@@ -6,36 +6,65 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import ModalWrapper from '@renderer/components/base/ModalWrapper';
+import { Close } from '@icon-park/react';
+import type { ICloudImAttachmentPayload } from '@/common/adapter/ipcBridge';
+import NomiModal from '@renderer/components/base/NomiModal';
 import { useSupportChat } from '../SupportChatProvider';
+import type { SupportOutgoingImage } from '../SupportChatProvider';
+import type { SupportChatState } from '../api/supportChatTypes';
 import SupportMessageComposer from './SupportMessageComposer';
 import SupportMessageList from './SupportMessageList';
 
-const SupportChatModal: React.FC = () => {
+export type SupportChatModalViewProps = {
+  state: SupportChatState;
+  closeSupportChat: () => void;
+  openSupportChat: () => void;
+  sendMessage: (content: string, logPayload?: ICloudImAttachmentPayload) => Promise<void>;
+  sendImages: (params: { content: string; images: SupportOutgoingImage[] }) => void;
+  retryMessage: (clientMsgId: string) => Promise<void>;
+  loadOlder: () => Promise<boolean>;
+  composerDisabled?: boolean;
+};
+
+export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
+  state,
+  closeSupportChat,
+  openSupportChat,
+  sendMessage,
+  sendImages,
+  retryMessage,
+  loadOlder,
+  composerDisabled = false,
+}) => {
   const { t } = useTranslation();
-  const {
-    state,
-    closeSupportChat,
-    openSupportChat,
-    sendMessage,
-    sendImages,
-    retryMessage,
-    loadOlder,
-  } = useSupportChat();
   const visible = state.status !== 'closed';
 
   return (
-    <ModalWrapper
+    <NomiModal
       visible={visible}
-      title={t('common.supportChat.title', { defaultValue: '联系客服' })}
+      header={{
+        title: t('common.supportChat.title', { defaultValue: '联系客服' }),
+        showClose: true,
+        closeIcon: <Close size={18} fill='currentColor' className='block' />,
+        className: 'support-chat-modal__header',
+      }}
       footer={null}
-      className='support-chat-modal w-[min(420px,calc(100vw-24px))] max-w-420px rd-16px'
-      style={{ maxHeight: 'min(620px, calc(100vh - 48px))' }}
+      className='support-chat-modal w-[min(560px,calc(100vw-32px))] max-w-560px rd-16px'
+      style={{
+        width: 'min(560px, calc(100vw - 32px))',
+        maxWidth: 'min(560px, calc(100vw - 32px))',
+        height: 'min(680px, calc(100dvh - 32px))',
+        maxHeight: 'min(680px, calc(100dvh - 32px))',
+      }}
+      contentStyle={{ padding: 0, overflow: 'hidden' }}
       onCancel={closeSupportChat}
     >
-      <div className='flex flex-col' style={{ height: 'min(540px, calc(100dvh - 160px))' }}>
+      <div className='support-chat-modal__body flex min-h-0 flex-col'>
         {state.status === 'ready' && state.syncWarning ? (
-          <div className='border-b border-[var(--color-border-2)] text-12px text-warning-6 leading-18px'>
+          <div
+            className='support-chat-modal__sync-warning border-b border-[var(--color-border-2)] px-12px py-8px text-12px text-warning-6 leading-18px'
+            role='status'
+          >
             {t('common.supportChat.syncWarning', {
               defaultValue: '消息同步暂时中断，正在重试',
             })}
@@ -43,7 +72,12 @@ const SupportChatModal: React.FC = () => {
         ) : null}
 
         {state.status === 'loading' ? (
-          <div className='flex-1 flex flex-col gap-12px animate-pulse'>
+          <div
+            className='min-h-0 flex-1 flex flex-col gap-12px animate-pulse px-16px py-16px'
+            role='status'
+            aria-busy='true'
+          >
+            <span className='sr-only'>{t('common.loading', { defaultValue: '请稍候…' })}</span>
             <div className='h-40px w-60% rd-12px rd-bl-4px bg-fill-2' />
             <div className='h-40px w-45% rd-12px rd-br-4px bg-fill-2 self-end' />
             <div className='h-40px w-55% rd-12px rd-bl-4px bg-fill-2' />
@@ -60,6 +94,7 @@ const SupportChatModal: React.FC = () => {
               }}
             />
             <SupportMessageComposer
+              disabled={composerDisabled}
               onSend={async (content, logPayload) => {
                 await sendMessage(content, logPayload);
               }}
@@ -78,7 +113,7 @@ const SupportChatModal: React.FC = () => {
             <div className='text-12px text-t-secondary leading-18px'>{state.message}</div>
             <button
               type='button'
-              className='mt-8px h-32px px-16px rd-8px border-none bg-primary text-white text-13px font-medium cursor-pointer transition-opacity hover:opacity-90 active:opacity-80'
+              className='support-chat-modal__action mt-8px h-32px px-16px rd-8px border-none text-13px font-medium cursor-pointer transition-opacity hover:opacity-90 active:opacity-80'
               onClick={() => openSupportChat()}
             >
               {t('common.supportChat.retry', { defaultValue: '重试' })}
@@ -95,7 +130,7 @@ const SupportChatModal: React.FC = () => {
             </div>
             <button
               type='button'
-              className='mt-8px h-32px px-16px rd-8px border-none bg-primary text-white text-13px font-medium cursor-pointer transition-opacity hover:opacity-90 active:opacity-80'
+              className='support-chat-modal__action mt-8px h-32px px-16px rd-8px border-none text-13px font-medium cursor-pointer transition-opacity hover:opacity-90 active:opacity-80'
               onClick={() => openSupportChat()}
             >
               {t('common.supportChat.relogin', { defaultValue: '重新登录' })}
@@ -103,7 +138,24 @@ const SupportChatModal: React.FC = () => {
           </div>
         ) : null}
       </div>
-    </ModalWrapper>
+    </NomiModal>
+  );
+};
+
+const SupportChatModal: React.FC = () => {
+  const { state, closeSupportChat, openSupportChat, sendMessage, sendImages, retryMessage, loadOlder } =
+    useSupportChat();
+
+  return (
+    <SupportChatModalView
+      state={state}
+      closeSupportChat={closeSupportChat}
+      openSupportChat={openSupportChat}
+      sendMessage={sendMessage}
+      sendImages={sendImages}
+      retryMessage={retryMessage}
+      loadOlder={loadOlder}
+    />
   );
 };
 

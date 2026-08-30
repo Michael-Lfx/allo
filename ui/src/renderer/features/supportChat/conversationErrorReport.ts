@@ -15,6 +15,22 @@ export type ConversationErrorReportContext = {
   occurredAt: string;
 };
 
+export type ConversationErrorReportScreenshot = {
+  file: File;
+  fileName: string;
+  previewUrl: string;
+};
+
+export type ConversationErrorReportDraft = {
+  description: string;
+  screenshots: ConversationErrorReportScreenshot[];
+};
+
+export type ConversationErrorReportSubmitResult =
+  | { status: 'success' }
+  | { status: 'preparation-failed' }
+  | { status: 'partial-failure' };
+
 export function buildConversationErrorReportMetadata(context: ConversationErrorReportContext) {
   const { error } = context;
   const diagnostic = buildAgentErrorDiagnostic(error);

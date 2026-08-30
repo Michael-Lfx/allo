@@ -88,6 +88,9 @@ export interface NomiModalProps extends Omit<ModalProps, 'title' | 'footer'> {
   title?: React.ReactNode;
   /** @deprecated 请使用 header.showClose */
   showCustomClose?: boolean;
+
+  /** 关闭按钮的可访问名称，默认使用当前语言的 common.close。 */
+  closeAriaLabel?: string;
 }
 
 // ==================== 样式常量 / Style Constants ====================
@@ -167,6 +170,7 @@ const NomiModal: React.FC<NomiModalProps> = ({
   // 向后兼容
   title,
   showCustomClose = true,
+  closeAriaLabel,
   onCancel,
   className = '',
   style,
@@ -346,8 +350,13 @@ const NomiModal: React.FC<NomiModalProps> = ({
       <div className={headerClassName} style={headerStyle}>
         {headerConfig.title && <h3 className={TITLE_BASE_CLASS}>{headerConfig.title}</h3>}
         {headerConfig.showClose && (
-          <button onClick={onCancel} className={CLOSE_BUTTON_CLASS} aria-label='Close'>
-            {headerConfig.closeIcon || <Close size={20} fill='#86909c' />}
+          <button
+            type='button'
+            onClick={onCancel}
+            className={CLOSE_BUTTON_CLASS}
+            aria-label={closeAriaLabel ?? t('common.close', { defaultValue: 'Close' })}
+          >
+            {headerConfig.closeIcon || <Close size={20} fill='currentColor' className='block' />}
           </button>
         )}
       </div>

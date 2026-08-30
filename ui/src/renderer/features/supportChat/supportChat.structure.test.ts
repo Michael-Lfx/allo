@@ -30,15 +30,21 @@ describe('support chat structure', () => {
     expect(logoutIndex).toBeGreaterThan(supportIndex);
   });
 
-  test('modal and composer keep async chat affordances without attachments or online status', () => {
+  test('modal and composer keep async chat affordances with stable attachment controls', () => {
     const modal = readSource(new URL('./components/SupportChatModal.tsx', import.meta.url));
     const list = readSource(new URL('./components/SupportMessageList.tsx', import.meta.url));
     const composer = readSource(new URL('./components/SupportMessageComposer.tsx', import.meta.url));
+    const previewGrid = readSource(new URL('./components/SupportImagePreviewGrid.tsx', import.meta.url));
 
-    expect(modal.includes('ModalWrapper')).toBe(true);
+    expect(modal.includes('NomiModal')).toBe(true);
+    expect(modal.includes('ModalWrapper')).toBe(false);
+    expect(modal.includes("100dvh")).toBe(true);
+    expect(modal.includes('contentStyle={{ padding: 0, overflow: \'hidden\' }}')).toBe(true);
+    expect(modal.includes('support-chat-modal__body flex min-h-0 flex-col')).toBe(true);
     expect(modal.includes('common.supportChat.asyncHint')).toBe(false);
     expect(modal.includes('common.supportChat.subtitle')).toBe(false);
     expect(list.includes("aria-live='polite'") || list.includes('aria-live="polite"')).toBe(true);
+    expect(list.includes('support-message-list min-h-0 flex-1 overflow-auto')).toBe(true);
     expect(composer.includes('Shift+Enter') || composer.includes('shiftKey')).toBe(true);
     expect(composer.includes('isComposing')).toBe(true);
     expect(composer.includes('box-border')).toBe(true);
@@ -48,8 +54,15 @@ describe('support chat structure', () => {
     expect(composer.includes('FileText')).toBe(true);
     expect(composer.includes('common.supportChat.uploadImage')).toBe(true);
     expect(composer.includes('common.supportChat.uploadLogs')).toBe(true);
-    expect(composer.includes('Modal.confirm')).toBe(true);
+    expect(composer.includes('Modal.confirm')).toBe(false);
+    expect(composer.includes('logConfirmOpen')).toBe(true);
+    expect(composer.includes('support-chat-log-confirm')).toBe(true);
+    expect(composer.includes('SupportImagePreviewGrid')).toBe(true);
+    expect(composer.includes('SUPPORT_IMAGE_ACCEPT')).toBe(true);
+    expect(composer.includes('MAX_SUPPORT_IMAGES')).toBe(true);
+    expect(composer.includes('MAX_SUPPORT_IMAGE_BYTES')).toBe(true);
     expect(composer.includes('common.supportChat.uploadLogsConfirm')).toBe(true);
+    expect(composer.includes('common.supportChat.uploadLogsPreparing')).toBe(true);
     expect(composer.includes('collectSupportLogUserInfo')).toBe(true);
     expect(composer.includes('collectSupportDeviceInfo')).toBe(true);
     expect(composer.includes('supportChatApi.packLogs')).toBe(true);
@@ -63,17 +76,12 @@ describe('support chat structure', () => {
     expect(uploadFlow.includes('setLogPayload')).toBe(false);
     expect(composer.includes('const [logPayload')).toBe(false);
     expect(composer.includes('{logPayload ?')).toBe(false);
-    expect(composer.includes("accept='image/png,image/jpeg,.png,.jpg,.jpeg'")).toBe(true);
     expect(composer.includes('multiple')).toBe(true);
-    expect(composer.includes('MAX_IMAGES = 4')).toBe(true);
-    expect(composer.includes('MAX_IMAGE_BYTES = 5 * 1024 * 1024')).toBe(true);
+    expect(composer.includes('MAX_IMAGES = 4')).toBe(false);
+    expect(composer.includes('MAX_IMAGE_BYTES = 5 * 1024 * 1024')).toBe(false);
     expect(composer.includes('imagePreviews')).toBe(true);
-    expect(composer.includes('common.supportChat.removeImage')).toBe(true);
     expect(composer.includes('common.supportChat.imageLimitReached')).toBe(true);
-    expect(composer.includes('size-72px')).toBe(true);
-    expect(composer.includes('URL.createObjectURL')).toBe(true);
-    expect(composer.includes("d='M5 5l10 10M15 5 5 15'")).toBe(true);
-    expect(composer.includes('w-148px p-4px')).toBe(true);
+    expect(composer.includes('w-180px p-4px')).toBe(true);
     expect(composer.includes('h-32px px-8px')).toBe(true);
     expect(composer.includes("size='16'")).toBe(true);
     expect(composer.includes('support-chat-send-arrow')).toBe(true);
@@ -87,6 +95,8 @@ describe('support chat structure', () => {
     expect(composer.includes('size-28px')).toBe(true);
     expect(composer.match(/data-button-shape='circle'/g)?.length).toBe(2);
     expect(composer.includes('textareaRef')).toBe(true);
+    expect(previewGrid.includes('common.supportChat.removeImage')).toBe(true);
+    expect(previewGrid.includes('support-image-preview-item__remove')).toBe(true);
 
     const joined = `${modal}\n${list}\n${composer}`;
     expect(joined.includes('online') || joined.includes('在线')).toBe(false);
@@ -107,6 +117,7 @@ describe('support chat structure', () => {
       'uploadImage',
       'uploadLogs',
       'uploadLogsConfirm',
+      'uploadLogsPreparing',
       'uploadLogsReady',
       'uploadLogsFailed',
       'uploadLogsDefaultContent',
