@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const edgeJobScriptPath = join(root, 'scripts', 'run-edge-in-job.ps1');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outDir = join(root, '.superpowers', 'audits', 'artifacts', `support-surface-${stamp}`);
 mkdirSync(outDir, { recursive: true });
@@ -74,6 +75,7 @@ const matrix = {
   widths: smoke ? [360, 560, 1280] : [320, 360, 390, 480, 560, 768, 1280],
   heights: smoke ? [900] : [720, 900],
   dprs: smoke ? [1, 2] : [1, 1.25, 1.5, 2],
+  pointers: ['fine', 'coarse'],
   locales: smoke ? ['zh-CN'] : ['zh-CN', 'en-US'],
   schemes: smoke ? ['light', 'dark'] : ['light', 'dark'],
   themes: smoke ? ['codex-neutral', 'rhythm-dark'] : [
@@ -85,7 +87,7 @@ const matrix = {
     'notion',
   ],
   surfaces: ['feedback', 'support'],
-  scenarios: smoke ? ['long', 'normal', 'log-confirm'] : [
+  scenarios: smoke ? ['long', 'normal', 'log-confirm', 'attachment-menu'] : [
     'normal',
     'empty',
     'long',
@@ -95,58 +97,87 @@ const matrix = {
     'uploading',
     'failed',
     'log-confirm',
+    'attachment-menu',
   ],
 };
 
 const activeChildren = new Set();
 let interrupted = false;
 
-const terminateProcessTree = (child) => {
-  if (!child?.pid) return Promise.resolve(true);
-  if (process.platform === 'win32') {
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (success) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutId);
-        resolve(success);
-      };
-      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-      const timeoutId = setTimeout(() => {
-        try {
-          child.kill();
-        } catch {
-          // The process may already be gone; profile removal is checked below.
-        }
-        finish(false);
-      }, edgeKillGraceMs);
-      killer.on('error', () => {
-        try {
-          child.kill();
-        } catch {
-          // Ignore an already-closed child.
-        }
-        finish(false);
-      });
-      killer.on('close', (code) => finish(code === 0 || child.exitCode !== null || child.signalCode !== null));
+const terminatePid = (pid, child) =>
+  new Promise((resolve) => {
+    const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
     });
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(false);
+    }, edgeKillGraceMs);
+    const finish = (success) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve(success);
+    };
+    killer.on('error', () => finish(false));
+    killer.on('close', (code) =>
+      finish(
+        code === 0 ||
+          code === 128 ||
+          child?.exitCode !== null ||
+          child?.signalCode !== null
+      )
+    );
+  });
+
+const waitForChildExit = (child) =>
+  new Promise((resolve) => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) {
+      resolve(true);
+      return;
+    }
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve(exited);
+    };
+    const timeoutId = setTimeout(() => finish(false), 1_000);
+    child.once('close', () => finish(true));
+  });
+
+const terminateProcessTree = async (child) => {
+  let directProcessStopped = true;
+  if (child?.pid) {
+    if (process.platform === 'win32') {
+      directProcessStopped = await terminatePid(child.pid, child);
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          child.kill();
+        } catch {
+          // The taskkill attempt or the process may already have finished.
+        }
+      }
+      directProcessStopped = directProcessStopped || (await waitForChildExit(child));
+    } else {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Ignore an already-closed child.
+      }
+    }
   }
-  try {
-    child.kill('SIGKILL');
-  } catch {
-    // Ignore an already-closed child.
-  }
-  return Promise.resolve(true);
+  return directProcessStopped;
 };
 
 const cleanupActiveChildren = async () => {
-  const children = [...activeChildren];
-  await Promise.all(children.map((child) => terminateProcessTree(child)));
-  for (const child of children) activeChildren.delete(child);
+  const records = [...activeChildren];
+  await Promise.all(records.map((record) => terminateProcessTree(record.child)));
+  for (const record of records) activeChildren.delete(record);
 };
 
 const onInterrupt = () => {
@@ -156,10 +187,30 @@ const onInterrupt = () => {
 process.once('SIGINT', onInterrupt);
 process.once('SIGTERM', onInterrupt);
 
-const run = (command, commandArgs, { timeoutMs = edgeTimeoutMs, ...spawnOptions } = {}) =>
+const run = (command, commandArgs, { timeoutMs = edgeTimeoutMs, ownedProfileDir, ...spawnOptions } = {}) =>
   new Promise((resolve) => {
-    const child = spawn(command, commandArgs, { windowsHide: true, ...spawnOptions });
-    activeChildren.add(child);
+    const useWindowsEdgeJob =
+      process.platform === 'win32' && command.toLowerCase().endsWith('msedge.exe');
+    const child = useWindowsEdgeJob
+      ? spawn(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            edgeJobScriptPath,
+            '-Executable',
+            command,
+            '-ArgsJsonBase64',
+            Buffer.from(JSON.stringify(commandArgs), 'utf8').toString('base64'),
+          ],
+          { windowsHide: true, ...spawnOptions }
+        )
+      : spawn(command, commandArgs, { windowsHide: true, ...spawnOptions });
+    const record = { child, profileDir: ownedProfileDir };
+    activeChildren.add(record);
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -172,7 +223,7 @@ const run = (command, commandArgs, { timeoutMs = edgeTimeoutMs, ...spawnOptions 
       settled = true;
       clearTimeout(timeoutId);
       clearTimeout(killGraceId);
-      resolve({ child, code, signal, stdout, stderr, timedOut, spawnError });
+      resolve({ child, code, signal, stdout, stderr, timedOut, spawnError, profileDir: ownedProfileDir });
     };
 
     child.stdout?.on('data', (chunk) => {
@@ -219,12 +270,12 @@ const parseReport = (dom) => {
   }
 };
 
-const captureOnce = async ({ width, height, dpr, locale, scheme, theme, surface, scenario, index, attempt }) => {
-  const name = [index, width, height, dpr, locale, scheme, theme, surface, scenario].join('-');
+const captureOnce = async ({ width, height, dpr, pointer, locale, scheme, theme, surface, scenario, index, attempt }) => {
+  const name = [index, width, height, dpr, pointer, locale, scheme, theme, surface, scenario].join('-');
   const userDataDir = join(tmpdir(), `flowy-support-surface-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const dumpPath = join(outDir, `${name}${attempt ? `-retry-${attempt}` : ''}.html`);
   const screenshotPath = join(outDir, `${name}.png`);
-  const url = buildUrl({ locale, scheme, theme, surface, scenario });
+  const url = buildUrl({ locale, scheme, theme, surface, scenario, pointer });
   const edgeArgs = [
     '--headless',
     '--disable-gpu',
@@ -244,27 +295,40 @@ const captureOnce = async ({ width, height, dpr, locale, scheme, theme, surface,
   ];
   let result;
   try {
-    result = await run(edgePath, edgeArgs);
+    result = await run(edgePath, edgeArgs, { ownedProfileDir: userDataDir });
     writeFileSync(dumpPath, result.stdout);
     return { name, url, result, report: parseReport(result.stdout), dumpPath, screenshotPath };
   } finally {
-    if (result?.child) {
-      await terminateProcessTree(result.child);
-      activeChildren.delete(result.child);
+    let processCleanupError = null;
+    try {
+      const processStopped = await terminateProcessTree(result?.child);
+      if (!processStopped) {
+        processCleanupError = new Error(
+          `[check:support-surface] Edge process cleanup was not confirmed: ${userDataDir}`
+        );
+      }
+    } catch (error) {
+      processCleanupError = error;
+    }
+    for (const record of activeChildren) {
+      if (record.profileDir === userDataDir) activeChildren.delete(record);
     }
     let cleaned = false;
-    for (let cleanupAttempt = 0; cleanupAttempt < 12; cleanupAttempt += 1) {
+    for (let cleanupAttempt = 0; cleanupAttempt < 24; cleanupAttempt += 1) {
       try {
         rmSync(userDataDir, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
-        cleaned = true;
-        break;
+        if (!existsSync(userDataDir)) {
+          cleaned = true;
+          break;
+        }
       } catch (error) {
         if (error?.code !== 'EBUSY') throw error;
-        if (cleanupAttempt === 11) break;
-        await new Promise((resolve) => setTimeout(resolve, 250 * (cleanupAttempt + 1)));
+        if (cleanupAttempt === 23) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, 250 * (cleanupAttempt + 1))));
       }
     }
     if (!cleaned) throw new Error(`[check:support-surface] Edge profile cleanup was not confirmed: ${userDataDir}`);
+    if (processCleanupError) throw processCleanupError;
   }
 };
 
@@ -279,7 +343,17 @@ const capture = async (testCase) => {
 };
 
 const caseKey = (testCase) =>
-  [testCase.width, testCase.height, testCase.dpr, testCase.locale, testCase.scheme, testCase.theme, testCase.surface, testCase.scenario].join('|');
+  [
+    testCase.width,
+    testCase.height,
+    testCase.dpr,
+    testCase.pointer,
+    testCase.locale,
+    testCase.scheme,
+    testCase.theme,
+    testCase.surface,
+    testCase.scenario,
+  ].join('|');
 
 const representativeCases = () => {
   const result = [];
@@ -293,6 +367,7 @@ const representativeCases = () => {
   const base = {
     height: matrix.heights.at(-1),
     dpr: matrix.dprs[0],
+    pointer: matrix.pointers[0],
     locale: matrix.locales[0],
     scheme: matrix.schemes[0],
     theme: matrix.themes[0],
@@ -302,6 +377,7 @@ const representativeCases = () => {
     for (const width of matrix.widths) add({ ...base, width, surface });
     for (const height of matrix.heights) add({ ...base, width: matrix.widths[1], height, surface });
     for (const dpr of matrix.dprs) add({ ...base, width: matrix.widths[1], dpr, surface });
+    for (const pointer of matrix.pointers) add({ ...base, width: matrix.widths[1], pointer, surface });
     for (const locale of matrix.locales) add({ ...base, width: matrix.widths[1], locale, surface });
     for (const scheme of matrix.schemes) add({ ...base, width: matrix.widths[1], scheme, surface });
     for (const theme of matrix.themes) add({ ...base, width: matrix.widths[1], theme, surface });
@@ -315,12 +391,14 @@ const cartesianCases = () => {
   for (const width of matrix.widths) {
     for (const height of matrix.heights) {
       for (const dpr of matrix.dprs) {
-        for (const locale of matrix.locales) {
-          for (const scheme of matrix.schemes) {
-            for (const theme of matrix.themes) {
-              for (const surface of matrix.surfaces) {
-                for (const scenario of matrix.scenarios) {
-                  result.push({ width, height, dpr, locale, scheme, theme, surface, scenario, index: result.length });
+        for (const pointer of matrix.pointers) {
+          for (const locale of matrix.locales) {
+            for (const scheme of matrix.schemes) {
+              for (const theme of matrix.themes) {
+                for (const surface of matrix.surfaces) {
+                  for (const scenario of matrix.scenarios) {
+                    result.push({ width, height, dpr, pointer, locale, scheme, theme, surface, scenario, index: result.length });
+                  }
                 }
               }
             }

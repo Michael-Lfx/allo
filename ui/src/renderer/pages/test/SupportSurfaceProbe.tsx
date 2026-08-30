@@ -19,7 +19,7 @@ type ProbeReport = {
   ok: boolean;
   surface: 'feedback' | 'support';
   scenario: string;
-  viewport: { width: number; height: number; devicePixelRatio: number };
+  viewport: { width: number; height: number; devicePixelRatio: number; pointer: 'fine' | 'coarse' };
   theme: string;
   scheme: string;
   locale: string;
@@ -229,6 +229,54 @@ const hasVisibleFocusStyle = (element: HTMLElement): boolean => {
   return element.matches(':focus-visible') && (outlineVisible || shadowVisible);
 };
 
+const waitForStableSurface = (selector: string): Promise<HTMLElement | null> =>
+  new Promise((resolve) => {
+    let previousSignature = '';
+    let stableFrames = 0;
+    let settled = false;
+    const startedAt = performance.now();
+    let fallbackTimer = 0;
+
+    const finish = (root: HTMLElement | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(fallbackTimer);
+      resolve(root);
+    };
+
+    const check = () => {
+      if (settled) return;
+      const root = document.querySelector<HTMLElement>(selector);
+      if (!root) {
+        if (performance.now() - startedAt >= 2_000) finish(null);
+        else window.requestAnimationFrame(check);
+        return;
+      }
+
+      const rect = root.getBoundingClientRect();
+      const signature = [rect.x, rect.y, rect.width, rect.height]
+        .map((value) => Math.round(value * 100) / 100)
+        .join(':');
+      const animations = root.getAnimations?.({ subtree: true }) ?? [];
+      const hasRunningAnimation = animations.some(
+        (animation) => animation.playState !== 'finished' && animation.playState !== 'idle'
+      );
+      const transform = getComputedStyle(root).transform;
+      const frameSettled = !hasRunningAnimation && transform === 'none';
+      stableFrames = frameSettled && signature === previousSignature ? stableFrames + 1 : 0;
+      previousSignature = signature;
+
+      if (stableFrames >= 3 || performance.now() - startedAt >= 2_000) {
+        finish(root);
+      } else {
+        window.requestAnimationFrame(check);
+      }
+    };
+
+    fallbackTimer = window.setTimeout(() => finish(document.querySelector<HTMLElement>(selector)), 2_000);
+    window.requestAnimationFrame(check);
+  });
+
 const makeSupportMessages = (scenario: string): SupportChatState => {
   const messages: SupportMessage[] = [];
   if (scenario === 'empty') {
@@ -292,14 +340,34 @@ const SupportSurfaceProbe: React.FC = () => {
   const locale = params.get('locale') === 'en-US' ? 'en-US' : 'zh-CN';
   const scheme = params.get('scheme') === 'dark' ? 'dark' : 'light';
   const themeId = params.get('theme') ?? 'codex-neutral';
-  const { i18n, t } = useTranslation();
+  const pointer = params.get('pointer') === 'coarse' ? 'coarse' : 'fine';
+  const { i18n } = useTranslation();
   const [report, setReport] = useState<ProbeReport | null>(null);
+  const [localeReady, setLocaleReady] = useState(false);
+  const [interactionReady, setInteractionReady] = useState(false);
 
   const reportContext = useMemo(() => makeErrorContext(scenario), [scenario]);
   const supportState = useMemo(() => makeSupportMessages(scenario), [scenario]);
   useEffect(() => {
-    void i18n.changeLanguage(locale);
+    let active = true;
+    setLocaleReady(false);
+    void i18n
+      .changeLanguage(locale)
+      .catch(() => undefined)
+      .then(() => {
+        if (active) setLocaleReady(true);
+      });
+    return () => {
+      active = false;
+    };
   }, [i18n, locale]);
+
+  useEffect(() => {
+    document.documentElement.dataset.supportProbePointer = pointer;
+    return () => {
+      delete document.documentElement.dataset.supportProbePointer;
+    };
+  }, [pointer]);
 
   useEffect(() => {
     const preset = PRESET_THEMES.find((item) => item.id === themeId);
@@ -316,10 +384,20 @@ const SupportSurfaceProbe: React.FC = () => {
   }, [scheme, themeId]);
 
   useEffect(() => {
+    setInteractionReady(false);
+    if (!localeReady) return undefined;
+    let active = true;
+    let followUpTimer = 0;
+    const markReady = () => {
+      if (active) setInteractionReady(true);
+    };
     const rootSelector = surface === 'support' ? '.support-chat-modal' : '.conversation-error-report-modal';
     const interactionTimer = window.setTimeout(() => {
       const root = document.querySelector<HTMLElement>(rootSelector);
-      if (!root) return;
+      if (!root) {
+        markReady();
+        return;
+      }
 
       if (scenario === 'expanded') {
         root.querySelector<HTMLElement>('.conversation-error-report__diagnostic .arco-collapse-item-header')?.click();
@@ -337,22 +415,39 @@ const SupportSurfaceProbe: React.FC = () => {
 
       if (surface === 'support' && scenario === 'log-confirm') {
         root.querySelector<HTMLButtonElement>('[data-button-shape="circle"]')?.click();
-        window.setTimeout(() => {
+        followUpTimer = window.setTimeout(() => {
           const label = locale === 'en-US' ? 'Upload logs' : '上传日志';
           Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
             .find((button) => button.textContent?.includes(label))
             ?.click();
+          window.requestAnimationFrame(markReady);
         }, 80);
+        return;
       }
+      if (surface === 'support' && scenario === 'attachment-menu') {
+        root.querySelector<HTMLButtonElement>('[data-button-shape="circle"]')?.click();
+      }
+      window.requestAnimationFrame(markReady);
     }, 160);
-    return () => window.clearTimeout(interactionTimer);
-  }, [locale, scenario, surface]);
+    return () => {
+      active = false;
+      window.clearTimeout(interactionTimer);
+      window.clearTimeout(followUpTimer);
+    };
+  }, [localeReady, locale, scenario, surface]);
 
   useEffect(() => {
-    const measureTimer = window.setTimeout(() => {
-      const root = document.querySelector<HTMLElement>(
+    if (!localeReady || !interactionReady) return undefined;
+    let cancelled = false;
+    const measure = async () => {
+      if (document.fonts?.ready) {
+        await document.fonts.ready.catch(() => undefined);
+      }
+      const root = await waitForStableSurface(
         surface === 'support' ? '.support-chat-modal' : '.conversation-error-report-modal'
       );
+      if (cancelled) return;
+
       const modalRect = rectOf(root);
       const header = root?.querySelector<HTMLElement>('.nomifun-modal-structured-header');
       const footer =
@@ -360,13 +455,20 @@ const SupportSurfaceProbe: React.FC = () => {
         root?.querySelector<HTMLElement>('.support-chat-composer');
       const scrollSelector = surface === 'support' ? '.support-message-list' : '.conversation-error-report__scroll';
       const scrollOwners = root ? Array.from(root.querySelectorAll<HTMLElement>(scrollSelector)) : [];
-      const controls = Array.from(
+      const rootControls = Array.from(
         root?.querySelectorAll<HTMLButtonElement>(
           surface === 'support'
             ? '.support-chat-composer button[data-button-shape="circle"]'
             : '.nomifun-modal-structured-header button, .conversation-error-report__footer-actions button'
         ) ?? []
-      ).map((button, index) => {
+      );
+      const portalControls =
+        surface === 'support'
+          ? Array.from(
+              document.querySelectorAll<HTMLButtonElement>('.support-chat-composer__attachment-menu button')
+            )
+          : [];
+      const controls = [...rootControls, ...portalControls].map((button, index) => {
         const buttonRect = button.getBoundingClientRect();
         const icon = button.querySelector<SVGElement>('svg');
         const iconRect = rectOf(icon);
@@ -375,6 +477,14 @@ const SupportSurfaceProbe: React.FC = () => {
           : null;
         const transform = getComputedStyle(button).transform;
         const focusVisible = hasVisibleFocusStyle(button);
+        const iconControl =
+          button.matches('[data-button-shape="circle"]') ||
+          Boolean(button.closest('.nomifun-modal-structured-header'));
+        const expectedIconSize = pointer === 'coarse' ? 40 : 32;
+        const stableIconSize =
+          !iconControl ||
+          (Math.abs(buttonRect.width - expectedIconSize) <= 1 &&
+            Math.abs(buttonRect.height - expectedIconSize) <= 1);
         return {
           label: button.getAttribute('aria-label') ?? button.textContent?.trim() ?? `control-${index}`,
           width: buttonRect.width,
@@ -386,13 +496,19 @@ const SupportSurfaceProbe: React.FC = () => {
           pass:
             buttonRect.width > 0 &&
             buttonRect.height > 0 &&
+            stableIconSize &&
             (iconCenterDeltaY === null || Math.abs(iconCenterDeltaY) <= 1) &&
             transform === 'none' &&
             focusVisible,
         };
       });
       const focusableControls = Array.from(
-        root?.querySelectorAll<HTMLElement>('button, textarea, [role="button"], [tabindex]:not([tabindex="-1"])') ?? []
+        new Set<HTMLElement>([
+          ...(root?.querySelectorAll<HTMLElement>(
+            'button, textarea, [role="button"], [tabindex]:not([tabindex="-1"])'
+          ) ?? []),
+          ...portalControls,
+        ])
       ).filter((element) => visibleRect(rectOf(element)) && !element.hasAttribute('disabled'));
       const focusVisibleControlCount = focusableControls.reduce(
         (count, element) => count + (hasVisibleFocusStyle(element) ? 1 : 0),
@@ -443,6 +559,10 @@ const SupportSurfaceProbe: React.FC = () => {
       if (surface === 'support') {
         if (scenario === 'log-confirm') {
           expectedStateVisible = Boolean(root?.querySelector('.support-chat-log-confirm'));
+        } else if (scenario === 'attachment-menu') {
+          expectedStateVisible = Boolean(
+            document.querySelector('.support-chat-composer__attachment-menu')
+          );
         } else if (scenario === 'sending') {
           expectedStateVisible = Boolean(root?.querySelector('[data-delivery="sending"]'));
         } else if (scenario === 'failed') {
@@ -467,8 +587,12 @@ const SupportSurfaceProbe: React.FC = () => {
       if (controls.some((control) => !control.pass)) failures.push('icon-control-geometry');
       if (focusVisibleControlCount !== focusableControls.length) failures.push('focus-visible-control');
       if (contrastChecks.some((check) => !check.pass)) failures.push('contrast-check');
-      if (surface === 'support' && scenario === 'log-confirm' && !expectedStateVisible) {
-        failures.push('log-confirm-not-visible');
+      if (
+        surface === 'support' &&
+        (scenario === 'log-confirm' || scenario === 'attachment-menu') &&
+        !expectedStateVisible
+      ) {
+        failures.push(`${scenario}-not-visible`);
       }
       if (
         surface === 'support' &&
@@ -482,7 +606,12 @@ const SupportSurfaceProbe: React.FC = () => {
         ok: failures.length === 0,
         surface,
         scenario,
-        viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio },
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio,
+          pointer,
+        },
         theme: themeId,
         scheme,
         locale,
@@ -507,9 +636,12 @@ const SupportSurfaceProbe: React.FC = () => {
         expectedStateVisible,
         failures,
       });
-    }, scenario === 'screenshots' || scenario === 'log-confirm' || scenario === 'expanded' ? 520 : 280);
-    return () => window.clearTimeout(measureTimer);
-  }, [locale, scenario, scheme, surface, themeId]);
+    };
+    void measure();
+    return () => {
+      cancelled = true;
+    };
+  }, [interactionReady, localeReady, locale, pointer, scenario, scheme, surface, themeId]);
 
   const noOpViewProps: Omit<SupportChatModalViewProps, 'state'> = {
     closeSupportChat: () => undefined,

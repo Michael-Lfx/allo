@@ -19,6 +19,9 @@ describe('support surface browser probe contract', () => {
     expect(probe).toContain('focusVisibleControlCount');
     expect(probe).toContain('contrastChecks');
     expect(probe).toContain('screenshotPreviewSize');
+    expect(probe).toContain('interactionReady');
+    expect(probe).toContain('waitForStableSurface');
+    expect(probe).toContain('getAnimations');
     expect(probe).toContain("root?.querySelectorAll<HTMLElement>('.support-image-preview-item')");
     expect(probe).toContain("scenario === 'log-confirm'");
     expect(probe).toContain("data-delivery=\"sending\"");

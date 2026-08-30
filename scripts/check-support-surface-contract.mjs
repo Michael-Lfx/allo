@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const auditSource = readFileSync(join(root, 'scripts', 'check-support-surface.mjs'), 'utf8');
+const edgeJobSource = readFileSync(join(root, 'scripts', 'run-edge-in-job.ps1'), 'utf8');
 const probeSource = readFileSync(join(root, 'ui', 'src', 'renderer', 'pages', 'test', 'SupportSurfaceProbe.tsx'), 'utf8');
 
 const requiredFragments = [
@@ -16,16 +17,28 @@ const requiredFragments = [
   'const allowedHosts = new Set([\'localhost\', \'127.0.0.1\', \'[::1]\']);',
   'await cleanupActiveChildren();',
   'Edge profile cleanup was not confirmed',
+  'run-edge-in-job.ps1',
+  'ArgsJsonBase64',
+  "pointers: ['fine', 'coarse']",
   "url.hash = '/test/support-surface';",
   'support-surface-probe-result',
+  'waitForStableSurface',
+  'getAnimations',
   'scrollOwnerCount',
   'iconCenterDeltaY',
   'support-chat-log-confirm',
+  'support-chat-composer__attachment-menu',
+  'supportProbePointer',
   'DataTransfer',
 ];
 const forbiddenFragments = ['--no-sandbox', 'deferred cleanup', 'http://example.com'];
 
-const missing = requiredFragments.filter((fragment) => !auditSource.includes(fragment) && !probeSource.includes(fragment));
+const missing = requiredFragments.filter(
+  (fragment) =>
+    !auditSource.includes(fragment) &&
+    !edgeJobSource.includes(fragment) &&
+    !probeSource.includes(fragment)
+);
 const unsafe = forbiddenFragments.filter((fragment) => auditSource.includes(fragment));
 if (missing.length > 0 || unsafe.length > 0) {
   if (missing.length > 0) console.error(`[check:support-surface-contract] missing: ${missing.join(', ')}`);
