@@ -868,7 +868,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
             </a>
             <main id="canvas-main" tabIndex={-1} className="flex h-full min-h-0 overflow-hidden outline-none" style={{ background: theme.canvas.background, color: theme.node.text }}>
                 {!focusMode && shortDramaEnabled && currentProject?.projectId ? (
-                    <CanvasProjectSidebar projectId={currentProject.projectId} detail={linkedProjectQuery.data} onAddChapter={handleProjectChapterInsert} onLocateStyle={locateProjectStyleNode} onOpenAssets={() => openProjectAssets()} />
+                    <CanvasProjectSidebar projectId={currentProject.projectId} detail={linkedProjectQuery.data} onAddChapter={handleProjectChapterInsert} onLocateStyle={locateProjectStyleNode} onOpenStyle={() => setStylePickerOpen(true)} onOpenAssets={() => openProjectAssets()} />
                 ) : null}
                 <section className="relative min-w-0 flex-1 flex flex-col min-h-0 overflow-hidden">
                     <CanvasProjectTopChrome

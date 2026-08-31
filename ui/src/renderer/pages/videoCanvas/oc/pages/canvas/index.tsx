@@ -20,6 +20,7 @@ import { exportCanvasProjects } from "@oc/lib/canvas/canvas-export";
 import { saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@oc/lib/canvas/canvas-drawing-storage";
 import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/services/user-data-sync";
 import { listProjects } from "@oc/services/api/projects";
+import { videoCanvasProjectPath } from "../../../routes";
 
 export default function CanvasPage() {
     useTranslation();
@@ -47,7 +48,7 @@ export default function CanvasPage() {
     const agentMode = mode === "new" || mode === "recent" || mode === "choose";
     const agentQuery = agentMode ? `?${searchParams.toString()}` : "";
     const enterProject = (id: string) => {
-        navigate(`/canvas/${id}${agentQuery}`);
+        navigate(videoCanvasProjectPath(id, agentQuery));
     };
     const defaultCanvasName = () => canvasT("videoCanvas.library.defaultName", "自由画布 {{n}}", { n: projects.length + 1 });
     const warnLocalCreate = (syncError: unknown) => {
