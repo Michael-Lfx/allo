@@ -143,6 +143,10 @@ function CodeBlock(props: CodeBlockProps) {
       ref={containerRef}
       style={{ width: '100%', minWidth: 0, maxWidth: '100%', ...props.codeStyle }}
       className='markdown-code-block'
+      data-testid='markdown-code-block'
+      data-streaming={isStreaming ? 'true' : 'false'}
+      data-collapsible={canCollapse ? 'true' : 'false'}
+      data-collapse-state={!canCollapse ? 'none' : isEffectivelyExpanded ? 'expanded' : 'collapsed'}
     >
       <BeautifulUiCodeBlock
         language={language}
@@ -236,6 +240,7 @@ function CodeBlock(props: CodeBlockProps) {
                   : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })
               }
               className='markdown-code-footer'
+              data-testid='markdown-code-footer'
               onClick={toggleExpanded}
             >
               <span className='markdown-code-footer-label'>
