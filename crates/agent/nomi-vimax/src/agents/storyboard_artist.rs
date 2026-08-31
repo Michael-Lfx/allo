@@ -68,16 +68,19 @@ impl StoryboardArtist {
         brief: &ShotBriefDescription,
         characters: &[CharacterInScene],
     ) -> VimaxResult<ShotDescription> {
-        self.decompose_visual_description_with_continuity(brief, characters, None)
+        self.decompose_visual_description_with_continuity(brief, characters, None, None)
             .await
     }
 
-    /// Decompose a shot; when `previous_lf_desc` is set, force ff_desc to continue from it.
+    /// Decompose a shot; when `previous_lf_desc` is set, identity carries over.
+    /// `previous_cam_idx` decides whether first_frame resumes the pose (same
+    /// camera) or opens a new angle already in progress (a cut).
     pub async fn decompose_visual_description_with_continuity(
         &self,
         brief: &ShotBriefDescription,
         characters: &[CharacterInScene],
         previous_lf_desc: Option<&str>,
+        previous_cam_idx: Option<i32>,
     ) -> VimaxResult<ShotDescription> {
         let characters_str = characters
             .iter()
@@ -95,21 +98,35 @@ impl StoryboardArtist {
             &crate::planning::clip_length_rules(self.clip),
         );
         let continuity_block = match previous_lf_desc.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(prev) => format!(
-                "\n<PREVIOUS_SHOT_LAST_FRAME>\n{prev}\n</PREVIOUS_SHOT_LAST_FRAME>\n\
+            Some(prev) => {
+                let same_take = previous_cam_idx.is_some_and(|cam| cam == brief.cam_idx);
+                let pose_rule = if same_take {
+                    "The first_frame description MUST open exactly where that last frame ended \
+(same composition, same body/prop positions, same screen-left/screen-right for each named person) \
+and the motion continues from there."
+                } else {
+                    "This shot is a CUT to a NEW camera. first_frame is a new angle/size with the action \
+already in progress — do NOT restage or replay the previous last-frame pose. Identity (cast, \
+wardrobe, lighting, set) still carries over. Keep each named person on the SAME screen side \
+(画面左侧/右侧) as the previous last frame unless THIS shot's visual_desc explicitly says 反打, \
+过肩, or reverse."
+                };
+                format!(
+                    "\n<PREVIOUS_SHOT_LAST_FRAME>\n{prev}\n</PREVIOUS_SHOT_LAST_FRAME>\n\
 CRITICAL CONTINUITY: This shot is timeline-adjacent to the previous shot in the SAME scene. \
-The first_frame description MUST start from (or seamlessly continue) the previous shot's last frame above — \
-same cast identity, wardrobe, lighting mood, and set. You may reframe (new cam_idx / shot size) but do NOT \
-reset to an unrelated establishing pose. Cross-scene continuity does NOT apply here.\n"
-            ),
+{pose_rule} Cross-scene continuity does NOT apply here.\n"
+                )
+            }
             None => String::new(),
         };
+        let beats_block = packed_beats_block(brief);
         let user = include_str!(
             "../../prompts/storyboard_artist__human_prompt_template_decompose_visual_description.txt"
         )
         .replace("{visual_desc}", &brief.visual_desc)
         .replace("{characters_str}", &characters_str)
-        .replace("{continuity_block}", &continuity_block);
+        .replace("{continuity_block}", &continuity_block)
+        .replace("{beats_block}", &beats_block);
 
         #[derive(Deserialize)]
         struct Decomp {
@@ -138,7 +155,51 @@ reset to an unrelated establishing pose. Cross-scene continuity does NOT apply h
             lf_vis_char_idxs: d.lf_vis_char_idxs,
             motion_desc: d.motion_desc,
             audio_desc: brief.audio_desc.clone(),
-            beats: Vec::new(),
+            beats: brief
+                .beats
+                .iter()
+                .map(|beat| crate::domain::ShotBeat {
+                    motion_desc: beat.visual_desc.clone(),
+                    audio_desc: beat.audio_desc.clone(),
+                    cam_idx: Some(beat.cam_idx),
+                })
+                .collect(),
         })
     }
+}
+
+fn packed_beats_block(brief: &ShotBriefDescription) -> String {
+    if brief.beats.len() < 2 {
+        return String::new();
+    }
+    let lines: String = brief
+        .beats
+        .iter()
+        .enumerate()
+        .map(|(i, beat)| {
+            let audio = beat.audio_desc.as_deref().unwrap_or("").trim();
+            let audio = if audio.is_empty() {
+                String::new()
+            } else {
+                format!(" audio: {audio}")
+            };
+            format!(
+                "- beat {i}: cam_idx={} visual: {}{audio}\n",
+                beat.cam_idx, beat.visual_desc
+            )
+        })
+        .collect();
+    let cuts = brief
+        .beats
+        .windows(2)
+        .any(|pair| pair[0].cam_idx != pair[1].cam_idx);
+    let cut_rule = if cuts {
+        "This is a native multi-shot: at a cam_idx change, CUT TO the new angle with the action already in progress — do not morph or dissolve. first_frame is beat 0; last_frame is the final beat after the last cut."
+    } else {
+        "This is ONE continuous take: camera and framing never change. Play every beat in order."
+    };
+    format!(
+        "\n<CLIP_BEATS>\nThis storyboard row is ONE generated video ({n} beats). {cut_rule}\n{lines}</CLIP_BEATS>\n",
+        n = brief.beats.len(),
+    )
 }

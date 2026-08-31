@@ -50,6 +50,12 @@ impl ClipBounds {
     /// speech, a merged same-camera run).
     const BEAT_MIN_SECS: u32 = 5;
     const BEAT_MAX_SECS: u32 = 15;
+    /// Everyday short-drama clip: rich enough for 2–3 related beats, short
+    /// enough that spoken lines still finish inside a 15s model ceiling.
+    const DRAMA_BEAT_SECS: u32 = 12;
+    /// Pack related beats toward this length when speech and motion actually
+    /// need it. Not a pad — empty holds stay forbidden.
+    const DRAMA_PACK_SECS: u32 = 14;
 
     /// Window used when the model id matches no known family. 5–12s is accepted
     /// by every currently integrated model, so an unknown model cannot be
@@ -68,11 +74,13 @@ impl ClipBounds {
             max_secs,
             preferred_min_secs,
             preferred_max_secs,
-            // Most beats land near the low end — the upper half of the window is
-            // headroom for long speech, not the everyday length — so a guess
-            // made before the content exists sits a third of the way up.
-            typical_beat_secs: preferred_min_secs
-                + (preferred_max_secs - preferred_min_secs) / 3,
+            // Guess made before content exists: pack toward a 12s drama beat
+            // so leftover seconds become longer clips, not extra splices.
+            typical_beat_secs: clamp_u32(
+                Self::DRAMA_BEAT_SECS,
+                preferred_min_secs,
+                preferred_max_secs,
+            ),
         }
     }
 
@@ -95,6 +103,25 @@ impl ClipBounds {
     /// Beat length to assume when planning has no content to price yet.
     pub const fn typical_beat_secs(&self) -> u32 {
         self.typical_beat_secs
+    }
+
+    /// Length a packed multi-beat clip should aim for when speech still fits.
+    pub const fn pack_target_secs(&self) -> u32 {
+        clamp_u32(
+            Self::DRAMA_PACK_SECS,
+            self.typical_beat_secs,
+            self.preferred_max_secs,
+        )
+    }
+
+    /// A single glance / sit / stand — stays short so packing does not inflate
+    /// one-event clips toward the drama beat.
+    pub const fn glance_secs(&self) -> u32 {
+        clamp_u32(
+            self.preferred_min_secs.saturating_add(2),
+            self.min_secs,
+            self.typical_beat_secs,
+        )
     }
 
     /// Clamp a requested clip length into the model's accepted window.
@@ -128,8 +155,10 @@ mod tests {
             (wide.preferred_min_secs(), wide.preferred_max_secs()),
             (5, 15)
         );
-        // Guesses made before the content exists stay short.
-        assert_eq!(wide.typical_beat_secs(), 8);
+        // Guesses pack toward a 12s drama beat, not the low end of the window.
+        assert_eq!(wide.typical_beat_secs(), 12);
+        assert_eq!(wide.pack_target_secs(), 14);
+        assert_eq!(wide.glance_secs(), 7);
 
         // A higher ceiling is headroom, not the everyday beat length.
         let long_model = ClipBounds::new(5, 60);
@@ -140,7 +169,8 @@ mod tests {
             ),
             (5, 15)
         );
-        assert_eq!(long_model.typical_beat_secs(), 8);
+        assert_eq!(long_model.typical_beat_secs(), 12);
+        assert_eq!(long_model.pack_target_secs(), 14);
     }
 
     #[test]
@@ -150,7 +180,9 @@ mod tests {
             (narrow.preferred_min_secs(), narrow.preferred_max_secs()),
             (5, 8)
         );
-        assert_eq!(narrow.typical_beat_secs(), 6);
+        assert_eq!(narrow.typical_beat_secs(), 8);
+        assert_eq!(narrow.pack_target_secs(), 8);
+        assert_eq!(narrow.glance_secs(), 7);
 
         let long_only = ClipBounds::new(20, 30);
         assert_eq!(

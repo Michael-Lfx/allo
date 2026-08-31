@@ -1,6 +1,6 @@
 //! Script2Video pipeline — plan text artifacts then render frames/clips/final.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -277,6 +277,24 @@ impl Script2VideoPipeline {
         let shot_descriptions: Vec<ShotDescription> =
             read_json_artifact(&wd.join("shot_descriptions.json")).await?;
         let camera_tree: Vec<Camera> = read_json_artifact(&wd.join("camera_tree.json")).await?;
+        let clip_count_on_disk = shot_descriptions.len();
+        let (synced, shot_descriptions) =
+            super::clip_beats::align_storyboard_and_clips(storyboard.clone(), shot_descriptions);
+        if super::clip_beats::storyboard_differs(&storyboard, &synced)
+            || shot_descriptions.len() != clip_count_on_disk
+        {
+            tracing::info!(
+                before_briefs = storyboard.len(),
+                after_briefs = synced.len(),
+                before_clips = clip_count_on_disk,
+                after_clips = shot_descriptions.len(),
+                "aligned storyboard to clips; board never grows at video start"
+            );
+            write_json_artifact(&wd.join("storyboard.json"), &synced).await?;
+            write_json_artifact(&wd.join("shot_descriptions.json"), &shot_descriptions).await?;
+            prune_unkept_shot_dirs(wd, &synced).await;
+        }
+        let storyboard = synced;
         apply_session_cameos(
             wd,
             &characters,
@@ -462,13 +480,14 @@ impl Script2VideoPipeline {
             // a camera change is a real cut. A scene that opened from a prior
             // scene's tail frame starts mid-soundtrack, so it must not fade up.
             let refs: Vec<&Path> = clips.iter().map(|p| p.as_path()).collect();
-            let cam_idxs: Vec<i32> = ordered_shots.iter().map(|s| s.cam_idx).collect();
+            let entries: Vec<i32> = ordered_shots.iter().map(|s| s.cam_idx).collect();
+            let exits: Vec<i32> = ordered_shots.iter().map(|s| s.exit_cam_idx()).collect();
             let opening = if prior_continuity.is_some() {
                 media_local::SpliceSeam::MatchCut
             } else {
                 media_local::SpliceSeam::Cut
             };
-            let seq = media_local::ConcatClip::scene(&refs, &cam_idxs, opening);
+            let seq = media_local::ConcatClip::scene_exits(&refs, &entries, &exits, opening);
             media_local::concat_videos(&seq, &final_path).await?;
             emit(&progress, "concat_done", "场景成片拼接完成");
         }
@@ -563,37 +582,31 @@ impl Script2VideoPipeline {
                     "truncated storyboard to respect duration budget"
                 );
                 write_json_artifact(&path, &storyboard).await?;
-                // Shot decompositions must be rebuilt for the truncated board.
-                let decomp = self.working_dir.join("shot_descriptions.json");
-                if decomp.exists() {
-                    let _ = tokio::fs::remove_file(&decomp).await;
-                }
-                let cam = self.working_dir.join("camera_tree.json");
-                if cam.exists() {
-                    let _ = tokio::fs::remove_file(&cam).await;
-                }
-                let keep: std::collections::HashSet<i32> =
-                    storyboard.iter().map(|s| s.idx).collect();
-                let shots_root = self.working_dir.join("shots");
-                if shots_root.is_dir() {
-                    if let Ok(mut entries) = tokio::fs::read_dir(&shots_root).await {
-                        while let Ok(Some(entry)) = entries.next_entry().await {
-                            let name = entry.file_name();
-                            let name = name.to_string_lossy();
-                            if let Ok(idx) = name.parse::<i32>() {
-                                if !keep.contains(&idx) {
-                                    let _ = tokio::fs::remove_dir_all(entry.path()).await;
-                                }
-                            }
-                        }
-                    }
-                }
+                invalidate_downstream_of_storyboard(&self.working_dir, &storyboard).await;
             }
         }
         if ensure_brief_audio_descs(&mut storyboard) {
             tracing::info!("filled missing storyboard audio_desc with ambient defaults");
             write_json_artifact(&path, &storyboard).await?;
         }
+        // Pack here — not at render — so each storyboard row is one generated
+        // video (in-file CUT allowed). Micro-shots the LLM still emitted are
+        // collapsed and reindexed before the user ever sees 「故事分镜」.
+        let packed = super::clip_beats::pack_scene_briefs(self.backends.clip, storyboard);
+        if super::clip_beats::storyboard_differs(
+            &read_json_artifact::<Vec<ShotBriefDescription>>(&path)
+                .await
+                .unwrap_or_default(),
+            &packed,
+        ) {
+            tracing::info!(
+                after = packed.len(),
+                "packed storyboard into renderable clips (one row = one video)"
+            );
+            write_json_artifact(&path, &packed).await?;
+            invalidate_downstream_of_storyboard(&self.working_dir, &packed).await;
+        }
+        let storyboard = packed;
         let bgm = ensure_scene_bgm_brief(&self.working_dir, &storyboard).await?;
         tracing::info!(bgm = %bgm, "scene BGM brief locked for shot continuity");
         Ok(storyboard)
@@ -607,7 +620,20 @@ impl Script2VideoPipeline {
     ) -> VimaxResult<Vec<ShotDescription>> {
         let aggregate = self.working_dir.join("shot_descriptions.json");
         if aggregate.is_file() && sidecar_matches(&aggregate, plan_fp).await {
-            return read_json_artifact(&aggregate).await;
+            let packed: Vec<ShotDescription> = read_json_artifact(&aggregate).await?;
+            let (synced, packed) =
+                super::clip_beats::align_storyboard_and_clips(briefs.to_vec(), packed);
+            if super::clip_beats::storyboard_differs(briefs, &synced) {
+                tracing::info!(
+                    before = briefs.len(),
+                    after = synced.len(),
+                    "aligned cached shot_descriptions to storyboard (no extra last shot)"
+                );
+                write_json_artifact(&self.working_dir.join("storyboard.json"), &synced).await?;
+                prune_unkept_shot_dirs(&self.working_dir, &synced).await;
+            }
+            write_json_artifact(&aggregate, &packed).await?;
+            return Ok(packed);
         }
         let shots_root = self.working_dir.join("shots");
         tokio::fs::create_dir_all(&shots_root).await?;
@@ -618,20 +644,22 @@ impl Script2VideoPipeline {
 
         let mut out: Vec<ShotDescription> = Vec::with_capacity(ordered.len());
         let mut prev_lf: Option<String> = None;
+        let mut prev_cam: Option<i32> = None;
         let storyboard = StoryboardArtist::new(Arc::clone(&self.backends.chat), self.backends.clip);
 
         for brief in &ordered {
             let path = shots_root
                 .join(brief.idx.to_string())
                 .join("shot_description.json");
-            // A merged clip on disk is a render artifact (the head of a
-            // same-camera run), not this brief's decomposition — reusing it
-            // would feed already-absorbed beats back into the merge.
+            // Reuse a cached decomposition when it still describes THIS brief.
+            // A merged file is valid iff the brief is also packed (one row =
+            // one clip). A merged file left over from the old post-decompose
+            // packer must not be reused for an unmerged brief.
             let cached: Option<ShotDescription> = match path.exists() {
                 true => read_json_artifact::<ShotDescription>(&path)
                     .await
                     .ok()
-                    .filter(|desc| !desc.is_merged()),
+                    .filter(|desc| desc.is_merged() == brief.is_merged()),
                 false => None,
             };
             let mut desc = if let Some(desc) = cached {
@@ -642,11 +670,20 @@ impl Script2VideoPipeline {
                         brief,
                         characters,
                         prev_lf.as_deref(),
+                        prev_cam,
                     )
                     .await?;
                 write_json_artifact(&path, &desc).await?;
                 desc
             };
+            // Cached files live under shots/{brief.idx} but may still carry an
+            // older `idx` from before pack/reindex. Leaving it drifted is how
+            // resume invents a phantom last storyboard row.
+            desc.idx = brief.idx;
+            super::clip_beats::stamp_beats_from_brief(&mut desc, brief);
+            if desc.is_merged() {
+                write_json_artifact(&path, &desc).await?;
+            }
             // Resume / stale cache: prefer non-empty brief audio, else keep mined defaults.
             let desc_audio_empty = desc
                 .audio_desc
@@ -661,17 +698,29 @@ impl Script2VideoPipeline {
                 }
             }
             prev_lf = Some(desc.lf_desc.clone());
+            prev_cam = Some(desc.exit_cam_idx());
             out.push(desc);
         }
 
-        // Adjacent shots that share a camera have nothing to cut to, so render
-        // them as one multi-beat clip: the splice that would have stuttered
-        // between them simply stops existing.
-        let out = super::clip_beats::merge_same_camera_shots(self.backends.clip, out);
+        // Safety net for a stale unpacked storyboard that skipped brief packing.
+        // After this, storyboard.json is rewritten to the packed list so the
+        // studio never keeps empty cards for absorbed micro-shots.
+        let packed = super::clip_beats::pack_scene_clips(self.backends.clip, out);
+        let (synced, packed) =
+            super::clip_beats::align_storyboard_and_clips(briefs.to_vec(), packed);
+        if super::clip_beats::storyboard_differs(briefs, &synced) {
+            tracing::info!(
+                before = briefs.len(),
+                after = synced.len(),
+                "synced storyboard after clip packing"
+            );
+            write_json_artifact(&self.working_dir.join("storyboard.json"), &synced).await?;
+            prune_unkept_shot_dirs(&self.working_dir, &synced).await;
+        }
 
-        write_json_artifact(&aggregate, &out).await?;
+        write_json_artifact(&aggregate, &packed).await?;
         super::artifact_cache::write_sidecar(&aggregate, plan_fp).await?;
-        Ok(out)
+        Ok(packed)
     }
 
     async fn construct_camera_tree(
@@ -1056,11 +1105,12 @@ impl Script2VideoPipeline {
             // Timeline-adjacent continuity: previous shot (or prior scene tail) ending still.
             // The seam decides what the still MEANS to this shot — resume the
             // same take, or just carry identity across a cut — and the scene
-            // concat re-derives it from the same `cam_idx` comparison.
+            // concat re-derives it from the previous clip's *exit* camera.
             let seam = match i.checked_sub(1) {
-                Some(prev) => {
-                    media_local::SpliceSeam::within_scene(shots[prev].cam_idx, shot.cam_idx)
-                }
+                Some(prev) => media_local::SpliceSeam::within_scene(
+                    shots[prev].exit_cam_idx(),
+                    shot.cam_idx,
+                ),
                 // Cross-scene: the prompt lets the new scene change camera or
                 // location, so its opening shot is a match-cut, never a resume.
                 None => media_local::SpliceSeam::MatchCut,
@@ -1069,18 +1119,28 @@ impl Script2VideoPipeline {
                 let prev = &shots[i - 1];
                 match ensure_shot_video_last_frame(&self.working_dir, prev.idx, false).await {
                     Ok(Some(path)) => {
+                        let vendor_url = media_local::load_return_last_frame_url(&path);
                         emit(
                             progress,
                             "video_continuity",
                             &format!(
-                                "Shot {}: reference_image ← shot {} video_last_frame.png (cam {}→{}, {seam:?})",
-                                shot.idx, prev.idx, prev.cam_idx, shot.cam_idx
+                                "Shot {}: reference_image ← shot {} {} (cam {}→{}, {seam:?})",
+                                shot.idx,
+                                prev.idx,
+                                if vendor_url.is_some() {
+                                    "last_frame_url"
+                                } else {
+                                    "video_last_frame.png"
+                                },
+                                prev.exit_cam_idx(),
+                                shot.cam_idx
                             ),
                         );
                         tracing::info!(
                             shot = shot.idx,
                             prev = prev.idx,
                             continuity = %path.display(),
+                            vendor_last_frame_url = vendor_url.is_some(),
                             ?seam,
                             "adjacent shot multi-ref continuity locked to previous video_last_frame"
                         );
@@ -1105,8 +1165,13 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                     progress,
                     "video_continuity",
                     &format!(
-                        "Shot {}: reference_image ← previous scene last-shot video_last_frame ({})",
+                        "Shot {}: reference_image ← previous scene last-shot {} ({})",
                         shot.idx,
+                        if media_local::load_return_last_frame_url(&path).is_some() {
+                            "last_frame_url"
+                        } else {
+                            "video_last_frame"
+                        },
                         path.file_name()
                             .and_then(|s| s.to_str())
                             .unwrap_or("video_last_frame.png")
@@ -2693,6 +2758,7 @@ async fn ensure_shot_video_last_frame(
     let out = dir.join("video_last_frame.png");
     if force {
         let _ = tokio::fs::remove_file(&out).await;
+        media_local::clear_return_last_frame_url(&out);
     } else if media_local::is_usable_image_file(&out) {
         return Ok(Some(out));
     }
@@ -2774,6 +2840,54 @@ fn enforce_max_shots(shots: &mut Vec<ShotBriefDescription>, max_shots: usize) ->
         s.is_last = i == last_i;
     }
     true
+}
+
+/// Drop cached decompose / camera tree and unused shot dirs after the
+/// storyboard list changes (truncate or pack). Directories that already have
+/// a clip are kept so resume does not delete billed work.
+async fn invalidate_downstream_of_storyboard(
+    working_dir: &Path,
+    storyboard: &[ShotBriefDescription],
+) {
+    let decomp = working_dir.join("shot_descriptions.json");
+    if decomp.exists() {
+        let _ = tokio::fs::remove_file(&decomp).await;
+    }
+    let cam = working_dir.join("camera_tree.json");
+    if cam.exists() {
+        let _ = tokio::fs::remove_file(&cam).await;
+    }
+    prune_unkept_shot_dirs(working_dir, storyboard).await;
+}
+
+async fn prune_unkept_shot_dirs(working_dir: &Path, storyboard: &[ShotBriefDescription]) {
+    let keep: HashSet<i32> = storyboard.iter().map(|s| s.idx).collect();
+    let shots_root = working_dir.join("shots");
+    if !shots_root.is_dir() {
+        return;
+    }
+    let Ok(mut entries) = tokio::fs::read_dir(&shots_root).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Ok(idx) = name.parse::<i32>() else {
+            continue;
+        };
+        if keep.contains(&idx) {
+            continue;
+        }
+        let video = entry.path().join("video.mp4");
+        if video.is_file() {
+            tracing::info!(
+                shot = idx,
+                "keeping absorbed shot dir; video already billed"
+            );
+            continue;
+        }
+        let _ = tokio::fs::remove_dir_all(entry.path()).await;
+    }
 }
 
 /// Fill empty `audio_desc` so every shot carries ambient/BGM (and keeps dialogue
@@ -2939,7 +3053,8 @@ fn plot_beat_clause(ff: &str, lf: &str, motion: &str) -> String {
 /// audience just watched — the splice reads as a freeze.
 const CONTINUITY_STATE_ROLE: &str =
     "previous shot's final frame — continuity reference ONLY (cast identity, wardrobe, hair, props, \
-set, lighting, time of day). Do NOT reproduce its framing and do NOT replay its pose";
+set, lighting, time of day, and who is screen-left vs screen-right). Do NOT reproduce its framing \
+and do NOT replay its pose; do NOT flip left/right geography";
 
 /// What a continuity still is for when the camera is *unchanged*.
 const CONTINUITY_RESUME_ROLE: &str =
@@ -2963,7 +3078,8 @@ re-frame, or re-establish; the motion is already underway at frame 1."
         SpliceSeam::MatchCut => {
             "Opening: this is a CUT to a NEW angle. Start with the action ALREADY in progress from \
 the new camera. Never re-stage, re-enter, or replay @Image1's ending pose or framing — repeating \
-that beat is what makes the join look frozen."
+that beat is what makes the join look frozen. Keep screen geography: whoever is left/right in \
+@Image1 stays left/right unless this clip's motion itself says CUT TO a reverse / 反打 / 过肩."
         }
     }
 }
@@ -3069,19 +3185,42 @@ fn clip_beat_script(timeline: &[super::clip_beats::TimedBeat]) -> String {
     if timeline.is_empty() {
         return String::new();
     }
-    let mut out = String::from(
-        "Motion: ONE continuous take — camera, framing and lighting never change. \
+    let cuts = timeline.windows(2).any(|pair| {
+        match (pair[0].cam_idx, pair[1].cam_idx) {
+            (Some(a), Some(b)) => a != b,
+            _ => false,
+        }
+    });
+    let mut out = if cuts {
+        String::from(
+            "Motion: native multi-shot inside ONE generated clip. Play these beats in order. \
+At a camera change, CUT to the new angle with the action already in progress — do not morph, \
+dissolve, or replay the previous beat. Framing may change; identity, wardrobe, lighting mood, \
+set, and who is screen-left vs screen-right do not (unless this beat is itself a 反打 / reverse).",
+        )
+    } else {
+        String::from(
+            "Motion: ONE continuous take — camera, framing and lighting never change. \
 Play these beats in order, each in its own time window:",
-    );
+        )
+    };
+    let mut prev_cam: Option<i32> = None;
     for beat in timeline {
         let text = match beat.text.trim() {
             "" => "hold the frame, subtle living motion only",
             text => text,
         };
+        let cut = match (cuts, prev_cam, beat.cam_idx) {
+            (true, Some(prev), Some(cam)) if prev != cam => "CUT TO a new camera. ",
+            _ => "",
+        };
         out.push_str(&format!(
-            "\n[{}-{}s] {text}",
+            "\n[{}-{}s] {cut}{text}",
             beat.start_secs, beat.end_secs
         ));
+        if beat.cam_idx.is_some() {
+            prev_cam = beat.cam_idx;
+        }
     }
     out
 }
@@ -3933,7 +4072,7 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         a.audio_desc = Some(line);
         let mut b = shot(1, 0);
         b.motion_desc = "她走近窗边".into();
-        let merged = super::super::clip_beats::merge_same_camera_shots(SEEDANCE, vec![a, b]);
+        let merged = super::super::clip_beats::pack_scene_clips(SEEDANCE, vec![a, b]);
         assert_eq!(merged.len(), 1, "same camera must merge");
 
         let prompt = i2v_motion_prompt(
@@ -3956,6 +4095,37 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         assert!(
             !prompt.contains("Motion: 她转身, then 她走近窗边"),
             "the joined prose line must give way to the timeline: {prompt}"
+        );
+    }
+
+    #[test]
+    fn a_packed_reverse_prompt_asks_for_a_cut_inside_the_clip() {
+        let mut first = shot(0, 0);
+        first.motion_desc = "她说话".into();
+        let mut second = shot(1, 1);
+        second.motion_desc = "他回答".into();
+        let packed = super::super::clip_beats::pack_scene_clips(SEEDANCE, vec![first, second]);
+        assert_eq!(packed.len(), 1);
+        assert!(packed[0].has_camera_cuts());
+
+        let prompt = i2v_motion_prompt(
+            &packed[0],
+            &[],
+            "cinematic",
+            &[],
+            SEEDANCE,
+            10,
+            SpliceSeam::Cut,
+            "",
+            false,
+            None,
+            "",
+        );
+        assert!(prompt.starts_with("Motion: native multi-shot"), "{prompt}");
+        assert!(prompt.contains("CUT TO a new camera"), "{prompt}");
+        assert!(
+            !prompt.contains("camera, framing and lighting never change"),
+            "a reverse must not be told it is one locked take: {prompt}"
         );
     }
 
@@ -4305,6 +4475,7 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             cam_idx: 0,
             visual_desc: "establishing wide shot".into(),
             audio_desc: None,
+            beats: Vec::new(),
         }];
         assert!(ensure_brief_audio_descs(&mut shots));
         assert!(shots[0].audio_desc.as_ref().is_some_and(|s| !s.trim().is_empty()));

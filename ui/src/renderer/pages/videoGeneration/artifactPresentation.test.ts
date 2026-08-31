@@ -192,8 +192,153 @@ describe('video artifact presentation', () => {
     expect(buildStoryboardScenes([], [], undefined)).toEqual([]);
   });
 
+  test('does not add a phantom shot from leftover media once the storyboard loaded', () => {
+    const treeWithStray: ArtifactNode[] = [
+      {
+        name: 'script2video',
+        path: 'script2video',
+        is_dir: true,
+        children: [
+          {
+            name: 'storyboard.json',
+            path: 'script2video/storyboard.json',
+            is_dir: false,
+          },
+          {
+            name: 'shots',
+            path: 'script2video/shots',
+            is_dir: true,
+            children: [
+              {
+                name: '0',
+                path: 'script2video/shots/0',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'video.mp4',
+                    path: 'script2video/shots/0/video.mp4',
+                    is_dir: false,
+                  },
+                ],
+              },
+              {
+                name: '1',
+                path: 'script2video/shots/1',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'video_last_frame.png',
+                    path: 'script2video/shots/1/video_last_frame.png',
+                    is_dir: false,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const scenes = buildStoryboardScenesFromStoryboards(treeWithStray, [
+      {
+        path: 'script2video/storyboard.json',
+        shots: [{ index: 0, visualDescription: 'Opening beat' }],
+      },
+    ]);
+    expect(scenes).toHaveLength(1);
+    expect(scenes[0]?.shotIndex).toBe(0);
+  });
+
+  test('does not invent shots from leftover media while storyboard.json exists but has not loaded', () => {
+    const treeWithStray: ArtifactNode[] = [
+      {
+        name: 'script2video',
+        path: 'script2video',
+        is_dir: true,
+        children: [
+          {
+            name: 'storyboard.json',
+            path: 'script2video/storyboard.json',
+            is_dir: false,
+          },
+          {
+            name: 'storyboard.json.cache.json',
+            path: 'script2video/storyboard.json.cache.json',
+            is_dir: false,
+          },
+          {
+            name: 'shots',
+            path: 'script2video/shots',
+            is_dir: true,
+            children: [
+              {
+                name: '0',
+                path: 'script2video/shots/0',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'video.mp4',
+                    path: 'script2video/shots/0/video.mp4',
+                    is_dir: false,
+                  },
+                ],
+              },
+              {
+                name: '1',
+                path: 'script2video/shots/1',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'shot_description.json',
+                    path: 'script2video/shots/1/shot_description.json',
+                    is_dir: false,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(findStoryboardPaths(treeWithStray)).toEqual(['script2video/storyboard.json']);
+    const scenes = buildStoryboardScenesFromStoryboards(treeWithStray, []);
+    expect(scenes).toHaveLength(0);
+  });
+
   test('falls back to real media artifacts without fabricating descriptions', () => {
-    const scenes = buildStoryboardScenes(tree, [], findStoryboardPath(tree));
+    const mediaOnly: ArtifactNode[] = [
+      {
+        name: 'script2video',
+        path: 'script2video',
+        is_dir: true,
+        children: [
+          {
+            name: 'shots',
+            path: 'script2video/shots',
+            is_dir: true,
+            children: [
+              {
+                name: '0',
+                path: 'script2video/shots/0',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'first_frame.png',
+                    path: 'script2video/shots/0/first_frame.png',
+                    is_dir: false,
+                  },
+                  {
+                    name: 'video.mp4',
+                    path: 'script2video/shots/0/video.mp4',
+                    is_dir: false,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const scenes = buildStoryboardScenes(mediaOnly, [], undefined);
     expect(scenes).toHaveLength(1);
     expect(scenes[0]?.visualDescription).toBe('');
     expect(scenes[0]?.imagePath).toBe('script2video/shots/0/first_frame.png');
@@ -249,7 +394,19 @@ describe('video artifact presentation', () => {
   });
 
   test('does not collapse same shot index from different scenes', () => {
-    const scenes = buildStoryboardScenesFromStoryboards(multiSceneTree, []);
+    const scenes = buildStoryboardScenesFromStoryboards(multiSceneTree, [
+      {
+        path: 'idea2video/scene_0/storyboard.json',
+        shots: [{ index: 0, visualDescription: 'Scene 0 opening shot' }],
+      },
+      {
+        path: 'idea2video/scene_1/storyboard.json',
+        shots: [
+          { index: 0, visualDescription: 'Scene 1 first shot' },
+          { index: 1, visualDescription: 'Scene 1 second shot' },
+        ],
+      },
+    ]);
     expect(scenes).toHaveLength(3);
     expect(scenes.map((scene) => scene.id)).toEqual([
       'idea2video/scene_0/shot-0',

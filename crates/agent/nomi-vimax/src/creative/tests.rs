@@ -93,6 +93,7 @@ fn sample_film() -> CreativeFilm {
                 cam_idx: 0,
                 visual_desc: "Alice walks into frame".into(),
                 audio_desc: Some("你好".into()),
+                beats: Vec::new(),
             }],
             shot_descriptions: vec![ShotDescription {
                 idx: 0,

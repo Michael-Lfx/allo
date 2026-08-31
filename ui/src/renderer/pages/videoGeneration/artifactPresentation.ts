@@ -74,12 +74,16 @@ export function findStoryboardPath(nodes: ArtifactNode[]): string | undefined {
   return findStoryboardPaths(nodes)[0];
 }
 
-/** All `storyboard.json` paths, sorted by scene order then path. */
+/** All `storyboard.json` paths, sorted by scene order then path.
+ *
+ * Exact basename only: `storyboard.json.cache.json` sidecars must not be
+ * treated as a second board (the old `storyboard.*.json` glob matched them).
+ */
 export function findStoryboardPaths(nodes: ArtifactNode[]): string[] {
   const files = flattenArtifacts(nodes);
   const paths = files
     .map((file) => file.path.replace(/\\/g, '/'))
-    .filter((path) => /\/storyboard\.json$/i.test(path) || /storyboard.*\.json$/i.test(path));
+    .filter((path) => /(^|\/)storyboard\.json$/i.test(path));
   return [...new Set(paths)].sort(compareSceneAwarePaths);
 }
 
@@ -151,6 +155,7 @@ export function buildStoryboardScenesFromStoryboards(
     const sceneRoot = sceneRootFromStoryboardPath(board.path);
     for (const shot of board.shots) {
       const key = shotKey(sceneRoot, shot.index);
+      if (usedKeys.has(key)) continue;
       usedKeys.add(key);
       scenes.push({
         id: key,
@@ -169,39 +174,47 @@ export function buildStoryboardScenesFromStoryboards(
     }
   }
 
-  // Also surface media that exists on disk but isn't listed in loaded storyboards
-  // (e.g. storyboard text still loading, or shots rendered before JSON refresh).
-  const locations = new Map<string, ShotLocation>();
-  for (const file of [...imageFiles, ...videoFiles]) {
-    const location = shotLocationFromPath(file.path);
-    if (!location) continue;
-    locations.set(shotKey(location.sceneRoot, location.shotIndex), location);
-  }
+  // Only invent filmstrip cards from leftover media when this scene has no
+  // storyboard.json on disk *and* none has loaded. A refetch with empty
+  // `storyboardEntries` used to rebuild from stray `shots/N` (including the
+  // extra dir created at video start) and flash a phantom last card.
+  const boardFilesOnDisk = files.some((file) =>
+    /(^|\/)storyboard\.json$/i.test(file.path.replace(/\\/g, '/'))
+  );
+  const boardsHaveRows = sortedBoards.some((board) => board.shots.length > 0);
+  if (!boardsHaveRows && !boardFilesOnDisk) {
+    const locations = new Map<string, ShotLocation>();
+    for (const file of [...imageFiles, ...videoFiles]) {
+      const location = shotLocationFromPath(file.path);
+      if (!location) continue;
+      locations.set(shotKey(location.sceneRoot, location.shotIndex), location);
+    }
 
-  const extra = [...locations.values()]
-    .filter((loc) => !usedKeys.has(shotKey(loc.sceneRoot, loc.shotIndex)))
-    .sort((a, b) => {
-      const byScene = compareSceneAwarePaths(a.sceneRoot, b.sceneRoot);
-      return byScene !== 0 ? byScene : a.shotIndex - b.shotIndex;
-    });
+    const extra = [...locations.values()]
+      .filter((loc) => !usedKeys.has(shotKey(loc.sceneRoot, loc.shotIndex)))
+      .sort((a, b) => {
+        const byScene = compareSceneAwarePaths(a.sceneRoot, b.sceneRoot);
+        return byScene !== 0 ? byScene : a.shotIndex - b.shotIndex;
+      });
 
-  for (const loc of extra) {
-    const fallbackBoard =
-      sortedBoards.find((board) => sceneRootFromStoryboardPath(board.path) === loc.sceneRoot)
-        ?.path ?? sortedBoards[0]?.path;
-    scenes.push({
-      id: shotKey(loc.sceneRoot, loc.shotIndex),
-      index: scenes.length,
-      visualDescription: '',
-      imagePath: bestShotFile(imageFiles, loc.sceneRoot, loc.shotIndex, 'first_frame'),
-      videoPath: bestShotFile(videoFiles, loc.sceneRoot, loc.shotIndex),
-      revisionPath:
-        bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex) ?? fallbackBoard,
-      generationSpecPath: bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex),
-      storyboardPath: fallbackBoard,
-      sceneRoot: loc.sceneRoot,
-      shotIndex: loc.shotIndex,
-    });
+    for (const loc of extra) {
+      const fallbackBoard =
+        sortedBoards.find((board) => sceneRootFromStoryboardPath(board.path) === loc.sceneRoot)
+          ?.path ?? sortedBoards[0]?.path;
+      scenes.push({
+        id: shotKey(loc.sceneRoot, loc.shotIndex),
+        index: scenes.length,
+        visualDescription: '',
+        imagePath: bestShotFile(imageFiles, loc.sceneRoot, loc.shotIndex, 'first_frame'),
+        videoPath: bestShotFile(videoFiles, loc.sceneRoot, loc.shotIndex),
+        revisionPath:
+          bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex) ?? fallbackBoard,
+        generationSpecPath: bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex),
+        storyboardPath: fallbackBoard,
+        sceneRoot: loc.sceneRoot,
+        shotIndex: loc.shotIndex,
+      });
+    }
   }
 
   return scenes;

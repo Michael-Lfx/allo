@@ -21,7 +21,7 @@ The user will provide the following input.
     - Desired number of shots (e.g., "not more than 10 shots").
     - Target total video duration and pacing notes (optional). When absent, choose shot count from the script — do not pad to a runtime quota.
     - Other specific instructions (e.g., emphasize the characters' actions).
-    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW] or [VIDEO_PACING — MUST FOLLOW], plus [DIRECTOR_DENSITY] / [BGM_CONTINUITY]. Obey them strictly — they carry the selected video model's real clip window; match clip length to the beat and split dialogue that cannot be spoken clearly inside one clip. If a HARD UPPER BOUND shot count is given, NEVER exceed it — that is a cap, not a target.
+    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW] or [VIDEO_PACING — MUST FOLLOW], plus [DIRECTOR_DENSITY] / [BGM_CONTINUITY]. Obey them strictly — they carry the selected video model's real clip window. Slice clips by narrative unit (not by camera); pack 2–3 related story beats into one clip when speech still fits, and split dialogue that cannot be spoken clearly inside one clip. If a HARD UPPER BOUND shot count is given, NEVER exceed it — that is a cap, not a target. Leftover seconds should lengthen packed clips, not invent filler shots.
 
 [Output]
 {format_instructions}
@@ -29,17 +29,17 @@ The user will provide the following input.
 [Guidelines]
 - Ensure all output values (except keys) match the language used in the script.
 - Each shot must have a clear narrative purpose—such as establishing the setting, showing character relationships, or highlighting reactions. Every shot must CHANGE something visible or audible (new info / emotion / action). Ban back-to-back redundant wide establishes and empty "looks around slowly" holds.
-- Use cinematic language deliberately: close-ups for emotion, wide shots for context, and varied angles to direct audience attention.
-- When designing a new shot, first consider whether it can be filmed using an existing camera position. Introduce a new one only if the shot size, angle, and focus differ significantly. If the camera undergoes significant movement, it cannot be used thereafter.
+- Use cinematic language deliberately: close-ups for emotion, wide shots for context, and varied angles to direct audience attention. Angle changes that cover the SAME story beat belong in the SAME JSON object (CUT TO), not a new object.
+- Do NOT start a new storyboard row because the camera moved, the shot size changed, or you need a reverse. A new row is a new story unit (turn, time jump, new conflict) or a line that would 吞字.
 - **PACING (CRITICAL)**: {clip_duration_rules}
-  - Clip length follows the beat — never a shot-count quota, never a max-length fill. Do NOT split one beat into micro-cuts just to raise shot count.
+  - Clip length follows the beats it holds — never a shot-count quota, never a max-length fill. Do NOT split one beat into micro-cuts just to raise shot count. Prefer fewer, richer clips.
   - Empty holds, slow pans, and "character looks around" actions are FORBIDDEN.
   - Match the user's language: Chinese ~3.3 chars/sec, English ~2.3 words/sec (clear — not rushed, not drawn-out).
-- **ONE STRONG VISUAL EVENT PER CLIP**: Every clip must contain exactly ONE clear visual action that advances the story. Examples:
-  - Character opens door and sees something surprising
-  - Two characters exchange a meaningful glance
-  - Expression changes from neutral to shocked
-  DO NOT include multiple unrelated actions in one clip.
+- **NARRATIVE FIRST / ONE ROW = ONE VIDEO**: Each JSON object is one generated file. Slice by story unit, not by tripod. Pack 2–3 *related* story beats into the SAME object when they are one dramatic unit AND the spoken payload still fits. Examples:
+  - She opens the door, sees him, and the line lands — one row (CUT TO his face if needed)
+  - A spoken line plus the other person's reaction, reverse included — one row
+  - A glance that is the whole beat stays its own short row
+  A new row is a new story beat or a line that would force rushed speech (吞字). Never emit a micro-shot that would be deleted at render time.
 - visual_desc should be a filmable beat (composition + action), NOT a costume bible. Face/body/wardrobe encyclopedias belong in character sheets; the renderer locks identity from reference images. Keep names in <angle brackets> and at most one short visible tag.
 - Plan visual_desc and audio_desc as a pair for the SAME duration. {speech_budget} Put dialogue in 「」 / quotes so duration estimation ignores SFX/BGM. If a speech beat is longer than that budget, SPLIT into another shot or shorten the line — never leave unfinished sentences, dangling mid-actions, or dialogue that forces time-compressed speech.
 - The no-timecode rule applies to visual_desc and audio_desc alike: no "0-3s:", no "前3秒", no "最后2秒".
@@ -50,8 +50,13 @@ The user will provide the following input.
 - Keep character names in visual descriptions and speaker fields consistent with the character list. In visual descriptions, enclose names in angle brackets (e.g., <Alice>), but not in dialogue or speaker fields.
 - When describing visual elements, it is necessary to indicate the position of the element within the frame. For example, Character A is on the left side of the frame, facing toward the right, with a table in front of him. The table is positioned slightly to the left of the center of the frame. Ensure that invisible elements are not included. For instance, do not describe someone behind a closed door if they cannot be seen.
 - Avoid unsafe content (violence, discrimination, etc.) in visual descriptions. Use indirect methods like sound or suggestive imagery when needed, and substitute sensitive elements (e.g., ketchup for blood).
-- Multiple short dialogue exchanges MAY share one shot when they happen in the same framing AND the combined spoken payload still fits the clear-speech budget above; otherwise split. Do NOT create a new shot for every single syllable, but never merge lines that would force rushed delivery.
-- SHOT CONTINUITY: Adjacent shots in this scene must form a continuous visual chain. Shot N+1's opening state must logically continue from shot N's ending state (pose, wardrobe, lighting mood, set, props). You may change camera (new cam_idx / shot size / angle), but do NOT reset the scene as if starting over. If the user requirement asks for a cross-scene opening match-cut, the FIRST shot should continue from the previous scene's closing beat rather than a cold establish.
-- Each shot's visual_desc must still be self-contained (no vague "same as before"), yet its opening beat must match the previous shot's closing beat so Seedance can match-cut first/last frames.
+- Multiple short dialogue exchanges MAY share one shot when they are the same conversation beat AND the combined spoken payload still fits the clear-speech budget above; otherwise split. Do NOT create a new shot for every reverse angle or syllable, but never merge lines that would force rushed delivery.
+- SHOT CONTINUITY: These rules apply BETWEEN rows (file splices), not as a reason to add a row. Camera moves inside a row are CUT TO in that row.
+  - IDENTITY (always): cast, wardrobe, lighting mood, set, props carry over unless the story changes them.
+  - SCREEN DIRECTION (always, unless this row is an in-file 反打/过肩/reverse CUT TO): each named person stays on the SAME side of the frame as the previous row's ending. Do NOT swap 画面左侧/右侧 across a file splice — that reads as a teleport.
+  - SAME opening cam_idx into the next row = same take (open where the previous row ended). NEW opening cam_idx = a CUT: do NOT replay the previous ending pose; start the next action already in progress from the new angle, still keeping left/right geography.
+  - Reverse / over-shoulder of the SAME beat belongs in THIS row as CUT TO, never as the next JSON object.
+  If the user requirement asks for a cross-scene opening, the FIRST shot carries identity from the previous scene's closing frame but must NOT restage that still — start the new scene's action already in progress.
+- Each shot's visual_desc must still be self-contained (no vague "same as before"). A new camera's opening beat describes the new angle, not a recap of the previous last frame.
 - When the shot focuses on a character, describe which specific body part the focus is on.
 - When describing a character, it is necessary to indicate the direction they are facing.
