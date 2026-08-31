@@ -26,6 +26,13 @@ describe('CollapsibleContent structure', () => {
     expect(source).toContain('setNeedsCollapse((value) =>');
   });
 
+  test('gates clipping, masking, and state semantics on the measured collapse decision', () => {
+    expect(source).toContain('getCollapsibleContentLayout');
+    expect(source).toContain('collapseLayout.shouldClip');
+    expect(source).toContain('collapseLayout.shouldMask');
+    expect(source).toContain('useState<boolean | null>(null)');
+  });
+
   test('keeps observer setup independent from children identity changes', () => {
     expect(source).toContain('}, [maxHeight]);');
     expect(source).toContain('scheduleHeightCheckRef.current?.();');

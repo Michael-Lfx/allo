@@ -6,7 +6,7 @@ import { Down, Up } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { shouldCollapseContent } from './collapsibleContentModel';
+import { getCollapsibleContentLayout, shouldCollapseContent } from './collapsibleContentModel';
 
 // 渐变遮罩常量 Gradient mask constants
 // mask-image 模式：让内容本身淡出，适用于有背景色的场景（如 Alert）
@@ -86,7 +86,7 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
   const { t } = useTranslation(); // 国际化 i18n
   const { theme } = useThemeContext(); // 主题上下文（亮色/暗色）Theme context (light/dark)
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed); // 折叠状态 Collapse state
-  const [needsCollapse, setNeedsCollapse] = useState(false); // 是否需要折叠功能 Whether collapse feature is needed
+  const [needsCollapse, setNeedsCollapse] = useState<boolean | null>(null); // null means measurement is pending
   const contentRef = useRef<HTMLDivElement>(null); // 内容容器引用 Content container ref
   const scheduleHeightCheckRef = useRef<(() => void) | null>(null);
   const contentId = `collapsible-content-${useId()}`;
@@ -178,26 +178,27 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
     setIsCollapsed((value) => !value);
   };
 
+  const collapseLayout = useMemo(
+    () => getCollapsibleContentLayout(isCollapsed, needsCollapse, useMask),
+    [isCollapsed, needsCollapse, useMask]
+  );
+
   // 计算内容区域样式 Calculate content area style
   const contentStyle = useMemo(() => {
     const style: React.CSSProperties = {
-      maxHeight: isCollapsed ? `${maxHeight}px` : undefined,
-      overflowX: allowHorizontalScroll ? 'auto' : 'hidden',
-      overflowY: isCollapsed ? 'hidden' : 'visible',
+      maxHeight: collapseLayout.shouldClip ? `${maxHeight}px` : undefined,
+      overflowX: allowHorizontalScroll ? 'auto' : collapseLayout.shouldClip ? 'hidden' : 'visible',
+      overflowY: collapseLayout.shouldClip ? 'hidden' : 'visible',
     };
 
-    if (!allowHorizontalScroll && !isCollapsed) {
-      style.overflowX = 'visible';
-    }
-
     // mask-image 模式：让内容本身淡出 mask-image mode: fade out content itself
-    if (useMask && isCollapsed) {
+    if (collapseLayout.shouldMask) {
       style.maskImage = MASK_GRADIENT;
       style.WebkitMaskImage = MASK_GRADIENT;
     }
 
     return style;
-  }, [allowHorizontalScroll, isCollapsed, maxHeight, useMask]);
+  }, [allowHorizontalScroll, collapseLayout.shouldClip, collapseLayout.shouldMask, maxHeight]);
 
   // 计算背景渐变颜色 Calculate background gradient color
   const bgGradient = useMemo(() => {
@@ -209,7 +210,7 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
     <div
       className={classNames('relative', 'collapsible-content', className)}
       data-testid='collapsible-content'
-      data-collapse-state={isCollapsed ? 'collapsed' : 'expanded'}
+      data-collapse-state={collapseLayout.shouldClip ? 'collapsed' : 'expanded'}
     >
       {/* 内容区域 Content area */}
       <div
