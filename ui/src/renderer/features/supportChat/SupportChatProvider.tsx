@@ -381,8 +381,9 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const isCurrentSession = createSupportSessionGuard();
     setModalOpen(true);
     // 有快照（预热或上次打开的缓存）就直接渲染，刷新转后台；否则先展示骨架屏。
+    const closedCache = stateRef.current.status === 'closed' ? stateRef.current.cached : undefined;
     const cached =
-      snapshotAccountIdRef.current === authAccountId ? snapshotRef.current : null;
+      closedCache ?? (snapshotAccountIdRef.current === authAccountId ? snapshotRef.current : null);
     if (cached) {
       dispatch({ type: 'ready', conversation: cached.conversation, messages: cached.messages });
     } else {
@@ -394,7 +395,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       try {
         const snapshot = await fetchConversationSnapshot();
         if (!isCurrentOpen()) return;
-        if (cached && stateRef.current.status === 'ready') {
+        if (stateRef.current.status === 'ready') {
           // 已用缓存上屏：增量合并，保留发送中的 pending 气泡。
           dispatch({ type: 'conversation-updated', conversation: snapshot.conversation });
           dispatch({
@@ -442,6 +443,9 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const closeSupportChat = useCallback(() => {
     supportOpenGenerationRef.current += 1;
     setModalOpen(false);
+    // Keep the reducer cache alive while in-flight sends finish. Closing the
+    // surface must not turn a retryable pending message into an unobservable
+    // request.
     dispatch({ type: 'close' });
   }, []);
 
@@ -548,8 +552,10 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       if (!isCurrentReportOperation()) return { status: 'preparation-failed' };
 
-      const isSupportChatReady = () => stateRef.current.status === 'ready';
-      if (!isSupportChatReady()) {
+      const hasSupportChatState = () =>
+        stateRef.current.status === 'ready' ||
+        (stateRef.current.status === 'closed' && Boolean(stateRef.current.cached));
+      if (!hasSupportChatState()) {
         try {
           // Reporting is intentionally available before the support window has
           // been opened. Hydrate the hidden conversation state first so the
@@ -557,7 +563,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
           // submitted from an error card.
           const snapshot = await fetchConversationSnapshot();
           if (!isCurrentReportOperation()) return { status: 'preparation-failed' };
-          if (!isSupportChatReady()) {
+          if (!hasSupportChatState()) {
             dispatch({ type: 'ready', conversation: snapshot.conversation, messages: snapshot.messages });
           }
         } catch (error) {

@@ -36,8 +36,14 @@ export type SupportPendingMessage = {
 
 export type SupportMessage = SupportServerMessage | SupportPendingMessage;
 
+export type SupportChatClosedCache = {
+  conversation: ICloudImConversation;
+  messages: SupportMessage[];
+  syncWarning: boolean;
+};
+
 export type SupportChatState =
-  | { status: 'closed'; unreadCount: number }
+  | { status: 'closed'; unreadCount: number; cached?: SupportChatClosedCache }
   | { status: 'loading'; unreadCount: number }
   | {
       status: 'ready';
