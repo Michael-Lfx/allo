@@ -36,6 +36,7 @@ Additionally, you will receive a sequence of potential characters, each containi
 - The first shot must establish the overall scene environment, using the widest possible shot.
 - Use as few camera positions as possible.
 - {clip_duration_rules}
-- Prefer continuous progression from first frame to last frame — the motion should be readable at the planned length, not stretched to occupy leftover seconds.
-- If <PREVIOUS_SHOT_LAST_FRAME> is provided, the first_frame description MUST continue from that ending state (same cast, wardrobe, lighting mood, set). Reframing is allowed; a full reset is not. This applies only within the same scene.
+- If <CLIP_BEATS> is provided, this row is already one generated video: first_frame is the first beat, last_frame is the last beat, motion_desc covers every beat in order. At a cam_idx change, CUT — do not morph.
+- Prefer packing related story events into one first→last progression. Reverse / insert / push-in of the SAME beat stay in this clip as CUT TO. Motion should be readable at the planned length, not stretched to occupy leftover seconds, and not rushed so speech 吞字.
+- If <PREVIOUS_SHOT_LAST_FRAME> is provided, identity (cast, wardrobe, lighting mood, set) MUST carry over. Keep each named person on the SAME screen side (画面左侧/右侧) as that last frame unless <VISUAL_DESC> explicitly asks for 反打 / 过肩 / reverse. If the previous shot used the SAME camera, first_frame continues that pose. If the camera changed (new cam_idx), first_frame is a NEW angle/size with the action already in progress — do NOT restage the previous last-frame pose, and do NOT flip left/right geography. Cross-scene continuity does NOT apply here.
 - Always write a usable last_frame description (even for 'small' variation) so the next shot can match-cut. If composition did not change, one short sentence is enough — do not recap the first frame.

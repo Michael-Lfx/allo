@@ -1,8 +1,10 @@
 //! Flowy video generation → local file (strictly serial + cancelable).
 
 use async_trait::async_trait;
-use std::path::Path;
+use futures::StreamExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -15,7 +17,8 @@ use nomifun_cloud::{
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local::{
-    is_usable_video_file, scrub_unusable_video, write_image_bytes_atomic, write_video_bytes_atomic,
+    image_magic_kind, is_usable_video_file, load_return_last_frame_url, scrub_unusable_video,
+    write_image_bytes_atomic, write_return_last_frame_url, write_video_bytes_atomic,
 };
 
 /// Cap concurrent Flowy video create+poll calls process-wide to **one**.
@@ -238,6 +241,7 @@ impl VimaxVideo for FlowyVideo {
         let uses_frame_roles = images.iter().any(|img| {
             matches!(img.role.as_str(), "first_frame" | "last_frame")
         });
+        let mut vendor_last_frame_slots: Vec<(usize, PathBuf)> = Vec::new();
         if uses_frame_roles {
             if !ref_images.is_empty() {
                 tracing::info!(
@@ -252,6 +256,8 @@ impl VimaxVideo for FlowyVideo {
         } else {
             // Upload reference images concurrently (independent I/O) while preserving
             // their order — the prompt binds each `Image N` by array position.
+            // Continuity stills prefer the previous task's `last_frame_url` so we
+            // do not re-host the same pixels on our OSS (lower content-review risk).
             let n = ref_images.len();
             let mut set = tokio::task::JoinSet::new();
             for (i, path) in ref_images.iter().enumerate() {
@@ -265,24 +271,31 @@ impl VimaxVideo for FlowyVideo {
                 let p = (*path).to_path_buf();
                 let stem_clone = stem.clone();
                 set.spawn(async move {
-                    let url = services.upload_image_public_url(&p, &stem_clone).await;
-                    (i, stem, url)
+                    let resolved =
+                        resolve_reference_image_url(&services, &p, &stem_clone).await;
+                    (i, stem, p, resolved)
                 });
             }
-            let mut slots: Vec<Option<(String, VimaxResult<String>)>> = (0..n)
-                .map(|_| None)
-                .collect();
+            let mut slots: Vec<Option<(String, PathBuf, VimaxResult<(String, bool)>)>> =
+                (0..n).map(|_| None).collect();
             while let Some(joined) = set.join_next().await {
-                let (i, stem, url) =
+                let (i, stem, path, resolved) =
                     joined.map_err(|e| VimaxError::Video(format!("ref upload join: {e}")))?;
-                slots[i] = Some((stem, url));
+                slots[i] = Some((stem, path, resolved));
             }
             for slot in slots {
-                let (stem, url) =
+                let (stem, path, resolved) =
                     slot.expect("every spawned ref upload joins exactly once");
-                local_frame_notes.push(format!("reference_image←{stem}"));
+                let (url, used_vendor_last_frame) = resolved?;
+                if used_vendor_last_frame {
+                    local_frame_notes
+                        .push(format!("reference_image←{stem} (Seedance last_frame_url)"));
+                    vendor_last_frame_slots.push((images.len(), path));
+                } else {
+                    local_frame_notes.push(format!("reference_image←{stem}"));
+                }
                 images.push(VideoContentImage {
-                    url: url?,
+                    url,
                     role: "reference_image".into(),
                 });
             }
@@ -355,7 +368,7 @@ impl VimaxVideo for FlowyVideo {
         }
         let want_last_frame = last_frame_out.is_some();
 
-        let params = VideoCreateParams {
+        let mut params = VideoCreateParams {
             model: model.clone(),
             prompt: prompt.to_string(),
             duration: Some(duration),
@@ -409,6 +422,54 @@ impl VimaxVideo for FlowyVideo {
                     None,
                 )
                 .await
+        };
+
+        let first = match first {
+            Err(e)
+                if !is_h3
+                    && !vendor_last_frame_slots.is_empty()
+                    && is_stale_ref_image_url_err(&e) =>
+            {
+                tracing::warn!(
+                    model = %model_for_err,
+                    error = %e,
+                    slots = vendor_last_frame_slots.len(),
+                    "upstream last_frame_url rejected; re-uploading local stills to OSS"
+                );
+                let mut oss_params = params.clone();
+                for (idx, path) in &vendor_last_frame_slots {
+                    let url = self.frame_public_url(path, "video_last_frame").await?;
+                    if let Some(img) = oss_params.images.get_mut(*idx) {
+                        img.url = url;
+                    }
+                }
+                local_frame_notes.push("last_frame_url_fallback_oss".into());
+                log_video_create_params(&oss_params, &local_frame_notes, out_path);
+                if self.is_cancelled() {
+                    return Err(VimaxError::Cancelled);
+                }
+                if is_usable_video_file(out_path) {
+                    return Ok(());
+                }
+                self.emit_progress(
+                    "video_create",
+                    "submitting video task (OSS last-frame fallback)",
+                    None,
+                );
+                params = oss_params;
+                self.services
+                    .api
+                    .generate_video_with_timeout_and_progress_cancellable(
+                        &self.services.session,
+                        params.to_json(),
+                        timeout,
+                        self.poll_progress_hook(),
+                        should_cancel.clone(),
+                        None,
+                    )
+                    .await
+            }
+            other => other,
         };
 
         let record = match first {
@@ -573,6 +634,18 @@ impl VimaxVideo for FlowyVideo {
 
         if let Some(lf_out) = last_frame_out {
             if let Some(lf_url) = record.last_frame_url() {
+                if let Err(e) = write_return_last_frame_url(lf_out, &lf_url) {
+                    tracing::warn!(
+                        out = %lf_out.display(),
+                        error = %e,
+                        "failed to persist last_frame_url sidecar"
+                    );
+                } else {
+                    tracing::info!(
+                        out = %lf_out.display(),
+                        "persisted Seedance last_frame_url for next-shot continuity"
+                    );
+                }
                 match download_image_still(&lf_url, lf_out).await {
                     Ok(()) => tracing::info!(
                         out = %lf_out.display(),
@@ -611,6 +684,92 @@ fn is_seedance_audio_only_ref_err(err: &nomifun_cloud::ServerClientError) -> boo
         || (s.contains("reference_audio")
             && s.contains("only reference")
             && (s.contains("invalidparameter") || s.contains("not valid")))
+}
+
+fn is_video_last_frame_still(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("video_last_frame.png"))
+}
+
+/// Prefer the previous Seedance `last_frame_url`; fall back to our OSS publicUrl.
+async fn resolve_reference_image_url(
+    services: &FlowyVimaxServices,
+    path: &Path,
+    stem: &str,
+) -> VimaxResult<(String, bool)> {
+    if is_video_last_frame_still(path)
+        && let Some(vendor) = load_return_last_frame_url(path)
+    {
+        if remote_still_url_is_live(&vendor).await {
+            tracing::info!(
+                path = %path.display(),
+                "reusing Seedance last_frame_url (skip OSS re-upload)"
+            );
+            return Ok((vendor, true));
+        }
+        tracing::warn!(
+            path = %path.display(),
+            "Seedance last_frame_url stale or unreadable; uploading local still to OSS"
+        );
+    }
+    let url = services.upload_image_public_url(path, stem).await?;
+    Ok((url, false))
+}
+
+async fn remote_still_url_is_live(url: &str) -> bool {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return false;
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    else {
+        return false;
+    };
+    let Ok(resp) = client.get(url).send().await else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let mut head = Vec::with_capacity(32);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(bytes) = chunk else {
+            return false;
+        };
+        head.extend_from_slice(&bytes);
+        if head.len() >= 16 {
+            break;
+        }
+    }
+    image_magic_kind(&head).is_some()
+}
+
+/// Create-task failed because a reference image URL could not be fetched.
+fn is_stale_ref_image_url_err(err: &nomifun_cloud::ServerClientError) -> bool {
+    let s = err.to_string().to_ascii_lowercase();
+    let mentions_image_url = s.contains("last_frame_url")
+        || s.contains("image url")
+        || s.contains("image_url")
+        || s.contains("download") && (s.contains("image") || s.contains("url"))
+        || s.contains("fetch") && s.contains("image")
+        || s.contains("getobject")
+        || s.contains("nosuchkey");
+    let stale = s.contains("expired")
+        || s.contains("expire")
+        || s.contains("403")
+        || s.contains("404")
+        || s.contains("accessdenied")
+        || s.contains("not found")
+        || s.contains("invalid")
+        || s.contains("unreadable")
+        || s.contains("cannot be accessed")
+        || s.contains("failed to download")
+        || s.contains("download failed");
+    mentions_image_url && stale
 }
 
 /// Append a strong ambient/BGM caption block so a second attempt can keep `generate_audio=true`.
@@ -735,5 +894,26 @@ reference_audio cannot be the only reference input. Request id: abc)"
         };
         assert!(is_seedance_audio_only_ref_err(&err));
         assert!(!is_seedance_caption_empty_err(&err));
+    }
+
+    #[test]
+    fn detects_stale_last_frame_url_reject() {
+        let err = ServerClientError::Api {
+            code: 400,
+            msg: "InvalidParameter: failed to download image from last_frame_url (403 expired)"
+                .into(),
+        };
+        assert!(is_stale_ref_image_url_err(&err));
+        let safety = ServerClientError::Api {
+            code: 400,
+            msg: "InputTextSensitiveContentDetected".into(),
+        };
+        assert!(!is_stale_ref_image_url_err(&safety));
+    }
+
+    #[tokio::test]
+    async fn dead_last_frame_url_is_not_live() {
+        assert!(!remote_still_url_is_live("http://127.0.0.1:1/missing.png").await);
+        assert!(!remote_still_url_is_live("not-a-url").await);
     }
 }

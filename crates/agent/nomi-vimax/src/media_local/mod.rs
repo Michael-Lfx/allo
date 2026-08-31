@@ -119,6 +119,39 @@ pub fn write_image_bytes_atomic(bytes: &[u8], out_path: &Path) -> VimaxResult<()
     replace_file_atomic(&part, out_path)
 }
 
+/// Sidecar next to `video_last_frame.png` holding the upstream `last_frame_url`.
+pub fn return_last_frame_url_sidecar(still_path: &Path) -> PathBuf {
+    still_path.with_extension("url")
+}
+
+/// Persist Seedance `last_frame_url` so the next shot can reuse it without OSS re-upload.
+pub fn write_return_last_frame_url(still_path: &Path, url: &str) -> VimaxResult<()> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Ok(());
+    }
+    let sidecar = return_last_frame_url_sidecar(still_path);
+    if let Some(parent) = sidecar.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| VimaxError::Media(e.to_string()))?;
+    }
+    std::fs::write(&sidecar, url.as_bytes()).map_err(|e| VimaxError::Media(e.to_string()))
+}
+
+/// Load a previously saved `last_frame_url` (https/http only).
+pub fn load_return_last_frame_url(still_path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(return_last_frame_url_sidecar(still_path)).ok()?;
+    let url = raw.trim();
+    if url.starts_with("https://") || url.starts_with("http://") {
+        Some(url.to_string())
+    } else {
+        None
+    }
+}
+
+pub fn clear_return_last_frame_url(still_path: &Path) {
+    let _ = std::fs::remove_file(return_last_frame_url_sidecar(still_path));
+}
+
 /// Sidecar for the front (left) panel of a three-view bible, used as a Seedance identity ref.
 const THREE_VIEW_VIDEO_FRONT_SUFFIX: &str = "_video_front.png";
 
@@ -858,13 +891,24 @@ impl<'a> ConcatClip<'a> {
     /// `paths`; a shot with no recorded camera is treated as a cut, which is
     /// the safe direction (no trim).
     pub fn scene(paths: &[&'a Path], cam_idxs: &[i32], opening: SpliceSeam) -> Vec<Self> {
+        Self::scene_exits(paths, cam_idxs, cam_idxs, opening)
+    }
+
+    /// Like [`Self::scene`], but a packed native multi-shot may *enter* on one
+    /// camera and *exit* on another. Seam i compares `exits[i-1]` to `entries[i]`.
+    pub fn scene_exits(
+        paths: &[&'a Path],
+        entries: &[i32],
+        exits: &[i32],
+        opening: SpliceSeam,
+    ) -> Vec<Self> {
         paths
             .iter()
             .enumerate()
             .map(|(i, p)| {
                 let seam = match i.checked_sub(1) {
                     None => opening,
-                    Some(prev) => match (cam_idxs.get(prev), cam_idxs.get(i)) {
+                    Some(prev) => match (exits.get(prev), entries.get(i)) {
                         (Some(&a), Some(&b)) => SpliceSeam::within_scene(a, b),
                         _ => SpliceSeam::MatchCut,
                     },
@@ -2186,6 +2230,21 @@ mod tests {
         assert_eq!(edits[2].head_trim, SPLICE_HEAD_TRIM_SECS);
     }
 
+    /// A packed native multi-shot exits on a later camera; the next clip that
+    /// reuses that camera is a continued take, not a match-cut from the pack's
+    /// opening camera.
+    #[test]
+    fn a_packed_clip_seam_uses_its_exit_camera() {
+        let paths: Vec<PathBuf> = ["pack.mp4", "next.mp4"].iter().map(PathBuf::from).collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let clips = ConcatClip::scene_exits(&refs, &[0, 1], &[1, 1], SpliceSeam::Cut);
+        assert_eq!(
+            clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
+            vec![SpliceSeam::Cut, SpliceSeam::SameTake]
+        );
+        assert_eq!(ClipEdit::plan(&clips)[1].head_trim, SPLICE_HEAD_TRIM_SECS);
+    }
+
     /// A scene rendered after another one opens mid-soundtrack, so baking a
     /// half-second fade-up into its first shot would dip the film at every
     /// scene boundary.
@@ -2249,5 +2308,40 @@ mod tests {
         let decoded = image::load_from_memory(&thumb).unwrap();
         assert!(decoded.width() <= VISION_THUMB_MAX_SIDE);
         assert!(decoded.height() <= VISION_THUMB_MAX_SIDE);
+    }
+
+    #[test]
+    fn return_last_frame_url_sidecar_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let still = dir.path().join("video_last_frame.png");
+        assert!(load_return_last_frame_url(&still).is_none());
+        write_return_last_frame_url(&still, "  https://cdn.example/last.png  ").unwrap();
+        assert_eq!(
+            return_last_frame_url_sidecar(&still),
+            dir.path().join("video_last_frame.url")
+        );
+        assert_eq!(
+            load_return_last_frame_url(&still).as_deref(),
+            Some("https://cdn.example/last.png")
+        );
+        write_return_last_frame_url(&still, "not-a-url").unwrap();
+        assert_eq!(
+            load_return_last_frame_url(&still).as_deref(),
+            Some("https://cdn.example/last.png"),
+            "empty/invalid writes are ignored"
+        );
+        // overwrite with a real url
+        write_return_last_frame_url(&still, "https://cdn.example/next.png").unwrap();
+        assert_eq!(
+            load_return_last_frame_url(&still).as_deref(),
+            Some("https://cdn.example/next.png")
+        );
+        clear_return_last_frame_url(&still);
+        assert!(load_return_last_frame_url(&still).is_none());
+        write_return_last_frame_url(&still, "ftp://nope").unwrap();
+        assert!(
+            load_return_last_frame_url(&still).is_none(),
+            "non-http schemes are not persisted"
+        );
     }
 }

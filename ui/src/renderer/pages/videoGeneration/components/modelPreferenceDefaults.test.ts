@@ -15,12 +15,13 @@ describe('modelPreferenceDefaults', () => {
     ).toBe('AIPC-doubao-seedance-2-0-fast');
   });
 
-  test('filters Seedream 5.0 Lite image models', () => {
+  test('filters Seedream 5.0 Lite and Pro image models', () => {
     const allowed = filterAllowedImageModels([
       { id: 'a', name: 'Doubao-seedream-5-0-lite' },
       { id: 'b', name: 'Other' },
+      { id: 'c', name: 'Doubao-seedream-5-0-pro' },
     ]);
-    expect(allowed.map((m) => m.id)).toEqual(['a']);
+    expect(allowed.map((m) => m.id)).toEqual(['a', 'c']);
   });
 
   test('prefers Deepseek-v4-pro for planning', () => {

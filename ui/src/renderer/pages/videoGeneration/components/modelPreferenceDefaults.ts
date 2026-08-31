@@ -7,8 +7,11 @@ const PREFERRED_VIDEO_MODEL_NEEDLE = 'doubao-seedance-2-0-fast';
 /** Preferred planning LLM catalog name (match id or display label). */
 const PREFERRED_LLM_MODEL_NAME = 'Deepseek-v4-pro';
 
-/** Image catalog is restricted to Seedream 5.0 Lite by catalog `name`. */
-const ALLOWED_IMAGE_MODEL_NAME = 'Doubao-seedream-5-0-lite';
+/** Image catalog: Seedream 5.0 Lite and Pro (match catalog `name`, fall back to id). */
+const ALLOWED_IMAGE_MODEL_NAMES = [
+  'Doubao-seedream-5-0-lite',
+  'Doubao-seedream-5-0-pro',
+] as const;
 
 function normalizeModelKey(id: string): string {
   return id.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -36,12 +39,14 @@ export function pickDefaultLlmModel(modelIds: string[]): string | undefined {
   return preferred ?? modelIds[0];
 }
 
-/** Keep only Seedream 5.0 Lite entries (match catalog `name`, fall back to id). */
+/** Keep Seedream 5.0 Lite / Pro entries (match catalog `name`, fall back to id). */
 export function filterAllowedImageModels(imageModels: IMediaModelOption[]): IMediaModelOption[] {
-  const needle = normalizeModelKey(ALLOWED_IMAGE_MODEL_NAME);
+  const needles = ALLOWED_IMAGE_MODEL_NAMES.map(normalizeModelKey);
   return imageModels.filter((m) => {
     const nameKey = normalizeModelKey(m.name);
     const idKey = normalizeModelKey(m.id);
-    return nameKey === needle || nameKey.includes(needle) || idKey.includes(needle);
+    return needles.some(
+      (needle) => nameKey === needle || nameKey.includes(needle) || idKey.includes(needle)
+    );
   });
 }

@@ -202,9 +202,9 @@ async fn collect_shots(
     storyboard: &[ShotBriefDescription],
     shot_descriptions: &[ShotDescription],
 ) -> VimaxResult<Vec<CreativeShot>> {
-    let mut idxs: Vec<i32> = shot_descriptions.iter().map(|s| s.idx).collect();
+    let mut idxs: Vec<i32> = storyboard.iter().map(|s| s.idx).collect();
     if idxs.is_empty() {
-        idxs = storyboard.iter().map(|s| s.idx).collect();
+        idxs = shot_descriptions.iter().map(|s| s.idx).collect();
     }
     if idxs.is_empty() {
         // Discover from shots/ directory.

@@ -226,6 +226,7 @@ pub async fn sync_canvas_shots_to_session(
             .map_err(|e| AppError::Internal(format!("write shot video: {e}")))?;
         // Invalidate derived last-frame so next Agent render regenerates continuity.
         let _ = tokio::fs::remove_file(scene_dir.join("shots").join(upd.shot_idx.to_string()).join("video_last_frame.png")).await;
+        let _ = tokio::fs::remove_file(scene_dir.join("shots").join(upd.shot_idx.to_string()).join("video_last_frame.url")).await;
         touched_scenes.insert(upd.scene_key.clone(), scene_dir);
         updated += 1;
     }
@@ -486,7 +487,7 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
     // 没产物文件则保守地要求 shots/ 下每一个 idx 子目录都产出可用的 video.mp4，
     // 缺失或损坏的 shot 不允许拼成成片。
     let planned = read_planned_shots(scene_dir).await.unwrap_or_default();
-    let expected_shot_idxs: Vec<i32> = planned.iter().map(|(idx, _)| *idx).collect();
+    let expected_shot_idxs: Vec<i32> = planned.iter().map(|(idx, _, _)| *idx).collect();
     let target_idxs: &[i32] = if expected_shot_idxs.is_empty() {
         &idxs
     } else {
@@ -521,27 +522,40 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
         return Err("skip concat: fewer than 2 usable shots".into());
     }
     let out = scene_dir.join("final_video.mp4");
-    // Reproduce the renderer's splice shape: shots that share a camera kept
-    // rolling (their head replays the previous ending and must be trimmed), a
-    // camera change is a real cut. Without a planner artifact we cannot tell
-    // them apart, so `cams` stays empty and nothing is trimmed.
-    let cams: Vec<i32> = if planned.len() == paths.len() {
-        planned.iter().filter_map(|(_, cam)| *cam).collect()
+    // Reproduce the renderer's splice shape: a packed clip may enter on one
+    // camera and exit on another, so the next clip's seam uses that exit.
+    // Without a planner artifact we cannot tell them apart, so both slices
+    // stay empty and nothing is trimmed.
+    let (entries, exits): (Vec<i32>, Vec<i32>) = if planned.len() == paths.len() {
+        planned
+            .iter()
+            .filter_map(|(_, entry, exit)| {
+                let entry = (*entry)?;
+                Some((entry, exit.unwrap_or(entry)))
+            })
+            .unzip()
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-    let clips = media_local::ConcatClip::scene(&refs, &cams, scene_opening_seam(scene_dir).await);
+    let opening = scene_opening_seam(scene_dir).await;
+    let clips = if entries.len() == paths.len() && exits.len() == paths.len() {
+        media_local::ConcatClip::scene_exits(&refs, &entries, &exits, opening)
+    } else {
+        media_local::ConcatClip::scene(&refs, &[], opening)
+    };
     media_local::concat_videos(&clips, &out)
         .await
         .map_err(|e| e.to_string())?;
     Ok(out)
 }
 
-/// Read `(idx, cam_idx)` per shot from `shot_descriptions.json` when present, in
-/// timeline order, so the canonical shot list comes from the planner (not from
-/// whatever happens to be on disk).
-async fn read_planned_shots(scene_dir: &Path) -> Result<Vec<(i32, Option<i32>)>, String> {
+/// Read `(idx, entry_cam, exit_cam)` per shot from `shot_descriptions.json`
+/// when present, in timeline order, so the canonical shot list comes from the
+/// planner (not from whatever happens to be on disk).
+async fn read_planned_shots(
+    scene_dir: &Path,
+) -> Result<Vec<(i32, Option<i32>, Option<i32>)>, String> {
     let path = scene_dir.join("shot_descriptions.json");
     if !path.is_file() {
         return Ok(Vec::new());
@@ -553,16 +567,24 @@ async fn read_planned_shots(scene_dir: &Path) -> Result<Vec<(i32, Option<i32>)>,
     let arr = parsed
         .as_array()
         .ok_or_else(|| "shot_descriptions.json is not an array".to_string())?;
-    let mut shots: Vec<(i32, Option<i32>)> = arr
+    let mut shots: Vec<(i32, Option<i32>, Option<i32>)> = arr
         .iter()
         .filter_map(|s| {
             let idx = s.get("idx").and_then(|v| v.as_i64())? as i32;
-            let cam = s.get("cam_idx").and_then(|v| v.as_i64()).map(|n| n as i32);
-            Some((idx, cam))
+            let entry = s.get("cam_idx").and_then(|v| v.as_i64()).map(|n| n as i32);
+            let exit = s
+                .get("beats")
+                .and_then(|b| b.as_array())
+                .and_then(|beats| beats.last())
+                .and_then(|b| b.get("cam_idx"))
+                .and_then(|v| v.as_i64())
+                .map(|n| n as i32)
+                .or(entry);
+            Some((idx, entry, exit))
         })
         .collect();
-    shots.sort_unstable_by_key(|(idx, _)| *idx);
-    shots.dedup_by_key(|(idx, _)| *idx);
+    shots.sort_unstable_by_key(|(idx, _, _)| *idx);
+    shots.dedup_by_key(|(idx, _, _)| *idx);
     Ok(shots)
 }
 

@@ -1,5 +1,5 @@
-//! Planning helpers: clip length follows the beat (speech + one visual event),
-//! not a shot-count quota.
+//! Planning helpers: clip length follows the beats (speech + related visual
+//! events packed into one generation), not a shot-count quota.
 //!
 //! The accepted per-clip window is a property of the **selected video model**
 //! ([`crate::clip_bounds::ClipBounds`]), so every duration helper here takes it
@@ -650,21 +650,26 @@ pub fn normalize_target_duration_secs(raw: Option<u32>) -> u32 {
 
 /// Suggested shot count for a **single scene budget** (not the whole film).
 ///
-/// Soft hint only: `ideal` assumes beats near the model's preferred length so a
-/// user duration is fillable without stretching every clip to the ceiling. The
+/// Soft hint only: `ideal` prices beats near the drama clip length (~12s) so a
+/// user duration is fillable by **longer clips**, not extra splices. The
 /// storyboard LLM still chooses count from beats — this is not a minimum quota.
-/// `max_shots` is a hard cap for post-LLM truncation.
+/// `max_shots` is a hard cap for post-LLM truncation, with slack for speech
+/// that cannot fit one clip (吞字).
 pub fn suggested_shot_count(bounds: ClipBounds, budget_secs: u32) -> (u32, u32) {
     let budget = budget_secs.max(bounds.min_secs());
     let min_to_fill = budget.div_ceil(bounds.max_secs());
-    // Price the hint at the beat length short drama actually lands on, not at
-    // the top of the window: leftover seconds should become extra shots rather
-    // than padded holds. With a 5–15s beat window that is ~8s/clip.
     let beat = bounds.typical_beat_secs().max(1);
-    let ideal = ((budget + beat / 2) / beat).clamp(1, 6);
-    let max_shots = (budget / bounds.min_secs()).max(min_to_fill).clamp(1, 8);
-    // Only raise ideal toward min_to_fill when even max-length ideal clips
-    // cannot reach the budget (e.g. ideal=2 → 30s < 40s target).
+    // Floor, not round-up: leftover seconds lengthen packed clips instead of
+    // inventing another splice. `min_to_fill` still raises the count when even
+    // max-length clips cannot reach the budget.
+    let ideal = (budget / beat).max(min_to_fill).clamp(1, 6);
+    // Slack: two extra shots so a long line can still split instead of 吞字.
+    // Cap stays tight so leftover seconds are not spent inventing filler cuts.
+    let max_shots = min_to_fill
+        .max(ideal)
+        .saturating_add(2)
+        .min(budget / bounds.min_secs())
+        .clamp(1, 6);
     let ideal = if ideal.saturating_mul(bounds.max_secs()) < budget {
         min_to_fill.min(max_shots)
     } else {
@@ -854,18 +859,21 @@ pub fn has_explicit_duration_budget(target_secs: Option<u32>) -> bool {
 /// buy longer lines instead of the planner guessing a vendor number.
 pub fn speech_budget_line(bounds: ClipBounds) -> String {
     let clip_max = bounds.max_secs();
-    let (clip_min, beat_max) = (bounds.min_secs(), bounds.preferred_max_secs());
+    let clip_min = bounds.min_secs();
     let speak_window = clip_max.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
     let max_cjk_chars = (speak_window as f32 * SPEECH_CJK_CHARS_PER_SEC).floor() as u32;
     let max_en_words = (speak_window as f32 * SPEECH_EN_WORDS_PER_SEC).floor() as u32;
-    let action_max = bounds.clamp_secs(bounds.typical_beat_secs());
+    let action_max = bounds.glance_secs();
+    let pack = bounds.pack_target_secs();
     format!(
         "Dialogue MUST finish inside the same shot's {clip_min}–{clip_max}s clip: \
 Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec or English ~{SPEECH_EN_WORDS_PER_SEC} words/sec, \
 leave ~{SPEECH_LEAD_SECS}s lead-in and ~{SPEECH_TAIL_SECS}s tail after the last word, then land on a \
 visible reaction/action beat (no empty hold); hard max ≲{max_cjk_chars} Chinese chars / \
-≲{max_en_words} English words. Action-only shots usually run {clip_min}–{action_max}s \
-(do not pad a sit/stand/walk to {beat_max}s)."
+≲{max_en_words} English words. Prefer packing a line + reaction into one ~{pack}s clip when the \
+spoken payload still fits. A single sit/stand/glance stays {clip_min}–{action_max}s \
+(do not pad it to {clip_max}s). If the line cannot be spoken clearly inside {clip_max}s, SPLIT \
+or shorten — never rush (吞字)."
     )
 }
 
@@ -877,34 +885,41 @@ visible reaction/action beat (no empty hold); hard max ≲{max_cjk_chars} Chines
 /// the renderer lays them on the real timeline.
 pub fn clip_length_rules(bounds: ClipBounds) -> String {
     let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
-    let (beat_min, beat_max) = (bounds.preferred_min_secs(), bounds.preferred_max_secs());
+    let pack = bounds.pack_target_secs();
+    let glance = bounds.glance_secs();
     format!(
-        "Each shot renders as ONE clip of {clip_min}–{clip_max}s (typically {beat_min}–{beat_max}s), \
-so a shot must describe one visual event that completes naturally at that length — no empty holds, \
-no slow-mo padding, no micro-cuts that belong in another shot. NEVER write absolute seconds or \
-timecodes (no \"0-4s:\", no \"4-7s\", no \"前3秒\"): the renderer decides the clip length and would \
-contradict them. When a beat genuinely contains two consecutive events, write them in order \
-(\"…；然后…\" / \"…, then …\") and let the renderer pace them inside the clip."
+        "Each shot renders as ONE clip of {clip_min}–{clip_max}s (typically ~{pack}s when it holds \
+2–3 related story beats). ONE ROW = ONE VIDEO: each storyboard JSON object is one generated file. \
+Slice rows by NARRATIVE (a dramatic unit: line+reaction, a turn, a payoff), never by tripod position. \
+A reverse-angle / insert / push-in is coverage of the SAME beat — write CUT TO inside that row, do not \
+open a new row because the camera moved. Pack a line + reaction + a small action into the SAME row when \
+they are the same story unit and the spoken payload still fits. A single glance/sit/stand stays \
+{clip_min}–{glance}s. Use a new row only when the story itself moves on, or the next events cannot fit \
+without rushing speech (吞字). NEVER write absolute seconds or timecodes (no \"0-4s:\", no \"4-7s\", no \
+\"前3秒\"): the renderer decides the clip length and would contradict them. When a clip contains \
+consecutive events, write them in order (\"…；然后…\" / \"…, then …\", and \"CUT TO\" on a camera \
+change) and let the renderer pace them. Do not pad. Do not rush speech (吞字)."
     )
 }
 
 fn film_pacing_model_decides_block(bounds: ClipBounds) -> String {
     let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
-    let (beat_min, beat_max) = (bounds.preferred_min_secs(), bounds.preferred_max_secs());
+    let pack = bounds.pack_target_secs();
     format!(
         "[VIDEO_PACING — MUST FOLLOW]\n\
          - Do NOT target a fixed finished runtime. Let scene count and story length follow the idea \
 (ViMax-style: the model decides duration).\n\
-         - Shot count follows story beats — do not pad or split to hit a quota. A compact idea may \
-need only a few shots; a denser conflict may need more. Honor an explicit user duration/scene/shot count.\n\
+         - Shot count follows story beats — do not pad or split to hit a quota. Prefer fewer, richer \
+clips (~{pack}s) over many 5–8s fragments. Honor an explicit user duration/scene/shot count.\n\
          - Each rendered shot clip is {clip_min}–{clip_max}s (hard range of the selected video model). \
-Match length to the beat (typically {beat_min}–{beat_max}s); \
-{clip_max}s only when speech or a continuous camera move needs it.\n\
+Pack 2–3 related story beats into one clip when they are the same narrative unit and speech still fits; \
+{clip_max}s only when speech or a continuous action needs it. Do not start a new clip because the camera moved.\n\
          - Speech pacing (clear, language-aware): Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec; leave ~{SPEECH_LEAD_SECS}s before speech starts and \
-~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold).\n\
+~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold). \
+If a line cannot finish clearly inside {clip_max}s, SPLIT or shorten — never rush (吞字).\n\
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
-         - Short-film information density: every shot must advance plot, relationship, OR a \
+         - Short-film information density: every clip must advance plot, relationship, OR a \
 distinct visual surprise. Forbid repeated establishing shots and filler pauses.\n\
          - Write a mental beat sheet before prose: hook → escalation → turn → payoff. Each scene needs \
 at least one concrete conflict beat and one filmable visual motif that can recur.\n\
@@ -919,24 +934,28 @@ Adjacent shots must feel like one soundtrack, not a new track per cut."
 /// nor a cut quota.
 fn beat_matched_pacing_lines(bounds: ClipBounds) -> String {
     let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
-    let (beat_min, beat_max) = (bounds.preferred_min_secs(), bounds.preferred_max_secs());
-    let action_max = bounds.clamp_secs(beat_min.saturating_add(2));
+    let pack = bounds.pack_target_secs();
+    let typical = bounds.typical_beat_secs();
+    let glance = bounds.glance_secs();
     format!(
         "         - **BEAT-MATCHED PACING** (not a shot-count quota):\n\
-           * Clip length follows the beat — a glance/reaction may be {clip_min}s; \
-a spoken line or single action typically {beat_min}–{beat_max}s; \
-use {beat_max}–{clip_max}s only when spoken words or a continuous \
-camera move actually need it.\n\
-           * Do NOT stretch thin content to {clip_max}s. Do NOT split one beat into \
-micro-cuts just to raise shot count.\n\
+           * Clip length follows the beats it holds — a glance/reaction may be {clip_min}s; \
+a spoken line plus its reaction typically ~{typical}s; pack 2–3 related beats toward ~{pack}s \
+when the spoken payload still fits.\n\
+           * Prefer fewer clips. Leftover seconds should lengthen a packed clip (up to {pack}s), \
+not invent another shot.\n\
+           * Do NOT stretch thin content to {clip_max}s. Do NOT split one story beat into \
+micro-cuts just to raise shot count, and do NOT start a new clip because the camera \
+moved (reverse / insert / push-in belong inside the same row as CUT TO).\n\
            * Empty holds, slow pans, and \"character looks around\" are FORBIDDEN.\n\
-           * Action-only (no dialogue) shots should usually be {clip_min}–{action_max}s — \
-do not pad a single sit/stand/walk to {clip_max}s.\n\
+           * A single sit/stand/walk with no dialogue stays {clip_min}–{glance}s — \
+do not pad it to {clip_max}s.\n\
            * Never write absolute seconds or timecodes into a shot description \
 (no \"0-3s:\" / \"前3秒\"): the renderer allocates each clip's length and lays consecutive \
 beats on that timeline itself. Order the beats instead.\n\
            * Language-aware delivery: Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
-English ~{SPEECH_EN_WORDS_PER_SEC} words/sec (clear — not rushed, not drawn-out).\n"
+English ~{SPEECH_EN_WORDS_PER_SEC} words/sec (clear — not rushed, not drawn-out). \
+If a line cannot finish clearly inside {clip_max}s, SPLIT or shorten — never 吞字.\n"
     )
 }
 
@@ -950,22 +969,15 @@ fn scene_pacing_model_decides_block(
     let speak_window_max = clip_max.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
     let max_cjk_chars = (speak_window_max as f32 * SPEECH_CJK_CHARS_PER_SEC).floor() as u32;
     let max_en_words = (speak_window_max as f32 * SPEECH_EN_WORDS_PER_SEC).floor() as u32;
-    let silent_beat_max = bounds.preferred_max_secs();
-    let cross_scene = if scene_idx > 0 && scene_count > 1 {
-        "         - CROSS-SCENE OPENING: This is NOT the first scene. The FIRST shot must open as a \
-match-cut from the previous scene's final shot ending state (carry cast identity / wardrobe / lighting mood \
-when story-consistent; camera or location may change for the new beat). The renderer feeds that ending frame \
-as continuity Image 1 — write the opening beat to continue from that still, not a cold establish.\n"
-            .to_string()
-    } else {
-        String::new()
-    };
+    let silent_beat_max = bounds.pack_target_secs();
+    let cross_scene = cross_scene_opening_line(scene_idx, scene_count);
     let beat_pacing = beat_matched_pacing_lines(bounds);
     let continuity = shot_continuity_lines();
+    let density = director_density_lines();
     format!(
         "[VIDEO_PACING — MUST FOLLOW]\n\
          - This is scene {scene_num}/{scene_count}. Shot count follows the scene script — do NOT pad or \
-truncate to hit a runtime quota.\n\
+truncate to hit a runtime quota. Prefer packing related beats into fewer clips.\n\
          - Each shot clip is {clip_min}–{clip_max}s (selected video model).\n\
 {beat_pacing}\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
@@ -978,20 +990,16 @@ If a speech beat is longer, you MUST SPLIT into another shot (or shorten the lin
 the {clip_max}s model limit.\n\
          - After the last spoken word, land on a clear reaction/action beat within ~{SPEECH_TAIL_SECS}s — \
 do NOT pad with empty static holds or \"磨叽\" waiting.\n\
-         - Prefer purposeful cuts that raise information density; silent/action beats may be \
-{clip_min}–{silent_beat_max}s with rich in-shot motion. For dialogue, prioritize clear pacing — pack \
-reaction into the same framing only when the spoken payload still fits the speech budget.\n\
-         - Reuse cam_idx whenever possible. Prefer in-shot motion when a cut adds no new information.\n\
+         - Prefer purposeful coverage that raises information density; silent/action beats may be \
+{clip_min}–{silent_beat_max}s with rich in-shot motion. For dialogue, pack the line and its reaction \
+into the SAME row when they are one conversation beat and the spoken payload still fits.\n\
+         - NARRATIVE FIRST: a new storyboard row is a new story unit (turn, time jump, new conflict), \
+never a new tripod position. Reverse / insert / angle change that still belongs to this beat stays \
+in this row as CUT TO (one row = one generated video). cam_idx is the opening setup of the row, not \
+a reason to emit another object.\n\
 {continuity}\
          {cross_scene}\
-         [DIRECTOR_DENSITY — MUST FOLLOW]\n\
-         - Each shot must change something the audience can see or hear (new info, new emotion, new action). \
-Ban back-to-back redundant wide establishes and repeated \"looks around slowly\" beats.\n\
-         - **ONE STRONG VISUAL EVENT PER CLIP**: Every clip must contain exactly ONE clear visual action:\n\
-           * Character opens door and sees something surprising\n\
-           * Two characters exchange a meaningful glance\n\
-           * Expression changes from neutral to shocked\n\
-           DO NOT include multiple unrelated actions in one clip.\n\
+{density}\
          [BGM_CONTINUITY — MUST FOLLOW]\n\
          - All shots in THIS SCENE share ONE continuous underscore: same motif, tempo feel, instrumentation, \
 and volume intention. Write the same BGM phrase into every audio_desc (or a clear \"same underscore as prior shot\"). \
@@ -1007,16 +1015,48 @@ Do NOT invent a new music style per shot — abrupt BGM changes between cuts are
 /// stutter at the splice. Identity continuity always holds; **compositional**
 /// continuity is only correct when the camera does not change.
 fn shot_continuity_lines() -> String {
-    "         - SHOT CONTINUITY — two separate rules, do NOT merge them:\n\
+    "         - SHOT CONTINUITY — these rules apply BETWEEN storyboard rows (file splices), \
+not as a reason to add a row. Camera moves inside a row are CUT TO in that row's visual_desc.\n\
            * IDENTITY (always): cast faces, wardrobe, hair, props, set dressing, time of day, \
 weather, and lighting mood carry over unchanged between adjacent shots unless the story explicitly \
 changes them.\n\
-           * SAME cam_idx = SAME TAKE: shot N+1 continues shot N's framing — open exactly where \
-shot N ended (same composition, same body/prop positions) and move on from there.\n\
-           * NEW cam_idx = A CUT: do NOT replay or re-describe shot N's ending pose. Open on the \
-next action already in progress from the new angle. The audience accepts the jump; repeating the \
-previous beat is what makes a splice look like a stutter.\n"
+           * SAME opening cam_idx = SAME TAKE into the next *row*: that next file continues this \
+row's exit framing — open exactly where this row ended and move on from there. Keep each named \
+person on the SAME screen side (left/right).\n\
+           * NEW opening cam_idx = A CUT into the next *row*: do NOT replay or re-describe this \
+row's ending pose. Open on the next action already in progress from the new angle. Keep the \
+180-degree axis: who is screen-left vs screen-right MUST match the previous row unless THIS row \
+explicitly writes 反打 / 过肩 / reverse as an in-file CUT TO. Flipping left/right across a file \
+splice looks like a teleport.\n\
+           * A reverse angle of the SAME beat is NOT a new row — pack it in this row as CUT TO.\n"
         .to_string()
+}
+
+fn cross_scene_opening_line(scene_idx: usize, scene_count: usize) -> String {
+    if scene_idx == 0 || scene_count <= 1 {
+        return String::new();
+    }
+    "         - CROSS-SCENE OPENING: This is NOT the first scene. Carry cast identity / wardrobe / \
+lighting mood from the previous scene when the story is consistent (camera or location may change). \
+The renderer feeds the previous ending frame as continuity Image 1 for IDENTITY only — do NOT restage \
+or replay that pose as the opening picture. Start the new scene's action already in progress. \
+Re-staging the previous last frame is what makes the scene join look frozen.\n"
+        .into()
+}
+
+fn director_density_lines() -> String {
+    "         [DIRECTOR_DENSITY — MUST FOLLOW]\n\
+         - Each clip must change something the audience can see or hear (new info, new emotion, new action). \
+Ban back-to-back redundant wide establishes and repeated \"looks around slowly\" beats.\n\
+         - **NARRATIVE FIRST / ONE ROW = ONE VIDEO**: Slice JSON objects by story unit, not by camera. \
+Each object is one generated file. Pack 2–3 *related* story beats into that SAME object when they are \
+one dramatic unit AND the spoken payload still fits:\n\
+           * She opens the door, sees him, and the line lands — one row (even if you CUT TO his face)\n\
+           * Line + the other person's reaction, reverse included — one row, write CUT TO\n\
+           * A glance that is the whole beat stays its own short row\n\
+           A new row is a new story beat (turn, time jump, new conflict) or a line that would 吞字. \
+Never emit a new row because the camera moved. Never emit a micro-shot the renderer would delete.\n"
+        .into()
 }
 
 /// Scene-level pacing when the user did not set a finished-film duration.
@@ -1048,7 +1088,7 @@ pub fn enrich_requirement_for_film(
         return format!("{base}\n\n{}", film_pacing_model_decides_block(bounds));
     }
     let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
-    let (beat_min, beat_max) = (bounds.preferred_min_secs(), bounds.preferred_max_secs());
+    let pack = bounds.pack_target_secs();
     let target = normalize_target_duration_secs(target_secs);
     let (ideal_scenes, max_scenes) = suggested_scene_count(bounds, target);
     let per_scene = (target / ideal_scenes.max(1)).max(clip_min);
@@ -1063,7 +1103,7 @@ pub fn enrich_requirement_for_film(
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec; leave ~{SPEECH_LEAD_SECS}s before speech starts and \
 ~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold).\n\
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
-         - Short-film information density: every shot (typically ~{beat_min}–{beat_max}s) must advance plot, \
+         - Short-film information density: every clip (typically ~{pack}s, packing 2–3 related beats) must advance plot, \
 relationship, OR a distinct visual surprise. Forbid repeated establishing shots and filler pauses.\n\
          - Write a mental beat sheet before prose: hook → escalation → turn → payoff. Each scene needs \
 at least one concrete conflict beat and one filmable visual motif that can recur.\n\
@@ -1100,32 +1140,24 @@ pub fn enrich_requirement_for_scene(
         (speak_window_typical as f32 * SPEECH_CJK_CHARS_PER_SEC).floor() as u32;
     let per_shot_en =
         (speak_window_typical as f32 * SPEECH_EN_WORDS_PER_SEC).floor() as u32;
-    let silent_beat_max = bounds.preferred_max_secs();
+    let silent_beat_max = bounds.pack_target_secs();
     let beat_pacing = beat_matched_pacing_lines(bounds);
     let continuity = shot_continuity_lines();
+    let density = director_density_lines();
     let base = user_requirement.trim();
     // Strip a previous film-level block so we don't double-confuse the LLM with two totals.
     let base = strip_duration_constraint_blocks(base);
     let base = with_language_lock(&base, &[&base, user_requirement]);
-    let cross_scene = if scene_idx > 0 && scene_count > 1 {
-        format!(
-            "         - CROSS-SCENE OPENING: This is NOT the first scene. The FIRST shot must open as a \
-match-cut from the previous scene's final shot ending state (carry cast identity / wardrobe / lighting mood \
-when story-consistent; camera or location may change for the new beat). The renderer feeds that ending frame \
-as continuity Image 1 — write the opening beat to continue from that still, not a cold establish.\n"
-        )
-    } else {
-        String::new()
-    };
+    let cross_scene = cross_scene_opening_line(scene_idx, scene_count);
     let block = format!(
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - This is scene {scene_num}/{scene_count} of a film targeting ≈ {film_total_secs}s total.\n\
          - THIS SCENE budget ≈ {budget} seconds of finished video (NOT the whole film).\n\
          - Each shot clip is {clip_min}–{clip_max}s (selected video model).\n\
 {beat_pacing}\
-         - Follow the scene's beats; a budget this size often lands around {ideal} shots. \
-HARD UPPER BOUND: {max_shots} shots — merge if you would exceed it. Do not invent filler shots \
-to hit {ideal}.\n\
+         - Follow the scene's beats; a budget this size often lands around {ideal} shots \
+(~{pack}s each). HARD UPPER BOUND: {max_shots} shots — merge if you would exceed it. Do not invent \
+filler shots to hit {ideal}; leftover seconds should lengthen packed clips, not add cuts.\n\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
 same shot's duration — no unfinished lines, mid-sentence cuts, swallowed syllables (吞字), or \
 \"and then…\" requiring another clip.\n\
@@ -1137,29 +1169,27 @@ If a speech beat is longer, you MUST SPLIT into another shot (or shorten the lin
 the {clip_max}s model limit.\n\
          - After the last spoken word, land on a clear reaction/action beat within ~{SPEECH_TAIL_SECS}s — \
 do NOT pad with empty static holds or \"磨叽\" waiting.\n\
-         - Prefer purposeful cuts that raise information density; silent/action beats may be \
-{clip_min}–{silent_beat_max}s with rich in-shot motion. For dialogue, prioritize clear pacing — pack \
-reaction into the same framing only when the spoken payload still fits the speech budget.\n\
-         - Reuse cam_idx whenever possible. Prefer in-shot motion when a cut adds no new information.\n\
+         - Prefer purposeful coverage that raises information density; silent/action beats may be \
+{clip_min}–{silent_beat_max}s with rich in-shot motion. For dialogue, pack the line and its reaction \
+into the SAME row when they are one conversation beat and the spoken payload still fits.\n\
+         - NARRATIVE FIRST: a new storyboard row is a new story unit (turn, time jump, new conflict), \
+never a new tripod position. Reverse / insert / angle change that still belongs to this beat stays \
+in this row as CUT TO (one row = one generated video). cam_idx is the opening setup of the row, not \
+a reason to emit another object.\n\
 {continuity}\
          {cross_scene}\
          - If you would create more than {max_shots} shots, merge beats instead.\n\
-         [DIRECTOR_DENSITY — MUST FOLLOW]\n\
-         - Each shot must change something the audience can see or hear (new info, new emotion, new action). \
-Ban back-to-back redundant wide establishes and repeated \"looks around slowly\" beats.\n\
-         - **ONE STRONG VISUAL EVENT PER CLIP**: Every clip must contain exactly ONE clear visual action:\n\
-           * Character opens door and sees something surprising\n\
-           * Two characters exchange a meaningful glance\n\
-           * Expression changes from neutral to shocked\n\
-           DO NOT include multiple unrelated actions in one clip.\n\
+{density}\
          [BGM_CONTINUITY — MUST FOLLOW]\n\
          - All shots in THIS SCENE share ONE continuous underscore: same motif, tempo feel, instrumentation, \
 and volume intention. Write the same BGM phrase into every audio_desc (or a clear \"same underscore as prior shot\"). \
 Do NOT invent a new music style per shot — abrupt BGM changes between cuts are forbidden.",
         scene_num = scene_idx + 1,
+        pack = bounds.pack_target_secs(),
         cross_scene = cross_scene,
         beat_pacing = beat_pacing,
         continuity = continuity,
+        density = density,
     );
     format!("{base}\n\n{block}")
 }
@@ -1923,6 +1953,29 @@ mod tests {
         assert!(s.contains("CROSS-SCENE OPENING"));
         assert!(s.contains("DIRECTOR_DENSITY"));
         assert!(s.contains("BGM_CONTINUITY"));
+        assert!(
+            s.contains("already in progress") || s.contains("IDENTITY only"),
+            "cross-scene must not restage the previous still: {s}"
+        );
+        assert!(
+            !s.contains("continue from that still"),
+            "cross-scene still-replay leftover: {s}"
+        );
+        assert!(
+            !s.contains("ONE STRONG VISUAL EVENT PER CLIP"),
+            "one-event-per-clip leftover: {s}"
+        );
+        assert!(s.contains("ONE ROW = ONE VIDEO"), "{s}");
+        assert!(s.contains("NARRATIVE FIRST"), "{s}");
+        assert!(s.contains("2–3") || s.contains("2-3"), "{s}");
+        assert!(
+            !s.contains("the packer folds"),
+            "merge belongs in the storyboard row, not a later packer: {s}"
+        );
+        assert!(
+            !s.contains("when they share a camera"),
+            "rows must not be sliced by tripod: {s}"
+        );
     }
 
     #[test]
@@ -1937,8 +1990,12 @@ mod tests {
     fn continuity_block_separates_identity_from_composition() {
         let s = shot_continuity_lines();
         assert!(s.contains("IDENTITY (always)"));
-        assert!(s.contains("SAME cam_idx"));
-        assert!(s.contains("NEW cam_idx"));
+        assert!(s.contains("SAME opening cam_idx") || s.contains("SAME cam_idx"));
+        assert!(s.contains("NEW opening cam_idx") || s.contains("NEW cam_idx"));
+        assert!(
+            s.contains("BETWEEN storyboard rows") || s.contains("file splices"),
+            "cam_idx rules must not be a reason to add a row: {s}"
+        );
         assert!(
             s.contains("do NOT replay") || s.contains("Do NOT replay"),
             "a cut must not re-stage the previous ending pose: {s}"
@@ -1962,10 +2019,11 @@ mod tests {
     }
 
     #[test]
-    fn forty_second_budget_prefers_five_shots_for_density() {
+    fn forty_second_budget_prefers_fewer_longer_clips() {
         let (ideal, max) = suggested_shot_count(SEEDANCE, 40);
-        assert_eq!(ideal, 5, "ideal={ideal}");
-        assert!(max >= 5);
+        // 40 / 12s drama beat = 3 clips (~13s each), not 5×8s fragments.
+        assert_eq!(ideal, 3, "ideal={ideal}");
+        assert!(max >= 3 && max <= 6, "max={max}");
         assert!(ideal * SEEDANCE.max_secs() >= 40);
     }
 

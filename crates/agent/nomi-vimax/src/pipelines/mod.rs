@@ -113,18 +113,30 @@ pub(crate) fn group_shots_into_cameras(
     use std::collections::BTreeMap;
     let mut cameras_by_idx: BTreeMap<i32, crate::domain::Camera> = BTreeMap::new();
     for shot in shot_descriptions {
-        let cam = cameras_by_idx.entry(shot.cam_idx).or_insert_with(|| {
-            crate::domain::Camera {
-                idx: shot.cam_idx,
-                active_shot_idxs: vec![],
-                parent_cam_idx: None,
-                parent_shot_idx: None,
-                reason: None,
-                is_parent_fully_covers_child: None,
-                missing_info: None,
+        let mut cams = vec![shot.cam_idx];
+        for beat in &shot.beats {
+            if let Some(cam) = beat.cam_idx {
+                if !cams.contains(&cam) {
+                    cams.push(cam);
+                }
             }
-        });
-        cam.active_shot_idxs.push(shot.idx);
+        }
+        for cam_idx in cams {
+            let cam = cameras_by_idx.entry(cam_idx).or_insert_with(|| {
+                crate::domain::Camera {
+                    idx: cam_idx,
+                    active_shot_idxs: vec![],
+                    parent_cam_idx: None,
+                    parent_shot_idx: None,
+                    reason: None,
+                    is_parent_fully_covers_child: None,
+                    missing_info: None,
+                }
+            });
+            if !cam.active_shot_idxs.contains(&shot.idx) {
+                cam.active_shot_idxs.push(shot.idx);
+            }
+        }
     }
     cameras_by_idx.into_values().collect()
 }
