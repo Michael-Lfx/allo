@@ -17,8 +17,8 @@
 
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { parseKnowledgeBaseId } from '@/common/types/ids';
+import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { tryParseEntityId } from '@/common/types/ids';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useTranslation } from 'react-i18next';
 import {
@@ -469,7 +469,8 @@ const KnowledgeDetailPage: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { id: rawId } = useParams<{ id: string }>();
-  const id = rawId == null ? undefined : parseKnowledgeBaseId(rawId);
+  const id = rawId == null ? undefined : tryParseEntityId('knowledge-base', rawId) ?? undefined;
+  const invalidRoute = rawId != null && id == null;
   const [searchParams, setSearchParams] = useSearchParams();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
@@ -1071,6 +1072,10 @@ const KnowledgeDetailPage: React.FC = () => {
   }, [base?.updated_at, t]);
 
   // ─── Error state ────────────────────────────────────────────────────────────
+  if (invalidRoute) {
+    return <Navigate to='/knowledge' replace />;
+  }
+
   if (error) {
     return (
       <div className='size-full flex items-center justify-center'>
@@ -1639,7 +1644,7 @@ const KnowledgeDetailPage: React.FC = () => {
                   size='small'
                   className='flowy-icon-text-btn'
                   icon={<LinkCloud theme='outline' size='14' />}
-                  onClick={() => navigate('/terminal')}
+                  onClick={() => navigate('/terminal-new')}
                 >
                   {t('knowledge.detail.use.goTerminal', { defaultValue: '前往终端注册' })}
                 </Button>

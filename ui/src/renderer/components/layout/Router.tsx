@@ -139,7 +139,8 @@ const LegacyExtensionsRedirect: React.FC = () => {
 // drawer, not a standalone form page).
 const RequirementEditRedirect: React.FC = () => {
   const { id } = useParams();
-  return <Navigate to={`/requirements?req=${id}&edit=1`} replace />;
+  const searchParams = new URLSearchParams({ req: id ?? '', edit: '1' });
+  return <Navigate to={`/requirements?${searchParams.toString()}`} replace />;
 };
 
 const getHashRouteRedirectUrl = () => {
@@ -216,16 +217,21 @@ const CompanionNavigateListener: React.FC = () => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import('@tauri-apps/api/event').then(({ listen }) =>
-      listen<string>('companion-navigate', (event) => {
-        if (typeof event.payload === 'string' && event.payload.startsWith('/')) {
-          void navigate(event.payload);
-        }
-      }).then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-    );
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<string>('companion-navigate', (event) => {
+          if (typeof event.payload === 'string' && event.payload.startsWith('/')) {
+            void navigate(event.payload);
+          }
+        }).then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        })
+      )
+      .catch(() => {
+        // Native event listeners are best-effort; a missing Tauri bridge must
+        // not become an unhandled rejection on the route shell.
+      });
     return () => {
       disposed = true;
       unlisten?.();
@@ -241,18 +247,23 @@ const MeetingOpenListener: React.FC = () => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import('@tauri-apps/api/event').then(({ listen }) =>
-      listen<string>('meeting-open', (event) => {
-        const path =
-          typeof event.payload === 'string' && event.payload.startsWith('/')
-            ? event.payload
-            : '/meeting';
-        void navigate(path);
-      }).then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-    );
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<string>('meeting-open', (event) => {
+          const path =
+            typeof event.payload === 'string' && event.payload.startsWith('/')
+              ? event.payload
+              : '/meeting';
+          void navigate(path);
+        }).then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        })
+      )
+      .catch(() => {
+        // Native event listeners are best-effort; a missing Tauri bridge must
+        // not become an unhandled rejection on the route shell.
+      });
     return () => {
       disposed = true;
       unlisten?.();
