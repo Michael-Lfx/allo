@@ -46,7 +46,7 @@ const GENERATE_AGENT_SYSTEM: &str = r#"你是一名课程大纲设计代理：�
 2. kb 流：动手设计前先用 co_read 阅读采样文件（至少浏览与主题最相关的若干文件），让大纲真正落在资料上；描述流：简报是唯一 grounding，逐条落实简报中的要点。
 3. 每次 co_patch 前后用 co_inspect 掌握全局；patch 里引用的模块/课时/概念 key 必须与草稿中完全一致（或引用本批前面创建的 key），拿不准先 co_query。
 4. 分批构建：每批少于 25 个操作，宁可多批，不要超长批次。
-5. 全部构建完成后调用 co_audit 自查；确认没有 danger 级问题才调用 co_finish。
+5. 全部构建完成后调用 co_audit 自查；确认没有 danger 级问题才调用 co_finish。scope 覆盖按标题判定：任一模块/课时/概念的 title 含块文本即算覆盖（单字块如「栈」只需任一标题含该字）。
 
 【结束条件】
 - 只有 co_audit 报告无 danger 时才调用 co_finish；被门禁拒绝时按报告继续修复。"#;
@@ -69,7 +69,7 @@ const REPAIR_AGENT_SYSTEM: &str = r#"你是一名课程大纲修复代理：基�
 - 重复 key：update_module / update_lesson / update_concept 重命名其中一个，或 remove 多余项。
 - 自引用 / 环：unlink_prereq 断开成环的边。
 - 孤儿概念：把概念绑定进课时（add_lesson / update_lesson 的 concepts），或 remove_concept 删除。
-- scope 覆盖缺口：为缺失的 scope 块补建模块与课时。
+- scope 覆盖缺口：为缺失的 scope 块补建模块与课时。覆盖按标题判定：任一模块/课时/概念 title 含块文本即算覆盖，单字块只需任一标题含该字——最省事的修法是把块词写进某个课时的标题。
 
 【结束条件】
 - 审计无 danger 时调用 co_finish；若 co_finish 被拒绝，认真阅读返回的阻塞报告并继续修复。
@@ -660,7 +660,7 @@ fn co_read(ctx: Arc<LoopContext>) -> OneShotTool {
 fn co_scope(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "co_scope".into(),
-        description: "返回 scope 范围参考全文：大块概念清单——生成阶段的严格完备覆盖自查表。构建前先取回它，逐项核对你的计划，确保每个大块概念都落到某个课时。".into(),
+        description: "返回 scope 范围参考全文：大块概念清单——生成阶段的严格完备覆盖自查表。构建前先取回它，逐项核对你的计划，确保每个大块概念都落到某个课时。覆盖判定按标题：任一模块/课时/概念 title 含块文本即算覆盖。".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         handler: one_shot_handler(move |_input| {
             let ctx = Arc::clone(&ctx);
@@ -785,6 +785,10 @@ mod tests {
     /// entry; every observed request (tool names + messages) is recorded.
     struct ScriptedProvider {
         script: Mutex<Vec<Vec<LlmEvent>>>,
+        /// Queued open-phase failures: each `stream` call pops one (LIFO)
+        /// and fails BEFORE recording anything or touching the script —
+        /// models a transient connect/429 fault at the open boundary.
+        open_failures: Mutex<Vec<ProviderError>>,
         seen_tool_names: Mutex<Vec<Vec<String>>>,
         seen_messages: Mutex<Vec<Vec<Message>>>,
         seen_thinking: Mutex<Vec<Option<ThinkingConfig>>>,
@@ -794,6 +798,7 @@ mod tests {
         fn new(script: Vec<Vec<LlmEvent>>) -> Arc<Self> {
             Arc::new(Self {
                 script: Mutex::new(script),
+                open_failures: Mutex::new(Vec::new()),
                 seen_tool_names: Mutex::new(Vec::new()),
                 seen_messages: Mutex::new(Vec::new()),
                 seen_thinking: Mutex::new(Vec::new()),
@@ -807,6 +812,9 @@ mod tests {
             &self,
             request: &LlmRequest,
         ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            if let Some(error) = self.open_failures.lock().unwrap().pop() {
+                return Err(error);
+            }
             self.seen_tool_names
                 .lock()
                 .unwrap()
@@ -1194,5 +1202,61 @@ mod tests {
         assert!(matches!(&error, AppError::UnprocessableEntity(message) if message.contains("exhausted 3 repair loops")));
         let seen = provider.seen_tool_names.lock().unwrap();
         assert_eq!(seen.len(), 6, "2 generation rounds + 1 idle round + 3 repair rounds");
+    }
+
+    /// 瞬态 provider 故障（429）在流打开阶段重试一次：失败的打开不消耗
+    /// 脚本轮次、不进入 seen 记录，重试后整条管线照常发布。
+    #[tokio::test]
+    async fn transient_stream_open_failure_is_retried_once() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service), description_brief());
+        let provider = ScriptedProvider::new(vec![
+            // ── generation loop ──
+            vec![tool_use("co_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("done".into()), done(StopReason::EndTurn)],
+            // ── repair loop 1: build and publish in-loop ──
+            vec![tool_use("co_patch", full_outline_ops(false)), done(StopReason::ToolUse)],
+            vec![tool_use("co_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]);
+        provider.open_failures.lock().unwrap().push(ProviderError::RateLimited {
+            retry_after_ms: 1,
+            message: "burst".into(),
+        });
+
+        let blueprint = engine(Arc::clone(&service))
+            .run_loops(provider.clone(), "test-model", ctx)
+            .await
+            .unwrap();
+        assert_eq!(blueprint.title, "测试课程");
+        assert_eq!(
+            provider.seen_tool_names.lock().unwrap().len(),
+            5,
+            "the failed open consumed no scripted round"
+        );
+    }
+
+    /// 不可重试的打开失败（4xx）立即失败：不重试、不拖时间。
+    #[tokio::test]
+    async fn terminal_stream_open_failure_fails_fast() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service), description_brief());
+        let provider = ScriptedProvider::new(vec![
+            vec![tool_use("co_start", serde_json::json!({})), done(StopReason::ToolUse)],
+        ]);
+        provider
+            .open_failures
+            .lock()
+            .unwrap()
+            .push(ProviderError::Api { status: 401, message: "bad key".into() });
+
+        let error = engine(Arc::clone(&service))
+            .run_loops(provider, "test-model", ctx)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, AppError::BadGateway(message) if message.contains("API error 401")),
+            "{error}"
+        );
     }
 }

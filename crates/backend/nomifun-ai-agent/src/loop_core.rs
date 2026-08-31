@@ -8,12 +8,14 @@
 //! other surface) is the security contract of this module — keep it intact.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use nomi_providers::LlmProvider;
+use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role, StopReason};
 use nomi_types::tool::ToolDef;
 use nomifun_common::AppError;
+use tokio::sync::mpsc::Receiver;
 
 use crate::one_shot::OneShotTool;
 
@@ -31,6 +33,62 @@ pub(crate) const TOTAL_TIMEOUT_SECS: u64 = 600;
 /// mid-arguments (EOF in a tool-call JSON → whole pipeline aborts). 8192
 /// matches the scope-analysis budget.
 pub(crate) const AGENT_MAX_TOKENS: u32 = 8192;
+
+/// One open-phase retry for transient provider faults — the loop sibling of
+/// the legacy single-call pipeline's one retry (`image_analyze` applies the
+/// same policy to `BadGateway`). A dropped connect (`error sending request`)
+/// or a 429 at the very last round would otherwise kill a multi-minute
+/// generation. Only the stream OPEN is retried: an open that already
+/// produced events is never replayed and mid-stream errors stay fatal
+/// (replay safety — see `ProviderError::StreamTruncated`'s contract).
+const STREAM_OPEN_RETRY_DELAY_MS: u64 = 2_000;
+const STREAM_OPEN_RETRY_MAX_DELAY_MS: u64 = 30_000;
+
+/// Backoff for one retryable stream-open failure; `None` marks the error as
+/// terminal at this boundary.
+fn stream_open_retry_delay(error: &ProviderError) -> Option<Duration> {
+    // `is_retryable` covers 429 / connect / 5xx-API / truncation; plain
+    // send-phase transport failures (`Http`, e.g. "error sending request")
+    // are equally transient at the open boundary but absent from that set.
+    if !error.is_retryable() && !matches!(error, ProviderError::Http(_)) {
+        return None;
+    }
+    let delay_ms = match error {
+        ProviderError::RateLimited { retry_after_ms, .. } => {
+            (*retry_after_ms).clamp(STREAM_OPEN_RETRY_DELAY_MS, STREAM_OPEN_RETRY_MAX_DELAY_MS)
+        }
+        _ => STREAM_OPEN_RETRY_DELAY_MS,
+    };
+    Some(Duration::from_millis(delay_ms))
+}
+
+/// [`LlmProvider::stream`] with one retry for transient open failures.
+async fn open_stream_with_retry(
+    provider: &dyn LlmProvider,
+    request: &LlmRequest,
+    sink: Option<&dyn LoopEventSink>,
+) -> Result<Receiver<LlmEvent>, AppError> {
+    let mut retried = false;
+    loop {
+        match provider.stream(request).await {
+            Ok(rx) => return Ok(rx),
+            Err(error) => {
+                let delay = if retried { None } else { stream_open_retry_delay(&error) };
+                let Some(delay) = delay else {
+                    return Err(AppError::BadGateway(format!("LLM provider error: {error}")));
+                };
+                retried = true;
+                if let Some(sink) = sink {
+                    sink.log("stream_open_retry", serde_json::json!({
+                        "error": error.to_string(),
+                        "retry_in_ms": delay.as_millis() as u64,
+                    }));
+                }
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
 
 /// Where loop events go. The concept-graph loop appends them to the shared
 /// JSONL log file; richer hosts may also mirror them onto the WebSocket so
@@ -79,7 +137,8 @@ pub(crate) fn stop_reason_name(reason: Option<StopReason>) -> String {
 /// parameterized — the one-shot entry's 8-round cap is too tight for a
 /// 30-round generation. `loop_label` names the loop and `sink` (when given)
 /// streams one `agent_round` event per round into the host's event channel
-/// so a failed run stays diagnosable offline.
+/// so a failed run stays diagnosable offline. Transient provider faults at
+/// the stream open get one retry (see [`open_stream_with_retry`]).
 pub(crate) async fn run_agent_loop(
     provider: Arc<dyn LlmProvider>,
     model: &str,
@@ -125,10 +184,7 @@ pub(crate) async fn run_agent_loop(
             temperature: None,
             retain_provider_round: false,
         };
-        let mut rx = provider
-            .stream(&request)
-            .await
-            .map_err(|error| AppError::BadGateway(format!("LLM provider error: {error}")))?;
+        let mut rx = open_stream_with_retry(provider.as_ref(), &request, sink).await?;
 
         let mut text = String::new();
         let mut tool_uses: Vec<(String, String, serde_json::Value, Option<serde_json::Value>)> =
