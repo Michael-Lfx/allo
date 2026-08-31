@@ -464,7 +464,6 @@ const LearningPage: React.FC = () => {
             allKnowledgeBases={creation.allKnowledgeBases}
             selectedKnowledgeBaseId={creation.selectedKnowledgeBaseId}
             generationDomain={creation.generationDomain}
-            generationMode={creation.generationMode}
             modelChoice={creation.modelChoice}
             creationTab={creation.creationTab}
             creationDescription={creation.creationDescription}
@@ -477,7 +476,6 @@ const LearningPage: React.FC = () => {
             }}
             onSelectedBaseChange={creation.setSelectedKnowledgeBaseId}
             onDomainChange={creation.setGenerationDomain}
-            onGenerationModeChange={creation.setGenerationMode}
             onModelChange={(choice) => void creation.setModelChoice(choice)}
             onTabChange={creation.setCreationTab}
             onDescriptionChange={creation.setCreationDescription}

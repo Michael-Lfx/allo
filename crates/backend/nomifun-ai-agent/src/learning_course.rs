@@ -42,9 +42,10 @@ impl LearningCourseSink for LiveLearningCourseSink {
                     .map_err(|e| format!("invalid provider id {provider}: {e}"))
             })
             .transpose()?;
+        // Only on-demand generation exists today; the field is an extension
+        // point for future strategies, so any other value is rejected.
         let mode = match req.mode.as_deref() {
-            None | Some("full") => CourseGenerationMode::Full,
-            Some("on_demand") => CourseGenerationMode::OnDemand,
+            None | Some("on_demand") => CourseGenerationMode::OnDemand,
             Some(other) => return Err(format!("unsupported course generation mode: {other}")),
         };
         let request = GenerateCourseRequest {

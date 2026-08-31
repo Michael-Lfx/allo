@@ -51,8 +51,10 @@ pub struct CourseGenerationRequest {
     pub model: Option<String>,
     pub module_count: u8,
     pub lessons_per_module: u8,
-    /// "full" (default) materializes every lesson up front; "on_demand" imports
-    /// the outline and generates each lesson's body when the learner opens it.
+    /// Only "on_demand" is supported today (default): the outline is imported
+    /// immediately and each lesson's body is generated when the learner opens
+    /// it. Kept as an extension point for future generation strategies (e.g.
+    /// a concept-graph-driven mode).
     pub mode: Option<String>,
 }
 
@@ -195,11 +197,11 @@ impl Tool for LearningGenerateCourseTool {
          例子 (worked examples) and 验证 (self-check questions) at minimum — other sections such as \
          迁移 (transfer), 其他 (other), 关键词 (keywords), 推广 (promotion) are optional and chosen \
          by topic — write missing ones with knowledge_write before calling this. \
-         Generated lesson documents follow the same structure as long-form study material \
-         (1000+ characters each), so the course reads like a real textbook instead of a bare summary. \
-         Generation samples the documents and runs multiple model calls (blueprint first, then one \
-         call per lesson), so it takes 1-3 minutes IN THE BACKGROUND. This tool returns immediately \
-         with a job_id — report progress by calling learning_course_status with it; the user can \
+         Generation is on-demand: it samples the documents, designs a blueprint and imports the \
+         course outline immediately (blueprint + lesson purposes + concept map), and each lesson's \
+         long-form document and exercises are generated only when the learner opens that lesson on \
+         the Learning page. The job runs in the background, so this tool returns immediately with \
+         a job_id — report progress by calling learning_course_status with it; the user can \
          also track / cancel / resume the job on the Learning page."
     }
 
@@ -231,7 +233,7 @@ impl Tool for LearningGenerateCourseTool {
                 },
                 "mode": {
                     "type": "string",
-                    "description": "Generation strategy: \"full\" (default) generates every lesson up front; \"on_demand\" imports the outline first and generates each lesson's body when the learner opens it."
+                    "description": "Generation strategy. Only \"on_demand\" is supported (default): the course outline is imported first and each lesson's body is generated when the learner opens it. Reserved for future strategies; do not pass other values."
                 },
                 "provider_id": {
                     "type": "string",
@@ -538,7 +540,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forwards_explicit_mode_and_model_override() {
+    async fn forwards_on_demand_mode_and_model_override() {
         let sink = Arc::new(FakeCourseSink::default());
         let tool = LearningGenerateCourseTool::new(
             sink.clone(),

@@ -11,8 +11,6 @@ export interface GenerateCourseRequest {
   model?: string;
   module_count?: number;
   lessons_per_module?: number;
-  /** 'full' 一次性生成全部课时；'on_demand' 先出大纲，学习时按需生成课时 */
-  mode?: 'full' | 'on_demand';
 }
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传 */

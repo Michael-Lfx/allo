@@ -39,21 +39,22 @@ pub struct GenerateCourseRequest {
     pub mode: CourseGenerationMode,
 }
 
-/// Course generation strategy: `full` materializes every lesson up front;
-/// `on_demand` imports the outline immediately and generates each lesson's
-/// body and activities only when the learner opens it.
+/// Course generation strategy. Only `on_demand` exists today: the outline is
+/// imported immediately and each lesson's body and activities are generated
+/// only when the learner opens it. The `mode` field and the
+/// `learning_course_jobs.generation_mode` column are kept as extension points
+/// for future generation strategies (e.g. a concept-graph-driven mode); any
+/// other value is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CourseGenerationMode {
     #[default]
-    Full,
     OnDemand,
 }
 
 impl CourseGenerationMode {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Full => "full",
             Self::OnDemand => "on_demand",
         }
     }
@@ -64,7 +65,6 @@ impl TryFrom<&str> for CourseGenerationMode {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "full" => Ok(Self::Full),
             "on_demand" => Ok(Self::OnDemand),
             other => Err(format!("unsupported course generation mode: {other}")),
         }

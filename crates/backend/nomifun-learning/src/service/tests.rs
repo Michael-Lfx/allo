@@ -74,7 +74,7 @@
             model: None,
             module_count: 3,
             lessons_per_module: 3,
-            mode: crate::models::CourseGenerationMode::Full,
+            mode: crate::models::CourseGenerationMode::OnDemand,
         }
     }
 
