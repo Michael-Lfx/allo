@@ -25,6 +25,28 @@ class FakeChild extends EventEmitter {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('run-dev supervisor', () => {
+  test('binds readiness to the spawned Vite child', async () => {
+    const vite = new FakeChild();
+    let observedVite;
+    let tauriStarted = false;
+    const supervisor = createSupervisor({
+      startVite: () => vite,
+      startTauri: () => {
+        tauriStarted = true;
+        return new FakeChild();
+      },
+      waitForVite: async (child) => {
+        observedVite = child;
+        child.close(1);
+      },
+      stopProcess: (child) => child?.close(0),
+    });
+
+    await expect(supervisor.run()).rejects.toThrow('Vite exited before becoming healthy');
+    expect(observedVite).toBe(vite);
+    expect(tauriStarted).toBe(false);
+  });
+
   test('keeps Vite alive across a development Tauri restart', async () => {
     const vite = new FakeChild();
     const tauri = [new FakeChild(), new FakeChild()];

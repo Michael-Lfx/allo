@@ -117,15 +117,35 @@ async function stopProcess(child, _reason) {
 const VITE_HOST = '127.0.0.1';
 const VITE_PORT = 5173;
 // Cold start on Windows commonly takes ~25s just to bind. Probe the actual
-// HTTP document and one representative lazy route module before launching
-// Tauri; a TCP listener alone can still serve an incomplete module graph.
+// HTTP document and the main lazy route modules before launching Tauri; a TCP
+// listener alone can still serve an incomplete module graph.
 const VITE_READY_TIMEOUT_MS = 120_000;
 const isViteReady = createViteHttpReadinessProbe({ host: VITE_HOST, port: VITE_PORT });
 
-async function waitForVite() {
+function hasExited(child) {
+  return child && child.exitCode !== null && child.exitCode !== undefined;
+}
+
+async function waitForVite(viteProcess) {
   const deadline = Date.now() + VITE_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await isViteReady()) return;
+    if (hasExited(viteProcess)) {
+      throw new Error(
+        `Vite exited before becoming healthy (code ${viteProcess.exitCode ?? 'unknown'})`,
+      );
+    }
+    if (await isViteReady()) {
+      // A stale Vite process can answer the HTTP probe while the newly spawned
+      // strictPort child is exiting. Give the child exit event a turn before
+      // allowing Tauri to attach to the old module graph.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (hasExited(viteProcess)) {
+        throw new Error(
+          `Vite exited before becoming healthy (code ${viteProcess.exitCode ?? 'unknown'})`,
+        );
+      }
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(

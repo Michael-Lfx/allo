@@ -1,5 +1,9 @@
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
-const DEFAULT_READY_PATHS = ['/', '/src/renderer/pages/guid/index.tsx'];
+const DEFAULT_READY_PATHS = [
+  '/',
+  '/src/renderer/pages/guid/index.tsx',
+  '/src/renderer/pages/conversation/index.tsx',
+];
 
 function formatHost(host) {
   return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
@@ -21,9 +25,10 @@ function fetchWithTimeout(fetchImpl, url, timeoutMs) {
 
 /**
  * Create a bounded readiness probe for the Vite dev server. The root document
- * proves the server is serving the app shell; the representative route module
- * catches the more subtle state where a port is open but lazy imports still
- * fail during the first transform.
+ * proves the server is serving the app shell; the representative route modules
+ * catch the more subtle state where a port is open but a lazy import still
+ * fails during the first transform. Keep both the sidebar guide route and the
+ * main conversation route because they are independently lazy-loaded.
  */
 export function createViteHttpReadinessProbe({
   host,

@@ -8,7 +8,7 @@ const response = (ok) => ({
 });
 
 describe('Vite HTTP readiness probe', () => {
-  test('requires both the app document and a representative lazy route module', async () => {
+  test('requires the app document and the main lazy route modules', async () => {
     const requested = [];
     const probe = createViteHttpReadinessProbe({
       host: '127.0.0.1',
@@ -23,6 +23,7 @@ describe('Vite HTTP readiness probe', () => {
     expect(requested).toEqual([
       'http://127.0.0.1:5173/',
       'http://127.0.0.1:5173/src/renderer/pages/guid/index.tsx',
+      'http://127.0.0.1:5173/src/renderer/pages/conversation/index.tsx',
     ]);
   });
 
