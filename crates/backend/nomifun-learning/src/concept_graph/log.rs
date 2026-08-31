@@ -25,8 +25,16 @@ impl ConceptGraphLogger {
     /// New logger appending to `concept-graph-generation.log` inside `dir`.
     /// The directory must already exist (the caller creates it).
     pub(crate) fn new(dir: &Path, session: &str) -> Self {
+        Self::with_file(dir, "concept-graph-generation.log", session)
+    }
+
+    /// New logger appending to an explicit log file inside `dir` — the same
+    /// JSONL event format under a feature-specific name (course outline
+    /// generation reuses it for `course-outline-generation.log`). The
+    /// directory must already exist (the caller creates it).
+    pub(crate) fn with_file(dir: &Path, file_name: &str, session: &str) -> Self {
         Self {
-            path: dir.join("concept-graph-generation.log"),
+            path: dir.join(file_name),
             session: session.to_owned(),
             lock: Mutex::new(()),
         }

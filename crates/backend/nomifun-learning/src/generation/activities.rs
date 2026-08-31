@@ -373,7 +373,9 @@ pub(crate) fn build_activities_prompt(
 
 /// Activity-stage validation: count floors, concept binding, and per-kind
 /// shape rules — everything that made the historical single-call validator
-/// reject weak activity output.
+/// reject weak activity output. The lesson draft audit (`lesson_draft.rs`)
+/// inlines the same rules with position-aware messages; keep the two in
+/// sync when changing either.
 pub(super) fn validate_lesson_activities(
     activities: &[ActivityPack],
     blueprint: &Blueprint,

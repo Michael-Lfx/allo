@@ -557,6 +557,112 @@ impl LearningService {
         Ok(())
     }
 
+    /// Version of the course with the given title, if one exists. The
+    /// tutorial seed uses this to decide between importing (absent), skipping
+    /// (same version) and replacing (stale version) the preset course.
+    pub(crate) async fn course_version_by_title(
+        &self,
+        title: &str,
+    ) -> Result<Option<i64>, AppError> {
+        let version: Option<i64> =
+            sqlx::query_scalar("SELECT version FROM learning_courses WHERE title = ?")
+                .bind(title)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        Ok(version)
+    }
+
+    /// Deletes every course with the given title and all of its data —
+    /// enrollments, progress, attempts, reviews, concepts, lessons and
+    /// activities — regardless of which user created them. Used by the
+    /// tutorial seed to replace a stale preset course version.
+    pub(crate) async fn delete_courses_by_title(&self, title: &str) -> Result<(), AppError> {
+        let course_ids: Vec<String> =
+            sqlx::query_scalar("SELECT course_id FROM learning_courses WHERE title = ?")
+                .bind(title)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+        if course_ids.is_empty() {
+            return Ok(());
+        }
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        for course_id in &course_ids {
+            let enrollment_ids: Vec<String> = sqlx::query_scalar(
+                "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ?",
+            )
+            .bind(course_id)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(internal)?;
+            for enrollment_id in &enrollment_ids {
+                for table in [
+                    "learning_review_items",
+                    "learning_mastery_states",
+                    "learning_lesson_progress",
+                    "learning_attempts",
+                ] {
+                    sqlx::query(&format!("DELETE FROM {table} WHERE enrollment_id = ?"))
+                        .bind(enrollment_id)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(internal)?;
+                }
+            }
+            sqlx::query("DELETE FROM learning_enrollments WHERE course_id = ?")
+                .bind(course_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+            let content_sql = [
+                "DELETE FROM learning_activity_concepts WHERE activity_id IN (\
+                    SELECT a.activity_id FROM learning_activities a \
+                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_activities WHERE lesson_id IN (\
+                    SELECT l.lesson_id FROM learning_lessons l \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
+                    SELECT a.activity_id FROM learning_activities a \
+                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
+                    SELECT l.lesson_id FROM learning_lessons l \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_lessons WHERE module_id IN (\
+                    SELECT module_id FROM learning_modules WHERE course_id = ?)",
+                "DELETE FROM learning_concept_prerequisites WHERE concept_id IN (\
+                    SELECT concept_id FROM learning_concepts WHERE course_id = ?)",
+                "DELETE FROM learning_concepts WHERE course_id = ?",
+                "DELETE FROM learning_modules WHERE course_id = ?",
+            ];
+            for sql in content_sql {
+                sqlx::query(sql)
+                    .bind(course_id)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(internal)?;
+            }
+            sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
+                .bind(course_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+            sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
+                .bind(course_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+        }
+        transaction.commit().await.map_err(internal)?;
+        Ok(())
+    }
+
 }
 
 const MASTERY_RECOMMENDATION_THRESHOLD: f64 = 0.8;

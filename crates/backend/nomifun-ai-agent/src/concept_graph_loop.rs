@@ -22,9 +22,6 @@
 use std::sync::{Arc, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
-use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
-use nomi_types::message::{ContentBlock, Message, Role, StopReason};
-use nomi_types::tool::ToolDef;
 use nomifun_common::{AppError, LearningConceptGraphId, ProviderId, UserId};
 use nomifun_learning::{
     ConceptGraphAgentEngine, ConceptGraphRecord, GraphOp, LearningService, NodeQuery,
@@ -33,22 +30,11 @@ use nomifun_learning::{
 
 use crate::factory::provider_config::resolve_provider_config;
 use crate::knowledge_completer::resolve_default_model;
+use crate::loop_core::{
+    AGENT_MAX_TOKENS, GENERATE_MAX_ROUNDS, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS,
+    TOTAL_TIMEOUT_SECS, json_compact, log_text, run_agent_loop,
+};
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
-
-/// Upper bound on model rounds inside the generation loop.
-const GENERATE_MAX_ROUNDS: usize = 50;
-/// Upper bound on model rounds inside ONE repair loop.
-const REPAIR_MAX_ROUNDS: usize = 20;
-/// How many complete repair loops run before the gate verdict is final.
-const REPAIR_LOOP_LIMIT: usize = 3;
-/// Wall-clock budget for the WHOLE pipeline (generation + repairs + audit
-/// gates) — same order of magnitude as the legacy call timeout.
-const TOTAL_TIMEOUT_SECS: u64 = 600;
-/// Token budget per model round. Generous because a round often carries
-/// planning prose AND a large cg_patch JSON (up to 15 ops); 4096 was
-/// observed cut off mid-arguments (EOF in a tool-call JSON → whole pipeline
-/// aborts). 8192 matches the scope-analysis budget.
-const AGENT_MAX_TOKENS: u32 = 8192;
 
 /// Generation-loop system prompt. The model builds the whole network via
 /// the draft tools; the audit gate still has the last word at `cg_finish`.
@@ -420,6 +406,12 @@ impl LoopContext {
     }
 }
 
+impl LoopEventSink for LoopContext {
+    fn log(&self, event: &str, fields: serde_json::Value) {
+        LoopContext::log(self, event, fields);
+    }
+}
+
 /// Take the published record out of the slot (once) — called after every
 /// loop, because the model may legitimately `cg_finish` from either loop.
 fn take_published(ctx: &LoopContext) -> Option<ConceptGraphRecord> {
@@ -450,36 +442,8 @@ fn concept_graph_tools(ctx: Arc<LoopContext>, with_start: bool) -> Vec<OneShotTo
 }
 
 /// Compact JSON without \uXXXX escapes (the default serializer already
-/// keeps non-ASCII; this is the single formatting seam for tool replies).
-fn json_compact<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_string(value).unwrap_or_else(|error| format!("序列化失败: {error}"))
-}
-
-/// Truncate model text for log events (the full text stays in the message
-/// window; logs only need a fingerprint of what the model said).
-fn log_text(text: &str) -> String {
-    const CAP: usize = 200;
-    let chars = text.chars();
-    if chars.clone().count() <= CAP {
-        return text.to_owned();
-    }
-    let truncated: String = chars.take(CAP).collect();
-    format!("{truncated}…")
-}
-
-/// Human-readable stop reason for log events (distinguishes a model that
-/// finished naturally from one that hit the token cap mid-generation).
-fn stop_reason_name(reason: Option<StopReason>) -> String {
-    match reason {
-        Some(StopReason::EndTurn) => "end_turn",
-        Some(StopReason::ToolUse) => "tool_use",
-        Some(StopReason::MaxTokens) => "max_tokens",
-        Some(StopReason::MaxTurns) => "max_turns",
-        Some(StopReason::Refusal) => "refusal",
-        None => "none",
-    }
-    .to_owned()
-}
+/// keeps non-ASCII; this is the single formatting seam for tool replies) and
+/// the truncation/stop-reason helpers live in `loop_core` — re-imported here.
 
 fn cg_start(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
@@ -781,197 +745,17 @@ fn cg_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 }
 
 // ── The tool loop (one-shot core, parameterized) ───────────────────────────
-
-/// Run one isolated agent loop: model tool calls execute strictly against
-/// the given whitelist, results feed back, until the model stops without
-/// pending calls or `max_rounds` is exhausted. This is
-/// `one_shot::tool_loop` with the round cap, token budget and window
-/// parameterized — the one-shot entry's 8-round cap is too tight for a
-/// 30-round generation. `loop_label` names the loop and `ctx` (when given)
-/// streams one `agent_round` event per round into the concept-graph log so
-/// a failed run stays diagnosable offline.
-async fn run_agent_loop(
-    provider: Arc<dyn LlmProvider>,
-    model: &str,
-    system: &str,
-    user_text: &str,
-    tools: &[OneShotTool],
-    max_rounds: usize,
-    max_tokens: u32,
-    loop_label: &str,
-    ctx: Option<&LoopContext>,
-) -> Result<String, AppError> {
-    // The tool defs sent to the model and the handler table derive from the
-    // SAME whitelist; there is no other tool source in this code path.
-    let tool_defs: Vec<ToolDef> = tools
-        .iter()
-        .map(|tool| ToolDef {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            input_schema: tool.input_schema.clone(),
-            deferred: false,
-        })
-        .collect();
-
-    let mut messages = vec![Message::new(
-        Role::User,
-        vec![ContentBlock::Text { text: user_text.to_owned() }],
-    )];
-
-    for round in 0..max_rounds {
-        let request = LlmRequest {
-            model: model.to_owned(),
-            system: system.to_owned(),
-            messages: messages.clone(),
-            tools: tool_defs.clone(),
-            max_tokens: Some(max_tokens),
-            // DeepSeek-style gateways default to chain-of-thought and only
-            // emit `content` after thinking is disabled; without this field
-            // the whole token budget is silently consumed by reasoning and
-            // rounds end with an empty `max_tokens` cut-off (mirrors
-            // `one_shot_completion` / `llm_chat.rs`).
-            thinking: Some(ThinkingConfig::Disabled),
-            reasoning_effort: None,
-            temperature: None,
-            retain_provider_round: false,
-        };
-        let mut rx = provider
-            .stream(&request)
-            .await
-            .map_err(|error| AppError::BadGateway(format!("LLM provider error: {error}")))?;
-
-        let mut text = String::new();
-        let mut tool_uses: Vec<(String, String, serde_json::Value, Option<serde_json::Value>)> =
-            Vec::new();
-        let mut stop_reason: Option<StopReason> = None;
-        let mut done = false;
-        while let Some(event) = rx.recv().await {
-            match event {
-                LlmEvent::TextDelta(delta) => text.push_str(&delta),
-                LlmEvent::ToolUse { id, name, input, extra } => {
-                    tool_uses.push((id, name, input, extra));
-                }
-                LlmEvent::Done { stop_reason: reason, .. } => {
-                    // Record WHY the model stopped (end_turn vs max_tokens
-                    // matters for diagnostics) and fall through to the
-                    // shared paths below — a non-tool stop with no pending
-                    // calls ends the loop there, keeping the per-round
-                    // logging on one code path.
-                    done = true;
-                    stop_reason = Some(reason);
-                    break;
-                }
-                LlmEvent::Error(message) => {
-                    if let Some(ctx) = ctx {
-                        ctx.log("agent_loop_end", serde_json::json!({
-                            "loop": loop_label,
-                            "rounds": round + 1,
-                            "exit": "stream_error",
-                            "error": message,
-                        }));
-                    }
-                    return Err(AppError::BadGateway(format!("LLM stream error: {message}")));
-                }
-                _ => {}
-            }
-        }
-        if tool_uses.is_empty() {
-            // No tool calls this round: log what the model said and why the
-            // loop ended (the repair loop's idle replies were invisible
-            // before — this is how we see a model refusing to work).
-            if let Some(ctx) = ctx {
-                ctx.log("agent_round", serde_json::json!({
-                    "loop": loop_label,
-                    "round": round + 1,
-                    "text": log_text(&text),
-                    "stop_reason": stop_reason_name(stop_reason),
-                    "tool_calls": Vec::<serde_json::Value>::new(),
-                }));
-                ctx.log("agent_loop_end", serde_json::json!({
-                    "loop": loop_label,
-                    "rounds": round + 1,
-                    "exit": "end_turn",
-                    "stop_reason": stop_reason_name(stop_reason),
-                    "text": log_text(&text),
-                }));
-            }
-            if !done && text.is_empty() {
-                return Err(AppError::BadGateway(
-                    "LLM stream ended without producing a response".into(),
-                ));
-            }
-            return Ok(text);
-        }
-
-        // Assistant message replaying the model's tool calls (and any text).
-        let mut assistant_blocks: Vec<ContentBlock> = Vec::new();
-        if !text.is_empty() {
-            assistant_blocks.push(ContentBlock::Text { text: text.clone() });
-        }
-        for (id, name, input, extra) in &tool_uses {
-            assistant_blocks.push(ContentBlock::ToolUse {
-                id: id.clone(),
-                name: name.clone(),
-                input: input.clone(),
-                extra: extra.clone(),
-            });
-        }
-        messages.push(Message::new(Role::Assistant, assistant_blocks));
-
-        // Execute strictly against the whitelist: an unknown name gets an
-        // error result and NEVER reaches any other execution surface.
-        let mut result_blocks: Vec<ContentBlock> = Vec::new();
-        let mut outcomes: Vec<(String, bool)> = Vec::new();
-        for (id, name, input, _extra) in tool_uses {
-            let outcome = match tools.iter().find(|tool| tool.name == name) {
-                Some(tool) => (tool.handler)(input).await,
-                None => Err(format!("tool '{name}' is not available in this session")),
-            };
-            let (content, is_error) = match outcome {
-                Ok(content) => (content, false),
-                Err(message) => (message, true),
-            };
-            outcomes.push((name.clone(), is_error));
-            result_blocks.push(ContentBlock::ToolResult {
-                tool_use_id: id,
-                content,
-                is_error,
-                images: Vec::new(),
-            });
-        }
-        if let Some(ctx) = ctx {
-            let calls: Vec<serde_json::Value> = outcomes
-                .iter()
-                .map(|(name, is_error)| serde_json::json!({ "name": name, "is_error": is_error }))
-                .collect();
-            ctx.log("agent_round", serde_json::json!({
-                "loop": loop_label,
-                "round": round + 1,
-                "text": log_text(&text),
-                "stop_reason": stop_reason_name(stop_reason),
-                "tool_calls": calls,
-            }));
-        }
-        messages.push(Message::new(Role::User, result_blocks));
-    }
-
-    if let Some(ctx) = ctx {
-        ctx.log("agent_loop_end", serde_json::json!({
-            "loop": loop_label,
-            "rounds": max_rounds,
-            "exit": "max_rounds",
-        }));
-    }
-    Err(AppError::BadGateway(format!(
-        "agent loop exceeded {max_rounds} tool rounds without a final answer"
-    )))
-}
+//
+// `run_agent_loop` lives in `loop_core` — shared verbatim by the
+// course-outline and lesson-content loops. The fail-closed whitelist
+// execution contract is documented there.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use nomi_providers::ProviderError;
-    use nomi_types::message::TokenUsage;
+    use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
+    use nomi_types::message::{ContentBlock, Message, StopReason, TokenUsage};
     use nomifun_learning::LearningCompleter;
     use tokio::sync::mpsc;
 

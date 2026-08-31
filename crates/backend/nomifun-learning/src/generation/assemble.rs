@@ -48,7 +48,8 @@ pub(crate) fn assemble_outline_pack(
         title: blueprint.title.clone(),
         description: blueprint.description.clone(),
         domain,
-        source_kb_id: Some(request.knowledge_base_id.clone()),
+        // Absent for the description flow: no knowledge base backs the course.
+        source_kb_id: request.knowledge_base_id.clone(),
         version: blueprint.version.max(1),
         concepts: blueprint.concepts.clone(),
         modules,

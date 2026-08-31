@@ -72,12 +72,13 @@ impl LearningService {
         }
 
         let snapshot = sqlx::query(
-            "SELECT blueprint_json, samples_json FROM learning_courses WHERE course_id = ?",
+            "SELECT title, blueprint_json, samples_json FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
+        let course_title: String = snapshot.try_get("title").map_err(internal)?;
         let blueprint_json: Option<String> = snapshot.try_get("blueprint_json").map_err(internal)?;
         let samples_json: Option<String> = snapshot.try_get("samples_json").map_err(internal)?;
         let blueprint_json = blueprint_json.ok_or_else(|| {
@@ -100,16 +101,15 @@ impl LearningService {
             .get(lesson_position as usize)
             .ok_or_else(|| AppError::Internal("outline lesson position out of range".into()))?;
 
-        let excerpt = lesson
-            .source
-            .as_ref()
-            .and_then(|source| {
-                samples
-                    .iter()
-                    .find(|(path, _)| path == &source.path)
-                    .map(|(_, excerpt)| excerpt.as_str())
-            })
-            .unwrap_or_default();
+        let excerpt: Option<LessonExcerpt> = lesson.source.as_ref().and_then(|source| {
+            samples
+                .iter()
+                .find(|(path, _)| path == &source.path)
+                .map(|(path, text)| LessonExcerpt {
+                    path: path.clone(),
+                    text: text.clone(),
+                })
+        });
         let total_lessons: usize = blueprint
             .modules
             .iter()
@@ -120,34 +120,116 @@ impl LearningService {
             .get(lesson_position as usize + 1)
             .map(|next| next.title.as_str());
 
-        let completer = self
-            .course_completer
-            .read()
-            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
-            .clone()
-            .ok_or_else(|| {
-                AppError::Conflict("knowledge-backed course generation is not configured".into())
-            })?;
         let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
-        let output = generate_lesson(
-            completer.as_ref(),
-            model_override,
-            &blueprint,
-            module,
-            lesson,
-            module_position as usize,
-            lesson_position as usize,
+        let context = LessonGenerationContext {
+            course_title,
+            course_description: blueprint.description.clone(),
+            module_title: module.title.clone(),
+            module_index: module_position as usize,
+            lesson_title: lesson.title.clone(),
+            lesson_index: lesson_position as usize,
             total_lessons,
-            next_lesson_title,
+            next_lesson_title: next_lesson_title.map(str::to_owned),
+            purpose: lesson.purpose.clone(),
+            concepts: blueprint
+                .concepts
+                .iter()
+                .filter(|concept| lesson.concepts.contains(&concept.key))
+                .cloned()
+                .collect(),
+            concept_keys: lesson.concepts.clone(),
             excerpt,
-        )
-        .await
-        .map_err(|error| {
-            AppError::UnprocessableEntity(format!(
-                "lesson '{}' failed to generate: {error}",
-                lesson.title
-            ))
-        })?;
+        };
+        self.emit_lesson_event(serde_json::json!({
+            "phase": "started",
+            "lesson_id": lesson_id.as_str(),
+            "title": lesson.title,
+            "module": module.title,
+        }));
+        let output = match self.lesson_engine() {
+            // Agent loop path: the injected two-loop engine owns the whole
+            // lifecycle (draft + `ls_*` tools, audit-gated publish); its
+            // LoopContext emits the round/audit progress frames itself.
+            Some(engine) => {
+                let result = engine
+                    .generate(
+                        user_id,
+                        &context,
+                        model_override.map(|(provider, model)| (provider.as_str(), model)),
+                    )
+                    .await;
+                match &result {
+                    Ok(output) => self.emit_lesson_event(serde_json::json!({
+                        "phase": "completed",
+                        "lesson_id": lesson_id.as_str(),
+                        "title": lesson.title,
+                        "activities": output.activities.len(),
+                        "estimated_minutes": output.estimated_minutes,
+                    })),
+                    Err(error) => self.emit_lesson_event(serde_json::json!({
+                        "phase": "failed",
+                        "lesson_id": lesson_id.as_str(),
+                        "title": lesson.title,
+                        "error": error.to_string(),
+                    })),
+                }
+                result?
+            }
+            // Fallback: the legacy two-stage one-shot pipeline (tests and
+            // direct calls), wrapped with the same terminal events so the
+            // UI stays uniform.
+            None => {
+                let completer = self
+                    .course_completer
+                    .read()
+                    .map_err(|_| {
+                        AppError::Internal("learning course completer lock poisoned".into())
+                    })?
+                    .clone()
+                    .ok_or_else(|| {
+                        AppError::Conflict(
+                            "knowledge-backed course generation is not configured".into(),
+                        )
+                    })?;
+                match generate_lesson(
+                    completer.as_ref(),
+                    model_override,
+                    &blueprint,
+                    module,
+                    lesson,
+                    module_position as usize,
+                    lesson_position as usize,
+                    total_lessons,
+                    next_lesson_title,
+                    context.excerpt.as_ref().map(|e| e.text.as_str()).unwrap_or_default(),
+                )
+                .await
+                {
+                    Ok(output) => {
+                        self.emit_lesson_event(serde_json::json!({
+                            "phase": "completed",
+                            "lesson_id": lesson_id.as_str(),
+                            "title": lesson.title,
+                            "activities": output.activities.len(),
+                            "estimated_minutes": output.estimated_minutes,
+                        }));
+                        output
+                    }
+                    Err(error) => {
+                        self.emit_lesson_event(serde_json::json!({
+                            "phase": "failed",
+                            "lesson_id": lesson_id.as_str(),
+                            "title": lesson.title,
+                            "error": error,
+                        }));
+                        return Err(AppError::UnprocessableEntity(format!(
+                            "lesson '{}' failed to generate: {error}",
+                            lesson.title
+                        )));
+                    }
+                }
+            }
+        };
 
         let concepts = self.concept_map_for_course(&course_id).await?;
         let mut transaction = self.pool.begin().await.map_err(internal)?;

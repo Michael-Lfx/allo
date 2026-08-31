@@ -7595,6 +7595,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tracing",
  "url",
  "walkdir",
 ]

@@ -13,6 +13,13 @@ pub(crate) async fn generate_blueprint(
     module_count: u8,
     lessons_per_module: u8,
 ) -> Result<Blueprint, AppError> {
+    let mut system = BLUEPRINT_SYSTEM.to_owned();
+    if samples.is_empty() {
+        // Description flow: no sampled documents exist, so the file-citation
+        // rule is replaced by brief grounding and lessons omit `source`.
+        system.push('\n');
+        system.push_str(BLUEPRINT_NO_SAMPLE_RULE);
+    }
     let mut last_error = String::new();
     for attempt in 0..2 {
         let user = if attempt == 0 {
@@ -26,7 +33,7 @@ pub(crate) async fn generate_blueprint(
         let raw = complete(
             completer,
             model_override,
-            BLUEPRINT_SYSTEM,
+            &system,
             &user,
             BLUEPRINT_MAX_TOKENS,
         )
@@ -71,7 +78,35 @@ pub(crate) fn build_blueprint_prompt(
 }
 
 
-pub(super) fn validate_blueprint(
+/// Appended to the blueprint system prompt when no sampled documents exist
+/// (description flow): the brief is the whole grounding and the `source`
+/// field is omitted.
+const BLUEPRINT_NO_SAMPLE_RULE: &str = "No sampled documents are provided for this run: ground \
+every lesson in the course brief itself and omit the \"source\" field from every lesson.";
+
+
+/// Description-flow variant of [`build_blueprint_prompt`]: the brief is the
+/// whole grounding — no knowledge base, no samples, no source citations.
+pub(crate) fn build_description_blueprint_prompt(
+    description: &str,
+    domain: Option<&str>,
+    module_count: u8,
+    lessons_per_module: u8,
+) -> String {
+    let mut prompt = format!(
+        "Course brief:\n{}\n\
+         Target size: exactly {module_count} modules and {lessons_per_module} lessons per module.\n",
+        description.trim()
+    );
+    if let Some(domain) = domain.map(str::trim).filter(|domain| !domain.is_empty()) {
+        prompt.push_str(&format!("Requested domain label: {domain}\n"));
+    }
+    prompt.push_str("\nDesign the course blueprint JSON now.");
+    prompt
+}
+
+
+pub(crate) fn validate_blueprint(
     blueprint: &Blueprint,
     samples: &[(String, String)],
     module_count: u8,
@@ -141,14 +176,19 @@ pub(super) fn validate_blueprint(
                     ));
                 }
             }
-            let Some(source) = &lesson.source else {
-                return Err(format!("lesson \"{}\" has no source", lesson.title));
-            };
-            if !source_paths.contains(source.path.as_str()) {
-                return Err(format!(
-                    "lesson \"{}\" cites an unsampled source path: {}",
-                    lesson.title, source.path
-                ));
+            // kb flow: every lesson must cite an exact sampled file. The
+            // description flow has no samples, so no source is required and
+            // an invented path is simply dropped on import.
+            if !samples.is_empty() {
+                let Some(source) = &lesson.source else {
+                    return Err(format!("lesson \"{}\" has no source", lesson.title));
+                };
+                if !source_paths.contains(source.path.as_str()) {
+                    return Err(format!(
+                        "lesson \"{}\" cites an unsampled source path: {}",
+                        lesson.title, source.path
+                    ));
+                }
             }
         }
     }

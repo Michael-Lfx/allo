@@ -1,7 +1,7 @@
 use nomifun_common::{
-    KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId, LearningCourseId,
-    LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId, ProviderId,
-    TimestampMs,
+    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
+    LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,
+    LearningReviewItemId, ProviderId, TimestampMs,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,7 +24,15 @@ pub struct CoursePack {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateCourseRequest {
-    pub knowledge_base_id: KnowledgeBaseId,
+    /// Knowledge base to ground the course in (kb flow). Exactly one of
+    /// `knowledge_base_id` / `description` must be provided.
+    #[serde(default)]
+    pub knowledge_base_id: Option<KnowledgeBaseId>,
+    /// Free-text course brief (description flow): the course is generated
+    /// from this briefing alone — no knowledge base is involved, sampled
+    /// sources stay empty and lessons carry no `source` span.
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub domain: Option<String>,
     #[serde(default)]
@@ -37,6 +45,47 @@ pub struct GenerateCourseRequest {
     pub lessons_per_module: u8,
     #[serde(default)]
     pub mode: CourseGenerationMode,
+}
+
+impl GenerateCourseRequest {
+    /// Shared request validation for the synchronous generate endpoint and
+    /// the agent tool sink: model fields come as a pair, the sizing bounds
+    /// hold, and exactly one of the two generation sources is chosen.
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.provider_id.is_some() != self.model.is_some() {
+            return Err(AppError::BadRequest(
+                "provider_id and model must be provided together".into(),
+            ));
+        }
+        if self
+            .model
+            .as_deref()
+            .is_some_and(|model| model.trim().is_empty())
+        {
+            return Err(AppError::BadRequest("model must not be empty".into()));
+        }
+        if !(1..=6).contains(&self.module_count) {
+            return Err(AppError::BadRequest(
+                "module_count must be between 1 and 6".into(),
+            ));
+        }
+        if !(1..=6).contains(&self.lessons_per_module) {
+            return Err(AppError::BadRequest(
+                "lessons_per_module must be between 1 and 6".into(),
+            ));
+        }
+        if self.knowledge_base_id.is_some() == self.description.is_some() {
+            return Err(AppError::BadRequest(
+                "exactly one of knowledge_base_id or description must be provided".into(),
+            ));
+        }
+        if let Some(description) = &self.description {
+            if description.trim().is_empty() {
+                return Err(AppError::BadRequest("description must not be empty".into()));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Course generation strategy. Only `on_demand` exists today: the outline is
@@ -97,18 +146,6 @@ pub struct RepairFigureRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepairFigureResponse {
     pub code: String,
-}
-
-/// Optional model preference for retrying a failed course-generation job.
-/// Both fields are sent together (or neither); when provided the job's
-/// request snapshot is re-pointed at the chosen model before the retry
-/// re-runs, so a busy default model can be swapped for another one.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RetryCourseJobRequest {
-    #[serde(default)]
-    pub provider_id: Option<ProviderId>,
-    #[serde(default)]
-    pub model: Option<String>,
 }
 
 const fn default_module_count() -> u8 {
@@ -715,114 +752,4 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack the column, so it defaults on read.
     #[serde(default)]
     pub distractors: Vec<String>,
-}
-
-/// Who submitted a course-generation job: the HTTP generate endpoint or an
-/// agent tool call. Kept for the task list display only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CourseJobSource {
-    Http,
-    Agent,
-}
-
-impl CourseJobSource {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Http => "http",
-            Self::Agent => "agent",
-        }
-    }
-}
-
-impl TryFrom<&str> for CourseJobSource {
-    type Error = String;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "http" => Ok(Self::Http),
-            "agent" => Ok(Self::Agent),
-            other => Err(format!("unsupported course job source: {other}")),
-        }
-    }
-}
-
-/// Pipeline stage of a persistent course-generation job. Non-terminal stages
-/// double as the runner's next step, so the claimed row always tells the
-/// runner what to do after a resume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CourseJobStatus {
-    Queued,
-    Sampling,
-    Blueprint,
-    Lessons,
-    Importing,
-    Completed,
-    Failed,
-    Cancelled,
-    Interrupted,
-}
-
-impl CourseJobStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Sampling => "sampling",
-            Self::Blueprint => "blueprint",
-            Self::Lessons => "lessons",
-            Self::Importing => "importing",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-            Self::Interrupted => "interrupted",
-        }
-    }
-
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
-    }
-}
-
-impl TryFrom<&str> for CourseJobStatus {
-    type Error = String;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "queued" => Ok(Self::Queued),
-            "sampling" => Ok(Self::Sampling),
-            "blueprint" => Ok(Self::Blueprint),
-            "lessons" => Ok(Self::Lessons),
-            "importing" => Ok(Self::Importing),
-            "completed" => Ok(Self::Completed),
-            "failed" => Ok(Self::Failed),
-            "cancelled" => Ok(Self::Cancelled),
-            "interrupted" => Ok(Self::Interrupted),
-            other => Err(format!("unsupported course job status: {other}")),
-        }
-    }
-}
-
-/// Public projection of one `learning_course_jobs` row: everything the
-/// Learning page needs to render progress and offer cancel/resume/retry.
-#[derive(Debug, Clone, Serialize)]
-pub struct CourseJobView {
-    pub job_id: String,
-    pub source: CourseJobSource,
-    pub status: CourseJobStatus,
-    /// 1-based module index of the lesson currently being generated (0 until
-    /// the blueprint resolves).
-    pub current_module: i64,
-    /// Number of completed lessons (0..=total_lessons).
-    pub current_lesson: i64,
-    pub total_lessons: i64,
-    pub error: Option<String>,
-    pub course_id: Option<String>,
-    /// Knowledge base name the course is generated from (`None` when the
-    /// base was deleted since the job ran).
-    pub knowledge_base_name: Option<String>,
-    /// User-provided course domain from the request snapshot, when given.
-    pub domain: Option<String>,
-    pub created_at: TimestampMs,
-    pub updated_at: TimestampMs,
 }

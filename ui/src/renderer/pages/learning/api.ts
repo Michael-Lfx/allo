@@ -7,7 +7,6 @@ import type {
   ConceptGraphView,
   ConceptRef,
   CourseDetail,
-  CourseJobView,
   CourseSummary,
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
@@ -22,7 +21,6 @@ import type {
   LessonStatus,
   QuestionEntry,
   RepairConceptGraphRequest,
-  RetryCourseJobRequest,
   ReviewAnswerResult,
   ReviewRating,
   ReviewResult,
@@ -42,19 +40,10 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
+  // 同步生成：agent loop 全程在 HTTP 请求内执行（约 1-3 分钟），过程事件经
+  // WS 的 `learning.course-generation` 推送，终态以本响应为准。
   generateCourse: (request: GenerateCourseRequest) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/courses/generate`, request),
-  listCourseJobs: () => httpRequest<CourseJobView[]>('GET', `${BASE}/course-jobs`),
-  getCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('GET', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
-  cancelCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/cancel`),
-  resumeCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/resume`),
-  retryCourseJob: (id: string, request: RetryCourseJobRequest) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/retry`, request),
-  deleteCourseJob: (id: string) =>
-    httpRequest<void>('DELETE', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
+    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>

@@ -169,8 +169,10 @@ pub(super) fn validate_lesson(
 
 /// Document-stage validation: a hard length floor plus the three required
 /// sections — 描述/例子/验证 (English variants accepted) — appearing in
-/// order, each introduced by a `## ` heading line.
-pub(super) fn validate_lesson_document(summary: &str) -> Result<(), String> {
+/// order, each introduced by a `## ` heading line. `pub(crate)`: the lesson
+/// draft audit reuses this validator verbatim so both pipelines enforce the
+/// identical document contract.
+pub(crate) fn validate_lesson_document(summary: &str) -> Result<(), String> {
     let char_count = summary.chars().filter(|c| !c.is_whitespace()).count();
     if char_count < LESSON_SUMMARY_MIN_CHARS {
         return Err(format!(

@@ -1601,6 +1601,70 @@ export const fileStream = {
   }>('fileStream.contentUpdate'),
 };
 
+// ---------------------------------------------------------------------------
+// Learning — course/lesson generation progress (WS, best-effort)
+// ---------------------------------------------------------------------------
+
+/** One tool call inside a generation round (`loop_core` agent_round reshape). */
+export interface ILearningGenerationToolCall {
+  name: string;
+  is_error: boolean;
+}
+
+/** 课程生成过程事件（`learning.course-generation`）。`phase` 区分阶段；
+ * WS 不重放、不补发，终态一律以同步 HTTP 响应为准，因此所有过程字段可选。 */
+export interface ILearningCourseGenerationEvent {
+  phase: 'started' | 'scope' | 'round' | 'audit' | 'publishing' | 'completed' | 'failed';
+  /** 生成来源：课程简报 / 知识库 */
+  kind?: 'description' | 'knowledge_base';
+  module_count?: number;
+  lessons_per_module?: number;
+  /** agent loop 轮次：loop=generate|repair、round/max_rounds、本轮工具调用与摘要文本 */
+  loop?: 'generate' | 'repair';
+  round?: number;
+  max_rounds?: number;
+  tools?: ILearningGenerationToolCall[];
+  text?: string;
+  /** 审计发现计数与最多 5 条 danger 摘要 */
+  danger?: number;
+  warning?: number;
+  info?: number;
+  top?: string[];
+  /** 终态：入库课程信息 / 失败原因 */
+  course_id?: string;
+  title?: string;
+  modules?: number;
+  lessons?: number;
+  error?: string;
+}
+
+/** 课时内容生成过程事件（`learning.lesson-generation`），与课程事件同构，
+ * 额外带 lesson 标识供并发生成的 UI 过滤。 */
+export interface ILearningLessonGenerationEvent {
+  phase: 'started' | 'round' | 'audit' | 'completed' | 'failed';
+  lesson_id?: string;
+  title?: string;
+  module?: string;
+  loop?: 'generate' | 'repair';
+  round?: number;
+  max_rounds?: number;
+  tools?: ILearningGenerationToolCall[];
+  text?: string;
+  danger?: number;
+  warning?: number;
+  info?: number;
+  top?: string[];
+  activities?: number;
+  estimated_minutes?: number;
+  error?: string;
+}
+
+/** 学习模块生成过程事件（概念图生成进度同款 best-effort 推送）。 */
+export const learning = {
+  courseGeneration: wsEmitter<ILearningCourseGenerationEvent>('learning.course-generation'),
+  lessonGeneration: wsEmitter<ILearningLessonGenerationEvent>('learning.lesson-generation'),
+};
+
 // File snapshot providers
 export const fileSnapshot = {
   init: httpPost<import('@/common/types/platform/fileSnapshot').SnapshotInfo, { workspace: string }>(

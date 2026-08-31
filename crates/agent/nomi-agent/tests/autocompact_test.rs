@@ -701,7 +701,8 @@ async fn summary_output_cap_follows_context_window() {
     autocompact(&provider, &messages, "test-model", &config, &mut state)
         .await
         .expect("compact");
-    assert_eq!(*provider.last_max_tokens.lock().unwrap(), Some(4000));
+    // Summary budget = one output unit = window/8 (128k → 16000, capped 20000).
+    assert_eq!(*provider.last_max_tokens.lock().unwrap(), Some(16_000));
 }
 
 #[tokio::test]

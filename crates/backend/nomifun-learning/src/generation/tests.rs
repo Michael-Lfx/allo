@@ -571,7 +571,8 @@
     fn generated_request_keeps_selected_knowledge_base() {
         let id = KnowledgeBaseId::new();
         let request = GenerateCourseRequest {
-            knowledge_base_id: id.clone(),
+            knowledge_base_id: Some(id.clone()),
+            description: None,
             domain: None,
             provider_id: None,
             model: None,
@@ -579,7 +580,7 @@
             lessons_per_module: 3,
             mode: crate::models::CourseGenerationMode::OnDemand,
         };
-        assert_eq!(request.knowledge_base_id, id);
+        assert_eq!(request.knowledge_base_id, Some(id));
     }
 
     /// A minimal blueprint with one module, one lesson and one concept.

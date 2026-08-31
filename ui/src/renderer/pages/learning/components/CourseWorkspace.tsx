@@ -11,7 +11,7 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { IconPlus } from '@arco-design/web-react/icon';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
@@ -261,6 +261,28 @@ function LessonBlock({
 }) {
   const { t } = useTranslation();
   const [addQuestionOpen, setAddQuestionOpen] = useState(false);
+  // 按需生成课时的行内迷你进度：按 lesson 过滤 round/audit 事件，
+  // 一行文本轻量更新（不展开完整 timeline）；终态事件清空文本
+  const [progressText, setProgressText] = useState<string | null>(null);
+  useEffect(() => {
+    return ipcBridge.learning.lessonGeneration.on((event) => {
+      if (event.lesson_id && event.lesson_id !== lesson.id) return;
+      if (event.phase === 'round') {
+        setProgressText(
+          `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenRound', { round: event.round ?? '' })}`
+        );
+      } else if (event.phase === 'audit') {
+        setProgressText(
+          `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenAudit', {
+            danger: event.danger ?? 0,
+            warning: event.warning ?? 0,
+          })}`
+        );
+      } else if (event.phase === 'completed' || event.phase === 'failed') {
+        setProgressText(null);
+      }
+    });
+  }, [lesson.id, t]);
   if (!lesson.generated) {
     return (
       <div className='flex flex-col gap-12px'>
@@ -276,6 +298,7 @@ function LessonBlock({
           >
             {t('learning.generateLessonContent')}
           </Button>
+          {progressText && <Text type='secondary'>{progressText}</Text>}
         </div>
       </div>
     );
