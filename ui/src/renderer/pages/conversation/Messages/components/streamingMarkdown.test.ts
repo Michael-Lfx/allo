@@ -32,4 +32,52 @@ describe('splitStreamingMarkdown', () => {
     expect(result.codeLanguage).toBe('tsx');
     expect(result.codeContent).toBe('const value = <Panel />');
   });
+
+  test('keeps the stable prefix fixed while a paragraph grows token by token', () => {
+    const prefix = '## Generated prompt\n\n';
+    const tail = 'A premium vertical infographic poster about a Border Collie dog breed';
+    let source = prefix;
+
+    for (const token of tail) {
+      source += token;
+      const result = splitStreamingMarkdown(source);
+
+      expect(result.stablePrefix).toBe(prefix);
+      expect(result.tail).toBe(source.slice(prefix.length));
+      expect(result.tailKind).toBe('text');
+    }
+  });
+
+  test('promotes a completed paragraph exactly once when its blank line arrives', () => {
+    const partial = splitStreamingMarkdown('Intro\n\nThe final line is still growing');
+    const completed = splitStreamingMarkdown('Intro\n\nThe final line is now complete\n\nNext block');
+
+    expect(partial.stablePrefix).toBe('Intro\n\n');
+    expect(completed.stablePrefix).toBe('Intro\n\nThe final line is now complete\n\n');
+    expect(completed.tail).toBe('Next block');
+  });
+
+  test('does not promote a paragraph or list on a single trailing newline', () => {
+    const result = splitStreamingMarkdown('- first item\n');
+
+    expect(result.stablePrefix).toBe('');
+    expect(result.tail).toBe('- first item\n');
+    expect(result.tailKind).toBe('text');
+  });
+
+  test('allows a completed paragraph boundary to leave an explicit empty tail', () => {
+    const result = splitStreamingMarkdown('Intro\n\n');
+
+    expect(result.stablePrefix).toBe('Intro\n\n');
+    expect(result.tail).toBe('');
+    expect(result.tailKind).toBe('text');
+  });
+
+  test('keeps a closed fence stable when the stream currently has no tail', () => {
+    const result = splitStreamingMarkdown('```ts\nconst ready = true;\n```');
+
+    expect(result.stablePrefix).toBe('```ts\nconst ready = true;\n```');
+    expect(result.tail).toBe('');
+    expect(result.tailKind).toBe('text');
+  });
 });

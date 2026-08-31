@@ -103,8 +103,9 @@
   text-wrap: pretty;
 }
 
-/* Pretty rebalances earlier wrap points as the tail grows, which reads as
-   line-jumping during fast streams. Keep greedy wrap on the live tail only. */
+/* This light-DOM fallback tail must wrap greedily. Pretty wrapping can
+   rebalance earlier lines as text grows, which reads as line-jumping during
+   fast streams. MarkdownView owns its typography inside Shadow DOM. */
 .message-text-body.message-streaming-body {
   text-wrap: wrap;
 }

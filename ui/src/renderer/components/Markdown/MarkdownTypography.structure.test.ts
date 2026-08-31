@@ -15,6 +15,8 @@ describe('Markdown typography controls', () => {
   test('lets message surfaces override the Shadow DOM body typography', () => {
     expect(markdownPropsSource.includes('fontSize?: string')).toBe(true);
     expect(markdownPropsSource.includes('lineHeight?: string')).toBe(true);
+    expect(markdownPropsSource.includes('collapsibleBlockquotes?: boolean')).toBe(true);
+    expect(markdownSource.includes('collapsibleBlockquotes = false')).toBe(true);
     expect(markdownSource.includes('<ShadowView fontSize={fontSize} lineHeight={lineHeight}>')).toBe(true);
     expect(shadowSource.includes('fontSize?: string')).toBe(true);
     expect(shadowSource.includes('lineHeight?: string')).toBe(true);
@@ -30,6 +32,8 @@ describe('Markdown typography controls', () => {
     expect(shadowSource.includes("'--color-link':")).toBe(true);
     expect(shadowSource.includes('markdown-code-toolbar')).toBe(true);
     expect(shadowSource.includes('markdown-code-block:focus-within')).toBe(true);
+    expect(shadowSource.includes('.collapsible-content__toggle')).toBe(true);
+    expect(shadowSource.includes('.collapsible-content__mask')).toBe(true);
     expect(shadowSource.includes('.markdown-shadow-body .hljs code')).toBe(true);
     expect(shadowSource.includes('.markdown-code-content::-webkit-scrollbar')).toBe(true);
   });

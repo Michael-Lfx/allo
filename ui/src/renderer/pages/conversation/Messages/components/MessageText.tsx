@@ -791,6 +791,7 @@ const MessageText: React.FC<{
                     fontSize={MESSAGE_BODY_FONT_SIZE}
                     lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                     allowUnverifiedImages={isUserMessage}
+                    collapsibleBlockquotes={false}
                   >{`\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``}</MarkdownView>
                 </CollapsibleContent>
               ) : streamingParts && streamingParts.tailKind === 'code' ? (
@@ -801,7 +802,7 @@ const MessageText: React.FC<{
                       fontSize={MESSAGE_BODY_FONT_SIZE}
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                       allowUnverifiedImages={isUserMessage}
-                      isStreaming
+                      collapsibleBlockquotes={false}
                     >
                       {streamingParts.stablePrefix}
                     </MarkdownView>
@@ -811,21 +812,29 @@ const MessageText: React.FC<{
                   </CodeBlock>
                 </>
               ) : streamingParts ? (
-                <MarkdownView
-                  codeStyle={CODE_STYLE}
-                  fontSize={MESSAGE_BODY_FONT_SIZE}
-                  lineHeight={MESSAGE_BODY_LINE_HEIGHT}
-                  allowUnverifiedImages={isUserMessage}
-                  isStreaming
-                >
-                  {data}
-                </MarkdownView>
+                <>
+                  {streamingParts.stablePrefix ? (
+                    <MarkdownView
+                      codeStyle={CODE_STYLE}
+                      fontSize={MESSAGE_BODY_FONT_SIZE}
+                      lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                      allowUnverifiedImages={isUserMessage}
+                      collapsibleBlockquotes={false}
+                    >
+                      {streamingParts.stablePrefix}
+                    </MarkdownView>
+                  ) : null}
+                  <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>
+                    {streamingParts.tail}
+                  </div>
+                </>
               ) : (
                 <MarkdownView
                   codeStyle={CODE_STYLE}
                   fontSize={MESSAGE_BODY_FONT_SIZE}
                   lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                   allowUnverifiedImages={isUserMessage}
+                  collapsibleBlockquotes={!isUserMessage && !isStreaming}
                 >
                   {data}
                 </MarkdownView>
