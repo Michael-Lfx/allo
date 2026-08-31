@@ -147,7 +147,7 @@ pub fn three_view_image_prompt(identifier: &str, features: &str, style: &str) ->
     include_str!("../../prompts/character_portraits_generator__prompt_template_three_view.txt")
         .replace("{identifier}", identifier)
         .replace("{features}", &features)
-        .replace("{style}", &crate::planning::resolve_visual_style(style))
+        .replace("{style}", &crate::planning::style_for_three_view_image(style))
 }
 
 fn safe_file_stem(s: &str) -> String {
@@ -263,7 +263,9 @@ mod tests {
         assert!(prompt.contains("一定要使用AI人脸"));
         assert!(prompt.contains("仅限原创虚构人物"));
         assert!(prompt.contains("不得套用现实真人、明星长相"));
-        assert!(prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.to_ascii_lowercase().contains("topology mesh"));
+        assert!(!prompt.contains("of character "));
         assert!(!prompt.contains("{look_lock}"));
         assert!(!prompt.contains("{medium_lock}"));
         assert!(!prompt.contains("{face_guidance}"));
@@ -286,7 +288,16 @@ mod tests {
         assert!(prompt.contains("人物安全约束"));
         assert!(prompt.contains("一定要使用AI人脸"));
         assert!(prompt.contains("不得套用现实真人、明星长相"));
-        assert!(prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.to_ascii_lowercase().contains("topology mesh"));
+        assert!(!prompt.to_ascii_lowercase().contains("designed characters"));
+        assert!(!prompt.to_ascii_lowercase().contains("clean healthy facial skin"));
+        assert!(!prompt.contains("of character "));
+        let defaulted = three_view_image_prompt("李薇", "(static) red hanfu", "");
+        let defaulted_l = defaulted.to_ascii_lowercase();
+        assert!(!defaulted_l.contains("designed characters"));
+        assert!(!defaulted_l.contains("clean healthy facial skin"));
+        assert!(!defaulted.contains("蓝色拓扑网格"));
     }
 
     #[test]
@@ -305,7 +316,9 @@ mod tests {
         assert!(!prompt.contains("CHILD FACE LOCK"));
         assert!(prompt.contains("人物安全约束"));
         assert!(prompt.contains("一定要使用AI人脸"));
-        assert!(prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.contains("蓝色拓扑网格"));
+        assert!(!prompt.to_ascii_lowercase().contains("topology mesh"));
+        assert!(!prompt.contains("of character "));
     }
 
     #[test]

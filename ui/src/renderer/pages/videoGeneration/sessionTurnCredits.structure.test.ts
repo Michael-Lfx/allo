@@ -7,11 +7,13 @@ const source = (rel: string) =>
 describe('video generation session video credits', () => {
   test('workspace and progress rail surface persisted video-task credits', () => {
     const page = source('./WorkspacePage.tsx');
-    const timeline = source('./components/ProgressTimeline.tsx');
+    const session = source('./studioAgentSession/StudioAgentSession.tsx');
     expect(page.includes('credits_consumed')).toBe(true);
     expect(page.includes('session-video-credits')).toBe(true);
-    expect(timeline.includes('creditsConsumed')).toBe(true);
-    expect(timeline.includes('session-video-credits-live')).toBe(true);
+    expect(session.includes('creditsConsumed')).toBe(true);
+    expect(session.includes('session-video-credits-live')).toBe(true);
+    const credits = source('./sessionCredits.ts');
+    expect(credits.includes('video_credits')).toBe(true);
   });
 
   test('artifact preview no longer offers local image replace', () => {

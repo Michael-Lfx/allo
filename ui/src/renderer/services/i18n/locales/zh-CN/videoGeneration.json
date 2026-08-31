@@ -695,6 +695,57 @@
       "filmstripNext": "向右查看镜头"
     }
   },
+  "agentSession": {
+    "title": "Agent 会话",
+    "collapse": "收起会话",
+    "expand": "展开会话",
+    "resize": "调整会话宽度",
+    "idlePhase": "待开始",
+    "working": "正在推进…",
+    "briefExpand": "展开全文",
+    "briefCollapse": "收起",
+    "filmHint": "完整播放在左侧主列。点击封面可放大预览。",
+    "cancelledHint": "可从断点继续，已成功的片段不会重复扣费。",
+    "send": {
+      "plan": "开始规划",
+      "render": "确认并生成成片",
+      "continue": "从断点继续"
+    },
+    "action": {
+      "planning": "正在规划…",
+      "rendering": "正在生成成片…",
+      "working": "正在生成…",
+      "stopHint": "点击可终止",
+      "done": "成片已在左侧准备好"
+    },
+    "hint": {
+      "needAssets": "请先在左侧上传角色图和参考视频"
+    },
+    "gate": {
+      "renderTitle": "分镜和定妆可以开渲了吗？",
+      "renderBody": "建议先在左侧检查分镜与定妆。确认后将逐镜出片并拼接，成本较高。",
+      "actionTitle": "素材就绪，开始生成？",
+      "actionBody": "将按参考视频的动作生成成片。确认即开始。"
+    },
+    "preview": {
+      "open": "放大预览",
+      "close": "关闭预览",
+      "prev": "上一张",
+      "next": "下一张",
+      "counter": "{{current}} / {{total}}"
+    },
+    "issue": {
+      "detail": "问题详情",
+      "kind": {
+        "credits": "积分",
+        "llm": "规划模型",
+        "image": "图片模型",
+        "video": "视频模型",
+        "unknown": "任务",
+        "cancelled": "已停止"
+      }
+    }
+  },
   "artifacts": {
     "edit": "编辑",
     "save": "保存",

@@ -695,6 +695,57 @@
       "filmstripNext": "Scroll shots right"
     }
   },
+  "agentSession": {
+    "title": "Agent session",
+    "collapse": "Collapse session",
+    "expand": "Open session",
+    "resize": "Resize session",
+    "idlePhase": "Not started",
+    "working": "Working…",
+    "briefExpand": "Show more",
+    "briefCollapse": "Show less",
+    "filmHint": "Full playback is in the main column. Click the cover to preview.",
+    "cancelledHint": "You can resume from the checkpoint. Finished clips will not be billed again.",
+    "send": {
+      "plan": "Start planning",
+      "render": "Confirm and render",
+      "continue": "Resume from checkpoint"
+    },
+    "action": {
+      "planning": "Planning…",
+      "rendering": "Rendering the film…",
+      "working": "Generating…",
+      "stopHint": "Click to stop",
+      "done": "Your film is ready in the main column"
+    },
+    "hint": {
+      "needAssets": "Upload a character still and reference video on the left first"
+    },
+    "gate": {
+      "renderTitle": "Ready to render the storyboard?",
+      "renderBody": "Review shots and portraits on the left first. Confirming starts billed clip generation and muxing.",
+      "actionTitle": "Assets ready — generate the clip?",
+      "actionBody": "The film will follow the reference video motion. Confirm to start."
+    },
+    "preview": {
+      "open": "Open preview",
+      "close": "Close preview",
+      "prev": "Previous",
+      "next": "Next",
+      "counter": "{{current}} / {{total}}"
+    },
+    "issue": {
+      "detail": "Details",
+      "kind": {
+        "credits": "Credits",
+        "llm": "Planning model",
+        "image": "Image model",
+        "video": "Video model",
+        "unknown": "Task",
+        "cancelled": "Stopped"
+      }
+    }
+  },
   "artifacts": {
     "edit": "Edit",
     "save": "Save",

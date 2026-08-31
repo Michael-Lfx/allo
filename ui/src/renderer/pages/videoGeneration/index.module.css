@@ -302,6 +302,58 @@
     var(--color-bg-1);
 }
 
+.studioShell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.studioHeader {
+  flex-shrink: 0;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--color-border-2);
+  background: color-mix(in srgb, var(--color-bg-2) 92%, transparent);
+}
+
+.studioBody {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.studioMain {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.studioMainInner {
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px 28px;
+}
+
+@media (max-width: 768px) {
+  .studioBody {
+    flex-direction: column;
+  }
+
+  .studioHeader {
+    padding: 10px 12px;
+  }
+
+  .studioMainInner {
+    padding: 12px 12px 16px;
+  }
+}
+
 .stageRail {
   display: flex;
   align-items: stretch;

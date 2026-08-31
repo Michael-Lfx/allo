@@ -50,6 +50,8 @@ interface StoryboardBoardProps {
   artifacts: ArtifactNode[];
   disabled?: boolean;
   revising?: boolean;
+  /** Select this filmstrip card when the agent session focuses a shot. */
+  focusSceneId?: string | null;
   /** Persist edited Visual / audio direction for the active shot. */
   onSaveSceneDescriptions: (
     scene: StoryboardScene,
@@ -206,6 +208,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   artifacts,
   disabled,
   revising,
+  focusSceneId,
   onSaveSceneDescriptions,
 }) => {
   const { t } = useTranslation();
@@ -292,6 +295,14 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
       ),
     [artifacts, storyboardEntries, generationSpecs]
   );
+
+  useEffect(() => {
+    if (!focusSceneId) return;
+    if (scenes.some((scene) => scene.id === focusSceneId)) {
+      setActiveSceneId(focusSceneId);
+    }
+  }, [focusSceneId, scenes]);
+
   const activeScene =
     scenes.find((scene) => scene.id === activeSceneId) ??
     scenes[0];
