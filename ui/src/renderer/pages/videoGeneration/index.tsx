@@ -37,6 +37,7 @@ import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
 import { prefetchCanvasWorkspace } from './prefetch';
+import { videoCanvasProjectPath } from '../videoCanvas/routes';
 import { parseVideoHomeMode } from './home/types';
 import type { VideoCreateDraft, VideoHomeMode } from './home/types';
 import {
@@ -442,7 +443,7 @@ const VideoGenerationListPage: React.FC = () => {
           project_id: id,
         });
         clearVideoHomeDraft();
-        navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
+        navigate(videoCanvasProjectPath(id));
       } catch (cause) {
         if (isInvalidCloudSessionError(cause)) {
           await logout();
@@ -737,7 +738,7 @@ const VideoGenerationListPage: React.FC = () => {
         source: 'project_import',
       });
       message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
-      navigate(`/video-generation/canvas/${encodeURIComponent(imported.project_id)}`);
+      navigate(videoCanvasProjectPath(imported.project_id));
     } catch (e) {
       message.error(
         `${t('videoGeneration.list.importFailed', { defaultValue: '导入失败' })}: ${

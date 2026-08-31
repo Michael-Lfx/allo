@@ -32,4 +32,15 @@ describe('video canvas routes', () => {
       expect(source).not.toContain('to="/wallet"');
     }
   });
+
+  test('uses the canonical project helper from all video-generation entry points', () => {
+    for (const source of [
+      read('../videoGeneration/home/CanvasProjectGallery.tsx'),
+      read('../videoGeneration/index.tsx'),
+      read('../videoGeneration/WorkspacePage.tsx'),
+    ]) {
+      expect(source).toContain('videoCanvasProjectPath');
+      expect(source).not.toContain('`/video-generation/canvas/${');
+    }
+  });
 });

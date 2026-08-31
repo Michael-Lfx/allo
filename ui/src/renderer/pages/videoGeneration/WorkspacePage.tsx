@@ -102,6 +102,7 @@ import {
 import { clampDuration } from './durationBounds';
 import styles from './index.module.css';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
+import { videoCanvasProjectPath } from '../videoCanvas/routes';
 
 const TextArea = Input.TextArea;
 
@@ -1218,7 +1219,7 @@ const WorkspacePage: React.FC = () => {
           }) + warnText
         );
       }
-      navigate(`/video-generation/canvas/${encodeURIComponent(result.project_id)}`);
+      navigate(videoCanvasProjectPath(result.project_id));
     } catch (e) {
       message.error(
         `${t('videoGeneration.actions.openInCanvasFailed', { defaultValue: '打开到 Canvas 失败' })}: ${
