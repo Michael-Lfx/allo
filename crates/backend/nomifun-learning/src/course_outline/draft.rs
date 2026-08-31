@@ -906,9 +906,15 @@ impl OutlineDraft {
 
     /// A scope block counts as covered when some module, lesson or concept
     /// title shares a meaningful substring with it (same weak bar the
-    /// concept graph audit applies).
+    /// concept graph audit applies). The bar is capped by the block's own
+    /// character length: the scope analysis can legitimately emit
+    /// single-character blocks ("栈", "图") whose longest possible shared
+    /// substring is 1 — without the cap such blocks are unmatchable and the
+    /// audit deadlocks the whole run (the model patches forever guessing at
+    /// the rule).
     fn block_covered(&self, block: &str) -> bool {
-        let covered = |text: &str| common_substring_len(text, block) >= BLOCK_MIN_SHARED;
+        let bar = scope_block_bar(block);
+        let covered = |text: &str| common_substring_len(text, block) >= bar;
         self.modules.iter().any(|module| covered(&module.title))
             || self.lessons.iter().any(|lesson| covered(&lesson.title))
             || self.concepts.iter().any(|concept| covered(&concept.title))
@@ -1172,11 +1178,15 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
     if let Some(scope) = &draft.scope {
         for block in &scope.blocks {
             if !draft.block_covered(block) {
+                let bar = scope_block_bar(block);
                 findings.push(finding(
                     "scope_gap",
                     SEV_DANGER,
                     format!(
-                        "scope block '{block}' is not covered by any module, lesson or concept title"
+                        "scope block '{block}' is not covered by any module, lesson or concept title \
+                         (coverage = a title sharing at least {bar} consecutive characters with the \
+                         block — a title containing '{block}' always counts); fix: add or rename one \
+                         module/lesson/concept whose title contains '{block}'"
                     ),
                     vec![],
                 ));
@@ -1185,6 +1195,14 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
     }
 
     findings
+}
+
+/// Coverage bar for one scope block: `BLOCK_MIN_SHARED` shared consecutive
+/// characters, capped by the block's own length (min 1) — a single-character
+/// block is covered by exact title containment, longer blocks keep the
+/// deliberately weak 2-char bar.
+fn scope_block_bar(block: &str) -> usize {
+    BLOCK_MIN_SHARED.min(block.chars().count()).max(1)
 }
 
 fn finding(kind: &str, severity: &str, message: String, evidence: Vec<String>) -> AuditFinding {
@@ -1652,6 +1670,41 @@ mod tests {
         let kinds = danger_kinds(&complete);
         assert!(kinds.contains(&"scope_gap"), "{kinds:?}");
         assert!(complete.audit_report().contains("特征值"));
+    }
+
+    /// 单字 scope 块（真实案例：'栈'、'图'）与任何标题的最长公共子串只有
+    /// 1 字符——覆盖条必须按块长截断，否则块永远不可覆盖，audit 死锁。
+    #[test]
+    fn single_char_scope_block_matches_by_title_containment() {
+        let scope = ScopeAnalysis {
+            scope: "数据结构".into(),
+            blocks: vec!["栈".into()],
+        };
+        let mut covered = build_complete_draft(kb_brief());
+        covered.apply_ops(vec![op(
+            r#"{"op":"update_module","key":"m1","title":"栈与队列入门"}"#,
+        )]);
+        covered.scope = Some(scope.clone());
+        covered.refresh_audit();
+        assert!(
+            !danger_kinds(&covered).contains(&"scope_gap"),
+            "{:?}",
+            covered.findings
+        );
+
+        let mut uncovered = build_complete_draft(kb_brief());
+        uncovered.scope = Some(scope);
+        uncovered.refresh_audit();
+        assert!(
+            danger_kinds(&uncovered).contains(&"scope_gap"),
+            "{:?}",
+            uncovered.findings
+        );
+        let report = uncovered.audit_report();
+        assert!(
+            report.contains("containing '栈'"),
+            "the finding must state the matching rule: {report}"
+        );
     }
 
     #[test]
