@@ -88,6 +88,11 @@ describe('MessageText process action chrome', () => {
     expect(proseBranch.includes('isStreaming={isStreaming}')).toBe(true);
   });
 
+  test('enables blockquote collapse only for completed assistant markdown', () => {
+    expect(source.includes('collapsibleBlockquotes={!isUserMessage && !isStreaming}')).toBe(true);
+    expect(source.includes('collapsibleBlockquotes={false}')).toBe(true);
+  });
+
   test('does not pretty-rebalance wrap points on the live streaming tail', () => {
     expect(messagesCss.includes('text-wrap: pretty')).toBe(true);
     expect(messagesCss.includes('.message-text-body.message-streaming-body')).toBe(true);
