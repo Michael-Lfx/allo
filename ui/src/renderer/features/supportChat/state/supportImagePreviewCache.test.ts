@@ -16,9 +16,12 @@ describe('supportImagePreviewCache', () => {
       supportImagePreviewCache.set('replace', 'blob:new');
       supportImagePreviewCache.set('keep', 'blob:keep');
       expect(supportImagePreviewCache.size()).toBe(2);
+      expect(supportImagePreviewCache.hasPreviewUrl('blob:keep')).toBe(true);
+      expect(supportImagePreviewCache.hasPreviewUrl('blob:missing')).toBe(false);
 
       supportImagePreviewCache.release('replace');
       expect(supportImagePreviewCache.get('replace')).toBeUndefined();
+      expect(supportImagePreviewCache.hasPreviewUrl('blob:new')).toBe(false);
       expect(calls).toEqual(['blob:old', 'blob:new']);
 
       supportImagePreviewCache.clear();

@@ -31,12 +31,12 @@ const DEFAULT_LOG_CONTENT = '附上日志，请协助排查';
 
 type SupportMessageComposerProps = {
   disabled?: boolean;
-  onSend: (content: string, logPayload?: ICloudImAttachmentPayload) => Promise<void>;
+  onSend: (content: string, logPayload?: ICloudImAttachmentPayload) => Promise<boolean>;
   /** 同步挂 pending 气泡，上传/发送在 provider 后台完成。 */
   onSendImages: (params: {
     content: string;
     images: { file: File; fileName: string; previewUrl: string }[];
-  }) => void;
+  }) => boolean;
 };
 
 const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
@@ -82,13 +82,12 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
   }, []);
 
   const removeImagePreview = (id: string) => {
-    setImagePreviews((current) => {
-      const target = current.find((item) => item.id === id);
-      if (target) {
-        revokeSupportImagePreview(target);
-      }
-      return current.filter((item) => item.id !== id);
-    });
+    const current = imagePreviewsRef.current;
+    const target = current.find((item) => item.id === id);
+    if (target) revokeSupportImagePreview(target);
+    const next = current.filter((item) => item.id !== id);
+    imagePreviewsRef.current = next;
+    setImagePreviews(next);
   };
 
   const handleSend = async () => {
@@ -99,7 +98,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
 
     if (images.length > 0) {
       // 秒上屏：预览所有权交给 pending 气泡，立即清空输入区；上传/发送由 provider 后台处理。
-      onSendImages({
+      const accepted = onSendImages({
         content: trimmed,
         images: images.map((item) => ({
           file: item.file,
@@ -107,8 +106,10 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
           previewUrl: item.url,
         })),
       });
+      if (!accepted) return;
       setValue('');
       setImagePreviews([]);
+      imagePreviewsRef.current = [];
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -117,8 +118,8 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
 
     setSending(true);
     try {
-      await onSend(trimmed);
-      setValue('');
+      const sent = await onSend(trimmed);
+      if (sent) setValue('');
     } catch {
       // pending failure is shown in the message list
     } finally {
@@ -139,7 +140,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
       const content = t('common.supportChat.uploadLogsDefaultContent', {
         defaultValue: DEFAULT_LOG_CONTENT,
       });
-      await onSend(content, {
+      const sent = await onSend(content, {
         ...(uploaded.url ? { url: uploaded.url } : {}),
         name: uploaded.name || packed.fileName,
         contentType: uploaded.contentType || 'application/zip',
@@ -148,6 +149,13 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
         account,
         device,
       });
+      if (!sent) {
+        throw new Error(
+          t('common.supportChat.uploadLogsFailed', {
+            defaultValue: '日志打包、上传或发送失败',
+          })
+        );
+      }
       Message.success(
         t('common.supportChat.uploadLogsReady', {
           defaultValue: '日志已上传并发送',
@@ -191,7 +199,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
     event.target.value = '';
     if (files.length === 0) return;
 
-    const remaining = MAX_SUPPORT_IMAGES - imagePreviews.length;
+    const remaining = MAX_SUPPORT_IMAGES - imagePreviewsRef.current.length;
     if (remaining <= 0) {
       Message.warning(
         t('common.supportChat.imageLimitReached', {
@@ -223,7 +231,14 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
     }
 
     if (accepted.length > 0) {
-      setImagePreviews((current) => [...current, ...accepted].slice(0, MAX_SUPPORT_IMAGES));
+      const current = imagePreviewsRef.current;
+      const next = [...current, ...accepted].slice(0, MAX_SUPPORT_IMAGES);
+      const keptUrls = new Set(next.map((item) => item.url));
+      for (const item of accepted) {
+        if (!keptUrls.has(item.url)) revokeSupportImagePreview(item);
+      }
+      imagePreviewsRef.current = next;
+      setImagePreviews(next);
     }
 
     if (rejected) {

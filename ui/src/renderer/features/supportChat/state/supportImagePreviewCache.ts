@@ -31,6 +31,13 @@ export const supportImagePreviewCache = {
     if (!clientMsgId) return undefined;
     return cache.get(clientMsgId);
   },
+  /** Check whether a pending support message currently owns a preview URL. */
+  hasPreviewUrl(previewUrl: string): boolean {
+    for (const cachedUrl of cache.values()) {
+      if (cachedUrl === previewUrl) return true;
+    }
+    return false;
+  },
   /** Release one URL and make subsequent renders fall back to the remote URL. */
   release(clientMsgId: string | null | undefined): void {
     if (!clientMsgId) return;

@@ -11,12 +11,14 @@ import { useTranslation } from 'react-i18next';
 import NomiModal from '@/renderer/components/base/NomiModal';
 import ErrorDiagnosticContent from '@/renderer/components/base/ErrorDiagnosticContent';
 import { buildAgentErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
-import type {
-  ConversationErrorReportContext,
-  ConversationErrorReportDraft,
-  ConversationErrorReportSubmitResult,
+import {
+  getConversationErrorReportContextKey,
+  type ConversationErrorReportContext,
+  type ConversationErrorReportDraft,
+  type ConversationErrorReportSubmitResult,
 } from '../conversationErrorReport';
 import SupportImagePreviewGrid from './SupportImagePreviewGrid';
+import { supportImagePreviewCache } from '../state/supportImagePreviewCache';
 import {
   createSupportImagePreviewId,
   isAcceptedSupportImage,
@@ -35,15 +37,6 @@ type ConversationErrorReportModalProps = {
   onSubmit: (draft: ConversationErrorReportDraft) => Promise<ConversationErrorReportSubmitResult>;
   onOpenSupportChat: () => void;
 };
-
-function contextKey(context: ConversationErrorReportContext): string {
-  return [
-    context.conversationId,
-    context.messageId ?? '',
-    context.turnId ?? '',
-    context.occurredAt,
-  ].join(':');
-}
 
 const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> = ({
   context,
@@ -74,7 +67,10 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
   useEffect(() => {
     return () => {
       for (const screenshot of screenshotsRef.current) {
-        if (!providerOwnedPreviewUrlsRef.current.has(screenshot.url)) {
+        if (
+          !providerOwnedPreviewUrlsRef.current.has(screenshot.url) &&
+          !supportImagePreviewCache.hasPreviewUrl(screenshot.url)
+        ) {
           revokeSupportImagePreview(screenshot);
         }
       }
@@ -83,7 +79,10 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
 
   const revokeDraftScreenshots = useCallback((items: SupportImagePreviewItem[]) => {
     for (const screenshot of items) {
-      if (!providerOwnedPreviewUrlsRef.current.has(screenshot.url)) {
+      if (
+        !providerOwnedPreviewUrlsRef.current.has(screenshot.url) &&
+        !supportImagePreviewCache.hasPreviewUrl(screenshot.url)
+      ) {
         revokeSupportImagePreview(screenshot);
       }
     }
@@ -91,9 +90,10 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
 
   useEffect(() => {
     if (!context) return;
-    const nextKey = contextKey(context);
+    const nextKey = getConversationErrorReportContextKey(context);
     if (lastContextKeyRef.current !== nextKey) {
       revokeDraftScreenshots(screenshotsRef.current);
+      screenshotsRef.current = [];
       setDescription('');
       setScreenshots([]);
       setSubmitStatus('idle');
@@ -109,13 +109,18 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
   }, [context, revokeDraftScreenshots]);
 
   const removeScreenshot = (id: string) => {
-    setScreenshots((current) => {
-      const target = current.find((item) => item.id === id);
-      if (target && !providerOwnedPreviewUrlsRef.current.has(target.url)) {
-        revokeSupportImagePreview(target);
-      }
-      return current.filter((item) => item.id !== id);
-    });
+    const current = screenshotsRef.current;
+    const target = current.find((item) => item.id === id);
+    if (
+      target &&
+      !providerOwnedPreviewUrlsRef.current.has(target.url) &&
+      !supportImagePreviewCache.hasPreviewUrl(target.url)
+    ) {
+      revokeSupportImagePreview(target);
+    }
+    const next = current.filter((item) => item.id !== id);
+    screenshotsRef.current = next;
+    setScreenshots(next);
   };
 
   const handleScreenshotSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -123,7 +128,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
     event.target.value = '';
     if (files.length === 0) return;
 
-    const remaining = MAX_SUPPORT_IMAGES - screenshots.length;
+    const remaining = MAX_SUPPORT_IMAGES - screenshotsRef.current.length;
     if (remaining <= 0) {
       Message.warning(
         t('settings.bugReportScreenshotLimit', {
@@ -154,7 +159,14 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
     }
 
     if (accepted.length > 0) {
-      setScreenshots((current) => [...current, ...accepted].slice(0, MAX_SUPPORT_IMAGES));
+      const current = screenshotsRef.current;
+      const next = [...current, ...accepted].slice(0, MAX_SUPPORT_IMAGES);
+      const keptUrls = new Set(next.map((item) => item.url));
+      for (const item of accepted) {
+        if (!keptUrls.has(item.url)) revokeSupportImagePreview(item);
+      }
+      screenshotsRef.current = next;
+      setScreenshots(next);
     }
     if (rejected) {
       Message.warning(
@@ -179,6 +191,12 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
     if (!preserveScreenshotPreviews) {
       revokeDraftScreenshots(screenshotsRef.current);
     }
+    if (preserveScreenshotPreviews) {
+      for (const screenshot of screenshotsRef.current) {
+        providerOwnedPreviewUrlsRef.current.delete(screenshot.url);
+      }
+    }
+    screenshotsRef.current = [];
     setDescription('');
     setScreenshots([]);
     setSubmitStatus('idle');

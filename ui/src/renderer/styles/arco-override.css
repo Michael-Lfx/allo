@@ -1064,11 +1064,19 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 }
 
 @media (pointer: coarse) {
-  .nomifun-modal-structured-header > button {
+  .conversation-error-report-modal .nomifun-modal-structured-header > button,
+  .support-chat-modal .nomifun-modal-structured-header > button {
     width: 40px;
     height: 40px;
     min-width: 40px;
     flex-basis: 40px;
+  }
+
+  .conversation-error-report__textarea,
+  .conversation-error-report__button,
+  .support-chat-composer__text-action,
+  .support-chat-composer__attachment-menu button {
+    min-height: 40px;
   }
 
   .support-chat-composer button[data-button-shape='circle'] {
@@ -1095,7 +1103,8 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
  * probe sets this attribute so the same 40px touch geometry is exercised in
  * a deterministic browser run instead of being inferred from a fine pointer.
  */
-html[data-support-probe-pointer='coarse'] .nomifun-modal-structured-header > button {
+html[data-support-probe-pointer='coarse'] .conversation-error-report-modal .nomifun-modal-structured-header > button,
+html[data-support-probe-pointer='coarse'] .support-chat-modal .nomifun-modal-structured-header > button {
   width: 40px;
   height: 40px;
   min-width: 40px;

@@ -153,6 +153,9 @@ const waitForChildExit = (child) =>
 const terminateProcessTree = async (child) => {
   let directProcessStopped = true;
   if (child?.pid) {
+    // Do not taskkill a PID after the child has already exited: Windows may
+    // have reused it for an unrelated process before the cleanup runs.
+    if (child.exitCode !== null || child.signalCode !== null) return true;
     if (process.platform === 'win32') {
       directProcessStopped = await terminatePid(child.pid, child);
       if (child.exitCode === null && child.signalCode === null) {
@@ -376,8 +379,10 @@ const representativeCases = () => {
   for (const surface of matrix.surfaces) {
     for (const width of matrix.widths) add({ ...base, width, surface });
     for (const height of matrix.heights) add({ ...base, width: matrix.widths[1], height, surface });
-    for (const dpr of matrix.dprs) add({ ...base, width: matrix.widths[1], dpr, surface });
     for (const pointer of matrix.pointers) add({ ...base, width: matrix.widths[1], pointer, surface });
+    // Keep coarse-pointer coverage near the front so the bounded smoke run
+    // exercises both surfaces before it reaches the full matrix dimensions.
+    for (const dpr of matrix.dprs) add({ ...base, width: matrix.widths[1], dpr, surface });
     for (const locale of matrix.locales) add({ ...base, width: matrix.widths[1], locale, surface });
     for (const scheme of matrix.schemes) add({ ...base, width: matrix.widths[1], scheme, surface });
     for (const theme of matrix.themes) add({ ...base, width: matrix.widths[1], theme, surface });
@@ -412,6 +417,14 @@ const cartesianCases = () => {
 
 const cases = fullMatrix ? cartesianCases() : representativeCases();
 const selectedCases = cases.slice(0, Math.min(maxRuns || cases.length, maxCasesPerRun));
+if (
+  smoke &&
+  !fullMatrix &&
+  !hasArg('--max-runs') &&
+  !selectedCases.some((testCase) => testCase.surface === 'support' && testCase.pointer === 'coarse')
+) {
+  throw new Error('[check:support-surface] smoke selection must include support coarse-pointer coverage');
+}
 const failures = [];
 const reports = [];
 

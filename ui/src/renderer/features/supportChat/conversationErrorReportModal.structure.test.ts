@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 
 const read = (url: URL) => readFileSync(url, 'utf8');
 const modalSource = read(new URL('./components/ConversationErrorReportModal.tsx', import.meta.url));
+const supportModalSource = read(new URL('./components/SupportChatModal.tsx', import.meta.url));
 const providerSource = read(new URL('./SupportChatProvider.tsx', import.meta.url));
 const submissionSource = read(new URL('./conversationErrorReportSubmission.ts', import.meta.url));
 const cssSource = read(new URL('../../styles/arco-override.css', import.meta.url));
@@ -52,12 +53,17 @@ describe('conversation error report modal contract', () => {
 
   test('invalidates report work and sensitive previews across auth boundaries', () => {
     expect(providerSource).toContain('reportGenerationRef');
+    expect(providerSource).toContain('reportContextKeyRef');
+    expect(providerSource).toContain('getConversationErrorReportContextKey');
+    expect(providerSource).toContain('supportSessionGenerationRef');
+    expect(providerSource).toContain('createSupportSessionGuard');
     expect(providerSource).toContain('authAccountIdRef');
-    expect(providerSource).toContain('invalidateReportSession');
+    expect(providerSource).toContain('invalidateSupportSession');
     expect(providerSource).toContain('supportImagePreviewCache.clear()');
     expect(providerSource).toContain('key={reportModalInstanceKey}');
-    expect(providerSource).toContain('shouldContinue?: () => boolean');
+    expect(providerSource).toContain('shouldContinue: () => boolean');
     expect(providerSource).toContain('authState.phase === \'offline\'');
+    expect(providerSource).toContain('shouldContinue });');
   });
 
   test('pins the real NomiModal geometry and removes the dead support body selector', () => {
@@ -76,5 +82,11 @@ describe('conversation error report modal contract', () => {
     }
     expect(cssSource).toContain('100dvh');
     expect(cssSource).not.toContain('.support-chat-modal .arco-modal-body');
+  });
+
+  test('keeps support visibility independent from reducer hydration state', () => {
+    expect(providerSource).toContain('modalOpen,');
+    expect(supportModalSource).toContain('visible={visible}');
+    expect(supportModalSource).toContain('visible={modalOpen}');
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { BackendHttpError } from '@/common/adapter/httpBridge';
 import type { ICloudImLogUploadResponse } from '@/common/adapter/ipcBridge';
 import type { SupportPendingMessage } from './api/supportChatTypes';
 import type {
@@ -166,5 +167,44 @@ describe('submitConversationErrorReport', () => {
     expect(pending).toHaveLength(3);
     expect(sent).toEqual(['report-1:text', 'report-2:image']);
     expect(failed).toEqual(['report-3']);
+  });
+
+  test('does not report auth expiry after the operation becomes stale', async () => {
+    let active = true;
+    let authExpiredCalls = 0;
+    const deps = createDependencies({
+      isCurrent: () => active,
+      uploadLogFromPath: async () => {
+        active = false;
+        throw new BackendHttpError({
+          method: 'POST',
+          path: '/api/support/logs',
+          status: 401,
+          body: { code: 'UNAUTHORIZED', error: 'authentication required' },
+        });
+      },
+      onAuthExpired: () => {
+        authExpiredCalls += 1;
+      },
+    });
+
+    const result = await submitConversationErrorReport(context, { description: 'stale auth', screenshots: [] }, deps);
+
+    expect(result).toEqual({ status: 'preparation-failed' });
+    expect(authExpiredCalls).toBe(0);
+  });
+
+  test('does not report success when the final send becomes stale', async () => {
+    let active = true;
+    const deps = createDependencies({
+      isCurrent: () => active,
+      send: async () => {
+        active = false;
+      },
+    });
+
+    const result = await submitConversationErrorReport(context, { description: 'stale send', screenshots: [] }, deps);
+
+    expect(result).toEqual({ status: 'preparation-failed' });
   });
 });

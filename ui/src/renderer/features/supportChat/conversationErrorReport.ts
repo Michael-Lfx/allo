@@ -31,6 +31,17 @@ export type ConversationErrorReportSubmitResult =
   | { status: 'preparation-failed' }
   | { status: 'partial-failure' };
 
+export function getConversationErrorReportContextKey(
+  context: ConversationErrorReportContext
+): string {
+  return [
+    context.conversationId,
+    context.messageId ?? '',
+    context.turnId ?? '',
+    context.occurredAt,
+  ].join(':');
+}
+
 export function buildConversationErrorReportMetadata(context: ConversationErrorReportContext) {
   const { error } = context;
   const diagnostic = buildAgentErrorDiagnostic(error);

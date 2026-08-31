@@ -577,6 +577,13 @@ const SupportSurfaceProbe: React.FC = () => {
       } else {
         expectedStateVisible = scenario !== 'screenshots' || thumbnails.length > 0;
       }
+      const feedbackScreenshotGeometryPass =
+        surface !== 'feedback' ||
+        scenario !== 'screenshots' ||
+        (thumbnails.length > 0 &&
+          !!thumbnailRect &&
+          Math.abs(thumbnailRect.width - 72) <= 1 &&
+          Math.abs(thumbnailRect.height - 72) <= 1);
 
       if (!visibleRoot) failures.push('modal-not-visible');
       if (!withinViewport) failures.push('modal-outside-viewport');
@@ -587,6 +594,10 @@ const SupportSurfaceProbe: React.FC = () => {
       if (controls.some((control) => !control.pass)) failures.push('icon-control-geometry');
       if (focusVisibleControlCount !== focusableControls.length) failures.push('focus-visible-control');
       if (contrastChecks.some((check) => !check.pass)) failures.push('contrast-check');
+      if (surface === 'feedback' && scenario === 'screenshots' && !expectedStateVisible) {
+        failures.push('screenshot-preview-not-visible');
+      }
+      if (!feedbackScreenshotGeometryPass) failures.push('screenshot-preview-geometry');
       if (
         surface === 'support' &&
         (scenario === 'log-confirm' || scenario === 'attachment-menu') &&
@@ -644,10 +655,11 @@ const SupportSurfaceProbe: React.FC = () => {
   }, [interactionReady, localeReady, locale, pointer, scenario, scheme, surface, themeId]);
 
   const noOpViewProps: Omit<SupportChatModalViewProps, 'state'> = {
+    visible: true,
     closeSupportChat: () => undefined,
     openSupportChat: () => undefined,
-    sendMessage: async () => undefined,
-    sendImages: () => undefined,
+    sendMessage: async () => true,
+    sendImages: () => true,
     retryMessage: async () => undefined,
     loadOlder: async () => false,
     composerDisabled: scenario === 'uploading',

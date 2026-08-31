@@ -160,7 +160,8 @@ export async function submitConversationErrorReport(
           logPayload: entry.msgType === 'text' ? entry.logPayload : undefined,
           shouldContinue: deps.isCurrent,
         });
-      } catch (error) {
+        if (!deps.isCurrent()) return { status: 'preparation-failed' };
+      } catch {
         if (!deps.isCurrent()) return { status: 'preparation-failed' };
         for (const remaining of entries.slice(index + 1)) {
           deps.markPendingFailed(remaining.clientMsgId);
@@ -168,9 +169,10 @@ export async function submitConversationErrorReport(
         return { status: 'partial-failure' };
       }
     }
+    if (!deps.isCurrent()) return { status: 'preparation-failed' };
     return { status: 'success' };
   } catch (error) {
-    if (isAuthExpiredHttpError(error)) deps.onAuthExpired(error);
+    if (isAuthExpiredHttpError(error) && deps.isCurrent()) deps.onAuthExpired(error);
     return { status: 'preparation-failed' };
   }
 }

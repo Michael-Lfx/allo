@@ -17,10 +17,11 @@ import SupportMessageList from './SupportMessageList';
 
 export type SupportChatModalViewProps = {
   state: SupportChatState;
+  visible: boolean;
   closeSupportChat: () => void;
   openSupportChat: () => void;
-  sendMessage: (content: string, logPayload?: ICloudImAttachmentPayload) => Promise<void>;
-  sendImages: (params: { content: string; images: SupportOutgoingImage[] }) => void;
+  sendMessage: (content: string, logPayload?: ICloudImAttachmentPayload) => Promise<boolean>;
+  sendImages: (params: { content: string; images: SupportOutgoingImage[] }) => boolean;
   retryMessage: (clientMsgId: string) => Promise<void>;
   loadOlder: () => Promise<boolean>;
   composerDisabled?: boolean;
@@ -28,6 +29,7 @@ export type SupportChatModalViewProps = {
 
 export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
   state,
+  visible,
   closeSupportChat,
   openSupportChat,
   sendMessage,
@@ -37,7 +39,6 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
   composerDisabled = false,
 }) => {
   const { t } = useTranslation();
-  const visible = state.status !== 'closed';
 
   return (
     <NomiModal
@@ -96,9 +97,7 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
             />
             <SupportMessageComposer
               disabled={composerDisabled}
-              onSend={async (content, logPayload) => {
-                await sendMessage(content, logPayload);
-              }}
+              onSend={(content, logPayload) => sendMessage(content, logPayload)}
               onSendImages={sendImages}
             />
           </>
@@ -144,12 +143,21 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
 };
 
 const SupportChatModal: React.FC = () => {
-  const { state, closeSupportChat, openSupportChat, sendMessage, sendImages, retryMessage, loadOlder } =
-    useSupportChat();
+  const {
+    state,
+    modalOpen,
+    closeSupportChat,
+    openSupportChat,
+    sendMessage,
+    sendImages,
+    retryMessage,
+    loadOlder,
+  } = useSupportChat();
 
   return (
     <SupportChatModalView
       state={state}
+      visible={modalOpen}
       closeSupportChat={closeSupportChat}
       openSupportChat={openSupportChat}
       sendMessage={sendMessage}
