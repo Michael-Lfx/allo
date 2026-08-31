@@ -25,6 +25,20 @@ impl fmt::Display for ShotBriefDescription {
     }
 }
 
+/// One beat inside a clip: a single spoken line or a single visual event.
+///
+/// A clip normally renders exactly one beat, so [`ShotDescription::beats`] stays
+/// empty. When planning merges adjacent shots that share a camera — one clip
+/// instead of two means one splice fewer to stutter on — the absorbed beats are
+/// preserved here in timeline order so the prompt can lay them out against the
+/// clip's final duration and duration estimation can price the whole run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShotBeat {
+    pub motion_desc: String,
+    #[serde(default)]
+    pub audio_desc: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShotDescription {
     pub idx: i32,
@@ -42,4 +56,20 @@ pub struct ShotDescription {
     pub motion_desc: String,
     #[serde(default)]
     pub audio_desc: Option<String>,
+    /// Timeline-ordered beats this clip plays in one continuous take.
+    ///
+    /// Empty for the usual one-beat clip. Two or more marks a merged clip, which
+    /// must never be merged again (see [`ShotDescription::is_merged`]).
+    #[serde(default)]
+    pub beats: Vec<ShotBeat>,
+}
+
+impl ShotDescription {
+    /// True when this clip already absorbed adjacent shots.
+    ///
+    /// Merging is not idempotent — absorbing an already-merged clip would replay
+    /// its beats — so every producer of merged clips checks this first.
+    pub fn is_merged(&self) -> bool {
+        self.beats.len() >= 2
+    }
 }

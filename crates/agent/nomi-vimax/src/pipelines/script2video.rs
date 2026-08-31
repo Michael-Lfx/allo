@@ -10,9 +10,11 @@ use crate::agents::{
     ensure_film_cover, has_usable_portrait, rank_world_pairs_for_frame, voice_ref_abs_path,
     world_asset_pairs,
 };
+use crate::clip_bounds::ClipBounds;
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
+use crate::media_local::SpliceSeam;
 use crate::progress::ProgressCallback;
 use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
 
@@ -50,7 +52,7 @@ pub struct Script2VideoPipeline {
 impl Script2VideoPipeline {
     pub fn new(backends: PipelineBackends, working_dir: PathBuf) -> Self {
         let character_extractor = CharacterExtractor::new(Arc::clone(&backends.chat));
-        let storyboard = StoryboardArtist::new(Arc::clone(&backends.chat));
+        let storyboard = StoryboardArtist::new(Arc::clone(&backends.chat), backends.clip);
         let camera_gen = CameraImageGenerator::new(Arc::clone(&backends.chat));
         let ref_selector = ReferenceImageSelector::new(Arc::clone(&backends.chat));
         Self {
@@ -313,6 +315,19 @@ impl Script2VideoPipeline {
         prior_continuity: Option<&Path>,
     ) -> VimaxResult<PathBuf> {
         emit(&progress, "render_start", "开始渲染脚本成片");
+        // Validate once: everything downstream (the opening shot's @Image1, the
+        // prompt seam, the concat's opening fade) must agree on whether this
+        // scene actually starts from the previous scene's tail frame.
+        let prior_continuity = prior_continuity.filter(|p| {
+            let usable = media_local::is_usable_image_file(p);
+            if !usable {
+                tracing::warn!(
+                    continuity = %p.display(),
+                    "prior scene continuity frame unusable; this scene opens as a hard cut"
+                );
+            }
+            usable
+        });
         let style = crate::planning::resolve_visual_style(style);
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
         let final_path = self.working_dir.join("final_video.mp4");
@@ -442,8 +457,19 @@ impl Script2VideoPipeline {
                 }
                 clips.push(clip);
             }
+            // Seams must match what the prompts asked the model for: shots that
+            // reuse a camera keep rolling (their head replays and gets trimmed),
+            // a camera change is a real cut. A scene that opened from a prior
+            // scene's tail frame starts mid-soundtrack, so it must not fade up.
             let refs: Vec<&Path> = clips.iter().map(|p| p.as_path()).collect();
-            media_local::concat_videos(&refs, &final_path).await?;
+            let cam_idxs: Vec<i32> = ordered_shots.iter().map(|s| s.cam_idx).collect();
+            let opening = if prior_continuity.is_some() {
+                media_local::SpliceSeam::MatchCut
+            } else {
+                media_local::SpliceSeam::Cut
+            };
+            let seq = media_local::ConcatClip::scene(&refs, &cam_idxs, opening);
+            media_local::concat_videos(&seq, &final_path).await?;
             emit(&progress, "concat_done", "场景成片拼接完成");
         }
         emit(&progress, "render_done", "脚本成片渲染完成");
@@ -529,7 +555,7 @@ impl Script2VideoPipeline {
         .await?;
         let budget = load_target_duration_secs(&self.working_dir).await;
         if let Some(budget) = budget {
-            let max_shots = crate::planning::max_shots_for_budget(budget);
+            let max_shots = crate::planning::max_shots_for_budget(self.backends.clip, budget);
             if enforce_max_shots(&mut storyboard, max_shots) {
                 tracing::warn!(
                     max_shots,
@@ -592,14 +618,24 @@ impl Script2VideoPipeline {
 
         let mut out: Vec<ShotDescription> = Vec::with_capacity(ordered.len());
         let mut prev_lf: Option<String> = None;
-        let storyboard = StoryboardArtist::new(Arc::clone(&self.backends.chat));
+        let storyboard = StoryboardArtist::new(Arc::clone(&self.backends.chat), self.backends.clip);
 
         for brief in &ordered {
             let path = shots_root
                 .join(brief.idx.to_string())
                 .join("shot_description.json");
-            let mut desc = if path.exists() {
-                read_json_artifact(&path).await?
+            // A merged clip on disk is a render artifact (the head of a
+            // same-camera run), not this brief's decomposition — reusing it
+            // would feed already-absorbed beats back into the merge.
+            let cached: Option<ShotDescription> = match path.exists() {
+                true => read_json_artifact::<ShotDescription>(&path)
+                    .await
+                    .ok()
+                    .filter(|desc| !desc.is_merged()),
+                false => None,
+            };
+            let mut desc = if let Some(desc) = cached {
+                desc
             } else {
                 let desc = storyboard
                     .decompose_visual_description_with_continuity(
@@ -627,6 +663,11 @@ impl Script2VideoPipeline {
             prev_lf = Some(desc.lf_desc.clone());
             out.push(desc);
         }
+
+        // Adjacent shots that share a camera have nothing to cut to, so render
+        // them as one multi-beat clip: the splice that would have stuttered
+        // between them simply stops existing.
+        let out = super::clip_beats::merge_same_camera_shots(self.backends.clip, out);
 
         write_json_artifact(&aggregate, &out).await?;
         super::artifact_cache::write_sidecar(&aggregate, plan_fp).await?;
@@ -977,17 +1018,12 @@ impl Script2VideoPipeline {
         let mut ok = 0usize;
         let mut errors: Vec<String> = Vec::new();
         let target = load_target_duration_secs(&self.working_dir).await;
+        let clip = self.backends.clip;
         let needs: Vec<u32> = shots
             .iter()
-            .map(|s| {
-                crate::planning::estimate_shot_need_secs(
-                    s.audio_desc.as_deref(),
-                    &s.motion_desc,
-                    &s.variation_type,
-                )
-            })
+            .map(|s| super::clip_beats::clip_need_secs(clip, s))
             .collect();
-        let clip_durs = crate::planning::allocate_clip_durations_for_content(target, &needs);
+        let clip_durs = crate::planning::allocate_clip_durations_for_content(clip, target, &needs);
         let scene_bgm = load_scene_bgm_paren(&self.working_dir).await;
         tracing::info!(
             target = ?target,
@@ -1018,6 +1054,17 @@ impl Script2VideoPipeline {
             );
 
             // Timeline-adjacent continuity: previous shot (or prior scene tail) ending still.
+            // The seam decides what the still MEANS to this shot — resume the
+            // same take, or just carry identity across a cut — and the scene
+            // concat re-derives it from the same `cam_idx` comparison.
+            let seam = match i.checked_sub(1) {
+                Some(prev) => {
+                    media_local::SpliceSeam::within_scene(shots[prev].cam_idx, shot.cam_idx)
+                }
+                // Cross-scene: the prompt lets the new scene change camera or
+                // location, so its opening shot is a match-cut, never a resume.
+                None => media_local::SpliceSeam::MatchCut,
+            };
             let continuity_first = if i > 0 {
                 let prev = &shots[i - 1];
                 match ensure_shot_video_last_frame(&self.working_dir, prev.idx, false).await {
@@ -1026,7 +1073,7 @@ impl Script2VideoPipeline {
                             progress,
                             "video_continuity",
                             &format!(
-                                "Shot {}: reference_image ← shot {} video_last_frame.png (cam {}→{})",
+                                "Shot {}: reference_image ← shot {} video_last_frame.png (cam {}→{}, {seam:?})",
                                 shot.idx, prev.idx, prev.cam_idx, shot.cam_idx
                             ),
                         );
@@ -1034,6 +1081,7 @@ impl Script2VideoPipeline {
                             shot = shot.idx,
                             prev = prev.idx,
                             continuity = %path.display(),
+                            ?seam,
                             "adjacent shot multi-ref continuity locked to previous video_last_frame"
                         );
                         Some(path)
@@ -1052,9 +1100,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                         )));
                     }
                 }
-            } else if let Some(path) = prior_continuity
-                .filter(|p| media_local::is_usable_image_file(p))
-            {
+            } else if let Some(path) = prior_continuity {
                 emit(
                     progress,
                     "video_continuity",
@@ -1073,29 +1119,23 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 );
                 Some(path.to_path_buf())
             } else {
-                if prior_continuity.is_some() {
-                    tracing::warn!(
-                        shot = shot.idx,
-                        "prior scene continuity path unusable; first shot of scene starts without match-cut frame"
-                    );
-                }
                 None
             };
 
             let duration_secs = clip_durs.get(i).copied().unwrap_or_else(|| {
                 needs.get(i).copied().unwrap_or_else(|| {
-                    crate::planning::clip_duration_secs(target, shots.len())
+                    crate::planning::clip_duration_secs(clip, target, shots.len())
                 })
             });
             emit(
                 progress,
                 "video_duration",
                 &format!(
-                    "Shot {}: render {}s (need≈{}s from audio/motion, ≤{}s Seedance max)",
+                    "Shot {}: render {}s (need≈{}s from audio/motion, ≤{}s model max)",
                     shot.idx,
                     duration_secs,
                     needs.get(i).copied().unwrap_or(duration_secs),
-                    crate::planning::MAX_CLIP_DURATION_SECS,
+                    clip.max_secs(),
                 ),
             );
 
@@ -1147,6 +1187,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                     shot,
                     duration_secs,
                     continuity_first.as_deref(),
+                    seam,
                     characters,
                     registry,
                     world_pairs,
@@ -1680,11 +1721,19 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         Ok(())
     }
 
+    /// Render one shot's clip.
+    ///
+    /// `seam` describes how this shot joins the previous one and is what keeps
+    /// the prompt honest about `continuity_first_frame`: same take (resume from
+    /// it) vs. new angle (identity reference only). It is downgraded to
+    /// [`SpliceSeam::Cut`] when no usable frame arrives, so the prompt never
+    /// talks about an `@Image1` that is not bound.
     async fn generate_video_for_shot(
         &self,
         shot: &ShotDescription,
         duration_secs: u32,
         continuity_first_frame: Option<&Path>,
+        seam: SpliceSeam,
         characters: &[CharacterInScene],
         registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
         world_pairs: &[(PathBuf, String)],
@@ -1710,6 +1759,11 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             .filter(|p| media_local::is_usable_image_file(p))
             .map(|p| p.to_path_buf());
         let using_video_continuity = continuity_source.is_some();
+        let seam = if using_video_continuity {
+            seam
+        } else {
+            SpliceSeam::Cut
+        };
 
         let ref_pairs = shot_video_ref_pairs(
             shot,
@@ -1748,8 +1802,9 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             characters,
             style,
             &ref_pairs,
+            self.backends.clip,
             duration_secs,
-            using_video_continuity,
+            seam,
             scene_bgm,
             use_voice_audio_ref,
             speaker_name.as_deref(),
@@ -1991,11 +2046,18 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     characters,
                     style,
                     &working_pairs,
+                    self.backends.clip,
                     duration_secs,
-                    using_video_continuity
-                        && continuity_source
-                            .as_ref()
-                            .is_some_and(|c| working_pairs.iter().any(|(p, _)| p == c)),
+                    // A privacy rewrite may have dropped the continuity still;
+                    // without it bound there is nothing for the seam to mean.
+                    if continuity_source
+                        .as_ref()
+                        .is_some_and(|c| working_pairs.iter().any(|(p, _)| p == c))
+                    {
+                        seam
+                    } else {
+                        SpliceSeam::Cut
+                    },
                     scene_bgm,
                     use_voice_audio_ref,
                     speaker_name.as_deref(),
@@ -2062,8 +2124,10 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         characters,
                         style,
                         &asset_pairs,
+                        self.backends.clip,
                         duration_secs,
-                        false,
+                        // Retrying without the continuity still at all.
+                        SpliceSeam::Cut,
                         scene_bgm,
                         use_voice_audio_ref,
                         speaker_name.as_deref(),
@@ -2867,9 +2931,52 @@ fn plot_beat_clause(ff: &str, lf: &str, motion: &str) -> String {
     }
 }
 
-fn video_ref_role(path: &Path, text: &str, is_continuity: bool) -> String {
-    if is_continuity || path_key_lower(path).contains("video_last_frame") {
-        return "previous shot ending frame — begin motion from this pose and framing".into();
+/// What a continuity still is for when the camera has *changed*.
+///
+/// The frame still carries everything that must not change (who, wearing what,
+/// lit how, standing where) but its framing is now wrong by construction, so
+/// asking the model to start from it makes the new angle re-stage the beat the
+/// audience just watched — the splice reads as a freeze.
+const CONTINUITY_STATE_ROLE: &str =
+    "previous shot's final frame — continuity reference ONLY (cast identity, wardrobe, hair, props, \
+set, lighting, time of day). Do NOT reproduce its framing and do NOT replay its pose";
+
+/// What a continuity still is for when the camera is *unchanged*.
+const CONTINUITY_RESUME_ROLE: &str =
+    "previous shot's final frame — the SAME take keeps rolling: this IS the first frame, so pick the \
+motion up from that exact instant without re-framing or restarting";
+
+/// How this clip must begin, given how it joins the previous one.
+///
+/// This is the prompt half of the anti-stutter contract; the concat half is
+/// [`media_local::SpliceSeam`], which trims the replayed head of a `SameTake`
+/// clip. Both are derived from the same `cam_idx` comparison, so a shot is never
+/// told to replay a beat that will not be trimmed, or trimmed after being told
+/// not to replay.
+fn clip_opening_clause(seam: SpliceSeam) -> &'static str {
+    match seam {
+        SpliceSeam::Cut => "",
+        SpliceSeam::SameTake => {
+            "Opening: one continuous take — the clip's first frame is @Image1. Do not restart, \
+re-frame, or re-establish; the motion is already underway at frame 1."
+        }
+        SpliceSeam::MatchCut => {
+            "Opening: this is a CUT to a NEW angle. Start with the action ALREADY in progress from \
+the new camera. Never re-stage, re-enter, or replay @Image1's ending pose or framing — repeating \
+that beat is what makes the join look frozen."
+        }
+    }
+}
+
+fn video_ref_role(path: &Path, text: &str, seam: SpliceSeam) -> String {
+    match seam {
+        SpliceSeam::SameTake => return CONTINUITY_RESUME_ROLE.into(),
+        SpliceSeam::MatchCut => return CONTINUITY_STATE_ROLE.into(),
+        SpliceSeam::Cut => {}
+    }
+    if path_key_lower(path).contains("video_last_frame") {
+        // A tail frame bound anywhere but Image 1 is state, never a start frame.
+        return CONTINUITY_STATE_ROLE.into();
     }
     if is_portrait_ref_path(path) {
         let who = extract_bracket_name(text).unwrap_or("cast");
@@ -2885,7 +2992,9 @@ fn video_ref_role(path: &Path, text: &str, is_continuity: bool) -> String {
     crate::planning::clip_at_break(text, 48)
 }
 
-fn video_at_image_bindings(ref_pairs: &[(PathBuf, String)], from_prev: bool) -> String {
+/// `@ImageN` role list. Image 1 is the continuity still whenever `seam` is not a
+/// [`SpliceSeam::Cut`]; every other slot is described by its own path.
+fn video_at_image_bindings(ref_pairs: &[(PathBuf, String)], seam: SpliceSeam) -> String {
     if ref_pairs.is_empty() {
         return String::new();
     }
@@ -2893,11 +3002,8 @@ fn video_at_image_bindings(ref_pairs: &[(PathBuf, String)], from_prev: bool) -> 
         .iter()
         .enumerate()
         .map(|(i, (path, text))| {
-            format!(
-                "@Image{} {}",
-                i + 1,
-                video_ref_role(path, text, i == 0 && from_prev)
-            )
+            let slot_seam = if i == 0 { seam } else { SpliceSeam::Cut };
+            format!("@Image{} {}", i + 1, video_ref_role(path, text, slot_seam))
         })
         .collect();
     bits.join(". ") + "."
@@ -2951,25 +3057,61 @@ fn video_cast_clause(
     }
 }
 
+/// Timed beat layout for a clip that plays more than one beat.
+///
+/// One clip playing several beats must be told *when* each beat happens.
+/// Without the timeline the model lingers on the first beat and the rest never
+/// arrive: the splice stutter is gone, but the clip reads as padded. The windows
+/// come from the duration the render actually requests, so they can never
+/// contradict it. Empty for the usual single-beat clip, which keeps its plain
+/// `Motion:` line.
+fn clip_beat_script(timeline: &[super::clip_beats::TimedBeat]) -> String {
+    if timeline.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "Motion: ONE continuous take — camera, framing and lighting never change. \
+Play these beats in order, each in its own time window:",
+    );
+    for beat in timeline {
+        let text = match beat.text.trim() {
+            "" => "hold the frame, subtle living motion only",
+            text => text,
+        };
+        out.push_str(&format!(
+            "\n[{}-{}s] {text}",
+            beat.start_secs, beat.end_secs
+        ));
+    }
+    out
+}
+
 fn i2v_motion_prompt(
     shot: &ShotDescription,
     characters: &[CharacterInScene],
     style: &str,
     ref_pairs: &[(PathBuf, String)],
+    clip: ClipBounds,
     duration_secs: u32,
-    from_prev_video_tail: bool,
+    seam: SpliceSeam,
     scene_bgm: &str,
     use_voice_audio_ref: bool,
     speaker_name: Option<&str>,
     aspect_ratio: &str,
 ) -> String {
-    let motion = shot.motion_desc.trim();
+    // Planner-authored timecodes are guesses made before the clip length was
+    // allocated; the renderer owns time, so they never reach the model.
+    let motion = super::clip_beats::strip_authored_timecodes(&shot.motion_desc);
+    let motion = motion.as_str();
+    let timeline = super::clip_beats::clip_timeline(clip, shot, duration_secs);
+    let beat_script = clip_beat_script(&timeline);
     let has_dialogue = shot_has_spoken_dialogue(shot);
     let has_identity_refs = ref_pairs.iter().any(|(p, _)| is_portrait_ref_path(p));
     let style_clause = crate::planning::video_style_clause(style);
     let identity = video_cast_clause(characters, shot, ref_pairs, style, has_identity_refs);
     let plot = plot_beat_clause(&shot.ff_desc, &shot.lf_desc, motion);
-    let ref_clause = video_at_image_bindings(ref_pairs, from_prev_video_tail);
+    let ref_clause = video_at_image_bindings(ref_pairs, seam);
+    let seam_clause = clip_opening_clause(seam);
     let speaker_idxs = speaker_idxs_for_shot(shot, characters);
     let voice_lock = if use_voice_audio_ref || !has_dialogue {
         String::new()
@@ -2979,13 +3121,13 @@ fn i2v_motion_prompt(
     let audio_block = if use_voice_audio_ref {
         seedance_audio_caption_essential_only(
             shot.audio_desc.as_deref(),
-            &shot.motion_desc,
+            motion,
             &shot.visual_desc,
         )
     } else {
         seedance_audio_caption_block(
             shot.audio_desc.as_deref(),
-            &shot.motion_desc,
+            motion,
             &shot.visual_desc,
             characters,
             &speaker_idxs,
@@ -3014,7 +3156,9 @@ No background music — dialogue and essential on-screen foley only."
     };
 
     let mut parts: Vec<String> = Vec::new();
-    if !motion.is_empty() {
+    if !beat_script.is_empty() {
+        parts.push(beat_script);
+    } else if !motion.is_empty() {
         parts.push(format!("Motion: {motion}"));
     } else if !shot.visual_desc.trim().is_empty() {
         parts.push(format!(
@@ -3028,6 +3172,9 @@ No background music — dialogue and essential on-screen foley only."
     if !ref_clause.is_empty() {
         parts.push(ref_clause);
     }
+    if !seam_clause.is_empty() {
+        parts.push(seam_clause.to_string());
+    }
     if !identity.trim().is_empty() {
         parts.push(identity.trim().to_string());
     }
@@ -3038,6 +3185,7 @@ No background music — dialogue and essential on-screen foley only."
     parts.push(crate::planning::i2v_duration_pacing_clause(
         duration_secs,
         has_dialogue,
+        timeline.len().max(1) as u32,
     ));
     for extra in [audio_ref_clause, voice_lock, voice_continuity, music_continuity] {
         if !extra.trim().is_empty() {
@@ -3558,6 +3706,9 @@ fn truncate_err(err: &VimaxError, max_chars: usize) -> String {
 mod continuity_tests {
     use super::*;
 
+    /// Window of the models integrated today (Seedance 2.0, MiniMax-H3 ⊂ 4–15s).
+    const SEEDANCE: ClipBounds = ClipBounds::new(5, 15);
+
     fn shot(idx: i32, cam_idx: i32) -> ShotDescription {
         ShotDescription {
             idx,
@@ -3572,6 +3723,7 @@ mod continuity_tests {
             lf_vis_char_idxs: vec![],
             motion_desc: String::new(),
             audio_desc: None,
+            beats: Vec::new(),
         }
     }
 
@@ -3651,7 +3803,19 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
                 "File [alice_three_view.png] = GLOBAL three-view character bible for <林铮>".into(),
             ),
         ];
-        let prompt = i2v_motion_prompt(&s, &[], "cinematic", &refs, 5, true, "", false, None, "9:16");
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            SEEDANCE,
+            5,
+            SpliceSeam::SameTake,
+            "",
+            false,
+            None,
+            "9:16",
+        );
         let motion_at = prompt.find("Motion:").expect("motion first");
         let look_at = prompt.find("Look:").expect("short look");
         assert!(motion_at < look_at, "motion must precede style lock: {prompt}");
@@ -3682,6 +3846,194 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             "portrait framing must keep giant figures inside the canvas: {prompt}"
         );
         assert!(!prompt.contains("16:9"), "{prompt}");
+    }
+
+    /// The continuity still means opposite things on the two seams, and the
+    /// prompt must say which one — this is the anti-stutter instruction.
+    #[test]
+    fn continuity_still_is_a_start_frame_only_when_the_camera_holds() {
+        let s = shot(1, 0);
+        let refs = vec![(
+            PathBuf::from("shots/0/video_last_frame.png"),
+            "Previous ending".into(),
+        )];
+
+        let same = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            SEEDANCE,
+            5,
+            SpliceSeam::SameTake,
+            "",
+            false,
+            None,
+            "",
+        );
+        assert!(same.contains("SAME take keeps rolling"), "{same}");
+        assert!(same.contains("one continuous take"), "{same}");
+        assert!(!same.contains("CUT to a NEW angle"), "{same}");
+
+        let cut = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            SEEDANCE,
+            5,
+            SpliceSeam::MatchCut,
+            "",
+            false,
+            None,
+            "",
+        );
+        assert!(cut.contains("continuity reference ONLY"), "{cut}");
+        assert!(cut.contains("CUT to a NEW angle"), "{cut}");
+        assert!(cut.contains("action ALREADY in progress"), "{cut}");
+        assert!(
+            !cut.contains("SAME take keeps rolling"),
+            "a new angle must not be told to resume the previous framing: {cut}"
+        );
+    }
+
+    /// Without a continuity still there is no seam to describe; the prompt must
+    /// not reference an `@Image1` role that was never bound.
+    #[test]
+    fn a_hard_cut_prompt_has_no_opening_seam_clause() {
+        let s = shot(1, 0);
+        let refs = vec![(
+            PathBuf::from("characters/alice_three_view.png"),
+            "File [alice_three_view.png] = GLOBAL three-view character bible for <林铮>".into(),
+        )];
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &refs,
+            SEEDANCE,
+            5,
+            SpliceSeam::Cut,
+            "",
+            false,
+            None,
+            "",
+        );
+        assert!(!prompt.contains("Opening:"), "{prompt}");
+        assert!(!prompt.contains("previous shot's final frame"), "{prompt}");
+    }
+
+    /// A clip that absorbed a same-camera neighbour must be told when each beat
+    /// plays, or the model holds on the first one for the whole clip.
+    #[test]
+    fn a_merged_clip_prompt_lays_its_beats_on_a_timeline() {
+        let line: String = "中".chars().cycle().take(17).collect();
+        let mut a = shot(0, 0);
+        a.motion_desc = "她转身".into();
+        a.audio_desc = Some(line);
+        let mut b = shot(1, 0);
+        b.motion_desc = "她走近窗边".into();
+        let merged = super::super::clip_beats::merge_same_camera_shots(SEEDANCE, vec![a, b]);
+        assert_eq!(merged.len(), 1, "same camera must merge");
+
+        let prompt = i2v_motion_prompt(
+            &merged[0],
+            &[],
+            "cinematic",
+            &[],
+            SEEDANCE,
+            13,
+            SpliceSeam::Cut,
+            "",
+            false,
+            None,
+            "",
+        );
+        assert!(prompt.starts_with("Motion: ONE continuous take"), "{prompt}");
+        assert!(prompt.contains("[0-"), "beats need explicit windows: {prompt}");
+        assert!(prompt.contains("她转身"), "{prompt}");
+        assert!(prompt.contains("她走近窗边"), "{prompt}");
+        assert!(
+            !prompt.contains("Motion: 她转身, then 她走近窗边"),
+            "the joined prose line must give way to the timeline: {prompt}"
+        );
+    }
+
+    /// Regression: the storyboard LLM had written `0-4s / 4-7s` into `motion_desc`
+    /// (7s of beats) while the render requested a 5s clip, so the prompt argued
+    /// with its own `duration`. The renderer owns time: authored seconds never
+    /// reach the model, only their ratio does.
+    #[test]
+    fn authored_timecodes_never_contradict_the_requested_duration() {
+        let mut s = shot(0, 0);
+        s.motion_desc = "0-4s:摄影机固定,男生骑车从画面左侧向右横贯画面;\
+4-7s:他继续向右骑行,地面落叶被风吹卷而起。"
+            .into();
+
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            SEEDANCE,
+            5,
+            SpliceSeam::Cut,
+            "",
+            false,
+            None,
+            "",
+        );
+        assert!(!prompt.contains("0-4s"), "{prompt}");
+        assert!(!prompt.contains("4-7s"), "{prompt}");
+        // 4:3 authored pacing, relaid on the 5s clip the render asks for.
+        assert!(prompt.contains("[0-3s]"), "{prompt}");
+        assert!(prompt.contains("[3-5s]"), "{prompt}");
+        assert!(prompt.contains("About 5s."), "{prompt}");
+        assert!(
+            prompt.contains("2 visual events back to back"),
+            "the pacing line must count the beats it has to fit: {prompt}"
+        );
+    }
+
+    /// A single-beat clip keeps the plain motion line — no beat timeline noise.
+    #[test]
+    fn a_single_beat_clip_prompt_has_no_beat_timeline() {
+        let mut s = shot(1, 0);
+        s.motion_desc = "她转身".into();
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            SEEDANCE,
+            8,
+            SpliceSeam::Cut,
+            "",
+            false,
+            None,
+            "",
+        );
+        assert!(prompt.starts_with("Motion: 她转身"), "{prompt}");
+        assert!(!prompt.contains("ONE continuous take"), "{prompt}");
+    }
+
+    /// A tail frame bound at Image 2+ describes state, never a start frame.
+    #[test]
+    fn a_tail_frame_outside_image_one_is_state_only() {
+        let refs = vec![
+            (
+                PathBuf::from("characters/alice_three_view.png"),
+                "bible for <林铮>".into(),
+            ),
+            (
+                PathBuf::from("shots/0/video_last_frame.png"),
+                "Previous ending".into(),
+            ),
+        ];
+        let bindings = video_at_image_bindings(&refs, SpliceSeam::Cut);
+        assert!(bindings.contains("@Image2 previous shot's final frame"), "{bindings}");
+        assert!(bindings.contains("continuity reference ONLY"), "{bindings}");
+        assert!(!bindings.contains("keeps rolling"), "{bindings}");
     }
 
     #[test]
@@ -3781,12 +4133,14 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
                 lf_vis_char_idxs: vec![0],
                 motion_desc: "speaks".into(),
                 audio_desc: Some("李薇用低沉的声音说：「今晚别等我」".into()),
+                beats: Vec::new(),
             },
             &chars,
             "cinematic",
             &[],
+            SEEDANCE,
             10,
-            false,
+            SpliceSeam::Cut,
             "",
             false,
             None,
@@ -3821,8 +4175,9 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             &[],
             "cinematic",
             &[],
+            SEEDANCE,
             8,
-            false,
+            SpliceSeam::Cut,
             "(piano motif)",
             true,
             Some("阿琳"),
@@ -3863,6 +4218,7 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             lf_vis_char_idxs: vec![0],
             motion_desc: "林铮收脚站定".into(),
             audio_desc: Some("脚步踩在沙砾上".into()),
+            beats: Vec::new(),
         };
         let chars = vec![CharacterInScene {
             idx: 0,
@@ -3876,7 +4232,19 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             PathBuf::from("characters/lin_three_view.png"),
             "File [lin_three_view.png] = GLOBAL three-view character bible for <林铮>".into(),
         )];
-        let prompt = i2v_motion_prompt(&s, &chars, "cinematic", &refs, 8, false, "", false, None, "16:9");
+        let prompt = i2v_motion_prompt(
+            &s,
+            &chars,
+            "cinematic",
+            &refs,
+            SEEDANCE,
+            8,
+            SpliceSeam::Cut,
+            "",
+            false,
+            None,
+            "16:9",
+        );
         assert!(!prompt.contains("Children share"));
         assert!(!prompt.contains("CAST LOCK"));
         assert!(prompt.contains("@Image1"));
@@ -3889,7 +4257,19 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
     #[test]
     fn empty_aspect_omits_frame_line() {
         let s = shot(1, 0);
-        let prompt = i2v_motion_prompt(&s, &[], "cinematic", &[], 5, false, "", false, None, "");
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            SEEDANCE,
+            5,
+            SpliceSeam::Cut,
+            "",
+            false,
+            None,
+            "",
+        );
         assert!(!prompt.contains("Frame:"), "{prompt}");
     }
 

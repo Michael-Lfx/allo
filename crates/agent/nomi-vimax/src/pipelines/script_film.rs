@@ -25,7 +25,8 @@ use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
     world_cameo_context,
 };
-use super::script2video::{resolve_scene_tail_continuity, PlanArtifacts, Script2VideoPipeline};
+use super::scene_reel::SceneReel;
+use super::script2video::{PlanArtifacts, Script2VideoPipeline};
 use super::script_scene_split::{
     apply_script_selection, build_scenes_index, resolve_script_selection, selected_script_bodies,
     split_screenplay, ScriptSelection, ScreenplayUnit,
@@ -341,8 +342,9 @@ impl ScriptFilmPipeline {
                 .await?;
         }
 
+        let clip = self.backends.clip;
         let scene_count = bodies.len().max(1);
-        let budgets = film_total.map(|total| allocate_scene_budgets(total, scene_count));
+        let budgets = film_total.map(|total| allocate_scene_budgets(clip, total, scene_count));
 
         for (i, scene_script) in bodies.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
@@ -368,13 +370,19 @@ impl ScriptFilmPipeline {
             let budget = budgets.as_ref().and_then(|b| b.get(i).copied());
             let mut scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
+                    clip,
                     user_requirement,
                     budget,
                     i,
                     scene_count,
                     film_total,
                 ),
-                _ => enrich_requirement_for_scene_model_decides(user_requirement, i, scene_count),
+                _ => enrich_requirement_for_scene_model_decides(
+                    clip,
+                    user_requirement,
+                    i,
+                    scene_count,
+                ),
             };
             scene_req = format!("{scene_req}\n\n{scope}");
             let permit = Arc::clone(&sem);
@@ -463,8 +471,9 @@ impl ScriptFilmPipeline {
         let scenes: Vec<String> =
             serde_json::from_str(&tokio::fs::read_to_string(&script_json).await?)?;
         let film_total = self.film_target_secs().await;
+        let clip = self.backends.clip;
         let scene_total = scenes.len().max(1);
-        let budgets = film_total.map(|total| allocate_scene_budgets(total, scene_total));
+        let budgets = film_total.map(|total| allocate_scene_budgets(clip, total, scene_total));
 
         let selection: ScriptSelection = read_json_artifact(&self.working_dir.join("selection.json"))
             .await
@@ -484,8 +493,7 @@ impl ScriptFilmPipeline {
         )
         .await?;
 
-        let mut scene_videos: Vec<PathBuf> = Vec::new();
-        let mut prior_continuity: Option<PathBuf> = None;
+        let mut reel = SceneReel::new();
         for (i, scene_script) in scenes.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
             let scene_final = scene_dir.join("final_video.mp4");
@@ -497,8 +505,7 @@ impl ScriptFilmPipeline {
                     &format!("场次 {}/{scene_total} 已完成，跳过", i + 1),
                     20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
                 );
-                prior_continuity = resolve_scene_tail_continuity(&scene_dir).await;
-                scene_videos.push(scene_final);
+                reel.push(scene_final, &scene_dir).await;
                 continue;
             }
 
@@ -506,13 +513,19 @@ impl ScriptFilmPipeline {
             self.prepare_scene_workspace(&scene_dir, budget).await?;
             let mut scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
+                    clip,
                     user_requirement,
                     budget,
                     i,
                     scene_total,
                     film_total,
                 ),
-                _ => enrich_requirement_for_scene_model_decides(user_requirement, i, scene_total),
+                _ => enrich_requirement_for_scene_model_decides(
+                    clip,
+                    user_requirement,
+                    i,
+                    scene_total,
+                ),
             };
             scene_req = format!("{scene_req}\n\n{scope}");
 
@@ -531,13 +544,12 @@ impl ScriptFilmPipeline {
                     &scene_req,
                     &style,
                     progress.clone(),
-                    prior_continuity.as_deref(),
+                    reel.tail_frame(),
                 )
                 .await
             {
                 Ok(video) => {
-                    prior_continuity = resolve_scene_tail_continuity(&scene_dir).await;
-                    scene_videos.push(video);
+                    reel.push(video, &scene_dir).await;
                     emit_pct(
                         &progress,
                         "render_scene_done",
@@ -549,7 +561,7 @@ impl ScriptFilmPipeline {
                     return Err(crate::error::VimaxError::Video(format!(
                         "场次 {}/{scene_total} 渲染失败（已完成 {} 场，可从断点续跑）: {e}",
                         i + 1,
-                        scene_videos.len()
+                        reel.len()
                     )));
                 }
             }
@@ -559,8 +571,7 @@ impl ScriptFilmPipeline {
         media_local::scrub_unusable_video(&final_path).await?;
         if !media_local::is_usable_video_file(&final_path) {
             emit_pct(&progress, "concat_start", "正在拼接各场次视频", 95.0);
-            let refs: Vec<&Path> = scene_videos.iter().map(|p| p.as_path()).collect();
-            media_local::concat_videos(&refs, &final_path).await?;
+            media_local::concat_videos(&reel.concat_clips(), &final_path).await?;
         }
         emit_pct(&progress, "render_done", "剧本成片渲染完成", 100.0);
         Ok(final_path)

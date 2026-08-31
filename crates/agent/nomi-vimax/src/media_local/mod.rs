@@ -437,10 +437,16 @@ fn parse_ffmpeg_duration_banner(stderr: &str) -> Option<f64> {
 /// `concat` **filter** (not the concat demuxer): demuxer stitches A/V as
 /// independent streams, so short audio on early shots makes the last shot's
 /// picture play over silence even when that shot's own file has sound.
-pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult<()> {
-    if clip_paths.is_empty() {
+///
+/// Each clip declares how it meets its predecessor ([`SpliceSeam`]); see
+/// [`ClipEdit::plan`] for what that buys at the seam.
+pub async fn concat_videos(clips: &[ConcatClip<'_>], out_path: &Path) -> VimaxResult<()> {
+    if clips.is_empty() {
         return Err(VimaxError::Media("no clips to concatenate".into()));
     }
+    let clip_paths: Vec<&Path> = clips.iter().map(|c| c.path).collect();
+    let clip_paths = &clip_paths[..];
+    let edits = ClipEdit::plan(clips);
     let ffmpeg = ensure_ffmpeg_ready().await?;
     if let Some(parent) = out_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -473,12 +479,13 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
             let ffmpeg = ffmpeg.clone();
             let input = (*clip).to_path_buf();
             let dest = norm_dir.join(format!("{i:03}.mp4"));
+            let edit = edits[i];
             let permit = Arc::clone(&sem);
             set.spawn(async move {
                 let _permit = permit.acquire_owned().await.map_err(|_| {
                     VimaxError::Media("normalize semaphore closed".into())
                 })?;
-                normalize_clip_for_concat(&ffmpeg, &input, &dest, canvas_w, canvas_h)
+                normalize_clip_for_concat(&ffmpeg, &input, &dest, canvas_w, canvas_h, edit)
                     .await
                     .map(|_| i)
             });
@@ -746,17 +753,212 @@ async fn try_remux_concat(ffmpeg: &Path, clips: &[PathBuf], out_path: &Path) -> 
     Ok((out_dur - expected).abs() <= (expected * 0.01).max(0.5))
 }
 
-/// Soft fade at clip edges so hard cuts do not click / jump in BGM loudness.
-/// Long enough to soften Seedance per-shot underscore discontinuities, short
-/// enough to avoid chewing the last spoken syllable.
+/// Soft fade at a hard cut / film edge so the join does not click or jump in
+/// BGM loudness. Long enough to soften a change of underscore, short enough to
+/// avoid chewing the last spoken syllable.
 pub const CONCAT_AUDIO_EDGE_FADE_SECS: f64 = 0.5;
+
+/// Fade applied on both sides of a seam that shares its soundtrack.
+///
+/// Such a seam is meant to be inaudible: the two shots share one scene, one
+/// underscore, and one room tone. Half a second of fade-out immediately
+/// followed by half a second of fade-in turns that into an audible dip at every
+/// shot change — the audio half of "stuttering". This is only long enough to
+/// hide the encoder discontinuity (~2 audio frames).
+pub const CONCAT_AUDIO_SEAM_FADE_SECS: f64 = 0.06;
+
+/// Seconds trimmed from the head of a clip that continues its predecessor.
+///
+/// I2V clips are generated from the previous clip's last frame, so they open by
+/// re-staging a moment the audience just saw and only then accelerate into the
+/// new action. Played back-to-back that reads as a freeze at every splice.
+/// Cutting the re-acceleration ramp is the edit-room fix ("cut on action");
+/// planning reserves [`crate::planning::SHOT_SPLICE_TAIL_PADDING_SECS`] per shot
+/// so the film still lands near its advertised length.
+pub const SPLICE_HEAD_TRIM_SECS: f64 = 0.25;
+
+/// Below this a clip is too short to survive a head trim without hurting the
+/// beat, so the overlap is kept rather than gutting the shot.
+const MIN_TRIMMABLE_CLIP_SECS: f64 = 1.5;
+
+/// How a clip meets the clip before it on the timeline.
+///
+/// Two independent things happen at a seam, and the variants below are exactly
+/// the combinations the renderer can produce:
+///
+/// | seam        | picture replays? | soundtrack continues? |
+/// |-------------|------------------|-----------------------|
+/// | `Cut`       | no               | no                    |
+/// | `MatchCut`  | no               | yes                   |
+/// | `SameTake`  | yes              | yes                   |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpliceSeam {
+    /// Unrelated material: the film opening, or a jump to a scene with its own
+    /// soundtrack. Both sides keep the full edge fade.
+    #[default]
+    Cut,
+    /// A new camera angle inside one continuous scene. The picture jumps, the
+    /// underscore does not, and the prompt forbids replaying the previous beat
+    /// — so there is nothing to trim, only a click to hide.
+    MatchCut,
+    /// The same camera continuing, generated from the predecessor's last frame,
+    /// so the head re-stages a beat the audience already saw.
+    SameTake,
+}
+
+impl SpliceSeam {
+    /// Seam between two adjacent shots of one continuously rendered scene.
+    ///
+    /// The renderer always feeds shot N's last frame to shot N+1, but the
+    /// prompt asks for two different things: keep rolling on the same setup, or
+    /// cut to a new angle with the action already in progress. Only the former
+    /// replays footage. See `script2video::shot_seam`, which writes the prompt
+    /// half of this contract from the same `cam_idx` comparison.
+    pub fn within_scene(prev_cam: i32, cam: i32) -> Self {
+        if prev_cam == cam {
+            Self::SameTake
+        } else {
+            Self::MatchCut
+        }
+    }
+
+    /// Does the head of this clip re-stage its predecessor's ending?
+    fn replays_predecessor(self) -> bool {
+        matches!(self, Self::SameTake)
+    }
+
+    /// Does one continuous soundtrack run across this seam?
+    fn shares_soundtrack(self) -> bool {
+        matches!(self, Self::MatchCut | Self::SameTake)
+    }
+}
+
+/// One clip of a concat, plus how it joins the previous one.
+#[derive(Debug, Clone, Copy)]
+pub struct ConcatClip<'a> {
+    pub path: &'a Path,
+    pub seam: SpliceSeam,
+}
+
+impl<'a> ConcatClip<'a> {
+    pub fn new(path: &'a Path, seam: SpliceSeam) -> Self {
+        Self { path, seam }
+    }
+
+    /// A clip that shares nothing with its predecessor.
+    pub fn cut(path: &'a Path) -> Self {
+        Self::new(path, SpliceSeam::Cut)
+    }
+
+    /// Shots of one continuously rendered scene, in timeline order.
+    ///
+    /// `opening` is how the scene itself joins the film: a later scene
+    /// match-cuts from the previous scene's tail frame, so its first shot must
+    /// not be faded up as if the film were starting. `cam_idxs` is parallel to
+    /// `paths`; a shot with no recorded camera is treated as a cut, which is
+    /// the safe direction (no trim).
+    pub fn scene(paths: &[&'a Path], cam_idxs: &[i32], opening: SpliceSeam) -> Vec<Self> {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let seam = match i.checked_sub(1) {
+                    None => opening,
+                    Some(prev) => match (cam_idxs.get(prev), cam_idxs.get(i)) {
+                        (Some(&a), Some(&b)) => SpliceSeam::within_scene(a, b),
+                        _ => SpliceSeam::MatchCut,
+                    },
+                };
+                Self::new(p, seam)
+            })
+            .collect()
+    }
+
+    /// Scene finals of one film, in timeline order.
+    ///
+    /// Each scene after the first is written as a match-cut from the previous
+    /// scene's tail frame, and its head trim (if any) was already applied when
+    /// its own shots were joined.
+    pub fn film(paths: &[&'a Path]) -> Vec<Self> {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let seam = if i == 0 {
+                    SpliceSeam::Cut
+                } else {
+                    SpliceSeam::MatchCut
+                };
+                Self::new(p, seam)
+            })
+            .collect()
+    }
+}
+
+/// What normalize must do to one clip so its two seams play smoothly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClipEdit {
+    /// Seconds dropped from the head (duplicated re-establishment frames).
+    head_trim: f64,
+    fade_in: f64,
+    fade_out: f64,
+}
+
+impl ClipEdit {
+    /// Fade shape for a clip whose seams are both hard cuts.
+    #[cfg(test)]
+    const CUT: Self = Self {
+        head_trim: 0.0,
+        fade_in: CONCAT_AUDIO_EDGE_FADE_SECS,
+        fade_out: CONCAT_AUDIO_EDGE_FADE_SECS,
+    };
+
+    /// Derive each clip's edit from the seams around it.
+    ///
+    /// A clip's head is shaped by its own seam and its tail by the *next*
+    /// clip's seam, so one continuity join relaxes both sides of that splice.
+    fn plan(clips: &[ConcatClip<'_>]) -> Vec<Self> {
+        let fade = |seam: SpliceSeam| {
+            if seam.shares_soundtrack() {
+                CONCAT_AUDIO_SEAM_FADE_SECS
+            } else {
+                CONCAT_AUDIO_EDGE_FADE_SECS
+            }
+        };
+        clips
+            .iter()
+            .enumerate()
+            .map(|(i, clip)| {
+                let next_seam = clips.get(i + 1).map_or(SpliceSeam::Cut, |c| c.seam);
+                Self {
+                    head_trim: if clip.seam.replays_predecessor() {
+                        SPLICE_HEAD_TRIM_SECS
+                    } else {
+                        0.0
+                    },
+                    fade_in: fade(clip.seam),
+                    fade_out: fade(next_seam),
+                }
+            })
+            .collect()
+    }
+
+    /// Head trim this clip can actually afford given its probed duration.
+    fn affordable_head_trim(&self, dur: f64) -> f64 {
+        if self.head_trim <= 0.0 || dur - self.head_trim < MIN_TRIMMABLE_CLIP_SECS {
+            0.0
+        } else {
+            self.head_trim
+        }
+    }
+}
 
 /// Build the per-clip audio filter used before concat.
 ///
 /// - Normalize sample rate / layout
-/// - Pad audio to the full video duration
-/// - Soft fade in/out at edges (when the clip is long enough)
-fn normalize_audio_filter(dur: f64) -> String {
+/// - Pad audio to the full (post-trim) video duration
+/// - Fade the edges per [`ClipEdit`], when the clip is long enough to hold both
+fn normalize_audio_filter(dur: f64, edit: ClipEdit) -> String {
     let base = if dur > 0.05 {
         format!(
             "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad=whole_dur={dur:.3}"
@@ -765,25 +967,34 @@ fn normalize_audio_filter(dur: f64) -> String {
         "aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad"
             .to_string()
     };
-    let fade = CONCAT_AUDIO_EDGE_FADE_SECS;
-    if dur > fade * 2.0 + 0.05 {
-        let out_st = dur - fade;
-        format!(
-            "{base},afade=t=in:st=0:d={fade:.3},afade=t=out:st={out_st:.3}:d={fade:.3}"
-        )
-    } else {
-        base
+    let (fade_in, fade_out) = (edit.fade_in, edit.fade_out);
+    if fade_in + fade_out <= 0.0 || dur <= fade_in + fade_out + 0.05 {
+        return base;
     }
+    let mut chain = base;
+    if fade_in > 0.0 {
+        chain.push_str(&format!(",afade=t=in:st=0:d={fade_in:.3}"));
+    }
+    if fade_out > 0.0 {
+        let out_st = dur - fade_out;
+        chain.push_str(&format!(",afade=t=out:st={out_st:.3}:d={fade_out:.3}"));
+    }
+    chain
 }
 
 /// Re-encode one shot to CFR 24fps video + stereo AAC matched to video length,
 /// scaled/padded onto a shared even canvas so concat can join them.
+///
+/// `edit` carries the seam treatment: the head overlap to drop and the fade
+/// shape for each end. Trimming here (rather than in a separate pass) keeps it
+/// free — the clip is being re-encoded anyway.
 async fn normalize_clip_for_concat(
     ffmpeg: &Path,
     input: &Path,
     output: &Path,
     canvas_w: u32,
     canvas_h: u32,
+    edit: ClipEdit,
 ) -> VimaxResult<()> {
     let input_s = input.to_str().unwrap_or("");
     let output_s = output.to_str().unwrap_or("");
@@ -794,7 +1005,22 @@ async fn normalize_clip_for_concat(
             input.display()
         )));
     }
-    let dur = probe_duration_secs(ffmpeg, input).await.unwrap_or(0.0);
+    let source_dur = probe_duration_secs(ffmpeg, input).await.unwrap_or(0.0);
+    let head_trim = edit.affordable_head_trim(source_dur);
+    let dur = (source_dur - head_trim).max(0.0);
+    if head_trim > 0.0 {
+        tracing::debug!(
+            clip = %input.display(),
+            head_trim,
+            source_dur,
+            "trimming continuity overlap from clip head"
+        );
+    }
+    let seek_args: Vec<String> = if head_trim > 0.0 {
+        vec!["-ss".into(), format!("{head_trim:.3}")]
+    } else {
+        Vec::new()
+    };
     let dur_arg = if dur > 0.05 {
         format!("{dur:.3}")
     } else {
@@ -802,7 +1028,7 @@ async fn normalize_clip_for_concat(
     };
     // whole_dur keeps AAC from ending early (dialogue often shorter than picture).
     // Edge afade softens BGM/volume jumps at shot boundaries without changing duration.
-    let af = normalize_audio_filter(dur);
+    let af = normalize_audio_filter(dur, edit);
 
     // Same hardware plan as the final join — one probe per process, one recipe.
     // A hardware plan that fails at runtime (full NVENC session, driver hiccup)
@@ -820,8 +1046,9 @@ async fn normalize_clip_for_concat(
     // Path A: clip already has an audio stream.
     let build_a = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan, vf: &str| -> Vec<String> {
         let mut args: Vec<String> = vec!["-y".into()];
-        // Input-side options (e.g. `-vaapi_device`) must precede `-i`.
+        // Input-side options (e.g. `-vaapi_device`, `-ss`) must precede `-i`.
         args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend(seek_args.iter().cloned());
         args.extend([
             "-i".into(),
             input_s.into(),
@@ -861,6 +1088,7 @@ async fn normalize_clip_for_concat(
     let build_b = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan, vf: &str| -> Vec<String> {
         let mut args: Vec<String> = vec!["-y".into()];
         args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend(seek_args.iter().cloned());
         args.extend([
             "-i".into(),
             input_s.into(),
@@ -1706,9 +1934,12 @@ mod tests {
         assert!(st1.success());
 
         let out = dir.path().join("final.mp4");
-        concat_videos(&[c0.as_path(), c1.as_path()], &out)
-            .await
-            .expect("concat");
+        concat_videos(
+            &[ConcatClip::cut(&c0), ConcatClip::cut(&c1)],
+            &out,
+        )
+        .await
+        .expect("concat");
         assert!(is_usable_video_file(&out));
 
         // Sample the last ~2s of the film; mean_volume must not be -inf.
@@ -1809,9 +2040,12 @@ mod tests {
             assert!(st.success(), "failed to mint {size} clip");
         }
         let out = dir.path().join("joined.mp4");
-        concat_videos(&[c0.as_path(), c1.as_path()], &out)
-            .await
-            .expect("concat mixed resolutions");
+        concat_videos(
+            &[ConcatClip::cut(&c0), ConcatClip::cut(&c1)],
+            &out,
+        )
+        .await
+        .expect("concat mixed resolutions");
         assert!(is_usable_video_file(&out));
         let dur = probe_duration_secs(&ffmpeg, &out).await.expect("probe duration");
         assert!(
@@ -1820,15 +2054,179 @@ mod tests {
         );
     }
 
+    /// Shots that keep rolling on one setup must drop their duplicated head, so
+    /// the join is shorter than the raw sum by one trim per seam.
+    #[tokio::test]
+    async fn concat_trims_the_replayed_head_of_same_take_clips() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let clips: Vec<PathBuf> = ["a.mp4", "b.mp4", "c.mp4"]
+            .iter()
+            .map(|n| dir.path().join(n))
+            .collect();
+        for path in &clips {
+            let st = run_ffmpeg(
+                &ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=gray:s=320x240:d=3:r=24",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=3",
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    path.to_str().unwrap(),
+                ],
+            )
+            .await
+            .unwrap();
+            assert!(st.success());
+        }
+        let refs: Vec<&Path> = clips.iter().map(|p| p.as_path()).collect();
+
+        let out = dir.path().join("chained.mp4");
+        let clips = ConcatClip::scene(&refs, &[4, 4, 4], SpliceSeam::Cut);
+        concat_videos(&clips, &out)
+            .await
+            .expect("concat one continuous take");
+        let chained = probe_duration_secs(&ffmpeg, &out).await.expect("probe");
+
+        // 3 clips → 2 same-take seams → 2 head trims removed.
+        let expected = 9.0 - 2.0 * SPLICE_HEAD_TRIM_SECS;
+        assert!(
+            (chained - expected).abs() < 0.35,
+            "chained duration {chained} should be ~{expected}"
+        );
+    }
+
     #[test]
-    fn normalize_audio_filter_adds_edge_afade_for_long_clips() {
-        let af = normalize_audio_filter(10.0);
+    fn cut_seams_keep_the_long_edge_fade() {
+        let af = normalize_audio_filter(10.0, ClipEdit::CUT);
         assert!(af.contains("apad=whole_dur=10.000"));
         assert!(af.contains("afade=t=in:st=0:d=0.500"));
         assert!(af.contains("afade=t=out:st=9.500:d=0.500"));
 
-        let short = normalize_audio_filter(0.2);
+        let short = normalize_audio_filter(0.2, ClipEdit::CUT);
         assert!(!short.contains("afade"), "too-short clips skip edge fade");
+    }
+
+    /// The film opens and closes with a real fade; seams inside one scene only
+    /// get a de-click, otherwise continuous BGM audibly pumps at every cut.
+    #[test]
+    fn a_scene_fades_only_at_the_film_edges() {
+        let paths: Vec<PathBuf> = ["a.mp4", "b.mp4", "c.mp4"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let edits = ClipEdit::plan(&ConcatClip::scene(&refs, &[1, 1, 1], SpliceSeam::Cut));
+
+        assert_eq!(edits[0].head_trim, 0.0, "the first clip has no predecessor");
+        assert_eq!(edits[0].fade_in, CONCAT_AUDIO_EDGE_FADE_SECS);
+        assert_eq!(edits[0].fade_out, CONCAT_AUDIO_SEAM_FADE_SECS);
+
+        assert_eq!(edits[1].head_trim, SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edits[1].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
+        assert_eq!(edits[1].fade_out, CONCAT_AUDIO_SEAM_FADE_SECS);
+
+        assert_eq!(edits[2].head_trim, SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edits[2].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
+        assert_eq!(
+            edits[2].fade_out, CONCAT_AUDIO_EDGE_FADE_SECS,
+            "the film still fades out at the end"
+        );
+    }
+
+    #[test]
+    fn a_clip_too_short_to_trim_keeps_its_head() {
+        let edit = ClipEdit {
+            head_trim: SPLICE_HEAD_TRIM_SECS,
+            fade_in: CONCAT_AUDIO_SEAM_FADE_SECS,
+            fade_out: CONCAT_AUDIO_SEAM_FADE_SECS,
+        };
+        assert_eq!(edit.affordable_head_trim(5.0), SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edit.affordable_head_trim(1.0), 0.0);
+        assert_eq!(ClipEdit::CUT.affordable_head_trim(5.0), 0.0);
+    }
+
+    /// A camera change is a real cut: the prompt tells the model not to replay
+    /// the previous beat, so trimming its head would eat live action. The
+    /// soundtrack still runs through, so the fade stays short either way.
+    #[test]
+    fn a_camera_change_inside_a_scene_is_not_trimmed() {
+        let paths: Vec<PathBuf> = ["a.mp4", "b.mp4", "c.mp4"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let clips = ConcatClip::scene(&refs, &[1, 2, 2], SpliceSeam::Cut);
+
+        assert_eq!(
+            clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
+            vec![SpliceSeam::Cut, SpliceSeam::MatchCut, SpliceSeam::SameTake]
+        );
+        let edits = ClipEdit::plan(&clips);
+        assert_eq!(edits[1].head_trim, 0.0, "cam 1→2 is a cut, nothing replays");
+        assert_eq!(edits[1].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
+        assert_eq!(edits[2].head_trim, SPLICE_HEAD_TRIM_SECS);
+    }
+
+    /// A scene rendered after another one opens mid-soundtrack, so baking a
+    /// half-second fade-up into its first shot would dip the film at every
+    /// scene boundary.
+    #[test]
+    fn a_later_scene_does_not_fade_up_from_silence() {
+        let paths: Vec<PathBuf> = ["a.mp4", "b.mp4"].iter().map(PathBuf::from).collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+
+        let opening = ClipEdit::plan(&ConcatClip::scene(&refs, &[1, 1], SpliceSeam::Cut));
+        assert_eq!(opening[0].fade_in, CONCAT_AUDIO_EDGE_FADE_SECS);
+
+        let later = ClipEdit::plan(&ConcatClip::scene(&refs, &[1, 1], SpliceSeam::MatchCut));
+        assert_eq!(later[0].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
+        assert_eq!(later[0].head_trim, 0.0, "the scene's own head was not replayed");
+    }
+
+    /// Scene finals were already trimmed shot-by-shot; the film join must not
+    /// trim them a second time.
+    #[test]
+    fn film_level_scenes_are_match_cuts_never_same_takes() {
+        let paths: Vec<PathBuf> = ["s0.mp4", "s1.mp4", "s2.mp4"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let clips = ConcatClip::film(&refs);
+
+        assert_eq!(
+            clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
+            vec![SpliceSeam::Cut, SpliceSeam::MatchCut, SpliceSeam::MatchCut]
+        );
+        assert!(ClipEdit::plan(&clips).iter().all(|e| e.head_trim == 0.0));
+    }
+
+    #[test]
+    fn a_scene_with_no_recorded_cameras_is_never_trimmed() {
+        let paths: Vec<PathBuf> = ["a.mp4", "b.mp4"].iter().map(PathBuf::from).collect();
+        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let clips = ConcatClip::scene(&refs, &[], SpliceSeam::Cut);
+        assert_eq!(clips[1].seam, SpliceSeam::MatchCut);
+        assert_eq!(ClipEdit::plan(&clips)[1].head_trim, 0.0);
     }
 
     #[test]

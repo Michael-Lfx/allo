@@ -1,22 +1,20 @@
-//! Planning helpers: Seedance clips are 5–12s for short drama.
-//! Clip length follows the beat (speech + one visual event), not a shot-count quota.
+//! Planning helpers: clip length follows the beat (speech + one visual event),
+//! not a shot-count quota.
+//!
+//! The accepted per-clip window is a property of the **selected video model**
+//! ([`crate::clip_bounds::ClipBounds`]), so every duration helper here takes it
+//! as an argument instead of hardcoding one vendor's numbers.
 
-/// Minimum seconds the Flowy / Seedance video API accepts for I2V (and what we bill).
-pub const MIN_CLIP_DURATION_SECS: u32 = 5;
+use crate::clip_bounds::ClipBounds;
 
-/// Max per clip for short drama mode — reserved for long speech or continuous camera moves.
-pub const MAX_CLIP_DURATION_SECS: u32 = 12;
+/// Shortest film the UI / API will plan. A product floor, not a model limit.
+pub const MIN_TARGET_DURATION_SECS: u32 = 5;
 
 /// Default target total length when the user does not specify one.
 pub const DEFAULT_TARGET_DURATION_SECS: u32 = 45;
 
 /// Max user-facing film target (UI timeline + plan/render clamp).
 pub const MAX_TARGET_DURATION_SECS: u32 = 300;
-
-/// Typical beat length: a glance may be 5s; most lines/actions land in 6–10s.
-/// 11–12s only when spoken words (or a continuous camera move) actually need it.
-pub const PREFERRED_CLIP_DURATION_MIN: u32 = 6;
-pub const PREFERRED_CLIP_DURATION_MAX: u32 = 10;
 
 /// Clear spoken Chinese chars/sec — conversational drama, not funeral-slow and not rushed.
 /// Daily Mandarin is ~4–5 chars/s; 3.3 leaves room for emotion without padding the clip.
@@ -28,12 +26,18 @@ const SPEECH_LEAD_SECS: u32 = 1;
 /// Tail seconds after the last spoken syllable so audio is not cut mid-breath.
 /// Keep short: reaction/action should fill the landing, not empty hold.
 const SPEECH_TAIL_SECS: u32 = 1;
-/// Dialogue shots should not be shorter than Seedance min even when the line is brief.
-const MIN_DIALOGUE_CLIP_SECS: u32 = 5;
+/// A spoken beat needs a lead-in, the line, and a landing. Budget compression
+/// must never push dialogue below this even when the model accepts shorter clips.
+const DIALOGUE_FLOOR_SECS: u32 = 5;
 /// Soft-landing seconds preferred at the end of each shot before a splice.
 /// Reserved **from** the user target before budget fitting, then re-applied, so
 /// the rendered sum stays near the advertised length (never `target + 2×shots`).
 pub const SHOT_SPLICE_TAIL_PADDING_SECS: u32 = 1;
+
+/// [`DIALOGUE_FLOOR_SECS`] pulled inside the selected model's window.
+fn dialogue_floor_secs(bounds: ClipBounds) -> u32 {
+    bounds.clamp_secs(DIALOGUE_FLOOR_SECS)
+}
 
 /// Seedance music caption `(…)` shared by every shot in a scene.
 /// Identical wording keeps motif/tempo intent stable across adjacent I2V clips.
@@ -641,28 +645,27 @@ pub fn video_style_clause(user_style: &str) -> String {
 /// Clamp a user-provided target into a practical range.
 pub fn normalize_target_duration_secs(raw: Option<u32>) -> u32 {
     raw.unwrap_or(DEFAULT_TARGET_DURATION_SECS)
-        .clamp(MIN_CLIP_DURATION_SECS, MAX_TARGET_DURATION_SECS)
+        .clamp(MIN_TARGET_DURATION_SECS, MAX_TARGET_DURATION_SECS)
 }
 
 /// Suggested shot count for a **single scene budget** (not the whole film).
 ///
-/// Soft hint only: `ideal` assumes ~8s beats so a user duration is fillable
-/// without stretching each clip to 12s. The storyboard LLM still chooses count
-/// from beats — this is not a minimum quota. `max_shots` is a hard cap for
-/// post-LLM truncation.
-pub fn suggested_shot_count(budget_secs: u32) -> (u32, u32) {
-    let budget = budget_secs.max(MIN_CLIP_DURATION_SECS);
-    let min_to_fill =
-        (budget + MAX_CLIP_DURATION_SECS - 1) / MAX_CLIP_DURATION_SECS;
-    // Aim ~8s/clip so leftover seconds are extra shots, not padded holds.
-    // 40→5, 60→8→clamp 6, 30→4. (`+4` rounds toward nearest).
-    let ideal = ((budget + 4) / 8).clamp(1, 6);
-    let max_shots = (budget / MIN_CLIP_DURATION_SECS)
-        .max(min_to_fill)
-        .clamp(1, 8);
+/// Soft hint only: `ideal` assumes beats near the model's preferred length so a
+/// user duration is fillable without stretching every clip to the ceiling. The
+/// storyboard LLM still chooses count from beats — this is not a minimum quota.
+/// `max_shots` is a hard cap for post-LLM truncation.
+pub fn suggested_shot_count(bounds: ClipBounds, budget_secs: u32) -> (u32, u32) {
+    let budget = budget_secs.max(bounds.min_secs());
+    let min_to_fill = budget.div_ceil(bounds.max_secs());
+    // Price the hint at the beat length short drama actually lands on, not at
+    // the top of the window: leftover seconds should become extra shots rather
+    // than padded holds. With a 5–15s beat window that is ~8s/clip.
+    let beat = bounds.typical_beat_secs().max(1);
+    let ideal = ((budget + beat / 2) / beat).clamp(1, 6);
+    let max_shots = (budget / bounds.min_secs()).max(min_to_fill).clamp(1, 8);
     // Only raise ideal toward min_to_fill when even max-length ideal clips
     // cannot reach the budget (e.g. ideal=2 → 30s < 40s target).
-    let ideal = if ideal.saturating_mul(MAX_CLIP_DURATION_SECS) < budget {
+    let ideal = if ideal.saturating_mul(bounds.max_secs()) < budget {
         min_to_fill.min(max_shots)
     } else {
         ideal.min(max_shots)
@@ -728,11 +731,15 @@ pub fn resolve_scene_bgm_paren(
         .unwrap_or_else(|| DEFAULT_SCENE_BGM_PAREN.to_string())
 }
 
-/// Split a film-level target across N scenes (each ≥5s).
-pub fn allocate_scene_budgets(total_secs: u32, scene_count: usize) -> Vec<u32> {
+/// Split a film-level target across N scenes (each ≥ one model-minimum clip).
+pub fn allocate_scene_budgets(
+    bounds: ClipBounds,
+    total_secs: u32,
+    scene_count: usize,
+) -> Vec<u32> {
     let n = scene_count.max(1);
     let total = normalize_target_duration_secs(Some(total_secs));
-    let base = (total / n as u32).max(MIN_CLIP_DURATION_SECS);
+    let base = (total / n as u32).max(bounds.min_secs());
     let mut budgets = vec![base; n];
     let mut rem = total.saturating_sub(base.saturating_mul(n as u32));
     for b in &mut budgets {
@@ -746,11 +753,11 @@ pub fn allocate_scene_budgets(total_secs: u32, scene_count: usize) -> Vec<u32> {
 }
 
 /// Suggested scene count for a whole film (idea/novel multi-scene).
-pub fn suggested_scene_count(total_secs: u32) -> (u32, u32) {
+pub fn suggested_scene_count(bounds: ClipBounds, total_secs: u32) -> (u32, u32) {
     let total = normalize_target_duration_secs(Some(total_secs));
     // ~10–12s per scene for short drama.
     let ideal = ((total + 10) / 12).clamp(1, 5);
-    let max_scenes = (total / MIN_CLIP_DURATION_SECS).clamp(1, 6);
+    let max_scenes = (total / bounds.min_secs()).clamp(1, 6);
     (ideal.min(max_scenes), max_scenes)
 }
 
@@ -841,16 +848,58 @@ pub fn has_explicit_duration_budget(target_secs: Option<u32>) -> bool {
     target_secs.is_some_and(|s| s > 0)
 }
 
-fn film_pacing_model_decides_block() -> String {
+/// Spoken-payload budget for one clip, in the user's terms (chars / words).
+///
+/// Derived from the selected model's window so a longer-clip model really does
+/// buy longer lines instead of the planner guessing a vendor number.
+pub fn speech_budget_line(bounds: ClipBounds) -> String {
+    let clip_max = bounds.max_secs();
+    let (clip_min, beat_max) = (bounds.min_secs(), bounds.preferred_max_secs());
+    let speak_window = clip_max.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
+    let max_cjk_chars = (speak_window as f32 * SPEECH_CJK_CHARS_PER_SEC).floor() as u32;
+    let max_en_words = (speak_window as f32 * SPEECH_EN_WORDS_PER_SEC).floor() as u32;
+    let action_max = bounds.clamp_secs(bounds.typical_beat_secs());
+    format!(
+        "Dialogue MUST finish inside the same shot's {clip_min}–{clip_max}s clip: \
+Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec or English ~{SPEECH_EN_WORDS_PER_SEC} words/sec, \
+leave ~{SPEECH_LEAD_SECS}s lead-in and ~{SPEECH_TAIL_SECS}s tail after the last word, then land on a \
+visible reaction/action beat (no empty hold); hard max ≲{max_cjk_chars} Chinese chars / \
+≲{max_en_words} English words. Action-only shots usually run {clip_min}–{action_max}s \
+(do not pad a sit/stand/walk to {beat_max}s)."
+    )
+}
+
+/// Clip-length rules for the planning prompts (storyboard + shot decompose).
+///
+/// Planning runs **before** the renderer allocates clip lengths from the scene
+/// budget, so any absolute second a planner writes would contradict the clip it
+/// lands on — the bug this rule exists to prevent. Planners order their beats;
+/// the renderer lays them on the real timeline.
+pub fn clip_length_rules(bounds: ClipBounds) -> String {
+    let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
+    let (beat_min, beat_max) = (bounds.preferred_min_secs(), bounds.preferred_max_secs());
+    format!(
+        "Each shot renders as ONE clip of {clip_min}–{clip_max}s (typically {beat_min}–{beat_max}s), \
+so a shot must describe one visual event that completes naturally at that length — no empty holds, \
+no slow-mo padding, no micro-cuts that belong in another shot. NEVER write absolute seconds or \
+timecodes (no \"0-4s:\", no \"4-7s\", no \"前3秒\"): the renderer decides the clip length and would \
+contradict them. When a beat genuinely contains two consecutive events, write them in order \
+(\"…；然后…\" / \"…, then …\") and let the renderer pace them inside the clip."
+    )
+}
+
+fn film_pacing_model_decides_block(bounds: ClipBounds) -> String {
+    let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
+    let (beat_min, beat_max) = (bounds.preferred_min_secs(), bounds.preferred_max_secs());
     format!(
         "[VIDEO_PACING — MUST FOLLOW]\n\
          - Do NOT target a fixed finished runtime. Let scene count and story length follow the idea \
 (ViMax-style: the model decides duration).\n\
          - Shot count follows story beats — do not pad or split to hit a quota. A compact idea may \
 need only a few shots; a denser conflict may need more. Honor an explicit user duration/scene/shot count.\n\
-         - Each rendered shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance hard range). \
-Match length to the beat (typically {PREFERRED_CLIP_DURATION_MIN}–{PREFERRED_CLIP_DURATION_MAX}s); \
-{MAX_CLIP_DURATION_SECS}s only when speech or a continuous camera move needs it.\n\
+         - Each rendered shot clip is {clip_min}–{clip_max}s (hard range of the selected video model). \
+Match length to the beat (typically {beat_min}–{beat_max}s); \
+{clip_max}s only when speech or a continuous camera move needs it.\n\
          - Speech pacing (clear, language-aware): Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec; leave ~{SPEECH_LEAD_SECS}s before speech starts and \
 ~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold).\n\
@@ -866,32 +915,42 @@ Adjacent shots must feel like one soundtrack, not a new track per cut."
     )
 }
 
-/// Beat-matched clip guidance: length follows content, neither a 12s pad nor a cut quota.
-fn beat_matched_pacing_lines() -> String {
+/// Beat-matched clip guidance: length follows content, neither a max-length pad
+/// nor a cut quota.
+fn beat_matched_pacing_lines(bounds: ClipBounds) -> String {
+    let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
+    let (beat_min, beat_max) = (bounds.preferred_min_secs(), bounds.preferred_max_secs());
+    let action_max = bounds.clamp_secs(beat_min.saturating_add(2));
     format!(
         "         - **BEAT-MATCHED PACING** (not a shot-count quota):\n\
-           * Clip length follows the beat — a glance/reaction may be {MIN_CLIP_DURATION_SECS}s; \
-a spoken line or single action typically {PREFERRED_CLIP_DURATION_MIN}–{PREFERRED_CLIP_DURATION_MAX}s; \
-use {PREFERRED_CLIP_DURATION_MAX}–{MAX_CLIP_DURATION_SECS}s only when spoken words or a continuous \
+           * Clip length follows the beat — a glance/reaction may be {clip_min}s; \
+a spoken line or single action typically {beat_min}–{beat_max}s; \
+use {beat_max}–{clip_max}s only when spoken words or a continuous \
 camera move actually need it.\n\
-           * Do NOT stretch thin content to {MAX_CLIP_DURATION_SECS}s. Do NOT split one beat into \
+           * Do NOT stretch thin content to {clip_max}s. Do NOT split one beat into \
 micro-cuts just to raise shot count.\n\
            * Empty holds, slow pans, and \"character looks around\" are FORBIDDEN.\n\
-           * Action-only (no dialogue) shots should usually be {MIN_CLIP_DURATION_SECS}–8s — \
-do not pad a single sit/stand/walk to {MAX_CLIP_DURATION_SECS}s.\n\
-           * When a clip needs ~8s or more, write the motion as timed beats \
-(e.g. 0-3s / 3-8s) so the renderer can pace one event instead of slow-mo padding.\n\
+           * Action-only (no dialogue) shots should usually be {clip_min}–{action_max}s — \
+do not pad a single sit/stand/walk to {clip_max}s.\n\
+           * Never write absolute seconds or timecodes into a shot description \
+(no \"0-3s:\" / \"前3秒\"): the renderer allocates each clip's length and lays consecutive \
+beats on that timeline itself. Order the beats instead.\n\
            * Language-aware delivery: Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec (clear — not rushed, not drawn-out).\n"
     )
 }
 
-fn scene_pacing_model_decides_block(scene_idx: usize, scene_count: usize) -> String {
+fn scene_pacing_model_decides_block(
+    bounds: ClipBounds,
+    scene_idx: usize,
+    scene_count: usize,
+) -> String {
     let scene_num = scene_idx + 1;
-    let speak_window_max =
-        MAX_CLIP_DURATION_SECS.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
+    let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
+    let speak_window_max = clip_max.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
     let max_cjk_chars = (speak_window_max as f32 * SPEECH_CJK_CHARS_PER_SEC).floor() as u32;
     let max_en_words = (speak_window_max as f32 * SPEECH_EN_WORDS_PER_SEC).floor() as u32;
+    let silent_beat_max = bounds.preferred_max_secs();
     let cross_scene = if scene_idx > 0 && scene_count > 1 {
         "         - CROSS-SCENE OPENING: This is NOT the first scene. The FIRST shot must open as a \
 match-cut from the previous scene's final shot ending state (carry cast identity / wardrobe / lighting mood \
@@ -901,30 +960,29 @@ as continuity Image 1 — write the opening beat to continue from that still, no
     } else {
         String::new()
     };
-    let beat_pacing = beat_matched_pacing_lines();
+    let beat_pacing = beat_matched_pacing_lines(bounds);
+    let continuity = shot_continuity_lines();
     format!(
         "[VIDEO_PACING — MUST FOLLOW]\n\
          - This is scene {scene_num}/{scene_count}. Shot count follows the scene script — do NOT pad or \
 truncate to hit a runtime quota.\n\
-         - Each shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance).\n\
+         - Each shot clip is {clip_min}–{clip_max}s (selected video model).\n\
 {beat_pacing}\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
 same shot's duration — no unfinished lines, mid-sentence cuts, swallowed syllables (吞字), or \
 \"and then…\" requiring another clip.\n\
          - EVERY shot MUST have a non-empty audio_desc (spoken lines and/or ambient SFX+BGM). Never leave audio_desc null.\n\
          - Speech budget per shot: hard max ≲ {max_cjk_chars} Chinese chars / ≲ {max_en_words} English words \
-for a {MAX_CLIP_DURATION_SECS}s clip, after reserving ~{SPEECH_LEAD_SECS}s lead-in + ~{SPEECH_TAIL_SECS}s tail. \
+for a {clip_max}s clip, after reserving ~{SPEECH_LEAD_SECS}s lead-in + ~{SPEECH_TAIL_SECS}s tail. \
 If a speech beat is longer, you MUST SPLIT into another shot (or shorten the line) — never cram past \
-the {MAX_CLIP_DURATION_SECS}s Seedance limit.\n\
+the {clip_max}s model limit.\n\
          - After the last spoken word, land on a clear reaction/action beat within ~{SPEECH_TAIL_SECS}s — \
 do NOT pad with empty static holds or \"磨叽\" waiting.\n\
-         - Prefer purposeful cuts that raise information density; silent/action beats may be 5–10s with \
-rich in-shot motion. For dialogue, prioritize clear pacing — pack reaction into the same framing only \
-when the spoken payload still fits the speech budget.\n\
+         - Prefer purposeful cuts that raise information density; silent/action beats may be \
+{clip_min}–{silent_beat_max}s with rich in-shot motion. For dialogue, prioritize clear pacing — pack \
+reaction into the same framing only when the spoken payload still fits the speech budget.\n\
          - Reuse cam_idx whenever possible. Prefer in-shot motion when a cut adds no new information.\n\
-         - SHOT CONTINUITY: for every adjacent pair of shots in this scene, shot N+1 must open from \
-shot N's ending state so Seedance can match-cut (first frame of next = last frame of previous). \
-Camera/angle may change; cast identity, wardrobe, lighting mood, and set must carry over.\n\
+{continuity}\
          {cross_scene}\
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
          - Each shot must change something the audience can see or hear (new info, new emotion, new action). \
@@ -941,8 +999,29 @@ Do NOT invent a new music style per shot — abrupt BGM changes between cuts are
     )
 }
 
+/// Continuity rules the renderer can actually deliver.
+///
+/// The renderer feeds shot N's last frame to shot N+1 as reference Image 1.
+/// Telling the LLM that *every* pair must "open from the previous ending state"
+/// makes each new shot re-stage that pose before it moves, which reads as a
+/// stutter at the splice. Identity continuity always holds; **compositional**
+/// continuity is only correct when the camera does not change.
+fn shot_continuity_lines() -> String {
+    "         - SHOT CONTINUITY — two separate rules, do NOT merge them:\n\
+           * IDENTITY (always): cast faces, wardrobe, hair, props, set dressing, time of day, \
+weather, and lighting mood carry over unchanged between adjacent shots unless the story explicitly \
+changes them.\n\
+           * SAME cam_idx = SAME TAKE: shot N+1 continues shot N's framing — open exactly where \
+shot N ended (same composition, same body/prop positions) and move on from there.\n\
+           * NEW cam_idx = A CUT: do NOT replay or re-describe shot N's ending pose. Open on the \
+next action already in progress from the new angle. The audience accepts the jump; repeating the \
+previous beat is what makes a splice look like a stutter.\n"
+        .to_string()
+}
+
 /// Scene-level pacing when the user did not set a finished-film duration.
 pub fn enrich_requirement_for_scene_model_decides(
+    bounds: ClipBounds,
     user_requirement: &str,
     scene_idx: usize,
     scene_count: usize,
@@ -950,33 +1029,42 @@ pub fn enrich_requirement_for_scene_model_decides(
     let base = user_requirement.trim();
     let base = strip_duration_constraint_blocks(base);
     let base = with_language_lock(&base, &[&base, user_requirement]);
-    format!("{base}\n\n{}", scene_pacing_model_decides_block(scene_idx, scene_count))
+    format!(
+        "{base}\n\n{}",
+        scene_pacing_model_decides_block(bounds, scene_idx, scene_count)
+    )
 }
 
 /// Film-level constraints (develop story / write multi-scene script).
 ///
 /// `None` / `0` means ViMax-style: the model decides length from the story.
-pub fn enrich_requirement_for_film(user_requirement: &str, target_secs: Option<u32>) -> String {
+pub fn enrich_requirement_for_film(
+    bounds: ClipBounds,
+    user_requirement: &str,
+    target_secs: Option<u32>,
+) -> String {
     let base = with_language_lock(user_requirement, &[user_requirement]);
     if !has_explicit_duration_budget(target_secs) {
-        return format!("{base}\n\n{}", film_pacing_model_decides_block());
+        return format!("{base}\n\n{}", film_pacing_model_decides_block(bounds));
     }
+    let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
+    let (beat_min, beat_max) = (bounds.preferred_min_secs(), bounds.preferred_max_secs());
     let target = normalize_target_duration_secs(target_secs);
-    let (ideal_scenes, max_scenes) = suggested_scene_count(target);
-    let per_scene = (target / ideal_scenes.max(1)).max(MIN_CLIP_DURATION_SECS);
+    let (ideal_scenes, max_scenes) = suggested_scene_count(bounds, target);
+    let per_scene = (target / ideal_scenes.max(1)).max(clip_min);
     let block = format!(
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - Target finished film length ≈ {target} seconds TOTAL (hard planning budget).\n\
          - Prefer about {ideal_scenes} scenes (hard upper bound {max_scenes}); ~{per_scene}s per scene.\n\
-         - Each rendered shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance hard range).\n\
-         - Keep the whole story compact so total scenes × shots × {MIN_CLIP_DURATION_SECS}s stays near {target}s.\n\
+         - Each rendered shot clip is {clip_min}–{clip_max}s (hard range of the selected video model).\n\
+         - Keep the whole story compact so total scenes × shots × {clip_min}s stays near {target}s.\n\
          - Do NOT write more plot/dialogue than can be spoken and shown inside that total runtime.\n\
          - Speech pacing (clear, language-aware): Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec; leave ~{SPEECH_LEAD_SECS}s before speech starts and \
 ~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold).\n\
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
-         - Short-film information density: every shot (typically ~6–10s) must advance plot, relationship, OR a \
-distinct visual surprise. Forbid repeated establishing shots and filler pauses.\n\
+         - Short-film information density: every shot (typically ~{beat_min}–{beat_max}s) must advance plot, \
+relationship, OR a distinct visual surprise. Forbid repeated establishing shots and filler pauses.\n\
          - Write a mental beat sheet before prose: hook → escalation → turn → payoff. Each scene needs \
 at least one concrete conflict beat and one filmable visual motif that can recur.\n\
          - Prefer show-don't-tell actions over long explanatory dialogue; keep spoken lines short and punchy.\n\
@@ -989,18 +1077,19 @@ Adjacent shots must feel like one soundtrack, not a new track per cut."
 
 /// Scene-level constraints for storyboard design (budget already allocated).
 pub fn enrich_requirement_for_scene(
+    bounds: ClipBounds,
     user_requirement: &str,
     scene_budget_secs: u32,
     scene_idx: usize,
     scene_count: usize,
     film_total_secs: u32,
 ) -> String {
-    let budget = scene_budget_secs.max(MIN_CLIP_DURATION_SECS);
-    let (ideal, max_shots) = suggested_shot_count(budget);
-    let per_shot = clip_duration_secs(Some(budget), ideal as usize);
-    // Speakable window inside one Seedance clip (lead + tail reserved).
-    let speak_window_max =
-        MAX_CLIP_DURATION_SECS.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
+    let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
+    let budget = scene_budget_secs.max(clip_min);
+    let (ideal, max_shots) = suggested_shot_count(bounds, budget);
+    let per_shot = clip_duration_secs(bounds, Some(budget), ideal as usize);
+    // Speakable window inside one clip (lead + tail reserved).
+    let speak_window_max = clip_max.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
     let speak_window_typical =
         per_shot.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
     let max_cjk_chars =
@@ -1011,7 +1100,9 @@ pub fn enrich_requirement_for_scene(
         (speak_window_typical as f32 * SPEECH_CJK_CHARS_PER_SEC).floor() as u32;
     let per_shot_en =
         (speak_window_typical as f32 * SPEECH_EN_WORDS_PER_SEC).floor() as u32;
-    let beat_pacing = beat_matched_pacing_lines();
+    let silent_beat_max = bounds.preferred_max_secs();
+    let beat_pacing = beat_matched_pacing_lines(bounds);
+    let continuity = shot_continuity_lines();
     let base = user_requirement.trim();
     // Strip a previous film-level block so we don't double-confuse the LLM with two totals.
     let base = strip_duration_constraint_blocks(base);
@@ -1030,7 +1121,7 @@ as continuity Image 1 — write the opening beat to continue from that still, no
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - This is scene {scene_num}/{scene_count} of a film targeting ≈ {film_total_secs}s total.\n\
          - THIS SCENE budget ≈ {budget} seconds of finished video (NOT the whole film).\n\
-         - Each shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance).\n\
+         - Each shot clip is {clip_min}–{clip_max}s (selected video model).\n\
 {beat_pacing}\
          - Follow the scene's beats; a budget this size often lands around {ideal} shots. \
 HARD UPPER BOUND: {max_shots} shots — merge if you would exceed it. Do not invent filler shots \
@@ -1040,19 +1131,17 @@ same shot's duration — no unfinished lines, mid-sentence cuts, swallowed sylla
 \"and then…\" requiring another clip.\n\
          - EVERY shot MUST have a non-empty audio_desc (spoken lines and/or ambient SFX+BGM). Never leave audio_desc null.\n\
          - Speech budget per shot: keep spoken Chinese ≲ {per_shot_cjk} chars / English ≲ {per_shot_en} words \
-(hard max ≲ {max_cjk_chars} Chinese chars / ≲ {max_en_words} English words for a {MAX_CLIP_DURATION_SECS}s clip, \
+(hard max ≲ {max_cjk_chars} Chinese chars / ≲ {max_en_words} English words for a {clip_max}s clip, \
 after reserving ~{SPEECH_LEAD_SECS}s lead-in + ~{SPEECH_TAIL_SECS}s tail). \
 If a speech beat is longer, you MUST SPLIT into another shot (or shorten the line) — never cram past \
-the {MAX_CLIP_DURATION_SECS}s Seedance limit.\n\
+the {clip_max}s model limit.\n\
          - After the last spoken word, land on a clear reaction/action beat within ~{SPEECH_TAIL_SECS}s — \
 do NOT pad with empty static holds or \"磨叽\" waiting.\n\
-         - Prefer purposeful cuts that raise information density; silent/action beats may be 5–10s with \
-rich in-shot motion. For dialogue, prioritize clear pacing — pack reaction into the same framing only \
-when the spoken payload still fits the speech budget.\n\
+         - Prefer purposeful cuts that raise information density; silent/action beats may be \
+{clip_min}–{silent_beat_max}s with rich in-shot motion. For dialogue, prioritize clear pacing — pack \
+reaction into the same framing only when the spoken payload still fits the speech budget.\n\
          - Reuse cam_idx whenever possible. Prefer in-shot motion when a cut adds no new information.\n\
-         - SHOT CONTINUITY: for every adjacent pair of shots in this scene, shot N+1 must open from \
-shot N's ending state so Seedance can match-cut (first frame of next = last frame of previous). \
-Camera/angle may change; cast identity, wardrobe, lighting mood, and set must carry over.\n\
+{continuity}\
          {cross_scene}\
          - If you would create more than {max_shots} shots, merge beats instead.\n\
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
@@ -1070,17 +1159,22 @@ Do NOT invent a new music style per shot — abrupt BGM changes between cuts are
         scene_num = scene_idx + 1,
         cross_scene = cross_scene,
         beat_pacing = beat_pacing,
+        continuity = continuity,
     );
     format!("{base}\n\n{block}")
 }
 
 /// Single-scene script2video (whole target = this scene).
-pub fn enrich_requirement_for_planning(user_requirement: &str, target_secs: Option<u32>) -> String {
+pub fn enrich_requirement_for_planning(
+    bounds: ClipBounds,
+    user_requirement: &str,
+    target_secs: Option<u32>,
+) -> String {
     if !has_explicit_duration_budget(target_secs) {
-        return enrich_requirement_for_scene_model_decides(user_requirement, 0, 1);
+        return enrich_requirement_for_scene_model_decides(bounds, user_requirement, 0, 1);
     }
     let target = normalize_target_duration_secs(target_secs);
-    enrich_requirement_for_scene(user_requirement, target, 0, 1, target)
+    enrich_requirement_for_scene(bounds, user_requirement, target, 0, 1, target)
 }
 
 fn strip_duration_constraint_blocks(s: &str) -> String {
@@ -1116,14 +1210,18 @@ fn strip_duration_constraint_blocks(s: &str) -> String {
 }
 
 /// Per-shot clip duration for render: spread scene budget across shots.
-pub fn clip_duration_secs(target_total: Option<u32>, shot_count: usize) -> u32 {
+pub fn clip_duration_secs(
+    bounds: ClipBounds,
+    target_total: Option<u32>,
+    shot_count: usize,
+) -> u32 {
     let n = shot_count.max(1) as u32;
     let target = normalize_target_duration_secs(target_total);
-    (target / n).clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS)
+    bounds.clamp_secs(target / n)
 }
 
 /// Allocate per-shot durations that sum as close as possible to the scene budget
-/// while respecting Seedance `[MIN, MAX]` clip bounds.
+/// while respecting the selected model's clip window.
 ///
 /// Prefer this over repeating [`clip_duration_secs`] when shot lengths should vary
 /// slightly so the last clip absorbs remainder seconds.
@@ -1131,11 +1229,15 @@ pub fn clip_duration_secs(target_total: Option<u32>, shot_count: usize) -> u32 {
 /// Soft-landing ([`SHOT_SPLICE_TAIL_PADDING_SECS`]) is reserved from `target` first
 /// so the final sum stays near the user budget instead of overshooting by
 /// `padding × shot_count`.
-pub fn allocate_clip_durations(target_total: Option<u32>, shot_count: usize) -> Vec<u32> {
+pub fn allocate_clip_durations(
+    bounds: ClipBounds,
+    target_total: Option<u32>,
+    shot_count: usize,
+) -> Vec<u32> {
     let n = shot_count.max(1);
     let target = normalize_target_duration_secs(target_total);
-    let (fit_budget, will_pad) = fit_budget_reserving_splice_padding(target, n);
-    let base = clip_duration_secs(Some(fit_budget), n);
+    let (fit_budget, will_pad) = fit_budget_reserving_splice_padding(bounds, target, n);
+    let base = clip_duration_secs(bounds, Some(fit_budget), n);
     let mut durs = vec![base; n];
     // Cap total near fit budget when base*n would overshoot (min-clip floor).
     let planned: u32 = base.saturating_mul(n as u32);
@@ -1145,22 +1247,26 @@ pub fn allocate_clip_durations(target_total: Option<u32>, shot_count: usize) -> 
             if rem == 0 {
                 break;
             }
-            let room = MAX_CLIP_DURATION_SECS.saturating_sub(*d);
+            let room = bounds.max_secs().saturating_sub(*d);
             let add = rem.min(room);
             *d += add;
             rem -= add;
         }
     }
-    reapply_splice_tail_padding(&mut durs, fit_budget, target, will_pad);
+    reapply_splice_tail_padding(bounds, &mut durs, fit_budget, target, will_pad);
     durs
 }
 
 /// Carve soft-landing room out of the advertised target when there is enough
-/// headroom above `MIN_CLIP × shots`.
-fn fit_budget_reserving_splice_padding(target: u32, shot_count: usize) -> (u32, bool) {
+/// headroom above `min_clip × shots`.
+fn fit_budget_reserving_splice_padding(
+    bounds: ClipBounds,
+    target: u32,
+    shot_count: usize,
+) -> (u32, bool) {
     let n = shot_count.max(1) as u32;
     let pad_total = SHOT_SPLICE_TAIL_PADDING_SECS.saturating_mul(n);
-    let min_content = MIN_CLIP_DURATION_SECS.saturating_mul(n);
+    let min_content = bounds.min_secs().saturating_mul(n);
     if target >= pad_total.saturating_add(min_content) {
         (target - pad_total, true)
     } else {
@@ -1168,18 +1274,17 @@ fn fit_budget_reserving_splice_padding(target: u32, shot_count: usize) -> (u32, 
     }
 }
 
-/// Add splice-tail padding to finalized per-shot durations (≤ Seedance max).
-fn apply_shot_splice_tail_padding(durs: &mut [u32]) {
+/// Add splice-tail padding to finalized per-shot durations (≤ model max).
+fn apply_shot_splice_tail_padding(bounds: ClipBounds, durs: &mut [u32]) {
     for d in durs.iter_mut() {
-        *d = d
-            .saturating_add(SHOT_SPLICE_TAIL_PADDING_SECS)
-            .clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS);
+        *d = bounds.saturating_add_within(*d, SHOT_SPLICE_TAIL_PADDING_SECS);
     }
 }
 
 /// Re-apply reserved soft-landing only when content still fits the pre-pad budget
 /// (or fill leftover seconds toward `target` without exceeding it).
 fn reapply_splice_tail_padding(
+    bounds: ClipBounds,
     durs: &mut [u32],
     fit_budget: u32,
     target: u32,
@@ -1190,7 +1295,7 @@ fn reapply_splice_tail_padding(
     }
     let sum: u32 = durs.iter().sum();
     if sum <= fit_budget {
-        apply_shot_splice_tail_padding(durs);
+        apply_shot_splice_tail_padding(bounds, durs);
         return;
     }
     if sum >= target {
@@ -1203,7 +1308,8 @@ fn reapply_splice_tail_padding(
         if rem == 0 {
             break;
         }
-        let room = MAX_CLIP_DURATION_SECS
+        let room = bounds
+            .max_secs()
             .saturating_sub(*d)
             .min(SHOT_SPLICE_TAIL_PADDING_SECS)
             .min(rem);
@@ -1348,13 +1454,14 @@ pub(crate) fn is_cjk_speech_char(ch: char) -> bool {
     )
 }
 
-/// Content-aware duration for one shot (Seedance-clamped).
+/// Content-aware duration for one shot, clamped to the selected model's window.
 ///
 /// Spoken audio (language-aware) sets the floor when present. Visual variation
 /// adds a little headroom for continuous camera moves — not for verbose
-/// `motion_desc` prose. Caps at [`PREFERRED_CLIP_DURATION_MAX`] unless speech
-/// itself needs more (up to [`MAX_CLIP_DURATION_SECS`]).
+/// `motion_desc` prose. Caps at the beat length ([`ClipBounds::preferred_max_secs`])
+/// unless speech itself needs more (up to [`ClipBounds::max_secs`]).
 pub fn estimate_shot_need_secs(
+    bounds: ClipBounds,
     audio_desc: Option<&str>,
     motion_desc: &str,
     variation_type: &str,
@@ -1372,37 +1479,48 @@ pub fn estimate_shot_need_secs(
         speech
             .saturating_add(SPEECH_LEAD_SECS)
             .saturating_add(SPEECH_TAIL_SECS)
-            .max(MIN_DIALOGUE_CLIP_SECS)
+            .max(dialogue_floor_secs(bounds))
     };
     // Variation is about on-screen change, not prompt length.
-    let visual_need = match variation_type.trim().to_ascii_lowercase().as_str() {
-        "large" => MIN_CLIP_DURATION_SECS.saturating_add(2), // 7s continuous move
-        "medium" => MIN_CLIP_DURATION_SECS.saturating_add(1),
-        _ => MIN_CLIP_DURATION_SECS,
+    let visual_extra = match variation_type.trim().to_ascii_lowercase().as_str() {
+        "large" => 2, // continuous move needs room to travel
+        "medium" => 1,
+        _ => 0,
     };
-    let combined = speech_need
-        .max(visual_need)
-        .clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS);
-    if speech_need > PREFERRED_CLIP_DURATION_MAX {
+    let visual_need = bounds.saturating_add_within(bounds.min_secs(), visual_extra);
+    let beat_cap = bounds.preferred_max_secs();
+    let combined = bounds.clamp_secs(speech_need.max(visual_need));
+    if speech_need > beat_cap {
         combined
     } else {
-        combined.min(PREFERRED_CLIP_DURATION_MAX)
+        combined.min(beat_cap)
     }
 }
 
 /// Short duration line for Seedance. Speech-pacing lecture only when the shot has dialogue.
-pub fn i2v_duration_pacing_clause(duration_secs: u32, has_dialogue: bool) -> String {
+///
+/// `beats` is how many beats the clip has to fit: 1 for an ordinary shot, more
+/// for a clip that absorbed a same-camera run. A merged clip must not be told it
+/// is "one continuous visual event" — it has several, and telling it otherwise
+/// invites the model to stretch the first beat over the whole take.
+pub fn i2v_duration_pacing_clause(duration_secs: u32, has_dialogue: bool, beats: u32) -> String {
     if has_dialogue {
-        format!(
+        return format!(
             "About {duration_secs}s. Speak at a natural conversational pace — do not rush or \
 time-compress lines. Finish the last syllable, then a brief visible reaction."
-        )
-    } else {
-        format!(
-            "About {duration_secs}s. One continuous visual event at natural speed — no slow-motion \
-padding, no empty holds."
-        )
+        );
     }
+    let events = match beats {
+        // Without an explicit timeline the clip may still carry two ordered
+        // events in prose, so this cannot claim there is exactly one — it only
+        // rules out padding.
+        0 | 1 => "One continuous take".to_string(),
+        n => format!("{n} visual events back to back in one take"),
+    };
+    format!(
+        "About {duration_secs}s. {events} at natural speed — no slow-motion padding, \
+no empty holds."
+    )
 }
 
 /// True when text carries spoken lines (quotes / dialogue verbs) rather than
@@ -1439,10 +1557,9 @@ pub fn text_looks_like_dialogue(text: &str) -> bool {
 ///
 /// Honors dialogue floors first. When needs exceed the user target, Phase 1
 /// trims surplus above each shot's content need; Phase 2 may compress further
-/// but **never below** [`MIN_DIALOGUE_CLIP_SECS`] for dialogue-heavy shots
-/// (`needs[i] >= MIN_DIALOGUE_CLIP_SECS`) or [`MIN_CLIP_DURATION_SECS`] otherwise.
-/// That can make the rendered sum slightly exceed `target` — preferred over
-/// cutting spoken lines mid-sentence.
+/// but **never below** [`DIALOGUE_FLOOR_SECS`] for dialogue-heavy shots or the
+/// model minimum otherwise. That can make the rendered sum slightly exceed
+/// `target` — preferred over cutting spoken lines mid-sentence.
 ///
 /// When content is *shorter* than the user target, leftover seconds are **not**
 /// dumped onto existing clips (that is what made shots feel slow). The film may
@@ -1452,27 +1569,23 @@ pub fn text_looks_like_dialogue(text: &str) -> bool {
 /// `target` before fitting and re-applied only when content still fits. Model-
 /// decides mode (no budget) uses content length as-is — no extra pad.
 pub fn allocate_clip_durations_for_content(
+    bounds: ClipBounds,
     target_total: Option<u32>,
     needs: &[u32],
 ) -> Vec<u32> {
     if needs.is_empty() {
         if !has_explicit_duration_budget(target_total) {
-            return vec![MIN_CLIP_DURATION_SECS];
+            return vec![bounds.min_secs()];
         }
-        return allocate_clip_durations(target_total, 1);
+        return allocate_clip_durations(bounds, target_total, 1);
     }
     if !has_explicit_duration_budget(target_total) {
-        return needs
-            .iter()
-            .map(|&n| n.clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS))
-            .collect();
+        return needs.iter().map(|&n| bounds.clamp_secs(n)).collect();
     }
     let target = normalize_target_duration_secs(target_total);
-    let (fit_budget, will_pad) = fit_budget_reserving_splice_padding(target, needs.len());
-    let mut durs: Vec<u32> = needs
-        .iter()
-        .map(|&n| n.clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS))
-        .collect();
+    let (fit_budget, will_pad) =
+        fit_budget_reserving_splice_padding(bounds, target, needs.len());
+    let mut durs: Vec<u32> = needs.iter().map(|&n| bounds.clamp_secs(n)).collect();
     let sum: u32 = durs.iter().sum();
 
     if sum < fit_budget {
@@ -1494,7 +1607,7 @@ pub fn allocate_clip_durations_for_content(
                 if excess == 0 {
                     break;
                 }
-                let floor = needs[i].clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS);
+                let floor = bounds.clamp_secs(needs[i]);
                 if durs[i] > floor {
                     durs[i] -= 1;
                     excess -= 1;
@@ -1505,8 +1618,8 @@ pub fn allocate_clip_durations_for_content(
                 break;
             }
         }
-        // Phase 2: still over → compress toward dialogue-safe floors (not bare Seedance min).
-        // Prefer cutting longer shots first, but never drop dialogue below MIN_DIALOGUE_CLIP_SECS.
+        // Phase 2: still over → compress toward dialogue-safe floors (not the bare model min).
+        // Prefer cutting longer shots first, but never drop dialogue below the dialogue floor.
         let sum2: u32 = durs.iter().sum();
         if sum2 > fit_budget {
             let mut excess = sum2 - fit_budget;
@@ -1518,7 +1631,7 @@ pub fn allocate_clip_durations_for_content(
                     if excess == 0 {
                         break;
                     }
-                    let floor = content_compress_floor(needs[i]);
+                    let floor = content_compress_floor(bounds, needs[i]);
                     if durs[i] > floor {
                         durs[i] -= 1;
                         excess -= 1;
@@ -1550,32 +1663,40 @@ pub fn allocate_clip_durations_for_content(
             }
         }
     }
-    reapply_splice_tail_padding(&mut durs, fit_budget, target, will_pad);
+    reapply_splice_tail_padding(bounds, &mut durs, fit_budget, target, will_pad);
     durs
 }
 
 /// Floor used when Phase-2 budget compression must still leave room for speech.
-fn content_compress_floor(need: u32) -> u32 {
-    if need >= MIN_DIALOGUE_CLIP_SECS {
-        MIN_DIALOGUE_CLIP_SECS
+fn content_compress_floor(bounds: ClipBounds, need: u32) -> u32 {
+    let dialogue_floor = dialogue_floor_secs(bounds);
+    if need >= dialogue_floor {
+        dialogue_floor
     } else {
-        MIN_CLIP_DURATION_SECS
+        bounds.min_secs()
     }
 }
 
 /// Hard max shots for a budget (for post-LLM truncation).
-pub fn max_shots_for_budget(budget_secs: u32) -> usize {
-    suggested_shot_count(budget_secs).1 as usize
+pub fn max_shots_for_budget(bounds: ClipBounds, budget_secs: u32) -> usize {
+    suggested_shot_count(bounds, budget_secs).1 as usize
 }
 
 /// Hard max scenes for a film-level budget (for post-LLM truncation).
-pub fn max_scenes_for_budget(total_secs: u32) -> usize {
-    suggested_scene_count(total_secs).1 as usize
+pub fn max_scenes_for_budget(bounds: ClipBounds, total_secs: u32) -> usize {
+    suggested_scene_count(bounds, total_secs).1 as usize
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Window of the models integrated today (Seedance 2.0, MiniMax-H3 ⊂ 4–15s).
+    const SEEDANCE: ClipBounds = ClipBounds::new(5, 15);
+
+    fn within(secs: u32) -> bool {
+        (SEEDANCE.min_secs()..=SEEDANCE.max_secs()).contains(&secs)
+    }
 
     #[test]
     fn detect_output_language_prefers_chinese_input() {
@@ -1789,7 +1910,7 @@ mod tests {
 
     #[test]
     fn enrich_scene_uses_budget_not_film_total_as_shot_target() {
-        let s = enrich_requirement_for_scene("funny", 10, 1, 3, 30);
+        let s = enrich_requirement_for_scene(SEEDANCE, "funny", 10, 1, 3, 30);
         assert!(s.contains("funny"));
         assert!(s.contains("10"));
         assert!(s.contains("scene 2/3"));
@@ -1805,49 +1926,80 @@ mod tests {
     }
 
     #[test]
+    fn scene_prompt_quotes_the_selected_model_window() {
+        let short_model = ClipBounds::new(4, 8);
+        let s = enrich_requirement_for_scene(short_model, "funny", 20, 0, 1, 20);
+        assert!(s.contains("4–8s"), "{s}");
+        assert!(!s.contains("15s"), "must not leak another model's ceiling: {s}");
+    }
+
+    #[test]
+    fn continuity_block_separates_identity_from_composition() {
+        let s = shot_continuity_lines();
+        assert!(s.contains("IDENTITY (always)"));
+        assert!(s.contains("SAME cam_idx"));
+        assert!(s.contains("NEW cam_idx"));
+        assert!(
+            s.contains("do NOT replay") || s.contains("Do NOT replay"),
+            "a cut must not re-stage the previous ending pose: {s}"
+        );
+    }
+
+    #[test]
     fn short_budget_allows_only_one_or_two_shots() {
-        let (ideal, max) = suggested_shot_count(8);
+        let (ideal, max) = suggested_shot_count(SEEDANCE, 8);
         assert!(ideal <= 2);
         assert!(max <= 2);
     }
 
     #[test]
     fn sixty_second_budget_allows_enough_shots_to_fill() {
-        let (ideal, max) = suggested_shot_count(60);
-        // 60s / 12s max per clip → need ≥5 shots; ~8s aim → ideal≈6.
+        let (ideal, max) = suggested_shot_count(SEEDANCE, 60);
         assert!(ideal >= 4, "ideal={ideal}");
         assert!(max >= 4, "max={max}");
-        assert!(ideal as u32 * MAX_CLIP_DURATION_SECS >= 60);
-        assert!(max as u32 * MAX_CLIP_DURATION_SECS >= 60);
+        assert!(ideal * SEEDANCE.max_secs() >= 60);
+        assert!(max * SEEDANCE.max_secs() >= 60);
     }
 
     #[test]
     fn forty_second_budget_prefers_five_shots_for_density() {
-        let (ideal, max) = suggested_shot_count(40);
+        let (ideal, max) = suggested_shot_count(SEEDANCE, 40);
         assert_eq!(ideal, 5, "ideal={ideal}");
         assert!(max >= 5);
-        assert!(ideal as u32 * MAX_CLIP_DURATION_SECS >= 40);
+        assert!(ideal * SEEDANCE.max_secs() >= 40);
+    }
+
+    #[test]
+    fn shot_count_follows_a_long_clip_model() {
+        // A model that accepts 30s clips needs fewer shots for the same budget.
+        let long_clips = ClipBounds::new(10, 30);
+        let (ideal, max) = suggested_shot_count(long_clips, 60);
+        assert!(max <= 6, "max={max}");
+        assert!(ideal * long_clips.max_secs() >= 60);
     }
 
     #[test]
     fn allocate_scene_budgets_sum_near_total() {
-        let budgets = allocate_scene_budgets(30, 3);
+        let budgets = allocate_scene_budgets(SEEDANCE, 30, 3);
         assert_eq!(budgets.len(), 3);
         assert!(budgets.iter().sum::<u32>() >= 30);
-        assert!(budgets.iter().all(|&b| b >= MIN_CLIP_DURATION_SECS));
+        assert!(budgets.iter().all(|&b| b >= SEEDANCE.min_secs()));
     }
 
     #[test]
     fn clip_duration_never_below_min() {
-        assert_eq!(clip_duration_secs(Some(20), 10), MIN_CLIP_DURATION_SECS);
-        assert!(clip_duration_secs(Some(60), 3) >= MIN_CLIP_DURATION_SECS);
+        assert_eq!(
+            clip_duration_secs(SEEDANCE, Some(20), 10),
+            SEEDANCE.min_secs()
+        );
+        assert!(clip_duration_secs(SEEDANCE, Some(60), 3) >= SEEDANCE.min_secs());
     }
 
     #[test]
     fn allocate_clip_durations_respects_bounds_and_absorbs_remainder() {
-        let durs = allocate_clip_durations(Some(30), 3);
+        let durs = allocate_clip_durations(SEEDANCE, Some(30), 3);
         assert_eq!(durs.len(), 3);
-        assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
+        assert!(durs.iter().all(|&d| within(d)));
         // Soft-landing is reserved from target then re-applied → sum stays ≈ 30.
         assert_eq!(durs.iter().sum::<u32>(), 30);
         assert!(durs.iter().all(|&d| d == 10));
@@ -1855,8 +2007,8 @@ mod tests {
 
     #[test]
     fn max_scenes_scales_with_budget() {
-        assert!(max_scenes_for_budget(15) <= 3);
-        assert!(max_scenes_for_budget(60) >= 3);
+        assert!(max_scenes_for_budget(SEEDANCE, 15) <= 3);
+        assert!(max_scenes_for_budget(SEEDANCE, 60) >= 3);
     }
 
     #[test]
@@ -1887,31 +2039,33 @@ eleven twelve thirteen fourteen";
         // 17 CJK → ceil(17/3.3)=6s speech + 1s lead + 1s tail = 8
         let line: String = "中".chars().cycle().take(17).collect();
         assert_eq!(line.chars().count(), 17);
-        let need = estimate_shot_need_secs(Some(&line), "slow pan", "small");
+        let need = estimate_shot_need_secs(SEEDANCE, Some(&line), "slow pan", "small");
         assert_eq!(need, 8);
         // Shorter line: 9 CJK → ceil(9/3.3)=3 + 1 + 1 = 5 (dialogue floor)
         let mid: String = "中".chars().cycle().take(9).collect();
-        let mid_need = estimate_shot_need_secs(Some(&mid), "slow pan", "small");
+        let mid_need = estimate_shot_need_secs(SEEDANCE, Some(&mid), "slow pan", "small");
         assert_eq!(mid_need, 5);
-        // No dialogue → visual floor (Seedance min)
-        let silent = estimate_shot_need_secs(None, "hold", "small");
-        assert_eq!(silent, MIN_CLIP_DURATION_SECS);
+        // No dialogue → visual floor (model min)
+        let silent = estimate_shot_need_secs(SEEDANCE, None, "hold", "small");
+        assert_eq!(silent, SEEDANCE.min_secs());
         // Verbose motion_desc must not inflate a silent shot
         let verbose_motion = "hold ".repeat(80);
         assert_eq!(
-            estimate_shot_need_secs(None, &verbose_motion, "small"),
-            MIN_CLIP_DURATION_SECS
+            estimate_shot_need_secs(SEEDANCE, None, &verbose_motion, "small"),
+            SEEDANCE.min_secs()
         );
-        // Long dialogue clamped to Seedance max
+        // Long dialogue clamped to the model ceiling
         let long: String = "中".chars().cycle().take(80).collect();
-        let capped = estimate_shot_need_secs(Some(&long), "walk across room", "large");
-        assert_eq!(capped, MAX_CLIP_DURATION_SECS);
-        // Brief dialogue still gets dialogue floor
-        let brief = estimate_shot_need_secs(Some("你好"), "nod", "small");
-        assert!(brief >= MIN_DIALOGUE_CLIP_SECS);
-        assert!(brief <= PREFERRED_CLIP_DURATION_MAX);
+        let capped =
+            estimate_shot_need_secs(SEEDANCE, Some(&long), "walk across room", "large");
+        assert_eq!(capped, SEEDANCE.max_secs());
+        // Brief dialogue still gets dialogue floor, and stays at beat length
+        let brief = estimate_shot_need_secs(SEEDANCE, Some("你好"), "nod", "small");
+        assert!(brief >= DIALOGUE_FLOOR_SECS);
+        assert!(brief <= SEEDANCE.preferred_max_secs());
         // English quoted line: 6 words → ceil(6/2.3)=3 + lead + tail = 5
         let en_need = estimate_shot_need_secs(
+            SEEDANCE,
             Some(r#"Alice: "Don't wait up tonight.""#),
             "nod",
             "small",
@@ -1919,16 +2073,48 @@ eleven twelve thirteen fourteen";
         assert_eq!(en_need, 5);
     }
 
+    /// A clip that absorbed a same-camera neighbour has several visual events;
+    /// calling it "one continuous visual event" invites the model to stretch the
+    /// first beat over the whole take.
+    #[test]
+    fn pacing_clause_counts_the_beats_it_must_fit() {
+        let single = i2v_duration_pacing_clause(8, /*has_dialogue*/ false, /*beats*/ 1);
+        assert!(single.contains("About 8s."), "{single}");
+        assert!(single.contains("One continuous take"), "{single}");
+        // No timeline means no claim about how many events the prose carries.
+        assert!(!single.contains("visual event"), "{single}");
+
+        let merged = i2v_duration_pacing_clause(13, /*has_dialogue*/ false, /*beats*/ 3);
+        assert!(merged.contains("3 visual events back to back"), "{merged}");
+        assert!(!merged.contains("One continuous"), "{merged}");
+        assert!(merged.contains("no empty holds"), "{merged}");
+
+        // Dialogue pacing is about speech, not event count.
+        let spoken = i2v_duration_pacing_clause(13, /*has_dialogue*/ true, /*beats*/ 3);
+        assert!(spoken.contains("natural conversational pace"), "{spoken}");
+        assert!(!spoken.contains("visual event"), "{spoken}");
+    }
+
+    #[test]
+    fn shot_need_never_leaves_a_narrow_model_window() {
+        let narrow = ClipBounds::new(4, 8);
+        let long: String = "中".chars().cycle().take(80).collect();
+        let capped = estimate_shot_need_secs(narrow, Some(&long), "walk", "large");
+        assert_eq!(capped, narrow.max_secs());
+        let silent = estimate_shot_need_secs(narrow, None, "hold", "small");
+        assert_eq!(silent, narrow.min_secs());
+    }
+
     #[test]
     fn allocate_for_content_protects_dialogue_floors() {
         // Dialogue-heavy shot needs ~12s; silent needs 5s; budget 20s.
         // Spare seconds are NOT dumped onto clips (that caused slow holds).
         let needs = vec![12, 5];
-        let durs = allocate_clip_durations_for_content(Some(20), &needs);
+        let durs = allocate_clip_durations_for_content(SEEDANCE, Some(20), &needs);
         assert_eq!(durs.len(), 2);
         assert!(durs[0] >= 12);
-        assert!(durs[1] >= MIN_CLIP_DURATION_SECS);
-        assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
+        assert!(durs[1] >= SEEDANCE.min_secs());
+        assert!(durs.iter().all(|&d| within(d)));
         let sum: u32 = durs.iter().sum();
         assert!(sum >= 17);
         assert!(sum <= 20);
@@ -1938,8 +2124,13 @@ eleven twelve thirteen fourteen";
     #[test]
     fn allocate_does_not_pad_short_content_to_fill_budget() {
         let needs = vec![5, 5];
-        let durs = allocate_clip_durations_for_content(Some(40), &needs);
-        assert!(durs.iter().all(|&d| d <= PREFERRED_CLIP_DURATION_MIN));
+        let durs = allocate_clip_durations_for_content(SEEDANCE, Some(40), &needs);
+        // A 40s budget buys nothing beyond each shot's content plus its soft
+        // landing — leftover seconds must not become slow holds.
+        assert!(durs
+            .iter()
+            .zip(&needs)
+            .all(|(&d, &need)| d <= need + SHOT_SPLICE_TAIL_PADDING_SECS));
         assert!(durs.iter().sum::<u32>() < 20);
     }
 
@@ -1948,47 +2139,51 @@ eleven twelve thirteen fourteen";
         // Dialogue floors that exceed the reserved fit budget still land near
         // the advertised target after soft-landing is re-applied only when safe.
         let needs = vec![12, 12];
-        let durs = allocate_clip_durations_for_content(Some(18), &needs);
+        let durs = allocate_clip_durations_for_content(SEEDANCE, Some(18), &needs);
         assert_eq!(durs.iter().sum::<u32>(), 18);
-        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
-        assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
+        assert!(durs.iter().all(|&d| d >= DIALOGUE_FLOOR_SECS));
+        assert!(durs.iter().all(|&d| within(d)));
     }
 
     #[test]
     fn allocate_for_content_caps_four_max_clips_to_forty() {
         let needs = vec![15, 15, 15, 15];
-        let durs = allocate_clip_durations_for_content(Some(40), &needs);
+        let durs = allocate_clip_durations_for_content(SEEDANCE, Some(40), &needs);
         // Budget + reserved soft-landing re-applied → sum stays at the user target.
         assert_eq!(durs.iter().sum::<u32>(), 40);
-        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
-        assert!(durs.iter().all(|&d| d <= MAX_CLIP_DURATION_SECS));
+        assert!(durs.iter().all(|&d| d >= DIALOGUE_FLOOR_SECS));
+        assert!(durs.iter().all(|&d| d <= SEEDANCE.max_secs()));
     }
 
     #[test]
     fn allocate_for_content_never_cuts_dialogue_below_floor() {
         // Extreme under-budget: prefer dialogue-safe floors over bare-min silent clips.
         let needs = vec![12, 12];
-        let durs = allocate_clip_durations_for_content(Some(12), &needs);
-        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
+        let durs = allocate_clip_durations_for_content(SEEDANCE, Some(12), &needs);
+        assert!(durs.iter().all(|&d| d >= DIALOGUE_FLOOR_SECS));
         assert!(durs.iter().sum::<u32>() <= 12);
-        assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
+        assert!(durs.iter().all(|&d| within(d)));
     }
 
     #[test]
     fn fifty_five_second_target_does_not_gain_two_secs_per_shot() {
         // Regression: max-shot packing must stay at the user target after soft-landing.
         let needs = vec![5; 11];
-        let durs = allocate_clip_durations_for_content(Some(55), &needs);
+        let durs = allocate_clip_durations_for_content(SEEDANCE, Some(55), &needs);
         assert_eq!(durs.len(), 11);
         assert_eq!(durs.iter().sum::<u32>(), 55);
     }
 
     #[test]
-    fn splice_tail_padding_respects_seedance_max() {
-        // With MAX_CLIP_DURATION_SECS = 12, durations are clamped at 12
+    fn splice_tail_padding_respects_the_model_ceiling() {
+        let narrow = ClipBounds::new(5, 12);
         let mut durs = vec![5, 13, 14, 15];
-        apply_shot_splice_tail_padding(&mut durs);
+        apply_shot_splice_tail_padding(narrow, &mut durs);
         assert_eq!(durs, vec![6, 12, 12, 12]);
+
+        let mut wide = vec![5, 14, 15];
+        apply_shot_splice_tail_padding(SEEDANCE, &mut wide);
+        assert_eq!(wide, vec![6, 15, 15]);
     }
 
     #[test]
@@ -2014,7 +2209,7 @@ eleven twelve thirteen fourteen";
 
     #[test]
     fn enrich_film_asks_for_density_and_music_arc() {
-        let s = enrich_requirement_for_film("雨夜重逢", Some(45));
+        let s = enrich_requirement_for_film(SEEDANCE, "雨夜重逢", Some(45));
         assert!(s.contains("DIRECTOR_DENSITY"));
         assert!(s.contains("MUSIC_ARC"));
         assert!(s.contains("45"));
@@ -2023,12 +2218,12 @@ eleven twelve thirteen fourteen";
 
     #[test]
     fn enrich_film_without_budget_lets_model_decide() {
-        let s = enrich_requirement_for_film("雨夜重逢", None);
+        let s = enrich_requirement_for_film(SEEDANCE, "雨夜重逢", None);
         assert!(s.contains("VIDEO_PACING"));
         assert!(s.contains("beats") || s.contains("BEAT"));
         assert!(!s.contains("hard planning budget"));
         assert!(!s.contains("VIDEO_DURATION_CONSTRAINTS"));
-        let planning = enrich_requirement_for_planning("funny", None);
+        let planning = enrich_requirement_for_planning(SEEDANCE, "funny", None);
         assert!(planning.contains("VIDEO_PACING"));
         assert!(!planning.contains("THIS SCENE budget"));
     }
@@ -2036,9 +2231,9 @@ eleven twelve thirteen fourteen";
     #[test]
     fn allocate_clip_durations_without_budget_follows_content() {
         let needs = vec![6, 9, 7];
-        let durs = allocate_clip_durations_for_content(None, &needs);
+        let durs = allocate_clip_durations_for_content(SEEDANCE, None, &needs);
         assert_eq!(durs.len(), 3);
-        assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
+        assert!(durs.iter().all(|&d| within(d)));
         for (d, n) in durs.iter().zip(needs.iter()) {
             assert_eq!(*d, *n);
         }

@@ -163,6 +163,7 @@ impl CameraImageGenerator {
                 lf_vis_char_idxs: vec![],
                 motion_desc: String::new(),
                 audio_desc: b.audio_desc.clone(),
+                beats: Vec::new(),
             })
             .collect();
         self.construct_camera_tree(cameras, &shots).await

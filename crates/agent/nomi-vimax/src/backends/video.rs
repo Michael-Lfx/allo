@@ -9,8 +9,7 @@ use tracing::info;
 
 use nomifun_cloud::{
     video_task_failure_message, is_minimax_h3_model, MODEL_CATEGORY_VIDEO, VideoContentImage,
-    VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord, MINIMAX_H3_DURATION_MAX,
-    MINIMAX_H3_DURATION_MIN,
+    VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord,
 };
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
@@ -339,24 +338,19 @@ impl VimaxVideo for FlowyVideo {
 
         let aspect = self.resolved_aspect();
         let resolution = Some(self.resolved_resolution(&model));
-        // Seedance 2.0 / 2.0-fast I2V accepts [4, 15]; MiniMax-H3 accepts [4, 15].
-        // ViMax film clips historically used [5, 15]; H3 action imitation uses the
-        // upstream 4–15 window so a 4s reference video is not padded.
-        let (min_d, max_d) = if is_h3 {
-            (MINIMAX_H3_DURATION_MIN, MINIMAX_H3_DURATION_MAX)
-        } else {
-            (
-                crate::planning::MIN_CLIP_DURATION_SECS,
-                crate::planning::MAX_CLIP_DURATION_SECS,
-            )
-        };
-        let duration = duration_secs.clamp(min_d, max_d);
+        // Last line of defence: planning already sizes clips to the model window,
+        // but a resumed session or a hand-edited storyboard can still ask for a
+        // duration the upstream API would reject.
+        let bounds = crate::video_quality::clip_bounds_for_model(&model);
+        let duration = bounds.clamp_secs(duration_secs);
         if duration != duration_secs {
             tracing::warn!(
                 requested = duration_secs,
                 clamped = duration,
                 model = %model,
-                "video duration clamped to [{min_d}, {max_d}]",
+                "video duration clamped to [{}, {}]",
+                bounds.min_secs(),
+                bounds.max_secs(),
             );
         }
         let want_last_frame = last_frame_out.is_some();

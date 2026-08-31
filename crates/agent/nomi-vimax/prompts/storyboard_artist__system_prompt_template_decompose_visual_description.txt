@@ -35,7 +35,7 @@ Additionally, you will receive a sequence of potential characters, each containi
 - When describing a character, it is necessary to indicate the direction they are facing.
 - The first shot must establish the overall scene environment, using the widest possible shot.
 - Use as few camera positions as possible.
-- Each shot will be rendered as a Seedance clip of 5–12 seconds. Design motion_desc as ONE visual event that can complete naturally in a typical 5–8s beat (up to 12s only if speech or a continuous camera move needs it). Action-only shots should usually be 5–8s — do not pad a sit/stand/walk to 12s. When the beat needs ~8s or more, write motion_desc as timed segments (e.g. 0-3s: …; 3-8s: …). Dialogue from the paired audio must finish before the clip ends (leave ~1s after the last spoken word for a reaction). Do not plan empty holds, slow-mo padding to fill a clock, unfinished lines, or micro-cuts that belong in a separate shot.
+- {clip_duration_rules}
 - Prefer continuous progression from first frame to last frame — the motion should be readable at the planned length, not stretched to occupy leftover seconds.
 - If <PREVIOUS_SHOT_LAST_FRAME> is provided, the first_frame description MUST continue from that ending state (same cast, wardrobe, lighting mood, set). Reframing is allowed; a full reset is not. This applies only within the same scene.
 - Always write a usable last_frame description (even for 'small' variation) so the next shot can match-cut. If composition did not change, one short sentence is enough — do not recap the first frame.

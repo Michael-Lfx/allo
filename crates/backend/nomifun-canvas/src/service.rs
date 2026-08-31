@@ -1014,7 +1014,11 @@ impl CanvasService {
                 .ok_or_else(|| AppError::Internal("scratch parent missing".into()))?,
         )
         .await?;
-        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        // User-picked clips are unrelated takes, so every join is a real cut.
+        let refs: Vec<nomi_vimax::media_local::ConcatClip<'_>> = paths
+            .iter()
+            .map(|p| nomi_vimax::media_local::ConcatClip::cut(p.as_path()))
+            .collect();
         nomi_vimax::media_local::concat_videos(&refs, &out_path)
             .await
             .map_err(|e| AppError::Internal(format!("ffmpeg concat: {e}")))?;

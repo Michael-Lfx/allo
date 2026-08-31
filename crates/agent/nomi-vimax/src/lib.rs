@@ -4,6 +4,7 @@ pub mod agents;
 pub mod artifact_edit;
 pub mod aspect;
 pub mod backends;
+pub mod clip_bounds;
 pub mod creative;
 pub mod domain;
 pub mod error;
@@ -30,9 +31,11 @@ pub use aspect::{
     normalize_aspect_ratio, video_aspect_framing_clause,
 };
 
+pub use clip_bounds::ClipBounds;
 pub use video_quality::{
     DEFAULT_VIDEO_FPS, DEFAULT_VIDEO_RESOLUTION, VIDEO_RESOLUTIONS, VideoModelCapabilities,
-    normalize_fps_for_model, normalize_resolution_for_model, video_model_capabilities,
+    clip_bounds_for_model, normalize_fps_for_model, normalize_resolution_for_model,
+    video_model_capabilities,
 };
 
 pub use artifact_edit::ImagePromptInfo;

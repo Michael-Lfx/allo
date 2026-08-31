@@ -174,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
         api_key: cli.api_key,
         base_url: cli.base_url,
         model: cli.model,
-        output_max_tokens: cli.max_tokens,
+        max_tokens: cli.max_tokens,
         max_turns: cli.max_turns,
         system_prompt: cli.system_prompt,
         profile: cli.profile,

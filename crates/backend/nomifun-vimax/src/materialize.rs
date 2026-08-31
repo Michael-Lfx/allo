@@ -485,10 +485,8 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
     // 通过 shot_descriptions.json（如果存在）锁定"应该有几个 shot"，
     // 没产物文件则保守地要求 shots/ 下每一个 idx 子目录都产出可用的 video.mp4，
     // 缺失或损坏的 shot 不允许拼成成片。
-    let expected_shot_idxs: Vec<i32> = match read_shot_description_idxs(scene_dir).await {
-        Ok(v) => v,
-        Err(_) => idxs.clone(),
-    };
+    let planned = read_planned_shots(scene_dir).await.unwrap_or_default();
+    let expected_shot_idxs: Vec<i32> = planned.iter().map(|(idx, _)| *idx).collect();
     let target_idxs: &[i32] = if expected_shot_idxs.is_empty() {
         &idxs
     } else {
@@ -523,16 +521,27 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
         return Err("skip concat: fewer than 2 usable shots".into());
     }
     let out = scene_dir.join("final_video.mp4");
+    // Reproduce the renderer's splice shape: shots that share a camera kept
+    // rolling (their head replays the previous ending and must be trimmed), a
+    // camera change is a real cut. Without a planner artifact we cannot tell
+    // them apart, so `cams` stays empty and nothing is trimmed.
+    let cams: Vec<i32> = if planned.len() == paths.len() {
+        planned.iter().filter_map(|(_, cam)| *cam).collect()
+    } else {
+        Vec::new()
+    };
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-    media_local::concat_videos(&refs, &out)
+    let clips = media_local::ConcatClip::scene(&refs, &cams, scene_opening_seam(scene_dir).await);
+    media_local::concat_videos(&clips, &out)
         .await
         .map_err(|e| e.to_string())?;
     Ok(out)
 }
 
-/// Read shot idxs from `shot_descriptions.json` when present so the canonical
-/// shot count comes from the planner (not from whatever happens to be on disk).
-async fn read_shot_description_idxs(scene_dir: &Path) -> Result<Vec<i32>, String> {
+/// Read `(idx, cam_idx)` per shot from `shot_descriptions.json` when present, in
+/// timeline order, so the canonical shot list comes from the planner (not from
+/// whatever happens to be on disk).
+async fn read_planned_shots(scene_dir: &Path) -> Result<Vec<(i32, Option<i32>)>, String> {
     let path = scene_dir.join("shot_descriptions.json");
     if !path.is_file() {
         return Ok(Vec::new());
@@ -544,13 +553,78 @@ async fn read_shot_description_idxs(scene_dir: &Path) -> Result<Vec<i32>, String
     let arr = parsed
         .as_array()
         .ok_or_else(|| "shot_descriptions.json is not an array".to_string())?;
-    let mut idxs: Vec<i32> = arr
+    let mut shots: Vec<(i32, Option<i32>)> = arr
         .iter()
-        .filter_map(|s| s.get("idx").and_then(|v| v.as_i64()).map(|n| n as i32))
+        .filter_map(|s| {
+            let idx = s.get("idx").and_then(|v| v.as_i64())? as i32;
+            let cam = s.get("cam_idx").and_then(|v| v.as_i64()).map(|n| n as i32);
+            Some((idx, cam))
+        })
         .collect();
-    idxs.sort_unstable();
-    idxs.dedup();
-    Ok(idxs)
+    shots.sort_unstable_by_key(|(idx, _)| *idx);
+    shots.dedup_by_key(|(idx, _)| *idx);
+    Ok(shots)
+}
+
+/// How this scene joins the film in front of it.
+///
+/// Only the film's first scene starts from silence; a later scene opens
+/// mid-soundtrack, so fading its first shot up would dip the film at every
+/// scene boundary. A scene dir that is not named `scene_*` is the film root
+/// (single-scene render), i.e. the opening.
+async fn scene_opening_seam(scene_dir: &Path) -> media_local::SpliceSeam {
+    let Some(name) = scene_dir.file_name().and_then(|s| s.to_str()) else {
+        return media_local::SpliceSeam::Cut;
+    };
+    if !name.starts_with("scene_") {
+        return media_local::SpliceSeam::Cut;
+    }
+    let Some(parent) = scene_dir.parent() else {
+        return media_local::SpliceSeam::Cut;
+    };
+    let earlier = ordered_scene_names(parent)
+        .await
+        .into_iter()
+        .any(|other| scene_sort_key(&other) < scene_sort_key(name));
+    if earlier {
+        media_local::SpliceSeam::MatchCut
+    } else {
+        media_local::SpliceSeam::Cut
+    }
+}
+
+/// `scene_*` child dirs of `film`, in timeline order.
+///
+/// Sorted on the numeric suffix: a plain string sort puts `scene_10` before
+/// `scene_2` and would splice a long film out of order.
+async fn ordered_scene_names(film: &Path) -> Vec<String> {
+    let Ok(mut rd) = tokio::fs::read_dir(film).await else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("scene_")
+            && entry
+                .file_type()
+                .await
+                .map(|t| t.is_dir())
+                .unwrap_or(false)
+        {
+            names.push(name);
+        }
+    }
+    names.sort_by_key(|n| scene_sort_key(n));
+    names
+}
+
+/// Numeric-then-lexical order key for a `scene_*` dir name.
+fn scene_sort_key(name: &str) -> (u64, String) {
+    let n = name
+        .strip_prefix("scene_")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    (n, name.to_string())
 }
 
 async fn reconcat_film(
@@ -560,23 +634,7 @@ async fn reconcat_film(
     let film = working_dir.join(session.workflow.artifact_root());
     // Collect scene finals in order when multi-scene; else use film/script final.
     let mut scene_finals = Vec::new();
-    let mut rd = tokio::fs::read_dir(&film)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut scene_names = Vec::new();
-    while let Some(entry) = rd.next_entry().await.map_err(|e| e.to_string())? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with("scene_")
-            && entry
-                .file_type()
-                .await
-                .map(|t| t.is_dir())
-                .unwrap_or(false)
-        {
-            scene_names.push(name);
-        }
-    }
-    scene_names.sort();
+    let scene_names = ordered_scene_names(&film).await;
     for name in &scene_names {
         let p = film.join(name).join("final_video.mp4");
         if media_local::is_usable_video_file(&p) {
@@ -595,8 +653,10 @@ async fn reconcat_film(
                 scene_names.len()
             ));
         }
+        // Scene N+1's opening shot match-cuts from scene N's tail frame, so a
+        // rebuilt film keeps the same seam treatment as the original render.
         let refs: Vec<&Path> = scene_finals.iter().map(|p| p.as_path()).collect();
-        media_local::concat_videos(&refs, &out)
+        media_local::concat_videos(&media_local::ConcatClip::film(&refs), &out)
             .await
             .map_err(|e| e.to_string())?;
     } else if film.join("shots").is_dir() {
