@@ -182,13 +182,21 @@ async fn tool_search_activates_full_schema_on_next_provider_turn() {
         .is_empty());
 
     let second = find_tool(&requests[1], DEFERRED_TOOL);
-    assert!(!second.deferred, "ToolSearch must activate the next provider definition");
-    assert_eq!(second.input_schema["required"][0], "kb_id");
-    assert_eq!(second.input_schema["properties"]["kb_id"]["type"], "string");
+    // Frozen wire contract (prefix-cache stability): after a prior-turn
+    // ToolSearch the advertised definition stays a deferred stub; activation
+    // is carried by the dispatch gate (overlay_live_activation, covered by the
+    // tool_execution gate tests), not by rewriting the advertised table.
+    assert!(
+        second.deferred,
+        "wire definition stays a deferred stub after ToolSearch"
+    );
     let second_wire = nomi_providers::anthropic_shared::build_tools(&[second.clone()]);
-    assert_eq!(
-        second_wire[0]["input_schema"]["properties"]["kb_id"]["type"],
-        "string"
+    assert!(
+        second_wire[0]["input_schema"]["properties"]
+            .as_object()
+            .unwrap()
+            .is_empty(),
+        "wire input_schema stays the frozen stub"
     );
 }
 

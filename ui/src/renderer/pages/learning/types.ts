@@ -4,8 +4,11 @@ export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
 export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archived';
 
+/** 生成课程请求：知识库流与描述流二选一（都传时后端以知识库为准）。
+ * 描述流全程无知识库参与；知识库流内联采样后仍可携带 domain 精调。 */
 export interface GenerateCourseRequest {
-  knowledge_base_id: string;
+  knowledge_base_id?: string;
+  description?: string;
   domain?: string;
   provider_id?: string;
   model?: string;
@@ -15,12 +18,6 @@ export interface GenerateCourseRequest {
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传 */
 export interface GenerateLessonRequest {
-  provider_id?: string;
-  model?: string;
-}
-
-/** 重试课程生成任务时可选的模型偏好；两个字段同时传或不传 */
-export interface RetryCourseJobRequest {
   provider_id?: string;
   model?: string;
 }
@@ -300,39 +297,6 @@ export interface ConceptRef {
 export interface SetTagsRequest {
   tags: string[];
   apply_to_children?: boolean;
-}
-
-export type CourseJobSource = 'http' | 'agent';
-
-export type CourseJobStatus =
-  | 'queued'
-  | 'sampling'
-  | 'blueprint'
-  | 'lessons'
-  | 'importing'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'interrupted';
-
-/** 持久化课程生成任务的公开投影（对应后端 CourseJobView） */
-export interface CourseJobView {
-  job_id: string;
-  source: CourseJobSource;
-  status: CourseJobStatus;
-  /** 1 起始的模块索引；蓝图完成前为 0 */
-  current_module: number;
-  /** 已完成课时数（0..=total_lessons） */
-  current_lesson: number;
-  total_lessons: number;
-  error: string | null;
-  course_id: string | null;
-  /** 任务对应的知识库名称（库已被删除时为 null） */
-  knowledge_base_name: string | null;
-  /** 用户填写的课程领域（请求快照中，未填时为 null） */
-  domain: string | null;
-  created_at: number;
-  updated_at: number;
 }
 
 // ── 实验：概念图（对应后端 concept_graph 类型） ──────────────────────

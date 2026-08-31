@@ -34,7 +34,10 @@ pub mod draft;
 mod log;
 mod repair;
 
-pub(crate) use audit::{SEV_DANGER, audit_concept_graph, audit_concept_graph_with_scope};
+pub(crate) use audit::{
+    common_substring_len, audit_concept_graph, audit_concept_graph_with_scope, BLOCK_MIN_SHARED,
+    SEV_DANGER, SEV_INFO, SEV_WARNING,
+};
 pub(crate) use log::ConceptGraphLogger;
 pub(crate) use repair::{auto_repair, repair_graph};
 

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use url::form_urlencoded;
 
 use crate::models::{
-    AnswerReviewRequest, CalendarStats, CheckinStatus, CourseJobSource, CoursePack,
+    AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
     RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest,
@@ -39,20 +39,6 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/concept-graphs/{id}/repair",
             post(repair_concept_graph),
-        )
-        .route("/api/learning/course-jobs", get(list_course_jobs))
-        .route("/api/learning/course-jobs/{id}", get(get_course_job).delete(delete_course_job))
-        .route(
-            "/api/learning/course-jobs/{id}/cancel",
-            post(cancel_course_job),
-        )
-        .route(
-            "/api/learning/course-jobs/{id}/resume",
-            post(resume_course_job),
-        )
-        .route(
-            "/api/learning/course-jobs/{id}/retry",
-            post(retry_course_job),
         )
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
@@ -167,78 +153,15 @@ async fn generate_course(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<GenerateCourseRequest>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    // Submit a background job and return immediately; progress is polled via
-    // the course-jobs endpoints and the Learning page job panel.
+) -> Result<Json<ApiResponse<crate::models::CourseDetail>>, AppError> {
+    // The whole generation runs synchronously inside the handler (mirroring
+    // the concept graph endpoint): the loop pushes progress over the
+    // best-effort WebSocket stream, and the response carries the imported
+    // course. Aborting the request drops this future at the next await
+    // point, which ends the loop and releases the in-flight slot.
     Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .start_course_job(request, &user.id, CourseJobSource::Http, None)
-            .await?,
+        state.service.generate_course(&user.id, request).await?,
     )))
-}
-
-async fn list_course_jobs(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<ApiResponse<Vec<crate::models::CourseJobView>>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.list_course_jobs(&user.id).await?,
-    )))
-}
-
-async fn get_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .course_job(&user.id, &id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("course generation job {id}")))?,
-    )))
-}
-
-async fn cancel_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.cancel_course_job(&user.id, &id).await?,
-    )))
-}
-
-async fn resume_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.resume_course_job(&user.id, &id).await?,
-    )))
-}
-
-async fn retry_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-    Json(request): Json<crate::models::RetryCourseJobRequest>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.retry_course_job(&user.id, &id, &request).await?,
-    )))
-}
-
-async fn delete_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    state.service.delete_course_job(&user.id, &id).await?;
-    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn get_course(

@@ -226,64 +226,71 @@ Rules:
 
 
 /// Floor enforced by validation (below the 1000-char target so borderline
-/// model output is not rejected outright).
-const LESSON_SUMMARY_MIN_CHARS: usize = 800;
+/// model output is not rejected outright). `pub(crate)`: the lesson draft
+/// audit reuses the same floor.
+pub(crate) const LESSON_SUMMARY_MIN_CHARS: usize = 800;
 
 /// Lessons must carry at least this many activities, of which at least
 /// [`LESSON_MIN_OBJECTIVE_ACTIVITIES`] must be objective so diagnostics and
-/// the review queue stay well-fed.
-const LESSON_MIN_ACTIVITIES: usize = 3;
-const LESSON_MIN_OBJECTIVE_ACTIVITIES: usize = 2;
+/// the review queue stay well-fed. `pub(crate)`: the lesson draft audit
+/// reuses the same rules.
+pub(crate) const LESSON_MIN_ACTIVITIES: usize = 3;
+pub(crate) const LESSON_MIN_OBJECTIVE_ACTIVITIES: usize = 2;
 
 /// Reflections are open questions: prefer one per lesson, allow up to three
 /// when a single question cannot cover all of the lesson's concepts.
-const LESSON_MAX_REFLECTION_ACTIVITIES: usize = 3;
+pub(crate) const LESSON_MAX_REFLECTION_ACTIVITIES: usize = 3;
 
 
+/// Blueprint stage output: the course skeleton (title, description,
+/// concepts with prerequisites, modules, lessons citing sampled files).
+/// Public because the agent engine trait's signature crosses the crate
+/// boundary (nomifun-ai-agent implements it).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Blueprint {
-    pub(crate) title: String,
+pub struct Blueprint {
+    pub title: String,
     #[serde(default)]
-    pub(crate) description: String,
+    pub description: String,
     #[serde(default)]
-    pub(crate) domain: String,
+    pub domain: String,
     #[serde(default)]
-    pub(crate) version: i64,
+    pub version: i64,
     #[serde(default)]
-    pub(crate) concepts: Vec<ConceptPack>,
+    pub concepts: Vec<ConceptPack>,
     #[serde(default)]
-    pub(crate) modules: Vec<BlueprintModule>,
+    pub modules: Vec<BlueprintModule>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct BlueprintModule {
-    pub(crate) title: String,
+pub struct BlueprintModule {
+    pub title: String,
     #[serde(default)]
-    pub(crate) description: String,
+    pub description: String,
     #[serde(default)]
-    pub(crate) lessons: Vec<BlueprintLesson>,
+    pub lessons: Vec<BlueprintLesson>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct BlueprintLesson {
-    pub(crate) title: String,
+pub struct BlueprintLesson {
+    pub title: String,
     #[serde(default)]
-    pub(crate) purpose: String,
+    pub purpose: String,
     #[serde(default)]
-    pub(crate) concepts: Vec<String>,
+    pub concepts: Vec<String>,
     #[serde(default)]
-    pub(crate) source: Option<SourceSpan>,
+    pub source: Option<SourceSpan>,
 }
 
 /// One lesson's long-form output, produced by a dedicated model call.
+/// Public for the same reason as [`Blueprint`] (lesson engine trait).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct LessonOutput {
+pub struct LessonOutput {
     #[serde(default, deserialize_with = "de_string_or_empty")]
-    pub(crate) summary: String,
+    pub summary: String,
     #[serde(default, deserialize_with = "de_estimated_minutes_or_default")]
-    pub(crate) estimated_minutes: i64,
+    pub estimated_minutes: i64,
     #[serde(default)]
-    pub(crate) activities: Vec<ActivityPack>,
+    pub activities: Vec<ActivityPack>,
 }
 
 
@@ -311,12 +318,15 @@ pub(crate) struct ActivitiesOutput {
 
 pub(crate) use self::activities::{ExistingLessonQuestion, generate_lesson_activity};
 pub(crate) use self::assemble::assemble_outline_pack;
-pub(crate) use self::blueprint::{build_blueprint_prompt, generate_blueprint};
+pub(crate) use self::blueprint::{
+    build_blueprint_prompt, build_description_blueprint_prompt, generate_blueprint,
+    validate_blueprint,
+};
 pub(crate) use self::completer::{
     complete, complete_with_timeout, repair_figure, ACTIVITIES_MAX_TOKENS, BLUEPRINT_MAX_TOKENS,
     CONCEPT_GRAPH_MAX_TOKENS, CONCEPT_GRAPH_REPAIR_MAX_TOKENS, CONCEPT_GRAPH_SCOPE_MAX_TOKENS,
     LESSON_DOCUMENT_MAX_TOKENS, REFLECTION_GRADING_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
 };
-pub(crate) use self::lesson::generate_lesson;
+pub(crate) use self::lesson::{generate_lesson, validate_lesson_document};
 pub(crate) use self::parser::{parse_json_object, strip_code_fences};
 pub(crate) use self::sample::sample_base_files;

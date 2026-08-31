@@ -12,7 +12,6 @@ import { ReviewBanner } from './components/ReviewBanner';
 import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_BANNER_EXPANDED_KEY, REVIEW_FILTERS_STORAGE_KEY } from './constants';
 import { useCheckinStatus } from './hooks/useCheckinStatus';
 import { useCourseCreation } from './hooks/useCourseCreation';
-import { useCourseJobs } from './hooks/useCourseJobs';
 import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
@@ -27,9 +26,6 @@ const { Title, Text, Paragraph } = Typography;
 const ConceptGraphPanel = lazy(() => import('./components/ConceptGraphPanel'));
 const QuestionManager = lazy(() =>
   import('./components/QuestionManager').then((m) => ({ default: m.QuestionManager }))
-);
-const CourseJobTable = lazy(() =>
-  import('./components/CourseJobTable').then((m) => ({ default: m.CourseJobTable }))
 );
 const ReviewSessionModal = lazy(() =>
   import('./components/ReviewSession').then((m) => ({ default: m.ReviewSessionModal }))
@@ -153,13 +149,6 @@ const LearningPage: React.FC = () => {
     setReviews,
   });
   const creation = useCourseCreation({ navigate, t, setBusyId });
-  // 课程生成任务面板：任务列表 + 非终态轮询 + 取消/继续/重试；有新任务完成
-  // 时刷新课程列表，让新课程直接出现在下方
-  const courseJobs = useCourseJobs({
-    t,
-    setBusyId,
-    onJobCompleted: () => void load(),
-  });
 
   const importCourse = useCallback(async () => {
     let pack: unknown;
@@ -349,35 +338,6 @@ const LearningPage: React.FC = () => {
               </Suspense>
             </Tabs.TabPane>
             <Tabs.TabPane
-              key='jobs'
-              title={
-                <span className='inline-flex items-center gap-6px'>
-                  {t('learning.jobManagement')}
-                  {courseJobs.hasActive && (
-                    <span
-                      role='img'
-                      aria-label={t('learning.jobsActiveHint')}
-                      className='size-6px rd-full bg-danger-6'
-                    />
-                  )}
-                </span>
-              }
-              destroyOnHide={false}
-            >
-              <Suspense fallback={<div className='flex justify-center py-32px'><Spin /></div>}>
-                <CourseJobTable
-                  jobs={courseJobs.jobs}
-                  loading={courseJobs.loading}
-                  busyId={busyId}
-                  onCancel={courseJobs.cancelJob}
-                  onResume={courseJobs.resumeJob}
-                  onRetry={courseJobs.retryJob}
-                  onDelete={courseJobs.deleteJob}
-                  onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)}
-                />
-              </Suspense>
-            </Tabs.TabPane>
-            <Tabs.TabPane
               key='concept-graph'
               title={
                 <span className='inline-flex items-center gap-6px'>
@@ -458,29 +418,24 @@ const LearningPage: React.FC = () => {
         <Suspense fallback={null}>
           <CreateCourseDialog
             visible={creation.generateVisible}
-            busy={busyId === 'generate' || busyId === 'create-via-agent'}
+            busy={busyId === 'generate'}
             knowledgeLoading={creation.knowledgeLoading}
             knowledgeBases={creation.knowledgeBases}
-            allKnowledgeBases={creation.allKnowledgeBases}
             selectedKnowledgeBaseId={creation.selectedKnowledgeBaseId}
             generationDomain={creation.generationDomain}
             modelChoice={creation.modelChoice}
             creationTab={creation.creationTab}
             creationDescription={creation.creationDescription}
-            creationBaseMode={creation.creationBaseMode}
-            creationBaseId={creation.creationBaseId}
-            onClose={() => creation.setGenerateVisible(false)}
-            onOk={() => {
-              if (creation.creationTab === 'base') void creation.generateCourse();
-              else void creation.createCourseViaAgent();
-            }}
+            generation={creation.generation}
+            onClose={creation.closeGenerator}
+            onOk={() => void creation.submitGeneration()}
             onSelectedBaseChange={creation.setSelectedKnowledgeBaseId}
             onDomainChange={creation.setGenerationDomain}
             onModelChange={(choice) => void creation.setModelChoice(choice)}
             onTabChange={creation.setCreationTab}
             onDescriptionChange={creation.setCreationDescription}
-            onBaseModeChange={creation.setCreationBaseMode}
-            onCreationBaseIdChange={creation.setCreationBaseId}
+            onRetry={creation.retryGeneration}
+            onStartLearning={creation.startLearning}
           />
         </Suspense>
 

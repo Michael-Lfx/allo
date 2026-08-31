@@ -68,7 +68,8 @@
             .await
             .unwrap();
         GenerateCourseRequest {
-            knowledge_base_id: base.base.knowledge_base_id.parse().unwrap(),
+            knowledge_base_id: Some(base.base.knowledge_base_id.parse().unwrap()),
+            description: None,
             domain: None,
             provider_id: None,
             model: None,
@@ -79,62 +80,35 @@
     }
 
     #[tokio::test]
-    async fn start_course_job_rejects_active_duplicate_for_same_base() {
-        let (service, knowledge_service, owner_id) = job_test_service().await;
-        let request = generation_request(&knowledge_service).await;
-        // Simulate an already-running job (the background runner may not have
-        // claimed it yet): the second submission must be refused with a
-        // conflict pointing at the active job.
-        let active_job_id = "0190f5fe-7c00-7a00-8000-0000000000ff";
-        let request_json = serde_json::to_string(&request).unwrap();
-        let now = now_ms();
-        sqlx::query(
-            "INSERT INTO learning_course_jobs \
-             (job_id, user_id, session_id, source, kb_id, request_json, status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-        )
-        .bind(active_job_id)
-        .bind(owner_id.as_str())
-        .bind(Option::<&str>::None)
-        .bind(CourseJobSource::Agent.as_str())
-        .bind(request.knowledge_base_id.as_str())
-        .bind(&request_json)
-        .bind(now)
-        .bind(now)
-        .execute(service.pool_for_tests())
-        .await
-        .unwrap();
-        let error = service
-            .start_course_job(request.clone(), &owner_id, CourseJobSource::Http, None)
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&error, AppError::Conflict(message) if message.contains(active_job_id)),
-            "expected a conflict naming the active job, got {error}"
-        );
-        // The slot is per-user: another user's submission on the same base
-        // is not blocked by the active job.
-        let other_user = nomifun_common::UserId::new();
-        service
-            .start_course_job(request.clone(), &other_user, CourseJobSource::Http, None)
-            .await
+    async fn generation_slot_rejects_duplicate_and_releases() {
+        let (service, _knowledge_service, owner_id) = job_test_service().await;
+        // The slot is per (user, source key): the second submit for the same
+        // key is refused with a conflict while the first is in flight.
+        let _guard = service
+            .acquire_generation_slot(&owner_id, "kb:math".into())
             .unwrap();
-        // A terminal job releases the slot: the same base can be generated
-        // again. Status is not asserted here because the background runner
-        // may have already advanced (or failed) the fresh job by the time the
-        // response view is built.
-        sqlx::query(
-            "UPDATE learning_course_jobs SET status = 'completed', updated_at = ? \
-             WHERE job_id = ?",
-        )
-        .bind(now_ms())
-        .bind(active_job_id)
-        .execute(service.pool_for_tests())
-        .await
-        .unwrap();
+        // unwrap_err needs `Debug` on the guard; match keeps the test free
+        // of a derive that only exists for this one assertion.
+        let error = match service.acquire_generation_slot(&owner_id, "kb:math".into()) {
+            Err(error) => error,
+            Ok(_) => panic!("expected a conflict for the duplicate slot"),
+        };
+        assert!(
+            matches!(error, AppError::Conflict(_)),
+            "expected a conflict for the duplicate slot, got {error}"
+        );
+        // Another user's submission on the same source is not blocked.
+        let other_user = nomifun_common::UserId::new();
+        let other_guard = service
+            .acquire_generation_slot(&other_user, "kb:math".into())
+            .unwrap();
+        drop(other_guard);
+        // Dropping the guard releases the slot: the same source can be
+        // generated again immediately (a failed or cancelled generation
+        // never wedges the next submit).
+        drop(_guard);
         service
-            .start_course_job(request, &owner_id, CourseJobSource::Http, None)
-            .await
+            .acquire_generation_slot(&owner_id, "kb:math".into())
             .unwrap();
     }
 
