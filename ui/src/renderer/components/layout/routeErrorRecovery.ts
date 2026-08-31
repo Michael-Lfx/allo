@@ -31,8 +31,10 @@ export function claimDynamicImportReload(
   href: string,
   now = Date.now(),
 ): boolean {
+  if (!storage) return false;
+
   try {
-    const raw = storage?.getItem(DYNAMIC_IMPORT_RETRY_STORAGE_KEY);
+    const raw = storage.getItem(DYNAMIC_IMPORT_RETRY_STORAGE_KEY);
     if (raw) {
       const previous = JSON.parse(raw) as Partial<RetryRecord>;
       if (
@@ -43,9 +45,11 @@ export function claimDynamicImportReload(
         return false;
       }
     }
-    storage?.setItem(DYNAMIC_IMPORT_RETRY_STORAGE_KEY, JSON.stringify({ href, at: now }));
+    storage.setItem(DYNAMIC_IMPORT_RETRY_STORAGE_KEY, JSON.stringify({ href, at: now }));
+    return true;
   } catch {
-    // A blocked or unavailable storage area must not prevent a recovery reload.
+    // Without a durable claim, offering another automatic reload can loop on a
+    // persistently stale module graph. Let the boundary expose manual reload.
+    return false;
   }
-  return true;
 }

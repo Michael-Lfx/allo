@@ -33,8 +33,34 @@ describe('dynamic import route recovery', () => {
     expect(claimDynamicImportReload(storage, href, 1_000 + DYNAMIC_IMPORT_RETRY_WINDOW_MS + 1)).toBe(true);
   });
 
-  test('does not block recovery when storage is unavailable', () => {
-    expect(claimDynamicImportReload(undefined, 'http://localhost/#/guid', 100)).toBe(true);
+  test('fails closed when storage is unavailable', () => {
+    expect(claimDynamicImportReload(undefined, 'http://localhost/#/guid', 100)).toBe(false);
+    expect(claimDynamicImportReload(null, 'http://localhost/#/guid', 100)).toBe(false);
+  });
+
+  test('fails closed when storage cannot be read or written', () => {
+    const readFailure = {
+      getItem: () => {
+        throw new Error('storage blocked');
+      },
+      setItem: () => undefined,
+    };
+    const writeFailure = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('storage blocked');
+      },
+    };
+
+    expect(claimDynamicImportReload(readFailure, 'http://localhost/#/guid', 100)).toBe(false);
+    expect(claimDynamicImportReload(writeFailure, 'http://localhost/#/guid', 100)).toBe(false);
+  });
+
+  test('fails closed when the retry record is malformed', () => {
+    const storage = createStorage();
+    storage.setItem(DYNAMIC_IMPORT_RETRY_STORAGE_KEY, '{not-json');
+
+    expect(claimDynamicImportReload(storage, 'http://localhost/#/guid', 100)).toBe(false);
   });
 
   test('uses the same bounded recovery gate in the nested settings boundary', () => {
