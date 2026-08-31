@@ -456,12 +456,34 @@ const renderApp = () => {
   );
 };
 
-// Wait for development/desktop service-worker cleanup before rendering the
-// route graph. Otherwise an old worker can intercept the first lazy module
-// request while the fresh Vite server is still starting.
-void registerPwa()
-  .catch((error) => {
-    // eslint-disable-next-line no-console
-    console.warn('[PWA] Failed to prepare the renderer:', error);
-  })
-  .finally(renderApp);
+// Give development/desktop service-worker cleanup a short head start so an
+// old worker cannot intercept the first lazy module request, but never let a
+// stalled browser API prevent the renderer from showing the recovery UI/app.
+const RENDER_STARTUP_PREPARATION_TIMEOUT_MS = 2_000;
+const prepareRendererBeforeRender = (): Promise<void> =>
+  new Promise((resolve) => {
+    let settled = false;
+    let timeout = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    timeout = window.setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[PWA] Renderer preparation exceeded ${RENDER_STARTUP_PREPARATION_TIMEOUT_MS}ms; continuing without waiting.`
+      );
+      finish();
+    }, RENDER_STARTUP_PREPARATION_TIMEOUT_MS);
+
+    void registerPwa()
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn('[PWA] Failed to prepare the renderer:', error);
+      })
+      .finally(finish);
+  });
+
+void prepareRendererBeforeRender().finally(renderApp);

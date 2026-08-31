@@ -17,6 +17,7 @@ interface SettingsSiderErrorFallbackProps {
   error: Error;
   componentStack: string | null;
   requiresReload: boolean;
+  reloadExhausted: boolean;
   onRetry: () => void;
   onReload: () => void;
 }
@@ -25,6 +26,7 @@ const SettingsSiderErrorFallback: React.FC<SettingsSiderErrorFallbackProps> = ({
   error,
   componentStack,
   requiresReload,
+  reloadExhausted,
   onRetry,
   onReload,
 }) => {
@@ -47,7 +49,11 @@ const SettingsSiderErrorFallback: React.FC<SettingsSiderErrorFallbackProps> = ({
           className='px-12px py-5px rounded-6px bg-2 border border-solid border-border-2'
           onClick={onRetry}
         >
-          {requiresReload ? t('settings.reloadApplication') : t('common.retry')}
+          {requiresReload
+            ? reloadExhausted
+              ? t('common.routeError.reloadAgain', { defaultValue: '再次重新加载应用' })
+              : t('settings.reloadApplication')
+            : t('common.retry')}
         </button>
         {requiresReload ? null : (
           <button
@@ -138,6 +144,7 @@ export default class SettingsSiderErrorBoundary extends React.Component<
         error={error}
         componentStack={componentStack}
         requiresReload={requiresReload}
+        reloadExhausted={dynamicImportReloadExhausted}
         onRetry={this.retry}
         onReload={this.reload}
       />

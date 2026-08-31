@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test';
 
 import { createViteHttpReadinessProbe } from './run-dev-vite-readiness.mjs';
 
-const response = (ok) => ({
+const response = (ok, body = 'ready', contentType = 'text/javascript') => ({
   ok,
-  text: async () => 'ready',
+  headers: { get: (name) => (name.toLowerCase() === 'content-type' ? contentType : null) },
+  text: async () => body,
 });
 
 describe('Vite HTTP readiness probe', () => {
@@ -35,6 +36,23 @@ describe('Vite HTTP readiness probe', () => {
       fetchImpl: async () => {
         requestCount += 1;
         return response(requestCount === 1);
+      },
+    });
+
+    expect(await probe()).toBe(false);
+    expect(requestCount).toBe(2);
+  });
+
+  test('does not treat an HTML fallback as a ready module response', async () => {
+    let requestCount = 0;
+    const probe = createViteHttpReadinessProbe({
+      host: '127.0.0.1',
+      port: 5173,
+      fetchImpl: async (url) => {
+        requestCount += 1;
+        return url.endsWith('/')
+          ? response(true, '<!doctype html><html></html>', 'text/html')
+          : response(true, '<!doctype html><html></html>', 'text/html');
       },
     });
 

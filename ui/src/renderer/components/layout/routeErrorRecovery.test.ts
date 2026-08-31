@@ -45,7 +45,16 @@ describe('dynamic import route recovery', () => {
 
   test('makes the exhausted dynamic-import action explicit', () => {
     const source = readFileSync(new URL('./RouteErrorBoundary.tsx', import.meta.url), 'utf8');
-    expect(source).toContain("? '再次重新加载应用'");
-    expect(source).toContain("? '重新加载应用'");
+    expect(source).toContain("? 'reloadAgain'");
+    expect(source).toContain("? 'reloadApplication'");
+    expect(source).toContain('useTranslation');
+    expect(source).toContain('var(--flowy-panel');
+  });
+
+  test('updates the settings action after the bounded reload claim is exhausted', () => {
+    const source = readFileSync(new URL('./SettingsSiderErrorBoundary.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('reloadExhausted: boolean');
+    expect(source).toContain('reloadExhausted={dynamicImportReloadExhausted}');
+    expect(source).toContain('common.routeError.reloadAgain');
   });
 });

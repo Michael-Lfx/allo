@@ -46,6 +46,15 @@
   "download": "下载",
   "close": "关闭",
   "retry": "重试",
+  "routeError": {
+    "applicationTitle": "应用渲染出错（已捕获，未显示空白窗口）",
+    "routeTitle": "页面渲染出错（已被路由错误边界捕获，未影响其它页面）",
+    "reloadApplication": "重新加载应用",
+    "reloadAgain": "再次重新加载应用",
+    "retry": "重试",
+    "stack": "Stack",
+    "componentStack": "Component stack"
+  },
   "startupRecovery": {
     "title": "应用启动数据加载失败",
     "description": "系统信息暂时无法读取。可以重试、打开支持日志，或退出当前账号。",

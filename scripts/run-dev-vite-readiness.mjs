@@ -9,14 +9,17 @@ function formatHost(host) {
   return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }
 
-function fetchWithTimeout(fetchImpl, url, timeoutMs) {
+function fetchWithTimeout(fetchImpl, url, timeoutMs, expectModule) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   return Promise.resolve()
     .then(() => fetchImpl(url, { signal: controller.signal }))
     .then(async (response) => {
       if (!response?.ok) return false;
-      if (typeof response.text === 'function') await response.text();
+      const body = typeof response.text === 'function' ? await response.text() : '';
+      if (!expectModule) return true;
+      const contentType = response.headers?.get?.('content-type')?.toLowerCase() ?? '';
+      if (contentType.includes('text/html') || /^\s*<!doctype\s+html|^\s*<html\b/i.test(body)) return false;
       return true;
     })
     .catch(() => false)
@@ -44,7 +47,7 @@ export function createViteHttpReadinessProbe({
 
   return async function isViteReady() {
     for (const path of paths) {
-      if (!(await fetchWithTimeout(fetchImpl, `${baseUrl}${path}`, requestTimeoutMs))) return false;
+      if (!(await fetchWithTimeout(fetchImpl, `${baseUrl}${path}`, requestTimeoutMs, path !== '/'))) return false;
     }
     return true;
   };

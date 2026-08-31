@@ -35,12 +35,25 @@ function isPwaRegistrationSupported(): boolean {
   return window.isSecureContext || LOCALHOST_HOSTS.has(hostname);
 }
 
+function isOwnedServiceWorkerRegistration(registration: ServiceWorkerRegistration): boolean {
+  if (typeof window === 'undefined') return false;
+  let expectedScriptUrl: string;
+  try {
+    expectedScriptUrl = new URL(SERVICE_WORKER_URL, window.location.href).href;
+  } catch {
+    return false;
+  }
+  return [registration.active, registration.waiting, registration.installing].some(
+    (worker) => worker?.scriptURL === expectedScriptUrl
+  );
+}
+
 /**
- * Tear down any previously-registered service worker and its caches. Runs in the
- * desktop shell so installs that registered a SW before the desktop guard
- * existed self-heal: a poisoned shell cache otherwise shows as a permanent white
- * screen after the embedded frontend is rebuilt (the cached index.html points at
- * asset hashes the new binary no longer contains).
+ * Tear down Flowy's previously-registered service worker and its caches. Runs
+ * in the desktop shell so installs that registered a SW before the desktop
+ * guard existed self-heal: a poisoned shell cache otherwise shows as a
+ * permanent white screen after the embedded frontend is rebuilt (the cached
+ * index.html points at asset hashes the new binary no longer contains).
  */
 async function purgeServiceWorkers(): Promise<void> {
   if (!serviceWorkerAvailable()) {
@@ -48,7 +61,11 @@ async function purgeServiceWorkers(): Promise<void> {
   }
   try {
     const registrations = await navigator.serviceWorker.getRegistrations();
-    await Promise.all(registrations.map((registration) => registration.unregister().catch((): false => false)));
+    await Promise.all(
+      registrations
+        .filter(isOwnedServiceWorkerRegistration)
+        .map((registration) => registration.unregister().catch((): false => false))
+    );
   } catch {
     // best-effort cleanup
   }

@@ -46,6 +46,15 @@
   "download": "Download",
   "close": "Close",
   "retry": "Retry",
+  "routeError": {
+    "applicationTitle": "Application render error (caught; the window was not left blank)",
+    "routeTitle": "Page render error (caught by the route boundary; other pages are unaffected)",
+    "reloadApplication": "Reload application",
+    "reloadAgain": "Reload application again",
+    "retry": "Retry",
+    "stack": "Stack",
+    "componentStack": "Component stack"
+  },
   "startupRecovery": {
     "title": "Startup data could not be loaded",
     "description": "System information is temporarily unavailable. Retry, open support logs, or sign out.",
