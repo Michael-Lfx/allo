@@ -19,6 +19,11 @@ describe('support surface browser probe contract', () => {
     expect(probe).toContain('focusVisibleControlCount');
     expect(probe).toContain('contrastChecks');
     expect(probe).toContain('screenshotPreviewSize');
+    expect(probe).toContain('empty-state-overexpanded');
+    expect(probe).toContain('short-feedback-overexpanded');
+    expect(probe).toContain('message-list-pushes-composer');
+    expect(probe).toContain('inputWithinViewport');
+    expect(probe).toContain('inputWithinViewport &&');
     expect(probe).toContain('interactionReady');
     expect(probe).toContain('waitForStableSurface');
     expect(probe).toContain('getAnimations');
@@ -32,6 +37,9 @@ describe('support surface browser probe contract', () => {
   test('registers the dev-only hash entry without affecting the normal provider path', () => {
     expect(main).toContain("window.location.hash.split('?')[0] === '#/test/support-surface'");
     expect(main).toContain('<SupportSurfaceProbe />');
+    expect(main).toContain('RENDER_STARTUP_PREPARATION_TIMEOUT_MS');
+    expect(main).toContain('prepareRendererBeforeRender');
+    expect(main).toContain('finally(renderApp)');
     expect(modal).toContain('export const SupportChatModalView');
     expect(modal).toContain('composerDisabled?: boolean');
   });

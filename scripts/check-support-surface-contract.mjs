@@ -23,6 +23,7 @@ const requiredFragments = [
   "url.hash = '/test/support-surface';",
   'support-surface-probe-result',
   'waitForStableSurface',
+  'heights: smoke ? [900] : [480, 568, 720, 800, 900]',
   'getAnimations',
   'scrollOwnerCount',
   'iconCenterDeltaY',

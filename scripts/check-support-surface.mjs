@@ -73,7 +73,7 @@ if (!edgePath) {
 
 const matrix = {
   widths: smoke ? [360, 560, 1280] : [320, 360, 390, 480, 560, 768, 1280],
-  heights: smoke ? [900] : [720, 900],
+  heights: smoke ? [900] : [480, 568, 720, 800, 900],
   dprs: smoke ? [1, 2] : [1, 1.25, 1.5, 2],
   pointers: ['fine', 'coarse'],
   locales: smoke ? ['zh-CN'] : ['zh-CN', 'en-US'],

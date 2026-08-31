@@ -32,6 +32,9 @@ type ProbeReport = {
     headerVisible: boolean;
     footerVisible: boolean;
     scrollOwnerCount: number;
+    messageListHeight: number | null;
+    contentBottomGap: number | null;
+    inputWithinViewport: boolean | null;
   };
   controls: Array<{
     label: string;
@@ -455,6 +458,19 @@ const SupportSurfaceProbe: React.FC = () => {
         root?.querySelector<HTMLElement>('.support-chat-composer');
       const scrollSelector = surface === 'support' ? '.support-message-list' : '.conversation-error-report__scroll';
       const scrollOwners = root ? Array.from(root.querySelectorAll<HTMLElement>(scrollSelector)) : [];
+      const messageList = root?.querySelector<HTMLElement>('.support-message-list');
+      const composer = root?.querySelector<HTMLElement>('.support-chat-composer');
+      const scrollOwner = scrollOwners[0] ?? null;
+      const scrollRect = rectOf(scrollOwner);
+      const lastContentRect = rectOf(scrollOwner?.lastElementChild ?? null);
+      const messageListRect = rectOf(messageList ?? null);
+      const composerRect = rectOf(composer ?? null);
+      const contentBottomGap =
+        scrollRect && lastContentRect ? Math.max(0, scrollRect.bottom - lastContentRect.bottom) : null;
+      const inputWithinViewport =
+        surface !== 'support'
+          ? null
+          : Boolean(composerRect && composerRect.top >= -1 && composerRect.bottom <= window.innerHeight + 1);
       const rootControls = Array.from(
         root?.querySelectorAll<HTMLButtonElement>(
           surface === 'support'
@@ -584,6 +600,28 @@ const SupportSurfaceProbe: React.FC = () => {
           !!thumbnailRect &&
           Math.abs(thumbnailRect.width - 72) <= 1 &&
           Math.abs(thumbnailRect.height - 72) <= 1);
+      const supportEmptyStateCompact =
+        surface !== 'support' ||
+        scenario !== 'empty' ||
+        Boolean(
+          modalRect &&
+            modalRect.height <= 440 + 1 &&
+            messageListRect &&
+            messageListRect.height <= 220 + 1
+        );
+      const feedbackShortContentFit =
+        surface !== 'feedback' ||
+        (scenario !== 'normal' && scenario !== 'screenshots') ||
+        (contentBottomGap !== null && contentBottomGap <= 40);
+      const supportMessageLayoutPass =
+        surface !== 'support' ||
+        Boolean(
+          inputWithinViewport &&
+          messageListRect &&
+          composerRect &&
+          messageListRect.bottom <= composerRect.top + 1 &&
+            composerRect.bottom <= window.innerHeight + 1
+        );
 
       if (!visibleRoot) failures.push('modal-not-visible');
       if (!withinViewport) failures.push('modal-outside-viewport');
@@ -591,6 +629,9 @@ const SupportSurfaceProbe: React.FC = () => {
       if (!headerVisible) failures.push('header-not-visible');
       if (!footerVisible) failures.push('footer-not-visible');
       if (scrollOwners.length !== 1) failures.push(`scroll-owner-count=${scrollOwners.length}`);
+      if (!supportEmptyStateCompact) failures.push('empty-state-overexpanded');
+      if (!feedbackShortContentFit) failures.push('short-feedback-overexpanded');
+      if (!supportMessageLayoutPass) failures.push('message-list-pushes-composer');
       if (controls.some((control) => !control.pass)) failures.push('icon-control-geometry');
       if (focusVisibleControlCount !== focusableControls.length) failures.push('focus-visible-control');
       if (contrastChecks.some((check) => !check.pass)) failures.push('contrast-check');
@@ -635,6 +676,9 @@ const SupportSurfaceProbe: React.FC = () => {
           headerVisible,
           footerVisible,
           scrollOwnerCount: scrollOwners.length,
+          messageListHeight: messageListRect?.height ?? null,
+          contentBottomGap,
+          inputWithinViewport,
         },
         controls,
         focusableControlCount: focusableControls.length,
