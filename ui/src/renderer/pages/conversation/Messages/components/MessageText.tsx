@@ -791,6 +791,7 @@ const MessageText: React.FC<{
                     fontSize={MESSAGE_BODY_FONT_SIZE}
                     lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                     allowUnverifiedImages={isUserMessage}
+                    collapsibleBlockquotes={false}
                   >{`\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``}</MarkdownView>
                 </CollapsibleContent>
               ) : streamingParts && streamingParts.tailKind === 'code' ? (
@@ -801,6 +802,7 @@ const MessageText: React.FC<{
                       fontSize={MESSAGE_BODY_FONT_SIZE}
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                       allowUnverifiedImages={isUserMessage}
+                      collapsibleBlockquotes={false}
                       isStreaming
                     >
                       {streamingParts.stablePrefix}
@@ -818,6 +820,7 @@ const MessageText: React.FC<{
                       fontSize={MESSAGE_BODY_FONT_SIZE}
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                       allowUnverifiedImages={isUserMessage}
+                      collapsibleBlockquotes={false}
                       isStreaming={isStreaming}
                     >
                       {streamingParts.stablePrefix}
@@ -835,6 +838,7 @@ const MessageText: React.FC<{
                   fontSize={MESSAGE_BODY_FONT_SIZE}
                   lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                   allowUnverifiedImages={isUserMessage}
+                  collapsibleBlockquotes={!isUserMessage && !isStreaming}
                 >
                   {data}
                 </MarkdownView>

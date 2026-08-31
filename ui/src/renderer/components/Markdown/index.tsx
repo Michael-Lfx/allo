@@ -19,8 +19,10 @@ import { useTranslation } from 'react-i18next';
 import { convertLatexDelimiters } from '@renderer/utils/chat/latexDelimiters';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import { isLocalImageSource } from '@/common/utils/localPath';
+import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import CodeBlock from './CodeBlock';
 import ShadowView from './ShadowView';
+import { shouldCollapseMarkdownBlockquote } from './blockquoteCollapse';
 import type { MarkdownViewProps } from './markdownViewProps';
 import { remarkSafeBreaks } from './remarkSafeBreaks';
 
@@ -55,6 +57,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
     allowHtml,
     allowUnverifiedImages = true,
     isStreaming = false,
+    collapsibleBlockquotes = false,
     children: childrenProp,
   }) => {
     const { t } = useTranslation();
@@ -109,6 +112,26 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
             <table {...rest} />
           </div>
         ),
+        blockquote: ({ node: blockquoteNode, children, ...rest }: React.JSX.IntrinsicElements['blockquote'] & ExtraProps) => {
+          const canCollapse = collapsibleBlockquotes && shouldCollapseMarkdownBlockquote(blockquoteNode);
+
+          return (
+            <blockquote {...rest}>
+              {canCollapse ? (
+                <CollapsibleContent
+                  maxHeight={200}
+                  defaultCollapsed
+                  useMask
+                  className='markdown-blockquote-collapsible'
+                >
+                  {children}
+                </CollapsibleContent>
+              ) : (
+                children
+              )}
+            </blockquote>
+          );
+        },
         img: ({ node: _node, ...rest }: React.JSX.IntrinsicElements['img'] & ExtraProps) => {
           const imgProps = rest;
           const src = imgProps.src || '';
@@ -125,7 +148,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
           return <img {...imgProps} />;
         },
       }),
-      [allowUnverifiedImages, codeStyle, hiddenCodeCopyButton, handleLinkClick, isStreaming]
+      [allowUnverifiedImages, codeStyle, collapsibleBlockquotes, hiddenCodeCopyButton, handleLinkClick, isStreaming]
     );
 
     const rehypePlugins = useMemo(() => (allowHtml ? [rehypeRaw, rehypeKatex] : [rehypeKatex]), [allowHtml]);

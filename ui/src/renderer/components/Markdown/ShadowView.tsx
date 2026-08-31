@@ -167,6 +167,64 @@ const createInitStyle = (
     color: var(--text-primary);
     margin: 16px 0;
   }
+  /* CollapsibleContent is shared with light-DOM surfaces, so keep its
+     structural styles here as well when Markdown renders inside Shadow DOM. */
+  .collapsible-content {
+    position: relative;
+    min-width: 0;
+  }
+  .collapsible-content__body {
+    min-width: 0;
+    transition-property: max-height, opacity;
+    transition-duration: 300ms;
+    transition-timing-function: ease;
+  }
+  .collapsible-content__mask {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    pointer-events: none;
+  }
+  .collapsible-content__controls {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    justify-content: center;
+  }
+  .collapsible-content__toggle {
+    display: inline-flex;
+    min-height: 30px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    transition: color 160ms ease, background-color 160ms ease;
+  }
+  .collapsible-content__toggle:hover {
+    background: var(--bg-3);
+    color: var(--text-primary);
+  }
+  .collapsible-content__toggle:active {
+    background: var(--bg-1);
+  }
+  .collapsible-content__toggle:focus-visible {
+    outline: 2px solid var(--color-link, ${theme.Color.PrimaryColor});
+    outline-offset: 1px;
+  }
+  .collapsible-content__toggle svg {
+    display: inline-block;
+    flex: none;
+    vertical-align: middle;
+  }
   pre {
     max-width: 100%;
     // overflow-x: auto;
@@ -486,6 +544,10 @@ const createInitStyle = (
     }
   }
   @media (prefers-reduced-motion: reduce) {
+    .collapsible-content__body,
+    .collapsible-content__toggle {
+      transition: none;
+    }
     .markdown-table-wrap tbody tr:hover td {
       transition: none;
     }
