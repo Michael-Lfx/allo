@@ -50,11 +50,10 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
         className: 'support-chat-modal__header',
       }}
       footer={null}
-      className='support-chat-modal w-[min(560px,calc(100vw-32px))] max-w-560px rd-16px'
+      className='support-chat-modal w-[min(600px,calc(100vw-32px))] max-w-600px rd-16px'
       style={{
-        width: 'min(560px, calc(100vw - 32px))',
-        maxWidth: 'min(560px, calc(100vw - 32px))',
-        height: 'min(680px, calc(100dvh - 32px))',
+        width: 'min(600px, calc(100vw - 32px))',
+        maxWidth: 'min(600px, calc(100vw - 32px))',
         maxHeight: 'min(680px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}
@@ -75,7 +74,7 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
 
         {state.status === 'loading' ? (
           <div
-            className='min-h-0 flex-1 flex flex-col gap-12px animate-pulse px-16px py-16px'
+            className='support-chat-modal__status support-chat-modal__status--loading flex flex-col gap-12px animate-pulse px-16px py-16px'
             role='status'
             aria-busy='true'
           >
@@ -104,7 +103,7 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
         ) : null}
 
         {state.status === 'error' ? (
-          <div className='flex-1 flex flex-col items-center justify-center text-center gap-8px'>
+          <div className='support-chat-modal__status support-chat-modal__status--error flex flex-col items-center justify-center text-center gap-8px'>
             <div className='text-14px font-medium text-t-primary'>
               {t('common.supportChat.connectionError', {
                 defaultValue: '暂时无法连接客服',
@@ -122,7 +121,7 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
         ) : null}
 
         {state.status === 'auth-required' ? (
-          <div className='flex-1 flex flex-col items-center justify-center text-center gap-8px'>
+          <div className='support-chat-modal__status support-chat-modal__status--auth-required flex flex-col items-center justify-center text-center gap-8px'>
             <div className='text-14px font-medium text-t-primary'>
               {t('common.supportChat.authRequired', {
                 defaultValue: '登录状态已失效',

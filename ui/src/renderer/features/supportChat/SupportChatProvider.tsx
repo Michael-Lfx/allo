@@ -441,14 +441,6 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const closeSupportChat = useCallback(() => {
     supportOpenGenerationRef.current += 1;
-    const current = stateRef.current;
-    if (current.status === 'ready') {
-      for (const item of current.messages) {
-        if (item.kind === 'server' && item.message.msgType === 'image') {
-          supportImagePreviewCache.release(item.message.clientMsgId);
-        }
-      }
-    }
     setModalOpen(false);
     dispatch({ type: 'close' });
   }, []);

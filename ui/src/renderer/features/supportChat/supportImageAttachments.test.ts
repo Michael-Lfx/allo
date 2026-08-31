@@ -9,6 +9,7 @@ import {
   MAX_SUPPORT_IMAGE_BYTES,
   MAX_SUPPORT_IMAGES,
   revokeSupportImagePreview,
+  selectSupportImagePreviews,
   SUPPORT_IMAGE_ACCEPT,
 } from './supportImageAttachments';
 
@@ -48,5 +49,40 @@ describe('support image attachments', () => {
       });
     }
     expect(calls).toEqual(['blob:test-preview']);
+  });
+
+  test('applies one selection policy and creates previews only for accepted files', () => {
+    const created: string[] = [];
+    const original = URL.createObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: (file: File) => {
+        const url = `blob:${file.name}`;
+        created.push(url);
+        return url;
+      },
+    });
+    try {
+      const result = selectSupportImagePreviews(
+        [
+          imageFile('first.png', 'image/png'),
+          imageFile('bad.gif', 'image/gif'),
+          imageFile('second.jpg', 'image/jpeg'),
+        ],
+        2
+      );
+
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0]?.file.name).toBe('first.png');
+      expect(result.items[1]?.file.name).toBe('second.jpg');
+      expect(result.rejected).toBe(true);
+      expect(result.truncated).toBe(false);
+      expect(created).toEqual(['blob:first.png', 'blob:second.jpg']);
+    } finally {
+      Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        value: original,
+      });
+    }
   });
 });

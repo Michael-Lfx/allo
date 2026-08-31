@@ -46,11 +46,6 @@ export type ConversationErrorReportSubmissionDependencies = {
   createClientMsgId?: () => string;
 };
 
-type PreparedReportImage = {
-  screenshot: ConversationErrorReportDraft['screenshots'][number];
-  payload: ICloudImAttachmentPayload;
-};
-
 function clientMsgId(deps: ConversationErrorReportSubmissionDependencies): string {
   return deps.createClientMsgId?.() ?? crypto.randomUUID();
 }
@@ -58,10 +53,17 @@ function clientMsgId(deps: ConversationErrorReportSubmissionDependencies): strin
 function createReportPendingMessages(
   content: string,
   logPayload: ICloudImAttachmentPayload,
-  screenshots: PreparedReportImage[],
+  screenshots: ConversationErrorReportDraft['screenshots'],
   createdAt: number,
   deps: ConversationErrorReportSubmissionDependencies
-): Array<{ clientMsgId: string; content: string; createdAt: string; msgType: 'text' | 'image'; payload?: ICloudImAttachmentPayload; logPayload?: ICloudImAttachmentPayload; screenshot?: PreparedReportImage['screenshot'] }> {
+): Array<{
+  clientMsgId: string;
+  content: string;
+  createdAt: string;
+  msgType: 'text' | 'image';
+  logPayload?: ICloudImAttachmentPayload;
+  screenshot?: ConversationErrorReportDraft['screenshots'][number];
+}> {
   const reportEntry = {
     clientMsgId: clientMsgId(deps),
     content,
@@ -69,12 +71,11 @@ function createReportPendingMessages(
     msgType: 'text' as const,
     logPayload,
   };
-  const screenshotEntries = screenshots.map(({ screenshot, payload }, index) => ({
+  const screenshotEntries = screenshots.map((screenshot, index) => ({
     clientMsgId: clientMsgId(deps),
     content: '',
     createdAt: new Date(createdAt + index + 1).toISOString(),
     msgType: 'image' as const,
-    payload,
     screenshot,
   }));
   return [reportEntry, ...screenshotEntries];
@@ -90,25 +91,9 @@ export async function submitConversationErrorReport(
   const content = draft.description.trim() || deps.defaultContent;
 
   try {
-    const [packed, device, screenshotUploads] = await Promise.all([
+    const [packed, device] = await Promise.all([
       deps.packLogs({ turnId: context.turnId ?? context.messageId }),
       deps.collectDevice(),
-      Promise.all(
-        draft.screenshots.map(async (screenshot): Promise<PreparedReportImage> => {
-          const uploaded = await deps.uploadScreenshot({
-            file: screenshot.file,
-            fileName: screenshot.fileName,
-          });
-          return {
-            screenshot,
-            payload: buildSupportImagePayload(uploaded, {
-              fileName: screenshot.fileName,
-              contentType: screenshot.file.type,
-              byteSize: screenshot.file.size,
-            }),
-          };
-        })
-      ),
     ]);
     if (!deps.isCurrent()) return { status: 'preparation-failed' };
 
@@ -131,7 +116,7 @@ export async function submitConversationErrorReport(
     const entries = createReportPendingMessages(
       content,
       logPayload,
-      screenshotUploads,
+      draft.screenshots,
       deps.now?.() ?? Date.now(),
       deps
     );
@@ -141,7 +126,6 @@ export async function submitConversationErrorReport(
       deps.addPending(
         entry.msgType === 'image'
           ? createPendingMessage(entry.clientMsgId, entry.content, entry.createdAt, 'sending', undefined, {
-              payload: entry.payload,
               previewUrl: entry.screenshot?.previewUrl,
               file: entry.screenshot?.file,
               fileName: entry.screenshot?.fileName,
@@ -150,20 +134,73 @@ export async function submitConversationErrorReport(
       );
     }
 
-    for (let index = 0; index < entries.length; index += 1) {
+    const [reportEntry, ...screenshotEntries] = entries;
+    if (!reportEntry || !deps.isCurrent()) return { status: 'preparation-failed' };
+
+    try {
+      await deps.send(reportEntry.clientMsgId, reportEntry.content, {
+        msgType: 'text',
+        logPayload: reportEntry.logPayload,
+        shouldContinue: deps.isCurrent,
+      });
       if (!deps.isCurrent()) return { status: 'preparation-failed' };
-      const entry = entries[index];
+    } catch {
+      if (!deps.isCurrent()) return { status: 'preparation-failed' };
+      for (const remaining of screenshotEntries) {
+        deps.markPendingFailed(remaining.clientMsgId);
+      }
+      return { status: 'partial-failure' };
+    }
+
+    for (let index = 0; index < screenshotEntries.length; index += 1) {
+      const entry = screenshotEntries[index];
+      const screenshot = entry.screenshot;
+      if (!screenshot || !deps.isCurrent()) return { status: 'preparation-failed' };
+
+      let payload: ICloudImAttachmentPayload;
+      try {
+        const uploaded = await deps.uploadScreenshot({
+          file: screenshot.file,
+          fileName: screenshot.fileName,
+        });
+        if (!deps.isCurrent()) return { status: 'preparation-failed' };
+        payload = buildSupportImagePayload(uploaded, {
+          fileName: screenshot.fileName,
+          contentType: screenshot.file.type,
+          byteSize: screenshot.file.size,
+        });
+      } catch (error) {
+        if (!deps.isCurrent()) return { status: 'preparation-failed' };
+        if (isAuthExpiredHttpError(error)) deps.onAuthExpired(error);
+        deps.markPendingFailed(entry.clientMsgId);
+        for (const remaining of screenshotEntries.slice(index + 1)) {
+          deps.markPendingFailed(remaining.clientMsgId);
+        }
+        return { status: 'partial-failure' };
+      }
+
+      // Replace the placeholder pending item with its upload payload so a
+      // send failure can retry without uploading the same file again.
+      deps.addPending(
+        createPendingMessage(entry.clientMsgId, entry.content, entry.createdAt, 'sending', undefined, {
+          payload,
+          previewUrl: screenshot.previewUrl,
+          file: screenshot.file,
+          fileName: screenshot.fileName,
+        })
+      );
       try {
         await deps.send(entry.clientMsgId, entry.content, {
-          msgType: entry.msgType,
-          payload: entry.msgType === 'image' ? entry.payload : undefined,
-          logPayload: entry.msgType === 'text' ? entry.logPayload : undefined,
+          msgType: 'image',
+          payload,
           shouldContinue: deps.isCurrent,
         });
         if (!deps.isCurrent()) return { status: 'preparation-failed' };
       } catch {
         if (!deps.isCurrent()) return { status: 'preparation-failed' };
-        for (const remaining of entries.slice(index + 1)) {
+        // sendWithClientMsgId owns the current item's failed state; only the
+        // messages that were not attempted yet need to be marked here.
+        for (const remaining of screenshotEntries.slice(index + 1)) {
           deps.markPendingFailed(remaining.clientMsgId);
         }
         return { status: 'partial-failure' };

@@ -490,7 +490,9 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 .nomifun-modal-structured-header > button {
   box-sizing: border-box;
   display: flex;
-  flex: 0 0 32px;
+  width: var(--support-modal-close-size, 32px);
+  min-width: var(--support-modal-close-size, 32px);
+  flex: 0 0 var(--support-modal-close-size, 32px);
   align-items: center;
   justify-content: center;
   line-height: 0;
@@ -516,15 +518,16 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 /* ===== Feedback report and support chat surfaces =====
  *
- * These two surfaces intentionally share one modal geometry contract: the
- * header and footer stay fixed, while one inner region owns scrolling. This
- * prevents long diagnostic text or chat history from pushing the action area
- * out of the viewport.
+ * These two surfaces intentionally share one modal geometry contract: short
+ * content determines the height, while one inner region owns scrolling once
+ * content reaches the viewport limit. This prevents long diagnostic text or
+ * chat history from pushing the action area out of the viewport.
  */
 .conversation-error-report-modal .arco-modal-content,
 .support-chat-modal .arco-modal-content {
   box-sizing: border-box;
-  height: 100%;
+  height: auto;
+  max-height: 100%;
   padding: 0 !important;
   overflow: hidden;
 }
@@ -534,7 +537,8 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   box-sizing: border-box;
   display: flex;
   min-height: 0;
-  height: 100%;
+  height: auto;
+  max-height: 100%;
   flex-direction: column;
   overflow: hidden;
   background: var(--flowy-panel, var(--dialog-fill-0));
@@ -544,7 +548,7 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 .support-chat-modal .nomifun-modal-body-content {
   display: flex;
   min-height: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   flex-direction: column;
   padding: 0 !important;
   overflow: hidden !important;
@@ -557,6 +561,13 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   margin: 0 !important;
   padding: 16px 20px 12px !important;
   gap: 12px;
+}
+
+.conversation-error-report__header > h3,
+.support-chat-modal__header > h3 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .conversation-error-report__title {
@@ -600,14 +611,14 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   display: flex;
   min-width: 0;
   min-height: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   flex-direction: column;
 }
 
 .conversation-error-report__scroll {
   min-width: 0;
   min-height: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   overflow: auto;
   padding: 4px 20px 20px;
   color: var(--flowy-text-primary, var(--text-primary));
@@ -739,10 +750,10 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 .conversation-error-report__auto-info {
   box-sizing: border-box;
-  padding: 12px;
-  border: 1px solid var(--flowy-border-subtle, var(--color-border-2));
-  border-radius: var(--flowy-radius-md, 8px);
-  background: color-mix(in srgb, var(--flowy-info, var(--info)) 8%, var(--flowy-panel, var(--dialog-fill-0)));
+  padding: 10px 0 8px;
+  border-top: 1px solid var(--flowy-border-subtle, var(--color-border-2));
+  border-bottom: 1px solid var(--flowy-border-subtle, var(--color-border-2));
+  background: transparent;
 }
 
 .conversation-error-report__copy {
@@ -766,6 +777,16 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 .conversation-error-report__diagnostic .conversation-error-diagnostic__detail {
   max-height: none;
   overflow: visible;
+}
+
+.conversation-error-report__diagnostic .conversation-error-diagnostic__summary,
+.conversation-error-report__diagnostic .conversation-error-diagnostic__detail {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.conversation-error-report__diagnostic .conversation-error-diagnostic__detail {
+  white-space: pre-wrap;
 }
 
 .conversation-error-report__status {
@@ -794,7 +815,7 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 .conversation-error-report__button {
   box-sizing: border-box;
   min-width: 96px;
-  min-height: 36px;
+  min-height: var(--support-action-min-height, 36px);
   flex: 0 0 auto;
   border: 1px solid transparent;
   border-radius: var(--flowy-radius-md, 8px);
@@ -852,6 +873,18 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   width: 100%;
 }
 
+.support-chat-modal__status {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.support-chat-modal__status--error,
+.support-chat-modal__status--auth-required {
+  padding: 32px 16px;
+}
+
 .support-chat-modal__sync-warning {
   flex: 0 0 auto;
 }
@@ -878,14 +911,33 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   width: 100%;
   min-width: 0;
   min-height: 0;
-  flex: 1 1 auto;
+  max-height: min(520px, calc(100dvh - 180px));
+  flex: 0 1 auto;
   overflow: auto;
   overscroll-behavior: contain;
+}
+
+.support-message-list__bubble {
+  min-width: 0;
+  max-width: min(85%, 65ch);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.support-message-list--empty {
+  min-height: 176px;
+  max-height: 220px;
+  flex: 0 0 auto;
+  overflow: hidden;
 }
 
 .support-chat-composer {
   box-sizing: border-box;
   width: 100%;
+  flex: 0 0 auto;
+  --support-control-size: 32px;
+  --support-toolbar-size: 32px;
+  --support-menu-item-min-height: 32px;
   padding: 10px 16px 14px;
 }
 
@@ -894,12 +946,13 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 }
 
 .support-chat-composer__toolbar {
-  flex: 0 0 32px;
+  height: var(--support-toolbar-size, 32px);
+  flex: 0 0 var(--support-toolbar-size, 32px);
 }
 
 .support-chat-composer__attachment-menu button {
   box-sizing: border-box;
-  min-height: 32px;
+  min-height: var(--support-menu-item-min-height, 32px);
 }
 
 .support-chat-composer textarea:focus-visible {
@@ -930,16 +983,16 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 .support-chat-composer button[data-button-shape='circle'] {
   box-sizing: border-box;
-  width: 32px;
-  height: 32px;
-  min-width: 32px;
-  flex: 0 0 32px;
+  width: var(--support-control-size, 32px);
+  height: var(--support-control-size, 32px);
+  min-width: var(--support-control-size, 32px);
+  flex: 0 0 var(--support-control-size, 32px);
   line-height: 0;
 }
 
 .support-chat-composer__text-action {
   box-sizing: border-box;
-  min-height: 28px;
+  min-height: var(--support-action-min-height, 28px);
   border: 0;
   border-radius: var(--flowy-radius-sm, 6px);
   padding: 4px 8px;
@@ -993,11 +1046,11 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 .support-image-preview-item__remove {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: var(--support-preview-remove-offset, -6px);
+  right: var(--support-preview-remove-offset, -6px);
   display: flex;
-  width: 20px;
-  height: 20px;
+  width: var(--support-preview-remove-size, 20px);
+  height: var(--support-preview-remove-size, 20px);
   box-sizing: border-box;
   align-items: center;
   justify-content: center;
@@ -1023,6 +1076,13 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   .support-chat-modal {
     width: calc(100vw - 24px) !important;
     max-width: calc(100vw - 24px) !important;
+    max-height: calc(100dvh - 24px) !important;
+  }
+
+  .conversation-error-report-modal {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: calc(100dvh - 24px) !important;
   }
 
   .conversation-error-report__scroll {
@@ -1030,11 +1090,38 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   }
 
   .conversation-error-report-modal .nomifun-modal-structured-footer {
-    padding: 10px 16px 14px;
+    padding: 10px 16px calc(14px + env(safe-area-inset-bottom, 0px));
   }
 
   .support-chat-composer {
-    padding: 8px 12px 12px;
+    padding: 8px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (max-height: 568px) {
+  .conversation-error-report__header,
+  .support-chat-modal__header {
+    padding-top: 10px !important;
+    padding-bottom: 8px !important;
+  }
+
+  .conversation-error-report__scroll {
+    padding-bottom: 12px;
+  }
+
+  .conversation-error-report-modal .nomifun-modal-structured-footer {
+    padding-top: 8px;
+  }
+
+  .support-chat-composer {
+    padding-top: 6px;
+  }
+
+  .support-message-list--empty {
+    min-height: 96px;
+    max-height: 176px;
+    padding-top: 12px;
+    padding-bottom: 12px;
   }
 }
 
@@ -1063,39 +1150,42 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   }
 }
 
+@media (max-width: 360px) {
+  .conversation-error-report__intro,
+  .conversation-error-report__hint,
+  .conversation-error-report__upload,
+  .support-chat-modal__status {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .conversation-error-report__upload {
+    padding-right: 12px;
+    padding-left: 12px;
+    text-align: center;
+  }
+}
+
 @media (pointer: coarse) {
-  .conversation-error-report-modal .nomifun-modal-structured-header > button,
-  .support-chat-modal .nomifun-modal-structured-header > button {
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
-    flex-basis: 40px;
+  .conversation-error-report-modal,
+  .support-chat-modal {
+    --support-modal-close-size: 40px;
   }
 
-  .conversation-error-report__textarea,
-  .conversation-error-report__button,
-  .support-chat-composer__text-action,
-  .support-chat-composer__attachment-menu button {
-    min-height: 40px;
+  .conversation-error-report-modal {
+    --support-action-min-height: 40px;
   }
 
-  .support-chat-composer button[data-button-shape='circle'] {
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
-    flex-basis: 40px;
-  }
-
-  .support-chat-composer__toolbar {
-    height: 40px;
-    flex-basis: 40px;
+  .support-chat-composer {
+    --support-control-size: 40px;
+    --support-toolbar-size: 40px;
+    --support-menu-item-min-height: 40px;
+    --support-action-min-height: 40px;
   }
 
   .support-image-preview-item__remove {
-    top: -12px;
-    right: -12px;
-    width: 40px;
-    height: 40px;
+    --support-preview-remove-size: 40px;
+    --support-preview-remove-offset: -12px;
   }
 }
 
@@ -1103,42 +1193,25 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
  * probe sets this attribute so the same 40px touch geometry is exercised in
  * a deterministic browser run instead of being inferred from a fine pointer.
  */
-html[data-support-probe-pointer='coarse'] .conversation-error-report-modal .nomifun-modal-structured-header > button,
-html[data-support-probe-pointer='coarse'] .support-chat-modal .nomifun-modal-structured-header > button {
-  width: 40px;
-  height: 40px;
-  min-width: 40px;
-  flex-basis: 40px;
+html[data-support-probe-pointer='coarse'] .conversation-error-report-modal,
+html[data-support-probe-pointer='coarse'] .support-chat-modal {
+  --support-modal-close-size: 40px;
 }
 
-html[data-support-probe-pointer='coarse'] .support-chat-composer button[data-button-shape='circle'] {
-  width: 40px;
-  height: 40px;
-  min-width: 40px;
-  flex-basis: 40px;
+html[data-support-probe-pointer='coarse'] .conversation-error-report-modal {
+  --support-action-min-height: 40px;
 }
 
-html[data-support-probe-pointer='coarse'] .support-chat-composer__toolbar {
-  height: 40px;
-  flex-basis: 40px;
-}
-
-html[data-support-probe-pointer='coarse'] .support-chat-composer__attachment-menu button {
-  min-height: 40px;
+html[data-support-probe-pointer='coarse'] .support-chat-composer {
+  --support-control-size: 40px;
+  --support-toolbar-size: 40px;
+  --support-menu-item-min-height: 40px;
+  --support-action-min-height: 40px;
 }
 
 html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
-  top: -12px;
-  right: -12px;
-  width: 40px;
-  height: 40px;
-}
-
-html[data-support-probe-pointer='coarse'] .conversation-error-report__textarea,
-html[data-support-probe-pointer='coarse'] .conversation-error-report__upload,
-html[data-support-probe-pointer='coarse'] .conversation-error-report__button,
-html[data-support-probe-pointer='coarse'] .support-chat-composer__text-action {
-  min-height: 40px;
+  --support-preview-remove-size: 40px;
+  --support-preview-remove-offset: -12px;
 }
 
 @media (prefers-reduced-motion: reduce) {

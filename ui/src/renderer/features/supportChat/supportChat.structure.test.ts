@@ -38,13 +38,22 @@ describe('support chat structure', () => {
 
     expect(modal.includes('NomiModal')).toBe(true);
     expect(modal.includes('ModalWrapper')).toBe(false);
+    expect(modal.includes("width: 'min(600px, calc(100vw - 32px))'")).toBe(true);
+    expect(modal.includes("height: 'min(680px, calc(100dvh - 32px))'")).toBe(false);
     expect(modal.includes("100dvh")).toBe(true);
     expect(modal.includes('contentStyle={{ padding: 0, overflow: \'hidden\' }}')).toBe(true);
     expect(modal.includes('support-chat-modal__body flex min-h-0 flex-col')).toBe(true);
+    expect(modal.includes('support-chat-modal--')).toBe(false);
+    expect(modal.includes('support-chat-modal__status--loading')).toBe(true);
+    expect(modal.includes('support-chat-modal__status--error')).toBe(true);
+    expect(modal.includes('support-chat-modal__status--auth-required')).toBe(true);
     expect(modal.includes('common.supportChat.asyncHint')).toBe(false);
     expect(modal.includes('common.supportChat.subtitle')).toBe(false);
     expect(list.includes("aria-live='polite'") || list.includes('aria-live="polite"')).toBe(true);
-    expect(list.includes('support-message-list min-h-0 flex-1 overflow-auto')).toBe(true);
+    expect(list.includes('support-message-list min-h-0 overflow-auto flex')).toBe(true);
+    expect(list.includes('support-message-list--empty')).toBe(true);
+    expect(list.includes('support-message-list--empty min-h-0 flex-1')).toBe(false);
+    expect(list.includes('support-message-list__bubble')).toBe(true);
     expect(composer.includes('Shift+Enter') || composer.includes('shiftKey')).toBe(true);
     expect(composer.includes('isComposing')).toBe(true);
     expect(composer.includes('box-border')).toBe(true);
@@ -60,7 +69,7 @@ describe('support chat structure', () => {
     expect(composer.includes('SupportImagePreviewGrid')).toBe(true);
     expect(composer.includes('SUPPORT_IMAGE_ACCEPT')).toBe(true);
     expect(composer.includes('MAX_SUPPORT_IMAGES')).toBe(true);
-    expect(composer.includes('MAX_SUPPORT_IMAGE_BYTES')).toBe(true);
+    expect(composer.includes('selectSupportImagePreviews')).toBe(true);
     expect(composer.includes('common.supportChat.uploadLogsConfirm')).toBe(true);
     expect(composer.includes('common.supportChat.uploadLogsPreparing')).toBe(true);
     expect(composer.includes('collectSupportLogUserInfo')).toBe(true);

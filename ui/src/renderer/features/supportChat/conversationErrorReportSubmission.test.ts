@@ -67,11 +67,21 @@ function createDependencies(
 
 describe('submitConversationErrorReport', () => {
   test('prepares one text report followed by screenshots in order', async () => {
-    const pending: SupportPendingMessage[] = [];
+    const pending = new Map<string, SupportPendingMessage>();
     const sent: Array<{ id: string; content: string; type: string }> = [];
+    const events: string[] = [];
     const deps = createDependencies({
-      addPending: (message) => pending.push(message),
+      addPending: (message) => pending.set(message.clientMsgId, message),
+      uploadLogFromPath: async () => {
+        events.push('log-upload');
+        return upload('report.zip', 'https://cdn/report.zip');
+      },
+      uploadScreenshot: async () => {
+        events.push('screenshot-upload');
+        return upload('screen.png', 'https://cdn/screen.png');
+      },
       send: async (id, content, options) => {
+        events.push(`send-${options.msgType}`);
         sent.push({ id, content, type: options.msgType });
       },
     });
@@ -83,11 +93,12 @@ describe('submitConversationErrorReport', () => {
     );
 
     expect(result).toEqual({ status: 'success' });
-    expect(pending).toHaveLength(2);
-    expect(pending[0]?.content).toBe('复现步骤');
-    expect(pending[1]?.previewUrl).toBe('blob:screen');
+    expect(pending.size).toBe(2);
+    expect(pending.get('report-1')?.content).toBe('复现步骤');
+    expect(pending.get('report-2')?.previewUrl).toBe('blob:screen');
     expect(sent.map((item) => item.type)).toEqual(['text', 'image']);
     expect(sent.map((item) => item.id)).toEqual(['report-1', 'report-2']);
+    expect(events).toEqual(['log-upload', 'send-text', 'screenshot-upload', 'send-image']);
   });
 
   test('keeps the report unsubmitted when preparation fails', async () => {
@@ -108,6 +119,48 @@ describe('submitConversationErrorReport', () => {
     expect(result).toEqual({ status: 'preparation-failed' });
     expect(pending).toHaveLength(0);
     expect(sent).toHaveLength(0);
+  });
+
+  test('does not upload screenshots when log preparation fails', async () => {
+    let uploadScreenshotCalls = 0;
+    const deps = createDependencies({
+      uploadLogFromPath: async () => {
+        throw new Error('log upload failed');
+      },
+      uploadScreenshot: async () => {
+        uploadScreenshotCalls += 1;
+        return upload('screen.png', 'https://cdn/screen.png');
+      },
+    });
+
+    const result = await submitConversationErrorReport(context, { description: 'report', screenshots: [screenshot] }, deps);
+
+    expect(result).toEqual({ status: 'preparation-failed' });
+    expect(uploadScreenshotCalls).toBe(0);
+  });
+
+  test('keeps a failed screenshot as a retryable pending item without a remote payload', async () => {
+    const pending = new Map<string, SupportPendingMessage>();
+    const failed: string[] = [];
+    const sent: string[] = [];
+    const deps = createDependencies({
+      addPending: (message) => pending.set(message.clientMsgId, message),
+      markPendingFailed: (id) => failed.push(id),
+      uploadScreenshot: async () => {
+        throw new Error('screenshot upload failed');
+      },
+      send: async (id, _content, options) => {
+        sent.push(`${id}:${options.msgType}`);
+      },
+    });
+
+    const result = await submitConversationErrorReport(context, { description: 'report', screenshots: [screenshot] }, deps);
+
+    expect(result).toEqual({ status: 'partial-failure' });
+    expect(sent).toEqual(['report-1:text']);
+    expect(failed).toEqual(['report-2']);
+    expect(pending.get('report-2')?.file).toBe(screenshot.file);
+    expect(pending.get('report-2')?.payload).toBeUndefined();
   });
 
   test('stops after the auth operation becomes stale during preparation', async () => {
@@ -145,11 +198,11 @@ describe('submitConversationErrorReport', () => {
   });
 
   test('marks only the unsent tail failed after a partial send', async () => {
-    const pending: SupportPendingMessage[] = [];
+    const pending = new Map<string, SupportPendingMessage>();
     const failed: string[] = [];
     const sent: string[] = [];
     const deps = createDependencies({
-      addPending: (message) => pending.push(message),
+      addPending: (message) => pending.set(message.clientMsgId, message),
       markPendingFailed: (id) => failed.push(id),
       send: async (id, _content, options) => {
         sent.push(`${id}:${options.msgType}`);
@@ -164,7 +217,7 @@ describe('submitConversationErrorReport', () => {
     );
 
     expect(result).toEqual({ status: 'partial-failure' });
-    expect(pending).toHaveLength(3);
+    expect(pending.size).toBe(3);
     expect(sent).toEqual(['report-1:text', 'report-2:image']);
     expect(failed).toEqual(['report-3']);
   });

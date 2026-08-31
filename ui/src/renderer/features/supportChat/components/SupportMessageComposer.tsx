@@ -16,13 +16,11 @@ import { collectSupportDeviceInfo } from '../collectSupportDeviceInfo';
 import { collectSupportLogUserInfo } from '../collectSupportLogUserInfo';
 import SupportImagePreviewGrid from './SupportImagePreviewGrid';
 import {
-  createSupportImagePreviewId,
-  isAcceptedSupportImage,
-  MAX_SUPPORT_IMAGE_BYTES,
   MAX_SUPPORT_IMAGES,
   revokeSupportImagePreview,
   revokeSupportImagePreviews,
   SUPPORT_IMAGE_ACCEPT,
+  selectSupportImagePreviews,
   type SupportImagePreviewItem,
 } from '../supportImageAttachments';
 
@@ -210,33 +208,11 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
       return;
     }
 
-    const accepted: SupportImagePreviewItem[] = [];
-    let rejected = false;
-    let truncated = false;
-
-    for (const file of files) {
-      if (accepted.length >= remaining) {
-        truncated = true;
-        break;
-      }
-      if (!isAcceptedSupportImage(file) || file.size > MAX_SUPPORT_IMAGE_BYTES) {
-        rejected = true;
-        continue;
-      }
-      accepted.push({
-        id: createSupportImagePreviewId(file),
-        url: URL.createObjectURL(file),
-        file,
-      });
-    }
+    const { items: accepted, rejected, truncated } = selectSupportImagePreviews(files, remaining);
 
     if (accepted.length > 0) {
       const current = imagePreviewsRef.current;
-      const next = [...current, ...accepted].slice(0, MAX_SUPPORT_IMAGES);
-      const keptUrls = new Set(next.map((item) => item.url));
-      for (const item of accepted) {
-        if (!keptUrls.has(item.url)) revokeSupportImagePreview(item);
-      }
+      const next = [...current, ...accepted];
       imagePreviewsRef.current = next;
       setImagePreviews(next);
     }

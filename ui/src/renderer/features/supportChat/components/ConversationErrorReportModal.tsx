@@ -20,12 +20,10 @@ import {
 import SupportImagePreviewGrid from './SupportImagePreviewGrid';
 import { supportImagePreviewCache } from '../state/supportImagePreviewCache';
 import {
-  createSupportImagePreviewId,
-  isAcceptedSupportImage,
-  MAX_SUPPORT_IMAGE_BYTES,
   MAX_SUPPORT_IMAGES,
   revokeSupportImagePreview,
   SUPPORT_IMAGE_ACCEPT,
+  selectSupportImagePreviews,
   type SupportImagePreviewItem,
 } from '../supportImageAttachments';
 
@@ -139,32 +137,11 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
       return;
     }
 
-    const accepted: SupportImagePreviewItem[] = [];
-    let rejected = false;
-    let truncated = false;
-    for (const file of files) {
-      if (accepted.length >= remaining) {
-        truncated = true;
-        break;
-      }
-      if (!isAcceptedSupportImage(file) || file.size > MAX_SUPPORT_IMAGE_BYTES) {
-        rejected = true;
-        continue;
-      }
-      accepted.push({
-        id: createSupportImagePreviewId(file),
-        url: URL.createObjectURL(file),
-        file,
-      });
-    }
+    const { items: accepted, rejected, truncated } = selectSupportImagePreviews(files, remaining);
 
     if (accepted.length > 0) {
       const current = screenshotsRef.current;
-      const next = [...current, ...accepted].slice(0, MAX_SUPPORT_IMAGES);
-      const keptUrls = new Set(next.map((item) => item.url));
-      for (const item of accepted) {
-        if (!keptUrls.has(item.url)) revokeSupportImagePreview(item);
-      }
+      const next = [...current, ...accepted];
       screenshotsRef.current = next;
       setScreenshots(next);
     }
@@ -304,7 +281,6 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
       style={{
         width: 'min(720px, calc(100vw - 32px))',
         maxWidth: 'min(720px, calc(100vw - 32px))',
-        height: 'min(760px, calc(100dvh - 32px))',
         maxHeight: 'min(760px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}

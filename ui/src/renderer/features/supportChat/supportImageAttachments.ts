@@ -29,6 +29,12 @@ export type SupportImagePreviewItem = {
   file: File;
 };
 
+export type SupportImageSelection = {
+  items: SupportImagePreviewItem[];
+  rejected: boolean;
+  truncated: boolean;
+};
+
 export function isAcceptedSupportImage(file: File): boolean {
   if (file.type === 'image/png' || file.type === 'image/jpeg') return true;
   const name = file.name.toLowerCase();
@@ -37,6 +43,31 @@ export function isAcceptedSupportImage(file: File): boolean {
 
 export function createSupportImagePreviewId(file: File): string {
   return `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Apply the shared image policy and create previews only for accepted files. */
+export function selectSupportImagePreviews(files: File[], limit: number): SupportImageSelection {
+  const items: SupportImagePreviewItem[] = [];
+  let rejected = false;
+  let truncated = false;
+
+  for (const file of files) {
+    if (items.length >= limit) {
+      truncated = true;
+      break;
+    }
+    if (!isAcceptedSupportImage(file) || file.size > MAX_SUPPORT_IMAGE_BYTES) {
+      rejected = true;
+      continue;
+    }
+    items.push({
+      id: createSupportImagePreviewId(file),
+      url: URL.createObjectURL(file),
+      file,
+    });
+  }
+
+  return { items, rejected, truncated };
 }
 
 export function revokeSupportImagePreview(item: SupportImagePreviewItem): void {

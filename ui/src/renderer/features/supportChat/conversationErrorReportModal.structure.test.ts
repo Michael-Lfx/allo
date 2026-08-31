@@ -19,6 +19,8 @@ describe('conversation error report modal contract', () => {
   test('uses a controlled report form with one scroll owner and stable submit states', () => {
     expect(modalSource).toContain("import NomiModal from '@/renderer/components/base/NomiModal';");
     expect(modalSource).toContain('conversation-error-report__scroll');
+    expect(modalSource).toContain("width: 'min(720px, calc(100vw - 32px))'");
+    expect(modalSource).not.toContain("height: 'min(760px, calc(100dvh - 32px))'");
     expect(modalSource).toContain('conversation-error-report-description');
     expect(modalSource).toContain('maxLength={MAX_REPORT_DESCRIPTION_CHARS}');
     expect(modalSource).toContain('event.ctrlKey || event.metaKey');
@@ -76,12 +78,26 @@ describe('conversation error report modal contract', () => {
       '.support-chat-composer__icon',
       '.nomifun-modal-structured-header > button > .i-icon',
       'line-height: 0;',
-      'flex: 0 0 32px;',
+      'flex: 0 0 var(--support-control-size, 32px);',
     ]) {
       expect(cssSource).toContain(fragment);
     }
     expect(cssSource).toContain('100dvh');
+    expect(cssSource).toContain('height: auto;');
+    expect(cssSource).toContain('max-height: min(520px, calc(100dvh - 180px));');
+    expect(cssSource).toContain('.support-message-list--empty');
+    expect(cssSource).toContain('min-height: 176px;');
+    expect(cssSource).toContain('max-height: 220px;');
+    expect(cssSource).toContain('max-height: calc(100dvh - 24px) !important;');
+    expect(cssSource).toContain('.conversation-error-report-modal {');
+    expect(cssSource).toContain('padding: 10px 0 8px;');
     expect(cssSource).not.toContain('.support-chat-modal .arco-modal-body');
+
+    const surfaceGeometryCss = cssSource.slice(
+      cssSource.indexOf('/* ===== Feedback report and support chat surfaces ====='),
+      cssSource.indexOf('.conversation-error-report__header')
+    );
+    expect(surfaceGeometryCss).not.toMatch(/\n\s+height: 100%;/);
   });
 
   test('keeps support visibility independent from reducer hydration state', () => {
