@@ -3,7 +3,7 @@
 /**
  * Data for the `OutputDiscarded` event.
  */
-export type OutputDiscardedEventData = {
+export type OutputDiscardedEventData = { 
 /**
  * One-based round attempt that will produce the replacement output.
  */

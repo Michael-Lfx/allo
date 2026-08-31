@@ -2,36 +2,6 @@ use super::*;
 
 impl LearningService {
 
-    pub async fn generate_course(
-        &self,
-        request: GenerateCourseRequest,
-    ) -> Result<CourseDetail, AppError> {
-        validate_generation_request(&request)?;
-        let knowledge_service = self
-            .knowledge_service
-            .read()
-            .map_err(|_| AppError::Internal("learning knowledge service lock poisoned".into()))?
-            .clone()
-            .ok_or_else(|| {
-                AppError::Conflict("knowledge-backed course generation is not configured".into())
-            })?;
-        let completer = self
-            .course_completer
-            .read()
-            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
-            .clone()
-            .ok_or_else(|| {
-                AppError::Conflict("knowledge-backed course generation is not configured".into())
-            })?;
-        let pack = crate::generation::generate_course_pack(
-            knowledge_service.as_ref(),
-            completer.as_ref(),
-            &request,
-        )
-        .await?;
-        self.import_course(pack).await
-    }
-
     /// Submit a course-generation job and return immediately. The pipeline
     /// runs in the background (one spawned task per claimed job); progress is
     /// visible through `list_course_jobs` / `course_job`. Used by both the
@@ -84,6 +54,8 @@ impl LearningService {
         let job_id = generate_id();
         let now = now_ms();
         let request_json = serde_json::to_string(&request).map_err(internal)?;
+        // generation_mode 列保留供未来生成策略复用（如概念图合并）；当前恒为
+        // 'on_demand'，显式写入以免依赖列默认值。
         sqlx::query(
             "INSERT INTO learning_course_jobs \
              (job_id, user_id, session_id, source, kb_id, request_json, status, generation_mode, created_at, updated_at) \

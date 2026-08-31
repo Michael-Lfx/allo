@@ -568,137 +568,6 @@
     }
 
     #[test]
-    fn assemble_pack_merges_blueprint_and_lessons() {
-        let request = GenerateCourseRequest {
-            knowledge_base_id: KnowledgeBaseId::new(),
-            domain: Some("trading".into()),
-            provider_id: None,
-            model: None,
-            module_count: 1,
-            lessons_per_module: 2,
-            mode: crate::models::CourseGenerationMode::Full,
-        };
-        let blueprint = Blueprint {
-            title: "Trading 101".into(),
-            description: "Master the basics.".into(),
-            domain: "ignored".into(),
-            version: 3,
-            concepts: vec![ConceptPack {
-                key: "a".into(),
-                title: "A".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
-            modules: vec![BlueprintModule {
-                title: "M".into(),
-                description: String::new(),
-                lessons: vec![
-                    BlueprintLesson {
-                        title: "L1".into(),
-                        purpose: "p1".into(),
-                        concepts: vec!["a".into()],
-                        source: Some(SourceSpan {
-                            path: "real.md".into(),
-                            start: None,
-                            end: None,
-                        }),
-                    },
-                    BlueprintLesson {
-                        title: "L2".into(),
-                        purpose: "p2".into(),
-                        concepts: vec!["a".into()],
-                        source: Some(SourceSpan {
-                            path: "real.md".into(),
-                            start: None,
-                            end: None,
-                        }),
-                    },
-                ],
-            }],
-        };
-        let outputs = vec![
-            LessonOutput {
-                summary: "S1".into(),
-                estimated_minutes: 12,
-                activities: Vec::new(),
-            },
-            LessonOutput {
-                summary: "S2".into(),
-                estimated_minutes: 8,
-                activities: Vec::new(),
-            },
-        ];
-        let pack = assemble_pack(blueprint, outputs, &request);
-        assert_eq!(pack.title, "Trading 101");
-        assert_eq!(pack.domain, "trading", "requested domain wins");
-        assert_eq!(pack.version, 3);
-        assert_eq!(pack.source_kb_id, Some(request.knowledge_base_id.clone()));
-        assert_eq!(pack.modules.len(), 1);
-        assert_eq!(pack.modules[0].lessons.len(), 2);
-        assert_eq!(pack.modules[0].lessons[0].summary, "S1");
-        assert_eq!(pack.modules[0].lessons[1].summary, "S2");
-        assert_eq!(pack.modules[0].lessons[0].estimated_minutes, 12);
-        assert_eq!(pack.modules[0].lessons[0].concepts, vec!["a"]);
-        assert_eq!(
-            pack.modules[0].lessons[1].source.as_ref().map(|s| s.path.as_str()),
-            Some("real.md")
-        );
-    }
-
-    #[test]
-    fn generated_pack_rejects_unsampled_source_paths() {
-        let request = GenerateCourseRequest {
-            knowledge_base_id: KnowledgeBaseId::new(),
-            domain: None,
-            provider_id: None,
-            model: None,
-            module_count: 1,
-            lessons_per_module: 1,
-            mode: crate::models::CourseGenerationMode::Full,
-        };
-        let blueprint = Blueprint {
-            title: "Course".into(),
-            description: String::new(),
-            domain: String::new(),
-            version: 1,
-            concepts: Vec::new(),
-            modules: vec![BlueprintModule {
-                title: "M".into(),
-                description: String::new(),
-                lessons: vec![BlueprintLesson {
-                    title: "L".into(),
-                    purpose: String::new(),
-                    concepts: Vec::new(),
-                    source: Some(SourceSpan {
-                        path: "invented.md".into(),
-                        start: None,
-                        end: None,
-                    }),
-                }],
-            }],
-        };
-        let pack = assemble_pack(
-            blueprint,
-            vec![LessonOutput {
-                summary: "S".into(),
-                estimated_minutes: 10,
-                activities: vec![ActivityPack {
-                    kind: ActivityKind::Reflection,
-                    prompt: "Explain".into(),
-                    options: Vec::new(),
-                    answer: json!(null),
-                    explanation: String::new(),
-                    concepts: Vec::new(),
-                    distractors: Vec::new(),
-                }],
-            }],
-            &request,
-        );
-        let samples = vec![("real.md".to_owned(), "# Real".to_owned())];
-        assert!(validate_generated_pack(&pack, &samples).is_err());
-    }
-
-    #[test]
     fn generated_request_keeps_selected_knowledge_base() {
         let id = KnowledgeBaseId::new();
         let request = GenerateCourseRequest {
@@ -708,7 +577,7 @@
             model: None,
             module_count: 3,
             lessons_per_module: 3,
-            mode: crate::models::CourseGenerationMode::Full,
+            mode: crate::models::CourseGenerationMode::OnDemand,
         };
         assert_eq!(request.knowledge_base_id, id);
     }

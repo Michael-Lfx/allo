@@ -17,14 +17,9 @@ function buildCourseCreationPrompt(
   description: string,
   kbName: string,
   kbHasDocs: boolean,
-  generationMode: 'full' | 'on_demand',
   modelChoice: LearningModelChoice,
 ): string {
   const topic = `课程主题与要求：${description}`;
-  const modeInstruction =
-    generationMode === 'on_demand'
-      ? '生成课程时使用「按需生成」模式：先生成大纲与每课时描述并立即创建课程，学习到具体课时时再生成其正文与练习。'
-      : '生成课程时使用「一次性生成」模式：一次性生成全部课时的正文与练习。';
   const modelInstruction = modelChoice
     ? `生成课程时请使用我指定的模型（provider_id: ${modelChoice.provider_id}，model: ${modelChoice.model}），调用 learning_generate_course 时传入 provider_id 与 model 两个字段。`
     : '';
@@ -36,7 +31,11 @@ function buildCourseCreationPrompt(
     : `我为知识库「${kbName}」准备了一门学习课程：\n${topic}\n\n` +
       '请先用 knowledge_write 向该知识库写入若干结构化 Markdown 文档（每个主题一个文件，' +
       '包含 描述、例子、验证 等章节），然后调用 learning_generate_course 基于该知识库生成课程。';
-  return `${body}\n\n${modeInstruction}${modelInstruction ? `\n${modelInstruction}` : ''}\n生成完成后告诉我课程已创建。`;
+  return `${body}${modelInstruction ? `
+
+${modelInstruction}` : ''}
+
+生成完成后告诉我课程已创建。`;
 }
 
 export interface UseCourseCreationOptions {
@@ -59,8 +58,6 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState<string>();
   const [generationDomain, setGenerationDomain] = useState('');
-  // 生成策略：on_demand 先出大纲、学习时按需生成课时；full 一次性生成全部课时
-  const [generationMode, setGenerationMode] = useState<'full' | 'on_demand'>('on_demand');
 
   const openGenerator = useCallback(async () => {
     setGenerateVisible(true);
@@ -103,7 +100,6 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         domain: generationDomain.trim() || undefined,
         provider_id: modelChoice?.provider_id,
         model: modelChoice?.model,
-        mode: generationMode,
       });
       setGenerateVisible(false);
       Message.success(t('learning.generateStarted'));
@@ -112,7 +108,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     } finally {
       setBusyId(null);
     }
-  }, [generationDomain, generationMode, modelChoice, selectedKnowledgeBaseId, t, setBusyId]);
+  }, [generationDomain, modelChoice, selectedKnowledgeBaseId, t, setBusyId]);
 
   // 方式二：描述生成 → 选择/自动创建知识库 → 跳转 AI 对话页自动发起课程创建会话
   const createCourseViaAgent = useCallback(async () => {
@@ -149,7 +145,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       const id = parseKnowledgeBaseId(kbId);
       stashKnowledgeActivation({
         knowledge_base_id: id,
-        suggest_prompt: buildCourseCreationPrompt(description, kbName, kbHasDocs, generationMode, modelChoice),
+        suggest_prompt: buildCourseCreationPrompt(description, kbName, kbHasDocs, modelChoice),
         // 写回直接落入 base 正文（main 已移除 staged/_inbox 机制），课程生成采样读得到
         binding: { ...bindingForNewBase(id), writeback: true },
         auto_send: true,
@@ -167,7 +163,6 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     creationBaseId,
     creationBaseMode,
     creationDescription,
-    generationMode,
     modelChoice,
     navigate,
     t,
@@ -194,8 +189,6 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     setSelectedKnowledgeBaseId,
     generationDomain,
     setGenerationDomain,
-    generationMode,
-    setGenerationMode,
     openGenerator,
     generateCourse,
     createCourseViaAgent,

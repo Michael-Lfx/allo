@@ -8,10 +8,10 @@ use sqlx::Row;
 use crate::completer::LearningCompleter;
 
 use crate::generation::{
-    Blueprint, LessonOutput, assemble_outline_pack, assemble_pack, build_blueprint_prompt,
-    generate_blueprint, generate_lesson, sample_base_files, validate_generated_pack,
+    Blueprint, assemble_outline_pack, build_blueprint_prompt, generate_blueprint,
+    sample_base_files,
 };
-use crate::models::{CourseGenerationMode, GenerateCourseRequest};
+use crate::models::GenerateCourseRequest;
 use crate::service::LearningService;
 
 /// Background driver for persistent course-generation jobs. Every job is one
@@ -50,7 +50,7 @@ impl GenerationJobRunner {
     /// cancelled while queued never starts.
     pub(crate) async fn claim_and_spawn(&self, job_id: &str) -> Result<bool, AppError> {
         let claimed = sqlx::query(
-            "UPDATE learning_course_jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' WHEN samples_json IS NULL THEN 'sampling' WHEN blueprint_json IS NULL THEN 'blueprint' WHEN generation_mode = 'on_demand' THEN 'importing' ELSE 'lessons' END, cancel_requested = 0, error = NULL, updated_at = ? WHERE job_id = ? AND status IN ('queued', 'interrupted', 'cancelled', 'failed')",
+            "UPDATE learning_course_jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' WHEN samples_json IS NULL THEN 'sampling' WHEN blueprint_json IS NULL THEN 'blueprint' ELSE 'importing' END, cancel_requested = 0, error = NULL, updated_at = ? WHERE job_id = ? AND status IN ('queued', 'interrupted', 'cancelled', 'failed')",
         )
         .bind(now_ms())
         .bind(job_id)
@@ -93,8 +93,6 @@ struct JobRow {
     request_json: String,
     samples_json: Option<String>,
     blueprint_json: Option<String>,
-    lesson_outputs_json: Option<String>,
-    total_lessons: i64,
 }
 
 /// Drive one claimed job through its pipeline. Cancel is checked at stage
@@ -118,7 +116,6 @@ async fn run_job(
             "blueprint" => {
                 run_blueprint(pool, knowledge_service, completer, job_id, &row).await?
             }
-            "lessons" => run_lessons(pool, completer, job_id, &row).await?,
             "importing" => {
                 run_importing(pool, service, job_id, &row).await?;
                 return Ok(());
@@ -186,13 +183,9 @@ async fn run_blueprint(
         .map(|module| module.lessons.len() as i64)
         .sum();
     let blueprint_json = serde_json::to_string(&blueprint).map_err(internal)?;
-    // On-demand mode imports the outline right after the blueprint; full mode
-    // continues into the per-lesson document stage.
-    let next_status = if request.mode == CourseGenerationMode::OnDemand {
-        "importing"
-    } else {
-        "lessons"
-    };
+    // The outline is imported right after the blueprint; each lesson's body
+    // is generated on demand when the learner opens it.
+    let next_status = "importing";
     sqlx::query(
         "UPDATE learning_course_jobs SET blueprint_json = ?, total_lessons = ?, status = ?, updated_at = ? WHERE job_id = ?",
     )
@@ -207,101 +200,6 @@ async fn run_blueprint(
     Ok(())
 }
 
-async fn run_lessons(
-    pool: &SqlitePool,
-    completer: &dyn LearningCompleter,
-    job_id: &str,
-    row: &JobRow,
-) -> Result<(), AppError> {
-    let request = parse_request(&row.request_json)?;
-    let samples: Vec<(String, String)> = parse_snapshot("samples", row.samples_json.as_deref())?;
-    let blueprint: Blueprint = parse_snapshot("blueprint", row.blueprint_json.as_deref())?;
-    let mut outputs: Vec<LessonOutput> = match row.lesson_outputs_json.as_deref() {
-        Some(json) => serde_json::from_str(json).map_err(internal)?,
-        None => Vec::new(),
-    };
-    let total_lessons = row.total_lessons as usize;
-    if outputs.len() >= total_lessons {
-        // Every lesson is already persisted; only the import stage is pending
-        // (e.g. the process exited right after the last lesson write).
-        sqlx::query(
-            "UPDATE learning_course_jobs SET status = 'importing', updated_at = ? WHERE job_id = ?",
-        )
-        .bind(now_ms())
-        .bind(job_id)
-        .execute(pool)
-        .await
-        .map_err(internal)?;
-        return Ok(());
-    }
-    let (module_index, lesson_index) = cursor_position(&blueprint, outputs.len());
-    let module = &blueprint.modules[module_index];
-    let lesson = &module.lessons[lesson_index];
-    let excerpt = lesson
-        .source
-        .as_ref()
-        .and_then(|source| {
-            samples
-                .iter()
-                .find(|(path, _)| path == &source.path)
-                .map(|(_, excerpt)| excerpt.as_str())
-        })
-        .unwrap_or_default();
-    let next_lesson_title = module
-        .lessons
-        .get(lesson_index + 1)
-        .map(|next| next.title.as_str());
-    let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
-    let output = generate_lesson(
-        completer,
-        model_override,
-        &blueprint,
-        module,
-        lesson,
-        module_index,
-        lesson_index,
-        total_lessons,
-        next_lesson_title,
-        excerpt,
-    )
-    .await
-    .map_err(|error| {
-        AppError::UnprocessableEntity(format!(
-            "lesson \"{}\" failed to generate: {error}",
-            lesson.title
-        ))
-    })?;
-    outputs.push(output);
-    let outputs_json = serde_json::to_string(&outputs).map_err(internal)?;
-    sqlx::query(
-        "UPDATE learning_course_jobs SET lesson_outputs_json = ?, current_module = ?, current_lesson = ?, updated_at = ? WHERE job_id = ?",
-    )
-    .bind(&outputs_json)
-    .bind((module_index + 1) as i64)
-    .bind(outputs.len() as i64)
-    .bind(now_ms())
-    .bind(job_id)
-    .execute(pool)
-    .await
-    .map_err(internal)?;
-    Ok(())
-}
-
-/// Map the number of completed lessons to blueprint coordinates. The lesson
-/// outputs array is appended strictly in blueprint order, so the cursor is
-/// derivable from its length alone; the persisted `current_module` /
-/// `current_lesson` columns are a display projection of the same cursor.
-fn cursor_position(blueprint: &Blueprint, completed: usize) -> (usize, usize) {
-    let mut remaining = completed;
-    for (module_index, module) in blueprint.modules.iter().enumerate() {
-        if remaining < module.lessons.len() {
-            return (module_index, remaining);
-        }
-        remaining -= module.lessons.len();
-    }
-    (blueprint.modules.len().saturating_sub(1), 0)
-}
-
 async fn run_importing(
     pool: &SqlitePool,
     service: &LearningService,
@@ -311,25 +209,17 @@ async fn run_importing(
     let request = parse_request(&row.request_json)?;
     let samples: Vec<(String, String)> = parse_snapshot("samples", row.samples_json.as_deref())?;
     let blueprint: Blueprint = parse_snapshot("blueprint", row.blueprint_json.as_deref())?;
-    let detail = if request.mode == CourseGenerationMode::OnDemand {
-        let pack = assemble_outline_pack(&blueprint, &request);
-        crate::service::validate_pack(&pack).map_err(|error| {
-            AppError::UnprocessableEntity(format!(
-                "model did not return a valid course outline: {error}"
-            ))
-        })?;
-        let blueprint_json = serde_json::to_string(&blueprint).map_err(internal)?;
-        let samples_json = serde_json::to_string(&samples).map_err(internal)?;
-        service.import_course_outline(pack, blueprint_json, samples_json).await?
-    } else {
-        let outputs: Vec<LessonOutput> =
-            parse_snapshot("lesson outputs", row.lesson_outputs_json.as_deref())?;
-        let pack = assemble_pack(blueprint, outputs, &request);
-        validate_generated_pack(&pack, &samples).map_err(|error| {
-            AppError::UnprocessableEntity(format!("model did not return a valid course pack: {error}"))
-        })?;
-        service.import_course(pack).await?
-    };
+    let pack = assemble_outline_pack(&blueprint, &request);
+    crate::service::validate_pack(&pack).map_err(|error| {
+        AppError::UnprocessableEntity(format!(
+            "model did not return a valid course outline: {error}"
+        ))
+    })?;
+    let blueprint_json = serde_json::to_string(&blueprint).map_err(internal)?;
+    let samples_json = serde_json::to_string(&samples).map_err(internal)?;
+    let detail = service
+        .import_course_outline(pack, blueprint_json, samples_json)
+        .await?;
     sqlx::query(
         "UPDATE learning_course_jobs SET course_id = ?, status = 'completed', updated_at = ? WHERE job_id = ?",
     )
@@ -344,7 +234,7 @@ async fn run_importing(
 
 async fn fetch_job(pool: &SqlitePool, job_id: &str) -> Result<JobRow, AppError> {
     let row = sqlx::query(
-        "SELECT status, cancel_requested, request_json, samples_json, blueprint_json, lesson_outputs_json, total_lessons FROM learning_course_jobs WHERE job_id = ?",
+        "SELECT status, cancel_requested, request_json, samples_json, blueprint_json FROM learning_course_jobs WHERE job_id = ?",
     )
     .bind(job_id)
     .fetch_one(pool)
@@ -356,8 +246,6 @@ async fn fetch_job(pool: &SqlitePool, job_id: &str) -> Result<JobRow, AppError> 
         request_json: row.try_get("request_json").map_err(internal)?,
         samples_json: row.try_get("samples_json").map_err(internal)?,
         blueprint_json: row.try_get("blueprint_json").map_err(internal)?,
-        lesson_outputs_json: row.try_get("lesson_outputs_json").map_err(internal)?,
-        total_lessons: row.try_get("total_lessons").map_err(internal)?,
     })
 }
 
