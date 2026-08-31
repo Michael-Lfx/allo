@@ -8,6 +8,7 @@ import {
   findShotVideoPaths,
   findStoryboardPath,
   findStoryboardPaths,
+  mergeStoryboardsWithoutGrowth,
   parseShotGenerationSpec,
   parseStoryboard,
   patchShotDescriptionsInArtifact,
@@ -190,6 +191,48 @@ describe('video artifact presentation', () => {
   test('does not invent a storyboard when backend JSON is invalid', () => {
     expect(parseStoryboard('{not-json')).toEqual([]);
     expect(buildStoryboardScenes([], [], undefined)).toEqual([]);
+  });
+
+  test('packed beats still count as one storyboard row', () => {
+    const shots = parseStoryboard(
+      JSON.stringify([
+        {
+          idx: 0,
+          visual_desc: '',
+          beats: [
+            { visual_desc: '男生在画面左侧刹车', cam_idx: 0 },
+            { visual_desc: '反打女生捡书', cam_idx: 1 },
+          ],
+        },
+      ])
+    );
+    expect(shots).toHaveLength(1);
+    expect(shots[0]?.index).toBe(0);
+    expect(shots[0]?.visualDescription).toContain('男生在画面左侧刹车');
+    expect(shots[0]?.visualDescription).toContain('反打女生捡书');
+  });
+
+  test('does not grow a loaded storyboard when a later fetch adds a last shot', () => {
+    const previous = [
+      {
+        path: 'script2video/storyboard.json',
+        shots: [{ index: 0, visualDescription: 'Opening' }, { index: 1, visualDescription: 'Turn' }],
+      },
+    ];
+    const incoming = [
+      {
+        path: 'script2video/storyboard.json',
+        shots: [
+          { index: 0, visualDescription: 'Opening updated' },
+          { index: 1, visualDescription: 'Turn' },
+          { index: 2, visualDescription: 'Phantom last shot' },
+        ],
+      },
+    ];
+    const merged = mergeStoryboardsWithoutGrowth(previous, incoming);
+    expect(merged[0]?.shots).toHaveLength(2);
+    expect(merged[0]?.shots.map((shot) => shot.index)).toEqual([0, 1]);
+    expect(merged[0]?.shots[0]?.visualDescription).toBe('Opening updated');
   });
 
   test('does not add a phantom shot from leftover media once the storyboard loaded', () => {
