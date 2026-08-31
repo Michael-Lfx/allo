@@ -423,9 +423,6 @@ const Main = () => {
 };
 
 const App = HOC.Wrapper(Config)(Main);
-
-void registerPwa();
-
 const root = createRoot(document.getElementById('root')!);
 const isButtonLayoutProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout';
 const isErrorSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/error-surface';
@@ -435,24 +432,36 @@ const isSupportSurfaceProbe = import.meta.env.DEV && window.location.hash.split(
 // still use this real renderer entry and global Arco styles, but must be able
 // to report layout before an unauthenticated session is ready. The exact hash
 // guards prevent these probes from becoming product bypasses.
-root.render(
-  isButtonLayoutProbe ? (
-    <React.Suspense fallback={<AppLoader />}>
-      <ButtonLayoutProbe />
-    </React.Suspense>
-  ) : isErrorSurfaceProbe ? (
-    <React.Suspense fallback={<AppLoader />}>
-      <ErrorSurfaceProbe />
-    </React.Suspense>
-  ) : isSupportSurfaceProbe ? (
-    <React.Suspense fallback={<AppLoader />}>
-      <SupportSurfaceProbe />
-    </React.Suspense>
-  ) : (
-    <RouteErrorBoundary scope='application'>
-      <AppProviders>
-        <App />
-      </AppProviders>
-    </RouteErrorBoundary>
-  )
-);
+const renderApp = () => {
+  root.render(
+    isButtonLayoutProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <ButtonLayoutProbe />
+      </React.Suspense>
+    ) : isErrorSurfaceProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <ErrorSurfaceProbe />
+      </React.Suspense>
+    ) : isSupportSurfaceProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <SupportSurfaceProbe />
+      </React.Suspense>
+    ) : (
+      <RouteErrorBoundary scope='application'>
+        <AppProviders>
+          <App />
+        </AppProviders>
+      </RouteErrorBoundary>
+    ),
+  );
+};
+
+// Wait for development/desktop service-worker cleanup before rendering the
+// route graph. Otherwise an old worker can intercept the first lazy module
+// request while the fresh Vite server is still starting.
+void registerPwa()
+  .catch((error) => {
+    // eslint-disable-next-line no-console
+    console.warn('[PWA] Failed to prepare the renderer:', error);
+  })
+  .finally(renderApp);

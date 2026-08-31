@@ -1,8 +1,10 @@
 
 
 import { isDesktopShell } from '@renderer/utils/platform';
+import { claimServiceWorkerCleanupReload } from './serviceWorkerRecovery';
 
 const SERVICE_WORKER_URL = './sw.js';
+const PWA_CACHE_PREFIX = 'nomifun-webui-';
 const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
 function serviceWorkerAvailable(): boolean {
@@ -53,10 +55,34 @@ async function purgeServiceWorkers(): Promise<void> {
   try {
     if (typeof caches !== 'undefined') {
       const keys = await caches.keys();
-      await Promise.all(keys.map((key) => caches.delete(key).catch((): false => false)));
+      await Promise.all(
+        keys
+          .filter((key) => key.startsWith(PWA_CACHE_PREFIX))
+          .map((key) => caches.delete(key).catch((): false => false)),
+      );
     }
   } catch {
     // best-effort cleanup
+  }
+}
+
+async function prepareServiceWorkerFreeRuntime(): Promise<void> {
+  const wasControlled = serviceWorkerAvailable() && Boolean(navigator.serviceWorker.controller);
+  await purgeServiceWorkers();
+
+  // Unregistering does not release the current document immediately. Reload
+  // once so stale SW script/module responses cannot survive into this render.
+  // The session-scoped claim prevents an unavailable/slow SW from causing a
+  // reload loop during startup.
+  if (!wasControlled || typeof window === 'undefined') return;
+  let storage: Pick<Storage, 'getItem' | 'setItem'> | undefined;
+  try {
+    storage = window.sessionStorage;
+  } catch {
+    storage = undefined;
+  }
+  if (claimServiceWorkerCleanupReload(storage, window.location.href)) {
+    window.location.reload();
   }
 }
 
@@ -67,14 +93,14 @@ export async function registerPwa(): Promise<ServiceWorkerRegistration | undefin
   // registration before starting a fresh Vite session and never register one
   // in dev mode.
   if (import.meta.env.DEV) {
-    await purgeServiceWorkers();
+    await prepareServiceWorkerFreeRuntime();
     return undefined;
   }
 
   // Desktop shell (Electron or Tauri): actively remove any pre-existing SW +
   // caches and never register one. See purgeServiceWorkers / the guard above.
   if (typeof window !== 'undefined' && isDesktopShell()) {
-    await purgeServiceWorkers();
+    await prepareServiceWorkerFreeRuntime();
     return undefined;
   }
 
