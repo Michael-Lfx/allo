@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.5 - 2026-08-31
+
+- Long Markdown blockquotes collapse; streaming layout and collapse controls stay stable.
+- Media catalog lists TTS models and rewrites relative catalog icons.
+- Vimax clip timelines follow model duration windows; narrative clips pack without phantom last shots.
+
 ## v1.1.4 - 2026-08-30
 
 - Seedance reference-to-video prompts are shorter and honor the user's aspect ratio.
