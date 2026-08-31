@@ -12,6 +12,10 @@ use crate::domain::WorkflowKind;
 use crate::error::{VimaxError, VimaxResult};
 use crate::progress::{RenderStatus, RunStatus};
 
+/// Sidecar under `{working_dir}/` so Agent session history + live credits survive
+/// process restart. Hidden from the artifact tree.
+pub const RUN_STATUS_FILENAME: &str = "run_status.json";
+
 pub mod action_assets;
 pub mod archive;
 pub mod cameo;
@@ -430,6 +434,23 @@ impl SessionIndex {
         Ok(path)
     }
 
+    fn run_status_path(&self, session_id: &str) -> VimaxResult<PathBuf> {
+        Ok(self.working_dir(session_id)?.join(RUN_STATUS_FILENAME))
+    }
+
+    /// Load the persisted pipeline log for a session (empty after first create).
+    pub fn load_run_status(&self, session_id: &str) -> Option<RenderStatus> {
+        let path = self.run_status_path(session_id).ok()?;
+        let raw = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// Atomically write the pipeline log next to session artifacts.
+    pub fn save_run_status(&self, session_id: &str, status: &RenderStatus) -> VimaxResult<()> {
+        let path = self.run_status_path(session_id)?;
+        atomic_write_json(&path, status)
+    }
+
     /// Artifact presence checklist (ViMax `SessionIndex.artifact_checklist`).
     pub fn artifact_checklist(&self, session_id: &str) -> VimaxResult<BTreeMap<String, bool>> {
         let root = self.working_dir(session_id)?;
@@ -684,6 +705,9 @@ fn walk_tree(root: &Path, dir: &Path) -> VimaxResult<Vec<ArtifactNode>> {
     for entry in read {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        if name == RUN_STATUS_FILENAME || name == "run_status.json.tmp" {
+            continue;
+        }
         let rel = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -833,6 +857,21 @@ pub fn apply_video_task_credits(
     record.billed_video_task_ids.push(task_id);
     record.credits_consumed = record.credits_consumed.saturating_add(credits);
     true
+}
+
+/// Credits on `video_poll` heartbeats are in-flight snapshots and must not hit
+/// the ledger — only the terminal `video_credits` event is authoritative.
+pub fn video_task_credit_delta(
+    stage: &str,
+    meta: Option<&Value>,
+) -> Option<(i64, i64)> {
+    if stage != "video_credits" {
+        return None;
+    }
+    let m = meta?;
+    let credits = m.get("credits_consumed")?.as_i64().filter(|c| *c > 0)?;
+    let task_id = m.get("task_id")?.as_i64().filter(|t| *t > 0)?;
+    Some((task_id, credits))
 }
 
 /// Convenience: empty metadata object for progress events.
@@ -1098,5 +1137,38 @@ mod import_export_tests {
         assert_eq!(record.credits_consumed, 6000);
         assert!(!apply_video_task_credits(&mut record, 12, 0));
         assert_eq!(record.credits_consumed, 6000);
+    }
+
+    #[test]
+    fn video_poll_heartbeats_do_not_enter_the_credit_ledger() {
+        let poll = serde_json::json!({"task_id": 10, "credits_consumed": 5200});
+        assert!(video_task_credit_delta("video_poll", Some(&poll)).is_none());
+        assert_eq!(
+            video_task_credit_delta("video_credits", Some(&poll)),
+            Some((10, 5200))
+        );
+    }
+
+    #[test]
+    fn run_status_sidecar_roundtrips_events_and_credits() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let record = index
+            .create(WorkflowKind::Script2Video, Some("t".into()))
+            .unwrap();
+        let mut status = RenderStatus::default();
+        status.status = RunStatus::Succeeded;
+        status.credits_consumed = 5200;
+        status.emit("extract_characters", "ok", None);
+        status.emit("character_portraits_done", "ok", None);
+        status.emit("planned", "ok", None);
+        index.save_run_status(&record.session_id, &status).unwrap();
+        let loaded = index.load_run_status(&record.session_id).unwrap();
+        assert_eq!(loaded.credits_consumed, 5200);
+        assert_eq!(loaded.events.len(), 3);
+        assert_eq!(loaded.events[0].stage, "extract_characters");
+        let tree = index.list_artifacts(&record.session_id).unwrap();
+        let names: Vec<_> = tree.iter().map(|n| n.name.as_str()).collect();
+        assert!(!names.contains(&RUN_STATUS_FILENAME));
     }
 }

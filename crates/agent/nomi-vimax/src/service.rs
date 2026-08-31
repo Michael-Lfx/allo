@@ -20,7 +20,7 @@ use crate::pipelines::{
 use crate::progress::{INTERRUPTED_SUMMARY, RenderStatus, RunStatus};
 use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
-    apply_status_to_record, apply_video_task_credits, cameo,
+    apply_status_to_record, apply_video_task_credits, cameo, video_task_credit_delta,
 };
 use crate::skills::{SkillCatalog, VerticalSkillDraft, VerticalSkillSummary};
 
@@ -33,6 +33,42 @@ fn first_nonempty<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> 
         }
     }
     String::new()
+}
+
+fn live_status<'a>(
+    index: &SessionIndex,
+    map: &'a mut HashMap<String, RenderStatus>,
+    id: &str,
+) -> &'a mut RenderStatus {
+    map.entry(id.to_string())
+        .or_insert_with(|| index.load_run_status(id).unwrap_or_default())
+}
+
+fn persist_run_status(index: &SessionIndex, id: &str, st: &RenderStatus) {
+    if let Err(e) = index.save_run_status(id, st) {
+        tracing::warn!(
+            session_id = %id,
+            error = %e,
+            "failed to persist vimax run status"
+        );
+    }
+}
+
+fn overlay_session_record(
+    out: &mut RenderStatus,
+    record: &SessionRecord,
+    working_abs: Option<String>,
+) {
+    out.working_dir_abs = working_abs.or(out.working_dir_abs.take());
+    if out.cover.is_none() {
+        out.cover = record.cover.clone();
+    }
+    if out.final_video.is_none() {
+        out.final_video = record.final_video.clone();
+    }
+    if record.credits_consumed > out.credits_consumed {
+        out.credits_consumed = record.credits_consumed;
+    }
 }
 
 /// Prefer `Interrupted` when shutdown already paused the session; else user cancel.
@@ -128,6 +164,7 @@ impl VimaxService {
                 st.message = INTERRUPTED_SUMMARY.into();
                 st.error = None;
                 st.emit_terminal("interrupted", INTERRUPTED_SUMMARY);
+                persist_run_status(&self.index, id, st);
                 ids.insert(id.clone());
             }
         }
@@ -261,40 +298,40 @@ impl VimaxService {
             .working_dir(id)
             .ok()
             .map(|p| p.to_string_lossy().replace('\\', "/"));
-        let map = self
+        let mut map = self
             .statuses
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some(s) = map.get(id) {
-            let mut out = s.clone();
-            out.working_dir_abs = working_abs.or(out.working_dir_abs);
-            if out.cover.is_none() {
-                out.cover = record.cover.clone();
-            }
-            if out.final_video.is_none() {
-                out.final_video = record.final_video.clone();
-            }
-            // Prefer live ledger; fall back to persisted session total.
-            if out.credits_consumed <= 0 {
-                out.credits_consumed = record.credits_consumed;
-            } else if record.credits_consumed > out.credits_consumed {
-                out.credits_consumed = record.credits_consumed;
-            }
-            return Ok(out);
+        let st = live_status(&self.index, &mut map, id);
+        overlay_session_record(st, &record, working_abs.clone());
+        if st.stage.is_empty() {
+            st.stage = record.stage.clone();
         }
-        Ok(RenderStatus {
-            status: record.status,
-            stage: record.stage,
-            message: record.summary,
-            progress: 0.0,
-            error: None,
-            final_video: record.final_video,
-            cover: record.cover,
-            credits_consumed: record.credits_consumed,
-            working_dir_abs: working_abs,
-            updated_at: record.updated_at,
-            events: vec![],
-        })
+        if st.message.is_empty() {
+            st.message = record.summary.clone();
+        }
+        if st.status == RunStatus::Idle && record.status != RunStatus::Idle {
+            st.status = record.status;
+        }
+        if !record.status.is_active() && st.status.is_active() {
+            st.status = record.status;
+            if st.message.is_empty() {
+                st.message = record.summary.clone();
+            }
+            let terminal = record.status.as_str();
+            if !st.events.iter().any(|e| e.stage == terminal) {
+                st.emit_terminal(terminal, &st.message.clone());
+            }
+            persist_run_status(&self.index, id, st);
+        }
+        if st.events.is_empty() && st.status == RunStatus::Idle {
+            // Keep disk-less completed sessions honest about stage/credits.
+            st.status = record.status;
+            st.stage = record.stage.clone();
+            st.message = record.summary.clone();
+            st.updated_at = record.updated_at.clone();
+        }
+        Ok(st.clone())
     }
 
     pub async fn cancel(self: &Arc<Self>, id: &str) -> VimaxResult<()> {
@@ -306,12 +343,13 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let status = map.entry(id.to_string()).or_default();
+            let status = live_status(&self.index, &mut map, id);
             status.status = RunStatus::Cancelled;
             status.message = "cancelled".into();
             // Keep the last working pipeline stage so "continue from checkpoint"
             // can resume plan vs render correctly.
             status.emit_terminal("cancelled", "cancelled");
+            persist_run_status(&self.index, id, status);
         }
         let _ = self.index.update_fields(id, |r| {
             r.status = RunStatus::Cancelled;
@@ -811,7 +849,7 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.to_string()).or_default();
+            let st = live_status(&self.index, &mut map, id);
             st.status = status;
             st.stage = status.as_str().into();
             st.message = message.into();
@@ -822,6 +860,7 @@ impl VimaxService {
                 st.credits_consumed = prior_credits;
             }
             st.emit(status.as_str(), message, None);
+            persist_run_status(&self.index, id, st);
         }
         self.index.update_fields(id, |r| {
             r.status = status;
@@ -843,7 +882,7 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.to_string()).or_default();
+            let st = live_status(&self.index, &mut map, id);
             match result {
                 Ok(()) => {
                     if token.is_cancelled() {
@@ -893,6 +932,7 @@ impl VimaxService {
             let _ = self.index.update_fields(id, |r| {
                 apply_status_to_record(r, st);
             });
+            persist_run_status(&self.index, id, st);
         }
         self.cancels.lock().await.remove(id);
     }
@@ -1229,9 +1269,10 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.to_string()).or_default();
+            let st = live_status(&self.index, &mut map, id);
             st.progress = 100.0;
             st.emit("planned", "规划完成，可以开始渲染", None);
+            persist_run_status(&self.index, id, st);
         }
         tracing::info!(
             phase = "plan_total",
@@ -1254,6 +1295,7 @@ impl VimaxService {
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(st) = map.get_mut(id) {
                 st.cover = Some(c);
+                persist_run_status(&self.index, id, st);
             }
         }
         Ok(())
@@ -1360,7 +1402,7 @@ impl VimaxService {
                 .statuses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.to_string()).or_default();
+            let st = live_status(&self.index, &mut map, id);
             st.final_video = Some(rel.clone());
             if let Some(c) = &cover_rel {
                 st.cover = Some(c.clone());
@@ -1369,6 +1411,7 @@ impl VimaxService {
             st.status = RunStatus::Succeeded;
             st.message = "render complete".into();
             st.emit("render_done", "render complete", None);
+            persist_run_status(&self.index, id, st);
         }
         let _ = self.index.update_fields(id, |r| {
             r.final_video = Some(rel);
@@ -1474,26 +1517,19 @@ fn resolve_fps_for_session(record: &SessionRecord, media: &nomi_config::MediaGen
 fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::ProgressCallback {
     let id = id.to_string();
     Arc::new(move |stage, message, meta| {
-        let credit_delta = meta.as_ref().and_then(|m| {
-            let credits = m.get("credits_consumed")?.as_i64().filter(|c| *c > 0)?;
-            let task_id = m.get("task_id")?.as_i64().filter(|t| *t > 0)?;
-            Some((task_id, credits))
-        });
+        let credit_delta = video_task_credit_delta(stage, meta.as_ref());
 
         let mut session_total: Option<i64> = None;
         if let Some((task_id, credits)) = credit_delta {
             let _ = svc.index.update_fields(&id, |r| {
-                if apply_video_task_credits(r, task_id, credits) {
-                    session_total = Some(r.credits_consumed);
-                } else {
-                    session_total = Some(r.credits_consumed);
-                }
+                let _ = apply_video_task_credits(r, task_id, credits);
+                session_total = Some(r.credits_consumed);
             });
         }
 
         {
             let mut map = svc.statuses.lock().unwrap_or_else(|e| e.into_inner());
-            let st = map.entry(id.clone()).or_default();
+            let st = live_status(&svc.index, &mut map, &id);
             if let Some(pct) = meta
                 .as_ref()
                 .and_then(|m| m.get("progress"))
@@ -1505,6 +1541,9 @@ fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::Progr
                 st.credits_consumed = total;
             }
             st.emit(stage, message, meta.clone());
+            if stage != "video_poll" || session_total.is_some() {
+                persist_run_status(&svc.index, &id, st);
+            }
         }
         let _ = svc.index.update_fields(&id, |r| {
             r.stage = stage.to_string();

@@ -58,6 +58,58 @@ pub fn resolve_visual_style(user_style: &str) -> String {
     }
 }
 
+/// Style line for three-view identity sheets: keep the look, drop filler that
+/// is not about *this* person (generic "designed characters", healthy-skin
+/// boilerplate, topology-mesh overlays).
+pub fn style_for_three_view_image(user_style: &str) -> String {
+    let mut s = resolve_visual_style(user_style);
+    const DROP: &[&str] = &[
+        "believable designed characters",
+        "expressive designed characters",
+        "designed characters",
+        "clean healthy facial skin with clear readable features",
+        "clean healthy facial skin with clear features",
+        "clean healthy facial skin",
+        "blue topology mesh",
+        "topology mesh",
+    ];
+    for phrase in DROP {
+        s = strip_ascii_ci(&s, phrase);
+    }
+    tidy_comma_list(&s)
+}
+
+fn strip_ascii_ci(hay: &str, needle: &str) -> String {
+    let n = needle.to_ascii_lowercase();
+    if n.is_empty() {
+        return hay.to_string();
+    }
+    let mut remaining = hay;
+    let mut out = String::with_capacity(hay.len());
+    loop {
+        let lower = remaining.to_ascii_lowercase();
+        match lower.find(&n) {
+            None => {
+                out.push_str(remaining);
+                break;
+            }
+            Some(pos) => {
+                out.push_str(&remaining[..pos]);
+                remaining = &remaining[pos + needle.len()..];
+            }
+        }
+    }
+    out
+}
+
+fn tidy_comma_list(s: &str) -> String {
+    s.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// True when the user asked for anime / animation / cartoon / illustration (non-photoreal).
 /// Used so cast/safety locks do NOT force cinematic/live-action look over the user's choice.
 ///
@@ -1757,6 +1809,26 @@ mod tests {
         assert!(lower.contains("cinematic") || lower.contains("film"));
         assert!(lower.contains("clean") || lower.contains("clear") || lower.contains("healthy"));
         assert!(!lower.contains("anime"));
+    }
+
+    #[test]
+    fn three_view_style_drops_identity_irrelevant_filler() {
+        let s = style_for_three_view_image("");
+        let lower = s.to_ascii_lowercase();
+        assert!(lower.contains("cinematic") || lower.contains("film"));
+        assert!(lower.contains("wardrobe") || lower.contains("lighting"));
+        assert!(!lower.contains("designed characters"));
+        assert!(!lower.contains("character"));
+        assert!(!lower.contains("clean healthy facial skin"));
+        assert!(!lower.contains("topology"));
+        let custom = style_for_three_view_image(
+            "rainy neon alley, believable designed characters, clean healthy facial skin with clear readable features, wet asphalt",
+        );
+        let custom_l = custom.to_ascii_lowercase();
+        assert!(custom_l.contains("rainy neon alley"));
+        assert!(custom_l.contains("wet asphalt"));
+        assert!(!custom_l.contains("designed characters"));
+        assert!(!custom_l.contains("clean healthy facial skin"));
     }
 
     #[test]

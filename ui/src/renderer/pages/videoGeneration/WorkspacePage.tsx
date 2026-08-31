@@ -3,16 +3,10 @@
 /**
  * VideoGeneration workspace (`/video-generation/:sessionId`).
  *
- * Sections (one job each):
- * 1. Header — title + locked workflow badge + status
- * 2. User-action panels — plan / render CTA / action assets
- * 3. Active status (Planning / Rendering)
- * 4. Storyboard — inline shot revise + filmstrip
- * 5. Final video player when done
- * 6. Source / model settings (collapsed after planning)
- * 7. Technical artifacts — tree + editable preview (bottom)
+ * Layout: sticky header + scrolling artifact column + docked Agent session.
+ * Pipeline actions (plan / render / cancel / continue) live in the session composer.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -23,7 +17,7 @@ import {
   Spin,
   Tag,
 } from '@arco-design/web-react';
-import { ArrowLeft, Delete, Export, Eyes, FolderOpen, Play, Refresh, Share, VideoOne, Cube } from '@icon-park/react';
+import { ArrowLeft, Delete, Export, FolderOpen, Refresh, Share, VideoOne, Cube, Robot } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -58,11 +52,9 @@ import ArtifactTree from './components/ArtifactTree';
 import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
-import ProgressTimeline from './components/ProgressTimeline';
 import VideoQualityPickers from './components/VideoQualityPickers';
 import { normalizeWorkflow, isActionImitationWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
 import StoryboardBoard from './components/StoryboardBoard';
-import StudioStageRail from './components/StudioStageRail';
 import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceActionAssets from './components/WorkspaceActionAssets';
 import WorkspaceCameoStrip from './components/WorkspaceCameoStrip';
@@ -73,7 +65,6 @@ import {
   patchShotDescriptionsInArtifact,
   patchShotGenerationSpecInArtifact,
 } from './artifactPresentation';
-import { progressStatusText } from './stageI18n';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
@@ -91,6 +82,7 @@ import {
   rememberVideoGenerationSession,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
+import { resolveSessionCreditsConsumed } from './sessionCredits';
 import { shouldContinueAsRender } from './continueMode';
 import {
   getRunStatusSnapshot,
@@ -99,6 +91,14 @@ import {
   useRunStatusFlags,
   useRunStatusFull,
 } from './useRunStatusFeed';
+import StudioAgentSession from './studioAgentSession/StudioAgentSession';
+import {
+  computeStudioSessionWidth,
+  loadStudioSessionCollapsed,
+  loadStudioSessionWidthRatio,
+  saveStudioSessionCollapsed,
+  saveStudioSessionWidthRatio,
+} from './studioAgentSession/sessionPanelStorage';
 import { clampDuration } from './durationBounds';
 import styles from './index.module.css';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
@@ -125,20 +125,6 @@ function sourceFieldForWorkflow(workflow: VimaxWorkflow | string): 'idea' | 'scr
       return 'idea';
   }
 }
-
-/** Live stage/message line — the only header piece tracking every poll tick. */
-const RunProgressLine: React.FC<{ fallbackStage?: string | null }> = ({ fallbackStage }) => {
-  const { t } = useTranslation();
-  const runStatus = useRunStatusFull();
-  return (
-    <>
-      {progressStatusText(runStatus?.stage ?? fallbackStage, runStatus?.message, t) ||
-        t('videoGeneration.workspace.workflowLocked', {
-          defaultValue: '工作流在创建后已锁定，不可更改。',
-        })}
-    </>
-  );
-};
 
 const WorkspacePage: React.FC = () => {
   const { sessionId = '' } = useParams<{ sessionId: string }>();
@@ -208,6 +194,38 @@ const WorkspacePage: React.FC = () => {
   const [actionAssetsReady, setActionAssetsReady] = useState(false);
   /** Bump so WorkspaceCameoStrip re-lists after plan / artifact changes. */
   const [cameoRefreshToken, setCameoRefreshToken] = useState(0);
+  const [focusSceneId, setFocusSceneId] = useState<string | null>(null);
+  const studioShellRef = useRef<HTMLDivElement>(null);
+  const [studioShellWidth, setStudioShellWidth] = useState(1280);
+  const [sessionRatio, setSessionRatio] = useState(loadStudioSessionWidthRatio);
+  const [sessionCollapsed, setSessionCollapsed] = useState(loadStudioSessionCollapsed);
+  const sessionWidth = computeStudioSessionWidth(studioShellWidth, sessionRatio);
+
+  useLayoutEffect(() => {
+    const node = studioShellRef.current;
+    if (!node) return;
+    const apply = () => {
+      const next = node.getBoundingClientRect().width;
+      if (next > 0) setStudioShellWidth(next);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [sessionId, loading]);
+
+  const handleSessionWidthChange = useCallback((next: number) => {
+    setSessionRatio((prev) => {
+      const ratio = studioShellWidth > 0 ? next / studioShellWidth : prev;
+      saveStudioSessionWidthRatio(ratio);
+      return ratio;
+    });
+  }, [studioShellWidth]);
+
+  const handleSessionCollapsedChange = useCallback((next: boolean) => {
+    setSessionCollapsed(next);
+    saveStudioSessionCollapsed(next);
+  }, []);
 
   const launchState = (location.state as WorkspaceLaunchState | null) ?? null;
   const launchDraft = launchState?.launchDraft;
@@ -405,7 +423,7 @@ const WorkspacePage: React.FC = () => {
   }, [sessionId]);
 
   // Toast only on an active→failed transition so revisiting an old failed job
-  // does not re-spam; ProgressTimeline still shows the credits panel either way.
+  // does not re-spam; the agent session still shows the credits failure either way.
   useEffect(() => {
     const prev = prevRunStatusRef.current;
     const next = statusFlags.status;
@@ -1144,11 +1162,10 @@ const WorkspacePage: React.FC = () => {
 
   const busy = statusFlags.busy || planning || rendering;
   const isAction = isActionImitationWorkflow(session?.workflow);
-  const videoCreditsConsumed = Math.max(
-    0,
-    statusFlags.creditsConsumed,
-    Number(session?.credits_consumed ?? 0) || 0
-  );
+  const videoCreditsConsumed = resolveSessionCreditsConsumed({
+    sessionCredits: session?.credits_consumed,
+    statusCredits: statusFlags.creditsConsumed,
+  });
   const hasStoryboard =
     !isAction &&
     (Boolean(findStoryboardPath(artifacts)) ||
@@ -1161,14 +1178,7 @@ const WorkspacePage: React.FC = () => {
     ? !busy && actionAssetsReady
     : !busy && (hasStoryboard || isFailed);
   /** Resume is only needed when continuing as plan (render button handles resume-as-render). */
-  const canContinue = isFailed && !busy && !continueAsRender;
   const currentStatus = liveStatus;
-  /** Plan finished (idle + `planned`) but the film is not rendered yet. */
-  const plannedIdle =
-    currentStatus === 'idle' &&
-    !statusFlags.hasFinalVideo &&
-    !session?.final_video &&
-    (statusFlags.stagePlanned || session?.stage === 'planned');
   const canPublishTvShow =
     !busy &&
     !publishing &&
@@ -1262,14 +1272,15 @@ const WorkspacePage: React.FC = () => {
 
   return (
     <div
+      ref={studioShellRef}
       className={[
         styles.studioPage,
-        'flex-1 min-h-0 size-full box-border overflow-y-auto',
-        isMobile ? 'px-12px py-12px' : 'px-16px py-20px md:px-32px md:py-24px',
+        styles.studioShell,
+        'flex-1 min-h-0 size-full box-border',
       ].join(' ')}
     >
       {messageHolder}
-      <div className='mx-auto flex w-full max-w-1180px box-border flex-col gap-14px'>
+      <header className={styles.studioHeader}>
         <div className='flex items-start justify-between gap-12px flex-wrap'>
           <div className='flex items-start gap-10px min-w-0'>
             <Button
@@ -1292,12 +1303,21 @@ const WorkspacePage: React.FC = () => {
                   {statusLabel(currentStatus, t)}
                 </Tag>
               </div>
-              <p className='m-0 mt-4px text-12px text-[var(--color-text-3)]'>
-                <RunProgressLine fallbackStage={session.stage} />
-              </p>
             </div>
           </div>
           <div className='flex items-center gap-8px shrink-0'>
+            {sessionCollapsed && !isMobile ? (
+              <Button
+                type='outline'
+                size='small'
+                onClick={() => handleSessionCollapsedChange(false)}
+              >
+                <span className='inline-flex items-center gap-4px'>
+                  <Robot theme='outline' size={14} fill='currentColor' />
+                  {t('videoGeneration.agentSession.expand', { defaultValue: '展开会话' })}
+                </span>
+              </Button>
+            ) : null}
             <Button
               type='outline'
               size='small'
@@ -1372,55 +1392,22 @@ const WorkspacePage: React.FC = () => {
             </Popconfirm>
           </div>
         </div>
+      </header>
 
-        <StudioStageRail
-          hasStoryboard={hasStoryboard}
-          hasFinalVideo={Boolean(finalBlobUrl)}
-          variant={isAction ? 'action' : 'film'}
-        />
-
+      <div className={styles.studioBody}>
+        <div className={styles.studioMain}>
+          <div className={styles.studioMainInner}>
         {isAction ? (
           <section className={`${styles.studioPanel} p-16px md:p-20px`}>
-            <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
-              <div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.actionTitle', { defaultValue: '上传素材，生成成片' })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.actionHint', {
-                    defaultValue: '一张角色图 + 一段参考视频。无需提示词，时长跟随参考视频。',
-                  })}
-                </p>
-              </div>
-              <div className='flex flex-wrap items-center gap-8px'>
-                {canContinue ? (
-                  <Button
-                    type='primary'
-                    status='warning'
-                    loading={rendering}
-                    onClick={() => void handleContinue()}
-                  >
-                    {t('videoGeneration.workspace.continue', { defaultValue: '从断点继续' })}
-                  </Button>
-                ) : null}
-                <Button
-                  type='primary'
-                  loading={rendering}
-                  disabled={!canRender || busy}
-                  onClick={() => void handleRender()}
-                >
-                  <span className='inline-flex items-center gap-7px'>
-                    <Play theme='outline' size={15} fill='currentColor' />
-                    {isFailed && continueAsRender
-                      ? t('videoGeneration.workspace.renderContinue', {
-                          defaultValue: '继续生成成片',
-                        })
-                      : t('videoGeneration.create.generateActionVideo', {
-                          defaultValue: '生成视频',
-                        })}
-                  </span>
-                </Button>
-              </div>
+            <div className='mb-14px'>
+              <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                {t('videoGeneration.studio.actionTitle', { defaultValue: '上传素材，生成成片' })}
+              </h2>
+              <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                {t('videoGeneration.studio.actionHint', {
+                  defaultValue: '一张角色图 + 一段参考视频。无需提示词，时长跟随参考视频。',
+                })}
+              </p>
             </div>
             <WorkspaceActionAssets
               sessionId={sessionId}
@@ -1450,31 +1437,15 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : !hasStoryboard ? (
           <section className={`${styles.studioPanel} p-16px md:p-20px`}>
-            <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
-              <div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.briefTitle', { defaultValue: '把故事交给 Flowy' })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.briefHint', {
-                    defaultValue: '生成的是可修改分镜，不会直接开始高成本渲染。',
-                  })}
-                </p>
-              </div>
-              <Button
-                type='primary'
-                loading={planning}
-                disabled={busy && !planning}
-                onClick={() => void handlePlan()}
-              >
-                {isFailed && !continueAsRender
-                  ? t('videoGeneration.workspace.planContinue', {
-                      defaultValue: '从断点继续规划',
-                    })
-                  : t('videoGeneration.create.generateStoryboard', {
-                      defaultValue: '生成分镜',
-                    })}
-              </Button>
+            <div className='mb-14px'>
+              <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                {t('videoGeneration.studio.briefTitle', { defaultValue: '把故事交给 Flowy' })}
+              </h2>
+              <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                {t('videoGeneration.studio.briefHint', {
+                  defaultValue: '生成的是可修改分镜，不会直接开始高成本渲染。',
+                })}
+              </p>
             </div>
             <label className='mb-6px block text-12px text-[var(--color-text-3)]'>{sourceLabel}</label>
             <TextArea
@@ -1571,87 +1542,6 @@ const WorkspacePage: React.FC = () => {
               </div>
             </details>
           </section>
-        ) : (
-          <section className={`${styles.studioPanel} ${styles.studioCtaPanel}`}>
-            {plannedIdle ? (
-              <div className='w-full rd-8px px-12px py-10px border border-solid border-[rgba(var(--primary-6),0.35)] bg-[rgba(var(--primary-6),0.06)]'>
-                <div className='flex items-center gap-6px text-13px font-600 text-[var(--color-text-1)]'>
-                  <Eyes theme='outline' size={15} className='text-[rgb(var(--primary-6))]' />
-                  {t('videoGeneration.studio.portraitReviewTitle', {
-                    defaultValue: '规划完成——渲染前可先审阅定妆图',
-                  })}
-                </div>
-                <div className='mt-2px text-12px leading-18px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.portraitReviewHint', {
-                    defaultValue:
-                      '规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在下方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。',
-                  })}
-                </div>
-              </div>
-            ) : null}
-            <div className={styles.studioCtaRow}>
-              <div className={styles.studioCtaCopy}>
-                <div className='text-14px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.renderTitle', { defaultValue: '分镜确认了吗？' })}
-                </div>
-                <div className='mt-3px text-12px leading-18px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.renderHint', {
-                    defaultValue: '渲染会生成关键帧、镜头视频并自动拼接成片。',
-                  })}
-                </div>
-              </div>
-              <div className={styles.studioCtaActions}>
-                {canContinue ? (
-                  <Button
-                    type='outline'
-                    loading={planning || rendering}
-                    onClick={() => void handleContinue()}
-                  >
-                    <span className='inline-flex items-center gap-7px'>
-                      <Refresh theme='outline' size={15} fill='currentColor' />
-                      {t('videoGeneration.workspace.continue', { defaultValue: '从断点继续' })}
-                    </span>
-                  </Button>
-                ) : null}
-                <Button
-                  type='primary'
-                  loading={rendering}
-                  disabled={!canRender || busy}
-                  onClick={() => void handleRender()}
-                >
-                  <span className='inline-flex items-center gap-7px'>
-                    {isFailed && continueAsRender ? (
-                      <Refresh theme='outline' size={15} fill='currentColor' />
-                    ) : (
-                      <Play theme='outline' size={15} fill='currentColor' />
-                    )}
-                    {isFailed && continueAsRender
-                      ? t('videoGeneration.workspace.renderContinue', {
-                          defaultValue: '从断点继续渲染',
-                        })
-                      : t('videoGeneration.studio.renderCta', { defaultValue: '生成成片' })}
-                  </span>
-                </Button>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {busy || isFailed ? (
-          <section
-            className={[
-              styles.studioPanel,
-              busy ? styles.progressGlow : '',
-              'p-16px',
-            ].join(' ')}
-          >
-            <ProgressTimeline
-              onCancel={() => void handleCancel()}
-              cancelling={cancelling}
-              models={models}
-              creditsConsumed={videoCreditsConsumed}
-            />
-          </section>
         ) : null}
 
         {!isAction && hasStoryboard ? (
@@ -1676,6 +1566,7 @@ const WorkspacePage: React.FC = () => {
               artifacts={artifacts}
               disabled={busy}
               revising={revising}
+              focusSceneId={focusSceneId}
               onSaveSceneDescriptions={handleSaveSceneDescriptions}
             />
           </section>
@@ -1837,6 +1728,40 @@ const WorkspacePage: React.FC = () => {
               />
             </div>
           </details>
+        ) : null}
+          </div>
+        </div>
+        {isMobile || !sessionCollapsed ? (
+          <StudioAgentSession
+            sessionId={sessionId}
+            artifacts={artifacts}
+            sourceText={sourceText}
+            hasStoryboard={hasStoryboard}
+            hasFinalVideo={Boolean(finalBlobUrl) || statusFlags.hasFinalVideo}
+            coverPath={statusFlags.coverPath || session.cover}
+            finalVideoPath={statusFlags.finalVideoPath || session.final_video}
+            isAction={isAction}
+            actionAssetsReady={actionAssetsReady}
+            canRender={canRender}
+            isFailed={Boolean(isFailed)}
+            busy={busy}
+            planning={planning}
+            rendering={rendering}
+            cancelling={cancelling}
+            creditsConsumed={videoCreditsConsumed}
+            models={models}
+            isMobile={isMobile}
+            collapsed={sessionCollapsed}
+            width={sessionWidth}
+            onCollapsedChange={handleSessionCollapsedChange}
+            onWidthChange={handleSessionWidthChange}
+            onPlan={() => void handlePlan()}
+            onRender={() => void handleRender()}
+            onCancel={() => void handleCancel()}
+            onContinue={handleContinue}
+            onFocusScene={setFocusSceneId}
+            onSelectArtifact={setSelectedPath}
+          />
         ) : null}
       </div>
     </div>
