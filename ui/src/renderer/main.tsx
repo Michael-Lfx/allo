@@ -77,7 +77,6 @@ import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
 import ButtonLayoutProbe from './pages/test/ButtonLayoutProbe';
 import ErrorSurfaceProbe from './pages/test/ErrorSurfaceProbe';
-import SupportSurfaceProbe from './pages/test/SupportSurfaceProbe';
 import { refreshDetectedAgentsIfStale } from './hooks/agent/useAgents';
 import { clearAvailableModelsCache } from './hooks/agent/useModelProviderList';
 import {
@@ -90,6 +89,7 @@ import { ConversationHistoryProvider } from './hooks/context/ConversationHistory
 import HOC from './utils/ui/HOC';
 
 void startProductTelemetry();
+const SupportSurfaceProbe = React.lazy(() => import('./pages/test/SupportSurfaceProbe'));
 
 const arcoLocales: Record<string, typeof enUS> = {
   'zh-CN': zhCN,
@@ -106,10 +106,16 @@ const AppProviders: React.FC<PropsWithChildren> = ({ children }) =>
       React.createElement(
         CreditsProvider,
         null,
+        // SupportChatProvider renders its modal siblings outside `children`,
+        // so ThemeProvider must wrap it for NomiModal's theme context.
         React.createElement(
-          SupportChatProvider,
-        null,
-        React.createElement(ThemeProvider, null, React.createElement(FeedbackProvider, null, children))
+          ThemeProvider,
+          null,
+          React.createElement(
+            SupportChatProvider,
+            null,
+            React.createElement(FeedbackProvider, null, children)
+          )
         )
       )
     )
@@ -431,11 +437,17 @@ const isSupportSurfaceProbe = import.meta.env.DEV && window.location.hash.split(
 // guards prevent these probes from becoming product bypasses.
 root.render(
   isButtonLayoutProbe ? (
-    <ButtonLayoutProbe />
+    <React.Suspense fallback={<AppLoader />}>
+      <ButtonLayoutProbe />
+    </React.Suspense>
   ) : isErrorSurfaceProbe ? (
-    <ErrorSurfaceProbe />
+    <React.Suspense fallback={<AppLoader />}>
+      <ErrorSurfaceProbe />
+    </React.Suspense>
   ) : isSupportSurfaceProbe ? (
-    <SupportSurfaceProbe />
+    <React.Suspense fallback={<AppLoader />}>
+      <SupportSurfaceProbe />
+    </React.Suspense>
   ) : (
     <RouteErrorBoundary scope='application'>
       <AppProviders>

@@ -7,7 +7,6 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,6 +17,7 @@ import {
 } from './run-dev-restart-signal.mjs';
 import { createSupervisor, waitForExit } from './run-dev-supervisor.mjs';
 import { createDevSessionLock } from './dev-session-lock.mjs';
+import { createViteHttpReadinessProbe } from './run-dev-vite-readiness.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VITE_ENTRY = join(ROOT, 'ui', 'node_modules', 'vite', 'bin', 'vite.js');
@@ -116,34 +116,16 @@ async function stopProcess(child, _reason) {
 
 const VITE_HOST = '127.0.0.1';
 const VITE_PORT = 5173;
-// Cold start on Windows commonly takes ~25s just to bind. The old 30s HTTP
-// probe also required GET / to finish in 1s, but the first index.html transform
-// of this SPA often exceeds that — so Vite printed "ready" and the supervisor
-// still killed it.
+// Cold start on Windows commonly takes ~25s just to bind. Probe the actual
+// HTTP document and one representative lazy route module before launching
+// Tauri; a TCP listener alone can still serve an incomplete module graph.
 const VITE_READY_TIMEOUT_MS = 120_000;
-
-function isViteListening() {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: VITE_HOST, port: VITE_PORT }, () => {
-      socket.end();
-      resolve(true);
-    });
-    socket.setTimeout(1_000);
-    socket.once('timeout', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.once('error', () => {
-      socket.destroy();
-      resolve(false);
-    });
-  });
-}
+const isViteReady = createViteHttpReadinessProbe({ host: VITE_HOST, port: VITE_PORT });
 
 async function waitForVite() {
   const deadline = Date.now() + VITE_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await isViteListening()) return;
+    if (await isViteReady()) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(

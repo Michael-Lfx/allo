@@ -2749,7 +2749,7 @@ fn main() -> std::process::ExitCode {
                     .dev_url
                     .as_ref()
                     .map(|url| url.to_string())
-                    .or_else(|| Some("http://localhost:5173".to_string()))
+                    .or_else(|| Some("http://127.0.0.1:5173".to_string()))
             } else {
                 None
             };

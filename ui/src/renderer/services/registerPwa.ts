@@ -61,6 +61,16 @@ async function purgeServiceWorkers(): Promise<void> {
 }
 
 export async function registerPwa(): Promise<ServiceWorkerRegistration | undefined> {
+  // A development service worker can keep an older module graph alive while
+  // Vite serves the current source tree. That mismatch is reported by the
+  // browser as a generic dynamic-import failure, so always remove a previous
+  // registration before starting a fresh Vite session and never register one
+  // in dev mode.
+  if (import.meta.env.DEV) {
+    await purgeServiceWorkers();
+    return undefined;
+  }
+
   // Desktop shell (Electron or Tauri): actively remove any pre-existing SW +
   // caches and never register one. See purgeServiceWorkers / the guard above.
   if (typeof window !== 'undefined' && isDesktopShell()) {

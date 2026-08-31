@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { captureException } from '@/renderer/utils/analytics/telemetry';
+import { claimDynamicImportReload, isDynamicImportFailure } from './routeErrorRecovery';
 
 interface RouteErrorBoundaryProps {
   children: React.ReactNode;
@@ -14,6 +15,7 @@ interface RouteErrorBoundaryProps {
 interface RouteErrorBoundaryState {
   error: Error | null;
   componentStack: string | null;
+  dynamicImportReloadExhausted: boolean;
 }
 
 /**
@@ -31,10 +33,14 @@ interface RouteErrorBoundaryState {
  * changes. `resetKey` therefore clears stale failures explicitly on navigation.
  */
 class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteErrorBoundaryState> {
-  state: RouteErrorBoundaryState = { error: null, componentStack: null };
+  state: RouteErrorBoundaryState = {
+    error: null,
+    componentStack: null,
+    dynamicImportReloadExhausted: false,
+  };
 
   static getDerivedStateFromError(error: Error): Partial<RouteErrorBoundaryState> {
-    return { error };
+    return { error, dynamicImportReloadExhausted: false };
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
@@ -52,18 +58,27 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
 
   componentDidUpdate(previousProps: RouteErrorBoundaryProps): void {
     if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
-      this.setState({ error: null, componentStack: null });
+      this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false });
     }
   }
 
-  private isDynamicImportFailure(): boolean {
-    return /Failed to fetch dynamically imported module|Importing a module script failed|dynamically imported module/i.test(
-      this.state.error?.message ?? ''
-    );
-  }
-
   private handleReset = (): void => {
-    this.setState({ error: null, componentStack: null });
+    if (isDynamicImportFailure(this.state.error)) {
+      let storage: Storage | undefined;
+      try {
+        storage = window.sessionStorage;
+      } catch {
+        storage = undefined;
+      }
+      const shouldReload = claimDynamicImportReload(storage, window.location.href);
+      if (shouldReload) {
+        this.handleApplicationReload();
+        return;
+      }
+      this.setState({ dynamicImportReloadExhausted: true });
+      return;
+    }
+    this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false });
   };
 
   private handleApplicationReload = (): void => {
@@ -71,10 +86,15 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
   };
 
   render(): React.ReactNode {
-    const { error, componentStack } = this.state;
+    const { error, componentStack, dynamicImportReloadExhausted } = this.state;
     if (!error) return this.props.children;
     const isApplicationFailure = this.props.scope === 'application';
-    const requiresReload = isApplicationFailure || this.isDynamicImportFailure();
+    const isDynamicImportError = isDynamicImportFailure(error);
+    const requiresApplicationReload = isApplicationFailure || isDynamicImportError;
+    const retryHandler =
+      isApplicationFailure || (isDynamicImportError && dynamicImportReloadExhausted)
+        ? this.handleApplicationReload
+        : this.handleReset;
 
     return (
       <div
@@ -95,7 +115,7 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
         <div style={{ fontSize: '15px', fontWeight: 700, color: '#ff6b6b', marginBottom: '12px' }}>
           {isApplicationFailure
             ? '应用渲染出错（已捕获，未显示空白窗口）'
-            : requiresReload
+            : requiresApplicationReload
               ? '页面资源加载失败（通常是更新后旧缓存），请重新加载应用'
               : '页面渲染出错（已被路由错误边界捕获，未影响其它页面）'}
         </div>
@@ -104,7 +124,7 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
         </div>
         <button
           type='button'
-          onClick={requiresReload ? this.handleApplicationReload : this.handleReset}
+          onClick={retryHandler}
           style={{
             marginBottom: '16px',
             padding: '4px 12px',
@@ -115,7 +135,7 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
             cursor: 'pointer',
           }}
         >
-          {requiresReload ? '重新加载应用' : '重试'}
+          {requiresApplicationReload ? '重新加载应用' : '重试'}
         </button>
         {error.stack ? (
           <>
