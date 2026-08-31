@@ -10,13 +10,23 @@
 
 use nomifun_cloud::{
     is_minimax_h3_model, normalize_minimax_h3_resolution, DEFAULT_MINIMAX_H3_RESOLUTION,
-    MINIMAX_H3_RESOLUTIONS,
+    MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS,
 };
+
+use crate::clip_bounds::ClipBounds;
 
 /// Resolutions offered in the Style & Model UI (subset filtered per model).
 pub const VIDEO_RESOLUTIONS: &[&str] = &["480p", "720p", "1080p"];
 pub const DEFAULT_VIDEO_RESOLUTION: &str = "720p";
 pub const DEFAULT_VIDEO_FPS: u32 = 24;
+
+/// Seedance 2.0 / 2.0-fast I2V accept 4–15s. ViMax bills from 5s so a short-drama
+/// beat still has room for a lead-in, the action, and a landing.
+const SEEDANCE_CLIP_BOUNDS: ClipBounds = ClipBounds::new(5, 15);
+
+/// MiniMax-H3 window, mirroring `nomifun_cloud::clamp_minimax_h3_duration`.
+const MINIMAX_H3_CLIP_BOUNDS: ClipBounds =
+    ClipBounds::new(MINIMAX_H3_DURATION_MIN, MINIMAX_H3_DURATION_MAX);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoModelCapabilities {
@@ -24,6 +34,8 @@ pub struct VideoModelCapabilities {
     pub fps_options: Vec<u32>,
     /// When true the UI should show fps but not allow changing it.
     pub fps_locked: bool,
+    /// Accepted duration window for one generated clip.
+    pub clip: ClipBounds,
 }
 
 fn model_blob(model: &str) -> String {
@@ -39,13 +51,29 @@ fn is_seedance_fast_or_mini(model: &str) -> bool {
     b.contains("seedance") && (b.contains("fast") || b.contains("mini"))
 }
 
+/// Accepted single-clip duration window for a Flowy video model id or display name.
+///
+/// Unknown ids fall back to [`ClipBounds::DEFAULT`], which every integrated model
+/// accepts — an unrecognized model can never be asked for an out-of-range clip.
+pub fn clip_bounds_for_model(model: &str) -> ClipBounds {
+    if is_minimax_h3_model(model) {
+        MINIMAX_H3_CLIP_BOUNDS
+    } else if is_seedance(model) {
+        SEEDANCE_CLIP_BOUNDS
+    } else {
+        ClipBounds::DEFAULT
+    }
+}
+
 /// Capability set for a Flowy video model id or display name.
 pub fn video_model_capabilities(model: &str) -> VideoModelCapabilities {
+    let clip = clip_bounds_for_model(model);
     if is_minimax_h3_model(model) {
         return VideoModelCapabilities {
             resolutions: MINIMAX_H3_RESOLUTIONS.to_vec(),
             fps_options: vec![DEFAULT_VIDEO_FPS],
             fps_locked: true,
+            clip,
         };
     }
     if is_seedance_fast_or_mini(model) {
@@ -53,6 +81,7 @@ pub fn video_model_capabilities(model: &str) -> VideoModelCapabilities {
             resolutions: vec!["480p", "720p"],
             fps_options: vec![DEFAULT_VIDEO_FPS],
             fps_locked: true,
+            clip,
         };
     }
     if is_seedance(model) {
@@ -60,6 +89,7 @@ pub fn video_model_capabilities(model: &str) -> VideoModelCapabilities {
             resolutions: vec!["480p", "720p", "1080p"],
             fps_options: vec![DEFAULT_VIDEO_FPS],
             fps_locked: true,
+            clip,
         };
     }
     // Unknown models: expose the common tier; fps stays cinematic 24 until a model
@@ -68,6 +98,7 @@ pub fn video_model_capabilities(model: &str) -> VideoModelCapabilities {
         resolutions: VIDEO_RESOLUTIONS.to_vec(),
         fps_options: vec![DEFAULT_VIDEO_FPS],
         fps_locked: true,
+        clip,
     }
 }
 
@@ -189,5 +220,28 @@ mod tests {
             "2K"
         );
         assert_eq!(default_resolution_for_model("MiniMax-H3"), "768P");
+    }
+
+    #[test]
+    fn clip_bounds_follow_the_selected_model() {
+        let seedance = clip_bounds_for_model("AIPC-Doubao-Seedance-2.0");
+        assert_eq!((seedance.min_secs(), seedance.max_secs()), (5, 15));
+        assert_eq!(
+            clip_bounds_for_model("AIPC-Doubao-Seedance-2.0-fast"),
+            seedance,
+            "fast/mini differ in resolution tiers, not in clip length"
+        );
+
+        let h3 = clip_bounds_for_model("flowy/MiniMax-H3");
+        assert_eq!((h3.min_secs(), h3.max_secs()), (4, 15));
+
+        assert_eq!(
+            clip_bounds_for_model("some-unreleased-model"),
+            ClipBounds::DEFAULT
+        );
+        assert_eq!(
+            video_model_capabilities("AIPC-Doubao-Seedance-2.0").clip,
+            seedance
+        );
     }
 }

@@ -107,6 +107,7 @@ fn sample_film() -> CreativeFilm {
                 lf_vis_char_idxs: vec![0],
                 motion_desc: "slow dolly in".into(),
                 audio_desc: Some("你好".into()),
+                beats: Vec::new(),
             }],
             camera_tree: vec![Camera {
                 idx: 0,

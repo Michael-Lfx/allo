@@ -909,6 +909,11 @@ impl VimaxService {
         let video = nonempty_opt(&record.video_model);
         let aspect = resolve_aspect_for_session(record, &flowy.media);
         let resolution = resolve_resolution_for_session(record, &flowy.media);
+        // Resolve from the configured id (not the catalog) so planning stays
+        // synchronous; an unknown id falls back to the universally safe window.
+        let clip = crate::video_quality::clip_bounds_for_model(
+            video.as_deref().unwrap_or(flowy.media.video.model.trim()),
+        );
         Ok(PipelineBackends {
             chat: Arc::new(flowy.chat_with_model(llm)),
             // Portraits / env plates use default Seedream 2K — do NOT bind video aspect here.
@@ -923,6 +928,7 @@ impl VimaxService {
             )),
             flowy: Some(flowy.clone()),
             image_model: image,
+            clip,
             cancel,
         })
     }
@@ -1112,7 +1118,11 @@ impl VimaxService {
             WorkflowKind::Script2Video
             | WorkflowKind::Idea2Video
             | WorkflowKind::Novel2Video => {
-                crate::planning::enrich_requirement_for_film(&req_base, target_secs)
+                crate::planning::enrich_requirement_for_film(
+                    backends.clip,
+                    &req_base,
+                    target_secs,
+                )
             }
             WorkflowKind::Action2Video => req_base,
         };

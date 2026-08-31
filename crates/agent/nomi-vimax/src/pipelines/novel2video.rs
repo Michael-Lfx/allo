@@ -1,6 +1,6 @@
 //! Novel2Video — compress → events → keyword RAG → scenes → Script2Video per scene.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agents::{
@@ -13,7 +13,8 @@ use crate::progress::ProgressCallback;
 use crate::rag;
 use crate::session::{write_json_artifact, write_text_artifact};
 
-use super::script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
+use super::scene_reel::SceneReel;
+use super::script2video::Script2VideoPipeline;
 use super::{
     artifact_cache::{
         artifact_fingerprint, load_or_write_json_cached, load_or_write_text_cached,
@@ -255,12 +256,14 @@ impl Novel2VideoPipeline {
                     .filter(|&n| n > 0)
                     .map(|n| crate::planning::normalize_target_duration_secs(Some(n)))
             };
+            let clip = self.backends.clip;
             let scene_n = scenes.len().max(1);
             let event_count = event_count.max(1);
             let budgets = film_total.map(|total| {
-                let event_budgets = crate::planning::allocate_scene_budgets(total, event_count);
+                let event_budgets =
+                    crate::planning::allocate_scene_budgets(clip, total, event_count);
                 let event_budget = event_budgets.get(event_i).copied().unwrap_or(total);
-                crate::planning::allocate_scene_budgets(event_budget, scene_n)
+                crate::planning::allocate_scene_budgets(clip, event_budget, scene_n)
             });
             for (si, scene) in scenes.iter().enumerate() {
                 emit_pct(
@@ -290,6 +293,7 @@ impl Novel2VideoPipeline {
                 let scene_req = match (budget, film_total) {
                     (Some(budget), Some(film_total)) => {
                         crate::planning::enrich_requirement_for_scene(
+                            clip,
                             user_requirement,
                             budget,
                             si,
@@ -298,6 +302,7 @@ impl Novel2VideoPipeline {
                         )
                     }
                     _ => crate::planning::enrich_requirement_for_scene_model_decides(
+                        clip,
                         user_requirement,
                         si,
                         scene_n,
@@ -342,12 +347,11 @@ impl Novel2VideoPipeline {
         let events: Vec<Event> =
             serde_json::from_str(&tokio::fs::read_to_string(events_path).await?)?;
 
-        let mut all_videos = Vec::new();
         let mut pending = 0usize;
         let mut total_scenes = 0usize;
         // Film-order continuity across events/scenes: next scene's first shot
         // match-cuts from the previous scene's last video_last_frame.
-        let mut prior_continuity: Option<PathBuf> = None;
+        let mut reel = SceneReel::new();
         for event in &events {
             let scenes_dir = self
                 .working_dir
@@ -374,8 +378,7 @@ impl Novel2VideoPipeline {
                             event.index, scene.index
                         ),
                     );
-                    prior_continuity = resolve_scene_tail_continuity(&scene_work).await;
-                    all_videos.push(scene_final);
+                    reel.push(scene_final, &scene_work).await;
                     continue;
                 }
                 pending += 1;
@@ -395,11 +398,10 @@ impl Novel2VideoPipeline {
                         user_requirement,
                         style,
                         progress.clone(),
-                        prior_continuity.as_deref(),
+                        reel.tail_frame(),
                     )
                     .await?;
-                prior_continuity = resolve_scene_tail_continuity(&scene_work).await;
-                all_videos.push(video);
+                reel.push(video, &scene_work).await;
             }
         }
         if pending > 0 && pending < total_scenes {
@@ -412,10 +414,9 @@ impl Novel2VideoPipeline {
 
         let final_path = self.working_dir.join("final_video.mp4");
         media_local::scrub_unusable_video(&final_path).await?;
-        if !media_local::is_usable_video_file(&final_path) && !all_videos.is_empty() {
+        if !media_local::is_usable_video_file(&final_path) && !reel.is_empty() {
             emit_pct(&progress, "concat_start", "正在拼接全部场景视频", 95.0);
-            let refs: Vec<&Path> = all_videos.iter().map(|p| p.as_path()).collect();
-            media_local::concat_videos(&refs, &final_path).await?;
+            media_local::concat_videos(&reel.concat_clips(), &final_path).await?;
         }
         emit_pct(&progress, "render_done", "小说成片渲染完成", 100.0);
         Ok(final_path)

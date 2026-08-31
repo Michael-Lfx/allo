@@ -4,9 +4,11 @@ mod action2video;
 mod ai_face_sanitizer;
 pub(crate) mod artifact_cache;
 mod cameo_bind;
+pub(crate) mod clip_beats;
 mod idea2video;
 mod novel2video;
 mod privacy_face;
+mod scene_reel;
 mod script_film;
 mod script_scene_split;
 mod script2video;
@@ -24,6 +26,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::backends::{VimaxChat, VimaxImage, VimaxVideo};
+use crate::clip_bounds::ClipBounds;
 use crate::progress::ProgressCallback;
 
 /// Shared backend handles for pipelines.
@@ -36,6 +39,9 @@ pub struct PipelineBackends {
     pub flowy: Option<crate::backends::FlowyVimaxServices>,
     /// Session image model id (empty → media default); used for poster sizing client.
     pub image_model: Option<String>,
+    /// Clip window of the session's video model. Planning sizes every shot inside
+    /// it, so a model change also changes shot lengths.
+    pub clip: ClipBounds,
     /// When cancelled, pipelines stop before the next video API call.
     pub cancel: Option<CancellationToken>,
 }

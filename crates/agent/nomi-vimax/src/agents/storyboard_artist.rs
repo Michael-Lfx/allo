@@ -3,19 +3,23 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::backends::VimaxChat;
+use crate::clip_bounds::ClipBounds;
 use crate::domain::{CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::error::VimaxResult;
 use crate::json_util::complete_and_parse_llm_json;
 
-use super::formats::{STORYBOARD, VIS_DECOMPOSE};
+use super::formats;
 
 pub struct StoryboardArtist {
     chat: Arc<dyn VimaxChat>,
+    /// Clip window of the session's video model — every duration rule in the
+    /// prompts is sized from it instead of naming one vendor's numbers.
+    clip: ClipBounds,
 }
 
 impl StoryboardArtist {
-    pub fn new(chat: Arc<dyn VimaxChat>) -> Self {
-        Self { chat }
+    pub fn new(chat: Arc<dyn VimaxChat>, clip: ClipBounds) -> Self {
+        Self { chat, clip }
     }
 
     pub async fn design_storyboard(
@@ -34,7 +38,15 @@ impl StoryboardArtist {
         let system = include_str!(
             "../../prompts/storyboard_artist__system_prompt_template_design_storyboard.txt"
         )
-        .replace("{format_instructions}", STORYBOARD);
+        .replace("{format_instructions}", &formats::storyboard(self.clip))
+        .replace(
+            "{clip_duration_rules}",
+            &crate::planning::clip_length_rules(self.clip),
+        )
+        .replace(
+            "{speech_budget}",
+            &crate::planning::speech_budget_line(self.clip),
+        );
         let user = include_str!(
             "../../prompts/storyboard_artist__human_prompt_template_design_storyboard.txt"
         )
@@ -77,7 +89,11 @@ impl StoryboardArtist {
         let system = include_str!(
             "../../prompts/storyboard_artist__system_prompt_template_decompose_visual_description.txt"
         )
-        .replace("{format_instructions}", VIS_DECOMPOSE);
+        .replace("{format_instructions}", &formats::vis_decompose(self.clip))
+        .replace(
+            "{clip_duration_rules}",
+            &crate::planning::clip_length_rules(self.clip),
+        );
         let continuity_block = match previous_lf_desc.map(str::trim).filter(|s| !s.is_empty()) {
             Some(prev) => format!(
                 "\n<PREVIOUS_SHOT_LAST_FRAME>\n{prev}\n</PREVIOUS_SHOT_LAST_FRAME>\n\
@@ -122,6 +138,7 @@ reset to an unrelated establishing pose. Cross-scene continuity does NOT apply h
             lf_vis_char_idxs: d.lf_vis_char_idxs,
             motion_desc: d.motion_desc,
             audio_desc: brief.audio_desc.clone(),
+            beats: Vec::new(),
         })
     }
 }

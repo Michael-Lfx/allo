@@ -4,6 +4,7 @@ use regex::Regex;
 use serde::Deserialize;
 
 use crate::backends::VimaxChat;
+use crate::clip_bounds::ClipBounds;
 use crate::error::{VimaxError, VimaxResult};
 use crate::json_util::{LLM_JSON_PARSE_ATTEMPTS, complete_and_parse_llm_json, parse_llm_json};
 
@@ -11,11 +12,14 @@ use super::formats::SCRIPT_SCENES;
 
 pub struct Screenwriter {
     chat: Arc<dyn VimaxChat>,
+    /// Clip window of the session's video model: a line has to be speakable
+    /// inside one clip, so the writer must know how long a clip can be.
+    clip: ClipBounds,
 }
 
 impl Screenwriter {
-    pub fn new(chat: Arc<dyn VimaxChat>) -> Self {
-        Self { chat }
+    pub fn new(chat: Arc<dyn VimaxChat>, clip: ClipBounds) -> Self {
+        Self { chat, clip }
     }
 
     pub async fn develop_story(
@@ -24,13 +28,14 @@ impl Screenwriter {
         user_requirement: &str,
     ) -> VimaxResult<String> {
         let system =
-            include_str!("../../prompts/screenwriter__system_prompt_template_develop_story.txt");
+            include_str!("../../prompts/screenwriter__system_prompt_template_develop_story.txt")
+                .replace("{clip_max_secs}", &self.clip.max_secs().to_string());
         let user = include_str!(
             "../../prompts/screenwriter__human_prompt_template_develop_story.txt"
         )
         .replace("{idea}", idea)
         .replace("{user_requirement}", user_requirement);
-        self.chat.complete_text(system, &user).await
+        self.chat.complete_text(&system, &user).await
     }
 
     pub async fn write_script_based_on_story(
@@ -41,7 +46,8 @@ impl Screenwriter {
         let system = include_str!(
             "../../prompts/screenwriter__system_prompt_template_write_script_based_on_story.txt"
         )
-        .replace("{format_instructions}", SCRIPT_SCENES);
+        .replace("{format_instructions}", SCRIPT_SCENES)
+        .replace("{clip_max_secs}", &self.clip.max_secs().to_string());
         // Prompt file may not have format_instructions — inject into system if absent.
         let system = if system.contains("{format_instructions}") {
             system

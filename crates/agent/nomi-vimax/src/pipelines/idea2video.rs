@@ -21,7 +21,8 @@ use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
     world_cameo_context,
 };
-use super::script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
+use super::scene_reel::SceneReel;
+use super::script2video::Script2VideoPipeline;
 use super::{
     artifact_cache::{artifact_fingerprint, load_or_write_json_cached, load_or_write_text_cached},
     PipelineBackends, emit_pct, emit_pct_meta, safe_component,
@@ -38,7 +39,7 @@ pub struct Idea2VideoPipeline {
 impl Idea2VideoPipeline {
     pub fn new(backends: PipelineBackends, working_dir: PathBuf) -> Self {
         Self {
-            screenwriter: Screenwriter::new(Arc::clone(&backends.chat)),
+            screenwriter: Screenwriter::new(Arc::clone(&backends.chat), backends.clip),
             character_extractor: CharacterExtractor::new(Arc::clone(&backends.chat)),
             portraits: CharacterPortraitsGenerator::new(Arc::clone(&backends.image)),
             backends,
@@ -329,8 +330,9 @@ impl Idea2VideoPipeline {
         )
         .await?;
 
+        let clip = self.backends.clip;
         if let Some(film_total) = film_total {
-            let max_scenes = crate::planning::max_scenes_for_budget(film_total);
+            let max_scenes = crate::planning::max_scenes_for_budget(clip, film_total);
             if scenes.len() > max_scenes {
                 tracing::warn!(
                     kept = max_scenes,
@@ -344,7 +346,7 @@ impl Idea2VideoPipeline {
         }
 
         let scene_count = scenes.len().max(1);
-        let budgets = film_total.map(|total| allocate_scene_budgets(total, scene_count));
+        let budgets = film_total.map(|total| allocate_scene_budgets(clip, total, scene_count));
 
         for (i, scene_script) in scenes.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
@@ -370,13 +372,19 @@ impl Idea2VideoPipeline {
             let budget = budgets.as_ref().and_then(|b| b.get(i).copied());
             let scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
+                    clip,
                     user_requirement,
                     budget,
                     i,
                     scene_count,
                     film_total,
                 ),
-                _ => enrich_requirement_for_scene_model_decides(user_requirement, i, scene_count),
+                _ => enrich_requirement_for_scene_model_decides(
+                    clip,
+                    user_requirement,
+                    i,
+                    scene_count,
+                ),
             };
             let permit = Arc::clone(&sem);
             let progress = progress.clone();
@@ -528,14 +536,14 @@ impl Idea2VideoPipeline {
             serde_json::from_str(&tokio::fs::read_to_string(&script_path).await?)?;
 
         let film_total = self.film_target_secs().await;
+        let clip = self.backends.clip;
         let scene_total = scenes.len().max(1);
-        let budgets = film_total.map(|total| allocate_scene_budgets(total, scene_total));
+        let budgets = film_total.map(|total| allocate_scene_budgets(clip, total, scene_total));
 
         // Sequential scenes so a mid-failure surfaces immediately (no stuck JoinSet wait)
         // and progress keeps moving. Per-shot videos are also sequential + fail-fast.
         // Cross-scene: scene N+1's first shot match-cuts from scene N's last video_last_frame.
-        let mut scene_videos: Vec<PathBuf> = Vec::new();
-        let mut prior_continuity: Option<PathBuf> = None;
+        let mut reel = SceneReel::new();
         for (i, scene_script) in scenes.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
             let scene_final = scene_dir.join("final_video.mp4");
@@ -547,8 +555,7 @@ impl Idea2VideoPipeline {
                     &format!("场景 {}/{scene_total} 已完成，跳过", i + 1),
                     20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
                 );
-                prior_continuity = resolve_scene_tail_continuity(&scene_dir).await;
-                scene_videos.push(scene_final);
+                reel.push(scene_final, &scene_dir).await;
                 continue;
             }
 
@@ -556,13 +563,19 @@ impl Idea2VideoPipeline {
             self.prepare_scene_workspace(&scene_dir, budget).await?;
             let scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
+                    clip,
                     user_requirement,
                     budget,
                     i,
                     scene_total,
                     film_total,
                 ),
-                _ => enrich_requirement_for_scene_model_decides(user_requirement, i, scene_total),
+                _ => enrich_requirement_for_scene_model_decides(
+                    clip,
+                    user_requirement,
+                    i,
+                    scene_total,
+                ),
             };
 
             let pct = 20.0 + 70.0 * (i as f32 / scene_total as f32);
@@ -580,13 +593,12 @@ impl Idea2VideoPipeline {
                     &scene_req,
                     &style,
                     progress.clone(),
-                    prior_continuity.as_deref(),
+                    reel.tail_frame(),
                 )
                 .await
             {
                 Ok(video) => {
-                    prior_continuity = resolve_scene_tail_continuity(&scene_dir).await;
-                    scene_videos.push(video);
+                    reel.push(video, &scene_dir).await;
                     emit_pct(
                         &progress,
                         "render_scene_done",
@@ -605,14 +617,14 @@ impl Idea2VideoPipeline {
                         &format!(
                             "Scene {}/{scene_total} failed; {} scene(s) already on disk — resume from checkpoint",
                             i + 1,
-                            scene_videos.len()
+                            reel.len()
                         ),
                         pct,
                     );
                     return Err(crate::error::VimaxError::Video(format!(
                         "Scene {}/{scene_total} render failed ({} scene(s) already on disk — resume from checkpoint): {e}",
                         i + 1,
-                        scene_videos.len()
+                        reel.len()
                     )));
                 }
             }
@@ -622,8 +634,7 @@ impl Idea2VideoPipeline {
         media_local::scrub_unusable_video(&final_path).await?;
         if !media_local::is_usable_video_file(&final_path) {
             emit_pct(&progress, "concat_start", "正在拼接各场景视频", 95.0);
-            let refs: Vec<&Path> = scene_videos.iter().map(|p| p.as_path()).collect();
-            media_local::concat_videos(&refs, &final_path).await?;
+            media_local::concat_videos(&reel.concat_clips(), &final_path).await?;
         }
         emit_pct(&progress, "render_done", "灵感成片渲染完成", 100.0);
         Ok(final_path)
