@@ -19,8 +19,8 @@ import { useTranslation } from 'react-i18next';
 import { convertLatexDelimiters } from '@renderer/utils/chat/latexDelimiters';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import { isLocalImageSource } from '@/common/utils/localPath';
-import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import CodeBlock from './CodeBlock';
+import CollapsibleBlockquote from './CollapsibleBlockquote';
 import ShadowView from './ShadowView';
 import { shouldCollapseMarkdownBlockquote } from './blockquoteCollapse';
 import type { MarkdownViewProps } from './markdownViewProps';
@@ -116,20 +116,11 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
           const canCollapse = collapsibleBlockquotes && shouldCollapseMarkdownBlockquote(blockquoteNode);
 
           return (
-            <blockquote {...rest}>
-              {canCollapse ? (
-                <CollapsibleContent
-                  maxHeight={200}
-                  defaultCollapsed
-                  useMask
-                  className='markdown-blockquote-collapsible'
-                >
-                  {children}
-                </CollapsibleContent>
-              ) : (
-                children
-              )}
-            </blockquote>
+            canCollapse ? (
+              <CollapsibleBlockquote {...rest}>{children}</CollapsibleBlockquote>
+            ) : (
+              <blockquote {...rest}>{children}</blockquote>
+            )
           );
         },
         img: ({ node: _node, ...rest }: React.JSX.IntrinsicElements['img'] & ExtraProps) => {

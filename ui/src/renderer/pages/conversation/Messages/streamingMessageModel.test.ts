@@ -84,4 +84,10 @@ describe('getActiveStreamingTextIndex', () => {
 
     expect(getActiveStreamingTextIndex(items, context({ lastUserTextIndex: 1 }))).toBe(-1);
   });
+
+  test('does not stream assistant-only history without a visible user boundary', () => {
+    const items = [text({ turn_id: ACTIVE_TURN })];
+
+    expect(getActiveStreamingTextIndex(items, context({ lastUserTextIndex: -1 }))).toBe(-1);
+  });
 });

@@ -65,16 +65,18 @@ describe('MessageText process action chrome', () => {
     expect(source.includes("'message-bubble-enter': shouldPlayEnterAnimation && !isStreaming")).toBe(true);
   });
 
-  test('keeps completed markdown fences expanded while the reply is still streaming', () => {
+  test('keeps only an open markdown fence in the lightweight streaming path', () => {
     expect(source.includes("streamingParts.tailKind === 'code'")).toBe(true);
     const codeBranch = source.slice(
       source.indexOf("streamingParts.tailKind === 'code'"),
       source.indexOf('streamingParts.codeContent')
     );
-    expect(codeBranch.includes('isStreaming')).toBe(true);
+    const stablePrefix = codeBranch.slice(codeBranch.indexOf('<MarkdownView'), codeBranch.indexOf('</MarkdownView>'));
+    expect(codeBranch.includes('<CodeBlock language={streamingParts.codeLanguage} streaming>')).toBe(true);
+    expect(stablePrefix.includes('isStreaming')).toBe(false);
   });
 
-  test('renders streaming prose through a stable Markdown prefix and lightweight tail', () => {
+  test('renders streaming prose through a non-streaming Markdown prefix and lightweight tail', () => {
     const streamingBlock = source.match(/<StreamingText[\s\S]*?<\/StreamingText>/)?.[0] ?? '';
     const proseStart = source.indexOf(') : streamingParts ? (');
     const proseEnd = source.indexOf(') : (\n                <MarkdownView', proseStart);
@@ -85,7 +87,8 @@ describe('MessageText process action chrome', () => {
     expect(streamingBlock.includes('{streamingParts.stablePrefix}')).toBe(true);
     expect(streamingBlock.includes('{streamingParts.tail}')).toBe(true);
     expect(proseBranch.includes('{data}')).toBe(false);
-    expect(proseBranch.includes('isStreaming={isStreaming}')).toBe(true);
+    expect(proseBranch.includes('isStreaming={isStreaming}')).toBe(false);
+    expect(proseBranch.includes("<div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>")).toBe(true);
   });
 
   test('enables blockquote collapse only for completed assistant markdown', () => {

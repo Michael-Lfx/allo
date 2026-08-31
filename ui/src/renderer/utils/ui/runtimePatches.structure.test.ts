@@ -9,18 +9,11 @@ import { describe, expect, test } from 'bun:test';
 
 const source = readFileSync(new URL('./runtimePatches.ts', import.meta.url), 'utf8');
 
-describe('SafeResizeObserver lifecycle', () => {
-  test('cancels queued callbacks when an observer disconnects', () => {
-    const observerSource = source.slice(
-      source.indexOf('class SafeResizeObserver'),
-      source.indexOf('window.ResizeObserver = SafeResizeObserver')
-    );
-
-    expect(observerSource.includes('private scheduledFrame')).toBe(true);
-    expect(observerSource.includes('private callbackGeneration')).toBe(true);
-    expect(observerSource.includes('if (generation !== this.callbackGeneration) return;')).toBe(true);
-    expect(observerSource.includes('disconnect()')).toBe(true);
-    expect(observerSource.includes('cancelAnimationFrame(this.scheduledFrame)')).toBe(true);
-    expect(observerSource.includes('super.disconnect()')).toBe(true);
+describe('runtime resize observer scope', () => {
+  test('does not replace the browser ResizeObserver globally', () => {
+    expect(source.includes('class SafeResizeObserver')).toBe(false);
+    expect(source.includes('window.ResizeObserver =')).toBe(false);
+    expect(source.includes('patchResizeObserver')).toBe(false);
+    expect(source.includes('patchGlobalErrorFilters();')).toBe(true);
   });
 });

@@ -34,6 +34,7 @@ export const getActiveStreamingTextIndex = (
 ): number => {
   if (!context.isProcessing) return -1;
   if (!context.activeTurnId && !context.activeRequestMessageId) return -1;
+  if (context.lastUserTextIndex < 0) return -1;
 
   for (let index = items.length - 1; index > context.lastUserTextIndex; index -= 1) {
     const item = items[index];

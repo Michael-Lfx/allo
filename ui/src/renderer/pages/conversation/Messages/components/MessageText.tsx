@@ -803,7 +803,6 @@ const MessageText: React.FC<{
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                       allowUnverifiedImages={isUserMessage}
                       collapsibleBlockquotes={false}
-                      isStreaming
                     >
                       {streamingParts.stablePrefix}
                     </MarkdownView>
@@ -821,16 +820,13 @@ const MessageText: React.FC<{
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                       allowUnverifiedImages={isUserMessage}
                       collapsibleBlockquotes={false}
-                      isStreaming={isStreaming}
                     >
                       {streamingParts.stablePrefix}
                     </MarkdownView>
                   ) : null}
-                  {streamingParts.tail ? (
-                    <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>
-                      {streamingParts.tail}
-                    </div>
-                  ) : null}
+                  <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>
+                    {streamingParts.tail}
+                  </div>
                 </>
               ) : (
                 <MarkdownView

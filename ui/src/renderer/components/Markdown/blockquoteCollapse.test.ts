@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test';
 import { shouldCollapseMarkdownBlockquote } from './blockquoteCollapse';
 
 const markdownSource = readFileSync(new URL('./index.tsx', import.meta.url), 'utf8');
+const collapsibleBlockquoteSource = readFileSync(new URL('./CollapsibleBlockquote.tsx', import.meta.url), 'utf8');
 
 describe('markdown blockquote collapse', () => {
   test('allows a simple blockquote to use the collapse wrapper', () => {
@@ -66,8 +67,14 @@ describe('markdown blockquote collapse', () => {
   test('keeps blockquote collapsing opt-in at the MarkdownView boundary', () => {
     expect(markdownSource).toContain('blockquote:');
     expect(markdownSource).toContain('collapsibleBlockquotes');
-    expect(markdownSource).toContain('maxHeight={200}');
-    expect(markdownSource).toContain('defaultCollapsed');
-    expect(markdownSource).toContain('useMask');
+    expect(markdownSource).toContain('<CollapsibleBlockquote');
+  });
+
+  test('measures the native blockquote before mounting collapse controls', () => {
+    expect(collapsibleBlockquoteSource).toContain('useLayoutEffect');
+    expect(collapsibleBlockquoteSource).toContain('shouldCollapseContent');
+    expect(collapsibleBlockquoteSource).toContain('needsCollapse ?');
+    expect(collapsibleBlockquoteSource).toContain('observer.observe(blockquote)');
+    expect(collapsibleBlockquoteSource).toContain('observer.disconnect()');
   });
 });

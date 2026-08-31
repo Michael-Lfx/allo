@@ -301,19 +301,37 @@ export function useAutoScroll({
   useEffect(() => {
     if (!scrollerEl || !contentEl) return;
 
-    const observer = new ResizeObserver(() => {
+    let frameId: number | null = null;
+    let disposed = false;
+
+    const flushResizeWork = () => {
+      frameId = null;
+      if (disposed) return;
+
       if (Date.now() < resizeAutoFollowBlockedUntilRef.current) {
         updateBottomState(scrollerEl);
         return;
       }
       followContentGrowth();
       updateBottomState(scrollerEl);
-    });
+    };
+
+    const scheduleResizeWork = () => {
+      if (disposed) return;
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(flushResizeWork);
+    };
+
+    const observer = new ResizeObserver(scheduleResizeWork);
 
     observer.observe(scrollerEl);
     observer.observe(contentEl);
 
-    return () => observer.disconnect();
+    return () => {
+      disposed = true;
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+      observer.disconnect();
+    };
   }, [contentEl, followContentGrowth, scrollerEl, updateBottomState]);
 
   useEffect(() => {

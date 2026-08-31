@@ -64,4 +64,20 @@ describe('splitStreamingMarkdown', () => {
     expect(result.tail).toBe('- first item\n');
     expect(result.tailKind).toBe('text');
   });
+
+  test('allows a completed paragraph boundary to leave an explicit empty tail', () => {
+    const result = splitStreamingMarkdown('Intro\n\n');
+
+    expect(result.stablePrefix).toBe('Intro\n\n');
+    expect(result.tail).toBe('');
+    expect(result.tailKind).toBe('text');
+  });
+
+  test('keeps a closed fence stable when the stream currently has no tail', () => {
+    const result = splitStreamingMarkdown('```ts\nconst ready = true;\n```');
+
+    expect(result.stablePrefix).toBe('```ts\nconst ready = true;\n```');
+    expect(result.tail).toBe('');
+    expect(result.tailKind).toBe('text');
+  });
 });
