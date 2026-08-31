@@ -42,4 +42,10 @@ describe('dynamic import route recovery', () => {
     expect(source).toContain('claimDynamicImportReload');
     expect(source).toContain('dynamicImportReloadExhausted');
   });
+
+  test('makes the exhausted dynamic-import action explicit', () => {
+    const source = readFileSync(new URL('./RouteErrorBoundary.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("? '再次重新加载应用'");
+    expect(source).toContain("? '重新加载应用'");
+  });
 });

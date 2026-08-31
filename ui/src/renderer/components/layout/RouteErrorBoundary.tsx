@@ -95,6 +95,12 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
       isApplicationFailure || (isDynamicImportError && dynamicImportReloadExhausted)
         ? this.handleApplicationReload
         : this.handleReset;
+    const actionLabel =
+      isDynamicImportError && dynamicImportReloadExhausted
+        ? '再次重新加载应用'
+        : requiresApplicationReload
+          ? '重新加载应用'
+          : '重试';
 
     return (
       <div
@@ -135,7 +141,7 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
             cursor: 'pointer',
           }}
         >
-          {requiresApplicationReload ? '重新加载应用' : '重试'}
+          {actionLabel}
         </button>
         {error.stack ? (
           <>
