@@ -7,8 +7,8 @@ import {
   applyShotGenerationSpecs,
   buildStoryboardScenesFromStoryboards,
   findShotDescriptionPaths,
-  findShotVideoPaths,
   findStoryboardPaths,
+  mergeStoryboardsWithoutGrowth,
   parseShotGenerationSpec,
   parseStoryboard,
   sceneHasGenerationSpec,
@@ -212,12 +212,8 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const runStatus = useRunStatusFull();
   const storyboardPaths = useMemo(() => findStoryboardPaths(artifacts), [artifacts]);
   const specPaths = useMemo(() => findShotDescriptionPaths(artifacts), [artifacts]);
-  const videoPaths = useMemo(() => findShotVideoPaths(artifacts), [artifacts]);
-  const descriptionFetchSignature = [
-    storyboardPaths.join('|'),
-    specPaths.join('|'),
-    videoPaths.join('|'),
-  ].join('||');
+  const storyboardPathKey = storyboardPaths.join('|');
+  const specPathKey = specPaths.join('|');
   const [storyboardEntries, setStoryboardEntries] = useState<
     Array<{ path: string; shots: StoryboardShot[] }>
   >([]);
@@ -236,45 +232,57 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   );
   const rendering = runStatus?.status === 'rendering';
 
+  // Storyboard *rows* come only from storyboard.json. Video start writes
+  // shots/N/shot_description.json and the artifact poll used to refetch the
+  // board in the same effect — that replaced a planned N-shot strip with N+1.
   useEffect(() => {
-    if (!storyboardPaths.length && !specPaths.length) {
-      setStoryboardEntries([]);
+    if (!storyboardPathKey) return;
+    let cancelled = false;
+    void Promise.all(
+      storyboardPaths.map(async (path) => {
+        try {
+          const content = await getArtifact(sessionId, path);
+          return { path, shots: parseStoryboard(content.text) };
+        } catch {
+          return { path, shots: [] as StoryboardShot[] };
+        }
+      })
+    ).then((boards) => {
+      if (cancelled) return;
+      setStoryboardEntries((previous) =>
+        rendering ? mergeStoryboardsWithoutGrowth(previous, boards) : boards
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- paths cover the board set
+  }, [sessionId, storyboardPathKey]);
+
+  useEffect(() => {
+    if (!specPathKey) {
       setGenerationSpecs([]);
       return;
     }
     let cancelled = false;
-    void Promise.all([
-      Promise.all(
-        storyboardPaths.map(async (path) => {
-          try {
-            const content = await getArtifact(sessionId, path);
-            return { path, shots: parseStoryboard(content.text) };
-          } catch {
-            return { path, shots: [] as StoryboardShot[] };
-          }
-        })
-      ),
-      Promise.all(
-        specPaths.map(async (path) => {
-          try {
-            const content = await getArtifact(sessionId, path);
-            return parseShotGenerationSpec(content.text, path);
-          } catch {
-            return null;
-          }
-        })
-      ),
-    ]).then(([boards, specs]) => {
+    void Promise.all(
+      specPaths.map(async (path) => {
+        try {
+          const content = await getArtifact(sessionId, path);
+          return parseShotGenerationSpec(content.text, path);
+        } catch {
+          return null;
+        }
+      })
+    ).then((specs) => {
       if (cancelled) return;
-      setStoryboardEntries(boards);
       setGenerationSpecs(specs.filter((spec): spec is ShotGenerationSpec => spec != null));
     });
     return () => {
       cancelled = true;
     };
-    // 路径集合未变不重拉；镜头视频落地（videoPaths）时再拉一次，避免成片已出、描述还停在规划简述。
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 签名覆盖 storyboard/spec/video 路径集合
-  }, [sessionId, descriptionFetchSignature]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- spec paths only; thumbs come from artifacts
+  }, [sessionId, specPathKey]);
 
   const scenes = useMemo(
     () =>

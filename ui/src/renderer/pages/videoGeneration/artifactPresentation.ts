@@ -95,11 +95,7 @@ export function parseStoryboard(text: string | undefined): StoryboardShot[] {
     return rows.flatMap((row, fallbackIndex) => {
       if (!row || typeof row !== 'object') return [];
       const value = row as Record<string, unknown>;
-      const visual =
-        stringValue(value.visual_desc) ??
-        stringValue(value.visualDescription) ??
-        stringValue(value.description) ??
-        stringValue(value.prompt);
+      const visual = visualFromStoryboardRow(value);
       if (!visual) return [];
       const rawIndex = value.idx ?? value.index ?? value.shot_index;
       return [
@@ -218,6 +214,39 @@ export function buildStoryboardScenesFromStoryboards(
   }
 
   return scenes;
+}
+
+export interface StoryboardFile {
+  path: string;
+  shots: StoryboardShot[];
+}
+
+/**
+ * Keep the planned shot count when a later fetch of `storyboard.json` grows.
+ *
+ * Video start rewrites per-shot specs and may briefly rewrite the board; the
+ * filmstrip must not gain a phantom last card. Shrinking (packed absorb) is OK.
+ * New scene paths not seen before are accepted in full.
+ */
+export function mergeStoryboardsWithoutGrowth(
+  previous: StoryboardFile[],
+  incoming: StoryboardFile[]
+): StoryboardFile[] {
+  if (previous.length === 0) return incoming;
+  const prevByPath = new Map(
+    previous.map((board) => [board.path.replace(/\\/g, '/'), board])
+  );
+  return incoming.map((board) => {
+    const prev = prevByPath.get(board.path.replace(/\\/g, '/'));
+    if (!prev?.shots.length || board.shots.length <= prev.shots.length) {
+      return board;
+    }
+    const byIndex = new Map(board.shots.map((shot) => [shot.index, shot]));
+    return {
+      path: board.path,
+      shots: prev.shots.map((shot) => byIndex.get(shot.index) ?? shot),
+    };
+  });
 }
 
 /** Paths of per-shot `shot_description.json` files, sorted for stable signatures. */
@@ -468,6 +497,27 @@ function patchShotRowInList(
     );
   }
   setDescriptionFields(target, visual, audio);
+}
+
+function visualFromStoryboardRow(value: Record<string, unknown>): string | undefined {
+  const top =
+    stringValue(value.visual_desc) ??
+    stringValue(value.visualDescription) ??
+    stringValue(value.description) ??
+    stringValue(value.prompt);
+  if (top) return top;
+  if (!Array.isArray(value.beats)) return undefined;
+  const parts: string[] = [];
+  for (const beat of value.beats) {
+    if (!beat || typeof beat !== 'object') continue;
+    const row = beat as Record<string, unknown>;
+    const text =
+      stringValue(row.visual_desc) ??
+      stringValue(row.visualDescription) ??
+      stringValue(row.motion_desc);
+    if (text) parts.push(text);
+  }
+  return parts.length > 0 ? parts.join('；然后') : undefined;
 }
 
 function storyboardRows(value: unknown): unknown[] {
