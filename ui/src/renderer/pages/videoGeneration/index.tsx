@@ -196,7 +196,7 @@ const VideoGenerationListPage: React.FC = () => {
 
   useEffect(() => {
     const prefetchGallery = () => {
-      void import('./home/CanvasProjectGallery');
+      void import('./home/CanvasProjectGallery').catch(() => undefined);
     };
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;

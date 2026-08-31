@@ -8,28 +8,28 @@ import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 export function prefetchGenerationPreferencesPanel(): void {
   void import('./home/GenerationPreferencesPopover').then((mod) => {
     mod.warmGenerationPreferences();
-  });
+  }).catch(() => undefined);
 }
 
 export function prefetchVerticalSkillMenu(): void {
-  void import('./home/VerticalSkillMenu');
+  void import('./home/VerticalSkillMenu').catch(() => undefined);
 }
 
 export function prefetchCanvasAssistantPanel(): void {
-  void loadCanvasAssistantPanel();
+  void loadCanvasAssistantPanel().catch(() => undefined);
 }
 
 export function prefetchCanvasWorkspace(): void {
-  void loadVideoCanvasProjectPage();
+  void loadVideoCanvasProjectPage().catch(() => undefined);
   prefetchCanvasAssistantPanel();
 }
 
 export function prefetchVideoGenerationHome(): void {
-  void import('./index');
-  void import('./components/TvShowPanel');
-  void import('./components/CampaignCarousel');
-  void import('./components/CampaignPanel');
-  void import('./home/CanvasProjectGallery');
+  void import('./index').catch(() => undefined);
+  void import('./components/TvShowPanel').catch(() => undefined);
+  void import('./components/CampaignCarousel').catch(() => undefined);
+  void import('./components/CampaignPanel').catch(() => undefined);
+  void import('./home/CanvasProjectGallery').catch(() => undefined);
   prefetchGenerationPreferencesPanel();
   prefetchVerticalSkillMenu();
 }

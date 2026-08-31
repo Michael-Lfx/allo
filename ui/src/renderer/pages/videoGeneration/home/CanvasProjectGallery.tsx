@@ -72,7 +72,7 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
 
   useEffect(() => {
     if (!projects.length) return;
-    loadVideoCanvasProjectPage();
+    void loadVideoCanvasProjectPage().catch(() => undefined);
   }, [projects.length]);
 
   const displayed = useMemo(() => {
@@ -88,7 +88,7 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
   const openProject = (projectId: string) => {
     if (openingId || creating || deletingId) return;
     setOpeningId(projectId);
-    void loadVideoCanvasProjectPage();
+    void loadVideoCanvasProjectPage().catch(() => undefined);
     navigate(`/video-generation/canvas/${encodeURIComponent(projectId)}`);
   };
 
@@ -273,8 +273,8 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                 style={
                   isDisabled ? { cursor: 'default', opacity: 0.72, transform: 'none' } : undefined
                 }
-                onMouseEnter={() => void loadVideoCanvasProjectPage()}
-                onFocus={() => void loadVideoCanvasProjectPage()}
+                onMouseEnter={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
+                onFocus={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
                 onClick={() => openProject(project.project_id)}
                 onKeyDown={(event) => {
                   // Only activate when the card itself is focused, so Enter/

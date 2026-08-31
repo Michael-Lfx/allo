@@ -9,5 +9,5 @@
  * Keep this module free of page-level imports so the sider stays out of that chunk.
  */
 export function prefetchScheduledTasksPage(): void {
-  void import('./ScheduledTasksPage');
+  void import('./ScheduledTasksPage').catch(() => undefined);
 }
