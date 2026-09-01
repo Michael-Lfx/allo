@@ -328,14 +328,12 @@
   "learningGraphGoalInputLabel": "Learning goal",
   "learningGraphGoalInputPlaceholder": "e.g. I want a complete picture of options trading basics",
   "learningGraphCreateHint": "When the topic is complex or open-ended, a learning graph splits your goal into a prerequisite network: one node per study session, follow the recommendations in order.",
-  "learningGraphGoal": "Learning goal",
   "learningGraphRecommended": "Recommended next",
   "learningGraphRecommendedShort": "Next",
   "learningGraphStatusNotStarted": "Not started",
   "learningGraphStatusInProgress": "In progress",
   "learningGraphStatusCompleted": "Completed",
   "learningGraphStatusSkipped": "Skipped",
-  "learningGraphGeneratedShort": "Content generated",
   "learningGraphGenerated": "Content ready",
   "learningGraphNotGenerated": "Not generated",
   "learningGraphViewDag": "Graph",
@@ -353,5 +351,6 @@
   "learningGraphEmpty": "This graph has no nodes yet",
   "learningGraphLocked": "Locked",
   "learningGraphLockedHint": "Not all prerequisite nodes are completed or skipped yet — it unlocks automatically, or you can skip the prerequisites.",
-  "learningGraphUnlocked": "Ready"
+  "learningGraphUnlocked": "Ready",
+  "learningGraphProgressTitle": "Progress"
 }

@@ -328,14 +328,12 @@
   "learningGraphGoalInputLabel": "学习目标",
   "learningGraphGoalInputPlaceholder": "例如：我想通盘认识期权交易的基础框架",
   "learningGraphCreateHint": "内容复杂、边界不明确或想覆盖整个领域时，用学习图把目标拆成一张前置依赖网络：每个节点一次学习，按推荐顺序推进。",
-  "learningGraphGoal": "学习目标",
   "learningGraphRecommended": "下一步推荐",
   "learningGraphRecommendedShort": "推荐",
   "learningGraphStatusNotStarted": "未开始",
   "learningGraphStatusInProgress": "进行中",
   "learningGraphStatusCompleted": "已完成",
   "learningGraphStatusSkipped": "已跳过",
-  "learningGraphGeneratedShort": "已生成内容",
   "learningGraphGenerated": "内容已生成",
   "learningGraphNotGenerated": "未生成",
   "learningGraphViewDag": "图视图",
@@ -353,5 +351,6 @@
   "learningGraphEmpty": "该图暂无节点",
   "learningGraphLocked": "未解锁",
   "learningGraphLockedHint": "前置节点尚未全部完成或跳过——完成后自动解锁，也可以直接跳过前置。",
-  "learningGraphUnlocked": "可学习"
+  "learningGraphUnlocked": "可学习",
+  "learningGraphProgressTitle": "学习进度"
 }
