@@ -6,11 +6,23 @@ import { configService } from '@/common/config/configService';
 import {
   applyKeepAwakeSetting,
   KEEP_AWAKE_CONFIG_KEY,
-  normalizeKeepAwake,
+  LEGACY_KEEP_AWAKE_CONFIG_KEY,
+  readKeepAwakeConfig,
 } from './keepAwakeSetting';
 
 // 默认关闭:未持久化时不主动阻止休眠 / Keep-awake defaults to OFF when unset.
-const readKeepAwake = (): boolean => normalizeKeepAwake(configService.get(KEEP_AWAKE_CONFIG_KEY));
+const readKeepAwake = (): boolean => readKeepAwakeConfig((key) => configService.get(key));
+
+// A failed PUT may have been accepted by the backend before the client saw a
+// transport error. Re-read the authoritative snapshot before deciding which
+// native/local value to restore.
+const readPersistedKeepAwake = async (): Promise<boolean> => {
+  await configService.reload();
+  if (!configService.isInitialized()) {
+    throw new Error('Keep-awake preference readback failed');
+  }
+  return readKeepAwake();
+};
 
 /**
  * 共享的"保持唤醒"状态。toggle 时:乐观更新 -> 应用 OS 效果(applyKeepAwake)-> 持久化(HTTP PUT)。
@@ -21,22 +33,26 @@ export function useKeepAwake(): { keepAwake: boolean; setKeepAwake: (enabled: bo
 
   useEffect(() => {
     let active = true;
-    const unsub = configService.subscribe(KEEP_AWAKE_CONFIG_KEY, (v) => setKeepAwakeState(normalizeKeepAwake(v)));
+    const syncKeepAwake = () => setKeepAwakeState(readKeepAwake());
+    const unsubCanonical = configService.subscribe(KEEP_AWAKE_CONFIG_KEY, syncKeepAwake);
+    const unsubLegacy = configService.subscribe(LEGACY_KEEP_AWAKE_CONFIG_KEY, syncKeepAwake);
     void configService.whenReady().then(() => {
       if (active) setKeepAwakeState(readKeepAwake());
     });
     return () => {
       active = false;
-      unsub();
+      unsubCanonical();
+      unsubLegacy();
     };
   }, []);
 
   const setKeepAwake = useCallback(async (enabled: boolean) => {
     await applyKeepAwakeSetting(enabled, {
-      getCurrent: () => configService.get(KEEP_AWAKE_CONFIG_KEY),
+      getCurrent: readKeepAwake,
       setLocal: (value) => configService.setLocal(KEEP_AWAKE_CONFIG_KEY, value),
       applyNative: (value) => application.applyKeepAwake.invoke({ enabled: value }),
       persist: (value) => systemSettings.setKeepAwake.invoke({ enabled: value }),
+      readPersisted: readPersistedKeepAwake,
     });
   }, []);
 

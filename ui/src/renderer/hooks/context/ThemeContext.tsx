@@ -10,7 +10,7 @@ import useColorScheme from '@renderer/hooks/ui/useColorScheme';
 import useFontScale from '@renderer/hooks/ui/useFontScale';
 import { configService } from '@/common/config/configService';
 import { application } from '@/common/adapter/ipcBridge';
-import { KEEP_AWAKE_CONFIG_KEY, normalizeKeepAwake } from '@renderer/hooks/ui/keepAwakeSetting';
+import { readKeepAwakeConfig } from '@renderer/hooks/ui/keepAwakeSetting';
 
 /**
  * Theme context value interface 主题上下文值接口
@@ -52,7 +52,7 @@ export const ThemeProvider: React.FC<PropsWithChildren> = ({ children }) => {
     (async () => {
       try {
         await configService.whenReady();
-        const enabled = normalizeKeepAwake(configService.get(KEEP_AWAKE_CONFIG_KEY));
+        const enabled = readKeepAwakeConfig((key) => configService.get(key));
         await application.applyKeepAwake.invoke({ enabled });
       } catch {
         /* 非桌面环境无此 command,忽略 */
