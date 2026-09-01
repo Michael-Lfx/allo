@@ -24,7 +24,9 @@ const { Title, Text, Paragraph } = Typography;
 // 与复习/创建/标签弹窗仅在对应 Tab 或操作打开时才下载执行。路由级 lazy
 // 只拆到整页，这里进一步把非首屏组件拆成独立 chunk，学习页首屏只加载
 // 课程卡片、复习横幅与模型选择器等核心模块，达到秒开。
-const ConceptGraphPanel = lazy(() => import('./components/ConceptGraphPanel'));
+const LearningGraphWorkspace = lazy(() =>
+  import('./components/LearningGraphWorkspace')
+);
 const QuestionManager = lazy(() =>
   import('./components/QuestionManager').then((m) => ({ default: m.QuestionManager }))
 );
@@ -240,6 +242,20 @@ const LearningPage: React.FC = () => {
   }
 
   if (detail) {
+    // 学习图课程走图工作区（DAG + 就绪集推荐 + 节点抽屉）；
+    // 传统课程维持大纲导航工作区。
+    if (detail.graph) {
+      return (
+        <Suspense fallback={<div className='flex h-full items-center justify-center'><Spin /></div>}>
+          <LearningGraphWorkspace
+            detail={detail}
+            busyId={busyId}
+            onBack={() => navigate('/learn')}
+            onRefresh={() => void load()}
+          />
+        </Suspense>
+      );
+    }
     return (
       <>
         <CourseWorkspace
@@ -340,22 +356,6 @@ const LearningPage: React.FC = () => {
                   onMutated={() => void load()}
                   onEditTags={(entry) => void openTagEditor('question', entry)}
                 />
-              </Suspense>
-            </Tabs.TabPane>
-            <Tabs.TabPane
-              key='concept-graph'
-              title={
-                <span className='inline-flex items-center gap-6px'>
-                  {t('learning.conceptGraphTab')}
-                  <Tag size='small' color='orangered' className='!mx-0'>
-                    {t('learning.conceptGraphExperimental')}
-                  </Tag>
-                </span>
-              }
-              destroyOnHide={false}
-            >
-              <Suspense fallback={<div className='flex justify-center py-32px'><Spin /></div>}>
-                <ConceptGraphPanel />
               </Suspense>
             </Tabs.TabPane>
           </Tabs>

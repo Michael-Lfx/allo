@@ -28,8 +28,9 @@ export interface UseCourseCreationOptions {
 export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationOptions) {
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const [generateVisible, setGenerateVisible] = useState(false);
-  // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）；默认描述生成
-  const [creationTab, setCreationTab] = useState<'base' | 'description'>('description');
+  // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）/
+  // 方式三（学习图 beta：描述即学习目标，生成前置网络）；默认描述生成
+  const [creationTab, setCreationTab] = useState<'base' | 'description' | 'graph'>('description');
   const [creationDescription, setCreationDescription] = useState('');
   const [knowledgeBases, setKnowledgeBases] = useState<IKnowledgeBase[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
@@ -101,6 +102,12 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     const description = creationDescription.trim();
     if (!description) {
       Message.warning(t('learning.describeRequired'));
+      return;
+    }
+    // 学习图（beta）：描述即学习目标，后端按 course_kind 分流到图生成；
+    // 传统课程走描述流生成大纲。
+    if (creationTab === 'graph') {
+      await generateCourse({ course_kind: 'learning_graph', description, ...modelFields });
       return;
     }
     await generateCourse({ description, ...modelFields });

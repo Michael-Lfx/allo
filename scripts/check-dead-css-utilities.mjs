@@ -256,7 +256,6 @@ const BASELINE = new Map([
   ['ui/src/renderer/pages/knowledge/KnowledgeTagFilterBar.tsx', { ramp: 1 }],
   ['ui/src/renderer/pages/knowledge/KnowledgeTagManagementModal.tsx', { ramp: 3 }],
   ['ui/src/renderer/pages/knowledge/QuickCapture.tsx', { ramp: 1 }],
-  ['ui/src/renderer/pages/learning/components/CreateCourseDialog.tsx', { ramp: 4 }],
   ['ui/src/renderer/pages/learning/components/QuestionManager.tsx', { borderNoStyle: 1 }],
   ['ui/src/renderer/pages/mcp/PluginSettingsPanel.tsx', { deadBorder: 1, ramp: 1 }],
   ['ui/src/renderer/pages/modelHub/FreeModelsContent.tsx', { ramp: 6 }],

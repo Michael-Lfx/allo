@@ -1,12 +1,15 @@
 export type ActivityKind = 'single_choice' | 'true_false' | 'reflection' | 'fill_in_blank';
-export type LessonStatus = 'not_started' | 'in_progress' | 'completed';
+export type LessonStatus = 'not_started' | 'in_progress' | 'completed' | 'skipped';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
 export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archived';
+/** 课程类型：传统课程（大纲驱动）与学习图（beta，前置网络驱动） */
+export type CourseKind = 'traditional' | 'learning_graph';
 
 /** 生成课程请求：知识库流与描述流二选一（都传时后端以知识库为准）。
- * 描述流全程无知识库参与；知识库流内联采样后仍可携带 domain 精调。 */
+ * 学习图课程只走描述流（描述即学习目标），由后端按 course_kind 分流。 */
 export interface GenerateCourseRequest {
+  course_kind?: CourseKind;
   knowledge_base_id?: string;
   description?: string;
   domain?: string;
@@ -34,6 +37,7 @@ export interface CourseSummary {
   completed_lessons: number;
   updated_at: number;
   tags: string[];
+  course_kind: CourseKind;
 }
 
 export interface Activity {
@@ -95,6 +99,8 @@ export interface CourseDetail {
   concepts: Concept[];
   next_lesson_id: string | null;
   due_review_count: number;
+  /** 仅 learning_graph 课程携带：图投影 + 下一步推荐节点 */
+  graph: LearningGraphView | null;
 }
 
 export interface AttemptResult {
@@ -299,72 +305,40 @@ export interface SetTagsRequest {
   apply_to_children?: boolean;
 }
 
-// ── 实验：概念图（对应后端 concept_graph 类型） ──────────────────────
+// ── 学习图（beta，对应后端 learning_graph 类型） ──────────────────────
 
-export interface ConceptGraphNode {
-  id: string;
+/** 图节点：底层课时 + 图坐标（拓扑序 position、层深 depth）+ 学习者进度。
+ * 正文不进全图载荷——内容经现有课时接口按需拉取。 */
+export interface GraphNodeView {
+  lesson_id: string;
   title: string;
-  /** 估计学习分钟数（5 分钟档；30 为软上限，60 为硬上限，超过 60 视为硬上限违例） */
-  min?: number;
-  /** 子领域分组名（旧字段，新图不再设置） */
-  group?: string;
-  /** 为什么不可或缺（旧字段，新图不再设置） */
-  necessity?: string;
-  /** 是否为锚点（旧字段，新图不再设置） */
-  is_anchor?: boolean;
+  summary: string;
+  purpose: string;
+  estimated_minutes: number;
+  generated: boolean;
+  /** 发布时的 Kahn 拓扑序（也是推荐排序键） */
+  position: number;
+  /** 前置层深（零前置为 0），供分层渲染与宏观 LOD 使用 */
+  depth: number;
+  status: LessonStatus;
+  prerequisite_count: number;
 }
 
-/** 先决边：from 应先于 to 掌握 */
-export interface ConceptGraphEdge {
-  from: string;
-  to: string;
-  /** 该边为何存在的理由 */
-  reason?: string;
-}
-
-export interface ConceptGraphDroppedEdge {
+/** 前置边：from 应先于 to 被满足（lesson_id 引用） */
+export interface GraphEdgeView {
   from: string;
   to: string;
   reason: string;
 }
 
-export type AuditSeverity = 'info' | 'warning' | 'danger';
-
-export interface ConceptGraphFinding {
-  kind: string;
-  severity: AuditSeverity;
-  message: string;
-  node_ids: string[];
-}
-
-export interface ConceptGraphAudit {
-  /** 全部阶段丢弃的引用数（unknown/self/duplicate/cycle） */
-  ref_drop_count: number;
-  /** 丢弃率 = 丢弃引用 / 模型原始引用总数 */
-  ref_drop_rate: number;
-  dropped_edges: ConceptGraphDroppedEdge[];
-  findings: ConceptGraphFinding[];
-}
-
-export interface ConceptGraphSummary {
-  id: string;
-  topic: string;
-  node_count: number;
-  edge_count: number;
-  created_at: number;
-}
-
-export interface ConceptGraphView {
-  id: string;
-  topic: string;
-  nodes: ConceptGraphNode[];
-  edges: ConceptGraphEdge[];
-  audit: ConceptGraphAudit;
-  created_at: number;
-}
-
-export interface GenerateConceptGraphRequest {
-  topic: string;
-  provider_id?: string;
-  model?: string;
+/** 图视图（挂在 CourseDetail.graph 下）：结构投影 + 就绪集推荐（≤10） */
+export interface LearningGraphView {
+  goal: string;
+  scope: string;
+  nodes: GraphNodeView[];
+  edges: GraphEdgeView[];
+  /** 下一步推荐学习的节点（就绪集按拓扑序，≤10） */
+  recommended: string[];
+  /** 课程行 graph_meta_json 透传（审计快照/生成留档/扩展备注） */
+  meta: Record<string, unknown> | null;
 }
