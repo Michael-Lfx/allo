@@ -19,6 +19,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { parseDiff } from '@/renderer/utils/file/diffUtils';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import MessageFileChanges from '../MessageFileChanges';
+import { BriefingToolCard, isBriefingToolName } from './BriefingToolCard';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import MarkdownView from '@renderer/components/Markdown';
@@ -374,6 +375,11 @@ const ToolResultDisplay: React.FC<{
     }
   }
 
+  if (isBriefingToolName(toolName)) {
+    const card = <BriefingToolCard result={result_display} />;
+    if (card) return card;
+  }
+
   // 将结果转换为字符串 Convert result to string
   const display = toDisplayText(result_display);
 
@@ -494,6 +500,22 @@ const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
           if (videoUrl) {
             return <VideoDisplay key={call_id} videoUrl={videoUrl} relativePath={result.local_path} />;
           }
+        }
+
+        if (isBriefingToolName(nameText) && result_display) {
+          return (
+            <div key={callIdText}>
+              <ToolChip
+                id={callIdText}
+                name={nameText}
+                detail={statusText === 'Canceled' ? t('messages.canceledExecution') : undefined}
+                status={resolveToolChipStatusFromToolGroup(status)}
+              />
+              <div className='mt-8px'>
+                <BriefingToolCard result={result_display} />
+              </div>
+            </div>
+          );
         }
 
         // 通用工具调用展示 Generic tool call display

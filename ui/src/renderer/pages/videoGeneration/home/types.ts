@@ -9,13 +9,31 @@ import type { VimaxModelSelection } from '../components/ModelSelectors';
  * - `agent`: ViMax multi-scene pipelines
  * - `action`: character still + reference video imitation
  * - `creation`: infinite canvas free composition
+ * - `briefing`: sourced news briefing (not a ViMax film)
  */
-export type VideoHomeMode = 'generate' | 'agent' | 'creation' | 'action';
+export type VideoHomeMode = 'generate' | 'agent' | 'creation' | 'action' | 'briefing';
+export type BriefingResearchDepth = 'fast' | 'deep';
+
+export interface BriefingModelPick {
+  provider_id: string;
+  model: string;
+  voice?: string | null;
+}
+
+export interface BriefingPreferenceValue {
+  formatSecs: number;
+  researchDepth: BriefingResearchDepth;
+  timeWindowHours: number;
+  sourceUrls: string;
+  tts: BriefingModelPick | null;
+  image: BriefingModelPick | null;
+}
 
 export function parseVideoHomeMode(raw: string | null | undefined): VideoHomeMode {
   if (raw === 'generate' || raw === 'video') return 'generate';
   if (raw === 'creation' || raw === 'canvas') return 'creation';
   if (raw === 'action') return 'action';
+  if (raw === 'briefing' || raw === 'news') return 'briefing';
   return 'agent';
 }
 
@@ -82,6 +100,12 @@ export interface VideoCreateDraft {
   actionCharacter: ActionAssetDraft | null;
   /** Action-imitation motion reference. File and object URL are never persisted. */
   actionVideo: ActionAssetDraft | null;
+  briefingFormatSecs: number;
+  researchDepth: BriefingResearchDepth;
+  timeWindowHours: number;
+  sourceUrls: string;
+  briefingTts: BriefingModelPick | null;
+  briefingImage: BriefingModelPick | null;
 }
 
 /** Agent Mode definition (idea / script / novel) — formerly labeled "skill". */

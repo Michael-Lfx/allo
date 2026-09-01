@@ -115,6 +115,29 @@ describe('product funnel', () => {
     expect('prompt' in (queued?.properties ?? {})).toBe(false);
   });
 
+  test('keeps briefing metadata and never maps briefing success to film_succeeded', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    trackFunnelEvent('briefing_succeeded', {
+      feature: 'video_generation',
+      mode: 'briefing',
+      workflow: 'news_briefing',
+      briefing_id: 'brief-1',
+      research_depth: 'fast',
+      beat_count: 2,
+      citation_count: 2,
+      prompt: 'must not upload',
+    });
+    const [queued] = listQueuedTelemetryEventsForTests();
+    expect(queued?.name).toBe('briefing_succeeded');
+    expect(queued?.properties.briefing_id).toBe('brief-1');
+    expect(queued?.properties.research_depth).toBe('fast');
+    expect(queued?.properties.beat_count).toBe(2);
+    expect(queued?.properties.citation_count).toBe(2);
+    expect('prompt' in (queued?.properties ?? {})).toBe(false);
+    expect(hasFunnelEvent('film_succeeded')).toBe(false);
+  });
+
   test('queues app_opened as platform telemetry', () => {
     resetFunnelForTests();
     resetTelemetryOutboxForTests();

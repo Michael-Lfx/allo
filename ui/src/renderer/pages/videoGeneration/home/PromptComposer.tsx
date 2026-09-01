@@ -54,7 +54,9 @@ export function PromptComposer({
   const enteredIdsRef = useRef(new Set<string>());
   const [enteringIds, setEnteringIds] = useState<Set<string>>(() => new Set());
 
-  const imageItems = usesCanvasReferences(mode)
+  const imageItems = mode === 'briefing'
+    ? []
+    : usesCanvasReferences(mode)
     ? canvasReferences.map((reference) => ({
         id: reference.localId,
         previewUrl: reference.previewUrl,
@@ -102,6 +104,7 @@ export function PromptComposer({
     <div className={styles.composerMain}>
       <div className={styles.promptArea}>
         <div className={styles.promptInner}>
+          {mode === 'briefing' ? null : (
           <div className={styles.attachStage}>
             {stackedCount > 0 ? (
               <div
@@ -198,6 +201,7 @@ export function PromptComposer({
               </button>
             )}
           </div>
+          )}
           <div className={styles.promptEditor}>
             {mode === 'agent' && selectedVerticalSkills.length > 0 ? (
               <div className={styles.skillChips}>

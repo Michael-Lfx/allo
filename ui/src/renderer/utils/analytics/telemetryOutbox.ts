@@ -43,6 +43,10 @@ const ALLOWED_PROPERTIES = new Set([
   'video_model',
   'viewport',
   'workflow',
+  'briefing_id',
+  'research_depth',
+  'beat_count',
+  'citation_count',
 ]);
 
 let memoryQueue: FirstPartyTelemetryEvent[] = [];

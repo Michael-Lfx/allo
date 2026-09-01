@@ -903,6 +903,13 @@ impl NomiAgentManager {
         config.tools.browser.headless = false;
         config.tools.browser.source = config_extra.browser_source.clone();
 
+        // News briefing tools talk to the same file-backed engine as /api/briefing.
+        // Allow-list before bootstrap so Default mode does not park on approval.
+        config.tools.allow_list.extend([
+            "briefing_create".to_owned(),
+            "briefing_status".to_owned(),
+        ]);
+
         // Companion memory tools only touch the companion's own memory.db — never
         // user files — so they skip the approval gate in every session mode
         // (Default mode auto-approves nothing by category, which would park
@@ -1301,6 +1308,12 @@ impl NomiAgentManager {
                 has_video = media_wired.has_video,
                 has_workflow = media_wired.has_workflow,
                 "Registered Flowy media generation tools"
+            );
+        }
+        if nomi_briefing::wire_briefing_tools(engine.registry_mut(), &gateway_data_dir) {
+            debug!(
+                conversation_id = %conversation_id,
+                "Registered briefing_create + briefing_status tools"
             );
         }
 

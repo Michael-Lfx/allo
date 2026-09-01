@@ -4,7 +4,7 @@
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 本域覆盖 Flowy 的所有"生成媒体"能力：创意工坊画布、ViMax 视频管线、视频生成
-Canvas 模式，以及它们共同依赖的统一多模态模型调用层。共 8 个 crate：
+Canvas 模式、资讯播报，以及它们共同依赖的统一多模态模型调用层。
 
 | Crate | 层 | 职责 |
 | --- | --- | --- |
@@ -15,6 +15,8 @@ Canvas 模式，以及它们共同依赖的统一多模态模型调用层。共 
 | [`nomifun-canvas`](../../crates/backend/nomifun-canvas/) | 后端 | 视频生成 Canvas 模式（DEV） |
 | [`nomifun-media`](../../crates/backend/nomifun-media/) | 后端 | 媒体设置 / 积分 / 工作流历史 |
 | [`nomi-vimax`](../../crates/agent/nomi-vimax/) | 引擎 | ViMax 视频生成管线 |
+| [`nomi-briefing`](../../crates/agent/nomi-briefing/) | 引擎 | 资讯播报：可溯源拍脚本、研究门、对齐、合成调度 |
+| [`nomifun-briefing`](../../crates/backend/nomifun-briefing/) | 后端 | 资讯播报 HTTP 面（`/api/briefing/*`） |
 | [`nomi-media`](../../crates/agent/nomi-media/) | 引擎 | 媒体生成引擎与 agent 工具 |
 
 ## 统一模型调用层 `nomifun-model-invoke`
@@ -84,6 +86,16 @@ P1 多模态重构的产物（设计稿：
 - 前端路由 `/video-generation`、`/video-generation/:sessionId` 已上线。
 - **成片终态遥测**：`VimaxService` 在 Render job 结束（`Succeeded` / `Failed` / `Cancelled`）以及 `interrupt_all` 时仅对当时 `Rendering` 的会话发出 `film_*`（中断映射为 `film_cancelled`）。Plan→Idle 与 Plan 失败不报。hook 由 `nomifun-vimax` 接到 `CloudService::upload_video_growth_events`；`event_id = video:{name}:{session_id}` 与 UI 一致，服务端 UNIQUE 去重。属性含 workflow / 模型 / `credits_consumed` / `duration_ms` / `error_code` / `failure_channel`。增长口径见 [cloud-billing.zh.md](cloud-billing.zh.md)「第一方产品遥测」。
 
+## 资讯播报 `nomi-briefing` / `nomifun-briefing`
+
+不是第四条创意成片管线。优化目标是「不说错、可溯源、时长预算」，IR 是 beat + claims + citations。
+
+- 引擎 [`nomi-briefing`](../../crates/agent/nomi-briefing/)：研究计划确认、意图检索独立域（用户链接可选）、≥2 独立域、无源 HOLD、按句 TTS 切片（4096 硬顶）、ASR 对齐写出 `timing.json` / `beats.json`（禁止手敲秒）、原作 compositor spawn、beat/card/motion lint。
+- HTTP 面 [`nomifun-briefing`](../../crates/backend/nomifun-briefing/)：`/api/briefing/sessions*`，文件会话 `{data_dir}/briefing/`。
+- 合成 sidecar [`packaging/briefing-compositor/`](../../packaging/briefing-compositor/)：原作最小新闻卡包，Rust `node cli.mjs --input <working_dir>`。禁止拷贝 video-talkcraft TSX。
+- 前端：VG Home `mode=briefing` 与 `/video-generation/briefing/:id`。Session 只调 `briefing_create` / `briefing_status`，禁止 `web_search` 即兴写稿。
+- **终态遥测禁止 `film_*`。** 服务端 hook 上报 `briefing_succeeded` / `briefing_failed` / `briefing_cancelled`，`event_id = briefing:{name}:{briefing_id}`。
+
 ## 视频生成 Canvas 模式 `nomifun-canvas`
 
 独立于 workshop 的第二条画布线（lib.rs 标注 **DEV**）：
@@ -116,5 +128,6 @@ P1 多模态重构的产物（设计稿：
                       ModelInvokeService ──▶ 各 provider HTTP
 /video-generation ──▶ /api/vimax/* (nomifun-vimax) ──▶ VimaxService(nomi-vimax)
         Canvas 模式 ──▶ /api/video-canvas/* (nomifun-canvas) ──┘（materialize 双向）
+        资讯播报 ──▶ /api/briefing/* (nomifun-briefing) ──▶ BriefingService(nomi-briefing)
 nomi-media 工具 ◀── nomifun-ai-agent 接线；nomifun-media 出设置/积分/历史
 ```

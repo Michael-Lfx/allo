@@ -15,6 +15,7 @@ mod campaign;
 mod tv_show;
 mod vimax_skill_hub;
 mod vimax;
+mod briefing;
 mod confirmation;
 mod connection_test;
 mod conversation;
@@ -151,6 +152,9 @@ pub use vimax_skill_hub::{
     VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse, VimaxSkillAuthor,
 };
 pub use vimax::{VimaxSessionListResponse, VimaxSessionSummary};
+pub use briefing::{
+    BriefingCreateRequest, BriefingModelsRequest, BriefingSessionListResponse, BriefingSessionSummary,
+};
 pub use confirmation::{
     ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse,
 };

@@ -47,6 +47,10 @@ const ALLOWED_PROPERTIES = new Set([
   'image_model',
   'credits_consumed',
   'duration_ms',
+  'briefing_id',
+  'research_depth',
+  'beat_count',
+  'citation_count',
 ]);
 
 let started = false;

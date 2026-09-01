@@ -36,6 +36,8 @@ interface DurationTimelineBarProps {
   max?: number;
   step?: number;
   ticks?: readonly number[];
+  /** Hide the video-credit estimate (briefing length is not billed per second). */
+  hideCredits?: boolean;
 }
 
 const DurationTimelineBar: React.FC<DurationTimelineBarProps> = ({
@@ -48,6 +50,7 @@ const DurationTimelineBar: React.FC<DurationTimelineBarProps> = ({
   max = DURATION_MAX_SECS,
   step = DURATION_STEP_SECS,
   ticks,
+  hideCredits,
 }) => {
   const { t } = useTranslation();
   const scrubRef = useRef<HTMLDivElement | null>(null);
@@ -195,13 +198,23 @@ const DurationTimelineBar: React.FC<DurationTimelineBarProps> = ({
       </div>
 
       <div className={styles.durationTimelineFooter}>
-        <span className={styles.durationTimelineCredits}>
-          {t('videoGeneration.workspace.source.durationCreditsHint', {
-            credits: formatDurationCredits(secs),
-            rate: CREDITS_PER_SECOND,
-            defaultValue: '预估约 {{credits}} 积分（约 {{rate}}/秒）',
-          })}
-        </span>
+        {hideCredits ? (
+          <span className={styles.durationTimelineCredits}>
+            {t('videoGeneration.briefing.formatRange', {
+              min,
+              max,
+              defaultValue: '{{min}}–{{max}} 秒口播',
+            })}
+          </span>
+        ) : (
+          <span className={styles.durationTimelineCredits}>
+            {t('videoGeneration.workspace.source.durationCreditsHint', {
+              credits: formatDurationCredits(secs),
+              rate: CREDITS_PER_SECOND,
+              defaultValue: '预估约 {{credits}} 积分（约 {{rate}}/秒）',
+            })}
+          </span>
+        )}
         <span className={styles.durationTimelineRangeHint}>
           {min}–{max}s
         </span>

@@ -11,10 +11,19 @@ import {
 import { DEFAULT_VISUAL_STYLE_PROMPT } from '../visualStylePresets';
 import type { VimaxWorkflow } from '../types';
 import type {
+  BriefingModelPick,
+  BriefingResearchDepth,
   CreationSkillId,
   GenerationPreferences,
   VideoCreateDraft,
 } from './types';
+import {
+  BRIEFING_DURATION_DEFAULT_SECS,
+  BRIEFING_DURATION_MAX_SECS,
+  BRIEFING_DURATION_MIN_SECS,
+  BRIEFING_DURATION_STEP_SECS,
+  clampDuration,
+} from '../durationBounds';
 import { CREATION_SKILL_IDS } from './modeCatalog';
 
 export const DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v3';
@@ -27,6 +36,19 @@ const EMPTY_MODELS = {
   image_model: '',
   video_model: '',
 };
+
+function parseBriefingPick(raw: unknown): BriefingModelPick | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  const provider_id = typeof row.provider_id === 'string' ? row.provider_id.trim() : '';
+  const model = typeof row.model === 'string' ? row.model.trim() : '';
+  if (!provider_id || !model) return null;
+  return {
+    provider_id,
+    model,
+    voice: typeof row.voice === 'string' && row.voice.trim() ? row.voice : null,
+  };
+}
 
 export const DEFAULT_PREFERENCES: GenerationPreferences = {
   automatic: false,
@@ -54,6 +76,12 @@ export function defaultDraft(): VideoCreateDraft {
     canvasReferences: [],
     actionCharacter: null,
     actionVideo: null,
+    briefingFormatSecs: BRIEFING_DURATION_DEFAULT_SECS,
+    researchDepth: 'fast',
+    timeWindowHours: 24,
+    sourceUrls: '',
+    briefingTts: null,
+    briefingImage: null,
   };
 }
 
@@ -149,6 +177,21 @@ export function loadDraft(): VideoCreateDraft {
       canvasReferences: [],
       actionCharacter: null,
       actionVideo: null,
+      briefingFormatSecs: clampDuration(
+        typeof parsed.briefingFormatSecs === 'number' ? parsed.briefingFormatSecs : BRIEFING_DURATION_DEFAULT_SECS,
+        BRIEFING_DURATION_MIN_SECS,
+        BRIEFING_DURATION_MAX_SECS,
+        BRIEFING_DURATION_STEP_SECS
+      ),
+      researchDepth:
+        parsed.researchDepth === 'deep' ? 'deep' : ('fast' as BriefingResearchDepth),
+      timeWindowHours:
+        typeof parsed.timeWindowHours === 'number' && parsed.timeWindowHours > 0
+          ? parsed.timeWindowHours
+          : 24,
+      sourceUrls: typeof parsed.sourceUrls === 'string' ? parsed.sourceUrls : '',
+      briefingTts: parseBriefingPick(parsed.briefingTts),
+      briefingImage: parseBriefingPick(parsed.briefingImage),
     };
   } catch {
     return fallback;

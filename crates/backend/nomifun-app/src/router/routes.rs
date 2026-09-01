@@ -35,6 +35,7 @@ use nomifun_poi::poi_routes;
 use nomifun_insights::insights_routes;
 use nomifun_media::media_routes;
 use nomifun_vimax::vimax_routes;
+use nomifun_briefing::briefing_routes;
 use nomifun_cloud::cloud_routes;
 use nomifun_mcp::mcp_routes;
 use nomifun_office::{office_proxy_routes, office_routes};
@@ -923,6 +924,12 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    let briefing_authenticated = protect_instance_owner(
+        briefing_routes(states.briefing),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
     let video_canvas_authenticated = protect_instance_owner(
         video_canvas_routes(states.video_canvas.clone()),
         &auth_mw_state,
@@ -1170,6 +1177,7 @@ pub fn create_router_with_all_state(
         .merge(insights_authenticated)
         .merge(media_authenticated)
         .merge(vimax_authenticated)
+        .merge(briefing_authenticated)
         .merge(video_canvas_authenticated)
         .merge(cloud_authenticated)
         .merge(webhook_authenticated)

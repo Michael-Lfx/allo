@@ -1237,6 +1237,8 @@ pub struct AppServices {
     pub media_service: Arc<nomifun_media::MediaApiService>,
     /// ViMax video-generation sessions / plan / render.
     pub vimax_service: Arc<nomifun_vimax::VimaxApiService>,
+    /// News briefing sessions (cited beats; not a ViMax workflow).
+    pub briefing_service: Arc<nomifun_briefing::BriefingApiService>,
     /// Video-generation Canvas mode (open-ai-canvas port) — independent of Workshop.
     pub video_canvas_service: Arc<nomifun_canvas::CanvasService>,
     /// Flowy cloud account (email OTP login, whoami).
@@ -3091,6 +3093,14 @@ impl AppServices {
             nomifun_vimax::VimaxApiService::new(data_dir.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to open vimax service: {e}"))?,
         );
+        let briefing_api = nomifun_briefing::BriefingApiService::new(data_dir.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to open briefing service: {e}"))?;
+        briefing_api.attach_voice(
+            model_invoke_service.clone(),
+            Arc::new(SqliteClientPreferenceRepository::new(database.pool().clone())),
+            Arc::new(SqliteProviderModelRepository::new(database.pool().clone())),
+        );
+        let briefing_service = Arc::new(briefing_api);
         let video_canvas_service = nomifun_canvas::CanvasService::new(data_dir.clone());
         let cloud_service = Arc::new(
             nomifun_cloud::CloudService::new(data_dir.clone())
@@ -3216,6 +3226,7 @@ impl AppServices {
             insights_service,
             media_service,
             vimax_service,
+            briefing_service,
             video_canvas_service,
             cloud_service,
             #[cfg(feature = "browser-use")]

@@ -59,6 +59,8 @@ describe('parseVideoHomeMode', () => {
     expect(parseVideoHomeMode('generate')).toBe('generate');
     expect(parseVideoHomeMode('video')).toBe('generate');
     expect(parseVideoHomeMode('agent')).toBe('agent');
+    expect(parseVideoHomeMode('briefing')).toBe('briefing');
+    expect(parseVideoHomeMode('news')).toBe('briefing');
     expect(parseVideoHomeMode(null)).toBe('agent');
   });
 });

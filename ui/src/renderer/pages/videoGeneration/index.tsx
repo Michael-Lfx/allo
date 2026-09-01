@@ -38,8 +38,14 @@ import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
 import { prefetchCanvasWorkspace } from './prefetch';
 import { videoCanvasProjectPath } from '../videoCanvas/routes';
-import { parseVideoHomeMode } from './home/types';
-import type { VideoCreateDraft, VideoHomeMode } from './home/types';
+import {
+  briefingWorkspacePath,
+  createBriefing,
+  listBriefingSessions,
+  runBriefing,
+} from './briefing/api';
+import type { BriefingSessionSummary } from './briefing/api';
+import { parseVideoHomeMode, type VideoCreateDraft, type VideoHomeMode } from './home/types';
 import {
   CLIP_DURATION_DEFAULT_SECS,
   CLIP_DURATION_MAX_SECS,
@@ -101,6 +107,7 @@ const VideoGenerationListPage: React.FC = () => {
 
   const [listTab, setListTab] = useState<ListTab>('tvShow');
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [briefingSessions, setBriefingSessions] = useState<BriefingSessionSummary[]>([]);
   const [generationTasks, setGenerationTasks] = useState<GenerationTaskView[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingTasks, setLoadingTasks] = useState(false);
@@ -158,6 +165,19 @@ const VideoGenerationListPage: React.FC = () => {
     }
   }, []);
 
+  const refreshBriefings = useCallback(async () => {
+    setLoading(true);
+    try {
+      setBriefingSessions(await listBriefingSessions());
+      setError(null);
+    } catch (e) {
+      console.error('[videoGeneration] failed to load briefing sessions', e);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const refreshTasks = useCallback(async () => {
     setLoadingTasks(true);
     try {
@@ -175,13 +195,17 @@ const VideoGenerationListPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (workMode === 'briefing' && listTab === 'recent') {
+      void refreshBriefings();
+      return;
+    }
     if (workMode !== 'creation' && listTab === 'recent') {
       void refresh();
     }
     if (workMode === 'generate' && listTab === 'recent') {
       void refreshTasks();
     }
-  }, [listTab, refresh, refreshTasks, workMode]);
+  }, [listTab, refresh, refreshBriefings, refreshTasks, workMode]);
 
   // Keep generation-task polling going while the home is visible — recent
   // tasks need to keep ticking even when the user switches between
@@ -227,6 +251,17 @@ const VideoGenerationListPage: React.FC = () => {
         (s.stage ?? '').toLowerCase().includes(q)
     );
   }, [sessions, searchQuery]);
+
+  const displayedBriefings = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return briefingSessions;
+    return briefingSessions.filter(
+      (session) =>
+        session.title.toLowerCase().includes(q) ||
+        session.stage.toLowerCase().includes(q) ||
+        session.status.toLowerCase().includes(q)
+    );
+  }, [briefingSessions, searchQuery]);
 
   const displayedTasks = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -366,6 +401,7 @@ const VideoGenerationListPage: React.FC = () => {
       if (mode === 'creation') next.set('mode', 'creation');
       else if (mode === 'action') next.set('mode', 'action');
       else if (mode === 'generate') next.set('mode', 'generate');
+      else if (mode === 'briefing') next.set('mode', 'briefing');
       else next.delete('mode');
       setSearchParams(next, { replace: true });
     },
@@ -585,6 +621,74 @@ const VideoGenerationListPage: React.FC = () => {
     [creating, logout, message, navigate, t]
   );
 
+  const handleCreateBriefing = useCallback(
+    async (draft: VideoCreateDraft) => {
+      if (creating) return;
+      const sourceUrls = draft.sourceUrls
+        .split(/[\s,]+/)
+        .map((row) => row.trim())
+        .filter((url) => /^https?:\/\//i.test(url));
+      setCreating(true);
+      try {
+        const created = await createBriefing({
+          intent: draft.sourceText.trim(),
+          title: titleForDraft(draft) || undefined,
+          format_secs: draft.briefingFormatSecs,
+          research_depth: draft.researchDepth,
+          time_window_hours: draft.timeWindowHours,
+          source_urls: sourceUrls,
+          tts_provider_id: draft.briefingTts?.provider_id,
+          tts_model: draft.briefingTts?.model,
+          tts_voice: draft.briefingTts?.voice ?? undefined,
+          image_provider_id: draft.briefingImage?.provider_id,
+          image_model: draft.briefingImage?.model,
+        });
+        trackFunnelEvent('task_accepted', {
+          feature: 'video_generation',
+          mode: 'briefing',
+          workflow: 'news_briefing',
+          briefing_id: created.id,
+          session_id: created.id,
+        });
+        trackFunnelEvent('first_task_started', {
+          feature: 'video_generation',
+          mode: 'briefing',
+          workflow: 'news_briefing',
+          briefing_id: created.id,
+          session_id: created.id,
+        });
+        try {
+          await runBriefing(created.id);
+          trackFunnelEvent('render_started', {
+            feature: 'video_generation',
+            mode: 'briefing',
+            workflow: 'news_briefing',
+            briefing_id: created.id,
+            session_id: created.id,
+          });
+        } catch {
+          // Workspace idle auto-start retries if the first kickoff fails.
+        }
+        clearVideoHomeDraft();
+        navigate(briefingWorkspacePath(created.id));
+      } catch (e) {
+        if (isInvalidCloudSessionError(e)) {
+          await logout();
+          navigate('/cloud-login');
+          return;
+        }
+        message.error(
+          `${t('videoGeneration.actions.createFailed', { defaultValue: '创建失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setCreating(false);
+      }
+    },
+    [creating, logout, message, navigate, t]
+  );
+
   const openSession = useCallback(
     (s: SessionSummary) => {
       rememberVideoGenerationSession(s.id, s.title);
@@ -768,6 +872,7 @@ const VideoGenerationListPage: React.FC = () => {
           onSubmitAgent={(draft) => void handleCreate(draft)}
           onSubmitCreation={(draft) => void handleCreateCanvas(draft)}
           onSubmitGenerate={(draft) => void handleCreateGenerate(draft)}
+          onSubmitBriefing={(draft) => void handleCreateBriefing(draft)}
         />
 
         <section className='flex flex-col gap-12px'>
@@ -796,6 +901,10 @@ const VideoGenerationListPage: React.FC = () => {
                     ? t('videoGeneration.list.actionRecentTitle', {
                         defaultValue: '动作模仿',
                       })
+                    : workMode === 'briefing'
+                    ? t('videoGeneration.list.briefingRecentTitle', {
+                        defaultValue: '最近资讯播报',
+                      })
                     : t('videoGeneration.list.recentTitle', {
                         defaultValue: '最近创作',
                       })}
@@ -821,6 +930,10 @@ const VideoGenerationListPage: React.FC = () => {
                     ? t('videoGeneration.list.actionRecentSubtitle', {
                         defaultValue: '继续动作模仿项目。',
                       })
+                    : workMode === 'briefing'
+                    ? t('videoGeneration.list.briefingRecentSubtitle', {
+                        defaultValue: '继续编辑拍脚本、核对引用或导出成片。',
+                      })
                     : t('videoGeneration.list.recentSubtitle', {
                         defaultValue: '继续分镜、渲染或查看已经完成的影片。',
                       })}
@@ -828,6 +941,7 @@ const VideoGenerationListPage: React.FC = () => {
               </div>
               {listTab === 'recent' ? (
                 <div className='flex flex-wrap items-center gap-10px'>
+                  {workMode === 'briefing' ? null : (
                   <Button
                     type='outline'
                     size='small'
@@ -846,7 +960,10 @@ const VideoGenerationListPage: React.FC = () => {
                       })}
                     </span>
                   </Button>
-                  {workMode !== 'creation' && !error && sessions.length > 0 ? (
+                  )}
+                  {(workMode === 'briefing'
+                    ? briefingSessions.length > 0
+                    : workMode !== 'creation' && sessions.length > 0) && !error ? (
                     <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
                       <Search
                         theme='outline'
@@ -947,6 +1064,79 @@ const VideoGenerationListPage: React.FC = () => {
                     )}
                   </>
                 )
+              ) : workMode === 'briefing' ? (
+                <div>
+                  {error ? (
+                    <Result
+                      status='error'
+                      title={t('videoGeneration.list.loadError', {
+                        defaultValue: '加载失败',
+                      })}
+                      subTitle={error}
+                      extra={
+                        <Button onClick={() => void refreshBriefings()}>
+                          {t('videoGeneration.list.retry', { defaultValue: '重试' })}
+                        </Button>
+                      }
+                    />
+                  ) : loading ? (
+                    <div className='flex justify-center py-38px'>
+                      <Spin />
+                    </div>
+                  ) : briefingSessions.length === 0 ? (
+                    <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
+                      <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
+                        <VideoOne theme='outline' size={19} fill='currentColor' />
+                      </span>
+                      <div>
+                        <div className='text-13px font-600 text-[var(--color-text-1)]'>
+                          {t('videoGeneration.list.briefingEmpty.title', {
+                            defaultValue: '你的第一条资讯播报从上方开始',
+                          })}
+                        </div>
+                        <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                          {t('videoGeneration.list.briefingEmpty.desc', {
+                            defaultValue: '写下话题并贴上至少两个独立来源，才会进入调研与口播。',
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div
+                        className='grid gap-12px'
+                        style={{
+                          gridTemplateColumns:
+                            'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
+                        }}
+                      >
+                        {displayedBriefings.map((session) => (
+                          <button
+                            key={session.id}
+                            type='button'
+                            className='flex flex-col gap-8px rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-16px text-left'
+                            onClick={() => navigate(briefingWorkspacePath(session.id))}
+                          >
+                            <strong className='text-14px text-[var(--color-text-1)]'>
+                              {session.title ||
+                                t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
+                            </strong>
+                            <span className='text-12px text-[var(--color-text-3)]'>
+                              {session.status} · {session.stage}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      {displayedBriefings.length === 0 ? (
+                        <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
+                          {t('videoGeneration.list.filterEmpty', {
+                            defaultValue: '没有匹配的任务',
+                          })}
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </div>
               ) : (
                 // Agent/Action modes - show sessions
                 <div>
