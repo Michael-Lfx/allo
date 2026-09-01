@@ -526,13 +526,13 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 .support-chat-modal__wrapper {
   box-sizing: border-box;
   padding: 16px;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .conversation-error-report__wrapper {
   box-sizing: border-box;
   padding: 16px;
-  overflow: auto;
+  overflow: hidden;
 }
 
 /* Arco's focus lock inserts an anonymous container between the modal and its
@@ -552,6 +552,13 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Arco's align-center rule uses an inline-level modal for vertical centering.
+ * Keep that participation while restoring the flex column that keeps the
+ * body scroll owner and footer as siblings. */
+.arco-modal-wrapper.arco-modal-wrapper-align-center .conversation-error-report-modal {
+  display: inline-flex;
 }
 
 /* Keep the report footer in the modal's flex sizing calculation. Without a

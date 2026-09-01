@@ -133,6 +133,31 @@ describe('conversation error report modal contract', () => {
     expect(supportGeometryCss).toContain('height: 100%;');
   });
 
+  test('keeps modal centering and one scroll owner across both support surfaces', () => {
+    for (const selector of ['.support-chat-modal__wrapper', '.conversation-error-report__wrapper']) {
+      const start = cssSource.indexOf(`${selector} {`);
+      expect(start).toBeGreaterThan(-1);
+      const end = cssSource.indexOf('}', start);
+      expect(end).toBeGreaterThan(start);
+      const wrapperRule = cssSource.slice(start, end);
+
+      expect(wrapperRule).toContain('overflow: hidden;');
+      expect(wrapperRule).not.toContain('overflow: auto;');
+    }
+
+    const centeredReportSelector =
+      '.arco-modal-wrapper.arco-modal-wrapper-align-center .conversation-error-report-modal';
+    const centeredReportRule = cssSource.slice(
+      cssSource.indexOf(centeredReportSelector),
+      cssSource.indexOf(centeredReportSelector) + 260
+    );
+
+    expect(centeredReportRule).toContain('display: inline-flex;');
+    expect(cssSource.indexOf(centeredReportSelector)).toBeGreaterThan(
+      cssSource.indexOf('.conversation-error-report-modal {')
+    );
+  });
+
   test('keeps support visibility independent from reducer hydration state', () => {
     expect(providerSource).toContain('modalOpen,');
     expect(supportModalSource).toContain('visible={visible}');
