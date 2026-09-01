@@ -24,7 +24,8 @@ describe('conversation error report modal contract', () => {
     expect(modalSource).toContain('<Popover');
     expect(modalSource).toContain('aria-expanded={infoOpen}');
     expect(modalSource).toContain("width: 'min(720px, calc(100vw - 32px))'");
-    expect(modalSource).toContain('alignCenter={false}');
+    expect(modalSource).toContain('alignCenter');
+    expect(modalSource).not.toContain('alignCenter={false}');
     expect(modalSource).toContain("wrapClassName='conversation-error-report__wrapper'");
     expect(modalSource).not.toContain("height: 'min(760px, calc(100dvh - 32px))'");
     expect(modalSource).toContain('conversation-error-report-description');
@@ -109,8 +110,9 @@ describe('conversation error report modal contract', () => {
       cssSource.indexOf('.support-chat-modal__wrapper'),
       cssSource.indexOf('.conversation-error-report__wrapper')
     );
-    expect(supportWrapperCss).toContain('align-items: center;');
-    expect(supportWrapperCss).not.toContain('align-items: flex-end;');
+    expect(supportWrapperCss).not.toContain('display: flex !important;');
+    expect(supportWrapperCss).not.toContain('align-items: center;');
+    expect(supportWrapperCss).not.toContain('justify-content: center;');
     expect(cssSource).not.toContain('.support-chat-modal .arco-modal-body');
     expect(cssSource).not.toContain('.conversation-error-report__upload');
     expect(cssSource).not.toContain('.conversation-error-report__auto-info');
@@ -135,5 +137,24 @@ describe('conversation error report modal contract', () => {
     expect(providerSource).toContain('modalOpen,');
     expect(supportModalSource).toContain('visible={visible}');
     expect(supportModalSource).toContain('visible={modalOpen}');
+  });
+
+  test('lets Arco own wrapper teardown for every persistent support surface', () => {
+    const extractRule = (selector: string) => {
+      const start = cssSource.indexOf(`${selector} {`);
+      expect(start).toBeGreaterThan(-1);
+      const end = cssSource.indexOf('}', start);
+      expect(end).toBeGreaterThan(start);
+      return cssSource.slice(start, end);
+    };
+
+    for (const selector of ['.support-chat-modal__wrapper', '.conversation-error-report__wrapper']) {
+      expect(extractRule(selector)).not.toMatch(/display\s*:\s*[^;]+!important/);
+    }
+
+    expect(supportModalSource).not.toContain('alignCenter={false}');
+    expect(modalSource).not.toContain('alignCenter={false}');
+    expect(supportModalSource).toContain('maskClosable={false}');
+    expect(modalSource).toContain('maskClosable={false}');
   });
 });

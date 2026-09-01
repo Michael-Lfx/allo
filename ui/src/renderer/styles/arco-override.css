@@ -520,34 +520,19 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
  *
  * The support surface owns a fixed viewport for the chat timeline. The report
  * surface stays content-sized until its single body scroll owner reaches the
- * viewport limit.
+ * viewport limit. Arco owns wrapper visibility; do not override its inline
+ * display lifecycle here, or an exited portal can keep intercepting clicks.
  */
 .support-chat-modal__wrapper {
   box-sizing: border-box;
-  display: flex !important;
-  align-items: center;
-  justify-content: center;
   padding: 16px;
   overflow: auto;
-}
-
-.support-chat-modal__wrapper > .support-chat-modal {
-  top: auto;
-  margin: 0;
 }
 
 .conversation-error-report__wrapper {
   box-sizing: border-box;
-  display: flex !important;
-  align-items: center;
-  justify-content: center;
   padding: 16px;
   overflow: auto;
-}
-
-.conversation-error-report__wrapper > .conversation-error-report-modal {
-  top: auto;
-  margin: 0;
 }
 
 /* Arco's focus lock inserts an anonymous container between the modal and its

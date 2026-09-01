@@ -41,7 +41,8 @@ describe('support chat structure', () => {
     expect(modal.includes('ModalWrapper')).toBe(false);
     expect(modal.includes("width: 'min(600px, calc(100vw - 32px))'")).toBe(true);
     expect(modal.includes("height: 'min(680px, calc(100dvh - 32px))'")).toBe(true);
-    expect(modal.includes('alignCenter={false}')).toBe(true);
+    expect(modal.includes('alignCenter')).toBe(true);
+    expect(modal.includes('alignCenter={false}')).toBe(false);
     expect(modal.includes("wrapClassName='support-chat-modal__wrapper'")).toBe(true);
     expect(modal.includes("100dvh")).toBe(true);
     expect(modal.includes('contentStyle={{ padding: 0, overflow: \'hidden\' }}')).toBe(true);

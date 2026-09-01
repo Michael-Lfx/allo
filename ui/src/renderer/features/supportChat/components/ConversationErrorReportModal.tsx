@@ -295,7 +295,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
         </div>
       }
       className='conversation-error-report-modal w-[min(720px,calc(100vw-32px))] max-w-720px rd-16px'
-      alignCenter={false}
+      alignCenter
       wrapClassName='conversation-error-report__wrapper'
       style={{
         width: 'min(720px, calc(100vw - 32px))',
@@ -303,6 +303,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
         maxHeight: 'min(760px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}
+      maskClosable={false}
       autoFocus={false}
     >
       {context && diagnostic ? (

@@ -55,7 +55,7 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
       }}
       footer={null}
       className='support-chat-modal w-[min(600px,calc(100vw-32px))] max-w-600px rd-16px'
-      alignCenter={false}
+      alignCenter
       wrapClassName='support-chat-modal__wrapper'
       style={{
         width: 'min(600px, calc(100vw - 32px))',
@@ -64,6 +64,7 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
         maxHeight: 'min(680px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}
+      maskClosable={false}
       onCancel={closeSupportChat}
     >
       <div
