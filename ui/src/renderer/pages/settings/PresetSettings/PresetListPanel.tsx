@@ -212,44 +212,61 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
             </Button>
           ) : null}
         </div>
-      ) : filteredPresets.length > 0 ? (
-        <div className='grid gap-16px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
-          {filteredPresets.map((preset) => (
-            <PresetCard
-              key={preset.preset_id}
-              preset={preset}
-              localeKey={localeKey}
-              avatarImageMap={avatarImageMap}
-              tagById={tagById}
-              isExtensionPreset={isExtensionPreset}
-              onEdit={(a) => {
-                setActivePresetId(a.preset_id);
-                onEdit(a);
-              }}
-              onDuplicate={onDuplicate}
-              onToggleEnabled={onToggleEnabled}
-              highlighted={highlightedId === preset.preset_id}
-              cardRef={cardRefSetter(preset.preset_id)}
-            />
-          ))}
-        </div>
       ) : (
-        <div className='flex min-h-220px flex-col items-center justify-center gap-12px rd-8px border border-dashed border-border-2 bg-2 px-20px py-32px text-center'>
-          <div className='max-w-440px text-13px leading-20px text-t-secondary'>
-            {presets.length === 0
-              ? t('settings.presetsEmpty', {
-                  defaultValue: 'No presets yet. Create one to save a reusable launch configuration.',
-                })
-              : t('settings.presetNoMatch', {
-                  defaultValue: 'No presets match the current filters.',
-                })}
-          </div>
-          {presets.length === 0 && (
-            <Button type='primary' size='small' className='flowy-icon-text-btn' icon={<Plus size={14} fill='currentColor' />} onClick={onCreate}>
-              {t('settings.createPreset', { defaultValue: 'Create Preset' })}
-            </Button>
+        <>
+          {error && presets.length > 0 ? (
+            <div
+              className='mb-12px flex items-center justify-between gap-12px rd-12px border border-dashed border-arco-2 px-16px py-12px text-13px text-t-secondary'
+              role='alert'
+            >
+              <span>{t('common.failed')}</span>
+              {onRetry ? (
+                <Button type='secondary' size='small' onClick={() => void onRetry()}>
+                  {t('common.retry')}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          {filteredPresets.length > 0 ? (
+            <div className='grid gap-16px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
+              {filteredPresets.map((preset) => (
+                <PresetCard
+                  key={preset.preset_id}
+                  preset={preset}
+                  localeKey={localeKey}
+                  avatarImageMap={avatarImageMap}
+                  tagById={tagById}
+                  isExtensionPreset={isExtensionPreset}
+                  onEdit={(a) => {
+                    setActivePresetId(a.preset_id);
+                    onEdit(a);
+                  }}
+                  onDuplicate={onDuplicate}
+                  onToggleEnabled={onToggleEnabled}
+                  highlighted={highlightedId === preset.preset_id}
+                  cardRef={cardRefSetter(preset.preset_id)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className='flex min-h-220px flex-col items-center justify-center gap-12px rd-8px border border-dashed border-border-2 bg-2 px-20px py-32px text-center'>
+              <div className='max-w-440px text-13px leading-20px text-t-secondary'>
+                {presets.length === 0
+                  ? t('settings.presetsEmpty', {
+                      defaultValue: 'No presets yet. Create one to save a reusable launch configuration.',
+                    })
+                  : t('settings.presetNoMatch', {
+                      defaultValue: 'No presets match the current filters.',
+                    })}
+              </div>
+              {presets.length === 0 && (
+                <Button type='primary' size='small' className='flowy-icon-text-btn' icon={<Plus size={14} fill='currentColor' />} onClick={onCreate}>
+                  {t('settings.createPreset', { defaultValue: 'Create Preset' })}
+                </Button>
+              )}
+            </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );

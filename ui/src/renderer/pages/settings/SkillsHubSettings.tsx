@@ -386,34 +386,49 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
                 {t('common.retry')}
               </Button>
             </div>
-          ) : filteredSkills.length > 0 ? (
-            <div
-              className='grid gap-16px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_185px]'
-              style={{ gridTemplateColumns: CARD_GRID_COLS }}
-            >
-              {filteredSkills.map((skill) => (
-                <SkillCard
-                  key={skill.name}
-                  skill={skill}
-                  tagByKey={tags.tagByKey}
-                  localeKey={localeKey}
-                  isAutoInjected={skill.source !== 'extension' && autoInjectedNames.has(skill.name)}
-                  onOpenDetails={setDetailSkill}
-                  onEditTags={setTagModalSkill}
-                  onDelete={confirmDelete}
-                  highlighted={highlightedSkill === skill.name}
-                  cardRef={(el) => {
-                    skillRefs.current[skill.name] = el;
-                  }}
-                />
-              ))}
-            </div>
           ) : (
-            <div className='text-center text-t-secondary py-40px'>
-              {availableSkills.length === 0
-                ? t('settings.skillsHub.noSkills', { defaultValue: 'No skills found. Import some to get started.' })
-                : t('settings.skillsHub.noMatch', { defaultValue: 'No skills match the current filters.' })}
-            </div>
+            <>
+              {loadError && availableSkills.length > 0 ? (
+                <div
+                  className='mb-12px flex items-center justify-between gap-12px rd-12px border border-dashed border-arco-2 px-16px py-12px text-13px text-t-secondary'
+                  role='alert'
+                >
+                  <span>{t('common.failed')}</span>
+                  <Button type='secondary' size='small' onClick={() => void fetchData()}>
+                    {t('common.retry')}
+                  </Button>
+                </div>
+              ) : null}
+              {filteredSkills.length > 0 ? (
+                <div
+                  className='grid gap-16px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_185px]'
+                  style={{ gridTemplateColumns: CARD_GRID_COLS }}
+                >
+                  {filteredSkills.map((skill) => (
+                    <SkillCard
+                      key={skill.name}
+                      skill={skill}
+                      tagByKey={tags.tagByKey}
+                      localeKey={localeKey}
+                      isAutoInjected={skill.source !== 'extension' && autoInjectedNames.has(skill.name)}
+                      onOpenDetails={setDetailSkill}
+                      onEditTags={setTagModalSkill}
+                      onDelete={confirmDelete}
+                      highlighted={highlightedSkill === skill.name}
+                      cardRef={(el) => {
+                        skillRefs.current[skill.name] = el;
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className='text-center text-t-secondary py-40px'>
+                  {availableSkills.length === 0
+                    ? t('settings.skillsHub.noSkills', { defaultValue: 'No skills found. Import some to get started.' })
+                    : t('settings.skillsHub.noMatch', { defaultValue: 'No skills match the current filters.' })}
+                </div>
+              )}
+            </>
           )}
 
           {/* Skill directory path */}

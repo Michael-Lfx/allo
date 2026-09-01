@@ -53,10 +53,17 @@ describe('capability hub load contracts', () => {
       expect(source).toContain('SettingsContentLoading');
     }
     expect(presetList).toContain('loading ?');
+    expect(presetList).toContain('error && presets.length > 0');
     expect(skills).toContain('{loading && availableSkills.length === 0 ? (');
     expect(skills).toContain('loadError && availableSkills.length === 0');
+    expect(skills).toContain('loadError && availableSkills.length > 0');
     expect(plugins).toContain('{loading ? (');
+    expect(plugins).toContain('requestIdRef');
+    expect(plugins).toContain('if (requestIdRef.current !== requestId) return;');
+    expect(plugins).toContain('loadError && extensions.length > 0');
     expect(mcp).toContain('{isMcpServersLoading ? (');
+    expect(mcp).toContain('mcpServersLoadFailed && !hasServers');
+    expect(mcp).toContain('loadErrorNotice');
     expect(mcp).toContain('mcpServersLoadFailed');
     expect(mcp).toContain("t('common.retry')");
   });
@@ -66,6 +73,8 @@ describe('capability hub load contracts', () => {
 
     expect(hook).toContain('requestIdRef');
     expect(hook).toContain('if (requestIdRef.current !== requestId) return;');
+    expect(hook).toContain('extensionMcpServersLoadFailed');
+    expect(hook).toContain('mcpServersLoadFailed || extensionMcpServersLoadFailed');
     expect(hook).toContain('isMcpServersLoading: isMcpServersLoading || isExtensionMcpServersLoading');
     expect(hook).toContain('reloadMcpServers: loadMcpServers');
   });

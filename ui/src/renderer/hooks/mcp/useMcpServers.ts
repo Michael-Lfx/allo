@@ -15,6 +15,7 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
   const [isMcpServersLoading, setIsMcpServersLoading] = useState(enabled);
   const [isExtensionMcpServersLoading, setIsExtensionMcpServersLoading] = useState(enabled);
   const [mcpServersLoadFailed, setMcpServersLoadFailed] = useState(false);
+  const [extensionMcpServersLoadFailed, setExtensionMcpServersLoadFailed] = useState(false);
   const requestIdRef = useRef(0);
 
   const loadMcpServers = useCallback(() => {
@@ -24,6 +25,8 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
     requestIdRef.current = requestId;
     setIsMcpServersLoading(true);
     setIsExtensionMcpServersLoading(true);
+    setMcpServersLoadFailed(false);
+    setExtensionMcpServersLoadFailed(false);
     void ensureBackendMcpCatalog()
       .then(({ allServers }) => {
         if (requestIdRef.current !== requestId) return;
@@ -33,7 +36,6 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
       .catch((error) => {
         if (requestIdRef.current !== requestId) return;
         console.error('[useMcpServers] Failed to load MCP catalog:', error);
-        setMcpServers([]);
         setMcpServersLoadFailed(true);
       })
       .finally(() => {
@@ -46,6 +48,7 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
         if (requestIdRef.current !== requestId) return;
         if (!extServers || extServers.length === 0) {
           setExtensionMcpServers([]);
+          setExtensionMcpServersLoadFailed(false);
           return;
         }
 
@@ -56,11 +59,12 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
           );
         }
         setExtensionMcpServers(converted);
+        setExtensionMcpServersLoadFailed(false);
       })
       .catch((error) => {
         if (requestIdRef.current !== requestId) return;
         console.error('[useMcpServers] Failed to load extension MCP servers:', error);
-        setExtensionMcpServers([]);
+        setExtensionMcpServersLoadFailed(true);
       })
       .finally(() => {
         if (requestIdRef.current === requestId) setIsExtensionMcpServersLoading(false);
@@ -72,6 +76,8 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
       requestIdRef.current += 1;
       setIsMcpServersLoading(false);
       setIsExtensionMcpServersLoading(false);
+      setMcpServersLoadFailed(false);
+      setExtensionMcpServersLoadFailed(false);
       return;
     }
 
@@ -94,7 +100,7 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
   return {
     mcpServers,
     isMcpServersLoading: isMcpServersLoading || isExtensionMcpServersLoading,
-    mcpServersLoadFailed,
+    mcpServersLoadFailed: mcpServersLoadFailed || extensionMcpServersLoadFailed,
     reloadMcpServers: loadMcpServers,
     allMcpServers: [...mcpServers, ...extensionMcpServers],
     extensionMcpServers,
