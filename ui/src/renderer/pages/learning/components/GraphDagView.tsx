@@ -43,30 +43,44 @@ const STATUS_COLOR: Record<LessonStatus, string> = {
 };
 
 type GraphFlowNode = Node<
-  { title: string; minutes: number; status: LessonStatus; recommended: boolean; generated: boolean },
+  {
+    title: string;
+    minutes: number;
+    status: LessonStatus;
+    recommended: boolean;
+    generated: boolean;
+    locked: boolean;
+  },
   'graphNode'
 >;
 
-/** 宏观点阵节点：zoom 低于阈值时整个网络退化为色点阵（学习者仍能读出结构与进度） */
+/** 宏观点阵节点：zoom 低于阈值时整个网络退化为色点阵。节点 wrapper 有
+ * 固定盒尺寸，圆点居中绘制——点距即 dagre 网格，读出结构与进度即可。 */
 const GraphDot: React.FC<NodeProps<GraphFlowNode>> = ({ data }) => (
-  <div
-    className='h-full w-full rounded-full'
-    style={{
-      backgroundColor: data.recommended
-        ? 'var(--color-warning-6)'
-        : STATUS_COLOR[data.status],
-      outline: data.recommended ? '2px solid var(--color-warning-6)' : 'none',
-    }}
-    title={data.title}
-  />
+  <div className='flex h-full w-full items-center justify-center' title={data.title}>
+    <span
+      className={`block rounded-full ${data.locked ? 'h-8px w-8px' : 'h-12px w-12px'}`}
+      style={{
+        backgroundColor: data.locked
+          ? 'var(--color-text-4)'
+          : data.recommended
+            ? 'var(--color-warning-6)'
+            : STATUS_COLOR[data.status],
+        opacity: data.locked ? 0.5 : 1,
+        outline: data.recommended ? '2px solid var(--color-warning-6)' : 'none',
+      }}
+    />
+  </div>
 );
 
-/** 完整节点：进度着色 + 推荐星标 + 估时 */
+/** 完整节点：进度着色 + 推荐星标 + 估时；未解锁节点半透明虚线框示意 */
 const GraphNodeInner: React.FC<NodeProps<GraphFlowNode>> = ({ data }) => {
   const { t } = useTranslation();
   const border = data.recommended
     ? 'border-warning-6'
-    : `border-[var(--color-border-2)]`;
+    : data.locked
+      ? 'border-dashed border-[var(--color-border-2)]'
+      : 'border-[var(--color-border-2)]';
   const bg =
     data.status === 'completed'
       ? 'bg-success-light-1'
@@ -77,7 +91,8 @@ const GraphNodeInner: React.FC<NodeProps<GraphFlowNode>> = ({ data }) => {
           : 'bg-[var(--color-bg-2)]';
   return (
     <div
-      className={`flex h-full w-full flex-col items-center justify-center gap-2px overflow-hidden rounded-8px border-1 border-solid px-10px py-6px text-center text-12px leading-16px text-[var(--color-text-1)] ${border} ${bg}`}
+      title={data.locked ? t('learning.learningGraphLockedHint') : undefined}
+      className={`flex h-full w-full flex-col items-center justify-center gap-2px overflow-hidden rounded-8px border-1 border-solid px-10px py-6px text-center text-12px leading-16px text-[var(--color-text-1)] ${border} ${bg} ${data.locked ? 'opacity-55' : ''}`}
     >
       <span className='line-clamp-2'>
         {data.recommended && (
@@ -119,8 +134,14 @@ const GraphNodeByZoom: React.FC<NodeProps<GraphFlowNode>> = (props) => {
 
 const NODE_TYPES = { graphNode: GraphNodeByZoom };
 
-/** dagre BT 分层布局：前置沉底、目标升至顶层；大图收紧间距控制画布尺寸 */
-function layoutGraph(nodes: GraphNodeView[], edges: GraphEdgeView[]) {
+/** dagre BT 分层布局：前置沉底、目标升至顶层；大图收紧间距控制画布尺寸。
+ * 节点对象必须显式携带 width/height：wrapper 尺寸依赖它，缺失时节点
+ * 0×0 不可见、边端点错位、MiniMap 无矩形可画。 */
+function layoutGraph(
+  nodes: GraphNodeView[],
+  edges: GraphEdgeView[],
+  lockedIds: Set<string>
+) {
   const g = new Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({ rankdir: 'BT', nodesep: 22, ranksep: 56, marginx: 32, marginy: 32 });
@@ -133,6 +154,8 @@ function layoutGraph(nodes: GraphNodeView[], edges: GraphEdgeView[]) {
     return {
       id: node.lesson_id,
       type: 'graphNode',
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
       position: {
         x: (positioned?.x ?? 0) - NODE_WIDTH / 2,
         y: (positioned?.y ?? 0) - NODE_HEIGHT / 2,
@@ -143,6 +166,7 @@ function layoutGraph(nodes: GraphNodeView[], edges: GraphEdgeView[]) {
         status: node.status,
         recommended: false,
         generated: node.generated,
+        locked: lockedIds.has(node.lesson_id),
       },
     };
   });
@@ -168,6 +192,8 @@ interface GraphDagViewProps {
   edges: GraphEdgeView[];
   /** 下一步推荐节点（琥珀星标高亮） */
   recommended: string[];
+  /** 未解锁节点：存在任一前置未完成/未跳过（半透明虚线示意，点阵用浅点） */
+  lockedIds: Set<string>;
   onSelect: (lessonId: string) => void;
 }
 
@@ -177,11 +203,17 @@ interface GraphDagViewProps {
  * 2. `onlyRenderVisibleElements` 只渲染视口内节点/边；
  * 3. zoom 低于 0.45 时节点退化为色点（宏观点阵），宏观结构视角永远保留。
  */
-const GraphDagView: React.FC<GraphDagViewProps> = ({ nodes, edges, recommended, onSelect }) => {
+const GraphDagView: React.FC<GraphDagViewProps> = ({
+  nodes,
+  edges,
+  recommended,
+  lockedIds,
+  onSelect,
+}) => {
   const recommendedSet = useMemo(() => new Set(recommended), [recommended]);
   const { flowNodes, flowEdges } = useMemo(
-    () => layoutGraph(nodes, edges),
-    [nodes, edges]
+    () => layoutGraph(nodes, edges, lockedIds),
+    [nodes, edges, lockedIds]
   );
   const markedNodes = useMemo(
     () =>
@@ -217,6 +249,7 @@ const GraphDagView: React.FC<GraphDagViewProps> = ({ nodes, edges, recommended, 
           maskColor='var(--color-mask-bg)'
           nodeColor={(node) => {
             const data = (node as GraphFlowNode).data;
+            if (data.locked) return 'var(--color-text-4)';
             return data.recommended ? 'var(--color-warning-6)' : STATUS_COLOR[data.status];
           }}
         />

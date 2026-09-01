@@ -331,7 +331,6 @@
   "learningGraphGoal": "Learning goal",
   "learningGraphRecommended": "Recommended next",
   "learningGraphRecommendedShort": "Next",
-  "learningGraphProgressLine": "{{completed}}/{{total}} completed, {{skipped}} skipped",
   "learningGraphStatusNotStarted": "Not started",
   "learningGraphStatusInProgress": "In progress",
   "learningGraphStatusCompleted": "Completed",
@@ -351,5 +350,8 @@
   "learningGraphUnskip": "Unskip",
   "learningGraphSkipDone": "Node skipped — downstream nodes unlocked",
   "learningGraphUnskipDone": "Skip removed",
-  "learningGraphEmpty": "This graph has no nodes yet"
+  "learningGraphEmpty": "This graph has no nodes yet",
+  "learningGraphLocked": "Locked",
+  "learningGraphLockedHint": "Not all prerequisite nodes are completed or skipped yet — it unlocks automatically, or you can skip the prerequisites.",
+  "learningGraphUnlocked": "Ready"
 }

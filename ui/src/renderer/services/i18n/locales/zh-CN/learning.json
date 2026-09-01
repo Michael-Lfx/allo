@@ -331,7 +331,6 @@
   "learningGraphGoal": "学习目标",
   "learningGraphRecommended": "下一步推荐",
   "learningGraphRecommendedShort": "推荐",
-  "learningGraphProgressLine": "已完成 {{completed}}/{{total}}，跳过 {{skipped}}",
   "learningGraphStatusNotStarted": "未开始",
   "learningGraphStatusInProgress": "进行中",
   "learningGraphStatusCompleted": "已完成",
@@ -351,5 +350,8 @@
   "learningGraphUnskip": "取消跳过",
   "learningGraphSkipDone": "已跳过该节点，后续节点已解锁",
   "learningGraphUnskipDone": "已取消跳过",
-  "learningGraphEmpty": "该图暂无节点"
+  "learningGraphEmpty": "该图暂无节点",
+  "learningGraphLocked": "未解锁",
+  "learningGraphLockedHint": "前置节点尚未全部完成或跳过——完成后自动解锁，也可以直接跳过前置。",
+  "learningGraphUnlocked": "可学习"
 }
