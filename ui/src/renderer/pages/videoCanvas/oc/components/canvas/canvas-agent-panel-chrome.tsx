@@ -1,29 +1,34 @@
 import { useTranslation } from "react-i18next";
 import { Button, Switch, Tooltip } from "antd";
-import { BookOpenText, Bot, Clapperboard, Focus, LayoutTemplate, PanelRightClose, PanelsTopLeft, RotateCcw, Workflow } from "lucide-react";
+import { BookOpenText, Bot, Clapperboard, Focus, Globe2, LayoutTemplate, Laptop, PanelRightClose, PanelsTopLeft, RotateCcw, Workflow } from "lucide-react";
 
 import type { CanvasContextSummary } from "@oc/lib/canvas/canvas-context-summary";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
+import type { CanvasAgentMode } from "./canvas-agent-chat-ui";
 
 export function AgentPanelChrome({
     theme,
+    mode,
     context,
     referenceCount,
     confirmTools,
     canUndo,
     undoCount,
+    onModeChange,
     onConfirmToolsChange,
     onUndo,
     onCollapse,
 }: {
     theme: CanvasTheme;
+    mode: CanvasAgentMode;
     context: CanvasContextSummary;
     referenceCount: number;
     confirmTools: boolean;
     canUndo: boolean;
     undoCount: number;
+    onModeChange: (mode: CanvasAgentMode) => void;
     onConfirmToolsChange: (confirm: boolean) => void;
     onUndo: () => void;
     onCollapse: () => void;
@@ -39,6 +44,7 @@ export function AgentPanelChrome({
                     <div className="truncate text-sm font-semibold leading-5">Agent</div>
                     <div className="truncate text-[var(--fs-label)] leading-4" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.agent.collab", "画布协作")}</div>
                 </div>
+                <AgentModeSwitch value={mode} theme={theme} onChange={onModeChange} />
                 <Tooltip title={canvasT("videoCanvas.agent.collapse", "收起 Agent")}>
                     <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} icon={<PanelRightClose className="size-4" />} onClick={onCollapse} />
                 </Tooltip>
@@ -60,6 +66,23 @@ export function AgentPanelChrome({
                 </div>
             </div>
         </header>
+    );
+}
+
+function AgentModeSwitch({ value, theme, onChange }: { value: CanvasAgentMode; theme: CanvasTheme; onChange: (value: CanvasAgentMode) => void }) {
+    return (
+        <div className="inline-flex h-8 shrink-0 items-center rounded-md p-0.5 text-[var(--fs-label)]" style={{ background: theme.spatial.surface }} role="group" aria-label={canvasT("videoCanvas.agent.modeAria", "Agent 运行位置")}>
+            {(["online", "local"] as const).map((item) => {
+                const active = value === item;
+                const Icon = item === "online" ? Globe2 : Laptop;
+                return (
+                    <button key={item} type="button" className="inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 transition-colors" style={{ background: active ? theme.node.fill : "transparent", color: active ? theme.node.text : theme.node.muted, boxShadow: active ? `0 1px 5px ${theme.spatial.shadow}` : "none" }} onClick={() => onChange(item)} aria-pressed={active}>
+                        <Icon className="size-3" />
+                        {item === "online" ? canvasT("videoCanvas.agent.modeOnline", "画布") : canvasT("videoCanvas.agent.modeLocal", "编码")}
+                    </button>
+                );
+            })}
+        </div>
     );
 }
 
