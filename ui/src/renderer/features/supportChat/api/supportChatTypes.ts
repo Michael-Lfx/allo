@@ -12,9 +12,19 @@ import type {
 
 export type SupportMessageDelivery = 'sending' | 'failed';
 
+export const MAX_SUPPORT_MESSAGE_CHARS = 4000;
+
+export type SupportSendOutcome = {
+  accepted: true;
+  /** False when the server accepted the message after this session became stale. */
+  applied: boolean;
+};
+
 export type SupportServerMessage = {
   kind: 'server';
   message: ICloudImMessage;
+  /** Local id retained when a pending bubble is replaced by a server response. */
+  localClientMsgId?: string;
 };
 
 export type SupportPendingMessage = {
@@ -36,8 +46,14 @@ export type SupportPendingMessage = {
 
 export type SupportMessage = SupportServerMessage | SupportPendingMessage;
 
+export type SupportChatClosedCache = {
+  conversation: ICloudImConversation;
+  messages: SupportMessage[];
+  syncWarning: boolean;
+};
+
 export type SupportChatState =
-  | { status: 'closed'; unreadCount: number }
+  | { status: 'closed'; unreadCount: number; cached?: SupportChatClosedCache }
   | { status: 'loading'; unreadCount: number }
   | {
       status: 'ready';

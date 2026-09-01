@@ -67,7 +67,7 @@ OS 的安装包/应用包。
 - `productName: "Flowy"`
 - `identifier: "com.nomifun.desktop"`
 - 版本来自 workspace package metadata
-- dev URL `http://localhost:5173`
+- dev URL `http://127.0.0.1:5173`
 - bundled frontend `../../ui/dist`
 
 桌面包应在目标 OS 上构建。跨 OS 桌面打包不是当前支持流程。

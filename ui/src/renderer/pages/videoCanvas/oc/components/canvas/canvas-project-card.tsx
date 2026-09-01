@@ -11,6 +11,7 @@ import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { resolveBackendApiUrl } from "@oc/stores/use-config-store";
 import { cn } from "@oc/lib/utils";
+import { videoCanvasProjectPath } from "@renderer/pages/videoCanvas/routes";
 
 export function CanvasProjectCard({ project, projectName, variant = "library" }: { project: CanvasProject; projectName?: string; variant?: "library" | "recent" }) {
     useTranslation();
@@ -27,7 +28,7 @@ export function CanvasProjectCard({ project, projectName, variant = "library" }:
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const editing = editingId === project.id;
     const selected = selectedIds.includes(project.id);
-    const open = () => navigate(`/canvas/${project.id}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`);
+    const open = () => navigate(videoCanvasProjectPath(project.id, searchParams.toString()));
     const saveTitle = () => {
         renameProject(project.id, editingTitle);
         stopEditing();

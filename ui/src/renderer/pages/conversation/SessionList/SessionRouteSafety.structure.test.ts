@@ -33,7 +33,7 @@ describe('shared session shell route safety', () => {
   });
 
   test('the renderer root has a final visible failure boundary', () => {
-    expect(mainSource.includes("<RouteErrorBoundary scope='application'>\n    <AppProviders>")).toBe(true);
+    expect(mainSource).toMatch(/<RouteErrorBoundary scope='application'>\s*<AppProviders>/);
     expect(mainSource.includes('return <AppLoader />')).toBe(true);
     expect(mainSource.includes('.finally(() => setConfigReady(true))')).toBe(false);
     expect(boundarySource.includes("window.location.reload()")).toBe(true);
@@ -45,9 +45,26 @@ describe('shared session shell route safety', () => {
   });
 
   test('expired WebUI auth returns to login without tripping the application boundary', () => {
-    expect(mainSource.includes('const { ready, status } = useAuth()')).toBe(true);
+    expect(mainSource).toMatch(/const \{ ready, status(?:, user)? \} = useAuth\(\)/);
     expect(mainSource.includes("if (!ready || status !== 'authenticated') {")).toBe(true);
     expect(mainSource.includes('if (!active || isHandledAuthExpiredHttpError(error)) return;')).toBe(true);
     expect(mainSource.includes("if (status !== 'authenticated') {\n    return router;")).toBe(true);
+  });
+
+  test('route parameter boundaries do not throw on malformed entity IDs', () => {
+    const conversationSource = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+    const knowledgeSource = readFileSync(new URL('../../knowledge/KnowledgeDetailPage/index.tsx', import.meta.url), 'utf8');
+    const terminalSource = readFileSync(new URL('../../terminal/TerminalSessionPage.tsx', import.meta.url), 'utf8');
+
+    expect(conversationSource).toContain("tryParseEntityId('conversation'");
+    expect(conversationSource).toContain("<Navigate to='/guid' replace />");
+    expect(knowledgeSource).toContain("tryParseEntityId('knowledge-base'");
+    expect(knowledgeSource).toContain("<Navigate to='/knowledge' replace />");
+    expect(terminalSource).toContain("tryParseEntityId('terminal'");
+    expect(terminalSource).toContain("<Navigate to='/guid' replace />");
+  });
+
+  test('legacy requirement deep links encode query parameters before redirecting', () => {
+    expect(routerSource).toContain("new URLSearchParams({ req: id ?? '', edit: '1' })");
   });
 });

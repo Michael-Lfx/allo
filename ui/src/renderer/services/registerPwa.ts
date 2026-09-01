@@ -1,8 +1,10 @@
 
 
 import { isDesktopShell } from '@renderer/utils/platform';
+import { claimServiceWorkerCleanupReload } from './serviceWorkerRecovery';
 
 const SERVICE_WORKER_URL = './sw.js';
+const PWA_CACHE_PREFIX = 'nomifun-webui-';
 const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
 function serviceWorkerAvailable(): boolean {
@@ -33,12 +35,25 @@ function isPwaRegistrationSupported(): boolean {
   return window.isSecureContext || LOCALHOST_HOSTS.has(hostname);
 }
 
+function isOwnedServiceWorkerRegistration(registration: ServiceWorkerRegistration): boolean {
+  if (typeof window === 'undefined') return false;
+  let expectedScriptUrl: string;
+  try {
+    expectedScriptUrl = new URL(SERVICE_WORKER_URL, window.location.href).href;
+  } catch {
+    return false;
+  }
+  return [registration.active, registration.waiting, registration.installing].some(
+    (worker) => worker?.scriptURL === expectedScriptUrl
+  );
+}
+
 /**
- * Tear down any previously-registered service worker and its caches. Runs in the
- * desktop shell so installs that registered a SW before the desktop guard
- * existed self-heal: a poisoned shell cache otherwise shows as a permanent white
- * screen after the embedded frontend is rebuilt (the cached index.html points at
- * asset hashes the new binary no longer contains).
+ * Tear down Flowy's previously-registered service worker and its caches. Runs
+ * in the desktop shell so installs that registered a SW before the desktop
+ * guard existed self-heal: a poisoned shell cache otherwise shows as a
+ * permanent white screen after the embedded frontend is rebuilt (the cached
+ * index.html points at asset hashes the new binary no longer contains).
  */
 async function purgeServiceWorkers(): Promise<void> {
   if (!serviceWorkerAvailable()) {
@@ -46,25 +61,63 @@ async function purgeServiceWorkers(): Promise<void> {
   }
   try {
     const registrations = await navigator.serviceWorker.getRegistrations();
-    await Promise.all(registrations.map((registration) => registration.unregister().catch((): false => false)));
+    await Promise.all(
+      registrations
+        .filter(isOwnedServiceWorkerRegistration)
+        .map((registration) => registration.unregister().catch((): false => false))
+    );
   } catch {
     // best-effort cleanup
   }
   try {
     if (typeof caches !== 'undefined') {
       const keys = await caches.keys();
-      await Promise.all(keys.map((key) => caches.delete(key).catch((): false => false)));
+      await Promise.all(
+        keys
+          .filter((key) => key.startsWith(PWA_CACHE_PREFIX))
+          .map((key) => caches.delete(key).catch((): false => false)),
+      );
     }
   } catch {
     // best-effort cleanup
   }
 }
 
+async function prepareServiceWorkerFreeRuntime(): Promise<void> {
+  const wasControlled = serviceWorkerAvailable() && Boolean(navigator.serviceWorker.controller);
+  await purgeServiceWorkers();
+
+  // Unregistering does not release the current document immediately. Reload
+  // once so stale SW script/module responses cannot survive into this render.
+  // The session-scoped claim prevents an unavailable/slow SW from causing a
+  // reload loop during startup.
+  if (!wasControlled || typeof window === 'undefined') return;
+  let storage: Pick<Storage, 'getItem' | 'setItem'> | undefined;
+  try {
+    storage = window.sessionStorage;
+  } catch {
+    storage = undefined;
+  }
+  if (claimServiceWorkerCleanupReload(storage, window.location.href)) {
+    window.location.reload();
+  }
+}
+
 export async function registerPwa(): Promise<ServiceWorkerRegistration | undefined> {
+  // A development service worker can keep an older module graph alive while
+  // Vite serves the current source tree. That mismatch is reported by the
+  // browser as a generic dynamic-import failure, so always remove a previous
+  // registration before starting a fresh Vite session and never register one
+  // in dev mode.
+  if (import.meta.env.DEV) {
+    await prepareServiceWorkerFreeRuntime();
+    return undefined;
+  }
+
   // Desktop shell (Electron or Tauri): actively remove any pre-existing SW +
   // caches and never register one. See purgeServiceWorkers / the guard above.
   if (typeof window !== 'undefined' && isDesktopShell()) {
-    await purgeServiceWorkers();
+    await prepareServiceWorkerFreeRuntime();
     return undefined;
   }
 

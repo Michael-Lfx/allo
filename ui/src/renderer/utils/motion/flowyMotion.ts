@@ -33,9 +33,9 @@ export function preloadGuidPathChunk() {
 }
 
 export function preloadCommercialPathChunks() {
-  void preloadGuidPathChunk();
-  void import('@renderer/pages/conversation');
-  void import('@renderer/pages/cloudLogin');
+  void preloadGuidPathChunk().catch(() => undefined);
+  void import('@renderer/pages/conversation').catch(() => undefined);
+  void import('@renderer/pages/cloudLogin').catch(() => undefined);
 }
 
 export function prefersReducedMotion(): boolean {

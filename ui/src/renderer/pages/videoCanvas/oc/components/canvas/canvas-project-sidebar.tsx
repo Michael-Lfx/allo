@@ -1,13 +1,14 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowUpRight, BookOpenText, ChevronLeft, ChevronRight, Crosshair, FolderKanban, GripVertical, Images, LocateFixed, LoaderCircle, Palette, Plus, Search, Settings2, X } from "lucide-react";
+import { BookOpenText, ChevronLeft, ChevronRight, Crosshair, FolderKanban, GripVertical, Images, LocateFixed, LoaderCircle, Palette, Plus, Search, Settings2, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import { resolveCanvasStylePreset } from "@oc/components/canvas/canvas-style-picker-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { getProject, getProjectUnit, type ProjectDetail, type ProjectUnit } from "@oc/services/api/projects";
+import { VIDEO_CANVAS_LIBRARY_PATH } from "@renderer/pages/videoCanvas/routes";
 
 export const CANVAS_PROJECT_CHAPTER_DND_TYPE = "application/x-infinite-canvas-project-chapter";
 export type CanvasProjectChapterPayload = Pick<ProjectUnit, "id" | "title" | "position"> & { projectId: string; sourceText?: string };
@@ -19,10 +20,11 @@ type CanvasProjectSidebarProps = {
     detail?: ProjectDetail;
     onAddChapter: (chapter: CanvasProjectChapterPayload) => void | Promise<void>;
     onLocateStyle: () => void;
+    onOpenStyle: () => void;
     onOpenAssets: () => void;
 };
 
-export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocateStyle, onOpenAssets }: CanvasProjectSidebarProps) {
+export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocateStyle, onOpenStyle, onOpenAssets }: CanvasProjectSidebarProps) {
     useTranslation();
     const [collapsed, setCollapsed] = useState(false);
     const [query, setQuery] = useState("");
@@ -109,7 +111,7 @@ export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocate
                 <button type="button" className="grid size-7 place-items-center rounded-md text-foreground/55 hover:bg-foreground/[.06]" title={canvasT("videoCanvas.sidebar.expand", "展开项目侧栏")} aria-label={canvasT("videoCanvas.sidebar.expand", "展开项目侧栏")} onClick={() => setCollapsed(false)}>
                     <ChevronRight className="size-4" />
                 </button>
-                <Link to={`/projects/${projectId}/canvases`} className="mt-2 grid size-7 place-items-center rounded-md text-foreground/55 hover:bg-foreground/[.06]" title={canvasT("videoCanvas.sidebar.backToCanvases", "返回项目画布列表")}>
+                <Link to={VIDEO_CANVAS_LIBRARY_PATH} className="mt-2 grid size-7 place-items-center rounded-md text-foreground/55 hover:bg-foreground/[.06]" title={canvasT("videoCanvas.sidebar.backToCanvases", "返回项目画布列表")}>
                     <FolderKanban className="size-4" />
                 </Link>
             </aside>
@@ -119,7 +121,7 @@ export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocate
     return (
         <aside className="relative z-[var(--z-panel)] hidden w-[var(--canvas-sidebar-width)] shrink-0 flex-col border-r border-border bg-background/94 backdrop-blur-xl lg:flex">
             <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-2.5">
-                <Link to={`/projects/${projectId}/canvases`} className="flex min-w-0 items-center gap-2 text-xs font-semibold" title={canvasT("videoCanvas.sidebar.backToCanvases", "返回项目画布列表")}>
+                <Link to={VIDEO_CANVAS_LIBRARY_PATH} className="flex min-w-0 items-center gap-2 text-xs font-semibold" title={canvasT("videoCanvas.sidebar.backToCanvases", "返回项目画布列表")}>
                     <FolderKanban className="size-3.5 shrink-0" />
                     <span className="truncate">{projectDetail?.project.name || canvasT("videoCanvas.sidebar.projectSpace", "项目空间")}</span>
                 </Link>
@@ -134,9 +136,9 @@ export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocate
                         <Palette className="size-3.5" />
                         {canvasT("videoCanvas.sidebar.projectStyle", "项目画风")}
                     </span>
-                    <Link to={`/projects/${projectId}/settings`} className="grid size-6 place-items-center rounded text-foreground/35 hover:bg-foreground/[.06] hover:text-foreground" title={canvasT("videoCanvas.sidebar.editStyle", "编辑项目画风")} aria-label={canvasT("videoCanvas.sidebar.editStyle", "编辑项目画风")}>
+                    <button type="button" onClick={onOpenStyle} className="grid size-6 place-items-center rounded text-foreground/35 hover:bg-foreground/[.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--workspace-accent)]" title={canvasT("videoCanvas.sidebar.editStyle", "编辑项目画风")} aria-label={canvasT("videoCanvas.sidebar.editStyle", "编辑项目画风")}>
                         <Settings2 className="size-3.5" />
-                    </Link>
+                    </button>
                 </div>
                 <button
                     type="button"
@@ -254,7 +256,6 @@ export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocate
 
             {selectedUnit ? (
                 <ChapterPreview
-                    projectId={projectId}
                     unit={selectedUnitQuery.data?.unit || selectedUnit}
                     chapterNumber={orderedUnits.findIndex((unit) => unit.id === selectedUnit.id) + 1}
                     loading={selectedUnitQuery.isLoading}
@@ -269,7 +270,6 @@ export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocate
 }
 
 function ChapterPreview({
-    projectId,
     unit,
     chapterNumber,
     loading,
@@ -278,7 +278,6 @@ function ChapterPreview({
     onAdd,
     onClose,
 }: {
-    projectId: string;
     unit: ProjectUnit;
     chapterNumber: number;
     loading: boolean;
@@ -316,10 +315,6 @@ function ChapterPreview({
                 >
                     {adding ? <LoaderCircle className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}{canvasT("videoCanvas.sidebar.addToCanvas", "添加到画布")}
                 </button>
-                <Link to={`/projects/${projectId}/chapters/${unit.id}`} className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-foreground/62 hover:bg-foreground/[.06] hover:text-foreground">
-                    {canvasT("videoCanvas.sidebar.openEditor", "打开编辑器")}
-                    <ArrowUpRight className="size-3.5" />
-                </Link>
             </footer>
         </section>
     );

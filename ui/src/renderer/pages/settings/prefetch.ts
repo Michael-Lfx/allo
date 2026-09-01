@@ -12,13 +12,13 @@
  * module free of page-level imports so the sider stays out of those chunks.
  */
 export function prefetchSettingsPages(): void {
-  void import('./SystemSettings');
-  void import('./components/SettingsSider');
-  void import('@/renderer/components/settings/SettingsModal/contents/SystemModalContent');
-  void import('@/renderer/pages/modelHub/ImageAnalysisModelContent');
-  void import('./PoiSettings');
-  void import('./LearningSettings');
-  void import('./InsightsSettings');
-  void import('./MoaSettings');
-  void import('./MediaSettings');
+  void import('./SystemSettings').catch(() => undefined);
+  void import('./components/SettingsSider').catch(() => undefined);
+  void import('@/renderer/components/settings/SettingsModal/contents/SystemModalContent').catch(() => undefined);
+  void import('@/renderer/pages/modelHub/ImageAnalysisModelContent').catch(() => undefined);
+  void import('./PoiSettings').catch(() => undefined);
+  void import('./LearningSettings').catch(() => undefined);
+  void import('./InsightsSettings').catch(() => undefined);
+  void import('./MoaSettings').catch(() => undefined);
+  void import('./MediaSettings').catch(() => undefined);
 }

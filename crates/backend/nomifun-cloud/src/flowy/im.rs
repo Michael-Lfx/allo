@@ -487,6 +487,7 @@ mod tests {
                     log_payload: Some(nomifun_api_types::CloudImAttachmentPayload {
                         object_key: None,
                         url: Some("https://cdn.example/a.zip".into()),
+                        oss_id: None,
                         name: "a.zip".into(),
                         content_type: "application/zip".into(),
                         byte_size: 9,

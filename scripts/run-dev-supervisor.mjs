@@ -74,12 +74,17 @@ export function createSupervisor({
 
     try {
       const startup = await Promise.race([
-        Promise.resolve().then(() => waitForVite()),
+        Promise.resolve().then(() => waitForVite(viteProcess)),
         viteExit.then((result) => ({ viteExited: true, result })),
       ]);
-      if (startup?.viteExited) {
+      if (
+        startup?.viteExited ||
+        viteState.settled ||
+        (viteProcess?.exitCode !== null && viteProcess?.exitCode !== undefined)
+      ) {
+        const result = startup?.result ?? viteState.result;
         throw new Error(
-          `Vite exited before becoming healthy (code ${startup.result.code ?? 'unknown'})`,
+          `Vite exited before becoming healthy (code ${result?.code ?? 'unknown'})`,
         );
       }
     } catch (error) {

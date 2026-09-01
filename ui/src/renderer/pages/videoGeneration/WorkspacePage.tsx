@@ -102,6 +102,7 @@ import {
 import { clampDuration } from './durationBounds';
 import styles from './index.module.css';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
+import { videoCanvasProjectPath } from '../videoCanvas/routes';
 
 const TextArea = Input.TextArea;
 
@@ -186,7 +187,7 @@ const WorkspacePage: React.FC = () => {
   // 「打开到 Canvas」按钮的目标页面：进入工作台即预热 ProjectPage 大 chunk，
   // 悬停按钮时再补一次，保证点击跳转不再等 chunk 解析。
   useEffect(() => {
-    void loadVideoCanvasProjectPage();
+    void loadVideoCanvasProjectPage().catch(() => undefined);
   }, []);
 
   const [previewEpoch, setPreviewEpoch] = useState(0);
@@ -1218,7 +1219,7 @@ const WorkspacePage: React.FC = () => {
           }) + warnText
         );
       }
-      navigate(`/video-generation/canvas/${encodeURIComponent(result.project_id)}`);
+      navigate(videoCanvasProjectPath(result.project_id));
     } catch (e) {
       message.error(
         `${t('videoGeneration.actions.openInCanvasFailed', { defaultValue: '打开到 Canvas 失败' })}: ${
@@ -1344,7 +1345,7 @@ const WorkspacePage: React.FC = () => {
                     })
                   : undefined
               }
-              onPointerEnter={() => void loadVideoCanvasProjectPage()}
+              onPointerEnter={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
               onClick={() => void handleOpenInCanvas()}
             >
               <span className='inline-flex items-center gap-4px'>

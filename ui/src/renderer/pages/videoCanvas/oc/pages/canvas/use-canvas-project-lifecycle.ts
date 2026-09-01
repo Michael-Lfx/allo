@@ -13,6 +13,7 @@ import { flushCanvasStorePersistence, useCanvasStore } from "@oc/stores/canvas/u
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, CanvasNodeMetadata, ViewportTransform } from "@oc/types/canvas";
 import { createCanvasPersistPause } from "../../../lib/canvasProjectAutosave";
+import { videoCanvasProjectPath } from "../../../routes";
 import type { CanvasHistorySnapshot } from "./use-canvas-history";
 
 type UseCanvasProjectLifecycleOptions = {
@@ -191,7 +192,7 @@ export function useCanvasProjectLifecycle({
     const createAndOpenProject = useCallback(() => {
         void createCanvasProjectWithRemoteSync(`自由画布 ${useCanvasStore.getState().projects.length + 1}`).then(({ id, syncError }) => {
             if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
-            navigate(`/canvas/${id}`);
+            navigate(videoCanvasProjectPath(id));
         });
     }, [message, navigate]);
 

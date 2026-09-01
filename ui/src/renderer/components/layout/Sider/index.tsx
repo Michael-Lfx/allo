@@ -9,6 +9,7 @@ import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGa
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
+import { safeDecodeUriComponent } from '@/common/utils/localPath';
 import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import { useSlidingSelectionIndicator } from '@renderer/hooks/ui/useSlidingSelectionIndicator';
@@ -133,7 +134,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
   const activeVideoGenerationSessionId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
-    const id = m?.[1] ? decodeURIComponent(m[1]) : null;
+    const id = m?.[1] ? safeDecodeUriComponent(m[1]) : null;
     if (!id || id === 'campaigns' || id === 'clip' || id === 'canvas') return null;
     return id;
   }, [pathname]);
@@ -142,7 +143,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   // bare /video-generation or any videoGeneration workspace session routes.
   const activeClipTaskId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/clip\/([^/]+)\/?$/);
-    return m?.[1] ? decodeURIComponent(m[1]) : null;
+    return m?.[1] ? safeDecodeUriComponent(m[1]) : null;
   }, [pathname]);
 
   const handleOpenRecentVideoGeneration = useCallback(

@@ -3,18 +3,20 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
 import useSWR from 'swr';
 import ChatConversation from './components/ChatConversation';
 import MessageListSkeleton from './Messages/components/MessageListSkeleton';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
-import { parseConversationId } from '@/common/types/ids';
+import { tryParseEntityId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
 
 const ChatConversationIndex: React.FC = () => {
   const { id } = useParams();
   // Validate the route string once at the boundary; every downstream layer
   // keeps the same canonical conversation entity ID.
-  const conversationId = id != null ? parseConversationId(id) : undefined;
+  const conversationId = id != null ? tryParseEntityId('conversation', id) ?? undefined : undefined;
+  const invalidRoute = id != null && conversationId == null;
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
@@ -22,7 +24,7 @@ const ChatConversationIndex: React.FC = () => {
   const deletedHandledIdRef = useRef<string | undefined>(undefined);
   const clearedAttentionKeyRef = useRef<string | undefined>(undefined);
 
-  const { data, isLoading, mutate } = useSWR(id ? `conversation/${id}` : null, () => {
+  const { data, isLoading, mutate } = useSWR(conversationId ? `conversation/${conversationId}` : null, () => {
     return getConversationOrNull(conversationId!);
   });
 
@@ -70,7 +72,7 @@ const ChatConversationIndex: React.FC = () => {
   }, [conversationId, data, isLoading, location.search]);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || !conversationId) return;
 
     return ipcBridge.conversation.listChanged.on((event) => {
       if (event.conversation_id !== conversationId) {
@@ -108,12 +110,13 @@ const ChatConversationIndex: React.FC = () => {
   // browser history): show a toast and replace the route with home, so we
   // don't render an empty skeleton. Fire at most once per id.
   useEffect(() => {
-    if (!id || isLoading || data || notFoundHandledIdRef.current === id) return;
+    if (invalidRoute || !id || isLoading || data || notFoundHandledIdRef.current === id) return;
     notFoundHandledIdRef.current = id;
     Message.warning(t('conversation.notFound'));
     navigate('/', { replace: true });
-  }, [id, isLoading, data, navigate, t]);
+  }, [id, invalidRoute, isLoading, data, navigate, t]);
 
+  if (invalidRoute) return <Navigate to='/guid' replace />;
   if (isLoading) return <MessageListSkeleton />;
   return <ChatConversation conversation={data ?? undefined}></ChatConversation>;
 };

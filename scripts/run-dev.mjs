@@ -7,7 +7,6 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,6 +17,7 @@ import {
 } from './run-dev-restart-signal.mjs';
 import { createSupervisor, waitForExit } from './run-dev-supervisor.mjs';
 import { createDevSessionLock } from './dev-session-lock.mjs';
+import { createViteHttpReadinessProbe } from './run-dev-vite-readiness.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VITE_ENTRY = join(ROOT, 'ui', 'node_modules', 'vite', 'bin', 'vite.js');
@@ -116,34 +116,36 @@ async function stopProcess(child, _reason) {
 
 const VITE_HOST = '127.0.0.1';
 const VITE_PORT = 5173;
-// Cold start on Windows commonly takes ~25s just to bind. The old 30s HTTP
-// probe also required GET / to finish in 1s, but the first index.html transform
-// of this SPA often exceeds that — so Vite printed "ready" and the supervisor
-// still killed it.
+// Cold start on Windows commonly takes ~25s just to bind. Probe the actual
+// HTTP document and the main lazy route modules before launching Tauri; a TCP
+// listener alone can still serve an incomplete module graph.
 const VITE_READY_TIMEOUT_MS = 120_000;
+const isViteReady = createViteHttpReadinessProbe({ host: VITE_HOST, port: VITE_PORT });
 
-function isViteListening() {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: VITE_HOST, port: VITE_PORT }, () => {
-      socket.end();
-      resolve(true);
-    });
-    socket.setTimeout(1_000);
-    socket.once('timeout', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.once('error', () => {
-      socket.destroy();
-      resolve(false);
-    });
-  });
+function hasExited(child) {
+  return child && child.exitCode !== null && child.exitCode !== undefined;
 }
 
-async function waitForVite() {
+async function waitForVite(viteProcess) {
   const deadline = Date.now() + VITE_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await isViteListening()) return;
+    if (hasExited(viteProcess)) {
+      throw new Error(
+        `Vite exited before becoming healthy (code ${viteProcess.exitCode ?? 'unknown'})`,
+      );
+    }
+    if (await isViteReady()) {
+      // A stale Vite process can answer the HTTP probe while the newly spawned
+      // strictPort child is exiting. Give the child exit event a turn before
+      // allowing Tauri to attach to the old module graph.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (hasExited(viteProcess)) {
+        throw new Error(
+          `Vite exited before becoming healthy (code ${viteProcess.exitCode ?? 'unknown'})`,
+        );
+      }
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(

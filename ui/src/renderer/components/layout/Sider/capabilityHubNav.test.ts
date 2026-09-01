@@ -95,4 +95,11 @@ describe('capability hub navigation', () => {
     expect(routerSource.includes('LegacyExtensionsRedirect')).toBe(true);
     expect(routerSource.includes("path='/extensions'")).toBe(true);
   });
+
+  test('does not let malformed encoded video paths crash the primary rail', () => {
+    const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+
+    expect(siderSource.includes('safeDecodeUriComponent')).toBe(true);
+    expect(siderSource.includes('decodeURIComponent(m[1])')).toBe(false);
+  });
 });

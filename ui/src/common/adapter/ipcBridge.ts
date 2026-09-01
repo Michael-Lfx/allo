@@ -7748,6 +7748,8 @@ export interface ICloudImAttachmentPayload {
   objectKey?: string;
   /** CDN URL when available. */
   url?: string;
+  /** FlowyClaw log uploads may expose only their OSS identifier. */
+  ossId?: number;
   name: string;
   contentType: string;
   byteSize: number;

@@ -4,7 +4,7 @@
   "identifier": "com.flowy.desktop",
   "build": {
     "frontendDist": "../../ui/dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://127.0.0.1:5173",
     "beforeDevCommand": "bun run --filter=./ui dev",
     "beforeBuildCommand": "bun scripts/prune-build.mjs --pre && bun scripts/ensure-bundled-rg.mjs && bun run --filter=./ui build"
   },

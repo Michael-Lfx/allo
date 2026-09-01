@@ -89,6 +89,7 @@ import { ConversationHistoryProvider } from './hooks/context/ConversationHistory
 import HOC from './utils/ui/HOC';
 
 void startProductTelemetry();
+const SupportSurfaceProbe = React.lazy(() => import('./pages/test/SupportSurfaceProbe'));
 
 const arcoLocales: Record<string, typeof enUS> = {
   'zh-CN': zhCN,
@@ -105,10 +106,16 @@ const AppProviders: React.FC<PropsWithChildren> = ({ children }) =>
       React.createElement(
         CreditsProvider,
         null,
+        // SupportChatProvider renders its modal siblings outside `children`,
+        // so ThemeProvider must wrap it for NomiModal's theme context.
         React.createElement(
-          SupportChatProvider,
-        null,
-        React.createElement(ThemeProvider, null, React.createElement(FeedbackProvider, null, children))
+          ThemeProvider,
+          null,
+          React.createElement(
+            SupportChatProvider,
+            null,
+            React.createElement(FeedbackProvider, null, children)
+          )
         )
       )
     )
@@ -416,27 +423,67 @@ const Main = () => {
 };
 
 const App = HOC.Wrapper(Config)(Main);
-
-void registerPwa();
-
 const root = createRoot(document.getElementById('root')!);
 const isButtonLayoutProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout';
 const isErrorSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/error-surface';
+const isSupportSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/support-surface';
 
 // Keep browser-only visual gates independent from auth/backend startup. They
 // still use this real renderer entry and global Arco styles, but must be able
 // to report layout before an unauthenticated session is ready. The exact hash
 // guards prevent these probes from becoming product bypasses.
-root.render(
-  isButtonLayoutProbe ? (
-    <ButtonLayoutProbe />
-  ) : isErrorSurfaceProbe ? (
-    <ErrorSurfaceProbe />
-  ) : (
-    <RouteErrorBoundary scope='application'>
-      <AppProviders>
-        <App />
-      </AppProviders>
-    </RouteErrorBoundary>
-  )
-);
+const renderApp = () => {
+  root.render(
+    isButtonLayoutProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <ButtonLayoutProbe />
+      </React.Suspense>
+    ) : isErrorSurfaceProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <ErrorSurfaceProbe />
+      </React.Suspense>
+    ) : isSupportSurfaceProbe ? (
+      <React.Suspense fallback={<AppLoader />}>
+        <SupportSurfaceProbe />
+      </React.Suspense>
+    ) : (
+      <RouteErrorBoundary scope='application'>
+        <AppProviders>
+          <App />
+        </AppProviders>
+      </RouteErrorBoundary>
+    ),
+  );
+};
+
+// Give development/desktop service-worker cleanup a short head start so an
+// old worker cannot intercept the first lazy module request, but never let a
+// stalled browser API prevent the renderer from showing the recovery UI/app.
+const RENDER_STARTUP_PREPARATION_TIMEOUT_MS = 2_000;
+const prepareRendererBeforeRender = (): Promise<void> =>
+  new Promise((resolve) => {
+    let settled = false;
+    let timeout = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    timeout = window.setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[PWA] Renderer preparation exceeded ${RENDER_STARTUP_PREPARATION_TIMEOUT_MS}ms; continuing without waiting.`
+      );
+      finish();
+    }, RENDER_STARTUP_PREPARATION_TIMEOUT_MS);
+
+    void registerPwa()
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn('[PWA] Failed to prepare the renderer:', error);
+      })
+      .finally(finish);
+  });
+
+void prepareRendererBeforeRender().finally(renderApp);

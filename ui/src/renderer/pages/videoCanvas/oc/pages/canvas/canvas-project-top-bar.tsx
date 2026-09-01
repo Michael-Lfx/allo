@@ -13,6 +13,7 @@ import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 import type { CanvasMediaPerformanceMode } from "@oc/types/canvas";
 import { CanvasShortcutsModal } from "./canvas-shortcuts-modal";
+import { VIDEO_CANVAS_LIBRARY_PATH } from "@renderer/pages/videoCanvas/routes";
 
 type CanvasTopBarProps = {
     title: string;
@@ -83,7 +84,7 @@ export function CanvasTopBar({
     const { availableMicrocredits, refreshing } = useWalletBalance(user?.id, creditsEnabled);
     const titleRef = useRef<HTMLDivElement>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
-    const goCanvasList = () => navigate("/video-generation?mode=creation");
+    const goCanvasList = () => navigate(VIDEO_CANVAS_LIBRARY_PATH);
 
     const handleShortDramaGuideToggle = () => {
         shortDramaGuide?.onToggle();
@@ -187,7 +188,7 @@ export function CanvasTopBar({
                         )}
                         {projectContext && !isTitleEditing ? (
                             <div className="mt-0.5 flex max-w-[360px] items-center gap-1.5 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>
-                                <Link to={`/projects/${projectContext.projectId}/overview`} className="inline-flex min-w-0 items-center gap-1 hover:underline" title={canvasT("videoCanvas.chrome.backToProject", "返回项目：{{name}}", { name: projectContext.projectName })}>
+                                <Link to={VIDEO_CANVAS_LIBRARY_PATH} className="inline-flex min-w-0 items-center gap-1 hover:underline" title={canvasT("videoCanvas.chrome.backToProject", "返回项目：{{name}}", { name: projectContext.projectName })}>
                                     <FolderKanban className="size-3 shrink-0" />
                                     <span className="max-w-[120px] truncate">{projectContext.projectName}</span>
                                 </Link>
@@ -222,7 +223,7 @@ export function CanvasTopBar({
                     {compactAgentStatus ? <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} /> : null}
                     {user && creditsEnabled ? (
                         <Link
-                            to="/wallet"
+                            to="/billing"
                             className="inline-flex h-9 min-w-[5.5rem] items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium tabular-nums transition hover:bg-black/5 dark:hover:bg-white/10"
                             style={{ color: theme.node.text }}
                             title={canvasT("videoCanvas.chrome.credits", "查看积分明细")}

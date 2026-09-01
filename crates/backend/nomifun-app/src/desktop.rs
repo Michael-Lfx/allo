@@ -471,7 +471,7 @@ pub struct DesktopServer {
     /// embedded in the Tauri executable. Unlike `spa_dir`, this is independent
     /// of bundle layout, current working directory, and platform path rules.
     webui_asset_source: Option<WebUiAssetSource>,
-    /// In DEV, the vite dev-server URL (e.g. `http://localhost:5173`) the desktop
+    /// In DEV, the vite dev-server URL (e.g. `http://127.0.0.1:5173`) the desktop
     /// webview itself loads. When set, the LAN listener PROXIES the SPA to it
     /// instead of serving the (stale) bundled `ui/dist`, so remote browsers get
     /// the exact same live frontend the desktop shows. `None` in production.
@@ -646,7 +646,7 @@ impl DesktopServer {
     ///
     /// `spa_dir` is the bundled `ui/dist` directory used to serve the app shell
     /// to remote browsers as a compatibility fallback. `dev_frontend_url` (e.g.
-    /// `http://localhost:5173`) is set ONLY in dev: the LAN listener then proxies
+    /// `http://127.0.0.1:5173`) is set ONLY in dev: the LAN listener then proxies
     /// the SPA to the vite dev server so remote browsers match the live desktop.
     /// `webui_asset_source` is the preferred production source and should adapt
     /// the desktop host's compile-time embedded frontend assets.

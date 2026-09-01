@@ -11,6 +11,7 @@ import {
   type CanvasProjectMeta,
 } from '../../videoCanvas/api';
 import { loadVideoCanvasProjectPage } from '../../videoCanvas/loadProjectPage';
+import { videoCanvasProjectPath } from '../../videoCanvas/routes';
 import styles from './home.module.css';
 
 function formatUpdatedAt(ms: number, t: TFunction): string {
@@ -72,7 +73,7 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
 
   useEffect(() => {
     if (!projects.length) return;
-    loadVideoCanvasProjectPage();
+    void loadVideoCanvasProjectPage().catch(() => undefined);
   }, [projects.length]);
 
   const displayed = useMemo(() => {
@@ -88,8 +89,8 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
   const openProject = (projectId: string) => {
     if (openingId || creating || deletingId) return;
     setOpeningId(projectId);
-    void loadVideoCanvasProjectPage();
-    navigate(`/video-generation/canvas/${encodeURIComponent(projectId)}`);
+    void loadVideoCanvasProjectPage().catch(() => undefined);
+    navigate(videoCanvasProjectPath(projectId));
   };
 
   const createBlankCanvas = async () => {
@@ -101,7 +102,7 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
       );
       const id = await createServerBackedCanvasProject(untitledCanvas);
       setOpeningId(id);
-      navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
+      navigate(videoCanvasProjectPath(id));
     } catch (cause) {
       message.error(
         t('videoGeneration.create.gallery.createFailed', {
@@ -273,8 +274,8 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                 style={
                   isDisabled ? { cursor: 'default', opacity: 0.72, transform: 'none' } : undefined
                 }
-                onMouseEnter={() => void loadVideoCanvasProjectPage()}
-                onFocus={() => void loadVideoCanvasProjectPage()}
+                onMouseEnter={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
+                onFocus={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
                 onClick={() => openProject(project.project_id)}
                 onKeyDown={(event) => {
                   // Only activate when the card itself is focused, so Enter/

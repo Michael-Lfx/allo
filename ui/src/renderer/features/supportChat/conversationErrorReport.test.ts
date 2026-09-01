@@ -7,6 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildConversationErrorReportMetadata,
+  getConversationErrorReportContextKey,
   type ConversationErrorReportContext,
 } from './conversationErrorReport';
 
@@ -55,5 +56,19 @@ describe('conversation error support report', () => {
     });
     expect(JSON.stringify(metadata)).not.toContain('Bearer secret');
     expect(JSON.stringify(metadata)).not.toContain('private');
+  });
+
+  test('keeps the same context stable while changing report contexts', () => {
+    expect(getConversationErrorReportContextKey(context)).toBe(
+      JSON.stringify([
+        context.conversationId,
+        context.messageId,
+        context.turnId,
+        context.occurredAt,
+      ])
+    );
+    expect(
+      getConversationErrorReportContextKey({ ...context, messageId: undefined })
+    ).not.toBe(getConversationErrorReportContextKey(context));
   });
 });
