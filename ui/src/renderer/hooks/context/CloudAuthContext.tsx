@@ -11,7 +11,7 @@ import {
   setProviderCatalogContext,
   type ProviderCatalogRefreshResult,
 } from '@renderer/hooks/agent/useModelProviderList';
-import { setVideoGrowthCloudAuthenticated } from '@renderer/utils/analytics/videoGrowthUpload';
+import { setTelemetryCloudAuthenticated } from '@renderer/utils/analytics/telemetryOutbox';
 import {
   identifyCloudUser,
   resetCloudUserIdentity,
@@ -111,7 +111,7 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
   whoamiRef.current = whoami;
 
   useEffect(() => {
-    setVideoGrowthCloudAuthenticated(authState.phase === 'authenticated');
+    setTelemetryCloudAuthenticated(authState.phase === 'authenticated');
     if (authState.phase === 'authenticated') {
       identifyCloudUser(authState.accountId);
       return;

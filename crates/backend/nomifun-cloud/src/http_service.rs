@@ -19,7 +19,7 @@ use nomifun_api_types::{
     CloudImSendMessageRequest, CloudBillingAirwallexSession, CloudBillingCouponList,
     CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
     CloudBillingPaymentChannel, CloudBillingPlan, VideoGrowthEventBatchRequest,
-    VideoGrowthEventBatchResponse, VideoGrowthMetricsResponse,
+    VideoGrowthEventBatchResponse,
 };
 use nomifun_common::AppError;
 
@@ -368,19 +368,37 @@ impl CloudService {
         request: &VideoGrowthEventBatchRequest,
     ) -> Result<VideoGrowthEventBatchResponse, AppError> {
         let (client, session) = self.im_client_and_session().await?;
+        let mut request = request.clone();
+        let cfg = self.gateway_config();
+        if request
+            .client_id
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            request.client_id = Some(crate::paths::load_or_create_client_id(&self.data_dir));
+        }
+        if request.app.as_ref().is_none_or(|value| value.trim().is_empty()) {
+            let app = cfg.server.app.trim();
+            if !app.is_empty() {
+                request.app = Some(app.to_string());
+            }
+        }
+        if request
+            .platform
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            request.platform = Some(crate::platform::client_platform());
+        }
+        if request
+            .app_version
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            request.app_version = Some(env!("CARGO_PKG_VERSION").to_string());
+        }
         client
-            .upload_video_growth_events(&session, request)
-            .await
-            .map_err(map_im_client_error)
-    }
-
-    pub async fn get_video_growth_metrics(
-        &self,
-        days: u16,
-    ) -> Result<VideoGrowthMetricsResponse, AppError> {
-        let (client, session) = self.im_client_and_session().await?;
-        client
-            .get_video_growth_metrics(&session, days)
+            .upload_video_growth_events(&session, &request)
             .await
             .map_err(map_im_client_error)
     }

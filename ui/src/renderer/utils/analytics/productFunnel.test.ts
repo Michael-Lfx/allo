@@ -18,9 +18,9 @@ import {
   trackFunnelEvent,
 } from './productFunnel';
 import {
-  listQueuedVideoGrowthEventsForTests,
-  resetVideoGrowthUploadForTests,
-} from './videoGrowthUpload';
+  listQueuedTelemetryEventsForTests,
+  resetTelemetryOutboxForTests,
+} from './telemetryOutbox';
 import { resetTelemetryForTests, setTelemetryOptOut } from './telemetry';
 
 describe('product funnel', () => {
@@ -73,7 +73,7 @@ describe('product funnel', () => {
 
   test('records video value once per session while preserving first-value semantics', () => {
     resetFunnelForTests();
-    resetVideoGrowthUploadForTests();
+    resetTelemetryOutboxForTests();
     expect(
       confirmFirstValue({
         feature: 'video_generation',
@@ -94,7 +94,7 @@ describe('product funnel', () => {
       listFunnelEvents().filter((event) => event.name === 'first_value_confirmed')
     ).toHaveLength(1);
     expect(
-      listQueuedVideoGrowthEventsForTests().filter(
+      listQueuedTelemetryEventsForTests().filter(
         (event) => event.name === 'value_confirmed'
       )
     ).toHaveLength(2);
@@ -102,29 +102,39 @@ describe('product funnel', () => {
 
   test('queues only allow-listed video metadata', () => {
     resetFunnelForTests();
-    resetVideoGrowthUploadForTests();
+    resetTelemetryOutboxForTests();
     trackFunnelEvent('render_started', {
       feature: 'video_generation',
       session_id: 'session-private',
       workflow: 'idea2video',
       prompt: 'must not upload',
     });
-    const [queued] = listQueuedVideoGrowthEventsForTests();
+    const [queued] = listQueuedTelemetryEventsForTests();
     expect(queued?.properties.session_id).toBe('session-private');
     expect(queued?.properties.workflow).toBe('idea2video');
     expect('prompt' in (queued?.properties ?? {})).toBe(false);
   });
 
-  test('opt-out skips first-party video growth upload', () => {
+  test('queues app_opened as platform telemetry', () => {
     resetFunnelForTests();
-    resetVideoGrowthUploadForTests();
+    resetTelemetryOutboxForTests();
+    maybeTrackRetention();
+    const queued = listQueuedTelemetryEventsForTests();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.name).toBe('app_opened');
+    expect(queued[0]?.module).toBe('platform');
+  });
+
+  test('opt-out skips first-party telemetry upload', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
     resetTelemetryForTests();
     setTelemetryOptOut(true);
     trackFunnelEvent('render_started', {
       feature: 'video_generation',
       session_id: 'session-opt-out',
     });
-    expect(listQueuedVideoGrowthEventsForTests()).toEqual([]);
+    expect(listQueuedTelemetryEventsForTests()).toEqual([]);
     setTelemetryOptOut(false);
   });
 });

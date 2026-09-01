@@ -47,9 +47,10 @@ pub use domain::WorkflowKind;
 pub use error::{VimaxError, VimaxResult};
 pub use progress::{
     INTERRUPTED_SUMMARY, ProgressCallback, ProgressEvent, RenderStatus, RunStatus,
+    VimaxTerminalTelemetry, duration_ms_from_status, film_event_name,
 };
 pub use revise::ReviseResult;
-pub use service::VimaxService;
+pub use service::{TerminalTelemetryHook, VimaxService};
 pub use session::{
     ARCHIVE_EXTENSION, ActionAssetsInfo, ArtifactNode, CameoManifest, CameoPhotoEntry, CameoUpdate,
     SessionIndex, SessionRecord, SessionSummary, apply_video_task_credits,

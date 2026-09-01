@@ -17,7 +17,7 @@ use nomifun_api_types::{
     CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudServerSettingsResponse, CloudSyncModelsResponse, CloudWebsiteEntryResponse,
     CloudWhoamiResponse, UpdateCloudServerSettingsRequest, VideoGrowthEvent,
-    VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse, VideoGrowthMetricsResponse,
+    VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -42,7 +42,8 @@ const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const MAX_GROWTH_EVENTS_PER_BATCH: usize = 50;
 const MAX_GROWTH_PROPERTIES: usize = 24;
-const VIDEO_GROWTH_EVENT_NAMES: [&str; 13] = [
+const TELEMETRY_EVENT_NAMES: [&str; 15] = [
+    "app_opened",
     "home_viewed",
     "task_drafted",
     "task_accepted",
@@ -51,6 +52,7 @@ const VIDEO_GROWTH_EVENT_NAMES: [&str; 13] = [
     "render_started",
     "film_succeeded",
     "film_failed",
+    "film_cancelled",
     "value_confirmed",
     "project_exported",
     "tv_published",
@@ -140,12 +142,12 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
         .route("/api/cloud/logout", post(logout))
         .route("/api/cloud/sync-models", post(sync_models))
         .route(
-            "/api/cloud/growth/video/events",
+            "/api/cloud/telemetry/events",
             post(upload_video_growth_events),
         )
         .route(
-            "/api/cloud/growth/video/metrics",
-            get(get_video_growth_metrics),
+            "/api/cloud/growth/video/events",
+            post(upload_video_growth_events),
         )
         .route("/api/cloud/plans", get(list_billing_plans))
         .route("/api/cloud/credit-packs", get(list_billing_credit_packs))
@@ -176,8 +178,17 @@ fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError>
     if event.event_id.is_empty() || event.event_id.len() > 128 {
         return Err(AppError::BadRequest("growth event id is invalid".into()));
     }
-    if !VIDEO_GROWTH_EVENT_NAMES.contains(&event.name.as_str()) {
+    if !TELEMETRY_EVENT_NAMES.contains(&event.name.as_str()) {
         return Err(AppError::BadRequest("growth event name is invalid".into()));
+    }
+    if let Some(module) = event.module.as_deref() {
+        let expected = match event.name.as_str() {
+            "app_opened" => "platform",
+            _ => "video_generation",
+        };
+        if module != expected {
+            return Err(AppError::BadRequest("growth event module is invalid".into()));
+        }
     }
     if event.cohort.as_deref().is_some_and(|value| value != "A" && value != "B") {
         return Err(AppError::BadRequest("growth event cohort is invalid".into()));
@@ -228,29 +239,6 @@ async fn upload_video_growth_events(
     )))
 }
 
-#[derive(Debug, Deserialize)]
-struct VideoGrowthMetricsQuery {
-    #[serde(default = "default_growth_metrics_days")]
-    days: u16,
-}
-
-fn default_growth_metrics_days() -> u16 {
-    7
-}
-
-async fn get_video_growth_metrics(
-    State(state): State<CloudRouterState>,
-    Extension(_user): Extension<CurrentUser>,
-    Query(query): Query<VideoGrowthMetricsQuery>,
-) -> Result<Json<ApiResponse<VideoGrowthMetricsResponse>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .get_video_growth_metrics(query.days.clamp(1, 90))
-            .await?,
-    )))
-}
-
 #[cfg(test)]
 mod growth_tests {
     use super::*;
@@ -260,6 +248,7 @@ mod growth_tests {
             event_id: "video:film_succeeded:session-1".into(),
             name: name.into(),
             occurred_at: "2026-08-26T00:00:00Z".into(),
+            module: None,
             properties: Default::default(),
             cohort: Some("A".into()),
         }
@@ -273,6 +262,14 @@ mod growth_tests {
     #[test]
     fn rejects_unknown_video_growth_event() {
         assert!(validate_video_growth_event(&event("arbitrary_event")).is_err());
+    }
+
+    #[test]
+    fn accepts_cancelled_and_platform_events() {
+        assert!(validate_video_growth_event(&event("film_cancelled")).is_ok());
+        let mut opened = event("app_opened");
+        opened.module = Some("platform".into());
+        assert!(validate_video_growth_event(&opened).is_ok());
     }
 
     #[test]
