@@ -28,6 +28,7 @@ describe('support chat structure', () => {
     expect(skinIndex).toBeGreaterThan(-1);
     expect(supportIndex).toBeGreaterThan(skinIndex);
     expect(logoutIndex).toBeGreaterThan(supportIndex);
+    expect(menuSection).toContain("className='mx-4px mt-8px h-1px bg-[var(--color-border-2)]'");
   });
 
   test('modal and composer keep async chat affordances with stable attachment controls', () => {
@@ -39,10 +40,13 @@ describe('support chat structure', () => {
     expect(modal.includes('NomiModal')).toBe(true);
     expect(modal.includes('ModalWrapper')).toBe(false);
     expect(modal.includes("width: 'min(600px, calc(100vw - 32px))'")).toBe(true);
-    expect(modal.includes("height: 'min(680px, calc(100dvh - 32px))'")).toBe(false);
+    expect(modal.includes("height: 'min(680px, calc(100dvh - 32px))'")).toBe(true);
+    expect(modal.includes('alignCenter={false}')).toBe(true);
+    expect(modal.includes("wrapClassName='support-chat-modal__wrapper'")).toBe(true);
     expect(modal.includes("100dvh")).toBe(true);
     expect(modal.includes('contentStyle={{ padding: 0, overflow: \'hidden\' }}')).toBe(true);
-    expect(modal.includes('support-chat-modal__body flex min-h-0 flex-col')).toBe(true);
+    expect(modal.includes('support-chat-modal__body--${state.status}')).toBe(true);
+    expect(modal.includes('support-chat-modal__body flex min-h-0 flex-col')).toBe(false);
     expect(modal.includes('support-chat-modal--')).toBe(false);
     expect(modal.includes('support-chat-modal__status--loading')).toBe(true);
     expect(modal.includes('support-chat-modal__status--error')).toBe(true);
@@ -101,7 +105,8 @@ describe('support chat structure', () => {
     expect(composer.includes('px-6px pt-6px pb-4px')).toBe(true);
     expect(composer.includes('min-h-60px max-h-120px')).toBe(true);
     expect(composer.includes('h-32px flex items-center justify-between')).toBe(true);
-    expect(composer.includes('size-28px')).toBe(true);
+    expect(composer.includes('size-32px')).toBe(true);
+    expect(composer.includes('support-chat-composer__surface')).toBe(true);
     expect(composer.match(/data-button-shape='circle'/g)?.length).toBe(2);
     expect(composer.includes('textareaRef')).toBe(true);
     expect(previewGrid.includes('common.supportChat.removeImage')).toBe(true);

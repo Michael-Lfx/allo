@@ -6,7 +6,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { Caution, Close } from '@icon-park/react';
+import { Popover } from '@arco-design/web-react';
+import { Caution, Close, Info, Plus } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import NomiModal from '@/renderer/components/base/NomiModal';
 import ErrorDiagnosticContent from '@/renderer/components/base/ErrorDiagnosticContent';
@@ -46,6 +47,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
   const [description, setDescription] = useState('');
   const [screenshots, setScreenshots] = useState<SupportImagePreviewItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const [submitStatus, setSubmitStatus] = useState<
     'idle' | 'preparation-failed' | 'partial-failure'
   >('idle');
@@ -95,6 +97,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
       setDescription('');
       setScreenshots([]);
       setSubmitStatus('idle');
+      setInfoOpen(false);
       lastContextKeyRef.current = nextKey;
     }
 
@@ -181,6 +184,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
 
   const handleSubmit = async () => {
     if (!context || submitting || descriptionTooLong || submitStatus === 'partial-failure') return;
+    setInfoOpen(false);
     setSubmitting(true);
     setSubmitStatus('idle');
     try {
@@ -219,11 +223,13 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
 
   const handleCancel = () => {
     if (submitting) return;
+    setInfoOpen(false);
     onCancel();
   };
 
   const handleOpenSupportChat = () => {
     if (submitting) return;
+    setInfoOpen(false);
     onCancel();
     onOpenSupportChat();
   };
@@ -278,6 +284,8 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
         </div>
       }
       className='conversation-error-report-modal w-[min(720px,calc(100vw-32px))] max-w-720px rd-16px'
+      alignCenter={false}
+      wrapClassName='conversation-error-report__wrapper'
       style={{
         width: 'min(720px, calc(100vw - 32px))',
         maxWidth: 'min(720px, calc(100vw - 32px))',
@@ -290,22 +298,13 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
       {context && diagnostic ? (
         <div className='conversation-error-report__body'>
           <div className='conversation-error-report__scroll'>
-            <p className='conversation-error-report__intro'>
-              {t('settings.bugReportIntro', {
-                defaultValue: '请描述问题表现和复现步骤，帮助我们更快定位。',
-              })}
-            </p>
-
-            <div className='conversation-error-report__section'>
-              <label
-                className='conversation-error-report__label'
-                htmlFor='conversation-error-report-description'
-              >
+            <section
+              className='conversation-error-report__editor'
+              aria-labelledby='conversation-error-report-editor-title'
+            >
+              <h3 id='conversation-error-report-editor-title' className='sr-only'>
                 {t('settings.bugReportDescriptionLabel')}
-                <span className='conversation-error-report__optional'>
-                  {t('settings.bugReportOptional', { defaultValue: '可选' })}
-                </span>
-              </label>
+              </h3>
               <textarea
                 id='conversation-error-report-description'
                 ref={textareaRef}
@@ -314,6 +313,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
                 maxLength={MAX_REPORT_DESCRIPTION_CHARS}
                 placeholder={t('settings.bugReportDescriptionPlaceholder')}
                 aria-invalid={descriptionTooLong}
+                aria-labelledby='conversation-error-report-editor-title'
                 aria-describedby='conversation-error-report-description-count'
                 onChange={(event) => setDescription(event.target.value)}
                 onKeyDown={(event) => {
@@ -327,87 +327,111 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
                   }
                 }}
               />
-              <div
-                id='conversation-error-report-description-count'
-                className={
-                  descriptionTooLong
-                    ? 'conversation-error-report__count conversation-error-report__count--danger'
-                    : 'conversation-error-report__count'
-                }
-              >
-                {charCount} / {MAX_REPORT_DESCRIPTION_CHARS}
-              </div>
-            </div>
-
-            <div className='conversation-error-report__section'>
-              <div className='conversation-error-report__section-heading'>
-                <span className='conversation-error-report__label'>
-                  {t('settings.bugReportScreenshotLabel')}
-                  <span className='conversation-error-report__optional'>
-                    {t('settings.bugReportOptional', { defaultValue: '可选' })}
-                  </span>
-                </span>
-                <span className='conversation-error-report__hint'>
-                  {t('settings.bugReportScreenshotFormats', {
-                    defaultValue: 'PNG / JPG，单张不超过 5MB',
-                  })}
-                </span>
-              </div>
-              <SupportImagePreviewGrid
-                items={screenshots}
-                onRemove={removeScreenshot}
-                disabled={submitting}
-                className='conversation-error-report__screenshots'
-              />
-              {screenshots.length < MAX_SUPPORT_IMAGES ? (
-                <label
-                  className='conversation-error-report__upload'
-                  role='button'
-                  tabIndex={submitting ? -1 : 0}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      fileInputRef.current?.click();
-                    }
-                  }}
-                >
-                  <input
-                    ref={fileInputRef}
-                    type='file'
-                    accept={SUPPORT_IMAGE_ACCEPT}
-                    multiple
-                    className='hidden'
-                    onChange={handleScreenshotSelected}
-                    disabled={submitting}
-                  />
-                  <span>{t('settings.bugReportScreenshotDropzoneText')}</span>
-                </label>
+              {screenshots.length > 0 ? (
+                <SupportImagePreviewGrid
+                  items={screenshots}
+                  onRemove={removeScreenshot}
+                  disabled={submitting}
+                  className='conversation-error-report__screenshots'
+                />
               ) : null}
-            </div>
-
-            <div className='conversation-error-report__section conversation-error-report__auto-info'>
-              <div className='conversation-error-report__label'>
-                {t('settings.bugReportIncludedInfo', { defaultValue: '自动附带信息' })}
+              <div className='conversation-error-report__editor-toolbar'>
+                <div className='conversation-error-report__editor-actions'>
+                  {screenshots.length < MAX_SUPPORT_IMAGES ? (
+                    <>
+                      <input
+                        ref={fileInputRef}
+                        type='file'
+                        accept={SUPPORT_IMAGE_ACCEPT}
+                        multiple
+                        className='hidden'
+                        onChange={handleScreenshotSelected}
+                        disabled={submitting}
+                      />
+                      <button
+                        type='button'
+                        className='conversation-error-report__attachment'
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={submitting}
+                        aria-label={t('settings.bugReportScreenshotLabel')}
+                        title={t('settings.bugReportScreenshotFormats', {
+                          defaultValue: '支持 PNG / JPG，最多 4 张，单张不超过 5MB',
+                        })}
+                      >
+                        <Plus theme='outline' size='16' strokeWidth={2} />
+                      </button>
+                    </>
+                  ) : null}
+                  {screenshots.length > 0 ? (
+                    <span className='conversation-error-report__attachment-count' aria-live='polite'>
+                      {screenshots.length} / {MAX_SUPPORT_IMAGES}
+                    </span>
+                  ) : null}
+                </div>
+                <div className='conversation-error-report__editor-meta'>
+                  <div
+                    id='conversation-error-report-description-count'
+                    className={
+                      descriptionTooLong
+                        ? 'conversation-error-report__count conversation-error-report__count--danger'
+                        : 'conversation-error-report__count'
+                    }
+                  >
+                    {charCount} / {MAX_REPORT_DESCRIPTION_CHARS}
+                  </div>
+                  <Popover
+                    className='conversation-error-report__info-popover'
+                    trigger={['hover', 'click', 'focus']}
+                    position='top'
+                    popupVisible={infoOpen}
+                    onVisibleChange={setInfoOpen}
+                    getPopupContainer={() => document.body}
+                    content={
+                      <div
+                        id='conversation-error-report-auto-info'
+                        className='conversation-error-report__info-content'
+                        role='dialog'
+                        aria-label={t('settings.bugReportIncludedInfo', {
+                          defaultValue: '查看自动附带信息说明',
+                        })}
+                      >
+                        <p>{t('settings.bugReportAutoInfo')}</p>
+                        <p>{t('settings.bugReportLogPrivacy')}</p>
+                      </div>
+                    }
+                  >
+                    <button
+                      type='button'
+                      className='conversation-error-report__info-trigger'
+                      aria-label={t('settings.bugReportIncludedInfo', {
+                        defaultValue: '查看自动附带信息说明',
+                      })}
+                      aria-haspopup='dialog'
+                      aria-controls='conversation-error-report-auto-info'
+                      aria-expanded={infoOpen}
+                    >
+                      <Info theme='outline' size='15' strokeWidth={2} />
+                    </button>
+                  </Popover>
+                </div>
               </div>
-              <p className='conversation-error-report__copy'>
-                {t('settings.bugReportAutoInfo')}
-              </p>
-              <p className='conversation-error-report__copy conversation-error-report__copy--muted'>
-                {t('settings.bugReportLogPrivacy', {
-                  defaultValue: '日志仅用于排查问题，可能包含对话记录和设备信息。',
-                })}
-              </p>
-            </div>
+            </section>
 
-            <div className='conversation-error-report__section'>
-              <div className='conversation-error-report__label'>
+            <section
+              className='conversation-error-report__diagnostic-section'
+              aria-labelledby='conversation-error-report-diagnostic-title'
+            >
+              <h3
+                id='conversation-error-report-diagnostic-title'
+                className='conversation-error-report__diagnostic-heading'
+              >
                 {t('settings.bugReportDiagnostic', { defaultValue: '错误诊断' })}
-              </div>
+              </h3>
               <ErrorDiagnosticContent
                 diagnostic={diagnostic}
                 className='conversation-error-report__diagnostic'
               />
-            </div>
+            </section>
 
             {submitStatus === 'preparation-failed' ? (
               <div className='conversation-error-report__status' role='alert'>

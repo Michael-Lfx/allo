@@ -230,7 +230,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
 
       {showLogout && onLogout && (
         <>
-          <div className='mx-4px h-1px bg-[var(--color-border-2)]' />
+          <div className='mx-4px mt-8px h-1px bg-[var(--color-border-2)]' />
           <button type='button' className={menuRowClass} onClick={handleLogout}>
             <Logout theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
             <span className='flex-1 text-12px text-t-primary'>

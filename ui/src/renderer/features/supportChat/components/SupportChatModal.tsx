@@ -51,16 +51,21 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
       }}
       footer={null}
       className='support-chat-modal w-[min(600px,calc(100vw-32px))] max-w-600px rd-16px'
+      alignCenter={false}
+      wrapClassName='support-chat-modal__wrapper'
       style={{
         width: 'min(600px, calc(100vw - 32px))',
         maxWidth: 'min(600px, calc(100vw - 32px))',
+        height: 'min(680px, calc(100dvh - 32px))',
         maxHeight: 'min(680px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}
       unmountOnExit
       onCancel={closeSupportChat}
     >
-      <div className='support-chat-modal__body flex min-h-0 flex-col'>
+      <div
+        className={`support-chat-modal__body support-chat-modal__body--${state.status} flex min-h-0 h-full flex-col`}
+      >
         {state.status === 'ready' && state.syncWarning ? (
           <div
             className='support-chat-modal__sync-warning border-b border-[var(--color-border-2)] px-12px py-8px text-12px text-warning-6 leading-18px'

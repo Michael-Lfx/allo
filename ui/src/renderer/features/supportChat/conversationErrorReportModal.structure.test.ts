@@ -19,7 +19,13 @@ describe('conversation error report modal contract', () => {
   test('uses a controlled report form with one scroll owner and stable submit states', () => {
     expect(modalSource).toContain("import NomiModal from '@/renderer/components/base/NomiModal';");
     expect(modalSource).toContain('conversation-error-report__scroll');
+    expect(modalSource).toContain('conversation-error-report__editor');
+    expect(modalSource).toContain('conversation-error-report__diagnostic-section');
+    expect(modalSource).toContain('<Popover');
+    expect(modalSource).toContain('aria-expanded={infoOpen}');
     expect(modalSource).toContain("width: 'min(720px, calc(100vw - 32px))'");
+    expect(modalSource).toContain('alignCenter={false}');
+    expect(modalSource).toContain("wrapClassName='conversation-error-report__wrapper'");
     expect(modalSource).not.toContain("height: 'min(760px, calc(100dvh - 32px))'");
     expect(modalSource).toContain('conversation-error-report-description');
     expect(modalSource).toContain('maxLength={MAX_REPORT_DESCRIPTION_CHARS}');
@@ -29,7 +35,11 @@ describe('conversation error report modal contract', () => {
     expect(modalSource).toContain("submitStatus === 'preparation-failed'");
     expect(modalSource).toContain("submitStatus === 'partial-failure'");
     expect(modalSource).toContain("submitStatus === 'partial-failure') return;");
-    expect(modalSource).toContain('role=\'button\'');
+    expect(modalSource).toContain('conversation-error-report__attachment');
+    expect(modalSource).not.toContain('role=\'button\'');
+    expect(modalSource).not.toContain('conversation-error-report__intro');
+    expect(modalSource).not.toContain('conversation-error-report__upload');
+    expect(modalSource).not.toContain('conversation-error-report__auto-info');
     expect(modalSource).toContain('providerOwnedPreviewUrlsRef');
     expect(modalSource).not.toContain('Modal.confirm');
   });
@@ -71,33 +81,52 @@ describe('conversation error report modal contract', () => {
   test('pins the real NomiModal geometry and removes the dead support body selector', () => {
     for (const fragment of [
       '.conversation-error-report-modal .arco-modal-content',
+      '.conversation-error-report-modal > div:has(> .arco-modal-content)',
       '.support-chat-modal .arco-modal-content',
       '.nomifun-modal-body-content',
       '.conversation-error-report__scroll',
       '.support-message-list {',
+      '.conversation-error-report__editor',
+      '.conversation-error-report__info-trigger',
       '.support-chat-composer__icon',
       '.nomifun-modal-structured-header > button > .i-icon',
       'line-height: 0;',
       'flex: 0 0 var(--support-control-size, 32px);',
+      'flex: 0 0 auto;',
     ]) {
       expect(cssSource).toContain(fragment);
     }
     expect(cssSource).toContain('100dvh');
     expect(cssSource).toContain('height: auto;');
-    expect(cssSource).toContain('max-height: min(520px, calc(100dvh - 180px));');
+    expect(cssSource).toContain('height: 100%;');
+    expect(cssSource).toContain('flex: 1 1 auto;');
     expect(cssSource).toContain('.support-message-list--empty');
-    expect(cssSource).toContain('min-height: 176px;');
-    expect(cssSource).toContain('max-height: 220px;');
-    expect(cssSource).toContain('max-height: calc(100dvh - 24px) !important;');
-    expect(cssSource).toContain('.conversation-error-report-modal {');
-    expect(cssSource).toContain('padding: 10px 0 8px;');
+    expect(cssSource).toContain('max-height: none;');
+    expect(cssSource).toContain('height: min(640px, calc(100dvh - 24px)) !important;');
+    const supportWrapperCss = cssSource.slice(
+      cssSource.indexOf('.support-chat-modal__wrapper'),
+      cssSource.indexOf('.conversation-error-report__wrapper')
+    );
+    expect(supportWrapperCss).toContain('align-items: center;');
+    expect(supportWrapperCss).not.toContain('align-items: flex-end;');
     expect(cssSource).not.toContain('.support-chat-modal .arco-modal-body');
+    expect(cssSource).not.toContain('.conversation-error-report__upload');
+    expect(cssSource).not.toContain('.conversation-error-report__auto-info');
+    expect(cssSource).not.toContain('.support-chat-composer textarea:focus-visible {\n  outline: 2px');
+    expect(cssSource).toContain('.conversation-error-report-modal {');
 
-    const surfaceGeometryCss = cssSource.slice(
-      cssSource.indexOf('/* ===== Feedback report and support chat surfaces ====='),
+    const feedbackGeometryCss = cssSource.slice(
+      cssSource.indexOf('.conversation-error-report-modal .arco-modal-content'),
+      cssSource.indexOf('.support-chat-modal .arco-modal-content')
+    );
+    expect(feedbackGeometryCss).toContain('height: auto;');
+    expect(feedbackGeometryCss).not.toContain('\n  height: 100%;');
+
+    const supportGeometryCss = cssSource.slice(
+      cssSource.indexOf('.support-chat-modal .arco-modal-content'),
       cssSource.indexOf('.conversation-error-report__header')
     );
-    expect(surfaceGeometryCss).not.toMatch(/\n\s+height: 100%;/);
+    expect(supportGeometryCss).toContain('height: 100%;');
   });
 
   test('keeps support visibility independent from reducer hydration state', () => {

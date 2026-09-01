@@ -28,6 +28,7 @@ type ProbeReport = {
     height: number;
     top: number;
     bottom: number;
+    verticalCenterDelta: number | null;
     horizontalOverflow: boolean;
     headerVisible: boolean;
     footerVisible: boolean;
@@ -35,6 +36,9 @@ type ProbeReport = {
     messageListHeight: number | null;
     contentBottomGap: number | null;
     inputWithinViewport: boolean | null;
+    modalHeightExplicit: boolean;
+    modalHeightDelta: number | null;
+    inputToolbarOverlap: boolean | null;
   };
   controls: Array<{
     label: string;
@@ -228,7 +232,13 @@ const hasVisibleFocusStyle = (element: HTMLElement): boolean => {
   if (document.activeElement !== element) return false;
   const style = getComputedStyle(element);
   const outlineVisible = style.outlineStyle !== 'none' && Number.parseFloat(style.outlineWidth) > 0;
-  const shadowVisible = style.boxShadow !== 'none';
+  const ancestorWithFocusRing = element.closest<HTMLElement>(
+    '.support-chat-composer__surface, .conversation-error-report__editor'
+  );
+  const ancestorShadowVisible = ancestorWithFocusRing
+    ? getComputedStyle(ancestorWithFocusRing).boxShadow !== 'none'
+    : false;
+  const shadowVisible = style.boxShadow !== 'none' || ancestorShadowVisible;
   return element.matches(':focus-visible') && (outlineVisible || shadowVisible);
 };
 
@@ -279,6 +289,9 @@ const waitForStableSurface = (selector: string): Promise<HTMLElement | null> =>
     fallbackTimer = window.setTimeout(() => finish(document.querySelector<HTMLElement>(selector)), 2_000);
     window.requestAnimationFrame(check);
   });
+
+const waitForNextFrame = (): Promise<void> =>
+  new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 
 const makeSupportMessages = (scenario: string): SupportChatState => {
   const messages: SupportMessage[] = [];
@@ -452,6 +465,21 @@ const SupportSurfaceProbe: React.FC = () => {
       if (cancelled) return;
 
       const modalRect = rectOf(root);
+      await waitForNextFrame();
+      if (cancelled) return;
+      const settledModalRect = rectOf(root);
+      const modalHeightDelta =
+        modalRect && settledModalRect ? Math.abs(modalRect.height - settledModalRect.height) : null;
+      const supportVerticalCenterDelta =
+        surface === 'support' && settledModalRect
+          ? settledModalRect.top + settledModalRect.height / 2 - window.innerHeight / 2
+          : null;
+      const supportVerticalCentering =
+        surface !== 'support' ||
+        (supportVerticalCenterDelta !== null && Math.abs(supportVerticalCenterDelta) <= 1);
+      const modalHeightExplicit =
+        surface !== 'support' ||
+        Boolean(root && getComputedStyle(root).height !== 'auto' && getComputedStyle(root).height !== '0px');
       const header = root?.querySelector<HTMLElement>('.nomifun-modal-structured-header');
       const footer =
         root?.querySelector<HTMLElement>('.nomifun-modal-structured-footer') ??
@@ -471,11 +499,19 @@ const SupportSurfaceProbe: React.FC = () => {
         surface !== 'support'
           ? null
           : Boolean(composerRect && composerRect.top >= -1 && composerRect.bottom <= window.innerHeight + 1);
+      const textareaRect = rectOf(root?.querySelector<HTMLTextAreaElement>('textarea') ?? null);
+      const toolbarRect = rectOf(root?.querySelector<HTMLElement>('.support-chat-composer__toolbar') ?? null);
+      const inputToolbarOverlap =
+        surface !== 'support'
+          ? null
+          : textareaRect && toolbarRect
+            ? textareaRect.bottom > toolbarRect.top + 1
+            : true;
       const rootControls = Array.from(
         root?.querySelectorAll<HTMLButtonElement>(
           surface === 'support'
             ? '.support-chat-composer button[data-button-shape="circle"]'
-            : '.nomifun-modal-structured-header button, .conversation-error-report__footer-actions button'
+            : '.nomifun-modal-structured-header button, .conversation-error-report__footer-actions button, .conversation-error-report__attachment, .conversation-error-report__info-trigger'
         ) ?? []
       );
       const portalControls =
@@ -495,7 +531,8 @@ const SupportSurfaceProbe: React.FC = () => {
         const focusVisible = hasVisibleFocusStyle(button);
         const iconControl =
           button.matches('[data-button-shape="circle"]') ||
-          Boolean(button.closest('.nomifun-modal-structured-header'));
+          Boolean(button.closest('.nomifun-modal-structured-header')) ||
+          button.matches('.conversation-error-report__attachment, .conversation-error-report__info-trigger');
         const expectedIconSize = pointer === 'coarse' ? 40 : 32;
         const stableIconSize =
           !iconControl ||
@@ -534,7 +571,7 @@ const SupportSurfaceProbe: React.FC = () => {
         {
           label: 'surface-text',
           element: root?.querySelector<HTMLElement>(
-            surface === 'support' ? '.support-message-list' : '.conversation-error-report__intro'
+            surface === 'support' ? '.support-message-list' : '.conversation-error-report__editor'
           ),
         },
         {
@@ -567,7 +604,13 @@ const SupportSurfaceProbe: React.FC = () => {
       const visibleRoot = visibleRect(modalRect);
       const horizontalOverflow = Boolean(root && root.scrollWidth > root.clientWidth + 1);
       const headerVisible = visibleRect(rectOf(header ?? null));
-      const footerVisible = visibleRect(rectOf(footer ?? null));
+      const footerRect = rectOf(footer ?? null);
+      const footerVisible = Boolean(
+        footerRect &&
+          visibleRect(footerRect) &&
+          footerRect.top >= -1 &&
+          footerRect.bottom <= window.innerHeight + 1
+      );
       const withinViewport = Boolean(
         modalRect && modalRect.top >= -1 && modalRect.bottom <= window.innerHeight + 1
       );
@@ -600,15 +643,9 @@ const SupportSurfaceProbe: React.FC = () => {
           !!thumbnailRect &&
           Math.abs(thumbnailRect.width - 72) <= 1 &&
           Math.abs(thumbnailRect.height - 72) <= 1);
-      const supportEmptyStateCompact =
+      const supportModalHeightContract =
         surface !== 'support' ||
-        scenario !== 'empty' ||
-        Boolean(
-          modalRect &&
-            modalRect.height <= 440 + 1 &&
-            messageListRect &&
-            messageListRect.height <= 220 + 1
-        );
+        Boolean(modalHeightExplicit && modalHeightDelta !== null && modalHeightDelta <= 1);
       const feedbackShortContentFit =
         surface !== 'feedback' ||
         (scenario !== 'normal' && scenario !== 'screenshots') ||
@@ -622,16 +659,21 @@ const SupportSurfaceProbe: React.FC = () => {
           messageListRect.bottom <= composerRect.top + 1 &&
             composerRect.bottom <= window.innerHeight + 1
         );
+      const feedbackFooterAccessible =
+        surface !== 'feedback' || scenario !== 'expanded' || footerVisible;
 
       if (!visibleRoot) failures.push('modal-not-visible');
       if (!withinViewport) failures.push('modal-outside-viewport');
       if (horizontalOverflow) failures.push('horizontal-overflow');
       if (!headerVisible) failures.push('header-not-visible');
       if (!footerVisible) failures.push('footer-not-visible');
+      if (!supportVerticalCentering) failures.push('support-modal-not-vertically-centered');
+      if (!feedbackFooterAccessible) failures.push('feedback-footer-not-visible');
       if (scrollOwners.length !== 1) failures.push(`scroll-owner-count=${scrollOwners.length}`);
-      if (!supportEmptyStateCompact) failures.push('empty-state-overexpanded');
+      if (!supportModalHeightContract) failures.push('support-modal-height-shift');
       if (!feedbackShortContentFit) failures.push('short-feedback-overexpanded');
       if (!supportMessageLayoutPass) failures.push('message-list-pushes-composer');
+      if (inputToolbarOverlap) failures.push('textarea-toolbar-overlap');
       if (controls.some((control) => !control.pass)) failures.push('icon-control-geometry');
       if (focusVisibleControlCount !== focusableControls.length) failures.push('focus-visible-control');
       if (contrastChecks.some((check) => !check.pass)) failures.push('contrast-check');
@@ -672,6 +714,7 @@ const SupportSurfaceProbe: React.FC = () => {
           height: modalRect?.height ?? 0,
           top: modalRect?.top ?? 0,
           bottom: modalRect?.bottom ?? 0,
+          verticalCenterDelta: supportVerticalCenterDelta,
           horizontalOverflow,
           headerVisible,
           footerVisible,
@@ -679,6 +722,9 @@ const SupportSurfaceProbe: React.FC = () => {
           messageListHeight: messageListRect?.height ?? null,
           contentBottomGap,
           inputWithinViewport,
+          modalHeightExplicit,
+          modalHeightDelta,
+          inputToolbarOverlap,
         },
         controls,
         focusableControlCount: focusableControls.length,

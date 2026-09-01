@@ -269,7 +269,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
         onChange={handleImageSelected}
       />
 
-      <div className='box-border w-full min-h-104px px-6px pt-6px pb-4px flex flex-col gap-0 rd-20px border border-solid border-[var(--color-border-2)] bg-bg-1 transition-colors focus-within:border-primary'>
+      <div className='support-chat-composer__surface box-border w-full min-h-104px px-6px pt-6px pb-4px flex flex-col gap-0 rd-20px border border-solid border-[var(--color-border-2)] bg-bg-1 transition-colors'>
         <SupportImagePreviewGrid
           items={imagePreviews}
           onRemove={removeImagePreview}
@@ -283,6 +283,9 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
           rows={2}
           value={value}
           disabled={disabled || sending || preparingLogs}
+          aria-label={t('common.supportChat.composerPlaceholder', {
+            defaultValue: '描述你的问题…',
+          })}
           placeholder={t('common.supportChat.composerPlaceholder', {
             defaultValue: '描述你的问题…',
           })}
@@ -339,7 +342,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
               <button
                 type='button'
                 data-button-shape='circle'
-                className='size-28px shrink-0 flex items-center justify-center rd-full border-none bg-fill-2 text-t-secondary cursor-pointer transition-colors hover:bg-fill-3 disabled:opacity-50 disabled:cursor-not-allowed'
+                className='size-32px shrink-0 flex items-center justify-center rd-full border-none bg-fill-2 text-t-secondary cursor-pointer transition-colors hover:bg-fill-3 disabled:opacity-50 disabled:cursor-not-allowed'
                 disabled={disabled || sending || preparingLogs}
                 aria-label={t('common.supportChat.addAttachment', { defaultValue: '添加附件' })}
               >
@@ -360,7 +363,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
           <button
             type='button'
             data-button-shape='circle'
-            className='support-chat-composer__send size-28px shrink-0 flex items-center justify-center rd-full border-none cursor-pointer transition-opacity hover:opacity-90 active:opacity-80 disabled:bg-fill-3 disabled:text-t-tertiary disabled:cursor-not-allowed'
+            className='support-chat-composer__send size-32px shrink-0 flex items-center justify-center rd-full border-none cursor-pointer transition-opacity hover:opacity-90 active:opacity-80 disabled:bg-fill-3 disabled:text-t-tertiary disabled:cursor-not-allowed'
             disabled={!canSend}
             onClick={() => void handleSend()}
             aria-label={t('common.supportChat.send', { defaultValue: '发送' })}

@@ -518,13 +518,77 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 /* ===== Feedback report and support chat surfaces =====
  *
- * These two surfaces intentionally share one modal geometry contract: short
- * content determines the height, while one inner region owns scrolling once
- * content reaches the viewport limit. This prevents long diagnostic text or
- * chat history from pushing the action area out of the viewport.
+ * The support surface owns a fixed viewport for the chat timeline. The report
+ * surface stays content-sized until its single body scroll owner reaches the
+ * viewport limit.
  */
-.conversation-error-report-modal .arco-modal-content,
-.support-chat-modal .arco-modal-content {
+.support-chat-modal__wrapper {
+  box-sizing: border-box;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+}
+
+.support-chat-modal__wrapper > .support-chat-modal {
+  top: auto;
+  margin: 0;
+}
+
+.conversation-error-report__wrapper {
+  box-sizing: border-box;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+}
+
+.conversation-error-report__wrapper > .conversation-error-report-modal {
+  top: auto;
+  margin: 0;
+}
+
+/* Arco's focus lock inserts an anonymous container between the modal and its
+ * content. Give that container the same definite height as the fixed chat
+ * surface so the message list can consume the remaining space. */
+.support-chat-modal > div:has(> .arco-modal-content) {
+  box-sizing: border-box;
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conversation-error-report-modal {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Keep the report footer in the modal's flex sizing calculation. Without a
+ * definite flex chain, expanding diagnostic details can push the footer below
+ * the clipped modal instead of shrinking the single report scroll owner. */
+.conversation-error-report-modal > div:has(> .arco-modal-content) {
+  box-sizing: border-box;
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conversation-error-report-modal > div:has(> .arco-modal-content) > .arco-modal-content {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.conversation-error-report-modal .arco-modal-content {
   box-sizing: border-box;
   height: auto;
   max-height: 100%;
@@ -532,11 +596,19 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   overflow: hidden;
 }
 
-.conversation-error-report-modal .nomifun-modal-wrapper,
-.support-chat-modal .nomifun-modal-wrapper {
+.support-chat-modal .arco-modal-content {
+  box-sizing: border-box;
+  height: 100%;
+  max-height: 100%;
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.conversation-error-report-modal .nomifun-modal-wrapper {
   box-sizing: border-box;
   display: flex;
   min-height: 0;
+  flex: 1 1 auto;
   height: auto;
   max-height: 100%;
   flex-direction: column;
@@ -544,11 +616,33 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   background: var(--flowy-panel, var(--dialog-fill-0));
 }
 
-.conversation-error-report-modal .nomifun-modal-body-content,
+.support-chat-modal .nomifun-modal-wrapper {
+  box-sizing: border-box;
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--flowy-panel, var(--dialog-fill-0));
+}
+
+.conversation-error-report-modal .nomifun-modal-body-content {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  height: auto;
+  max-height: 100%;
+  flex-direction: column;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
 .support-chat-modal .nomifun-modal-body-content {
   display: flex;
   min-height: 0;
-  flex: 0 1 auto;
+  height: 100%;
+  flex: 1 1 auto;
   flex-direction: column;
   padding: 0 !important;
   overflow: hidden !important;
@@ -558,6 +652,7 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 .support-chat-modal__header {
   box-sizing: border-box;
   width: 100%;
+  flex: 0 0 auto;
   margin: 0 !important;
   padding: 16px 20px 12px !important;
   gap: 12px;
@@ -613,163 +708,189 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   min-height: 0;
   flex: 0 1 auto;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .conversation-error-report__scroll {
   min-width: 0;
   min-height: 0;
-  flex: 0 1 auto;
-  overflow: auto;
+  flex: 1 1 auto;
+  overflow-y: auto;
   padding: 4px 20px 20px;
   color: var(--flowy-text-primary, var(--text-primary));
 }
 
-.conversation-error-report__intro {
-  max-width: 70ch;
-  margin: 0 0 16px;
-  color: var(--flowy-text-secondary, var(--text-secondary));
-  font-size: var(--flowy-text-body, 14px);
-  line-height: var(--flowy-leading-body, 1.5);
+.conversation-error-report__body {
+  width: 100%;
+  flex: 1 1 auto;
+  max-height: 100%;
 }
 
-.conversation-error-report__section {
+.conversation-error-report__editor {
   min-width: 0;
-  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--flowy-border-subtle, var(--color-border-2));
+  border-radius: var(--flowy-radius-lg, 12px);
+  background: var(--flowy-interactive, var(--bg-1));
+  transition:
+    border-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
+    box-shadow var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out);
 }
 
-.conversation-error-report__section:first-of-type {
-  margin-top: 0;
-}
-
-.conversation-error-report__section-heading {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.conversation-error-report__label {
-  display: inline-flex;
-  min-width: 0;
-  align-items: baseline;
-  gap: 6px;
-  color: var(--flowy-text-primary, var(--text-primary));
-  font-size: 13px;
-  font-weight: var(--flowy-weight-semibold, 600);
-  line-height: 20px;
-}
-
-.conversation-error-report__optional,
-.conversation-error-report__hint {
-  color: var(--flowy-text-muted, var(--color-text-3));
-  font-size: 12px;
-  font-weight: var(--flowy-weight-regular, 400);
+.conversation-error-report__editor:focus-within {
+  border-color: var(--flowy-accent, rgb(var(--primary-6)));
+  box-shadow: inset 0 0 0 2px var(--flowy-focus, var(--control-focus-ring, var(--color-primary-light-3)));
 }
 
 .conversation-error-report__textarea {
   box-sizing: border-box;
   display: block;
   width: 100%;
-  min-height: 96px;
-  max-height: 180px;
-  margin-top: 8px;
+  min-height: 120px;
+  max-height: 240px;
   resize: vertical;
-  border: 1px solid var(--flowy-border-subtle, var(--color-border-2));
-  border-radius: var(--flowy-radius-md, 8px);
+  border: 0;
   outline: none;
-  padding: 10px 12px;
-  background: var(--flowy-interactive, var(--bg-1));
+  padding: 0;
+  background: transparent;
   color: var(--flowy-text-primary, var(--text-primary));
   font: inherit;
   line-height: 22px;
-  transition:
-    border-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
-    box-shadow var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out);
+}
+
+.conversation-error-report__textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .conversation-error-report__textarea::placeholder {
   color: var(--flowy-text-muted, var(--color-text-3));
 }
 
-.conversation-error-report__textarea:focus-visible {
-  border-color: var(--flowy-accent, rgb(var(--primary-6)));
-  box-shadow: 0 0 0 3px var(--flowy-focus, var(--control-focus-ring, var(--color-primary-light-3)));
-}
-
 .conversation-error-report__textarea[aria-invalid='true'] {
-  border-color: var(--flowy-danger, var(--danger));
+  color: var(--flowy-danger, var(--danger));
 }
 
+.conversation-error-report__screenshots {
+  margin-top: 10px;
+}
+
+.conversation-error-report__editor-toolbar {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--flowy-border-subtle, var(--color-border-2));
+}
+
+.conversation-error-report__editor-actions,
+.conversation-error-report__editor-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.conversation-error-report__attachment,
+.conversation-error-report__info-trigger {
+  display: flex;
+  width: var(--support-report-control-size, 32px);
+  height: var(--support-report-control-size, 32px);
+  min-width: var(--support-report-control-size, 32px);
+  flex: 0 0 var(--support-report-control-size, 32px);
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: transparent;
+  color: var(--flowy-text-secondary, var(--text-secondary));
+  line-height: 0;
+  cursor: pointer;
+  transition:
+    background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
+    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out);
+}
+
+.conversation-error-report__attachment:hover,
+.conversation-error-report__info-trigger:hover {
+  background: var(--flowy-interactive-hover, var(--bg-2));
+  color: var(--flowy-text-primary, var(--text-primary));
+}
+
+.conversation-error-report__attachment:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.conversation-error-report__attachment > svg,
+.conversation-error-report__info-trigger > svg,
+.conversation-error-report__attachment > .i-icon,
+.conversation-error-report__info-trigger > .i-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.conversation-error-report__attachment > .i-icon > svg,
+.conversation-error-report__info-trigger > .i-icon > svg {
+  display: block;
+  flex: 0 0 auto;
+  line-height: 0;
+  transform: none;
+}
+
+.conversation-error-report__attachment-count,
 .conversation-error-report__count {
-  margin-top: 4px;
-  text-align: right;
   color: var(--flowy-text-muted, var(--color-text-3));
   font-size: 11px;
   line-height: 16px;
+  white-space: nowrap;
 }
 
 .conversation-error-report__count--danger {
   color: var(--flowy-danger, var(--danger));
 }
 
-.conversation-error-report__upload {
-  display: flex;
-  min-height: 56px;
-  box-sizing: border-box;
-  align-items: center;
-  justify-content: center;
-  border: 1px dashed var(--flowy-border-structural, var(--border-base));
-  border-radius: var(--flowy-radius-md, 8px);
-  background: var(--flowy-interactive, var(--bg-1));
+.conversation-error-report__info-content {
+  max-width: min(280px, calc(100vw - 40px));
   color: var(--flowy-text-secondary, var(--text-secondary));
   font-size: 12px;
   line-height: 18px;
-  cursor: pointer;
-  transition:
-    border-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
-    background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
-    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out);
 }
 
-.conversation-error-report__upload:hover {
-  border-color: var(--flowy-accent, rgb(var(--primary-6)));
-  background: var(--flowy-interactive-hover, var(--bg-2));
+.conversation-error-report__info-content p {
+  margin: 0;
+}
+
+.conversation-error-report__info-content p + p {
+  margin-top: 8px;
+}
+
+.conversation-error-report__diagnostic-section {
+  min-width: 0;
+  margin-top: 16px;
+}
+
+.conversation-error-report__diagnostic-heading {
+  margin: 0 0 8px;
   color: var(--flowy-text-primary, var(--text-primary));
-}
-
-.conversation-error-report__upload:focus-within {
-  outline: 2px solid var(--flowy-focus, var(--control-focus-ring, var(--color-primary-light-3)));
-  outline-offset: 2px;
-}
-
-.conversation-error-report__upload:focus-visible {
-  outline: 2px solid var(--flowy-focus, var(--control-focus-ring, var(--color-primary-light-3)));
-  outline-offset: 2px;
-}
-
-.conversation-error-report__auto-info {
-  box-sizing: border-box;
-  padding: 10px 0 8px;
-  border-top: 1px solid var(--flowy-border-subtle, var(--color-border-2));
-  border-bottom: 1px solid var(--flowy-border-subtle, var(--color-border-2));
-  background: transparent;
-}
-
-.conversation-error-report__copy {
-  max-width: 70ch;
-  margin: 6px 0 0;
-  color: var(--flowy-text-secondary, var(--text-secondary));
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.conversation-error-report__copy--muted {
-  color: var(--flowy-text-muted, var(--color-text-3));
+  font-size: 13px;
+  font-weight: var(--flowy-weight-semibold, 600);
+  line-height: 20px;
 }
 
 .conversation-error-report__diagnostic {
-  margin-top: 8px;
+  margin-top: 0;
 }
 
 /* The report body is already the scroll owner, so expanded diagnostics must
@@ -808,6 +929,7 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 .conversation-error-report-modal .nomifun-modal-structured-footer {
   box-sizing: border-box;
+  flex: 0 0 auto;
   margin-top: 0;
   padding: 12px 20px 16px;
 }
@@ -852,6 +974,8 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 }
 
 .conversation-error-report__button:focus-visible,
+.conversation-error-report__attachment:focus-visible,
+.conversation-error-report__info-trigger:focus-visible,
 .nomifun-modal-structured-header > button:focus-visible,
 .support-chat-composer button:focus-visible,
 .support-chat-composer__attachment-menu button:focus-visible,
@@ -871,13 +995,15 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 .support-chat-modal__body {
   width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
 }
 
 .support-chat-modal__status {
   box-sizing: border-box;
   width: 100%;
   min-height: 0;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
 }
 
 .support-chat-modal__status--error,
@@ -911,9 +1037,9 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   width: 100%;
   min-width: 0;
   min-height: 0;
-  max-height: min(520px, calc(100dvh - 180px));
-  flex: 0 1 auto;
-  overflow: auto;
+  max-height: none;
+  flex: 1 1 auto;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 
@@ -925,9 +1051,9 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 }
 
 .support-message-list--empty {
-  min-height: 176px;
-  max-height: 220px;
-  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
   overflow: hidden;
 }
 
@@ -941,8 +1067,13 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   padding: 10px 16px 14px;
 }
 
-.support-chat-composer > .box-border {
+.support-chat-composer__surface {
   min-width: 0;
+}
+
+.support-chat-composer__surface:focus-within {
+  border-color: var(--flowy-accent, rgb(var(--primary-6)));
+  box-shadow: inset 0 0 0 2px var(--flowy-focus, var(--control-focus-ring, var(--color-primary-light-3)));
 }
 
 .support-chat-composer__toolbar {
@@ -956,8 +1087,8 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 }
 
 .support-chat-composer textarea:focus-visible {
-  outline: 2px solid var(--flowy-focus, var(--control-focus-ring, var(--color-primary-light-3)));
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: none;
 }
 
 .support-chat-composer__icon {
@@ -983,10 +1114,14 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
 .support-chat-composer button[data-button-shape='circle'] {
   box-sizing: border-box;
+  display: flex;
   width: var(--support-control-size, 32px);
   height: var(--support-control-size, 32px);
   min-width: var(--support-control-size, 32px);
   flex: 0 0 var(--support-control-size, 32px);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   line-height: 0;
 }
 
@@ -1067,6 +1202,38 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   background: var(--flowy-danger, var(--danger));
 }
 
+@media (min-width: 760px) and (max-height: 560px) {
+  .support-chat-modal {
+    width: min(680px, calc(100vw - 32px)) !important;
+    max-width: min(680px, calc(100vw - 32px)) !important;
+  }
+
+  .support-chat-modal__body--ready {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .support-chat-modal__body--ready .support-chat-modal__sync-warning {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .support-chat-modal .support-chat-modal__body--ready .support-message-list {
+    grid-column: 1;
+    grid-row: 2;
+    border-right: 1px solid var(--flowy-border-subtle, var(--color-border-2));
+  }
+
+  .support-chat-modal .support-chat-modal__body--ready .support-chat-composer {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: stretch;
+    border-top: 0;
+    border-left: 1px solid var(--flowy-border-subtle, var(--color-border-2));
+  }
+}
+
 @media (max-width: 640px) {
   .conversation-error-report__header,
   .support-chat-modal__header {
@@ -1076,7 +1243,13 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   .support-chat-modal {
     width: calc(100vw - 24px) !important;
     max-width: calc(100vw - 24px) !important;
-    max-height: calc(100dvh - 24px) !important;
+    height: min(640px, calc(100dvh - 24px)) !important;
+    max-height: min(640px, calc(100dvh - 24px)) !important;
+  }
+
+  .support-chat-modal__wrapper {
+    padding: 12px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
   }
 
   .conversation-error-report-modal {
@@ -1118,8 +1291,6 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   }
 
   .support-message-list--empty {
-    min-height: 96px;
-    max-height: 176px;
     padding-top: 12px;
     padding-bottom: 12px;
   }
@@ -1134,12 +1305,6 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
     width: 100%;
   }
 
-  .conversation-error-report__section-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 4px;
-  }
-
   .support-chat-log-confirm {
     align-items: stretch;
     flex-direction: column;
@@ -1151,18 +1316,15 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 }
 
 @media (max-width: 360px) {
-  .conversation-error-report__intro,
-  .conversation-error-report__hint,
-  .conversation-error-report__upload,
+  .conversation-error-report__info-content,
   .support-chat-modal__status {
     overflow-wrap: anywhere;
     word-break: break-word;
   }
 
-  .conversation-error-report__upload {
-    padding-right: 12px;
-    padding-left: 12px;
-    text-align: center;
+  .conversation-error-report__editor-toolbar {
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
 }
 
@@ -1174,6 +1336,7 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
 
   .conversation-error-report-modal {
     --support-action-min-height: 40px;
+    --support-report-control-size: 40px;
   }
 
   .support-chat-composer {
@@ -1181,6 +1344,16 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
     --support-toolbar-size: 40px;
     --support-menu-item-min-height: 40px;
     --support-action-min-height: 40px;
+  }
+
+  .support-chat-modal {
+    --support-action-min-height: 40px;
+  }
+
+  .support-chat-modal__action,
+  .conversation-error-diagnostic__copy {
+    min-width: 40px;
+    min-height: 40px;
   }
 
   .support-image-preview-item__remove {
@@ -1200,6 +1373,7 @@ html[data-support-probe-pointer='coarse'] .support-chat-modal {
 
 html[data-support-probe-pointer='coarse'] .conversation-error-report-modal {
   --support-action-min-height: 40px;
+  --support-report-control-size: 40px;
 }
 
 html[data-support-probe-pointer='coarse'] .support-chat-composer {
@@ -1209,6 +1383,16 @@ html[data-support-probe-pointer='coarse'] .support-chat-composer {
   --support-action-min-height: 40px;
 }
 
+html[data-support-probe-pointer='coarse'] .support-chat-modal {
+  --support-action-min-height: 40px;
+}
+
+html[data-support-probe-pointer='coarse'] .support-chat-modal__action,
+html[data-support-probe-pointer='coarse'] .conversation-error-diagnostic__copy {
+  min-width: 40px;
+  min-height: 40px;
+}
+
 html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
   --support-preview-remove-size: 40px;
   --support-preview-remove-offset: -12px;
@@ -1216,7 +1400,9 @@ html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
 
 @media (prefers-reduced-motion: reduce) {
   .conversation-error-report__textarea,
-  .conversation-error-report__upload,
+  .conversation-error-report__editor,
+  .conversation-error-report__attachment,
+  .conversation-error-report__info-trigger,
   .conversation-error-report__button,
   .support-chat-composer__text-action {
     transition: none;
@@ -1289,18 +1475,29 @@ html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
 
 .conversation-error-diagnostic__copy {
   box-sizing: border-box;
+  display: flex;
   width: 28px;
   height: 28px;
   flex: none;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--flowy-border-subtle, var(--color-border-2));
+  line-height: 0;
   background: var(--flowy-surface-1, var(--color-bg-popup));
   color: var(--flowy-text-muted, var(--color-text-3));
   cursor: pointer;
   transition:
     background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
     border-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
-    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
-    transform var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out);
+    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out);
+}
+
+.conversation-error-diagnostic__copy > .i-icon,
+.conversation-error-diagnostic__copy > .i-icon > svg {
+  display: block;
+  flex: 0 0 auto;
+  line-height: 0;
+  transform: none;
 }
 
 .conversation-error-diagnostic__copy:hover {
@@ -1312,10 +1509,6 @@ html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
 .conversation-error-diagnostic__copy:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--flowy-focus, var(--control-focus-ring, var(--color-primary-light-3)));
-}
-
-.conversation-error-diagnostic__copy:active {
-  transform: scale(0.94);
 }
 
 .conversation-error-diagnostic__summary {
@@ -1392,10 +1585,6 @@ html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
   .conversation-error-diagnostic__copy,
   .conversation-error-diagnostic__details .arco-collapse-item-header {
     transition: none;
-  }
-
-  .conversation-error-diagnostic__copy:active {
-    transform: none;
   }
 }
 
