@@ -6,13 +6,17 @@ import { resolveEditResubmitRecovery, shouldReplayEditResubmit } from './editRes
 
 const replacementId = parseMessageId('0190f5fe-7c00-7a00-8000-000000000901');
 
-const delivery = (overrides: Partial<NonNullable<IEditResubmitObservation['delivery']>> = {}) => ({
+const delivery = (
+  overrides: Partial<NonNullable<IEditResubmitObservation['delivery']>> = {}
+): NonNullable<IEditResubmitObservation['delivery']> => ({
   msg_id: replacementId,
   replayed: true,
   completed: false,
   result_ok: null,
   result_text: null,
   result_error: null,
+  result_error_code: null,
+  result_error_retryable: null,
   ...overrides,
 });
 
