@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Button, Drawer, Empty, Message, Radio, Spin, Tag, Typography } from '@arco-design/web-react';
+import { Alert, Button, Drawer, Empty, Message, Radio, Spin, Tag, Typography } from '@arco-design/web-react';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
@@ -64,7 +64,23 @@ const LearningGraphWorkspace: React.FC<{
     () => new Map((graph?.nodes ?? []).map((node) => [node.lesson_id, node])),
     [graph]
   );
+  // 解锁 = 不存在任何「未完成且未跳过」的前置（根节点天然解锁）。
+  // 前端从边表推导：完成/跳过集合 ∩ 入边 from，命中即锁定 to。
+  const lockedIds = useMemo(() => {
+    const locked = new Set<string>();
+    if (!graph) return locked;
+    const satisfied = new Set(
+      graph.nodes
+        .filter((node) => node.status === 'completed' || node.status === 'skipped')
+        .map((node) => node.lesson_id)
+    );
+    for (const edge of graph.edges) {
+      if (!satisfied.has(edge.from)) locked.add(edge.to);
+    }
+    return locked;
+  }, [graph]);
   const selectedNode = selected ? nodesById.get(selected.lesson_id) ?? selected : null;
+  const selectedLocked = selectedNode ? lockedIds.has(selectedNode.lesson_id) : false;
   const isRecommended = useCallback(
     (lessonId: string) => graph?.recommended.includes(lessonId) ?? false,
     [graph]
@@ -132,16 +148,10 @@ const LearningGraphWorkspace: React.FC<{
         />
       </div>
       <div className='flex flex-wrap items-center gap-8px text-12px text-t-secondary'>
-        <Text type='secondary'>
-          {t('learning.learningGraphProgressLine', {
-            completed: stats.completed,
-            total: stats.total,
-            skipped: stats.skipped,
-          })}
-        </Text>
         <Tag size='small' color='green'>{t('learning.learningGraphStatusCompleted')} {stats.completed}</Tag>
         <Tag size='small' color='arcoblue'>{t('learning.learningGraphStatusInProgress')} {stats.inProgress}</Tag>
         <Tag size='small' color='gray'>{t('learning.learningGraphStatusSkipped')} {stats.skipped}</Tag>
+        <Tag size='small' color='gray'>{t('learning.learningGraphUnlocked')} {stats.total - lockedIds.size}/{stats.total}</Tag>
         <Tag size='small' color='gray'>{t('learning.learningGraphGeneratedShort')} {stats.generated}/{stats.total}</Tag>
         <div className='ml-auto'>
           <Radio.Group
@@ -191,6 +201,7 @@ const LearningGraphWorkspace: React.FC<{
               nodes={graph.nodes}
               edges={graph.edges}
               recommended={graph.recommended}
+              lockedIds={lockedIds}
               onSelect={(lessonId) => setSelected(nodesById.get(lessonId) ?? null)}
             />
           </React.Suspense>
@@ -211,11 +222,18 @@ const LearningGraphWorkspace: React.FC<{
                       <Tag size='small' color={STATUS_TAG_COLOR[node.status]}>
                         {t(STATUS_LABEL_KEY[node.status])}
                       </Tag>
+                      {lockedIds.has(node.lesson_id) && (
+                        <Tag size='small' color='gray' className='!mx-0'>
+                          {t('learning.learningGraphLocked')}
+                        </Tag>
+                      )}
                       <span className='flex-1 truncate text-13px'>
                         {isRecommended(node.lesson_id) && (
                           <span className='mr-4px text-[var(--color-warning-6)]'>★</span>
                         )}
-                        {node.title}
+                        <span className={lockedIds.has(node.lesson_id) ? 'opacity-55' : ''}>
+                          {node.title}
+                        </span>
                       </span>
                       {!node.generated && (
                         <Tag size='small' color='orange'>
@@ -248,6 +266,9 @@ const LearningGraphWorkspace: React.FC<{
               <Tag color={STATUS_TAG_COLOR[selectedNode.status]}>
                 {t(STATUS_LABEL_KEY[selectedNode.status])}
               </Tag>
+              {selectedLocked && (
+                <Tag color='gray'>{t('learning.learningGraphLocked')}</Tag>
+              )}
               {isRecommended(selectedNode.lesson_id) && (
                 <Tag color='gold'>{t('learning.learningGraphRecommendedShort')}</Tag>
               )}
@@ -257,6 +278,9 @@ const LearningGraphWorkspace: React.FC<{
                 <Tag color='orange'>{t('learning.learningGraphNotGenerated')}</Tag>
               )}
             </div>
+            {selectedLocked && (
+              <Alert type='info' content={t('learning.learningGraphLockedHint')} />
+            )}
             {selectedNode.purpose.trim() !== '' && (
               <div>
                 <Text bold>{t('learning.learningGraphNodePurpose')}</Text>
@@ -281,7 +305,7 @@ const LearningGraphWorkspace: React.FC<{
               {!selectedNode.generated && (
                 <Button
                   type='primary'
-                  disabled={nodeActionBusy}
+                  disabled={nodeActionBusy || selectedLocked}
                   onClick={() => void generateContent(selectedNode)}
                 >
                   {t('learning.learningGraphGenerateContent')}
