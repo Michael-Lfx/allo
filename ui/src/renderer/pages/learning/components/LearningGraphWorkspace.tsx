@@ -85,6 +85,19 @@ const LearningGraphWorkspace: React.FC<{
     (lessonId: string) => graph?.recommended.includes(lessonId) ?? false,
     [graph]
   );
+  // 进度面板的分段：绿=已完成、蓝=进行中、深灰=已跳过、浅蓝=可学习
+  // （未锁定且未开始）、浅灰=未解锁， flexGrow 即段宽比例。
+  const segments = useMemo(() => {
+    const readyToStudy =
+      stats.total - stats.completed - stats.inProgress - stats.skipped - lockedIds.size;
+    return [
+      { key: 'completed', count: stats.completed, color: 'var(--color-success-6)', label: t('learning.learningGraphStatusCompleted') },
+      { key: 'inProgress', count: stats.inProgress, color: 'var(--color-primary-6)', label: t('learning.learningGraphStatusInProgress') },
+      { key: 'skipped', count: stats.skipped, color: 'var(--color-text-3)', label: t('learning.learningGraphStatusSkipped') },
+      { key: 'ready', count: Math.max(0, readyToStudy), color: 'var(--color-primary-3)', label: t('learning.learningGraphUnlocked') },
+      { key: 'locked', count: lockedIds.size, color: 'var(--color-fill-3)', label: t('learning.learningGraphLocked') },
+    ];
+  }, [lockedIds, stats.completed, stats.inProgress, stats.skipped, stats.total, t]);
 
   const toggleSkip = useCallback(
     async (node: GraphNodeView) => {
@@ -130,16 +143,23 @@ const LearningGraphWorkspace: React.FC<{
 
   return (
     <div className='flex h-full min-h-0 flex-col gap-12px'>
-      {/* 头部：返回 + 标题 + Beta + 模型选择 + 进度概览 + 视图切换 */}
-      <div className='flex flex-wrap items-center justify-between gap-12px'>
-        <div className='flex items-center gap-10px'>
-          <Button onClick={onBack}>{t('learning.back')}</Button>
-          <Title heading={4} className='!m-0'>
-            {detail.course.title}
-          </Title>
-          <Tag size='small' color='orangered' className='!mx-0'>
-            {t('learning.learningGraphBeta')}
-          </Tag>
+      {/* 头部：返回 + 标题/Beta + 学习目标 + 模型选择（对齐传统课程工作区） */}
+      <Button type='text' className='self-start !px-0' onClick={onBack}>
+        {t('learning.back')}
+      </Button>
+      <div className='flex flex-wrap items-start justify-between gap-12px'>
+        <div className='min-w-0 flex-1'>
+          <div className='flex items-center gap-8px'>
+            <Title heading={3} className='!m-0'>
+              {detail.course.title}
+            </Title>
+            <Tag size='small' color='orangered' className='!mx-0 shrink-0'>
+              {t('learning.learningGraphBeta')}
+            </Tag>
+          </div>
+          {graph.goal.trim() !== '' && (
+            <Paragraph className='!mb-0 !mt-4px text-t-secondary'>{graph.goal}</Paragraph>
+          )}
         </div>
         <LearningModelSelector
           choice={model.choice}
@@ -147,16 +167,17 @@ const LearningGraphWorkspace: React.FC<{
           size='small'
         />
       </div>
-      <div className='flex flex-wrap items-center gap-8px text-12px text-t-secondary'>
-        <Tag size='small' color='green'>{t('learning.learningGraphStatusCompleted')} {stats.completed}</Tag>
-        <Tag size='small' color='arcoblue'>{t('learning.learningGraphStatusInProgress')} {stats.inProgress}</Tag>
-        <Tag size='small' color='gray'>{t('learning.learningGraphStatusSkipped')} {stats.skipped}</Tag>
-        <Tag size='small' color='gray'>{t('learning.learningGraphUnlocked')} {stats.total - lockedIds.size}/{stats.total}</Tag>
-        <Tag size='small' color='gray'>{t('learning.learningGraphGeneratedShort')} {stats.generated}/{stats.total}</Tag>
-        <div className='ml-auto'>
+
+      {/* 进度面板：分段进度条（绿=完成/蓝=进行/灰=跳过/浅蓝=可学/浅灰=未解锁）
+          + 图例 + 视图切换，替代原先一排无层级的状态 Tag */}
+      <div className='rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-14px py-10px'>
+        <div className='mb-8px flex flex-wrap items-center justify-between gap-8px'>
+          <Text bold className='text-13px'>
+            {t('learning.learningGraphProgressTitle')}
+          </Text>
           <Radio.Group
             type='button'
-            size='small'
+            size='mini'
             value={view}
             onChange={(value) => setView(value as 'dag' | 'list')}
           >
@@ -164,18 +185,40 @@ const LearningGraphWorkspace: React.FC<{
             <Radio value='list'>{t('learning.learningGraphViewList')}</Radio>
           </Radio.Group>
         </div>
+        <div className='h-8px overflow-hidden rounded-full bg-[var(--color-fill-2)]'>
+          {stats.total === 0 ? null : (
+            <div className='flex h-full'>
+              {segments
+                .filter((segment) => segment.count > 0)
+                .map((segment) => (
+                  <span
+                    key={segment.key}
+                    className='h-full'
+                    style={{ flexGrow: segment.count, backgroundColor: segment.color }}
+                  />
+                ))}
+            </div>
+          )}
+        </div>
+        <div className='mt-8px flex flex-wrap items-center gap-x-16px gap-y-4px text-12px text-t-secondary'>
+          {segments.map((segment) => (
+            <span key={segment.key} className='inline-flex items-center gap-4px'>
+              <span
+                className='h-8px w-8px rounded-full'
+                style={{ backgroundColor: segment.color }}
+              />
+              {segment.label} {segment.count}
+            </span>
+          ))}
+        </div>
       </div>
-
-      {graph.goal.trim() !== '' && (
-        <Text type='secondary'>
-          {t('learning.learningGraphGoal')}: {graph.goal}
-        </Text>
-      )}
 
       {/* 下一步推荐（就绪集 ≤10）：前置全部完成/已跳过的节点 */}
       {graph.recommended.length > 0 && (
         <div className='flex flex-wrap items-center gap-6px'>
-          <Text bold>{t('learning.learningGraphRecommended')}</Text>
+          <Text bold className='text-13px'>
+            {t('learning.learningGraphRecommended')}
+          </Text>
           {graph.recommended.map((lessonId) => {
             const node = nodesById.get(lessonId);
             if (!node) return null;
