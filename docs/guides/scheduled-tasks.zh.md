@@ -123,10 +123,12 @@ prompt。诸如下面这些模式：
 ## 保持唤醒
 
 只有当宿主进程在运行时，cron 任务才会触发。列表页有一个
-**Flowy 运行时保持系统唤醒**开关，它会请求 OS 抑制睡眠
-(Windows：`SetThreadExecutionState`，macOS：`caffeinate`，
-Linux 上若可用为 `systemd-inhibit`)，这样你在笔记本上设置的
-任务不会在合上盖子那一刻悄悄漏触发。
+**Flowy 运行时保持唤醒**开关，它会请求 OS 同时抑制系统空闲休眠和
+显示器自动息屏（Windows：`SetThreadExecutionState`，macOS：
+`caffeinate -di`，Linux 上若可用为桌面屏保和 `systemd-inhibit`），
+这样你在笔记本上设置的任务不会因为系统空闲休眠而悄悄漏触发。
+
+该开关不能覆盖合盖、系统强制休眠、电源策略或低电量关机等操作系统行为。
 
 如果一次触发还是因为系统进入睡眠 (或 Flowy 没在运行) 而漏掉，
 下一次启动/唤醒时的漏触发处理器会记录一次 `missed` 运行并

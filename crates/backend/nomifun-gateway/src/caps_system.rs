@@ -57,7 +57,7 @@ struct UpdateSettingsParams {
 struct GetPreferencesParams {
     /// Optional list of preference keys to fetch (omit to return all).
     /// Common keys: "theme", "ui.zoomFactor", "system.closeToTray",
-    /// "companion.size", "system.keepAwake", "feature.*".
+    /// "companion.size", "keepAwake", "feature.*".
     #[serde(default)]
     keys: Option<Vec<String>>,
 }
@@ -72,7 +72,7 @@ struct UpdatePreferencesParams {
     ///   "theme" (string: "light" | "dark" | "rhythm-dark" | …),
     ///   "ui.zoomFactor" (number: 0.5–2.0),
     ///   "system.closeToTray" (bool),
-    ///   "system.keepAwake" (bool),
+    ///   "keepAwake" (bool),
     ///   "companion.size" (number: px),
     ///   "feature.<name>" (bool).
     preferences: HashMap<String, Value>,
@@ -369,7 +369,7 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
         CapabilityMeta::new(
             "nomi_system_update_preferences",
             "system",
-            "Batch set/delete client preferences (theme, ui.zoomFactor, system.closeToTray, system.keepAwake, companion.size, feature toggles). Pass null value to delete a key.",
+            "Batch set/delete client preferences (theme, ui.zoomFactor, system.closeToTray, keepAwake, companion.size, feature toggles). Pass null value to delete a key.",
             DangerTier::Write,
         ),
         |deps, _ctx, p| update_preferences(deps, p),
