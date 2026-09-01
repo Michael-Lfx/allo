@@ -6,7 +6,7 @@ import { CanvasStylePickerModal } from "@oc/components/canvas/canvas-style-picke
 import { CanvasDirectorTemplateModal } from "@oc/components/canvas/director/canvas-director-template-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
-import type { CanvasNodeData, CanvasWorkspaceMode, CanvasMediaPerformanceMode, Position } from "@oc/types/canvas";
+import type { CanvasNodeData, CanvasMediaPerformanceMode, Position } from "@oc/types/canvas";
 import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import type { useCanvasHistory } from "./use-canvas-history";
 import type { useCanvasUpload } from "./use-canvas-upload";
@@ -20,8 +20,6 @@ import type { CanvasHistoryActions, CanvasAssistantState } from "./canvas-projec
 type CanvasProjectTopChromeProps = {
     focusMode: boolean;
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
-    workspaceMode: CanvasWorkspaceMode;
-    setWorkspaceMode: Dispatch<SetStateAction<CanvasWorkspaceMode>>;
     titleDraft: string;
     setTitleDraft: Dispatch<SetStateAction<string>>;
     titleEditing: boolean;
@@ -71,8 +69,6 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
     const {
         focusMode,
         currentProject,
-        workspaceMode,
-        setWorkspaceMode,
         titleDraft,
         setTitleDraft,
         titleEditing,
@@ -124,8 +120,6 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
                     {!focusMode ? (
                         <CanvasTopBar
                             title={currentProject?.title || canvasT("videoCanvas.chrome.untitled", "未命名画布")}
-                            workspaceMode={workspaceMode}
-                            onWorkspaceModeChange={setWorkspaceMode}
                             titleDraft={titleDraft}
                             isTitleEditing={titleEditing}
                             onTitleDraftChange={setTitleDraft}

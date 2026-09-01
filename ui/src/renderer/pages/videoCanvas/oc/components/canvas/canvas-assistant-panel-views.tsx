@@ -1,12 +1,16 @@
 import copyToClipboard from "copy-to-clipboard";
 import { useMemo, useRef, useState } from "react";
 import { Button, Segmented, Select, Tooltip } from "antd";
-import { Copy, Settings2, Trash2, X } from "lucide-react";
+import { Copy, Trash2, X } from "lucide-react";
 
 import { ModelIcon } from "@oc/components/model-picker";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { imageReferenceLabel } from "@oc/lib/image-reference-prompt";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { canvasNodeVideoPreviewUrl } from "@oc/lib/canvas/canvas-media-preview";
+import { buildCanvasAgentAliasMap, canvasAgentShortId } from "@oc/lib/canvas/canvas-agent-ids";
+import { getNodeResourceKind } from "@oc/lib/canvas/node-registry";
+import type { CanvasResourceKind, CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { modelDisplayName, resolveModelChannel, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { LocalUser } from "@oc/stores/use-user-store";
@@ -101,34 +105,6 @@ export function AssistantHistory({
     );
 }
 
-export function OnlineAgentSetupView({ theme, activeModel, onOpenConfig }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes]; activeModel: string; onOpenConfig: () => void }) {
-    return (
-        <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto p-4">
-            <div className="space-y-4">
-                <div>
-                    <div className="text-base font-semibold leading-6">{canvasT("videoCanvas.agent.setupTitle", "连接配置")}</div>
-                    <div className="mt-1 text-xs leading-5" style={{ color: theme.node.muted }}>
-                        {canvasT("videoCanvas.agent.setupHint", "网站 Agent 直接使用当前网页配置的文本模型和 API。")}
-                    </div>
-                </div>
-                <div className="rounded-md p-3" style={{ background: theme.spatial.surface }}>
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                            <div className="text-sm font-medium leading-5">{canvasT("videoCanvas.agent.textModel", "文本模型")}</div>
-                            <div className="mt-1 truncate text-xs leading-5" style={{ color: theme.node.muted }}>
-                                {activeModel || canvasT("videoCanvas.agent.noModelConfigured", "未配置模型")}
-                            </div>
-                        </div>
-                        <Button className="!h-8 !px-3" type="primary" icon={<Settings2 className="size-4" />} onClick={onOpenConfig}>
-                            {canvasT("videoCanvas.agent.configure", "配置")}
-                        </Button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-}
-
 export function OnlineAgentLogView({ logs, theme, context, onClear }: { logs: OnlineAgentLog[]; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; context: OnlineAgentLogContext; onClear: () => void }) {
     const [mode, setMode] = useState<"text" | "json">("text");
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -167,6 +143,7 @@ export function AssistantChatMessages({
     theme,
     user,
     busy,
+    activity,
     nodeCount,
     onSelectPrompt,
     onRejectTool,
@@ -176,6 +153,7 @@ export function AssistantChatMessages({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     user: LocalUser | null;
     busy: boolean;
+    activity?: string | null;
     nodeCount: number;
     onSelectPrompt: (text: string) => void;
     onRejectTool?: (id: string) => void;
@@ -183,6 +161,7 @@ export function AssistantChatMessages({
 }) {
     // 映射结果按 messages 身份缓存；chat 项引用稳定后，流式只重渲变化的那条。
     const chatMessagePairs = useMemo(() => messages.map((message) => ({ chat: assistantMessageToChatMessage(message), message })), [messages]);
+    const hasRunningTool = messages.some((message) => messageDetailStatus(message.detail) === "running");
     if (!chatMessagePairs.length) {
         return <AgentChatEmptyState theme={theme} nodeCount={nodeCount} onSelect={onSelectPrompt} />;
     }
@@ -194,9 +173,13 @@ export function AssistantChatMessages({
                     {message.references?.length ? <MessageReferences message={message} /> : null}
                 </div>
             ))}
-            {busy ? <AgentWorkingMessage theme={theme} /> : null}
+            {busy && !hasRunningTool ? <AgentWorkingMessage theme={theme} label={activity} /> : null}
         </>
     );
+}
+
+function messageDetailStatus(detail: unknown) {
+    return detail && typeof detail === "object" ? (detail as { status?: unknown }).status : undefined;
 }
 
 function MessageReferences({ message }: { message: CanvasAssistantMessage }) {
@@ -248,6 +231,37 @@ export function buildAssistantReferences(nodes: CanvasNodeData[], selectedNodeId
         .filter((item): item is CanvasAssistantReference => Boolean(item));
 }
 
+export function buildAgentComposerReferences(nodes: CanvasNodeData[]): CanvasResourceReference[] {
+    const aliases = buildCanvasAgentAliasMap(nodes);
+    return nodes.map((node) => {
+        const shortId = canvasAgentShortId(node.id, aliases);
+        const kind = agentMentionKind(node);
+        return {
+            id: node.id,
+            nodeId: node.id,
+            kind,
+            label: `${shortId} ${node.title || node.type}`.trim(),
+            title: node.title || shortId,
+            previewUrl: node.metadata?.workflowKind === "character"
+                ? node.metadata.characterCoverUrl
+                : node.type === CanvasNodeType.Drawing
+                    ? node.metadata?.drawingPreviewUrl
+                    : node.type === CanvasNodeType.Video
+                        ? canvasNodeVideoPreviewUrl(node)
+                        : node.metadata?.previewContent || (kind === "image" ? node.metadata?.content : undefined),
+            storageKey: node.metadata?.storageKey,
+            text: node.type === CanvasNodeType.Text ? node.metadata?.content || node.metadata?.prompt : undefined,
+            active: true,
+            sourceType: node.type,
+        };
+    });
+}
+
+function agentMentionKind(node: CanvasNodeData): CanvasResourceKind {
+    if (node.metadata?.workflowKind === "character" && node.metadata.characterAssetId) return "character";
+    return getNodeResourceKind(node) || "text";
+}
+
 function nodeToReference(node: CanvasNodeData): CanvasAssistantReference | null {
     if (node.type === CanvasNodeType.Image && node.metadata?.content) {
         return { id: node.id, type: node.type, title: node.title, dataUrl: node.metadata.content, storageKey: node.metadata.storageKey };
@@ -285,7 +299,7 @@ function stringifyLog(value: unknown) {
 
 function formatOnlineLogText(logs: OnlineAgentLog[], context: OnlineAgentLogContext) {
     const head = [
-        "影策网站 Agent 诊断日志",
+        "allo 画布 Agent 诊断日志",
         `model: ${context.model || "none"}`,
         `running: ${context.running}`,
         `confirmTools: ${context.confirmTools}`,

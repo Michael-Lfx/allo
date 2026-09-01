@@ -88,7 +88,7 @@ function VideoSettingsPortal({
 }) {
     const gap = 8;
     const margin = 12;
-    const width = Math.min(356, window.innerWidth - margin * 2);
+        const width = Math.min(380, window.innerWidth - margin * 2);
     const alignRight = placement?.endsWith("Right");
     const alignCenter = placement === "top" || placement === "bottom";
     const left = alignCenter ? buttonRect.left + buttonRect.width / 2 - width / 2 : alignRight ? buttonRect.right - width : buttonRect.left;
@@ -105,9 +105,9 @@ function VideoSettingsPortal({
         ...(placeAbove ? { bottom: window.innerHeight - buttonRect.top + gap, maxHeight: Math.max(260, topSpace) } : { top: buttonRect.bottom + gap, maxHeight: Math.max(260, bottomSpace) }),
         background: theme.canvas.background,
         border: `1px solid ${theme.toolbar.border}`,
-        borderRadius: 10,
+        borderRadius: 16,
         boxShadow: `0 24px 72px ${theme.spatial.shadow}`,
-        padding: 12,
+        padding: 16,
         overflowY: "auto",
         color: theme.node.text,
     } as const;
@@ -121,7 +121,7 @@ function VideoSettingsPortal({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <VideoSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-3" />
+            <VideoSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-2.5" />
         </div>,
         document.body,
     );

@@ -1,3 +1,4 @@
+import { buildCanvasAgentAliasMap, canvasAgentShortId } from "@oc/lib/canvas/canvas-agent-ids";
 import type { CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
 import type { CanvasNodeData } from "@oc/types/canvas";
 
@@ -7,6 +8,7 @@ import type { CanvasNodeData } from "@oc/types/canvas";
  * 完整快照仍通过 postToolResult / postState 发送给 Agent 本体。
  */
 export function compactCanvasAgentSnapshot(snapshot: CanvasAgentSnapshot) {
+    const aliases = buildCanvasAgentAliasMap(snapshot.nodes);
     return {
         projectId: snapshot.projectId,
         title: snapshot.title,
@@ -14,6 +16,7 @@ export function compactCanvasAgentSnapshot(snapshot: CanvasAgentSnapshot) {
         selectedNodeIds: snapshot.selectedNodeIds,
         nodes: snapshot.nodes.map((node) => ({
             id: node.id,
+            shortId: canvasAgentShortId(node.id, aliases),
             type: node.type,
             title: node.title,
             position: node.position,

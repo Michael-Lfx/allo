@@ -1,3 +1,4 @@
+import type { AssetCategory } from "@oc/lib/asset-category";
 import type { CanvasColorGrade } from "@oc/lib/canvas/canvas-color-grade";
 import type { PortraitTextureSettings } from "@oc/lib/canvas/canvas-portrait-texture";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@oc/types/timeline";
@@ -147,6 +148,15 @@ export type CanvasNodeMetadata = {
     failedPromptFingerprint?: string;
     lastGenerationRequestFingerprint?: string;
     previewContent?: string;
+    videoPreview?: {
+        content?: string;
+        storageKey?: string;
+        width?: number;
+        height?: number;
+        bytes?: number;
+        mimeType?: string;
+    };
+    hasAudio?: boolean;
     /**
      * 生成任务已在服务端成功，但结果下载/落盘到本地或现有 OSS 失败。
      * 可基于同一 taskId 向当前服务端重新拉取，无需重新计费生成。
@@ -192,7 +202,7 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     assetId?: string;
     assetTags?: string[];
-    assetCategory?: "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
+    assetCategory?: AssetCategory;
     workflowKind?: CanvasWorkflowKind;
     workflowTitle?: string;
     workflowDescription?: string;
@@ -379,6 +389,8 @@ export type CanvasAssistantMessage = {
     role: "user" | "assistant" | "system" | "tool" | "error";
     title?: string;
     text: string;
+    /** Model-only brief; not shown in the chat bubble. */
+    modelContext?: string;
     meta?: string;
     detail?: unknown;
     references?: CanvasAssistantReference[];
@@ -424,6 +436,7 @@ export type ContextMenuState =
           x: number;
           y: number;
           position: Position;
+          createOpen?: boolean;
       }
     | {
           type: "node";

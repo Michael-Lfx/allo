@@ -111,6 +111,9 @@ export type CanvasDocument = {
     durationMs: number;
     updatedAt?: string;
   };
+  /** Agent chat: one project keeps its sessions across reopen. */
+  chatSessions?: unknown[];
+  activeChatId?: string | null;
   /** High-fidelity Agent→Canvas sidecar (camera tree, voice bible, write-back). */
   alloCreative?: Record<string, unknown>;
 };

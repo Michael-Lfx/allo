@@ -131,7 +131,7 @@ export function useCanvasNodeOperations({
         const node = createCanvasNode(type, position || getCanvasCenter(), type === CanvasNodeType.Drawing ? { drawingEngine: defaultDrawingEngine } : undefined);
         commitNodes([...nodesRef.current, node]);
         selectNodes(new Set([node.id]));
-        if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== CanvasNodeType.Markdown && type !== CanvasNodeType.Svg && type !== CanvasNodeType.Html && type !== CanvasNodeType.Panorama && type !== CanvasNodeType.Compare && type !== CanvasNodeType.Chart && type !== CanvasNodeType.ColorGrade) setDialogNodeId(node.id);
+        if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== CanvasNodeType.Markdown && type !== CanvasNodeType.Svg && type !== CanvasNodeType.Html && type !== CanvasNodeType.Panorama && type !== CanvasNodeType.Compare && type !== CanvasNodeType.Chart && type !== CanvasNodeType.ColorGrade && type !== CanvasNodeType.Config) setDialogNodeId(node.id);
     }, [commitNodes, defaultDrawingEngine, getCanvasCenter, message, nodesRef, selectNodes, setDialogNodeId, tldrawLicenseKey]);
 
     const createFolder = useCallback((position?: Position) => {

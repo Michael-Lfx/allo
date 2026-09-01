@@ -13,7 +13,7 @@
     "agentMenuDesc": "Auto-plan storyboards and render a film",
     "actionLabel": "Action imitation",
     "actionMenuDesc": "Character still + reference video to imitate motion",
-    "creationMenuDesc": "Open the infinite canvas to arrange freely"
+    "creationMenuDesc": "Send the brief to the canvas Agent to build and generate"
   },
   "nav": {
     "entry": "Video Generation",
@@ -188,7 +188,7 @@
     "generateClip": "Generate video",
     "generateTitle": "Video generation",
     "generateFailed": "Failed to start video generation",
-    "enterCanvas": "Open canvas",
+    "enterCanvas": "Send to canvas Agent",
     "customize": "Customize generation preferences",
     "modelRequired": "A planning model is required before generating.",
     "modelRequiredAction": "A video model is required before generating.",

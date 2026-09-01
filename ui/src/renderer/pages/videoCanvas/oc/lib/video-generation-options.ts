@@ -48,6 +48,33 @@ export function videoDimensionsForRatioAndResolution(ratio: string | undefined, 
     return { width: shortEdge, height: evenDimension(shortEdge / aspect) };
 }
 
+export function normalizeVideoResolutionValue(value: string | number | undefined): string {
+    return normalizeVideoResolution(value) || "720";
+}
+
+export function isVideoResolutionMatch(selected: string | undefined, target: string | undefined) {
+    const s = String(selected || "").trim().toLowerCase().replace(/[_\s]/g, "").replace(/p$/i, "");
+    const t = String(target || "").trim().toLowerCase().replace(/[_\s]/g, "").replace(/p$/i, "");
+    if (!s && !t) return true;
+    if (s === t) return true;
+    if ((s === "2k" || s === "1440") && (t === "2k" || t === "1440")) return true;
+    if ((s === "4k" || s === "2160") && (t === "4k" || t === "2160")) return true;
+    if ((s === "768") && (t === "768")) return true;
+    return false;
+}
+
+export function formatVideoResolutionLabel(value: string | number | undefined) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase().replace(/[_\s]/g, "");
+    if (lower === "2k" || lower === "1440" || lower === "1440p") return "2K";
+    if (lower === "4k" || lower === "2160" || lower === "2160p") return "4K";
+    if (lower === "768" || lower === "768p") return "768P";
+    const normalized = normalizeVideoResolution(raw);
+    if (/^\d+$/.test(normalized)) return `${normalized}P`;
+    return normalized.replace(/^(\d+)p/i, "$1P");
+}
+
 function evenDimension(value: number) {
     return Math.max(2, Math.round(value / 2) * 2);
 }

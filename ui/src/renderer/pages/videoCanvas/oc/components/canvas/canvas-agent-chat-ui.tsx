@@ -6,7 +6,9 @@ import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound,
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import type { CanvasAgentOperationImpact } from "@oc/lib/canvas/canvas-agent-ops";
+import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import type { LocalUser } from "@oc/stores/use-user-store";
+import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 
 export type CanvasAgentChatAttachment = { id: string; name: string; url: string };
 export type CanvasAgentMode = "online" | "local";
@@ -63,7 +65,7 @@ export const AgentChatMessage = memo(function AgentChatMessage({
 
 export function AgentPendingToolCard({ summary, detail, theme, onReject, onApprove }: { summary: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onReject?: () => void; onApprove?: () => void }) {
     useTranslation();
-    const impact = agentImpactFromDetail(detail);
+    const plan = agentPlanFromDetail(detail);
     return (
         <div className="flex items-start gap-2.5">
             <AgentAvatar theme={theme} />
@@ -74,22 +76,38 @@ export function AgentPendingToolCard({ summary, detail, theme, onReject, onAppro
                     </span>
                     <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2 text-sm font-semibold leading-5">
-                            <span>{canvasT("videoCanvas.agent.confirmTool", "确认工具调用")}</span>
+                            <span>{plan?.title || canvasT("videoCanvas.agent.confirmTool", "确认工具调用")}</span>
                             <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[var(--fs-label)] font-medium" style={{ color: "#d97706", background: "rgba(217,119,6,.1)" }}>{canvasT("videoCanvas.agent.waitingConfirm", "等待确认")}</span>
+                            {plan?.spend ? <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[var(--fs-label)] font-medium" style={{ color: "#d97706", background: "rgba(217,119,6,.1)" }}>{canvasT("videoCanvas.agent.planSpendBadge", "含花费")}</span> : null}
                         </div>
                         <div className="mt-2 text-sm leading-6" style={{ color: theme.node.text }}>{summary}</div>
                     </div>
                 </div>
-                {impact?.operationCount ? (
+                {plan?.stages.length ? (
+                    <ol className="mt-3 space-y-1.5">
+                        {plan.stages.map((stage, index) => (
+                            <li key={`${stage.label}-${index}`} className="flex gap-2 text-xs leading-5" style={{ color: theme.node.muted }}>
+                                <span className="mt-0.5 w-4 shrink-0 tabular-nums" style={{ color: theme.node.faint }}>{index + 1}.</span>
+                                <span style={{ color: stage.spend ? "#d97706" : theme.node.text }}>{stage.label}</span>
+                            </li>
+                        ))}
+                    </ol>
+                ) : null}
+                {plan?.models.length ? (
+                    <div className="mt-2 text-xs leading-5" style={{ color: theme.node.muted }}>
+                        {canvasT("videoCanvas.agent.planModels", "模型：{{models}}", { models: plan.models.join("、") })}
+                    </div>
+                ) : null}
+                {plan?.operationCount ? (
                     <div className="mt-3 pt-1">
                         <div className="grid grid-cols-2 gap-2">
-                            <ImpactMetric label={canvasT("videoCanvas.agent.metricOps", "操作")} value={impact.operationCount} theme={theme} />
-                            <ImpactMetric label={canvasT("videoCanvas.agent.metricNodes", "涉及节点")} value={impact.affectedNodeCount} theme={theme} />
-                            <ImpactMetric label={canvasT("videoCanvas.agent.metricDelete", "删除")} value={impact.destructiveCount} attention={impact.destructiveCount > 0} theme={theme} />
-                            <ImpactMetric label={canvasT("videoCanvas.agent.metricGenerate", "生成")} value={impact.generationCount} attention={impact.generationCount > 0} theme={theme} />
+                            <ImpactMetric label={canvasT("videoCanvas.agent.metricOps", "操作")} value={plan.operationCount} theme={theme} />
+                            <ImpactMetric label={canvasT("videoCanvas.agent.metricNodes", "涉及节点")} value={plan.affectedNodeCount} theme={theme} />
+                            <ImpactMetric label={canvasT("videoCanvas.agent.metricDelete", "删除")} value={plan.destructiveCount} attention={plan.destructiveCount > 0} theme={theme} />
+                            <ImpactMetric label={canvasT("videoCanvas.agent.metricGenerate", "生成")} value={plan.generationCount} attention={plan.generationCount > 0} theme={theme} />
                         </div>
-                        {impact.items.length ? <div className="mt-3 space-y-1.5">{impact.items.map((item, index) => <div key={`${item}-${index}`} className="flex gap-2 text-xs leading-5" style={{ color: theme.node.muted }}><span className="mt-2 size-1 shrink-0 rounded-full bg-current" /><span>{item}</span></div>)}</div> : null}
-                        {impact.warning ? <div className="mt-3 rounded-md bg-amber-500/[.08] px-2.5 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">{impact.warning}</div> : null}
+                        {plan.items.length ? <div className="mt-3 space-y-1.5">{plan.items.map((item, index) => <div key={`${item}-${index}`} className="flex gap-2 text-xs leading-5" style={{ color: theme.node.muted }}><span className="mt-2 size-1 shrink-0 rounded-full bg-current" /><span>{item}</span></div>)}</div> : null}
+                        {plan.warning ? <div className="mt-3 rounded-md bg-amber-500/[.08] px-2.5 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">{plan.warning}</div> : null}
                     </div>
                 ) : null}
                 {detail ? <details className="mt-3 pt-1"><summary className="cursor-pointer text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.agent.techDetails", "技术详情")}</summary><AgentDetailBlock detail={detail} theme={theme} /></details> : null}
@@ -112,18 +130,28 @@ function ImpactMetric({ label, value, attention = false, theme }: { label: strin
     return <div className="px-1 py-1"><div className="text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{label}</div><div className="mt-0.5 text-sm font-semibold tabular-nums" style={{ color: attention ? "#d97706" : theme.node.text }}>{value}</div></div>;
 }
 
-function agentImpactFromDetail(detail: unknown) {
+function agentPlanFromDetail(detail: unknown) {
     const impact = objectField(detail, "impact");
     if (!impact || typeof impact !== "object") return null;
-    const value = impact as Partial<CanvasAgentOperationImpact>;
+    const value = impact as Partial<CanvasAgentOperationImpact> & { title?: unknown; stages?: unknown; models?: unknown; spend?: unknown };
     return {
+        title: typeof value.title === "string" ? value.title : "",
+        stages: Array.isArray(value.stages)
+            ? value.stages.flatMap((item) => {
+                if (!item || typeof item !== "object") return [];
+                const stage = item as { label?: unknown; spend?: unknown };
+                return typeof stage.label === "string" ? [{ label: stage.label, spend: Boolean(stage.spend) }] : [];
+            })
+            : [],
+        models: Array.isArray(value.models) ? value.models.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [],
+        spend: Boolean(value.spend),
         operationCount: Number(value.operationCount) || 0,
         affectedNodeCount: Number(value.affectedNodeCount) || 0,
         destructiveCount: Number(value.destructiveCount) || 0,
         generationCount: Number(value.generationCount) || 0,
         items: Array.isArray(value.items) ? value.items.filter((item): item is string => typeof item === "string") : [],
         warning: typeof value.warning === "string" ? value.warning : "",
-    } satisfies CanvasAgentOperationImpact;
+    };
 }
 
 // 序列化结果按 detail 对象身份缓存：流式期间列表反复重渲时不再对大快照重复 stringify。
@@ -160,20 +188,16 @@ export function AgentToolCard({ title, text, detail, theme }: { title: string; t
     );
 }
 
-export function AgentWorkingMessage({ theme }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+export function AgentWorkingMessage({ theme, label }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes]; label?: string | null }) {
     useTranslation();
-    const workingText = canvasT(WORKING_TEXT_KEY, WORKING_TEXT_DEFAULT);
-    const [length, setLength] = useState(1);
-    useEffect(() => {
-        const timer = window.setInterval(() => setLength((value) => (value >= workingText.length + 4 ? 1 : value + 1)), 120);
-        return () => window.clearInterval(timer);
-    }, [setLength, workingText.length]);
+    const workingText = label?.trim() || canvasT(WORKING_TEXT_KEY, WORKING_TEXT_DEFAULT);
     return (
         <div className="flex items-start gap-2.5">
             <AgentAvatar theme={theme} />
             <div className="min-w-0 max-w-[82%]">
-                <div className="font-mono text-sm" style={{ color: theme.node.muted }} aria-label={workingText}>
-                    <span className="inline-block w-[96px]">{workingText.slice(0, Math.min(length, workingText.length))}</span>
+                <div className="flex items-center gap-2 text-sm" style={{ color: theme.node.muted }} aria-label={workingText}>
+                    <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
+                    <span>{workingText}</span>
                 </div>
             </div>
         </div>
@@ -192,6 +216,7 @@ export function AgentChatComposer({
     onAddFiles,
     onRemoveAttachment,
     left,
+    mentionReferences = [],
 }: {
     prompt: string;
     attachments?: CanvasAgentChatAttachment[];
@@ -204,6 +229,7 @@ export function AgentChatComposer({
     onAddFiles?: (files: FileList | File[] | null) => void | Promise<void>;
     onRemoveAttachment?: (id: string) => void;
     left?: ReactNode;
+    mentionReferences?: CanvasResourceReference[];
 }) {
     useTranslation();
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -236,25 +262,45 @@ export function AgentChatComposer({
                         ))}
                     </div>
                 ) : null}
-                <textarea
-                    value={prompt}
-                    onChange={(event) => onPromptChange(event.target.value)}
-                    onPaste={(event) => {
-                        if (!onAddFiles) return;
-                        const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
-                        if (!images.length) return;
-                        event.preventDefault();
-                        void onAddFiles(images);
-                    }}
-                    onKeyDown={(event) => {
-                        if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey) return;
-                        event.preventDefault();
-                        void onSubmit();
-                    }}
-                    className="thin-scrollbar max-h-40 min-h-[60px] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-5 outline-none placeholder:opacity-45"
-                    style={{ color: theme.node.text }}
-                    placeholder={placeholder}
-                />
+                {mentionReferences.length ? (
+                    <CanvasResourceMentionTextarea
+                        value={prompt}
+                        references={mentionReferences}
+                        onChange={onPromptChange}
+                        onSubmit={onSubmit}
+                        sendOnEnter
+                        placeholder={placeholder}
+                        className="thin-scrollbar max-h-40 min-h-[60px] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-5 outline-none placeholder:opacity-45"
+                        style={{ color: theme.node.text }}
+                        onPaste={(event) => {
+                            if (!onAddFiles) return;
+                            const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+                            if (!images.length) return;
+                            event.preventDefault();
+                            void onAddFiles(images);
+                        }}
+                    />
+                ) : (
+                    <textarea
+                        value={prompt}
+                        onChange={(event) => onPromptChange(event.target.value)}
+                        onPaste={(event) => {
+                            if (!onAddFiles) return;
+                            const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+                            if (!images.length) return;
+                            event.preventDefault();
+                            void onAddFiles(images);
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey) return;
+                            event.preventDefault();
+                            void onSubmit();
+                        }}
+                        className="thin-scrollbar max-h-40 min-h-[60px] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-5 outline-none placeholder:opacity-45"
+                        style={{ color: theme.node.text }}
+                        placeholder={placeholder}
+                    />
+                )}
                 <div className="mt-2 flex items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-1">
                         {onAddFiles ? (
@@ -344,10 +390,11 @@ function toolCardState(title: string, text: string, detail?: unknown) {
     const raw = `${title} ${text} ${normalizeText(objectField(detail, "error"))}`;
     const lower = raw.toLowerCase();
     const tool = String(objectField(detail, "name") || objectField(detail, "tool") || "");
+    if (objectField(detail, "status") === "running") return { label: canvasT("videoCanvas.agent.statusRunning", "执行中"), color: "#2563eb", softBg: "rgba(37,99,235,.08)", icon: <LoaderCircle className="size-4 animate-spin" />, isError: false };
     if (objectField(detail, "status") === "noop" || /未生效|无需|没有找到|没有.*可|已存在/.test(raw)) return { label: canvasT("videoCanvas.agent.statusNoop", "未生效"), color: "#d97706", softBg: "rgba(217,119,6,.04)", icon: <CircleAlert className="size-4" />, isError: false };
     if (/拒绝|取消/.test(raw) || lower.includes("rejected")) return { label: canvasT("videoCanvas.agent.statusRejected", "拒绝执行"), color: "#dc2626", softBg: "rgba(220,38,38,.04)", icon: <XCircle className="size-4" />, isError: true };
-    if (/失败|错误/.test(raw) || lower.includes("failed") || lower.includes("error")) return { label: canvasT("videoCanvas.agent.statusFailed", "执行失败"), color: "#dc2626", softBg: "rgba(220,38,38,.04)", icon: <XCircle className="size-4" />, isError: true };
-    if (/完成|成功/.test(raw) || lower.includes("completed") || lower.includes("succeeded")) return { label: tool === "canvas_apply_ops" || /画布操作/.test(title) ? canvasT("videoCanvas.agent.statusApproved", "已批准执行") : canvasT("videoCanvas.agent.statusCompleted", "执行完成"), color: "#16a34a", softBg: "rgba(22,163,74,.04)", icon: <CheckCircle2 className="size-4" />, isError: false };
+    if (objectField(detail, "status") === "failed" || /失败|错误/.test(raw) || lower.includes("failed") || lower.includes("error")) return { label: canvasT("videoCanvas.agent.statusFailed", "执行失败"), color: "#dc2626", softBg: "rgba(220,38,38,.04)", icon: <XCircle className="size-4" />, isError: true };
+    if (objectField(detail, "status") === "completed" || /完成|成功/.test(raw) || lower.includes("completed") || lower.includes("succeeded")) return { label: tool === "canvas_apply_ops" || /画布操作/.test(title) ? canvasT("videoCanvas.agent.statusApproved", "已批准执行") : canvasT("videoCanvas.agent.statusCompleted", "执行完成"), color: "#16a34a", softBg: "rgba(22,163,74,.04)", icon: <CheckCircle2 className="size-4" />, isError: false };
     return { label: canvasT("videoCanvas.agent.toolCall", "工具调用"), color: "#2563eb", softBg: "rgba(37,99,235,.04)", icon: <Wrench className="size-4" />, isError: false };
 }
 

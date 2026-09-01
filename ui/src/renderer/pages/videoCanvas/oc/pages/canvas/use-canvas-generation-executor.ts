@@ -120,9 +120,10 @@ export function useCanvasGenerationExecutor({
             const isPreparingEmptyImage = mode === "image" && sourceNode?.type === CanvasNodeType.Image && !sourceNode.metadata?.content;
 
             let rawGenerationContext: Awaited<ReturnType<typeof hydrateNodeGenerationContext>>;
+            const promptOnly = mode === "video";
             try {
                 rawGenerationContext = await hydrateNodeGenerationContext(
-                    buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? `请根据要求修改以下文本。\n\n原文：\n${sourceTextContent}\n\n修改要求：\n${prompt}` : generationPrompt),
+                    buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? `请根据要求修改以下文本。\n\n原文：\n${sourceTextContent}\n\n修改要求：\n${prompt}` : generationPrompt, promptOnly),
                     projectId,
                     domainProjectId,
                     mode,

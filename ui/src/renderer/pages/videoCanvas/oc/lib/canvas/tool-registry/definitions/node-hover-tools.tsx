@@ -18,7 +18,6 @@ function hasAudio(ctx: ToolContext) { return isAudio(ctx) && Boolean(ctx.nodeMet
 function isCharacterReference(ctx: ToolContext) { return isText(ctx) && ctx.nodeMetadata?.workflowKind === "character" && Boolean(ctx.nodeMetadata?.characterAssetId); }
 function isEditableText(ctx: ToolContext) { return isText(ctx) && !isCharacterReference(ctx); }
 function canOpenDialog(ctx: ToolContext) { return isEditableText(ctx) || isImage(ctx) || isVideo(ctx); }
-function simpleMode(ctx: ToolContext) { return ctx.workspaceMode === "simple"; }
 function canRetry(ctx: ToolContext) {
     const requiresPromptChange = ctx.nodeMetadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(ctx.nodeMetadata?.errorDetails);
     return ctx.nodeMetadata?.status === "error" && !requiresPromptChange;
@@ -71,7 +70,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: (ctx) => ctx.extractingVideoFrame ? <LoaderCircle className="size-3.5 animate-spin" /> : <GalleryHorizontalEnd className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 40,
-        applicable: (ctx) => hasVideo(ctx) && !simpleMode(ctx),
+        applicable: hasVideo,
         disabled: (ctx) => ctx.extractingVideoFrame,
         run: (ctx) => ctx.handlers.onNodeExtractVideoFrames(ctx.node!),
     },
@@ -144,7 +143,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: <Settings2 className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 100,
-        applicable: (ctx) => isConfig(ctx) && !simpleMode(ctx),
+        applicable: isConfig,
         run: (ctx) => ctx.handlers.onNodeToggleDialog(ctx.node!),
     },
     {
@@ -156,7 +155,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: <Minus className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 110,
-        applicable: (ctx) => isEditableText(ctx) && !simpleMode(ctx),
+        applicable: isEditableText,
         run: (ctx) => ctx.handlers.onNodeDecreaseFont(ctx.node!),
     },
     {
@@ -168,7 +167,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: <Plus className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 120,
-        applicable: (ctx) => isEditableText(ctx) && !simpleMode(ctx),
+        applicable: isEditableText,
         run: (ctx) => ctx.handlers.onNodeIncreaseFont(ctx.node!),
     },
     {

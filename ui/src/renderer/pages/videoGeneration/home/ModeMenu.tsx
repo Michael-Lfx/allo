@@ -88,7 +88,7 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
           <strong>{creationModeLabel}</strong>
           <small>
             {t('videoGeneration.mode.creationMenuDesc', {
-              defaultValue: '进入无限画布自由编排',
+              defaultValue: '把需求发给画布 Agent，自动搭建并生成',
             })}
           </small>
         </span>

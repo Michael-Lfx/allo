@@ -1,24 +1,27 @@
 import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
+import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH } from "@oc/lib/canvas/canvas-frame";
+import { buildCanvasAgentAliasMap, resolveCanvasAgentNodeId } from "@oc/lib/canvas/canvas-agent-ids";
+import { buildCanvasAgentPlan, type CanvasAgentPlan } from "@oc/lib/canvas/canvas-agent-plan";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
-import { previewCanvasAgentOps, type CanvasAgentOp, type CanvasAgentOperationImpact, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
 import { buildCanvasWorkflowOps, looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@oc/lib/canvas/canvas-agent-workflow";
 import { normalizeModelOptionValue, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
 import { type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@oc/services/api/image";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
-export const ONLINE_AGENT_MAX_STEPS = 4;
+export const ONLINE_AGENT_MAX_STEPS = 12;
 export const ONLINE_AGENT_PROMPT =
-    "你是影策网页内置在线画布助手。首轮必须先调用 canvas_get_context；涉及已有节点时用 canvas_find_nodes 获取真实 id，涉及媒体参考时用 canvas_get_resources。流水线、工作流、管线、节点图或用户要求连线时，必须使用 canvas_create_workflow：把需求拆成有语义的节点类型、真实内容/提示词、边和布局，禁止把业务阶段退化成几个空文本卡片；工具会自动分配 id、布局并建立连线。复杂写操作先 canvas_validate_ops，再执行 canvas_apply_ops。任何写入后都必须检查工具返回的真实节点类型、connectionCount、overlapWarnings 和 verification；没有真实连线时绝不能说已连线，没有生成资源时绝不能说已完成。不要输出 JSON ops、不要猜 id、不要把未就绪资源当作可用素材、不要编造执行结果。需要用户选择时，给出可点击的短选项，不要只让用户输入 1、2、3。技能不是被拼进用户消息的提示词：用户提及技能时，先用 canvas_get_skill 按 id 或名称加载该技能，再按工具返回的技能契约执行。";
-export const ONLINE_READ_TOOLS = new Set(["canvas_list_skills", "canvas_get_skill", "canvas_get_state", "canvas_get_context", "canvas_find_nodes", "canvas_get_node", "canvas_get_connection", "canvas_get_generation_tasks", "canvas_get_resources", "canvas_validate_ops", "canvas_get_selection", "canvas_export_snapshot"]);
+    "你是 allo 画布 Agent：用工具操作当前节点画布，不是聊天机器人。用户消息已包含当前画布压缩快照，首轮直接动手，不要先调用 canvas_get_context。节点用短 ID（n1）或真实 id。快照里已有的节点、当前选区和用户 @ 的节点都是已知上下文，可直接修改或触发生成，不要为它们再 canvas_get_node。流水线、工作流、管线或用户要求连线时，必须使用 canvas_create_workflow：把需求拆成有语义的节点类型、真实内容/提示词、边和布局，禁止把业务阶段退化成几个空文本卡片。本轮刚创建的节点可立即 update / run_generation / wait_generation。复杂写操作先 canvas_validate_ops，再执行写入工具。触发 run_generation 后必须 canvas_wait_generation 等到终态；没有就绪资源时绝不能说已完成。写入后检查工具返回的真实节点类型、connectionCount、overlapWarnings 和 verification。不要输出 JSON ops、不要猜不存在的 id、不要把未就绪资源当作可用素材、不要编造执行结果。需要用户选择时给出可点击短选项。技能先 canvas_get_skill 再按契约执行。";
+export const ONLINE_READ_TOOLS = new Set(["canvas_list_skills", "canvas_get_skill", "canvas_get_state", "canvas_get_context", "canvas_find_nodes", "canvas_get_node", "canvas_get_connection", "canvas_get_generation_tasks", "canvas_wait_generation", "canvas_get_resources", "canvas_validate_ops", "canvas_get_selection", "canvas_export_snapshot"]);
 
 export type OnlineToolResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
 
 const JSON_RECORD_SCHEMA = { type: "object", additionalProperties: true };
 const POSITION_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"], additionalProperties: false };
 const VIEWPORT_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, k: { type: "number" } }, required: ["x", "y", "k"], additionalProperties: false };
-const NODE_TYPE_SCHEMA = { type: "string", enum: ["image", "text", "skill", "video", "audio"] };
+const NODE_TYPE_SCHEMA = { type: "string", enum: ["image", "text", "skill", "video", "audio", "frame", "script", "config"] };
 const WORKFLOW_NODE_KIND_SCHEMA = { type: "string", enum: ["text", "script", "image", "video", "audio", "character_cards", "character_three_view", "storyboard_video"] };
 const GENERATION_MODE_SCHEMA = { type: "string", enum: ["text", "image", "video", "audio"] };
 const GENERATION_OPTION_PROPERTIES = {
@@ -39,7 +42,7 @@ const GENERATION_OPTION_PROPERTIES = {
 const CANVAS_OP_SCHEMA = {
     type: "object",
     properties: {
-        type: { type: "string", enum: ["add_node", "update_node", "delete_node", "delete_connections", "connect_nodes", "set_viewport", "select_nodes", "run_generation"] },
+        type: { type: "string", enum: ["add_node", "update_node", "delete_node", "delete_connections", "connect_nodes", "set_viewport", "select_nodes", "run_generation", "extract_frames"] },
         id: { type: "string" },
         ids: { type: "array", items: { type: "string" } },
         nodeType: NODE_TYPE_SCHEMA,
@@ -48,6 +51,7 @@ const CANVAS_OP_SCHEMA = {
         y: { type: "number" },
         width: { type: "number" },
         height: { type: "number" },
+        parentId: { type: "string" },
         position: POSITION_SCHEMA,
         metadata: JSON_RECORD_SCHEMA,
         patch: JSON_RECORD_SCHEMA,
@@ -58,6 +62,7 @@ const CANVAS_OP_SCHEMA = {
         nodeId: { type: "string" },
         mode: GENERATION_MODE_SCHEMA,
         prompt: { type: "string" },
+        timesMs: { type: "array", items: { type: "number" } },
     },
     required: ["type"],
     additionalProperties: false,
@@ -80,11 +85,12 @@ export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     toolDefinition("canvas_list_skills", "列出当前画布上可按需加载的技能节点；只返回元数据，不返回完整指令。", {}),
     toolDefinition("canvas_get_skill", "按 skillId 或技能名称按需加载一个画布技能的完整契约。技能正文通过工具结果提供，不会自动注入每条用户消息。", { skillId: { type: "string" }, name: { type: "string" } }),
     toolDefinition("canvas_get_state", "读取当前网页画布的节点、连线、选区和视口。", {}),
-    toolDefinition("canvas_get_context", "读取语义化画布上下文、真实节点 id、连接关系、资源就绪状态和状态哈希。", {}),
-    toolDefinition("canvas_find_nodes", "按标题、内容、提示词、类型、状态或资产检索真实节点。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, types: { type: "array", items: { type: "string" } }, statuses: { type: "array", items: { type: "string" } }, resourceOnly: { type: "boolean" }, limit: { type: "number" } }),
-    toolDefinition("canvas_get_node", "按真实节点 id 精确读取单个节点、资源状态和关联连线。", { id: { type: "string" } }, ["id"]),
+    toolDefinition("canvas_get_context", "读取语义化画布上下文。用户消息已含压缩快照；仅在刚写完需要复核、或快照不够时再调用。", {}),
+    toolDefinition("canvas_find_nodes", "按标题、内容、提示词、类型、状态、短 ID 或资产检索真实节点。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, types: { type: "array", items: { type: "string" } }, statuses: { type: "array", items: { type: "string" } }, resourceOnly: { type: "boolean" }, limit: { type: "number" } }),
+    toolDefinition("canvas_get_node", "按真实节点 id 或短 ID（n1）精确读取单个节点、资源状态和关联连线。快照里已有的节点不必先读再改。", { id: { type: "string" } }, ["id"]),
     toolDefinition("canvas_get_connection", "按真实连线 id 精确读取端点节点和 handle 信息。", { id: { type: "string" } }, ["id"]),
-    toolDefinition("canvas_get_generation_tasks", "读取当前画布绑定的生成任务观察状态，不主动轮询上游。", { status: { type: "string" }, nodeIds: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
+    toolDefinition("canvas_get_generation_tasks", "读取当前画布绑定的生成任务观察状态。", { status: { type: "string" }, nodeIds: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
+    toolDefinition("canvas_wait_generation", "等待指定节点的生成任务到达终态（成功/失败/取消）。触发 run_generation 后必须调用；超时后返回当前观察状态，不要把未完成任务说成已完成。", { nodeIds: { type: "array", items: { type: "string" } }, timeoutMs: { type: "number" } }),
     toolDefinition("canvas_get_resources", "读取画布媒体资源引用、类型、尺寸、大小、时长和就绪状态，不返回媒体 URL。", { nodeIds: { type: "array", items: { type: "string" } }, status: { type: "string" }, limit: { type: "number" } }),
     toolDefinition("canvas_validate_ops", "在写入前校验节点 id、连接关系和批量操作参数。", { ops: { type: "array", items: CANVAS_OP_SCHEMA } }, ["ops"]),
     toolDefinition("canvas_get_selection", "读取当前网页画布选中的节点。", {}),
@@ -144,7 +150,12 @@ export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     toolDefinition("canvas_connect_nodes", "批量连接节点。", { connections: { type: "array", minItems: 1, items: { type: "object", properties: { fromNodeId: { type: "string" }, toNodeId: { type: "string" } }, required: ["fromNodeId", "toNodeId"], additionalProperties: false } } }, ["connections"]),
     toolDefinition("canvas_select_nodes", "设置当前选中节点。", { ids: { type: "array", items: { type: "string" } } }, ["ids"]),
     toolDefinition("canvas_set_viewport", "调整画布视口。", { viewport: VIEWPORT_SCHEMA }, ["viewport"]),
-    toolDefinition("canvas_run_generation", "触发指定节点生成，通常用于配置节点或文本/图片/视频/音频节点。", { nodeId: { type: "string" }, mode: GENERATION_MODE_SCHEMA, prompt: { type: "string" } }, ["nodeId"]),
+    toolDefinition("canvas_run_generation", "触发指定节点生成，通常用于配置节点或文本/图片/视频/音频节点。之后必须 canvas_wait_generation。", { nodeId: { type: "string" }, mode: GENERATION_MODE_SCHEMA, prompt: { type: "string" } }, ["nodeId"]),
+    toolDefinition("canvas_create_folder", "创建文件夹容器（折叠画框）。可选 childNodeIds 把已有节点放进文件夹。", { title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, childNodeIds: { type: "array", items: { type: "string" } } }),
+    toolDefinition("canvas_create_frame", "创建展开的画框/背板容器。", { title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }),
+    toolDefinition("canvas_set_video_frames", "为视频节点指定首帧/尾帧图片节点，并建立连线。", { nodeId: { type: "string" }, startFrameNodeId: { type: "string" }, endFrameNodeId: { type: "string" } }, ["nodeId"]),
+    toolDefinition("canvas_create_variants", "在已有生成节点上设置变体数量并立即重跑生成。", { nodeId: { type: "string" }, count: { type: "number" }, prompt: { type: "string" } }, ["nodeId", "count"]),
+    toolDefinition("canvas_extract_frames", "从已有视频节点提取画面，创建图片节点并连线。timesMs 为毫秒时间点；空则提取首帧、中间帧、尾帧。", { nodeId: { type: "string" }, timesMs: { type: "array", items: { type: "number" } } }, ["nodeId"]),
 ];
 
 export function parseToolArguments(value: string) {
@@ -183,21 +194,38 @@ export function onlineToolToOps(name: string, input: Record<string, unknown>, sn
     if (name === "canvas_generate_image") return generationFlowOps({ ...input, mode: "image", autoRun: true }, snapshot, config);
     if (name === "canvas_generate_video") return generationFlowOps({ ...input, mode: "video", autoRun: true }, snapshot, config);
     if (name === "canvas_generate_audio") return generationFlowOps({ ...input, mode: "audio", autoRun: true }, snapshot, config);
-    if (name === "canvas_update_node") return [{ type: "update_node", id: requireString(input.id, "id"), patch: recordOptional(input.patch) as Partial<CanvasNodeData> | undefined, metadata: recordOptional(input.metadata) as CanvasNodeData["metadata"] }];
-    if (name === "canvas_update_node_text") return [{ type: "update_node", id: requireString(input.id, "id"), patch: stringOptional(input.title) ? { title: stringOptional(input.title) } : undefined, metadata: { content: requireString(input.text, "text"), status: "success" } }];
+    if (name === "canvas_update_node") return [{ type: "update_node", id: resolveId(snapshot, requireString(input.id, "id")), patch: recordOptional(input.patch) as Partial<CanvasNodeData> | undefined, metadata: recordOptional(input.metadata) as CanvasNodeData["metadata"] }];
+    if (name === "canvas_update_node_text") return [{ type: "update_node", id: resolveId(snapshot, requireString(input.id, "id")), patch: stringOptional(input.title) ? { title: stringOptional(input.title) } : undefined, metadata: { content: requireString(input.text, "text"), status: "success" } }];
     if (name === "canvas_move_nodes") {
         return requireRecordArray(input.items, "items").map((item) => {
-            const id = requireString(item.id, "id");
+            const id = resolveId(snapshot, requireString(item.id, "id"));
             const current = snapshot.nodes.find((node) => node.id === id);
             return { type: "update_node", id, patch: { position: { x: numberOr(item.x, (current?.position.x || 0) + numberOr(item.dx, 0)), y: numberOr(item.y, (current?.position.y || 0) + numberOr(item.dy, 0)) } } };
         });
     }
-    if (name === "canvas_resize_node") return [{ type: "update_node", id: requireString(input.id, "id"), patch: { width: requireNumber(input.width, "width"), height: requireNumber(input.height, "height") }, metadata: typeof input.freeResize === "boolean" ? { freeResize: input.freeResize } : undefined }];
-    if (name === "canvas_delete_nodes") return [{ type: "delete_node", ids: requireStringArray(input.ids, "ids") }];
-    if (name === "canvas_connect_nodes") return requireRecordArray(input.connections, "connections").map((connection) => ({ type: "connect_nodes", fromNodeId: requireString(connection.fromNodeId, "fromNodeId"), toNodeId: requireString(connection.toNodeId, "toNodeId") }));
-    if (name === "canvas_select_nodes") return [{ type: "select_nodes", ids: requireStringArray(input.ids, "ids") }];
+    if (name === "canvas_resize_node") return [{ type: "update_node", id: resolveId(snapshot, requireString(input.id, "id")), patch: { width: requireNumber(input.width, "width"), height: requireNumber(input.height, "height") }, metadata: typeof input.freeResize === "boolean" ? { freeResize: input.freeResize } : undefined }];
+    if (name === "canvas_delete_nodes") return [{ type: "delete_node", ids: requireStringArray(input.ids, "ids").map((id) => resolveId(snapshot, id)) }];
+    if (name === "canvas_connect_nodes") return requireRecordArray(input.connections, "connections").map((connection) => ({ type: "connect_nodes", fromNodeId: resolveId(snapshot, requireString(connection.fromNodeId, "fromNodeId")), toNodeId: resolveId(snapshot, requireString(connection.toNodeId, "toNodeId")) }));
+    if (name === "canvas_select_nodes") return [{ type: "select_nodes", ids: requireStringArray(input.ids, "ids").map((id) => resolveId(snapshot, id)) }];
     if (name === "canvas_set_viewport") return [{ type: "set_viewport", viewport: requireViewport(input.viewport) }];
-    if (name === "canvas_run_generation") return [runGenerationOp(requireString(input.nodeId, "nodeId"), generationMode(input.mode), stringOptional(input.prompt))];
+    if (name === "canvas_run_generation") return [runGenerationOp(resolveId(snapshot, requireString(input.nodeId, "nodeId")), generationMode(input.mode), stringOptional(input.prompt))];
+    if (name === "canvas_create_folder") return folderOps(input, snapshot);
+    if (name === "canvas_create_frame") {
+        const x = numberOr(input.x, nextCanvasX(snapshot));
+        const y = numberOr(input.y, 0);
+        return [{ type: "add_node", nodeType: CanvasNodeType.Frame, title: stringOptional(input.title) || canvasT("videoCanvas.node.frame", "画框"), position: { x, y }, width: numberOptional(input.width), height: numberOptional(input.height) }];
+    }
+    if (name === "canvas_set_video_frames") return videoFrameOps(input, snapshot);
+    if (name === "canvas_create_variants") {
+        const id = resolveId(snapshot, requireString(input.nodeId, "nodeId"));
+        const count = Math.max(1, Math.min(15, Math.floor(requireNumber(input.count, "count"))));
+        const node = snapshot.nodes.find((item) => item.id === id);
+        return [
+            { type: "update_node", id, metadata: { count } },
+            runGenerationOp(id, generationMode(node?.metadata?.generationMode || input.mode), stringOptional(input.prompt)),
+        ];
+    }
+    if (name === "canvas_extract_frames") return [{ type: "extract_frames", nodeId: resolveId(snapshot, requireString(input.nodeId, "nodeId")), timesMs: Array.isArray(input.timesMs) ? input.timesMs.filter((item): item is number => typeof item === "number" && Number.isFinite(item)) : [] }];
     throw new Error(`不支持的工具：${name}`);
 }
 
@@ -298,31 +326,27 @@ export function toolCallToResponseInput(call: ResponseToolCall): ResponseInputMe
 }
 
 export function summarizeToolCalls(calls: ResponseToolCall[]) {
-    return calls.map((call) => toolCallLabel(call.function.name)).join("，") || "工具调用";
+    return calls.map((call) => describeOnlineToolActivity(call.function.name)).join("，") || "工具调用";
 }
 
-export function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentOperationImpact {
+export function describeOnlineToolActivity(name: string) {
+    return toolCallLabel(name);
+}
+
+export function describeOnlineToolProgress(name: string) {
+    return canvasT("videoCanvas.agent.activityTool", "正在{{label}}…", { label: toolCallLabel(name) });
+}
+
+export function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentPlan {
     const ops: CanvasAgentOp[] = [];
-    let deferredCinematicCount = 0;
     calls.filter(isWritableToolCall).forEach((call) => {
-        if (call.function.name === "canvas_create_cinematic_session") {
-            deferredCinematicCount += 1;
-            return;
-        }
         try {
             ops.push(...onlineToolToOps(call.function.name, parseToolArguments(call.function.arguments), snapshot, config));
         } catch {
             // 参数错误会在真正执行时显式失败；预览阶段只展示可确定的影响。
         }
     });
-    const impact = previewCanvasAgentOps(ops, snapshot);
-    if (!deferredCinematicCount) return impact;
-    return {
-        ...impact,
-        operationCount: impact.operationCount + deferredCinematicCount,
-        items: [...impact.items, canvasT("videoCanvas.agent.impactCinematicItem", "启动影视 Agent，会话完成后将剧本、分镜和生成节点写回当前画布")].slice(0, 8),
-        warning: [impact.warning, canvasT("videoCanvas.agent.impactCinematicWarning", "影视 Agent 的具体写回范围将在后端完成拆解后确定。")].filter(Boolean).join(" "),
-    };
+    return buildCanvasAgentPlan(ops, snapshot, config);
 }
 
 function toolCallLabel(name: string) {
@@ -335,11 +359,11 @@ function toolCallLabel(name: string) {
     if (name === "canvas_get_node") return canvasT("videoCanvas.agent.tlGetNode", "读取节点");
     if (name === "canvas_get_connection") return canvasT("videoCanvas.agent.tlGetConnection", "读取连线");
     if (name === "canvas_get_generation_tasks") return canvasT("videoCanvas.agent.tlGetGenerationTasks", "读取生成任务");
+    if (name === "canvas_wait_generation") return canvasT("videoCanvas.agent.tlWaitGeneration", "等待生成");
     if (name === "canvas_get_resources") return canvasT("videoCanvas.agent.tlGetResources", "读取资源");
     if (name === "canvas_validate_ops") return canvasT("videoCanvas.agent.tlValidateOps", "校验操作");
     if (name === "canvas_get_selection") return canvasT("videoCanvas.agent.tlGetSelection", "读取选区");
     if (name === "canvas_export_snapshot") return canvasT("videoCanvas.agent.tlExportSnapshot", "导出快照");
-    if (name === "canvas_create_cinematic_session") return canvasT("videoCanvas.agent.tlCreateCinematic", "创建影视项目");
     if (name === "canvas_create_workflow") return canvasT("videoCanvas.agent.tlCreateWorkflow", "创建工作流");
     if (name === "canvas_create_node") return canvasT("videoCanvas.agent.tlCreateNode", "创建节点");
     if (name === "canvas_create_text_node") return canvasT("videoCanvas.agent.tlCreateTextNode", "创建文本");
@@ -359,6 +383,11 @@ function toolCallLabel(name: string) {
     if (name === "canvas_select_nodes") return canvasT("videoCanvas.agent.tlSelectNodes", "选择节点");
     if (name === "canvas_set_viewport") return canvasT("videoCanvas.agent.tlSetViewport", "调整视口");
     if (name === "canvas_run_generation") return canvasT("videoCanvas.agent.tlRunGeneration", "触发生成");
+    if (name === "canvas_create_folder") return canvasT("videoCanvas.agent.tlCreateFolder", "创建文件夹");
+    if (name === "canvas_create_frame") return canvasT("videoCanvas.agent.tlCreateFrame", "创建画框");
+    if (name === "canvas_set_video_frames") return canvasT("videoCanvas.agent.tlSetVideoFrames", "指定首尾帧");
+    if (name === "canvas_create_variants") return canvasT("videoCanvas.agent.tlCreateVariants", "生成变体");
+    if (name === "canvas_extract_frames") return canvasT("videoCanvas.agent.tlExtractFrames", "提取画面");
     return name;
 }
 
@@ -381,6 +410,7 @@ function toCanvasAgentOp(value: unknown): CanvasAgentOp {
             y: numberOptional(item.y),
             width: numberOptional(item.width),
             height: numberOptional(item.height),
+            parentId: stringOptional(item.parentId) || undefined,
             metadata: recordOptional(item.metadata) as CanvasNodeData["metadata"],
         };
     }
@@ -391,6 +421,7 @@ function toCanvasAgentOp(value: unknown): CanvasAgentOp {
     if (type === "set_viewport") return { type, viewport: requireViewport(item.viewport) };
     if (type === "select_nodes") return { type, ids: requireStringArray(item.ids, "ids") };
     if (type === "run_generation") return { type, nodeId: requireString(item.nodeId, "nodeId"), mode: generationMode(item.mode), prompt: stringOptional(item.prompt) };
+    if (type === "extract_frames") return { type, nodeId: requireString(item.nodeId, "nodeId"), timesMs: Array.isArray(item.timesMs) ? (item.timesMs as unknown[]).filter((value): value is number => typeof value === "number" && Number.isFinite(value)) : [] };
     throw new Error("不支持的画布操作类型");
 }
 
@@ -447,6 +478,51 @@ function numberOptional(value: unknown) {
 
 function numberOr(value: unknown, fallback: number) {
     return numberOptional(value) ?? fallback;
+}
+
+function folderOps(input: Record<string, unknown>, snapshot: CanvasAgentSnapshot): CanvasAgentOp[] {
+    const folderId = `folder-${nanoid()}`;
+    const x = numberOr(input.x, nextCanvasX(snapshot));
+    const y = numberOr(input.y, 0);
+    const childIds = Array.isArray(input.childNodeIds) ? input.childNodeIds.filter((id): id is string => typeof id === "string").map((id) => resolveId(snapshot, id)) : [];
+    return [
+        {
+            type: "add_node",
+            id: folderId,
+            nodeType: CanvasNodeType.Frame,
+            title: stringOptional(input.title) || canvasT("videoCanvas.node.folderDefault", "我的文件"),
+            position: { x, y },
+            width: FOLDER_COLLAPSED_WIDTH,
+            height: FOLDER_COLLAPSED_HEIGHT,
+            metadata: {
+                frame: { collapsed: true, expandedWidth: FOLDER_COLLAPSED_WIDTH, expandedHeight: FOLDER_COLLAPSED_HEIGHT },
+                folder: { style: "glass", theme: "aurora", createdAt: new Date().toISOString() },
+            },
+        },
+        ...childIds.map((id) => ({ type: "update_node" as const, id, patch: { parentId: folderId } })),
+        { type: "select_nodes", ids: [folderId] },
+    ];
+}
+
+function videoFrameOps(input: Record<string, unknown>, snapshot: CanvasAgentSnapshot): CanvasAgentOp[] {
+    const nodeId = resolveId(snapshot, requireString(input.nodeId, "nodeId"));
+    const startId = stringOptional(input.startFrameNodeId) ? resolveId(snapshot, stringOptional(input.startFrameNodeId)) : "";
+    const endId = stringOptional(input.endFrameNodeId) ? resolveId(snapshot, stringOptional(input.endFrameNodeId)) : "";
+    const ops: CanvasAgentOp[] = [{
+        type: "update_node",
+        id: nodeId,
+        metadata: cleanRecord({
+            videoStartFrameNodeId: startId || undefined,
+            videoEndFrameNodeId: endId || undefined,
+        }) as CanvasNodeData["metadata"],
+    }];
+    if (startId) ops.push({ type: "connect_nodes", fromNodeId: startId, toNodeId: nodeId });
+    if (endId) ops.push({ type: "connect_nodes", fromNodeId: endId, toNodeId: nodeId });
+    return ops;
+}
+
+function resolveId(snapshot: CanvasAgentSnapshot, token: string) {
+    return resolveCanvasAgentNodeId(snapshot, token, buildCanvasAgentAliasMap(snapshot.nodes)) || token;
 }
 
 function nextCanvasX(snapshot: CanvasAgentSnapshot) {

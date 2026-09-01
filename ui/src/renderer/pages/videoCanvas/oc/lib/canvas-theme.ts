@@ -4,7 +4,7 @@ export type CanvasBackgroundMode = "dots" | "lines" | "blank";
 export const canvasThemes = {
     light: {
         canvas: {
-            background: "#ffffff",
+            background: "#edeeee",
             // 点阵略提亮但仍压过背景，避免远距缩放时糊成噪点。
             dot: "rgba(15,23,42,.20)",
             line: "rgba(15,23,42,.15)",

@@ -52,6 +52,7 @@ import {
   clampDuration,
 } from '../durationBounds';
 import {
+  prefetchCanvasAssistantPanel,
   prefetchGenerationPreferencesPanel,
   prefetchVerticalSkillMenu,
 } from '../prefetch';
@@ -413,6 +414,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       setPrefsModuleReady(true);
       prefetchGenerationPreferencesPanel();
       if (mode === 'agent') prefetchVerticalSkillMenu();
+      if (mode === 'creation') prefetchCanvasAssistantPanel();
     };
     if (typeof idleWindow.requestIdleCallback === 'function') {
       const idleId = idleWindow.requestIdleCallback(warm, { timeout: 800 });
@@ -856,6 +858,12 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 ? !draft.actionCharacter?.file || !draft.actionVideo?.file
                 : !activeText.trim())
             }
+            onMouseEnter={() => {
+              if (mode === 'creation') prefetchCanvasAssistantPanel();
+            }}
+            onFocus={() => {
+              if (mode === 'creation') prefetchCanvasAssistantPanel();
+            }}
             onClick={submit}
             aria-label={
               isAction
@@ -871,7 +879,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                         defaultValue: '生成分镜',
                       })
                     : t('videoGeneration.create.enterCanvas', {
-                        defaultValue: '进入画布',
+                        defaultValue: '发给画布 Agent',
                       })
             }
           >

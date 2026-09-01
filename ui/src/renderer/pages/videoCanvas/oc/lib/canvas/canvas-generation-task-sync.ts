@@ -59,7 +59,31 @@ export function imageMetadata(image: UploadedImage): CanvasNodeMetadata {
 }
 
 export function videoMetadata(video: UploadedFile): CanvasNodeMetadata {
-    return { content: video.url, storageKey: video.storageKey, status: "success", naturalWidth: video.width, naturalHeight: video.height, bytes: video.bytes, mimeType: video.mimeType || "video/mp4", durationMs: video.durationMs, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined };
+    const mediaId = resourceIdFromStorageKey(video.storageKey) || undefined;
+    return {
+        content: video.url,
+        storageKey: video.storageKey,
+        mediaId,
+        status: "success",
+        naturalWidth: video.width,
+        naturalHeight: video.height,
+        bytes: video.bytes,
+        mimeType: video.mimeType || "video/mp4",
+        durationMs: video.durationMs,
+        hasAudio: video.hasAudio,
+        videoPreview: video.preview ? {
+            content: video.preview.url,
+            storageKey: video.preview.storageKey,
+            width: video.preview.width,
+            height: video.preview.height,
+            bytes: video.preview.bytes,
+            mimeType: video.preview.mimeType,
+        } : undefined,
+        errorDetails: undefined,
+        generationErrorCode: undefined,
+        failedPromptFingerprint: undefined,
+        resourceReloadAvailable: undefined,
+    };
 }
 
 export function audioMetadata(audio: UploadedFile): CanvasNodeMetadata {
@@ -118,7 +142,9 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
             bytes: result.video.bytes,
             durationMs: result.video.durationMs,
         });
-        const videoSize = fitNodeSize(video.width || node.width || VIDEO_NODE_MAX_SIZE.width, video.height || node.height || VIDEO_NODE_MAX_SIZE.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+        const videoSize = node.metadata?.locked
+            ? { width: node.width, height: node.height }
+            : fitNodeSize(video.width || node.width || VIDEO_NODE_MAX_SIZE.width, video.height || node.height || VIDEO_NODE_MAX_SIZE.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
         return {
             ...node,
             type: CanvasNodeType.Video,
@@ -146,11 +172,22 @@ export async function applyGenerationTaskResultToNodes(nodes: CanvasNodeData[], 
     if (!node) return { nodes, updated: false, nodeId: "", node: null };
     const updatedNode = await buildGenerationTaskNodeResult(node, task, nodes);
     return {
-        nodes: nodes.map((item) => (item.id === node.id ? updatedNode : item)),
+        nodes: applySuccessfulVersionSelection(nodes, updatedNode),
         updated: true,
         nodeId: node.id,
         node: updatedNode,
     };
+}
+
+function applySuccessfulVersionSelection(nodes: CanvasNodeData[], updatedNode: CanvasNodeData) {
+    const versionRootId = updatedNode.metadata?.versionOfNodeId;
+    return nodes.map((item) => {
+        if (item.id === updatedNode.id) {
+            return versionRootId ? { ...updatedNode, metadata: { ...updatedNode.metadata, versionPrimary: true } } : updatedNode;
+        }
+        if (!versionRootId || (item.metadata?.versionOfNodeId || item.id) !== versionRootId) return item;
+        return { ...item, metadata: { ...item.metadata, versionPrimary: false } };
+    });
 }
 
 export async function syncGenerationTaskToCanvasStore(task: GenerationTask) {

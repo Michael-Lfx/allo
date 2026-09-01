@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
 import { nanoid } from "nanoid";
+import { normalizeCanvasAppearance, readCanvasAppearanceDefault, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
+import type { CanvasStarterMode } from "@oc/lib/canvas/canvas-starter";
 import { localForageStorage } from "@oc/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@oc/types/canvas";
@@ -27,6 +29,8 @@ export type CanvasProject = {
     connections: CanvasConnection[];
     chatSessions: CanvasAssistantSession[];
     activeChatId: string | null;
+    starterMode?: CanvasStarterMode;
+    appearance?: CanvasAppearance;
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
     viewport: ViewportTransform;
@@ -46,7 +50,7 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "timeline" | "alloCreative">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "starterMode" | "appearance" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "timeline" | "alloCreative">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
@@ -122,6 +126,7 @@ export const useCanvasStore = create<CanvasStore>()(
             createProject: (title = "未命名画布", projectId) => {
                 const now = new Date().toISOString();
                 const id = nanoid();
+                const appearanceDefault = readCanvasAppearanceDefault();
                 const project: CanvasProject = {
                     id,
                     projectId,
@@ -132,7 +137,8 @@ export const useCanvasStore = create<CanvasStore>()(
                     connections: [],
                     chatSessions: [],
                     activeChatId: null,
-                    backgroundMode: "lines",
+                    appearance: appearanceDefault?.appearance,
+                    backgroundMode: appearanceDefault?.backgroundMode || "lines",
                     showImageInfo: false,
                     viewport: initialViewport,
                     directorScenes: [],
@@ -142,6 +148,7 @@ export const useCanvasStore = create<CanvasStore>()(
             },
             importProject: (source) => {
                 const now = new Date().toISOString();
+                const appearanceDefault = readCanvasAppearanceDefault();
                 const project: CanvasProject = {
                     id: nanoid(),
                     projectId: source.projectId,
@@ -152,7 +159,9 @@ export const useCanvasStore = create<CanvasStore>()(
                     connections: source.connections || [],
                     chatSessions: source.chatSessions || [],
                     activeChatId: source.activeChatId || null,
-                    backgroundMode: source.backgroundMode || "lines",
+                    starterMode: source.starterMode,
+                    appearance: source.appearance ? normalizeCanvasAppearance(source.appearance, "dark") : appearanceDefault?.appearance,
+                    backgroundMode: source.backgroundMode || appearanceDefault?.backgroundMode || "lines",
                     showImageInfo: source.showImageInfo || false,
                     viewport: source.viewport || initialViewport,
                     directorScenes: source.directorScenes || [],

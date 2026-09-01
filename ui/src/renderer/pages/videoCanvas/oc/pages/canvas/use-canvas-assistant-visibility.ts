@@ -3,19 +3,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CANVAS_AGENT_PANEL_MOTION_MS } from "@oc/components/canvas/canvas-assistant-panel-motion";
 import type { CanvasAgentMode } from "@oc/components/canvas/canvas-agent-chat-ui";
 
-export function useCanvasAssistantVisibility() {
+export function useCanvasAssistantVisibility(options?: { initialOpen?: boolean }) {
     const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const [assistantCollapsed, setAssistantCollapsed] = useState(true);
-    const [assistantMounted, setAssistantMounted] = useState(false);
+    const [assistantCollapsed, setAssistantCollapsed] = useState(!options?.initialOpen);
+    const [assistantMounted, setAssistantMounted] = useState(Boolean(options?.initialOpen));
     const [assistantClosing, setAssistantClosing] = useState(false);
     const [agentMode, setAgentMode] = useState<CanvasAgentMode>("online");
 
-    const openAgent = useCallback((mode?: CanvasAgentMode) => {
+    const openAgent = useCallback((_mode?: CanvasAgentMode) => {
         if (closeTimerRef.current) {
             clearTimeout(closeTimerRef.current);
             closeTimerRef.current = null;
         }
-        if (mode) setAgentMode(mode);
+        setAgentMode("online");
         setAssistantMounted(true);
         setAssistantClosing(false);
         setAssistantCollapsed(false);

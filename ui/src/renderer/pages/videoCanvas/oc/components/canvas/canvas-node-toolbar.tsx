@@ -3,6 +3,7 @@ import { App, Button, Dropdown, Input, Modal, Segmented, Tag } from "antd";
 import { ChevronDown, Ellipsis, Lock, Plus, Settings2, Unlock } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { ASSET_CATEGORY_OPTIONS } from "@oc/lib/asset-category";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
@@ -57,15 +58,7 @@ type CanvasNodeToolbarProps = {
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
 
-const assetCategoryOptions: Array<{ value: CanvasAssetCategory; label: string }> = [
-    { value: "character", get label() { return canvasT("videoCanvas.menu.categoryCharacter", "角色"); } },
-    { value: "environment", get label() { return canvasT("videoCanvas.menu.categoryEnvironment", "场景"); } },
-    { value: "wardrobe", get label() { return canvasT("videoCanvas.menu.categoryWardrobe", "服饰"); } },
-    { value: "prop", get label() { return canvasT("videoCanvas.menu.categoryProp", "道具"); } },
-    { value: "weapon", get label() { return canvasT("videoCanvas.menu.categoryWeapon", "武器"); } },
-    { value: "style", get label() { return canvasT("videoCanvas.menu.categoryStyle", "画风"); } },
-    { value: "other", get label() { return canvasT("videoCanvas.menu.categoryOther", "其他"); } },
-];
+const assetCategoryOptions = ASSET_CATEGORY_OPTIONS;
 
 type ToolbarTool = {
     id: string;
@@ -134,7 +127,6 @@ export function CanvasNodeToolbar({
     const copyText = useCopyText();
     const themeName = useThemeStore((state) => state.theme);
     const theme = canvasThemes[themeName];
-    const simpleMode = workspaceMode === "simple";
 
     useEffect(() => {
         try {
@@ -285,7 +277,7 @@ export function CanvasNodeToolbar({
         disabled: tool.disabled?.(nodeHoverCtx),
         onClick: () => tool.run(nodeHoverCtx),
     }));
-    const allTools: ToolbarTool[] = hasImage && !simpleMode
+    const allTools: ToolbarTool[] = hasImage
         ? [...otherTools, ...imageTools.map((tool) => ({ id: tool.id, title: tool.title, label: tool.label, icon: tool.icon, active: tool.active, danger: undefined, disabled: undefined, onClick: tool.onClick }))]
         : otherTools;
     const selectableImageToolbarTools = allTools.filter((tool): tool is ToolbarTool & { id: ImageQuickToolId } => isImageQuickToolId(tool.id));
@@ -307,7 +299,7 @@ export function CanvasNodeToolbar({
         .filter((tool) => !visibleToolIds.has(tool.id))
         .map((tool) => (tool.id === "edit" && (isImage || isVideo) ? { ...tool, label: canvasT("videoCanvas.nodeUi.genSettings", "生成设置") } : tool));
     // 专业模式图片：把「管理快捷工具」放入更多，保证入口与 OA「更多」一致可见
-    if (hasImage && !simpleMode) {
+    if (hasImage) {
         overflowTools.push({
             id: "manage-image-quick-tools",
             title: canvasT("videoCanvas.nodeUi.manageQuickTools", "管理快捷工具"),

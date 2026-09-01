@@ -13,6 +13,7 @@ import { CanvasToolbar } from "@oc/components/canvas/canvas-toolbar";
 import { getContextResourceNodes } from "@oc/lib/canvas/canvas-resource-references";
 import { CanvasNodeType, type CanvasNodeMetadata, type CanvasToolMode, type CanvasWorkspaceMode, type Position, type ViewportTransform } from "@oc/types/canvas";
 import type { CanvasBackgroundMode, CanvasTheme } from "@oc/lib/canvas-theme";
+import type { CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import type { GenerationTask } from "@oc/services/api/task-center";
 import type { useCanvasAssistantVisibility } from "./use-canvas-assistant-visibility";
 import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
@@ -27,6 +28,7 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     emotionNodeId: string | null;
     containerRef: RefObject<HTMLDivElement | null>;
     backgroundMode: CanvasBackgroundMode;
+    canvasAppearance: CanvasAppearance;
     handleViewportChange: (viewport: ViewportTransform) => void;
     handleViewportPreviewChange: (viewport: ViewportTransform) => void;
     handleCanvasMouseDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -54,6 +56,8 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
     showImageInfo: boolean;
     setBackgroundMode: Dispatch<SetStateAction<CanvasBackgroundMode>>;
+    applyCanvasAppearance: (appearance: CanvasAppearance) => void;
+    saveCanvasAppearanceDefault: (appearance: CanvasAppearance) => void;
     setShowImageInfo: Dispatch<SetStateAction<boolean>>;
     createNode: ReturnType<typeof useCanvasNodeOperations>["createNode"];
     createFolder: ReturnType<typeof useCanvasNodeOperations>["createFolder"];
@@ -113,6 +117,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         theme,
         containerRef,
         backgroundMode,
+        canvasAppearance,
         handleViewportChange,
         handleViewportPreviewChange,
         handleCanvasMouseDown,
@@ -139,6 +144,8 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         shortDramaEnabled,
         currentProject,
         setBackgroundMode,
+        applyCanvasAppearance,
+        saveCanvasAppearanceDefault,
         setShowImageInfo,
         createNode,
         createFolder,
@@ -184,6 +191,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                             <InfiniteCanvas
                                 containerRef={containerRef}
                                 viewport={viewport}
+                                appearance={canvasAppearance}
                                 backgroundMode={backgroundMode}
                                 graphicsLayer={
                                     <CanvasLeaferGraphicsLayer
@@ -298,6 +306,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     canUndo={historyState.canUndo}
                                     canRedo={historyState.canRedo}
                                     backgroundMode={backgroundMode}
+                                    appearance={canvasAppearance}
                                     showImageInfo={showImageInfo}
                                     onAddImage={() => createNode(CanvasNodeType.Image)}
                                     onAddVideo={() => createNode(CanvasNodeType.Video)}
@@ -317,6 +326,8 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onClear={() => setClearConfirmOpen(true)}
                                     onDeselect={deselectCanvas}
                                     onBackgroundModeChange={setBackgroundMode}
+                                    onAppearanceChange={applyCanvasAppearance}
+                                    onSaveAppearanceDefault={saveCanvasAppearanceDefault}
                                     onShowImageInfoChange={setShowImageInfo}
                                     onOpenMyAssets={() => {
                                         openAssetsAtPosition();

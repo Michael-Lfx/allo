@@ -43,12 +43,11 @@ function videoOperationOptions(): Array<{ label: string; value: CanvasVideoEditO
     ];
 }
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStop, onComposerToggle, workspaceMode = "professional" }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
     useTranslation();
     const globalConfig = useEffectiveConfig();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = node.metadata?.generationMode || "image";
-    const simpleMode = workspaceMode === "simple";
     const config = buildNodeConfig(globalConfig, node, mode);
     const videoProfile = mode === "video" ? modelCapabilityConfigFor(config, config.model).video! : undefined;
     const allOps = videoOperationOptions();
@@ -59,12 +58,20 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
     const capabilityError = videoProfile ? videoCapabilityError(videoProfile, config.videoSeconds, node.metadata?.composerContent ?? node.metadata?.prompt ?? "", inputSummary, node.metadata?.videoEditOperation) : "";
     const canGenerate = (hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput)) && !capabilityError;
+    const modeTitle = mode === "video"
+        ? canvasT("videoCanvas.config.genConfigVideo", "视频生成配置")
+        : mode === "audio"
+            ? canvasT("videoCanvas.config.genConfigAudio", "音频生成配置")
+            : mode === "text"
+                ? canvasT("videoCanvas.config.genConfigText", "文本生成配置")
+                : canvasT("videoCanvas.config.genConfigImage", "图片生成配置");
 
     return (
         <div className="flex h-full w-full cursor-move flex-col px-3 pb-3 pt-7 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
-            <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="shrink-0 text-sm font-semibold">{simpleMode ? canvasT("videoCanvas.config.quickGenerate", "快速生成") : canvasT("videoCanvas.config.genConfig", "生成配置")}</div>
-                {simpleMode ? <span className="rounded-md px-2 py-1 text-[var(--fs-tiny)]" style={{ background: theme.node.fill, color: theme.node.muted }}>{canvasT("videoCanvas.config.autoConfig", "自动配置")}</span> : <div className="cursor-default" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-2">
+                <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 truncate text-sm font-semibold">{modeTitle}</div>
+                    <div className="cursor-default" onMouseDown={(event) => event.stopPropagation()}>
                     <Segmented
                         size="small"
                         className="canvas-config-mode !rounded-md !p-0.5"
@@ -109,7 +116,13 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                             },
                         ]}
                     />
-                </div>}
+                    </div>
+                </div>
+                <p className="mt-1.5 text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
+                    {hasAnyInput || hasComposerContent
+                        ? canvasT("videoCanvas.config.howTo", "把参考素材连到左侧，在这里写提示词并选择模型，生成结果会出现在旁边。")
+                        : canvasT("videoCanvas.config.howToEmpty", "先把图、视频或文本连到左侧，或点「组装提示词」用 @ 引用画布素材。")}
+                </p>
             </div>
 
             <div className="mb-2 flex flex-wrap gap-1.5">
@@ -118,12 +131,12 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 <InputChip label={canvasT("videoCanvas.config.refVideo", "参考视频")} value={canvasT("videoCanvas.config.countUnit", "{{count}} 个", { count: inputSummary.videoCount })} style={chipStyle} />
                 <InputChip label={canvasT("videoCanvas.config.refAudio", "参考音频")} value={canvasT("videoCanvas.config.countUnit", "{{count}} 个", { count: inputSummary.audioCount })} style={chipStyle} />
                 <button type="button" className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[var(--fs-label)]" style={chipStyle} onMouseDown={(event) => event.stopPropagation()} onClick={onComposerToggle}>
-                    {simpleMode ? <MessageSquare className="size-3.5" /> : <Settings2 className="size-3.5" />}
-                    {simpleMode ? canvasT("videoCanvas.config.editContent", "编辑生成内容") : canvasT("videoCanvas.config.assemblePrompt", "组装提示词")}
+                    <Settings2 className="size-3.5" />
+                    {canvasT("videoCanvas.config.assemblePrompt", "组装提示词")}
                 </button>
             </div>
 
-            {mode === "video" && !simpleMode ? (
+            {mode === "video" ? (
                 <div className="mb-2 cursor-default" data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                     <Select
                         size="small"

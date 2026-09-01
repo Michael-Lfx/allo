@@ -29,13 +29,22 @@ describe("video canvas project entry chunk", () => {
         expect(chainSource.includes('from "@oc/components/canvas/canvas-assistant-panel"')).toBe(false);
         expect(chainSource.includes('from "@oc/components/canvas/canvas-text-editor-modal"')).toBe(false);
         expect(chainSource.includes('from "@oc/components/canvas/canvas-local-agent-panel"')).toBe(false);
-        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-assistant-panel"')).toBe(true);
+        expect(chainSource.includes("loadCanvasAssistantPanel")).toBe(true);
+        expect(source("./loadAssistantPanel.ts").includes("import('@oc/components/canvas/canvas-assistant-panel')")).toBe(true);
         expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-text-editor-modal"')).toBe(true);
         expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-local-agent-panel"')).toBe(true);
         expect(/import\s*\{[^}]*\bCanvasScriptEditor\b/.test(chainSource)).toBe(false);
         expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-script-editor"')).toBe(true);
         expect(chainSource.includes("CanvasScriptNodeContent")).toBe(true);
         expect(chainSource.includes('from "@oc/components/canvas/canvas-script-node"')).toBe(true);
+    });
+
+    test("canvas node connection rails are a mid-side crosshair hit zone", () => {
+        const nodeSource = source("./oc/components/canvas/canvas-node.tsx");
+        expect(nodeSource.includes("function ConnectionSideRail")).toBe(true);
+        expect(nodeSource.includes("cursor-crosshair")).toBe(true);
+        expect(nodeSource.includes("absolute inset-y-0")).toBe(false);
+        expect(nodeSource.includes("<Plus")).toBe(false);
     });
 
     test("canvas node renders rich text via lazy view (no static tiptap)", () => {

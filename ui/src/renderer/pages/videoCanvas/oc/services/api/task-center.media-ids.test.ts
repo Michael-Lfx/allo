@@ -52,6 +52,26 @@ describe("collectMediaIds / alloBodyFromCreateInput", () => {
         expect(body.reference_media_ids).toEqual(["media-b"]);
     });
 
+    test("video start/end frame node ids map onto first/last frame media ids", () => {
+        const body = alloBodyFromCreateInput({
+            type: "canvas_video",
+            operation: "image_to_video",
+            prompt: "animate",
+            input: {
+                mode: "video",
+                prompt: "animate",
+                referenceImages: [refA, refB],
+                metadata: {
+                    videoStartFrameNodeId: "b",
+                    videoEndFrameNodeId: "a",
+                },
+            },
+        });
+        expect(body.first_frame_media_id).toBe("media-b");
+        expect(body.last_frame_media_id).toBe("media-a");
+        expect(body.reference_media_ids).toEqual([]);
+    });
+
     test("explicit first-frame metadata is honored and excluded from references", () => {
         const collected = collectMediaIds(
             {

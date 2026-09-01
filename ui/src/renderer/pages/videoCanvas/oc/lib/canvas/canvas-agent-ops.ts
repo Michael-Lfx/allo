@@ -4,14 +4,15 @@ import { getNodeSpec } from "@oc/constant/canvas";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type ViewportTransform } from "@oc/types/canvas";
 
 export type CanvasAgentOp =
-    | { type: "add_node"; id?: string; nodeType?: CanvasNodeType; title?: string; position?: { x: number; y: number }; x?: number; y?: number; width?: number; height?: number; metadata?: CanvasNodeMetadata }
+    | { type: "add_node"; id?: string; nodeType?: CanvasNodeType; title?: string; position?: { x: number; y: number }; x?: number; y?: number; width?: number; height?: number; parentId?: string; metadata?: CanvasNodeMetadata }
     | { type: "update_node"; id: string; patch?: Partial<CanvasNodeData>; metadata?: CanvasNodeMetadata }
     | { type: "delete_node"; id?: string; ids?: string[]; nodeType?: CanvasNodeType }
     | { type: "delete_connections"; id?: string; ids?: string[]; all?: boolean }
     | { type: "connect_nodes"; id?: string; fromNodeId: string; toNodeId: string; fromHandleId?: string; toHandleId?: string }
     | { type: "set_viewport"; viewport: ViewportTransform }
     | { type: "select_nodes"; ids: string[] }
-    | { type: "run_generation"; nodeId: string; mode?: "text" | "image" | "video" | "audio"; prompt?: string };
+    | { type: "run_generation"; nodeId: string; mode?: "text" | "image" | "video" | "audio"; prompt?: string }
+    | { type: "extract_frames"; nodeId: string; timesMs: number[] };
 
 export type CanvasAgentSnapshot = {
     projectId: string;
@@ -121,6 +122,11 @@ export function previewCanvasAgentOps(ops?: CanvasAgentOp[], snapshot?: CanvasAg
             items.push(`为「${nodeById.get(op.nodeId)?.title || op.nodeId}」触发${generationModeLabel(op.mode)}生成`);
             return;
         }
+        if (op.type === "extract_frames") {
+            affectedNodeIds.add(op.nodeId);
+            items.push(`从「${nodeById.get(op.nodeId)?.title || op.nodeId}」提取 ${op.timesMs.length || 0} 帧`);
+            return;
+        }
         if (op.type === "select_nodes") {
             op.ids.forEach((id) => affectedNodeIds.add(id));
             items.push(`选择 ${op.ids.length} 个节点`);
@@ -160,6 +166,7 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
                 position: op.position || { x: op.x ?? index * 36, y: op.y ?? index * 36 },
                 width: op.width || spec.width,
                 height: op.height || spec.height,
+                ...(op.parentId ? { parentId: op.parentId } : {}),
                 metadata: { ...spec.metadata, ...op.metadata },
             };
             nodes = [...nodes, node];
@@ -299,6 +306,10 @@ export function verifyCanvasAgentOps(before: CanvasAgentSnapshot, after: CanvasA
             });
             continue;
         }
+        if (op.type === "extract_frames") {
+            requireAfterNode(op.nodeId);
+            continue;
+        }
         if (op.type === "run_generation") {
             requireAfterNode(op.nodeId);
             const node = after.nodes.find((item) => item.id === op.nodeId);
@@ -382,6 +393,7 @@ function opLabel(type: string) {
     if (type === "set_viewport") return "调整视图";
     if (type === "select_nodes") return "选择节点";
     if (type === "run_generation") return "触发生成";
+    if (type === "extract_frames") return "提取画面";
     return type;
 }
 

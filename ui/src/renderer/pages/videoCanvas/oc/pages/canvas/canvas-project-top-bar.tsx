@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, Bot, Clapperboard, Coins, Download, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Settings2, Share2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
+import { ArrowLeft, Bot, Clapperboard, Coins, Download, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Share2, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -11,13 +11,11 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
-import type { CanvasMediaPerformanceMode, CanvasWorkspaceMode } from "@oc/types/canvas";
+import type { CanvasMediaPerformanceMode } from "@oc/types/canvas";
 import { CanvasShortcutsModal } from "./canvas-shortcuts-modal";
 
 type CanvasTopBarProps = {
     title: string;
-    workspaceMode: CanvasWorkspaceMode;
-    onWorkspaceModeChange: (mode: CanvasWorkspaceMode) => void;
     titleDraft: string;
     isTitleEditing: boolean;
     onTitleDraftChange: (value: string) => void;
@@ -49,8 +47,6 @@ type CanvasTopBarProps = {
 
 export function CanvasTopBar({
     title,
-    workspaceMode,
-    onWorkspaceModeChange,
     titleDraft,
     isTitleEditing,
     onTitleDraftChange,
@@ -206,8 +202,6 @@ export function CanvasTopBar({
                     </div>
                 </div>
 
-                <CanvasWorkspaceModeSwitch mode={workspaceMode} onChange={onWorkspaceModeChange} />
-
                 <div className="pointer-events-auto flex items-center gap-1.5">
                     <Button type="text" className="!hidden !h-10 !w-10 !min-w-10 !rounded-xl !p-0 lg:!inline-flex" style={{ color: theme.node.text }} icon={<Search className="size-4" />} onClick={onOpenSearch} aria-label={canvasT("videoCanvas.chrome.searchCanvasNodes", "搜索画布节点")} title={canvasT("videoCanvas.chrome.searchCanvasNodes", "搜索画布节点")} />
                     <Dropdown
@@ -301,60 +295,6 @@ export function CanvasTopBar({
             </div>
             <CanvasShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
         </>
-    );
-}
-
-function CanvasWorkspaceModeSwitch({ mode, onChange }: { mode: CanvasWorkspaceMode; onChange: (mode: CanvasWorkspaceMode) => void }) {
-    useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const items = [
-        { key: "simple" as const, label: canvasT("videoCanvas.chrome.modeSimple", "简洁"), icon: <Sparkles className="size-3.5" />, title: canvasT("videoCanvas.chrome.modeSimpleHint", "简洁模式：保留核心创作路径") },
-        { key: "professional" as const, label: canvasT("videoCanvas.chrome.modeProfessional", "专业"), icon: <Settings2 className="size-3.5" />, title: canvasT("videoCanvas.chrome.modeProfessionalHint", "专业模式：完整节点与生成控制") },
-    ];
-
-    return (
-        <div
-            className="pointer-events-auto absolute left-1/2 top-2 z-[var(--dock-z-popover)] -translate-x-1/2"
-            role="group"
-            aria-label={canvasT("videoCanvas.chrome.workspaceMode", "画布工作模式")}
-        >
-            <div
-                className="inline-flex h-9 items-center gap-0.5 rounded-full p-0.5 backdrop-blur-xl"
-                style={{
-                    background: theme.spatial.elevated,
-                    color: theme.node.text,
-                    boxShadow: "0 8px 24px rgba(15,23,42,.08)",
-                    border: `1px solid ${theme.toolbar.border}`,
-                }}
-            >
-                {items.map((item) => {
-                    const active = mode === item.key;
-                    return (
-                        <button
-                            key={item.key}
-                            type="button"
-                            title={item.title}
-                            aria-pressed={active}
-                            className="inline-flex h-8 min-w-[4.75rem] items-center justify-center gap-1.5 rounded-full px-3 text-[var(--fs-caption)] font-semibold leading-none transition-all duration-200 outline-none focus-visible:ring-2"
-                            style={{
-                                background: active ? theme.node.fill : "transparent",
-                                color: active ? theme.node.text : theme.node.muted,
-                                boxShadow: active ? `0 1px 4px ${theme.spatial.shadow}` : "none",
-                                ["--tw-ring-color" as string]: theme.accent.primary,
-                            }}
-                            onClick={() => {
-                                if (item.key !== mode) onChange(item.key);
-                            }}
-                        >
-                            <span className="grid place-items-center" style={{ color: active ? theme.accent.primary : theme.node.muted }}>
-                                {item.icon}
-                            </span>
-                            <span>{item.label}</span>
-                        </button>
-                    );
-                })}
-            </div>
-        </div>
     );
 }
 

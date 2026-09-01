@@ -10,6 +10,7 @@ import {
 import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
 import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
+import { hasExplicitVideoFrames, resolveVideoImageReferences } from '@oc/services/api/video-reference-roles';
 import { modelOptionName } from '@oc/stores/use-config-store';
 import {
   cancelGenerationTask as alloCancel,
@@ -243,9 +244,8 @@ export function mapAlloTask(view: GenerationTaskView, extra?: Partial<Generation
  * Map task-center reference payloads onto allo generation media ids.
  *
  * Video image-to-video may promote the first reference image to `first_frame`
- * when no explicit frame media id is set. Image / img2img must keep every
- * reference in `reference_media_ids` — the canvas image runner only reads that
- * field, so treating the first ref as a video frame would silently drop it.
+ * when no explicit frame is set. Named start/end frame node ids win over that
+ * fallback. Image / img2img must keep every reference in `reference_media_ids`.
  */
 export function collectMediaIds(
   input?: Record<string, unknown>,
@@ -272,13 +272,38 @@ export function collectMediaIds(
     input.metadata && typeof input.metadata === 'object'
       ? (input.metadata as Record<string, unknown>)
       : {};
-  const explicitFirstFrame =
+  const videoOptions = {
+    videoEditOperation: typeof metadata.videoEditOperation === 'string' ? metadata.videoEditOperation : undefined,
+    videoStartFrameNodeId: typeof metadata.videoStartFrameNodeId === 'string' ? metadata.videoStartFrameNodeId : undefined,
+    videoEndFrameNodeId: typeof metadata.videoEndFrameNodeId === 'string' ? metadata.videoEndFrameNodeId : undefined,
+  };
+  // Named start/end frames only apply to video. The OA helper's index fallback
+  // (1 image = first frame, 2 images = first+last) is Yingce creation-page
+  // semantics — canvas keeps "first connected image becomes first_frame, rest
+  // stay references" unless the user named the frames.
+  const namedFrames = Boolean(options?.promoteFirstImageToFrame) && hasExplicitVideoFrames(videoOptions);
+  const rolePlan = namedFrames
+    ? resolveVideoImageReferences(
+        images.flatMap((item) => {
+          if (!item || typeof item !== 'object') return [];
+          const image = item as { id?: string; storageKey?: string };
+          return typeof image.id === 'string' ? [image as { id: string; storageKey?: string }] : [];
+        }),
+        videoOptions,
+      )
+    : [];
+  const roleFirst = rolePlan.find((item) => item.role === 'first_frame');
+  const roleLast = rolePlan.find((item) => item.role === 'last_frame');
+  const metadataFirstFrame =
     (typeof metadata.firstFrameMediaId === 'string' && metadata.firstFrameMediaId) ||
     (typeof metadata.first_frame_media_id === 'string' && metadata.first_frame_media_id) ||
     undefined;
   const firstFrameId =
-    explicitFirstFrame ||
+    metadataFirstFrame ||
+    (roleFirst ? resourceIdFromStorageKey(roleFirst.image.storageKey) : undefined) ||
     (options?.promoteFirstImageToFrame &&
+    !namedFrames &&
+    !metadataFirstFrame &&
     images[0] &&
     typeof images[0] === 'object'
       ? resourceIdFromStorageKey((images[0] as { storageKey?: string }).storageKey) ||
@@ -287,6 +312,7 @@ export function collectMediaIds(
   const lastFrameId =
     (typeof metadata.lastFrameMediaId === 'string' && metadata.lastFrameMediaId) ||
     (typeof metadata.last_frame_media_id === 'string' && metadata.last_frame_media_id) ||
+    (roleLast ? resourceIdFromStorageKey(roleLast.image.storageKey) : undefined) ||
     undefined;
   const referenceIds = refs.filter((id) => id !== firstFrameId && id !== lastFrameId);
   return { referenceIds, firstFrameId: firstFrameId || undefined, lastFrameId: lastFrameId || undefined };
@@ -316,8 +342,9 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     payload.metadata && typeof payload.metadata === 'object'
       ? (payload.metadata as Record<string, unknown>)
       : {};
-  const { referenceIds, firstFrameId, lastFrameId } = collectMediaIds(payload, {
-    // Only video tasks use first/last frame slots. Image edit must keep refs.
+    const { referenceIds, firstFrameId, lastFrameId } = collectMediaIds(payload, {
+    // Only video tasks use first/last frame slots. Named start/end frames win
+    // over promoting the first connected image.
     promoteFirstImageToFrame: isVideo,
   });
   const modelValue = String(input.model || config.model || '');

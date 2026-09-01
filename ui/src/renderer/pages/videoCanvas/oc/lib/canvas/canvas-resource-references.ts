@@ -1,5 +1,6 @@
 import { imageReferenceLabel } from "@oc/lib/image-reference-prompt";
 import { seedanceReferenceLabel } from "@oc/lib/seedance-video";
+import { canvasNodeVideoPreviewUrl } from "@oc/lib/canvas/canvas-media-preview";
 import { getNodeResourceKind } from "@oc/lib/canvas/node-registry";
 import { skillFromCanvasNode } from "@oc/lib/canvas/canvas-skill-mentions";
 import type { Skill } from "@oc/services/api/skills";
@@ -15,6 +16,7 @@ export type CanvasResourceReference = {
     title: string;
     previewUrl?: string;
     storageKey?: string;
+    previewStorageKey?: string;
     text?: string;
     active: boolean;
     sourceType?: CanvasNodeType;
@@ -43,7 +45,7 @@ export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNo
  */
 export function canvasResourceReferencesSignature(references: CanvasResourceReference[]) {
     return references
-        .map((reference) => [reference.id, reference.kind, reference.label, reference.title, reference.previewUrl ?? "", reference.storageKey ?? "", reference.text ?? "", reference.active ? "1" : "0", reference.sourceType ?? "", reference.skill?.skill_id ?? reference.skill?.skill_name ?? ""].join("|"))
+        .map((reference) => [reference.id, reference.kind, reference.label, reference.title, reference.previewUrl ?? "", reference.storageKey ?? "", reference.previewStorageKey ?? "", reference.text ?? "", reference.active ? "1" : "0", reference.sourceType ?? "", reference.skill?.skill_id ?? reference.skill?.skill_name ?? ""].join("|"))
         .join("\n");
 }
 
@@ -93,8 +95,15 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
                 kind,
                 label: skill?.skill_name || label,
                 title: skill?.skill_name || node.title || label,
-                previewUrl: node.metadata?.workflowKind === "character" ? node.metadata.characterCoverUrl : node.type === CanvasNodeType.Drawing ? node.metadata?.drawingPreviewUrl : node.metadata?.content,
+                previewUrl: node.metadata?.workflowKind === "character"
+                    ? node.metadata.characterCoverUrl
+                    : node.type === CanvasNodeType.Drawing
+                        ? node.metadata?.drawingPreviewUrl
+                        : node.type === CanvasNodeType.Video
+                            ? canvasNodeVideoPreviewUrl(node)
+                            : node.metadata?.previewContent || node.metadata?.content,
                 storageKey: node.metadata?.storageKey,
+                previewStorageKey: node.type === CanvasNodeType.Video ? node.metadata?.videoPreview?.storageKey : undefined,
                 text: node.metadata?.workflowKind === "character" ? node.metadata.characterPrompt : node.type === CanvasNodeType.Text ? node.metadata?.content || node.metadata?.prompt : node.type === CanvasNodeType.Skill ? skillResourceText(node) : undefined,
                 active,
                 sourceType: node.type,

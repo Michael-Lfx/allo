@@ -13,7 +13,7 @@
     "agentMenuDesc": "自动规划分镜并渲染成片",
     "actionLabel": "动作模仿",
     "actionMenuDesc": "角色图 + 参考视频，模仿动作成片",
-    "creationMenuDesc": "进入无限画布自由编排"
+    "creationMenuDesc": "把需求发给画布 Agent，自动搭建并生成"
   },
   "nav": {
     "entry": "视频生成",
@@ -188,7 +188,7 @@
     "generateClip": "生成视频",
     "generateTitle": "视频生成",
     "generateFailed": "视频生成创建失败",
-    "enterCanvas": "进入画布",
+    "enterCanvas": "发给画布 Agent",
     "customize": "自定义生成偏好",
     "modelRequired": "生成前需要可用的规划模型。",
     "modelRequiredAction": "生成前需要选择视频模型。",
