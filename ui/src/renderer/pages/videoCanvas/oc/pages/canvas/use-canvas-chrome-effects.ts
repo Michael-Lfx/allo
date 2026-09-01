@@ -35,6 +35,7 @@ export function useCanvasChromeEffects(input: CanvasChromeEffectsInput) {
         searchParams,
         projectLoaded,
         openAgent,
+        setAgentMode,
         closeAgent,
         setNodeSearchOpen,
         setIsMiniMapOpen,
@@ -70,9 +71,12 @@ export function useCanvasChromeEffects(input: CanvasChromeEffectsInput) {
 
     useEffect(() => {
         if (!projectLoaded || !["new", "recent", "choose"].includes(searchParams.get("mode") || "")) return;
-        if (searchParams.has("agentUrl")) return;
+        if (searchParams.has("agentUrl")) {
+            setAgentMode("local");
+            return;
+        }
         openAgent("online");
-    }, [openAgent, projectLoaded, searchParams]);
+    }, [openAgent, projectLoaded, searchParams, setAgentMode]);
 
     // 沉浸专注进入时收起智能体与小地图、重置 Dock 唤出态；仅响应「进入」瞬间，避免关闭专注内主动唤出的面板。
     const prevFocusModeRef = useRef(focusMode);

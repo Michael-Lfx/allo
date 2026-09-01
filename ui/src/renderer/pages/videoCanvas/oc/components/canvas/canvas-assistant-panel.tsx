@@ -15,6 +15,7 @@ import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
 import { AgentChatComposer, AgentPanelTabs, type CanvasAgentMode } from "./canvas-agent-chat-ui";
 import { AgentPanelChrome } from "./canvas-agent-panel-chrome";
 import { CANVAS_AGENT_PANEL_MOTION_MS } from "./canvas-assistant-panel-motion";
+import { CanvasLocalAgentPanel } from "./canvas-local-agent-panel";
 import { type CanvasAssistantMessage, type CanvasAssistantSession, type CanvasNodeData } from "@oc/types/canvas";
 import { useCanvasAgentStore } from "@oc/stores/canvas/use-canvas-agent-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
@@ -22,6 +23,7 @@ import { createSession, useCanvasOnlineAgentLoop } from "./canvas-online-agent-l
 import { AgentTextModelPicker, AssistantChatMessages, AssistantHistory, AssistantReferenceChip, OnlineAgentLogView, assistantImageReferenceLabel, buildAgentComposerReferences, buildAssistantReferences } from "./canvas-assistant-panel-views";
 
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
+const NOOP_AGENT_MODE_CHANGE: (mode: CanvasAgentMode) => void = () => {};
 type OnlineAgentTab = "chat" | "history" | "log";
 const startedHomeAgentKeys = new Set<string>();
 
@@ -51,7 +53,7 @@ type CanvasAssistantPanelProps = {
     appearImmediately?: boolean;
 };
 
-export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onApplyOps, canUndoOps, undoOpsCount, onUndoOps, onPasteImage, closing, onCollapse, onExtractFrames, resizing = false, autoStart, onAutoStartConsumed, appearImmediately = false }: CanvasAssistantPanelProps) {
+export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onApplyOps, canUndoOps, undoOpsCount, onUndoOps, onPasteImage, agentMode = "online", onAgentModeChange, autoConnectLocal, closing, onCollapse, onExtractFrames, resizing = false, autoStart, onAutoStartConsumed, appearImmediately = false }: CanvasAssistantPanelProps) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const user = useUserStore((state) => state.user);
@@ -150,10 +152,10 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     }, [activeSessionId, localActiveSessionId, localSessions, onSessionsChange, sessions]);
 
     useEffect(() => {
-        if (view !== "chat") return;
+        if (agentMode !== "online" || view !== "chat") return;
         const frame = requestAnimationFrame(() => chatListRef.current?.scrollTo({ top: chatListRef.current.scrollHeight }));
         return () => cancelAnimationFrame(frame);
-    }, [agentBusy, localActiveSessionId, messages, view]);
+    }, [agentBusy, agentMode, localActiveSessionId, messages, view]);
 
     useEffect(() => {
         setRemovedReferenceIds(new Set());
@@ -384,16 +386,30 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
         >
                 <AgentPanelChrome
                     theme={theme}
+                    mode={agentMode}
                     context={contextSummary}
                     referenceCount={selectedReferences.length}
                     confirmTools={confirmTools}
-                    canUndo={canUndoOps}
-                    undoCount={undoOpsCount}
+                    canUndo={agentMode === "online" && canUndoOps}
+                    undoCount={agentMode === "online" ? undoOpsCount : 0}
+                    onModeChange={onAgentModeChange ?? NOOP_AGENT_MODE_CHANGE}
                     onConfirmToolsChange={(confirmTools) => setAgentState({ confirmTools })}
                     onUndo={undoLastOnlineBatch}
                     onCollapse={collapse}
                 />
-                {onlineContent}
+                {agentMode === "local" ? (
+                    <CanvasLocalAgentPanel
+                        embedded
+                        snapshot={snapshot}
+                        canUndoOps={canUndoOps}
+                        undoOpsCount={undoOpsCount}
+                        onApplyOps={onApplyOps}
+                        onUndoOps={onUndoOps}
+                        autoConnect={autoConnectLocal}
+                    />
+                ) : (
+                    onlineContent
+                )}
         </motion.aside>
     );
 }

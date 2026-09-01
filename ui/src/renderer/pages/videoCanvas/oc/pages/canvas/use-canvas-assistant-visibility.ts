@@ -10,12 +10,12 @@ export function useCanvasAssistantVisibility(options?: { initialOpen?: boolean }
     const [assistantClosing, setAssistantClosing] = useState(false);
     const [agentMode, setAgentMode] = useState<CanvasAgentMode>("online");
 
-    const openAgent = useCallback((_mode?: CanvasAgentMode) => {
+    const openAgent = useCallback((mode?: CanvasAgentMode) => {
         if (closeTimerRef.current) {
             clearTimeout(closeTimerRef.current);
             closeTimerRef.current = null;
         }
-        setAgentMode("online");
+        if (mode) setAgentMode(mode);
         setAssistantMounted(true);
         setAssistantClosing(false);
         setAssistantCollapsed(false);
