@@ -1,26 +1,23 @@
 //! Experimental concept-graph feature: decompose a broad learning goal into a
 //! network of LEARNING UNITS linked by task-dependency edges — a complete DAG.
-//! A unit is one human study session of at most 25 minutes: a small organic
-//! combination of atomic concepts, or a single atomic concept rich enough to
-//! fill a session. Unit names are action sentences ("用配方法解一元二次方程"),
-//! never concept nouns or whole sub-domains ("概率基础" is meaningless as a unit).
-//! Units usually fit within 30 minutes (soft cap); genuinely hard single
-//! lessons may go up to 60 (hard cap).
+//! A unit is one human study session, usually within 30 minutes (soft cap); a
+//! genuinely hard single lesson may go up to 60 (hard cap). Unit names are
+//! action sentences ("用配方法解一元二次方程"), never concept nouns or whole
+//! sub-domains ("概率基础" is meaningless as a unit).
 //!
-//! Generation follows the "audit-gate loop" pattern: a small SCOPE call first
-//! resolves what the user's goal description actually covers — a strictly
-//! complete checklist of large-block concepts (reference material only,
-//! never scaffolding; no fixed count, a complex goal gets more blocks), then
-//! ONE full model call enumerates the whole
-//! network in a deliberately symbolic shape (unit name + direct dependency
-//! names + minute budget), the program normalizes it tolerantly (dedupe, drop
-//! unknown references, break cycles), then a deterministic audit grades the
-//! result. Danger-grade findings are fixed by LIGHT local patch calls
-//! (add/link/reverse/split/merge — never a full rewrite), for at most three
-//! rounds; a graph that still fails the gate is rejected with the full report
-//! so a human can repair it. The normalized graph is persisted by
-//! [`crate::service::LearningService`] as JSON files so the UI can revisit it
-//! without regenerating.
+//! Generation runs EXCLUSIVELY through the agent tool loop
+//! ([`ConceptGraphAgentEngine`], implemented in nomifun-ai-agent): a scope
+//! call first resolves the coverage checklist, then the agent builds the
+//! network step by step with the `cg_*` draft tools ([`crate::concept_graph::draft`])
+//! and publishes only through the deterministic audit gate
+//! ([`crate::concept_graph::audit`]). The former one-shot generation +
+//! auto-repair pipeline has been retired; this module keeps the shared
+//! symbolic kernel (normalization, fuzzy reference resolution, cycle
+//! removal, merge), the scope analysis and the audit report renderer the
+//! agent path reuses.
+//!
+//! Published graphs are persisted by [`crate::service::LearningService`] as
+//! JSON files so the UI can revisit them without regenerating.
 
 use std::collections::{HashMap, HashSet};
 
@@ -32,14 +29,12 @@ use crate::completer::LearningCompleter;
 mod audit;
 pub mod draft;
 mod log;
-mod repair;
 
 pub(crate) use audit::{
     common_substring_len, audit_concept_graph, audit_concept_graph_with_scope, BLOCK_MIN_SHARED,
     SEV_DANGER, SEV_INFO, SEV_WARNING,
 };
 pub(crate) use log::ConceptGraphLogger;
-pub(crate) use repair::{auto_repair, repair_graph};
 
 /// One node in the graph — a LEARNING UNIT: one human study session,
 /// usually within 30 minutes (soft cap), at most 60 for a genuinely hard
@@ -190,14 +185,6 @@ pub struct GenerateConceptGraphRequest {
     pub model: Option<String>,
 }
 
-/// Repair request: which finding kinds the model should address. An empty
-/// list means "fix everything the audit found".
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RepairConceptGraphRequest {
-    #[serde(default)]
-    pub kinds: Vec<String>,
-}
-
 /// Tolerate `"min": "15"` (or `null`/absence/non-numeric) where the shape
 /// asks for a number; an unusable value becomes `None` rather than failing
 /// the whole reply.
@@ -218,18 +205,6 @@ where
     })
 }
 
-/// The audit gate gives the model at most this many repair rounds after the
-/// first full generation call (total model calls = MAX_REPAIR_ROUNDS + 1;
-/// every round after the first is a LIGHT patch call, never a full rewrite).
-pub(crate) const MAX_REPAIR_ROUNDS: usize = 3;
-
-/// One generation call writes the WHOLE network (30-60 learning units plus
-/// their dependency names) in a single reply — far heavier than a
-/// course-stage call. Patch calls in the repair loop are much lighter and
-/// get a shorter bound. The course-generation ceiling of 180s is too tight
-/// for the full call, so concept graphs get their own bound.
-const CONCEPT_GRAPH_CALL_TIMEOUT_SECS: u64 = 600;
-
 // ── Raw model output types ────────────────────────────────────────────────
 
 /// Raw per-unit model output — deliberately symbolic and minimal, the same
@@ -247,16 +222,6 @@ pub(crate) struct RawConcept {
     /// Estimated study minutes; tolerated as a number or a digit string.
     #[serde(default, deserialize_with = "de_min")]
     pub min: Option<u16>,
-}
-
-/// The whole generation reply: one flat concept list. No milestones, no
-/// groups, no anchors — the graph itself is the deliverable. `concepts` is
-/// REQUIRED (no default) so a bare array of unit objects — a shape models
-/// sometimes emit instead of the wrapper — fails the object parse and falls
-/// through to the array fallback instead of silently yielding an empty graph.
-#[derive(Debug, Deserialize)]
-pub(crate) struct RawGraph {
-    pub concepts: Vec<RawConcept>,
 }
 
 /// Tolerate `"pre": "single name"` (or `null`/absence) where the shape asks
@@ -602,60 +567,33 @@ pub(crate) fn merge_batch(graph: &ConceptGraphData, batch: &NormalizedBatch) -> 
     )
 }
 
-// ── Generation prompt ──────────────────────────────────────────────────────
-
-/// Generation prompt: one call, one flat list of symbolic LEARNING UNIT
-/// entries — the same shape as a hand-maintained YAML prerequisite graph,
-/// plus a minute budget per unit. The prompt carries the non-negotiable
-/// semantic contracts (prerequisite sufficiency, real entry points only,
-/// convergence between sub-domains); the audit gate loop enforces the
-/// structural side (coverage, connectivity, multi-parent share, workload
-/// cap).
-const GENERATE_SYSTEM: &str = r#"You decompose a broad learning goal into a complete network of LEARNING UNITS linked by task-dependency edges.
-A learning unit is ONE human study session, usually within 30 minutes (the soft cap): a small organic combination of simple atomic concepts, or a single atomic concept rich enough to fill a session on its own. A genuinely hard single lesson may go up to 60 minutes (the hard cap). It is NEVER a whole sub-domain — "概率基础" is a whole small field and meaningless as a unit.
-Reply with ONLY one JSON object matching this shape:
-{
-  "concepts": [
-    {"name": "单元名", "pre": ["前置单元名"], "min": 15}
-  ]
-}
-Rules:
-- "name" is an ACTION describing what the learner does in this unit — the knowledge point is the core and the sentence form serves it, never the reverse. Varied good names: "用配方法解一元二次方程", "理解导数的极限定义", "证明可导函数必连续", "比较二分法与牛顿法的收敛速度", "构造素数筛", "推导等比数列求和公式", "辨析充分条件与必要条件". Never the bare concept noun "一元二次方程求解". Start with an action verb (解/求/证明/推导/比较/判定/构造/区分/计算/应用/理解/辨析/建立/验证...). Do NOT reuse one sentence template across units (e.g. every name starting with "用"): vary the verb and the sentence structure so each name carries its knowledge point distinctly.
-- "min" is the estimated study time in minutes, in 5-minute steps: keep units within 5-30 whenever possible (the soft cap); a genuinely hard single lesson may go up to 60 (the hard cap). The 60-minute budget is a HARD CAP: less is always fine, more is not.
-- SUFFICIENCY CONTRACT: "pre" is the COMPLETE set of direct prerequisites. The invariant: a learner who has finished EXACTLY the units listed in "pre" (and nothing else) can fully understand this unit without any other background. For every unit ask "what must the learner already master to understand this?" and list EVERY such unit — omitting one makes the unit incomprehensible at its position in the path. Do NOT trim "pre" to shorten the reply.
-- "pre": [] is allowed ONLY for units a complete beginner understands from daily intuition or school arithmetic (数数、四则运算、直观图形). Anything above that level — limits, integrals, proofs, vectors, equations — MUST list its real prerequisites. A unit about calculus with an empty "pre" is a hard error: it would strand the learner mid-path.
-- CONVERGENCE IS EXPECTED: real knowledge is a DAG, not a chain. Units where two earlier threads meet legitimately depend on 2-4 prerequisites: 解析几何 depends on BOTH geometry AND equations; 微积分 depends on BOTH functions AND limits; 数列 depends on BOTH functions AND arithmetic patterns. Produce such converging units deliberately — a network where nearly every unit has exactly one prerequisite is a forest of chains, not a graph.
-- SPIRAL LEARNING: the same topic legitimately appears at several depths with different viewpoints — "用配方法解一元二次方程" then "用求根公式解一元二次方程" then "用判别式判定一元二次方程根的性质". Every unit name must make its depth and viewpoint clear; never emit two units with the same name, and never emit two nearly identical units.
-- Produce a COMPLETE network covering the WHOLE path from the starting point to the goal: every significant sub-domain of the topic must be decomposed. Missing sub-domains are the worst failure — decompose generously. The unit count follows the goal's true breadth: a whole field like "数学零基础到本科结业" needs well over 60 units; never stop early just to finish quickly.
-- If the user message includes a reference scope analysis, treat it as the COVERAGE CHECKLIST: every listed block must be realized as one or more units (reworded into action sentences as needed).
-- Every name in any "pre" list MUST also appear as a "name" in this same reply (self-contained reference space). Reuse the exact name string — no aliases, no paraphrases.
-- The network must be ONE connected structure: every unit is reachable from the true entry units along dependency chains. Sub-domains MUST cross-link where they genuinely depend on each other — geometry and algebra meet in 解析几何; functions and limits meet in 微积分. Two sub-domains forming two separate disconnected trees is a hard failure.
-- No star-shaped hubs: no single unit should carry more than ~12 direct dependents — spread dependencies across intermediate units instead.
-- Write names in the language of the learning goal.
-- Output JSON only, without Markdown fences or commentary."#;
-
 // ── Scope analysis (pre-generation reference) ──────────────────────────────
 
 /// Scope call: ONE light call that resolves what the goal description
-/// actually covers before the heavy generation call. The output is REFERENCE
-/// material only — a STRICTLY COMPLETE list of large-block concepts that a
-/// complete network must cover (no fixed count: a complex goal gets more
-/// blocks, a simple goal fewer); the generation stage decomposes each block
-/// into learning units on its own, and the audit re-checks every block
-/// against the final graph. Nothing else (unit-level naming, expected size)
-/// is the scope's job — the audit owns completeness. Failure degrades to
-/// no-scope generation (the pre-scope behavior), never to a hard error.
-const SCOPE_SYSTEM: &str = r#"You resolve the exact coverage of a broad learning goal BEFORE it is decomposed into units.
-Reply with ONLY one JSON object matching this shape:
+/// actually covers before the agent builds the network. The output is
+/// REFERENCE material only — a STRICTLY COMPLETE list of large-block concepts
+/// that a complete network must cover (no fixed count: a complex goal gets
+/// more blocks, a simple goal fewer); the agent decomposes each block into
+/// learning units on its own, and the audit re-checks every block against
+/// the final graph. Nothing else (unit-level naming, expected size) is the
+/// scope's job — the audit owns completeness. Failure degrades to a
+/// scope-free draft, never to a hard error.
+///
+/// The prompt is maintained in Chinese, in lockstep with the agent-loop
+/// prompts in nomifun-ai-agent (`GENERATE_AGENT_SYSTEM` / `REPAIR_AGENT_SYSTEM`)
+/// — the Chinese wording is the single source of truth for the semantic
+/// contracts; do not fork new English variants.
+const SCOPE_SYSTEM: &str = r#"你负责在学习目标被拆解为学习单元网络之前，先厘清这个目标到底覆盖什么。
+只回复一个 JSON 对象，形状如下：
 {
-  "scope": "one sentence delimiting what this goal covers and where it starts",
-  "blocks": ["骨干概念一", "骨干概念二"]
+  "scope": "一句话界定该目标覆盖什么、从哪里开始",
+  "blocks": ["大块概念一", "大块概念二"]
 }
-Rules:
-- "scope": a crisp one-sentence boundary of the goal — the starting point, the target level, and the subject breadth. When the learner's baseline is unclear and no explicit starting point is requested, default to absolute zero: assume the learner has NO prior knowledge or skills in the subject, and set the starting point accordingly.
-- "blocks": the large-block concepts the goal genuinely covers, ordered from foundational to advanced, together spanning the WHOLE path from the starting point to the goal. This is a strictly complete checklist — every significant block a complete curriculum would include; under-listing is the worst failure, so when in doubt, split a block rather than merge two. No fixed count: a complex goal gets more blocks, a simple goal fewer.
-- Write names in the language of the learning goal.
-- Output JSON only, without Markdown fences or commentary."#;
+规则：
+- "scope"：一句话划清目标的边界——起点、要达到的水平、主题广度。当学习者基线不明且没有明确要求起点时，默认从零开始：假定学习者对该主题没有任何先备知识与技能，并据此设定起点。
+- "blocks"：该目标真正覆盖的大块概念，按从基础到高级排序，合起来必须铺满从起点到目标的整条路径。这是严格完备的覆盖清单——一个完整课程该包含的大块概念都要列入；漏列是最严重的失败，拿不准时把一个大块拆成两个，也不要把两个合并成一个。数量不固定：复杂的目标多列，简单的目标少列。
+- 用学习目标的语言书写。
+- 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
 
 /// Resolved scope reference fed into the generation call. `blocks` is
 /// deliberately coarse: large-block concepts the generator decomposes into
@@ -668,34 +606,22 @@ pub(crate) struct ScopeAnalysis {
 
 /// Raw scope reply — same tolerant parsing philosophy as [`RawConcept`]: a
 /// bare string where a list is expected, or a missing field, degrades
-/// instead of failing the whole analysis. `blocks` is the only field the
-/// current prompt asks for; legacy two-list replies (subdomains + backbone)
-/// are still accepted and merged into one checklist.
+/// instead of failing the whole analysis.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct RawScope {
     #[serde(default)]
     pub scope: String,
     #[serde(default, deserialize_with = "de_pre_list")]
     pub blocks: Vec<String>,
-    #[serde(default, deserialize_with = "de_pre_list")]
-    pub subdomains: Vec<String>,
-    #[serde(default, deserialize_with = "de_pre_list")]
-    pub backbone: Vec<String>,
 }
 
-/// Parse the scope reply; `None` means "no usable scope" and degrades to
-/// scope-free generation.
+/// Parse the scope reply; `None` means "no usable scope" and degrades to a
+/// scope-free draft.
 fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
     let parsed = crate::generation::parse_json_object::<RawScope>(raw).ok()?;
-    let mut blocks = parsed.blocks;
-    if blocks.is_empty() {
-        // Legacy two-list replies merge into the single block checklist.
-        blocks.extend(parsed.subdomains.into_iter());
-        blocks.extend(parsed.backbone.into_iter());
-    }
     Some(ScopeAnalysis {
         scope: parsed.scope.trim().to_owned(),
-        blocks,
+        blocks: parsed.blocks,
     })
 }
 
@@ -757,197 +683,9 @@ pub(crate) async fn analyze_scope(
     }
 }
 
-// ── Audit-gate generation loop ─────────────────────────────────────────────
-
-/// Full first generation + light local repair rounds: ONE full call
-/// enumerates the whole network (enumeration is the model's strength); if
-/// danger-grade findings remain, [`auto_repair`] issues LIGHT patch calls
-/// (add/link/reverse/split/merge) against the findings — never a full rewrite,
-/// which is where attention decays on long outputs. At most
-/// [`MAX_REPAIR_ROUNDS`] repair rounds; a graph that still fails the gate is
-/// rejected with the full report so a human can repair it. `log` receives
-/// the full model replies and every stage result as JSON-lines events for
-/// offline diagnosis (see [`ConceptGraphLogger`]); `None` disables logging.
-pub(crate) async fn generate_concept_graph(
-    completer: &dyn LearningCompleter,
-    model_override: Option<(&nomifun_common::ProviderId, &str)>,
-    topic: &str,
-    log: Option<&ConceptGraphLogger>,
-) -> Result<ConceptGraphData, AppError> {
-    if let Some(log) = log {
-        log.log(
-            "session_start",
-            serde_json::json!({
-                "topic": topic,
-                "provider_id": model_override.map(|(id, _)| id.as_str()),
-                "model": model_override.map(|(_, model)| model),
-                "max_tokens": crate::generation::CONCEPT_GRAPH_MAX_TOKENS,
-                "timeout_secs": CONCEPT_GRAPH_CALL_TIMEOUT_SECS,
-            }),
-        );
-    }
-    // Scope first: resolve what the goal covers, feed it to the generation
-    // call as a coverage checklist. Best-effort — failure degrades to
-    // scope-free generation.
-    let scope = analyze_scope(completer, model_override, topic, log).await;
-    let user = build_generate_user(topic, scope.as_ref());
-    let started = std::time::Instant::now();
-    let raw = crate::generation::complete_with_timeout(
-        completer,
-        model_override,
-        GENERATE_SYSTEM,
-        &user,
-        crate::generation::CONCEPT_GRAPH_MAX_TOKENS,
-        std::time::Duration::from_secs(CONCEPT_GRAPH_CALL_TIMEOUT_SECS),
-    )
-    .await?;
-    if let Some(log) = log {
-        log.log(
-            "generate_reply",
-            serde_json::json!({
-                "duration_ms": started.elapsed().as_millis(),
-                "reply": &raw,
-                "shape": log::reply_shape(&raw),
-            }),
-        );
-    }
-    let parsed = match parse_graph_reply(&raw) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            if let Some(log) = log {
-                log.log("parse_failed", serde_json::json!({ "error": error }));
-            }
-            return Err(AppError::UnprocessableEntity(format!(
-                "concept graph reply could not be parsed as JSON: {error}"
-            )));
-        }
-    };
-    if let Some(log) = log {
-        log.log("parsed", serde_json::json!({ "concepts": parsed.concepts.len() }));
-    }
-    let (mut graph, fuzzy_resolved) = assemble_graph(&parsed);
-    // The scope content checklist (large-block concepts) rejoins the audit
-    // as a coverage contract of its own — so skipped blocks are caught and
-    // repairable by name.
-    graph.audit.findings = audit_concept_graph_with_scope(
-        &graph,
-        scope.as_ref().map(|scope| scope.blocks.as_slice()),
-    );
-    if let Some(log) = log {
-        // Near-miss references that were resolved instead of dropped are a
-        // diagnosis signal on their own: each one was a would-be orphan.
-        if !fuzzy_resolved.is_empty() {
-            log.log(
-                "fuzzy_resolved",
-                serde_json::json!({
-                    "count": fuzzy_resolved.len(),
-                    "pairs": &fuzzy_resolved,
-                }),
-            );
-        }
-        log.log(
-            "audit",
-            serde_json::json!({
-                "nodes": graph.nodes.len(),
-                "edges": graph.edges.len(),
-                "dropped_refs": graph.audit.ref_drop_count,
-                "findings": &graph.audit.findings,
-            }),
-        );
-    }
-
-    for _ in 0..MAX_REPAIR_ROUNDS {
-        if graph
-            .audit
-            .findings
-            .iter()
-            .all(|finding| finding.severity != SEV_DANGER)
-        {
-            if let Some(log) = log {
-                log.log(
-                    "session_end",
-                    serde_json::json!({
-                        "ok": true,
-                        "nodes": graph.nodes.len(),
-                        "edges": graph.edges.len(),
-                    }),
-                );
-            }
-            return Ok(graph);
-        }
-        match auto_repair(topic, &graph, completer, model_override, scope.as_ref(), log).await {
-            Ok(Some(fixed)) => graph = fixed,
-            // Repair made no progress (or the model produced nothing usable):
-            // stop patching and report the surviving failures honestly.
-            Ok(None) => break,
-            Err(error) => return Err(error),
-        }
-    }
-    let report = format_audit_report(&graph);
-    if let Some(log) = log {
-        log.log("session_end", serde_json::json!({ "ok": false, "error": report }));
-    }
-    Err(AppError::UnprocessableEntity(format!(
-        "concept graph still fails the audit gate after {} rounds: {}",
-        MAX_REPAIR_ROUNDS + 1,
-        report
-    )))
-}
-
-/// Normalize one flat concept list into a graph, breaking cycles and folding
-/// the drop statistics into the audit shell. Also returns the near-miss
-/// references that were fuzzy-resolved instead of dropped — each one is a
-/// would-be orphan, worth a diagnosis-log line.
-fn assemble_graph(raw: &RawGraph) -> (ConceptGraphData, Vec<(String, String)>) {
-    let batch = normalize_batch(&raw.concepts, &HashSet::new());
-    let graph = finalize_graph(batch.nodes, batch.edges, batch.dropped, batch.raw_refs);
-    (graph, batch.fuzzy_resolved)
-}
-
-/// Parse the generation reply: the documented `{"concepts": [...]}` object
-/// first; a model that answered with the bare concepts array (with or without
-/// code fences) is tolerated as a fallback. When both shapes fail, the object
-/// error plus the reply diagnostic is returned so the failure is
-/// self-explanatory.
-fn parse_graph_reply(raw: &str) -> Result<RawGraph, String> {
-    match crate::generation::parse_json_object::<RawGraph>(raw) {
-        Ok(graph) => Ok(graph),
-        Err(object_error) => {
-            let stripped = crate::generation::strip_code_fences(raw);
-            match serde_json::from_str::<Vec<RawConcept>>(&stripped) {
-                Ok(concepts) => Ok(RawGraph { concepts }),
-                Err(array_error) => Err(format!(
-                    "{object_error}; bare array fallback failed: {array_error}"
-                )),
-            }
-        }
-    }
-}
-
-/// The generation call only ever asks for the whole network once. A resolved
-/// scope (when present) is embedded as the coverage checklist: large-block
-/// concepts that must all be covered — the model still produces the single
-/// flat list and decomposes each block into units itself.
-fn build_generate_user(topic: &str, scope: Option<&ScopeAnalysis>) -> String {
-    let Some(scope) = scope else {
-        return format!("Learning goal: {topic}");
-    };
-    let mut parts = vec![format!("Learning goal: {topic}")];
-    if !scope.scope.is_empty() {
-        parts.push(format!("范围界定：{}", scope.scope));
-    }
-    if !scope.blocks.is_empty() {
-        parts.push(format!(
-            "必须覆盖的大块概念（严格完备清单，每个需落实为一个或多个单元，可改写为动作句）：{}",
-            scope.blocks.join("；")
-        ));
-    }
-    parts.join("\n")
-}
-
 /// Render the audit state as a model-readable report: size, dropped
 /// references with their names, and every finding with its evidence.
-/// Also used by the repair stages, so it is crate-visible.
+/// The draft kernel's `audit_report` builds on it, so it is crate-visible.
 pub(crate) fn format_audit_report(graph: &ConceptGraphData) -> String {
     let mut lines = vec![format!(
         "Generated graph: {} concepts, {} edges",
@@ -1119,24 +857,50 @@ mod tests {
     }
 
     #[test]
-    fn assemble_graph_breaks_cycles_and_counts_drops() {
+    fn finalize_graph_breaks_cycles_and_counts_drops() {
         // a -> b -> a is a cycle; the back edge is dropped and counted.
-        let raw = RawGraph {
-            concepts: vec![concept("a", &["b"]), concept("b", &["a"])],
-        };
-        let (graph, fuzzy) = assemble_graph(&raw);
-        assert!(fuzzy.is_empty());
+        let graph = finalize_graph(
+            vec![unit("a"), unit("b")],
+            vec![ConceptGraphEdge { from: "a".into(), to: "b".into(), reason: None },
+                 ConceptGraphEdge { from: "b".into(), to: "a".into(), reason: None }],
+            Vec::new(),
+            2,
+        );
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.edges.len(), 1, "one of the two cycle edges is dropped");
         assert_eq!(graph.audit.ref_drop_count, 1);
         assert_eq!(graph.audit.dropped_edges[0].reason, "cycle");
     }
 
+    fn unit(name: &str) -> ConceptGraphNode {
+        ConceptGraphNode {
+            id: name.to_owned(),
+            title: name.to_owned(),
+            min: None,
+            group: None,
+            necessity: None,
+            is_anchor: None,
+        }
+    }
+
+    fn graph_of(nodes: &[&str], edges: &[(&str, &str)]) -> ConceptGraphData {
+        ConceptGraphData {
+            nodes: nodes.iter().map(|name| unit(name)).collect(),
+            edges: edges
+                .iter()
+                .map(|(from, to)| ConceptGraphEdge {
+                    from: (*from).to_owned(),
+                    to: (*to).to_owned(),
+                    reason: None,
+                })
+                .collect(),
+            audit: ConceptGraphAudit::default(),
+        }
+    }
+
     #[test]
     fn merge_batch_keeps_existing_keys_and_recomputes_audit() {
-        let (graph, _) = assemble_graph(&RawGraph {
-            concepts: vec![concept("a", &[]), concept("b", &["a"])],
-        });
+        let graph = graph_of(&["a", "b"], &[("a", "b")]);
         let batch = normalize_batch(&[concept("a", &[]), concept("c", &["a"])], &HashSet::new());
         let merged = merge_batch(&graph, &batch);
         assert_eq!(merged.nodes.len(), 3);
@@ -1149,11 +913,15 @@ mod tests {
         // b's prerequisite "ghost" is dropped: b is an orphan candidate the
         // repair is supposed to reconnect. A patch that adds c (no drops of
         // its own) must NOT wipe that evidence — the re-audit keys on it.
-        let (graph, _) = assemble_graph(&RawGraph {
-            concepts: vec![concept("a", &[]), concept("b", &["ghost"])],
-        });
-        assert_eq!(graph.audit.ref_drop_count, 1);
-        assert_eq!(graph.audit.raw_ref_count, 1);
+        let mut graph = graph_of(&["a", "b"], &[("a", "b")]);
+        graph.audit.dropped_edges = vec![DroppedEdge {
+            from: "ghost".into(),
+            to: "b".into(),
+            reason: "unknown reference".into(),
+        }];
+        graph.audit.ref_drop_count = 1;
+        graph.audit.raw_ref_count = 1;
+        graph.audit.ref_drop_rate = 1.0;
         let allowed: HashSet<String> = ["a".to_owned(), "b".to_owned()]
             .into_iter()
             .collect();
@@ -1191,39 +959,6 @@ mod tests {
         assert_eq!(raw.min, None);
     }
 
-    #[test]
-    fn parse_graph_reply_accepts_the_documented_object_shape() {
-        let raw = r#"{"concepts": [{"name": "A", "pre": [], "min": 10}]}"#;
-        let parsed = parse_graph_reply(raw).unwrap();
-        assert_eq!(parsed.concepts.len(), 1);
-        assert_eq!(parsed.concepts[0].min, Some(10));
-    }
-
-    #[test]
-    fn parse_graph_reply_accepts_a_bare_concept_array() {
-        let raw = r#"[{"name": "A", "pre": [], "min": 10}, {"name": "B", "pre": ["A"]}]"#;
-        let parsed = parse_graph_reply(raw).unwrap();
-        assert_eq!(parsed.concepts.len(), 2);
-        assert_eq!(parsed.concepts[1].pre, vec!["A".to_owned()]);
-    }
-
-    #[test]
-    fn parse_graph_reply_accepts_a_fenced_bare_concept_array() {
-        let raw = "```json\n[{\"name\": \"A\", \"min\": 5}]\n```";
-        let parsed = parse_graph_reply(raw).unwrap();
-        assert_eq!(parsed.concepts.len(), 1);
-        assert_eq!(parsed.concepts[0].min, Some(5));
-    }
-
-    #[test]
-    fn parse_graph_reply_reports_both_shapes_failing_with_diagnostics() {
-        let err =
-            parse_graph_reply("learning plan: 1. 学配方法 2. 学求根公式 3. 学判别式").unwrap_err();
-        assert!(err.contains("no complete JSON object found"), "{err}");
-        assert!(err.contains("head:"), "{err}");
-        assert!(err.contains("bare array fallback failed"), "{err}");
-    }
-
     // ── scope analysis ─────────────────────────────────────────────────────
 
     #[test]
@@ -1241,34 +976,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_scope_reply_tolerates_string_lists_missing_fields_and_legacy_two_lists() {
+    fn parse_scope_reply_tolerates_string_lists_and_missing_fields() {
         let raw = r#"{"scope":"x","blocks":"算术"}"#;
         let scope = parse_scope_reply(raw).unwrap();
         assert_eq!(scope.blocks, vec!["算术"]);
-        // Legacy two-list replies (subdomains + backbone) merge into blocks.
-        let legacy =
-            parse_scope_reply(r#"{"scope":"x","subdomains":["算术"],"backbone":["配方法"]}"#)
-                .unwrap();
-        assert_eq!(legacy.blocks, vec!["算术", "配方法"]);
-    }
-
-    #[test]
-    fn build_generate_user_without_scope_stays_minimal() {
-        assert_eq!(build_generate_user("数学", None), "Learning goal: 数学");
-    }
-
-    #[test]
-    fn build_generate_user_embeds_scope_as_coverage_checklist() {
-        let scope = ScopeAnalysis {
-            scope: "零基础到本科结业".into(),
-            blocks: vec!["算术".into(), "代数".into(), "配方法".into()],
-        };
-        let user = build_generate_user("数学-零基础到本科结业", Some(&scope));
-        assert!(user.contains("范围界定：零基础到本科结业"), "{user}");
-        assert!(user.contains("必须覆盖的大块概念"), "{user}");
-        assert!(user.contains("算术；代数；配方法"), "{user}");
-        assert!(!user.contains("预期单元规模"), "{user}");
-        assert!(user.starts_with("Learning goal: 数学-零基础到本科结业"), "{user}");
     }
 
     #[test]

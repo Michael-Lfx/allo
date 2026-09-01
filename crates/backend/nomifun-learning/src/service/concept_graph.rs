@@ -1,5 +1,10 @@
 use super::*;
 
+/// Drafts older than this are evicted: an agent session never outlives the
+/// generation timeout by much, so anything older is an abandoned draft
+/// (crashed or timed-out session, client gave up) leaking memory.
+const CONCEPT_GRAPH_DRAFT_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
 impl LearningService {
 
     // ── Experimental learning-unit network (rough file persistence) ─────
@@ -26,10 +31,11 @@ impl LearningService {
     }
 
     /// Decompose a learning goal into a learning-unit network and persist it
-    /// as JSON. When the agent engine is injected, the two-loop agent
-    /// pipeline owns the whole lifecycle (draft tools + audit-gated
-    /// publish); otherwise the legacy one-shot generation runs (fallback
-    /// for tests and direct calls).
+    /// as JSON. The agent engine is the SINGLE generation path: it owns the
+    /// whole lifecycle (draft tools + audit-gated publish). A per-user slot
+    /// guard serializes generations — the agent loop runs for minutes, and
+    /// parallel runs would race the shared draft store, so a duplicate
+    /// submit fails fast with a conflict instead.
     pub async fn generate_concept_graph(
         &self,
         user_id: &UserId,
@@ -45,56 +51,22 @@ impl LearningService {
             return Err(AppError::BadRequest("concept graph topic is too long".into()));
         }
         let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+        let _slot = self.acquire_generation_slot(user_id, "concept-graph".to_owned())?;
         let engine = self
             .concept_graph_engine
             .read()
             .map_err(|_| AppError::Internal("concept graph engine lock poisoned".into()))?
             .clone();
-        if let Some(engine) = engine {
-            return engine
-                .generate(
-                    user_id,
-                    topic,
-                    model_override.map(|(provider, model)| (provider.as_str(), model)),
-                )
-                .await;
-        }
-        let completer = self
-            .course_completer
-            .read()
-            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
-            .clone()
-            .ok_or_else(|| {
-                AppError::Conflict("concept graph generation is not configured".into())
-            })?;
-        let dir = self.concept_graph_dir()?;
-        tokio::fs::create_dir_all(&dir).await.map_err(|error| {
-            AppError::Internal(format!("failed to create concept graph dir: {error}"))
+        let engine = engine.ok_or_else(|| {
+            AppError::Conflict("concept graph generation is not configured".into())
         })?;
-        let session = LearningConceptGraphId::new().as_str().to_owned();
-        let logger = crate::concept_graph::ConceptGraphLogger::new(&dir, &session);
-        let graph = crate::concept_graph::generate_concept_graph(
-            completer.as_ref(),
-            model_override,
-            topic,
-            Some(&logger),
-        )
-        .await?;
-        let record = crate::concept_graph::ConceptGraphRecord {
-            id: LearningConceptGraphId::new().as_str().to_owned(),
-            user_id: user_id.as_str().to_owned(),
-            topic: topic.to_owned(),
-            graph,
-            created_at: now_ms(),
-        };
-        let path = dir.join(format!("{}.json", record.id));
-        let json = serde_json::to_vec_pretty(&record).map_err(|error| {
-            AppError::Internal(format!("failed to serialize concept graph: {error}"))
-        })?;
-        tokio::fs::write(&path, json).await.map_err(|error| {
-            AppError::Internal(format!("failed to store concept graph: {error}"))
-        })?;
-        Ok(record)
+        engine
+            .generate(
+                user_id,
+                topic,
+                model_override.map(|(provider, model)| (provider.as_str(), model)),
+            )
+            .await
     }
 
     pub async fn list_concept_graphs(
@@ -167,51 +139,22 @@ impl LearningService {
             .map_err(|error| AppError::Internal(format!("failed to delete concept graph: {error}")))
     }
 
-    /// Manually triggered repair: the stored audit report is the decision
-    /// basis, the model applies local patch operations (add/reverse/
-    /// split/merge), and the merged graph is re-audited and persisted over
-    /// the same record.
-    pub async fn repair_concept_graph(
-        &self,
-        user_id: &UserId,
-        id: &LearningConceptGraphId,
-        request: crate::concept_graph::RepairConceptGraphRequest,
-    ) -> Result<crate::concept_graph::ConceptGraphRecord, AppError> {
-        let record = self.get_concept_graph(user_id, id).await?;
-        let completer = self
-            .course_completer
-            .read()
-            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
-            .clone()
-            .ok_or_else(|| {
-                AppError::Conflict("concept graph generation is not configured".into())
-            })?;
-        let graph = crate::concept_graph::repair_graph(completer.as_ref(), None, &record, &request)
-            .await?;
-        let mut updated = record;
-        updated.graph = graph;
-        let path = self.concept_graph_path(id)?;
-        let json = serde_json::to_vec_pretty(&updated).map_err(|error| {
-            AppError::Internal(format!("failed to serialize concept graph: {error}"))
-        })?;
-        tokio::fs::write(&path, json).await.map_err(|error| {
-            AppError::Internal(format!("failed to store concept graph: {error}"))
-        })?;
-        Ok(updated)
-    }
-
     // ── Draft store (the agent tool set's backing) ───────────────────────
     // In-memory only; `finish_concept_graph_draft` is the single publish
     // path to the JSON files above, gated by the deterministic audit.
 
     /// Snapshot one draft (drafts are small; cloning under the read lock is
-    /// cheaper than holding the lock across any mutation).
+    /// cheaper than holding the lock across any mutation). An entry older
+    /// than [`CONCEPT_GRAPH_DRAFT_TTL`] is reported as not found — only an
+    /// abandoned draft can age out, and every active tool call refreshes the
+    /// timestamp.
     fn draft(&self, draft_id: &str) -> Result<DraftGraph, AppError> {
         self.concept_graph_drafts
             .read()
             .map_err(|_| AppError::Internal("concept graph draft lock poisoned".into()))?
             .get(draft_id)
-            .cloned()
+            .filter(|(_, created)| created.elapsed() < CONCEPT_GRAPH_DRAFT_TTL)
+            .map(|(graph, _)| graph.clone())
             .ok_or_else(|| AppError::NotFound(format!("concept graph draft {draft_id}")))
     }
 
@@ -257,10 +200,15 @@ impl LearningService {
         let draft = DraftGraph::new(topic.to_owned(), scope);
         let draft_id = LearningConceptGraphId::new().as_str().to_owned();
         let view = draft.view(&draft_id);
-        self.concept_graph_drafts
+        let now = std::time::Instant::now();
+        let mut drafts = self
+            .concept_graph_drafts
             .write()
-            .map_err(|_| AppError::Internal("concept graph draft lock poisoned".into()))?
-            .insert(draft_id, draft);
+            .map_err(|_| AppError::Internal("concept graph draft lock poisoned".into()))?;
+        // Lazy TTL sweep: abandoned drafts (crashed or timed-out sessions)
+        // must not accumulate in memory.
+        drafts.retain(|_, (_, created)| now.duration_since(*created) < CONCEPT_GRAPH_DRAFT_TTL);
+        drafts.insert(draft_id, (draft, now));
         Ok(view)
     }
 
@@ -273,10 +221,11 @@ impl LearningService {
     ) -> Result<crate::concept_graph::draft::PatchReport, AppError> {
         let mut draft = self.draft(draft_id)?;
         let report = draft.apply_ops(ops);
+        // Refresh the TTL timestamp: an active patch session never ages out.
         self.concept_graph_drafts
             .write()
             .map_err(|_| AppError::Internal("concept graph draft lock poisoned".into()))?
-            .insert(draft_id.to_owned(), draft);
+            .insert(draft_id.to_owned(), (draft, std::time::Instant::now()));
         Ok(report)
     }
 
