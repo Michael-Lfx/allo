@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.8 - 2026-09-01
+
+- Canvas Agent restores the local coding switch and no longer hits a max-update-depth loop on prompt resize.
+- Keep-awake settings stay consistent. Feedback and support chat modals are more stable.
+- First-party telemetry reports video-generation events and film terminal status.
+
 ## v1.1.7 - 2026-09-01
 
 - Canvas Agent starts faster, persists chats, and uses a simpler panel.
