@@ -109,6 +109,13 @@ export async function submitConversationErrorReport(
   }
 
   const content = draft.description.trim() || deps.defaultContent;
+  const pendingClientMsgIds: string[] = [];
+  const completedClientMsgIds = new Set<string>();
+  const markUnresolvedPending = () => {
+    for (const clientMsgId of pendingClientMsgIds) {
+      if (!completedClientMsgIds.has(clientMsgId)) deps.markPendingFailed(clientMsgId);
+    }
+  };
 
   try {
     const [packed, device] = await Promise.all([
@@ -145,7 +152,10 @@ export async function submitConversationErrorReport(
     );
 
     for (const entry of entries) {
-      if (!deps.isCurrent()) return { status: 'preparation-failed' };
+      if (!deps.isCurrent()) {
+        markUnresolvedPending();
+        return { status: 'preparation-failed' };
+      }
       deps.addPending(
         entry.msgType === 'image'
           ? createPendingMessage(entry.clientMsgId, entry.content, entry.createdAt, 'sending', undefined, {
@@ -155,10 +165,14 @@ export async function submitConversationErrorReport(
             })
           : createPendingMessage(entry.clientMsgId, entry.content, entry.createdAt, 'sending', entry.logPayload)
       );
+      pendingClientMsgIds.push(entry.clientMsgId);
     }
 
     const [reportEntry, ...screenshotEntries] = entries;
-    if (!reportEntry || !deps.isCurrent()) return { status: 'preparation-failed' };
+    if (!reportEntry || !deps.isCurrent()) {
+      markUnresolvedPending();
+      return { status: 'preparation-failed' };
+    }
 
     try {
       const sendResult = await deps.send(reportEntry.clientMsgId, reportEntry.content, {
@@ -166,10 +180,20 @@ export async function submitConversationErrorReport(
         logPayload: reportEntry.logPayload,
         shouldContinue: deps.isCurrent,
       });
-      if (!sendResult.applied) return { status: 'stale' };
-      if (!deps.isCurrent()) return { status: 'preparation-failed' };
+      if (!sendResult.applied) {
+        markUnresolvedPending();
+        return { status: 'stale' };
+      }
+      completedClientMsgIds.add(reportEntry.clientMsgId);
+      if (!deps.isCurrent()) {
+        markUnresolvedPending();
+        return { status: 'preparation-failed' };
+      }
     } catch {
-      if (!deps.isCurrent()) return { status: 'preparation-failed' };
+      if (!deps.isCurrent()) {
+        markUnresolvedPending();
+        return { status: 'preparation-failed' };
+      }
       for (const remaining of screenshotEntries) {
         deps.markPendingFailed(remaining.clientMsgId);
       }
@@ -179,7 +203,10 @@ export async function submitConversationErrorReport(
     for (let index = 0; index < screenshotEntries.length; index += 1) {
       const entry = screenshotEntries[index];
       const screenshot = entry.screenshot;
-      if (!screenshot || !deps.isCurrent()) return { status: 'preparation-failed' };
+      if (!screenshot || !deps.isCurrent()) {
+        markUnresolvedPending();
+        return { status: 'preparation-failed' };
+      }
 
       let payload: ICloudImAttachmentPayload;
       try {
@@ -187,7 +214,10 @@ export async function submitConversationErrorReport(
           file: normalizeSupportImageFile(screenshot.file, screenshot.fileName),
           fileName: screenshot.fileName,
         });
-        if (!deps.isCurrent()) return { status: 'preparation-failed' };
+        if (!deps.isCurrent()) {
+          markUnresolvedPending();
+          return { status: 'preparation-failed' };
+        }
         payload = buildSupportImagePayload(uploaded, {
           fileName: screenshot.fileName,
           contentType: screenshot.file.type,
@@ -219,10 +249,20 @@ export async function submitConversationErrorReport(
           payload,
           shouldContinue: deps.isCurrent,
         });
-        if (!sendResult.applied) return { status: 'stale' };
-        if (!deps.isCurrent()) return { status: 'preparation-failed' };
+        if (!sendResult.applied) {
+          markUnresolvedPending();
+          return { status: 'stale' };
+        }
+        completedClientMsgIds.add(entry.clientMsgId);
+        if (!deps.isCurrent()) {
+          markUnresolvedPending();
+          return { status: 'preparation-failed' };
+        }
       } catch {
-        if (!deps.isCurrent()) return { status: 'preparation-failed' };
+        if (!deps.isCurrent()) {
+          markUnresolvedPending();
+          return { status: 'preparation-failed' };
+        }
         // sendWithClientMsgId owns the current item's failed state; only the
         // messages that were not attempted yet need to be marked here.
         for (const remaining of screenshotEntries.slice(index + 1)) {
@@ -231,9 +271,13 @@ export async function submitConversationErrorReport(
         return { status: 'partial-failure' };
       }
     }
-    if (!deps.isCurrent()) return { status: 'preparation-failed' };
+    if (!deps.isCurrent()) {
+      markUnresolvedPending();
+      return { status: 'preparation-failed' };
+    }
     return { status: 'success' };
   } catch (error) {
+    if (!deps.isCurrent()) markUnresolvedPending();
     if (isAuthExpiredHttpError(error) && deps.isCurrent()) deps.onAuthExpired(error);
     return { status: 'preparation-failed' };
   }

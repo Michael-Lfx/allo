@@ -98,6 +98,7 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
   const stickToBottomRef = useRef(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const loadingOlderRef = useRef(false);
+  const hasMoreOlderRef = useRef(true);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   // 历史消息前插时的锚点：在 DOM 提交后（useLayoutEffect）同步补偿滚动位置，
@@ -136,7 +137,7 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     stickToBottomRef.current = distance < 48;
-    if (el.scrollTop <= 16 && !loadingOlderRef.current) {
+    if (el.scrollTop <= 16 && hasMoreOlderRef.current && !loadingOlderRef.current) {
       loadingOlderRef.current = true;
       prependAnchorRef.current = { prevHeight: el.scrollHeight, prevTop: el.scrollTop };
       setLoadingOlder(true);
@@ -145,10 +146,13 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
           // 没有更早消息时丢弃锚点，防止后续新消息进入时被误补偿。
           if (!loaded) {
             prependAnchorRef.current = null;
+            hasMoreOlderRef.current = false;
           }
         })
         .catch(() => {
           prependAnchorRef.current = null;
+          // A failed request is retryable; only an empty successful page
+          // exhausts the older-message cursor.
         })
         .finally(() => {
           loadingOlderRef.current = false;
@@ -238,6 +242,8 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
             ? getSupportAttachmentImageUrl(item.message.payload)
             : getSupportAttachmentImageUrl(item.payload);
         const imageUrl = localPreviewUrl || remoteImageUrl;
+        const isImageMessage =
+          item.kind === 'pending' ? item.msgType === 'image' : item.message.msgType === 'image';
         // 连续己方消息成组：状态行（发送中/已送达）只挂在每组最后一条；失败始终单独显示。
         const next = messages[index + 1];
         const nextIsUser =
@@ -276,6 +282,12 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
                     }
                   }}
                 />
+              ) : isImageMessage ? (
+                <div className='support-message-list__image-unavailable max-w-[85%] px-12px py-8px rd-12px bg-fill-2 text-t-secondary text-12px leading-18px'>
+                  {t('common.supportChat.imagePreviewUnavailable', {
+                    defaultValue: '图片预览暂不可用',
+                  })}
+                </div>
               ) : null}
               {imageUrl && content ? (
                 <div

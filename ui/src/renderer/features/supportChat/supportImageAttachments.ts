@@ -69,9 +69,7 @@ export function getSupportAttachmentImageUrl(
   payload: ICloudImAttachmentPayload | null | undefined
 ): string | undefined {
   const url = payload?.url?.trim();
-  if (url) return url;
-  const objectKey = payload?.objectKey?.trim();
-  return objectKey || undefined;
+  return url && /^https?:\/\//i.test(url) ? url : undefined;
 }
 
 export function buildSupportAttachmentPayload(

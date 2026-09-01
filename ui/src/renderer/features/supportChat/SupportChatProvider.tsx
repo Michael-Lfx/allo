@@ -543,7 +543,10 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       );
       dispatch({ type: 'pending-added', message: pending });
       const result = await sendWithClientMsgId(clientMsgId, trimmed, { logPayload, shouldContinue });
-      return result.accepted;
+      // A stale operation may have been accepted by the server after this
+      // session was invalidated. Keep the composer draft in that case because
+      // the current surface never applied the result.
+      return result.applied;
     },
     [createSupportSessionGuard, sendWithClientMsgId]
   );
@@ -825,7 +828,11 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
         limit: OLDER_PAGE_MESSAGE_LIMIT,
       });
       if (!shouldContinue()) return false;
-      if (listed.list.length > 0) {
+      const existingSeqs = new Set(
+        current.messages.flatMap((item) => (item.kind === 'server' ? [item.message.seq] : []))
+      );
+      const hasNewMessages = listed.list.some((message) => !existingSeqs.has(message.seq));
+      if (hasNewMessages) {
         dispatch({ type: 'messages-merged', incoming: listed.list });
         return true;
       }
@@ -837,7 +844,9 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       } else {
         dispatch({ type: 'sync-warning', syncWarning: true });
       }
-      return false;
+      // Let the list distinguish a transient request failure from an empty
+      // page. It must remain possible to retry by returning to the top.
+      throw error;
     } finally {
       loadingOlderRef.current = false;
     }
