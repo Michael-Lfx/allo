@@ -18,6 +18,9 @@ const McpHubBody: React.FC<{
   extensionMcpServers: ReturnType<typeof useMcpServers>['extensionMcpServers'];
   saveMcpServers: ReturnType<typeof useMcpServers>['saveMcpServers'];
   setMcpServers: ReturnType<typeof useMcpServers>['setMcpServers'];
+  isMcpServersLoading: ReturnType<typeof useMcpServers>['isMcpServersLoading'];
+  mcpServersLoadFailed: ReturnType<typeof useMcpServers>['mcpServersLoadFailed'];
+  reloadMcpServers: ReturnType<typeof useMcpServers>['reloadMcpServers'];
   addedStateLoading: boolean;
 }> = ({
   panelRef,
@@ -27,6 +30,9 @@ const McpHubBody: React.FC<{
   extensionMcpServers,
   saveMcpServers,
   setMcpServers,
+  isMcpServersLoading,
+  mcpServersLoadFailed,
+  reloadMcpServers,
   addedStateLoading,
 }) => {
   const { view } = useCapabilityHubRoute('mcp');
@@ -42,6 +48,9 @@ const McpHubBody: React.FC<{
         extensionMcpServers={extensionMcpServers}
         saveMcpServers={saveMcpServers}
         setMcpServers={setMcpServers}
+        isMcpServersLoading={isMcpServersLoading}
+        mcpServersLoadFailed={mcpServersLoadFailed}
+        reloadMcpServers={reloadMcpServers}
         hideChrome
         searchQuery={searchQuery}
         showList={view === 'installed'}
@@ -68,6 +77,7 @@ const McpPage: React.FC = () => {
     extensionMcpServers,
     isMcpServersLoading,
     mcpServersLoadFailed,
+    reloadMcpServers,
     saveMcpServers,
     setMcpServers,
   } = useMcpServers();
@@ -86,7 +96,10 @@ const McpPage: React.FC = () => {
         extensionMcpServers={extensionMcpServers}
         saveMcpServers={saveMcpServers}
         setMcpServers={setMcpServers}
-        addedStateLoading={isMcpServersLoading || mcpServersLoadFailed}
+        isMcpServersLoading={isMcpServersLoading}
+        mcpServersLoadFailed={mcpServersLoadFailed}
+        reloadMcpServers={reloadMcpServers}
+        addedStateLoading={isMcpServersLoading}
       />
     </CapabilityHubShell>
   );

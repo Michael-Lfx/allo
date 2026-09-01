@@ -4,6 +4,7 @@
  * Replaces the old source-Tabs + enabled/disabled-section layout.
  */
 import { filterPresetsByTags, type TagFilterState } from './presetUtils';
+import SettingsContentLoading from '@/renderer/components/layout/SettingsContentLoading';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { PresetReference, PresetTag } from '@/common/types/agent/presetTypes';
 import type { PresetListItem } from './types';
@@ -46,6 +47,9 @@ type PresetListPanelProps = {
   hideChrome?: boolean;
   searchQuery?: string;
   onSearchQueryChange?: (value: string) => void;
+  loading?: boolean;
+  error?: boolean;
+  onRetry?: () => void | Promise<void>;
 };
 
 const PresetListPanel: React.FC<PresetListPanelProps> = ({
@@ -67,6 +71,9 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
   hideChrome = false,
   searchQuery: searchQueryProp,
   onSearchQueryChange,
+  loading = false,
+  error = false,
+  onRetry,
 }) => {
   const { t } = useTranslation();
   const layout = useLayoutContext();
@@ -191,7 +198,21 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
         onManageTags={onManageTags}
       />
 
-      {filteredPresets.length > 0 ? (
+      {loading ? (
+        <SettingsContentLoading className='min-h-220px' />
+      ) : error && presets.length === 0 ? (
+        <div
+          className='flex min-h-220px flex-col items-center justify-center gap-10px rd-8px border border-dashed border-arco-2 px-20px py-32px text-center'
+          role='alert'
+        >
+          <div className='text-13px text-t-secondary'>{t('common.failed')}</div>
+          {onRetry ? (
+            <Button type='secondary' size='small' onClick={() => void onRetry()}>
+              {t('common.retry')}
+            </Button>
+          ) : null}
+        </div>
+      ) : filteredPresets.length > 0 ? (
         <div className='grid gap-16px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
           {filteredPresets.map((preset) => (
             <PresetCard

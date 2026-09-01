@@ -54,6 +54,8 @@ type PresetHubBodyProps = {
   onManageTags: () => void;
   loadPresets: ReturnType<typeof usePresetList>['loadPresets'];
   addedStateLoading: boolean;
+  presetsLoading: boolean;
+  presetsLoadError: boolean;
 };
 
 const PresetHubBody: React.FC<PresetHubBodyProps> = ({
@@ -69,6 +71,8 @@ const PresetHubBody: React.FC<PresetHubBodyProps> = ({
   onManageTags,
   loadPresets,
   addedStateLoading,
+  presetsLoading,
+  presetsLoadError,
 }) => {
   const { view } = useCapabilityHubRoute('presets');
   const { searchQuery, setSearchQuery } = useCapabilityHubSearch();
@@ -94,6 +98,9 @@ const PresetHubBody: React.FC<PresetHubBodyProps> = ({
         hideChrome
         searchQuery={searchQuery}
         onSearchQueryChange={setSearchQuery}
+        loading={presetsLoading}
+        error={presetsLoadError}
+        onRetry={loadPresets}
       />
     );
   }
@@ -227,6 +234,8 @@ const PresetSettings: React.FC = () => {
         onManageTags={() => setTagModalVisible(true)}
         loadPresets={loadPresets}
         addedStateLoading={presetsLoading || Boolean(presetsLoadError)}
+        presetsLoading={presetsLoading}
+        presetsLoadError={Boolean(presetsLoadError)}
       />
 
       <PresetEditDrawer

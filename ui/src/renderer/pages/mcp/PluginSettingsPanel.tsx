@@ -6,7 +6,8 @@
 import { ipcBridge } from '@/common';
 import type { IExtensionInfo, ISkillMarketItem } from '@/common/adapter/ipcBridge';
 import { resolveLocaleKey } from '@/common/utils';
-import { Tag } from '@arco-design/web-react';
+import SettingsContentLoading from '@/renderer/components/layout/SettingsContentLoading';
+import { Button, Tag } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarketSettingsPanel from '@/renderer/pages/settings/MarketSettingsPanel';
@@ -39,25 +40,36 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({
   const { start } = useNomiQuickStart();
   const [extensions, setExtensions] = useState<IExtensionInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const showInstalled = section !== 'market';
   const showMarket = section !== 'installed';
+
+  const loadInstalledExtensions = useCallback(async () => {
+    if (!showInstalled) return;
+
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const loadedExtensions = await ipcBridge.extensions.getLoadedExtensions.invoke();
+      setExtensions(loadedExtensions);
+    } catch (error) {
+      console.error('Failed to load installed plugins:', error);
+      setExtensions([]);
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [showInstalled]);
 
   useEffect(() => {
     if (!showInstalled) {
       setLoading(false);
+      setLoadError(false);
       return;
     }
 
-    setLoading(true);
-    void ipcBridge.extensions.getLoadedExtensions
-      .invoke()
-      .then(setExtensions)
-      .catch((error) => {
-        console.error('Failed to load installed plugins:', error);
-        setExtensions([]);
-      })
-      .finally(() => setLoading(false));
-  }, [showInstalled]);
+    void loadInstalledExtensions();
+  }, [loadInstalledExtensions, showInstalled]);
 
   useEffect(() => {
     if (!showInstalled || loading) return;
@@ -105,8 +117,16 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({
           )}
 
           {loading ? (
-            <div className='py-24px text-center text-t-secondary text-14px'>
-              {t('common.loading', { defaultValue: 'Loading...' })}
+            <SettingsContentLoading className='min-h-220px' />
+          ) : loadError && extensions.length === 0 ? (
+            <div
+              className='flex min-h-220px flex-col items-center justify-center gap-10px rd-12px border border-dashed border-arco-2 px-20px py-32px text-center'
+              role='alert'
+            >
+              <div className='text-13px text-t-secondary'>{t('common.failed')}</div>
+              <Button type='secondary' size='small' onClick={() => void loadInstalledExtensions()}>
+                {t('common.retry')}
+              </Button>
             </div>
           ) : visibleExtensions.length === 0 ? (
             <div className='py-24px text-center text-t-secondary text-14px border border-dashed border-border-2 rd-12px'>
