@@ -29,7 +29,7 @@ export function CanvasSelectionToolbar({ anchorRef, containerRef, count, childre
         const element = anchorRef.current;
         const container = containerRef.current;
         if (!element || !container) {
-            setAnchor(null);
+            setAnchor((current) => (current === null ? current : null));
             return;
         }
 
@@ -40,18 +40,17 @@ export function CanvasSelectionToolbar({ anchorRef, containerRef, count, childre
             const toolbarHeight = toolbarRef.current?.offsetHeight || 38;
             const halfWidth = Math.min(toolbarWidth / 2, Math.max(0, containerBounds.width / 2 - 12));
             const center = bounds.left - containerBounds.left + bounds.width / 2;
-            const left = Math.min(Math.max(center, 12 + halfWidth), Math.max(12 + halfWidth, containerBounds.width - 12 - halfWidth));
+            const left = Math.round(Math.min(Math.max(center, 12 + halfWidth), Math.max(12 + halfWidth, containerBounds.width - 12 - halfWidth)));
             const boundsTop = bounds.top - containerBounds.top;
             const boundsBottom = bounds.bottom - containerBounds.top;
             const placement = boundsTop - toolbarHeight - 8 >= 68 ? "above" : "below";
-            const top = placement === "above" ? boundsTop - 8 : Math.min(boundsBottom + 8, containerBounds.height - toolbarHeight - 12);
+            const top = Math.round(placement === "above" ? boundsTop - 8 : Math.min(boundsBottom + 8, containerBounds.height - toolbarHeight - 12));
             if (toolbarRef.current) {
                 toolbarRef.current.style.left = `${left}px`;
                 toolbarRef.current.style.top = `${top}px`;
                 toolbarRef.current.classList.toggle("-translate-y-full", placement === "above");
-                return;
             }
-            setAnchor((current) => current?.left === left && current.top === top && current.placement === placement ? current : { left, top, placement });
+            setAnchor((current) => (current?.left === left && current.top === top && current.placement === placement ? current : { left, top, placement }));
         };
 
         update();

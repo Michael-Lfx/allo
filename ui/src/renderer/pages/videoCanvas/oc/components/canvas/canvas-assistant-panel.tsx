@@ -19,6 +19,7 @@ import { CanvasLocalAgentPanel } from "./canvas-local-agent-panel";
 import { type CanvasAssistantMessage, type CanvasAssistantSession, type CanvasNodeData } from "@oc/types/canvas";
 import { useCanvasAgentStore } from "@oc/stores/canvas/use-canvas-agent-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { shouldApplyExternalAssistantSessions, shouldPushAssistantSessionsToParent } from "@renderer/pages/videoCanvas/lib/canvasChatPersist";
 import { createSession, useCanvasOnlineAgentLoop } from "./canvas-online-agent-loop";
 import { AgentTextModelPicker, AssistantChatMessages, AssistantHistory, AssistantReferenceChip, OnlineAgentLogView, assistantImageReferenceLabel, buildAgentComposerReferences, buildAssistantReferences } from "./canvas-assistant-panel-views";
 
@@ -131,11 +132,12 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     const autoStartTriedRef = useRef(false);
 
     useEffect(() => {
-        if (!sessions.length) return;
-        if (sessions === localSessions && activeSessionId === localActiveSessionId) return;
+        if (!shouldApplyExternalAssistantSessions(sessions, localSessions, activeSessionId, localActiveSessionId)) return;
         applyingExternalSessionsRef.current = true;
         setLocalSessions(sessions);
         setLocalActiveSessionId(activeSessionId);
+        // 只响应父级会话变化：把 localSessions 放进 deps 会在用户发消息时把本地稿盖回旧父级。
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeSessionId, sessions]);
 
     useEffect(() => {
@@ -147,7 +149,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
             applyingExternalSessionsRef.current = false;
             return;
         }
-        if (sessions === localSessions && activeSessionId === localActiveSessionId) return;
+        if (!shouldPushAssistantSessionsToParent(sessions, localSessions, activeSessionId, localActiveSessionId)) return;
         onSessionsChange(localSessions, localActiveSessionId);
     }, [activeSessionId, localActiveSessionId, localSessions, onSessionsChange, sessions]);
 

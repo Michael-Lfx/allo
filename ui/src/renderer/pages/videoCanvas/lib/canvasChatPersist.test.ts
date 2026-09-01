@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { CanvasNodeType, type CanvasAssistantSession } from "@oc/types/canvas";
 import type { CanvasProject } from "@oc/stores/canvas/use-canvas-store";
-import { parsePersistedChatSessions, persistableChatSessions, projectToCanvasDocument } from "./canvasChatPersist";
+import { parsePersistedChatSessions, persistableChatSessions, projectToCanvasDocument, shouldApplyExternalAssistantSessions, shouldPushAssistantSessionsToParent } from "./canvasChatPersist";
 
 const session: CanvasAssistantSession = {
     id: "sess-1",
@@ -96,5 +96,19 @@ describe("canvas chat persist", () => {
         const doc = projectToCanvasDocument(project);
         expect(parsePersistedChatSessions(doc.chatSessions).map((item) => item.id)).toEqual(["sess-1", "sess-2"]);
         expect(doc.activeChatId).toBe("sess-1");
+    });
+
+    test("does not sync a placeholder blank session back to an empty parent", () => {
+        const placeholder: CanvasAssistantSession = {
+            id: "blank",
+            title: "新对话",
+            createdAt: "2026-09-01T00:00:00.000Z",
+            updatedAt: "2026-09-01T00:00:00.000Z",
+            messages: [],
+        };
+        expect(shouldPushAssistantSessionsToParent([], [placeholder], null, null)).toBe(false);
+        expect(shouldApplyExternalAssistantSessions([], [placeholder], null, null)).toBe(false);
+        expect(shouldPushAssistantSessionsToParent([], [{ ...placeholder, messages: [{ id: "m1", role: "user", text: "hi" }] }], null, placeholder.id)).toBe(true);
+        expect(shouldApplyExternalAssistantSessions([session], [], session.id, null)).toBe(true);
     });
 });

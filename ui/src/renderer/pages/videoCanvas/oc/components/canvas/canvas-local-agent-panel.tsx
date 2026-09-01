@@ -54,6 +54,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
     // 映射结果按 messages 数组身份缓存：配合 memo(AgentChatMessage)，
     // 流式更新只重渲实际变化的那条消息，而不是整张聊天列表。
     const chatMessages = useMemo(() => messages.map(agentMessageToChatMessage), [messages]);
+    const mentionReferences = useMemo(() => buildAgentComposerReferences(snapshot.nodes), [snapshot.nodes]);
     const urlAgentAutoConnect = searchParams.has("agentUrl") && searchParams.has("agentToken");
     const loadThreads = useCallback(async () => {
         const projectId = snapshotRef.current.projectId;
@@ -604,7 +605,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                         sending={sending || waiting}
                         placeholder={canvasT(`${LA}.placeholder`, "询问本机编码 Agent，或让它操作画布")}
                         theme={theme}
-                        mentionReferences={buildAgentComposerReferences(snapshot.nodes)}
+                        mentionReferences={mentionReferences}
                         onPromptChange={(prompt) => setAgentState({ prompt })}
                         onSubmit={sendPrompt}
                         onAddFiles={addAttachments}

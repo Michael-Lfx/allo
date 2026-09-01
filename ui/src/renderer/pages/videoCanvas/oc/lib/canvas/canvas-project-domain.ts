@@ -128,6 +128,9 @@ export function storyboardRowsFromTask(task: GenerationTask) {
 
 export function applyNodeConfigPatch(node: CanvasNodeData, patch: Partial<CanvasNodeMetadata>) {
     const safePatch = patch || {};
+    const metadata = node.metadata;
+    const unchanged = Object.entries(safePatch).every(([key, value]) => metadata?.[key as keyof CanvasNodeMetadata] === value);
+    if (unchanged) return node;
     const next = { ...node, metadata: { ...node.metadata, ...safePatch } };
     const spec = node.type === CanvasNodeType.Video ? NODE_DEFAULT_SIZE[CanvasNodeType.Video] : NODE_DEFAULT_SIZE[CanvasNodeType.Image];
     const size = typeof safePatch.size === "string" && !node.metadata?.content ? nodeSizeFromRatio(safePatch.size, spec.width, spec.height) : null;
