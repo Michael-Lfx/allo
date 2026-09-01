@@ -5,6 +5,11 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.6 - 2026-09-01
+
+- Vimax studio docks the Agent session and persists run history.
+- Storyboard rows stay frozen while a video clip is generating.
+
 ## v1.1.5 - 2026-08-31
 
 - Long Markdown blockquotes collapse; streaming layout and collapse controls stay stable.
