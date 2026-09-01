@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Modal, Select, Tabs, Typography } from '@arco-design/web-react';
+import { Button, Input, Modal, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import type { CourseGenerationState } from '../hooks/useCourseCreation';
 import LearningModelSelector, {
@@ -40,7 +40,7 @@ export function CreateCourseDialog({
   selectedKnowledgeBaseId?: string;
   generationDomain: string;
   modelChoice: LearningModelChoice;
-  creationTab: 'base' | 'description';
+  creationTab: 'base' | 'description' | 'graph';
   creationDescription: string;
   generation: CourseGenerationState | null;
   onClose: () => void;
@@ -48,7 +48,7 @@ export function CreateCourseDialog({
   onSelectedBaseChange: (value: string) => void;
   onDomainChange: (value: string) => void;
   onModelChange: (choice: LearningModelChoice) => void;
-  onTabChange: (tab: 'base' | 'description') => void;
+  onTabChange: (tab: 'base' | 'description' | 'graph') => void;
   onDescriptionChange: (value: string) => void;
   onRetry: () => void;
   onStartLearning: (courseId: string) => void;
@@ -80,7 +80,7 @@ export function CreateCourseDialog({
         />
       ) : (
         <>
-          <Tabs activeTab={creationTab} onChange={(key) => onTabChange(key as 'base' | 'description')}>
+          <Tabs activeTab={creationTab} onChange={(key) => onTabChange(key as 'base' | 'description' | 'graph')}>
             <Tabs.TabPane key='base' title={t('learning.generateFromBase')} destroyOnHide={false}>
               <Paragraph className='mt-0 text-t-secondary'>{t('learning.generateHint')}</Paragraph>
               <div className='flex flex-col gap-16px'>
@@ -125,6 +125,31 @@ export function CreateCourseDialog({
                   />
                 </div>
                 <Paragraph className='mt-0 text-t-secondary'>{t('learning.generateDescriptionHint')}</Paragraph>
+              </div>
+            </Tabs.TabPane>
+            <Tabs.TabPane
+              key='graph'
+              title={
+                <span className='inline-flex items-center gap-6px'>
+                  {t('learning.learningGraphTabTitle')}
+                  <Tag size='small' color='orangered' className='!mx-0'>
+                    {t('learning.learningGraphBeta')}
+                  </Tag>
+                </span>
+              }
+              destroyOnHide={false}
+            >
+              <div className='flex flex-col gap-16px'>
+                <div>
+                  <div className='mb-6px font-500'>{t('learning.learningGraphGoalInputLabel')}</div>
+                  <Input.TextArea
+                    value={creationDescription}
+                    placeholder={t('learning.learningGraphGoalInputPlaceholder')}
+                    onChange={onDescriptionChange}
+                    autoSize={{ minRows: 3, maxRows: 6 }}
+                  />
+                </div>
+                <Paragraph className='mt-0 text-t-secondary'>{t('learning.learningGraphCreateHint')}</Paragraph>
               </div>
             </Tabs.TabPane>
           </Tabs>

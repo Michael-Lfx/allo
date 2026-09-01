@@ -15,6 +15,7 @@ export function statusLabel(status: LessonStatus, t: Translate): string {
     not_started: t('learning.notStarted'),
     in_progress: t('learning.inProgress'),
     completed: t('learning.completed'),
+    skipped: t('learning.learningGraphStatusSkipped'),
   };
   return labels[status];
 }
