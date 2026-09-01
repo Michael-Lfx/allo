@@ -11,7 +11,8 @@ import { createClientId } from "@oc/lib/client-id";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { useCanvasAgentStore, type AgentChatItem, type AgentPendingToolCall, type AgentThreadSummary } from "@oc/stores/canvas/use-canvas-agent-store";
-import { previewCanvasAgentOps, canvasAgentPostconditionMessage, summarizeCanvasAgentOps, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { canvasAgentPostconditionMessage, summarizeCanvasAgentOps, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { buildCanvasAgentPlan } from "@oc/lib/canvas/canvas-agent-plan";
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@oc/lib/canvas/canvas-agent-context";
 import { collectCanvasSkills } from "@oc/lib/canvas/canvas-skill-mentions";
 import { isProjectAgentReadTool, isProjectAgentToolName, runProjectAgentTool } from "@oc/services/api/project-agent-tools";
@@ -19,6 +20,7 @@ import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCa
 import { compactCanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-snapshot-compact";
 import { requireString } from "./canvas-online-agent-tools";
 import { AgentChatEmptyState } from "./canvas-agent-panel-chrome";
+import { buildAgentComposerReferences } from "./canvas-assistant-panel-views";
 import { AgentConnectView, AgentHistoryView, AgentLogView } from "./canvas-local-agent-views";
 import { discoverAgentConfig, fetchAgentJson, normalizeHistoryMessages, postState, postToolResult, type AgentThreadResponse, type AgentThreadsResponse } from "./canvas-local-agent-api";
 import { activityText, agentAttachmentToChatAttachment, agentMessageToChatMessage, eventTitle, formatAgentEvent, isConnectionErrorMessage, mergeAgentText, parseEventData, shouldLogAgentEvent, toolName, type AgentEventPayload } from "./canvas-local-agent-events";
@@ -592,7 +594,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                         {chatMessages.map((item) => (
                             <AgentChatMessage key={item.id} item={item} theme={theme} user={user} />
                         ))}
-                        {pendingTool ? <AgentPendingToolCard summary={summarizeCanvasAgentOps(pendingTool.input?.ops || []) || toolName(pendingTool.name)} detail={{ requestId: pendingTool.requestId, name: pendingTool.name, input: pendingTool.input, impact: previewCanvasAgentOps(pendingTool.input?.ops || [], snapshot) }} theme={theme} onReject={rejectPendingTool} onApprove={approvePendingTool} /> : null}
+                        {pendingTool ? <AgentPendingToolCard summary={summarizeCanvasAgentOps(pendingTool.input?.ops || []) || toolName(pendingTool.name)} detail={{ requestId: pendingTool.requestId, name: pendingTool.name, input: pendingTool.input, impact: buildCanvasAgentPlan(pendingTool.input?.ops || [], snapshot) }} theme={theme} onReject={rejectPendingTool} onApprove={approvePendingTool} /> : null}
                         {waiting && !pendingTool ? <AgentWorkingMessage theme={theme} /> : null}
                     </div>
                     <AgentChatComposer
@@ -600,8 +602,9 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                         attachments={attachments.map(agentAttachmentToChatAttachment)}
                         disabled={!connected}
                         sending={sending || waiting}
-                        placeholder={canvasT(`${LA}.placeholder`, "询问 Codex，或让它操作画布")}
+                        placeholder={canvasT(`${LA}.placeholder`, "询问本机编码 Agent，或让它操作画布")}
                         theme={theme}
+                        mentionReferences={buildAgentComposerReferences(snapshot.nodes)}
                         onPromptChange={(prompt) => setAgentState({ prompt })}
                         onSubmit={sendPrompt}
                         onAddFiles={addAttachments}

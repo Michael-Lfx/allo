@@ -25,7 +25,6 @@ export function useCanvasDialogState() {
     const [directorNodeId, setDirectorNodeId] = useState<string | null>(null);
     const [versionCompareRootId, setVersionCompareRootId] = useState<string | null>(null);
     const [shortcutRequestNonce, setShortcutRequestNonce] = useState(0);
-    const [cinematicAgentEntry, setCinematicAgentEntry] = useState(false);
     const openProjectAssets = useCallback((initialCategory = "all", position?: Position) => {
         setProjectAssetInitialCategory(initialCategory);
         setProjectAssetInsertPosition(position);
@@ -80,8 +79,6 @@ export function useCanvasDialogState() {
         setVersionCompareRootId,
         shortcutRequestNonce,
         setShortcutRequestNonce,
-        cinematicAgentEntry,
-        setCinematicAgentEntry,
         openProjectAssets,
         closeProjectAssets,
     };

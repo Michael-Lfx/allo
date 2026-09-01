@@ -29,7 +29,7 @@ export function CanvasCreateMenu({ commands }: { commands: CanvasCreateCommand[]
         <div>
             <header className="flex min-h-7 items-center justify-between gap-2 border-b pb-2" style={{ borderColor: theme.toolbar.border }}>
                 <h2 className="font-semibold leading-none" style={{ fontSize: "var(--fs-caption)" }}>{canvasT("videoCanvas.menu.addNode", "添加节点")}</h2>
-                {projectCommands.map((command) => (
+                {projectCommands.length ? projectCommands.map((command) => (
                     <button
                         key={command.id}
                         type="button"
@@ -42,7 +42,7 @@ export function CanvasCreateMenu({ commands }: { commands: CanvasCreateCommand[]
                         {command.icon}
                         <span className="whitespace-nowrap">{command.label}</span>
                     </button>
-                ))}
+                )) : null}
             </header>
 
             <MenuSection title={canvasT("videoCanvas.menu.createNodes", "创作节点")} color={theme.node.muted} />

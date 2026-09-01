@@ -1,6 +1,6 @@
-export type ProjectStyleWorldId = "xianxia" | "urban" | "historical" | "suspense" | "science-fiction" | "pastoral";
-export type ProjectStyleToneId = "epic" | "dark" | "light-comedy" | "romantic" | "healing";
-export type ProjectStyleMediumId = "live-action" | "3d-anime" | "3d-cartoon" | "2d-guoman" | "ink";
+export type ProjectStyleWorldId = "xianxia" | "urban" | "historical" | "suspense" | "science-fiction" | "pastoral" | "cyberpunk" | "republic" | "campus" | "court" | "wasteland" | "space";
+export type ProjectStyleToneId = "epic" | "dark" | "light-comedy" | "romantic" | "healing" | "melancholic" | "glamour" | "documentary";
+export type ProjectStyleMediumId = "live-action" | "3d-anime" | "3d-cartoon" | "2d-guoman" | "ink" | "stop-motion" | "comic" | "storybook";
 export type ProjectStyleCharacterId = "realistic" | "semi-real" | "anime" | "stylized";
 
 export type ProjectStyleSelection = {
@@ -100,6 +100,72 @@ export const projectStyleWorlds: Array<StyleOption<ProjectStyleWorldId>> = [
         motion: "风、雨、植物、动物和细小生活动作形成自然节奏",
         forbidden: "商业民宿广告感、欧美乡村替代、随机换季、无生活痕迹和过度航拍空镜",
     },
+    {
+        id: "cyberpunk",
+        label: "赛博都市",
+        description: "潮湿夜城、阶层义体与受控霓虹构成技术失衡的近未来。",
+        prompt: "赛博都市世界以亚洲高密度夜城、企业领地、地下黑市和义体阶层为基础；霓虹、雨水、旧材质与界面光必须服务功能与身份，而不是把整座城市涂成装饰灯牌。",
+        palette: "湿沥青、冷青、品红霓虹、锈橙指示灯与少量企业识别色",
+        wardrobe: "机能外套、义体接口、阶层制服和街头改装按身份模块化，保留磨损与改装痕迹",
+        environment: "高楼峡谷、天桥、雨巷、地下商场、维修巷道和企业大堂共享同一城市地理",
+        motion: "人群、交通、雨水和屏幕光斑形成城市节奏，人物动作考虑装备重量与狭窄空间",
+        forbidden: "无功能 HUD 满屏、纯欧美赛博模板、霓虹淹没人物、干燥白日棚拍和随机游戏 UI",
+    },
+    {
+        id: "republic",
+        label: "港风年代",
+        description: "八九十年代华语都市的胶片色、街区密度与生活器物。",
+        prompt: "港风年代世界锁定二十世纪后期华语都市：霓虹招牌、骑楼、茶餐厅、码头、老公寓与夜生活共同构成时代地理；色彩来自胶片、钨丝灯和潮湿空气，而不是复古滤镜贴纸。",
+        palette: "钨丝暖黄、青绿阴影、褪色品红招牌与胶片中性肤色",
+        wardrobe: "衬衫、风衣、针织、旗袍剪裁与皮鞋按阶层和职业建立衣橱，避免当代潮牌混入",
+        environment: "骑楼街道、茶餐厅、旧公寓、码头、报摊、舞厅和雨夜马路保持同一座城市的尺度",
+        motion: "手持或平稳跟拍贴近生活重心，夜景光源来自招牌、车灯与室内钨丝",
+        forbidden: "当代手机界面、错误繁简混用招牌、欧美复古替代、过度颗粒滤镜和时代器物漂移",
+    },
+    {
+        id: "campus",
+        label: "校园青春",
+        description: "学期节奏、班级关系和校园空间组织青春短剧。",
+        prompt: "校园青春世界以学期、班级、社团和放学路径组织人物关系；教室、操场、走廊、宿舍和校门口必须像被使用过的真实校园，而不是偶像剧布景。",
+        palette: "校服识别色、课桌木色、操场绿、黄昏暖金与晴空浅蓝",
+        wardrobe: "校服、运动鞋、季节外套和书包配饰按年级与性格建立差异，保持可复用资产",
+        environment: "教学楼、操场、天台、便利店、公交站和回家路线构成稳定校园地理",
+        motion: "课间、奔跑、停顿与对视构成青春节奏，避免无动机的慢动作花瓣",
+        forbidden: "成人职场空间替代校园、过度磨皮网红脸、永恒樱花滤镜和校服制度漂移",
+    },
+    {
+        id: "court",
+        label: "宫廷权谋",
+        description: "礼制、仪仗与权力空间共同支撑宫廷叙事。",
+        prompt: "宫廷权谋世界以单一王朝礼制为核心：朝会、内廷、花园、寝殿和仪仗队列必须服从身份差序；华丽来自织物、建筑等级和仪式，而不是堆金砌玉的游戏UI。",
+        palette: "朱红、黛青、冷金、牙白、深褐木作与有限夜灯暖色",
+        wardrobe: "冕服、常服、甲胄和宫人衣装按品级、场合建立制度，纹样不得跨级混用",
+        environment: "宫殿轴线、廊庑、御道、内苑和水榭遵循同一都城规划",
+        motion: "步伐、跪拜、仪仗和衣袂重量体现礼制，权力对峙用距离与停顿表达",
+        forbidden: "朝代混搭、日式或欧式宫殿、塑料金饰、现代妆容和礼制等级漂移",
+    },
+    {
+        id: "wasteland",
+        label: "末日废土",
+        description: "资源稀缺、废墟地理与改装生存装备构成末日世界。",
+        prompt: "末日废土世界以资源、气候伤害和残存聚落为基础；废墟必须能读出灾前功能，装备来自改装与回收，奇观服务于生存压力而不是无来源爆炸。",
+        palette: "尘土、锈橙、骨白、煤灰与稀少的警示色或旧世界残彩",
+        wardrobe: "防护层、缝补织物、护目镜和改装包具按聚落与职能区分",
+        environment: "坍塌城市、公路、掩体、集市残骸和干旱地貌保持同一灾后地理",
+        motion: "动作考虑负重、沙尘、掩体和体力限制，镜头避免无动机的毁灭奇观",
+        forbidden: "崭新科幻盔甲、绿洲广告感、无磨损道具、随机核爆闪光和地理漂移",
+    },
+    {
+        id: "space",
+        label: "星际远征",
+        description: "舰船结构、阵营徽记与真空尺度支撑太空叙事。",
+        prompt: "星际远征世界必须先确定推进、重力、通讯和阵营政治；舰船、空间站与行星地表具有可理解的结构和维护痕迹，宏大来自尺度对照而不是乱堆星云。",
+        palette: "深空黑、舱体白、冷金属、观察窗蓝与阵营徽记色",
+        wardrobe: "舰员服、防护舱外装和典礼服按职能模块化，徽记与接口保持稳定",
+        environment: "舰桥、走廊、船坞、行星前哨和观察窗对外空间共享同一技术文明",
+        motion: "失重或人工重力下的惯性、舱门气压和设备反馈必须可见",
+        forbidden: "无结构星云背景、现实品牌、随机激光秀、技术规则漂移和无尺度参照",
+    },
 ];
 
 export const projectStyleTones: Array<StyleOption<ProjectStyleToneId>> = [
@@ -148,6 +214,33 @@ export const projectStyleTones: Array<StyleOption<ProjectStyleToneId>> = [
         motion: "观察细小动作、呼吸、眼神和环境响应，节奏舒展但不空洞",
         forbidden: "全片奶油滤镜、过度暖黄、无剧情自然空镜、广告式精致和人物永远微笑",
     },
+    {
+        id: "melancholic",
+        label: "清冷克制",
+        description: "低饱和、留白和克制表演形成文艺气质，信息仍然可读。",
+        prompt: "叙事气质清冷、克制、带距离感；情绪来自停顿、天气、室内灯色和未说完的对白，色彩降低饱和但保留肤色与关键道具的可识别性。",
+        palette: "灰蓝、冷白、浅木与少量温暖室内灯，暗部保留层次",
+        motion: "镜头平稳、剪辑留白，运动只服务关系变化，避免炫技摇移",
+        forbidden: "全片发灰不可读、过度青橙、无表演空镜和把清冷做成恐怖片",
+    },
+    {
+        id: "glamour",
+        label: "华丽时尚",
+        description: "服化道、灯光造型和构图共同建立时尚大片气质。",
+        prompt: "叙事气质精致、自信、有造型意识；华丽来自剪裁、珠宝、布光和姿态，而不是磨皮美颜或乱闪的闪光灯。",
+        palette: "深底色、金属高光、珠宝点色与受控的皮肤高光",
+        motion: "姿态明确、走位如造型，镜头可用缓慢推拉但必须有构图意图",
+        forbidden: "网红滤镜、塑料皮肤、过曝闪光、廉价金粉和服饰品牌乱入",
+    },
+    {
+        id: "documentary",
+        label: "纪实观察",
+        description: "观察式机位、自然光和生活痕迹构成纪实基线。",
+        prompt: "叙事气质诚实、贴近、不打断生活；摄影机像在场的观察者，光来自环境，人物不必看镜头，空间保留使用痕迹。",
+        palette: "现场光源色温、自然灰土与未调高的环境色",
+        motion: "跟拍、等待、轻微手持，避免广告式编排走位",
+        forbidden: "棚拍光、摆拍笑容、过饱和旅拍滤镜和把纪实做成监控模糊",
+    },
 ];
 
 export const projectStyleMedia: Array<StyleOption<ProjectStyleMediumId> & { characters: ProjectStyleCharacterId[] }> = [
@@ -195,6 +288,33 @@ export const projectStyleMedia: Array<StyleOption<ProjectStyleMediumId> & { char
         motion: "轮廓先行、笔势跟随、墨迹生长与消散遵循统一规则，人物结构在变化中保持可识别",
         forbidden: "随机泼墨、角色五官消失、西式水彩、全屏脏灰、廉价纸纹滤镜和随机文字印章",
         characters: ["semi-real", "stylized"],
+    },
+    {
+        id: "stop-motion",
+        label: "定格黏土",
+        description: "手塑痕迹、微缩布景与逐帧动作构成可触的手工世界。",
+        prompt: "采用定格黏土或偶戏媒介：保留指纹与接缝的手塑形体、微缩场景、摄影棚柔光和轻微逐帧顿挫；材质来自黏土、织物、纸木，而不是光滑 CG 公仔。",
+        motion: "动作呈可感知的帧步进，预备、停顿和跟随被放大，避免流畅到像三维实时渲染",
+        forbidden: "无接缝塑料 CG、真人皮肤、流畅动作捕捉感和比例随机漂移",
+        characters: ["stylized"],
+    },
+    {
+        id: "comic",
+        label: "漫画分镜",
+        description: "墨线、网点与高对比块面构成可读的漫画影像。",
+        prompt: "采用漫画/图形小说媒介：稳定墨线、网点或平涂色块、戏剧性分格光影；夸张来自构图、速度线和姿态，角色剪影在转面中保持连续。",
+        motion: "关键姿势清晰、帧间跳跃服务节奏，拟声与速度线不得淹没身份特征",
+        forbidden: "照片滤镜漫画、线宽随机漂移、所有角色同脸和把漫画做成低幼简笔画",
+        characters: ["stylized", "anime"],
+    },
+    {
+        id: "storybook",
+        label: "绘本插画",
+        description: "纸张颗粒、柔和色块与手绘边缘构成童话绘本世界。",
+        prompt: "采用绘本插画媒介：可见纸纹或颜料边缘、柔和色块、手绘轮廓；角色表情清楚，背景层次服务故事，不把绘本感做成全屏柔焦滤镜。",
+        motion: "动作温和、转场如翻页或色块推移，保持二维绘画语言",
+        forbidden: "三维塑料质感、真人照片、过锐数字描边和随机贴纸装饰",
+        characters: ["stylized", "semi-real"],
     },
 ];
 
@@ -298,10 +418,24 @@ const recommendedSelections: ProjectStyleSelection[] = [
     { world: "xianxia", tone: "dark", medium: "3d-anime", character: "semi-real" },
     { world: "xianxia", tone: "light-comedy", medium: "3d-cartoon", character: "stylized" },
     { world: "xianxia", tone: "epic", medium: "live-action", character: "realistic" },
+    { world: "xianxia", tone: "healing", medium: "ink", character: "semi-real" },
     { world: "urban", tone: "light-comedy", medium: "live-action", character: "realistic" },
+    { world: "urban", tone: "melancholic", medium: "live-action", character: "realistic" },
+    { world: "urban", tone: "glamour", medium: "live-action", character: "realistic" },
+    { world: "urban", tone: "documentary", medium: "live-action", character: "realistic" },
+    { world: "campus", tone: "romantic", medium: "live-action", character: "realistic" },
     { world: "suspense", tone: "dark", medium: "live-action", character: "realistic" },
-    { world: "pastoral", tone: "healing", medium: "3d-cartoon", character: "stylized" },
     { world: "historical", tone: "romantic", medium: "2d-guoman", character: "semi-real" },
+    { world: "court", tone: "epic", medium: "live-action", character: "realistic" },
+    { world: "republic", tone: "melancholic", medium: "live-action", character: "realistic" },
+    { world: "cyberpunk", tone: "dark", medium: "live-action", character: "realistic" },
+    { world: "science-fiction", tone: "epic", medium: "live-action", character: "realistic" },
+    { world: "space", tone: "epic", medium: "3d-anime", character: "semi-real" },
+    { world: "wasteland", tone: "dark", medium: "live-action", character: "realistic" },
+    { world: "pastoral", tone: "healing", medium: "3d-cartoon", character: "stylized" },
+    { world: "pastoral", tone: "healing", medium: "storybook", character: "stylized" },
+    { world: "urban", tone: "light-comedy", medium: "comic", character: "stylized" },
+    { world: "urban", tone: "light-comedy", medium: "stop-motion", character: "stylized" },
 ];
 
 export const recommendedCanvasStylePresets = recommendedSelections.map(compileCanvasStylePreset);
@@ -318,6 +452,15 @@ export function canvasStyleAssetUrl(fileName: string) {
 }
 
 function stylePreviewImage(selection: ProjectStyleSelection) {
+    if (selection.medium === "stop-motion") return canvasStyleAssetUrl("clay-stop-motion.jpg");
+    if (selection.medium === "comic") return canvasStyleAssetUrl("comic-pop.jpg");
+    if (selection.medium === "storybook") return canvasStyleAssetUrl("storybook-fantasy.jpg");
+    if (selection.world === "cyberpunk") return canvasStyleAssetUrl("cyberpunk-neon.jpg");
+    if (selection.world === "republic") return canvasStyleAssetUrl("retro-hong-kong.jpg");
+    if (selection.world === "campus") return canvasStyleAssetUrl("urban-live-action.jpg");
+    if (selection.world === "court") return canvasStyleAssetUrl("period-live-action.jpg");
+    if (selection.world === "wasteland") return canvasStyleAssetUrl("suspense-noir.jpg");
+    if (selection.world === "space") return canvasStyleAssetUrl("space-opera.jpg");
     if (selection.world === "xianxia") {
         if (selection.medium === "live-action") return canvasStyleAssetUrl("period-live-action.jpg");
         if (selection.medium === "3d-cartoon") return canvasStyleAssetUrl("three-d-cartoon.jpg");

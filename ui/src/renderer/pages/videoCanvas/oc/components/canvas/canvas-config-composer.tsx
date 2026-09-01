@@ -45,7 +45,7 @@ type ComposerCandidate =
 
 export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
-export function CanvasConfigComposer({ value, inputs, skillReferences = [], generationMode, metadata, onChange, onMetadataChange, onClose, workspaceMode = "professional" }: CanvasConfigComposerProps) {
+export function CanvasConfigComposer({ value, inputs, skillReferences = [], generationMode, metadata, onChange, onMetadataChange, onClose }: CanvasConfigComposerProps) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const editorRef = useRef<HTMLDivElement>(null);
@@ -54,7 +54,6 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
     const [activeIndex, setActiveIndex] = useState(0);
     const [imagePreview, setImagePreview] = useState<string | null>(null);
     const [presetOpen, setPresetOpen] = useState(false);
-    const simpleMode = workspaceMode === "simple";
     const tokens = useMemo(() => parseComposerTokens(value), [value]);
     const referenceById = useMemo(() => new Map(inputs.map((input) => [input.nodeId, input])), [inputs]);
     const videoFrameOptions = useMemo(
@@ -170,15 +169,15 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
         >
             <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-baseline gap-2">
-                    <div className="shrink-0 text-xs font-semibold">{simpleMode ? canvasT("videoCanvas.config.quickGenerate", "快速生成") : canvasT("videoCanvas.config.assemblePrompt", "组装提示词")}</div>
-                    <div className="truncate text-[var(--fs-label)] opacity-55">{simpleMode ? canvasT("videoCanvas.config.simpleHint", "已连接素材会自动带入") : canvasT("videoCanvas.config.assembleHint", "@ 引用已连接素材或已激活技能，发送前自动组装")}</div>
+                    <div className="shrink-0 text-xs font-semibold">{canvasT("videoCanvas.config.assemblePrompt", "组装提示词")}</div>
+                    <div className="truncate text-[var(--fs-label)] opacity-55">{canvasT("videoCanvas.config.assembleHint", "@ 引用已连接素材或已激活技能，发送前自动组装")}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                    {(simpleMode && generationMode !== "image" && generationMode !== "video") ? null : <CanvasPresetPicker mode={generationMode || "image"} skillReferences={skillReferences} open={presetOpen} onOpenChange={setPresetOpen} onSelect={insertPreset} />}
+                    <CanvasPresetPicker mode={generationMode || "image"} skillReferences={skillReferences} open={presetOpen} onOpenChange={setPresetOpen} onSelect={insertPreset} />
                     <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
                 </div>
             </div>
-            {generationMode === "video" && onMetadataChange && !simpleMode ? (
+            {generationMode === "video" && onMetadataChange ? (
                 <div className="mb-2 border-y px-1 py-1.5" style={{ borderColor: theme.node.stroke }}>
                     <CanvasVideoPromptTools metadata={metadata} frameOptions={videoFrameOptions} onMetadataChange={onMetadataChange} />
                 </div>

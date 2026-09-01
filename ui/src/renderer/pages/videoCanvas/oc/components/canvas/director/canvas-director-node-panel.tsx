@@ -1,13 +1,16 @@
 import { useState, type ReactNode } from "react";
-import { Box, Camera, Clapperboard, Lightbulb, LockKeyhole, Move3d } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { Box, Camera, Clapperboard, Lightbulb, Move3d } from "lucide-react";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { gateDirectorPreviewFailure, resolveDirectorActiveShot, resolveDirectorPreviewSource, type DirectorNodeContentReader } from "@oc/lib/canvas/director/director-preview";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasNodeData } from "@oc/types/canvas";
 import type { DirectorScene } from "@oc/types/director";
 
-export function CanvasDirectorNodePanel({ node, scene, readNodeContent, onOpen, professional = true }: { node: CanvasNodeData; scene: DirectorScene | null; readNodeContent: DirectorNodeContentReader; onOpen: () => void; professional?: boolean }) {
+export function CanvasDirectorNodePanel({ node, scene, readNodeContent, onOpen }: { node: CanvasNodeData; scene: DirectorScene | null; readNodeContent: DirectorNodeContentReader; onOpen: () => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const shot = resolveDirectorActiveShot(scene, node.metadata?.directorShotId);
     // 记录「失败的那个 URL」而非布尔量：同一个坏 URL 不再反复渲染，换成另一个 URL 时自动重试。
@@ -35,8 +38,7 @@ export function CanvasDirectorNodePanel({ node, scene, readNodeContent, onOpen, 
                 data-canvas-no-zoom
                 className="group relative min-h-0 flex-1 cursor-pointer overflow-hidden rounded-lg border text-left focus-visible:outline-none focus-visible:ring-2 disabled:cursor-default"
                 style={{ background: theme.node.fill, borderColor: theme.node.stroke }}
-                title={professional ? "打开 3D 导演台" : "切换到专业模式后编辑导演台"}
-                disabled={!professional}
+                title={canvasT("videoCanvas.director.openWorkbench", "打开 3D 导演台")}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => { event.stopPropagation(); onOpen(); }}
@@ -44,7 +46,7 @@ export function CanvasDirectorNodePanel({ node, scene, readNodeContent, onOpen, 
                 {preview.kind === "image"
                     ? <img src={preview.url} alt={`${node.metadata?.workflowTitle || node.title} 已回写的导演台构图`} className="h-full w-full object-contain" draggable={false} onError={() => setFailedUrl(preview.url)} />
                     : <DirectorPreviewState kind={preview.kind} theme={theme} />}
-                <span className={`absolute inset-x-0 bottom-0 flex h-10 items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-sm transition-opacity ${professional ? "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" : "opacity-100"}`} style={{ background: `${theme.toolbar.panel}dd`, color: theme.node.text }}>{professional ? <><Move3d className="size-3.5" />进入导演台</> : <><LockKeyhole className="size-3.5" />专业模式可编辑</>}</span>
+                <span className="absolute inset-x-0 bottom-0 flex h-10 items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-sm opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" style={{ background: `${theme.toolbar.panel}dd`, color: theme.node.text }}><Move3d className="size-3.5" />{canvasT("videoCanvas.director.enterWorkbench", "进入导演台")}</span>
             </button>
 
             <div className="mt-2 grid grid-cols-3 gap-1 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>

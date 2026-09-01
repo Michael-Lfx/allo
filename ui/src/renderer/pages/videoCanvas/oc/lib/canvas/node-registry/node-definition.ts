@@ -28,7 +28,7 @@ export type CanvasNodeDefinition = {
     minSize: { width: number; height: number };
     /** 拉伸时是否锁定宽高比，缺省不锁 */
     keepAspectRatio?: (node: CanvasNodeData) => boolean;
-    /** 是否出现在添加节点菜单（技能、生成配置由其他入口创建） */
+    /** 是否出现在添加节点菜单（技能仍由其他入口创建） */
     showInCreateMenu: boolean;
     /**
      * 作为 @ 引用素材时归入的类型；不设或返回 null 表示该节点不是可引用素材。

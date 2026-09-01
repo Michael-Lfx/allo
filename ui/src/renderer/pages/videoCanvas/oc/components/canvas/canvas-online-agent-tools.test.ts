@@ -8,8 +8,10 @@ import { CanvasNodeType } from "@oc/types/canvas";
 // 断言只关心 add_node 的 payload 面；CanvasAgentOp 是判别联合，直接 toMatchObject 会因其它成员无 metadata 报类型错。
 type AddNodeOp = Extract<CanvasAgentOp, { type: "add_node" }>;
 import {
+    ONLINE_AGENT_PROMPT,
     ONLINE_AGENT_TOOLS,
     describeCanvasSnapshot,
+    describeOnlineToolProgress,
     isWritableToolCall,
     onlineToolToOps,
     parseToolArguments,
@@ -123,6 +125,7 @@ describe("tool call helpers", () => {
     test("isWritableToolCall treats read-only tools as non-writable", () => {
         expect(isWritableToolCall({ id: "1", type: "function", function: { name: "canvas_get_state", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "1b", type: "function", function: { name: "canvas_get_context", arguments: "{}" } })).toBe(false);
+        expect(isWritableToolCall({ id: "1c", type: "function", function: { name: "canvas_wait_generation", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "2", type: "function", function: { name: "canvas_apply_ops", arguments: "{}" } })).toBe(true);
         expect(isWritableToolCall({ id: "3", type: "function", function: { name: "canvas_create_workflow", arguments: "{}" } })).toBe(true);
     });
@@ -151,6 +154,8 @@ describe("tool call helpers", () => {
         const impact = previewOnlineToolCalls(calls, snapshot(), defaultConfig);
         expect(impact.operationCount).toBeGreaterThanOrEqual(5);
         expect(impact.generationCount).toBe(1);
+        expect(impact.spend).toBe(true);
+        expect(impact.stages.length).toBeGreaterThan(0);
     });
 });
 
@@ -173,6 +178,22 @@ describe("ONLINE_AGENT_TOOLS", () => {
         expect(names).toContain("canvas_list_skills");
         expect(names).toContain("canvas_apply_ops");
         expect(names).toContain("canvas_generate_audio");
+        expect(names).toContain("canvas_wait_generation");
+        expect(names).toContain("canvas_create_folder");
+        expect(names).toContain("canvas_create_frame");
+        expect(names).toContain("canvas_set_video_frames");
+        expect(names).toContain("canvas_create_variants");
+        expect(names).toContain("canvas_extract_frames");
+        expect(names).not.toContain("canvas_create_cinematic_session");
         expect(ONLINE_AGENT_TOOLS.every((tool) => tool.function.parameters.additionalProperties === false)).toBe(true);
+    });
+});
+
+describe("ONLINE_AGENT_PROMPT", () => {
+    test("does not force a first-turn canvas_get_context round trip", () => {
+        expect(ONLINE_AGENT_PROMPT).toContain("用户消息已包含当前画布压缩快照");
+        expect(ONLINE_AGENT_PROMPT).not.toContain("首轮必须调用 canvas_get_context");
+        expect(ONLINE_AGENT_PROMPT).toContain("不要为它们再 canvas_get_node");
+        expect(describeOnlineToolProgress("canvas_create_workflow")).toContain("创建工作流");
     });
 });

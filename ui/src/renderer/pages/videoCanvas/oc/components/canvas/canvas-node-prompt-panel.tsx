@@ -39,12 +39,11 @@ type CanvasNodePromptPanelProps = {
 
 type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, workspaceMode = "professional" }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange }: CanvasNodePromptPanelProps) {
     useTranslation();
     const globalConfig = useEffectiveConfig();
     const themeName = useThemeStore((state) => state.theme);
     const theme = canvasThemes[themeName];
-    const simpleMode = workspaceMode === "simple";
     const mode = getNodeGenerationMode(node) ?? "image";
     const config = buildNodeConfig(globalConfig, node, mode);
     const hasTextContent = node.type === CanvasNodeType.Text && Boolean(node.metadata?.content?.trim());
@@ -59,7 +58,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const activeReferenceCount = mentionReferences.filter((item) => item.active && item.kind !== "skill").length;
     const videoFrameOptions = mentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
     // 无可用参考帧时不渲染空参数壳，避免 B 区占位却没有可操作内容。
-    const hasVideoPromptTools = mode === "video" && !simpleMode && videoFrameOptions.length > 0;
+    const hasVideoPromptTools = mode === "video" && videoFrameOptions.length > 0;
     const darkSurface = themeName === "dark";
     const monochromeAccent = theme.node.activeStroke;
     const shellBorder = darkSurface ? "rgba(255,255,255,.08)" : "rgba(15,23,42,.08)";
@@ -146,7 +145,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     <span className="truncate text-[var(--fs-tiny)] font-medium">{canvasT("videoCanvas.prompt.creation", "{{mode}}创作", { mode: modeDisplayName(mode) })}</span>
                 </div>
             )}
-            {( !simpleMode || mode === "image" || mode === "video") ? <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense /> : null}
+            <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense />
             <div className="ml-auto flex shrink-0 items-center justify-end gap-1">
                 {activeReferenceCount ? <ComposerPill theme={theme} borderColor={insetBorder} icon={<Boxes className="size-2.5" />} label={canvasT("videoCanvas.prompt.connected", "已连接 {{count}} 个", { count: activeReferenceCount })} /> : null}
                 {!expanded && canExpandPrompt ? (

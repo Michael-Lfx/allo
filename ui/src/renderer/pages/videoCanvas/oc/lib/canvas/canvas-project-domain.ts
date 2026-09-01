@@ -12,20 +12,20 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Canvas
 const CANVAS_WORKSPACE_MODE_STORAGE_KEY = "canvas-workspace-mode-v1";
 
 export function readCanvasWorkspaceMode(): CanvasWorkspaceMode {
-    if (typeof window === "undefined") return "professional";
-    try {
-        return scopedLocalStorage.getItem(CANVAS_WORKSPACE_MODE_STORAGE_KEY) === "simple" ? "simple" : "professional";
-    } catch (error) {
-        console.warn("读取画布工作模式失败，已使用专业模式", error);
-        return "professional";
-    }
+    migrateCanvasWorkspaceMode();
+    return "professional";
 }
 
-export function persistCanvasWorkspaceMode(mode: CanvasWorkspaceMode) {
+export function persistCanvasWorkspaceMode(_mode?: CanvasWorkspaceMode) {
+    migrateCanvasWorkspaceMode();
+}
+
+function migrateCanvasWorkspaceMode() {
+    if (typeof window === "undefined") return;
     try {
-        scopedLocalStorage.setItem(CANVAS_WORKSPACE_MODE_STORAGE_KEY, mode);
+        if (scopedLocalStorage.getItem(CANVAS_WORKSPACE_MODE_STORAGE_KEY)) scopedLocalStorage.removeItem(CANVAS_WORKSPACE_MODE_STORAGE_KEY);
     } catch (error) {
-        console.warn("保存画布工作模式失败", error);
+        console.warn("清理画布工作模式失败", error);
     }
 }
 

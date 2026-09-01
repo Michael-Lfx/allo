@@ -71,8 +71,7 @@ const BUILTIN_NODE_TRAITS = {
         label: "生成配置",
         icon: <Settings2 />,
         minSize: DEFAULT_MIN_SIZE,
-        // 生成配置由连线时自动创建。
-        showInCreateMenu: false,
+        showInCreateMenu: true,
         // 生成模式由用户在配置节点上选择，缺省按图片。
         generationMode: (node: CanvasNodeData) => node.metadata?.generationMode || "image",
         // 不设 inputKind：配置节点本身不是参考素材，不参与容量计数。

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { canvasThemes, type CanvasBackgroundMode } from "@oc/lib/canvas-theme";
+import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
+import { resolveCanvasAppearance, resolveCanvasGridColor, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { canvasDotGridSizePx, canvasDotSizePx } from "@oc/lib/canvas/canvas-live-viewport";
 import { applyCanvasLiveViewport, subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -9,6 +10,7 @@ import type { ViewportTransform } from "@oc/types/canvas";
 type InfiniteCanvasProps = {
     containerRef: React.RefObject<HTMLDivElement | null>;
     viewport: ViewportTransform;
+    appearance?: CanvasAppearance;
     backgroundMode?: CanvasBackgroundMode;
     onViewportChange: (viewport: ViewportTransform) => void;
     onViewportPreviewChange?: (viewport: ViewportTransform) => void;
@@ -40,8 +42,9 @@ type PinchState = {
     initialScale: number;
 };
 
-export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines", onViewportChange, onViewportPreviewChange, onCanvasMouseDown, boxSelectEnabled = false, onCanvasDoubleClick, onCanvasDeselect, onContextMenu, onDrop, onFileDragEnter, onFileDragLeave, onFileDragOver, graphicsLayer, children }: InfiniteCanvasProps) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundMode = "lines", onViewportChange, onViewportPreviewChange, onCanvasMouseDown, boxSelectEnabled = false, onCanvasDoubleClick, onCanvasDeselect, onContextMenu, onDrop, onFileDragEnter, onFileDragLeave, onFileDragOver, graphicsLayer, children }: InfiniteCanvasProps) {
+    const colorTheme = useThemeStore((state) => state.theme);
+    const resolvedAppearance = resolveCanvasAppearance(appearance, colorTheme);
     const panState = useRef({
         isPanning: false,
         pointerId: -1,
@@ -376,7 +379,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
             data-canvas-hide-node-headers={viewport.k < 0.35 ? "true" : "false"}
             data-canvas-low-scale={viewport.k < 0.32 ? "true" : "false"}
             style={{
-                background: theme.canvas.background,
+                background: resolvedAppearance.background,
                 overscrollBehavior: "none",
                 "--canvas-live-x": `${viewport.x}px`,
                 "--canvas-live-y": `${viewport.y}px`,
@@ -406,7 +409,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
             }}
             onDrop={onDrop}
         >
-            <CanvasGrid mode={backgroundMode} />
+            <CanvasGrid appearance={appearance} mode={backgroundMode} />
             {graphicsLayer}
             <div
                 data-canvas-world-layer
@@ -420,11 +423,12 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
     );
 }
 
-function CanvasGrid({ mode }: { mode: CanvasBackgroundMode }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+function CanvasGrid({ appearance, mode }: { appearance?: CanvasAppearance; mode: CanvasBackgroundMode }) {
+    const colorTheme = useThemeStore((state) => state.theme);
+    const gridColor = resolveCanvasGridColor(appearance, colorTheme, mode);
     const backgroundImage = mode === "dots"
-        ? `radial-gradient(circle, ${theme.canvas.dot} var(--canvas-dot-size), transparent calc(var(--canvas-dot-size) + 0.2px))`
-        : `linear-gradient(${theme.canvas.line} 1px, transparent 1px), linear-gradient(90deg, ${theme.canvas.line} 1px, transparent 1px)`;
+        ? `radial-gradient(circle, ${gridColor} var(--canvas-dot-size), transparent calc(var(--canvas-dot-size) + 0.2px))`
+        : `linear-gradient(${gridColor} 1px, transparent 1px), linear-gradient(90deg, ${gridColor} 1px, transparent 1px)`;
     if (mode === "blank") return null;
 
     return (

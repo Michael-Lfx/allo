@@ -36,7 +36,7 @@ import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
-import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
+import { prefetchCanvasWorkspace } from './prefetch';
 import { parseVideoHomeMode } from './home/types';
 import type { VideoCreateDraft, VideoHomeMode } from './home/types';
 import {
@@ -213,7 +213,7 @@ const VideoGenerationListPage: React.FC = () => {
   // 「打开到 Canvas」/ 画布入口跳转到这里；用户在列表页停留时提前拉取并解析
   // ProjectPage 大 chunk，跳转时不再出现多秒骨架屏。
   useEffect(() => {
-    void loadVideoCanvasProjectPage();
+    prefetchCanvasWorkspace();
   }, []);
 
   const displayed = useMemo(() => {
@@ -375,6 +375,7 @@ const VideoGenerationListPage: React.FC = () => {
     async (draft: VideoCreateDraft) => {
       if (creating) return;
       setCreating(true);
+      prefetchCanvasWorkspace();
       const references: import('../videoCanvas/api').CanvasMediaMeta[] = [];
       let canvasCreated = false;
       try {
@@ -409,6 +410,7 @@ const VideoGenerationListPage: React.FC = () => {
           requirement: draft.requirement.trim() || undefined,
           mediaKind: draft.preferences.mediaKind,
           intent: 'creation',
+          autoAgent: true,
           skill: {
             id: draft.creationSkillId,
             label: skillLabel,

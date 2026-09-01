@@ -5,7 +5,24 @@ import { getActiveUserScope } from "@oc/lib/user-scope";
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, resolveResourceUrl, uploadResourceFile } from "@oc/services/api/resources";
 import { getCachedResourceBlob, getCachedResourceObjectUrl, primeResourceBlobCache } from "@oc/services/resource-blob-cache";
 
-export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
+export type UploadedFile = {
+    url: string;
+    storageKey: string;
+    bytes: number;
+    mimeType: string;
+    width?: number;
+    height?: number;
+    durationMs?: number;
+    hasAudio?: boolean;
+    preview?: {
+        url: string;
+        storageKey: string;
+        width?: number;
+        height?: number;
+        bytes?: number;
+        mimeType?: string;
+    };
+};
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
 const objectUrls = new Map<string, string>();

@@ -3,12 +3,14 @@ import { App } from "antd";
 import { useNavigate } from "react-router-dom";
 
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
+import { canvasAppearanceBaseTheme, normalizeCanvasAppearance, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { removeCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
 import { hydrateAssistantImages, hydrateCanvasImages, resetInterruptedGeneration } from "@oc/lib/canvas/canvas-project-generation";
 import { normalizeCanvasNodeTimestamps } from "@oc/lib/canvas/canvas-node-timestamps";
 import { listAddedSkills, type Skill } from "@oc/services/api/skills";
 import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
+import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, CanvasNodeMetadata, ViewportTransform } from "@oc/types/canvas";
 import { createCanvasPersistPause } from "../../../lib/canvasProjectAutosave";
 import type { CanvasHistorySnapshot } from "./use-canvas-history";
@@ -21,6 +23,7 @@ type UseCanvasProjectLifecycleOptions = {
     chatSessions: CanvasAssistantSession[];
     activeChatId: string | null;
     backgroundMode: CanvasBackgroundMode;
+    canvasAppearance: CanvasAppearance;
     showImageInfo: boolean;
     viewport: ViewportTransform;
     nodesRef: MutableRefObject<CanvasNodeData[]>;
@@ -32,6 +35,7 @@ type UseCanvasProjectLifecycleOptions = {
     setChatSessions: Dispatch<SetStateAction<CanvasAssistantSession[]>>;
     setActiveChatId: Dispatch<SetStateAction<string | null>>;
     setBackgroundMode: Dispatch<SetStateAction<CanvasBackgroundMode>>;
+    setCanvasAppearance: Dispatch<SetStateAction<CanvasAppearance>>;
     setShowImageInfo: Dispatch<SetStateAction<boolean>>;
     setViewport: Dispatch<SetStateAction<ViewportTransform>>;
     setProjectLoaded: Dispatch<SetStateAction<boolean>>;
@@ -48,6 +52,7 @@ export function useCanvasProjectLifecycle({
     chatSessions,
     activeChatId,
     backgroundMode,
+    canvasAppearance,
     showImageInfo,
     viewport,
     nodesRef,
@@ -59,6 +64,7 @@ export function useCanvasProjectLifecycle({
     setChatSessions,
     setActiveChatId,
     setBackgroundMode,
+    setCanvasAppearance,
     setShowImageInfo,
     setViewport,
     setProjectLoaded,
@@ -110,6 +116,10 @@ export function useCanvasProjectLifecycle({
             setChatSessions(snapshot.chatSessions);
             setActiveChatId(snapshot.activeChatId);
             setBackgroundMode(snapshot.backgroundMode);
+            const restoredAppearance = normalizeCanvasAppearance(project.appearance, canvasAppearanceBaseTheme(project.appearance, "dark"));
+            setCanvasAppearance(restoredAppearance);
+            const restoredTheme = canvasAppearanceBaseTheme(restoredAppearance, useThemeStore.getState().theme);
+            if (restoredTheme !== useThemeStore.getState().theme) useThemeStore.getState().setTheme(restoredTheme);
             setShowImageInfo(snapshot.showImageInfo);
             setViewport(project.viewport);
             resetHistory(snapshot);
@@ -157,8 +167,8 @@ export function useCanvasProjectLifecycle({
 
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current || persistPausedRef.current.paused) return;
-        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo });
-    }, [activeChatId, backgroundMode, chatSessions, connections, historyPausedRef, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
+        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, appearance: canvasAppearance, backgroundMode, showImageInfo });
+    }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connections, historyPausedRef, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded || persistPausedRef.current.paused) return;
@@ -207,6 +217,7 @@ export function useCanvasProjectLifecycle({
                 connections: connectionsRef.current,
                 chatSessions,
                 activeChatId,
+                appearance: canvasAppearance,
                 backgroundMode,
                 showImageInfo,
                 viewport: viewportRef.current,
@@ -224,7 +235,7 @@ export function useCanvasProjectLifecycle({
             const detail = error instanceof Error ? error.message : "未知错误";
             message.warning(`本地画布布局已保存，云端同步失败：${detail}`);
         }
-    }, [activeChatId, backgroundMode, chatSessions, connectionsRef, currentProject?.directorScenes, message, nodesRef, projectId, showImageInfo, updateProject, viewportRef]);
+    }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connectionsRef, currentProject?.directorScenes, message, nodesRef, projectId, showImageInfo, updateProject, viewportRef]);
 
     const clearCanvasFiles = useCallback(() => {
         cleanupCanvasFiles({ projectId, nodes: [], chatSessions: [] });

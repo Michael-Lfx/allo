@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router-dom";
 import { useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
 import { canvasThemes, type CanvasBackgroundMode } from "@oc/lib/canvas-theme";
+import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, writeCanvasAppearanceDefault, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { readCanvasMediaPerformanceMode } from "@oc/lib/canvas/canvas-performance-mode";
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
 import { refreshCanvasCharacterReferenceNodes } from "@oc/lib/canvas/canvas-character-reference";
@@ -37,6 +38,9 @@ import { useCanvasNodeEditor } from "./use-canvas-node-editor";
 import { useCanvasNodeOperations } from "./use-canvas-node-operations";
 import { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import { useCanvasProjectShare } from "./use-canvas-project-share";
+import { homeAgentAutoStartFromCreative, readHomeLaunchSidecar } from "@renderer/pages/videoCanvas/lib/home-agent-launch";
+import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
+import { loadCanvasAssistantPanel } from "@renderer/pages/videoCanvas/loadAssistantPanel";
 import { useCanvasRenderModel } from "./use-canvas-render-model";
 import { useCanvasSelectionController } from "./use-canvas-selection-controller";
 import { useCanvasShortDrama } from "./use-canvas-short-drama";
@@ -79,10 +83,17 @@ type CanvasPageProps = {
     modelCatalogReady: boolean;
 };
 
+function peekHomeAgentAutoStart(projectId: string) {
+    if (!projectId) return null;
+    const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
+    return homeAgentAutoStartFromCreative(project?.alloCreative);
+}
+
 export default function CanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const [mounted, setMounted] = useState(false);
 
     useEffect(() => {
+        void loadCanvasAssistantPanel();
         setMounted(true);
     }, []);
 
@@ -141,11 +152,12 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
+    const [canvasAppearance, setCanvasAppearance] = useState<CanvasAppearance>(() => canvasAppearanceForTheme(useThemeStore.getState().theme));
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [canvasTool, setCanvasTool] = useState<CanvasToolMode>("move");
     const [mediaPerformanceMode, setMediaPerformanceMode] = useState<CanvasMediaPerformanceMode>(readCanvasMediaPerformanceMode);
     const [projectLoaded, setProjectLoaded] = useState(false);
-    const [workspaceMode, setWorkspaceMode] = useState<CanvasWorkspaceMode>(readCanvasWorkspaceMode);
+    const [workspaceMode] = useState<CanvasWorkspaceMode>(readCanvasWorkspaceMode);
     const dialogState = useCanvasDialogState();
     const {
         setNodeSearchOpen,
@@ -163,13 +175,16 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         directorNodeId,
         setDirectorNodeId,
         setShortcutRequestNonce,
-        setCinematicAgentEntry,
         openProjectAssets,
     } = dialogState;
     const codexAutoConnect = ["new", "recent", "choose"].includes(searchParams.get("mode") || "");
     const codexCompactAgent = codexAutoConnect && searchParams.has("agentUrl");
     const { assistantWidth, setAssistantWidth } = useCanvasAssistantPanelWidth();
-    const { agentMode, assistantClosing, assistantMounted, assistantOpen, closeAgent, openAgent, setAgentMode } = useCanvasAssistantVisibility();
+    const [homeAgentAutoStart, setHomeAgentAutoStart] = useState(() => peekHomeAgentAutoStart(projectId));
+    const homeAutoAgentTriedRef = useRef(homeAgentAutoStart !== null);
+    const { agentMode, assistantClosing, assistantMounted, assistantOpen, closeAgent, openAgent, setAgentMode } = useCanvasAssistantVisibility({
+        initialOpen: homeAgentAutoStart !== null,
+    });
     const assistant = { agentMode, assistantClosing, assistantMounted, assistantOpen, closeAgent, openAgent, setAgentMode };
     const { tasks: activeTasks } = useCanvasActiveTasks(projectId, projectLoaded);
     const { focusMode, enterFocusMode, exitFocusMode, toggleFocusMode } = useFocusMode();
@@ -217,12 +232,14 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         chatSessions,
         activeChatId,
         backgroundMode,
+        canvasAppearance,
         showImageInfo,
         viewport,
         historyPausedRef,
         setChatSessions,
         setActiveChatId,
         setBackgroundMode,
+        setCanvasAppearance,
         setShowImageInfo,
         setViewport,
         setProjectLoaded,
@@ -231,6 +248,14 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         cleanupCanvasFiles,
     });
     const projectShare = useCanvasProjectShare(currentProject);
+    const applyCanvasAppearance = useCallback((next: CanvasAppearance) => {
+        setCanvasAppearance(next);
+        const nextTheme = canvasAppearanceBaseTheme(next, useThemeStore.getState().theme);
+        if (nextTheme !== useThemeStore.getState().theme) useThemeStore.getState().setTheme(nextTheme);
+    }, []);
+    const saveCanvasAppearanceDefault = useCallback((appearance: CanvasAppearance) => {
+        writeCanvasAppearanceDefault({ appearance, backgroundMode });
+    }, [backgroundMode]);
     const linkedProjectId = shortDramaEnabled ? currentProject?.projectId || "" : "";
     const linkedProjectQuery = useQuery({ queryKey: ["project", linkedProjectId], queryFn: () => getProject(linkedProjectId), enabled: Boolean(linkedProjectId) });
     useEffect(() => {
@@ -320,6 +345,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         cropNodeId,
         closeFrameDialog,
         extractVideoFrames,
+        extractVideoFramesForAgent,
         extractingVideoFrameNodeId,
         frameDialogNodeId,
         openVideoFrameExtractor,
@@ -699,6 +725,27 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         projectId,
     ]);
 
+    useEffect(() => {
+        if (!projectLoaded || homeAutoAgentTriedRef.current) return;
+        const autoStart = homeAgentAutoStartFromCreative(currentProject?.alloCreative);
+        if (!autoStart) return;
+        homeAutoAgentTriedRef.current = true;
+        setHomeAgentAutoStart(autoStart);
+        openAgent("online");
+    }, [currentProject?.alloCreative, openAgent, projectLoaded]);
+    const consumeHomeAgentAutoStart = useCallback(() => {
+        setHomeAgentAutoStart(null);
+        const creative = currentProject?.alloCreative;
+        const launch = readHomeLaunchSidecar(creative);
+        if (!launch) return;
+        updateProject(projectId, {
+            alloCreative: {
+                ...(typeof creative === "object" && creative ? creative : {}),
+                homeLaunch: { ...launch, autoAgent: false, agentBriefSent: true },
+            },
+        });
+    }, [currentProject?.alloCreative, projectId, updateProject]);
+
     const { cancelSubmittedBatchItem, enqueueGenerationBatch, retryFailedBatchItems, stopRemainingBatchItems } = useCanvasGenerationBatches({
         projectId,
         projectLoaded,
@@ -804,10 +851,9 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
             onOpenAssets={() => openProjectAssets()}
                             onCreatePipeline={shortDramaActions.createShortDramaPipeline}
             onOpenAgent={() => {
-                setCinematicAgentEntry(true);
-                setAgentMode("online");
                 openAgent("online");
             }}
+            onStartFreeform={() => updateProject(projectId, { starterMode: "freeform" })}
         />
     );
     if (!projectLoaded) return <CanvasRefreshShell />;
@@ -835,8 +881,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         {...dialogState}
                         focusMode={focusMode}
                         currentProject={currentProject}
-                        workspaceMode={workspaceMode}
-                        setWorkspaceMode={setWorkspaceMode}
                         createAndOpenProject={createAndOpenProject}
                         deleteCurrentProject={deleteCurrentProject}
                         handleUploadRequest={handleUploadRequest}
@@ -888,6 +932,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                             theme={theme}
                             containerRef={containerRef}
                             backgroundMode={backgroundMode}
+                            canvasAppearance={canvasAppearance}
                             canvasTool={canvasTool}
                             activeTasks={activeTasks}
                             focusMode={focusMode}
@@ -900,6 +945,8 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                             shortDramaEnabled={shortDramaEnabled}
                             currentProject={currentProject}
                             setBackgroundMode={setBackgroundMode}
+                            applyCanvasAppearance={applyCanvasAppearance}
+                            saveCanvasAppearanceDefault={saveCanvasAppearanceDefault}
                             setShowImageInfo={setShowImageInfo}
                             createNode={createNode}
                             createFolder={createFolder}
@@ -925,6 +972,9 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                             handleAssistantSessionsChange={handleAssistantSessionsChange}
                             pasteAssistantImage={pasteAssistantImage}
                             codexAutoConnect={codexAutoConnect}
+                            extractFramesForAgent={extractVideoFramesForAgent}
+                            autoStart={homeAgentAutoStart}
+                            onAutoStartConsumed={consumeHomeAgentAutoStart}
                         />
                     </div>
                     {/* 选区框、连接草稿与节点弹层（HideWhileSelectionBox/HideWhileNodeDragging 隔离）统一在此编排 */}

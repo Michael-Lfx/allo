@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Button, Input, InputNumber, Popover, Segmented, Select, Tooltip } from "antd";
-import { Clapperboard, Expand, Grid3X3, Image as ImageIcon, ListTree, Merge, Minus, Plus, RefreshCw, Send, Square, Trash2, Video, X } from "lucide-react";
+import { Clapperboard, Expand, Grid3X3, ListTree, Merge, Minus, Plus, RefreshCw, Send, Square, Trash2, X } from "lucide-react";
 
 import { CanvasResourceMentionTextarea } from "@oc/components/canvas/canvas-resource-mention-textarea";
 import { ModelPicker } from "@oc/components/model-picker";
@@ -38,7 +38,7 @@ export function storyboardTableHeight(nodeHeight: number, composerHeight = STORY
     return Math.max(STORYBOARD_ROW_HEIGHT, nodeHeight - STORYBOARD_HEADER_HEIGHT - STORYBOARD_ADD_ROW_HEIGHT - Math.min(STORYBOARD_COMPOSER_MAX_HEIGHT, Math.max(STORYBOARD_COMPOSER_MIN_HEIGHT, composerHeight)));
 }
 
-export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferences, onOpen, onCreateImageNodes, onCreateVideoNodes, onGenerateImages, onGenerateVideos, onVideoInputModeChange, onMergeVideos, onCreateActionBoards, onRetryBatch, onRetryBatchItem, onStopBatch, onCancelBatchItem, onAddRow, onRemoveRow, onUpdateRow, onPromptChange, onGenerateScript, onModelChange, onShotDurationChange, onShotCountChange, onComposerHeightChange, onConnectStart, onScrollTopChange, workspaceMode = "professional" }: {
+export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferences, onOpen, onCreateImageNodes, onCreateVideoNodes, onGenerateImages, onGenerateVideos, onVideoInputModeChange, onMergeVideos, onCreateActionBoards, onRetryBatch, onRetryBatchItem, onStopBatch, onCancelBatchItem, onAddRow, onRemoveRow, onUpdateRow, onPromptChange, onGenerateScript, onModelChange, onShotDurationChange, onShotCountChange, onComposerHeightChange, onConnectStart, onScrollTopChange }: {
     node: CanvasNodeData;
     batch?: CanvasGenerationBatch;
     pipeline: CanvasStoryboardPipelineProgress;
@@ -72,7 +72,6 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const effectiveConfig = useEffectiveConfig();
     const generationConfig = buildGenerationConfig(effectiveConfig, node, "text");
-    const simpleMode = workspaceMode === "simple";
     const rows = node.metadata?.storyboard?.rows || [];
     const [prompt, setPrompt] = useState(node.metadata?.composerContent || "");
     // 滚动热路径：scrollTop 只进 ref，端口位置由 rAF 里直改 DOM transform，
@@ -127,12 +126,11 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
                     {hasWaitingBatchItems ? <Tooltip title={canvasT("videoCanvas.script.stopRemaining", "停止剩余任务")}><button type="button" className="grid size-7 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ "--tw-ring-color": theme.node.muted } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onStopBatch(batch.id); }} aria-label={canvasT("videoCanvas.script.stopRemaining", "停止剩余任务")}><Square className="size-3.5" /></button></Tooltip> : null}
                     <Popover placement="bottomRight" trigger="click" content={<GenerationBatchDetails batch={batch} rows={rows} onRetryItem={(itemId) => onRetryBatchItem(batch.id, itemId)} onCancelItem={(itemId) => onCancelBatchItem(batch.id, itemId)} />}><Tooltip title={canvasT("videoCanvas.script.viewDetails", "查看详情")}><button type="button" className="grid size-7 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ "--tw-ring-color": theme.node.muted } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} aria-label={canvasT("videoCanvas.script.batchDetailsAria", "查看批次详情")}><ListTree className="size-3.5" /></button></Tooltip></Popover>
                 </> : null}
-                {simpleMode ? null : <Tooltip title={canvasT("videoCanvas.script.actionBoard", "生成动作拆分 12 宫格")}><button type="button" disabled={!rows.length || hasActiveBatchItems} className="grid size-7 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-white/10" style={{ "--tw-ring-color": theme.node.muted } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCreateActionBoards(); }}><Grid3X3 className="size-3.5" /></button></Tooltip>}
-                {simpleMode ? null : <Tooltip title={canvasT("videoCanvas.script.fullscreenEdit", "全屏编辑")}><button type="button" className="grid size-7 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ "--tw-ring-color": theme.node.muted } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpen(); }}><Expand className="size-3.5" /></button></Tooltip>}
+                <Tooltip title={canvasT("videoCanvas.script.actionBoard", "生成动作拆分 12 宫格")}><button type="button" disabled={!rows.length || hasActiveBatchItems} className="grid size-7 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-white/10" style={{ "--tw-ring-color": theme.node.muted } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCreateActionBoards(); }}><Grid3X3 className="size-3.5" /></button></Tooltip>
+                <Tooltip title={canvasT("videoCanvas.script.fullscreenEdit", "全屏编辑")}><button type="button" className="grid size-7 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ "--tw-ring-color": theme.node.muted } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpen(); }}><Expand className="size-3.5" /></button></Tooltip>
             </div>
             <StoryboardPipelineBar
                 pipeline={pipeline}
-                simpleMode={simpleMode}
                 disabled={!rows.length || node.metadata?.status === "loading" || hasActiveBatchItems}
                 theme={theme}
                 onCreateImageNodes={onCreateImageNodes}
@@ -233,7 +231,7 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
                             />
                         </div>
                     </Tooltip>
-                    {simpleMode ? <span className="shrink-0 truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.script.autoSplitDefault", "自动拆分 · 默认时长")}</span> : <Select<StoryboardShotCount>
+                    <Select<StoryboardShotCount>
                         className="w-[7.5rem] shrink-0"
                         size="small"
                         value={shotCount}
@@ -241,8 +239,8 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
                         options={[{ value: "auto", label: canvasT("videoCanvas.script.shotCountAuto", "分镜数量：自动拆分") }, ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1) as StoryboardShotCount, label: canvasT("videoCanvas.script.shotCountN", "分镜数量：{{n}}", { n: index + 1 }) }))]}
                         popupMatchSelectWidth={false}
                         onChange={onShotCountChange}
-                    />}
-                    {simpleMode ? null : <Select<StoryboardShotDuration>
+                    />
+                    <Select<StoryboardShotDuration>
                         className="w-[7.5rem] shrink-0"
                         size="small"
                         value={shotDuration}
@@ -256,7 +254,7 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
                         ]}
                         popupMatchSelectWidth={false}
                         onChange={onShotDurationChange}
-                    />}
+                    />
                     <Button
                         size="small"
                         shape="circle"
@@ -288,9 +286,8 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
     );
 }
 
-function StoryboardPipelineBar({ pipeline, simpleMode, disabled, theme, videoInputMode, onCreateImageNodes, onCreateVideoNodes, onGenerateImages, onGenerateVideos, onVideoInputModeChange, onMergeVideos }: {
+function StoryboardPipelineBar({ pipeline, disabled, theme, videoInputMode, onCreateImageNodes, onCreateVideoNodes, onGenerateImages, onGenerateVideos, onVideoInputModeChange, onMergeVideos }: {
     pipeline: CanvasStoryboardPipelineProgress;
-    simpleMode: boolean;
     disabled: boolean;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     videoInputMode: StoryboardVideoInputMode;
@@ -307,16 +304,8 @@ function StoryboardPipelineBar({ pipeline, simpleMode, disabled, theme, videoInp
     return (
         <div className="grid h-12 shrink-0 grid-cols-3 border-b" style={{ borderColor: theme.node.stroke, background: theme.node.fill }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <PipelineStageCell label={videoInputMode === "keyframe" ? canvasT("videoCanvas.script.keyframe", "首帧") : canvasT("videoCanvas.script.storyboardImageOptional", "分镜图（可选）")} stage={pipeline.images} theme={theme}>
-                {simpleMode ? (
-                    <Button size="small" type="text" icon={<ImageIcon className="size-3" />} disabled={disabled || pipeline.images.incomplete === 0} onClick={onGenerateImages}>
-                        {pipeline.images.incomplete ? canvasT("videoCanvas.script.genImages", "生成 {{count}} 张{{kind}}", { count: pipeline.images.incomplete, kind: videoInputMode === "keyframe" ? canvasT("videoCanvas.script.keyframe", "首帧") : canvasT("videoCanvas.script.storyboardImage", "分镜图") }) : canvasT("videoCanvas.script.imagesDone", "{{kind}}已完成", { kind: videoInputMode === "keyframe" ? canvasT("videoCanvas.script.keyframe", "首帧") : canvasT("videoCanvas.script.storyboardImage", "分镜图") })}
-                    </Button>
-                ) : (
-                    <>
-                        <Button size="small" type="text" disabled={disabled || missingImages === 0} onClick={onCreateImageNodes}>{missingImages ? canvasT("videoCanvas.script.createImageNodes", "创建 {{count}} 个图片节点", { count: missingImages }) : canvasT("videoCanvas.script.imageNodesCreated", "图片节点已创建")}</Button>
-                        <Button size="small" type="text" disabled={disabled || pipeline.images.incomplete === 0} onClick={onGenerateImages}>{canvasT("videoCanvas.script.genIncompleteImages", "生成未完成的图片")}</Button>
-                    </>
-                )}
+                <Button size="small" type="text" disabled={disabled || missingImages === 0} onClick={onCreateImageNodes}>{missingImages ? canvasT("videoCanvas.script.createImageNodes", "创建 {{count}} 个图片节点", { count: missingImages }) : canvasT("videoCanvas.script.imageNodesCreated", "图片节点已创建")}</Button>
+                <Button size="small" type="text" disabled={disabled || pipeline.images.incomplete === 0} onClick={onGenerateImages}>{canvasT("videoCanvas.script.genIncompleteImages", "生成未完成的图片")}</Button>
             </PipelineStageCell>
             <PipelineStageCell label={canvasT("videoCanvas.script.shotVideos", "镜头视频")} stage={pipeline.videos} theme={theme}>
                 <Segmented<StoryboardVideoInputMode>
@@ -325,16 +314,8 @@ function StoryboardPipelineBar({ pipeline, simpleMode, disabled, theme, videoInp
                     options={[{ value: "direct", label: canvasT("videoCanvas.script.directGen", "直接生成") }, { value: "keyframe", label: canvasT("videoCanvas.script.keyframeFirst", "先做首帧") }]}
                     onChange={onVideoInputModeChange}
                 />
-                {simpleMode ? (
-                    <Button size="small" type="text" icon={<Video className="size-3" />} disabled={disabled || pipeline.videos.incomplete === 0} onClick={onGenerateVideos}>
-                        {pipeline.videos.incomplete ? videoInputMode === "keyframe" ? canvasT("videoCanvas.script.confirmKeyframeGen", "确认首帧并生成") : canvasT("videoCanvas.script.genShotVideos", "生成 {{count}} 个镜头视频", { count: pipeline.videos.incomplete }) : canvasT("videoCanvas.script.shotVideosDone", "镜头视频已完成")}
-                    </Button>
-                ) : (
-                    <>
-                        <Button size="small" type="text" disabled={disabled || missingVideos === 0} onClick={onCreateVideoNodes}>{missingVideos ? canvasT("videoCanvas.script.createVideoNodes", "创建 {{count}} 个视频节点", { count: missingVideos }) : canvasT("videoCanvas.script.videoNodesCreated", "视频节点已创建")}</Button>
-                        <Button size="small" type="text" disabled={disabled || pipeline.videos.incomplete === 0} onClick={onGenerateVideos}>{videoInputMode === "keyframe" ? canvasT("videoCanvas.script.confirmKeyframeGen", "确认首帧并生成") : canvasT("videoCanvas.script.genIncompleteVideos", "生成未完成的视频")}</Button>
-                    </>
-                )}
+                <Button size="small" type="text" disabled={disabled || missingVideos === 0} onClick={onCreateVideoNodes}>{missingVideos ? canvasT("videoCanvas.script.createVideoNodes", "创建 {{count}} 个视频节点", { count: missingVideos }) : canvasT("videoCanvas.script.videoNodesCreated", "视频节点已创建")}</Button>
+                <Button size="small" type="text" disabled={disabled || pipeline.videos.incomplete === 0} onClick={onGenerateVideos}>{videoInputMode === "keyframe" ? canvasT("videoCanvas.script.confirmKeyframeGen", "确认首帧并生成") : canvasT("videoCanvas.script.genIncompleteVideos", "生成未完成的视频")}</Button>
             </PipelineStageCell>
             <PipelineStageCell label={canvasT("videoCanvas.script.mergeFinal", "合并成片")} stage={pipeline.final} theme={theme} last>
                 <button

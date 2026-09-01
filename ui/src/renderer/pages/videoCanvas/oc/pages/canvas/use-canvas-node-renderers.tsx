@@ -214,7 +214,6 @@ export function useCanvasNodeRenderers(input: CanvasNodeRenderersInput) {
                         node={contentNode}
                         scene={directorScenes?.find((scene) => scene.id === contentNode.metadata?.directorSceneId) || null}
                         readNodeContent={(nodeId) => nodesRef.current.find((item) => item.id === nodeId)?.metadata?.content}
-                        professional={workspaceMode === "professional"}
                         onOpen={() => openDirectorWorkbench(contentNode.id)}
                     />
                 );

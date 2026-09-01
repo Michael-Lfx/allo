@@ -192,9 +192,11 @@ export function useCanvasMediaTools({
         setFrameDialogNodeId(null);
     }, []);
 
-    const extractVideoFrames = useCallback(async (node: CanvasNodeData, params: CanvasVideoFrameParams) => {
+    const extractVideoFrames = useCallback(async (node: CanvasNodeData, params: CanvasVideoFrameParams): Promise<{ createdNodeIds: string[]; message: string }> => {
         const content = node.metadata?.content;
-        if (!content || extractingVideoFrameNodeIdRef.current || !params.timesMs.length) return;
+        if (!content || extractingVideoFrameNodeIdRef.current || !params.timesMs.length) {
+            return { createdNodeIds: [], message: canvasT("videoCanvas.agent.extractMissing", "缺少可提取的视频节点。") };
+        }
         const progress = startUploadStatus(canvasT("videoCanvas.frames.progressTitle", "提取视频画面"), canvasT("videoCanvas.frames.progressRead", "读取视频资源"), params.timesMs.length + 2);
         extractingVideoFrameNodeIdRef.current = node.id;
         setExtractingVideoFrameNodeId(node.id);
@@ -230,15 +232,28 @@ export function useCanvasMediaTools({
             const failedCount = captured.failures.length + uploadFailures.length;
             progress.done(failedCount ? canvasT("videoCanvas.frames.partialDone", "已提取 {{n}} 帧，{{failed}} 帧失败", { n: frameNodes.length, failed: failedCount }) : canvasT("videoCanvas.frames.done", "已提取 {{n}} 帧并创建图片节点", { n: frameNodes.length }));
             if (failedCount) message.warning(canvasT("videoCanvas.frames.partialWarn", "{{n}} 个时间点提取失败，其余画面已创建", { n: failedCount }));
+            return {
+                createdNodeIds: frameNodes.map((frameNode) => frameNode.id),
+                message: failedCount
+                    ? canvasT("videoCanvas.frames.partialDone", "已提取 {{n}} 帧，{{failed}} 帧失败", { n: frameNodes.length, failed: failedCount })
+                    : canvasT("videoCanvas.frames.done", "已提取 {{n}} 帧并创建图片节点", { n: frameNodes.length }),
+            };
         } catch (error) {
             const details = error instanceof Error ? error.message : canvasT("videoCanvas.frames.failed", "视频画面提取失败");
             progress.fail(details);
             message.error(details);
+            return { createdNodeIds: [], message: details };
         } finally {
             extractingVideoFrameNodeIdRef.current = null;
             setExtractingVideoFrameNodeId(null);
         }
     }, [connectionsRef, message, nodesRef, selectedNodeIdsRef, setConnections, setNodes, setSelectedConnectionId, setSelectedNodeIds, startUploadStatus]);
+
+    const extractVideoFramesForAgent = useCallback(async (nodeId: string, timesMs: number[]) => {
+        const node = nodesRef.current.find((item) => item.id === nodeId);
+        if (!node) return { createdNodeIds: [], message: canvasT("videoCanvas.agent.extractMissing", "缺少可提取的视频节点。") };
+        return extractVideoFrames(node, { timesMs });
+    }, [extractVideoFrames, nodesRef]);
 
     const mergeVideosByIds = useCallback(async (videoNodeIds: string[]) => {
         if (mergeVideoRunningRef.current) return;
@@ -479,6 +494,7 @@ export function useCanvasMediaTools({
         cropNodeId,
         closeFrameDialog,
         extractVideoFrames,
+        extractVideoFramesForAgent,
         extractingVideoFrameNodeId,
         frameDialogNodeId,
         openVideoFrameExtractor,

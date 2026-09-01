@@ -84,7 +84,7 @@ export function useCanvasAgentOperations({
         const safeOps = Array.isArray(ops) ? ops.filter((op) => op?.type) : [];
         const before = { projectId, domainProjectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current };
         const generationOps = safeOps.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation" && Boolean(op.nodeId));
-        const next = applyCanvasAgentOps(before, safeOps.filter((op) => op.type !== "run_generation"));
+        const next = applyCanvasAgentOps(before, safeOps.filter((op) => op.type !== "run_generation" && op.type !== "extract_frames"));
         const beforeNodeIds = new Set(before.nodes.map((node) => node.id));
         const addedNodeIds = next.nodes.filter((node) => !beforeNodeIds.has(node.id)).map((node) => node.id);
         const addedNodeIdSet = new Set(addedNodeIds);

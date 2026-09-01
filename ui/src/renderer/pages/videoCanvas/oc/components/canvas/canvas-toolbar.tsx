@@ -1,18 +1,19 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { Segmented, Switch } from "antd";
-import { CircleDot, Grid2x2, Moon, Palette, Sun, Square, Info } from "lucide-react";
+import { Switch } from "antd";
+import { Palette, Info } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { AnimatedThemeToggler } from "@oc/components/ui/animated-theme-toggler";
+import { CanvasCreateMenu, type CanvasCreateCommand } from "@oc/components/canvas/canvas-create-menu";
 import { FloatingDock } from "@oc/components/ui/aceternity/floating-dock";
 import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
-import { CanvasCreateMenu, type CanvasCreateCommand } from "@oc/components/canvas/canvas-create-menu";
+import { CanvasAppearanceControls } from "@oc/components/canvas/canvas-appearance-controls";
 import { ToolbarSettingsModal } from "@oc/components/canvas/toolbars/toolbar-settings-modal";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
-import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type CanvasTheme } from "@oc/lib/canvas-theme";
+import { canvasThemes, type CanvasBackgroundMode, type CanvasTheme } from "@oc/lib/canvas-theme";
+import type { CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { defaultToolbarPrefs, readToolbarPrefs, resolveAddNodeMenuCommands, resolveToolbarEntries, type ResolvedAddNodeMenuCommand, type ToolContext, type ToolbarHandlers, type ToolbarPrefs } from "@oc/lib/canvas/tool-registry";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasNodeType, CanvasToolMode, CanvasWorkspaceMode } from "@oc/types/canvas";
@@ -26,6 +27,7 @@ export function CanvasToolbar({
     canUndo,
     canRedo,
     backgroundMode,
+    appearance,
     showImageInfo,
     onAddImage,
     onAddVideo,
@@ -45,6 +47,8 @@ export function CanvasToolbar({
     onClear,
     onDeselect,
     onBackgroundModeChange,
+    onAppearanceChange,
+    onSaveAppearanceDefault,
     onShowImageInfoChange,
     onOpenMyAssets,
     onOpenProjectCharacters,
@@ -57,6 +61,7 @@ export function CanvasToolbar({
     canUndo: boolean;
     canRedo: boolean;
     backgroundMode: CanvasBackgroundMode;
+    appearance: CanvasAppearance;
     showImageInfo: boolean;
     onAddImage: () => void;
     onAddVideo: () => void;
@@ -76,6 +81,8 @@ export function CanvasToolbar({
     onClear: () => void;
     onDeselect: () => void;
     onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
+    onAppearanceChange: (appearance: CanvasAppearance) => void;
+    onSaveAppearanceDefault: (appearance: CanvasAppearance) => void;
     onShowImageInfoChange: (show: boolean) => void;
     onOpenMyAssets: () => void;
     onOpenProjectCharacters: () => void;
@@ -84,7 +91,6 @@ export function CanvasToolbar({
     const rootRef = useRef<HTMLDivElement>(null);
     const dockRef = useRef<HTMLDivElement>(null);
     const colorTheme = useThemeStore((state) => state.theme);
-    const setTheme = useThemeStore((state) => state.setTheme);
     const theme = canvasThemes[colorTheme];
     const [addOpen, setAddOpen] = useState(false);
     const [appearanceOpen, setAppearanceOpen] = useState(false);
@@ -109,6 +115,7 @@ export function CanvasToolbar({
         const closeFloatingPanels = (event: PointerEvent) => {
             const target = event.target instanceof Node ? event.target : null;
             if (target && rootRef.current?.contains(target)) return;
+            if (target instanceof Element && target.closest(".ant-color-picker,.ant-color-picker-dropdown,.ant-popover,.ant-select-dropdown")) return;
             setAddOpen(false);
             setAppearanceOpen(false);
         };
@@ -203,21 +210,14 @@ export function CanvasToolbar({
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: aceternityMotion.duration.instant }} className="pointer-events-auto absolute bottom-[var(--canvas-dock-popover-offset)] z-[var(--dock-z-popover)] w-[224px] max-w-[calc(100vw-24px)] -translate-x-1/2" style={{ left: panelX || "50%" }}>
                         <SpotlightSurface spotlightColor={theme.toolbar.itemHover} initial={{ y: 6, scale: 0.97 }} animate={{ y: 0, scale: 1 }} exit={{ y: 4, scale: 0.98 }} transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }} className="aceternity-floating-panel overflow-hidden rounded-[var(--panel-radius)] border p-2.5 backdrop-blur-2xl" style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.toolbar.item, boxShadow: `0 24px 64px ${theme.spatial.shadow}` }} onWheel={(event) => event.stopPropagation()}>
                             <PanelHeading icon={<Palette className="size-4" />} title={canvasT("videoCanvas.toolbar.appearance", "画布外观")} subtitle={canvasT("videoCanvas.toolbar.appearanceSubtitle", "调整整个创作空间")} theme={theme} />
-                            <div className="mt-3 text-[var(--fs-micro)] font-semibold uppercase opacity-45">{canvasT("videoCanvas.toolbar.themeMode", "主题模式")}</div>
-                            <div className="mt-1 grid grid-cols-2 gap-1 rounded-[var(--dock-item-radius-labeled)] border p-1" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
-                                <CanvasThemeButton colorTheme={colorTheme} targetTheme="light" onThemeChange={setTheme}><Sun className="size-3.5" />{canvasT("videoCanvas.toolbar.light", "浅色")}</CanvasThemeButton>
-                                <CanvasThemeButton colorTheme={colorTheme} targetTheme="dark" onThemeChange={setTheme}><Moon className="size-3.5" />{canvasT("videoCanvas.toolbar.dark", "深色")}</CanvasThemeButton>
-                            </div>
-                            <div className="mt-3 text-[var(--fs-micro)] font-semibold uppercase opacity-45">{canvasT("videoCanvas.toolbar.spatialGrid", "空间网格")}</div>
-                            <Segmented
-                                className="mt-1 w-full !rounded-[var(--dock-item-radius-labeled)] !p-0.5 [&_.ant-segmented-group]:!flex [&_.ant-segmented-item]:!min-h-7 [&_.ant-segmented-item]:!flex-1 [&_.ant-segmented-item-label]:!min-h-7 [&_.ant-segmented-item-label]:!text-[var(--fs-tiny)] [&_.ant-segmented-item-label]:!leading-7"
-                                value={backgroundMode}
-                                onChange={(value) => onBackgroundModeChange(value as CanvasBackgroundMode)}
-                                options={[
-                                    { value: "dots", label: <span className="inline-flex items-center gap-1.5"><CircleDot className="size-3.5" />{canvasT("videoCanvas.toolbar.dots", "点阵")}</span> },
-                                    { value: "lines", label: <span className="inline-flex items-center gap-1.5"><Grid2x2 className="size-3.5" />{canvasT("videoCanvas.toolbar.lines", "线网")}</span> },
-                                    { value: "blank", label: <span className="inline-flex items-center gap-1.5"><Square className="size-3.5" />{canvasT("videoCanvas.toolbar.blank", "空白")}</span> },
-                                ]}
+                            <CanvasAppearanceControls
+                                appearance={appearance}
+                                backgroundMode={backgroundMode}
+                                colorTheme={colorTheme}
+                                theme={theme}
+                                onAppearanceChange={onAppearanceChange}
+                                onSaveAppearanceDefault={onSaveAppearanceDefault}
+                                onBackgroundModeChange={onBackgroundModeChange}
                             />
                             <div className="mt-2.5 flex items-center justify-between gap-2 rounded-[var(--dock-item-radius-labeled)] border px-2.5 py-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
                                 <span className="inline-flex min-w-0 items-center gap-1.5 text-[var(--fs-tiny)] font-semibold"><Info className="size-3" />{canvasT("videoCanvas.toolbar.imageInfo", "图片信息")}</span>
@@ -253,25 +253,6 @@ function PanelHeading({ icon, title, subtitle, theme }: { icon: ReactNode; title
             <span className="grid size-8 shrink-0 place-items-center rounded-[var(--dock-item-radius)] border opacity-75 [&_svg]:size-3.5" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>{icon}</span>
             <span className="min-w-0"><span className="block text-xs font-semibold">{title}</span><span className="mt-0.5 block text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>{subtitle}</span></span>
         </div>
-    );
-}
-
-function CanvasThemeButton({ colorTheme, targetTheme, onThemeChange, children }: { colorTheme: CanvasColorTheme; targetTheme: CanvasColorTheme; onThemeChange: (theme: CanvasColorTheme) => void; children: ReactNode }) {
-    const theme = canvasThemes[colorTheme];
-    const active = colorTheme === targetTheme;
-    const themeLabel = targetTheme === "dark" ? canvasT("videoCanvas.toolbar.dark", "深色") : canvasT("videoCanvas.toolbar.light", "浅色");
-    return (
-        <AnimatedThemeToggler
-            theme={colorTheme}
-            targetTheme={targetTheme}
-            onThemeChange={onThemeChange}
-            className="inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] px-2 text-xs font-semibold transition-colors"
-            style={active ? { background: theme.node.text, color: theme.node.panel } : { color: theme.toolbar.item }}
-            aria-label={themeLabel}
-            title={themeLabel}
-        >
-            {children}
-        </AnimatedThemeToggler>
     );
 }
 

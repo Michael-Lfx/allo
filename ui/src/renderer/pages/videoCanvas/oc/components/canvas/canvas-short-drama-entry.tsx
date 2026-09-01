@@ -27,9 +27,10 @@ export function CanvasLinkedProjectEmptyState({ projectName, hasChapter, onAddFi
     );
 }
 
-export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onUpload, onAddText, onAddScript }: {
+export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onStartFreeform, onUpload, onAddText, onAddScript }: {
     onCreatePipeline: () => void;
     onOpenAgent: () => void;
+    onStartFreeform: () => void;
     onUpload: () => void;
     onAddText: () => void;
     onAddScript: () => void;
@@ -44,7 +45,7 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onUp
                     <h2 className="text-lg font-semibold">{canvasT("videoCanvas.empty.whereToStart", "从哪里开始？")}</h2>
                     <p className="mt-1 text-sm" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.whereToStartHint", "选择一条主路径，之后仍可随时切换。")}</p>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid gap-3 md:grid-cols-3">
                     <PathCard
                         icon={<Clapperboard className="size-5" />}
                         title={canvasT("videoCanvas.empty.createYourself", "自己创作")}
@@ -64,6 +65,16 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onUp
                         theme={theme}
                         focusStyle={focusStyle}
                         onClick={onOpenAgent}
+                    />
+                    <PathCard
+                        icon={<Plus className="size-5" />}
+                        title={canvasT("videoCanvas.empty.freeformCanvas", "自由空白画布")}
+                        description={canvasT("videoCanvas.empty.freeformCanvasDesc", "不预设流程，自由添加文本、图片、音频和视频。")}
+                        action={canvasT("videoCanvas.empty.startFreeform", "从空白画布开始")}
+                        accent={theme.node.muted}
+                        theme={theme}
+                        focusStyle={focusStyle}
+                        onClick={onStartFreeform}
                     />
                 </div>
                 <div className="mt-3 flex justify-center">

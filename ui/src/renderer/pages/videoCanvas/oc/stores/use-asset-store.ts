@@ -2,12 +2,13 @@ import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
 import { nanoid } from "nanoid";
+import { type AssetCategory, normalizeAssetCategory } from "@oc/lib/asset-category";
 import { localForageStorage } from "@oc/lib/localforage-storage";
 import { cleanupUnusedImages, resolveImageUrl, uploadImage } from "@oc/services/image-storage";
 import { cleanupUnusedMedia, resolveMediaUrl, uploadMediaFile } from "@oc/services/file-storage";
 
 export type AssetKind = "text" | "image" | "video" | "audio" | "model" | "entity";
-export type AssetCategory = "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
+export type { AssetCategory };
 export type AssetStatus = "draft" | "review" | "confirmed" | "archived";
 export type TextAsset = AssetBase<"text"> & { data: { content: string } };
 export type ImageAsset = AssetBase<"image"> & { data: { dataUrl: string; storageKey?: string; width: number; height: number; bytes: number; mimeType: string } };
@@ -142,20 +143,22 @@ const assetStorage: PersistStorage<AssetStore> = {
         const parsed = JSON.parse(value) as StorageValue<AssetStore>;
         parsed.state.assets = await Promise.all(
             parsed.state.assets.map(async (asset) => {
+                const category = asset.category ? normalizeAssetCategory(asset.category) : undefined;
+                const withCategory = category && category !== asset.category ? { ...asset, category } : asset;
                 // 视频和音频的数据结构不同，分别缩窄以保持 Asset 判别联合关系。
-                if (asset.kind === "video" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(asset.data.storageKey, asset.data.url) } };
-                if (asset.kind === "audio" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(asset.data.storageKey, asset.data.url) } };
-                if (asset.kind === "model" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(asset.data.storageKey, asset.data.url) } };
-                if (asset.kind !== "image") return asset;
-                if (asset.data.storageKey)
+                if (withCategory.kind === "video" && withCategory.data.storageKey) return { ...withCategory, data: { ...withCategory.data, url: await resolveMediaUrl(withCategory.data.storageKey, withCategory.data.url) } };
+                if (withCategory.kind === "audio" && withCategory.data.storageKey) return { ...withCategory, data: { ...withCategory.data, url: await resolveMediaUrl(withCategory.data.storageKey, withCategory.data.url) } };
+                if (withCategory.kind === "model" && withCategory.data.storageKey) return { ...withCategory, data: { ...withCategory.data, url: await resolveMediaUrl(withCategory.data.storageKey, withCategory.data.url) } };
+                if (withCategory.kind !== "image") return withCategory;
+                if (withCategory.data.storageKey)
                     return {
-                        ...asset,
-                        coverUrl: asset.coverUrl.startsWith("blob:") ? await resolveImageUrl(asset.data.storageKey, asset.coverUrl) : asset.coverUrl,
-                        data: { ...asset.data, dataUrl: await resolveImageUrl(asset.data.storageKey, asset.data.dataUrl) },
+                        ...withCategory,
+                        coverUrl: withCategory.coverUrl.startsWith("blob:") ? await resolveImageUrl(withCategory.data.storageKey, withCategory.coverUrl) : withCategory.coverUrl,
+                        data: { ...withCategory.data, dataUrl: await resolveImageUrl(withCategory.data.storageKey, withCategory.data.dataUrl) },
                     };
-                if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
-                const image = await uploadImage(asset.data.dataUrl);
-                return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
+                if (!withCategory.data.dataUrl.startsWith("data:image/")) return withCategory;
+                const image = await uploadImage(withCategory.data.dataUrl);
+                return { ...withCategory, coverUrl: withCategory.coverUrl.startsWith("data:image/") ? image.url : withCategory.coverUrl, data: { ...withCategory.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
             }),
         );
         return parsed;

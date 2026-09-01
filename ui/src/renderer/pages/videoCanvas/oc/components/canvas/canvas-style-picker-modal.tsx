@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Eye, Palette } from "lucide-react";
-import { Button, Modal, Segmented, Select } from "antd";
+import { Button, Modal, Segmented } from "antd";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -382,16 +382,22 @@ const legacyStyleUpgrades: Partial<Record<string, ProjectStyleSelection>> = {
     "three-d-cartoon": { world: "urban", tone: "light-comedy", medium: "3d-cartoon", character: "stylized" },
     "fantasy-3d": { world: "xianxia", tone: "epic", medium: "3d-anime", character: "semi-real" },
     "future-tech": { world: "science-fiction", tone: "epic", medium: "live-action", character: "realistic" },
-    "cyberpunk-neon": { world: "science-fiction", tone: "dark", medium: "live-action", character: "realistic" },
-    "space-opera": { world: "science-fiction", tone: "epic", medium: "3d-anime", character: "semi-real" },
+    "cyberpunk-neon": { world: "cyberpunk", tone: "dark", medium: "live-action", character: "realistic" },
+    "retro-hong-kong": { world: "republic", tone: "melancholic", medium: "live-action", character: "realistic" },
+    "clay-stop-motion": { world: "urban", tone: "light-comedy", medium: "stop-motion", character: "stylized" },
+    "space-opera": { world: "space", tone: "epic", medium: "3d-anime", character: "semi-real" },
+    "comic-pop": { world: "urban", tone: "light-comedy", medium: "comic", character: "stylized" },
+    "storybook-fantasy": { world: "pastoral", tone: "healing", medium: "storybook", character: "stylized" },
     "nature-healing": { world: "pastoral", tone: "healing", medium: "live-action", character: "realistic" },
-    "real-life-documentary": { world: "urban", tone: "healing", medium: "live-action", character: "realistic" },
+    "real-life-documentary": { world: "urban", tone: "documentary", medium: "live-action", character: "realistic" },
 };
 
 const resolvedLegacyCanvasStylePresets = legacyCanvasStylePresets.map((preset) => {
     const upgrade = legacyStyleUpgrades[preset.id];
-    return upgrade ? { ...compileCanvasStylePreset(upgrade), id: preset.id, imageUrl: preset.imageUrl } : preset;
+    return upgrade ? { ...compileCanvasStylePreset(upgrade), id: preset.id, title: preset.title, category: preset.category, description: preset.description, imageUrl: preset.imageUrl } : preset;
 });
+
+export const lookbookCanvasStylePresets = resolvedLegacyCanvasStylePresets;
 
 export const canvasStylePresets: CanvasStylePreset[] = [...recommendedCanvasStylePresets, ...resolvedLegacyCanvasStylePresets];
 
@@ -404,56 +410,161 @@ export function CanvasStylePickerModal({ open, value, onClose, onSelect }: { ope
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [detailPreset, setDetailPreset] = useState<CanvasStylePreset | null>(null);
     const [mode, setMode] = useState<"recommended" | "custom">("recommended");
+    const [lookFilter, setLookFilter] = useState("all");
     const [selection, setSelection] = useState<ProjectStyleSelection>(defaultProjectStyleSelection);
     useEffect(() => {
         if (!open) return;
         const parsed = parseCanvasStyleSelection(value);
         if (parsed) {
             setSelection(parsed);
-            setMode(recommendedCanvasStylePresets.some((preset) => preset.id === value) ? "recommended" : "custom");
+            const key = `${parsed.world}--${parsed.tone}--${parsed.medium}--${parsed.character}`;
+            const inLookbook = lookbookCanvasStylePresets.some((preset) => presetSelectionKey(preset) === key || preset.id === value);
+            const inCombos = uniqueRecommendedCombos(lookbookCanvasStylePresets, recommendedCanvasStylePresets).some((preset) => presetSelectionKey(preset) === key);
+            setMode(inLookbook || inCombos ? "recommended" : "custom");
         } else {
             setSelection(defaultProjectStyleSelection);
             setMode("recommended");
         }
+        setLookFilter("all");
     }, [open, value]);
-    const activePreset = resolveCanvasStylePreset(value);
-    const visiblePresets = activePreset && !recommendedCanvasStylePresets.some((preset) => preset.id === activePreset.id)
-        ? [activePreset, ...recommendedCanvasStylePresets.filter((preset) => preset.prompt !== activePreset.prompt)]
-        : recommendedCanvasStylePresets;
+    const lookCategories = useMemo(() => {
+        const seen = new Set<string>();
+        return lookbookCanvasStylePresets.flatMap((preset) => {
+            const category = localizedStylePresetDisplay(preset).category;
+            if (seen.has(category)) return [];
+            seen.add(category);
+            return [category];
+        });
+    }, []);
+    const uniqueComboPresets = useMemo(() => uniqueRecommendedCombos(lookbookCanvasStylePresets, recommendedCanvasStylePresets), []);
+    const lookbookPresets = lookFilter === "all"
+        ? lookbookCanvasStylePresets
+        : lookbookCanvasStylePresets.filter((preset) => localizedStylePresetDisplay(preset).category === lookFilter);
+    const comboPresets = lookFilter === "all" ? uniqueComboPresets : [];
     return (
         <>
-            <Modal rootClassName="canvas-style-picker-modal" open={open} getContainer={() => document.body} zIndex={1200} title={null} footer={null} centered width="min(920px, calc(100vw - 24px))" onCancel={onClose} styles={{ container: { padding: 0 }, body: { padding: 0 } }}>
+            <Modal rootClassName="canvas-style-picker-modal" open={open} getContainer={() => document.body} zIndex={1200} title={null} footer={null} centered width="min(1080px, calc(100vw - 24px))" onCancel={onClose} styles={{ container: { padding: 0 }, body: { padding: 0 } }}>
                 <div className="overflow-hidden" style={{ color: theme.node.text, background: theme.node.panel }}>
-                    <header className="flex flex-col gap-3 border-b px-4 py-3 pr-12 sm:flex-row sm:items-center sm:justify-between" style={{ borderColor: theme.node.stroke }}>
-                        <h2 className="text-sm font-semibold">{canvasT("videoCanvas.stylePicker.title", "选择项目画风")}</h2>
-                        <Segmented size="small" value={mode} options={[{ value: "recommended", label: canvasT("videoCanvas.stylePicker.recommended", "推荐画风") }, { value: "custom", label: canvasT("videoCanvas.stylePicker.custom", "自定义组合") }]} onChange={(next) => setMode(next as typeof mode)} />
+                    <header className="border-b px-5 py-4 pr-12" style={{ borderColor: theme.node.stroke }}>
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                            <div className="min-w-0">
+                                <p className="text-[var(--fs-tiny)] font-medium tracking-[0.14em] uppercase" style={{ color: theme.node.activeStroke }}>{canvasT("videoCanvas.stylePicker.kicker", "PROJECT LOOK")}</p>
+                                <h2 className="mt-1 text-lg font-semibold tracking-tight">{canvasT("videoCanvas.stylePicker.title", "选择项目画风")}</h2>
+                                <p className="mt-1.5 max-w-xl text-xs leading-5" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.stylePicker.subtitle", "为整部短剧锁定题材世界、叙事气质与影像媒介。这是全项目美术基线，不是单镜头提示词。")}</p>
+                            </div>
+                            <Segmented size="small" value={mode} options={[{ value: "recommended", label: canvasT("videoCanvas.stylePicker.recommended", "推荐画风") }, { value: "custom", label: canvasT("videoCanvas.stylePicker.custom", "自定义组合") }]} onChange={(next) => setMode(next as typeof mode)} />
+                        </div>
                     </header>
-                    {mode === "recommended" ? <div className="thin-scrollbar grid max-h-[76vh] grid-cols-1 gap-2 overflow-y-auto p-2 md:grid-cols-2 md:p-3">
-                        {visiblePresets.map((preset) => {
-                            const active = preset.id === value;
-                            const display = localizedStylePresetDisplay(preset);
-                            return (
-                                <article key={preset.id} className="group relative">
-                                    <button type="button" className="flex min-h-24 w-full overflow-hidden rounded-[var(--r-md)] border text-left transition-colors focus-visible:outline-none focus-visible:ring-2" style={{ background: theme.canvas.background, borderColor: active ? theme.node.activeStroke : theme.node.stroke, boxShadow: active ? `inset 0 0 0 1px ${theme.node.activeStroke}` : undefined, "--tw-ring-color": theme.node.activeStroke } as CSSProperties} onClick={() => onSelect(preset)}>
-                                        <span className="relative w-28 shrink-0 overflow-hidden border-r" style={{ background: theme.canvas.background, borderColor: theme.node.stroke }}>
-                                            <img src={preset.imageUrl} width="960" height="540" alt={canvasT("videoCanvas.stylePicker.previewAlt", "{{title}}画风示意", { title: display.title })} className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]" style={preset.id === "black-white-noir" ? { filter: "grayscale(1) contrast(1.08)" } : undefined} loading="lazy" />
-                                        </span>
-                                        <span className="min-w-0 flex-1 px-3 py-2.5 pr-10">
-                                            <span className="flex items-center gap-1.5 text-xs font-semibold"><span className="truncate">{display.title}</span>{active ? <span className="grid size-4 shrink-0 place-items-center rounded-[var(--r-full)]" style={{ background: theme.node.activeStroke, color: theme.canvas.background }}><Check className="size-3" /></span> : null}</span>
-                                            <span className="mt-1 block truncate text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{display.category}</span>
-                                            <span className="mt-1 line-clamp-2 block text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>{display.description}</span>
-                                        </span>
-                                    </button>
-                                    <button type="button" className="absolute right-2 top-2 grid size-7 place-items-center rounded-[var(--r-sm)] transition-colors focus-visible:outline-none focus-visible:ring-2" style={{ background: theme.toolbar.itemHover, color: theme.node.muted, "--tw-ring-color": theme.node.activeStroke } as CSSProperties} onClick={() => setDetailPreset(preset)} aria-label={canvasT("videoCanvas.stylePicker.viewSpecAria", "查看{{title}}规范", { title: display.title })} title={canvasT("videoCanvas.stylePicker.viewSpec", "查看画风规范")}><Eye className="size-3.5" /></button>
-                                </article>
-                            );
-                        })}
-                    </div> : <CanvasStyleComposer selection={selection} value={value} theme={theme} onChange={setSelection} onSelect={onSelect} onDetail={setDetailPreset} />}
+                    {mode === "recommended" ? (
+                        <div className="thin-scrollbar max-h-[76vh] overflow-y-auto px-5 py-4">
+                            <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                                <LookFilterChip label={canvasT("videoCanvas.stylePicker.allLooks", "全部气质")} active={lookFilter === "all"} theme={theme} onClick={() => setLookFilter("all")} />
+                                {lookCategories.map((category) => (
+                                    <LookFilterChip key={category} label={category} active={lookFilter === category} theme={theme} onClick={() => setLookFilter(category)} />
+                                ))}
+                            </div>
+                            <p className="mb-3 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.stylePicker.lookbookHint", "对照主流影像气质精选的项目基线，点选即可锁定全片画风。需要更细的交叉组合，可切换到自定义组合。")}</p>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                                {lookbookPresets.map((preset) => (
+                                    <StyleLookCard key={preset.id} preset={preset} active={isStylePresetActive(preset, value)} theme={theme} onSelect={onSelect} onDetail={setDetailPreset} />
+                                ))}
+                            </div>
+                            {comboPresets.length ? (
+                                <>
+                                    <h3 className="mb-1 mt-8 text-xs font-semibold tracking-wide">{canvasT("videoCanvas.stylePicker.comboSection", "题材组合")}</h3>
+                                    <p className="mb-3 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.stylePicker.comboHint", "与上方气质完全相同的条目已去掉。其余交叉组合沿用同一套大卡，请以标题和标签区分。")}</p>
+                                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                                        {comboPresets.map((preset) => (
+                                            <StyleLookCard key={preset.id} preset={preset} active={isStylePresetActive(preset, value)} theme={theme} onSelect={onSelect} onDetail={setDetailPreset} />
+                                        ))}
+                                    </div>
+                                </>
+                            ) : null}
+                        </div>
+                    ) : <CanvasStyleComposer selection={selection} value={value} theme={theme} onChange={setSelection} onSelect={onSelect} onDetail={setDetailPreset} />}
                 </div>
             </Modal>
             <CanvasStyleDetailModal open={Boolean(detailPreset)} preset={detailPreset} selected={detailPreset?.id === value} onClose={() => setDetailPreset(null)} onSelect={(preset) => { setDetailPreset(null); onSelect(preset); }} />
         </>
     );
+}
+
+function LookFilterChip({ label, active, theme, onClick }: { label: string; active: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onClick: () => void }) {
+    return (
+        <button
+            type="button"
+            className="h-7 rounded-full px-3 text-[var(--fs-tiny)] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
+            style={{ background: active ? theme.node.activeStroke : theme.toolbar.itemHover, color: active ? theme.canvas.background : theme.node.text, "--tw-ring-color": theme.node.activeStroke } as CSSProperties}
+            onClick={onClick}
+        >
+            {label}
+        </button>
+    );
+}
+
+function StyleLookCard({ preset, active, theme, onSelect, onDetail }: { preset: CanvasStylePreset; active: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (preset: CanvasStylePreset) => void; onDetail: (preset: CanvasStylePreset) => void }) {
+    const display = localizedStylePresetDisplay(preset);
+    const mix = preset.selection || parseCanvasStyleSelection(preset.id);
+    const chips = mix && preset.id.startsWith("v2-")
+        ? [localizedStyleOptionLabel("world", mix.world), localizedStyleOptionLabel("tone", mix.tone), localizedStyleOptionLabel("medium", mix.medium)]
+        : preset.tags.slice(0, 3);
+    return (
+        <article className="group relative">
+            <button type="button" className="flex w-full flex-col overflow-hidden rounded-2xl border text-left transition-[transform,box-shadow] duration-300 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2" style={{ background: theme.canvas.background, borderColor: active ? theme.node.activeStroke : theme.node.stroke, boxShadow: active ? `0 0 0 1px ${theme.node.activeStroke}, 0 18px 40px ${theme.spatial.shadow}` : `0 10px 28px ${theme.spatial.shadow}`, "--tw-ring-color": theme.node.activeStroke } as CSSProperties} onClick={() => onSelect(preset)}>
+                <span className="relative aspect-[16/10] overflow-hidden">
+                    <img src={preset.imageUrl} width="960" height="540" alt={canvasT("videoCanvas.stylePicker.previewAlt", "{{title}}画风示意", { title: display.title })} className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]" style={preset.id === "black-white-noir" ? { filter: "grayscale(1) contrast(1.08)" } : undefined} loading="lazy" />
+                    <span className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
+                    <span className="absolute inset-x-3 bottom-3 flex items-end justify-between gap-2">
+                        <span className="min-w-0">
+                            <span className="block text-[10px] font-medium tracking-[0.16em] uppercase text-white/70">{display.category}</span>
+                            <span className="mt-0.5 block truncate text-sm font-semibold text-white">{display.title}</span>
+                        </span>
+                        {active ? <span className="grid size-5 shrink-0 place-items-center rounded-full bg-white text-black"><Check className="size-3" /></span> : null}
+                    </span>
+                </span>
+                <span className="px-3 py-2.5">
+                    <span className="line-clamp-2 block text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>{display.description}</span>
+                    {chips.length ? (
+                        <span className="mt-2 flex flex-wrap gap-1">
+                            {chips.map((chip) => (
+                                <span key={chip} className="rounded-full px-2 py-0.5 text-[10px] leading-4" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>{chip}</span>
+                            ))}
+                        </span>
+                    ) : null}
+                </span>
+            </button>
+            <button type="button" className="absolute right-2.5 top-2.5 grid size-8 place-items-center rounded-full backdrop-blur-md transition-opacity focus-visible:outline-none focus-visible:ring-2" style={{ background: "rgba(0,0,0,.42)", color: "white", "--tw-ring-color": theme.node.activeStroke } as CSSProperties} onClick={() => onDetail(preset)} aria-label={canvasT("videoCanvas.stylePicker.viewSpecAria", "查看{{title}}规范", { title: display.title })} title={canvasT("videoCanvas.stylePicker.viewSpec", "查看画风规范")}><Eye className="size-3.5" /></button>
+        </article>
+    );
+}
+
+function uniqueRecommendedCombos(lookbook: CanvasStylePreset[], recommended: CanvasStylePreset[]) {
+    const seenKeys = new Set(lookbook.flatMap((preset) => {
+        const key = presetSelectionKey(preset);
+        return key ? [key] : [];
+    }));
+    return recommended.filter((preset) => {
+        const key = presetSelectionKey(preset);
+        if (!key || seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+    });
+}
+
+function presetSelectionKey(preset: CanvasStylePreset) {
+    const selection = preset.selection || parseCanvasStyleSelection(preset.id);
+    return selection ? `${selection.world}--${selection.tone}--${selection.medium}--${selection.character}` : "";
+}
+
+function isStylePresetActive(preset: CanvasStylePreset, value?: string) {
+    if (!value) return false;
+    if (preset.id === value) return true;
+    const presetKey = presetSelectionKey(preset);
+    if (!presetKey) return false;
+    const parsed = parseCanvasStyleSelection(value);
+    if (parsed) return presetKey === `${parsed.world}--${parsed.tone}--${parsed.medium}--${parsed.character}`;
+    const selectedLook = lookbookCanvasStylePresets.find((item) => item.id === value);
+    return Boolean(selectedLook && presetSelectionKey(selectedLook) === presetKey);
 }
 
 function CanvasStyleComposer({ selection, value, theme, onChange, onSelect, onDetail }: {
@@ -475,26 +586,30 @@ function CanvasStyleComposer({ selection, value, theme, onChange, onSelect, onDe
     };
     return (
         <div className="thin-scrollbar grid max-h-[76vh] overflow-y-auto md:grid-cols-5">
-            <section className="grid content-start gap-3 border-b p-4 md:col-span-2 md:border-b-0 md:border-r" style={{ borderColor: theme.node.stroke }}>
-                <StyleSelect kind="world" label={canvasT("videoCanvas.stylePicker.world", "题材世界")} value={selection.world} options={projectStyleWorlds} onChange={(world) => onChange({ ...selection, world })} />
-                <StyleSelect kind="tone" label={canvasT("videoCanvas.stylePicker.tone", "叙事气质")} value={selection.tone} options={projectStyleTones} onChange={(tone) => onChange({ ...selection, tone })} />
-                <StyleSelect kind="medium" label={canvasT("videoCanvas.stylePicker.medium", "视觉媒介")} value={selection.medium} options={projectStyleMedia} onChange={updateMedium} />
-                <StyleSelect kind="character" label={canvasT("videoCanvas.stylePicker.character", "角色造型")} value={selection.character} options={characterOptions} onChange={(character) => onChange({ ...selection, character })} />
+            <section className="grid content-start gap-5 border-b p-5 md:col-span-2 md:border-b-0 md:border-r" style={{ borderColor: theme.node.stroke }}>
+                <StyleChipSelect kind="world" label={canvasT("videoCanvas.stylePicker.world", "题材世界")} value={selection.world} options={projectStyleWorlds} theme={theme} onChange={(world) => onChange({ ...selection, world })} />
+                <StyleChipSelect kind="tone" label={canvasT("videoCanvas.stylePicker.tone", "叙事气质")} value={selection.tone} options={projectStyleTones} theme={theme} onChange={(tone) => onChange({ ...selection, tone })} />
+                <StyleChipSelect kind="medium" label={canvasT("videoCanvas.stylePicker.medium", "视觉媒介")} value={selection.medium} options={projectStyleMedia} theme={theme} onChange={updateMedium} />
+                <StyleChipSelect kind="character" label={canvasT("videoCanvas.stylePicker.character", "角色造型")} value={selection.character} options={characterOptions} theme={theme} onChange={(character) => onChange({ ...selection, character })} />
             </section>
             <section className="flex min-h-0 flex-col md:col-span-3">
                 <div className="relative aspect-video overflow-hidden" style={{ background: theme.canvas.background }}>
                     <img src={preset.imageUrl} width="960" height="540" alt={canvasT("videoCanvas.stylePicker.previewAlt", "{{title}}画风示意", { title: display.title })} className="h-full w-full object-cover" />
+                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/55 via-transparent to-transparent" />
+                    <div className="absolute inset-x-5 bottom-4">
+                        <div className="text-[10px] font-medium tracking-[0.16em] uppercase text-white/70">{display.category}</div>
+                        <div className="mt-1 text-base font-semibold text-white">{display.title}</div>
+                    </div>
                 </div>
-                <div className="flex min-h-0 flex-1 flex-col p-4">
-                    <div className="text-sm font-semibold">{display.title}</div>
-                    <p className="mt-1.5 text-xs leading-5" style={{ color: theme.node.muted }}>{display.description}</p>
-                    <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-y py-3 text-[var(--fs-tiny)]" style={{ borderColor: theme.node.stroke }}>
+                <div className="flex min-h-0 flex-1 flex-col p-5">
+                    <p className="text-xs leading-5" style={{ color: theme.node.muted }}>{display.description}</p>
+                    <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border px-3 py-3 text-[var(--fs-tiny)]" style={{ borderColor: theme.node.stroke, background: theme.canvas.background }}>
                         <StyleSummary label={canvasT("videoCanvas.stylePicker.summaryWorld", "题材")} value={localizedStyleOptionLabel("world", selection.world)} muted={theme.node.muted} />
                         <StyleSummary label={canvasT("videoCanvas.stylePicker.summaryTone", "气质")} value={localizedStyleOptionLabel("tone", selection.tone)} muted={theme.node.muted} />
                         <StyleSummary label={canvasT("videoCanvas.stylePicker.summaryMedium", "媒介")} value={localizedStyleOptionLabel("medium", selection.medium)} muted={theme.node.muted} />
                         <StyleSummary label={canvasT("videoCanvas.stylePicker.summaryCharacter", "角色")} value={localizedStyleOptionLabel("character", selection.character)} muted={theme.node.muted} />
                     </div>
-                    <div className="mt-auto flex justify-end gap-2 pt-4">
+                    <div className="mt-auto flex justify-end gap-2 pt-5">
                         <Button icon={<Eye className="size-3.5" />} onClick={() => onDetail(preset)}>{canvasT("videoCanvas.stylePicker.viewRules", "查看规范")}</Button>
                         <Button type="primary" disabled={preset.id === value} icon={preset.id === value ? <Check className="size-3.5" /> : <Palette className="size-3.5" />} onClick={() => onSelect(preset)}>{preset.id === value ? canvasT("videoCanvas.stylePicker.currentStyle", "当前画风") : canvasT("videoCanvas.stylePicker.applyCombo", "应用组合")}</Button>
                     </div>
@@ -508,17 +623,29 @@ function StyleSummary({ label, value, muted }: { label: string; value?: string; 
     return <div className="flex min-w-0 items-center gap-2"><span className="shrink-0" style={{ color: muted }}>{label}</span><span className="truncate font-medium">{value}</span></div>;
 }
 
-function StyleSelect<T extends string>({ kind, label, value, options, onChange }: { kind: StyleOptionKind; label: string; value: T; options: Array<{ id: T; label: string; description: string }>; onChange: (value: T) => void }) {
-    const localized = options.map((option) => ({
-        value: option.id,
-        label: localizedStyleOptionLabel(kind, option.id),
-        title: localizedStyleOptionDesc(kind, option.id, option.description),
-    }));
+function StyleChipSelect<T extends string>({ kind, label, value, options, theme, onChange }: { kind: StyleOptionKind; label: string; value: T; options: Array<{ id: T; label: string; description: string }>; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onChange: (value: T) => void }) {
+    const selected = options.find((option) => option.id === value);
     return (
-        <label className="grid gap-1.5 text-xs">
-            <span className="font-semibold">{label}</span>
-            <Select<T> value={value} optionLabelProp="label" onChange={onChange} options={localized} optionRender={(option) => <div className="py-1"><div className="text-xs font-medium">{option.label}</div><div className="mt-0.5 whitespace-normal text-[var(--fs-tiny)] opacity-60">{option.data.title}</div></div>} />
-        </label>
+        <div className="grid gap-2">
+            <div className="text-xs font-semibold">{label}</div>
+            <div className="flex flex-wrap gap-1.5">
+                {options.map((option) => {
+                    const active = option.id === value;
+                    return (
+                        <button
+                            key={option.id}
+                            type="button"
+                            className="h-8 rounded-full px-3 text-[var(--fs-tiny)] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
+                            style={{ background: active ? theme.node.activeStroke : theme.toolbar.itemHover, color: active ? theme.canvas.background : theme.node.text, "--tw-ring-color": theme.node.activeStroke } as CSSProperties}
+                            onClick={() => onChange(option.id)}
+                        >
+                            {localizedStyleOptionLabel(kind, option.id)}
+                        </button>
+                    );
+                })}
+            </div>
+            {selected ? <p className="text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>{localizedStyleOptionDesc(kind, selected.id, selected.description)}</p> : null}
+        </div>
     );
 }
 
@@ -570,7 +697,7 @@ function localizedStyleOptionDesc(kind: StyleOptionKind, id: string, fallback: s
 /** UI-only localization; stored preset.prompt stays Chinese for generation. */
 function localizedStylePresetDisplay(preset: CanvasStylePreset) {
     const selection = preset.selection || parseCanvasStyleSelection(preset.id);
-    if (selection) {
+    if (selection && preset.id.startsWith("v2-")) {
         const world = localizedStyleOptionLabel("world", selection.world);
         const tone = localizedStyleOptionLabel("tone", selection.tone);
         const medium = localizedStyleOptionLabel("medium", selection.medium);

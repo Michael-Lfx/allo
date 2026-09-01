@@ -1,4 +1,4 @@
-import React, { useMemo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import React, { useCallback, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { Link2 } from "lucide-react";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 
@@ -8,6 +8,8 @@ import { CanvasNode } from "@oc/components/canvas/canvas-node";
 import type { CanvasBatchConnectionPreview } from "@oc/lib/canvas/canvas-batch-connection";
 import { applyDragPreviewToDisplayConnections } from "@oc/lib/canvas/canvas-connection-draw-list";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
+import { bringCanvasNodeToFront, sortCanvasNodesByStackOrder } from "@oc/lib/canvas/canvas-node-stack-order";
+import { resolveActiveCanvasMediaNodeId } from "@oc/lib/canvas/canvas-performance-mode";
 import { canvasActiveNodeId, canvasRelatedHighlight } from "@oc/lib/canvas/canvas-related-highlight";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
@@ -89,6 +91,20 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
     const connectingParams = useCanvasInteractionStore((state) => state.connectingParams);
     const connectionTargetNodeId = useCanvasInteractionStore((state) => state.connectionTargetNodeId);
     const selectionBox = useCanvasInteractionStore((state) => state.selectionBox);
+    const [nodeStackOrder, setNodeStackOrder] = useState<string[]>([]);
+    const paintedNodes = useMemo(() => sortCanvasNodesByStackOrder(props.visibleNodes, nodeStackOrder), [nodeStackOrder, props.visibleNodes]);
+    const mediaActiveNodeId = resolveActiveCanvasMediaNodeId(props.selectedNodeIds, props.nodeById);
+    const bringNodeToFront = useCallback((nodeId: string) => {
+        setNodeStackOrder((order) => bringCanvasNodeToFront(order, nodeId));
+    }, []);
+    const handleNodeMouseDown = useCallback((event: ReactMouseEvent, nodeId: string) => {
+        bringNodeToFront(nodeId);
+        props.onNodeMouseDown(event, nodeId);
+    }, [bringNodeToFront, props.onNodeMouseDown]);
+    const handleNodeHoverStart = useCallback((nodeId: string) => {
+        bringNodeToFront(nodeId);
+        props.onNodeHoverStart(nodeId);
+    }, [bringNodeToFront, props.onNodeHoverStart]);
     const activeNodeId = canvasActiveNodeId(hoveredNodeId, props.selectedNodeIds);
     const relatedHighlight = useMemo(
         () => canvasRelatedHighlight(activeNodeId, props.connections),
@@ -123,7 +139,7 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                 ))}
             </svg>
 
-            {props.visibleNodes.map((node) =>
+            {paintedNodes.map((node) =>
                 isFrameNode(node) ? (
                     <CanvasFrameNode
                         key={node.id}
@@ -132,7 +148,7 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                         childNodes={props.frameChildrenById.get(node.id) || EMPTY_CANVAS_NODES}
                         isSelected={props.selectedNodeIds.has(node.id)}
                         isDropTarget={frameDropTargetId === node.id}
-                        onMouseDown={props.onNodeMouseDown}
+                        onMouseDown={handleNodeMouseDown}
                         onResize={props.onNodeResize}
                         onToggleCollapsed={props.onToggleFrame}
                         onTitleChange={props.onNodeTitleChange}
@@ -156,14 +172,16 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                         batchRecovering={props.collapsingBatchIds.has(node.id)}
                         batchPrimary={Boolean(node.metadata?.batchRootId && props.nodeById.get(node.metadata.batchRootId)?.metadata?.primaryImageId === node.id)}
                         batchMotion={props.batchMotionById.get(node.id)}
+                        mediaActive={mediaActiveNodeId === node.id}
+                        hydrateMediaPreview={!props.reduceMediaEffects}
                         showImageInfo={props.showImageInfo}
                         reduceMediaEffects={props.reduceMediaEffects || isNodeDragging || props.mediaEffectsDisabledNodeId === node.id}
                         resourceLabel={props.resourceReferenceByNodeId.get(node.id)}
                         mentionReferences={props.mentionReferencesByNodeId.get(node.id) || EMPTY_RESOURCE_REFERENCES}
                         renderNodeContent={props.renderCanvasNodeContent}
                         drawingProjectId={props.projectId}
-                        onMouseDown={props.onNodeMouseDown}
-                        onHoverStart={props.onNodeHoverStart}
+                        onMouseDown={handleNodeMouseDown}
+                        onHoverStart={handleNodeHoverStart}
                         onHoverEnd={props.onNodeHoverEnd}
                         onConnectStart={props.onConnectStart}
                         onResize={props.onNodeResize}

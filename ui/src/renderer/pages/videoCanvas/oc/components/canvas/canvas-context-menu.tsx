@@ -7,6 +7,7 @@ import { CanvasCreateMenu, type CanvasCreateCommand } from "@oc/components/canva
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { ASSET_CATEGORY_OPTIONS } from "@oc/lib/asset-category";
 import { canvasNodeAssetCategory } from "@oc/lib/canvas/canvas-node-asset";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { getNodeLabel, getNodeListLabel } from "@oc/lib/canvas/node-registry";
@@ -17,15 +18,7 @@ import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type Con
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
 
 function assetCategoryOptions(): Array<{ value: CanvasAssetCategory; label: string }> {
-    return [
-        { value: "character", label: canvasT("videoCanvas.menu.categoryCharacter", "角色") },
-        { value: "environment", label: canvasT("videoCanvas.menu.categoryEnvironment", "场景") },
-        { value: "wardrobe", label: canvasT("videoCanvas.menu.categoryWardrobe", "服饰") },
-        { value: "prop", label: canvasT("videoCanvas.menu.categoryProp", "道具") },
-        { value: "weapon", label: canvasT("videoCanvas.menu.categoryWeapon", "武器") },
-        { value: "style", label: canvasT("videoCanvas.menu.categoryStyle", "画风") },
-        { value: "other", label: canvasT("videoCanvas.menu.categoryOther", "其他") },
-    ];
+    return ASSET_CATEGORY_OPTIONS.map((option) => ({ value: option.value, label: option.label }));
 }
 
 type CanvasNodeContextMenuProps = {

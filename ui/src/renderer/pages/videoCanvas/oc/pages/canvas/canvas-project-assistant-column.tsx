@@ -1,13 +1,18 @@
 import { lazy, Suspense } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { AssistantPanelColumn } from "./canvas-assistant-panel-column";
+import { useTranslation } from "react-i18next";
+import { Bot, LoaderCircle } from "lucide-react";
+
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasThemes } from "@oc/lib/canvas-theme";
+import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasNodeData, CanvasAssistantSession } from "@oc/types/canvas";
-import type { CanvasAgentMode } from "@oc/components/canvas/canvas-agent-chat-ui";
-import type { useCanvasAgentOperations } from "./use-canvas-agent-operations";
+import { loadCanvasAssistantPanel } from "@renderer/pages/videoCanvas/loadAssistantPanel";
+import { AssistantPanelColumn } from "./canvas-assistant-panel-column";
 import type { useCanvasUpload } from "./use-canvas-upload";
 import type { CanvasAgentOps, CanvasAssistantState } from "./canvas-project-bundles";
 
-const CanvasAssistantPanel = lazy(() => import("@oc/components/canvas/canvas-assistant-panel").then((module) => ({ default: module.CanvasAssistantPanel })));
+const CanvasAssistantPanel = lazy(() => loadCanvasAssistantPanel().then((module) => ({ default: module.CanvasAssistantPanel })));
 
 type CanvasProjectAssistantColumnProps = {
     assistantWidth: number;
@@ -22,11 +27,50 @@ type CanvasProjectAssistantColumnProps = {
     handleAssistantSessionsChange: (sessions: CanvasAssistantSession[], activeId: string | null) => void;
     pasteAssistantImage: ReturnType<typeof useCanvasUpload>["pasteAssistantImage"];
     codexAutoConnect: boolean;
-    cinematicAgentEntry: boolean;
-    setCinematicAgentEntry: Dispatch<SetStateAction<boolean>>;
+    extractFramesForAgent: (nodeId: string, timesMs: number[]) => Promise<{ createdNodeIds: string[]; message: string }>;
     agentOps: CanvasAgentOps;
     assistant: CanvasAssistantState;
+    autoStart?: { prompt: string; modelContext?: string } | null;
+    onAutoStartConsumed?: () => void;
 };
+
+function CanvasAssistantPanelFallback({ busy }: { busy?: boolean }) {
+    useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    return (
+        <aside
+            className="pointer-events-auto relative flex h-full w-full flex-col overflow-hidden rounded-[var(--panel-radius)] border"
+            style={{
+                borderColor: theme.toolbar.border,
+                background: theme.spatial.elevated,
+                color: theme.node.text,
+                boxShadow: `0 24px 72px ${theme.spatial.shadow}`,
+            }}
+            aria-busy={busy || undefined}
+            aria-live="polite"
+        >
+            <header className="shrink-0 px-3 pb-2 pt-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                    <span className="grid size-9 shrink-0 place-items-center rounded-md" style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}>
+                        <Bot className="size-[18px]" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold leading-5">Agent</div>
+                        <div className="truncate text-[var(--fs-label)] leading-4" style={{ color: theme.node.muted }}>
+                            {busy
+                                ? canvasT("videoCanvas.agent.working", "正在推演...")
+                                : canvasT("videoCanvas.agent.collab", "画布协作")}
+                        </div>
+                    </div>
+                </div>
+            </header>
+            <div className="flex min-h-0 flex-1 items-center justify-center gap-2 px-4" style={{ color: theme.node.muted }}>
+                <LoaderCircle className="size-4 animate-spin" />
+                <span className="text-sm">{canvasT("videoCanvas.agent.working", "正在推演...")}</span>
+            </div>
+        </aside>
+    );
+}
 
 export function CanvasProjectAssistantColumn(props: CanvasProjectAssistantColumnProps) {
     const {
@@ -42,10 +86,11 @@ export function CanvasProjectAssistantColumn(props: CanvasProjectAssistantColumn
         handleAssistantSessionsChange,
         pasteAssistantImage,
         codexAutoConnect,
-        cinematicAgentEntry,
-        setCinematicAgentEntry,
+        extractFramesForAgent,
         agentOps,
         assistant,
+        autoStart,
+        onAutoStartConsumed,
     } = props;
     const { agentSnapshot, agentUndoCount, applyAgentOps, canUndoAgentOps, undoAgentOps } = agentOps;
     const { agentMode, assistantMounted, assistantClosing, setAgentMode, closeAgent } = assistant;
@@ -54,7 +99,7 @@ export function CanvasProjectAssistantColumn(props: CanvasProjectAssistantColumn
                         {assistantMounted ? (
                             <AssistantPanelColumn width={assistantWidth} closing={assistantClosing} topInset={focusMode ? "0px" : "var(--canvas-topbar-offset)"} onWidthChange={setAssistantWidth}>
                                 {(resizing) => (
-                                    <Suspense fallback={null}>
+                                    <Suspense fallback={<CanvasAssistantPanelFallback busy={Boolean(autoStart)} />}>
                                         <CanvasAssistantPanel
                                             nodes={nodes}
                                             selectedNodeIds={selectedNodeIds}
@@ -74,9 +119,11 @@ export function CanvasProjectAssistantColumn(props: CanvasProjectAssistantColumn
                                             autoConnectLocal={codexAutoConnect}
                                             closing={assistantClosing}
                                             onCollapse={closeAgent}
-                                            cinematicEntry={cinematicAgentEntry}
-                                            onCinematicEntryConsumed={() => setCinematicAgentEntry(false)}
+                                            onExtractFrames={extractFramesForAgent}
                                             resizing={resizing}
+                                            autoStart={autoStart}
+                                            onAutoStartConsumed={onAutoStartConsumed}
+                                            appearImmediately={Boolean(autoStart)}
                                         />
                                     </Suspense>
                                 )}

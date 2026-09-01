@@ -1,3 +1,4 @@
+import { buildCanvasAgentAliasMap, canvasAgentNodeChangeKind, canvasAgentShortId, resolveCanvasAgentNodeId, type CanvasAgentAliasMap } from "./canvas-agent-ids";
 import { hashCanvasAgentSnapshot, type CanvasAgentOp, type CanvasAgentSnapshot } from "./canvas-agent-ops";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
@@ -18,10 +19,12 @@ export type CanvasAgentResource = {
     ready: boolean;
 };
 
-export function buildCanvasAgentContext(snapshot: CanvasAgentSnapshot, options: { stateHash?: string; hashSource?: "browser-local" | "canvas-agent-server" } = {}) {
+export function buildCanvasAgentContext(snapshot: CanvasAgentSnapshot, options: { stateHash?: string; hashSource?: "browser-local" | "canvas-agent-server"; previous?: CanvasAgentSnapshot } = {}) {
     const nodes = snapshot.nodes || [];
     const selectedIds = new Set(snapshot.selectedNodeIds || []);
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const previousById = new Map((options.previous?.nodes || []).map((node) => [node.id, node]));
+    const aliases = buildCanvasAgentAliasMap(nodes);
     const resources = nodes.flatMap((node) => {
         const resource = resourceFromNode(node);
         return resource ? [resource] : [];
@@ -30,8 +33,9 @@ export function buildCanvasAgentContext(snapshot: CanvasAgentSnapshot, options: 
         counts[node.type] = (counts[node.type] || 0) + 1;
         return counts;
     }, {});
+    const compact = (node: CanvasNodeData) => compactNode(node, aliases, canvasAgentNodeChangeKind(previousById.get(node.id), node));
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         revision: snapshot.revision ?? 0,
         // The browser can build a fast local fingerprint synchronously, but the
         // canonical hash used by the Canvas Agent Runtime is calculated on the
@@ -40,21 +44,38 @@ export function buildCanvasAgentContext(snapshot: CanvasAgentSnapshot, options: 
         // the server hash in a write precondition.
         stateHash: options.stateHash || hashCanvasAgentSnapshot(snapshot),
         hashSource: options.hashSource || "browser-local",
+        aliases: Object.fromEntries(aliases.byShortId),
         canvas: { projectId: snapshot.projectId, domainProjectId: snapshot.domainProjectId, title: snapshot.title, viewport: snapshot.viewport, nodeCount: nodes.length, connectionCount: snapshot.connections.length, selectedNodeCount: selectedIds.size, nodeTypeCounts },
-        selection: nodes.filter((node) => selectedIds.has(node.id)).map(compactNode),
-        nodes: nodes.map(compactNode),
-        connections: snapshot.connections.map((connection) => ({ id: connection.id, fromNodeId: connection.fromNodeId, fromTitle: nodeById.get(connection.fromNodeId)?.title || "未知节点", toNodeId: connection.toNodeId, toTitle: nodeById.get(connection.toNodeId)?.title || "未知节点", fromHandleId: connection.fromHandleId, toHandleId: connection.toHandleId })),
-        resources,
+        selection: nodes.filter((node) => selectedIds.has(node.id)).map(compact),
+        nodes: nodes.map(compact),
+        connections: snapshot.connections.map((connection) => ({
+            id: connection.id,
+            fromNodeId: connection.fromNodeId,
+            fromShortId: canvasAgentShortId(connection.fromNodeId, aliases),
+            fromTitle: nodeById.get(connection.fromNodeId)?.title || "未知节点",
+            toNodeId: connection.toNodeId,
+            toShortId: canvasAgentShortId(connection.toNodeId, aliases),
+            toTitle: nodeById.get(connection.toNodeId)?.title || "未知节点",
+            fromHandleId: connection.fromHandleId,
+            toHandleId: connection.toHandleId,
+        })),
+        resources: resources.map((resource) => ({ ...resource, shortId: canvasAgentShortId(resource.nodeId, aliases) })),
         warnings: [
             ...(nodes.some((node) => node.metadata?.status === "error") ? ["画布中存在生成失败节点；重试前先检查错误信息。"] : []),
             ...(resources.some((resource) => !resource.ready) ? ["存在未就绪或缺少持久化引用的媒体节点，不要把占位节点当作可用参考素材。"] : []),
+            ...(selectedIds.size ? ["当前选区已作为默认上下文，优先复用选中节点而不是重建。"] : []),
         ],
     };
 }
 
 export function findCanvasAgentNodes(snapshot: CanvasAgentSnapshot, input: { query?: string; ids?: string[]; types?: string[]; statuses?: string[]; resourceOnly?: boolean; limit?: number }) {
     const query = input.query?.trim().toLocaleLowerCase();
-    const ids = input.ids?.length ? new Set(input.ids) : null;
+    const aliases = buildCanvasAgentAliasMap(snapshot.nodes);
+    const resolvedIds = (input.ids || []).flatMap((token) => {
+        const id = resolveCanvasAgentNodeId(snapshot, token, aliases);
+        return id ? [id] : [];
+    });
+    const ids = resolvedIds.length ? new Set(resolvedIds) : null;
     const types = input.types?.length ? new Set(input.types) : null;
     const statuses = input.statuses?.length ? new Set(input.statuses) : null;
     const limit = Math.min(Math.max(input.limit || 50, 1), 200);
@@ -68,34 +89,42 @@ export function findCanvasAgentNodes(snapshot: CanvasAgentSnapshot, input: { que
         return [node.id, node.title, metadata.content, metadata.prompt, metadata.composerContent, metadata.assetId, Array.isArray(metadata.assetTags) ? metadata.assetTags.join(" ") : "", metadata.workflowKind, metadata.workflowTitle, metadata.characterName]
             .some((value) => String(value || "").toLocaleLowerCase().includes(query));
     });
-    return { query: input.query || "", total: nodes.length, truncated: nodes.length > limit, nodes: nodes.slice(0, limit).map(compactNode) };
+    return { query: input.query || "", total: nodes.length, truncated: nodes.length > limit, nodes: nodes.slice(0, limit).map((node) => compactNode(node, aliases)) };
 }
 
 export function getCanvasAgentNode(snapshot: CanvasAgentSnapshot, input: { id: string }) {
-    const node = snapshot.nodes.find((candidate) => candidate.id === input.id);
+    const aliases = buildCanvasAgentAliasMap(snapshot.nodes);
+    const id = resolveCanvasAgentNodeId(snapshot, input.id, aliases) || input.id;
+    const node = snapshot.nodes.find((candidate) => candidate.id === id);
     if (!node) return { found: false, id: input.id, node: null, connections: [] };
     const nodeById = new Map(snapshot.nodes.map((candidate) => [candidate.id, candidate]));
     const connections = snapshot.connections
         .filter((connection) => connection.fromNodeId === node.id || connection.toNodeId === node.id)
-        .map((connection) => connectionSummary(connection, nodeById));
-    return { found: true, id: node.id, node: compactNode(node), resource: resourceFromNode(node), connections };
+        .map((connection) => connectionSummary(connection, nodeById, aliases));
+    return { found: true, id: node.id, shortId: canvasAgentShortId(node.id, aliases), node: compactNode(node, aliases), resource: resourceFromNode(node), connections };
 }
 
 export function getCanvasAgentConnection(snapshot: CanvasAgentSnapshot, input: { id: string }) {
     const connection = snapshot.connections.find((candidate) => candidate.id === input.id);
     if (!connection) return { found: false, id: input.id, connection: null };
     const nodeById = new Map(snapshot.nodes.map((candidate) => [candidate.id, candidate]));
+    const aliases = buildCanvasAgentAliasMap(snapshot.nodes);
     return {
         found: true,
         id: connection.id,
-        connection: connectionSummary(connection, nodeById),
-        fromNode: nodeById.get(connection.fromNodeId) ? compactNode(nodeById.get(connection.fromNodeId)!) : null,
-        toNode: nodeById.get(connection.toNodeId) ? compactNode(nodeById.get(connection.toNodeId)!) : null,
+        connection: connectionSummary(connection, nodeById, aliases),
+        fromNode: nodeById.get(connection.fromNodeId) ? compactNode(nodeById.get(connection.fromNodeId)!, aliases) : null,
+        toNode: nodeById.get(connection.toNodeId) ? compactNode(nodeById.get(connection.toNodeId)!, aliases) : null,
     };
 }
 
 export function getCanvasAgentGenerationTasks(snapshot: CanvasAgentSnapshot, input: { status?: string; nodeIds?: string[]; limit?: number }) {
-    const nodeIds = input.nodeIds?.length ? new Set(input.nodeIds) : null;
+    const aliases = buildCanvasAgentAliasMap(snapshot.nodes);
+    const resolvedNodeIds = (input.nodeIds || []).flatMap((token) => {
+        const id = resolveCanvasAgentNodeId(snapshot, token, aliases);
+        return id ? [id] : [];
+    });
+    const nodeIds = resolvedNodeIds.length ? new Set(resolvedNodeIds) : null;
     const tasks = snapshot.nodes.flatMap((node) => {
         const metadata = (node.metadata || {}) as Record<string, unknown>;
         const taskId = stringValue(metadata.taskId);
@@ -215,12 +244,15 @@ function connectionKey(connection: { fromNodeId: string; toNodeId: string; fromH
     return [connection.fromNodeId, connection.toNodeId, connection.fromHandleId || "", connection.toHandleId || ""].join("\0");
 }
 
-function connectionSummary(connection: { id: string; fromNodeId: string; toNodeId: string; fromHandleId?: string; toHandleId?: string }, nodeById: Map<string, CanvasNodeData>) {
+function connectionSummary(connection: { id: string; fromNodeId: string; toNodeId: string; fromHandleId?: string; toHandleId?: string }, nodeById: Map<string, CanvasNodeData>, aliases?: CanvasAgentAliasMap) {
+    const map = aliases || buildCanvasAgentAliasMap([...nodeById.values()]);
     return {
         id: connection.id,
         fromNodeId: connection.fromNodeId,
+        fromShortId: canvasAgentShortId(connection.fromNodeId, map),
         fromTitle: nodeById.get(connection.fromNodeId)?.title || "未知节点",
         toNodeId: connection.toNodeId,
+        toShortId: canvasAgentShortId(connection.toNodeId, map),
         toTitle: nodeById.get(connection.toNodeId)?.title || "未知节点",
         fromHandleId: connection.fromHandleId,
         toHandleId: connection.toHandleId,
@@ -231,11 +263,14 @@ function isMediaNodeType(type: CanvasNodeData["type"] | undefined) {
     return type === CanvasNodeType.Image || type === CanvasNodeType.Video || type === CanvasNodeType.Audio;
 }
 
-function compactNode(node: CanvasNodeData) {
+function compactNode(node: CanvasNodeData, aliases?: CanvasAgentAliasMap, change?: "new" | "modified") {
     const metadata = (node.metadata || {}) as Record<string, unknown>;
     const resource = resourceFromNode(node);
+    const map = aliases || buildCanvasAgentAliasMap([node]);
     return {
         id: node.id,
+        shortId: canvasAgentShortId(node.id, map),
+        change,
         type: node.type,
         title: node.title || "未命名节点",
         position: node.position,

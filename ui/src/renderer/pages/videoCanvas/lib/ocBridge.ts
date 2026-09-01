@@ -24,6 +24,7 @@ import { encodeChannelModel } from '@oc/stores/use-config-store';
 import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
 import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
 import { isMiniMaxH3ResolutionToken } from '@oc/lib/video-generation-options';
+import { parsePersistedChatSessions, projectToCanvasDocument } from './canvasChatPersist';
 
 export type CanvasHomeLaunch = {
   prompt: string;
@@ -31,11 +32,13 @@ export type CanvasHomeLaunch = {
   mediaKind: 'image' | 'video';
   /**
    * `generate` = ordinary T2V/I2V from home (no style skill, may auto-start).
-   * `creation` (default) = styleboard launch with skill node.
+   * `creation` (default) = open canvas Agent with the homepage prompt as the first turn.
    */
   intent?: 'creation' | 'generate';
   /** When true, canvas opens and fires one video generation on the config node. */
   autoGenerate?: boolean;
+  /** When true, canvas opens Agent and sends the homepage prompt as the first chat turn. */
+  autoAgent?: boolean;
   skill?: {
     id: string;
     label: string;
@@ -65,7 +68,59 @@ function connection(fromNodeId: string, toNodeId: string): CanvasConnection {
 function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLaunch): CanvasProject {
   const intent = launch.intent ?? 'creation';
   const isGenerate = intent === 'generate';
+  const autoAgent = isCanvasHomeAgentLaunch({ intent, autoAgent: launch.autoAgent });
   const skill = launch.skill;
+  const referenceNodes = (launch.references ?? []).map((reference, index) => ({
+    ...createCanvasNode(
+      CanvasNodeType.Image,
+      { x: 600, y: 150 + index * 210 },
+      {
+        content: canvasMediaUrl(reference.media_id),
+        status: 'success',
+        mimeType: reference.mime,
+        bytes: reference.bytes,
+        naturalWidth: reference.width ?? undefined,
+        naturalHeight: reference.height ?? undefined,
+        assetId: reference.media_id,
+        workflowKind: 'reference_set',
+      }
+    ),
+    title: reference.title || `参考图 ${index + 1}`,
+  }));
+  const seeded = autoAgent ? { nodes: referenceNodes, connections: [] as CanvasConnection[] } : seedLegacyHomeGraph(launch, isGenerate, skill, referenceNodes);
+  return {
+    ...project,
+    nodes: seeded.nodes,
+    connections: seeded.connections,
+    viewport: autoAgent
+      ? { x: 80, y: 60, k: 1 }
+      : { x: 80, y: 60, k: referenceNodes.length > 2 ? 0.72 : 0.86 },
+    alloCreative: {
+      ...(project.alloCreative ?? {}),
+      homeLaunch: {
+        schema: 1,
+        intent,
+        autoGenerate: Boolean(launch.autoGenerate),
+        autoAgent,
+        agentBriefSent: false,
+        prompt: launch.prompt,
+        requirement: launch.requirement,
+        mediaKind: launch.mediaKind,
+        skill,
+        preferences: launch.preferences,
+        referenceMediaIds: (launch.references ?? []).map((item) => item.media_id),
+        createdAt: new Date().toISOString(),
+      },
+    },
+  };
+}
+
+function seedLegacyHomeGraph(
+  launch: CanvasHomeLaunch,
+  isGenerate: boolean,
+  skill: CanvasHomeLaunch['skill'],
+  referenceNodes: CanvasNodeData[],
+) {
   const promptNode = {
     ...createCanvasNode(CanvasNodeType.Text, { x: 220, y: 190 }, {
       content: launch.prompt,
@@ -129,7 +184,6 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
       prompt: composedPrompt,
       status: 'idle',
       generationMode: launch.mediaKind,
-      // Ordinary generate always targets a video clip (T2V / I2V).
       videoEditOperation: isGenerate
         ? (launch.references?.length ? 'image_to_video' : 'text_to_video')
         : undefined,
@@ -150,59 +204,28 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
     }),
     title: launch.mediaKind === 'image' ? '图片生成配置' : '视频生成配置',
   };
-  const referenceNodes = (launch.references ?? []).map((reference, index) => ({
-    ...createCanvasNode(
-      CanvasNodeType.Image,
-      { x: 600, y: 150 + index * 210 },
-      {
-        content: canvasMediaUrl(reference.media_id),
-        status: 'success',
-        mimeType: reference.mime,
-        bytes: reference.bytes,
-        naturalWidth: reference.width ?? undefined,
-        naturalHeight: reference.height ?? undefined,
-        assetId: reference.media_id,
-        workflowKind: 'reference_set',
-      }
-    ),
-    title: reference.title || `参考图 ${index + 1}`,
-  }));
-  const nodes = [
-    promptNode,
-    ...(skillNode ? [skillNode] : []),
-    ...referenceNodes,
-    configNode,
-  ];
-  const connections = [
-    connection(promptNode.id, configNode.id),
-    ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
-    ...referenceNodes.map((node) => connection(node.id, configNode.id)),
-  ];
   return {
-    ...project,
-    nodes,
-    connections,
-    viewport: { x: 80, y: 60, k: referenceNodes.length > 2 ? 0.72 : 0.86 },
-    alloCreative: {
-      ...(project.alloCreative ?? {}),
-      homeLaunch: {
-        schema: 1,
-        intent,
-        autoGenerate: Boolean(launch.autoGenerate),
-        prompt: launch.prompt,
-        requirement: launch.requirement,
-        mediaKind: launch.mediaKind,
-        skill: skill,
-        preferences: launch.preferences,
-        referenceMediaIds: (launch.references ?? []).map((item) => item.media_id),
-        createdAt: new Date().toISOString(),
-      },
-    },
+    nodes: [
+      promptNode,
+      ...(skillNode ? [skillNode] : []),
+      ...referenceNodes,
+      configNode,
+    ],
+    connections: [
+      connection(promptNode.id, configNode.id),
+      ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
+      ...referenceNodes.map((node) => connection(node.id, configNode.id)),
+    ],
   };
 }
 
-function docToProject(projectId: string, title: string, doc: CanvasDocument): CanvasProject {
+function docToProject(projectId: string, title: string, doc: CanvasDocument, existing?: CanvasProject): CanvasProject {
   const now = new Date().toISOString();
+  const sessions = parsePersistedChatSessions(doc.chatSessions);
+  const chatSessions = sessions.length ? sessions : existing?.chatSessions || [];
+  const activeChatId = typeof doc.activeChatId === 'string' && doc.activeChatId
+    ? doc.activeChatId
+    : existing?.activeChatId || chatSessions[0]?.id || null;
   return {
     id: projectId,
     title: doc.title || title || '未命名画布',
@@ -210,8 +233,8 @@ function docToProject(projectId: string, title: string, doc: CanvasDocument): Ca
     updatedAt: now,
     nodes: (doc.nodes || []) as unknown as CanvasNodeData[],
     connections: (doc.connections || []) as unknown as CanvasConnection[],
-    chatSessions: [],
-    activeChatId: null,
+    chatSessions,
+    activeChatId,
     backgroundMode: (doc.backgroundMode as CanvasProject['backgroundMode']) || 'dots',
     showImageInfo: false,
     viewport: (doc.viewport || { x: 0, y: 0, k: 1 }) as ViewportTransform,
@@ -221,13 +244,16 @@ function docToProject(projectId: string, title: string, doc: CanvasDocument): Ca
   };
 }
 
+export { projectToCanvasDocument };
+
 export async function hydrateCanvasProjectFromServer(
   projectId: string,
   prefetched?: Awaited<ReturnType<typeof getCanvasProject>>
 ): Promise<CanvasProject> {
   const { meta, doc } = prefetched ?? (await getCanvasProject(projectId));
-  const project = docToProject(projectId, meta.title, doc as CanvasDocument);
   const store = useCanvasStore.getState();
+  const existingProject = store.projects.find((p) => p.id === projectId);
+  const project = docToProject(projectId, meta.title, doc as CanvasDocument, existingProject);
   const existing = store.projects.filter((p) => p.id !== projectId);
   store.replaceProjects([...existing, project]);
   return project;
@@ -237,17 +263,7 @@ export async function syncCanvasProjectToServer(projectId: string): Promise<void
   const project = useCanvasStore.getState().projects.find((p) => p.id === projectId);
   if (!project) return;
   await flushCanvasStorePersistence();
-  const doc: CanvasDocument = {
-    schema: 1,
-    title: project.title,
-    nodes: project.nodes as unknown as CanvasDocument['nodes'],
-    connections: project.connections as unknown as CanvasDocument['connections'],
-    viewport: project.viewport as CanvasDocument['viewport'],
-    backgroundMode: (project.backgroundMode as CanvasDocument['backgroundMode']) || 'dots',
-    ...(project.timeline ? { timeline: project.timeline as CanvasDocument['timeline'] } : {}),
-    ...(project.alloCreative ? { alloCreative: project.alloCreative } : {}),
-  };
-  await putCanvasDoc(projectId, doc);
+  await putCanvasDoc(projectId, projectToCanvasDocument(project));
 }
 
 export async function ensureServerProjectsInStore(): Promise<void> {
