@@ -327,6 +327,8 @@ pub(crate) use self::completer::{
     CONCEPT_GRAPH_MAX_TOKENS, CONCEPT_GRAPH_REPAIR_MAX_TOKENS, CONCEPT_GRAPH_SCOPE_MAX_TOKENS,
     LESSON_DOCUMENT_MAX_TOKENS, REFLECTION_GRADING_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
 };
-pub(crate) use self::lesson::{generate_lesson, validate_lesson_document};
+pub(crate) use self::lesson::{
+    build_adjacent_context, build_outline_tree, generate_lesson, validate_lesson_document,
+};
 pub(crate) use self::parser::{parse_json_object, strip_code_fences};
 pub(crate) use self::sample::sample_base_files;

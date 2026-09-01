@@ -10,7 +10,7 @@ import { CourseGenerationProgress } from './CourseGenerationProgress';
 const { Text, Paragraph } = Typography;
 
 /** 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）。
- * 提交后就地切换为生成视图：agent loop 同步执行（约 1-3 分钟），
+ * 提交后就地切换为生成视图：agent loop 同步执行需要一些时间，
  * 过程事件实时展示，关闭对话框即中止。 */
 export function CreateCourseDialog({
   visible,

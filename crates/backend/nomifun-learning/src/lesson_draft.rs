@@ -54,6 +54,12 @@ pub struct LessonGenerationContext {
     pub concept_keys: Vec<String>,
     /// Kb-flow grounding; `None` on the description flow.
     pub excerpt: Option<LessonExcerpt>,
+    /// Pre-rendered full course outline with the current lesson marked — the
+    /// anti-duplication / no-scope-creep reference shared by both pipelines.
+    pub outline_tree: String,
+    /// Pre-rendered prev/next lesson reference (title/purpose/truncated
+    /// excerpt); empty when there is nothing to reference.
+    pub adjacent_context: String,
 }
 
 /// One deterministic audit finding. `severity` uses the shared vocabulary
@@ -621,6 +627,8 @@ mod tests {
                 path: "docs/basics.md".into(),
                 text: "期权的定义……".into(),
             }),
+            outline_tree: String::new(),
+            adjacent_context: String::new(),
         }
     }
 

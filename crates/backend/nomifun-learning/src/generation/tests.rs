@@ -613,6 +613,88 @@
         }
     }
 
+    /// A two-module × two-lesson blueprint for the outline-tree / adjacent
+    /// context renderers: global lesson order 一→二→三→四, the second lesson
+    /// carries a sampled source.
+    fn two_by_two_blueprint() -> Blueprint {
+        let lesson = |title: &str, purpose: &str, source: Option<&str>| BlueprintLesson {
+            title: title.into(),
+            purpose: purpose.into(),
+            concepts: vec!["a".into()],
+            source: source.map(|path| SourceSpan {
+                path: path.into(),
+                start: None,
+                end: None,
+            }),
+        };
+        Blueprint {
+            title: "C".into(),
+            description: String::new(),
+            domain: String::new(),
+            version: 1,
+            concepts: vec![ConceptPack {
+                key: "a".into(),
+                title: "A".into(),
+                description: String::new(),
+                prerequisites: Vec::new(),
+            }],
+            modules: vec![
+                BlueprintModule {
+                    title: "模块一".into(),
+                    description: String::new(),
+                    lessons: vec![
+                        lesson("第一课", "目标一", None),
+                        lesson("第二课", "目标二", Some("docs/two.md")),
+                    ],
+                },
+                BlueprintModule {
+                    title: "模块二".into(),
+                    description: String::new(),
+                    lessons: vec![
+                        lesson("第三课", "目标三", None),
+                        lesson("第四课", "目标四", None),
+                    ],
+                },
+            ],
+        }
+    }
+
+    /// The outline tree lists EVERY lesson of the course (global numbering)
+    /// and marks exactly the current one — the model's anti-duplication map.
+    #[test]
+    fn outline_tree_lists_every_lesson_and_marks_the_current_one() {
+        let blueprint = two_by_two_blueprint();
+        let tree = build_outline_tree(&blueprint, 1, 0);
+        assert!(tree.contains("模块 1/2：模块一"));
+        assert!(tree.contains("模块 2/2：模块二"));
+        assert!(tree.contains("  1. 第一课 — 目标一"));
+        assert!(tree.contains("  3. 第三课 — 目标三（本课时）"));
+        assert!(!tree.contains("目标四（本课时）"));
+        assert!(!tree.contains("  5."));
+    }
+
+    /// Adjacent lessons: prev/next titles + purposes; kb-flow excerpts are
+    /// truncated at the hard budget; the description flow has no excerpt lines.
+    #[test]
+    fn adjacent_context_names_neighbors_and_truncates_excerpts() {
+        let blueprint = two_by_two_blueprint();
+        // 1800 chars > the 1000-char budget; the tail marker must not survive.
+        let sample = format!("{}尾部标记", "第二课原文。".repeat(300));
+        let samples = vec![("docs/two.md".to_owned(), sample)];
+        let context = build_adjacent_context(&blueprint, &samples, 1, 0);
+        assert!(context.contains("相邻课时参考"));
+        assert!(context.contains("上一课时「第二课」— 目标二"));
+        assert!(context.contains("下一课时「第四课」— 目标四"));
+        assert!(context.contains("原文摘录（节选）"));
+        assert!(context.contains("第二课原文"));
+        assert!(!context.contains("尾部标记"), "excerpt must be truncated");
+
+        // Description flow (no samples): titles and purposes only.
+        let context = build_adjacent_context(&blueprint, &[], 1, 0);
+        assert!(context.contains("上一课时「第二课」"));
+        assert!(!context.contains("原文摘录"));
+    }
+
     /// Returns canned responses in order while recording every call.
     struct ScriptedCompleter {
         script: std::sync::Mutex<Vec<String>>,
@@ -659,7 +741,7 @@
         let module = &blueprint.modules[0];
         let lesson = &module.lessons[0];
         let document_prompt =
-            build_lesson_document_prompt(&blueprint, module, lesson, 0, 0, 1, None, "# Real");
+            build_lesson_document_prompt(&blueprint, &[], module, lesson, 0, 0, 1, None, "# Real");
         assert!(document_prompt.contains("Write the lesson document now."));
         assert!(!document_prompt.contains("JSON"));
         let activities_prompt =
@@ -762,7 +844,7 @@
         let lesson = &module.lessons[0];
         let completer = ScriptedCompleter::new(vec![document.clone(), activities.to_owned()]);
         let output = generate_lesson(
-            &completer, None, &blueprint, module, lesson, 0, 0, 1, None, "# Real",
+            &completer, None, &blueprint, &[], module, lesson, 0, 0, 1, None, "# Real",
         )
         .await
         .unwrap();
@@ -804,7 +886,7 @@
         let module = &blueprint.modules[0];
         let lesson = &module.lessons[0];
         let output = generate_lesson(
-            &completer, None, &blueprint, module, lesson, 0, 0, 1, None, "# Real",
+            &completer, None, &blueprint, &[], module, lesson, 0, 0, 1, None, "# Real",
         )
         .await
         .unwrap();
