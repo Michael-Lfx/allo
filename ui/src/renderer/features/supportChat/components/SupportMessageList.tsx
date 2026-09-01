@@ -8,6 +8,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { SupportMessage } from '../api/supportChatTypes';
 import { supportImagePreviewCache } from '../state/supportImagePreviewCache';
+import { getSupportAttachmentImageUrl } from '../supportImageAttachments';
 
 type SupportMessageListProps = {
   messages: SupportMessage[];
@@ -124,7 +125,7 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
       // is closed, so release only those cache entries here.
       for (const item of messagesRef.current) {
         if (item.kind === 'server' && item.message.msgType === 'image') {
-          supportImagePreviewCache.release(item.message.clientMsgId);
+          supportImagePreviewCache.release(item.localClientMsgId ?? item.message.clientMsgId);
         }
       }
     };
@@ -217,21 +218,25 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
             : recalled
               ? t('common.supportChat.recalled', { defaultValue: '消息已撤回' })
               : item.message.content;
+        const imageClientMsgId =
+          item.kind === 'server' ? item.localClientMsgId ?? item.message.clientMsgId : undefined;
         // 图片消息：pending 用本地预览；服务端优先用本会话缓存的预览（免 CDN 重载闪烁），否则 payload.url。
         const localPreviewUrl = recalled
           ? undefined
           : item.kind === 'pending'
             ? item.msgType === 'image'
-              ? item.previewUrl || item.payload?.url
+              ? item.previewUrl || getSupportAttachmentImageUrl(item.payload)
               : undefined
             : item.message.msgType === 'image'
-              ? supportImagePreviewCache.get(item.message.clientMsgId)
+              ? imageClientMsgId
+                ? supportImagePreviewCache.get(imageClientMsgId)
+                : undefined
               : undefined;
         const remoteImageUrl = recalled
           ? undefined
           : item.kind === 'server'
-            ? item.message.payload?.url
-            : item.payload?.url;
+            ? getSupportAttachmentImageUrl(item.message.payload)
+            : getSupportAttachmentImageUrl(item.payload);
         const imageUrl = localPreviewUrl || remoteImageUrl;
         // 连续己方消息成组：状态行（发送中/已送达）只挂在每组最后一条；失败始终单独显示。
         const next = messages[index + 1];
@@ -261,7 +266,7 @@ const SupportMessageList: React.FC<SupportMessageListProps> = ({ messages, onLoa
                 <SupportMessageImage
                   localPreviewUrl={localPreviewUrl}
                   remoteUrl={remoteImageUrl}
-                  clientMsgId={item.kind === 'server' ? item.message.clientMsgId : undefined}
+                  clientMsgId={imageClientMsgId}
                   alt={t('common.supportChat.imageMessage', { defaultValue: '图片' })}
                   className='max-w-160px max-h-160px rd-12px border border-solid border-[var(--color-border-2)] object-cover cursor-zoom-in bg-fill-1'
                   onClick={() => {

@@ -53,7 +53,7 @@ function createDependencies(
     account: { collectedAt: '2026-08-30T10:00:00.000Z' },
     addPending: () => undefined,
     markPendingFailed: () => undefined,
-    send: async () => undefined,
+    send: async () => ({ accepted: true as const, applied: true }),
     onAuthExpired: () => undefined,
     defaultContent: '默认反馈内容',
     now: () => Date.parse('2026-08-30T10:00:00.000Z'),
@@ -66,6 +66,54 @@ function createDependencies(
 }
 
 describe('submitConversationErrorReport', () => {
+  test('rejects an overlong description before packing or uploading diagnostics', async () => {
+    let packCalls = 0;
+    const pending: SupportPendingMessage[] = [];
+    const deps = createDependencies({
+      packLogs: async () => {
+        packCalls += 1;
+        return {
+          zipPath: 'C:/logs/report.zip',
+          fileName: 'report.zip',
+          byteSize: 16,
+          includedFiles: [],
+          truncated: false,
+        };
+      },
+      addPending: (message) => pending.push(message),
+    });
+
+    const result = await submitConversationErrorReport(
+      context,
+      { description: 'x'.repeat(4001), screenshots: [] },
+      deps
+    );
+
+    expect(result).toEqual({ status: 'invalid-input' });
+    expect(packCalls).toBe(0);
+    expect(pending).toHaveLength(0);
+  });
+
+  test('preserves an OSS-only log upload reference in the report payload', async () => {
+    let logPayload: SupportPendingMessage['logPayload'];
+    const deps = createDependencies({
+      uploadLogFromPath: async () => ({
+        ossId: 10002,
+        name: 'report.zip',
+        contentType: 'application/zip',
+        byteSize: 16,
+      }),
+      addPending: (message) => {
+        logPayload = message.logPayload;
+      },
+    });
+
+    const result = await submitConversationErrorReport(context, { description: '', screenshots: [] }, deps);
+
+    expect(result).toEqual({ status: 'success' });
+    expect(logPayload).toMatchObject({ ossId: 10002, contentType: 'application/zip' });
+  });
+
   test('prepares one text report followed by screenshots in order', async () => {
     const pending = new Map<string, SupportPendingMessage>();
     const sent: Array<{ id: string; content: string; type: string }> = [];
@@ -83,6 +131,7 @@ describe('submitConversationErrorReport', () => {
       send: async (id, content, options) => {
         events.push(`send-${options.msgType}`);
         sent.push({ id, content, type: options.msgType });
+        return { accepted: true as const, applied: true };
       },
     });
 
@@ -111,6 +160,7 @@ describe('submitConversationErrorReport', () => {
       addPending: (message) => pending.push(message),
       send: async (id) => {
         sent.push(id);
+        return { accepted: true as const, applied: true };
       },
     });
 
@@ -151,6 +201,7 @@ describe('submitConversationErrorReport', () => {
       },
       send: async (id, _content, options) => {
         sent.push(`${id}:${options.msgType}`);
+        return { accepted: true as const, applied: true };
       },
     });
 
@@ -207,6 +258,7 @@ describe('submitConversationErrorReport', () => {
       send: async (id, _content, options) => {
         sent.push(`${id}:${options.msgType}`);
         if (options.msgType === 'image') throw new Error('image send failed');
+        return { accepted: true as const, applied: true };
       },
     });
 
@@ -253,11 +305,12 @@ describe('submitConversationErrorReport', () => {
       isCurrent: () => active,
       send: async () => {
         active = false;
+        return { accepted: true as const, applied: false };
       },
     });
 
     const result = await submitConversationErrorReport(context, { description: 'stale send', screenshots: [] }, deps);
 
-    expect(result).toEqual({ status: 'preparation-failed' });
+    expect(result).toEqual({ status: 'stale' });
   });
 });

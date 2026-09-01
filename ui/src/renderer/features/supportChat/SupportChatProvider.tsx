@@ -34,7 +34,13 @@ import {
   type ConversationErrorReportSubmitResult,
 } from './conversationErrorReport';
 import { submitConversationErrorReport as submitConversationErrorReportFlow } from './conversationErrorReportSubmission';
-import type { SupportChatState, SupportMessage, SupportPendingMessage } from './api/supportChatTypes';
+import {
+  MAX_SUPPORT_MESSAGE_CHARS,
+  type SupportChatState,
+  type SupportMessage,
+  type SupportPendingMessage,
+  type SupportSendOutcome,
+} from './api/supportChatTypes';
 import {
   collectNotifiableSysUserMessages,
   readNotifiedSeq,
@@ -42,9 +48,15 @@ import {
   writeNotifiedSeq,
 } from './supportNotifications';
 import { createSupportPollController } from './supportPollController';
-import { createPendingMessage } from './state/supportMessageMerge';
+import { createPendingMessage, mergeServerMessages } from './state/supportMessageMerge';
 import { supportImagePreviewCache } from './state/supportImagePreviewCache';
-import { buildSupportImagePayload } from './supportImageAttachments';
+import {
+  buildSupportImagePayload,
+  getSupportImageContentType,
+  MAX_SUPPORT_IMAGE_BYTES,
+  MAX_SUPPORT_IMAGES,
+  normalizeSupportImageFile,
+} from './supportImageAttachments';
 import { isSupportSessionCurrent } from './supportSession';
 import { initialSupportChatState, supportChatReducer } from './state/supportChatReducer';
 import SupportChatModal from './components/SupportChatModal';
@@ -154,7 +166,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
     ]);
     return {
       conversation,
-      messages: listed.list.map((message) => ({ kind: 'server' as const, message })),
+      messages: mergeServerMessages([], listed.list),
     };
   }, []);
 
@@ -400,7 +412,9 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
           dispatch({ type: 'conversation-updated', conversation: snapshot.conversation });
           dispatch({
             type: 'messages-merged',
-            incoming: snapshot.messages.map((item) => item.message),
+            incoming: snapshot.messages
+              .filter((item): item is Extract<SupportMessage, { kind: 'server' }> => item.kind === 'server')
+              .map((item) => item.message),
           });
         } else {
           dispatch({ type: 'ready', conversation: snapshot.conversation, messages: snapshot.messages });
@@ -460,24 +474,32 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
         /** Prevents queued work from crossing an auth boundary. */
         shouldContinue: () => boolean;
       }
-    ) => {
-      const task = sendQueueRef.current.then(async () => {
+    ): Promise<SupportSendOutcome> => {
+      const task: Promise<SupportSendOutcome> = sendQueueRef.current.then(async () => {
         if (!options.shouldContinue()) {
           throw new Error('support operation cancelled');
         }
+        const msgType = options.msgType ?? 'text';
         try {
+          if (
+            Array.from(content).length > MAX_SUPPORT_MESSAGE_CHARS ||
+            (msgType === 'text' && content.trim().length === 0)
+          ) {
+            throw new Error('support message is outside the allowed content boundary');
+          }
           const message = await supportChatApi.sendMessage({
             clientMsgId,
             content,
-            msgType: options?.msgType ?? 'text',
-            payload: options?.payload,
-            logPayload: options?.logPayload,
+            msgType,
+            payload: options.payload,
+            logPayload: options.logPayload,
           });
-          if (!options.shouldContinue()) return;
+          if (!options.shouldContinue()) return { accepted: true, applied: false };
           dispatch({ type: 'pending-replaced', clientMsgId, message });
-          if (options?.msgType === 'image' && !modalOpenRef.current) {
+          if (msgType === 'image' && !modalOpenRef.current) {
             supportImagePreviewCache.release(clientMsgId);
           }
+          return { accepted: true, applied: true };
         } catch (error) {
           if (!options.shouldContinue()) {
             throw error;
@@ -489,8 +511,11 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
           throw error;
         }
       });
-      sendQueueRef.current = task.catch(() => {});
-      await task;
+      sendQueueRef.current = task.then(
+        () => undefined,
+        () => undefined
+      );
+      return task;
     },
     []
   );
@@ -499,7 +524,14 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
     async (content: string, logPayload?: ICloudImAttachmentPayload): Promise<boolean> => {
       const trimmed = content.trim();
       const shouldContinue = createSupportSessionGuard();
-      if (!trimmed || !shouldContinue() || stateRef.current.status !== 'ready') return false;
+      if (
+        !trimmed ||
+        Array.from(trimmed).length > MAX_SUPPORT_MESSAGE_CHARS ||
+        !shouldContinue() ||
+        stateRef.current.status !== 'ready'
+      ) {
+        return false;
+      }
       const clientMsgId = crypto.randomUUID();
       const createdAt = new Date().toISOString();
       const pending = createPendingMessage(
@@ -510,8 +542,8 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
         logPayload
       );
       dispatch({ type: 'pending-added', message: pending });
-      await sendWithClientMsgId(clientMsgId, trimmed, { logPayload, shouldContinue });
-      return shouldContinue();
+      const result = await sendWithClientMsgId(clientMsgId, trimmed, { logPayload, shouldContinue });
+      return result.accepted;
     },
     [createSupportSessionGuard, sendWithClientMsgId]
   );
@@ -535,6 +567,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
   );
 
   const closeConversationErrorReport = useCallback(() => {
+    reportGenerationRef.current += 1;
     setConversationErrorReportContext(null);
   }, []);
 
@@ -607,10 +640,22 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const sendImages = useCallback(
     (params: { content: string; images: SupportOutgoingImage[] }): boolean => {
       const shouldContinue = createSupportSessionGuard();
-      if (!shouldContinue() || stateRef.current.status !== 'ready' || params.images.length === 0) {
+      const caption = params.content.trim();
+      if (
+        !shouldContinue() ||
+        stateRef.current.status !== 'ready' ||
+        params.images.length === 0 ||
+        params.images.length > MAX_SUPPORT_IMAGES ||
+        Array.from(caption).length > MAX_SUPPORT_MESSAGE_CHARS ||
+        params.images.some(
+          (image) =>
+            !image.fileName.trim() ||
+            image.file.size > MAX_SUPPORT_IMAGE_BYTES ||
+            !getSupportImageContentType({ name: image.fileName, type: image.file.type })
+        )
+      ) {
         return false;
       }
-      const caption = params.content.trim();
       const now = Date.now();
       const entries = params.images.map((image, index) => ({
         ...image,
@@ -639,7 +684,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
           }
           try {
             const uploaded = await supportChatApi.uploadScreenshot({
-              file: entry.file,
+              file: normalizeSupportImageFile(entry.file, entry.fileName),
               fileName: entry.fileName,
             });
             if (!shouldContinue()) {
@@ -685,11 +730,14 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
             }),
           });
           try {
-            await sendWithClientMsgId(entry.clientMsgId, entry.content, {
+            const sendResult = await sendWithClientMsgId(entry.clientMsgId, entry.content, {
               msgType: 'image',
               payload,
               shouldContinue,
             });
+            if (!sendResult.applied) {
+              supportImagePreviewCache.release(entry.clientMsgId);
+            }
           } catch {
             // pending-failed 已在 sendWithClientMsgId 内标记，气泡上可重试。
           }
@@ -724,7 +772,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
         try {
           if (!shouldContinue()) return;
           const uploaded = await supportChatApi.uploadScreenshot({
-            file: pending.file,
+            file: normalizeSupportImageFile(pending.file, pending.fileName || 'screenshot.png'),
             fileName: pending.fileName || 'screenshot.png',
           });
           if (!shouldContinue()) return;
@@ -748,12 +796,15 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
       if (!shouldContinue()) return;
       try {
-        await sendWithClientMsgId(pending.clientMsgId, pending.content, {
+        const sendResult = await sendWithClientMsgId(pending.clientMsgId, pending.content, {
           msgType: pending.msgType ?? 'text',
           payload,
           logPayload: pending.logPayload,
           shouldContinue,
         });
+        if (!sendResult.applied && pending.msgType === 'image') {
+          supportImagePreviewCache.release(pending.clientMsgId);
+        }
       } catch {
         // pending-failed 已在 sendWithClientMsgId 内标记，气泡上可重试。
       }

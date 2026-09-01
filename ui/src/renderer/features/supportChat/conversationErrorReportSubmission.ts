@@ -18,12 +18,20 @@ import {
   type ConversationErrorReportContext,
   type ConversationErrorReportDraft,
   type ConversationErrorReportSubmitResult,
+  MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS,
 } from './conversationErrorReport';
-import { buildSupportImagePayload } from './supportImageAttachments';
-import type { SupportPendingMessage } from './api/supportChatTypes';
+import {
+  buildSupportImagePayload,
+  buildSupportLogPayload,
+  getSupportImageContentType,
+  MAX_SUPPORT_IMAGE_BYTES,
+  MAX_SUPPORT_IMAGES,
+  normalizeSupportImageFile,
+} from './supportImageAttachments';
+import type { SupportPendingMessage, SupportSendOutcome } from './api/supportChatTypes';
 import { createPendingMessage } from './state/supportMessageMerge';
 
-type ReportSendOptions = {
+export type ReportSendOptions = {
   msgType: 'text' | 'image';
   payload?: ICloudImAttachmentPayload;
   logPayload?: ICloudImAttachmentPayload;
@@ -39,7 +47,7 @@ export type ConversationErrorReportSubmissionDependencies = {
   account: SupportLogUserInfo;
   addPending: (message: SupportPendingMessage) => void;
   markPendingFailed: (clientMsgId: string) => void;
-  send: (clientMsgId: string, content: string, options: ReportSendOptions) => Promise<void>;
+  send: (clientMsgId: string, content: string, options: ReportSendOptions) => Promise<SupportSendOutcome>;
   onAuthExpired: (error: unknown) => void;
   defaultContent: string;
   now?: () => number;
@@ -88,6 +96,18 @@ export async function submitConversationErrorReport(
 ): Promise<ConversationErrorReportSubmitResult> {
   if (!deps.isCurrent()) return { status: 'preparation-failed' };
 
+  if (
+    Array.from(draft.description).length > MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS ||
+    draft.screenshots.length > MAX_SUPPORT_IMAGES ||
+    draft.screenshots.some(
+      (screenshot) =>
+        screenshot.file.size > MAX_SUPPORT_IMAGE_BYTES ||
+        !getSupportImageContentType(screenshot.file)
+    )
+  ) {
+    return { status: 'invalid-input' };
+  }
+
   const content = draft.description.trim() || deps.defaultContent;
 
   try {
@@ -103,16 +123,19 @@ export async function submitConversationErrorReport(
     });
     if (!deps.isCurrent()) return { status: 'preparation-failed' };
 
-    const logPayload: ICloudImAttachmentPayload = {
-      ...(uploadedLog.url ? { url: uploadedLog.url } : {}),
-      ...(uploadedLog.objectKey ? { objectKey: uploadedLog.objectKey } : {}),
-      name: uploadedLog.name || packed.fileName,
-      contentType: uploadedLog.contentType || 'application/zip',
-      byteSize: uploadedLog.byteSize || packed.byteSize,
-      account: deps.account,
-      device,
-      report: buildConversationErrorReportMetadata(context),
-    };
+    const logPayload = buildSupportLogPayload(
+      uploadedLog,
+      {
+        fileName: packed.fileName,
+        contentType: 'application/zip',
+        byteSize: packed.byteSize,
+      },
+      {
+        account: deps.account,
+        device,
+        report: buildConversationErrorReportMetadata(context),
+      }
+    );
     const entries = createReportPendingMessages(
       content,
       logPayload,
@@ -138,11 +161,12 @@ export async function submitConversationErrorReport(
     if (!reportEntry || !deps.isCurrent()) return { status: 'preparation-failed' };
 
     try {
-      await deps.send(reportEntry.clientMsgId, reportEntry.content, {
+      const sendResult = await deps.send(reportEntry.clientMsgId, reportEntry.content, {
         msgType: 'text',
         logPayload: reportEntry.logPayload,
         shouldContinue: deps.isCurrent,
       });
+      if (!sendResult.applied) return { status: 'stale' };
       if (!deps.isCurrent()) return { status: 'preparation-failed' };
     } catch {
       if (!deps.isCurrent()) return { status: 'preparation-failed' };
@@ -160,7 +184,7 @@ export async function submitConversationErrorReport(
       let payload: ICloudImAttachmentPayload;
       try {
         const uploaded = await deps.uploadScreenshot({
-          file: screenshot.file,
+          file: normalizeSupportImageFile(screenshot.file, screenshot.fileName),
           fileName: screenshot.fileName,
         });
         if (!deps.isCurrent()) return { status: 'preparation-failed' };
@@ -190,11 +214,12 @@ export async function submitConversationErrorReport(
         })
       );
       try {
-        await deps.send(entry.clientMsgId, entry.content, {
+        const sendResult = await deps.send(entry.clientMsgId, entry.content, {
           msgType: 'image',
           payload,
           shouldContinue: deps.isCurrent,
         });
+        if (!sendResult.applied) return { status: 'stale' };
         if (!deps.isCurrent()) return { status: 'preparation-failed' };
       } catch {
         if (!deps.isCurrent()) return { status: 'preparation-failed' };

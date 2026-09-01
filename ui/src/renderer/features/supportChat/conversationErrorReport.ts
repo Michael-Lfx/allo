@@ -6,6 +6,7 @@
 
 import type { AgentStreamErrorInfo } from '@/common/chat/chatLib';
 import { buildAgentErrorDiagnostic, buildErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
+import { MAX_SUPPORT_MESSAGE_CHARS } from './api/supportChatTypes';
 
 export type ConversationErrorReportContext = {
   error: AgentStreamErrorInfo;
@@ -26,20 +27,24 @@ export type ConversationErrorReportDraft = {
   screenshots: ConversationErrorReportScreenshot[];
 };
 
+export const MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS = MAX_SUPPORT_MESSAGE_CHARS;
+
 export type ConversationErrorReportSubmitResult =
   | { status: 'success' }
   | { status: 'preparation-failed' }
-  | { status: 'partial-failure' };
+  | { status: 'partial-failure' }
+  | { status: 'invalid-input' }
+  | { status: 'stale' };
 
 export function getConversationErrorReportContextKey(
   context: ConversationErrorReportContext
 ): string {
-  return [
+  return JSON.stringify([
     context.conversationId,
-    context.messageId ?? '',
-    context.turnId ?? '',
+    context.messageId ?? null,
+    context.turnId ?? null,
     context.occurredAt,
-  ].join(':');
+  ]);
 }
 
 export function buildConversationErrorReportMetadata(context: ConversationErrorReportContext) {

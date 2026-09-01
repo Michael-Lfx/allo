@@ -83,7 +83,9 @@ describe('supportChatReducer', () => {
     });
     expect(replaced.status).toBe('closed');
     if (replaced.status !== 'closed' || !replaced.cached) throw new Error('expected cached replaced state');
-    expect(replaced.cached.messages).toEqual([{ kind: 'server', message: serverMessage() }]);
+    expect(replaced.cached.messages).toEqual([
+      { kind: 'server', message: serverMessage(), localClientMsgId: 'client-1' },
+    ]);
 
     const failed = supportChatReducer(closed, { type: 'pending-failed', clientMsgId: 'client-1' });
     expect(failed.status).toBe('closed');
@@ -118,7 +120,9 @@ describe('supportChatReducer', () => {
     });
     expect(replaced.status).toBe('ready');
     if (replaced.status !== 'ready') throw new Error('expected ready');
-    expect(replaced.messages).toEqual([{ kind: 'server', message: serverMessage() }]);
+    expect(replaced.messages).toEqual([
+      { kind: 'server', message: serverMessage(), localClientMsgId: 'client-1' },
+    ]);
   });
 
   test('auth-required and error preserve unread count', () => {

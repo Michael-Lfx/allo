@@ -60,7 +60,12 @@ describe('conversation error support report', () => {
 
   test('keeps the same context stable while changing report contexts', () => {
     expect(getConversationErrorReportContextKey(context)).toBe(
-      `${context.conversationId}:${context.messageId}:${context.turnId}:${context.occurredAt}`
+      JSON.stringify([
+        context.conversationId,
+        context.messageId,
+        context.turnId,
+        context.occurredAt,
+      ])
     );
     expect(
       getConversationErrorReportContextKey({ ...context, messageId: undefined })
