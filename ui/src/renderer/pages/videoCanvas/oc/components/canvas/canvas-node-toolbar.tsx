@@ -154,12 +154,12 @@ export function CanvasNodeToolbar({
     useLayoutEffect(() => {
         const container = containerRef.current;
         if (!node || !container) {
-            setAnchor(null);
+            setAnchor((current) => (current === null ? current : null));
             return;
         }
         const element = container.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
         if (!element) {
-            setAnchor(null);
+            setAnchor((current) => (current === null ? current : null));
             return;
         }
         const update = () => {
@@ -169,15 +169,14 @@ export function CanvasNodeToolbar({
             const toolbarWidth = toolbarRef.current?.offsetWidth || 0;
             const halfToolbar = toolbarWidth / 2;
             const canClamp = toolbarWidth > 0 && toolbarWidth <= containerRect.width - 20;
-            const left = canClamp ? Math.min(Math.max(preferredLeft, halfToolbar + 10), containerRect.width - halfToolbar - 10) : preferredLeft;
+            const left = Math.round(canClamp ? Math.min(Math.max(preferredLeft, halfToolbar + 10), containerRect.width - halfToolbar - 10) : preferredLeft);
             // 外置标题固定占 24px，额外保留 6px 即可兼顾层级和名称编辑入口。
-            const top = nodeRect.top - containerRect.top - 30;
+            const top = Math.round(nodeRect.top - containerRect.top - 30);
             if (toolbarRef.current) {
                 toolbarRef.current.style.left = `${left}px`;
                 toolbarRef.current.style.top = `${top}px`;
-                return;
             }
-            setAnchor((current) => current?.left === left && current.top === top ? current : { left, top });
+            setAnchor((current) => (current?.left === left && current.top === top ? current : { left, top }));
         };
         update();
         const resizeObserver = new ResizeObserver(update);
@@ -195,7 +194,7 @@ export function CanvasNodeToolbar({
             unsubscribeViewport();
             window.removeEventListener("resize", update);
         };
-    }, [anchor === null, containerRef, node, showDockLabels, viewport.k, viewport.x, viewport.y]);
+    }, [containerRef, node, showDockLabels, viewport.k, viewport.x, viewport.y]);
 
     if (!node || !anchor) return null;
 

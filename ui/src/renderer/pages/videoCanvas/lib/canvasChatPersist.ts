@@ -2,6 +2,33 @@ import type { CanvasAssistantMessage, CanvasAssistantReference, CanvasAssistantS
 import type { CanvasProject } from "@oc/stores/canvas/use-canvas-store";
 import type { CanvasDocument } from "../types";
 
+function isBlankAssistantSession(session: CanvasAssistantSession) {
+    return session.messages.length === 0;
+}
+
+/** 父级仍是空列表、子面板只有占位空会话时不要写回，避免空数组 ↔ 空白会话来回 setState。 */
+export function shouldPushAssistantSessionsToParent(
+    parentSessions: CanvasAssistantSession[],
+    localSessions: CanvasAssistantSession[],
+    parentActiveId: string | null,
+    localActiveId: string | null,
+) {
+    if (parentSessions === localSessions && parentActiveId === localActiveId) return false;
+    const localIsPlaceholder = localSessions.length === 1 && isBlankAssistantSession(localSessions[0]);
+    if (!parentSessions.length && localIsPlaceholder && !parentActiveId) return false;
+    return true;
+}
+
+export function shouldApplyExternalAssistantSessions(
+    parentSessions: CanvasAssistantSession[],
+    localSessions: CanvasAssistantSession[],
+    parentActiveId: string | null,
+    localActiveId: string | null,
+) {
+    if (!parentSessions.length) return false;
+    return parentSessions !== localSessions || parentActiveId !== localActiveId;
+}
+
 /** Strip bulky media so Agent sessions can ride along the canvas doc PUT. */
 export function persistableChatSessions(sessions: CanvasAssistantSession[] | undefined): CanvasAssistantSession[] {
     return (sessions || [])

@@ -106,7 +106,8 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
     const resizePrompt = useCallback((contentHeight: number) => {
         const promptHeight = Math.min(STORYBOARD_PROMPT_MAX_HEIGHT, Math.max(STORYBOARD_PROMPT_MIN_HEIGHT, contentHeight));
         const composerHeight = promptHeight + 64;
-        if (reportedComposerHeightRef.current === composerHeight) return;
+        const previous = reportedComposerHeightRef.current;
+        if (previous !== null && Math.abs(previous - composerHeight) < 1) return;
         reportedComposerHeightRef.current = composerHeight;
         composerHeightChangeRef.current(composerHeight);
     }, []);

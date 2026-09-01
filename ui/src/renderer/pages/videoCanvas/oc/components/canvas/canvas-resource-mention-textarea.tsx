@@ -8,6 +8,7 @@ import { useThemeStore } from "@oc/stores/use-theme-store";
 import { canvasResourceMentionToken, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { CanvasNodeType } from "@oc/types/canvas";
 import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
+import { contentSizeShouldNotify, measureElementScrollHeight, resizeObserverWidthChanged } from "./canvas-content-size";
 
 type MentionState = {
     start: number;
@@ -66,12 +67,13 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     }, [mention, canvasReferences]);
     const activeReferences = useMemo(() => (highlightLabels ? canvasReferences.filter((item) => item.active) : []), [highlightLabels, canvasReferences]);
     const useRichEditor = Boolean(activeReferences.length);
+    const lastReportedHeightRef = useRef<number | null>(null);
+    const lastObservedWidthRef = useRef<number | null>(null);
     const reportContentSize = useCallback((element: HTMLElement | null) => {
         if (!element || !onContentSizeChange) return;
-        const previousHeight = element.style.height;
-        element.style.height = "0px";
-        const height = element.scrollHeight;
-        element.style.height = previousHeight;
+        const height = measureElementScrollHeight(element);
+        if (!contentSizeShouldNotify(lastReportedHeightRef.current, height)) return;
+        lastReportedHeightRef.current = height;
         onContentSizeChange(height);
     }, [onContentSizeChange]);
 
@@ -95,10 +97,24 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
 
     useLayoutEffect(() => {
         const element = useRichEditor ? editorRef.current : textareaRef.current;
+        reportContentSize(element);
+    }, [reportContentSize, useRichEditor, value]);
+
+    useLayoutEffect(() => {
+        const element = useRichEditor ? editorRef.current : textareaRef.current;
         const container = containerRef.current;
         if (!element || !container || !onContentSizeChange) return;
+        lastObservedWidthRef.current = Math.round(container.getBoundingClientRect().width);
         reportContentSize(element);
-        const observer = new ResizeObserver(() => reportContentSize(element));
+        // 只在宽度变化时复测。父级根据本回调改高度会触发 ResizeObserver，
+        // 若再同步 setState，滚动条出现/消失会让 scrollHeight 来回抖，生产环境即 React #185。
+        const observer = new ResizeObserver((entries) => {
+            const width = Math.round(entries[0]?.contentRect.width ?? container.getBoundingClientRect().width);
+            if (!resizeObserverWidthChanged(lastObservedWidthRef.current, width)) return;
+            lastObservedWidthRef.current = width;
+            lastReportedHeightRef.current = null;
+            reportContentSize(element);
+        });
         observer.observe(container);
         return () => observer.disconnect();
     }, [onContentSizeChange, reportContentSize, useRichEditor]);
