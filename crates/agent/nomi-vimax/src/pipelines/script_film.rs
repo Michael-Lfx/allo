@@ -1,4 +1,4 @@
-//! Multi-scene film orchestration for Script2Video.
+//! Multi-scene film coordination for Script2Video.
 //!
 //! Reuses per-scene [`Script2VideoPipeline`] the same way Idea2Video does:
 //! split screenplay → film-level cast/world → `scene_i/` plan+render → concat.
