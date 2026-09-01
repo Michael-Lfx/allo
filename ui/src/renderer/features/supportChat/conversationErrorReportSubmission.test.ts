@@ -313,4 +313,22 @@ describe('submitConversationErrorReport', () => {
 
     expect(result).toEqual({ status: 'stale' });
   });
+
+  test('marks unresolved pending report items failed when sending becomes stale', async () => {
+    let active = true;
+    const failed: string[] = [];
+    const deps = createDependencies({
+      isCurrent: () => active,
+      markPendingFailed: (id) => failed.push(id),
+      send: async () => {
+        active = false;
+        return { accepted: true as const, applied: false };
+      },
+    });
+
+    const result = await submitConversationErrorReport(context, { description: 'stale send', screenshots: [screenshot] }, deps);
+
+    expect(result).toEqual({ status: 'stale' });
+    expect(failed).toEqual(['report-1', 'report-2']);
+  });
 });

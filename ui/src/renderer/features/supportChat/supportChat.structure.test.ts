@@ -35,6 +35,7 @@ describe('support chat structure', () => {
     const modal = readSource(new URL('./components/SupportChatModal.tsx', import.meta.url));
     const list = readSource(new URL('./components/SupportMessageList.tsx', import.meta.url));
     const composer = readSource(new URL('./components/SupportMessageComposer.tsx', import.meta.url));
+    const provider = readSource(new URL('./SupportChatProvider.tsx', import.meta.url));
     const previewGrid = readSource(new URL('./components/SupportImagePreviewGrid.tsx', import.meta.url));
 
     expect(modal.includes('NomiModal')).toBe(true);
@@ -61,6 +62,9 @@ describe('support chat structure', () => {
     expect(list.includes('support-message-list--empty')).toBe(true);
     expect(list.includes('support-message-list--empty min-h-0 flex-1')).toBe(false);
     expect(list.includes('support-message-list__bubble')).toBe(true);
+    expect(list.includes('imagePreviewUnavailable')).toBe(true);
+    expect(list.includes('hasMoreOlderRef')).toBe(true);
+    expect(provider.includes('return result.applied;')).toBe(true);
     expect(composer.includes('Shift+Enter') || composer.includes('shiftKey')).toBe(true);
     expect(composer.includes('isComposing')).toBe(true);
     expect(composer.includes('box-border')).toBe(true);

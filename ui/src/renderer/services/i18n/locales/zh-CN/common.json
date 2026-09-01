@@ -205,6 +205,7 @@
     "invalidImage": "仅支持 PNG / JPG，且单张不超过 5MB",
     "imageLimitReached": "最多上传 {{count}} 张图片",
     "imageMessage": "图片",
+    "imagePreviewUnavailable": "图片预览暂不可用",
     "send": "发送",
     "sending": "发送中",
     "sent": "已送达",

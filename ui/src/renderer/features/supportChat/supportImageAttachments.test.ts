@@ -7,6 +7,7 @@ import {
   buildSupportImagePayload,
   buildSupportLogPayload,
   createSupportImagePreviewId,
+  getSupportAttachmentImageUrl,
   getSupportImageContentType,
   isAcceptedSupportImage,
   MAX_SUPPORT_IMAGE_BYTES,
@@ -101,6 +102,19 @@ describe('support image attachments', () => {
       rejected = true;
     }
     expect(rejected).toBe(true);
+  });
+
+  test('does not treat an object key or relative value as a browser image URL', () => {
+    const base = {
+      name: 'screen.png',
+      contentType: 'image/png',
+      byteSize: 12,
+    };
+    expect(getSupportAttachmentImageUrl({ ...base, objectKey: 'claw/feedback/screen.png' })).toBeUndefined();
+    expect(getSupportAttachmentImageUrl({ ...base, url: '/uploads/screen.png' })).toBeUndefined();
+    expect(getSupportAttachmentImageUrl({ ...base, url: 'https://cdn.example/screen.png' })).toBe(
+      'https://cdn.example/screen.png'
+    );
   });
 
   test('applies one selection policy and creates previews only for accepted files', () => {

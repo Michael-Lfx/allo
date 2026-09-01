@@ -1061,6 +1061,7 @@ export type I18nKey =
   | 'common.supportChat.emptyHint'
   | 'common.supportChat.imageLimitReached'
   | 'common.supportChat.imageMessage'
+  | 'common.supportChat.imagePreviewUnavailable'
   | 'common.supportChat.invalidImage'
   | 'common.supportChat.loadingOlder'
   | 'common.supportChat.recalled'
