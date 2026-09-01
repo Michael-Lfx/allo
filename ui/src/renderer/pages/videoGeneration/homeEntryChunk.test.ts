@@ -22,18 +22,33 @@ describe('video generation home entry chunk', () => {
     expect(composer.includes("import CampaignCarousel from")).toBe(false);
     expect(composer.includes("lazy(() => import('../components/CampaignCarousel'))")).toBe(true);
     expect(composer.includes("from '../components/ModelSelectors'")).toBe(false);
+    expect(composer.includes("from './BriefingControls'")).toBe(false);
+    expect(composer.includes("from './BriefingPreferenceFields'")).toBe(false);
+    expect(composer.includes("from './BriefingModelFields'")).toBe(false);
     expect(composer.includes("import VerticalSkillMenu from")).toBe(false);
 
     const popover = source('./home/GenerationPreferencesPopover.tsx');
     expect(popover.includes("from '../components/ModelSelectors'")).toBe(false);
     expect(popover.includes('useGeneratorModels')).toBe(false);
     expect(popover.includes('warmGenerationPreferences')).toBe(true);
+    expect(popover.includes("from './BriefingPreferenceFields'")).toBe(true);
+    expect(popover.includes("import('./BriefingPreferenceFields')")).toBe(false);
+    expect(popover.includes('TaskModelSelect')).toBe(false);
+    expect(popover.includes('useModelsForTask')).toBe(false);
+
+    const briefingFields = source('./home/BriefingPreferenceFields.tsx');
+    const briefingModels = source('./home/BriefingModelFields.tsx');
+    expect(briefingFields.includes('TaskModelSelect')).toBe(false);
+    expect(briefingModels.includes('TaskModelSelect')).toBe(false);
+    expect(briefingModels.includes('useMediaModels')).toBe(true);
+    expect(briefingModels.includes('useModelsForTask')).toBe(false);
 
     const prefetch = source('./prefetch.ts');
     expect(prefetch.includes('prefetchGenerationPreferencesPanel')).toBe(true);
     expect(prefetch.includes('prefetchVerticalSkillMenu')).toBe(true);
     expect(prefetch.includes('prefetchCanvasAssistantPanel')).toBe(true);
     expect(prefetch.includes('./home/GenerationPreferencesPopover')).toBe(true);
+    expect(prefetch.includes('@/renderer/hooks/agent/useMediaModels')).toBe(true);
     expect(prefetch.includes('./home/VerticalSkillMenu')).toBe(true);
     expect(composer.includes("import VerticalSkillCreateModal from")).toBe(false);
     expect(composer.includes("import CameoCastEditor from")).toBe(false);

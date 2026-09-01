@@ -6347,6 +6347,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomi-briefing"
+version = "1.1.8"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "nomi-protocol",
+ "nomi-tools",
+ "nomi-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "nomi-browser"
 version = "1.1.8"
 dependencies = [
@@ -6816,6 +6836,7 @@ dependencies = [
  "nomi-agent-eval",
  "nomi-agent-trace",
  "nomi-auxiliary",
+ "nomi-briefing",
  "nomi-browser",
  "nomi-config",
  "nomi-insights-core",
@@ -6914,6 +6935,7 @@ dependencies = [
  "nomifun-assets",
  "nomifun-audio",
  "nomifun-auth",
+ "nomifun-briefing",
  "nomifun-browser-platform",
  "nomifun-canvas",
  "nomifun-channel",
@@ -7040,6 +7062,29 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "nomifun-briefing"
+version = "1.1.8"
+dependencies = [
+ "axum",
+ "chrono",
+ "flowy-web",
+ "mime_guess",
+ "nomi-briefing",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-cloud",
+ "nomifun-common",
+ "nomifun-db",
+ "nomifun-model-invoke",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

@@ -13,7 +13,9 @@
     "agentMenuDesc": "Auto-plan storyboards and render a film",
     "actionLabel": "Action imitation",
     "actionMenuDesc": "Character still + reference video to imitate motion",
-    "creationMenuDesc": "Send the brief to the canvas Agent to build and generate"
+    "creationMenuDesc": "Send the brief to the canvas Agent to build and generate",
+    "briefingLabel": "News briefing",
+    "briefingMenuDesc": "Cited research plus a spoken briefing. Never invent today's news"
   },
   "nav": {
     "entry": "Video Generation",
@@ -35,6 +37,8 @@
     "generateRecentSubtitle": "Continue video creation.",
     "actionRecentTitle": "Action Imitation",
     "actionRecentSubtitle": "Continue action imitation projects.",
+    "briefingRecentTitle": "Recent briefings",
+    "briefingRecentSubtitle": "Continue the beat script, citations, or export.",
     "loadError": "Failed to load",
     "retry": "Retry",
     "filterEmpty": "No matching sessions",
@@ -50,6 +54,10 @@
     "generateEmpty": {
       "title": "Your first video starts here",
       "desc": "Enter a prompt above to generate a video."
+    },
+    "briefingEmpty": {
+      "title": "Your first briefing starts above",
+      "desc": "Write a topic and paste at least two independent sources before research and voiceover."
     },
     "card": {
       "updatedAt": "Updated {{time}}",
@@ -182,10 +190,12 @@
     "homeHintAction": "Upload a character image and a reference video to imitate the motion.",
     "homeHintCreation": "Describe scenes and shots, then arrange generation on the infinite canvas.",
     "homeHintGenerate": "Upload a reference image and write a prompt to generate a video clip.",
+    "homeHintBriefing": "Describe a topic. The engine researches independent sources for a cited briefing and will not invent today's news.",
     "advanced": "Style & models",
     "generateStoryboard": "Generate storyboard",
     "generateActionVideo": "Generate video",
     "generateClip": "Generate video",
+    "generateBriefing": "Start briefing",
     "generateTitle": "Video generation",
     "generateFailed": "Failed to start video generation",
     "enterCanvas": "Send to canvas Agent",
@@ -256,6 +266,7 @@
       "novelPlaceholder": "Paste a novel excerpt and Flowy will shape the story into shots…",
       "creationPlaceholder": "Describe the frame, camera, or mood you want — type / for style skills…",
       "generatePlaceholder": "Describe the scene and motion you want — you can upload a reference image…",
+      "briefingPlaceholder": "Enter a briefing topic, e.g. today's chip export controls. Source URLs are optional — the engine will research.",
       "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / to switch Mode…"
     },
     "upload": {
@@ -955,6 +966,95 @@
       "finalizing": "Finalizing"
     },
     "progress": "Progress: {{percent}}%"
+  },
+  "briefing": {
+    "format": "Length",
+    "formatHint": "Spoken runtime. Drag anywhere from 30 seconds to 5 minutes.",
+    "formatRange": "{{min}}–{{max}}s spoken",
+    "formatSecs": "{{secs}} seconds",
+    "format90": "90 seconds",
+    "format300": "5 minutes",
+    "depth": "Research depth",
+    "depthHint": "Fast is one search pass. Deep adds a second pass for cross-checking; slower, more coverage.",
+    "fast": "Fast",
+    "deep": "Deep",
+    "window": "Time window",
+    "windowHint": "How far back to look, in hours. Default 24.",
+    "sources": "Source URLs (optional)",
+    "sourcesHint": "Paste links if you already have them. Otherwise the engine researches independent sources from your topic.",
+    "sourcesPlaceholder": "https://news.example/a\nhttps://reuters.example/b",
+    "needSources": "Research did not find two independent domains. Refine the topic or paste URLs. Do not invent today's news from model memory.",
+    "back": "Back to briefings",
+    "run": "Generate",
+    "runAgain": "Generate again",
+    "cancel": "Cancel",
+    "kicker": "Sourced briefing",
+    "pipeline": "Pipeline",
+    "models": "Models for this briefing",
+    "tts": "Voice model",
+    "ttsHint": "Pick from the shared model list. Leave empty to use the system default voice.",
+    "ttsPlaceholder": "Voice model (optional)",
+    "ttsEmpty": "No voice models in the catalog. Leave empty to use the system default.",
+    "image": "Atmosphere image (optional)",
+    "imageHint": "Pick from the shared model list. Used only under the opening and evidence cards; skip to keep original plates.",
+    "imagePlaceholder": "Image model (optional)",
+    "imageEmpty": "No image models in the catalog. Skip this — the original cards still compose.",
+    "clearImage": "Skip stills",
+    "deskLive": "News desk",
+    "waitingTitle": "Starting generation",
+    "runningTitle": "Composing the desk",
+    "holdTitle": "Research is on hold",
+    "holdBody": "Research still found fewer than two independent domains. Refine the topic or paste URLs. Do not invent today's news.",
+    "failedTitle": "The cut failed",
+    "failedBody": "Research, voice, or compose did not finish. Adjust sources or models, then generate again.",
+    "cancelledTitle": "Cancelled",
+    "cancelledBody": "This briefing stopped. Adjust models if needed, then generate again.",
+    "intent": "Intent",
+    "plan": "Research plan",
+    "beats": "Beat rundown",
+    "beatCount": "{{count}} beats",
+    "spoken": "Voice",
+    "onScreen": "On screen",
+    "sourcesTitle": "Sources",
+    "sourceCount": "{{count}} sources",
+    "windowChip": "{{hours}}h window",
+    "download": "Download cut",
+    "noVideo": "The MP4 is not ready yet. After generate, this player shows briefing.mp4 (original news-card plates timed to beats; narration is muxed when an audio file is present).",
+    "openWorkspace": "Open briefing workspace",
+    "card": {
+      "title_desk": "Opening desk",
+      "evidence_tour": "Evidence split",
+      "highlighter": "Highlight",
+      "number_roll": "Numeral",
+      "source_bar": "Source ticker",
+      "yield_shrink": "Yield",
+      "transition_wipe": "Wipe",
+      "subtitle_plain": "Lower third"
+    },
+    "stage": {
+      "researching": "Source check",
+      "scripting": "Beat script",
+      "aligning": "Voice align",
+      "composing": "Compose"
+    },
+    "stageHint": {
+      "researching": "Independent domains only",
+      "scripting": "Every beat is cited",
+      "aligning": "Word-level timing",
+      "composing": "Original cards, optional stills"
+    },
+    "status": {
+      "idle": "Ready",
+      "researching": "Checking sources",
+      "scripting": "Writing beats",
+      "aligning": "Aligning voice",
+      "composing": "Composing",
+      "succeeded": "Ready",
+      "failed": "Failed",
+      "hold": "On hold",
+      "cancelled": "Cancelled",
+      "interrupted": "Interrupted"
+    }
   },
   "time": {
     "justNow": "just now",

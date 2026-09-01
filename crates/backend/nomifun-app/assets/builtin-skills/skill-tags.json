@@ -126,6 +126,15 @@
       },
       "audience_tags": ["developer"],
       "scenario_tags": ["setup"]
+    },
+    {
+      "name": "news-briefing",
+      "name_i18n": { "zh-CN": "资讯播报" },
+      "description_i18n": {
+        "zh-CN": "把话题做成可溯源口播。引擎自行检索独立来源，禁止用 web_search 即兴写今日新闻，必须调用 briefing_create / briefing_status。"
+      },
+      "audience_tags": ["general"],
+      "scenario_tags": ["research"]
     }
   ]
 }

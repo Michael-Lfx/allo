@@ -1195,6 +1195,28 @@ impl DesktopServer {
             }
         }
 
+        if let Some(briefing) = self
+            ._keep_alive
+            .services()
+            .map(|services| services.briefing_service.clone())
+        {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                briefing.interrupt_all(),
+            )
+            .await
+            {
+                Ok(n) => {
+                    if n > 0 {
+                        tracing::info!(interrupted = n, "briefing runs paused during desktop shutdown");
+                    }
+                }
+                Err(_) => errors.push(
+                    "briefing interrupt timed out after 3 seconds".to_owned(),
+                ),
+            }
+        }
+
         // Do not close the shared database after an earlier cleanup failure.
         // Terminal cleanup intentionally preserves durable rows on failure and
         // BrowserSessionHub retains Host authority for an explicit retry; closing

@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Platte, RobotOne, VideoOne } from '@icon-park/react';
+import { Broadcast, Platte, RobotOne, VideoOne } from '@icon-park/react';
 import type { VideoHomeMode } from './types';
 import styles from './home.module.css';
 
@@ -19,6 +19,9 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   });
   const creationModeLabel = t('videoGeneration.mode.creationLabel', {
     defaultValue: '创作模式',
+  });
+  const briefingModeLabel = t('videoGeneration.mode.briefingLabel', {
+    defaultValue: '资讯播报',
   });
 
   return (
@@ -89,6 +92,23 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
           <small>
             {t('videoGeneration.mode.creationMenuDesc', {
               defaultValue: '把需求发给画布 Agent，自动搭建并生成',
+            })}
+          </small>
+        </span>
+      </button>
+      <button
+        type='button'
+        className={`${styles.modeMenuItem} ${
+          mode === 'briefing' ? styles.modeMenuItemActive : ''
+        }`}
+        onClick={() => onSelect('briefing')}
+      >
+        <Broadcast theme='outline' size={18} />
+        <span>
+          <strong>{briefingModeLabel}</strong>
+          <small>
+            {t('videoGeneration.mode.briefingMenuDesc', {
+              defaultValue: '可溯源调研 + 口播成片，不发明今日新闻',
             })}
           </small>
         </span>

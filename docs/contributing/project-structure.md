@@ -126,7 +126,7 @@ from silently tying themselves to engine internals.
 | [`nomi-browser-engine`](../../crates/agent/nomi-browser-engine) | Self-hosted browser/CDP automation engine. |
 | [`nomi-browser`](../../crates/agent/nomi-browser) | Browser-use tool layer. |
 
-The `crates/agent/*` glob also contains other members (eval, vimax, media, …) that this historical engine table does not enumerate.
+The `crates/agent/*` glob also contains other members (eval, vimax, media, briefing, …) that this historical engine table does not enumerate.
 
 ## `crates/backend/` — 29 `nomifun-*` crates (the backend)
 

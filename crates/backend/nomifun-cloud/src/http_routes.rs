@@ -42,7 +42,7 @@ const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const MAX_GROWTH_EVENTS_PER_BATCH: usize = 50;
 const MAX_GROWTH_PROPERTIES: usize = 24;
-const TELEMETRY_EVENT_NAMES: [&str; 15] = [
+const TELEMETRY_EVENT_NAMES: [&str; 18] = [
     "app_opened",
     "home_viewed",
     "task_drafted",
@@ -53,6 +53,9 @@ const TELEMETRY_EVENT_NAMES: [&str; 15] = [
     "film_succeeded",
     "film_failed",
     "film_cancelled",
+    "briefing_succeeded",
+    "briefing_failed",
+    "briefing_cancelled",
     "value_confirmed",
     "project_exported",
     "tv_published",
@@ -265,11 +268,12 @@ mod growth_tests {
     }
 
     #[test]
-    fn accepts_cancelled_and_platform_events() {
-        assert!(validate_video_growth_event(&event("film_cancelled")).is_ok());
-        let mut opened = event("app_opened");
-        opened.module = Some("platform".into());
-        assert!(validate_video_growth_event(&opened).is_ok());
+    fn accepts_briefing_terminal_events() {
+        assert!(validate_video_growth_event(&event("briefing_succeeded")).is_ok());
+        assert!(validate_video_growth_event(&event("briefing_failed")).is_ok());
+        assert!(validate_video_growth_event(&event("briefing_cancelled")).is_ok());
+        assert!(TELEMETRY_EVENT_NAMES.contains(&"briefing_succeeded"));
+        assert!(TELEMETRY_EVENT_NAMES.contains(&"film_succeeded"));
     }
 
     #[test]

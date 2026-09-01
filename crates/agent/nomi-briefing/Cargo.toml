@@ -1,0 +1,25 @@
+[package]
+name = "nomi-briefing"
+description = "News briefing engine: research gates, beat IR, voice align, compose scheduling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+nomi-protocol.workspace = true
+nomi-tools.workspace = true
+nomi-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile.workspace = true

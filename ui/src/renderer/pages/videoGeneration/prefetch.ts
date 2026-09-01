@@ -6,6 +6,9 @@ import { loadCanvasAssistantPanel } from '../videoCanvas/loadAssistantPanel';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 
 export function prefetchGenerationPreferencesPanel(): void {
+  void import('@/renderer/hooks/agent/useMediaModels')
+    .then((mod) => mod.fetchMediaModels())
+    .catch(() => undefined);
   void import('./home/GenerationPreferencesPopover').then((mod) => {
     mod.warmGenerationPreferences();
   }).catch(() => undefined);

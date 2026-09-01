@@ -81,7 +81,7 @@ The source of truth is
 | `/browser` | Browser-use management surface. |
 | `/customer-service`, `/customer-service/:cs_agent_id` | Customer-service agents. |
 | `/learn`, `/learn/:id` | Learning engine pages (backed by `nomifun-learning`). |
-| `/video-generation`, `/video-generation/canvas`, `/video-generation/:sessionId` | Video generation + Canvas mode (`nomifun-vimax` / `nomifun-canvas`). |
+| `/video-generation`, `/video-generation/canvas`, `/video-generation/briefing/:id`, `/video-generation/:sessionId` | Video generation + Canvas mode (`nomifun-vimax` / `nomifun-canvas`) plus news briefing (`nomifun-briefing`). |
 | `/billing` | Billing / Airwallex surface. |
 | `/completion-toast`, `/nomi-memory-panel` | Desktop helper surfaces rendered in dedicated windows. |
 | `/test/*` (`beautiful-ui`, `color-lab`, `capability-hub`, `components`, `commercial-slice`) | Internal UI test/preview routes. |

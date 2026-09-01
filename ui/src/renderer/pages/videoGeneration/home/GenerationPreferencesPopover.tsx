@@ -25,9 +25,10 @@ import {
 import { normalizeVideoFps,
 normalizeVideoResolution,
 videoModelCapabilities, } from '@renderer/services/videoModelCapabilities'
-import type { GenerationPreferences, VideoHomeMode } from './types';
+import type { BriefingPreferenceValue, GenerationPreferences, VideoHomeMode } from './types';
 import { isClipDurationMode } from './types';
 import type { VimaxWorkflow } from '../types';
+import BriefingPreferenceFields from './BriefingPreferenceFields';
 import { getScrollParents } from './scrollParents';
 import styles from './home.module.css';
 
@@ -54,6 +55,8 @@ interface GenerationPreferencesPopoverProps {
   onChange: (next: GenerationPreferences) => void;
   onOpenModelHub: () => void;
   workflow?: VimaxWorkflow;
+  briefing?: BriefingPreferenceValue;
+  onBriefingChange?: (next: BriefingPreferenceValue) => void;
 }
 
 type PanelPlacement = {
@@ -170,10 +173,13 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   onChange,
   onOpenModelHub,
   workflow,
+  briefing,
+  onBriefingChange,
 }) => {
   const { t } = useTranslation();
   const isAction = mode === 'action' || workflow === 'action2video';
   const isGenerate = mode === 'generate';
+  const isBriefing = mode === 'briefing';
   /** Ordinary video generate + action: video-only; no image/LLM planning tabs. */
   const videoOnlyMode = isAction || isGenerate;
   const anchorRef = useRef<HTMLDivElement | null>(null);
@@ -218,7 +224,13 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     defaultValue: '暂无可用模型',
   });
 
-  const summary = isAction
+  const summary = isBriefing
+    ? `${briefing?.formatSecs ?? 90}s · ${
+        briefing?.researchDepth === 'deep'
+          ? t('videoGeneration.briefing.deep')
+          : t('videoGeneration.briefing.fast')
+      }`
+    : isAction
     ? `${shortModelLabel(value.models.video_model, noModelLabel)} · ${value.resolution.toUpperCase()}`
     : isGenerate
       ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()} · ${clampDuration(
@@ -236,7 +248,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             )}`
           : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
 
-  const summaryTitle = isAction || isGenerate
+  const summaryTitle = isBriefing
+    ? summary
+    : isAction || isGenerate
     ? summary
     : value.automatic
       ? automaticLabel
@@ -390,6 +404,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
   // Clamp resolution / fps whenever the video model allow-list changes.
   useEffect(() => {
+    if (isBriefing) return;
     const current = valueRef.current;
     if (!current.models.video_model) return;
     const resolution = normalizeVideoResolution(
@@ -404,7 +419,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
   // Seed missing / invalid models whenever options become available while open.
   useEffect(() => {
-    if (!open) return;
+    if (!open || isBriefing) return;
     if (mediaLoading && imageOptions.length === 0 && videoOptions.length === 0) return;
 
     const current = valueRef.current;
@@ -491,7 +506,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     defaultValue: '生成偏好',
                   })}
                 </div>
-                {videoOnlyMode ? null : (
+                {videoOnlyMode || isBriefing ? null : (
                 <label className={styles.autoToggle}>
                   <span>{automaticLabel}</span>
                   <Switch
@@ -504,6 +519,15 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 )}
               </div>
 
+            {isBriefing && briefing && onBriefingChange ? (
+              <BriefingPreferenceFields
+                value={briefing}
+                disabled={disabled}
+                selectProps={selectProps}
+                onChange={onBriefingChange}
+              />
+            ) : (
+              <>
             {videoOnlyMode ? null : (
             <div
               className={styles.mediaKindTabs}
@@ -892,6 +916,8 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 </Button>
               </div>
             ) : null}
+              </>
+            )}
             </div>
           </div>
         </ConfigProvider>,

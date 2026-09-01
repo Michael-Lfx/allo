@@ -34,6 +34,7 @@ Agent 引擎位于 [`crates/agent/`](../../crates/agent/)（24 个 crate：23 �
 | `nomi-insights-core` | 去标识化的洞察贡献管线与 POI 清洗辅助。 |
 | `nomi-media` | Flowy 后端的媒体生成与多步工作流协调。 |
 | `nomi-vimax` | ViMax 视频生成管线。 |
+| `nomi-briefing` | 资讯播报引擎：可溯源拍脚本、研究质量门、TTS/ASR 对齐、原作合成调度。 |
 | `nomi-poi` | 本地用户兴趣（POI）话题存储。 |
 
 `nomi_delegate` 在 `nomi-types` 中只有一套请求和回执契约：
@@ -59,7 +60,7 @@ Agent 分组对后端**大体独立，但并非完全**：`nomi-agent` 与 `nomi
 `nomifun-secret`。常规的后端到 agent 集成通过 `nomifun-ai-agent` 进入；
 `nomifun-app` 与 `nomifun-gateway` 中 feature-gated 的桥接面会直接依赖
 browser/computer-use crate 以便把这些能力暴露为 stdio 或公开工具；媒体域功能
-crate（`nomifun-canvas`、`nomifun-media`、`nomifun-vimax`、`nomifun-poi`、
+crate（`nomifun-canvas`、`nomifun-media`、`nomifun-vimax`、`nomifun-briefing`、`nomifun-poi`、
 `nomifun-insights`、`nomifun-companion`、`nomifun-robot`、`nomifun-cloud`）
 则直接绑定各自匹配的 `nomi-*` 引擎。
 

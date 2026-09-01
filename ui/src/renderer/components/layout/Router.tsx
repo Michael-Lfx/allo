@@ -45,6 +45,9 @@ const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
 const EvalPage = React.lazy(() => import('@renderer/pages/eval'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
+const VideoBriefingWorkspacePage = React.lazy(
+  () => import('@renderer/pages/videoGeneration/briefing/BriefingWorkspacePage')
+);
 const VideoClipResultPage = React.lazy(() => import('@renderer/pages/videoGeneration/ClipResultPage'));
 const VideoCampaignDetailPage = React.lazy(
   () => import('@renderer/pages/videoGeneration/CampaignDetailPage')
@@ -423,6 +426,10 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route
             path='/video-generation/campaigns/:id'
             element={withRouteFallback(VideoCampaignDetailPage)}
+          />
+          <Route
+            path='/video-generation/briefing/:id'
+            element={withRouteFallback(VideoBriefingWorkspacePage)}
           />
           <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
           {/* workshop/assets deferred — keep pages in tree but unrouted */}

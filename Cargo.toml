@@ -50,6 +50,7 @@ nomifun-cloud = { path = "crates/backend/nomifun-cloud" }
 nomifun-insights = { path = "crates/backend/nomifun-insights" }
 nomifun-media = { path = "crates/backend/nomifun-media" }
 nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
+nomifun-briefing = { path = "crates/backend/nomifun-briefing" }
 nomifun-canvas = { path = "crates/backend/nomifun-canvas" }
 nomifun-browser-platform = { path = "crates/backend/nomifun-browser-platform" }
 nomifun-robot = { path = "crates/backend/nomifun-robot" }
@@ -82,6 +83,7 @@ nomi-auxiliary = { path = "crates/agent/nomi-auxiliary" }
 nomi-insights-core = { path = "crates/agent/nomi-insights-core" }
 nomi-media = { path = "crates/agent/nomi-media" }
 nomi-vimax = { path = "crates/agent/nomi-vimax" }
+nomi-briefing = { path = "crates/agent/nomi-briefing" }
 nomi-agent = { path = "crates/agent/nomi-agent" }
 nomi-coding = { path = "crates/agent/nomi-coding" }
 nomi-computer = { path = "crates/agent/nomi-computer" }

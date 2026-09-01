@@ -35,6 +35,7 @@ implementation map for the current workspace, not an extraction plan.
 | `nomi-insights-core` | De-identified insights contribution pipeline and POI sanitization helpers. |
 | `nomi-media` | Flowy-backed media generation and multi-step workflow coordination. |
 | `nomi-vimax` | ViMax video-generation pipelines. |
+| `nomi-briefing` | News briefing engine: cited beats, research gates, TTS/ASR align, original compositor spawn. |
 | `nomi-poi` | Local user-interest (POI) topic store. |
 
 `nomi_delegate` has one request and receipt contract in `nomi-types`:
@@ -68,7 +69,7 @@ Backend-to-agent integration normally flows through `nomifun-ai-agent`;
 feature-gated bridge surfaces in `nomifun-app` and `nomifun-gateway` directly
 depend on browser and computer-use crates to expose those capabilities as
 stdio/public tools, and domain feature crates (`nomifun-canvas`, `nomifun-media`,
-`nomifun-vimax`, `nomifun-poi`, `nomifun-insights`, `nomifun-companion`,
+`nomifun-vimax`, `nomifun-briefing`, `nomifun-poi`, `nomifun-insights`, `nomifun-companion`,
 `nomifun-robot`, `nomifun-cloud`) bind their matching `nomi-*` engines directly.
 
 ## Runtime Families

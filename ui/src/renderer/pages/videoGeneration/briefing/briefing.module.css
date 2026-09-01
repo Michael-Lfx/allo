@@ -1,0 +1,460 @@
+.page {
+  min-height: 100%;
+  box-sizing: border-box;
+  background:
+    radial-gradient(56rem 22rem at 6% -18%, rgba(var(--warning-6), 0.12), transparent 58%),
+    radial-gradient(42rem 20rem at 96% -8%, rgba(var(--primary-6), 0.1), transparent 54%),
+    var(--color-bg-1);
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 24px 56px;
+}
+
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin: 0 -24px;
+  padding: 16px 24px 14px;
+  border-bottom: 1px solid var(--color-border-2);
+  background: color-mix(in srgb, var(--color-bg-1) 82%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.mastheadCopy {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: rgb(var(--warning-6));
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.kicker::before {
+  content: '';
+  width: 28px;
+  height: 2px;
+  background: rgb(var(--warning-6));
+}
+
+.title {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.032em;
+  line-height: 1.18;
+}
+
+.metaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 999px;
+  color: var(--color-text-2);
+  background: var(--color-fill-2);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.statusRunning {
+  border-color: rgba(var(--primary-6), 0.4);
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.1);
+}
+
+.statusOk {
+  border-color: rgba(var(--success-6), 0.4);
+  color: rgb(var(--success-6));
+  background: rgba(var(--success-6), 0.1);
+}
+
+.statusHold {
+  border-color: rgba(var(--warning-6), 0.45);
+  color: rgb(var(--warning-6));
+  background: rgba(var(--warning-6), 0.12);
+}
+
+.statusFail {
+  border-color: rgba(var(--danger-6), 0.4);
+  color: rgb(var(--danger-6));
+  background: rgba(var(--danger-6), 0.1);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--color-text-3);
+  background: var(--color-fill-2);
+  font-size: 11px;
+}
+
+.summary {
+  margin: 0;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.actions :global(.arco-btn) {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.stageRail {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 16px;
+  background: var(--color-bg-2);
+  color: var(--color-text-3);
+}
+
+.stageIndex {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.12em;
+}
+
+.stageActive {
+  border-color: rgba(var(--warning-6), 0.45);
+  color: var(--color-text-1);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--warning-6), 0.16),
+    0 10px 24px rgba(0, 0, 0, 0.05);
+}
+
+.stageDone {
+  color: var(--color-text-2);
+}
+
+.stageDone .stageIndex {
+  color: rgb(var(--warning-6));
+}
+
+.stageLabel {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.stageHint {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.8fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.playerCard,
+.panel,
+.rundown {
+  border: 1px solid var(--color-border-2);
+  border-radius: 20px;
+  background: var(--color-bg-2);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.06);
+}
+
+.playerCard {
+  position: relative;
+  overflow: hidden;
+}
+
+.playerCard::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    rgb(var(--danger-6)),
+    rgb(var(--warning-6)),
+    rgb(var(--primary-6))
+  );
+}
+
+.player {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: color-mix(in srgb, var(--color-text-1) 88%, black);
+}
+
+.playerEmpty {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 10px;
+  min-height: 340px;
+  padding: 28px 28px 24px;
+  background:
+    linear-gradient(180deg, transparent 12%, var(--color-bg-2) 78%),
+    linear-gradient(115deg, rgba(var(--primary-6), 0.16), transparent 42%),
+    repeating-linear-gradient(
+      -11deg,
+      rgba(var(--warning-6), 0.07) 0 10px,
+      transparent 10px 22px
+    );
+}
+
+.playerEmptyKicker {
+  margin: 0;
+  color: rgb(var(--warning-6));
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.playerEmptyTitle {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.playerEmptyBody {
+  margin: 0;
+  max-width: 40em;
+  color: var(--color-text-3);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+}
+
+.panelTitle {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.intent {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--color-text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.sourceList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sourceChip,
+.cite a {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 9px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 999px;
+  color: var(--color-text-2);
+  background: var(--color-fill-1);
+  font-size: 11px;
+  line-height: 1.4;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sourceChip:hover,
+.cite a:hover {
+  border-color: rgba(var(--warning-6), 0.45);
+  color: var(--color-text-1);
+}
+
+.rundown {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+}
+
+.rundownHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.beatCount {
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+
+.beat {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr);
+  gap: 4px 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border-1);
+  border-radius: 16px;
+  background: var(--color-bg-1);
+}
+
+.beatIndex {
+  grid-row: 1 / span 3;
+  color: rgb(var(--warning-6));
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+.beatCard {
+  color: var(--color-text-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.beatText {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.beatScreen {
+  margin: 0;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cite {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.errorBanner {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(var(--danger-6), 0.1);
+  color: var(--color-text-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.errorPage,
+.loadingPage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 48vh;
+  padding: 32px;
+  color: var(--color-text-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .masthead {
+    backdrop-filter: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .layout,
+  .stageRail,
+  .masthead {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .masthead {
+    margin: 0;
+    padding: 16px 0 12px;
+  }
+
+  .actions {
+    justify-content: flex-start;
+  }
+
+  .beat {
+    grid-template-columns: 2.5rem minmax(0, 1fr);
+  }
+}

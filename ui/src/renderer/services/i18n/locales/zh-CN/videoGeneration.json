@@ -13,7 +13,9 @@
     "agentMenuDesc": "自动规划分镜并渲染成片",
     "actionLabel": "动作模仿",
     "actionMenuDesc": "角色图 + 参考视频，模仿动作成片",
-    "creationMenuDesc": "把需求发给画布 Agent，自动搭建并生成"
+    "creationMenuDesc": "把需求发给画布 Agent，自动搭建并生成",
+    "briefingLabel": "资讯播报",
+    "briefingMenuDesc": "可溯源调研 + 口播成片，不发明今日新闻"
   },
   "nav": {
     "entry": "视频生成",
@@ -35,6 +37,8 @@
     "generateRecentSubtitle": "继续视频创作。",
     "actionRecentTitle": "动作模仿",
     "actionRecentSubtitle": "继续动作模仿项目。",
+    "briefingRecentTitle": "最近资讯播报",
+    "briefingRecentSubtitle": "继续编辑拍脚本、核对引用或导出成片。",
     "loadError": "加载失败",
     "retry": "重试",
     "filterEmpty": "没有匹配的任务",
@@ -50,6 +54,10 @@
     "generateEmpty": {
       "title": "你的第一个视频从这里开始",
       "desc": "输入描述，上方开始生成视频。"
+    },
+    "briefingEmpty": {
+      "title": "你的第一条资讯播报从上方开始",
+      "desc": "写下话题并贴上至少两个独立来源，才会进入调研与口播。"
     },
     "card": {
       "updatedAt": "{{time}} 更新",
@@ -182,10 +190,12 @@
     "homeHintAction": "上传角色图和参考视频，让角色模仿动作生成成片。",
     "homeHintCreation": "描述画面与镜头，在无限画布里自由编排生成。",
     "homeHintGenerate": "上传参考图并填写提示词，直接生成视频片段。",
+    "homeHintBriefing": "写下话题即可。引擎会检索独立来源做成可溯源口播，不会用模型记忆写今日新闻。",
     "advanced": "风格与模型",
     "generateStoryboard": "生成分镜",
     "generateActionVideo": "生成视频",
     "generateClip": "生成视频",
+    "generateBriefing": "开始资讯播报",
     "generateTitle": "视频生成",
     "generateFailed": "视频生成创建失败",
     "enterCanvas": "发给画布 Agent",
@@ -256,6 +266,7 @@
       "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…",
       "creationPlaceholder": "描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…",
       "generatePlaceholder": "描述你想生成的画面与运动，可上传参考图…",
+      "briefingPlaceholder": "输入早报话题，例如「今日芯片出口管制」。来源链接可选，引擎会自行检索。",
       "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 切换 Mode…"
     },
     "upload": {
@@ -955,6 +966,95 @@
       "finalizing": "完成中"
     },
     "progress": "进度: {{percent}}%"
+  },
+  "briefing": {
+    "format": "时长",
+    "formatHint": "口播成片长度。30 秒到 5 分钟，可拖动选择。",
+    "formatRange": "{{min}}–{{max}} 秒口播",
+    "formatSecs": "{{secs}} 秒",
+    "format90": "90 秒",
+    "format300": "5 分钟",
+    "depth": "研究深度",
+    "depthHint": "Fast 快速检索；Deep 多一轮交叉检索，更稳但更慢。",
+    "fast": "Fast",
+    "deep": "Deep",
+    "window": "时间窗",
+    "windowHint": "只看最近多少小时内的报道，默认 24 小时。",
+    "sources": "参考链接（可选）",
+    "sourcesHint": "有现成报道可粘贴链接。不贴也可以，引擎会按话题自行检索独立来源。",
+    "sourcesPlaceholder": "https://news.example/a\nhttps://reuters.example/b",
+    "needSources": "研究未凑齐两家独立来源。可改话题或补贴链接后再生成，禁止用模型记忆写今日新闻。",
+    "back": "返回资讯播报",
+    "run": "开始生成",
+    "runAgain": "重新生成",
+    "cancel": "取消",
+    "kicker": "Sourced briefing",
+    "pipeline": "生成流程",
+    "models": "本期模型",
+    "tts": "配音模型",
+    "ttsHint": "从模型列表选择配音。未选则使用系统默认配音。",
+    "ttsPlaceholder": "选择配音（可选）",
+    "ttsEmpty": "暂无可用配音模型。未选将使用系统默认配音。",
+    "image": "氛围生图（可选）",
+    "imageHint": "从模型列表选择。仅用于片头与证据卡氛围底板；不选则只用原作资讯卡。",
+    "imagePlaceholder": "选择生图模型（可选）",
+    "imageEmpty": "暂无可用生图模型。可跳过，成片仍会使用原作卡面。",
+    "clearImage": "不使用生图",
+    "deskLive": "资讯台",
+    "waitingTitle": "正在开始生成",
+    "runningTitle": "正在落版",
+    "holdTitle": "研究被暂停",
+    "holdBody": "检索后仍不足两家独立来源。可改话题、补贴链接后再生成，不要用模型记忆写今日新闻。",
+    "failedTitle": "成片失败",
+    "failedBody": "核验、配音或合成没有走完。可调整来源与模型后重新生成。",
+    "cancelledTitle": "已取消",
+    "cancelledBody": "本期已停止。可以调整模型后重新生成。",
+    "intent": "意图",
+    "plan": "研究计划",
+    "beats": "拍脚本",
+    "beatCount": "{{count}} 拍",
+    "spoken": "口播",
+    "onScreen": "画面",
+    "sourcesTitle": "来源",
+    "sourceCount": "{{count}} 个来源",
+    "windowChip": "{{hours}} 小时窗",
+    "download": "下载成片",
+    "noVideo": "成片尚未就绪。生成完成后会在此播放 briefing.mp4：原作资讯卡按拍时长拼接，有配音文件时混入音轨。",
+    "openWorkspace": "打开资讯播报工作台",
+    "card": {
+      "title_desk": "片头条",
+      "evidence_tour": "证据栏",
+      "highlighter": "划重点",
+      "number_roll": "数字板",
+      "source_bar": "来源条",
+      "yield_shrink": "收束",
+      "transition_wipe": "转场",
+      "subtitle_plain": "字幕条"
+    },
+    "stage": {
+      "researching": "核验来源",
+      "scripting": "写拍脚本",
+      "aligning": "配音对齐",
+      "composing": "落版成片"
+    },
+    "stageHint": {
+      "researching": "交叉引用独立域名",
+      "scripting": "每拍必须带出处",
+      "aligning": "词级时间轴",
+      "composing": "原作卡面 + 可选氛围图"
+    },
+    "status": {
+      "idle": "待开始",
+      "researching": "核验来源",
+      "scripting": "写拍脚本",
+      "aligning": "配音对齐",
+      "composing": "落版成片",
+      "succeeded": "已完成",
+      "failed": "失败",
+      "hold": "暂停",
+      "cancelled": "已取消",
+      "interrupted": "已中断"
+    }
   },
   "time": {
     "justNow": "刚刚",

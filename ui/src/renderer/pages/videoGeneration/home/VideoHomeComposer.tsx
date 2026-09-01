@@ -10,6 +10,7 @@ import React, {
 } from 'react';
 import { Popover } from '@arco-design/web-react';
 import {
+  Broadcast,
   Down,
   MagicWand,
   People,
@@ -45,6 +46,9 @@ import type {
 import { usesCanvasReferences } from './types';
 import { generationPreferencesSummary } from '../preferenceSummary';
 import {
+  BRIEFING_DURATION_MAX_SECS,
+  BRIEFING_DURATION_MIN_SECS,
+  BRIEFING_DURATION_STEP_SECS,
   CLIP_DURATION_DEFAULT_SECS,
   CLIP_DURATION_MAX_SECS,
   CLIP_DURATION_MIN_SECS,
@@ -87,6 +91,7 @@ interface VideoHomeComposerProps {
   onSubmitAgent: (draft: VideoCreateDraft) => void;
   onSubmitCreation: (draft: VideoCreateDraft) => void;
   onSubmitGenerate: (draft: VideoCreateDraft) => void;
+  onSubmitBriefing: (draft: VideoCreateDraft) => void;
 }
 
 const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
@@ -96,6 +101,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   onSubmitAgent,
   onSubmitCreation,
   onSubmitGenerate,
+  onSubmitBriefing,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -103,6 +109,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const { draft, setDraft } = useHomeDraft();
   const isAction = mode === 'action';
   const isGenerate = mode === 'generate';
+  const isBriefing = mode === 'briefing';
   const {
     handleFiles,
     uploadError,
@@ -155,6 +162,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const actionModeLabel = t('videoGeneration.mode.actionLabel', {
     defaultValue: '动作模仿',
   });
+  const briefingModeLabel = t('videoGeneration.mode.briefingLabel', {
+    defaultValue: '资讯播报',
+  });
   const modeLabel =
     mode === 'generate'
       ? generateModeLabel
@@ -162,7 +172,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         ? agentModeLabel
         : mode === 'creation'
           ? creationModeLabel
-          : actionModeLabel;
+          : mode === 'briefing'
+            ? briefingModeLabel
+            : actionModeLabel;
 
   useEffect(() => {
     setDraft((current) => {
@@ -220,6 +232,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   }, [mode]);
 
   useEffect(() => {
+    if (isBriefing) {
+      setModelMissing(false);
+      return;
+    }
     if (isAction || isGenerate) {
       if (draft.preferences.models.video_model) setModelMissing(false);
       return;
@@ -229,6 +245,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     draft.preferences.models.llm_model,
     draft.preferences.models.video_model,
     isAction,
+    isBriefing,
     isGenerate,
   ]);
 
@@ -254,9 +271,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       workflow:
         mode === 'creation'
           ? draft.creationSkillId
-          : mode === 'generate'
-            ? 'clip'
-            : draft.workflow,
+            : mode === 'generate'
+              ? 'clip'
+              : mode === 'briefing'
+                ? 'news_briefing'
+                : draft.workflow,
     });
   }, [
     activeText,
@@ -339,7 +358,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   };
 
   const placeholder =
-    mode === 'generate'
+    mode === 'briefing'
+      ? t('videoGeneration.create.composer.briefingPlaceholder', {
+          defaultValue: '输入早报话题，例如「今日芯片出口管制」。来源链接可选，引擎会自行检索。',
+        })
+      : mode === 'generate'
       ? t('videoGeneration.create.composer.generatePlaceholder', {
           defaultValue: '描述你想生成的画面与运动，可上传参考图…',
         })
@@ -416,6 +439,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       if (mode === 'agent') prefetchVerticalSkillMenu();
       if (mode === 'creation') prefetchCanvasAssistantPanel();
     };
+    // Briefing first-open waits on this chunk + /api/media/models; do not idle-defer.
+    if (mode === 'briefing') {
+      warm();
+      return;
+    }
     if (typeof idleWindow.requestIdleCallback === 'function') {
       const idleId = idleWindow.requestIdleCallback(warm, { timeout: 800 });
       return () => idleWindow.cancelIdleCallback?.(idleId);
@@ -504,10 +532,17 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             ),
           }
         : draft.preferences,
+      briefingFormatSecs: clampDuration(
+        draft.briefingFormatSecs,
+        BRIEFING_DURATION_MIN_SECS,
+        BRIEFING_DURATION_MAX_SECS,
+        BRIEFING_DURATION_STEP_SECS
+      ),
     };
     openPreferences(false);
     setModelMissing(false);
-    if (mode === 'agent') onSubmitAgent(normalized);
+    if (mode === 'briefing') onSubmitBriefing(normalized);
+    else if (mode === 'agent') onSubmitAgent(normalized);
     else if (mode === 'generate') onSubmitGenerate(normalized);
     else onSubmitCreation(normalized);
   };
@@ -540,7 +575,19 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       />
     ) : null;
 
-  const prefsSummary = generationPreferencesSummary(
+  const briefingSummary = `${clampDuration(
+    draft.briefingFormatSecs,
+    BRIEFING_DURATION_MIN_SECS,
+    BRIEFING_DURATION_MAX_SECS,
+    BRIEFING_DURATION_STEP_SECS
+  )}s · ${
+    draft.researchDepth === 'deep'
+      ? t('videoGeneration.briefing.deep')
+      : t('videoGeneration.briefing.fast')
+  }`;
+  const prefsSummary = isBriefing
+    ? { summary: briefingSummary, title: briefingSummary }
+    : generationPreferencesSummary(
     draft.preferences,
     mode,
     {
@@ -606,6 +653,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 ? t('videoGeneration.create.homeHintAgent', {
                     defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
                   })
+                : mode === 'briefing'
+                  ? t('videoGeneration.create.homeHintBriefing', {
+                      defaultValue: '写下话题即可。引擎会检索独立来源做成可溯源口播，不会用模型记忆写今日新闻。',
+                    })
                 : t('videoGeneration.create.homeHintCreation', {
                     defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
                   })}
@@ -620,16 +671,21 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         ref={composerRef}
         className={styles.composer}
         onDragEnter={(event) => {
+          if (isBriefing) return;
           event.preventDefault();
           setFileDragOver(true);
         }}
-        onDragOver={(event) => event.preventDefault()}
+        onDragOver={(event) => {
+          if (isBriefing) return;
+          event.preventDefault();
+        }}
         onDragLeave={(event) => {
           const next = event.relatedTarget as Node | null;
           if (next && composerRef.current?.contains(next)) return;
           setFileDragOver(false);
         }}
         onDrop={(event) => {
+          if (isBriefing) return;
           event.preventDefault();
           setFileDragOver(false);
           void handleFiles(filesFromClipboardData(event.dataTransfer));
@@ -637,6 +693,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         // Capture so pasted images are treated as uploads before the textarea
         // inserts a filename / binary placeholder as text.
         onPasteCapture={(event) => {
+          if (isBriefing) return;
           const files = filesFromClipboardData(event.clipboardData);
           if (files.length === 0) return;
           event.preventDefault();
@@ -682,7 +739,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             onRequestUpload={openFilePicker}
           />
         )}
-        {isAction ? null : (
+        {isAction || isBriefing ? null : (
           <input
             ref={fileInputRef}
             type='file'
@@ -726,6 +783,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   <RobotOne size={15} />
                 ) : mode === 'creation' ? (
                   <Platte size={15} />
+                ) : mode === 'briefing' ? (
+                  <Broadcast size={15} />
                 ) : (
                   <People size={15} />
                 )}
@@ -748,6 +807,32 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   }
                   onOpenModelHub={() => navigate('/models')}
                   workflow={isAction ? 'action2video' : draft.workflow}
+                  briefing={
+                    isBriefing
+                      ? {
+                          formatSecs: draft.briefingFormatSecs,
+                          researchDepth: draft.researchDepth,
+                          timeWindowHours: draft.timeWindowHours,
+                          sourceUrls: draft.sourceUrls,
+                          tts: draft.briefingTts,
+                          image: draft.briefingImage,
+                        }
+                      : undefined
+                  }
+                  onBriefingChange={
+                    isBriefing
+                      ? (next) =>
+                          setDraft((current) => ({
+                            ...current,
+                            briefingFormatSecs: next.formatSecs,
+                            researchDepth: next.researchDepth,
+                            timeWindowHours: next.timeWindowHours,
+                            sourceUrls: next.sourceUrls,
+                            briefingTts: next.tts,
+                            briefingImage: next.image,
+                          }))
+                      : undefined
+                  }
                 />
                 </GenerationPreferencesMount>
               </Suspense>
@@ -877,6 +962,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   : mode === 'agent'
                     ? t('videoGeneration.create.generateStoryboard', {
                         defaultValue: '生成分镜',
+                      })
+                  : mode === 'briefing'
+                    ? t('videoGeneration.create.generateBriefing', {
+                        defaultValue: '开始资讯播报',
                       })
                     : t('videoGeneration.create.enterCanvas', {
                         defaultValue: '发给画布 Agent',

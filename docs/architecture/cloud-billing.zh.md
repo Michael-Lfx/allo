@@ -70,17 +70,24 @@ PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使�
 | Flowy 云 | `POST {base}/claw/telemetry/events/batch` → Gin `/api/v1/telemetry/events/batch`；JWT `user_id` 强制覆盖 |
 | ViMax 终态 | `nomi-vimax` 仅在 **Render** 终态（成功/失败/取消）与关机 **Rendering** 中断时回调；`nomifun-vimax` spawn 上传，不阻塞管线。未登录云则跳过。Rust 侧目前**不读** UI opt-out |
 
-事件名不改：`home_viewed` … `film_succeeded` / `film_failed` / `film_cancelled`，外加 `app_opened`（`module=platform`）。
+事件名闭集 18 个：漏斗 `home_viewed` … `film_succeeded` / `film_failed` / `film_cancelled`，资讯播报终态 `briefing_succeeded` / `briefing_failed` / `briefing_cancelled`，外加 `app_opened`（`module=platform`）。**资讯播报禁止发 `film_succeeded`。**
 
 **冻结口径（WAFC 分母）**
 
-- **WAFC**：窗口内有 `film_succeeded` / `film_at` 的 distinct 用户
+- **WAFC**：窗口内有 `film_succeeded` / `film_at` 的 distinct 用户（**film-only**，不含 briefing）
 - **TTF Film p50**：首次 `home_viewed` 或 `task_accepted` → 首次 `film_succeeded`
 - **start_to_film_rate**：窗口内有 `render_started` 且同时成片成功的用户比
 - **film_success_rate**：`succeeded / (succeeded + failed)`，**排除 cancel**
 - **film_d7_rate**：当前为窗口内成功，不是终身首次成功后的 D7
 - **publish_rate**：成片成功用户中已导出或 TV 发布
 - **DAU**：来自 `app_opened` 集市 `platform_dau`，不是 VG KPI 卡
+
+**资讯播报另立口径（不并入 WAFC）**
+
+- **WAFC-Briefing**：窗口内有 `briefing_succeeded` 的 distinct 用户
+- **TTF Briefing p50**：首次带 `mode=briefing` 的 `home_viewed` 或 `task_accepted` → 首次 `briefing_succeeded`
+- 属性白名单含 `briefing_id` / `research_depth` / `beat_count` / `citation_count`；服务端 `event_id = briefing:{name}:{briefing_id}`
+- FlowyClaw ingest 已同步闭集 18 与白名单；资讯播报写入 `tb_vg_session_facts` 但不置 `film_at`，WAFC 仍只看成片
 
 ClickHouse 是后续双写出口，当前权威存储是 MySQL 事件表 + 会话事实 + 日/小时集市。
 
@@ -98,6 +105,7 @@ ClickHouse 是后续双写出口，当前权威存储是 MySQL 事件表 + 会�
 ## 消费者
 
 后端：`nomifun-app`（挂载服务与路由）、`nomifun-media`、`nomifun-vimax`、
+`nomifun-briefing`、
 `nomifun-canvas`、`nomifun-shell`、`nomifun-insights`；引擎侧：`nomi-media`、
 `nomi-vimax`（媒体/视频生成走 Flowy 云后端的公共依赖，见
 [media-creation.zh.md](media-creation.zh.md) 与 [poi-insights.zh.md](poi-insights.zh.md)）。

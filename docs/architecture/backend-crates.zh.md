@@ -15,6 +15,7 @@
 - [`nomifun-app`](../../crates/backend/nomifun-app/) 为 `mcp-computer-stdio` 与 `mcp-browser-stdio` 桥接子命令，可选依赖 `nomi-computer`、`nomi-browser`、`nomi-browser-engine`、`nomi-config`、`nomi-tools`、`nomi-types`。
 - [`nomifun-gateway`](../../crates/backend/nomifun-gateway/) 为平台 Gateway 的 browser/computer 注册表，可选依赖 `nomi-browser`、`nomi-computer`、`nomi-config`、`nomi-tools`、`nomi-types`。
 - [`nomifun-robot`](../../crates/backend/nomifun-robot/) 无条件直接依赖 `nomi-config`、`nomi-providers`、`nomi-types`：LAN 机器人网关需要不经 Conversation runtime 直接说 provider 协议。
+- [`nomifun-briefing`](../../crates/backend/nomifun-briefing/) 直接依赖 `nomi-briefing`，与 `nomifun-vimax` → `nomi-vimax` 同类：资讯播报是独立领域引擎（文件会话 + `/api/briefing/*`），不能只经 conversation 的 `nomifun-ai-agent` 中转，否则 Session 会用模型记忆写「今日新闻」。对话入口仍通过薄 `briefing_*` 工具调用同一引擎。
 
 不要在未说明“为何无法走正常接缝或上述桥接面”的情况下，新增其他直接的 `nomi-*` 依赖。
 
@@ -86,6 +87,7 @@
 | [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) | 远程 LLM 服务器客户端：Flowy 云登录 + OpenAI 兼容推理网关客户端，供云端能力使用；同时是 `nomi-media` / `nomi-vimax` 共享的后端依赖。 |
 | [`nomifun-canvas`](../../crates/backend/nomifun-canvas/) | 视频生成 Canvas 模式 HTTP 面（`/api/video-canvas/*`），构建在 `nomi-vimax` 管线之上。 |
 | [`nomifun-vimax`](../../crates/backend/nomifun-vimax/) | ViMax 视频生成 HTTP 面（`/api/vimax/*`）。 |
+| [`nomifun-briefing`](../../crates/backend/nomifun-briefing/) | 资讯播报 HTTP 面（`/api/briefing/*`），引擎为 `nomi-briefing`；与 `nomifun-vimax` → `nomi-vimax` 同类例外。 |
 | [`nomifun-media`](../../crates/backend/nomifun-media/) | 媒体设置、积分与工作流历史的 HTTP 面（引擎工作委托给 `nomi-media`）。 |
 | [`nomifun-learning`](../../crates/backend/nomifun-learning/) | 面向知识库的领域无关学习引擎（前端 `/learn` 页面即它的界面）。 |
 | [`nomifun-poi`](../../crates/backend/nomifun-poi/) | 本地用户兴趣（POI）话题管理 API（引擎在 `nomi-poi`）。 |
@@ -128,4 +130,4 @@
 rg -l 'nomi-[a-z-]+\s*=' crates/backend/*/Cargo.toml
 ```
 
-预期会看到主接缝（`nomifun-ai-agent`）、上文描述的由 feature 控制的桥接例外（`nomifun-app`、`nomifun-gateway`、`nomifun-robot`），以及直接消费领域 `nomi-*` 引擎的媒体域 crate（`nomifun-canvas`、`nomifun-media`、`nomifun-vimax`、`nomifun-poi`、`nomifun-insights`、`nomifun-companion`）。
+预期会看到主接缝（`nomifun-ai-agent`）、上文描述的由 feature 控制的桥接例外（`nomifun-app`、`nomifun-gateway`、`nomifun-robot`），以及直接消费领域 `nomi-*` 引擎的媒体域 crate（`nomifun-canvas`、`nomifun-media`、`nomifun-vimax`、`nomifun-briefing`、`nomifun-poi`、`nomifun-insights`、`nomifun-companion`）。
