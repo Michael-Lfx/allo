@@ -134,10 +134,14 @@ fans out one thread per fire.
 ## Keep-Awake
 
 Cron jobs only fire while the host process is running. The list page has a
-**Keep system awake while Flowy is running** toggle that asks the OS to
-inhibit sleep (Windows: `SetThreadExecutionState`, macOS: `caffeinate`,
-Linux: `systemd-inhibit` where available) so jobs you set up on a laptop
-do not silently miss their fires the moment the lid closes.
+**Keep Flowy awake while it is running** toggle that asks the OS to inhibit
+idle system sleep and display idle-off (Windows: `SetThreadExecutionState`,
+macOS: `caffeinate -di`, Linux: the desktop screensaver and
+`systemd-inhibit` where available) so laptop jobs are less likely to be
+missed because of idle sleep.
+
+The toggle cannot override lid-close, forced sleep, power policies, or
+shutdown due to low battery; those behaviors remain controlled by the OS.
 
 If a fire is missed because the system slept anyway (or Flowy was not
 running), the missed-trigger handler at next boot/wake will record a

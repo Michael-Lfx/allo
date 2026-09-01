@@ -983,16 +983,14 @@ async fn webui_stop(server: tauri::State<'_, Arc<DesktopServer>>) -> Result<WebU
 /// Managed state holding the active OS sleep-inhibitor assertion (None = sleep allowed).
 struct AwakeState(Mutex<Option<keepawake::KeepAwake>>);
 
-/// 获取"保持唤醒"的 OS assertion:仅阻止系统空闲休眠(PreventUserIdleSystemSleep),
-/// **不**阻止显示器空闲关闭 —— 等价 `caffeinate -i`(而非 `-di`)。电脑保持活动时屏幕仍可正常熄屏,
-/// 既省电也避免长时间常亮对屏幕(尤其 OLED)的损耗;熄屏不影响定时任务运行。
+/// 获取"保持唤醒"的 OS assertion:阻止系统空闲休眠和显示器空闲关闭,
+/// 等价 `caffeinate -di`。`keepawake` 在 Windows/Linux 上也会同时请求系统和显示器保持活动。
 /// `set_keep_awake` 与回归测试共用此单一来源。
-/// Acquire the keep-awake assertion: inhibit system idle sleep only, while letting the display
-/// sleep normally (≈ `caffeinate -i`, not `-di`) — saves power and avoids screen wear, and the
-/// display turning off does NOT pause scheduled tasks. Single source shared with the test.
+/// Acquire the keep-awake assertion: inhibit system idle sleep and prevent the display from
+/// entering its idle-off state (≈ `caffeinate -di`). Single source shared with the test.
 fn acquire_keep_awake() -> Result<keepawake::KeepAwake, String> {
     keepawake::Builder::default()
-        .display(false) // 不持有 PreventUserIdleDisplaySleep:允许显示器空闲关闭(省电 + 护屏)
+        .display(true) // PreventUserIdleDisplaySleep:阻止显示器空闲关闭
         .idle(true) // PreventUserIdleSystemSleep:系统保持唤醒;电池供电时同样生效
         .sleep(false) // PreventSystemSleep:已废弃 + 电池下被忽略,显式关闭
         .reason("Flowy keep-awake enabled")
@@ -1002,14 +1000,13 @@ fn acquire_keep_awake() -> Result<keepawake::KeepAwake, String> {
         .map_err(|e| format!("failed to acquire keep-awake assertion: {e}"))
 }
 
-/// 开启/关闭"保持唤醒":开盖状态下阻止系统空闲休眠,但允许显示器照常熄屏(等价 `caffeinate -i`)。
+/// 开启/关闭"保持唤醒":开盖状态下阻止系统空闲休眠并保持显示器常亮(等价 `caffeinate -di`)。
 /// macOS 硬限制:合盖属于"强制休眠"(forced sleep),任何 IOKit assertion 都拦不住(参见 Apple QA1340);
 /// 合盖仍要运行,只能 clamshell 模式(插电 + 外接显示器 + 外接键鼠)或 root 级 `pmset disablesleep 1`。
-/// 早先还持有 PreventUserIdleDisplaySleep(display=true)强制屏幕常亮,会阻止显示器关闭、徒增屏幕损耗,
-/// 现已去掉;PreventSystemSleep(sleep)自 macOS 10.9 起已废弃且电池下被忽略,同样不用。
-/// Keep-awake: with the lid OPEN, inhibit idle system sleep but let the display sleep (~`caffeinate -i`).
-/// Lid-close is forced sleep that no assertion can block; the old display-on assertion (which blocked
-/// the monitor from turning off) and the deprecated PreventSystemSleep are both gone.
+/// 其他平台同样无法覆盖合盖、系统强制休眠、电源策略或低电量关机等操作系统行为。
+/// Keep-awake: with the lid OPEN, inhibit idle system sleep and keep the display on (~`caffeinate -di`).
+/// Lid-close is forced sleep that the assertion cannot block; the deprecated PreventSystemSleep
+/// assertion remains disabled.
 #[tauri::command]
 fn set_keep_awake(enabled: bool, state: tauri::State<'_, AwakeState>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -1125,13 +1122,13 @@ mod keep_awake_tests {
     use std::thread::sleep;
     use std::time::Duration;
 
-    /// 回归测试:保持唤醒必须只阻止系统空闲休眠,绝不阻止显示器关闭。
+    /// 回归测试:保持唤醒必须同时阻止系统空闲休眠和显示器关闭。
     /// 用真实 IOKit assertion + `pmset -g assertions` 验证 —— 只看本测试进程(按 pid 过滤)
     /// 自己持有的 assertion,因此不受同时运行的 App 实例或 `caffeinate` 干扰。
-    /// Regression: keep-awake must hold PreventUserIdleSystemSleep but NOT
-    /// PreventUserIdleDisplaySleep (the latter is what stops the monitor from turning off).
+    /// Regression: keep-awake must hold both PreventUserIdleSystemSleep and
+    /// PreventUserIdleDisplaySleep (the latter keeps the monitor from turning off).
     #[test]
-    fn holds_system_idle_assertion_but_not_display() {
+    fn holds_system_and_display_assertions() {
         let handle = acquire_keep_awake().expect("acquire keep-awake assertion");
         let owner = format!("pid {}(", std::process::id());
 
@@ -1147,7 +1144,9 @@ mod keep_awake_tests {
                 .filter(|l| l.contains(&owner))
                 .map(str::to_owned)
                 .collect();
-            if ours.iter().any(|l| l.contains("PreventUserIdleSystemSleep")) {
+            if ours.iter().any(|l| l.contains("PreventUserIdleSystemSleep"))
+                && ours.iter().any(|l| l.contains("PreventUserIdleDisplaySleep"))
+            {
                 break;
             }
             sleep(Duration::from_millis(50));
@@ -1158,9 +1157,8 @@ mod keep_awake_tests {
             "keep-awake should hold PreventUserIdleSystemSleep; our assertions: {ours:?}"
         );
         assert!(
-            !ours.iter().any(|l| l.contains("PreventUserIdleDisplaySleep")),
-            "keep-awake must NOT hold PreventUserIdleDisplaySleep (it blocks the display from \
-             turning off); our assertions: {ours:?}"
+            ours.iter().any(|l| l.contains("PreventUserIdleDisplaySleep")),
+            "keep-awake should hold PreventUserIdleDisplaySleep; our assertions: {ours:?}"
         );
 
         drop(handle);

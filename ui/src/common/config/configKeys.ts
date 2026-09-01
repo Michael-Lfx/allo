@@ -67,9 +67,14 @@ export type ConfigKeyMap = {
   'workspace.pasteConfirm': boolean | undefined;
   'upload.saveToWorkspace': boolean | undefined;
   'guid.lastSelectedAgent': string | undefined;
+  // Keep the desktop awake and prevent the display from turning off while enabled.
+  // This flat key is the persisted backend key used by systemSettings.
+  keepAwake: boolean | undefined;
+  // Legacy Agent preference. Read only as a migration fallback; all new writes
+  // must use the canonical `keepAwake` key above.
+  'system.keepAwake': boolean | undefined;
   'system.notificationEnabled': boolean | undefined;
   'system.cronNotificationEnabled': boolean | undefined;
-  'system.keepAwake': boolean | undefined;
   'system.autoPreviewOfficeFiles': boolean | undefined;
   // Unlock advanced settings tabs (e.g. cloud account) after a password gate.
   'system.developerMode': boolean | undefined;

@@ -501,7 +501,7 @@
   "sendKeyDesc": "Choose which key sends a message. \"Enter\" sends on Enter (Shift+Enter for a new line). \"Ctrl/⌘+Enter\" makes Enter insert a new line and sends only with the modifier.",
   "sendKeyEnter": "Enter",
   "sendKeyModEnter": "Ctrl/⌘+Enter",
-  "keepAwakeDesc": "When on, Flowy keeps your Mac awake while the lid is open, so scheduled tasks run on time. The display can still turn off normally (saving power and your screen — tasks keep running). Closing the lid still sleeps it and pauses tasks — unless it's plugged in with an external display and an external keyboard/mouse (clamshell mode).",
+  "keepAwakeDesc": "When on, Flowy prevents idle system sleep and keeps the display on so scheduled tasks can run on time. Lid-close, forced sleep, power policies, and shutdown due to low battery remain controlled by the operating system.",
   "notification": "Notifications",
   "cronNotificationEnabled": "Scheduled Task Completion",
   "promptTimeout": "LLM Prompt Timeout (s)",
