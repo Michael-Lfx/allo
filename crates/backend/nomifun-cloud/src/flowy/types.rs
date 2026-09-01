@@ -257,6 +257,7 @@ pub struct ClientPackageRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PresenceHeartbeatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
@@ -264,6 +265,8 @@ pub struct PresenceHeartbeatRequest {
     pub app_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

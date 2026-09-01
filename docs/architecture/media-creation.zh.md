@@ -1,6 +1,6 @@
 # 媒体与创作域（Workshop / 视频生成 / 模型调用层）
 
-> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6` ·
+> **最后维护：** 2026-09-01 · 核对基准：源码（nomi-vimax 终态 hook + 第一方遥测）
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 本域覆盖 Flowy 的所有"生成媒体"能力：创意工坊画布、ViMax 视频管线、视频生成
@@ -82,6 +82,7 @@ P1 多模态重构的产物（设计稿：
   action-assets、`materialize-to-canvas` / `sync-from-canvas`（与 Canvas 双向同步，
   链接存 `vimax_session_links.json`）、tv-show 发布面、skills / skill-hub 面。
 - 前端路由 `/video-generation`、`/video-generation/:sessionId` 已上线。
+- **成片终态遥测**：`VimaxService` 在 Render job 结束（`Succeeded` / `Failed` / `Cancelled`）以及 `interrupt_all` 时仅对当时 `Rendering` 的会话发出 `film_*`（中断映射为 `film_cancelled`）。Plan→Idle 与 Plan 失败不报。hook 由 `nomifun-vimax` 接到 `CloudService::upload_video_growth_events`；`event_id = video:{name}:{session_id}` 与 UI 一致，服务端 UNIQUE 去重。属性含 workflow / 模型 / `credits_consumed` / `duration_ms` / `error_code` / `failure_channel`。增长口径见 [cloud-billing.zh.md](cloud-billing.zh.md)「第一方产品遥测」。
 
 ## 视频生成 Canvas 模式 `nomifun-canvas`
 

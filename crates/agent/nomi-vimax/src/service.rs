@@ -17,7 +17,10 @@ use crate::pipelines::{
     model_supports_action_imitation, Action2VideoPipeline, Idea2VideoPipeline, Novel2VideoPipeline,
     PipelineBackends, ScriptFilmPipeline,
 };
-use crate::progress::{INTERRUPTED_SUMMARY, RenderStatus, RunStatus};
+use crate::progress::{
+    duration_ms_from_status, film_event_name, INTERRUPTED_SUMMARY, RenderStatus, RunStatus,
+    VimaxTerminalTelemetry,
+};
 use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
     apply_status_to_record, apply_video_task_credits, cameo, video_task_credit_delta,
@@ -97,6 +100,8 @@ enum JobKind {
     Render,
 }
 
+pub type TerminalTelemetryHook = Arc<dyn Fn(VimaxTerminalTelemetry) + Send + Sync>;
+
 pub struct VimaxService {
     #[allow(dead_code)]
     data_dir: PathBuf,
@@ -106,6 +111,7 @@ pub struct VimaxService {
     /// Sync mutex so progress callbacks never drop updates via `try_lock`.
     statuses: StdMutex<HashMap<String, RenderStatus>>,
     cancels: Mutex<HashMap<String, CancellationToken>>,
+    terminal_hook: StdMutex<Option<TerminalTelemetryHook>>,
 }
 
 impl VimaxService {
@@ -133,6 +139,7 @@ impl VimaxService {
             flowy: Mutex::new(flowy),
             statuses: StdMutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
+            terminal_hook: StdMutex::new(None),
         }))
     }
 
@@ -151,6 +158,7 @@ impl VimaxService {
         }
 
         let mut ids: HashSet<String> = HashSet::new();
+        let mut emit_interrupt: HashSet<String> = HashSet::new();
         {
             let mut map = self
                 .statuses
@@ -160,17 +168,24 @@ impl VimaxService {
                 if !st.status.is_active() {
                     continue;
                 }
+                let was_rendering = st.status == RunStatus::Rendering;
                 st.status = RunStatus::Interrupted;
                 st.message = INTERRUPTED_SUMMARY.into();
                 st.error = None;
                 st.emit_terminal("interrupted", INTERRUPTED_SUMMARY);
                 persist_run_status(&self.index, id, st);
                 ids.insert(id.clone());
+                if was_rendering {
+                    emit_interrupt.insert(id.clone());
+                }
             }
         }
 
         if let Ok(sessions) = self.index.list() {
             for record in sessions {
+                if record.status == RunStatus::Rendering {
+                    emit_interrupt.insert(record.session_id.clone());
+                }
                 if record.status.is_active() {
                     ids.insert(record.session_id);
                 }
@@ -184,6 +199,10 @@ impl VimaxService {
             });
         }
 
+        for id in &emit_interrupt {
+            self.emit_film_terminal(id, RunStatus::Interrupted);
+        }
+
         if !ids.is_empty() || !tokens.is_empty() {
             tracing::info!(
                 cancelled_tokens = tokens.len(),
@@ -192,6 +211,85 @@ impl VimaxService {
             );
         }
         ids.len()
+    }
+
+    pub fn set_terminal_telemetry_hook(&self, hook: Option<TerminalTelemetryHook>) {
+        *self
+            .terminal_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hook;
+    }
+
+    fn emit_film_terminal(&self, id: &str, status: RunStatus) {
+        if film_event_name(status).is_none() {
+            return;
+        }
+        let st = {
+            let map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.get(id)
+                .cloned()
+                .or_else(|| self.index.load_run_status(id))
+                .unwrap_or_default()
+        };
+        let record = self.index.get(id).ok();
+        let credits = record
+            .as_ref()
+            .map(|r| r.credits_consumed.max(st.credits_consumed))
+            .unwrap_or(st.credits_consumed);
+        let error_code = st
+            .error
+            .as_deref()
+            .or((!st.message.is_empty()).then_some(st.message.as_str()))
+            .map(|s| s.chars().take(256).collect::<String>())
+            .filter(|s| !s.is_empty());
+        let payload = VimaxTerminalTelemetry {
+            session_id: id.to_string(),
+            status,
+            workflow: record
+                .as_ref()
+                .map(|r| r.workflow.as_str().to_string())
+                .unwrap_or_default(),
+            llm_model: record
+                .as_ref()
+                .map(|r| r.llm_model.clone())
+                .unwrap_or_default(),
+            image_model: record
+                .as_ref()
+                .map(|r| r.image_model.clone())
+                .unwrap_or_default(),
+            video_model: record
+                .as_ref()
+                .map(|r| r.video_model.clone())
+                .unwrap_or_default(),
+            credits_consumed: credits,
+            duration_ms: duration_ms_from_status(&st),
+            error_code: if matches!(status, RunStatus::Failed) {
+                error_code
+            } else {
+                None
+            },
+            failure_channel: if status == RunStatus::Failed {
+                Some("pipeline".into())
+            } else {
+                None
+            },
+            occurred_at: if st.updated_at.is_empty() {
+                chrono::Utc::now().to_rfc3339()
+            } else {
+                st.updated_at.clone()
+            },
+        };
+        let hook = self
+            .terminal_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(payload);
+        }
     }
 
     /// Replace Flowy backends after login / config reload.
@@ -904,6 +1002,7 @@ impl VimaxService {
                                     st.message = "render complete".into();
                                 }
                                 st.progress = 100.0;
+                                st.emit("succeeded", &st.message.clone(), None);
                             }
                         }
                     }
@@ -934,7 +1033,17 @@ impl VimaxService {
             });
             persist_run_status(&self.index, id, st);
         }
+        let emit_status = matches!(kind, JobKind::Render).then(|| {
+            self.statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(id)
+                .map(|st| st.status)
+        });
         self.cancels.lock().await.remove(id);
+        if let Some(Some(status)) = emit_status {
+            self.emit_film_terminal(id, status);
+        }
     }
 
     async fn backends_for(

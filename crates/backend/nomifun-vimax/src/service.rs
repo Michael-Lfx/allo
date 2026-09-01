@@ -1,5 +1,6 @@
 //! Thin wrapper around `nomi_vimax::VimaxService` with GatewayConfig reload.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -7,16 +8,18 @@ use nomi_config::{GatewayConfig, config_yaml_path, load_user_config_file};
 use nomi_vimax::{
     pack_skill_dir, ArtifactNode, CameoPhotoEntry, CameoUpdate, FlowyVimaxServices, RenderStatus,
     RunStatus, SessionRecord, SessionSummary, SkillSource, VerticalSkill, VerticalSkillDraft,
-    VerticalSkillSummary, VimaxService, WorkflowKind,
+    VerticalSkillSummary, VimaxService, VimaxTerminalTelemetry, WorkflowKind, film_event_name,
 };
 use nomifun_api_types::{
     CampaignCarouselResponse, CampaignDetail, CampaignListResponse, TvShowLikeResponse,
     TvShowListResponse, TvShowPublishRequest, TvShowPublishResponse, TvShowPublishSessionRequest,
-    TvShowVideo, VimaxCloudSkill, VimaxCloudSkillInstallResponse, VimaxCloudSkillLikeResponse,
-    VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest, VimaxCloudSkillPublishRequest,
+    TvShowVideo, VideoGrowthEvent, VideoGrowthEventBatchRequest, VimaxCloudSkill,
+    VimaxCloudSkillInstallResponse, VimaxCloudSkillLikeResponse, VimaxCloudSkillListResponse,
+    VimaxCloudSkillPublishLocalRequest, VimaxCloudSkillPublishRequest,
     VimaxCloudSkillPublishResponse, VimaxSessionSummary,
 };
-use nomifun_cloud::{FlowyApiClient, ServerSession};
+use nomifun_cloud::{CloudService, FlowyApiClient, ServerSession};
+use serde_json::json;
 use nomifun_common::AppError;
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
@@ -36,6 +39,15 @@ impl VimaxApiService {
         let flowy = load_flowy(&data_dir);
         let inner = VimaxService::start(&data_dir, flowy)
             .map_err(|e| AppError::Internal(e.to_string()))?;
+        let hook_dir = data_dir.clone();
+        inner.set_terminal_telemetry_hook(Some(Arc::new(move |payload| {
+            let data_dir = hook_dir.clone();
+            tokio::spawn(async move {
+                if let Err(err) = upload_vimax_terminal_telemetry(data_dir, payload).await {
+                    warn!(error = %err, "vimax terminal telemetry upload failed");
+                }
+            });
+        })));
         Ok(Self { data_dir, inner })
     }
 
@@ -1248,6 +1260,64 @@ async fn download_url_to_file_capped(
     tokio::fs::write(dest, &bytes)
         .await
         .map_err(|e| AppError::Internal(format!("write skill package: {e}")))?;
+    Ok(())
+}
+
+async fn upload_vimax_terminal_telemetry(
+    data_dir: PathBuf,
+    payload: VimaxTerminalTelemetry,
+) -> Result<(), AppError> {
+    let Some(name) = film_event_name(payload.status) else {
+        return Ok(());
+    };
+    let cloud = CloudService::new(data_dir)?;
+    if !cloud.is_authenticated().await {
+        return Ok(());
+    }
+
+    let session_id = payload.session_id.clone();
+    let mut properties = BTreeMap::new();
+    properties.insert("session_id".into(), json!(session_id.clone()));
+    properties.insert("feature".into(), json!("video_generation"));
+    properties.insert("runtime".into(), json!("desktop"));
+    properties.insert("status".into(), json!(payload.status.as_str()));
+    properties.insert("credits_consumed".into(), json!(payload.credits_consumed));
+    properties.insert("duration_ms".into(), json!(payload.duration_ms));
+    if !payload.workflow.is_empty() {
+        properties.insert("workflow".into(), json!(payload.workflow));
+    }
+    if !payload.llm_model.is_empty() {
+        properties.insert("llm_model".into(), json!(payload.llm_model));
+    }
+    if !payload.image_model.is_empty() {
+        properties.insert("image_model".into(), json!(payload.image_model));
+    }
+    if !payload.video_model.is_empty() {
+        properties.insert("video_model".into(), json!(payload.video_model));
+    }
+    if let Some(error_code) = payload.error_code.filter(|value| !value.is_empty()) {
+        properties.insert("error_code".into(), json!(error_code));
+    }
+    if let Some(failure_channel) = payload.failure_channel.filter(|value| !value.is_empty()) {
+        properties.insert("failure_channel".into(), json!(failure_channel));
+    }
+
+    cloud
+        .upload_video_growth_events(&VideoGrowthEventBatchRequest {
+            events: vec![VideoGrowthEvent {
+                event_id: format!("video:{name}:{session_id}"),
+                name: name.to_string(),
+                occurred_at: payload.occurred_at,
+                module: Some("video_generation".into()),
+                properties,
+                cohort: None,
+            }],
+            client_id: None,
+            app: None,
+            platform: None,
+            app_version: None,
+        })
+        .await?;
     Ok(())
 }
 

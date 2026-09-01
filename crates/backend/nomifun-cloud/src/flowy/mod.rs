@@ -265,10 +265,16 @@ impl FlowyApiClient {
         session: &ServerSession,
         client_id: Option<String>,
     ) -> Result<(), ServerClientError> {
+        let app = self.config.app.trim();
         let body = PresenceHeartbeatRequest {
             platform: Some(crate::platform::client_platform()),
             app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             client_id,
+            app: if app.is_empty() {
+                None
+            } else {
+                Some(app.to_string())
+            },
         };
         self.post_no_data("/presence/heartbeat", Some(session), &body)
             .await

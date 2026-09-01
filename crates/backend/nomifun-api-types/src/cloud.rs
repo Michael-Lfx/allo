@@ -143,6 +143,8 @@ pub struct VideoGrowthEvent {
     pub event_id: String,
     pub name: String,
     pub occurred_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
     pub properties: BTreeMap<String, Value>,
     pub cohort: Option<String>,
 }
@@ -151,6 +153,14 @@ pub struct VideoGrowthEvent {
 #[serde(rename_all = "camelCase")]
 pub struct VideoGrowthEventBatchRequest {
     pub events: Vec<VideoGrowthEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +168,8 @@ pub struct VideoGrowthEventBatchRequest {
 pub struct VideoGrowthEventBatchResponse {
     pub accepted: u64,
     pub duplicates: u64,
+    #[serde(default)]
+    pub rejected: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

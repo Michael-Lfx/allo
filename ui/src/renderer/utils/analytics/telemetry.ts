@@ -26,6 +26,7 @@ const ALLOWED_PROPERTIES = new Set([
   'item_type',
   'kind',
   'launchpad_variant',
+  'llm_model',
   'method',
   'mode',
   'outcome',
@@ -39,9 +40,13 @@ const ALLOWED_PROPERTIES = new Set([
   'stream_ms',
   'total_ms',
   'ttft_ms',
+  'video_model',
   'viewport',
   'wait_ms',
   'workflow',
+  'image_model',
+  'credits_consumed',
+  'duration_ms',
 ]);
 
 let started = false;

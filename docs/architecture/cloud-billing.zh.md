@@ -1,6 +1,6 @@
 # 云服务与计费域（Flowy Cloud）
 
-> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6` ·
+> **最后维护：** 2026-09-01 · 核对基准：源码（nomifun-cloud 遥测出站 + FlowyClaw ingest）
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) 是"远程 LLM 服务器客户端"：
@@ -58,6 +58,31 @@
   设计稿：
   [`superpowers/specs/2026-08-21-desktop-airwallex-billing-design.md`](../superpowers/specs/2026-08-21-desktop-airwallex-billing-design.md)。
   托管式 `redirectToCheckout` 明确不在范围内（仅 drop-in）。
+
+## 第一方产品遥测（增长仓）
+
+PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使用分析」opt-out）。**运营/商业北星以 FlowyClaw 第一方仓为权威**，不从 PostHog 或 `tb_video_task` 倒算漏斗。
+
+| 路径 | 职责 |
+| --- | --- |
+| 渲染进程 outbox | `ui/.../telemetryOutbox.ts`：队列 `flowy.telemetry.events.v1`（迁移旧 `flowy.growth.video.events.v1`）；尊重 `isTelemetryEnabled()` |
+| 本机 axum | `POST /api/cloud/telemetry/events`（别名 `/api/cloud/growth/video/events`）补 `clientId` / `app` / `platform` / `appVersion` |
+| Flowy 云 | `POST {base}/claw/telemetry/events/batch` → Gin `/api/v1/telemetry/events/batch`；JWT `user_id` 强制覆盖 |
+| ViMax 终态 | `nomi-vimax` 仅在 **Render** 终态（成功/失败/取消）与关机 **Rendering** 中断时回调；`nomifun-vimax` spawn 上传，不阻塞管线。未登录云则跳过。Rust 侧目前**不读** UI opt-out |
+
+事件名不改：`home_viewed` … `film_succeeded` / `film_failed` / `film_cancelled`，外加 `app_opened`（`module=platform`）。
+
+**冻结口径（WAFC 分母）**
+
+- **WAFC**：窗口内有 `film_succeeded` / `film_at` 的 distinct 用户
+- **TTF Film p50**：首次 `home_viewed` 或 `task_accepted` → 首次 `film_succeeded`
+- **start_to_film_rate**：窗口内有 `render_started` 且同时成片成功的用户比
+- **film_success_rate**：`succeeded / (succeeded + failed)`，**排除 cancel**
+- **film_d7_rate**：当前为窗口内成功，不是终身首次成功后的 D7
+- **publish_rate**：成片成功用户中已导出或 TV 发布
+- **DAU**：来自 `app_opened` 集市 `platform_dau`，不是 VG KPI 卡
+
+ClickHouse 是后续双写出口，当前权威存储是 MySQL 事件表 + 会话事实 + 日/小时集市。
 
 ## 配置面
 

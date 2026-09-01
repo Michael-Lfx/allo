@@ -1,7 +1,7 @@
 
 
 import { captureFunnelEvent } from './telemetry';
-import { enqueueVideoGrowthEvent } from './videoGrowthUpload';
+import { enqueueTelemetryEvent } from './telemetryOutbox';
 
 export type FunnelEventName =
   | 'auth_completed'
@@ -15,6 +15,7 @@ export type FunnelEventName =
   | 'render_started'
   | 'film_succeeded'
   | 'film_failed'
+  | 'film_cancelled'
   | 'value_confirmed'
   | 'project_exported'
   | 'tv_published'
@@ -164,7 +165,7 @@ function recordFunnelEvent(
     window.dispatchEvent(new CustomEvent('flowy:funnel', { detail: event }));
   }
   captureFunnelEvent(event);
-  enqueueVideoGrowthEvent(event);
+  enqueueTelemetryEvent(event);
   return event;
 }
 
@@ -176,6 +177,7 @@ export type VideoSessionEventName =
   | 'render_started'
   | 'film_succeeded'
   | 'film_failed'
+  | 'film_cancelled'
   | 'value_confirmed'
   | 'project_exported'
   | 'tv_published'
