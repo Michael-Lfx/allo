@@ -473,7 +473,10 @@ export const PreviewProvider: React.FC<{
 
   const closeTab = useCallback(
     (tabId: string): PreviewTab | null => {
-      let nextActiveTab: PreviewTab | null | undefined = undefined;
+      const closeResult: { activeTabWasClosed: boolean; nextActiveTab: PreviewTab | null } = {
+        activeTabWasClosed: false,
+        nextActiveTab: null,
+      };
 
       setTabs((prevTabs) => {
         const closedIndex = prevTabs.findIndex((tab) => tab.id === tabId);
@@ -495,6 +498,7 @@ export const PreviewProvider: React.FC<{
         }
 
         if (tabId === activeTabIdRef.current) {
+          closeResult.activeTabWasClosed = true;
           const nextActiveTabId = resolveActiveTabAfterClose(
             newTabs,
             previousActiveTabIdRef.current
@@ -502,7 +506,7 @@ export const PreviewProvider: React.FC<{
           if (nextActiveTabId && nextActiveTabId === previousActiveTabIdRef.current) {
             previousActiveTabIdRef.current = null;
           }
-          nextActiveTab = nextActiveTabId
+          closeResult.nextActiveTab = nextActiveTabId
             ? (newTabs.find((tab) => tab.id === nextActiveTabId) ?? null)
             : null;
           // Preemptively sync so chained closes observe the post-close active id.
@@ -512,12 +516,12 @@ export const PreviewProvider: React.FC<{
         return newTabs;
       });
 
-      if (nextActiveTab !== undefined) {
-        activateTab(nextActiveTab?.id ?? null, { recordHistory: false });
-        if (!nextActiveTab) {
+      if (closeResult.activeTabWasClosed) {
+        activateTab(closeResult.nextActiveTab?.id ?? null, { recordHistory: false });
+        if (!closeResult.nextActiveTab) {
           setIsOpen(false);
         }
-        return nextActiveTab;
+        return closeResult.nextActiveTab;
       }
 
       return tabsRef.current.find((tab) => tab.id === activeTabIdRef.current) ?? null;

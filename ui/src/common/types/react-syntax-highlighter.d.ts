@@ -8,13 +8,13 @@
  * preset object, so loose typings are sufficient here.
  */
 declare module 'react-syntax-highlighter' {
-  import type { ComponentType, ReactNode } from 'react';
+  import type { ComponentType, CSSProperties, ReactNode } from 'react';
 
   export interface SyntaxHighlighterProps {
     language?: string;
     style?: Record<string, unknown>;
     children?: ReactNode;
-    customStyle?: Record<string, unknown>;
+    customStyle?: CSSProperties;
     codeTagProps?: Record<string, unknown>;
     PreTag?: keyof JSX.IntrinsicElements | ComponentType<unknown>;
     CodeTag?: keyof JSX.IntrinsicElements | ComponentType<unknown>;
