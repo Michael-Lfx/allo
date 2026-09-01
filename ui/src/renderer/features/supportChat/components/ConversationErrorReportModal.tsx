@@ -14,6 +14,7 @@ import ErrorDiagnosticContent from '@/renderer/components/base/ErrorDiagnosticCo
 import { buildAgentErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
 import {
   getConversationErrorReportContextKey,
+  MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS,
   type ConversationErrorReportContext,
   type ConversationErrorReportDraft,
   type ConversationErrorReportSubmitResult,
@@ -27,8 +28,6 @@ import {
   selectSupportImagePreviews,
   type SupportImagePreviewItem,
 } from '../supportImageAttachments';
-
-const MAX_REPORT_DESCRIPTION_CHARS = 4000;
 
 type ConversationErrorReportModalProps = {
   context: ConversationErrorReportContext | null;
@@ -49,7 +48,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
   const [submitting, setSubmitting] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [submitStatus, setSubmitStatus] = useState<
-    'idle' | 'preparation-failed' | 'partial-failure'
+    'idle' | 'preparation-failed' | 'partial-failure' | 'invalid-input'
   >('idle');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -57,7 +56,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
   const providerOwnedPreviewUrlsRef = useRef(new Set<string>());
   const lastContextKeyRef = useRef<string | null>(null);
   const charCount = Array.from(description).length;
-  const descriptionTooLong = charCount > MAX_REPORT_DESCRIPTION_CHARS;
+  const descriptionTooLong = charCount > MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS;
   const diagnostic = context ? buildAgentErrorDiagnostic(context.error) : null;
 
   useEffect(() => {
@@ -209,6 +208,18 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
         });
         setSubmitStatus('partial-failure');
         Message.error(t('settings.bugReportPartialFailure'));
+      } else if (result.status === 'invalid-input') {
+        setSubmitStatus('invalid-input');
+        Message.error(
+          t('settings.bugReportInvalidInput', {
+            defaultValue: '反馈内容或截图不符合要求，请检查后重试。',
+          })
+        );
+      } else if (result.status === 'stale') {
+        // The authenticated account or report context changed while the
+        // request was in flight. The accepted message belongs to the old
+        // context and must not update this modal.
+        return;
       } else {
         setSubmitStatus('preparation-failed');
         Message.error(t('settings.bugReportError'));
@@ -292,7 +303,6 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
         maxHeight: 'min(760px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}
-      unmountOnExit
       autoFocus={false}
     >
       {context && diagnostic ? (
@@ -310,7 +320,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
                 ref={textareaRef}
                 className='conversation-error-report__textarea'
                 value={description}
-                maxLength={MAX_REPORT_DESCRIPTION_CHARS}
+                maxLength={MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS}
                 placeholder={t('settings.bugReportDescriptionPlaceholder')}
                 aria-invalid={descriptionTooLong}
                 aria-labelledby='conversation-error-report-editor-title'
@@ -377,7 +387,7 @@ const ConversationErrorReportModal: React.FC<ConversationErrorReportModalProps> 
                         : 'conversation-error-report__count'
                     }
                   >
-                    {charCount} / {MAX_REPORT_DESCRIPTION_CHARS}
+                    {charCount} / {MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS}
                   </div>
                   <Popover
                     className='conversation-error-report__info-popover'

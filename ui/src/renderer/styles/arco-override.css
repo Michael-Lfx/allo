@@ -706,7 +706,6 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   display: flex;
   min-width: 0;
   min-height: 0;
-  flex: 0 1 auto;
   flex-direction: column;
   overflow: hidden;
 }
@@ -997,6 +996,18 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   width: 100%;
   height: 100%;
   flex: 1 1 auto;
+}
+
+.support-chat-modal__composer-slot {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+}
+
+.support-chat-modal__composer-slot:not(.support-chat-modal__composer-slot--ready) {
+  display: none;
 }
 
 .support-chat-modal__status {

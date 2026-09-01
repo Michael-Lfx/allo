@@ -1049,6 +1049,7 @@
   "bugReportCancel": "Cancel",
   "bugReportSuccess": "Report submitted, thank you for your feedback",
   "bugReportError": "Submission failed, please try again later",
+  "bugReportInvalidInput": "The report text or screenshots are invalid. Check them and try again.",
   "bugReportRetryHint": "Preparing logs or screenshots failed. Your draft is preserved; please try again.",
   "bugReportPartialFailure": "Some content failed to send. Retry it from the support chat.",
   "bugReportPartialFailureHint": "Some content is already in support messages. Open support to review and retry failed items.",

@@ -12,19 +12,21 @@ import { useTranslation } from 'react-i18next';
 import type { ICloudImAttachmentPayload } from '@/common/adapter/ipcBridge';
 import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
 import { supportChatApi } from '../api/supportChatApi';
+import { MAX_SUPPORT_MESSAGE_CHARS } from '../api/supportChatTypes';
 import { collectSupportDeviceInfo } from '../collectSupportDeviceInfo';
 import { collectSupportLogUserInfo } from '../collectSupportLogUserInfo';
 import SupportImagePreviewGrid from './SupportImagePreviewGrid';
 import {
+  buildSupportLogPayload,
   MAX_SUPPORT_IMAGES,
   revokeSupportImagePreview,
   revokeSupportImagePreviews,
   SUPPORT_IMAGE_ACCEPT,
   selectSupportImagePreviews,
+  SupportAttachmentReferenceError,
   type SupportImagePreviewItem,
 } from '../supportImageAttachments';
 
-const MAX_CHARS = 4000;
 const DEFAULT_LOG_CONTENT = '附上日志，请协助排查';
 
 type SupportMessageComposerProps = {
@@ -59,7 +61,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
     !sending &&
     !preparingLogs &&
     (charCount > 0 || imagePreviews.length > 0) &&
-    charCount <= MAX_CHARS;
+    charCount <= MAX_SUPPORT_MESSAGE_CHARS;
   const canAddImages = imagePreviews.length < MAX_SUPPORT_IMAGES;
 
   useLayoutEffect(() => {
@@ -138,15 +140,18 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
       const content = t('common.supportChat.uploadLogsDefaultContent', {
         defaultValue: DEFAULT_LOG_CONTENT,
       });
-      const sent = await onSend(content, {
-        ...(uploaded.url ? { url: uploaded.url } : {}),
-        name: uploaded.name || packed.fileName,
-        contentType: uploaded.contentType || 'application/zip',
-        byteSize: uploaded.byteSize || packed.byteSize,
-        ...(uploaded.objectKey ? { objectKey: uploaded.objectKey } : {}),
-        account,
-        device,
-      });
+      const sent = await onSend(
+        content,
+        buildSupportLogPayload(
+          uploaded,
+          {
+            fileName: packed.fileName,
+            contentType: 'application/zip',
+            byteSize: packed.byteSize,
+          },
+          { account, device }
+        )
+      );
       if (!sent) {
         throw new Error(
           t('common.supportChat.uploadLogsFailed', {
@@ -162,11 +167,15 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
       setLogConfirmOpen(false);
     } catch (error) {
       Message.error(
-        error instanceof Error && error.message
-          ? error.message
-          : t('common.supportChat.uploadLogsFailed', {
+        error instanceof SupportAttachmentReferenceError
+          ? t('common.supportChat.uploadLogsFailed', {
               defaultValue: '日志打包、上传或发送失败',
             })
+          : error instanceof Error && error.message
+            ? error.message
+            : t('common.supportChat.uploadLogsFailed', {
+                defaultValue: '日志打包、上传或发送失败',
+              })
       );
     } finally {
       setPreparingLogs(false);
@@ -282,6 +291,7 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
           className='box-border w-full min-h-60px max-h-120px overflow-y-auto resize-none border-none bg-transparent px-2px py-2px text-14px leading-22px text-t-primary outline-none disabled:opacity-60 disabled:cursor-not-allowed'
           rows={2}
           value={value}
+          maxLength={MAX_SUPPORT_MESSAGE_CHARS}
           disabled={disabled || sending || preparingLogs}
           aria-label={t('common.supportChat.composerPlaceholder', {
             defaultValue: '描述你的问题…',
@@ -353,10 +363,12 @@ const SupportMessageComposer: React.FC<SupportMessageComposerProps> = ({
             </Trigger>
             <span
               className={
-                charCount > MAX_CHARS ? 'text-12px text-danger' : 'text-12px text-t-tertiary'
+                charCount > MAX_SUPPORT_MESSAGE_CHARS
+                  ? 'text-12px text-danger'
+                  : 'text-12px text-t-tertiary'
               }
             >
-              {charCount} / {MAX_CHARS}
+              {charCount} / {MAX_SUPPORT_MESSAGE_CHARS}
             </span>
           </div>
 

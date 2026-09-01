@@ -5103,6 +5103,7 @@ export type I18nKey =
   | 'settings.bugReportDiagnostic'
   | 'settings.bugReportError'
   | 'settings.bugReportIncludedInfo'
+  | 'settings.bugReportInvalidInput'
   | 'settings.bugReportLogPrivacy'
   | 'settings.bugReportOpenSupport'
   | 'settings.bugReportPartialFailure'

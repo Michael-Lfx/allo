@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { Close } from '@icon-park/react';
 import type { ICloudImAttachmentPayload } from '@/common/adapter/ipcBridge';
 import NomiModal from '@renderer/components/base/NomiModal';
+import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
 import { useSupportChat } from '../SupportChatProvider';
 import type { SupportOutgoingImage } from '../SupportChatProvider';
 import type { SupportChatState } from '../api/supportChatTypes';
@@ -25,6 +26,8 @@ export type SupportChatModalViewProps = {
   retryMessage: (clientMsgId: string) => Promise<void>;
   loadOlder: () => Promise<boolean>;
   composerDisabled?: boolean;
+  /** Remounts the composer when the authenticated account changes. */
+  composerKey?: string;
 };
 
 export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
@@ -37,6 +40,7 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
   retryMessage,
   loadOlder,
   composerDisabled = false,
+  composerKey,
 }) => {
   const { t } = useTranslation();
 
@@ -60,7 +64,6 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
         maxHeight: 'min(680px, calc(100dvh - 32px))',
       }}
       contentStyle={{ padding: 0, overflow: 'hidden' }}
-      unmountOnExit
       onCancel={closeSupportChat}
     >
       <div
@@ -91,21 +94,26 @@ export const SupportChatModalView: React.FC<SupportChatModalViewProps> = ({
         ) : null}
 
         {state.status === 'ready' ? (
-          <>
-            <SupportMessageList
-              messages={state.messages}
-              onLoadOlder={loadOlder}
-              onRetry={(clientMsgId) => {
-                void retryMessage(clientMsgId);
-              }}
-            />
-            <SupportMessageComposer
-              disabled={composerDisabled}
-              onSend={(content, logPayload) => sendMessage(content, logPayload)}
-              onSendImages={sendImages}
-            />
-          </>
+          <SupportMessageList
+            messages={state.messages}
+            onLoadOlder={loadOlder}
+            onRetry={(clientMsgId) => {
+              void retryMessage(clientMsgId);
+            }}
+          />
         ) : null}
+
+        <div
+          className={`support-chat-modal__composer-slot support-chat-modal__composer-slot--${state.status}`}
+          aria-hidden={state.status !== 'ready'}
+        >
+          <SupportMessageComposer
+            key={composerKey}
+            disabled={composerDisabled || state.status !== 'ready'}
+            onSend={(content, logPayload) => sendMessage(content, logPayload)}
+            onSendImages={sendImages}
+          />
+        </div>
 
         {state.status === 'error' ? (
           <div className='support-chat-modal__status support-chat-modal__status--error flex flex-col items-center justify-center text-center gap-8px'>
@@ -157,6 +165,13 @@ const SupportChatModal: React.FC = () => {
     retryMessage,
     loadOlder,
   } = useSupportChat();
+  const { authState } = useCloudAuth();
+  const composerKey =
+    authState.phase === 'authenticated'
+      ? authState.accountId
+      : authState.phase === 'offline'
+        ? authState.previousAccountId ?? 'offline'
+        : 'anonymous';
 
   return (
     <SupportChatModalView
@@ -168,6 +183,7 @@ const SupportChatModal: React.FC = () => {
       sendImages={sendImages}
       retryMessage={retryMessage}
       loadOlder={loadOlder}
+      composerKey={composerKey}
     />
   );
 };

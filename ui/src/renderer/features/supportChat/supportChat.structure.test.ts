@@ -46,6 +46,8 @@ describe('support chat structure', () => {
     expect(modal.includes("100dvh")).toBe(true);
     expect(modal.includes('contentStyle={{ padding: 0, overflow: \'hidden\' }}')).toBe(true);
     expect(modal.includes('support-chat-modal__body--${state.status}')).toBe(true);
+    expect(modal.includes('support-chat-modal__composer-slot')).toBe(true);
+    expect(modal.includes('unmountOnExit')).toBe(false);
     expect(modal.includes('support-chat-modal__body flex min-h-0 flex-col')).toBe(false);
     expect(modal.includes('support-chat-modal--')).toBe(false);
     expect(modal.includes('support-chat-modal__status--loading')).toBe(true);
@@ -73,6 +75,7 @@ describe('support chat structure', () => {
     expect(composer.includes('SupportImagePreviewGrid')).toBe(true);
     expect(composer.includes('SUPPORT_IMAGE_ACCEPT')).toBe(true);
     expect(composer.includes('MAX_SUPPORT_IMAGES')).toBe(true);
+    expect(composer.includes('MAX_SUPPORT_MESSAGE_CHARS')).toBe(true);
     expect(composer.includes('selectSupportImagePreviews')).toBe(true);
     expect(composer.includes('common.supportChat.uploadLogsConfirm')).toBe(true);
     expect(composer.includes('common.supportChat.uploadLogsPreparing')).toBe(true);

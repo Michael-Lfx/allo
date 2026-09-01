@@ -28,7 +28,7 @@ describe('conversation error report modal contract', () => {
     expect(modalSource).toContain("wrapClassName='conversation-error-report__wrapper'");
     expect(modalSource).not.toContain("height: 'min(760px, calc(100dvh - 32px))'");
     expect(modalSource).toContain('conversation-error-report-description');
-    expect(modalSource).toContain('maxLength={MAX_REPORT_DESCRIPTION_CHARS}');
+    expect(modalSource).toContain('maxLength={MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS}');
     expect(modalSource).toContain('event.ctrlKey || event.metaKey');
     expect(modalSource).toContain('SupportImagePreviewGrid');
     expect(modalSource).toContain('SUPPORT_IMAGE_ACCEPT');
@@ -42,6 +42,8 @@ describe('conversation error report modal contract', () => {
     expect(modalSource).not.toContain('conversation-error-report__auto-info');
     expect(modalSource).toContain('providerOwnedPreviewUrlsRef');
     expect(modalSource).not.toContain('Modal.confirm');
+    expect(modalSource).not.toContain('unmountOnExit');
+    expect(modalSource).toContain('MAX_CONVERSATION_ERROR_REPORT_DESCRIPTION_CHARS');
   });
 
   test('preserves the exact screenshot preview ownership across pending messages', () => {

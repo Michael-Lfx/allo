@@ -1049,6 +1049,7 @@
   "bugReportCancel": "取消",
   "bugReportSuccess": "问题已提交，感谢反馈",
   "bugReportError": "提交失败，请稍后重试",
+  "bugReportInvalidInput": "反馈内容或截图不符合要求，请检查后重试。",
   "bugReportRetryHint": "日志或截图准备失败，草稿已保留，请重试。",
   "bugReportPartialFailure": "部分内容发送失败，请在客服窗口重试。",
   "bugReportPartialFailureHint": "部分内容已进入客服消息，打开客服窗口即可查看并重试失败项。",
