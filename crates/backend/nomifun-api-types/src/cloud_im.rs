@@ -34,6 +34,9 @@ pub struct CloudImAttachmentPayload {
     /// CDN URL when available. Optional when `object_key` is supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Feedback log uploads may return only an OSS identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oss_id: Option<i64>,
     pub name: String,
     pub content_type: String,
     pub byte_size: i64,
@@ -127,6 +130,7 @@ mod tests {
             log_payload: Some(CloudImAttachmentPayload {
                 object_key: Some("claw/presigned/1/x.zip".into()),
                 url: Some("https://cdn.example/x.zip".into()),
+                oss_id: Some(42),
                 name: "app-logs.zip".into(),
                 content_type: "application/zip".into(),
                 byte_size: 123,
@@ -137,6 +141,7 @@ mod tests {
         };
         let value = serde_json::to_value(&req).unwrap();
         assert_eq!(value["logPayload"]["url"], "https://cdn.example/x.zip");
+        assert_eq!(value["logPayload"]["ossId"], 42);
         assert_eq!(value["logPayload"]["contentType"], "application/zip");
         assert_eq!(value["logPayload"]["byteSize"], 123);
         assert_eq!(value["logPayload"]["account"]["userId"], "u1");
@@ -156,6 +161,7 @@ mod tests {
             payload: Some(CloudImAttachmentPayload {
                 object_key: Some("claw/feedback/screenshots/20260727/x.png".into()),
                 url: Some("https://cdn.example/x.png".into()),
+                oss_id: None,
                 name: "screenshot.png".into(),
                 content_type: "image/png".into(),
                 byte_size: 152340,
@@ -168,6 +174,7 @@ mod tests {
         let value = serde_json::to_value(&req).unwrap();
         assert_eq!(value["msgType"], "image");
         assert_eq!(value["payload"]["objectKey"], "claw/feedback/screenshots/20260727/x.png");
+        assert!(value["payload"].get("ossId").is_none());
         assert_eq!(value["payload"]["contentType"], "image/png");
         assert_eq!(value["payload"]["byteSize"], 152340);
         assert!(value.get("logPayload").is_none());

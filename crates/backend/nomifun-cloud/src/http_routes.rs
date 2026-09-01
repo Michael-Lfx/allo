@@ -631,7 +631,7 @@ fn validate_send_im_message(
             .payload
             .as_mut()
             .ok_or_else(|| AppError::BadRequest("payload is required for msgType=image".into()))?;
-        validate_im_attachment_payload(payload, "payload", MAX_IMAGE_PAYLOAD_BYTES)?;
+        validate_im_attachment_payload(payload, "payload", MAX_IMAGE_PAYLOAD_BYTES, false)?;
         if !ALLOWED_IM_IMAGE_CONTENT_TYPES.contains(&payload.content_type.as_str()) {
             return Err(AppError::BadRequest(
                 "payload.contentType must be image/jpeg, image/png, image/webp or image/gif"
@@ -643,7 +643,7 @@ fn validate_send_im_message(
     }
 
     if let Some(payload) = request.log_payload.as_mut() {
-        validate_im_attachment_payload(payload, "logPayload", MAX_LOG_PAYLOAD_BYTES)?;
+        validate_im_attachment_payload(payload, "logPayload", MAX_LOG_PAYLOAD_BYTES, true)?;
     }
 
     request.app = validate_im_app(request.app.as_deref())?.map(str::to_string);
@@ -654,6 +654,7 @@ fn validate_im_attachment_payload(
     payload: &mut CloudImAttachmentPayload,
     field: &str,
     max_bytes: i64,
+    allow_oss_id: bool,
 ) -> Result<(), AppError> {
     let url = payload
         .url
@@ -667,13 +668,18 @@ fn validate_im_attachment_payload(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    if url.is_none() && object_key.is_none() {
+    let oss_id = allow_oss_id
+        .then_some(payload.oss_id)
+        .flatten()
+        .filter(|value| *value > 0);
+    if url.is_none() && object_key.is_none() && (!allow_oss_id || oss_id.is_none()) {
         return Err(AppError::BadRequest(format!(
-            "{field} requires url or objectKey"
+            "{field} requires url, objectKey, or a valid ossId"
         )));
     }
     payload.url = url;
     payload.object_key = object_key;
+    payload.oss_id = oss_id;
 
     let name = payload.name.trim();
     if name.is_empty() {
@@ -873,4 +879,83 @@ async fn mark_im_read(
     Ok(Json(ApiResponse::ok(
         state.service.mark_im_read(req.last_read_seq).await?,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attachment(oss_id: Option<i64>) -> CloudImAttachmentPayload {
+        CloudImAttachmentPayload {
+            object_key: None,
+            url: Some("https://cdn.example/attachment".into()),
+            oss_id,
+            name: "attachment.bin".into(),
+            content_type: "application/octet-stream".into(),
+            byte_size: 1,
+            account: None,
+            device: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn log_payload_keeps_a_valid_oss_only_reference() {
+        let mut payload = attachment(Some(42));
+        payload.url = None;
+        let request = CloudImSendMessageRequest {
+            client_msg_id: "client-1".into(),
+            content: "日志".into(),
+            msg_type: "text".into(),
+            app: None,
+            payload: None,
+            log_payload: Some(payload),
+        };
+
+        let validated = validate_send_im_message(request).expect("valid log payload");
+        assert_eq!(validated.log_payload.as_ref().and_then(|item| item.oss_id), Some(42));
+    }
+
+    #[test]
+    fn image_payload_does_not_forward_storage_only_oss_id() {
+        let request = CloudImSendMessageRequest {
+            client_msg_id: "client-2".into(),
+            content: "截图".into(),
+            msg_type: "image".into(),
+            app: None,
+            payload: Some(CloudImAttachmentPayload {
+                object_key: None,
+                url: Some("https://cdn.example/screenshot.png".into()),
+                oss_id: Some(42),
+                name: "screenshot.png".into(),
+                content_type: "image/png".into(),
+                byte_size: 1,
+                account: None,
+                device: None,
+                extra: Default::default(),
+            }),
+            log_payload: None,
+        };
+
+        let validated = validate_send_im_message(request).expect("valid image payload");
+        assert_eq!(validated.payload.as_ref().and_then(|item| item.oss_id), None);
+    }
+
+    #[test]
+    fn image_payload_rejects_an_oss_only_reference() {
+        let mut payload = attachment(Some(42));
+        payload.url = None;
+        payload.name = "screenshot.png".into();
+        payload.content_type = "image/png".into();
+        let request = CloudImSendMessageRequest {
+            client_msg_id: "client-3".into(),
+            content: "截图".into(),
+            msg_type: "image".into(),
+            app: None,
+            payload: Some(payload),
+            log_payload: None,
+        };
+
+        assert!(validate_send_im_message(request).is_err());
+    }
 }

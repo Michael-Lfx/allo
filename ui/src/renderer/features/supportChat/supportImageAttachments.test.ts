@@ -4,10 +4,15 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  buildSupportImagePayload,
+  buildSupportLogPayload,
   createSupportImagePreviewId,
+  getSupportImageContentType,
   isAcceptedSupportImage,
   MAX_SUPPORT_IMAGE_BYTES,
   MAX_SUPPORT_IMAGES,
+  normalizeSupportImageFile,
+  normalizeSupportImageContentType,
   revokeSupportImagePreview,
   selectSupportImagePreviews,
   SUPPORT_IMAGE_ACCEPT,
@@ -49,6 +54,53 @@ describe('support image attachments', () => {
       });
     }
     expect(calls).toEqual(['blob:test-preview']);
+  });
+
+  test('normalizes generic and legacy image MIME values before upload', () => {
+    expect(normalizeSupportImageContentType('', 'screen.PNG')).toBe('image/png');
+    expect(normalizeSupportImageContentType('application/octet-stream', 'screen.jpg')).toBe('image/jpeg');
+    expect(normalizeSupportImageContentType('image/jpg', 'screen.txt')).toBe('image/jpeg');
+    expect(normalizeSupportImageContentType('image/gif', 'screen.png')).toBeUndefined();
+    expect(getSupportImageContentType(imageFile('screen.jpg', 'image/jpg'))).toBe('image/jpeg');
+
+    const normalized = normalizeSupportImageFile(imageFile('screen.png', ''), 'screen.png');
+    expect(normalized.type).toBe('image/png');
+    expect(normalized.size).toBe(16);
+
+    const parameterized = normalizeSupportImageFile(
+      new Blob(['image'], { type: 'image/png; charset=binary' }),
+      'screen.png'
+    );
+    expect(parameterized.type).toBe('image/png');
+  });
+
+  test('keeps OSS-only log references but rejects unusable image references', () => {
+    const upload = {
+      ossId: 42,
+      name: 'report.zip',
+      contentType: 'application/zip',
+      byteSize: 12,
+    };
+    expect(buildSupportLogPayload(upload, { fileName: 'report.zip', byteSize: 12 })).toMatchObject({
+      ossId: 42,
+      name: 'report.zip',
+    });
+    const imagePayload = buildSupportImagePayload(
+      { ...upload, url: 'https://cdn.example/screen.png', name: 'screen.png', contentType: 'image/png' },
+      { fileName: 'screen.png', contentType: 'image/png', byteSize: 12 }
+    );
+    expect(imagePayload).toBeDefined();
+    expect('ossId' in imagePayload).toBe(false);
+    let rejected = false;
+    try {
+      buildSupportImagePayload(
+        { ...upload, name: 'screen.png', contentType: 'image/png' },
+        { fileName: 'screen.png', contentType: 'image/png', byteSize: 12 }
+      );
+    } catch {
+      rejected = true;
+    }
+    expect(rejected).toBe(true);
   });
 
   test('applies one selection policy and creates previews only for accepted files', () => {
