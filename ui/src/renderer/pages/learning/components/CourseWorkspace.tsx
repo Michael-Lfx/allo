@@ -77,7 +77,7 @@ function ActivityBlock({
             {/* AI 批改的反馈是多段 Markdown（评价/覆盖情况/建议），独立渲染 */}
             {result.feedback && (
               <div className='mt-8px rounded-8px bg-[var(--color-fill-1)] p-10px'>
-                <Markdown className='text-13px'>{result.feedback}</Markdown>
+                <Markdown>{result.feedback}</Markdown>
               </div>
             )}
           </div>
@@ -231,7 +231,7 @@ function LessonSourcePanel({
           {error && <Alert type='error' content={`${t('learning.sourceLoadFailed')}: ${error}`} />}
           {!loading && !error && content !== null && (
             <div className='max-h-420px overflow-auto rounded-8px bg-[var(--color-fill-1)] p-12px'>
-              <Markdown className='text-13px'>{content}</Markdown>
+              <Markdown>{content}</Markdown>
             </div>
           )}
         </div>
@@ -305,7 +305,7 @@ function LessonBlock({
   }
   return (
     <div className='flex flex-col gap-14px'>
-      {lesson.summary && <Markdown className='text-13px'>{lesson.summary}</Markdown>}
+      {lesson.summary && <Markdown>{lesson.summary}</Markdown>}
       <div className='flex flex-wrap items-center gap-8px'>
         <Tag color={statusColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
         <Text type='secondary'>
@@ -572,7 +572,11 @@ export function CourseWorkspace({
             })}
           </aside>
 
-          <section className='flex min-w-0 flex-1 flex-col gap-14px'>
+          {/* 正文可读性：右栏默认约 918px 行宽（≈57 汉字/行）超出连续阅读舒适区，
+              限宽 760px（≈47 字/行）居中；Markdown 正文不传字号 props——ShadowView
+              以 `* { font-size/line-height }` 钉死 shadow 内排版（默认 16px/28px 阅读档），
+              外层 className 穿透无效，且显式传值会切到紧凑段距的消息档，反而更差 */}
+          <section className='mx-auto flex w-full min-w-0 max-w-760px flex-1 flex-col gap-14px'>
             {selectedLesson && (
               <>
                 <div>
