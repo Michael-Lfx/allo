@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.7 - 2026-09-01
+
+- Canvas Agent starts faster, persists chats, and uses a simpler panel.
+
 ## v1.1.6 - 2026-09-01
 
 - Vimax studio docks the Agent session and persists run history.
