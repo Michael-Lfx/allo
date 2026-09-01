@@ -149,6 +149,159 @@
         }
     }
 
+    /// Records the generation contexts it receives — the engine-path contract
+    /// test: the service must pre-render the outline tree and the adjacent
+    /// lesson reference into `LessonGenerationContext`.
+    struct RecordingLessonEngine {
+        contexts: Mutex<Vec<LessonGenerationContext>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LessonContentAgentEngine for RecordingLessonEngine {
+        async fn generate(
+            &self,
+            _user_id: &UserId,
+            context: &LessonGenerationContext,
+            _model_override: Option<(&str, &str)>,
+        ) -> Result<LessonOutput, nomifun_common::AppError> {
+            self.contexts.lock().unwrap().push(context.clone());
+            Ok(LessonOutput {
+                summary: "## 描述\n占位\n## 例子\n占位\n## 验证\n占位\n".into(),
+                estimated_minutes: 10,
+                activities: Vec::new(),
+            })
+        }
+    }
+
+    /// Engine-path contract: the service pre-renders the full outline tree
+    /// (current lesson marked) and the adjacent-lesson reference (kb-flow
+    /// excerpt truncated at the budget) into the context handed to the engine.
+    #[tokio::test]
+    async fn lesson_context_carries_outline_tree_and_adjacent_reference() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool()).await.unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+
+        let concept = |key: &str| ConceptPack {
+            key: key.into(),
+            title: key.to_uppercase(),
+            description: String::new(),
+            prerequisites: Vec::new(),
+        };
+        let lesson = |title: &str, purpose: &str, source: Option<SourceSpan>,
+                      concept: &str| LessonPack {
+            title: title.into(),
+            summary: String::new(),
+            purpose: purpose.into(),
+            estimated_minutes: 10,
+            source,
+            concepts: vec![concept.into()],
+            activities: Vec::new(),
+        };
+        let pack = CoursePack {
+            title: "上下文课程".into(),
+            description: "两模块两课时".into(),
+            domain: "math".into(),
+            source_kb_id: None,
+            version: 1,
+            concepts: vec![concept("a"), concept("b")],
+            modules: vec![
+                ModulePack {
+                    title: "模块一".into(),
+                    description: String::new(),
+                    lessons: vec![
+                        lesson("第一课", "目标一", None, "a"),
+                        lesson("第二课", "目标二", Some(SourceSpan {
+                            path: "docs/two.md".into(),
+                            start: None,
+                            end: None,
+                        }), "a"),
+                    ],
+                },
+                ModulePack {
+                    title: "模块二".into(),
+                    description: String::new(),
+                    lessons: vec![
+                        lesson("第三课", "目标三", None, "b"),
+                        lesson("第四课", "目标四", None, "b"),
+                    ],
+                },
+            ],
+        };
+        let blueprint_lesson = |title: &str, purpose: &str, source: Option<SourceSpan>,
+                                concept: &str| crate::generation::BlueprintLesson {
+            title: title.into(),
+            purpose: purpose.into(),
+            concepts: vec![concept.into()],
+            source,
+        };
+        let blueprint_module = |title: &str,
+                                lessons: Vec<crate::generation::BlueprintLesson>|
+         crate::generation::BlueprintModule {
+            title: title.into(),
+            description: String::new(),
+            lessons,
+        };
+        let blueprint = Blueprint {
+            title: "上下文课程".into(),
+            description: "两模块两课时".into(),
+            domain: "math".into(),
+            version: 1,
+            concepts: vec![concept("a"), concept("b")],
+            modules: vec![
+                blueprint_module("模块一", vec![
+                    blueprint_lesson("第一课", "目标一", None, "a"),
+                    blueprint_lesson("第二课", "目标二", Some(SourceSpan {
+                        path: "docs/two.md".into(),
+                        start: None,
+                        end: None,
+                    }), "a"),
+                ]),
+                blueprint_module("模块二", vec![
+                    blueprint_lesson("第三课", "目标三", None, "b"),
+                    blueprint_lesson("第四课", "目标四", None, "b"),
+                ]),
+            ],
+        };
+        let samples = vec![(
+            "docs/two.md".to_owned(),
+            format!("{}尾部标记", "第二课原文。".repeat(300)),
+        )];
+        let detail = service
+            .import_course_outline(
+                pack,
+                serde_json::to_string(&blueprint).unwrap(),
+                serde_json::to_string(&samples).unwrap(),
+            )
+            .await
+            .unwrap();
+        let lesson_id = detail.modules[1].lessons[0].id.clone();
+
+        let engine = Arc::new(RecordingLessonEngine {
+            contexts: Mutex::new(Vec::new()),
+        });
+        service.set_lesson_engine(engine.clone());
+        service
+            .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+            .await
+            .unwrap();
+
+        let contexts = engine.contexts.lock().unwrap();
+        assert_eq!(contexts.len(), 1);
+        let context = &contexts[0];
+        assert!(context.outline_tree.contains("模块 2/2：模块二"));
+        assert!(context.outline_tree.contains("  3. 第三课 — 目标三（本课时）"));
+        assert!(context.outline_tree.contains("  1. 第一课 — 目标一"));
+        assert!(context.adjacent_context.contains("上一课时「第二课」— 目标二"));
+        assert!(context.adjacent_context.contains("下一课时「第四课」— 目标四"));
+        assert!(context.adjacent_context.contains("第二课原文"));
+        assert!(
+            !context.adjacent_context.contains("尾部标记"),
+            "the adjacent excerpt must be truncated at the budget"
+        );
+    }
+
     #[test]
     fn pack_validation_rejects_unknown_concepts() {
         let mut pack = valid_pack();

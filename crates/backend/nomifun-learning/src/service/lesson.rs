@@ -139,6 +139,17 @@ impl LearningService {
                 .collect(),
             concept_keys: lesson.concepts.clone(),
             excerpt,
+            outline_tree: crate::generation::build_outline_tree(
+                &blueprint,
+                module_position as usize,
+                lesson_position as usize,
+            ),
+            adjacent_context: crate::generation::build_adjacent_context(
+                &blueprint,
+                &samples,
+                module_position as usize,
+                lesson_position as usize,
+            ),
         };
         self.emit_lesson_event(serde_json::json!({
             "phase": "started",
@@ -195,6 +206,7 @@ impl LearningService {
                     completer.as_ref(),
                     model_override,
                     &blueprint,
+                    &samples,
                     module,
                     lesson,
                     module_position as usize,

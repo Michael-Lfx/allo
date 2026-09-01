@@ -42,6 +42,7 @@ const GENERATE_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容设计代�
 - 必需章节，顺序固定，各自以 `## ` 标题行开头：描述（完整精确地讲清本课教什么）→ 例子（1-3 个带真实步骤/数字/流程的具体示例）→ 验证（3-5 道自检题，至少 2 道客观题且与活动呼应）。可选章节（迁移/其他/关键词/推广等）按需自由添加，不要为凑数硬凑。
 - 图形：内容真正需要图示时才画，每个图必须自足完整（命名点、标注、坐标刻度、说明文字）；静态图用 ```svg 块，交互图用 ```jsxgraph 块；图形块不计入长度下限，也不要为凑长度画图。
 - 内容必须落在 grounding 上：引用摘录流忠于摘录，课程简报流忠于简报；不要发明资料之外的事实。用资料的主导语言书写。
+- 动笔前对照任务给出的课程完整目录：只写本课时范围内的内容，不越界讲后续课时的主题，也不重复相邻课时已覆盖的内容。
 
 【活动契约】
 - 3-5 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank）+ 反思题（宁少勿多，最多 3，通常恰好 1）。
@@ -472,6 +473,12 @@ fn audit_report(
 fn lesson_user_text(context: &LessonGenerationContext) -> String {
     let mut text = String::new();
     text.push_str(&format!("课程：{}\n", context.course_title.trim()));
+    if !context.outline_tree.is_empty() {
+        text.push_str(&format!(
+            "课程完整目录（「本课时」是你要写的课时——只写它的范围，不越界讲后续课时，不重复相邻课时）：\n{}\n",
+            context.outline_tree
+        ));
+    }
     text.push_str(&format!(
         "模块：{}\n课时（{}/{}）：{}\n课时目标：{}\n",
         context.module_title.trim(),
@@ -498,6 +505,9 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
         if !context.concepts.iter().any(|concept| &concept.key == key) {
             text.push_str(&format!("- {key}\n"));
         }
+    }
+    if !context.adjacent_context.is_empty() {
+        text.push_str(&format!("\n{}\n", context.adjacent_context));
     }
     match &context.excerpt {
         Some(excerpt) => {
@@ -826,7 +836,27 @@ mod tests {
                 path: "docs/basics.md".into(),
                 text: "期权的定义……".into(),
             }),
+            outline_tree: String::new(),
+            adjacent_context: String::new(),
         }
+    }
+
+    /// The user turn embeds the outline tree and the adjacent-lesson
+    /// reference when present, and stays clean when both are empty.
+    #[test]
+    fn lesson_user_text_embeds_outline_and_adjacent_sections() {
+        let mut context = lesson_context();
+        context.outline_tree = "模块 1/1：模块一\n  1. 课时〇 — 铺垫\n  2. 课时一 — 理解期权的定义（本课时）".into();
+        context.adjacent_context = "相邻课时参考：\n- 上一课时「课时〇」— 铺垫".into();
+        let text = lesson_user_text(&context);
+        assert!(text.contains("课程完整目录"));
+        assert!(text.contains("（本课时）"));
+        assert!(text.contains("相邻课时参考"));
+        assert!(text.contains("课时〇"));
+
+        let plain = lesson_user_text(&lesson_context());
+        assert!(!plain.contains("课程完整目录"));
+        assert!(!plain.contains("相邻课时参考"));
     }
 
     #[derive(Default)]

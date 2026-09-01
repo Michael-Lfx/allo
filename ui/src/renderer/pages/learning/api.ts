@@ -40,7 +40,7 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
-  // 同步生成：agent loop 全程在 HTTP 请求内执行（约 1-3 分钟），过程事件经
+  // 同步生成：agent loop 全程在 HTTP 请求内执行，过程事件经
   // WS 的 `learning.course-generation` 推送，终态以本响应为准。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),

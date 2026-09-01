@@ -17,6 +17,7 @@ pub(crate) async fn generate_lesson(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     blueprint: &Blueprint,
+    samples: &[(String, String)],
     module: &BlueprintModule,
     lesson: &BlueprintLesson,
     module_index: usize,
@@ -28,6 +29,7 @@ pub(crate) async fn generate_lesson(
     // Stage 1: the study document as plain Markdown.
     let document_prompt = build_lesson_document_prompt(
         blueprint,
+        samples,
         module,
         lesson,
         module_index,
@@ -91,11 +93,145 @@ async fn generate_lesson_document(
 }
 
 
+/// Per-adjacent-lesson excerpt budget: neighbors are reference material for
+/// de-duplication and bridging, never the grounding — this hard cap keeps the
+/// added context bounded even when the sampled files are huge (the "if the
+/// context is already rich enough, add nothing" contract).
+pub(crate) const ADJACENT_EXCERPT_MAX_CHARS: usize = 1000;
+
+/// Trim to at most `max` characters (appending an ellipsis when truncated).
+fn truncate_chars(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let truncated: String = text.chars().take(max).collect();
+    format!("{truncated}……")
+}
+
+/// The FULL course outline as a compact tree with the current lesson marked.
+/// The anti-duplication / no-scope-creep contract: the model sees every
+/// sibling lesson before writing a word.
+pub(crate) fn build_outline_tree(
+    blueprint: &Blueprint,
+    module_position: usize,
+    lesson_position: usize,
+) -> String {
+    let mut global = 0usize;
+    let mut lines: Vec<String> = Vec::with_capacity(blueprint.modules.len() + 8);
+    for (module_index, module) in blueprint.modules.iter().enumerate() {
+        lines.push(format!(
+            "模块 {}/{}：{}",
+            module_index + 1,
+            blueprint.modules.len(),
+            module.title.trim()
+        ));
+        for (lesson_index, lesson) in module.lessons.iter().enumerate() {
+            global += 1;
+            let current = module_index == module_position && lesson_index == lesson_position;
+            lines.push(format!(
+                "  {}. {} — {}{}",
+                global,
+                lesson.title.trim(),
+                lesson.purpose.trim(),
+                if current { "（本课时）" } else { "" }
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+/// One adjacent lesson (prev/next in the GLOBAL lesson sequence): title and
+/// purpose always, plus the cited excerpt truncated to the budget when the
+/// lesson has a sampled source.
+struct AdjacentLesson {
+    label: &'static str,
+    title: String,
+    purpose: String,
+    excerpt: Option<String>,
+}
+
+/// The global prev/next neighbors of the current lesson.
+fn adjacent_lessons(
+    blueprint: &Blueprint,
+    samples: &[(String, String)],
+    module_position: usize,
+    lesson_position: usize,
+) -> Vec<AdjacentLesson> {
+    let flat: Vec<(usize, usize)> = blueprint
+        .modules
+        .iter()
+        .enumerate()
+        .flat_map(|(module_index, module)| {
+            (0..module.lessons.len()).map(move |lesson_index| (module_index, lesson_index))
+        })
+        .collect();
+    let Some(current) = flat
+        .iter()
+        .position(|(module_index, lesson_index)| {
+            *module_index == module_position && *lesson_index == lesson_position
+        })
+    else {
+        return Vec::new();
+    };
+    let neighbors = [
+        ("上一课时", current.checked_sub(1)),
+        ("下一课时", Some(current + 1).filter(|next| *next < flat.len())),
+    ];
+    neighbors
+        .into_iter()
+        .filter_map(|(label, neighbor_index)| {
+            let &(module_index, lesson_index) = flat.get(neighbor_index?)?;
+            let lesson = &blueprint.modules[module_index].lessons[lesson_index];
+            let excerpt = lesson.source.as_ref().and_then(|source| {
+                samples
+                    .iter()
+                    .find(|(path, _)| path == &source.path)
+                    .map(|(_, text)| truncate_chars(text, ADJACENT_EXCERPT_MAX_CHARS))
+            });
+            Some(AdjacentLesson {
+                label,
+                title: lesson.title.trim().to_owned(),
+                purpose: lesson.purpose.trim().to_owned(),
+                excerpt,
+            })
+        })
+        .collect()
+}
+
+/// Render the adjacent-lesson reference section (empty when there is nothing
+/// to reference). Shared by the fallback prompt builder and the engine path —
+/// the service pre-renders it into `LessonGenerationContext`.
+pub(crate) fn build_adjacent_context(
+    blueprint: &Blueprint,
+    samples: &[(String, String)],
+    module_position: usize,
+    lesson_position: usize,
+) -> String {
+    let lessons = adjacent_lessons(blueprint, samples, module_position, lesson_position);
+    if lessons.is_empty() {
+        return String::new();
+    }
+    let mut lines =
+        vec!["相邻课时参考（只做衔接与避重：不要重复其内容，也不要越界代讲）：".to_owned()];
+    for lesson in lessons {
+        lines.push(format!(
+            "- {}「{}」— {}",
+            lesson.label, lesson.title, lesson.purpose
+        ));
+        if let Some(excerpt) = &lesson.excerpt {
+            lines.push(format!("  原文摘录（节选）：{excerpt}"));
+        }
+    }
+    lines.join("\n")
+}
+
 /// Stage 1 prompt: course context, concepts, bridging instruction, the
 /// document standard, and the cited excerpt — everything the model needs to
 /// write the study document as plain Markdown. No JSON is ever mentioned.
 pub(crate) fn build_lesson_document_prompt(
     blueprint: &Blueprint,
+    samples: &[(String, String)],
     module: &BlueprintModule,
     lesson: &BlueprintLesson,
     module_index: usize,
@@ -105,8 +241,7 @@ pub(crate) fn build_lesson_document_prompt(
     excerpt: &str,
 ) -> String {
     let mut prompt = format!(
-        "Course: {}\nModule {}/{}: {}\nLesson {}/{}: {}\nLesson purpose: {}\n\
-         Lesson concepts to cover:\n",
+        "Course: {}\nModule {}/{}: {}\nLesson {}/{}: {}\nLesson purpose: {}\n",
         blueprint.title,
         module_index + 1,
         blueprint.modules.len(),
@@ -116,6 +251,13 @@ pub(crate) fn build_lesson_document_prompt(
         lesson.title,
         lesson.purpose.trim()
     );
+    prompt.push_str(&format!(
+        "Full course outline (「本课时」 marks the current lesson — stay within \
+         its scope, do not teach later lessons here, and do not repeat adjacent \
+         lessons):\n{}\n",
+        build_outline_tree(blueprint, module_index, lesson_index)
+    ));
+    prompt.push_str("Lesson concepts to cover:\n");
     for concept_key in &lesson.concepts {
         let concept = blueprint
             .concepts
@@ -138,6 +280,10 @@ pub(crate) fn build_lesson_document_prompt(
         ));
     } else {
         prompt.push_str("This is the last lesson of the module; close with a wrap-up of the module's ideas.\n");
+    }
+    let adjacent = build_adjacent_context(blueprint, samples, module_index, lesson_index);
+    if !adjacent.is_empty() {
+        prompt.push_str(&format!("{adjacent}\n\n"));
     }
     prompt.push_str(&format!(
         "{LESSON_DOCUMENT_STANDARD}\n\nCited file excerpt (the lesson must stay grounded in it):\n\
