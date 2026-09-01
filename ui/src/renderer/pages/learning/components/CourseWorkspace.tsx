@@ -540,10 +540,10 @@ export function CourseWorkspace({
                         key={lesson.id}
                         type='button'
                         onClick={() => setSelectedLessonId(lesson.id)}
-                        className={`flex w-full cursor-pointer items-center gap-6px rd-6px px-6px py-5px text-left text-13px transition-colors ${
+                        className={`flex w-full cursor-pointer items-center gap-6px border-none rd-6px px-6px py-6px text-left font-inherit text-13px leading-20px transition-colors ${
                           isSelected
                             ? 'bg-primary-1 font-500 text-primary-6'
-                            : 'text-t-primary hover:bg-fill-2'
+                            : 'bg-transparent text-t-primary hover:bg-fill-2'
                         }`}
                       >
                         <span className='w-18px shrink-0 text-right text-12px text-t-tertiary'>
