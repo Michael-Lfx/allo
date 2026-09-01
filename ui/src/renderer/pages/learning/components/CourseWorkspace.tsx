@@ -87,6 +87,7 @@ function ActivityBlock({
   );
 }
 
+// 知识诊断弹窗：暂时下线（与当前学习模块流程脱节），保留实现待重新设计后恢复
 function DiagnosticModal({
   plan,
   index,
@@ -470,9 +471,11 @@ export function CourseWorkspace({
                 onChange={(choice) => void setModelChoice(choice)}
                 size='small'
               />
-              <Button type='primary' loading={busyId === 'diagnostic'} onClick={onDiagnostic}>
+              {/* 知识诊断暂时下线：与当前学习模块流程脱节，待重新设计后恢复
+                  （onDiagnostic prop 保持传递，恢复时仅取消此注释块） */}
+              {/* <Button type='primary' loading={busyId === 'diagnostic'} onClick={onDiagnostic}>
                 {t('learning.startDiagnostic')}
-              </Button>
+              </Button> */}
             </div>
           </div>
         </div>

@@ -6,7 +6,8 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
-import { CourseWorkspace, DiagnosticModal } from './components/CourseWorkspace';
+import { CourseWorkspace } from './components/CourseWorkspace';
+// 知识诊断暂时下线：恢复时改回 import { CourseWorkspace, DiagnosticModal } 并取消下方相关注释
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
 import { ReviewBanner } from './components/ReviewBanner';
 import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_BANNER_EXPANDED_KEY, REVIEW_FILTERS_STORAGE_KEY } from './constants';
@@ -226,7 +227,9 @@ const LearningPage: React.FC = () => {
       )),
     [courses, navigate, openTagEditor, reviewSession.startCourseReviewSession]
   );
-  const diagnosticActivityId = courseLearning.diagnosticPlan?.items[courseLearning.diagnosticIndex]?.activity.id;
+  // 知识诊断暂时下线：与当前学习模块（按需课时生成 + 左侧大纲导航）流程脱节，
+  // 恢复时连同下方 DiagnosticModal 注释块一并取消注释
+  // const diagnosticActivityId = courseLearning.diagnosticPlan?.items[courseLearning.diagnosticIndex]?.activity.id;
 
   if (loading && !detail && courses.length === 0) {
     return (
@@ -250,7 +253,9 @@ const LearningPage: React.FC = () => {
           onGenerate={courseLearning.generateLesson}
           onRefresh={() => void load()}
         />
-        <DiagnosticModal
+        {/* 知识诊断暂时下线：与当前学习模块流程脱节，待重新设计后恢复
+            （恢复时需同步取消 diagnosticActivityId 与 import 中 DiagnosticModal 的注释） */}
+        {/* <DiagnosticModal
           plan={courseLearning.diagnosticPlan}
           index={courseLearning.diagnosticIndex}
           result={courseLearning.diagnosticResult}
@@ -263,7 +268,7 @@ const LearningPage: React.FC = () => {
               courseLearning.setDiagnosticResult(undefined);
             }
           }}
-        />
+        /> */}
       </>
     );
   }
