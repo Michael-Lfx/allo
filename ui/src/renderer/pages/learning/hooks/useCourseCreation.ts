@@ -28,8 +28,8 @@ export interface UseCourseCreationOptions {
 export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationOptions) {
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const [generateVisible, setGenerateVisible] = useState(false);
-  // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）
-  const [creationTab, setCreationTab] = useState<'base' | 'description'>('base');
+  // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）；默认描述生成
+  const [creationTab, setCreationTab] = useState<'base' | 'description'>('description');
   const [creationDescription, setCreationDescription] = useState('');
   const [knowledgeBases, setKnowledgeBases] = useState<IKnowledgeBase[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
