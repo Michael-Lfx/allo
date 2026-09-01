@@ -50,10 +50,14 @@ pub struct LearningService {
     knowledge_service: Arc<RwLock<Option<Arc<KnowledgeService>>>>,
     course_completer: Arc<RwLock<Option<Arc<dyn LearningCompleter>>>>,
     concept_graph_dir: Arc<RwLock<Option<PathBuf>>>,
-    /// In-memory draft store backing the agent tool set (`cg_start` ..
-    /// `cg_finish`). Generation is a short-lived operation, so drafts do
-    /// not survive restarts; only `cg_finish` publishes to disk.
-    concept_graph_drafts: Arc<RwLock<HashMap<String, DraftGraph>>>,
+    /// In-memory concept-graph draft store backing the agent tool set
+    /// (`cg_start` .. `cg_finish`). Generation is a short-lived operation,
+    /// so drafts do not survive restarts; only `cg_finish` publishes to
+    /// disk. Each entry carries its last-activity timestamp: stale drafts
+    /// are evicted lazily (see
+    /// `service::concept_graph::CONCEPT_GRAPH_DRAFT_TTL`), so crashed or
+    /// timed-out generation sessions cannot leak memory.
+    concept_graph_drafts: Arc<RwLock<HashMap<String, (DraftGraph, std::time::Instant)>>>,
     /// Two-loop agent engine; when present, `generate_concept_graph` routes
     /// through it (draft + `cg_*` tools), otherwise the legacy one-shot
     /// pipeline runs.

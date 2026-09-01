@@ -52,11 +52,29 @@ pub enum GraphOp {
         from: String,
         to: String,
     },
+    /// Remove a single prerequisite edge `from -> to` between two existing
+    /// units — the edge-level counterpart of [`GraphOp::Delete`]. Whether
+    /// the change orphans a unit is decided by the audit, not by the
+    /// unlink.
+    Unlink {
+        from: String,
+        to: String,
+    },
     /// Flip an existing prerequisite edge: `from -> to` becomes
     /// `to -> from`.
     Reverse {
         from: String,
         to: String,
+    },
+    /// Replace the full prerequisite set of an existing unit. Every `pre`
+    /// name must already exist in the graph (or be created by an earlier op
+    /// of the same batch); duplicates are tolerated (deduped). Whether the
+    /// new set is sufficient — or leaves the unit without prerequisites —
+    /// is the audit's call.
+    SetPre {
+        target: String,
+        #[serde(default, deserialize_with = "de_string_list")]
+        pre: Vec<String>,
     },
     /// Replace one unit by several finer units. A replacement may name its
     /// own prerequisites (existing units or other replacements); a
@@ -194,7 +212,9 @@ impl DraftGraph {
         match op {
             GraphOp::Add { name, pre, min } => self.op_add(name, pre, *min),
             GraphOp::Link { from, to } => self.op_link(from, to),
+            GraphOp::Unlink { from, to } => self.op_unlink(from, to),
             GraphOp::Reverse { from, to } => self.op_reverse(from, to),
+            GraphOp::SetPre { target, pre } => self.op_set_pre(target, pre),
             GraphOp::Split { target, into } => self.op_split(target, into),
             GraphOp::Merge { into, targets } => self.op_merge(into, targets),
             GraphOp::Update { target, name, min } => self.op_update(target, name.as_deref(), *min),
@@ -293,6 +313,33 @@ impl DraftGraph {
         })
     }
 
+    fn op_unlink(&mut self, from: &str, to: &str) -> Result<OpOutcome, String> {
+        let from = from.trim();
+        let to = to.trim();
+        if !self.node_exists(from) {
+            return Err(format!("unlink: unknown unit '{from}'"));
+        }
+        if !self.node_exists(to) {
+            return Err(format!("unlink: unknown unit '{to}'"));
+        }
+        if !self.edge_exists(from, to) {
+            return Err(format!("unlink: no edge '{from} -> {to}' to remove"));
+        }
+        let edges_before = self.graph.edges.len();
+        self.graph
+            .edges
+            .retain(|edge| !(edge.from == from && edge.to == to));
+        self.revision += 1;
+        Ok(OpOutcome {
+            op: "unlink".into(),
+            summary: format!(
+                "已移除依赖 {from} -> {to}；{to} 是否因此失去前置由审计判定"
+            ),
+            node_delta: 0,
+            edge_delta: self.graph.edges.len() as i64 - edges_before as i64,
+        })
+    }
+
     fn op_reverse(&mut self, from: &str, to: &str) -> Result<OpOutcome, String> {
         let from = from.trim();
         let to = to.trim();
@@ -331,6 +378,68 @@ impl DraftGraph {
             op: "reverse".into(),
             summary: format!("已反转依赖 {from} -> {to} 为 {to} -> {from}"),
             node_delta: self.graph.nodes.len() as i64 - nodes_before as i64,
+            edge_delta: self.graph.edges.len() as i64 - edges_before as i64,
+        })
+    }
+
+    fn op_set_pre(&mut self, target: &str, pre: &[String]) -> Result<OpOutcome, String> {
+        let target = target.trim();
+        if !self.node_exists(target) {
+            return Err(format!("set_pre: unknown unit '{target}'"));
+        }
+        let mut pre_refs: Vec<String> = Vec::with_capacity(pre.len());
+        let mut seen: HashSet<String> = HashSet::new();
+        for raw in pre {
+            let reference = raw.trim();
+            if reference.is_empty() {
+                return Err(format!("set_pre: empty prerequisite on '{target}'"));
+            }
+            if reference == target {
+                return Err(format!("set_pre: '{target}' cannot depend on itself"));
+            }
+            if !self.node_exists(reference) {
+                let hint = self
+                    .closest(reference)
+                    .map(|c| format!("; closest existing unit: '{c}'"))
+                    .unwrap_or_default();
+                return Err(format!("set_pre: unknown prerequisite '{reference}'{hint}"));
+            }
+            if seen.insert(reference.to_owned()) {
+                pre_refs.push(reference.to_owned());
+            }
+        }
+        // A full-set replacement can close a cycle (pointing the target at
+        // one of its own descendants), so the whole op rolls back on one.
+        let snapshot = self.graph.clone();
+        let edges_before = self.graph.edges.len();
+        let replaced = self
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| edge.to == target)
+            .count();
+        self.graph.edges.retain(|edge| edge.to != target);
+        for reference in &pre_refs {
+            self.push_edge(reference, target);
+        }
+        if let Err(cycle) = self.reject_if_cycle() {
+            self.graph = snapshot;
+            return Err(cycle);
+        }
+        self.revision += 1;
+        let new_set = if pre_refs.is_empty() {
+            "空（成为入门单元）".to_owned()
+        } else {
+            pre_refs.join("、")
+        };
+        Ok(OpOutcome {
+            op: "set_pre".into(),
+            summary: format!(
+                "已将 '{target}' 的前置整体替换为 [{}]（移除 {replaced} 条旧前置边）；\
+                 新集合是否充分由审计判定",
+                new_set
+            ),
+            node_delta: 0,
             edge_delta: self.graph.edges.len() as i64 - edges_before as i64,
         })
     }
@@ -1262,6 +1371,8 @@ mod tests {
             r#"[
                 {"op": "add", "name": "A", "pre": "B", "min": "15"},
                 {"op": "link", "from": "A", "to": "B"},
+                {"op": "unlink", "from": "A", "to": "B"},
+                {"op": "set_pre", "target": "B", "pre": "A"},
                 {"op": "split", "target": "A", "into": [{"name": "A1", "min": 5}]},
                 {"op": "merge", "into": "A", "targets": ["B"]},
                 {"op": "update", "target": "A", "name": "A2"},
@@ -1269,7 +1380,7 @@ mod tests {
             ]"#,
         )
         .unwrap();
-        assert_eq!(ops.len(), 6);
+        assert_eq!(ops.len(), 8);
         match &ops[0] {
             GraphOp::Add { pre, min, .. } => {
                 assert_eq!(pre, &vec!["B".to_owned()]);
@@ -1277,6 +1388,8 @@ mod tests {
             }
             _ => panic!("expected add"),
         }
+        assert!(matches!(&ops[2], GraphOp::Unlink { .. }));
+        assert!(matches!(&ops[3], GraphOp::SetPre { .. }));
         // Missing optional fields default.
         let ops: Vec<GraphOp> =
             serde_json::from_str(r#"[{"op": "add", "name": "A"}, {"op": "update", "target": "A"}]"#)
@@ -1288,6 +1401,12 @@ mod tests {
             }
             _ => panic!("expected add"),
         }
+        let ops: Vec<GraphOp> =
+            serde_json::from_str(r#"[{"op": "set_pre", "target": "A"}]"#).unwrap();
+        assert!(
+            matches!(&ops[0], GraphOp::SetPre { pre, .. } if pre.is_empty()),
+            "set_pre tolerates a missing pre list"
+        );
     }
 
     #[test]
@@ -1377,6 +1496,105 @@ mod tests {
         }]);
         assert_eq!(report.accepted.len(), 0);
         assert!(report.rejected[0].reason.contains("no edge"));
+    }
+
+    #[test]
+    fn unlink_removes_one_edge_and_keeps_nodes() {
+        let mut graph = seeded();
+        // Unknown units and a missing edge are rejected.
+        let report = graph.apply_ops(vec![
+            GraphOp::Unlink { from: "ghost".into(), to: "a".into() },
+            GraphOp::Unlink { from: "a".into(), to: "d".into() },
+        ]);
+        assert_eq!(report.accepted.len(), 0);
+        assert_eq!(report.rejected.len(), 2);
+        assert!(report.rejected[0].reason.contains("unknown unit"));
+        assert!(report.rejected[1].reason.contains("no edge"));
+
+        // Only the one edge goes; every node and the other edges stay.
+        let report = graph.apply_ops(vec![GraphOp::Unlink {
+            from: "b".into(),
+            to: "c".into(),
+        }]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        assert_eq!(graph.graph.nodes.len(), 4, "nodes are untouched");
+        assert!(!graph.edge_exists("b", "c"));
+        assert!(graph.edge_exists("a", "b"));
+        assert!(graph.edge_exists("b", "d"));
+        assert!(graph.edge_exists("c", "d"));
+        // Removing an edge can never close a cycle.
+        assert!(graph.reject_if_cycle().is_ok());
+        // A legit unlink drops no reference, so the audit never flags
+        // orphaned_units here — c just became an entry unit the agent must
+        // reconnect when the audit (or its own review) asks for it.
+        let findings = graph
+            .graph
+            .audit
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == "orphaned_units")
+            .count();
+        assert_eq!(findings, 0, "findings: {:?}", graph.graph.audit.findings);
+        let inspect = graph.inspect();
+        assert!(
+            inspect.entry_nodes.contains(&"c".to_owned()),
+            "c without prerequisites is now an entry unit: {:?}",
+            inspect.entry_nodes
+        );
+    }
+
+    #[test]
+    fn set_pre_replaces_the_full_prerequisite_set() {
+        let mut graph = seeded();
+        // Unknown target, unknown/self/empty references are rejected.
+        let report = graph.apply_ops(vec![
+            GraphOp::SetPre { target: "ghost".into(), pre: vec!["a".into()] },
+            GraphOp::SetPre { target: "c".into(), pre: vec!["c的".into()] },
+            GraphOp::SetPre { target: "c".into(), pre: vec!["c".into()] },
+            GraphOp::SetPre { target: "c".into(), pre: vec!["  ".into()] },
+        ]);
+        assert_eq!(report.accepted.len(), 0);
+        assert_eq!(report.rejected.len(), 4);
+        assert!(report.rejected[0].reason.contains("unknown unit"));
+        assert!(
+            report.rejected[1].reason.contains("closest existing unit"),
+            "unknown prerequisite gets a near-miss hint: {}",
+            report.rejected[1].reason
+        );
+        assert!(report.rejected[2].reason.contains("depend on itself"));
+        assert!(report.rejected[3].reason.contains("empty prerequisite"));
+        assert_eq!(graph.graph.edges.len(), 4, "nothing was applied");
+
+        // c's prerequisites were [b]; the full set is now [a]: the old edge
+        // b -> c disappears in the same op, and a duplicated reference is
+        // deduped.
+        let report = graph.apply_ops(vec![GraphOp::SetPre {
+            target: "c".into(),
+            pre: vec!["a".into(), "a".into()],
+        }]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        assert!(!graph.edge_exists("b", "c"));
+        assert!(graph.edge_exists("a", "c"));
+        assert_eq!(graph.graph.edges.len(), 4, "a -> c replaced b -> c once");
+        assert!(report.accepted[0].summary.contains("整体替换"));
+
+        // A set that would close a cycle rolls back whole: a -> b -> c -> d,
+        // so pointing a at d closes the loop a -> b -> c -> d -> a.
+        let report = graph.apply_ops(vec![GraphOp::SetPre {
+            target: "a".into(),
+            pre: vec!["d".into()],
+        }]);
+        assert_eq!(report.accepted.len(), 0);
+        assert!(report.rejected[0].reason.contains("cycle"));
+        assert!(graph.edge_exists("a", "b"), "rolled back");
+
+        // Clearing the set is legal — the audit grades the empty pre.
+        let report = graph.apply_ops(vec![GraphOp::SetPre {
+            target: "d".into(),
+            pre: vec![],
+        }]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        assert!(graph.graph.edges.iter().all(|edge| edge.to != "d"));
     }
 
     #[test]

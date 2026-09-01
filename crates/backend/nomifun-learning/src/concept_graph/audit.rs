@@ -51,6 +51,10 @@ const MAX_EVIDENCE: usize = 12;
 /// many learning units; fewer means whole sub-domains were skipped — the
 /// "missing sub-domains" failure mode, graded danger so the model extends
 /// the network (via a repair round) instead of publishing a thin graph.
+/// With a scope reference the bar SCALES with the block count (2 units per
+/// block, floored at half this constant) — a narrow goal with a handful of
+/// blocks must not be padded to a fixed size, and a very broad goal with
+/// dozens of blocks must not pass at a fixed 30.
 const MIN_UNITS: usize = 30;
 /// Reference-drop gate: a model output where this share (or absolute count)
 /// of prerequisite entries names no defined concept is too sloppy to trust
@@ -75,19 +79,24 @@ pub(crate) const BLOCK_MIN_SHARED: usize = 2;
 /// (merge removes cycles), but a defensive cycle check guards hand-edited
 /// files: on a cycle the depth-based indicators are skipped.
 pub(crate) fn audit_concept_graph(graph: &ConceptGraphData) -> Vec<AuditFinding> {
-    audit_concept_graph_with_scope(graph, None)
+    audit_graph_core(graph, MIN_UNITS)
 }
 
 /// Structural audit plus the scope content checklist: the scope analysis'
 /// large-block concepts become a coverage contract of their own — every
 /// block must show up in at least one unit (danger, so the repair loop can
 /// add units by block name). `None` skips the content check, matching the
-/// pre-scope behavior.
+/// pre-scope behavior. The coverage floor scales with the block count:
+/// 2 units per block, floored at half the fixed [`MIN_UNITS`] constant.
 pub(crate) fn audit_concept_graph_with_scope(
     graph: &ConceptGraphData,
     blocks: Option<&[String]>,
 ) -> Vec<AuditFinding> {
-    let mut findings = audit_graph_core(graph);
+    let min_units = match blocks {
+        Some(blocks) if !blocks.is_empty() => (blocks.len() * 2).max(MIN_UNITS / 2),
+        _ => MIN_UNITS,
+    };
+    let mut findings = audit_graph_core(graph, min_units);
 
     // Scope content contract: the scope analysis handed the generation call
     // a block checklist, and the audit verifies every block is actually
@@ -125,8 +134,9 @@ pub(crate) fn audit_concept_graph_with_scope(
     findings
 }
 
-/// All structural checks (see [`audit_concept_graph`]).
-fn audit_graph_core(graph: &ConceptGraphData) -> Vec<AuditFinding> {
+/// All structural checks (see [`audit_concept_graph`]). `min_units` is the
+/// coverage floor (fixed without a scope reference, block-scaled with one).
+fn audit_graph_core(graph: &ConceptGraphData, min_units: usize) -> Vec<AuditFinding> {
     let mut findings = Vec::new();
     let n = graph.nodes.len();
     // Empty graph is a hard failure, not a pass: the network was never
@@ -143,15 +153,15 @@ fn audit_graph_core(graph: &ConceptGraphData) -> Vec<AuditFinding> {
         }];
     }
 
-    // Coverage gate: fewer units than a broad goal demands means whole
+    // Coverage gate: fewer units than the goal demands means whole
     // sub-domains were skipped. Graded danger so the generation loop extends
     // the network instead of publishing a thin graph.
-    if n < MIN_UNITS {
+    if n < min_units {
         findings.push(AuditFinding {
             kind: "coverage".into(),
             severity: SEV_DANGER.into(),
             message: format!(
-                "only {n} learning units — a broad learning goal needs at least {MIN_UNITS}; whole sub-domains are likely missing"
+                "only {n} learning units — this goal needs at least {min_units}; whole sub-domains are likely missing"
             ),
             node_ids: Vec::new(),
         });
@@ -477,14 +487,20 @@ fn audit_graph_core(graph: &ConceptGraphData) -> Vec<AuditFinding> {
     }
 
     // Multiple sinks/sources: a broad learning goal should converge onto one
-    // goal concept and fan out from a small root set.
+    // goal concept and fan out from a small root set. The caps scale with
+    // the graph (one per ~15 units, floored at the constants): a 60-unit
+    // network legitimately has several entry points and terminal branches,
+    // and flagging them would push the model into bogus merges.
+    let scale_cap = |fixed: usize| (n / 15).max(fixed);
+    let max_sinks = scale_cap(MAX_SINKS);
+    let max_sources = scale_cap(MAX_SOURCES);
     let sinks: Vec<usize> = succs
         .iter()
         .enumerate()
         .filter(|(_, succs)| succs.is_empty())
         .map(|(position, _)| position)
         .collect();
-    if sinks.len() > MAX_SINKS {
+    if sinks.len() > max_sinks {
         findings.push(AuditFinding {
             kind: "multiple_sinks".into(),
             severity: SEV_WARNING.into(),
@@ -505,7 +521,7 @@ fn audit_graph_core(graph: &ConceptGraphData) -> Vec<AuditFinding> {
         .filter(|(_, prereqs)| prereqs.is_empty())
         .map(|(position, _)| position)
         .collect();
-    if sources.len() > MAX_SOURCES {
+    if sources.len() > max_sources {
         findings.push(AuditFinding {
             kind: "multiple_sources".into(),
             severity: SEV_WARNING.into(),
@@ -808,6 +824,77 @@ mod tests {
             .expect("sloppy naming must fail the reference-drop gate");
         assert_eq!(drops.severity, SEV_DANGER);
         assert!(drops.node_ids.contains(&"ghost".to_owned()));
+    }
+
+    #[test]
+    fn audit_scales_the_coverage_gate_with_the_scope_checklist() {
+        // Without a scope reference the floor is the fixed 30-unit gate.
+        let chain = |count: usize| {
+            let nodes: Vec<ConceptGraphNode> =
+                (0..count).map(|i| node(&format!("u{i}"), Some(10))).collect();
+            let edges: Vec<ConceptGraphEdge> = (0..count.saturating_sub(1))
+                .map(|i| edge(&format!("u{i}"), &format!("u{}", i + 1)))
+                .collect();
+            graph(nodes, edges)
+        };
+        assert!(
+            audit_concept_graph(&chain(15)).iter().any(|f| f.kind == "coverage"),
+            "15 units fail the fixed 30-unit gate"
+        );
+
+        // A narrow goal with 7 scope blocks lowers the bar to 14 — the 15
+        // floor wins only on ties, so 15 units clear the scaled gate where
+        // the fixed 30-unit gate would have forced 15 more units of padding.
+        let blocks: Vec<String> = (0..7).map(|i| format!("块{i}")).collect();
+        let findings = audit_concept_graph_with_scope(&chain(15), Some(&blocks));
+        assert!(
+            !findings.iter().any(|f| f.kind == "coverage"),
+            "15 units clear the 14-unit scaled gate: {findings:?}"
+        );
+
+        // A broad goal with 25 blocks RAISES the bar to 50.
+        let blocks: Vec<String> = (0..25).map(|i| format!("块{i}")).collect();
+        let findings = audit_concept_graph_with_scope(&chain(30), Some(&blocks));
+        let coverage = findings
+            .iter()
+            .find(|f| f.kind == "coverage")
+            .expect("30 units must fail the 50-unit scaled gate");
+        assert!(coverage.message.contains("50"), "{}", coverage.message);
+    }
+
+    #[test]
+    fn audit_relaxes_the_sink_and_source_caps_for_large_graphs() {
+        // A 60-unit graph shaped as one long spine with `terminals` separate
+        // branches hanging off the root: the scaled cap is 60/15 = 4, so 4
+        // terminals sit exactly at the cap while 5 exceed it — neither count
+        // would pass the fixed cap of 3.
+        let branchy = |terminals: usize| {
+            let nodes: Vec<ConceptGraphNode> =
+                (0..60).map(|i| node(&format!("u{i}"), Some(10))).collect();
+            // Spine u0 -> u1 -> ... -> u(59-terminals); every node on it has
+            // an outgoing edge.
+            let mut edges: Vec<ConceptGraphEdge> = (0..(60 - terminals))
+                .map(|i| edge(&format!("u{i}"), &format!("u{}", i + 1)))
+                .collect();
+            // The last `terminals` nodes hang directly off the root and are
+            // the only sinks.
+            for terminal in 0..terminals {
+                edges.push(edge("u0", &format!("u{}", 59 - terminal)));
+            }
+            graph(nodes, edges)
+        };
+        // 4 terminals on 60 units: exactly at the scaled cap — no finding.
+        let findings = audit_concept_graph(&branchy(4));
+        assert!(
+            !findings.iter().any(|f| f.kind == "multiple_sinks"),
+            "{findings:?}"
+        );
+        // 5 terminals on 60 units: one over the scaled cap — flagged.
+        let findings = audit_concept_graph(&branchy(5));
+        assert!(
+            findings.iter().any(|f| f.kind == "multiple_sinks"),
+            "{findings:?}"
+        );
     }
 
     #[test]

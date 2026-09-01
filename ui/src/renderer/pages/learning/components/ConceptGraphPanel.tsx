@@ -99,6 +99,33 @@ const ConceptNode: React.FC<NodeProps<ConceptFlowNode>> = ({ data }) => {
 const NODE_TYPES = { concept: ConceptNode };
 
 /**
+ * Audit finding kinds are stable machine-readable labels from the backend
+ * audit; map each to a localized label and fall back to the raw kind for
+ * anything a future backend adds before the UI learns about it.
+ */
+const FINDING_KIND_LABEL_KEY: Record<string, string> = {
+  missing_block_coverage: 'learning.conceptGraphFindingMissingBlockCoverage',
+  empty_graph: 'learning.conceptGraphFindingEmptyGraph',
+  coverage: 'learning.conceptGraphFindingCoverage',
+  unit_overload: 'learning.conceptGraphFindingUnitOverload',
+  unit_above_soft_cap: 'learning.conceptGraphFindingUnitAboveSoftCap',
+  unit_fragment: 'learning.conceptGraphFindingUnitFragment',
+  excessive_reference_drops: 'learning.conceptGraphFindingExcessiveReferenceDrops',
+  cycle: 'learning.conceptGraphFindingCycle',
+  orphaned_units: 'learning.conceptGraphFindingOrphanedUnits',
+  tree_structure: 'learning.conceptGraphFindingTreeStructure',
+  shallow_depth: 'learning.conceptGraphFindingShallowDepth',
+  shallow_leaves: 'learning.conceptGraphFindingShallowLeaves',
+  disconnected_components: 'learning.conceptGraphFindingDisconnectedComponents',
+  multiple_sinks: 'learning.conceptGraphFindingMultipleSinks',
+  multiple_sources: 'learning.conceptGraphFindingMultipleSources',
+  degree_anomaly: 'learning.conceptGraphFindingDegreeAnomaly',
+  near_duplicate_titles: 'learning.conceptGraphFindingNearDuplicateTitles',
+  spiral_clash: 'learning.conceptGraphFindingSpiralClash',
+  redundant_edges: 'learning.conceptGraphFindingRedundantEdges',
+};
+
+/**
  * Hierarchical DAG layout via dagre: prerequisites sink to the bottom and the
  * goal rises to the top (rankdir BT), like the reference graph.
  */
@@ -150,10 +177,13 @@ function layoutConceptGraph(graph: {
 
 /**
  * Experimental learning feature: decompose a broad learning goal into a
- * network of learning units (each a 25-minute study session with a minute
- * budget) and render the dependency DAG. Generation is one full backend
- * model call plus light audit-gate repair rounds; results persist as rough
- * JSON files server-side.
+ * network of learning units (each one study session, usually within the
+ * 30-minute soft cap, at most 60 for a genuinely hard lesson with a minute
+ * budget) and render the dependency DAG. Generation runs entirely on the
+ * backend agent loop (scope analysis → draft tools → audit-gated publish);
+ * results persist as rough JSON files server-side. The audit panel below is
+ * read-only reference: the next-generation repair mode replaces the retired
+ * one-shot repair endpoint.
  */
 const ConceptGraphPanel: React.FC = () => {
   const { t } = useTranslation();
@@ -162,7 +192,6 @@ const ConceptGraphPanel: React.FC = () => {
   const [summaries, setSummaries] = useState<ConceptGraphSummary[]>([]);
   const [selected, setSelected] = useState<ConceptGraphView | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [repairing, setRepairing] = useState(false);
   const [loadingList, setLoadingList] = useState(true);
   const [loadingGraph, setLoadingGraph] = useState(false);
 
@@ -230,21 +259,6 @@ const ConceptGraphPanel: React.FC = () => {
     [refreshList, t]
   );
 
-  const repair = useCallback(async () => {
-    if (!selected) return;
-    setRepairing(true);
-    try {
-      const updated = await learningApi.repairConceptGraph(selected.id, {});
-      Message.success(t('learning.conceptGraphRepairSuccess'));
-      setSelected(updated);
-      await refreshList();
-    } catch (actionError) {
-      Message.error(`${t('learning.conceptGraphRepairFailed')}: ${errorMessage(t, actionError)}`);
-    } finally {
-      setRepairing(false);
-    }
-  }, [refreshList, selected, t]);
-
   // The whole graph renders as-is: every node is a learning unit, there is
   // no milestone/atom split anymore.
   const { nodes, edges } = useMemo(
@@ -283,6 +297,10 @@ const ConceptGraphPanel: React.FC = () => {
       : severity === 'warning'
         ? t('learning.conceptGraphSeverityWarning')
         : t('learning.conceptGraphSeverityInfo');
+  const findingLabel = (kind: string) => {
+    const key = FINDING_KIND_LABEL_KEY[kind];
+    return key ? t(key) : kind;
+  };
   const severityColor: Record<AuditSeverity, string> = {
     danger: 'red',
     warning: 'orange',
@@ -438,16 +456,6 @@ const ConceptGraphPanel: React.FC = () => {
                 )}
               </Text>
             </div>
-            <Button
-              size='small'
-              type='primary'
-              status='warning'
-              loading={repairing}
-              disabled={orderedFindings.length === 0}
-              onClick={() => void repair()}
-            >
-              {t('learning.conceptGraphRepair')}
-            </Button>
           </div>
           <Text type='secondary' className='text-12px'>
             {t('learning.conceptGraphRefDrop', {
@@ -467,7 +475,9 @@ const ConceptGraphPanel: React.FC = () => {
                   <Tag color={severityColor[finding.severity]} size='small'>
                     {severityLabel(finding.severity)}
                   </Tag>
-                  <Text className='truncate text-12px'>{finding.kind}</Text>
+                  <Text className='truncate text-12px'>
+                    {findingLabel(finding.kind)}
+                  </Text>
                 </div>
                 <Text type='secondary' className='text-12px'>
                   {finding.message}

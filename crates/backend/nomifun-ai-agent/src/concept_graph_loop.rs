@@ -76,7 +76,7 @@ const REPAIR_AGENT_SYSTEM: &str = r#"你是一名概念图修复代理：基于�
 
 【修复原则】
 1. 审计报告是主要的修复依据：逐条处理 danger 级 findings，按报告给出的证据（节点名、缺失的大块概念名、孤立组件）精确操作；
-2. 不做过大的重构、不删无关节点。（add/link/reverse/split/merge/update/delete）。
+2. 不做过大的重构、不删无关节点。（add/link/unlink/set_pre/reverse/split/merge/update/delete）。
 3. 动手前可以用 cg_query / cg_subgraph 查清引用名的精确写法；引用不一致会被拒绝。
 4. 修复动作分批提交（每批 5-15 个操作），每批后用 cg_audit 复查该条 finding 是否消除。
 5. 全部 danger 消除后调用 cg_finish 发布。
@@ -85,7 +85,7 @@ const REPAIR_AGENT_SYSTEM: &str = r#"你是一名概念图修复代理：基于�
 - missing_block_coverage：按报告列出的大块概念名，add 对应单元（把概念改写为动作句）。
 - coverage：对照 scope 清单，补齐缺失大块概念的单元。
 - disconnected_components：用 link 或在新单元的 pre 中引用，把孤立组件接入主结构。
-- orphaned_units：把失去唯一前置的单元重新 link 到它真正的前置。
+- orphaned_units：把失去唯一前置的单元重新 link 到它真正的前置；旧的前置边确实画错时，用 set_pre 整体替换该单元的前置（或先 unlink 移除错误边再 link）。
 - tree_structure：为确实需要两条以上前线的单元补 link，制造收敛。
 - unit_overload：split 超过 60 分钟硬上限的单元；30-60 分钟的偏重单元若可拆也建议拆。
 
@@ -665,7 +665,7 @@ fn cg_scope(ctx: Arc<LoopContext>) -> OneShotTool {
 fn cg_patch(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "cg_patch".into(),
-        description: "批量应用图操作（add/link/reverse/split/merge/update/delete），一次调用就是一个批次。操作按数组顺序执行，后面的操作可以引用本批前面 add 的名字。返回每个操作的成功/拒绝明细 + 最新审计摘要。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add\", \"name\": \"用几何概括法临摹静物\", \"pre\": [], \"min\": 20},\n  {\"op\": \"add\", \"name\": \"使用一点透视绘制空间\", \"pre\": [\"用几何概括法临摹静物\"], \"min\": 25},\n  {\"op\": \"link\", \"from\": \"用几何概括法临摹静物\", \"to\": \"使用一点透视绘制空间\"}\n]}\n\n引用规则：add 的 pre 和 link/reverse 的 from/to 必须与图中已有名字（或本批前面 add 的名字）完全一致，不一致的操作会被拒绝并附最近似的名字提示。每批 5-15 个操作，宁多批勿超长。".into(),
+        description: "批量应用图操作（add/link/unlink/set_pre/reverse/split/merge/update/delete），一次调用就是一个批次。操作按数组顺序执行，后面的操作可以引用本批前面 add 的名字。返回每个操作的成功/拒绝明细 + 最新审计摘要。\n\n各操作语义：\n- add：新增单元，pre 是直接前置名列表，min 是分钟预算。\n- link：在两个已有单元之间补一条缺失的依赖边 from -> to。\n- unlink：仅移除一条依赖边 from -> to，两个单元都保留——发现关系画错（而非方向画反）时用它；reverse 只适合改方向。\n- set_pre：把 target 的前置集合整体替换为 pre（完整集合语义），一步完成'删错边+接对边'；前置画错或多余时优先用它。\n- reverse：把已有边 from -> to 翻转为 to -> from。\n- split / merge / update / delete：拆分、合并、改名或改预算；delete 会删除单元及其触及的所有边。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add\", \"name\": \"用几何概括法临摹静物\", \"pre\": [], \"min\": 20},\n  {\"op\": \"add\", \"name\": \"使用一点透视绘制空间\", \"pre\": [\"用几何概括法临摹静物\"], \"min\": 25},\n  {\"op\": \"unlink\", \"from\": \"使用一点透视绘制空间\", \"to\": \"画布与画笔准备\"},\n  {\"op\": \"link\", \"from\": \"画布与画笔准备\", \"to\": \"用几何概括法临摹静物\"},\n  {\"op\": \"set_pre\", \"target\": \"使用一点透视绘制空间\", \"pre\": [\"用几何概括法临摹静物\", \"画布与画笔准备\"]}\n]}\n\n引用规则：add 的 pre、set_pre 的 pre 和 link/unlink/reverse 的 from/to 必须与图中已有名字（或本批前面 add 的名字）完全一致，不一致的操作会被拒绝并附最近似的名字提示。每批 5-15 个操作，宁多批勿超长。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -678,7 +678,9 @@ fn cg_patch(ctx: Arc<LoopContext>) -> OneShotTool {
                         "oneOf": [
                             { "type": "object", "properties": { "op": { "const": "add" }, "name": { "type": "string", "description": "新单元名——动作句，通常 30 分钟内可完成的一个学习会话（极困难最多 60 分钟）" }, "pre": { "type": "array", "items": { "type": "string" }, "description": "直接前置单元名，必须与图中已有名字（或本批前面 add 的名字）完全一致；入门单元可为空" }, "min": { "type": "integer", "minimum": 1, "maximum": 60, "description": "学习分钟预算：常规 5-30（软上限），极困难单课最多 60（硬上限）" } }, "required": ["op", "name"] },
                             { "type": "object", "properties": { "op": { "const": "link" }, "from": { "type": "string", "description": "已存在单元名（前置）" }, "to": { "type": "string", "description": "已存在单元名（后继）" } }, "required": ["op", "from", "to"] },
+                            { "type": "object", "properties": { "op": { "const": "unlink" }, "from": { "type": "string", "description": "已存在单元名（当前前置）" }, "to": { "type": "string", "description": "已存在单元名（当前后继）" } }, "required": ["op", "from", "to"] },
                             { "type": "object", "properties": { "op": { "const": "reverse" }, "from": { "type": "string", "description": "已存在单元名（新前置）" }, "to": { "type": "string", "description": "已存在单元名（新后继）" } }, "required": ["op", "from", "to"] },
+                            { "type": "object", "properties": { "op": { "const": "set_pre" }, "target": { "type": "string", "description": "要改前置的已存在单元名" }, "pre": { "type": "array", "items": { "type": "string" }, "description": "完整的新直接前置名列表（必须与图中已有名字或本批前面 add 的名字完全一致）；空数组=清空前置使其成为入门单元（是否合规由审计判定）；重复项自动去重" } }, "required": ["op", "target", "pre"] },
                             { "type": "object", "properties": { "op": { "const": "split" }, "target": { "type": "string", "description": "要拆分的已存在单元名" }, "into": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string", "description": "拆分后的新单元名（动作句）" }, "pre": { "type": "array", "items": { "type": "string" }, "description": "可选的直接前置名（已有单元或本批其它拆分）；留空则继承被拆单元的前置" }, "min": { "type": "integer", "minimum": 1, "maximum": 60 } }, "required": ["name"] } } }, "required": ["op", "target", "into"] },
                             { "type": "object", "properties": { "op": { "const": "merge" }, "into": { "type": "string", "description": "保留的已存在单元名" }, "targets": { "type": "array", "items": { "type": "string" }, "description": "要并入的已存在单元名列表" } }, "required": ["op", "into", "targets"] },
                             { "type": "object", "properties": { "op": { "const": "update" }, "target": { "type": "string", "description": "要改的已存在单元名" }, "name": { "type": "string", "description": "新名字（可选）" }, "min": { "type": "integer", "minimum": 1, "maximum": 60, "description": "新分钟预算（可选）" } }, "required": ["op", "target"] },

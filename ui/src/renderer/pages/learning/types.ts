@@ -368,8 +368,3 @@ export interface GenerateConceptGraphRequest {
   provider_id?: string;
   model?: string;
 }
-
-/** 手动修复请求：kinds 为空时修复全部审计发现 */
-export interface RepairConceptGraphRequest {
-  kinds?: string[];
-}
