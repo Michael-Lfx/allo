@@ -39,6 +39,10 @@ import { isDesktopShell } from '@renderer/utils/platform';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
 import SidebarToggleIcon from '@renderer/components/layout/Sider/SidebarToggleIcon';
+import {
+  SettingsNavigationLoadingOverlay,
+  SettingsNavigationTransitionProvider,
+} from '@renderer/components/layout/SettingsNavigationTransition';
 import { useTranslation } from 'react-i18next';
 import '@renderer/styles/layout.css';
 
@@ -558,110 +562,117 @@ const Layout: React.FC<{
 
   return (
     <LayoutContext.Provider value={{ isMobile, siderCollapsed: collapsed, setSiderCollapsed: setCollapsed }}>
-      <NavigationHistoryProvider>
-        <WebuiServerProvider>
-          <div className='app-shell flex flex-col size-full min-h-0'>
-            <Titlebar workspaceAvailable={workspaceAvailable} />
-          {/* 移动端左侧边栏蒙板 / Mobile left sider backdrop */}
-          {isMobile && !collapsed && (
-            <div className='fixed inset-0 bg-black/30 z-90' onClick={() => setCollapsed(true)} aria-hidden='true' />
-          )}
-
-          <ArcoLayout className={'size-full layout flex-1 min-h-0'}>
-            <ArcoLayout.Sider
-              collapsedWidth={isMobile ? 0 : 0}
-              collapsed={collapsed}
-              width={siderWidth}
-              className={classNames('!bg-2 layout-sider', {
-                collapsed: collapsed,
-              })}
-              style={siderStyle}
-            >
-              <ArcoLayout.Header
-                className={classNames(
-                  'flex items-center justify-start pt-8px pb-8px pl-18px pr-16px gap-12px layout-sider-header',
-                  isMobile && 'layout-sider-header--mobile',
-                  {
-                    'cursor-pointer group ': collapsed,
-                  }
-                )}
-              >
+      <SettingsNavigationTransitionProvider>
+        <NavigationHistoryProvider>
+          <WebuiServerProvider>
+            <div className='app-shell flex flex-col size-full min-h-0'>
+              <Titlebar workspaceAvailable={workspaceAvailable} />
+              {/* 移动端左侧边栏蒙板 / Mobile left sider backdrop */}
+              {isMobile && !collapsed && (
                 <div
-                  className={classNames('shrink-0 size-32px relative rd-0.5rem overflow-hidden', {
-                    '!size-24px': collapsed,
-                  })}
-                  onClick={onClick}
-                >
-                  <img src={appLogo} alt='Flowy' className='absolute inset-0 w-full h-full object-cover' />
-                </div>
-                <div className='min-w-0 flex-1 flex flex-col justify-center collapsed-hidden'>
-                  <span className='truncate text-16px text-t-primary font-semibold'>Flowy</span>
-                  {appVersion && <span className='sidebar-app-version'>v{appVersion}</span>}
-                </div>
-                {isMobile && !collapsed && (
-                  <button
-                    type='button'
-                    className='app-titlebar__button app-titlebar__button--mobile'
-                    onClick={() => setCollapsed(true)}
-                    title={t('common.navCollapse')}
-                    aria-label={t('common.navCollapse')}
-                    aria-expanded={!collapsed}
-                    aria-controls='flowy-primary-sider'
-                  >
-                    <SidebarToggleIcon collapsed={collapsed} size={18} strokeWidth={2.5} />
-                  </button>
-                )}
-                {/* 侧栏折叠改由标题栏统一控制 / Sidebar folding handled by Titlebar toggle */}
-              </ArcoLayout.Header>
-              <ArcoLayout.Content className='pt-0 px-8px pb-0 layout-sider-content'>
-                {React.isValidElement(sider)
-                  ? React.cloneElement(sider, {
-                      onSessionClick: () => {
-                        cleanupSiderTooltips();
-                        if (isMobile) setCollapsed(true);
-                      },
-                      collapsed,
-                    } as any)
-                  : sider}
-              </ArcoLayout.Content>
-              {!isMobile && (
-                <div
-                  className='absolute top-0 h-full w-8px z-20 cursor-col-resize group'
-                  style={{ right: '-4px' }}
-                  onMouseDown={beginSiderResizeDrag}
-                  onDoubleClick={resetSiderWidth}
+                  className='fixed inset-0 bg-black/30 z-90'
+                  onClick={() => setCollapsed(true)}
                   aria-hidden='true'
-                >
-                  <div className='absolute top-0 left-1/2 h-full w-1px -translate-x-1/2 bg-transparent group-hover:bg-[var(--color-border-2)] transition-colors duration-150' />
-                </div>
+                />
               )}
-            </ArcoLayout.Sider>
 
-            <ArcoLayout.Content
-              className={'bg-base layout-content flex flex-col min-h-0'}
-              onClick={() => {
-                if (isMobile && !collapsed) setCollapsed(true);
-              }}
-              style={
-                isMobile
-                  ? {
-                      width: '100%',
-                    }
-                  : undefined
-              }
-            >
-              {children ?? <Outlet />}
-              {directorySelectionContextHolder}
-              <PwaPullToRefresh />
-              <Suspense fallback={null}>
-                <UpdateModal />
-              </Suspense>
-            </ArcoLayout.Content>
-          </ArcoLayout>
-        </div>
-        <NotificationHost />
-        </WebuiServerProvider>
-      </NavigationHistoryProvider>
+              <ArcoLayout className={'size-full layout flex-1 min-h-0'}>
+                <ArcoLayout.Sider
+                  collapsedWidth={isMobile ? 0 : 0}
+                  collapsed={collapsed}
+                  width={siderWidth}
+                  className={classNames('!bg-2 layout-sider', {
+                    collapsed: collapsed,
+                  })}
+                  style={siderStyle}
+                >
+                  <ArcoLayout.Header
+                    className={classNames(
+                      'flex items-center justify-start pt-8px pb-8px pl-18px pr-16px gap-12px layout-sider-header',
+                      isMobile && 'layout-sider-header--mobile',
+                      {
+                        'cursor-pointer group ': collapsed,
+                      }
+                    )}
+                  >
+                    <div
+                      className={classNames('shrink-0 size-32px relative rd-0.5rem overflow-hidden', {
+                        '!size-24px': collapsed,
+                      })}
+                      onClick={onClick}
+                    >
+                      <img src={appLogo} alt='Flowy' className='absolute inset-0 w-full h-full object-cover' />
+                    </div>
+                    <div className='min-w-0 flex-1 flex flex-col justify-center collapsed-hidden'>
+                      <span className='truncate text-16px text-t-primary font-semibold'>Flowy</span>
+                      {appVersion && <span className='sidebar-app-version'>v{appVersion}</span>}
+                    </div>
+                    {isMobile && !collapsed && (
+                      <button
+                        type='button'
+                        className='app-titlebar__button app-titlebar__button--mobile'
+                        onClick={() => setCollapsed(true)}
+                        title={t('common.navCollapse')}
+                        aria-label={t('common.navCollapse')}
+                        aria-expanded={!collapsed}
+                        aria-controls='flowy-primary-sider'
+                      >
+                        <SidebarToggleIcon collapsed={collapsed} size={18} strokeWidth={2.5} />
+                      </button>
+                    )}
+                    {/* 侧栏折叠改由标题栏统一控制 / Sidebar folding handled by Titlebar toggle */}
+                  </ArcoLayout.Header>
+                  <ArcoLayout.Content className='pt-0 px-8px pb-0 layout-sider-content'>
+                    {React.isValidElement(sider)
+                      ? React.cloneElement(sider, {
+                          onSessionClick: () => {
+                            cleanupSiderTooltips();
+                            if (isMobile) setCollapsed(true);
+                          },
+                          collapsed,
+                        } as any)
+                      : sider}
+                  </ArcoLayout.Content>
+                  {!isMobile && (
+                    <div
+                      className='absolute top-0 h-full w-8px z-20 cursor-col-resize group'
+                      style={{ right: '-4px' }}
+                      onMouseDown={beginSiderResizeDrag}
+                      onDoubleClick={resetSiderWidth}
+                      aria-hidden='true'
+                    >
+                      <div className='absolute top-0 left-1/2 h-full w-1px -translate-x-1/2 bg-transparent group-hover:bg-[var(--color-border-2)] transition-colors duration-150' />
+                    </div>
+                  )}
+                </ArcoLayout.Sider>
+
+                <ArcoLayout.Content
+                  className={'relative bg-base layout-content flex flex-col min-h-0'}
+                  onClick={() => {
+                    if (isMobile && !collapsed) setCollapsed(true);
+                  }}
+                  style={
+                    isMobile
+                      ? {
+                          width: '100%',
+                        }
+                      : undefined
+                  }
+                >
+                  {children ?? <Outlet />}
+                  <SettingsNavigationLoadingOverlay />
+                  {directorySelectionContextHolder}
+                  <PwaPullToRefresh />
+                  <Suspense fallback={null}>
+                    <UpdateModal />
+                  </Suspense>
+                </ArcoLayout.Content>
+              </ArcoLayout>
+            </div>
+            <NotificationHost />
+          </WebuiServerProvider>
+        </NavigationHistoryProvider>
+      </SettingsNavigationTransitionProvider>
     </LayoutContext.Provider>
   );
 };

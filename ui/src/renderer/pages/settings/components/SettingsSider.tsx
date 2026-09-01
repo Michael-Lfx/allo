@@ -1,4 +1,5 @@
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
+import { useSettingsNavigationTransition } from '@/renderer/components/layout/SettingsNavigationTransition';
 import { useSlidingSelectionIndicator } from '@/renderer/hooks/ui/useSlidingSelectionIndicator';
 import {
   BookOpen,
@@ -69,7 +70,9 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
   tooltipEnabled = false,
 }) => {
   const navigate = useNavigate();
+  const { navigateWithSettingsTransition, pendingTarget } = useSettingsNavigationTransition();
   const { pathname } = useLocation();
+  const navigationPathname = pendingTarget?.split(/[?#]/u, 1)[0] || pathname;
   const { groups } = useSettingsNavigation();
   const navigationRef = useRef<HTMLDivElement>(null);
   const menuSignature = useMemo(
@@ -79,7 +82,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
   const selectionIndicator = useSlidingSelectionIndicator({
     containerRef: navigationRef,
     activeSelector: '[data-settings-nav-entry][data-active="true"]',
-    revision: `${pathname}:${collapsed}:${menuSignature}`,
+    revision: `${navigationPathname}:${collapsed}:${menuSignature}`,
   });
   const { measureElement } = selectionIndicator;
 
@@ -105,7 +108,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     navigationRef.current
       ?.querySelector<HTMLElement>('[data-settings-nav-entry][data-active="true"]')
       ?.scrollIntoView({ block: 'nearest' });
-  }, [menuSignature, pathname]);
+  }, [menuSignature, navigationPathname]);
 
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
   return (
@@ -134,7 +137,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
             </h2>
           )}
           {group.items.map((item) => {
-            const selected = isSettingsNavItemActive(pathname, item);
+            const selected = isSettingsNavItemActive(navigationPathname, item);
             const target = item.path.startsWith('/') ? item.path : `/settings/${item.path}`;
             return (
               <Tooltip key={item.id} {...siderTooltipProps} content={item.label} position='right'>
@@ -151,8 +154,10 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
                     { 'hover:bg-fill-2': !selected }
                   )}
                   onClick={() => {
-                    Promise.resolve(navigate(target, { replace: true })).catch((error: unknown) => {
-                      console.error('Navigation failed:', error);
+                    navigateWithSettingsTransition(target, () => {
+                      Promise.resolve(navigate(target, { replace: true })).catch((error: unknown) => {
+                        console.error('Navigation failed:', error);
+                      });
                     });
                   }}
                 >

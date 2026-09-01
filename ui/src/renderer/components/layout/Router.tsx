@@ -1,8 +1,10 @@
-import React, { Suspense, useEffect } from 'react';
+import React, { Suspense, useEffect, useLayoutEffect } from 'react';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
+import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
+import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
@@ -80,14 +82,42 @@ type RouteFallbackProps = {
   fullscreen?: boolean;
 };
 
+const SETTINGS_CAPABILITY_PATHS = ['/presets', '/skills', '/mcp', '/plugins'];
+
+const isSettingsSurfacePath = (pathname: string): boolean =>
+  pathname === '/settings' ||
+  pathname.startsWith('/settings/') ||
+  SETTINGS_CAPABILITY_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+
+const SettingsRouteReady: React.FC<{ children: React.ReactNode; locationKey: string }> = ({ children, locationKey }) => {
+  const { markSettingsNavigationReady } = useSettingsNavigationTransition();
+
+  useLayoutEffect(() => {
+    markSettingsNavigationReady();
+  }, [locationKey, markSettingsNavigationReady]);
+
+  return <>{children}</>;
+};
+
 const RouteFallback: React.FC<RouteFallbackProps> = ({ Component, fullscreen = false }) => {
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
+  const settingsSurface = isSettingsSurfacePath(location.pathname);
 
   return (
     <RouteErrorBoundary resetKey={resetKey}>
-      <Suspense fallback={fullscreen ? <AppLoader /> : <RouteContentFallback />}>
-        <Component />
+      <Suspense
+        fallback={
+          fullscreen ? <AppLoader /> : settingsSurface ? <SettingsContentLoading /> : <RouteContentFallback />
+        }
+      >
+        {settingsSurface ? (
+          <SettingsRouteReady locationKey={resetKey}>
+            <Component />
+          </SettingsRouteReady>
+        ) : (
+          <Component />
+        )}
       </Suspense>
     </RouteErrorBoundary>
   );

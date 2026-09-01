@@ -21,4 +21,8 @@ export function prefetchSettingsPages(): void {
   void import('./InsightsSettings').catch(() => undefined);
   void import('./MoaSettings').catch(() => undefined);
   void import('./MediaSettings').catch(() => undefined);
+  void import('./PresetSettings').catch(() => undefined);
+  void import('./SkillsSettingsPage').catch(() => undefined);
+  void import('@/renderer/pages/mcp').catch(() => undefined);
+  void import('@/renderer/pages/mcp/PluginSettingsPage').catch(() => undefined);
 }

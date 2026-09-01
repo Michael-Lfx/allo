@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import HubPageShell from '@/renderer/components/layout/HubPageShell';
 import CapabilityHubHeader from './CapabilityHubHeader';
-import type { CapabilityHubId } from './capabilityHub';
+import { parseCapabilityHubFromPathname, type CapabilityHubId } from './capabilityHub';
 import { useCapabilityHubRoute } from './useCapabilityHubRoute';
+import { useSettingsNavigationTransition } from '@/renderer/components/layout/SettingsNavigationTransition';
 
 type CapabilityHubShellProps = {
   hub: CapabilityHubId;
@@ -29,7 +30,12 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
   children,
 }) => {
   const { view, setView, goToHub, redirectTo } = useCapabilityHubRoute(hub);
+  const { pendingTarget } = useSettingsNavigationTransition();
   const [searchQuery, setSearchQuery] = useState('');
+  const pendingHub = pendingTarget
+    ? parseCapabilityHubFromPathname(pendingTarget.split(/[?#]/u, 1)[0])
+    : null;
+  const activeHub = pendingHub ?? hub;
 
   if (redirectTo) {
     return <Navigate to={redirectTo} replace />;
@@ -44,7 +50,7 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
         toolbarClassName='mb-8px'
         toolbar={
           <CapabilityHubHeader
-            hub={hub}
+            hub={activeHub}
             view={view}
             installedCount={installedCount}
             searchQuery={searchQuery}

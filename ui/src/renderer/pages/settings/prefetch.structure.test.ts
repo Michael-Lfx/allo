@@ -39,6 +39,13 @@ describe('settings route prefetch', () => {
     expect(prefetchSource.includes("from './LearningSettings'")).toBe(false);
   });
 
+  test('warms capability hubs before their first installed/market switch', () => {
+    expect(prefetchSource.includes("void import('./PresetSettings')")).toBe(true);
+    expect(prefetchSource.includes("void import('./SkillsSettingsPage')")).toBe(true);
+    expect(prefetchSource.includes("void import('@/renderer/pages/mcp')")).toBe(true);
+    expect(prefetchSource.includes("void import('@/renderer/pages/mcp/PluginSettingsPage')")).toBe(true);
+  });
+
   test('the sider settings button prefetches on hover and idle', () => {
     expect(
       footerSource.includes("import { prefetchSettingsPages } from '@renderer/pages/settings/prefetch'")
