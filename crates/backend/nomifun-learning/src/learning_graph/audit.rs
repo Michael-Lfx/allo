@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::{AuditFinding, ConceptGraphData};
+use super::{AuditFinding, LearningGraphData};
 
 pub(crate) const SEV_INFO: &str = "info";
 pub(crate) const SEV_WARNING: &str = "warning";
@@ -75,10 +75,11 @@ const MULTI_PARENT_MIN_NODES: usize = 30;
 /// rewritten into action sentences).
 pub(crate) const BLOCK_MIN_SHARED: usize = 2;
 
-/// Run every deterministic structural check. The graph is assumed acyclic
-/// (merge removes cycles), but a defensive cycle check guards hand-edited
-/// files: on a cycle the depth-based indicators are skipped.
-pub(crate) fn audit_concept_graph(graph: &ConceptGraphData) -> Vec<AuditFinding> {
+/// Run every deterministic structural check without a scope reference —
+/// the fixed-floor gate. Test-only today: production audits always carry
+/// the scope checklist (or its absence) through [`audit_learning_graph_with_scope`].
+#[cfg(test)]
+pub(crate) fn audit_learning_graph(graph: &LearningGraphData) -> Vec<AuditFinding> {
     audit_graph_core(graph, MIN_UNITS)
 }
 
@@ -88,8 +89,8 @@ pub(crate) fn audit_concept_graph(graph: &ConceptGraphData) -> Vec<AuditFinding>
 /// add units by block name). `None` skips the content check, matching the
 /// pre-scope behavior. The coverage floor scales with the block count:
 /// 2 units per block, floored at half the fixed [`MIN_UNITS`] constant.
-pub(crate) fn audit_concept_graph_with_scope(
-    graph: &ConceptGraphData,
+pub(crate) fn audit_learning_graph_with_scope(
+    graph: &LearningGraphData,
     blocks: Option<&[String]>,
 ) -> Vec<AuditFinding> {
     let min_units = match blocks {
@@ -134,14 +135,14 @@ pub(crate) fn audit_concept_graph_with_scope(
     findings
 }
 
-/// All structural checks (see [`audit_concept_graph`]). `min_units` is the
+/// All structural checks (see [`audit_learning_graph`]). `min_units` is the
 /// coverage floor (fixed without a scope reference, block-scaled with one).
-fn audit_graph_core(graph: &ConceptGraphData, min_units: usize) -> Vec<AuditFinding> {
+fn audit_graph_core(graph: &LearningGraphData, min_units: usize) -> Vec<AuditFinding> {
     let mut findings = Vec::new();
     let n = graph.nodes.len();
     // Empty graph is a hard failure, not a pass: the network was never
     // built (the model skipped construction or every patch was rejected).
-    // Zero findings would let `cg_finish`/the legacy pipeline publish a
+    // Zero findings would let `lg_finish`/the legacy pipeline publish a
     // blank graph the UI renders as nothing — grade it danger so the
     // repair loop is handed the report and must build the units.
     if n == 0 {
@@ -730,12 +731,12 @@ fn reachable_in(prereqs: &[Vec<usize>], from: usize, to: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::concept_graph::{
-        ConceptGraphData, ConceptGraphEdge, ConceptGraphNode, DroppedEdge,
+    use crate::learning_graph::{
+        LearningGraphData, LearningGraphEdge, LearningGraphNode, DroppedEdge,
     };
 
-    fn node(id: &str, min: Option<u16>) -> ConceptGraphNode {
-        ConceptGraphNode {
+    fn node(id: &str, min: Option<u16>) -> LearningGraphNode {
+        LearningGraphNode {
             id: id.to_owned(),
             title: id.to_owned(),
             min,
@@ -745,16 +746,16 @@ mod tests {
         }
     }
 
-    fn edge(from: &str, to: &str) -> ConceptGraphEdge {
-        ConceptGraphEdge {
+    fn edge(from: &str, to: &str) -> LearningGraphEdge {
+        LearningGraphEdge {
             from: from.to_owned(),
             to: to.to_owned(),
             reason: None,
         }
     }
 
-    fn graph(nodes: Vec<ConceptGraphNode>, edges: Vec<ConceptGraphEdge>) -> ConceptGraphData {
-        ConceptGraphData {
+    fn graph(nodes: Vec<LearningGraphNode>, edges: Vec<LearningGraphEdge>) -> LearningGraphData {
+        LearningGraphData {
             nodes,
             edges,
             audit: Default::default(),
@@ -774,7 +775,7 @@ mod tests {
             ],
             vec![edge("b", "c"), edge("c", "d"), edge("d", "e")],
         );
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind.as_str()).collect();
         assert!(kinds.contains(&"disconnected_components"), "{kinds:?}");
         let disconnected = findings
@@ -798,7 +799,7 @@ mod tests {
             vec![node("a", None), node("b", None)],
             vec![edge("a", "b")],
         );
-        let findings = audit_concept_graph(&thin);
+        let findings = audit_learning_graph(&thin);
         let coverage = findings
             .iter()
             .find(|f| f.kind == "coverage")
@@ -817,7 +818,7 @@ mod tests {
             to: "b".into(),
             reason: "unknown reference".into(),
         });
-        let findings = audit_concept_graph(&sloppy);
+        let findings = audit_learning_graph(&sloppy);
         let drops = findings
             .iter()
             .find(|f| f.kind == "excessive_reference_drops")
@@ -830,15 +831,15 @@ mod tests {
     fn audit_scales_the_coverage_gate_with_the_scope_checklist() {
         // Without a scope reference the floor is the fixed 30-unit gate.
         let chain = |count: usize| {
-            let nodes: Vec<ConceptGraphNode> =
+            let nodes: Vec<LearningGraphNode> =
                 (0..count).map(|i| node(&format!("u{i}"), Some(10))).collect();
-            let edges: Vec<ConceptGraphEdge> = (0..count.saturating_sub(1))
+            let edges: Vec<LearningGraphEdge> = (0..count.saturating_sub(1))
                 .map(|i| edge(&format!("u{i}"), &format!("u{}", i + 1)))
                 .collect();
             graph(nodes, edges)
         };
         assert!(
-            audit_concept_graph(&chain(15)).iter().any(|f| f.kind == "coverage"),
+            audit_learning_graph(&chain(15)).iter().any(|f| f.kind == "coverage"),
             "15 units fail the fixed 30-unit gate"
         );
 
@@ -846,7 +847,7 @@ mod tests {
         // floor wins only on ties, so 15 units clear the scaled gate where
         // the fixed 30-unit gate would have forced 15 more units of padding.
         let blocks: Vec<String> = (0..7).map(|i| format!("块{i}")).collect();
-        let findings = audit_concept_graph_with_scope(&chain(15), Some(&blocks));
+        let findings = audit_learning_graph_with_scope(&chain(15), Some(&blocks));
         assert!(
             !findings.iter().any(|f| f.kind == "coverage"),
             "15 units clear the 14-unit scaled gate: {findings:?}"
@@ -854,7 +855,7 @@ mod tests {
 
         // A broad goal with 25 blocks RAISES the bar to 50.
         let blocks: Vec<String> = (0..25).map(|i| format!("块{i}")).collect();
-        let findings = audit_concept_graph_with_scope(&chain(30), Some(&blocks));
+        let findings = audit_learning_graph_with_scope(&chain(30), Some(&blocks));
         let coverage = findings
             .iter()
             .find(|f| f.kind == "coverage")
@@ -869,11 +870,11 @@ mod tests {
         // terminals sit exactly at the cap while 5 exceed it — neither count
         // would pass the fixed cap of 3.
         let branchy = |terminals: usize| {
-            let nodes: Vec<ConceptGraphNode> =
+            let nodes: Vec<LearningGraphNode> =
                 (0..60).map(|i| node(&format!("u{i}"), Some(10))).collect();
             // Spine u0 -> u1 -> ... -> u(59-terminals); every node on it has
             // an outgoing edge.
-            let mut edges: Vec<ConceptGraphEdge> = (0..(60 - terminals))
+            let mut edges: Vec<LearningGraphEdge> = (0..(60 - terminals))
                 .map(|i| edge(&format!("u{i}"), &format!("u{}", i + 1)))
                 .collect();
             // The last `terminals` nodes hang directly off the root and are
@@ -884,13 +885,13 @@ mod tests {
             graph(nodes, edges)
         };
         // 4 terminals on 60 units: exactly at the scaled cap — no finding.
-        let findings = audit_concept_graph(&branchy(4));
+        let findings = audit_learning_graph(&branchy(4));
         assert!(
             !findings.iter().any(|f| f.kind == "multiple_sinks"),
             "{findings:?}"
         );
         // 5 terminals on 60 units: one over the scaled cap — flagged.
-        let findings = audit_concept_graph(&branchy(5));
+        let findings = audit_learning_graph(&branchy(5));
         assert!(
             findings.iter().any(|f| f.kind == "multiple_sinks"),
             "{findings:?}"
@@ -904,7 +905,7 @@ mod tests {
             vec![node("b", None), node("c", None)],
             vec![edge("b", "c"), edge("c", "b")],
         );
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         assert!(findings.iter().any(|f| f.kind == "cycle"), "{findings:?}");
         // Depth-based checks are skipped, so no shallow_depth finding.
         assert!(!findings.iter().any(|f| f.kind == "shallow_depth"));
@@ -924,7 +925,7 @@ mod tests {
         let mut g = g;
         g.nodes[1].title = "Same Title".into();
         g.nodes[2].title = "same   title".into();
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind.as_str()).collect();
         assert!(kinds.contains(&"near_duplicate_titles"), "{kinds:?}");
         let duplicates = findings
@@ -945,7 +946,7 @@ mod tests {
             ],
             vec![],
         );
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         let overload = findings
             .iter()
             .find(|f| f.kind == "unit_overload")
@@ -969,7 +970,7 @@ mod tests {
             ],
             vec![],
         );
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         let soft = findings
             .iter()
             .find(|f| f.kind == "unit_above_soft_cap")
@@ -992,7 +993,7 @@ mod tests {
             ],
             vec![edge("通分", "比较两个分数的大小")],
         );
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         let fragment = findings
             .iter()
             .find(|f| f.kind == "unit_fragment")
@@ -1011,7 +1012,7 @@ mod tests {
             ],
             vec![],
         );
-        let findings = audit_concept_graph(&clash);
+        let findings = audit_learning_graph(&clash);
         let spiral = findings
             .iter()
             .find(|f| f.kind == "spiral_clash")
@@ -1027,7 +1028,7 @@ mod tests {
             ],
             vec![edge("用配方法解一元二次方程", "用求根公式解一元二次方程")],
         );
-        let findings = audit_concept_graph(&chain);
+        let findings = audit_learning_graph(&chain);
         assert!(
             !findings.iter().any(|f| f.kind == "spiral_clash"),
             "{findings:?}"
@@ -1051,7 +1052,7 @@ mod tests {
                 edge("a", "d"),
             ],
         );
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         let redundant = findings
             .iter()
             .find(|f| f.kind == "redundant_edges")
@@ -1065,13 +1066,13 @@ mod tests {
     #[test]
     fn audit_flags_tree_structured_networks() {
         // 30 chained units, every unit single-parent: the tree gate fires.
-        let nodes: Vec<ConceptGraphNode> =
+        let nodes: Vec<LearningGraphNode> =
             (0..30).map(|i| node(&format!("u{i}"), Some(10))).collect();
-        let edges: Vec<ConceptGraphEdge> = (0..29)
+        let edges: Vec<LearningGraphEdge> = (0..29)
             .map(|i| edge(&format!("u{i}"), &format!("u{}", i + 1)))
             .collect();
         let g = graph(nodes, edges);
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         let tree = findings
             .iter()
             .find(|f| f.kind == "tree_structure")
@@ -1079,16 +1080,16 @@ mod tests {
         assert_eq!(tree.severity, SEV_DANGER);
 
         // Three converging units (3/30 = 10%) clear the gate.
-        let nodes: Vec<ConceptGraphNode> =
+        let nodes: Vec<LearningGraphNode> =
             (0..30).map(|i| node(&format!("w{i}"), Some(10))).collect();
-        let mut edges: Vec<ConceptGraphEdge> = (0..29)
+        let mut edges: Vec<LearningGraphEdge> = (0..29)
             .map(|i| edge(&format!("w{i}"), &format!("w{}", i + 1)))
             .collect();
         for target in [5, 10, 15] {
             edges.push(edge("w0", &format!("w{target}")));
         }
         let g = graph(nodes, edges);
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         assert!(!findings.iter().any(|f| f.kind == "tree_structure"), "{findings:?}");
     }
 
@@ -1108,7 +1109,7 @@ mod tests {
         });
         g.audit.ref_drop_count = 1;
         g.audit.ref_drop_rate = 0.05;
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         let orphaned = findings
             .iter()
             .find(|f| f.kind == "orphaned_units")
@@ -1132,7 +1133,7 @@ mod tests {
         // only a theme word — e.g. "配方法" — counts as covered by design;
         // the fuzzy overlap bar is 2 chars.
         let blocks = vec!["拉格朗日乘数法".to_owned(), "可导与连续".to_owned()];
-        let findings = audit_concept_graph_with_scope(&g, Some(&blocks));
+        let findings = audit_learning_graph_with_scope(&g, Some(&blocks));
         let missing = findings
             .iter()
             .find(|f| f.kind == "missing_block_coverage")
@@ -1144,14 +1145,14 @@ mod tests {
         // A block with a near-miss unit name (reworded by the generator)
         // clears the gate: theme-word overlap counts as covered.
         let blocks = vec!["配方法".to_owned()];
-        let findings = audit_concept_graph_with_scope(&g, Some(&blocks));
+        let findings = audit_learning_graph_with_scope(&g, Some(&blocks));
         assert!(
             !findings.iter().any(|f| f.kind == "missing_block_coverage"),
             "{findings:?}"
         );
 
         // The plain audit entry point carries no content checklist.
-        let findings = audit_concept_graph(&g);
+        let findings = audit_learning_graph(&g);
         assert!(!findings.iter().any(|f| f.kind == "missing_block_coverage"), "{findings:?}");
     }
 }

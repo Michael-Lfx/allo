@@ -1,5 +1,5 @@
 //! The course outline draft the `co_*` agent tools edit. Mirrors
-//! `concept_graph/draft.rs`: stable-keyed entities (modules, lessons,
+//! `learning_graph/draft.rs`: stable-keyed entities (modules, lessons,
 //! concepts), a batched op vocabulary with per-op rejection reasons and
 //! fuzzy-reference hints, a live deterministic audit, and a single
 //! audit-gated publish path that converts the draft into the generation
@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::concept_graph::{
+use crate::learning_graph::{
     common_substring_len, fuzzy_resolve_reference, AuditFinding, ScopeAnalysis, BLOCK_MIN_SHARED,
     SEV_DANGER, SEV_INFO, SEV_WARNING,
 };
@@ -65,7 +65,7 @@ pub struct OutlineLesson {
     pub source: Option<String>,
 }
 
-/// One course concept with its prerequisite keys (concept-graph style DAG).
+/// One course concept with its prerequisite keys (learning-graph style DAG).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutlineConcept {
     pub key: String,

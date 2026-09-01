@@ -39,7 +39,7 @@ pub(crate) const REFLECTION_GRADING_MAX_TOKENS: u32 = 2048;
 /// Pre-generation scope analysis: a coarse block checklist JSON. Generous
 /// budget so a complex goal can enumerate a long, strictly-complete
 /// checklist without the reply being cut off mid-array.
-pub(crate) const CONCEPT_GRAPH_SCOPE_MAX_TOKENS: u32 = 8192;
+pub(crate) const LEARNING_GRAPH_SCOPE_MAX_TOKENS: u32 = 8192;
 
 
 /// Figure-repair stage: one model call that receives the broken figure code

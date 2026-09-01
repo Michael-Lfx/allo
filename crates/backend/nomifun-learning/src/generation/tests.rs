@@ -571,6 +571,7 @@
     fn generated_request_keeps_selected_knowledge_base() {
         let id = KnowledgeBaseId::new();
         let request = GenerateCourseRequest {
+            course_kind: crate::models::CourseKind::Traditional,
             knowledge_base_id: Some(id.clone()),
             description: None,
             domain: None,

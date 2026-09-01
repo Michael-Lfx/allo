@@ -1,5 +1,5 @@
 //! Two-loop agent engine for course outline generation — the course sibling
-//! of [`crate::concept_graph_loop`]. The generation loop (`co_start` →
+//! of [`crate::learning_graph_loop`]. The generation loop (`co_start` →
 //! optional `co_read` grounding → batched `co_patch` builds → `co_audit`
 //! self-check) drives the draft, then audit-gated repair rounds drive
 //! publishing.
@@ -19,7 +19,7 @@
 use std::sync::{Arc, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
-use nomifun_common::{AppError, ProviderId, generate_id};
+use nomifun_common::{AppError, ProviderId};
 use nomifun_learning::{
     Blueprint, CourseOutlineAgentEngine, LearningService, OutlineBrief, OutlineOp, OutlineQuery,
 };
@@ -112,22 +112,12 @@ impl CourseOutlineAgentEngine for LiveCourseOutlineAgentEngine {
         )
         .await?;
         let provider: Arc<dyn LlmProvider> = create_provider(&cfg);
-
-        // One session stream names every event of this generation in the
-        // shared `course-outline-generation.log` (same file as the legacy
-        // pipeline), so a failed run stays diagnosable offline.
-        let session = generate_id();
-        self.service.log_course_outline_event(&session, "session_start", serde_json::json!({
-            "kind": brief.kind(),
-            "provider_id": provider_id.as_str(),
-            "model": &model,
-            "module_count": brief.module_count,
-            "lessons_per_module": brief.lessons_per_module,
-            "samples": brief.samples.len(),
-            "generate_max_rounds": GENERATE_MAX_ROUNDS,
-            "repair_loop_limit": REPAIR_LOOP_LIMIT,
-            "timeout_secs": TOTAL_TIMEOUT_SECS,
-        }));
+        tracing::info!(
+            kind = brief.kind(),
+            provider = provider_id.as_str(),
+            model = %model,
+            "course outline generation start"
+        );
 
         // The two slots are shared with the tool handlers: the draft the
         // model opened and the blueprint `co_finish` published. On timeout
@@ -135,7 +125,6 @@ impl CourseOutlineAgentEngine for LiveCourseOutlineAgentEngine {
         // audit report).
         let ctx = Arc::new(LoopContext {
             service: Arc::clone(&self.service),
-            session,
             brief: brief.clone(),
             model_override: Some((provider_id, model.clone())),
             draft_slot: Arc::new(Mutex::new(None)),
@@ -350,11 +339,9 @@ impl LiveCourseOutlineAgentEngine {
 
 /// Everything the tool handlers need, captured once per generation. The two
 /// slots are the only mutable cross-round state: which draft is active and
-/// which blueprint (if any) was published by `co_finish`. `session` names
-/// this generation's event stream in the shared course-outline log file.
+/// which blueprint (if any) was published by `co_finish`.
 struct LoopContext {
     service: Arc<LearningService>,
-    session: String,
     brief: OutlineBrief,
     model_override: Option<(ProviderId, String)>,
     draft_slot: Arc<Mutex<Option<String>>>,
@@ -362,12 +349,10 @@ struct LoopContext {
 }
 
 impl LoopContext {
-    /// Append one JSON-line event to the shared course-outline log, then
-    /// mirror the UI-relevant seams onto the WebSocket progress stream.
-    /// Both legs are best-effort and never fail the caller.
+    /// Mirror loop events onto the WebSocket progress stream (the shared
+    /// progress channel — no session files). Best-effort and never fails
+    /// the caller.
     fn log(&self, event: &str, fields: serde_json::Value) {
-        self.service
-            .log_course_outline_event(&self.session, event, fields.clone());
         self.emit_progress(event, &fields);
     }
 
@@ -768,7 +753,7 @@ fn co_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 // ── The tool loop (one-shot core, parameterized) ───────────────────────────
 //
 // `run_agent_loop` lives in `loop_core` — shared verbatim by the
-// concept-graph, course-outline and lesson-content loops.
+// learning-graph, course-outline and lesson-content loops.
 
 #[cfg(test)]
 mod tests {
@@ -933,7 +918,6 @@ mod tests {
         ));
         let service = Arc::new(LearningService::new(database.pool().clone()));
         service.set_generation_dependencies(knowledge_service, Arc::new(FakeCompleter));
-        service.set_concept_graph_dir(dir.path().to_owned());
         (service, dir)
     }
 
@@ -978,7 +962,6 @@ mod tests {
         let published_slot = Arc::new(Mutex::new(None));
         let ctx = Arc::new(LoopContext {
             service,
-            session: "test-session".into(),
             brief,
             model_override: None,
             draft_slot: Arc::clone(&draft_slot),

@@ -18,7 +18,7 @@
 use std::sync::{Arc, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
-use nomifun_common::{AppError, ProviderId, UserId, generate_id};
+use nomifun_common::{AppError, ProviderId, UserId};
 use nomifun_learning::{
     LessonContentAgentEngine, LessonGenerationContext, LessonOp, LessonOutput, LearningService,
 };
@@ -42,7 +42,7 @@ const GENERATE_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容设计代�
 - 必需章节，顺序固定，各自以 `## ` 标题行开头：描述（完整精确地讲清本课教什么）→ 例子（1-3 个带真实步骤/数字/流程的具体示例）→ 验证（3-5 道自检题，至少 2 道客观题且与活动呼应）。可选章节（迁移/其他/关键词/推广等）按需自由添加，不要为凑数硬凑。
 - 图形：内容真正需要图示时才画，每个图必须自足完整（命名点、标注、坐标刻度、说明文字）；静态图用 ```svg 块，交互图用 ```jsxgraph 块；图形块不计入长度下限，也不要为凑长度画图。
 - 内容必须落在 grounding 上：引用摘录流忠于摘录，课程简报流忠于简报；不要发明资料之外的事实。用资料的主导语言书写。
-- 动笔前对照任务给出的课程完整目录：只写本课时范围内的内容，不越界讲后续课时的主题，也不重复相邻课时已覆盖的内容。
+- 动笔前对照任务给出的范围参考（课程完整目录，或学习图节点的前置/后续节点段落）：只写本课时范围内的内容，不越界讲后续课时/节点的主题，也不重复相邻或前置内容已覆盖的部分。
 
 【活动契约】
 - 3-5 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank）+ 反思题（宁少勿多，最多 3，通常恰好 1）。
@@ -95,7 +95,9 @@ pub struct LiveLessonContentAgentEngine {
 impl LessonContentAgentEngine for LiveLessonContentAgentEngine {
     async fn generate(
         &self,
-        user_id: &UserId,
+        // Lesson content is a shared course asset: the caller identity is
+        // accepted for trait uniformity but not used by the loop itself.
+        _user_id: &UserId,
         context: &LessonGenerationContext,
         model_override: Option<(&str, &str)>,
     ) -> Result<LessonOutput, AppError> {
@@ -122,30 +124,19 @@ impl LessonContentAgentEngine for LiveLessonContentAgentEngine {
         )
         .await?;
         let provider: Arc<dyn LlmProvider> = create_provider(&cfg);
-
-        // One session stream names every event of this generation in the
-        // shared `lesson-content-generation.log` (same directory as the
-        // other learning logs), so a failed run stays diagnosable offline.
-        let session = generate_id();
-        self.service.log_lesson_event(&session, "session_start", serde_json::json!({
-            "user_id": user_id.as_str(),
-            "course": context.course_title,
-            "module": context.module_title,
-            "lesson": context.lesson_title,
-            "provider_id": provider_id.as_str(),
-            "model": &model,
-            "concepts": context.concept_keys,
-            "generate_max_rounds": GENERATE_MAX_ROUNDS,
-            "repair_loop_limit": REPAIR_LOOP_LIMIT,
-            "timeout_secs": TOTAL_TIMEOUT_SECS,
-        }));
+        tracing::info!(
+            course = %context.course_title,
+            lesson = %context.lesson_title,
+            provider = provider_id.as_str(),
+            model = %model,
+            "lesson content generation start"
+        );
 
         // The two slots are shared with the tool handlers: the draft the
         // model opened and the lesson output `ls_finish` published. On
         // timeout the draft slot also carries the diagnostics.
         let ctx = Arc::new(LoopContext {
             service: Arc::clone(&self.service),
-            session,
             context: context.clone(),
             draft_slot: Arc::new(Mutex::new(None)),
             published_slot: Arc::new(Mutex::new(None)),
@@ -359,23 +350,19 @@ impl LiveLessonContentAgentEngine {
 
 /// Everything the tool handlers need, captured once per generation. The two
 /// slots are the only mutable cross-round state: which draft is active and
-/// which lesson output (if any) was published by `ls_finish`. `session`
-/// names this generation's event stream in the shared lesson log file.
+/// which lesson output (if any) was published by `ls_finish`.
 struct LoopContext {
     service: Arc<LearningService>,
-    session: String,
     context: LessonGenerationContext,
     draft_slot: Arc<Mutex<Option<String>>>,
     published_slot: Arc<Mutex<Option<LessonOutput>>>,
 }
 
 impl LoopContext {
-    /// Append one JSON-line event to the shared lesson log, then mirror the
-    /// UI-relevant seams onto the WebSocket progress stream. Both legs are
-    /// best-effort and never fail the caller.
+    /// Mirror loop events onto the WebSocket progress stream (the shared
+    /// progress channel — no session files). Best-effort and never fails
+    /// the caller.
     fn log(&self, event: &str, fields: serde_json::Value) {
-        self.service
-            .log_lesson_event(&self.session, event, fields.clone());
         self.emit_progress(event, &fields);
     }
 
@@ -469,41 +456,88 @@ fn audit_report(
 
 /// The generation loop's user turn: the lesson coordinates, purpose,
 /// concepts, bridging target, and the grounding (the cited excerpt for the
-/// kb flow, the course brief for the description flow).
+/// kb flow, the course brief for the description flow). Learning-graph
+/// nodes (`context.graph` = Some) swap the outline/brief sections for
+/// graph-scoped sections: goal, scope, the prerequisite path, and the
+/// downstream nodes — and never bind concepts.
 fn lesson_user_text(context: &LessonGenerationContext) -> String {
     let mut text = String::new();
     text.push_str(&format!("课程：{}\n", context.course_title.trim()));
-    if !context.outline_tree.is_empty() {
-        text.push_str(&format!(
-            "课程完整目录（「本课时」是你要写的课时——只写它的范围，不越界讲后续课时，不重复相邻课时）：\n{}\n",
-            context.outline_tree
-        ));
+    let graph = context.graph.as_ref();
+    match graph {
+        Some(graph) => {
+            text.push_str(&format!(
+                "学习图节点（「本节点」是你要写的课时——只写它的范围，不越界讲后续节点，不重复前置节点已覆盖的内容）：\n学习目标：{}\n学习范围：{}\n",
+                graph.goal.trim(),
+                graph.scope.trim()
+            ));
+        }
+        None if !context.outline_tree.is_empty() => {
+            text.push_str(&format!(
+                "课程完整目录（「本课时」是你要写的课时——只写它的范围，不越界讲后续课时，不重复相邻课时）：\n{}\n",
+                context.outline_tree
+            ));
+        }
+        None => {}
     }
-    text.push_str(&format!(
-        "模块：{}\n课时（{}/{}）：{}\n课时目标：{}\n",
-        context.module_title.trim(),
-        context.lesson_index + 1,
-        context.total_lessons,
-        context.lesson_title.trim(),
-        context.purpose.trim()
-    ));
-    if let Some(next) = context.next_lesson_title.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-        text.push_str(&format!("下一课：「{next}」——结尾句要衔接到它。\n"));
+    match graph {
+        Some(graph) => {
+            text.push_str(&format!(
+                "节点（{}/{}）：{}\n节点定位：{}\n",
+                context.lesson_index + 1,
+                context.total_lessons,
+                context.lesson_title.trim(),
+                context.purpose.trim()
+            ));
+            if graph.prerequisite_path.is_empty() {
+                text.push_str("本节点没有前置——它是学习图的起点，从零讲起。\n");
+            } else {
+                text.push_str(&format!(
+                    "前置路径（学习者到达本节点前应已掌握，按学习顺序，不要重复讲授）：\n{}\n",
+                    graph.prerequisite_path
+                ));
+            }
+            if graph.upcoming_nodes.is_empty() {
+                text.push_str("本节点没有后续节点——结尾句做整个学习图的收束。\n");
+            } else {
+                text.push_str(&format!(
+                    "后续节点（结尾句要为它们做衔接铺垫，但不要展开其内容）：\n{}\n",
+                    graph.upcoming_nodes
+                ));
+            }
+        }
+        None => {
+            text.push_str(&format!(
+                "模块：{}\n课时（{}/{}）：{}\n课时目标：{}\n",
+                context.module_title.trim(),
+                context.lesson_index + 1,
+                context.total_lessons,
+                context.lesson_title.trim(),
+                context.purpose.trim()
+            ));
+            if let Some(next) = context.next_lesson_title.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                text.push_str(&format!("下一课：「{next}」——结尾句要衔接到它。\n"));
+            } else {
+                text.push_str("这是本模块最后一课——结尾句做本模块的收束。\n");
+            }
+        }
+    }
+    if graph.is_some() {
+        text.push_str("学习图节点不绑定概念：活动的 concepts 一律留空数组。\n");
     } else {
-        text.push_str("这是本模块最后一课——结尾句做本模块的收束。\n");
-    }
-    text.push_str("本课概念（活动的 concepts 只能绑定这些 key）：\n");
-    for concept in &context.concepts {
-        text.push_str(&format!(
-            "- {} ({}) — {}\n",
-            concept.key,
-            concept.title,
-            concept.description.trim()
-        ));
-    }
-    for key in &context.concept_keys {
-        if !context.concepts.iter().any(|concept| &concept.key == key) {
-            text.push_str(&format!("- {key}\n"));
+        text.push_str("本课概念（活动的 concepts 只能绑定这些 key）：\n");
+        for concept in &context.concepts {
+            text.push_str(&format!(
+                "- {} ({}) — {}\n",
+                concept.key,
+                concept.title,
+                concept.description.trim()
+            ));
+        }
+        for key in &context.concept_keys {
+            if !context.concepts.iter().any(|concept| &concept.key == key) {
+                text.push_str(&format!("- {key}\n"));
+            }
         }
     }
     if !context.adjacent_context.is_empty() {
@@ -515,6 +549,11 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
                 "\n引用摘录（文档与活动必须忠于它）——文件 {}：\n---\n{}\n---\n",
                 excerpt.path, excerpt.text
             ));
+        }
+        None if graph.is_some() => {
+            text.push_str(
+                "\n学习图节点没有课程简报：内容忠于学习目标、学习范围与前置/后续节点段落。\n",
+            );
         }
         None => {
             let brief = context.course_description.trim();
@@ -721,7 +760,7 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 // ── The tool loop (one-shot core, parameterized) ───────────────────────────
 //
 // `run_agent_loop` lives in `loop_core` — shared verbatim by the
-// concept-graph, course-outline and lesson-content loops.
+// learning-graph, course-outline and lesson-content loops.
 
 #[cfg(test)]
 mod tests {
@@ -729,7 +768,7 @@ mod tests {
     use nomi_providers::ProviderError;
     use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
     use nomi_types::message::{ContentBlock, Message, StopReason, TokenUsage};
-    use nomifun_learning::{ConceptPack, LessonExcerpt};
+    use nomifun_learning::{ConceptPack, GraphLessonContext, LessonExcerpt};
     use tokio::sync::mpsc;
 
     use crate::knowledge_completer::tests::{ListOnlyModelRepo, ListOnlyRepo};
@@ -838,7 +877,47 @@ mod tests {
             }),
             outline_tree: String::new(),
             adjacent_context: String::new(),
+            graph: None,
         }
+    }
+
+    /// 学习图节点的用户回合：图语义段落（目标/范围/前置路径/后续节点）取代
+    /// 课程目录/模块/下一课段，概念绑定显式留空，课程简报句不渲染。
+    #[test]
+    fn lesson_user_text_renders_graph_sections_instead_of_outline() {
+        let mut context = lesson_context();
+        context.excerpt = None;
+        context.graph = Some(GraphLessonContext {
+            goal: "通盘认识期权交易".into(),
+            scope: "聚焦场内标准期权，不含结构性产品".into(),
+            prerequisite_path: "1. 什么是衍生品 — 先建立衍生品框架\n".into(),
+            upcoming_nodes: "- 期权定价基础（为理解希腊字母铺垫）\n".into(),
+        });
+        let text = lesson_user_text(&context);
+        assert!(text.contains("学习图节点"));
+        assert!(text.contains("学习目标：通盘认识期权交易"));
+        assert!(text.contains("学习范围：聚焦场内标准期权"));
+        assert!(text.contains("前置路径"));
+        assert!(text.contains("1. 什么是衍生品"));
+        assert!(text.contains("后续节点"));
+        assert!(text.contains("期权定价基础"));
+        assert!(text.contains("concepts 一律留空数组"));
+        // 传统段落不再出现。
+        assert!(!text.contains("课程完整目录"));
+        assert!(!text.contains("下一课"));
+        assert!(!text.contains("课程简报为空"));
+        assert!(!text.contains("课程简报（文档与活动必须忠于它）"));
+
+        // 起点/终点节点：无前置与无后续的措辞分支。
+        context.graph = Some(GraphLessonContext {
+            goal: "通盘认识期权交易".into(),
+            scope: "聚焦场内标准期权".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+        });
+        let text = lesson_user_text(&context);
+        assert!(text.contains("从零讲起"));
+        assert!(text.contains("整个学习图的收束"));
     }
 
     /// The user turn embeds the outline tree and the adjacent-lesson
@@ -891,7 +970,6 @@ mod tests {
         ));
         let service = Arc::new(LearningService::new(database.pool().clone()));
         service.set_generation_dependencies(knowledge_service, Arc::new(FakeCompleter));
-        service.set_concept_graph_dir(dir.path().to_owned());
         (service, dir)
     }
 
@@ -933,7 +1011,6 @@ mod tests {
         let published_slot = Arc::new(Mutex::new(None));
         let ctx = Arc::new(LoopContext {
             service,
-            session: "test-session".into(),
             context: lesson_context(),
             draft_slot: Arc::clone(&draft_slot),
             published_slot: Arc::clone(&published_slot),

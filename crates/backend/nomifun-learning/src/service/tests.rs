@@ -68,6 +68,7 @@
             .await
             .unwrap();
         GenerateCourseRequest {
+            course_kind: crate::models::CourseKind::Traditional,
             knowledge_base_id: Some(base.base.knowledge_base_id.parse().unwrap()),
             description: None,
             domain: None,
@@ -1764,4 +1765,122 @@
             .await
             .unwrap();
         assert_eq!(stats2.streak, 0);
+    }
+
+    /// 学习图课程的最小 DB 夹具：课程行（learning_graph）+ 隐含模块 +
+    /// 两个节点（position 即拓扑序）+ 一条前置边（B 依赖 A）。
+    async fn seed_graph_course(
+        service: &LearningService,
+    ) -> (String, String, String) {
+        let pool = service.pool_for_tests();
+        let course_id = nomifun_common::LearningCourseId::new();
+        let module_id = nomifun_common::LearningModuleId::new();
+        let lesson_a = nomifun_common::LearningLessonId::new();
+        let lesson_b = nomifun_common::LearningLessonId::new();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, course_kind, learning_goal, \
+              learning_scope, graph_meta_json, created_at, updated_at) \
+             VALUES (?, '图课程', '', 'general', 1, 'learning_graph', '学习目标', '', NULL, ?, ?)",
+        )
+        .bind(course_id.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_modules \
+             (module_id, course_id, title, description, position) VALUES (?, ?, '学习图', '', 0)",
+        )
+        .bind(module_id.as_str())
+        .bind(course_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, '节点A', '', '起点', 0, 10, 0)",
+        )
+        .bind(lesson_a.as_str())
+        .bind(module_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, '节点B', '', '下游', 1, 10, 0)",
+        )
+        .bind(lesson_b.as_str())
+        .bind(module_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_graph_prerequisites \
+             (course_id, lesson_id, prerequisite_lesson_id, reason) VALUES (?, ?, ?, '需要先学 A')",
+        )
+        .bind(course_id.as_str())
+        .bind(lesson_b.as_str())
+        .bind(lesson_a.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        (
+            course_id.into_string(),
+            lesson_a.into_string(),
+            lesson_b.into_string(),
+        )
+    }
+
+    /// 学习图节点的内容生成只走 agent 引擎：未配置引擎时明确 Conflict
+    /// （traditional 节点在同样配置下走 fallback，图节点不行）；而幂等
+    /// 检查先于类型分流——已生成节点无论课程类型都直接返回现有视图。
+    #[tokio::test]
+    async fn graph_lesson_generation_requires_engine_and_stays_idempotent() {
+        let (service, _knowledge, user) = job_test_service().await;
+        let (_course_id, lesson_a, lesson_b) = seed_graph_course(&service).await;
+        let request = GenerateLessonRequest {
+            provider_id: None,
+            model: None,
+        };
+
+        // 无引擎：图节点生成被拒，且不落任何内容。
+        let error = service
+            .generate_lesson_content(
+                &user,
+                &nomifun_common::LearningLessonId::parse(&lesson_b).unwrap(),
+                &request,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::Conflict(ref message) if message.contains("agent engine")),
+            "unexpected error: {error:?}"
+        );
+        let generated: i64 = sqlx::query_scalar("SELECT content_generated FROM learning_lessons WHERE lesson_id = ?")
+            .bind(&lesson_b)
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+        assert_eq!(generated, 0, "a rejected graph lesson must not be persisted");
+
+        // 幂等路径：已生成节点直接返回现有视图，不再触碰引擎。
+        sqlx::query("UPDATE learning_lessons SET summary = '## 已有内容', content_generated = 1 WHERE lesson_id = ?")
+            .bind(&lesson_a)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let view = service
+            .generate_lesson_content(
+                &user,
+                &nomifun_common::LearningLessonId::parse(&lesson_a).unwrap(),
+                &request,
+            )
+            .await
+            .unwrap();
+        assert_eq!(view.summary, "## 已有内容");
     }

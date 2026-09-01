@@ -1,12 +1,11 @@
 pub(super) use std::cmp::Ordering;
 pub(super) use std::collections::{HashMap, HashSet};
-pub(super) use std::path::PathBuf;
 pub(super) use std::str::FromStr;
 pub(super) use std::sync::{Arc, Mutex, RwLock};
 
 pub(super) use chrono::Datelike;
 pub(super) use nomifun_common::{
-    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptGraphId,
+    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningGraphId,
     LearningConceptId, LearningCourseId, LearningEnrollmentId, LearningLessonId,
     LearningModuleId, LearningReviewItemId, LearningTagId, ProviderId, UserId, UuidV7Error,
     generate_id, now_ms,
@@ -18,12 +17,12 @@ pub(super) use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) use crate::completer::LearningCompleter;
 pub(super) use crate::events::LearningEventEmitter;
-pub(super) use crate::concept_graph::draft::DraftGraph;
-pub(super) use crate::concept_graph::ConceptGraphAgentEngine;
+pub(super) use crate::learning_graph::draft::DraftGraph;
+pub(super) use crate::learning_graph::LearningGraphAgentEngine;
 pub(super) use crate::course_outline::draft::OutlineDraft;
 pub(super) use crate::course_outline::{CourseOutlineAgentEngine, KnowledgeBaseBrief, OutlineBrief};
 pub(super) use crate::lesson_draft::{
-    LessonContentAgentEngine, LessonDraft, LessonDraftView, LessonExcerpt,
+    GraphLessonContext, LessonContentAgentEngine, LessonDraft, LessonDraftView, LessonExcerpt,
     LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 pub(super) use crate::generation::{
@@ -34,10 +33,11 @@ pub(super) use crate::generation::{
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
     CalendarLessonRef, CalendarStats, CheckinStatus, ConceptPack, ConceptRef, ConceptView,
-    CourseDetail, CoursePack, CourseSummary,
+    CourseDetail, CourseKind, CoursePack, CourseSummary,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem, DiagnosticPlan,
     DueReview, GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    GeneratedLessonActivity, LessonStatus, LessonView, ModuleView, QuestionEntry,
+    GraphEdgeView, GraphNodeView, GeneratedLessonActivity, LearningGraphView, LessonStatus,
+    LessonView, ModuleView, QuestionEntry,
     ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
     ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
 };
@@ -49,21 +49,19 @@ pub struct LearningService {
     pool: SqlitePool,
     knowledge_service: Arc<RwLock<Option<Arc<KnowledgeService>>>>,
     course_completer: Arc<RwLock<Option<Arc<dyn LearningCompleter>>>>,
-    concept_graph_dir: Arc<RwLock<Option<PathBuf>>>,
-    /// In-memory concept-graph draft store backing the agent tool set
-    /// (`cg_start` .. `cg_finish`). Generation is a short-lived operation,
-    /// so drafts do not survive restarts; only `cg_finish` publishes to
-    /// disk. Each entry carries its last-activity timestamp: stale drafts
-    /// are evicted lazily (see
-    /// `service::concept_graph::CONCEPT_GRAPH_DRAFT_TTL`), so crashed or
+    /// In-memory learning-graph draft store backing the agent tool set
+    /// (`lg_start` .. `lg_finish`). Generation is a short-lived operation,
+    /// so drafts do not survive restarts; only `lg_finish` publishes to
+    /// the database. Each entry carries its last-activity timestamp: stale
+    /// drafts are evicted lazily (see
+    /// `service::learning_graph::LEARNING_GRAPH_DRAFT_TTL`), so crashed or
     /// timed-out generation sessions cannot leak memory.
-    concept_graph_drafts: Arc<RwLock<HashMap<String, (DraftGraph, std::time::Instant)>>>,
-    /// Two-loop agent engine; when present, `generate_concept_graph` routes
-    /// through it (draft + `cg_*` tools), otherwise the legacy one-shot
-    /// pipeline runs.
-    concept_graph_engine: Arc<RwLock<Option<Arc<dyn ConceptGraphAgentEngine>>>>,
+    learning_graph_drafts: Arc<RwLock<HashMap<String, (DraftGraph, std::time::Instant)>>>,
+    /// Two-loop agent engine; when present, `generate_learning_graph` routes
+    /// through it (draft + `lg_*` tools, audit-gated publish).
+    learning_graph_engine: Arc<RwLock<Option<Arc<dyn LearningGraphAgentEngine>>>>,
     /// In-memory outline draft store backing the agent tool set (`co_start`
-    /// .. `co_finish`). Same lifecycle as the concept graph drafts:
+    /// .. `co_finish`). Same lifecycle as the learning-graph drafts:
     /// short-lived, `finish` is the single publish path.
     course_outline_drafts: Arc<RwLock<HashMap<String, OutlineDraft>>>,
     /// Two-loop course outline agent engine; when present, `generate_course`
@@ -101,9 +99,8 @@ impl LearningService {
             pool,
             knowledge_service: Arc::new(RwLock::new(None)),
             course_completer: Arc::new(RwLock::new(None)),
-            concept_graph_dir: Arc::new(RwLock::new(None)),
-            concept_graph_drafts: Arc::new(RwLock::new(HashMap::new())),
-            concept_graph_engine: Arc::new(RwLock::new(None)),
+            learning_graph_drafts: Arc::new(RwLock::new(HashMap::new())),
+            learning_graph_engine: Arc::new(RwLock::new(None)),
             course_outline_drafts: Arc::new(RwLock::new(HashMap::new())),
             course_outline_engine: Arc::new(RwLock::new(None)),
             lesson_drafts: Arc::new(RwLock::new(HashMap::new())),
@@ -296,27 +293,13 @@ impl LearningService {
         Ok(())
     }
 
-    /// Inject the two-loop concept graph agent engine (wiring-time, before
-    /// any request). Absent, concept graph generation falls back to the
-    /// legacy one-shot pipeline.
-    pub fn set_concept_graph_engine(&self, engine: Arc<dyn ConceptGraphAgentEngine>) {
+    /// Inject the two-loop learning-graph agent engine (wiring-time, before
+    /// any request). Generation requires the engine — there is no fallback.
+    pub fn set_learning_graph_engine(&self, engine: Arc<dyn LearningGraphAgentEngine>) {
         *self
-            .concept_graph_engine
+            .learning_graph_engine
             .write()
-            .expect("learning concept graph engine lock poisoned") = Some(engine);
-    }
-
-    /// Best-effort session log for concept graph generation: appends one
-    /// event to the same `concept-graph-generation.log` the legacy pipeline
-    /// writes, so agent-engine sessions stay diagnosable offline. Logging
-    /// never fails the caller — every failure is swallowed by contract.
-    pub fn log_concept_graph_event(&self, session: &str, event: &str, fields: serde_json::Value) {
-        let dir = match self.concept_graph_dir.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return,
-        };
-        let Some(dir) = dir else { return };
-        crate::concept_graph::ConceptGraphLogger::new(&dir, session).log(event, fields);
+            .expect("learning graph engine lock poisoned") = Some(engine);
     }
 
     /// Inject the two-loop course outline agent engine (wiring-time, before
@@ -353,48 +336,6 @@ impl LearningService {
             .read()
             .ok()
             .and_then(|guard| guard.clone())
-    }
-
-    /// Best-effort session log for lesson content generation: appends one
-    /// event to `lesson-content-generation.log` inside the concept graph
-    /// log directory (the learning data dir), same contract as
-    /// [`Self::log_course_outline_event`]. Logging never fails the caller.
-    pub fn log_lesson_event(&self, session: &str, event: &str, fields: serde_json::Value) {
-        let dir = match self.concept_graph_dir.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return,
-        };
-        let Some(dir) = dir else { return };
-        crate::concept_graph::ConceptGraphLogger::with_file(
-            &dir,
-            "lesson-content-generation.log",
-            session,
-        )
-        .log(event, fields);
-    }
-
-    /// Best-effort session log for course outline generation: appends one
-    /// event to `course-outline-generation.log` inside the concept graph
-    /// log directory (the learning data dir), so agent-engine sessions
-    /// stay diagnosable offline. Logging never fails the caller — every
-    /// failure is swallowed by contract.
-    pub fn log_course_outline_event(
-        &self,
-        session: &str,
-        event: &str,
-        fields: serde_json::Value,
-    ) {
-        let dir = match self.concept_graph_dir.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return,
-        };
-        let Some(dir) = dir else { return };
-        crate::concept_graph::ConceptGraphLogger::with_file(
-            &dir,
-            "course-outline-generation.log",
-            session,
-        )
-        .log(event, fields);
     }
 
     /// Test-only access to the underlying pool (e.g. to simulate a stale
@@ -575,7 +516,7 @@ struct AgentCourseJobEntry {
 }
 
 mod checkin;
-mod concept_graph;
+mod learning_graph;
 mod course;
 mod course_outline;
 mod diagnostic;

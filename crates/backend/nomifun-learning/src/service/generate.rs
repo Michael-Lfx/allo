@@ -15,13 +15,17 @@ use super::*;
 impl LearningService {
     /// Generate a course synchronously. Exactly one source must be set
     /// (knowledge base or free-text description) — enforced by
-    /// [`GenerateCourseRequest::validate`].
+    /// [`GenerateCourseRequest::validate`]. `learning_graph` 课程分流到
+    /// 学习图生成（描述即学习目标，agent 图循环 + 审计门禁发布）。
     pub async fn generate_course(
         &self,
         user_id: &UserId,
         request: GenerateCourseRequest,
     ) -> Result<CourseDetail, AppError> {
         request.validate()?;
+        if request.course_kind == CourseKind::LearningGraph {
+            return self.generate_learning_graph_course(user_id, &request).await;
+        }
         let brief = self.resolve_outline_brief(&request).await?;
         // One in-flight generation per (user, source): duplicate submits
         // (double click, parallel agent tool calls) are rejected up front.
@@ -146,11 +150,7 @@ impl LearningService {
         session: &str,
     ) -> Result<Blueprint, AppError> {
         if let Some(engine) = self.course_outline_engine() {
-            self.log_course_outline_event(
-                session,
-                "engine_start",
-                serde_json::json!({ "kind": brief.kind() }),
-            );
+            tracing::info!(session, kind = brief.kind(), "course outline engine start");
             let result = engine
                 .generate(
                     brief,
@@ -158,20 +158,13 @@ impl LearningService {
                 )
                 .await;
             match &result {
-                Ok(blueprint) => self.log_course_outline_event(
+                Ok(blueprint) => tracing::info!(
                     session,
-                    "engine_end",
-                    serde_json::json!({
-                        "ok": true,
-                        "modules": blueprint.modules.len(),
-                        "concepts": blueprint.concepts.len(),
-                    }),
+                    modules = blueprint.modules.len(),
+                    concepts = blueprint.concepts.len(),
+                    "course outline engine end"
                 ),
-                Err(error) => self.log_course_outline_event(
-                    session,
-                    "engine_end",
-                    serde_json::json!({ "ok": false, "error": error.to_string() }),
-                ),
+                Err(error) => tracing::warn!(session, error = %error, "course outline engine failed"),
             }
             return result;
         }
@@ -204,10 +197,11 @@ impl LearningService {
                 ))
             }
         };
-        self.log_course_outline_event(
+        tracing::info!(
             session,
-            "fallback_start",
-            serde_json::json!({ "kind": brief.kind(), "samples": brief.samples.len() }),
+            kind = brief.kind(),
+            samples = brief.samples.len(),
+            "course outline fallback start"
         );
         let blueprint = generate_blueprint(
             completer.as_ref(),
@@ -218,13 +212,11 @@ impl LearningService {
             brief.lessons_per_module,
         )
         .await?;
-        self.log_course_outline_event(
+        tracing::info!(
             session,
-            "fallback_blueprint",
-            serde_json::json!({
-                "modules": blueprint.modules.len(),
-                "concepts": blueprint.concepts.len(),
-            }),
+            modules = blueprint.modules.len(),
+            concepts = blueprint.concepts.len(),
+            "course outline fallback blueprint"
         );
         Ok(blueprint)
     }

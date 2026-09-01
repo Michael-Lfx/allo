@@ -53,6 +53,9 @@ impl LearningService {
             LessonStatus::NotStarted => (None, None),
             LessonStatus::InProgress => (Some(existing_started.unwrap_or(now)), None),
             LessonStatus::Completed => (Some(existing_started.unwrap_or(now)), Some(now)),
+            // 跳过不伪造开始时间也不写 completed_at（CHECK 要求 skipped 的
+            // completed_at 为 NULL）：保留已有的 in_progress 历史即可。
+            LessonStatus::Skipped => (existing_started, None),
         };
         sqlx::query(
             "INSERT INTO learning_lesson_progress \

@@ -331,8 +331,8 @@ define_entity_id!(
     LearningTagId
 );
 define_entity_id!(
-    /// Globally unique experimental concept-graph identifier.
-    LearningConceptGraphId
+    /// Globally unique experimental learning-graph identifier.
+    LearningGraphId
 );
 define_entity_id!(
     /// Globally unique attachment identifier.
