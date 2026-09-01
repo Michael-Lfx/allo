@@ -156,7 +156,7 @@ const MeetingTranscriptPanel: React.FC<MeetingTranscriptPanelProps> = ({
                 >
                   {!sameSpeaker ? (
                     <div className='mb-4px flex items-center gap-8px px-4px text-11px text-white/45'>
-                      <span className={classNames('font-medium', isMic ? 'text-white/75' : 'text-[rgb(var(--success-5))]')}>
+                      <span className={classNames('font-medium', isMic ? 'text-white/75' : 'text-success-5')}>
                         {segment.speaker_label || t('meeting.speaker')}
                       </span>
                       <span className='tabular-nums'>{formatMs(segment.start_ms)}</span>

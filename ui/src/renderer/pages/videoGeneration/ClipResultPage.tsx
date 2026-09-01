@@ -16,7 +16,7 @@ import { Button } from '@arco-design/web-react';
 import {
   ArrowLeft,
   Refresh,
-  Error as ErrorIcon,
+  Error,
   LoadingOne,
   FullScreen,
   PlayOne,
@@ -136,7 +136,7 @@ const ClipResultPage: React.FC = () => {
         navigate('/cloud-login');
         return true;
       }
-      const errorMessage = (e as Error).message ?? String(e);
+      const errorMessage = (e as globalThis.Error).message ?? String(e);
       console.error('[ClipResultPage] failed to fetch task:', errorMessage);
       setError(errorMessage);
       return true;
@@ -281,7 +281,7 @@ const ClipResultPage: React.FC = () => {
       } catch (err) {
         message.error(
           t('videoGeneration.clip.regenerateFailed', {
-            defaultValue: `重新生成失败：${err instanceof Error ? err.message : String(err)}`,
+            defaultValue: `重新生成失败：${err instanceof globalThis.Error ? err.message : String(err)}`,
           })
         );
       } finally {
@@ -311,7 +311,7 @@ const ClipResultPage: React.FC = () => {
     } catch (err) {
       message.error(
         t('videoGeneration.clip.openFolderFailed', {
-          defaultValue: `无法打开所在位置：${err instanceof Error ? err.message : String(err)}`,
+          defaultValue: `无法打开所在位置：${err instanceof globalThis.Error ? err.message : String(err)}`,
         })
       );
     } finally {
@@ -455,7 +455,7 @@ const ClipResultPage: React.FC = () => {
         {error && !task && (
           <div className={styles.errorState}>
             <div className={styles.errorIcon}>
-              <ErrorIcon theme='outline' size={40} />
+              <Error theme='outline' size={40} />
             </div>
             <h2 className={styles.errorTitle}>
               {t('videoGeneration.clip.errorTitle')}
@@ -638,7 +638,7 @@ const ClipResultPage: React.FC = () => {
                 </div>
               ) : isFailed && error ? (
                 <div className={styles.errorBanner}>
-                  <ErrorIcon theme='outline' size={18} className={styles.errorBannerIcon} />
+                  <Error theme='outline' size={18} className={styles.errorBannerIcon} />
                   <span>{error}</span>
                 </div>
               ) : null}

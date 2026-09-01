@@ -321,6 +321,7 @@ function LessonBlock({
       <div className='rounded-10px border border-dashed border-[var(--color-border-2)] p-10px'>
         <Button
           type='text'
+          className='flowy-icon-text-btn'
           icon={<IconPlus />}
           onClick={() => setAddQuestionOpen(true)}
         >

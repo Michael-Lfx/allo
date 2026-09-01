@@ -62,7 +62,7 @@ export function CanvasNodeSearchModal({ open, nodes, onClose, onFocus }: { open:
                 aria-controls={RESULT_LIST_ID}
                 aria-activedescendant={results[activeIndex] ? `canvas-node-search-result-${results[activeIndex].id}` : undefined}
             />
-            <div className="mt-2 flex min-h-7 items-center justify-between gap-3 border-b pb-2 text-[11px] tracking-[0.015em] text-foreground/45">
+            <div className="mt-2 flex min-h-7 items-center justify-between gap-3 border-b pb-2 text-[11px] tracking-[0.015em] text-[var(--foreground)] opacity-45">
                 <span className="tabular-nums">{query.trim() ? canvasT("videoCanvas.search.foundCount", "找到 {{n}} 个节点", { n: results.length }) : canvasT("videoCanvas.search.recentCount", "最近编辑 · {{n}} 个节点", { n: results.length })}</span>
                 <span className="hidden sm:inline">{canvasT("videoCanvas.search.keyboardHint", "↑↓ 选择 · Enter 定位 · Esc 关闭")}</span>
             </div>
@@ -103,21 +103,21 @@ const CanvasNodeSearchResult = memo(function CanvasNodeSearchResult({ node, acti
             onClick={onSelect}
         >
             <CanvasNodeSearchThumbnail node={node} />
-            <span className="min-w-0 self-center">
+            <span className="min-w-0 self-center text-[var(--foreground)]">
                 <span className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-foreground" title={node.title}>{node.title || getNodeListLabel(node.type)}</span>
-                    <span className="max-w-[210px] shrink truncate rounded-full bg-foreground/[0.055] px-2 py-0.5 text-[10px] font-medium tracking-[0.02em] text-foreground/50" title={materialSummary}>{materialSummary}</span>
+                    <span className="min-w-0 truncate text-[13px] font-medium leading-5" title={node.title}>{node.title || getNodeListLabel(node.type)}</span>
+                    <span className="max-w-[210px] shrink truncate rounded-full bg-foreground/[0.055] px-2 py-0.5 text-[10px] font-medium tracking-[0.02em] opacity-50" title={materialSummary}>{materialSummary}</span>
                 </span>
-                <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-foreground/45">
+                <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] leading-4 opacity-45">
                     {node.metadata?.chapterTitle ? <BookOpenText className="size-3 shrink-0" /> : null}
                     <span className="truncate" title={context}>{context}</span>
                 </span>
-                <span className="mt-1 hidden items-center gap-3 text-[10px] tabular-nums tracking-[0.015em] text-foreground/40 max-sm:flex">
+                <span className="mt-1 hidden items-center gap-3 text-[10px] tabular-nums tracking-[0.015em] opacity-40 max-sm:flex">
                     <time dateTime={times.createdAt} title={fullTime(times.createdAt)}>{canvasT("videoCanvas.search.created", "创建")} {times.createdLabel}</time>
                     <time dateTime={times.updatedAt} title={fullTime(times.updatedAt)}>{canvasT("videoCanvas.search.edited", "编辑")} {times.updatedLabel}</time>
                 </span>
             </span>
-            <span className="grid min-w-[112px] gap-0.5 border-l pl-3 text-[10px] tabular-nums tracking-[0.015em] text-foreground/40 max-sm:hidden" style={{ borderColor: "color-mix(in srgb, var(--foreground) 8%, transparent)" }}>
+            <span className="grid min-w-[112px] gap-0.5 border-l pl-3 text-[10px] tabular-nums tracking-[0.015em] text-[var(--foreground)] opacity-40 max-sm:hidden" style={{ borderColor: "color-mix(in srgb, var(--foreground) 8%, transparent)" }}>
                 <span className="flex items-center gap-1.5"><Clock3 className="size-3" /><span>{canvasT("videoCanvas.search.created", "创建")}</span><time className="ml-auto" dateTime={times.createdAt} title={fullTime(times.createdAt)}>{times.createdLabel}</time></span>
                 <span className="flex items-center gap-1.5"><Pencil className="size-3" /><span>{canvasT("videoCanvas.search.edited", "编辑")}</span><time className="ml-auto" dateTime={times.updatedAt} title={fullTime(times.updatedAt)}>{times.updatedLabel}</time></span>
             </span>
@@ -143,11 +143,11 @@ function CanvasNodeSearchThumbnail({ node }: { node: CanvasNodeData }) {
 
     const textPreview = node.metadata?.previewContent || node.metadata?.composerContent || node.metadata?.prompt || node.metadata?.content;
     if (textPreview && (node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Markdown || node.type === CanvasNodeType.Script)) {
-        return <span aria-hidden="true" className="line-clamp-3 h-11 w-16 overflow-hidden rounded-[var(--r-sm)] border px-1.5 py-1 text-[8px] leading-[11px] text-foreground/55" style={commonStyle}>{textPreview}</span>;
+        return <span aria-hidden="true" className="line-clamp-3 h-11 w-16 overflow-hidden rounded-[var(--r-sm)] border px-1.5 py-1 text-[8px] leading-[11px] text-[var(--foreground)] opacity-55" style={commonStyle}>{textPreview}</span>;
     }
 
     return (
-        <span aria-hidden="true" className="grid h-11 w-16 place-items-center rounded-[var(--r-sm)] border text-foreground/48" style={commonStyle}>
+        <span aria-hidden="true" className="grid h-11 w-16 place-items-center rounded-[var(--r-sm)] border text-[var(--foreground)] opacity-48" style={commonStyle}>
             {node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Panorama ? <Image className="size-4" />
                 : node.type === CanvasNodeType.Video ? <Video className="size-4" />
                     : node.type === CanvasNodeType.Audio ? <AudioLines className="size-4" />

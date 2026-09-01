@@ -71,7 +71,7 @@ const CampaignCard: React.FC<CampaignCardProps> = ({ campaign, onOpen }) => {
           />
         ) : (
           <div className={styles.projectCoverFallback}>
-            <span className='flex h-28px w-28px items-center justify-center rd-8px border border-solid border-[rgba(var(--primary-6),0.2)] bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'>
+            <span className='flex h-28px w-28px items-center justify-center rd-8px border border-solid border-[rgba(var(--primary-6),0.2)] bg-[rgba(var(--primary-6),0.12)] text-primary-6'>
               <Trophy theme='outline' size={15} fill='currentColor' />
             </span>
           </div>

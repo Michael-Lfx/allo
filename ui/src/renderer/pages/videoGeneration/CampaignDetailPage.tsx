@@ -435,7 +435,7 @@ const CampaignDetailPage: React.FC = () => {
           </h2>
           {submissions.length === 0 ? (
             <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-              <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
+              <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-primary-6'>
                 <Trophy theme='outline' size={19} fill='currentColor' />
               </span>
               <div className='text-13px text-[var(--color-text-3)]'>
@@ -501,7 +501,7 @@ const CampaignDetailPage: React.FC = () => {
               </p>
             ) : null}
             {videoDetail.rejectReason && videoDetail.status === 'offline' ? (
-              <div className='text-12px text-[rgb(var(--danger-6))]'>{videoDetail.rejectReason}</div>
+              <div className='text-12px text-danger-6'>{videoDetail.rejectReason}</div>
             ) : null}
             <div className='flex flex-wrap gap-8px'>
               {videoDetail.status === 'published' ? (
