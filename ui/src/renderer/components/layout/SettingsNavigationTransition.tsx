@@ -171,9 +171,10 @@ export const useSettingsNavigationTransition = (): SettingsNavigationTransitionC
   React.useContext(SettingsNavigationTransitionContext);
 
 /**
- * A stable, non-blocking loading layer for the right side of the settings
- * workspace. It is mounted by Layout so it survives route component
- * unmounts and can paint before a heavy settings page commits.
+ * A stable loading layer for the right side of the settings workspace. It is
+ * mounted by Layout so it survives route component unmounts and can paint
+ * before a heavy settings page commits. Because it lives inside Content, it
+ * blocks stale right-side controls while keeping the settings rail usable.
  */
 export const SettingsNavigationLoadingOverlay: React.FC = () => {
   const { isPending } = useSettingsNavigationTransition();
@@ -182,7 +183,7 @@ export const SettingsNavigationLoadingOverlay: React.FC = () => {
 
   return (
     <div
-      className='pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-base flowy-crossfade'
+      className='pointer-events-auto absolute inset-0 z-20 flex items-center justify-center bg-base flowy-crossfade'
       data-testid='settings-navigation-loading'
       aria-busy='true'
     >

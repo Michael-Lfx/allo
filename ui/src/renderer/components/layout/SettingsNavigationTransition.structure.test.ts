@@ -20,6 +20,7 @@ describe('settings navigation loading contract', () => {
     expect(transitionSource).toContain('SETTINGS_TRANSITION_BACKSTOP_MS');
     expect(transitionSource).toContain('pendingRef.current?.token !== next.token');
     expect(transitionSource).toContain("data-testid='settings-navigation-loading'");
+    expect(transitionSource).toContain('pointer-events-auto');
     expect(transitionSource).toContain("variant='drive'");
     expect(layoutSource).toContain('<SettingsNavigationLoadingOverlay />');
     expect(layoutSource).toContain("className={'relative bg-base layout-content flex flex-col min-h-0'}");
