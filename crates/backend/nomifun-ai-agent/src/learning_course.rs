@@ -18,7 +18,9 @@ use nomi_agent::learning_tools::{
     CourseGenerationRequest, CourseJobStarted, CourseJobStatus, LearningCourseSink,
 };
 use nomifun_common::{ProviderId, UserId};
-use nomifun_learning::{CourseGenerationMode, GenerateCourseRequest, LearningService};
+use nomifun_learning::{
+    CourseGenerationMode, CourseKind, GenerateCourseRequest, LearningService,
+};
 
 /// Bridges the agent-facing course-generation trait to the backend
 /// LearningService. The sink is shared across sessions, so the caller's
@@ -50,6 +52,9 @@ impl LearningCourseSink for LiveLearningCourseSink {
             Some(other) => return Err(format!("unsupported course generation mode: {other}")),
         };
         let request = GenerateCourseRequest {
+            // The agent tool surface only covers traditional courses; the
+            // learning-graph flow has its own `lg_*` tool entry.
+            course_kind: CourseKind::Traditional,
             knowledge_base_id: req.kb_id,
             description: req.description,
             domain: req.domain,

@@ -45,6 +45,10 @@ pub struct GenerateCourseRequest {
     pub lessons_per_module: u8,
     #[serde(default)]
     pub mode: CourseGenerationMode,
+    /// 课程类型（beta）：`learning_graph` 走学习图生成（描述即学习目标），
+    /// 缺省为传统课程。
+    #[serde(default)]
+    pub course_kind: CourseKind,
 }
 
 impl GenerateCourseRequest {
@@ -63,6 +67,24 @@ impl GenerateCourseRequest {
             .is_some_and(|model| model.trim().is_empty())
         {
             return Err(AppError::BadRequest("model must not be empty".into()));
+        }
+        if self.course_kind == CourseKind::LearningGraph {
+            // 学习图课程只走描述流：描述即学习目标，知识库采样与
+            // 模块/课时数都不参与生成。
+            if self.knowledge_base_id.is_some() {
+                return Err(AppError::BadRequest(
+                    "learning graph courses ground in the description only".into(),
+                ));
+            }
+            let Some(description) = &self.description else {
+                return Err(AppError::BadRequest(
+                    "learning graph courses require a description (the learning goal)".into(),
+                ));
+            };
+            if description.trim().is_empty() {
+                return Err(AppError::BadRequest("description must not be empty".into()));
+            }
+            return Ok(());
         }
         if !(1..=6).contains(&self.module_count) {
             return Err(AppError::BadRequest(
@@ -92,7 +114,7 @@ impl GenerateCourseRequest {
 /// imported immediately and each lesson's body and activities are generated
 /// only when the learner opens it. The `mode` field and the
 /// `learning_course_jobs.generation_mode` column are kept as extension points
-/// for future generation strategies (e.g. a concept-graph-driven mode); any
+/// for future generation strategies (e.g. a learning-graph-driven mode); any
 /// other value is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -298,6 +320,10 @@ pub enum LessonStatus {
     NotStarted,
     InProgress,
     Completed,
+    /// 学习图节点跳过：学习者声明已掌握、跳过学习。它满足前置条件
+    /// （解锁下游），但不等于 completed：不种复习项、不进推荐候选，
+    /// completed_at 保持 NULL。取消跳过 = 传回 not_started。
+    Skipped,
 }
 
 impl LessonStatus {
@@ -306,6 +332,7 @@ impl LessonStatus {
             Self::NotStarted => "not_started",
             Self::InProgress => "in_progress",
             Self::Completed => "completed",
+            Self::Skipped => "skipped",
         }
     }
 }
@@ -318,7 +345,49 @@ impl TryFrom<&str> for LessonStatus {
             "not_started" => Ok(Self::NotStarted),
             "in_progress" => Ok(Self::InProgress),
             "completed" => Ok(Self::Completed),
+            "skipped" => Ok(Self::Skipped),
             other => Err(format!("unsupported lesson status: {other}")),
+        }
+    }
+}
+
+impl LessonStatus {
+    /// 该状态是否视为「已满足」：completed 与 skipped 都解锁下游节点、
+    /// 不再进入推荐候选。跳过是学习图（beta）的能力，但对传统课时
+    /// 同样语义自洽（声明已掌握）。
+    pub const fn satisfies(self) -> bool {
+        matches!(self, Self::Completed | Self::Skipped)
+    }
+}
+
+/// 课程目录类型。`traditional` 为模块/课时大纲课程；`learning_graph`
+/// （beta）由 AI 把宽泛学习目标拆解为前置 DAG，课程大纲被
+/// 「下一步推荐学习的节点」取代。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CourseKind {
+    #[default]
+    Traditional,
+    LearningGraph,
+}
+
+impl CourseKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Traditional => "traditional",
+            Self::LearningGraph => "learning_graph",
+        }
+    }
+}
+
+impl TryFrom<&str> for CourseKind {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "traditional" => Ok(Self::Traditional),
+            "learning_graph" => Ok(Self::LearningGraph),
+            other => Err(format!("unsupported course kind: {other}")),
         }
     }
 }
@@ -329,6 +398,7 @@ pub struct CourseSummary {
     pub title: String,
     pub description: String,
     pub domain: String,
+    pub course_kind: CourseKind,
     pub source_kb_id: Option<KnowledgeBaseId>,
     pub version: i64,
     pub enrolled: bool,
@@ -336,6 +406,49 @@ pub struct CourseSummary {
     pub completed_lessons: i64,
     pub updated_at: TimestampMs,
     pub tags: Vec<String>,
+}
+
+/// 学习图课程视图的一个节点：底层课时（标题/摘要/估计分钟/生成状态）
+/// 加图坐标（拓扑序 position、depth 层深）与学习者进度状态。正文永远
+/// 不进全图载荷——内容经现有课时接口按需拉取。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphNodeView {
+    pub lesson_id: LearningLessonId,
+    pub title: String,
+    pub summary: String,
+    pub purpose: String,
+    pub estimated_minutes: i64,
+    pub generated: bool,
+    /// 发布时的 Kahn 拓扑序（也是推荐排序键）。
+    pub position: i64,
+    /// 前置层深（零前置为 0），供分层渲染与宏观 LOD 使用。
+    pub depth: i64,
+    pub status: LessonStatus,
+    pub prerequisite_count: i64,
+}
+
+/// 学习图课程视图的一条前置边：`from` 应先于 `to` 被满足（lesson_id 引用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphEdgeView {
+    pub from: LearningLessonId,
+    pub to: LearningLessonId,
+    pub reason: String,
+}
+
+/// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：图结构的事实来源
+/// 是 lessons + prerequisites 两张表，这里只做投影；`recommended` 是
+/// 「下一步推荐学习的节点」（≤10，就绪集按拓扑序）。
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningGraphView {
+    /// 用户生成图时输入的学习目标。
+    pub goal: String,
+    /// 学习范围（scope 分析文本）。
+    pub scope: String,
+    pub nodes: Vec<GraphNodeView>,
+    pub edges: Vec<GraphEdgeView>,
+    pub recommended: Vec<LearningLessonId>,
+    /// 课程行 graph_meta_json 透传（审计快照/生成留档/扩展备注）。
+    pub meta: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -346,6 +459,8 @@ pub struct CourseDetail {
     pub concepts: Vec<ConceptView>,
     pub next_lesson_id: Option<LearningLessonId>,
     pub due_review_count: i64,
+    /// 仅 `learning_graph` 课程携带：图结构 + 下一步推荐节点。
+    pub graph: Option<LearningGraphView>,
 }
 
 #[derive(Debug, Clone, Serialize)]

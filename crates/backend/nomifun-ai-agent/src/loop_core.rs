@@ -1,8 +1,8 @@
 //! Shared agent-loop core: the budget constants, the `LoopEventSink` seam and
-//! the parameterized tool loop that `concept_graph_loop`, `course_outline_loop`
+//! the parameterized tool loop that `learning_graph_loop`, `course_outline_loop`
 //! and `lesson_content_loop` all run on.
 //!
-//! Extracted from `concept_graph_loop.rs` so each domain loop keeps only its
+//! Extracted from `learning_graph_loop.rs` so each domain loop keeps only its
 //! prompts, tool set and draft/publish context. The fail-closed whitelist
 //! execution (an unknown tool name gets an error result and never reaches any
 //! other surface) is the security contract of this module — keep it intact.
@@ -90,7 +90,7 @@ async fn open_stream_with_retry(
     }
 }
 
-/// Where loop events go. The concept-graph loop appends them to the shared
+/// Where loop events go. The learning-graph loop appends them to the shared
 /// JSONL log file; richer hosts may also mirror them onto the WebSocket so
 /// the UI can render the generation live. `Send + Sync` so the loop future
 /// stays `Send` (the engines run behind `async_trait`, which demands it).

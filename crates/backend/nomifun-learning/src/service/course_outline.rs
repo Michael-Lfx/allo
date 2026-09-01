@@ -1,5 +1,5 @@
 //! Course outline draft facade — the `co_*` agent tool set's backing store.
-//! Mirrors `service/concept_graph.rs`: drafts live in memory, every patch
+//! Mirrors `service/learning_graph.rs`: drafts live in memory, every patch
 //! re-runs the deterministic audit, and `finish_course_outline_draft` is the
 //! single publish path — a live re-audit gates it (DANGER findings block),
 //! then the draft converts into the generation stage's [`Blueprint`], which
@@ -59,11 +59,10 @@ impl LearningService {
                 ))
             }
         };
-        let scope = crate::concept_graph::analyze_scope(
+        let scope = crate::learning_graph::analyze_scope(
             completer.as_ref(),
             model_override,
             &scope_topic,
-            None,
         )
         .await;
         let draft_id = generate_id();
@@ -173,7 +172,7 @@ impl LearningService {
         if draft
             .findings
             .iter()
-            .any(|finding| finding.severity == crate::concept_graph::SEV_DANGER)
+            .any(|finding| finding.severity == crate::learning_graph::SEV_DANGER)
         {
             return Err(AppError::UnprocessableEntity(format!(
                 "course outline draft still fails the audit gate:\n{}",

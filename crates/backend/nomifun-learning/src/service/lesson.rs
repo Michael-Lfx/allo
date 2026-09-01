@@ -56,7 +56,12 @@ impl LearningService {
         request: &GenerateLessonRequest,
     ) -> Result<LessonView, AppError> {
         let row = sqlx::query(
-            "SELECT l.module_id, l.position, l.content_generated, m.course_id, m.position AS module_position FROM learning_lessons l JOIN learning_modules m ON m.module_id = l.module_id WHERE l.lesson_id = ?",
+            "SELECT l.module_id, l.position, l.content_generated, m.course_id, \
+                    m.position AS module_position, c.course_kind \
+             FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id \
+             WHERE l.lesson_id = ?",
         )
         .bind(lesson_id.as_str())
         .fetch_optional(&self.pool)
@@ -69,6 +74,16 @@ impl LearningService {
         if content_generated != 0 {
             let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
             return self.lesson_view(lesson_id, enrollment.as_ref()).await;
+        }
+
+        // 课程类型分流（幂等检查已共享）：学习图节点没有蓝图快照，走图
+        // 专属路径——上下文来自课程行与前置边表，且只走 agent 引擎。
+        if row.try_get::<String, _>("course_kind").map_err(internal)?
+            == CourseKind::LearningGraph.as_str()
+        {
+            return self
+                .generate_graph_lesson_content(user_id, lesson_id, &course_id, request)
+                .await;
         }
 
         let snapshot = sqlx::query(
@@ -150,6 +165,8 @@ impl LearningService {
                 module_position as usize,
                 lesson_position as usize,
             ),
+            // 传统课时永远不走图分支。
+            graph: None,
         };
         self.emit_lesson_event(serde_json::json!({
             "phase": "started",
@@ -244,6 +261,235 @@ impl LearningService {
         };
 
         let concepts = self.concept_map_for_course(&course_id).await?;
+        self.persist_lesson_output(lesson_id, &output, &concepts, &lesson.concepts)
+            .await?;
+
+        let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
+        self.lesson_view(lesson_id, enrollment.as_ref()).await
+    }
+
+    /// 学习图课程节点的内容生成（beta）。学习图课程没有蓝图快照：上下文
+    /// 来自课程行（学习目标/学习范围）与前置边表（前置整条路径 + 下游
+    /// 节点），节点与边一次载入后在 Rust 内计算（≤500 节点，不引入 SQL
+    /// 递归 CTE）。只走注入的 agent 引擎——fallback 一次性管线消费
+    /// `&Blueprint`，对图节点不可复用。
+    async fn generate_graph_lesson_content(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        course_id: &LearningCourseId,
+        request: &GenerateLessonRequest,
+    ) -> Result<LessonView, AppError> {
+        let lesson = sqlx::query(
+            "SELECT l.title, l.purpose, l.position, m.title AS module_title \
+             FROM learning_lessons l JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let lesson_title: String = lesson.try_get("title").map_err(internal)?;
+        let purpose: String = lesson.try_get("purpose").map_err(internal)?;
+        let lesson_position: i64 = lesson.try_get("position").map_err(internal)?;
+        let module_title: String = lesson.try_get("module_title").map_err(internal)?;
+
+        let course = sqlx::query(
+            "SELECT title, learning_goal, learning_scope FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let course_title: String = course.try_get("title").map_err(internal)?;
+        let goal: String = course
+            .try_get::<Option<String>, _>("learning_goal")
+            .map_err(internal)?
+            .unwrap_or_default();
+        let scope: String = course
+            .try_get::<Option<String>, _>("learning_scope")
+            .map_err(internal)?
+            .unwrap_or_default();
+
+        // 一次载入全部节点与前置边（≤500 节点），内存算祖先闭包与后代。
+        let node_rows = sqlx::query(
+            "SELECT l.lesson_id, l.title, l.position FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? ORDER BY l.position, l.lesson_id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut nodes: HashMap<String, (i64, String)> = HashMap::with_capacity(node_rows.len());
+        for node in &node_rows {
+            nodes.insert(
+                node.try_get::<String, _>("lesson_id").map_err(internal)?,
+                (
+                    node.try_get::<i64, _>("position").map_err(internal)?,
+                    node.try_get::<String, _>("title").map_err(internal)?,
+                ),
+            );
+        }
+        let edge_rows = sqlx::query(
+            "SELECT lesson_id, prerequisite_lesson_id, reason FROM learning_graph_prerequisites \
+             WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        // 拥有化后再建邻接表，借用不挂在行对象上。
+        let mut edges: Vec<(String, String, String)> = Vec::with_capacity(edge_rows.len());
+        for edge in &edge_rows {
+            edges.push((
+                edge.try_get("lesson_id").map_err(internal)?,
+                edge.try_get("prerequisite_lesson_id").map_err(internal)?,
+                edge.try_get("reason").map_err(internal)?,
+            ));
+        }
+        let mut predecessors: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut successors: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+        for (to, from, reason) in &edges {
+            predecessors.entry(to.as_str()).or_default().push(from.as_str());
+            successors
+                .entry(from.as_str())
+                .or_default()
+                .push((to.as_str(), reason.as_str()));
+        }
+
+        let target = lesson_id.as_str();
+        // 前置整条路径：沿前驱反向遍历出祖先闭包（发布时已保证无环，
+        // visited 去重兜底防御），按拓扑序渲染，离节点最近者优先保留。
+        let mut ancestors: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = predecessors.get(target).cloned().unwrap_or_default();
+        while let Some(current) = stack.pop() {
+            if !ancestors.insert(current) {
+                continue;
+            }
+            if let Some(parents) = predecessors.get(current) {
+                stack.extend(parents.iter().copied());
+            }
+        }
+        let mut path: Vec<(i64, &str)> = ancestors
+            .iter()
+            .filter_map(|id| nodes.get(*id).map(|(position, title)| (*position, title.as_str())))
+            .collect();
+        path.sort_unstable_by_key(|(position, _)| *position);
+        let prerequisite_path = render_prerequisite_path(&path);
+
+        // 后续节点：直接后继按拓扑序列出（带 reason），可及后代总数沿后继
+        // 正向遍历计数（含直接后继）。
+        let mut direct: Vec<(i64, &str, &str)> = successors
+            .get(target)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(id, reason)| {
+                nodes
+                    .get(id)
+                    .map(|(position, title)| (*position, title.as_str(), reason))
+            })
+            .collect();
+        direct.sort_unstable_by_key(|(position, _, _)| *position);
+        let mut reachable: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = successors
+            .get(target)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        while let Some(current) = stack.pop() {
+            if !reachable.insert(current) {
+                continue;
+            }
+            if let Some(children) = successors.get(current) {
+                stack.extend(children.iter().map(|(id, _)| *id));
+            }
+        }
+        let upcoming_nodes = render_upcoming_nodes(&direct, reachable.len());
+
+        let context = LessonGenerationContext {
+            course_title,
+            // 图节点没有课程简报；目标/范围在 graph 段渲染。
+            course_description: String::new(),
+            module_title,
+            module_index: 0,
+            lesson_title,
+            lesson_index: lesson_position.max(0) as usize,
+            total_lessons: nodes.len(),
+            // 衔接语义由 graph.upcoming_nodes 承担。
+            next_lesson_title: None,
+            purpose,
+            concepts: Vec::new(),
+            concept_keys: Vec::new(),
+            excerpt: None,
+            outline_tree: String::new(),
+            adjacent_context: String::new(),
+            graph: Some(GraphLessonContext {
+                goal,
+                scope,
+                prerequisite_path,
+                upcoming_nodes,
+            }),
+        };
+
+        self.emit_lesson_event(serde_json::json!({
+            "phase": "started",
+            "lesson_id": lesson_id.as_str(),
+            "title": context.lesson_title,
+            "module": context.module_title,
+        }));
+        let engine = self.lesson_engine().ok_or_else(|| {
+            AppError::Conflict(
+                "learning-graph lesson content generation requires the agent engine".into(),
+            )
+        })?;
+        let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+        let result = engine
+            .generate(
+                user_id,
+                &context,
+                model_override.map(|(provider, model)| (provider.as_str(), model)),
+            )
+            .await;
+        match &result {
+            Ok(output) => self.emit_lesson_event(serde_json::json!({
+                "phase": "completed",
+                "lesson_id": lesson_id.as_str(),
+                "title": context.lesson_title,
+                "activities": output.activities.len(),
+                "estimated_minutes": output.estimated_minutes,
+            })),
+            Err(error) => self.emit_lesson_event(serde_json::json!({
+                "phase": "failed",
+                "lesson_id": lesson_id.as_str(),
+                "title": context.lesson_title,
+                "error": error.to_string(),
+            })),
+        }
+        let output = result?;
+        // 学习图课程没有概念行：空 concept_map + 空 default_keys（audit
+        // 保证活动不携带概念绑定）。
+        self.persist_lesson_output(lesson_id, &output, &HashMap::new(), &[])
+            .await?;
+
+        let enrollment = self.enrollment_id_for(user_id, course_id).await?;
+        self.lesson_view(lesson_id, enrollment.as_ref()).await
+    }
+
+    /// 生成事务落库尾（传统与学习图两条路径共用）：更新课时行（文档/时长/
+    /// 生成标记）、替换全部活动并绑定概念。`default_keys` 是活动未显式绑定
+    /// 概念时的回退（传统课时 = 整课概念）；学习图节点传空——节点不绑定
+    /// 概念，活动若携带绑定会在空 `concept_map` 上以 unknown key 失败。
+    async fn persist_lesson_output(
+        &self,
+        lesson_id: &LearningLessonId,
+        output: &LessonOutput,
+        concept_map: &HashMap<String, LearningConceptId>,
+        default_keys: &[String],
+    ) -> Result<(), AppError> {
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "UPDATE learning_lessons SET summary = ?, estimated_minutes = ?, content_generated = 1 WHERE lesson_id = ?",
@@ -291,12 +537,12 @@ impl LearningService {
             .map_err(internal)?;
 
             let activity_concepts = if activity.concepts.is_empty() {
-                &lesson.concepts
+                default_keys
             } else {
-                &activity.concepts
+                activity.concepts.as_slice()
             };
             for concept_key in activity_concepts {
-                let concept_id = concepts.get(concept_key).ok_or_else(|| {
+                let concept_id = concept_map.get(concept_key).ok_or_else(|| {
                     AppError::Internal(format!("unknown concept key {concept_key}"))
                 })?;
                 sqlx::query(
@@ -310,9 +556,7 @@ impl LearningService {
             }
         }
         transaction.commit().await.map_err(internal)?;
-
-        let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
-        self.lesson_view(lesson_id, enrollment.as_ref()).await
+        Ok(())
     }
 
     /// Manually appends an activity to a generated lesson. The lesson must
@@ -678,6 +922,60 @@ impl LearningService {
         Ok(questions)
     }
 
+}
+
+// ── 学习图节点上下文渲染 ────────────────────────────────────────────────────
+
+/// 提示词里前置路径的渲染上限：只保留离节点最近的一段，更早的合并概括
+/// （500 节点级图的祖先闭包可能极长）。
+const GRAPH_PATH_RENDER_LIMIT: usize = 20;
+
+/// 直接后继的渲染上限：超过时列前 10 个并注明总数。
+const GRAPH_SUCCESSOR_RENDER_LIMIT: usize = 10;
+
+/// 前置路径渲染：按拓扑序全局编号；超出上限时只渲染离节点最近的一段，
+/// 更早的合并成概括行。节点内容是共享资产，不标注任何用户进度。
+fn render_prerequisite_path(path: &[(i64, &str)]) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let mut lines = Vec::new();
+    let start = path.len().saturating_sub(GRAPH_PATH_RENDER_LIMIT);
+    if start > 0 {
+        lines.push(format!(
+            "……（更早还有 {start} 个前置节点，均已掌握，此处省略）"
+        ));
+    }
+    for (offset, (_, title)) in path[start..].iter().enumerate() {
+        lines.push(format!("{}. {}", start + offset + 1, title.trim()));
+    }
+    lines.join("\n")
+}
+
+/// 后续节点渲染：直接后继按拓扑序列出（reason 非空时附注），超出上限
+/// 截断并注明总数；末行总述可及下游规模，供衔接句的分寸参考。
+fn render_upcoming_nodes(direct: &[(i64, &str, &str)], reachable: usize) -> String {
+    if direct.is_empty() {
+        return String::new();
+    }
+    let mut lines = Vec::new();
+    for (_, title, reason) in direct.iter().take(GRAPH_SUCCESSOR_RENDER_LIMIT) {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            lines.push(format!("- {}", title.trim()));
+        } else {
+            lines.push(format!("- {}（{}）", title.trim(), reason));
+        }
+    }
+    if direct.len() > GRAPH_SUCCESSOR_RENDER_LIMIT {
+        lines.push(format!("……等共 {} 个直接后继", direct.len()));
+    }
+    if reachable > direct.len() {
+        lines.push(format!(
+            "下游共 {reachable} 个节点（含上列直接后继）——保持衔接，不要展开。"
+        ));
+    }
+    lines.join("\n")
 }
 
 /// Shared payload validation for course activities and custom questions so

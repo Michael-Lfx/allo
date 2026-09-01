@@ -1,5 +1,5 @@
 //! Draft-graph kernel: pure in-memory graph manipulation powering the agent
-//! tool set (`cg_patch` and the query tools live in `nomifun-ai-agent`).
+//! tool set (`lg_patch` and the query tools live in `nomifun-ai-agent`).
 //! Zero IO, zero model calls: every operation reuses the crate's
 //! deterministic normalization, merge and audit logic, so the agent edits
 //! through exactly the gates the legacy pipeline enforces.
@@ -20,11 +20,11 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use super::audit::{
-    BLOCK_MIN_SHARED, UNIT_MINUTE_CAP, audit_concept_graph_with_scope,
+    BLOCK_MIN_SHARED, UNIT_MINUTE_CAP, audit_learning_graph_with_scope,
     common_substring_len,
 };
 use super::{
-    AuditFinding, ConceptGraphData, ConceptGraphEdge, ConceptGraphNode, RawConcept, ScopeAnalysis,
+    AuditFinding, LearningGraphData, LearningGraphEdge, LearningGraphNode, RawConcept, ScopeAnalysis,
     format_audit_report, fuzzy_resolve_reference, merge_batch, normalize_batch,
     remove_cycle_edges,
 };
@@ -162,7 +162,7 @@ where
 pub(crate) struct DraftGraph {
     pub topic: String,
     pub scope: Option<ScopeAnalysis>,
-    pub graph: ConceptGraphData,
+    pub graph: LearningGraphData,
     /// Increments once per accepted op, so tool callers can detect
     /// concurrent edits.
     pub revision: u64,
@@ -173,7 +173,7 @@ impl DraftGraph {
         let mut draft = Self {
             topic,
             scope,
-            graph: ConceptGraphData {
+            graph: LearningGraphData {
                 nodes: Vec::new(),
                 edges: Vec::new(),
                 audit: Default::default(),
@@ -181,7 +181,7 @@ impl DraftGraph {
             revision: 0,
         };
         // A fresh draft is ALREADY audited: an empty graph carries its
-        // empty_graph danger from birth, so a premature `cg_finish` on a
+        // empty_graph danger from birth, so a premature `lg_finish` on a
         // never-patched draft is rejected instead of publishing blank.
         draft.refresh_audit();
         draft
@@ -270,10 +270,22 @@ impl DraftGraph {
         self.graph = merge_batch(&self.graph, &batch);
         self.revision += 1;
         let minutes = min.map(|m| m.to_string()).unwrap_or_else(|| "未标注".into());
+        // Near-miss references that fuzzy-resolved are reported back so the
+        // model knows which node its reference actually attached to.
+        let fuzzy_note = if batch.fuzzy_resolved.is_empty() {
+            String::new()
+        } else {
+            let pairs: Vec<String> = batch
+                .fuzzy_resolved
+                .iter()
+                .map(|(emitted, resolved)| format!("'{emitted}' → '{resolved}'"))
+                .collect();
+            format!("（模糊引用解析：{}——已按解析后的节点建边）", pairs.join("、"))
+        };
         Ok(OpOutcome {
             op: "add".into(),
             summary: format!(
-                "已添加单元 '{name}'（前置 {} 个，预算 {minutes} 分钟）",
+                "已添加单元 '{name}'（前置 {} 个，预算 {minutes} 分钟）{fuzzy_note}",
                 pre.len()
             ),
             node_delta: self.graph.nodes.len() as i64 - nodes_before as i64,
@@ -583,7 +595,7 @@ impl DraftGraph {
             .retain(|edge| edge.from != target && edge.to != target);
         for unit in into {
             let name = unit.name.trim();
-            self.graph.nodes.push(ConceptGraphNode {
+            self.graph.nodes.push(LearningGraphNode {
                 id: name.to_owned(),
                 title: name.to_owned(),
                 min: unit.min,
@@ -651,7 +663,7 @@ impl DraftGraph {
         let nodes_before = self.graph.nodes.len();
         let edges_before = self.graph.edges.len();
         let is_target = |id: &str| targets.iter().any(|raw| raw.trim() == id);
-        let mut folded: Vec<ConceptGraphEdge> = Vec::with_capacity(self.graph.edges.len());
+        let mut folded: Vec<LearningGraphEdge> = Vec::with_capacity(self.graph.edges.len());
         for edge in &self.graph.edges {
             let from_is_target = is_target(&edge.from);
             let to_is_target = is_target(&edge.to);
@@ -669,7 +681,7 @@ impl DraftGraph {
             if from == to {
                 continue;
             }
-            folded.push(ConceptGraphEdge {
+            folded.push(LearningGraphEdge {
                 from,
                 to,
                 reason: edge.reason.clone(),
@@ -678,7 +690,7 @@ impl DraftGraph {
         // Dedup: a prerequisite shared by several targets would otherwise
         // reappear once per target.
         let mut seen_edges: HashSet<(String, String)> = HashSet::new();
-        let mut deduped: Vec<ConceptGraphEdge> = Vec::with_capacity(folded.len());
+        let mut deduped: Vec<LearningGraphEdge> = Vec::with_capacity(folded.len());
         for edge in folded {
             if seen_edges.insert((edge.from.clone(), edge.to.clone())) {
                 deduped.push(edge);
@@ -799,7 +811,7 @@ impl DraftGraph {
         if from == to || self.edge_exists(from, to) {
             return;
         }
-        self.graph.edges.push(ConceptGraphEdge {
+        self.graph.edges.push(LearningGraphEdge {
             from: from.to_owned(),
             to: to.to_owned(),
             reason: None,
@@ -832,7 +844,7 @@ impl DraftGraph {
     /// Re-run the deterministic audit (with the scope block checklist when a
     /// scope reference exists) so findings always reflect the latest state.
     pub(crate) fn refresh_audit(&mut self) {
-        let findings = audit_concept_graph_with_scope(
+        let findings = audit_learning_graph_with_scope(
             &self.graph,
             self.scope.as_ref().map(|scope| scope.blocks.as_slice()),
         );
@@ -1070,7 +1082,7 @@ impl DraftGraph {
         Some(parts.join("\n"))
     }
 
-    /// Lightweight creation view handed back by `cg_start`.
+    /// Lightweight creation view handed back by `lg_start`.
     pub(crate) fn view(&self, draft_id: &str) -> DraftView {
         DraftView {
             draft_id: draft_id.to_owned(),
@@ -1141,7 +1153,7 @@ fn capped(ids: Vec<String>, cap: usize) -> (usize, Vec<String>) {
 
 // ── Views returned to the agent tools ──────────────────────────────────────
 
-/// Creation view of a draft (returned by `cg_start`).
+/// Creation view of a draft (returned by `lg_start`).
 #[derive(Debug, Clone, Serialize)]
 pub struct DraftView {
     pub draft_id: String,
@@ -1161,7 +1173,7 @@ pub struct ScopeView {
     pub blocks: Vec<String>,
 }
 
-/// Result of a `cg_patch` batch.
+/// Result of a `lg_patch` batch.
 #[derive(Debug, Clone, Serialize)]
 pub struct PatchReport {
     /// Draft revision after the batch (one per accepted op).
@@ -1223,7 +1235,7 @@ fn summarize_findings(findings: &[AuditFinding]) -> Vec<FindingSummary> {
         .collect()
 }
 
-/// `cg_inspect` overview.
+/// `lg_inspect` overview.
 #[derive(Debug, Clone, Serialize)]
 pub struct InspectView {
     pub topic: String,
@@ -1261,7 +1273,7 @@ pub struct ScopeCoverage {
     pub blocks_total: usize,
 }
 
-/// Filter for `cg_query`.
+/// Filter for `lg_query`.
 #[derive(Debug, Clone, Default)]
 pub struct NodeQuery {
     /// Substring matched against unit titles (empty/`None` = no filter).
@@ -1273,7 +1285,7 @@ pub struct NodeQuery {
     pub limit: usize,
 }
 
-/// `cg_query` result.
+/// `lg_query` result.
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeListView {
     /// How many units matched the filter (may exceed `nodes.len()` when the
@@ -1292,7 +1304,7 @@ pub struct NodeInfo {
     pub dependents: Vec<String>,
 }
 
-/// Which neighbourhood a `cg_subgraph` call walks.
+/// Which neighbourhood a `lg_subgraph` call walks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubgraphDirection {
@@ -1314,7 +1326,7 @@ impl SubgraphDirection {
     }
 }
 
-/// `cg_subgraph` result: the local DAG around the roots.
+/// `lg_subgraph` result: the local DAG around the roots.
 #[derive(Debug, Clone, Serialize)]
 pub struct SubgraphView {
     pub roots: Vec<String>,

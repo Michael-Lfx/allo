@@ -18,7 +18,7 @@ use crate::generation::{
 };
 use crate::models::{ActivityKind, ActivityPack, ConceptPack};
 
-use crate::concept_graph::{SEV_DANGER, SEV_WARNING};
+use crate::learning_graph::{SEV_DANGER, SEV_WARNING};
 
 /// Hard cap on the activities a draft may hold: the design guidance is 3-5,
 /// so anything near this cap is already off-script (the audit warns before
@@ -30,6 +30,24 @@ const MAX_ACTIVITIES: usize = 10;
 pub struct LessonExcerpt {
     pub path: String,
     pub text: String,
+}
+
+/// 学习图课程节点专属的生成上下文（beta）。传统课时恒为 `None`；为 Some
+/// 时，引擎提示词以图语义段落（学习目标/学习范围/前置路径/后续节点）取代
+/// 课程大纲段，保证节点内容有全局观、范围受限、并能顺畅衔接后续节点。
+#[derive(Debug, Clone)]
+pub struct GraphLessonContext {
+    /// 用户生成图时输入的学习目标。
+    pub goal: String,
+    /// 学习图的学习范围（scope 分析文本）。
+    pub scope: String,
+    /// 预渲染：到达此节点的前置整条路径（祖先闭包，按拓扑序排列；离节点
+    /// 最近的前置优先展示，超长截断），让生成知道「学习者此刻已经会什么」。
+    /// 节点内容是共享课程资产，不含任何用户个人进度。
+    pub prerequisite_path: String,
+    /// 预渲染：此节点之后的下游节点（直接后继全列 + 可及后代总数），
+    /// 让生成知道「要为哪些后续学习做衔接」。
+    pub upcoming_nodes: String,
 }
 
 /// The lesson context an engine generates content for: course/module/lesson
@@ -60,6 +78,8 @@ pub struct LessonGenerationContext {
     /// Pre-rendered prev/next lesson reference (title/purpose/truncated
     /// excerpt); empty when there is nothing to reference.
     pub adjacent_context: String,
+    /// 学习图节点专属上下文；传统课时恒为 `None`。
+    pub graph: Option<GraphLessonContext>,
 }
 
 /// One deterministic audit finding. `severity` uses the shared vocabulary
@@ -629,6 +649,7 @@ mod tests {
             }),
             outline_tree: String::new(),
             adjacent_context: String::new(),
+            graph: None,
         }
     }
 

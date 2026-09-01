@@ -1,5 +1,5 @@
 //! Course outline draft + deterministic audit + agent engine seam. Mirrors
-//! `concept_graph/`: the learning crate owns the draft vocabulary the
+//! `learning_graph/`: the learning crate owns the draft vocabulary the
 //! `co_*` agent tools edit, the deterministic audit gate that has the last
 //! word on publishing, and the engine trait; the two-loop agent engine
 //! itself lives in nomifun-ai-agent.
@@ -59,7 +59,7 @@ impl OutlineBrief {
 }
 
 /// Agent-driven course outline generation seam — mirrors
-/// [`crate::concept_graph::ConceptGraphAgentEngine`]: the learning crate
+/// [`crate::learning_graph::LearningGraphAgentEngine`]: the learning crate
 /// holds only the trait; the two-loop agent engine is implemented in
 /// nomifun-ai-agent. When injected, `generate_course` routes through it
 /// (draft + `co_*` tools, audit-gated publish) instead of the legacy

@@ -1,11 +1,11 @@
-//! Two-loop concept-graph agent: the draft tool set (`cg_start` ..
-//! `cg_finish`) drives generation, then audit-gated repair rounds drive
+//! Two-loop concept-graph agent: the draft tool set (`lg_start` ..
+//! `lg_finish`) drives generation, then audit-gated repair rounds drive
 //! publishing.
 //!
 //! Same layering as `LiveLearningCompleter`: the learning crate holds only
-//! [`ConceptGraphAgentEngine`]; this crate provides the provider-backed
+//! [`LearningGraphAgentEngine`]; this crate provides the provider-backed
 //! implementation, and the app layer wires it via
-//! `LearningService::set_concept_graph_engine`.
+//! `LearningService::set_learning_graph_engine`.
 //!
 //! Why a dedicated loop instead of `run_one_shot_turn`? The one-shot entry
 //! caps tool rounds at 8 and returns only the final text; generation needs
@@ -17,14 +17,14 @@
 //!
 //! The deterministic audit gate holds the decision power: the generation
 //! loop builds, the repair loop fixes exactly what the audit reports, and
-//! only `cg_finish` (which re-runs the audit as a hard gate) publishes.
+//! only `lg_finish` (which re-runs the audit as a hard gate) publishes.
 
 use std::sync::{Arc, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
-use nomifun_common::{AppError, LearningConceptGraphId, ProviderId, UserId};
+use nomifun_common::{AppError, LearningCourseId, ProviderId, UserId};
 use nomifun_learning::{
-    ConceptGraphAgentEngine, ConceptGraphRecord, GraphOp, LearningService, NodeQuery,
+    LearningGraphAgentEngine, LearningGraphRecord, GraphOp, LearningService, NodeQuery,
     SubgraphDirection,
 };
 
@@ -37,8 +37,8 @@ use crate::loop_core::{
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
 /// Generation-loop system prompt. The model builds the whole network via
-/// the draft tools; the audit gate still has the last word at `cg_finish`.
-const GENERATE_AGENT_SYSTEM: &str = r#"你是一名概念图构建代理：把一个宽泛学习目标分解为完整的"学习单元网络"，并通过工具逐步构建成图。
+/// the draft tools; the audit gate still has the last word at `lg_finish`.
+const GENERATE_AGENT_SYSTEM: &str = r#"你是一名学习图构建代理：把一个宽泛学习目标分解为完整的"学习单元网络"，并通过工具逐步构建成图。
 - 认知学习单元不一定是原子概念，很多简单的原子概念不适合作为人类单次学习行为单元，应该是简单原子概念的少量的有机的组合，但也可能有些原子概念本身就足够复杂这种情况可以作为单独集结点，不能是太复合的概念，过于复合的概念没有意义，
 - *无依赖的节点一定是最基础最简单的（重点）*，如果这些基础概念本身有更精准但过于抽象复杂或者说需要前置条件时，也应先创建一个简单的节点在前，而不是放一个实际不可用的零依赖起点
     - 想想以用户的视角为起点，他到底满不满足以这个为起点的条件
@@ -46,10 +46,10 @@ const GENERATE_AGENT_SYSTEM: &str = r#"你是一名概念图构建代理：把�
 - 生成的学习单元网络一定要完整，宁愿节点过多不要过少，节点关系没有必要冗余，但应该是无环的复杂网络，如果节点的连接过少大概率是认知切分方式的或连接存在问题
 - 对于最终的目标应该是真正彻底的学会而非只是会使用，所以可以按需存在具有元（meta）或者说抽象 本质 证明等性质的节点，但应满足上面提到的螺旋上升与渐进的原则,比如 无依赖的节点一定是最基础最简单的
 【工具使用纪律】
-1. 第一步必须调用 cg_start 创建草稿——它会先做范围分析，返回 draft_id 和 scope 覆盖清单。这就是你的基本参考清单，至少要满足里面的要求除非其中出现虚构或确实毫无必要的概念，除了覆盖清单你也可以发挥主观能动性，以及要小心参考清单本身不够全面的可能性。
-2. 每次 cg_patch 前后调用 cg_inspect 掌握全局；动手前用 cg_query / cg_subgraph 查清单元名的精确写法——patch 里的引用必须与图中名称完全一致，否则整个操作被拒。
+1. 第一步必须调用 lg_start 创建草稿——它会先做范围分析，返回 draft_id 和 scope 覆盖清单。这就是你的基本参考清单，至少要满足里面的要求除非其中出现虚构或确实毫无必要的概念，除了覆盖清单你也可以发挥主观能动性，以及要小心参考清单本身不够全面的可能性。
+2. 每次 lg_patch 前后调用 lg_inspect 掌握全局；动手前用 lg_query / lg_subgraph 查清单元名的精确写法——patch 里的引用必须与图中名称完全一致，否则整个操作被拒。
 3. 分批构建：每批小于 25 个操作，宁可多批，不要超长批次。
-4. 全部构建完成后调用 cg_audit 自查
+4. 全部构建完成后调用 lg_audit 自查
 
 【单元命名】（与单次生成管线同标准）
 - 节点大多 name 可以是动作句：包含 解/求/证明/推导/比较/判定/构造/区分/计算/应用/理解/辨析/建立/验证/化简/变形/转化/估计/近似/检验/分类/归纳/抽象/训练 等等词以及它们之间的组合存在。                    
@@ -63,23 +63,23 @@ const GENERATE_AGENT_SYSTEM: &str = r#"你是一名概念图构建代理：把�
 - 连通性：整个网络必须是一个连通结构；子域在真实依赖处必须交叉链接
 
 【覆盖与规模】
-- 以 cg_scope / cg_start 返回的 scope 为主要参考。
+- 以 lg_scope / lg_start 返回的 scope 为主要参考。
 - min 是学习分钟预算：常规 5-30 分钟（软上限，尽量不超过 30），极困难单课最多 60 分钟（硬上限）；超过 60 会被拒。
-- 引用名必须恰好等于图中已存在的单元名；拿不准时先 cg_query。
+- 引用名必须恰好等于图中已存在的单元名；拿不准时先 lg_query。
 
 【结束条件】
-- 只有当你确认图已完整覆盖 scope 且 cg_audit 基本健康时，才调用 cg_finish；否则继续构建。"#;
+- 只有当你确认图已完整覆盖 scope 且 lg_audit 基本健康时，才调用 lg_finish；否则继续构建。"#;
 
 /// Repair-loop system prompt: the audit report is the ONLY repair basis;
 /// the model patches locally and never rewrites the graph wholesale.
-const REPAIR_AGENT_SYSTEM: &str = r#"你是一名概念图修复代理：基于确定性审计报告，精确修复图中被指出的问题。
+const REPAIR_AGENT_SYSTEM: &str = r#"你是一名学习图修复代理：基于确定性审计报告，精确修复图中被指出的问题。
 
 【修复原则】
 1. 审计报告是主要的修复依据：逐条处理 danger 级 findings，按报告给出的证据（节点名、缺失的大块概念名、孤立组件）精确操作；
 2. 不做过大的重构、不删无关节点。（add/link/unlink/set_pre/reverse/split/merge/update/delete）。
-3. 动手前可以用 cg_query / cg_subgraph 查清引用名的精确写法；引用不一致会被拒绝。
-4. 修复动作分批提交（每批 5-15 个操作），每批后用 cg_audit 复查该条 finding 是否消除。
-5. 全部 danger 消除后调用 cg_finish 发布。
+3. 动手前可以用 lg_query / lg_subgraph 查清引用名的精确写法；引用不一致会被拒绝。
+4. 修复动作分批提交（每批 5-15 个操作），每批后用 lg_audit 复查该条 finding 是否消除。
+5. 全部 danger 消除后调用 lg_finish 发布。
 
 【常见修复动作对照】
 - missing_block_coverage：按报告列出的大块概念名，add 对应单元（把概念改写为动作句）。
@@ -90,31 +90,31 @@ const REPAIR_AGENT_SYSTEM: &str = r#"你是一名概念图修复代理：基于�
 - unit_overload：split 超过 60 分钟硬上限的单元；30-60 分钟的偏重单元若可拆也建议拆。
 
 【结束条件】
-- 审计无 danger 时调用 cg_finish；若 cg_finish 被拒绝，认真阅读返回的阻塞 findings 并继续修复。
-- 禁止空手结束：每一轮都必须调用 cg_patch 执行修复动作（或 cg_audit 复查、cg_finish 尝试发布）；只输出文字而不调用任何工具，会被判定为拒绝修复，整个生成以失败告终。
+- 审计无 danger 时调用 lg_finish；若 lg_finish 被拒绝，认真阅读返回的阻塞 findings 并继续修复。
+- 禁止空手结束：每一轮都必须调用 lg_patch 执行修复动作（或 lg_audit 复查、lg_finish 尝试发布）；只输出文字而不调用任何工具，会被判定为拒绝修复，整个生成以失败告终。
 - 回复使用中文。"#;
 
-/// Provider-backed engine for the two-loop concept graph pipeline.
-pub struct LiveConceptGraphAgentEngine {
+/// Provider-backed engine for the two-loop learning-graph pipeline.
+pub struct LiveLearningGraphAgentEngine {
     pub service: Arc<LearningService>,
     pub deps: OneShotDeps,
 }
 
 #[async_trait::async_trait]
-impl ConceptGraphAgentEngine for LiveConceptGraphAgentEngine {
+impl LearningGraphAgentEngine for LiveLearningGraphAgentEngine {
     async fn generate(
         &self,
         user_id: &UserId,
         topic: &str,
         model_override: Option<(&str, &str)>,
-    ) -> Result<ConceptGraphRecord, AppError> {
+    ) -> Result<LearningGraphRecord, AppError> {
         let (provider_id, model) = match model_override {
             Some((provider_id, model)) => (provider_id.to_owned(), model.to_owned()),
             None => resolve_default_model(&self.deps.provider_repo, &self.deps.provider_model_repo)
                 .await
                 .ok_or_else(|| {
                     AppError::Conflict(
-                        "concept graph generation unavailable: no enabled provider/model is configured"
+                        "learning graph generation unavailable: no enabled provider/model is configured"
                             .into(),
                     )
                 })?,
@@ -131,26 +131,18 @@ impl ConceptGraphAgentEngine for LiveConceptGraphAgentEngine {
         )
         .await?;
         let provider: Arc<dyn LlmProvider> = create_provider(&cfg);
-
-        // One session stream names every event of this generation in the
-        // shared `concept-graph-generation.log` (same file as the legacy
-        // pipeline), so a failed run stays diagnosable offline.
-        let session = LearningConceptGraphId::new().as_str().to_owned();
-        self.service.log_concept_graph_event(&session, "session_start", serde_json::json!({
-            "topic": topic,
-            "provider_id": provider_id.as_str(),
-            "model": &model,
-            "generate_max_rounds": GENERATE_MAX_ROUNDS,
-            "repair_loop_limit": REPAIR_LOOP_LIMIT,
-            "timeout_secs": TOTAL_TIMEOUT_SECS,
-        }));
+        tracing::info!(
+            topic,
+            provider = provider_id.as_str(),
+            model = %model,
+            "learning graph generation start"
+        );
 
         // The two slots are shared with the tool handlers: the draft the
-        // model opened and the record `cg_finish` published. On timeout they
+        // model opened and the record `lg_finish` published. On timeout they
         // also carry the diagnostics (draft id -> live audit report).
         let ctx = Arc::new(LoopContext {
             service: Arc::clone(&self.service),
-            session,
             topic: topic.to_owned(),
             user_id: user_id.clone(),
             model_override: Some((provider_id, model.clone())),
@@ -167,22 +159,36 @@ impl ConceptGraphAgentEngine for LiveConceptGraphAgentEngine {
             Ok(Ok(record)) => {
                 ctx.log("session_end", serde_json::json!({
                     "ok": true,
+                    "phase": "completed",
                     "record_id": record.id,
                     "nodes": record.graph.nodes.len(),
                     "edges": record.graph.edges.len(),
                 }));
+                // Persist the generation provenance next to the audit
+                // snapshot (best-effort: diagnostics only).
+                if let Ok(course_id) = parse_course_id(&record.id) {
+                    let _ = self
+                        .service
+                        .record_learning_graph_generation(
+                            &course_id,
+                            ctx.model_override.as_ref().map(|(p, _)| p.as_str()).unwrap_or(""),
+                            &model,
+                        )
+                        .await;
+                }
                 Ok(record)
             }
             Ok(Err(error)) => {
                 ctx.log("session_end", serde_json::json!({
                     "ok": false,
+                    "phase": "failed",
                     "error": error.to_string(),
                 }));
                 Err(error)
             }
             Err(_) => {
                 let mut message = format!(
-                    "concept graph agent timed out after {TOTAL_TIMEOUT_SECS}s"
+                    "learning graph agent timed out after {TOTAL_TIMEOUT_SECS}s"
                 );
                 if let Some(draft_id) = ctx
                     .draft_slot
@@ -190,7 +196,7 @@ impl ConceptGraphAgentEngine for LiveConceptGraphAgentEngine {
                     .ok()
                     .and_then(|slot| slot.clone())
                 {
-                    match self.service.audit_concept_graph_draft(&draft_id) {
+                    match self.service.audit_learning_graph_draft(&draft_id) {
                         Ok(audit) => {
                             message.push_str(&format!(
                                 "\ndraft {draft_id} survives; its audit state:\n{audit}"
@@ -205,6 +211,7 @@ impl ConceptGraphAgentEngine for LiveConceptGraphAgentEngine {
                 }
                 ctx.log("session_end", serde_json::json!({
                     "ok": false,
+                    "phase": "failed",
                     "error": "timeout",
                 }));
                 Err(AppError::Internal(message))
@@ -213,7 +220,7 @@ impl ConceptGraphAgentEngine for LiveConceptGraphAgentEngine {
     }
 }
 
-impl LiveConceptGraphAgentEngine {
+impl LiveLearningGraphAgentEngine {
     /// Generation loop, then audit-gated repair loops. `provider` is
     /// injected so tests stub the LLM here (same seam as
     /// `run_one_shot_turn_with_provider`).
@@ -223,13 +230,14 @@ impl LiveConceptGraphAgentEngine {
         model: &str,
         topic: &str,
         ctx: Arc<LoopContext>,
-    ) -> Result<ConceptGraphRecord, AppError> {
+    ) -> Result<LearningGraphRecord, AppError> {
         // ── Generation loop: full tool set, the topic as the user turn ──
         ctx.log("generate_loop_start", serde_json::json!({
+            "phase": "generating",
             "max_rounds": GENERATE_MAX_ROUNDS,
-            "tool_count": concept_graph_tools(Arc::clone(&ctx), true).len(),
+            "tool_count": learning_graph_tools(Arc::clone(&ctx), true).len(),
         }));
-        let generate_tools = concept_graph_tools(Arc::clone(&ctx), true);
+        let generate_tools = learning_graph_tools(Arc::clone(&ctx), true);
         let final_text = run_agent_loop(
             provider.clone(),
             model,
@@ -244,24 +252,25 @@ impl LiveConceptGraphAgentEngine {
         .await?;
         if let Some(record) = take_published(&ctx) {
             ctx.log("publish_ok", serde_json::json!({
+                "phase": "publishing",
+                "loop": "generate",
                 "record_id": record.id,
-                "phase": "generate",
             }));
             return Ok(record);
         }
         let draft_id = ctx
             .draft_slot
             .lock()
-            .map_err(|_| AppError::Internal("concept graph draft slot poisoned".into()))?
+            .map_err(|_| AppError::Internal("learning graph draft slot poisoned".into()))?
             .clone()
             .ok_or_else(|| {
                 ctx.log("generate_loop_end", serde_json::json!({
                     "ok": false,
-                    "reason": "no draft created (cg_start never called)",
+                    "reason": "no draft created (lg_start never called)",
                     "text": log_text(&final_text),
                 }));
                 AppError::Internal(
-                    "concept graph agent finished without creating a draft (cg_start was never called)"
+                    "learning graph agent finished without creating a draft (lg_start was never called)"
                         .into(),
                 )
             })?;
@@ -272,7 +281,7 @@ impl LiveConceptGraphAgentEngine {
         }));
 
         // ── Repair loops: the audit gate has the last word ──────────────
-        // `finish_concept_graph_draft` IS the deterministic gate: success
+        // `finish_learning_graph_draft` IS the deterministic gate: success
         // means the graph cleared it, UnprocessableEntity means danger
         // findings remain and the repair loop gets the full report.
         // `idle_nudge` carries a warning into the next loop when the model
@@ -281,19 +290,21 @@ impl LiveConceptGraphAgentEngine {
         let mut idle_nudge: Option<String> = None;
         for round in 0..REPAIR_LOOP_LIMIT {
             ctx.log("repair_loop_start", serde_json::json!({
+                "phase": "repairing",
                 "round": round + 1,
                 "draft_id": draft_id,
             }));
             match ctx
                 .service
-                .finish_concept_graph_draft(&ctx.user_id, &draft_id)
+                .finish_learning_graph_draft(&ctx.user_id, &draft_id)
                 .await
             {
                 Ok(record) => {
                     ctx.log("publish_ok", serde_json::json!({
-                        "record_id": record.id,
-                        "phase": "repair",
+                        "phase": "publishing",
+                        "loop": "repair",
                         "round": round + 1,
+                        "record_id": record.id,
                     }));
                     return Ok(record);
                 }
@@ -305,15 +316,15 @@ impl LiveConceptGraphAgentEngine {
                 }
                 Err(error) => return Err(error),
             }
-            let audit = ctx.service.audit_concept_graph_draft(&draft_id)?;
+            let audit = ctx.service.audit_learning_graph_draft(&draft_id)?;
             let repair_user = match &idle_nudge {
                 Some(nudge) => format!("{nudge}\n\n{audit}"),
                 None => audit,
             };
-            let repair_tools = concept_graph_tools(Arc::clone(&ctx), false);
+            let repair_tools = learning_graph_tools(Arc::clone(&ctx), false);
             let revision_before = ctx
                 .service
-                .inspect_concept_graph_draft(&draft_id)?
+                .inspect_learning_graph_draft(&draft_id)?
                 .revision;
             let final_text = run_agent_loop(
                 provider.clone(),
@@ -329,15 +340,16 @@ impl LiveConceptGraphAgentEngine {
             .await?;
             if let Some(record) = take_published(&ctx) {
                 ctx.log("publish_ok", serde_json::json!({
-                    "record_id": record.id,
-                    "phase": "repair",
+                    "phase": "publishing",
+                    "loop": "repair",
                     "round": round + 1,
+                    "record_id": record.id,
                 }));
                 return Ok(record);
             }
             let revision_after = ctx
                 .service
-                .inspect_concept_graph_draft(&draft_id)?
+                .inspect_learning_graph_draft(&draft_id)?
                 .revision;
             if revision_after == revision_before {
                 ctx.log("repair_loop_idle", serde_json::json!({
@@ -347,7 +359,7 @@ impl LiveConceptGraphAgentEngine {
                 }));
                 idle_nudge = Some(format!(
                     "警告：你上一轮没有对草稿做任何修改（revision 仍是 {revision_after}），只回复了文字。\
-                     禁止空手结束：本轮必须调用 cg_patch 执行修复动作，或以 cg_finish 尝试发布；\
+                     禁止空手结束：本轮必须调用 lg_patch 执行修复动作，或以 lg_finish 尝试发布；\
                      只输出文字而不调用任何工具，会被判定为拒绝修复，整个生成将以失败告终。"
                 ));
             } else {
@@ -363,12 +375,12 @@ impl LiveConceptGraphAgentEngine {
 
         // Budget exhausted: report honestly with the surviving findings
         // (the draft is kept, so a human or a later run can continue).
-        let audit = ctx.service.audit_concept_graph_draft(&draft_id)?;
+        let audit = ctx.service.audit_learning_graph_draft(&draft_id)?;
         ctx.log("repair_budget_exhausted", serde_json::json!({
             "draft_id": draft_id,
         }));
         Err(AppError::UnprocessableEntity(format!(
-            "concept graph agent exhausted {REPAIR_LOOP_LIMIT} repair loops; the draft survives with these blocking findings:\n{audit}"
+            "learning graph agent exhausted {REPAIR_LOOP_LIMIT} repair loops; the draft survives with these blocking findings:\n{audit}"
         )))
     }
 }
@@ -377,24 +389,54 @@ impl LiveConceptGraphAgentEngine {
 
 /// Everything the tool handlers need, captured once per generation. The two
 /// slots are the only mutable cross-round state: which draft is active and
-/// which record (if any) was published by `cg_finish`. `session` names this
-/// generation's event stream in the shared concept-graph log file.
+/// which record (if any) was published by `lg_finish`.
 struct LoopContext {
     service: Arc<LearningService>,
-    session: String,
     topic: String,
     user_id: UserId,
     model_override: Option<(ProviderId, String)>,
     draft_slot: Arc<Mutex<Option<String>>>,
-    published_slot: Arc<Mutex<Option<ConceptGraphRecord>>>,
+    published_slot: Arc<Mutex<Option<LearningGraphRecord>>>,
 }
 
 impl LoopContext {
-    /// Append one JSON-line event to the shared concept-graph log (the same
-    /// `concept-graph-generation.log` the legacy pipeline writes). Best-effort.
+    /// Mirror loop events onto the `learning.course-generation` WebSocket
+    /// stream (the shared progress channel — no session files). Best-effort
+    /// and never fails the caller.
     fn log(&self, event: &str, fields: serde_json::Value) {
-        self.service
-            .log_concept_graph_event(&self.session, event, fields);
+        self.emit_progress(event, &fields);
+    }
+
+    /// Translate loop-core log events into `learning.course-generation`
+    /// frames, tagged `kind: "learning_graph"`. `agent_round` carries the
+    /// loop-core shape (loop/round/text/tool_calls) and is reshaped; events
+    /// with a `phase` field pass through with the tag added; anything else
+    /// is loop-internal and stays off the wire.
+    fn emit_progress(&self, event: &str, fields: &serde_json::Value) {
+        let payload = match event {
+            "agent_round" => {
+                let repair =
+                    fields.get("loop").and_then(serde_json::Value::as_str) != Some("generate");
+                serde_json::json!({
+                    "kind": "learning_graph",
+                    "phase": "round",
+                    "loop": fields.get("loop"),
+                    "round": fields.get("round"),
+                    "max_rounds": if repair { REPAIR_MAX_ROUNDS } else { GENERATE_MAX_ROUNDS },
+                    "tools": fields.get("tool_calls").cloned().unwrap_or_default(),
+                    "text": fields.get("text").cloned().unwrap_or_default(),
+                })
+            }
+            _other if fields.get("phase").is_some() => {
+                let mut payload = fields.clone();
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("kind".to_owned(), serde_json::json!("learning_graph"));
+                }
+                payload
+            }
+            _ => return,
+        };
+        self.service.emit_course_event(payload);
     }
 
     fn require_draft(&self) -> Result<String, String> {
@@ -402,7 +444,7 @@ impl LoopContext {
             .lock()
             .map_err(|_| "internal draft slot lock failed".to_owned())?
             .clone()
-            .ok_or_else(|| "没有活动的草稿——请先调用 cg_start".to_owned())
+            .ok_or_else(|| "没有活动的草稿——请先调用 lg_start".to_owned())
     }
 }
 
@@ -413,31 +455,39 @@ impl LoopEventSink for LoopContext {
 }
 
 /// Take the published record out of the slot (once) — called after every
-/// loop, because the model may legitimately `cg_finish` from either loop.
-fn take_published(ctx: &LoopContext) -> Option<ConceptGraphRecord> {
+/// loop, because the model may legitimately `lg_finish` from either loop.
+fn take_published(ctx: &LoopContext) -> Option<LearningGraphRecord> {
     ctx.published_slot
         .lock()
         .ok()
         .and_then(|mut slot| slot.take())
 }
 
+/// Parse the published record id (a `learning_courses.course_id` string)
+/// into the typed id for the provenance write. The slot only ever holds a
+/// record produced by `finish_learning_graph_draft`, so failure here is
+/// impossible in practice — the caller treats it as best-effort regardless.
+fn parse_course_id(raw: &str) -> Result<LearningCourseId, String> {
+    LearningCourseId::parse(raw).map_err(|error| error.to_string())
+}
+
 // ── Tool set ───────────────────────────────────────────────────────────────
 
-/// The `cg_*` whitelist. `with_start` adds `cg_start` (generation loop
+/// The `lg_*` whitelist. `with_start` adds `lg_start` (generation loop
 /// only — the repair loop must never re-scope a finished draft, and an
 /// unlisted tool name fails closed at the loop level).
-fn concept_graph_tools(ctx: Arc<LoopContext>, with_start: bool) -> Vec<OneShotTool> {
+fn learning_graph_tools(ctx: Arc<LoopContext>, with_start: bool) -> Vec<OneShotTool> {
     let mut tools = Vec::with_capacity(8);
     if with_start {
-        tools.push(cg_start(Arc::clone(&ctx)));
+        tools.push(lg_start(Arc::clone(&ctx)));
     }
-    tools.push(cg_inspect(Arc::clone(&ctx)));
-    tools.push(cg_query(Arc::clone(&ctx)));
-    tools.push(cg_subgraph(Arc::clone(&ctx)));
-    tools.push(cg_audit(Arc::clone(&ctx)));
-    tools.push(cg_scope(Arc::clone(&ctx)));
-    tools.push(cg_patch(Arc::clone(&ctx)));
-    tools.push(cg_finish(Arc::clone(&ctx)));
+    tools.push(lg_inspect(Arc::clone(&ctx)));
+    tools.push(lg_query(Arc::clone(&ctx)));
+    tools.push(lg_subgraph(Arc::clone(&ctx)));
+    tools.push(lg_audit(Arc::clone(&ctx)));
+    tools.push(lg_scope(Arc::clone(&ctx)));
+    tools.push(lg_patch(Arc::clone(&ctx)));
+    tools.push(lg_finish(Arc::clone(&ctx)));
     tools
 }
 
@@ -445,10 +495,10 @@ fn concept_graph_tools(ctx: Arc<LoopContext>, with_start: bool) -> Vec<OneShotTo
 /// keeps non-ASCII; this is the single formatting seam for tool replies) and
 /// the truncation/stop-reason helpers live in `loop_core` — re-imported here.
 
-fn cg_start(ctx: Arc<LoopContext>) -> OneShotTool {
+fn lg_start(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
-        name: "cg_start".into(),
-        description: "启动概念图草稿：先运行范围分析，返回 draft_id 与 scope 覆盖清单（大块概念）。这是你的第一个工具调用；幂等——已有活动草稿时直接返回现有草稿。".into(),
+        name: "lg_start".into(),
+        description: "启动学习图草稿：先运行范围分析，返回 draft_id 与 scope 覆盖清单（大块概念）。这是你的第一个工具调用；幂等——已有活动草稿时直接返回现有草稿。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -467,7 +517,7 @@ fn cg_start(ctx: Arc<LoopContext>) -> OneShotTool {
                     .trim();
                 if topic != ctx.topic {
                     return Err(format!(
-                        "cg_start: topic 必须与任务主题完全一致——收到 '{}'，任务主题是 '{}'",
+                        "lg_start: topic 必须与任务主题完全一致——收到 '{}'，任务主题是 '{}'",
                         topic, ctx.topic
                     ));
                 }
@@ -478,14 +528,14 @@ fn cg_start(ctx: Arc<LoopContext>) -> OneShotTool {
                 if let Some(existing) = ctx
                     .draft_slot
                     .lock()
-                    .map_err(|_| "cg_start: 内部锁故障".to_owned())?
+                    .map_err(|_| "lg_start: 内部锁故障".to_owned())?
                     .clone()
                 {
                     let view = ctx
                         .service
-                        .inspect_concept_graph_draft(&existing)
+                        .inspect_learning_graph_draft(&existing)
                         .map_err(|error| error.to_string())?;
-                    return Ok(format!("已有活动草稿（cg_start 幂等返回）：{}", json_compact(&view)));
+                    return Ok(format!("已有活动草稿（lg_start 幂等返回）：{}", json_compact(&view)));
                 }
                 let model_override = ctx
                     .model_override
@@ -493,22 +543,22 @@ fn cg_start(ctx: Arc<LoopContext>) -> OneShotTool {
                     .map(|(provider, model)| (provider, model.as_str()));
                 let view = ctx
                     .service
-                    .create_concept_graph_draft(&ctx.topic, focus.as_deref(), model_override)
+                    .create_learning_graph_draft(&ctx.topic, focus.as_deref(), model_override)
                     .await
                     .map_err(|error| error.to_string())?;
                 *ctx.draft_slot
                     .lock()
-                    .map_err(|_| "cg_start: 内部锁故障".to_owned())? = Some(view.draft_id.clone());
+                    .map_err(|_| "lg_start: 内部锁故障".to_owned())? = Some(view.draft_id.clone());
                 Ok(format!("草稿已创建：{}", json_compact(&view)))
             }
         }),
     }
 }
 
-fn cg_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
+fn lg_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
-        name: "cg_inspect".into(),
-        description: "当前草稿全局概览：节点/边数、总分钟预算、各范围块的单元分布、入口/终点单元、审计摘要。每次 cg_patch 前后调用，保持全局认知。".into(),
+        name: "lg_inspect".into(),
+        description: "当前草稿全局概览：节点/边数、总分钟预算、各范围块的单元分布、入口/终点单元、审计摘要。每次 lg_patch 前后调用，保持全局认知。".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         handler: one_shot_handler(move |_input| {
             let ctx = Arc::clone(&ctx);
@@ -516,7 +566,7 @@ fn cg_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
                 let draft_id = ctx.require_draft()?;
                 let view = ctx
                     .service
-                    .inspect_concept_graph_draft(&draft_id)
+                    .inspect_learning_graph_draft(&draft_id)
                     .map_err(|error| error.to_string())?;
                 Ok(json_compact(&view))
             }
@@ -524,10 +574,10 @@ fn cg_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
-fn cg_query(ctx: Arc<LoopContext>) -> OneShotTool {
+fn lg_query(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
-        name: "cg_query".into(),
-        description: "按名称子串 / 重叠词过滤列出单元：返回 id、分钟预算、直接前置与直接后继。任何 cg_patch 之前先查询，确保引用的名字与图中完全一致。limit 上限 200，防止上下文爆炸。".into(),
+        name: "lg_query".into(),
+        description: "按名称子串 / 重叠词过滤列出单元：返回 id、分钟预算、直接前置与直接后继。任何 lg_patch 之前先查询，确保引用的名字与图中完全一致。limit 上限 200，防止上下文爆炸。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -558,7 +608,7 @@ fn cg_query(ctx: Arc<LoopContext>) -> OneShotTool {
                 };
                 let list = ctx
                     .service
-                    .query_concept_graph_draft(&draft_id, query)
+                    .query_learning_graph_draft(&draft_id, query)
                     .map_err(|error| error.to_string())?;
                 Ok(json_compact(&list))
             }
@@ -566,9 +616,9 @@ fn cg_query(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
-fn cg_subgraph(ctx: Arc<LoopContext>) -> OneShotTool {
+fn lg_subgraph(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
-        name: "cg_subgraph".into(),
+        name: "lg_subgraph".into(),
         description: "查看某区域的依赖局部图：围绕给定单元展开前置（ancestors）/ 后继（descendants）闭包，返回局部 DAG 的节点与边。编辑某区域前先看清它的依赖结构。".into(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -594,7 +644,7 @@ fn cg_subgraph(ctx: Arc<LoopContext>) -> OneShotTool {
                     })
                     .unwrap_or_default();
                 if nodes.is_empty() {
-                    return Err("cg_subgraph: nodes 必须是至少一个单元名的数组".into());
+                    return Err("lg_subgraph: nodes 必须是至少一个单元名的数组".into());
                 }
                 let direction = match input
                     .get("direction")
@@ -605,7 +655,7 @@ fn cg_subgraph(ctx: Arc<LoopContext>) -> OneShotTool {
                     Some("both") => SubgraphDirection::Both,
                     _ => {
                         return Err(
-                            "cg_subgraph: direction 必须是 ancestors / descendants / both".into()
+                            "lg_subgraph: direction 必须是 ancestors / descendants / both".into()
                         );
                     }
                 };
@@ -615,7 +665,7 @@ fn cg_subgraph(ctx: Arc<LoopContext>) -> OneShotTool {
                     .map(|value| value as usize);
                 let view = ctx
                     .service
-                    .subgraph_concept_graph_draft(&draft_id, nodes, direction, depth)
+                    .subgraph_learning_graph_draft(&draft_id, nodes, direction, depth)
                     .map_err(|error| error.to_string())?;
                 Ok(json_compact(&view))
             }
@@ -623,9 +673,9 @@ fn cg_subgraph(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
-fn cg_audit(ctx: Arc<LoopContext>) -> OneShotTool {
+fn lg_audit(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
-        name: "cg_audit".into(),
+        name: "lg_audit".into(),
         description: "完整确定性审计报告：每条 finding 的级别、类型、证据与修复提示，以及 scope 对照覆盖情况（大块概念未落地）。修复 loop 的主要输入；发布前的最终自查也用它。".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         handler: one_shot_handler(move |_input| {
@@ -633,16 +683,16 @@ fn cg_audit(ctx: Arc<LoopContext>) -> OneShotTool {
             async move {
                 let draft_id = ctx.require_draft()?;
                 ctx.service
-                    .audit_concept_graph_draft(&draft_id)
+                    .audit_learning_graph_draft(&draft_id)
                     .map_err(|error| error.to_string())
             }
         }),
     }
 }
 
-fn cg_scope(ctx: Arc<LoopContext>) -> OneShotTool {
+fn lg_scope(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
-        name: "cg_scope".into(),
+        name: "lg_scope".into(),
         description: "返回 scope 范围参考全文：大块概念清单——生成阶段的严格完备覆盖自查表。构建前先取回它，逐项核对你的计划，确保每个大块概念都不遗漏。".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         handler: one_shot_handler(move |_input| {
@@ -651,20 +701,20 @@ fn cg_scope(ctx: Arc<LoopContext>) -> OneShotTool {
                 let draft_id = ctx.require_draft()?;
                 match ctx
                     .service
-                    .scope_reference_concept_graph_draft(&draft_id)
+                    .scope_reference_learning_graph_draft(&draft_id)
                     .map_err(|error| error.to_string())?
                 {
                     Some(reference) => Ok(reference),
-                    None => Ok("本草稿没有 scope 参考（范围分析不可用时降级）；以 cg_audit 的覆盖检查为准".into()),
+                    None => Ok("本草稿没有 scope 参考（范围分析不可用时降级）；以 lg_audit 的覆盖检查为准".into()),
                 }
             }
         }),
     }
 }
 
-fn cg_patch(ctx: Arc<LoopContext>) -> OneShotTool {
+fn lg_patch(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
-        name: "cg_patch".into(),
+        name: "lg_patch".into(),
         description: "批量应用图操作（add/link/unlink/set_pre/reverse/split/merge/update/delete），一次调用就是一个批次。操作按数组顺序执行，后面的操作可以引用本批前面 add 的名字。返回每个操作的成功/拒绝明细 + 最新审计摘要。\n\n各操作语义：\n- add：新增单元，pre 是直接前置名列表，min 是分钟预算。\n- link：在两个已有单元之间补一条缺失的依赖边 from -> to。\n- unlink：仅移除一条依赖边 from -> to，两个单元都保留——发现关系画错（而非方向画反）时用它；reverse 只适合改方向。\n- set_pre：把 target 的前置集合整体替换为 pre（完整集合语义），一步完成'删错边+接对边'；前置画错或多余时优先用它。\n- reverse：把已有边 from -> to 翻转为 to -> from。\n- split / merge / update / delete：拆分、合并、改名或改预算；delete 会删除单元及其触及的所有边。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add\", \"name\": \"用几何概括法临摹静物\", \"pre\": [], \"min\": 20},\n  {\"op\": \"add\", \"name\": \"使用一点透视绘制空间\", \"pre\": [\"用几何概括法临摹静物\"], \"min\": 25},\n  {\"op\": \"unlink\", \"from\": \"使用一点透视绘制空间\", \"to\": \"画布与画笔准备\"},\n  {\"op\": \"link\", \"from\": \"画布与画笔准备\", \"to\": \"用几何概括法临摹静物\"},\n  {\"op\": \"set_pre\", \"target\": \"使用一点透视绘制空间\", \"pre\": [\"用几何概括法临摹静物\", \"画布与画笔准备\"]}\n]}\n\n引用规则：add 的 pre、set_pre 的 pre 和 link/unlink/reverse 的 from/to 必须与图中已有名字（或本批前面 add 的名字）完全一致，不一致的操作会被拒绝并附最近似的名字提示。每批 5-15 个操作，宁多批勿超长。".into(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -698,13 +748,13 @@ fn cg_patch(ctx: Arc<LoopContext>) -> OneShotTool {
                 let operations =
                     input.get("operations").cloned().unwrap_or(serde_json::Value::Null);
                 let ops: Vec<GraphOp> = serde_json::from_value(operations)
-                    .map_err(|error| format!("cg_patch: operations 必须是图操作数组——{error}"))?;
+                    .map_err(|error| format!("lg_patch: operations 必须是图操作数组——{error}"))?;
                 if ops.is_empty() {
-                    return Err("cg_patch: operations 不能为空".into());
+                    return Err("lg_patch: operations 不能为空".into());
                 }
                 let report = ctx
                     .service
-                    .patch_concept_graph_draft(&draft_id, ops)
+                    .patch_learning_graph_draft(&draft_id, ops)
                     .map_err(|error| error.to_string())?;
                 Ok(json_compact(&report))
             }
@@ -712,10 +762,10 @@ fn cg_patch(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
-fn cg_finish(ctx: Arc<LoopContext>) -> OneShotTool {
+fn lg_finish(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
-        name: "cg_finish".into(),
-        description: "发布草稿为正式概念图记录。确定性审计门禁有最终决定权：存在 danger 级 findings 时发布被阻塞，返回完整阻塞报告（草稿保留，可继续修复）。只有 cg_audit 确认无 danger 时才调用。".into(),
+        name: "lg_finish".into(),
+        description: "发布草稿为正式学习图记录。确定性审计门禁有最终决定权：存在 danger 级 findings 时发布被阻塞，返回完整阻塞报告（草稿保留，可继续修复）。只有 lg_audit 确认无 danger 时才调用。".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         handler: one_shot_handler(move |_input| {
             let ctx = Arc::clone(&ctx);
@@ -723,16 +773,16 @@ fn cg_finish(ctx: Arc<LoopContext>) -> OneShotTool {
                 let draft_id = ctx.require_draft()?;
                 match ctx
                     .service
-                    .finish_concept_graph_draft(&ctx.user_id, &draft_id)
+                    .finish_learning_graph_draft(&ctx.user_id, &draft_id)
                     .await
                 {
                     Ok(record) => {
                         *ctx.published_slot
                             .lock()
-                            .map_err(|_| "cg_finish: 内部锁故障".to_owned())? =
+                            .map_err(|_| "lg_finish: 内部锁故障".to_owned())? =
                             Some(record.clone());
                         Ok(format!(
-                            "概念图已发布：id={}，主题={}，{} 个单元 / {} 条边。",
+                            "学习图已发布：id={}，主题={}，{} 个单元 / {} 条边。",
                             record.id,
                             record.topic,
                             record.graph.nodes.len(),
@@ -858,8 +908,8 @@ mod tests {
         }
     }
 
-    /// A service wired with the fake completer and a scratch concept-graph
-    /// dir; the temp dir stays alive for the test's duration.
+    /// A service wired with the fake completer and a scratch knowledge dir;
+    /// the temp dir stays alive for the test's duration.
     async fn test_service() -> (Arc<LearningService>, tempfile::TempDir) {
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
@@ -878,12 +928,11 @@ mod tests {
         ));
         let service = Arc::new(LearningService::new(database.pool().clone()));
         service.set_generation_dependencies(knowledge_service, Arc::new(FakeCompleter));
-        service.set_concept_graph_dir(dir.path().to_owned());
         (service, dir)
     }
 
-    fn engine(service: Arc<LearningService>) -> LiveConceptGraphAgentEngine {
-        LiveConceptGraphAgentEngine {
+    fn engine(service: Arc<LearningService>) -> LiveLearningGraphAgentEngine {
+        LiveLearningGraphAgentEngine {
             service,
             deps: OneShotDeps {
                 provider_repo: Arc::new(ListOnlyRepo(Vec::new())),
@@ -899,13 +948,12 @@ mod tests {
     ) -> (
         Arc<LoopContext>,
         Arc<Mutex<Option<String>>>,
-        Arc<Mutex<Option<ConceptGraphRecord>>>,
+        Arc<Mutex<Option<LearningGraphRecord>>>,
     ) {
         let draft_slot = Arc::new(Mutex::new(None));
         let published_slot = Arc::new(Mutex::new(None));
         let ctx = Arc::new(LoopContext {
             service,
-            session: "test-session".into(),
             topic: "数学基础".into(),
             user_id: UserId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
             model_override: None,
@@ -921,21 +969,21 @@ mod tests {
     async fn generation_loop_exposes_exactly_the_whitelist() {
         let (service, _dir) = test_service().await;
         let (ctx, _draft, _published) = context(service);
-        let tools = concept_graph_tools(Arc::clone(&ctx), true);
+        let tools = learning_graph_tools(Arc::clone(&ctx), true);
         let names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
         assert_eq!(
             names,
             vec![
-                "cg_start", "cg_inspect", "cg_query", "cg_subgraph", "cg_audit", "cg_scope",
-                "cg_patch", "cg_finish"
+                "lg_start", "lg_inspect", "lg_query", "lg_subgraph", "lg_audit", "lg_scope",
+                "lg_patch", "lg_finish"
             ]
         );
 
-        // Round 1: the model asks cg_inspect before any draft exists — the
+        // Round 1: the model asks lg_inspect before any draft exists — the
         // handler must answer with a guidance error, never panic.
         let provider = ScriptedProvider::new(vec![
             vec![
-                tool_use("cg_inspect", serde_json::json!({})),
+                tool_use("lg_inspect", serde_json::json!({})),
                 done(StopReason::ToolUse),
             ],
             vec![LlmEvent::TextDelta("understood".into()), done(StopReason::EndTurn)],
@@ -970,7 +1018,7 @@ mod tests {
         assert!(matches!(
             &last.content[0],
             ContentBlock::ToolResult { is_error: true, content, .. }
-                if content.contains("cg_start")
+                if content.contains("lg_start")
         ));
     }
 
@@ -1004,12 +1052,12 @@ mod tests {
         assert!(matches!(&error, AppError::BadGateway(message) if message.contains("exceeded 2 tool rounds")));
     }
 
-    /// 空图必须被审计门禁拦截：生成 loop 里模型过早 cg_finish（一个单元
+    /// 空图必须被审计门禁拦截：生成 loop 里模型过早 lg_finish（一个单元
     /// 都没建）→ 发布被拒（empty_graph danger）→ 修复 loop 补建完整网络
     /// → 第二轮门禁通过并发布。绝不能以空图收尾（前端会渲染成空白图）。
     #[tokio::test]
     async fn empty_graph_is_blocked_until_repaired_and_published() {
-        let (service, dir) = test_service().await;
+        let (service, _dir) = test_service().await;
         let (ctx, _draft, _published) = context(Arc::clone(&service));
 
         // Repair batch: n2/n3 branch off n1; n4/n5 converge two threads
@@ -1028,12 +1076,12 @@ mod tests {
         }
 
         let provider = ScriptedProvider::new(vec![
-            // ── generation loop: cg_start, then a premature cg_finish ──
+            // ── generation loop: lg_start, then a premature lg_finish ──
             vec![
-                tool_use("cg_start", serde_json::json!({ "topic": "数学基础" })),
+                tool_use("lg_start", serde_json::json!({ "topic": "数学基础" })),
                 done(StopReason::ToolUse),
             ],
-            vec![tool_use("cg_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![tool_use("lg_finish", serde_json::json!({})), done(StopReason::ToolUse)],
             vec![
                 LlmEvent::TextDelta("发布被拒，需要先构建单元".into()),
                 done(StopReason::EndTurn),
@@ -1041,7 +1089,7 @@ mod tests {
             // ── repair loop 1: build the whole network in one patch ──
             vec![
                 tool_use(
-                    "cg_patch",
+                    "lg_patch",
                     serde_json::json!({ "operations": operations }),
                 ),
                 done(StopReason::ToolUse),
@@ -1054,8 +1102,9 @@ mod tests {
             .unwrap();
         assert_eq!(record.topic, "数学基础");
         assert_eq!(record.graph.nodes.len(), 30, "repaired graph publishes");
-        assert_eq!(record.user_id, "0190f5fe-7c00-7a00-8000-000000000001");
-        // The premature cg_finish was rejected with the empty_graph finding.
+        // The published record id is the graph course's id.
+        assert!(nomifun_common::LearningCourseId::parse(&record.id).is_ok());
+        // The premature lg_finish was rejected with the empty_graph finding.
         let rounds = provider.seen_messages.lock().unwrap();
         let rejected = rounds.iter().flat_map(|round| round.iter()).any(|message| {
             matches!(
@@ -1065,22 +1114,20 @@ mod tests {
             )
         });
         assert!(rejected, "an empty graph must be rejected by the audit gate");
-        // The JSON record was persisted like the legacy pipeline's output
-        // (the directory also holds the concept-graph generation log).
-        let files: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-            .collect();
-        assert_eq!(files.len(), 1, "exactly one published record");
+        // The published graph lives in the database (the SQLite publish
+        // replaced the legacy JSON directory) — exactly one learning-graph
+        // course with the full repaired node set.
+        let published = service.list_learning_graphs().await.unwrap();
+        assert_eq!(published.len(), 1, "exactly one published record");
+        assert_eq!(published[0].node_count, 30, "the repaired graph publishes");
     }
 
     /// 修复 loop：生成 loop 只铺了 2 个单元（coverage danger）——发布被
     /// 门禁阻塞；修复 loop 补齐到 30 个且收敛结构（3 个多父节点）后通过。
-    /// 修复 loop 的工具面必须不含 cg_start。
+    /// 修复 loop 的工具面必须不含 lg_start。
     #[tokio::test]
     async fn repair_loop_fixes_danger_findings_before_publish() {
-        let (service, dir) = test_service().await;
+        let (service, _dir) = test_service().await;
         let (ctx, _draft, _published) = context(Arc::clone(&service));
 
         // Repair batch: n3 branches off n1; n4/n5 converge two threads each;
@@ -1099,12 +1146,12 @@ mod tests {
         let provider = ScriptedProvider::new(vec![
             // ── generation loop ──
             vec![
-                tool_use("cg_start", serde_json::json!({ "topic": "数学基础" })),
+                tool_use("lg_start", serde_json::json!({ "topic": "数学基础" })),
                 done(StopReason::ToolUse),
             ],
             vec![
                 tool_use(
-                    "cg_patch",
+                    "lg_patch",
                     serde_json::json!({
                         "operations": [
                             add_op("n1", &[]),
@@ -1114,13 +1161,13 @@ mod tests {
                 ),
                 done(StopReason::ToolUse),
             ],
-            // The model declares the generation done WITHOUT cg_finish; the
+            // The model declares the generation done WITHOUT lg_finish; the
             // gate blocks the publish (2 < 30 units) and the repair loop
             // starts.
             vec![LlmEvent::TextDelta("done".into()), done(StopReason::EndTurn)],
             // ── repair loop ──
             vec![
-                tool_use("cg_patch", serde_json::json!({ "operations": operations })),
+                tool_use("lg_patch", serde_json::json!({ "operations": operations })),
                 done(StopReason::ToolUse),
             ],
             vec![LlmEvent::TextDelta("fixed".into()), done(StopReason::EndTurn)],
@@ -1137,22 +1184,17 @@ mod tests {
         assert_eq!(seen.len(), 5, "3 generation rounds + 2 repair rounds");
         for round in &seen[3..] {
             assert!(
-                !round.iter().any(|name| name == "cg_start"),
-                "the repair loop must never expose cg_start: {round:?}"
+                !round.iter().any(|name| name == "lg_start"),
+                "the repair loop must never expose lg_start: {round:?}"
             );
         }
-        assert_eq!(
-            std::fs::read_dir(dir.path())
-                .unwrap()
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-                .count(),
-            1,
-            "one published record"
-        );
+        // The SQLite publish replaced the legacy JSON directory.
+        let published = service.list_learning_graphs().await.unwrap();
+        assert_eq!(published.len(), 1, "one published record");
+        assert_eq!(published[0].edge_count, 33, "2 + 28 adds, 3 multi-parent joins");
     }
 
-    /// 模型从未调用 cg_start 就宣告完成：无草稿可发布，明确报错。
+    /// 模型从未调用 lg_start 就宣告完成：无草稿可发布，明确报错。
     #[tokio::test]
     async fn finishing_without_a_draft_fails() {
         let (service, _dir) = test_service().await;
@@ -1177,11 +1219,11 @@ mod tests {
         let provider = ScriptedProvider::new(vec![
             // generation loop: one unit only
             vec![
-                tool_use("cg_start", serde_json::json!({ "topic": "数学基础" })),
+                tool_use("lg_start", serde_json::json!({ "topic": "数学基础" })),
                 done(StopReason::ToolUse),
             ],
             vec![
-                tool_use("cg_patch", serde_json::json!({ "operations": [add_op("n1", &[])] })),
+                tool_use("lg_patch", serde_json::json!({ "operations": [add_op("n1", &[])] })),
                 done(StopReason::ToolUse),
             ],
             vec![LlmEvent::TextDelta("done".into()), done(StopReason::EndTurn)],

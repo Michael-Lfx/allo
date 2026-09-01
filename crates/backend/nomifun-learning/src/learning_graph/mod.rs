@@ -1,4 +1,4 @@
-//! Experimental concept-graph feature: decompose a broad learning goal into a
+//! Learning-graph feature (beta): decompose a broad learning goal into a
 //! network of LEARNING UNITS linked by task-dependency edges — a complete DAG.
 //! A unit is one human study session, usually within 30 minutes (soft cap); a
 //! genuinely hard single lesson may go up to 60 (hard cap). Unit names are
@@ -6,18 +6,19 @@
 //! sub-domains ("概率基础" is meaningless as a unit).
 //!
 //! Generation runs EXCLUSIVELY through the agent tool loop
-//! ([`ConceptGraphAgentEngine`], implemented in nomifun-ai-agent): a scope
+//! ([`LearningGraphAgentEngine`], implemented in nomifun-ai-agent): a scope
 //! call first resolves the coverage checklist, then the agent builds the
-//! network step by step with the `cg_*` draft tools ([`crate::concept_graph::draft`])
+//! network step by step with the `lg_*` draft tools ([`crate::learning_graph::draft`])
 //! and publishes only through the deterministic audit gate
-//! ([`crate::concept_graph::audit`]). The former one-shot generation +
+//! ([`crate::learning_graph::audit`]). The former one-shot generation +
 //! auto-repair pipeline has been retired; this module keeps the shared
 //! symbolic kernel (normalization, fuzzy reference resolution, cycle
 //! removal, merge), the scope analysis and the audit report renderer the
 //! agent path reuses.
 //!
-//! Published graphs are persisted by [`crate::service::LearningService`] as
-//! JSON files so the UI can revisit them without regenerating.
+//! Published graphs are persisted by [`crate::service::LearningService`] into
+//! the database (graph course + lesson nodes + prerequisite edges) so the UI
+//! can revisit them without regenerating.
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,13 +29,8 @@ use crate::completer::LearningCompleter;
 
 mod audit;
 pub mod draft;
-mod log;
 
-pub(crate) use audit::{
-    common_substring_len, audit_concept_graph, audit_concept_graph_with_scope, BLOCK_MIN_SHARED,
-    SEV_DANGER, SEV_INFO, SEV_WARNING,
-};
-pub(crate) use log::ConceptGraphLogger;
+pub(crate) use audit::{common_substring_len, BLOCK_MIN_SHARED, SEV_DANGER, SEV_INFO, SEV_WARNING};
 
 /// One node in the graph — a LEARNING UNIT: one human study session,
 /// usually within 30 minutes (soft cap), at most 60 for a genuinely hard
@@ -42,7 +38,7 @@ pub(crate) use log::ConceptGraphLogger;
 /// learner does in the session ("用配方法解一元二次方程"), never a concept
 /// noun. `min` carries the estimated workload; the audit enforces the caps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConceptGraphNode {
+pub struct LearningGraphNode {
     pub id: String,
     pub title: String,
     /// Estimated study time in minutes (the prompt asks for 5-minute steps
@@ -63,7 +59,7 @@ pub struct ConceptGraphNode {
 
 /// A prerequisite edge: `from` should be mastered before `to`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConceptGraphEdge {
+pub struct LearningGraphEdge {
     pub from: String,
     pub to: String,
     /// Why `from` must precede `to` (model-provided, optional).
@@ -73,7 +69,7 @@ pub struct ConceptGraphEdge {
 
 /// Deterministic structural audit report attached to a stored graph.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConceptGraphAudit {
+pub struct LearningGraphAudit {
     /// References the model emitted that no node satisfied — the missing
     /// concept proxy. Counts unknown references, self loops, duplicates and
     /// cycle edges dropped during normalization/merge.
@@ -119,44 +115,44 @@ pub struct AuditFinding {
 
 /// The validated, cycle-free DAG payload shared by storage and API.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConceptGraphData {
-    pub nodes: Vec<ConceptGraphNode>,
-    pub edges: Vec<ConceptGraphEdge>,
+pub struct LearningGraphData {
+    pub nodes: Vec<LearningGraphNode>,
+    pub edges: Vec<LearningGraphEdge>,
     #[serde(default)]
-    pub audit: ConceptGraphAudit,
+    pub audit: LearningGraphAudit,
 }
 
-/// A stored concept graph as returned to the UI.
+/// A stored learning graph as returned to the UI. Courses are installation
+/// global, so unlike the legacy JSON files there is no owner field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConceptGraphRecord {
+pub struct LearningGraphRecord {
     pub id: String,
-    pub user_id: String,
     pub topic: String,
     #[serde(flatten)]
-    pub graph: ConceptGraphData,
+    pub graph: LearningGraphData,
     pub created_at: i64,
 }
 
 /// Agent-driven concept graph generation seam — mirrors [`LearningCompleter`]:
 /// the learning crate holds only the trait; the two-loop agent engine is
-/// implemented in nomifun-ai-agent. When injected, `generate_concept_graph`
-/// routes through the agent tool set (draft + `cg_*` tools, audit-gated
+/// implemented in nomifun-ai-agent. When injected, `generate_learning_graph`
+/// routes through the agent tool set (draft + `lg_*` tools, audit-gated
 /// publish) instead of the one-shot legacy pipeline, which stays as the
 /// fallback so tests and direct calls keep working unconfigured.
 #[async_trait::async_trait]
-pub trait ConceptGraphAgentEngine: Send + Sync {
+pub trait LearningGraphAgentEngine: Send + Sync {
     /// Run the two-loop agent generation; returns the published record.
     async fn generate(
         &self,
         user_id: &UserId,
         topic: &str,
         model_override: Option<(&str, &str)>,
-    ) -> Result<ConceptGraphRecord, AppError>;
+    ) -> Result<LearningGraphRecord, AppError>;
 }
 
 /// List entry without the full node/edge payload.
 #[derive(Debug, Clone, Serialize)]
-pub struct ConceptGraphSummary {
+pub struct LearningGraphSummary {
     pub id: String,
     pub topic: String,
     pub node_count: usize,
@@ -164,9 +160,9 @@ pub struct ConceptGraphSummary {
     pub created_at: i64,
 }
 
-impl ConceptGraphRecord {
-    pub fn summary(&self) -> ConceptGraphSummary {
-        ConceptGraphSummary {
+impl LearningGraphRecord {
+    pub fn summary(&self) -> LearningGraphSummary {
+        LearningGraphSummary {
             id: self.id.clone(),
             topic: self.topic.clone(),
             node_count: self.graph.nodes.len(),
@@ -177,7 +173,7 @@ impl ConceptGraphRecord {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct GenerateConceptGraphRequest {
+pub struct GenerateLearningGraphRequest {
     pub topic: String,
     #[serde(default)]
     pub provider_id: Option<nomifun_common::ProviderId>,
@@ -249,10 +245,10 @@ where
 /// statistics. Used by the generation loop and the repair stage.
 #[derive(Debug, Clone)]
 pub(crate) struct NormalizedBatch {
-    pub nodes: Vec<ConceptGraphNode>,
+    pub nodes: Vec<LearningGraphNode>,
     /// Edges whose references resolved; may still contain cycles (removed
     /// by [`finalize_graph`]).
-    pub edges: Vec<ConceptGraphEdge>,
+    pub edges: Vec<LearningGraphEdge>,
     /// Total prerequisite entries the model emitted (drop-rate denominator).
     pub raw_refs: usize,
     /// References dropped during normalization (unknown/self/duplicate).
@@ -274,7 +270,7 @@ pub(crate) fn normalize_batch(
 ) -> NormalizedBatch {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut kept: Vec<bool> = Vec::with_capacity(raw.len());
-    let mut nodes: Vec<ConceptGraphNode> = Vec::new();
+    let mut nodes: Vec<LearningGraphNode> = Vec::new();
     let mut raw_refs = 0usize;
     for concept in raw {
         raw_refs += concept.pre.len();
@@ -284,7 +280,7 @@ pub(crate) fn normalize_batch(
         if !is_kept {
             continue;
         }
-        nodes.push(ConceptGraphNode {
+        nodes.push(LearningGraphNode {
             id: name.to_owned(),
             title: name.to_owned(),
             min: concept.min,
@@ -295,7 +291,7 @@ pub(crate) fn normalize_batch(
     }
 
     let mut seen_edges: HashSet<(String, String)> = HashSet::new();
-    let mut edges: Vec<ConceptGraphEdge> = Vec::new();
+    let mut edges: Vec<LearningGraphEdge> = Vec::new();
     let mut dropped: Vec<DroppedEdge> = Vec::new();
     let mut fuzzy_resolved: Vec<(String, String)> = Vec::new();
     for (concept, is_kept) in raw.iter().zip(&kept) {
@@ -351,7 +347,7 @@ pub(crate) fn normalize_batch(
                 });
                 continue;
             }
-            edges.push(ConceptGraphEdge {
+            edges.push(LearningGraphEdge {
                 from: resolved,
                 to: to.to_owned(),
                 reason: None,
@@ -500,11 +496,11 @@ pub(crate) fn remove_cycle_edges(
 /// the published graph is always a DAG, and fold the drop statistics into a
 /// fresh audit shell (findings are filled by the audit stage).
 fn finalize_graph(
-    nodes: Vec<ConceptGraphNode>,
-    edges: Vec<ConceptGraphEdge>,
+    nodes: Vec<LearningGraphNode>,
+    edges: Vec<LearningGraphEdge>,
     mut dropped: Vec<DroppedEdge>,
     raw_refs: usize,
-) -> ConceptGraphData {
+) -> LearningGraphData {
     let order: Vec<String> = nodes.iter().map(|node| node.id.clone()).collect();
     let edge_pairs: Vec<(String, String)> = edges
         .iter()
@@ -523,7 +519,7 @@ fn finalize_graph(
             reason: "cycle".into(),
         });
     }
-    let audit = ConceptGraphAudit {
+    let audit = LearningGraphAudit {
         ref_drop_count: dropped.len(),
         raw_ref_count: raw_refs,
         ref_drop_rate: if raw_refs == 0 {
@@ -534,7 +530,7 @@ fn finalize_graph(
         dropped_edges: dropped,
         findings: Vec::new(),
     };
-    ConceptGraphData {
+    LearningGraphData {
         nodes,
         edges: final_edges,
         audit,
@@ -547,7 +543,7 @@ fn finalize_graph(
 /// patch cannot re-add an edge whose endpoint never existed — because the
 /// orphaned-units audit keys on those entries; resetting them would blind
 /// the re-audit to exactly the units the repair was supposed to reconnect).
-pub(crate) fn merge_batch(graph: &ConceptGraphData, batch: &NormalizedBatch) -> ConceptGraphData {
+pub(crate) fn merge_batch(graph: &LearningGraphData, batch: &NormalizedBatch) -> LearningGraphData {
     let mut nodes = graph.nodes.clone();
     let mut node_keys: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
     for node in &batch.nodes {
@@ -625,68 +621,32 @@ fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
     })
 }
 
-/// One scope call, best-effort: any failure is logged and degrades to `None`
-/// so the generation call still runs without a reference (pre-scope
-/// behavior). Also the draft store's scope resolver (`cg_start`).
+/// One scope call, best-effort: any failure degrades to `None` so the
+/// generation call still runs without a reference (pre-scope behavior).
+/// Also the draft store's scope resolver (`lg_start`). Progress is reported
+/// through the caller's event channel, never through files.
 pub(crate) async fn analyze_scope(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     topic: &str,
-    log: Option<&ConceptGraphLogger>,
 ) -> Option<ScopeAnalysis> {
-    if let Some(log) = log {
-        log.log("scope_start", serde_json::json!({ "topic": topic }));
-    }
     let user = format!("Learning goal: {topic}");
-    let started = std::time::Instant::now();
-    let raw = match crate::generation::complete(
+    let raw = crate::generation::complete(
         completer,
         model_override,
         SCOPE_SYSTEM,
         &user,
-        crate::generation::CONCEPT_GRAPH_SCOPE_MAX_TOKENS,
+        crate::generation::LEARNING_GRAPH_SCOPE_MAX_TOKENS,
     )
     .await
-    {
-        Ok(raw) => raw,
-        Err(error) => {
-            if let Some(log) = log {
-                log.log("scope_error", serde_json::json!({ "error": error.to_string() }));
-            }
-            return None;
-        }
-    };
-    if let Some(log) = log {
-        log.log(
-            "scope_reply",
-            serde_json::json!({ "duration_ms": started.elapsed().as_millis(), "reply": raw, "shape": log::reply_shape(&raw) }),
-        );
-    }
-    match parse_scope_reply(&raw) {
-        Some(scope) => {
-            if let Some(log) = log {
-                log.log(
-                    "scope_parsed",
-                    serde_json::json!({
-                        "blocks": scope.blocks.len(),
-                    }),
-                );
-            }
-            Some(scope)
-        }
-        None => {
-            if let Some(log) = log {
-                log.log("scope_failed", serde_json::json!({ "reply_head": raw.chars().take(200).collect::<String>() }));
-            }
-            None
-        }
-    }
+    .ok()?;
+    parse_scope_reply(&raw)
 }
 
 /// Render the audit state as a model-readable report: size, dropped
 /// references with their names, and every finding with its evidence.
 /// The draft kernel's `audit_report` builds on it, so it is crate-visible.
-pub(crate) fn format_audit_report(graph: &ConceptGraphData) -> String {
+pub(crate) fn format_audit_report(graph: &LearningGraphData) -> String {
     let mut lines = vec![format!(
         "Generated graph: {} concepts, {} edges",
         graph.nodes.len(),
@@ -861,8 +821,8 @@ mod tests {
         // a -> b -> a is a cycle; the back edge is dropped and counted.
         let graph = finalize_graph(
             vec![unit("a"), unit("b")],
-            vec![ConceptGraphEdge { from: "a".into(), to: "b".into(), reason: None },
-                 ConceptGraphEdge { from: "b".into(), to: "a".into(), reason: None }],
+            vec![LearningGraphEdge { from: "a".into(), to: "b".into(), reason: None },
+                 LearningGraphEdge { from: "b".into(), to: "a".into(), reason: None }],
             Vec::new(),
             2,
         );
@@ -872,8 +832,8 @@ mod tests {
         assert_eq!(graph.audit.dropped_edges[0].reason, "cycle");
     }
 
-    fn unit(name: &str) -> ConceptGraphNode {
-        ConceptGraphNode {
+    fn unit(name: &str) -> LearningGraphNode {
+        LearningGraphNode {
             id: name.to_owned(),
             title: name.to_owned(),
             min: None,
@@ -883,18 +843,18 @@ mod tests {
         }
     }
 
-    fn graph_of(nodes: &[&str], edges: &[(&str, &str)]) -> ConceptGraphData {
-        ConceptGraphData {
+    fn graph_of(nodes: &[&str], edges: &[(&str, &str)]) -> LearningGraphData {
+        LearningGraphData {
             nodes: nodes.iter().map(|name| unit(name)).collect(),
             edges: edges
                 .iter()
-                .map(|(from, to)| ConceptGraphEdge {
+                .map(|(from, to)| LearningGraphEdge {
                     from: (*from).to_owned(),
                     to: (*to).to_owned(),
                     reason: None,
                 })
                 .collect(),
-            audit: ConceptGraphAudit::default(),
+            audit: LearningGraphAudit::default(),
         }
     }
 
@@ -996,7 +956,7 @@ mod tests {
             "edges": [{"from": "a", "to": "b"}],
             "created_at": 1
         }"#;
-        let record: ConceptGraphRecord = serde_json::from_str(json).unwrap();
+        let record: LearningGraphRecord = serde_json::from_str(json).unwrap();
         assert_eq!(record.graph.nodes[0].min, None);
         assert_eq!(record.graph.nodes[0].group, None);
         assert_eq!(record.graph.audit.ref_drop_count, 0);

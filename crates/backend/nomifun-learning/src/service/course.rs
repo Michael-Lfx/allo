@@ -209,7 +209,7 @@ impl LearningService {
 
     pub async fn list_courses(&self, user_id: &UserId) -> Result<Vec<CourseSummary>, AppError> {
         let rows = sqlx::query(
-            "SELECT c.course_id, c.title, c.description, c.domain, c.source_kb_id, c.version, c.updated_at, \
+            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.version, c.updated_at, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -243,7 +243,7 @@ impl LearningService {
     ) -> Result<CourseDetail, AppError> {
         let user_value = user_id.map(UserId::as_str);
         let row = sqlx::query(
-            "SELECT c.course_id, c.title, c.description, c.domain, c.source_kb_id, c.version, c.updated_at, \
+            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.version, c.updated_at, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -350,7 +350,21 @@ impl LearningService {
         let concepts = self
             .course_concepts(course_id, enrollment_id.as_ref())
             .await?;
-        let next_lesson_id = recommend_next_lesson(&modules, &concepts);
+        // 学习图课程：大纲被「下一步推荐节点」取代——next_lesson_id 不参与，
+        // 换成图视图（结构 + 就绪集推荐 ≤10）。传统课程路径零变化。
+        let graph = if course.course_kind == CourseKind::LearningGraph {
+            Some(
+                self.assemble_learning_graph_view(course_id, &modules)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let next_lesson_id = if graph.is_some() {
+            None
+        } else {
+            recommend_next_lesson(&modules, &concepts)
+        };
         let due_review_count = if let Some(enrollment_id) = &enrollment_id {
             // Items are seeded per objective question when the lesson is
             // completed, so every row already represents a due-able card.
@@ -375,6 +389,7 @@ impl LearningService {
             concepts,
             next_lesson_id,
             due_review_count,
+            graph,
         })
     }
 
@@ -532,6 +547,7 @@ impl LearningService {
                     SELECT module_id FROM learning_modules WHERE course_id = ?)",
                 "DELETE FROM learning_concept_prerequisites WHERE concept_id IN (\
                     SELECT concept_id FROM learning_concepts WHERE course_id = ?)",
+                "DELETE FROM learning_graph_prerequisites WHERE course_id = ?",
                 "DELETE FROM learning_concepts WHERE course_id = ?",
                 "DELETE FROM learning_modules WHERE course_id = ?",
             ];
@@ -697,7 +713,9 @@ pub(super) fn recommend_next_lesson(
     for lesson in lessons
         .iter()
         .copied()
-        .filter(|lesson| lesson.status != LessonStatus::Completed)
+        // skipped 与 completed 同为「已满足」：跳过的节点不再作为 next_lesson
+        // 推荐（学习图的推荐走图视图就绪集，这里只影响传统课程的防御语义）。
+        .filter(|lesson| !lesson.status.satisfies())
     {
         if lesson.concepts.is_empty() {
             return Some(lesson.id.clone());
@@ -946,6 +964,8 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         title: row.try_get("title").map_err(internal)?,
         description: row.try_get("description").map_err(internal)?,
         domain: row.try_get("domain").map_err(internal)?,
+        course_kind: CourseKind::try_from(row.try_get::<String, _>("course_kind").map_err(internal)?.as_str())
+            .map_err(AppError::Internal)?,
         source_kb_id,
         version: row.try_get("version").map_err(internal)?,
         enrolled: row.try_get::<i64, _>("enrolled").map_err(internal)? != 0,

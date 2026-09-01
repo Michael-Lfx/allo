@@ -69,7 +69,7 @@ pub use id::{
     CsAgentId, CsNoteId,
     EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID,
     IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId,
-    LearningActivityId, LearningAttemptId, LearningConceptGraphId, LearningConceptId,
+    LearningActivityId, LearningAttemptId, LearningGraphId, LearningConceptId,
     LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,
     LearningReviewItemId, LearningTagId,
     McpServerId, MessageId,

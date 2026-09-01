@@ -1,5 +1,5 @@
 mod completer;
-mod concept_graph;
+mod learning_graph;
 mod course_outline;
 mod events;
 mod generation;
@@ -23,26 +23,26 @@ pub use course_outline::draft::{
 };
 
 pub use lesson_draft::{
-    LessonContentAgentEngine, LessonDraftView, LessonExcerpt, LessonGenerationContext,
-    LessonInspectView, LessonOp, LessonPatchReport,
+    GraphLessonContext, LessonContentAgentEngine, LessonDraftView, LessonExcerpt,
+    LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 
 pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput};
 
-pub use concept_graph::{
-    ConceptGraphAgentEngine, ConceptGraphData, ConceptGraphEdge, ConceptGraphNode,
-    ConceptGraphRecord, ConceptGraphSummary, GenerateConceptGraphRequest,
+pub use learning_graph::{
+    GenerateLearningGraphRequest, LearningGraphAgentEngine, LearningGraphAudit, LearningGraphData,
+    LearningGraphEdge, LearningGraphNode, LearningGraphRecord, LearningGraphSummary,
 };
 
-pub use concept_graph::draft::{
+pub use learning_graph::draft::{
     DraftView, GraphOp, InspectView, NodeListView, NodeQuery, PatchReport, SplitUnit,
     SubgraphDirection, SubgraphView,
 };
 
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, ConceptPack, ConceptView, CourseDetail,
-    CourseGenerationMode, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan, DueReview,
-    GenerateCourseRequest, GenerateLessonRequest, LessonStatus, LessonView, ModuleView,
+    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
+    DueReview, GenerateCourseRequest, GenerateLessonRequest, LessonStatus, LessonView, ModuleView,
     RateReviewRequest, ReviewRating, ReviewResult, SourceSpan, SubmitAttemptRequest,
     UpdateLessonProgressRequest,
 };

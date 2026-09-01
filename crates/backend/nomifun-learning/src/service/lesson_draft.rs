@@ -84,7 +84,7 @@ impl LearningService {
         if draft
             .findings
             .iter()
-            .any(|finding| finding.severity == crate::concept_graph::SEV_DANGER)
+            .any(|finding| finding.severity == crate::learning_graph::SEV_DANGER)
         {
             return Err(AppError::UnprocessableEntity(format!(
                 "lesson draft still fails the audit gate:\n{}",

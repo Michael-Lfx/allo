@@ -58,7 +58,7 @@ pub struct CourseGenerationRequest {
     /// Only "on_demand" is supported today (default): the outline is imported
     /// immediately and each lesson's body is generated when the learner opens
     /// it. Kept as an extension point for future generation strategies (e.g.
-    /// a concept-graph-driven mode).
+    /// a learning-graph-driven mode).
     pub mode: Option<String>,
 }
 
