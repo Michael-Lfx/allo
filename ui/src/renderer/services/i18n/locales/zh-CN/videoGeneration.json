@@ -1021,6 +1021,13 @@
     "download": "下载成片",
     "noVideo": "成片尚未就绪。生成完成后会在此播放 briefing.mp4：原作资讯卡按拍时长拼接，有配音文件时混入音轨。",
     "openWorkspace": "打开资讯播报工作台",
+    "composePrep": "正在准备 {{total}} 张资讯卡",
+    "composeClip": "已完成 {{current}} / {{total}} 拍 · {{card}}",
+    "composeConcat": "正在拼接各拍画面",
+    "composeMux": "正在混入配音",
+    "composeWait": "正在逐拍编码资讯卡",
+    "composeElapsed": "已用时 {{clock}}",
+    "stillWorking": "这一步会逐张编码画面，进度会持续刷新，不是卡住了。",
     "card": {
       "title_desk": "片头条",
       "evidence_tour": "证据栏",
@@ -1041,7 +1048,7 @@
       "researching": "交叉引用独立域名",
       "scripting": "每拍必须带出处",
       "aligning": "词级时间轴",
-      "composing": "原作卡面 + 可选氛围图"
+      "composing": "逐拍编码资讯卡，进度会持续更新"
     },
     "status": {
       "idle": "待开始",

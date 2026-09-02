@@ -75,10 +75,28 @@ export interface BriefingPlan {
   confirmed: boolean;
 }
 
+export interface BriefingProgressEvent {
+  stage: string;
+  message: string;
+  metadata?: BriefingComposeProgress | null;
+  at?: string;
+}
+
+export interface BriefingComposeProgress {
+  phase?: string;
+  step?: number;
+  total?: number;
+  card?: string;
+  index?: number;
+  message?: string;
+}
+
 export interface BriefingRunSnapshot {
   status: BriefingStatus | string;
   stage: string;
   message: string;
+  events?: BriefingProgressEvent[];
+  updated_at?: string;
   final_video?: string | null;
 }
 

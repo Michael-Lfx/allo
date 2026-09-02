@@ -1021,6 +1021,13 @@
     "download": "Download cut",
     "noVideo": "The MP4 is not ready yet. After generate, this player shows briefing.mp4 (original news-card plates timed to beats; narration is muxed when an audio file is present).",
     "openWorkspace": "Open briefing workspace",
+    "composePrep": "Preparing {{total}} cards",
+    "composeClip": "{{current}} / {{total}} clips · {{card}}",
+    "composeConcat": "Stitching clips",
+    "composeMux": "Mixing narration",
+    "composeWait": "Encoding news cards, one beat at a time",
+    "composeElapsed": "Elapsed {{clock}}",
+    "stillWorking": "This step encodes each card. Progress keeps updating — it is not stuck.",
     "card": {
       "title_desk": "Opening desk",
       "evidence_tour": "Evidence split",
@@ -1041,7 +1048,7 @@
       "researching": "Independent domains only",
       "scripting": "Every beat is cited",
       "aligning": "Word-level timing",
-      "composing": "Original cards, optional stills"
+      "composing": "Encodes each beat; progress updates as clips finish"
     },
     "status": {
       "idle": "Ready",

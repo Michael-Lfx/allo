@@ -9,8 +9,8 @@
  * Card roles follow a news-briefing shot list (open / evidence / highlight /
  * numeral / ticker / chip / wipe / lower-third) with original geometry.
  */
-import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,11 +35,44 @@ function argValue(flag) {
 }
 
 function ffmpeg(args) {
-  return spawnSync('ffmpeg', args, { encoding: 'utf8' });
+  return new Promise((resolvePromise) => {
+    const child = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args], {
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+      if (stderr.length > 4000) stderr = stderr.slice(-2000);
+    });
+    child.on('error', () => resolvePromise({ status: 1, stderr }));
+    child.on('close', (code) => resolvePromise({ status: code ?? 1, stderr }));
+  });
 }
 
 function ffmpegOk(result) {
   return result.status === 0;
+}
+
+function writeProgress(inputDir, payload) {
+  const body = `${JSON.stringify({ ...payload, at: new Date().toISOString() })}\n`;
+  const tmp = join(inputDir, 'compose-progress.json.tmp');
+  writeFileSync(tmp, body);
+  renameSync(tmp, join(inputDir, 'compose-progress.json'));
+}
+
+async function runPool(count, limit, worker) {
+  let next = 0;
+  const n = Math.min(Math.max(1, limit), count);
+  await Promise.all(
+    Array.from({ length: n }, async () => {
+      while (next < count) {
+        const index = next;
+        next += 1;
+        await worker(index);
+      }
+    })
+  );
 }
 
 function escapeDrawtext(text) {
@@ -282,71 +315,13 @@ function drawtextFilters(font, beat) {
 }
 
 function motionFilter(card, duration, textFilter) {
-  const frames = Math.max(45, Math.round(Number(duration) * 30));
-  const ken =
-    card === 'title_desk' || card === 'evidence_tour'
-      ? `scale=2048:1152,zoompan=z='min(1.04+0.0004*on,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1920x1080:fps=30`
-      : null;
-  if (ken && textFilter) return `${ken},${textFilter}`;
-  if (ken) return ken;
+  void card;
+  void duration;
   return textFilter;
 }
 
-const input = argValue('--input');
-if (!input) {
-  console.error('usage: node cli.mjs --input <working_dir>');
-  process.exit(2);
-}
-
-const beatsPath = join(input, 'beats.json');
-if (!existsSync(beatsPath)) {
-  console.error('missing beats.json');
-  process.exit(1);
-}
-
-const payload = JSON.parse(readFileSync(beatsPath, 'utf8'));
-const beats = payload.beats ?? [];
-const timing = payload.timing ?? (existsSync(join(input, 'timing.json'))
-  ? JSON.parse(readFileSync(join(input, 'timing.json'), 'utf8'))
-  : { chunks: [] });
-const errors = [];
-for (const beat of beats) {
-  if (!catalog.includes(beat.card)) {
-    errors.push(`unknown card ${beat.card}`);
-  }
-}
-
-const stillsDir = join(input, 'stills');
-const clipsDir = join(input, 'clips');
-mkdirSync(stillsDir, { recursive: true });
-mkdirSync(clipsDir, { recursive: true });
-
-if (errors.length) {
-  writeFileSync(join(input, 'qa.json'), JSON.stringify({ ok: false, errors }, null, 2));
-  console.error(errors.join('\n'));
-  process.exit(1);
-}
-
-if (beats.length === 0) {
-  console.error('no beats');
-  process.exit(1);
-}
-
-const font = findFont();
-const logs = [];
-const concatLines = [];
-
-for (let i = 0; i < beats.length; i += 1) {
-  const beat = beats[i];
-  const ppm = join(stillsDir, `${String(i).padStart(3, '0')}-${beat.card}.ppm`);
-  const clip = join(clipsDir, `${String(i).padStart(3, '0')}.mp4`);
-  writePpm(ppm, beat.card);
-  const atmosphere = findAtmosphere(stillsDir, i);
-  const still = atmosphere ?? ppm;
-  const duration = beatDuration(beat, timing).toFixed(3);
-  const textFilter = font ? drawtextFilters(font, beat) : null;
-  const vf = motionFilter(beat.card, duration, textFilter);
-  const baseArgs = [
+async function encodeClip(still, duration, vf, clip) {
+  const common = [
     '-y',
     '-loop',
     '1',
@@ -355,93 +330,217 @@ for (let i = 0; i < beats.length; i += 1) {
     '-i',
     still,
     '-t',
-    duration,
+    String(duration),
+    '-an',
     '-pix_fmt',
     'yuv420p',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-tune',
+    'stillimage',
   ];
-  const attempts = [];
-  if (vf) {
-    attempts.push([...baseArgs, '-vf', vf, '-c:v', 'libx264', clip]);
-    attempts.push([...baseArgs, '-vf', vf, clip]);
-  }
-  attempts.push([...baseArgs, '-c:v', 'libx264', clip]);
-  attempts.push([...baseArgs, clip]);
-  let encoded = false;
+  const attempts = vf ? [[...common, '-vf', vf, clip], [...common, clip]] : [[...common, clip]];
   for (const args of attempts) {
-    const result = ffmpeg(args);
-    if (ffmpegOk(result) && existsSync(clip)) {
-      encoded = true;
-      break;
-    }
-    logs.push(`encode retry ${beat.card}: ${(result.stderr || '').slice(-240)}`);
+    const result = await ffmpeg(args);
+    if (ffmpegOk(result) && existsSync(clip)) return { ok: true, stderr: '' };
   }
-  if (!encoded) {
-    logs.push(`clip failed ${beat.card}`);
-    writeFileSync(join(input, 'compose.log'), logs.join('\n'));
+  return { ok: false, stderr: 'encode failed' };
+}
+
+const input = argValue('--input');
+if (!input) {
+  console.error('usage: node cli.mjs --input <working_dir>');
+  process.exit(2);
+}
+
+await compose(input);
+
+async function compose(inputDir) {
+  const beatsPath = join(inputDir, 'beats.json');
+  if (!existsSync(beatsPath)) {
+    console.error('missing beats.json');
     process.exit(1);
   }
-  concatLines.push(concatFileEntry(clip));
-}
 
-const listPath = join(clipsDir, 'concat.txt');
-writeFileSync(listPath, `${concatLines.join('\n')}\n`);
-const videoOnly = join(clipsDir, 'video-only.mp4');
-const out = join(input, 'briefing.mp4');
-const concat = ffmpeg([
-  '-y',
-  '-f',
-  'concat',
-  '-safe',
-  '0',
-  '-i',
-  listPath,
-  '-c:v',
-  'libx264',
-  '-pix_fmt',
-  'yuv420p',
-  '-movflags',
-  '+faststart',
-  videoOnly,
-]);
-if (!ffmpegOk(concat)) {
-  logs.push(`concat failed: ${(concat.stderr || '').slice(-1200)}`);
-  writeFileSync(join(input, 'compose.log'), logs.join('\n'));
-  process.exit(1);
-}
+  const payload = JSON.parse(readFileSync(beatsPath, 'utf8'));
+  const beats = payload.beats ?? [];
+  const timing = payload.timing ?? (existsSync(join(inputDir, 'timing.json'))
+    ? JSON.parse(readFileSync(join(inputDir, 'timing.json'), 'utf8'))
+    : { chunks: [] });
+  const errors = [];
+  for (const beat of beats) {
+    if (!catalog.includes(beat.card)) {
+      errors.push(`unknown card ${beat.card}`);
+    }
+  }
 
-const narration = findNarration(input);
-if (narration) {
-  const mux = ffmpeg([
+  const stillsDir = join(inputDir, 'stills');
+  const clipsDir = join(inputDir, 'clips');
+  mkdirSync(stillsDir, { recursive: true });
+  mkdirSync(clipsDir, { recursive: true });
+
+  if (errors.length) {
+    writeFileSync(join(inputDir, 'qa.json'), JSON.stringify({ ok: false, errors }, null, 2));
+    console.error(errors.join('\n'));
+    process.exit(1);
+  }
+
+  if (beats.length === 0) {
+    console.error('no beats');
+    process.exit(1);
+  }
+
+  writeProgress(inputDir, {
+    phase: 'prep',
+    step: 0,
+    total: beats.length,
+    message: `prep ${beats.length} cards`,
+  });
+
+  const font = findFont();
+  const logs = [];
+  const clips = beats.map((beat, i) => join(clipsDir, `${String(i).padStart(3, '0')}.mp4`));
+
+  for (let i = 0; i < beats.length; i += 1) {
+    const beat = beats[i];
+    const ppm = join(stillsDir, `${String(i).padStart(3, '0')}-${beat.card}.ppm`);
+    writePpm(ppm, beat.card);
+  }
+
+  let completed = 0;
+  await runPool(beats.length, 2, async (i) => {
+    const beat = beats[i];
+    const ppm = join(stillsDir, `${String(i).padStart(3, '0')}-${beat.card}.ppm`);
+    const clip = clips[i];
+    writeProgress(inputDir, {
+      phase: 'clip',
+      step: completed,
+      total: beats.length,
+      card: beat.card,
+      index: i,
+      message: `encoding ${i + 1}/${beats.length} ${beat.card}`,
+    });
+    const atmosphere = findAtmosphere(stillsDir, i);
+    const still = atmosphere ?? ppm;
+    const duration = beatDuration(beat, timing).toFixed(3);
+    const textFilter = font ? drawtextFilters(font, beat) : null;
+    const vf = motionFilter(beat.card, duration, textFilter);
+    const encoded = await encodeClip(still, duration, vf, clip);
+    if (!encoded.ok) {
+      logs.push(`clip failed ${beat.card}`);
+      writeFileSync(join(inputDir, 'compose.log'), logs.join('\n'));
+      process.exit(1);
+    }
+    completed += 1;
+    writeProgress(inputDir, {
+      phase: 'clip',
+      step: completed,
+      total: beats.length,
+      card: beat.card,
+      index: i,
+      message: `encode ${completed}/${beats.length} ${beat.card}`,
+    });
+  });
+
+  writeProgress(inputDir, {
+    phase: 'concat',
+    step: beats.length,
+    total: beats.length,
+    message: 'concat clips',
+  });
+
+  const listPath = join(clipsDir, 'concat.txt');
+  writeFileSync(listPath, `${clips.map((clip) => concatFileEntry(clip)).join('\n')}\n`);
+  const videoOnly = join(clipsDir, 'video-only.mp4');
+  const out = join(inputDir, 'briefing.mp4');
+  let concat = await ffmpeg([
     '-y',
+    '-f',
+    'concat',
+    '-safe',
+    '0',
     '-i',
-    videoOnly,
-    '-i',
-    narration,
-    '-c:v',
+    listPath,
+    '-c',
     'copy',
-    '-c:a',
-    'aac',
-    '-shortest',
     '-movflags',
     '+faststart',
-    out,
+    videoOnly,
   ]);
-  if (!ffmpegOk(mux)) {
-    logs.push(`audio mux skipped: ${(mux.stderr || '').slice(-400)}`);
-      copyFileSync(videoOnly, out);
+  if (!ffmpegOk(concat)) {
+    concat = await ffmpeg([
+      '-y',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      listPath,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-pix_fmt',
+      'yuv420p',
+      '-movflags',
+      '+faststart',
+      videoOnly,
+    ]);
   }
-} else {
-  copyFileSync(videoOnly, out);
-}
+  if (!ffmpegOk(concat)) {
+    logs.push(`concat failed: ${(concat.stderr || '').slice(-1200)}`);
+    writeFileSync(join(inputDir, 'compose.log'), logs.join('\n'));
+    process.exit(1);
+  }
 
-writeFileSync(
-  join(input, 'qa.json'),
-  JSON.stringify({ ok: true, errors: [], clips: beats.length, duration_source: 'timing.json' }, null, 2)
-);
-if (logs.length) {
-  writeFileSync(join(input, 'compose.log'), logs.join('\n'));
+  const narration = findNarration(inputDir);
+  if (narration) {
+    writeProgress(inputDir, {
+      phase: 'mux',
+      step: beats.length,
+      total: beats.length,
+      message: 'mux narration',
+    });
+    const mux = await ffmpeg([
+      '-y',
+      '-i',
+      videoOnly,
+      '-i',
+      narration,
+      '-c:v',
+      'copy',
+      '-c:a',
+      'aac',
+      '-shortest',
+      '-movflags',
+      '+faststart',
+      out,
+    ]);
+    if (!ffmpegOk(mux)) {
+      logs.push(`audio mux skipped: ${(mux.stderr || '').slice(-400)}`);
+      copyFileSync(videoOnly, out);
+    }
+  } else {
+    copyFileSync(videoOnly, out);
+  }
+
+  writeProgress(inputDir, {
+    phase: 'done',
+    step: beats.length,
+    total: beats.length,
+    message: 'briefing ready',
+  });
+  writeFileSync(
+    join(inputDir, 'qa.json'),
+    JSON.stringify({ ok: true, errors: [], clips: beats.length, duration_source: 'timing.json' }, null, 2)
+  );
+  if (logs.length) {
+    writeFileSync(join(inputDir, 'compose.log'), logs.join('\n'));
+  }
+  if (!existsSync(out)) {
+    process.exit(1);
+  }
+  console.log('wrote', out);
 }
-if (!existsSync(out)) {
-  process.exit(1);
-}
-console.log('wrote', out);

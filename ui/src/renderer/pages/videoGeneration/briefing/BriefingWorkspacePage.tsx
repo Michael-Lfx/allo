@@ -6,6 +6,7 @@ import { ArrowLeft, Download } from '@icon-park/react';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import BriefingModelFields from '../home/BriefingModelFields';
 import type { BriefingModelPick } from '../home/types';
+import { formatElapsedClock, parseEventMs } from '../progressEventElapsed';
 import {
   cancelBriefing,
   getBriefing,
@@ -15,7 +16,9 @@ import {
   briefingArtifactUrl,
   runBriefing,
   updateBriefingModels,
+  type BriefingComposeProgress,
   type BriefingPlan,
+  type BriefingRunSnapshot,
   type BriefingScript,
   type BriefingSession,
 } from './api';
@@ -74,6 +77,40 @@ function hostOf(url: string): string {
   }
 }
 
+function latestComposeMeta(run: BriefingRunSnapshot | null): BriefingComposeProgress | null {
+  const events = run?.events ?? [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event?.stage === 'compose' && event.metadata) return event.metadata;
+  }
+  return null;
+}
+
+function composePercent(meta: BriefingComposeProgress | null): number {
+  if (!meta) return 8;
+  const total = Math.max(1, Number(meta.total) || 1);
+  const step = Math.max(0, Number(meta.step) || 0);
+  switch (meta.phase) {
+    case 'prep':
+      return 6;
+    case 'clip':
+      return Math.min(90, 10 + Math.round((step / total) * 76));
+    case 'concat':
+      return 92;
+    case 'mux':
+      return 96;
+    case 'done':
+      return 100;
+    default:
+      return Math.min(90, Math.round((step / total) * 90));
+  }
+}
+
+function composeStartedMs(run: BriefingRunSnapshot | null): number | null {
+  const first = (run?.events ?? []).find((event) => event.stage === 'compose');
+  return parseEventMs(first?.at) ?? parseEventMs(run?.updated_at);
+}
+
 export default function BriefingWorkspacePage() {
   const { id = '' } = useParams();
   const { t } = useTranslation();
@@ -85,6 +122,8 @@ export default function BriefingWorkspacePage() {
   const [busy, setBusy] = useState(false);
   const [tts, setTts] = useState<BriefingModelPick | null>(null);
   const [image, setImage] = useState<BriefingModelPick | null>(null);
+  const [run, setRun] = useState<BriefingRunSnapshot | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const autoStartedRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -115,16 +154,18 @@ export default function BriefingWorkspacePage() {
     if (!id || !session) return;
     const active = STAGE_ORDER.includes(session.status as (typeof STAGE_ORDER)[number]);
     if (!active) return;
-    const timer = window.setInterval(() => {
+    const composing = String(session.status) === 'composing';
+    const tick = () => {
       void getBriefingStatus(id)
         .then((snapshot) => {
+          setRun(snapshot);
           setSession((current) =>
             current
               ? {
                   ...current,
                   status: snapshot.status,
                   stage: snapshot.stage,
-                  summary: snapshot.message,
+                  updated_at: snapshot.updated_at ?? current.updated_at,
                   final_video: snapshot.final_video,
                 }
               : current
@@ -139,9 +180,17 @@ export default function BriefingWorkspacePage() {
           }
         })
         .catch(() => undefined);
-    }, 1500);
+    };
+    tick();
+    const timer = window.setInterval(tick, composing ? 1000 : 1500);
     return () => window.clearInterval(timer);
   }, [id, load, session?.status]);
+
+  useEffect(() => {
+    if (String(session?.status) !== 'composing') return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [session?.status]);
 
   useEffect(() => {
     if (!id || !session || script) return;
@@ -155,6 +204,40 @@ export default function BriefingWorkspacePage() {
   }, [id, session?.status, script]);
 
   const running = STAGE_ORDER.includes(String(session?.status) as (typeof STAGE_ORDER)[number]);
+  const composing = String(session?.status) === 'composing';
+  const composeMeta = latestComposeMeta(run);
+  const composeTitle = (() => {
+    if (!composing) return null;
+    const total = composeMeta?.total ?? script?.beats.length ?? 0;
+    const cardKey = CARD_KEYS.includes(composeMeta?.card as (typeof CARD_KEYS)[number])
+      ? composeMeta?.card
+      : null;
+    const card = cardKey
+      ? t(`videoGeneration.briefing.card.${cardKey}`)
+      : composeMeta?.card || t('videoGeneration.briefing.stage.composing');
+    switch (composeMeta?.phase) {
+      case 'prep':
+        return t('videoGeneration.briefing.composePrep', { total });
+      case 'clip':
+        return t('videoGeneration.briefing.composeClip', {
+          current: composeMeta.step ?? 0,
+          total,
+          card,
+        });
+      case 'concat':
+        return t('videoGeneration.briefing.composeConcat');
+      case 'mux':
+        return t('videoGeneration.briefing.composeMux');
+      default:
+        return t('videoGeneration.briefing.composeWait');
+    }
+  })();
+  const composeClock = (() => {
+    if (!composing) return null;
+    const start = composeStartedMs(run);
+    if (start == null) return formatElapsedClock(0);
+    return formatElapsedClock((nowMs - start) / 1000);
+  })();
   const busyRef = useRef(false);
 
   const kickoff = useCallback(
@@ -258,8 +341,10 @@ export default function BriefingWorkspacePage() {
     if (running) {
       return {
         kicker: t('videoGeneration.briefing.deskLive'),
-        title: t('videoGeneration.briefing.runningTitle'),
-        body: session?.summary || t('videoGeneration.briefing.noVideo'),
+        title: composeTitle || t('videoGeneration.briefing.runningTitle'),
+        body: composing
+          ? t('videoGeneration.briefing.stillWorking')
+          : t('videoGeneration.briefing.noVideo'),
       };
     }
     return {
@@ -314,7 +399,13 @@ export default function BriefingWorkspacePage() {
                 {t('videoGeneration.briefing.sourceCount', { count: session.source_urls.length })}
               </span>
             </div>
-            {session.summary ? <p className={styles.summary}>{session.summary}</p> : null}
+            {composing && composeClock ? (
+              <p className={styles.summary}>
+                {t('videoGeneration.briefing.composeElapsed', { clock: composeClock })}
+              </p>
+            ) : session.summary ? (
+              <p className={styles.summary}>{session.summary}</p>
+            ) : null}
           </div>
           <div className={styles.actions}>
             <Button
@@ -392,6 +483,27 @@ export default function BriefingWorkspacePage() {
                 <p className={styles.playerEmptyKicker}>{emptyCopy.kicker}</p>
                 <p className={styles.playerEmptyTitle}>{emptyCopy.title}</p>
                 <p className={styles.playerEmptyBody}>{emptyCopy.body}</p>
+                {composing ? (
+                  <div className={styles.composeMeter}>
+                    <div
+                      className={styles.composeTrack}
+                      role='progressbar'
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={composePercent(composeMeta)}
+                    >
+                      <span
+                        className={styles.composeFill}
+                        style={{ width: `${composePercent(composeMeta)}%` }}
+                      />
+                    </div>
+                    {composeClock ? (
+                      <p className={styles.composeElapsed}>
+                        {t('videoGeneration.briefing.composeElapsed', { clock: composeClock })}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             )}
           </section>
@@ -451,7 +563,12 @@ export default function BriefingWorkspacePage() {
                 ? beat.card
                 : null;
               return (
-                <article key={beat.id} className={styles.beat}>
+                <article
+                  key={beat.id}
+                  className={`${styles.beat} ${
+                    composing && composeMeta?.index === index ? styles.beatActive : ''
+                  }`}
+                >
                   <span className={styles.beatIndex}>{String(index + 1).padStart(2, '0')}</span>
                   <span className={styles.beatCard}>
                     {cardKey

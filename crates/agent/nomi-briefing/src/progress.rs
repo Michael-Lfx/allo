@@ -73,13 +73,24 @@ pub struct RunSnapshot {
 
 impl RunSnapshot {
     pub fn emit(&mut self, stage: &str, message: &str) {
+        self.emit_meta(stage, message, None);
+    }
+
+    pub fn emit_meta(&mut self, stage: &str, message: &str, metadata: Option<Value>) {
         self.stage = stage.to_string();
         self.message = message.to_string();
         self.updated_at = chrono::Local::now().to_rfc3339();
+        if let Some(last) = self.events.last_mut() {
+            if last.stage == stage {
+                last.message = message.to_string();
+                last.metadata = metadata;
+                return;
+            }
+        }
         self.events.push(ProgressEvent {
             stage: stage.to_string(),
             message: message.to_string(),
-            metadata: None,
+            metadata,
             at: self.updated_at.clone(),
         });
         if self.events.len() > 200 {
@@ -121,5 +132,27 @@ mod tests {
         assert_eq!(briefing_event_name(RunStatus::Succeeded), Some("briefing_succeeded"));
         assert_eq!(briefing_event_name(RunStatus::Hold), Some("briefing_failed"));
         assert_ne!(briefing_event_name(RunStatus::Succeeded), Some("film_succeeded"));
+    }
+
+    #[test]
+    fn emit_meta_merges_same_stage() {
+        let mut snapshot = RunSnapshot::default();
+        snapshot.emit("compose", "compose original news cards");
+        let start_at = snapshot.events[0].at.clone();
+        snapshot.emit_meta(
+            "compose",
+            "encode 2/8 title_desk",
+            Some(serde_json::json!({"phase": "clip", "step": 2, "total": 8})),
+        );
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.message, "encode 2/8 title_desk");
+        assert_eq!(
+            snapshot.events[0].metadata.as_ref().and_then(|v| v.get("step")),
+            Some(&serde_json::json!(2))
+        );
+        snapshot.emit("export", "briefing ready");
+        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(snapshot.stage, "export");
+        assert_eq!(snapshot.events[0].at, start_at);
     }
 }
