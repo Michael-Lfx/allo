@@ -24,6 +24,7 @@ crates/backend/nomifun-app/data/
 node_modules/
 **/node_modules/
 ui/dist/
+web/dist/
 .bun/
 *.tsbuildinfo
 
@@ -101,3 +102,5 @@ Thumbs.db
 
 # Local absorb scratch (never commit)
 .absorb_tmp/
+
+.codebuddy/
