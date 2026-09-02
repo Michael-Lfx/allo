@@ -2,6 +2,7 @@
 
 import type { ConversationId, SshHostId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { IConversationMcpStatus, IProvider, TChatConversation, TProviderWithModel } from '@/common/config/storage';
 import addChatIcon from '@/renderer/assets/icons/add-chat.svg';
 import { CronJobManager } from '@/renderer/pages/cron';
@@ -28,7 +29,10 @@ import { resolveHealModel } from '../platforms/nomi/healConversationModel';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import { getConversationOrNull, seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
-import { isConversationProcessing } from '@/renderer/pages/conversation/utils/conversationRuntime';
+import {
+  getConversationRuntimeAuthority,
+  isConversationProcessing,
+} from '@/renderer/pages/conversation/utils/conversationRuntime';
 import NomiChat from '../platforms/nomi/NomiChat';
 import { useNomiModelSelection } from '../platforms/nomi/useNomiModelSelection';
 import CompanionChatPanel from '@/renderer/pages/nomi/companion/CompanionChatPanel';
@@ -255,6 +259,7 @@ const NomiConversationPanel: React.FC<{
   conversation: NomiConversation;
   sliderTitle: React.ReactNode;
 }> = ({ conversation, sliderTitle }) => {
+  const runtimeAuthority = getConversationRuntimeAuthority(conversation);
   const [collaborators, setCollaboratorsState] = useState<TExecutionModelRef[]>(() => {
     const pool = conversation.execution_model_pool;
     return pool?.mode === 'range' ? pool.models.slice(1) : [];
@@ -276,7 +281,9 @@ const NomiConversationPanel: React.FC<{
           updates: { execution_model_pool },
         });
       } catch (err) {
-        console.error('[ChatConversation] Failed to persist execution model pool:', err);
+        if (!(isBackendHttpError(err) && err.status === 409)) {
+          console.error('[ChatConversation] Failed to persist execution model pool:', err);
+        }
       }
     },
     [conversation.id],
@@ -289,19 +296,14 @@ const NomiConversationPanel: React.FC<{
     async (_provider: IProvider, modelName: string) => {
       const requestId = ++modelSelectionRequestIdRef.current;
       const run = async (): Promise<boolean> => {
-        // Newer selections supersede queued work before it can stop the
-        // conversation or persist a stale model.
+        // Newer selections supersede queued work before it can persist a stale
+        // model.
         if (requestId !== modelSelectionRequestIdRef.current) return false;
 
         const selected = {
           ..._provider,
           use_model: modelName,
         } as TProviderWithModel;
-        // Kill the running agent on model switch; it will be rebuilt with the
-        // new model on the next message.
-        await ipcBridge.conversation.stop.invoke({
-          conversation_id: conversation.id,
-        });
         if (requestId !== modelSelectionRequestIdRef.current) return false;
 
         const execution_model_pool = buildConversationModelPool(
@@ -358,11 +360,12 @@ const NomiConversationPanel: React.FC<{
   );
 
   useEffect(() => {
+    if (runtimeAuthority !== 'idle') return;
     if (!collaboratorReconciliation || collaboratorReconciliation.removed.length === 0) return;
     if (sameModelRefs(collaborators, collaboratorReconciliation.retained)) return;
     setCollaboratorsState(collaboratorReconciliation.retained);
     void persistModelPool(mainModelRef, collaboratorReconciliation.retained);
-  }, [collaboratorReconciliation, collaborators, mainModelRef, persistModelPool]);
+  }, [collaboratorReconciliation, collaborators, mainModelRef, persistModelPool, runtimeAuthority]);
 
   // Heal against the unified chat catalog (backend resolve, no heuristics).
   // On resolve failure/loading `chatGroups` is empty ⇒ resolveHealModel is a
@@ -378,6 +381,7 @@ const NomiConversationPanel: React.FC<{
   );
   const { providers: healProviders, getAvailableModels: healGetAvailable } = healPool;
   useEffect(() => {
+    if (runtimeAuthority !== 'idle') return;
     if (!healProviders.length) return;
     const saved = configService.get('nomi.defaultModel');
     const heal = resolveHealModel(
@@ -388,27 +392,33 @@ const NomiConversationPanel: React.FC<{
     );
     if (!heal) return;
     void (async () => {
-      const selected = {
-        ...heal.provider,
-        use_model: heal.use_model,
-      } as TProviderWithModel;
-      const execution_model_pool = buildConversationModelPool(
-        { provider_id: heal.provider.id, model: heal.use_model },
-        activeCollaborators,
-      );
-      if (!execution_model_pool) return;
-      const ok = await ipcBridge.conversation.update.invoke({
-        conversation_id: conversation.id,
-        updates: { model: selected, execution_model_pool, execution_template_id: null },
-      });
-      if (ok) {
-        // Silent for first-time default; only notify when replacing a stale binding.
-        if (heal.reason === 'stale') {
-          Message.info(
-            t('conversation.chat.modelHealedToDefault', {
-              model: heal.use_model,
-            }),
-          );
+      try {
+        const selected = {
+          ...heal.provider,
+          use_model: heal.use_model,
+        } as TProviderWithModel;
+        const execution_model_pool = buildConversationModelPool(
+          { provider_id: heal.provider.id, model: heal.use_model },
+          activeCollaborators,
+        );
+        if (!execution_model_pool) return;
+        const ok = await ipcBridge.conversation.update.invoke({
+          conversation_id: conversation.id,
+          updates: { model: selected, execution_model_pool, execution_template_id: null },
+        });
+        if (ok) {
+          // Silent for first-time default; only notify when replacing a stale binding.
+          if (heal.reason === 'stale') {
+            Message.info(
+              t('conversation.chat.modelHealedToDefault', {
+                model: heal.use_model,
+              }),
+            );
+          }
+        }
+      } catch (error) {
+        if (!(isBackendHttpError(error) && error.status === 409)) {
+          console.error('[ChatConversation] Failed to heal conversation model:', error);
         }
       }
     })();
@@ -420,6 +430,7 @@ const NomiConversationPanel: React.FC<{
     conversation.model?.use_model,
     healProviders,
     healGetAvailable,
+    runtimeAuthority,
     t,
   ]);
 

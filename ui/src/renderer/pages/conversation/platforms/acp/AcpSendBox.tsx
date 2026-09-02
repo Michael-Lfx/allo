@@ -147,6 +147,7 @@ const AcpSendBox: React.FC<{
   const conversationContext = useConversationContextSafe();
   const loadedMcpStatuses = conversationContext?.loadedMcpStatuses ?? [];
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
   const prepareRuntimeSync = useCallback(async () => {
     await warmupConversation(conversation_id);
@@ -166,6 +167,7 @@ const AcpSendBox: React.FC<{
     prepareRuntime: prepareRuntimeForRead,
     prepareRuntimeForMutation: prepareRuntimeSync,
     enabled: isMobile,
+    disabled: !hasHydratedRunningState || running || aiProcessing || isStopping,
     onSelectModelSuccess: () => Message.success(t('agent.model.switchSuccess')),
     onSelectModelFailed: () => Message.error(t('agent.model.switchFailed')),
   });
@@ -230,8 +232,13 @@ const AcpSendBox: React.FC<{
     setAtPath,
     setUploadFile,
   });
-  const [isStopping, setIsStopping] = useState(false);
   const isBusy = running || aiProcessing || isStopping;
+  const modelSelectionDisabled = !hasHydratedRunningState || isBusy;
+
+  useEffect(() => {
+    if (modelSelectionDisabled) setIsMobileSheetOpen(false);
+  }, [modelSelectionDisabled]);
+
   const { beginStopAttempt, getStopAttemptStatus } = useConversationStopAttemptGuard(
     conversation_id,
     getTurnStartGeneration,
@@ -722,6 +729,7 @@ Please check your local CLI tool authentication status`,
               backend={backend}
               initialModelId={initialModelId}
               waitForWarmup
+              disabled={modelSelectionDisabled}
             />
           </div>
         }

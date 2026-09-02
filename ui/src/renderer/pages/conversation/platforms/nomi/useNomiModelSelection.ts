@@ -5,6 +5,7 @@
  */
 
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
@@ -123,8 +124,14 @@ export const useNomiModelSelection = ({
         return true;
       } catch (error) {
         if (requestId !== selectionRequestIdRef.current) return false;
-        console.error('[useNomiModelSelection] Failed to switch model:', error);
-        Message.error(t('agent.model.switchFailed'));
+        // A 409 is the expected response when a turn became active between
+        // rendering the selector and submitting the mutation. Keep the
+        // current model visible and treat it as an unapplied selection rather
+        // than surfacing a failed-turn error to the user.
+        if (!(isBackendHttpError(error) && error.status === 409)) {
+          console.error('[useNomiModelSelection] Failed to switch model:', error);
+          Message.error(t('agent.model.switchFailed'));
+        }
         return false;
       } finally {
         if (pendingModelKeyRef.current === modelKey && requestId === selectionRequestIdRef.current) {

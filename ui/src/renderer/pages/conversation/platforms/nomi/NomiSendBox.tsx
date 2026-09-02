@@ -51,6 +51,7 @@ import {
   getEditResubmitOperation,
   releaseEditResubmitOperation,
   releaseEditResubmitRunner,
+  subscribeEditResubmitOperations,
   subscribeRecoverableEditResubmitOperation,
   updateEditResubmitOperation,
 } from '@/renderer/pages/conversation/Messages/editResubmitOperationController';
@@ -241,6 +242,19 @@ const NomiSendBox: React.FC<{
   const lifecycleGenerationRef = useRef(0);
   const confirmationWaitRef = useRef<(() => void) | null>(null);
   const editRunnerOwnerIdRef = useRef(uuid());
+  const [hasAdmittedEditResubmit, setHasAdmittedEditResubmit] = useState(() => {
+    const operation = getEditResubmitOperation(conversation_id);
+    return Boolean(operation && operation.phase !== 'editing');
+  });
+
+  useEffect(() => {
+    const syncEditResubmitState = () => {
+      const operation = getEditResubmitOperation(conversation_id);
+      setHasAdmittedEditResubmit(Boolean(operation && operation.phase !== 'editing'));
+    };
+    syncEditResubmitState();
+    return subscribeEditResubmitOperations(syncEditResubmitState);
+  }, [conversation_id]);
 
   useEffect(() => {
     const generation = lifecycleGenerationRef.current + 1;
@@ -458,6 +472,22 @@ const NomiSendBox: React.FC<{
     presentation.phase === 'local_pending' ||
     presentation.phase === 'accepted';
   const isBusy = showStrongBusy;
+  const modelSelectionDisabled =
+    !hasHydratedRunningState ||
+    isBusy ||
+    hasAdmittedEditResubmit ||
+    requiresConversationReset ||
+    isResettingConversation;
+
+  useEffect(() => {
+    if (!modelSelectionDisabled) return;
+    setIsMobileSheetOpen(false);
+    setActiveChatPopup((current) =>
+      current === 'model' || (current === 'strategy' && selectedChatModelOption?.family === 'auto')
+        ? null
+        : current
+    );
+  }, [modelSelectionDisabled, selectedChatModelOption?.family]);
   const { beginStopAttempt, getStopAttemptStatus } = useConversationStopAttemptGuard(
     conversation_id,
     getTurnStartGeneration,
@@ -1415,6 +1445,7 @@ const NomiSendBox: React.FC<{
 
   const handleSheetModelSelect = useCallback(
     (value: string) => {
+      if (modelSelectionDisabled) return;
       const catalogOptions = allChatModelOptions(modelSelection.modelPicker, { hasImageAttachments });
       const selected =
         value === 'flowy-auto-family'
@@ -1446,6 +1477,7 @@ const NomiSendBox: React.FC<{
       modelSelection.current_model?.use_model,
       modelSelection.handleSelectModel,
       modelSelection.modelPicker,
+      modelSelectionDisabled,
     ]
   );
 
@@ -1605,6 +1637,7 @@ const NomiSendBox: React.FC<{
                 : t(`conversation.reasoningEffort.level.${effectiveReasoningEffort}`, {
                     defaultValue: effectiveReasoningEffort ?? '',
                   }),
+            disabled: currentCatalogOption.family === 'auto' && modelSelectionDisabled,
             submenu: {
               title:
                 currentCatalogOption.family === 'auto'
@@ -1613,6 +1646,7 @@ const NomiSendBox: React.FC<{
               options: strategyOptions,
               onSelect: (key) => {
                 if (currentCatalogOption.family === 'auto') {
+                  if (modelSelectionDisabled) return;
                   if (hasImageAttachments) return;
                   const option = strategyOptions.find((item) => item.key === key);
                   const autoOption = modelSelection.modelPicker.autoModels.find((item) => item.key === option?.key);
@@ -1630,7 +1664,7 @@ const NomiSendBox: React.FC<{
     const entries: MobileActionSheetEntry[] = [
       // Locked surfaces (companion) hide the model + permission entries: model is
       // pinned to the companion profile and permission is fixed to yolo.
-      ...(hideModeSelector
+      ...(hideModeSelector || modelSelectionDisabled
         ? []
         : [
             {
@@ -1645,7 +1679,11 @@ const NomiSendBox: React.FC<{
                 emptyText: t('conversation.welcome.selectModel'),
               },
             },
-            ...(strategyEntry ? [strategyEntry] : []),
+          ]),
+      ...(hideModeSelector || !strategyEntry ? [] : [strategyEntry]),
+      ...(hideModeSelector
+        ? []
+        : [
             {
               key: 'permission',
               icon: <Shield theme='outline' size='16' />,
@@ -1697,6 +1735,7 @@ const NomiSendBox: React.FC<{
     hideModeSelector,
     isMobile,
     loadedMcpStatuses,
+    modelSelectionDisabled,
     modelSelection,
     hasImageAttachments,
     reasoningEffortLevels,
@@ -1970,6 +2009,7 @@ const NomiSendBox: React.FC<{
                       options={modelSelection.modelPicker.autoModels}
                       selected={selectedChatModelOption}
                       hasImageAttachments={hasImageAttachments}
+                      disabled={modelSelectionDisabled}
                       popupVisible={activeChatPopup === 'strategy'}
                       onPopupVisibleChange={handleStrategyPopupVisibleChange}
                       onSelect={handleAutoTierSelect}
@@ -1998,6 +2038,7 @@ const NomiSendBox: React.FC<{
                 >
                   <NomiModelSelector
                     selection={modelSelection}
+                    disabled={modelSelectionDisabled}
                     hasImageAttachments={hasImageAttachments}
                     popupVisible={activeChatPopup === 'model'}
                     onPopupVisibleChange={handleModelPopupVisibleChange}

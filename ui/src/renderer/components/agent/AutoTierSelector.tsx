@@ -142,6 +142,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
           popupVisible && 'sendbox-responsive-control-open',
           className,
         )}
+        aria-disabled={disabled || undefined}
         aria-label={`${autoTierLabel}: ${currentLabel}`}
         aria-haspopup='dialog'
         aria-controls={popupId}
