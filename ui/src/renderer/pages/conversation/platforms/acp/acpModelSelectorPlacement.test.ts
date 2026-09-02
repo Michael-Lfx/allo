@@ -32,12 +32,14 @@ describe('ACP conversation model selector placement', () => {
     const selectorSource = readSource(new URL('../../../../components/agent/AcpModelSelector.tsx', import.meta.url));
     const hookSource = readSource(new URL('../../../../hooks/agent/useAcpModelInfo.ts', import.meta.url));
 
-    expect(sendBoxSource.includes('disabled: !hasHydratedRunningState || running || aiProcessing || isStopping')).toBe(true);
+    expect(sendBoxSource.includes('isConversationModelSelectionDisabled')).toBe(true);
+    expect(sendBoxSource.includes('isBusy,')).toBe(true);
     expect(sendBoxSource.includes('disabled={modelSelectionDisabled}')).toBe(true);
     expect(sendBoxSource.includes('setIsMobileSheetOpen(false)')).toBe(true);
     expect(selectorSource.includes('disabled?: boolean')).toBe(true);
     expect(selectorSource.includes('disabled={disabled}')).toBe(true);
     expect(hookSource.includes('if (!enabled || disabled) return;')).toBe(true);
+    expect(hookSource.includes('disabledRef.current')).toBe(true);
     expect(hookSource.includes('enabled && !disabled')).toBe(true);
   });
 });

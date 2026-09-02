@@ -45,6 +45,10 @@ import NomiSessionMetricsPanel from '../platforms/nomi/NomiSessionMetricsPanel';
 import ConversationTerminalPanel from './ConversationTerminalPanel';
 import SshHostStatusPill from './SshHostStatusPill';
 import { useExecutionModelPool } from '../execution/useExecutionModelPool';
+import {
+  createConversationModelMutationCoordinator,
+  type ConversationModelMutationCoordinator,
+} from '../platforms/nomi/conversationModelMutationCoordinator';
 import { reconcileModelRefs, sameModelRefs } from '../execution/executionModelRefs';
 
 /** Check whether a specific skill is mounted on the conversation. */
@@ -260,6 +264,12 @@ const NomiConversationPanel: React.FC<{
   sliderTitle: React.ReactNode;
 }> = ({ conversation, sliderTitle }) => {
   const runtimeAuthority = getConversationRuntimeAuthority(conversation);
+  const modelMutationCoordinatorRef = useRef<ConversationModelMutationCoordinator | null>(null);
+  if (!modelMutationCoordinatorRef.current) {
+    modelMutationCoordinatorRef.current = createConversationModelMutationCoordinator();
+  }
+  const modelMutationCoordinator = modelMutationCoordinatorRef.current;
+  const [modelMutationEpoch, setModelMutationEpoch] = useState(0);
   const [collaborators, setCollaboratorsState] = useState<TExecutionModelRef[]>(() => {
     const pool = conversation.execution_model_pool;
     return pool?.mode === 'range' ? pool.models.slice(1) : [];
@@ -272,39 +282,51 @@ const NomiConversationPanel: React.FC<{
   const activeCollaborators = collaboratorReconciliation?.active ?? [];
 
   const persistModelPool = useCallback(
-    async (mainRef: TExecutionModelRef | null, collabs: TExecutionModelRef[]) => {
+    async (
+      mainRef: TExecutionModelRef | null,
+      collabs: TExecutionModelRef[],
+      observedMutationVersion: number,
+    ): Promise<boolean> => {
       const execution_model_pool = buildConversationModelPool(mainRef, collabs);
-      if (!execution_model_pool) return;
-      try {
-        await ipcBridge.conversation.update.invoke({
-          conversation_id: conversation.id,
-          updates: { execution_model_pool },
-        });
-      } catch (err) {
-        if (!(isBackendHttpError(err) && err.status === 409)) {
-          console.error('[ChatConversation] Failed to persist execution model pool:', err);
+      if (!execution_model_pool) return false;
+      return modelMutationCoordinator.enqueue(async () => {
+        if (!modelMutationCoordinator.canRunAutomaticMutation(observedMutationVersion)) {
+          return false;
         }
-      }
+        try {
+          const ok = await ipcBridge.conversation.update.invoke({
+            conversation_id: conversation.id,
+            updates: { execution_model_pool },
+          });
+          if (ok) {
+            modelMutationCoordinator.markAutomaticMutationApplied();
+          }
+          return Boolean(ok);
+        } catch (err) {
+          if (!(isBackendHttpError(err) && err.status === 409)) {
+            console.error('[ChatConversation] Failed to persist execution model pool:', err);
+          }
+          return false;
+        }
+      });
     },
-    [conversation.id],
+    [conversation.id, modelMutationCoordinator],
   );
 
   const { t } = useTranslation();
-  const modelSelectionRequestIdRef = useRef(0);
-  const modelSelectionQueueRef = useRef<Promise<void>>(Promise.resolve());
   const onSelectModel = useCallback(
     async (_provider: IProvider, modelName: string) => {
-      const requestId = ++modelSelectionRequestIdRef.current;
+      const { requestId } = modelMutationCoordinator.beginExplicitSelection();
       const run = async (): Promise<boolean> => {
         // Newer selections supersede queued work before it can persist a stale
         // model.
-        if (requestId !== modelSelectionRequestIdRef.current) return false;
+        if (!modelMutationCoordinator.isLatestExplicitSelection(requestId)) return false;
 
         const selected = {
           ..._provider,
           use_model: modelName,
         } as TProviderWithModel;
-        if (requestId !== modelSelectionRequestIdRef.current) return false;
+        if (!modelMutationCoordinator.isLatestExplicitSelection(requestId)) return false;
 
         const execution_model_pool = buildConversationModelPool(
           { provider_id: _provider.id, model: modelName },
@@ -319,7 +341,7 @@ const NomiConversationPanel: React.FC<{
           // state to Gateway delegation.
           updates: { model: selected, execution_model_pool, execution_template_id: null },
         });
-        if (requestId !== modelSelectionRequestIdRef.current) return false;
+        if (!modelMutationCoordinator.isLatestExplicitSelection(requestId)) return false;
         if (ok) {
           // Keep the default-model write inside the same serialized operation.
           // Otherwise an older fire-and-forget write could finish after a
@@ -329,17 +351,24 @@ const NomiConversationPanel: React.FC<{
         return Boolean(ok);
       };
 
-      // Serialize the actual IPC updates. A latest-request check alone is not
-      // enough: two IPC writes could otherwise complete in the opposite order
-      // and leave the older model persisted after the newer selection.
-      const operation = modelSelectionQueueRef.current.then(run, run);
-      modelSelectionQueueRef.current = operation.then(
-        () => undefined,
-        () => undefined,
-      );
-      return operation;
+      // Serialize explicit selections with automatic heal/pool reconciliation.
+      // A latest-request check alone cannot prevent an older automatic write
+      // from completing after the user's explicit selection.
+      return modelMutationCoordinator.enqueue(async () => {
+        try {
+          return await run();
+        } finally {
+          // Clear the flag inside the queued operation, before the next
+          // queued automatic reconcile is allowed to start.
+          modelMutationCoordinator.completeExplicitSelection(requestId);
+          // Re-run idle-only automatic reconciliation after an explicit
+          // selection settles. An effect may have observed the in-flight
+          // selection and intentionally deferred its stale snapshot.
+          setModelMutationEpoch((epoch) => epoch + 1);
+        }
+      });
     },
-    [activeCollaborators, conversation.id],
+    [activeCollaborators, conversation.id, modelMutationCoordinator],
   );
 
   const modelSelection = useNomiModelSelection({
@@ -363,9 +392,27 @@ const NomiConversationPanel: React.FC<{
     if (runtimeAuthority !== 'idle') return;
     if (!collaboratorReconciliation || collaboratorReconciliation.removed.length === 0) return;
     if (sameModelRefs(collaborators, collaboratorReconciliation.retained)) return;
-    setCollaboratorsState(collaboratorReconciliation.retained);
-    void persistModelPool(mainModelRef, collaboratorReconciliation.retained);
-  }, [collaboratorReconciliation, collaborators, mainModelRef, persistModelPool, runtimeAuthority]);
+    if (modelMutationCoordinator.isExplicitSelectionInFlight()) return;
+    const retained = collaboratorReconciliation.retained;
+    const observedMutationVersion = modelMutationCoordinator.currentMutationVersion();
+    let cancelled = false;
+    void persistModelPool(mainModelRef, retained, observedMutationVersion).then((applied) => {
+      if (applied && !cancelled) {
+        setCollaboratorsState(retained);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    collaboratorReconciliation,
+    collaborators,
+    mainModelRef,
+    modelMutationCoordinator,
+    modelMutationEpoch,
+    persistModelPool,
+    runtimeAuthority,
+  ]);
 
   // Heal against the unified chat catalog (backend resolve, no heuristics).
   // On resolve failure/loading `chatGroups` is empty ⇒ resolveHealModel is a
@@ -383,53 +430,74 @@ const NomiConversationPanel: React.FC<{
   useEffect(() => {
     if (runtimeAuthority !== 'idle') return;
     if (!healProviders.length) return;
+    if (modelMutationCoordinator.isExplicitSelectionInFlight()) return;
     const saved = configService.get('nomi.defaultModel');
+    const boundModel = modelSelection.current_model ?? conversation.model;
     const heal = resolveHealModel(
-      conversation.model,
+      boundModel,
       healProviders,
       healGetAvailable,
       saved,
     );
     if (!heal) return;
-    void (async () => {
-      try {
-        const selected = {
-          ...heal.provider,
-          use_model: heal.use_model,
-        } as TProviderWithModel;
-        const execution_model_pool = buildConversationModelPool(
-          { provider_id: heal.provider.id, model: heal.use_model },
-          activeCollaborators,
-        );
-        if (!execution_model_pool) return;
-        const ok = await ipcBridge.conversation.update.invoke({
-          conversation_id: conversation.id,
-          updates: { model: selected, execution_model_pool, execution_template_id: null },
-        });
-        if (ok) {
-          // Silent for first-time default; only notify when replacing a stale binding.
-          if (heal.reason === 'stale') {
-            Message.info(
-              t('conversation.chat.modelHealedToDefault', {
-                model: heal.use_model,
-              }),
-            );
+    const observedMutationVersion = modelMutationCoordinator.currentMutationVersion();
+    void modelMutationCoordinator
+      .enqueue(async () => {
+        if (!modelMutationCoordinator.canRunAutomaticMutation(observedMutationVersion)) {
+          return false;
+        }
+        try {
+          const selected = {
+            ...heal.provider,
+            use_model: heal.use_model,
+          } as TProviderWithModel;
+          const execution_model_pool = buildConversationModelPool(
+            { provider_id: heal.provider.id, model: heal.use_model },
+            activeCollaborators,
+          );
+          if (!execution_model_pool) return false;
+          const ok = await ipcBridge.conversation.update.invoke({
+            conversation_id: conversation.id,
+            updates: { model: selected, execution_model_pool, execution_template_id: null },
+          });
+          if (ok) {
+            modelMutationCoordinator.markAutomaticMutationApplied();
+            // Silent for first-time default; only notify when replacing a stale binding.
+            if (heal.reason === 'stale') {
+              Message.info(
+                t('conversation.chat.modelHealedToDefault', {
+                  model: heal.use_model,
+                }),
+              );
+            }
           }
+          return Boolean(ok);
+        } catch (error) {
+          if (!(isBackendHttpError(error) && error.status === 409)) {
+            console.error('[ChatConversation] Failed to heal conversation model:', error);
+          }
+          return false;
         }
-      } catch (error) {
-        if (!(isBackendHttpError(error) && error.status === 409)) {
-          console.error('[ChatConversation] Failed to heal conversation model:', error);
-        }
-      }
-    })();
+      })
+      .catch((error) => {
+        // The operation handles expected IPC/409 failures. Keep an unexpected
+        // queue failure observable without creating an unhandled rejection in
+        // this fire-and-forget effect.
+        console.error('[ChatConversation] Failed to schedule conversation model heal:', error);
+        return false;
+      });
     // Re-evaluate when the conversation or provider list changes.
   }, [
     activeCollaborators,
     conversation.id,
+    conversation.model,
     conversation.model?.id,
     conversation.model?.use_model,
     healProviders,
     healGetAvailable,
+    modelMutationCoordinator,
+    modelMutationEpoch,
+    modelSelection.current_model,
     runtimeAuthority,
     t,
   ]);

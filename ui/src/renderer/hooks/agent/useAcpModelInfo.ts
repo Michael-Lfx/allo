@@ -125,6 +125,10 @@ export const useAcpModelInfo = ({
   onSelectModelFailed?: (model_id: string, error: unknown) => void;
 }): UseAcpModelInfoResult => {
   const hasUserChangedModel = useRef(false);
+  const disabledRef = useRef(disabled);
+  // Keep this synchronous with render so a model click that started before a
+  // turn begins cannot continue after a potentially blocking warmup.
+  disabledRef.current = disabled;
   const prevConversationIdRef = useRef(conversation_id);
   const modelInfoRef = useRef<AcpModelInfo | null>(null);
   const handshakeModelInfoRef = useRef<AcpModelInfo | null>(null);
@@ -403,6 +407,13 @@ export const useAcpModelInfo = ({
       void (async () => {
         try {
           await (prepareRuntimeForMutation ?? prepareRuntime)?.();
+          if (disabledRef.current) {
+            // A stale click may have waited behind runtime preparation. Do not
+            // apply it after the conversation became busy; the backend gate
+            // remains the authority for races that happen after this check.
+            hasUserChangedModel.current = false;
+            return;
+          }
           await ipcBridge.acpConversation.setModel.invoke({ conversation_id, model: model_id });
         } catch (error) {
           hasUserChangedModel.current = false;

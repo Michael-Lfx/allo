@@ -13,8 +13,9 @@ describe('Conversation lead model authority', () => {
 
   test('does not cancel a turn as a side effect of model selection', () => {
     expect(source.includes('conversation.stop.invoke')).toBe(false);
-    expect(source.includes('modelSelectionRequestIdRef')).toBe(true);
-    expect(source.includes('modelSelectionQueueRef')).toBe(true);
+    expect(source.includes('modelMutationCoordinator')).toBe(true);
+    expect(source.includes('beginExplicitSelection')).toBe(true);
+    expect(source.includes('modelMutationCoordinator.enqueue')).toBe(true);
   });
 
   test('defers automatic model and pool reconciliation until runtime authority is idle', () => {

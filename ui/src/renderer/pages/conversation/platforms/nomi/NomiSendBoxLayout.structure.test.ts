@@ -217,9 +217,9 @@ describe('Nomi sendbox control layout', () => {
     expect(selectionSource.includes('pendingModelKeyRef')).toBe(true);
     expect(selectionSource.includes('if (pendingModelKeyRef.current === modelKey) return false')).toBe(true);
     expect(selectionSource.includes('if (requestId !== selectionRequestIdRef.current) return false')).toBe(true);
-    expect(chatSource.includes('modelSelectionRequestIdRef')).toBe(true);
-    expect(chatSource.includes('modelSelectionQueueRef')).toBe(true);
-    expect(chatSource.includes('modelSelectionQueueRef.current.then(run, run)')).toBe(true);
+    expect(chatSource.includes('modelMutationCoordinator')).toBe(true);
+    expect(chatSource.includes('beginExplicitSelection')).toBe(true);
+    expect(chatSource.includes('modelMutationCoordinator.enqueue')).toBe(true);
     expect(chatSource.includes('await saveNomiDefaultModel(_provider.id, modelName)')).toBe(true);
   });
 
@@ -229,7 +229,7 @@ describe('Nomi sendbox control layout', () => {
 
     expect(sendBoxSource.includes('subscribeEditResubmitOperations')).toBe(true);
     expect(sendBoxSource.includes("operation.phase !== 'editing'")).toBe(true);
-    expect(sendBoxSource.includes('!hasHydratedRunningState')).toBe(true);
+    expect(sendBoxSource.includes('isConversationModelSelectionDisabled')).toBe(true);
     expect(sendBoxSource.includes('disabled={modelSelectionDisabled}')).toBe(true);
     expect(sendBoxSource.includes('setIsMobileSheetOpen(false)')).toBe(true);
     expect(modelSource.includes('disabled={disabled}')).toBe(true);

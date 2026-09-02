@@ -137,6 +137,7 @@ import {
 } from '@/renderer/utils/model/reasoningEffort';
 import { formatCreditRateMultiplier, catalogCreditRateForModel } from '@/renderer/utils/model/creditRate';
 import { catalogContextLimitForModel, resolveDisplayContextWindow } from '@/renderer/utils/model/contextWindow';
+import { isConversationModelSelectionDisabled } from '@/renderer/pages/conversation/utils/conversationModelSelection';
 
 const imageAttachmentSignature = (paths: string[]) =>
   Array.from(new Set(paths.filter(isImageAttachment))).sort().join('\u0000');
@@ -472,12 +473,13 @@ const NomiSendBox: React.FC<{
     presentation.phase === 'local_pending' ||
     presentation.phase === 'accepted';
   const isBusy = showStrongBusy;
-  const modelSelectionDisabled =
-    !hasHydratedRunningState ||
-    isBusy ||
-    hasAdmittedEditResubmit ||
-    requiresConversationReset ||
-    isResettingConversation;
+  const modelSelectionDisabled = isConversationModelSelectionDisabled({
+    hasHydratedRunningState,
+    isBusy,
+    hasAdmittedEditResubmit,
+    requiresConversationReset,
+    isResettingConversation,
+  });
 
   useEffect(() => {
     if (!modelSelectionDisabled) return;
@@ -2129,7 +2131,7 @@ const NomiSendBox: React.FC<{
       {isMobile && (
         <>
           <MobileActionSheet
-            open={isMobileSheetOpen}
+            open={modelSelectionDisabled ? false : isMobileSheetOpen}
             onClose={() => setIsMobileSheetOpen(false)}
             title={t('common.more', { defaultValue: 'More' })}
             entries={sheetEntries}
