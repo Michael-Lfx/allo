@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router-dom";
 import { useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
 import { canvasThemes, type CanvasBackgroundMode } from "@oc/lib/canvas-theme";
-import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, writeCanvasAppearanceDefault, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
+import { canvasAppearanceBaseTheme, DEFAULT_CANVAS_COLOR_THEME, resolveStoredCanvasAppearance, writeCanvasAppearanceDefault, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { readCanvasMediaPerformanceMode } from "@oc/lib/canvas/canvas-performance-mode";
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
 import { refreshCanvasCharacterReferenceNodes } from "@oc/lib/canvas/canvas-character-reference";
@@ -152,7 +152,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
-    const [canvasAppearance, setCanvasAppearance] = useState<CanvasAppearance>(() => canvasAppearanceForTheme(useThemeStore.getState().theme));
+    const [canvasAppearance, setCanvasAppearance] = useState<CanvasAppearance>(() => resolveStoredCanvasAppearance(undefined));
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [canvasTool, setCanvasTool] = useState<CanvasToolMode>("move");
     const [mediaPerformanceMode, setMediaPerformanceMode] = useState<CanvasMediaPerformanceMode>(readCanvasMediaPerformanceMode);
@@ -250,9 +250,12 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const projectShare = useCanvasProjectShare(currentProject);
     const applyCanvasAppearance = useCallback((next: CanvasAppearance) => {
         setCanvasAppearance(next);
-        const nextTheme = canvasAppearanceBaseTheme(next, useThemeStore.getState().theme);
+        const nextTheme = canvasAppearanceBaseTheme(next, DEFAULT_CANVAS_COLOR_THEME);
         if (nextTheme !== useThemeStore.getState().theme) useThemeStore.getState().setTheme(nextTheme);
-    }, []);
+        if (next.mode === "light" || next.mode === "dark") {
+            writeCanvasAppearanceDefault({ appearance: next, backgroundMode });
+        }
+    }, [backgroundMode]);
     const saveCanvasAppearanceDefault = useCallback((appearance: CanvasAppearance) => {
         writeCanvasAppearanceDefault({ appearance, backgroundMode });
     }, [backgroundMode]);

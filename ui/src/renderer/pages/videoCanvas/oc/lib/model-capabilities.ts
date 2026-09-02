@@ -8,7 +8,14 @@ import {
     videoModelCapabilities,
 } from "@renderer/services/videoModelCapabilities";
 import { DEFAULT_SEEDANCE_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS } from "@renderer/pages/videoGeneration/aspectRatios";
-import { isSeedanceFastModel, isSeedanceVideoModel } from "@oc/lib/seedance-video";
+import {
+    isSeedanceFastModel,
+    isSeedanceVideoModel,
+    SEEDANCE_REFERENCE_LIMITS,
+} from "@oc/lib/seedance-video";
+
+/** Canvas maps video/audio refs to these ops; Seedance + MiniMax-H3 both accept them. */
+export const VIDEO_REFERENCE_OPERATIONS = ["text_to_video", "image_to_video", "extend", "audio_to_video"] as const;
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -72,7 +79,32 @@ function minimaxH3VideoCapability(): VideoCapabilityConfig {
         // Prefer MiniMax `aigc_watermark` via backend; do not expose Ark watermark / generate_audio.
         generateAudio: { supported: false, default: false },
         watermark: { supported: false, default: false },
-        operations: ["text_to_video", "image_to_video"],
+        operations: [...VIDEO_REFERENCE_OPERATIONS],
+        defaultOperation: "text_to_video",
+    };
+}
+
+function seedanceVideoCapability(): VideoCapabilityConfig {
+    return {
+        references: {
+            promptMaxChars: 1000,
+            maxImages: SEEDANCE_REFERENCE_LIMITS.images,
+            maxImageBytes: SEEDANCE_REFERENCE_LIMITS.imageMaxBytes,
+            maxVideos: SEEDANCE_REFERENCE_LIMITS.videos,
+            maxVideoBytes: SEEDANCE_REFERENCE_LIMITS.videoMaxBytes,
+            maxVideoDurationSeconds: 15,
+            maxAudios: SEEDANCE_REFERENCE_LIMITS.audios,
+            maxAudioBytes: SEEDANCE_REFERENCE_LIMITS.audioMaxBytes,
+            maxAudioDurationSeconds: 15,
+        },
+        duration: { selection: "range", min: 1, max: 15, step: 1, default: 6 },
+        ratios: [...SEEDANCE_ASPECT_RATIOS],
+        defaultRatio: DEFAULT_SEEDANCE_ASPECT_RATIO,
+        resolutions: ["480p", "720p", "1080p"],
+        defaultResolution: DEFAULT_VIDEO_RESOLUTION,
+        generateAudio: { supported: true, default: true },
+        watermark: { supported: true, default: false },
+        operations: [...VIDEO_REFERENCE_OPERATIONS],
         defaultOperation: "text_to_video",
     };
 }
@@ -83,12 +115,12 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol): ModelCap
             promptMaxChars: 1000,
             maxImages: 9,
             maxImageBytes: 30 * 1024 * 1024,
-            maxVideos: 0,
-            maxVideoBytes: 0,
-            maxVideoDurationSeconds: 0,
-            maxAudios: 0,
-            maxAudioBytes: 0,
-            maxAudioDurationSeconds: 0,
+            maxVideos: 3,
+            maxVideoBytes: 50 * 1024 * 1024,
+            maxVideoDurationSeconds: 15,
+            maxAudios: 3,
+            maxAudioBytes: 15 * 1024 * 1024,
+            maxAudioDurationSeconds: 15,
         },
         duration: { selection: "range", min: 1, max: 15, step: 1, default: 6 },
         ratios: [...SEEDANCE_ASPECT_RATIOS],
@@ -97,7 +129,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol): ModelCap
         defaultResolution: "720p",
         generateAudio: { supported: false, default: false },
         watermark: { supported: false, default: false },
-        operations: ["text_to_video", "image_to_video"],
+        operations: [...VIDEO_REFERENCE_OPERATIONS],
         defaultOperation: "text_to_video",
     };
     if (protocol === "volcengine-jimeng-video") video.duration = { selection: "enum", values: [5, 10], default: 5 };
@@ -125,16 +157,13 @@ export function modelCapabilityConfigFor(config: { channels: Array<{ id: string;
     if (isMiniMaxH3VideoModel(modelName) || isMiniMaxH3VideoModel(model)) {
         return { version: 1, video: minimaxH3VideoCapability() };
     }
-    const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.includes(modelName));
-    const cost = channel?.modelCosts?.find((item) => item.model === modelName);
-    const base = cost?.capabilityConfig || defaultModelCapabilityConfig(cost?.protocol);
-    // Overlay per-model resolution allow-list (Seedance fast/mini drop 1080p, etc.).
-    if (base.video && (isSeedanceVideoModel(modelName) || isSeedanceFastModel(modelName))) {
-        const caps = videoModelCapabilities(modelName);
+    if (isSeedanceVideoModel(modelName) || isSeedanceFastModel(modelName) || isSeedanceVideoModel(model)) {
+        const caps = videoModelCapabilities(modelName || model);
+        const seedance = seedanceVideoCapability();
         return {
-            ...base,
+            version: 1,
             video: {
-                ...base.video,
+                ...seedance,
                 resolutions: caps.resolutions.map(String),
                 defaultResolution: caps.resolutions.includes(DEFAULT_VIDEO_RESOLUTION)
                     ? DEFAULT_VIDEO_RESOLUTION
@@ -142,7 +171,35 @@ export function modelCapabilityConfigFor(config: { channels: Array<{ id: string;
             },
         };
     }
-    return base;
+    const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.includes(modelName));
+    const cost = channel?.modelCosts?.find((item) => item.model === modelName);
+    return mergeVideoCapabilityConfig(cost?.capabilityConfig, cost?.protocol);
+}
+
+function mergeVideoCapabilityConfig(stored: ModelCapabilityConfig | undefined, protocol?: ModelProtocol): ModelCapabilityConfig {
+    const fallback = defaultModelCapabilityConfig(protocol);
+    if (!stored?.video) return fallback;
+    const fallbackVideo = fallback.video!;
+    const refs = stored.video.references;
+    const fallbackRefs = fallbackVideo.references;
+    return {
+        ...stored,
+        video: {
+            ...fallbackVideo,
+            ...stored.video,
+            references: {
+                ...fallbackRefs,
+                ...refs,
+                maxVideos: refs.maxVideos > 0 ? refs.maxVideos : fallbackRefs.maxVideos,
+                maxAudios: refs.maxAudios > 0 ? refs.maxAudios : fallbackRefs.maxAudios,
+                maxVideoBytes: refs.maxVideoBytes > 0 ? refs.maxVideoBytes : fallbackRefs.maxVideoBytes,
+                maxAudioBytes: refs.maxAudioBytes > 0 ? refs.maxAudioBytes : fallbackRefs.maxAudioBytes,
+                maxVideoDurationSeconds: refs.maxVideoDurationSeconds > 0 ? refs.maxVideoDurationSeconds : fallbackRefs.maxVideoDurationSeconds,
+                maxAudioDurationSeconds: refs.maxAudioDurationSeconds > 0 ? refs.maxAudioDurationSeconds : fallbackRefs.maxAudioDurationSeconds,
+            },
+            operations: [...new Set([...fallbackVideo.operations, ...(stored.video.operations || [])])],
+        },
+    };
 }
 
 export function normalizeVideoValue(profile: VideoCapabilityConfig, value: { seconds?: string; ratio?: string; resolution?: string }) {

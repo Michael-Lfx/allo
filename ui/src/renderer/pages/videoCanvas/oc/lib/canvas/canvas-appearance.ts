@@ -32,6 +32,8 @@ const HEX_COLOR_PATTERN = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i;
 const CUSTOM_GRID_COLOR = "#B6B3B3";
 const CUSTOM_GRID_OPACITY = 70;
 
+export const DEFAULT_CANVAS_COLOR_THEME: CanvasColorTheme = "light";
+
 export function canvasAppearanceForTheme(theme: CanvasColorTheme, previous?: CanvasAppearance): CanvasAppearance {
     return previous?.custom?.baseTheme === theme ? { mode: theme, custom: previous.custom } : { mode: theme };
 }
@@ -112,7 +114,7 @@ export function readCanvasAppearanceDefault(): CanvasAppearanceDefault | null {
     try {
         const parsed = JSON.parse(value) as Partial<CanvasAppearanceDefault>;
         if (parsed.backgroundMode !== "dots" && parsed.backgroundMode !== "lines" && parsed.backgroundMode !== "blank") return null;
-        const fallback = canvasAppearanceBaseTheme(parsed.appearance, "dark");
+        const fallback = canvasAppearanceBaseTheme(parsed.appearance, DEFAULT_CANVAS_COLOR_THEME);
         return {
             appearance: normalizeCanvasAppearance(parsed.appearance, fallback),
             backgroundMode: parsed.backgroundMode,
@@ -123,11 +125,21 @@ export function readCanvasAppearanceDefault(): CanvasAppearanceDefault | null {
 }
 
 export function writeCanvasAppearanceDefault(value: CanvasAppearanceDefault) {
-    const fallback = canvasAppearanceBaseTheme(value.appearance, "dark");
+    const fallback = canvasAppearanceBaseTheme(value.appearance, DEFAULT_CANVAS_COLOR_THEME);
     scopedLocalStorage.setItem(CANVAS_APPEARANCE_DEFAULT_KEY, JSON.stringify({
         appearance: normalizeCanvasAppearance(value.appearance, fallback),
         backgroundMode: value.backgroundMode,
     }));
+}
+
+/** Project blob if present, else the saved canvas default, else light. */
+export function resolveStoredCanvasAppearance(stored: unknown): CanvasAppearance {
+    if (stored && typeof stored === "object") {
+        return normalizeCanvasAppearance(stored, DEFAULT_CANVAS_COLOR_THEME);
+    }
+    const savedDefault = readCanvasAppearanceDefault();
+    if (savedDefault) return savedDefault.appearance;
+    return canvasAppearanceForTheme(DEFAULT_CANVAS_COLOR_THEME);
 }
 
 function normalizeCustomAppearance(value: unknown): CanvasCustomAppearance | undefined {
