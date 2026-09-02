@@ -1298,6 +1298,9 @@ async fn upload_vimax_terminal_telemetry(
     if let Some(error_code) = payload.error_code.filter(|value| !value.is_empty()) {
         properties.insert("error_code".into(), json!(error_code));
     }
+    if let Some(error_message) = payload.error_message.filter(|value| !value.is_empty()) {
+        properties.insert("error_message".into(), json!(error_message));
+    }
     if let Some(failure_channel) = payload.failure_channel.filter(|value| !value.is_empty()) {
         properties.insert("failure_channel".into(), json!(failure_channel));
     }

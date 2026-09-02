@@ -519,6 +519,11 @@ pub(crate) fn map_model_err(
         || lower.contains("refusing multimodal llm call")
     {
         "Request prompt was empty — check prior artifacts (e.g. script.txt)."
+    } else if lower.contains("copyright")
+        || lower.contains("outputvideosensitive")
+        || (lower.contains("policyviolation") && lower.contains("outputvideo"))
+    {
+        "The generated clip was flagged for copyright or content policy. Change the shot wording or references, then resume from checkpoint."
     } else if lower.contains("privacyinformation")
         || lower.contains("inputimagesensitivecontent")
         || lower.contains("may contain real person")

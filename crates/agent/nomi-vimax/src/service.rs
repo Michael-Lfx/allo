@@ -239,12 +239,17 @@ impl VimaxService {
             .as_ref()
             .map(|r| r.credits_consumed.max(st.credits_consumed))
             .unwrap_or(st.credits_consumed);
-        let error_code = st
+        let error_blob = st
             .error
             .as_deref()
             .or((!st.message.is_empty()).then_some(st.message.as_str()))
-            .map(|s| s.chars().take(256).collect::<String>())
-            .filter(|s| !s.is_empty());
+            .unwrap_or("");
+        let (error_code, error_message) = nomifun_cloud::flowy::film_telemetry_error(error_blob);
+        let failure_channel = if status == RunStatus::Failed {
+            Some(nomifun_cloud::flowy::infer_film_failure_channel(error_blob).to_string())
+        } else {
+            None
+        };
         let payload = VimaxTerminalTelemetry {
             session_id: id.to_string(),
             status,
@@ -271,11 +276,12 @@ impl VimaxService {
             } else {
                 None
             },
-            failure_channel: if status == RunStatus::Failed {
-                Some("pipeline".into())
+            error_message: if matches!(status, RunStatus::Failed) {
+                error_message
             } else {
                 None
             },
+            failure_channel,
             occurred_at: if st.updated_at.is_empty() {
                 chrono::Utc::now().to_rfc3339()
             } else {

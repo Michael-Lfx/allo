@@ -207,7 +207,7 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
       ? models?.llm_model
       : failure?.kind === 'image'
         ? models?.image_model
-        : failure?.kind === 'video'
+        : failure?.kind === 'video' || failure?.kind === 'moderation'
           ? models?.video_model
           : undefined;
 
@@ -252,17 +252,23 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
       }
       if (item.kind === 'failure') {
         const raw = item.error?.trim();
+        const detailParts = [failure?.errorCode, failure?.providerMessage, raw].filter(
+          (part, index, all) => Boolean(part) && all.indexOf(part) === index
+        );
         return {
           title: failure?.title ?? t('videoGeneration.workspace.failure.unknownTitle'),
           body: [
             failure?.hint,
+            failure?.providerMessage && failure.providerMessage !== failure.hint
+              ? failure.providerMessage
+              : '',
             relatedModel
               ? t('videoGeneration.workspace.progress.currentModel', { model: relatedModel })
               : '',
           ]
             .filter(Boolean)
             .join('\n'),
-          detail: raw && raw !== failure?.hint ? raw : undefined,
+          detail: detailParts.length > 0 ? detailParts.join('\n\n') : undefined,
           issueKind: failure?.kind,
         };
       }

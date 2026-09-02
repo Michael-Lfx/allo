@@ -619,11 +619,19 @@
       "videoTitle": "视频模型调用失败",
       "videoChannelHint": "生成镜头成片时视频通道不可用。请更换「视频模型」后点击「从断点继续」。",
       "videoHint": "请检查视频模型是否可用。已保留现场，可点击「从断点继续」。",
+      "copyrightTitle": "成片未通过版权审核",
+      "copyrightHint": "生成画面可能涉及版权受限内容，该镜头未生成成功。请修改分镜描述或参考素材后，点击「从断点继续」；已成功的片段不会重复扣费。",
+      "privacyTitle": "参考图未通过内容审核",
+      "privacyHint": "参考图或首帧可能含真人肖像。请更换参考图或改用更偏插画的风格后，点击「从断点继续」。",
+      "moderationTitle": "成片未通过内容审核",
+      "moderationHint": "模型判定本次生成内容不符合安全规范。请修改分镜描述或参考素材后，点击「从断点继续」；已成功的片段不会重复扣费。",
       "creditsTitle": "积分不足",
       "creditsHint": "当前积分不足以完成本次生成。请充值或缩短时长后，点击「从断点继续」；已成功的片段不会重复扣费。",
       "creditsToast": "积分不足，请充值或缩短时长后从断点继续。",
       "unknownTitle": "执行失败",
-      "unknownHint": "现场产物已保留。若错误含 All channel models failed，请更换对应模型后点击「从断点继续」。"
+      "unknownHint": "现场产物已保留。若错误含 All channel models failed，请更换对应模型后点击「从断点继续」。",
+      "jsonArtifactTitle": "规划产物读写失败",
+      "jsonArtifactHint": "场景规划时读到了不完整的 JSON 文件，通常不是规划模型本身报错。请点击「从断点继续」重试规划。"
     }
   },
   "studio": {
@@ -752,6 +760,7 @@
         "llm": "规划模型",
         "image": "图片模型",
         "video": "视频模型",
+        "moderation": "内容审核",
         "unknown": "任务",
         "cancelled": "已停止"
       }

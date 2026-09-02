@@ -5,14 +5,23 @@
 
 import type { TFunction } from 'i18next';
 import { isInsufficientCreditsError } from './creditsError';
+import {
+  isContentPolicyRejection,
+  isCopyrightRestriction,
+  isReferenceImageModeration,
+  extractProviderErrorCode,
+  extractProviderErrorMessage,
+} from './providerError';
 import type { SessionStatus } from './types';
 
-export type FailureKind = 'credits' | 'llm' | 'image' | 'video' | 'unknown';
+export type FailureKind = 'credits' | 'llm' | 'image' | 'video' | 'moderation' | 'unknown';
 
 export interface ClassifiedFailure {
   kind: FailureKind;
   title: string;
   hint: string;
+  errorCode?: string;
+  providerMessage?: string;
 }
 
 const PLANNING_LLM_STAGES = new Set([
@@ -78,6 +87,72 @@ export function classifyFailure(
       hint: t('videoGeneration.workspace.failure.creditsHint', {
         defaultValue:
           '当前积分不足以完成本次生成。请充值或缩短时长后，点击「从断点继续」；已成功的片段不会重复扣费。',
+      }),
+    };
+  }
+
+  const providerMessage = extractProviderErrorMessage(error) ?? undefined;
+  const errorCode = extractProviderErrorCode(error) ?? undefined;
+
+  if (isContentPolicyRejection(error)) {
+    if (isCopyrightRestriction(error)) {
+      return {
+        kind: 'moderation',
+        title: t('videoGeneration.workspace.failure.copyrightTitle', {
+          defaultValue: '成片未通过版权审核',
+        }),
+        hint: t('videoGeneration.workspace.failure.copyrightHint', {
+          defaultValue:
+            '生成画面可能涉及版权受限内容，该镜头未生成成功。请修改分镜描述或参考素材后，点击「从断点继续」；已成功的片段不会重复扣费。',
+        }),
+        errorCode,
+        providerMessage,
+      };
+    }
+    if (isReferenceImageModeration(error)) {
+      return {
+        kind: 'moderation',
+        title: t('videoGeneration.workspace.failure.privacyTitle', {
+          defaultValue: '参考图未通过内容审核',
+        }),
+        hint: t('videoGeneration.workspace.failure.privacyHint', {
+          defaultValue:
+            '参考图或首帧可能含真人肖像。请更换参考图或改用更偏插画的风格后，点击「从断点继续」。',
+        }),
+        errorCode,
+        providerMessage,
+      };
+    }
+    return {
+      kind: 'moderation',
+      title: t('videoGeneration.workspace.failure.moderationTitle', {
+        defaultValue: '成片未通过内容审核',
+      }),
+      hint: t('videoGeneration.workspace.failure.moderationHint', {
+        defaultValue:
+          '模型判定本次生成内容不符合安全规范。请修改分镜描述或参考素材后，点击「从断点继续」；已成功的片段不会重复扣费。',
+      }),
+      errorCode,
+      providerMessage,
+    };
+  }
+
+  const looksLikeJsonArtifact =
+    /empty json artifact/i.test(error) ||
+    /unreadable json artifact/i.test(error) ||
+    /json error at /i.test(error) ||
+    /interrupted write or concurrent planner/i.test(error) ||
+    (/^\s*json error:/i.test(error) && !/failed to parse llm json/i.test(error));
+
+  if (looksLikeJsonArtifact) {
+    return {
+      kind: 'unknown',
+      title: t('videoGeneration.workspace.failure.jsonArtifactTitle', {
+        defaultValue: '规划产物读写失败',
+      }),
+      hint: t('videoGeneration.workspace.failure.jsonArtifactHint', {
+        defaultValue:
+          '场景规划时读到了不完整的 JSON 文件，通常不是规划模型本身报错。请点击「从断点继续」重试规划。',
       }),
     };
   }
@@ -162,11 +237,15 @@ export function classifyFailure(
       hint: isChannel
         ? t('videoGeneration.workspace.failure.videoChannelHint')
         : t('videoGeneration.workspace.failure.videoHint'),
+      errorCode,
+      providerMessage,
     };
   }
   return {
     kind,
     title: t('videoGeneration.workspace.failure.unknownTitle'),
     hint: t('videoGeneration.workspace.failure.unknownHint'),
+    errorCode,
+    providerMessage,
   };
 }

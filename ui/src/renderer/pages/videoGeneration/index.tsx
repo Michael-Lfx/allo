@@ -349,6 +349,7 @@ const VideoGenerationListPage: React.FC = () => {
               error_code: isInsufficientCreditsError(raw)
                 ? 'insufficient_credits'
                 : 'launch_failed',
+              error_message: raw.slice(0, 256),
             });
           }
           const failedLabel =

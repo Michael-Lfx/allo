@@ -82,6 +82,7 @@ import {
   rememberVideoGenerationSession,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
+import { filmTelemetryError } from './providerError';
 import { resolveSessionCreditsConsumed } from './sessionCredits';
 import { shouldContinueAsRender } from './continueMode';
 import {
@@ -447,6 +448,7 @@ const WorkspacePage: React.FC = () => {
     ) {
       const snapshot = getRunStatusSnapshot();
       const stage = snapshot?.stage ?? '';
+      const errText = snapshot?.error ?? '';
       const failureChannel = /plan|brief|script|storyboard/i.test(stage)
         ? 'llm'
         : /image|poster|cover/i.test(stage)
@@ -454,14 +456,23 @@ const WorkspacePage: React.FC = () => {
           : /video|render|concat/i.test(stage)
             ? 'video'
             : 'pipeline';
-      trackFunnelEvent('film_failed', {
-        feature: 'video_generation',
-        session_id: sessionId,
-        workflow: session?.workflow ?? null,
-        status: next,
-        failure_channel: failureChannel,
-        error_code: statusFlags.creditsFailed ? 'insufficient_credits' : next,
-      });
+      if (next === 'cancelled' || next === 'interrupted') {
+        trackVideoSessionEvent('film_cancelled', sessionId, {
+          workflow: session?.workflow ?? null,
+          status: next,
+        });
+      } else {
+        const { errorCode, errorMessage } = filmTelemetryError(errText);
+        trackVideoSessionEvent('film_failed', sessionId, {
+          workflow: session?.workflow ?? null,
+          status: next,
+          failure_channel: errorCode?.includes('.') ? 'video' : failureChannel,
+          error_code: statusFlags.creditsFailed
+            ? 'insufficient_credits'
+            : errorCode,
+          error_message: errorMessage,
+        });
+      }
     }
     if (!sessionId || next !== 'failed' || !statusFlags.creditsFailed) return;
     if (prev !== 'planning' && prev !== 'rendering') return;

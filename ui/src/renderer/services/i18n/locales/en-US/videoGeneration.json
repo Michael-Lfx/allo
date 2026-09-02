@@ -619,11 +619,19 @@
       "videoTitle": "Video model call failed",
       "videoChannelHint": "Video channels were unavailable while generating shot clips. Switch the video model and resume.",
       "videoHint": "Check that the video model is available. Artifacts were kept — you can resume from checkpoint.",
+      "copyrightTitle": "Clip failed copyright review",
+      "copyrightHint": "The generated picture may involve copyright-restricted content, so this shot was not produced. Change the storyboard wording or references, then resume from checkpoint — finished clips will not be billed again.",
+      "privacyTitle": "Reference image failed content review",
+      "privacyHint": "A reference or first frame may contain a real-person likeness. Replace the reference or use a more illustrated look, then resume from checkpoint.",
+      "moderationTitle": "Clip failed content review",
+      "moderationHint": "The model flagged this generation as against safety policy. Change the storyboard wording or references, then resume from checkpoint — finished clips will not be billed again.",
       "creditsTitle": "Insufficient credits",
       "creditsHint": "Not enough credits to finish this generation. Top up or shorten the duration, then resume from checkpoint — finished clips will not be billed again.",
       "creditsToast": "Insufficient credits. Top up or shorten the duration, then resume from checkpoint.",
       "unknownTitle": "Execution failed",
-      "unknownHint": "Artifacts were kept. If the error mentions All channel models failed, switch the related model and resume from checkpoint."
+      "unknownHint": "Artifacts were kept. If the error mentions All channel models failed, switch the related model and resume from checkpoint.",
+      "jsonArtifactTitle": "Planning artifact read failed",
+      "jsonArtifactHint": "A scene planner read an incomplete JSON file. This is usually not a planning-model failure. Resume from checkpoint to retry planning."
     }
   },
   "studio": {
@@ -752,6 +760,7 @@
         "llm": "Planning model",
         "image": "Image model",
         "video": "Video model",
+        "moderation": "Content review",
         "unknown": "Task",
         "cancelled": "Stopped"
       }

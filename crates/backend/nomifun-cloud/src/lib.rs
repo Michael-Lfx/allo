@@ -43,7 +43,8 @@ pub use flowy::{
     MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, OssUploadResult,
     TurnCreditUsage, TurnCreditUsageCall, UserMe, VideoContentImage, VideoCreateParams,
     VideoTaskRecord, clamp_minimax_h3_duration, is_minimax_h3_model, normalize_minimax_h3_resolution,
-    resolve_model_in_catalog, video_task_failure_message, DEFAULT_MINIMAX_H3_RESOLUTION,
+    resolve_model_in_catalog, video_task_failure_message, extract_provider_error_code,
+    film_telemetry_error, infer_film_failure_channel, DEFAULT_MINIMAX_H3_RESOLUTION,
     MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS,
 };
 pub use llm::ServerLlmProvider;

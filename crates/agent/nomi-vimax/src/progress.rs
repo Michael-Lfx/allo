@@ -103,6 +103,7 @@ pub struct VimaxTerminalTelemetry {
     pub credits_consumed: i64,
     pub duration_ms: i64,
     pub error_code: Option<String>,
+    pub error_message: Option<String>,
     pub failure_channel: Option<String>,
     pub occurred_at: String,
 }
