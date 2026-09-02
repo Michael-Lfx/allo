@@ -16,10 +16,10 @@ import {
   Plug,
   RefreshCw,
 } from "lucide-react";
-import type { AppServerClient } from "../lib/client";
-import { isAppServerError } from "../lib/errors";
+import { useTranslation } from "react-i18next";
+import { formatError, isRetryableError } from "../lib/errors";
+import { useAppStore } from "../store/appStore";
 import type {
-  Capabilities,
   ConnectorDetail,
   ConnectorStatus,
   ConnectorSummary,
@@ -29,31 +29,31 @@ import type {
 
 type CatalogTab = "skills" | "connectors";
 
-const CONNECTOR_STATE_LABEL: Record<string, string> = {
-  installed: "已安装",
-  configured: "已配置",
-  authorization_required: "需要授权",
-  authenticated: "已授权",
-  connected: "已连接",
-  degraded: "降级",
-  error: "错误",
-  reauthorization_required: "需重新授权",
+const CONNECTOR_STATE_KEYS: Record<string, string> = {
+  installed: "catalog.stateInstalled",
+  configured: "catalog.stateConfigured",
+  authorization_required: "catalog.stateAuthRequired",
+  authenticated: "catalog.stateAuthenticated",
+  connected: "catalog.stateConnected",
+  degraded: "catalog.stateDegraded",
+  error: "catalog.stateError",
+  reauthorization_required: "catalog.stateReauthRequired",
 };
 
-const AUTH_STATE_LABEL: Record<string, string> = {
-  authenticated: "已授权",
-  not_authenticated: "未授权",
-  reauthorization_required: "需重新授权",
+const AUTH_STATE_KEYS: Record<string, string> = {
+  authenticated: "catalog.authAuthenticated",
+  not_authenticated: "catalog.authNotAuthenticated",
+  reauthorization_required: "catalog.authReauthRequired",
 };
 
-function errorMessage(error: unknown): string {
-  if (isAppServerError(error)) {
-    return `[${error.code}] ${error.message}`;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
+function connectorStateLabel(t: (key: string, opts?: Record<string, unknown>) => string, status: ConnectorStatus | string): string {
+  const key = CONNECTOR_STATE_KEYS[status];
+  return key ? t(key) : t("catalog.stateOther", { status });
+}
+
+function authStateLabel(t: (key: string, opts?: Record<string, unknown>) => string, state: string): string {
+  const key = AUTH_STATE_KEYS[state];
+  return key ? t(key) : t("catalog.authOther", { status: state });
 }
 
 function connectorStateClass(status: ConnectorStatus | string): string {
@@ -71,15 +71,11 @@ function connectorStateClass(status: ConnectorStatus | string): string {
   }
 }
 
-export function CatalogView({
-  client,
-  capabilities,
-  onBack,
-}: {
-  client: AppServerClient | null;
-  capabilities: Capabilities | null;
-  onBack: () => void;
-}) {
+export function CatalogView() {
+  const { t } = useTranslation();
+  const client = useAppStore((s) => s.client);
+  const capabilities = useAppStore((s) => s.client?.initializeInfo?.capabilities ?? null);
+  const onBack = useAppStore((s) => s.toggleCatalog);
   const [tab, setTab] = useState<CatalogTab>("skills");
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);
@@ -88,6 +84,11 @@ export function CatalogView({
   const [detailBusy, setDetailBusy] = useState<string | null>(null);
   const [authMap, setAuthMap] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  /** Localize a caught error and append a retryable hint without baking
+   *  wording into `lib/errors`. */
+  const reportError = (caught: unknown) => {
+    setError(formatError(caught) + (isRetryableError(caught) ? t("common.retryable") : ""));
+  };
   const [reloadTick, setReloadTick] = useState(0);
   const activeRef = useRef(true);
 
@@ -119,7 +120,7 @@ export function CatalogView({
         setConnectors(connectorList);
       } catch (caught) {
         if (cancelled || !activeRef.current) return;
-        setError(errorMessage(caught));
+        reportError(caught);
         setSkills(null);
         setConnectors(null);
       }
@@ -141,7 +142,7 @@ export function CatalogView({
       setSkillDetail(detail);
     } catch (caught) {
       if (!activeRef.current) return;
-      setError(errorMessage(caught));
+      reportError(caught);
       setSkillDetail(previous);
     } finally {
       if (activeRef.current) setDetailBusy(null);
@@ -165,7 +166,7 @@ export function CatalogView({
       }
     } catch (caught) {
       if (!activeRef.current) return;
-      setError(errorMessage(caught));
+      reportError(caught);
       setConnectorDetail(previous);
     } finally {
       if (activeRef.current) setDetailBusy(null);
@@ -178,7 +179,7 @@ export function CatalogView({
     try {
       const result = await client.connectors.test(connectorId);
       if (!activeRef.current) return;
-      setError(result.success ? null : `探测失败：${result.error ?? result.code ?? "未知错误"}`);
+      setError(result.success ? null : t("catalog.probeFailed", { error: result.error ?? result.code ?? t("catalog.unknownError") }));
       const [detail, status] = await Promise.all([
         client.connectors.get(connectorId),
         client.connectors.status(connectorId),
@@ -190,7 +191,7 @@ export function CatalogView({
       }
     } catch (caught) {
       if (!activeRef.current) return;
-      setError(errorMessage(caught));
+      reportError(caught);
     } finally {
       if (activeRef.current) setDetailBusy(null);
     }
@@ -204,7 +205,7 @@ export function CatalogView({
       setAuthMap((map) => new Map(map).set(connectorId, status.state));
     } catch (caught) {
       if (!activeRef.current) return;
-      setError(errorMessage(caught));
+      reportError(caught);
     }
   }, [client]);
 
@@ -215,14 +216,14 @@ export function CatalogView({
       const started = await client.connectors.authStart(connectorId);
       if (!activeRef.current) return;
       if (started.error) {
-        setError(`授权启动失败：${started.error}`);
+        setError(t("catalog.authStartFailed", { error: started.error }));
         return;
       }
-      setError("授权已在可信主机上启动，请在弹出的浏览器窗口中完成授权。");
+      setError(t("catalog.authStarted"));
       await refreshAuth(connectorId);
     } catch (caught) {
       if (!activeRef.current) return;
-      setError(errorMessage(caught));
+      reportError(caught);
     } finally {
       if (activeRef.current) setDetailBusy(null);
     }
@@ -237,28 +238,28 @@ export function CatalogView({
       setAuthMap((map) => new Map(map).set(connectorId, "not_authenticated"));
     } catch (caught) {
       if (!activeRef.current) return;
-      setError(errorMessage(caught));
+      reportError(caught);
     } finally {
       if (activeRef.current) setDetailBusy(null);
     }
   }, [client]);
 
   return (
-    <section className="catalog-view" aria-label="Agent Store 目录">
+    <section className="catalog-view" aria-label={t("catalog.ariaLabel")}>
       <header className="catalog-topbar">
         <div className="topbar-left">
-          <IconButton label="返回聊天" onClick={onBack} className="catalog-back"><ArrowLeft size={19} strokeWidth={1.7} /></IconButton>
+          <IconButton label={t("catalog.backToChat")} onClick={onBack} className="catalog-back"><ArrowLeft size={19} strokeWidth={1.7} /></IconButton>
           <BookOpen aria-hidden="true" className="catalog-glyph" size={19} strokeWidth={1.7} />
-          <div className="thread-heading"><span>技能与连接器</span><small>Agent Store 目录</small></div>
+          <div className="thread-heading"><span>{t("catalog.title")}</span><small>{t("catalog.subtitle")}</small></div>
         </div>
         <div className="topbar-actions">
-          <button className="quiet-button" type="button" onClick={reload} title="重新加载目录">
-            <RefreshCw size={15} strokeWidth={1.7} /> 刷新
+          <button className="quiet-button" type="button" onClick={reload} title={t("catalog.reloadTitle")}>
+            <RefreshCw size={15} strokeWidth={1.7} /> {t("catalog.reload")}
           </button>
         </div>
       </header>
 
-      <div className="catalog-tabs" role="tablist" aria-label="目录类型">
+      <div className="catalog-tabs" role="tablist" aria-label={t("catalog.typeLabel")}>
         {capabilities?.skills !== false && (
           <button
             className={`catalog-tab ${tab === "skills" ? "is-active" : ""}`}
@@ -267,7 +268,7 @@ export function CatalogView({
             aria-selected={tab === "skills"}
             onClick={() => { setTab("skills"); setSkillDetail(null); }}
           >
-            <BookOpen size={15} strokeWidth={1.7} /> 技能
+            <BookOpen size={15} strokeWidth={1.7} /> {t("catalog.tabSkills")}
           </button>
         )}
         {capabilities?.connectors !== false && (
@@ -278,21 +279,21 @@ export function CatalogView({
             aria-selected={tab === "connectors"}
             onClick={() => { setTab("connectors"); setConnectorDetail(null); }}
           >
-            <Plug size={15} strokeWidth={1.7} /> 连接器
+            <Plug size={15} strokeWidth={1.7} /> {t("catalog.tabConnectors")}
           </button>
         )}
       </div>
 
-      {error && <div className="catalog-alert" role="alert"><CircleAlert size={15} strokeWidth={1.8} /><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="关闭错误">✕</button></div>}
+      {error && <div className="catalog-alert" role="alert"><CircleAlert size={15} strokeWidth={1.8} /><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label={t("common.closeError")}>✕</button></div>}
 
       <div className="catalog-body">
         {tab === "skills" && (
           <div className="catalog-layout">
             <div className="catalog-list">
               {!client && <p className="catalog-empty">请先连接 App Server。</p>}
-              {client && skills === null && <p className="catalog-empty">正在加载技能目录…</p>}
+              {client && skills === null && <p className="catalog-empty">{t("catalog.loadingSkills")}</p>}
               {client && skills !== null && skills.length === 0 && (
-                <p className="catalog-empty">没有可用的技能。</p>
+                <p className="catalog-empty">{t("catalog.noSkills")}</p>
               )}
               {skills?.map((skill) => (
                 <button
@@ -308,7 +309,7 @@ export function CatalogView({
                   <div className="catalog-row-meta">
                     <span className="source-chip">{skill.source}</span>
                     <span className="compat-chip">{skill.compatibility_status}</span>
-                    {detailBusy === skill.id && <span className="row-busy">加载中…</span>}
+                    {detailBusy === skill.id && <span className="row-busy">{t("catalog.loading")}</span>}
                     <ChevronRight size={15} strokeWidth={1.7} />
                   </div>
                 </button>
@@ -318,7 +319,7 @@ export function CatalogView({
               {skillDetail ? (
                 <SkillDetailPane detail={skillDetail} />
               ) : (
-                <p className="catalog-detail-empty">选择一个技能查看详情。</p>
+                <p className="catalog-detail-empty">{t("catalog.selectSkill")}</p>
               )}
             </div>
           </div>
@@ -327,10 +328,10 @@ export function CatalogView({
         {tab === "connectors" && (
           <div className="catalog-layout">
             <div className="catalog-list">
-              {!client && <p className="catalog-empty">请先连接 App Server。</p>}
-              {client && connectors === null && <p className="catalog-empty">正在加载连接器目录…</p>}
+              {!client && <p className="catalog-empty">{t("catalog.connectFirst")}</p>}
+              {client && connectors === null && <p className="catalog-empty">{t("catalog.loadingConnectors")}</p>}
               {client && connectors !== null && connectors.length === 0 && (
-                <p className="catalog-empty">没有可用的连接器。</p>
+                <p className="catalog-empty">{t("catalog.noConnectors")}</p>
               )}
               {connectors?.map((connector) => (
                 <button
@@ -347,7 +348,7 @@ export function CatalogView({
                   </div>
                   <div className="catalog-row-meta">
                     <span className={`status-badge ${connectorStateClass(connector.status)}`}>
-                      {CONNECTOR_STATE_LABEL[connector.status] ?? connector.status}
+                      {connectorStateLabel(t, connector.status)}
                     </span>
                     {detailBusy === connector.id && <span className="row-busy">加载中…</span>}
                     <ChevronRight size={15} strokeWidth={1.7} />
@@ -367,7 +368,7 @@ export function CatalogView({
                   onLogout={() => void logoutConnector(connectorDetail.id)}
                 />
               ) : (
-                <p className="catalog-detail-empty">选择一个连接器查看状态与工具。</p>
+                <p className="catalog-detail-empty">{t("catalog.selectConnector")}</p>
               )}
             </div>
           </div>
@@ -393,6 +394,7 @@ function IconButton({
 }
 
 function SkillDetailPane({ detail }: { detail: SkillDetail }) {
+  const { t } = useTranslation();
   return (
     <div className="catalog-detail-card">
       <div className="catalog-detail-head">
@@ -402,16 +404,16 @@ function SkillDetailPane({ detail }: { detail: SkillDetail }) {
       </div>
       {detail.description && <p className="catalog-detail-desc">{detail.description}</p>}
       <dl className="catalog-detail-meta">
-        <div><dt>模式</dt><dd>{detail.mode}</dd></div>
-        <div><dt>调用方式</dt><dd>{detail.invocation_policy}</dd></div>
-        <div><dt>版本</dt><dd>{detail.version}</dd></div>
+        <div><dt>{t("catalog.fieldMode")}</dt><dd>{detail.mode}</dd></div>
+        <div><dt>{t("catalog.fieldInvocation")}</dt><dd>{detail.invocation_policy}</dd></div>
+        <div><dt>{t("catalog.fieldVersion")}</dt><dd>{detail.version}</dd></div>
         {detail.required_connectors?.length > 0 && (
-          <div><dt>所需连接器</dt><dd>{(detail.required_connectors ?? []).join(", ")}</dd></div>
+          <div><dt>{t("catalog.fieldRequiredConnectors")}</dt><dd>{(detail.required_connectors ?? []).join(", ")}</dd></div>
         )}
       </dl>
       {detail.instructions_summary && (
         <details className="catalog-instructions">
-          <summary>指令摘要</summary>
+          <summary>{t("catalog.fieldInstructions")}</summary>
           <pre>{detail.instructions_summary}</pre>
         </details>
       )}
@@ -437,45 +439,46 @@ function ConnectorDetailPane({
   onLogout: () => void;
 }) {
   const authenticated = authState === "authenticated";
+  const { t } = useTranslation();
   return (
     <div className="catalog-detail-card">
       <div className="catalog-detail-head">
         <h2>{detail.name}</h2>
         <span className={`status-badge ${connectorStateClass(detail.status)}`}>
-          {CONNECTOR_STATE_LABEL[detail.status] ?? detail.status}
+          {connectorStateLabel(t, detail.status)}
         </span>
-        {!detail.enabled && <span className="status-badge is-warn">已停用</span>}
+        {!detail.enabled && <span className="status-badge is-warn">{t("catalog.disabled")}</span>}
       </div>
       {detail.description && <p className="catalog-detail-desc">{detail.description}</p>}
       <dl className="catalog-detail-meta">
-        <div><dt>类型</dt><dd>{detail.kind}</dd></div>
-        <div><dt>传输</dt><dd>{detail.transport_summary}</dd></div>
-        <div><dt>认证</dt><dd>{detail.auth_mode}</dd></div>
-        <div><dt>命名空间</dt><dd>{detail.tool_filter ?? "—"}</dd></div>
+        <div><dt>{t("catalog.fieldType")}</dt><dd>{detail.kind}</dd></div>
+        <div><dt>{t("catalog.fieldTransport")}</dt><dd>{detail.transport_summary}</dd></div>
+        <div><dt>{t("catalog.fieldAuth")}</dt><dd>{detail.auth_mode}</dd></div>
+        <div><dt>{t("catalog.fieldNamespace")}</dt><dd>{detail.tool_filter ?? "—"}</dd></div>
       </dl>
 
       {detail.auth_mode === "oauth" ? (
         <div className="catalog-auth-row">
           <span className={`status-badge ${authenticated ? "is-success" : "is-warn"}`}>
-            {AUTH_STATE_LABEL[authState ?? "not_authenticated"] ?? authState ?? "未授权"}
+            {authStateLabel(t, authState ?? "not_authenticated")}
           </span>
           {!authenticated
-            ? <button className="quiet-button" type="button" onClick={onAuthStart} disabled={busy}>授权</button>
-            : <button className="quiet-button" type="button" onClick={onLogout} disabled={busy}>取消授权</button>}
-          <button className="quiet-button" type="button" onClick={onAuthRefresh} disabled={busy}>刷新状态</button>
-          <button className="primary-button" type="button" onClick={onProbe} disabled={busy}>测试连接</button>
+            ? <button className="quiet-button" type="button" onClick={onAuthStart} disabled={busy}>{t("catalog.authAuthorize")}</button>
+            : <button className="quiet-button" type="button" onClick={onLogout} disabled={busy}>{t("catalog.authRevoke")}</button>}
+          <button className="quiet-button" type="button" onClick={onAuthRefresh} disabled={busy}>{t("catalog.authRefreshStatus")}</button>
+          <button className="primary-button" type="button" onClick={onProbe} disabled={busy}>{t("catalog.authTest")}</button>
         </div>
       ) : (
         <div className="catalog-auth-row">
-          <button className="primary-button" type="button" onClick={onProbe} disabled={busy}>测试连接</button>
+          <button className="primary-button" type="button" onClick={onProbe} disabled={busy}>{t("catalog.authTest")}</button>
         </div>
       )}
-      {busy && <p className="catalog-detail-hint">正在处理…</p>}
+      {busy && <p className="catalog-detail-hint">{t("common.processing")}</p>}
 
       <details className="catalog-tools" open={(detail.tools?.length ?? 0) > 0}>
-        <summary>工具（{detail.tools?.length ?? 0}）</summary>
+        <summary>{t("catalog.tools", { count: detail.tools?.length ?? 0 })}</summary>
         {(detail.tools ?? []).length === 0 ? (
-          <p className="catalog-detail-hint">尚未探测到工具；运行「测试连接」后可用工具会出现在这里。</p>
+          <p className="catalog-detail-hint">{t("catalog.noToolsHint")}</p>
         ) : (
           <ul className="catalog-tool-list">
             {(detail.tools ?? []).map((tool) => (

@@ -61,10 +61,21 @@ cargo run -p nomifun-web -- --port 8787 --api-only --insecure-no-auth --data-dir
 ## 目录结构
 
 ```text
-src/lib/           类型化的协议客户端（transport/client/conversations/runs/skills/connectors/errors）
-src/components/CatalogView.tsx   Agent Store 技能/连接器目录视图
-src/App.tsx          Codex 风格的单 Agent 持久化聊天壳 + 目录入口
-src/style.css       桌面 + 移动布局和连接/空状态/错误状态样式
+src/lib/
+  transport / client / conversations / runs / skills / connectors / errors
+                    类型化的协议客户端（React 零依赖）
+  activity.ts       消息/活动载荷解码器；NOISE_ACTIVITY_KINDS 是生命周期噪音规则的唯一出处
+  conversation-events.ts  会话流的纯 reducer（消息合并 + 乐观发送对账 + context.usage 投影）
+  errors.ts         AppServerError + formatError
+src/ui/format.ts    跨组件共享的展示格式化（shortId / formatTokens / modelName / providerLabel / modelChipLabel / modelKeyToSelection）
+src/store/appStore.ts  单 zustand store：接管全部应用状态（连接/会话列表/会话流/草稿/UI 开关/模型/工作区/对话框）与所有动作；组件直接 useAppStore 订阅，无 prop drilling
+src/components/
+  App.tsx           Codex 风格的单 Agent 持久化聊天壳（薄壳：DOM ref + 三个 effect + 渲染）
+  CatalogView.tsx   Agent Store 技能/连接器目录视图
+  Sidebar / Topbar / MessageList / Composer   外壳四段（直接消费 store）
+  IconButton.tsx / ContextIndicator.tsx / ModelPicker.tsx   复用小部件
+  dialogs/          Settings / NewChat / Rename / Delete / WorkspaceRemove 五个对话框（自门控，直接消费 store）
+  messages/         MessageItem / ActivityItem / ThinkingItem / TipsItem / ToolCallItem / EmptyStates
 scripts/mock-server.ts   支持聊天事件、旧 run 协议与技能/连接器目录的 Bun mock 服务
 scripts/smoke.ts         端到端冒烟测试
 ```

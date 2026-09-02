@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppServerClient } from "../lib/client";
-import { formatError, shortId } from "../App";
+import { formatError } from "../lib/errors";
+import { shortId } from "../ui/format";
 import type { RunEvent, RunResult, RunView } from "../lib/protocol";
 
 export function RunDetail({

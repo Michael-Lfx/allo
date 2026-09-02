@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AppServerClient } from "../lib/client";
 import type { RunReceipt } from "../lib/protocol";
-import { formatError } from "../App";
+import { formatError } from "../lib/errors";
 
 const DEFAULT_AGENT_ID = "0190f5fe-7c00-7a00-8000-000000000004";
 

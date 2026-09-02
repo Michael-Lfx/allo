@@ -11,9 +11,14 @@
     "mock": "bun scripts/mock-server.ts"
   },
   "dependencies": {
-    "lucide-react": "^1.38.0",
+    "ahooks": "^3.9.7",
+    "es-toolkit": "^1.52.0",
+    "i18next": "^26.4.1",
+    "lucide-react": "^1.39.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "react-i18next": "^17.0.13",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",

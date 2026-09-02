@@ -76,3 +76,23 @@ export function isAppServerError(error: unknown): error is AppServerError {
 export function isRetryableTransportError(error: unknown): boolean {
   return error instanceof TransportError && error.retryable;
 }
+
+/**
+ * Single human-readable rendering of a caught error.
+ *
+ * Every UI surface shares this one: a bare `Error` contributes only its
+ * message, while a protocol error contributes its stable `code` plus the
+ * server's retry hint. Components must not grow their own variants — a
+ * second spelling means the two drift apart on the retry hint.
+ */
+export function formatError(error: unknown): string {
+  if (error instanceof AppServerError) return `${error.code}: ${error.message}`;
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+/** Whether the caught error is retryable — used by UI surfaces to append a
+ *  localized "（可重试）" hint without baking wording into this lib. */
+export function isRetryableError(error: unknown): boolean {
+  return (error instanceof AppServerError || error instanceof TransportError) && error.retryable;
+}
