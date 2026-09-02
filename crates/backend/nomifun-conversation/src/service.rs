@@ -45,7 +45,8 @@ use nomifun_common::{
     generate_id, now_ms, validate_uuidv7, workspace_path_has_edge_whitespace_segment,
 };
 use nomifun_db::models::{
-    AgentMetadataRow, ConversationRow, MessageRow, NewConversationSkillLoad,
+    AgentMetadataRow, AppServerContextUsageRow, ConversationRow, MessageRow,
+    NewConversationSkillLoad,
 };
 use nomifun_db::{
     AgentExecutionTurnAuthority, ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
@@ -4827,7 +4828,139 @@ impl ConversationService {
 
 // ── Conversation CRUD ───────────────────────────────────────────────
 
+/// Trusted marker for the narrow App Server chat projection. It is deliberately
+/// not runtime authority: ownership, model selection and capabilities remain in
+/// typed Conversation fields and process-owned factory dependencies.
+pub const APP_SERVER_CHAT_EXTRA_KEY: &str = "app_server_chat";
+
 impl ConversationService {
+    /// Create a presetless, single-Nomi conversation for the App Server.
+    ///
+    /// This is the seam used by the versioned App Server protocol. Callers get
+    /// one deep operation rather than assembling open Conversation JSON, and it
+    /// deliberately disables auto-injected Skills/MCP/preset shaping. The
+    /// supplied workspace has already been resolved by the App Server's
+    /// owner-scoped workspace authority; arbitrary raw paths never cross this
+    /// interface.
+    pub async fn create_app_server_nomi_chat(
+        &self,
+        user_id: &str,
+        name: Option<String>,
+        model: ProviderWithModel,
+        workspace: String,
+        workspace_id: Option<String>,
+        reasoning_effort: Option<String>,
+    ) -> Result<ConversationResponse, AppError> {
+        model
+            .validate()
+            .map_err(AppError::BadRequest)?;
+        if workspace.trim().is_empty() || workspace.trim() != workspace {
+            return Err(AppError::BadRequest(
+                "App Server chat workspace must be a non-empty trimmed path".to_owned(),
+            ));
+        }
+        if let Some(effort) = reasoning_effort.as_deref()
+            && effort.trim().is_empty()
+        {
+            return Err(AppError::BadRequest(
+                "reasoning_effort must not be empty when provided".to_owned(),
+            ));
+        }
+
+        // App Server keeps Team, Skill and MCP capabilities off. Freeze an
+        // empty initial skill snapshot even when the host has auto-inject
+        // skills configured for its first-party UI.
+        let excluded_auto_skills = self.skill_resolver.auto_inject_names().await;
+        let mut extra = serde_json::json!({
+            "workspace": workspace,
+            "exclude_auto_inject_skills": excluded_auto_skills,
+            APP_SERVER_CHAT_EXTRA_KEY: true,
+        });
+        if let Some(workspace_id) = workspace_id {
+            extra["workspace_id"] = serde_json::Value::String(workspace_id);
+        }
+        if let Some(effort) = reasoning_effort {
+            extra["reasoning_effort"] = serde_json::Value::String(effort);
+        }
+        self.create(
+            user_id,
+            CreateConversationRequest {
+                r#type: AgentType::Nomi,
+                name,
+                model: Some(model),
+                source: Some(ConversationSource::Nomifun),
+                channel_chat_id: None,
+                preset_id: None,
+                preset_overrides: None,
+                delegation_policy: DelegationPolicy::Disabled,
+                execution_model_pool: None,
+                decision_policy: DecisionPolicy::Automatic,
+                execution_template_id: None,
+                extra,
+            },
+        )
+        .await
+    }
+
+    /// Read an App Server-owned chat without exposing arbitrary first-party
+    /// conversations through the protocol surface.
+    pub async fn get_app_server_chat(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<ConversationResponse, AppError> {
+        let conversation = self.get(user_id, conversation_id).await?;
+        if is_app_server_chat(&conversation) {
+            Ok(conversation)
+        } else {
+            Err(AppError::NotFound(format!(
+                "App Server conversation {conversation_id} not found"
+            )))
+        }
+    }
+
+    /// Read the last measured context occupancy snapshot for an App Server
+    /// chat. `None` means no `TurnCompleted` with usage has been recorded yet
+    /// (or the conversation is not an App Server chat); the projection then
+    /// reports "unknown" instead of fabricating a percentage.
+    pub async fn get_app_server_context_usage(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<AppServerContextUsageRow>, AppError> {
+        self.conversation_repo
+            .get_app_server_context_usage(parse_conv_id(conversation_id)?)
+            .await
+            .map_err(AppError::from)
+    }
+
+    /// Return the most recent App Server chats for this owner. The durable
+    /// Conversation table stays authoritative; this projection merely filters
+    /// rows carrying the trusted creation marker above.
+    pub async fn list_app_server_chats(
+        &self,
+        user_id: &str,
+        limit: u32,
+    ) -> Result<Vec<ConversationResponse>, AppError> {
+        let result = self
+            .list(
+                user_id,
+                ListConversationsQuery {
+                    cursor: None,
+                    limit: Some(limit.clamp(1, 200)),
+                    source: None,
+                    cron_job_id: None,
+                    pinned: None,
+                },
+                false,
+            )
+            .await?;
+        Ok(result
+            .items
+            .into_iter()
+            .filter(is_app_server_chat)
+            .collect())
+    }
+
     /// Create a new conversation.
     ///
     /// Generates a canonical bare UUIDv7 ID, sets status to `pending`, defaults
@@ -9313,6 +9446,7 @@ impl ConversationService {
             .filter(|r| r.user_id == user_id)
             .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
         let conversation_key = row.conversation_id.clone();
+        let app_server_chat = is_app_server_chat_row(&row);
         if let Some(lease) = runtime_build_lease.as_ref() {
             lease.ensure_active()?;
         }
@@ -10390,6 +10524,7 @@ impl ConversationService {
                 .with_origin(origin.clone())
                 .with_channel_platform(channel_platform.clone())
                 .with_robot_session(robot_session)
+                .with_app_server_chat(app_server_chat)
                 .with_artifact_workspace(agent.workspace());
 
                 // Execution-attempt turns: let the relay accumulate this turn's
@@ -15454,6 +15589,29 @@ fn validate_url_field(transport: &str, url: Option<&str>) -> Result<(), String> 
         Some(_) => Ok(()),
         None => Err(format!("{transport} transport is missing url")),
     }
+}
+
+/// Identify the narrow App Server chat projection without treating the marker
+/// as capability authority.
+fn is_app_server_chat(conversation: &ConversationResponse) -> bool {
+    conversation
+        .extra
+        .get(APP_SERVER_CHAT_EXTRA_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Row-level variant of [`is_app_server_chat`] for the send loop, which holds
+/// the persisted `ConversationRow` rather than a `ConversationResponse`.
+fn is_app_server_chat_row(row: &ConversationRow) -> bool {
+    serde_json::from_str::<serde_json::Value>(&row.extra)
+        .ok()
+        .and_then(|extra| {
+            extra
+                .get(APP_SERVER_CHAT_EXTRA_KEY)
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 /// Serialize a serde-compatible enum to its JSON string form for DB storage.

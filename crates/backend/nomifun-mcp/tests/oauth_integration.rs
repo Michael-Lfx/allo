@@ -237,9 +237,12 @@ async fn get_token_returns_expired_token_when_no_refresh_token() {
     .await
     .unwrap();
 
-    // With no refresh_token, returns the expired token as-is.
-    let token = svc.get_token("https://expired.example.com").await.unwrap();
-    assert_eq!(token.as_deref(), Some("old_access"));
+    // An expired access token without a refresh token must fail closed.
+    let error = svc
+        .get_token("https://expired.example.com")
+        .await
+        .expect_err("expired token without refresh must require reauthorization");
+    assert!(matches!(error, nomifun_mcp::McpError::ReauthorizationRequired));
 }
 
 #[tokio::test]

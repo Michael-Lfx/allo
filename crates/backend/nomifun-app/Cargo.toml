@@ -251,6 +251,7 @@ nomifun-vimax.workspace = true
 nomifun-canvas.workspace = true
 nomifun-cloud.workspace = true
 nomifun-agent-execution.workspace = true
+nomifun-app-server.workspace = true
 nomifun-companion.workspace = true
 nomifun-robot.workspace = true
 nomifun-customer-service.workspace = true

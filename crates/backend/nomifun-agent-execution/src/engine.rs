@@ -267,6 +267,52 @@ impl AgentExecutionEngine {
         self.create_inner(owner_id, actor, request, lead_preset).await
     }
 
+    /// App Server entry point: create an execution whose immutable Preset
+    /// snapshot is persisted in the Execution Participant.
+    /// The snapshot is written atomically with the Planning aggregate and its Created event.
+    pub async fn create_for_app_server(
+        &self,
+        owner_id: &str,
+        actor: &AgentExecutionActor,
+        request: CreateAgentExecutionRequest,
+        preset: ResolvedPresetSnapshot,
+    ) -> Result<AgentExecution, AppError> {
+        if request.lead_conversation_id.is_some() {
+            return Err(AppError::BadRequest(
+                "conversation-less Agent execution must not declare a lead conversation"
+                    .to_owned(),
+            ));
+        }
+        let participants = self
+            .resolver
+            .resolve(&request.model_pool, request.lead_model.as_ref())
+            .await?;
+        let mut participants = participants;
+        if let Some(lead) = participants.first_mut() {
+            lead.preset_id = Some(preset.preset_id.clone());
+            lead.preset_revision = Some(preset.preset_revision);
+            lead.preset_snapshot = Some(
+                serde_json::to_string(&preset)
+                    .map_err(|error| AppError::Internal(format!("encode App Server preset: {error}")))?,
+            );
+            lead.system_prompt = Some(preset.instructions.clone());
+            lead.enabled_skills = serde_json::to_string(&preset.included_skills)
+                .map_err(|error| AppError::Internal(format!("encode App Server skills: {error}")))?;
+            // Preset MCP references stay in the frozen participant snapshot;
+            // the attempt runner projects them into the attempt conversation
+            // (`selected_mcp_server_ids`) so the Nomi runtime attaches the
+            // authenticated owner's configured MCP servers.
+        }
+        self.persist_execution(
+            owner_id,
+            actor,
+            request,
+            participants,
+            None,
+        )
+        .await
+    }
+
     /// Instantiate reusable authoring input into one independent execution.
     /// The template is read once and then forgotten: participants and planner
     /// context are copied into immutable execution-owned state, with no FK or

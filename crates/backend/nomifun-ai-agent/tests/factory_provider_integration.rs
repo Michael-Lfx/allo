@@ -123,6 +123,7 @@ fn make_factory_with_summon(
         requirement_mcp_config: None,
         knowledge_mcp_config: None,
         mcp_server_repo: None,
+        mcp_oauth_service: None,
         requirement_sink: None,
         companion_sink: None,
         knowledge_retrieval: None,

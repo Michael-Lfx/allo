@@ -20,11 +20,11 @@ use nomifun_conversation::{
 };
 use nomifun_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, ICompanionTokenRepository,
-    IConversationRepository, IMcpServerRepository, IProviderModelRepository, IProviderRepository,
-    IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    IConversationRepository, IMcpServerRepository, IOAuthTokenRepository, IProviderModelRepository,
+    IProviderRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
-    SqliteProviderModelRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteTerminalRepository, SqliteUserRepository,
+    SqliteOAuthTokenRepository, SqliteProviderModelRepository, SqliteProviderRepository,
+    SqliteRemoteAgentRepository, SqliteTerminalRepository, SqliteUserRepository,
 };
 use nomifun_db::{IClientPreferenceRepository, SqliteClientPreferenceRepository};
 use nomifun_realtime::{BroadcastEventBus, WebSocketManager};
@@ -2167,6 +2167,13 @@ impl AppServices {
         // so the agent gets the operator's tools (ELECTRON-1JG fix).
         let mcp_server_repo: Arc<dyn IMcpServerRepository> =
             Arc::new(SqliteMcpServerRepository::new(database.pool().clone()));
+        // MCP OAuth service for remote (SSE/Streamable HTTP) servers: injects
+        // the stored bearer token into transport headers at session build and
+        // backs the runtime 401 → refresh → single-retry path.
+        let mcp_oauth_service = nomifun_mcp::McpOAuthService::new_dynamic(
+            Arc::new(SqliteOAuthTokenRepository::new(database.pool().clone()))
+                as Arc<dyn IOAuthTokenRepository>,
+        );
 
         let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> =
             Arc::new(SqliteAgentMetadataRepository::new(database.pool().clone()));
@@ -2967,6 +2974,7 @@ impl AppServices {
                 database.pool().clone(),
             )) as Arc<dyn nomifun_db::ISettingsRepository>),
             mcp_server_repo: Some(mcp_server_repo),
+            mcp_oauth_service: Some(mcp_oauth_service),
             requirement_sink: Some(requirement_sink),
             // Native cron tools: agent schedules/lists/deletes its own recurring
             // prompts. The closure resolves the process CronService lazily (it is

@@ -6,6 +6,7 @@ pub mod provider_config;
 mod acp;
 pub(crate) mod construction_guard;
 mod context;
+pub mod mcp_oauth;
 pub(crate) mod moa;
 mod nanobot;
 pub(crate) mod nomi;
@@ -27,6 +28,7 @@ use nomifun_db::{
     IClientPreferenceRepository, IMcpServerRepository, IProviderRepository, IRemoteAgentRepository,
     ISettingsRepository,
 };
+use nomifun_mcp::McpOAuthService;
 
 use crate::runtime_handle::AgentRuntimeHandle;
 use crate::capability::skill_manager::AcpSkillManager;
@@ -196,6 +198,11 @@ pub struct AgentFactoryDeps {
     /// inject enabled servers into `session/new` (ELECTRON-1JG fix).
     /// `None` for tests/composition paths that do not need MCP injection.
     pub mcp_server_repo: Option<Arc<dyn IMcpServerRepository>>,
+    /// MCP OAuth service for remote (SSE/Streamable HTTP) servers: injects
+    /// the stored bearer token into transport headers at session build and
+    /// backs the runtime 401 → refresh → single-retry path. `None` keeps
+    /// remote servers unauthenticated (401 surfaces to the caller).
+    pub mcp_oauth_service: Option<McpOAuthService>,
     /// Optional sink enabling nomi native requirement tools. When `Some`,
     /// `requirement_complete` / `requirement_update_status` are registered into
     /// the in-process engine. `None` (e.g. standalone) leaves them unregistered.

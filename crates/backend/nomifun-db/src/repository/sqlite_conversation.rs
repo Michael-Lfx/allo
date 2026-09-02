@@ -10,8 +10,8 @@ use nomifun_common::{
 
 use crate::error::DbError;
 use crate::models::{
-    ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow,
-    ConversationSkillLoad, MessageRow,
+    AppServerContextUsageRow, ConversationArtifactRow, ConversationDeliveryReceiptRow,
+    ConversationRow, ConversationSkillLoad, MessageRow,
 };
 use crate::repository::bind::{BindValue, bind_value, bind_value_as};
 use crate::repository::conversation::{
@@ -4633,6 +4633,10 @@ impl IConversationRepository for SqliteConversationRepository {
             .bind(conversation_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM app_server_context_usage WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM idmm_action_reservations WHERE conversation_id = ?")
             .bind(conversation_id)
             .execute(&mut *tx)
@@ -4665,6 +4669,50 @@ impl IConversationRepository for SqliteConversationRepository {
 
         tx.commit().await?;
         Ok(deleted_cron_job_ids)
+    }
+
+    async fn upsert_app_server_context_usage(
+        &self,
+        conversation_id: &str,
+        context_tokens: i64,
+        window_tokens: i64,
+        updated_at: i64,
+    ) -> Result<(), DbError> {
+        if conversation_id.trim().is_empty() || context_tokens < 0 || window_tokens < 0 {
+            return Err(DbError::Conflict(
+                "App Server context usage requires a conversation id and non-negative token counts"
+                    .to_owned(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO app_server_context_usage \
+                 (conversation_id, context_tokens, window_tokens, updated_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(conversation_id) DO UPDATE SET \
+                 context_tokens = excluded.context_tokens, \
+                 window_tokens = excluded.window_tokens, \
+                 updated_at = excluded.updated_at",
+        )
+        .bind(conversation_id)
+        .bind(context_tokens)
+        .bind(window_tokens)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_app_server_context_usage(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<AppServerContextUsageRow>, DbError> {
+        sqlx::query_as::<_, AppServerContextUsageRow>(
+            "SELECT * FROM app_server_context_usage WHERE conversation_id = ?",
+        )
+        .bind(conversation_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DbError::Query)
     }
 
     async fn list_paginated(

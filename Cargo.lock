@@ -6737,6 +6737,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "tracing",
 ]
@@ -6860,6 +6861,7 @@ dependencies = [
  "nomifun-agent-execution",
  "nomifun-ai-agent",
  "nomifun-api-types",
+ "nomifun-app-server",
  "nomifun-assets",
  "nomifun-audio",
  "nomifun-auth",
@@ -6923,6 +6925,33 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "wiremock",
+]
+
+[[package]]
+name = "nomifun-app-server"
+version = "1.0.11"
+dependencies = [
+ "async-trait",
+ "axum",
+ "futures-util",
+ "http-body-util",
+ "nomifun-agent-execution",
+ "nomifun-ai-agent",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-common",
+ "nomifun-conversation",
+ "nomifun-db",
+ "nomifun-preset",
+ "nomifun-realtime",
+ "nomifun-system",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 0.8.2",
+ "tower",
 ]
 
 [[package]]

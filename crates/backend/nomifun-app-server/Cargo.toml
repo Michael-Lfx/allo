@@ -1,0 +1,29 @@
+[package]
+name = "nomifun-app-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+nomifun-agent-execution.workspace = true
+nomifun-api-types.workspace = true
+nomifun-preset.workspace = true
+futures-util.workspace = true
+nomifun-auth.workspace = true
+nomifun-common.workspace = true
+nomifun-ai-agent.workspace = true
+nomifun-conversation.workspace = true
+nomifun-db.workspace = true
+nomifun-realtime.workspace = true
+nomifun-system.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }

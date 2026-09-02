@@ -13,6 +13,10 @@ use crate::error::DbError;
 
 pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "acp_session",
+    "app_server_context_usage",
+    "app_server_idempotency_receipts",
+    "app_server_run_mappings",
+    "app_server_workspaces",
     "agent_execution_attempts",
     "agent_execution_events",
     "agent_execution_participants",
@@ -131,6 +135,8 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ),
     ("agent_execution_templates", "execution_template_id"),
     ("agent_executions", "execution_id"),
+    ("app_server_run_mappings", "public_run_id"),
+    ("app_server_workspaces", "workspace_id"),
     ("agent_metadata", "agent_id"),
     ("attachments", "attachment_id"),
     ("channel_plugins", "channel_plugin_id"),
@@ -194,6 +200,10 @@ const UUIDV7_MANAGED_VALUE_COLUMNS: &[(&str, &str)] = &[("creation_tasks", "node
 /// `_id` column must be present in [`LOGICAL_REFERENCES`].
 const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("acp_session", "acp_session_id"),
+    ("app_server_idempotency_receipts", "client_id"),
+    ("app_server_idempotency_receipts", "principal_id"),
+    ("app_server_run_mappings", "public_run_id"),
+    ("app_server_workspaces", "workspace_id"),
     ("agent_metadata", "agent_id"),
     ("agent_metadata", "yolo_id"),
     ("agent_execution_attempts", "attempt_id"),
@@ -616,6 +626,9 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("agent_execution_templates", "primary_participant_id" => "agent_execution_template_participants", "template_participant_id", false, "idx_execution_templates_primary_participant_id", Restrict)
         .with_aggregate_scope("parent.template_id = child.execution_template_id"),
     text_ref!("agent_executions", "user_id" => "users", "user_id", false, "idx_agent_executions_user_id", Cascade),
+    text_ref!("app_server_run_mappings", "execution_id" => "agent_executions", "execution_id", false, "uq_app_server_run_mappings_execution_id", KeepHistory),
+    text_ref!("app_server_run_mappings", "user_id" => "users", "user_id", false, "idx_app_server_run_mappings_user_id", KeepHistory),
+    text_ref!("app_server_workspaces", "user_id" => "users", "user_id", false, "idx_app_server_workspaces_user_id", KeepHistory),
     text_ref!("attachments", "requirement_id" => "requirements", "requirement_id", false, "idx_attachments_requirement_id", Cascade),
     text_ref!("channel_inbound_receipts", "user_id" => "users", "user_id", true, "idx_channel_inbound_receipts_user_id", SetNull),
     text_ref!("channel_inbound_receipts", "channel_plugin_id" => "channel_plugins", "channel_plugin_id", true, "idx_channel_inbound_receipts_channel_plugin_id", SetNull),
@@ -694,6 +707,7 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("agent_execution_template_participants", "source_agent_id" => "agent_metadata", "agent_id", false, "idx_template_participants_source_agent_id", Restrict),
     text_ref!("agent_execution_template_participants", "preset_id" => "presets", "preset_id", true, "idx_template_participants_preset_id", SetNull),
     text_ref!("agent_execution_template_participants", "provider_id" => "providers", "provider_id", true, "idx_template_participants_provider_id", Restrict),
+    text_ref!("app_server_context_usage", "conversation_id" => "conversations", "conversation_id", false, "idx_app_server_context_usage_conversation_id", Cascade),
     text_ref!("conversation_artifacts", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_artifacts_conversation_id", Cascade),
     text_ref!("conversation_artifacts", "cron_job_id" => "cron_jobs", "cron_job_id", true, "idx_conversation_artifacts_cron_job_id", SetNull),
     text_ref!("conversation_execution_links", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_execution_links_conversation_id", KeepHistory),
@@ -1332,6 +1346,20 @@ async fn validate_no_physical_foreign_keys(pool: &SqlitePool) -> Result<(), DbEr
 
 async fn validate_no_triggers(pool: &SqlitePool) -> Result<(), DbError> {
     const TRIGGER_CONTRACTS: &[(&str, &[&str])] = &[
+        (
+            "app_server_idempotency_receipts_immutable",
+            &[
+                "BEFORE UPDATE ON APP_SERVER_IDEMPOTENCY_RECEIPTS",
+                "RAISE(ABORT, 'APP SERVER IDEMPOTENCY RECEIPTS ARE IMMUTABLE')",
+            ],
+        ),
+        (
+            "app_server_idempotency_receipts_no_delete",
+            &[
+                "BEFORE DELETE ON APP_SERVER_IDEMPOTENCY_RECEIPTS",
+                "RAISE(ABORT, 'APP SERVER IDEMPOTENCY RECEIPTS ARE RETAINED INDEFINITELY')",
+            ],
+        ),
         (
             "channel_inbound_receipts_identity_immutable",
             &[

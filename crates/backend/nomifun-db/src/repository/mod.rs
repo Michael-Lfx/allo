@@ -1,4 +1,7 @@
 pub mod acp_session;
+pub mod app_server_idempotency;
+pub mod app_server_run_mapping;
+pub mod app_server_workspace;
 pub mod agent_metadata;
 pub mod agent_execution;
 pub mod agent_execution_template;
@@ -27,6 +30,9 @@ mod settings;
 pub mod skill_tag;
 pub mod ssh_host;
 mod sqlite_acp_session;
+mod sqlite_app_server_idempotency;
+mod sqlite_app_server_run_mapping;
+mod sqlite_app_server_workspace;
 mod sqlite_agent_metadata;
 mod sqlite_agent_execution;
 mod sqlite_agent_execution_template;
@@ -65,6 +71,12 @@ pub mod webhook;
 pub mod workshop;
 
 pub use acp_session::{CreateAcpSessionParams, IAcpSessionRepository, PersistedSessionState, SaveRuntimeStateParams};
+pub use app_server_idempotency::{
+    AppServerIdempotencyCommit, AppServerIdempotencyLookup,
+    IAppServerIdempotencyRepository,
+};
+pub use app_server_run_mapping::IAppServerRunMappingRepository;
+pub use app_server_workspace::IAppServerWorkspaceRepository;
 pub use agent_metadata::IAgentMetadataRepository;
 pub use agent_execution::*;
 pub use agent_execution_template::*;
@@ -109,6 +121,9 @@ pub use requirement::{
 pub use settings::ISettingsRepository;
 pub use skill_tag::ISkillTagRepository;
 pub use sqlite_acp_session::SqliteAcpSessionRepository;
+pub use sqlite_app_server_idempotency::SqliteAppServerIdempotencyRepository;
+pub use sqlite_app_server_run_mapping::SqliteAppServerRunMappingRepository;
+pub use sqlite_app_server_workspace::SqliteAppServerWorkspaceRepository;
 pub use sqlite_agent_metadata::SqliteAgentMetadataRepository;
 pub use sqlite_agent_execution::SqliteAgentExecutionRepository;
 pub use sqlite_agent_execution_template::SqliteAgentExecutionTemplateRepository;

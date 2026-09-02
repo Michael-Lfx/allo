@@ -1801,6 +1801,14 @@ pub struct StreamRelay {
     ///     is never touched. Deliberately narrower than the ungated precedent of
     ///     `strip_think_tags` / `strip_cron_commands`.
     robot_session: bool,
+    /// True for the narrow App Server chat projection (the conversation row
+    /// carries `extra.app_server_chat`). When set, the relay persists the
+    /// server-measured context snapshot on each `TurnCompleted` (last prompt
+    /// occupancy + effective window) and publishes a `context.usage` user
+    /// event, so the WebUI can show real context occupancy instead of
+    /// estimating token counts. Observability only: a persist failure logs
+    /// and never fails or delays the turn.
+    app_server_chat: bool,
     /// Phase 3 (review #1/#5): predicate telling the relay whether a PRE-RESPONSE
     /// terminal provider-fault with this error code WILL be failed over by the
     /// send loop. When it returns `true` the relay suppresses the user-visible
@@ -1894,6 +1902,7 @@ impl StreamRelay {
             origin: None,
             channel_platform: None,
             robot_session: false,
+            app_server_chat: false,
             failover_suppressor: None,
             runtime_state: None,
             cancellation: None,
@@ -1939,6 +1948,13 @@ impl StreamRelay {
     /// chat and companion turns leave it unset.
     pub fn with_runtime_state(mut self, runtime_state: Arc<ConversationRuntimeStateService>) -> Self {
         self.runtime_state = Some(runtime_state);
+        self
+    }
+
+    /// Mark the relay as serving the narrow App Server chat projection so
+    /// `TurnCompleted` metrics are persisted and projected as `context.usage`.
+    pub fn with_app_server_chat(mut self, app_server_chat: bool) -> Self {
+        self.app_server_chat = app_server_chat;
         self
     }
 
@@ -3346,6 +3362,16 @@ impl StreamRelay {
                                     metrics.input_tokens.saturating_add(metrics.output_tokens);
                                 runtime_state
                                     .add_turn_tokens(&self.conversation_id, turn_tokens as i64);
+                            }
+                            // App Server chats persist the measured context occupancy
+                            // (last prompt tokens + effective window) so the WebUI can
+                            // render a real percentage across reloads. Never infer
+                            // tokens from text length; a missing report simply stays
+                            // "unknown" in the projection.
+                            if self.app_server_chat
+                                && (metrics.context_tokens > 0 || metrics.context_window > 0)
+                            {
+                                self.persist_app_server_context_usage(metrics).await;
                             }
                             self.forward_to_websocket(&event);
                         }
@@ -6081,6 +6107,56 @@ impl StreamRelay {
         }
 
         debug!(conversation_id, status = "finished", "Turn completed");
+    }
+
+    /// Persist the measured context snapshot for an App Server chat and
+    /// publish a `context.usage` user event. Best-effort observability: the
+    /// repository write and the broadcast are isolated so a broken sink can
+    /// never unwind the relay owner or delay turn completion.
+    async fn persist_app_server_context_usage(
+        &self,
+        metrics: &nomifun_ai_agent::protocol::events::TurnCompletedEventData,
+    ) {
+        let updated_at = now_ms();
+        if let Err(error) = self
+            .repo
+            .upsert_app_server_context_usage(
+                &self.conversation_id,
+                metrics.context_tokens.min(i64::MAX as u64) as i64,
+                metrics.context_window.min(i64::MAX as u64) as i64,
+                updated_at,
+            )
+            .await
+        {
+            warn!(
+                conversation_id = %self.conversation_id,
+                error = %ErrorChain(&error),
+                "Failed to persist App Server context usage"
+            );
+            return;
+        }
+        let payload = json!({
+            "conversation_id": self.conversation_id,
+            "context_usage": {
+                "used_tokens": metrics.context_tokens,
+                "window_tokens": metrics.context_window,
+                "updated_at": updated_at,
+                "source": "measured",
+            },
+        });
+        // Same resilience contract as the other user-event projections: a sink
+        // panic must be contained.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.user_events
+                .send_to_user(&self.user_id, WebSocketMessage::new("context.usage", payload));
+        }))
+        .is_err()
+        {
+            error!(
+                conversation_id = %self.conversation_id,
+                "User event sink panicked while projecting context.usage"
+            );
+        }
     }
 
     async fn try_derived_message_id(
