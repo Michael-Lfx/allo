@@ -19,7 +19,9 @@ use crate::planning::{
     enrich_requirement_for_scene_model_decides, normalize_target_duration_secs,
 };
 use crate::progress::ProgressCallback;
-use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
+use crate::session::{
+    copy_json_artifact_if_readable, read_json_artifact, write_json_artifact, write_text_artifact,
+};
 
 use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
@@ -77,15 +79,15 @@ impl ScriptFilmPipeline {
 
         let root_chars = self.working_dir.join("characters.json");
         let scene_chars = scene_dir.join("characters.json");
-        if root_chars.exists() {
+        if root_chars.is_file() {
             let mut cast_changed = !scene_chars.exists();
             if scene_chars.exists() {
                 let a = tokio::fs::read(&root_chars).await.unwrap_or_default();
                 let b = tokio::fs::read(&scene_chars).await.unwrap_or_default();
                 cast_changed = a != b;
             }
-            tokio::fs::copy(&root_chars, &scene_chars).await?;
-            if cast_changed {
+            let copied = copy_json_artifact_if_readable(&root_chars, &scene_chars).await?;
+            if copied && cast_changed {
                 for name in [
                     "storyboard.json",
                     "shot_descriptions.json",
@@ -104,21 +106,17 @@ impl ScriptFilmPipeline {
         }
 
         let root_reg = self.working_dir.join("character_portraits_registry.json");
-        if root_reg.exists() {
-            tokio::fs::copy(
-                &root_reg,
-                scene_dir.join("character_portraits_registry.json"),
-            )
-            .await?;
-        }
+        let _ = copy_json_artifact_if_readable(
+            &root_reg,
+            &scene_dir.join("character_portraits_registry.json"),
+        )
+        .await?;
         let root_world = self.working_dir.join("world_assets_registry.json");
-        if root_world.exists() {
-            tokio::fs::copy(
-                &root_world,
-                scene_dir.join("world_assets_registry.json"),
-            )
-            .await?;
-        }
+        let _ = copy_json_artifact_if_readable(
+            &root_world,
+            &scene_dir.join("world_assets_registry.json"),
+        )
+        .await?;
         let local_portraits = scene_dir.join("character_portraits");
         if local_portraits.is_dir() {
             let _ = tokio::fs::remove_dir_all(&local_portraits).await;
@@ -281,7 +279,7 @@ impl ScriptFilmPipeline {
                 ));
                 let entry = self
                     .portraits
-                    .generate_all_views(character, &style, &corpus, &dir, &[])
+                    .generate_all_views(character, &style, &corpus, &dir)
                     .await?;
                 registry.extend(entry);
                 write_json_artifact(&registry_path, &registry).await?;
@@ -321,7 +319,6 @@ impl ScriptFilmPipeline {
             }
         }
 
-        emit_pct(&progress, "look_plate_start", "正在锁定全片画风", 28.0);
         emit_pct(
             &progress,
             "world_assets_start",

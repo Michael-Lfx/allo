@@ -22,11 +22,20 @@ fn fence_re() -> &'static Regex {
 /// Strip markdown fences and extract the outermost JSON object/array.
 pub fn extract_json_str(raw: &str) -> VimaxResult<String> {
     let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(VimaxError::Llm("empty LLM response (no JSON)".into()));
+    }
     if let Some(caps) = fence_re().captures(trimmed) {
-        return Ok(caps
+        let inner = caps
             .get(1)
             .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default());
+            .unwrap_or_default();
+        if inner.is_empty() {
+            return Err(VimaxError::Llm(
+                "empty JSON fence in LLM response".into(),
+            ));
+        }
+        return Ok(inner);
     }
     if let Some(start) = trimmed.find('{') {
         if let Some(end) = trimmed.rfind('}') {
@@ -252,6 +261,12 @@ pub async fn complete_and_parse_llm_json<T: DeserializeOwned>(
             Some(err) => retry_user_prompt(user, attempt, err),
         };
         match chat.complete_text(system, &prompted).await {
+            Ok(raw) if raw.trim().is_empty() => {
+                tracing::warn!(attempt, "LLM chat complete returned empty body");
+                last_err = Some(VimaxError::Llm(
+                    "empty chat completion (model returned no content)".into(),
+                ));
+            }
             Ok(raw) => match parse_llm_json::<T>(&raw) {
                 Ok(v) => {
                     if attempt > 1 {
@@ -290,6 +305,12 @@ pub async fn complete_vision_and_parse_llm_json<T: DeserializeOwned>(
             .complete_vision(system, &prompted, image_paths)
             .await
         {
+            Ok(raw) if raw.trim().is_empty() => {
+                tracing::warn!(attempt, "LLM vision complete returned empty body");
+                last_err = Some(VimaxError::Llm(
+                    "empty vision completion (model returned no content)".into(),
+                ));
+            }
             Ok(raw) => match parse_llm_json::<T>(&raw) {
                 Ok(v) => {
                     if attempt > 1 {
@@ -391,5 +412,22 @@ mod tests {
         let s = sanitize_llm_json_text(r#"{"a":"他说「你好」"}"#);
         assert!(s.contains('「'));
         assert!(!s.contains(r#"他说""#));
+    }
+
+    #[test]
+    fn extract_json_str_rejects_empty_and_empty_fence() {
+        assert!(extract_json_str("").is_err());
+        assert!(extract_json_str("   ").is_err());
+        assert!(extract_json_str("```json\n\n```").is_err());
+        assert!(extract_json_str("```\n```").is_err());
+    }
+
+    #[test]
+    fn parse_llm_json_empty_is_llm_error_not_serde_eof() {
+        let err = parse_llm_json::<serde_json::Value>("")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("empty LLM"), "{err}");
+        assert!(!err.starts_with("JSON error:"), "{err}");
     }
 }

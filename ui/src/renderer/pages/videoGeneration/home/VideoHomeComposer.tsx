@@ -11,6 +11,7 @@ import React, {
 import { Popover } from '@arco-design/web-react';
 import {
   Broadcast,
+  ColorFilter,
   Down,
   MagicWand,
   People,
@@ -46,6 +47,11 @@ import type {
 import { usesCanvasReferences } from './types';
 import { generationPreferencesSummary } from '../preferenceSummary';
 import {
+  VISUAL_STYLE_PRESETS,
+  hasSelectedVisualStyle,
+  visualStyleSelectValue,
+} from '../visualStylePresets';
+import {
   BRIEFING_DURATION_MAX_SECS,
   BRIEFING_DURATION_MIN_SECS,
   BRIEFING_DURATION_STEP_SECS,
@@ -58,6 +64,7 @@ import {
 import {
   prefetchCanvasAssistantPanel,
   prefetchGenerationPreferencesPanel,
+  prefetchLookStyleMenu,
   prefetchVerticalSkillMenu,
 } from '../prefetch';
 import styles from './home.module.css';
@@ -66,6 +73,7 @@ const CameoCastEditor = lazy(() => import('../components/CameoCastEditor'));
 const loadGenerationPreferencesPopover = () => import('./GenerationPreferencesPopover');
 const GenerationPreferencesPopover = lazy(loadGenerationPreferencesPopover);
 const VerticalSkillMenu = lazy(() => import('./VerticalSkillMenu'));
+const LookStyleMenu = lazy(() => import('./LookStyleMenu'));
 const VerticalSkillCreateModal = lazy(() => import('./VerticalSkillCreateModal'));
 const CampaignCarousel = lazy(() => import('../components/CampaignCarousel'));
 
@@ -134,6 +142,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [skillHubOpen, setSkillHubOpen] = useState(false);
+  const [lookMenuOpen, setLookMenuOpen] = useState(false);
   const [skillCreateOpen, setSkillCreateOpen] = useState(false);
   const [fileDragOver, setFileDragOver] = useState(false);
   const [modelMissing, setModelMissing] = useState(false);
@@ -297,6 +306,21 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const verticalSkillLabel = t('videoGeneration.skills.mountButton', {
     defaultValue: 'Skill',
   });
+  const lookButtonFallback = t('videoGeneration.looks.mountButton', {
+    defaultValue: '画风',
+  });
+  const selectedLookKey = visualStyleSelectValue(draft.style);
+  const selectedLookPreset =
+    selectedLookKey === '__custom__'
+      ? undefined
+      : VISUAL_STYLE_PRESETS.find((preset) => preset.key === selectedLookKey);
+  const lookButtonLabel = selectedLookPreset
+    ? t(selectedLookPreset.labelKey, { defaultValue: selectedLookPreset.defaultLabel })
+    : selectedLookKey === '__custom__'
+      ? t('videoGeneration.workspace.source.stylePresets.custom', {
+          defaultValue: '自定义风格',
+        })
+      : lookButtonFallback;
 
   const removeVerticalSkill = (skillId: string) => {
     setDraft((current) => ({
@@ -436,7 +460,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     const warm = () => {
       setPrefsModuleReady(true);
       prefetchGenerationPreferencesPanel();
-      if (mode === 'agent') prefetchVerticalSkillMenu();
+      if (mode === 'agent') {
+        prefetchVerticalSkillMenu();
+        prefetchLookStyleMenu();
+      }
       if (mode === 'creation') prefetchCanvasAssistantPanel();
     };
     // Briefing first-open waits on this chunk + /api/media/models; do not idle-defer.
@@ -457,6 +484,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       setModeMenuOpen(false);
       setSlashMenuOpen(false);
       setSkillHubOpen(false);
+      setLookMenuOpen(false);
       setPrefsModuleReady(true);
       prefetchGenerationPreferencesPanel();
       setPreferencesOpen(true);
@@ -769,6 +797,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   setPreferencesOpen(false);
                   setSlashMenuOpen(false);
                   setSkillHubOpen(false);
+                  setLookMenuOpen(false);
                 }
                 setModeMenuOpen(open);
               }}
@@ -851,6 +880,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   setPreferencesOpen(false);
                   setModeMenuOpen(false);
                   setSkillHubOpen(false);
+                  setLookMenuOpen(false);
                 }
                 setSlashMenuOpen(open);
               }}
@@ -892,6 +922,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                     setPreferencesOpen(false);
                     setModeMenuOpen(false);
                     setSlashMenuOpen(false);
+                    setLookMenuOpen(false);
                   }
                   setSkillHubOpen(open);
                 }}
@@ -927,6 +958,55 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 >
                   <Star size={15} />
                   <span className={styles.toolbarLabel}>{verticalSkillLabel}</span>
+                </button>
+              </Popover>
+            ) : null}
+            {mode === 'agent' ? (
+              <Popover
+                trigger='click'
+                position='bl'
+                triggerProps={{ showArrow: false, autoFitPosition: false, updateOnScroll: true }}
+                getPopupContainer={getComposerPopupContainer}
+                className={styles.lookPopover}
+                style={{ maxWidth: 400, padding: 0 }}
+                popupVisible={lookMenuOpen}
+                onVisibleChange={(open) => {
+                  if (open) {
+                    setPreferencesOpen(false);
+                    setModeMenuOpen(false);
+                    setSlashMenuOpen(false);
+                    setSkillHubOpen(false);
+                  }
+                  setLookMenuOpen(open);
+                }}
+                content={
+                  <Suspense fallback={<div className={styles.slashMenu} />}>
+                    <LookStyleMenu
+                      stylePrompt={draft.style}
+                      onSelect={(style) => {
+                        setDraft((current) => ({ ...current, style }));
+                        setLookMenuOpen(false);
+                      }}
+                    />
+                  </Suspense>
+                }
+              >
+                <button
+                  type='button'
+                  className={`${styles.toolbarButton} ${styles.skillToolbarButton} ${
+                    lookMenuOpen || hasSelectedVisualStyle(draft.style)
+                      ? styles.toolbarButtonActive
+                      : ''
+                  }`}
+                  aria-expanded={lookMenuOpen}
+                  aria-label={t('videoGeneration.looks.menuAria', {
+                    defaultValue: '选择画风',
+                  })}
+                  onMouseEnter={prefetchLookStyleMenu}
+                  onFocus={prefetchLookStyleMenu}
+                >
+                  <ColorFilter size={15} />
+                  <span className={styles.toolbarLabel}>{lookButtonLabel}</span>
                 </button>
               </Popover>
             ) : null}

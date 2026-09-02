@@ -184,8 +184,9 @@ export function useHomeUpload({
                 workflow:
                   current.workflow === 'idea2video' ? 'script2video' : current.workflow,
                 sourceText: text,
+                sourceDocumentName: documents[0].name,
               }
-            : { ...current, creationPrompt: text }
+            : { ...current, creationPrompt: text, sourceDocumentName: documents[0].name }
         );
       } catch (error) {
         setUploadError(error instanceof Error ? error.message : String(error));

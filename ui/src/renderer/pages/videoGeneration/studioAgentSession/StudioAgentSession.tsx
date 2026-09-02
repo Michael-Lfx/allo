@@ -13,7 +13,8 @@ import {
 } from '../studioStageTimeline';
 import { useDocumentHidden, useRunStatusFull } from '../useRunStatusFeed';
 import { resolveSessionCreditsConsumed } from '../sessionCredits';
-import type { ArtifactNode } from '../types';
+import { listCameos } from '../api';
+import type { ArtifactNode, CameoPhoto } from '../types';
 import StudioMediaLightbox from './StudioMediaLightbox';
 import StudioSessionComposer from './StudioSessionComposer';
 import StudioSessionMessageView from './StudioSessionMessage';
@@ -21,6 +22,7 @@ import {
   projectStudioSessionMessages,
   resolveStudioComposerAction,
 } from './projectStudioSessionMessages';
+import { collectCameoMedia, collectSourceDocumentMedia } from './collectStudioMedia';
 import { clampStudioSessionWidth } from './sessionPanelStorage';
 import type { StudioSessionMedia } from './types';
 import styles from './index.module.css';
@@ -63,6 +65,8 @@ export interface StudioAgentSessionProps {
   onContinue: () => void;
   onFocusScene?: (sceneId: string) => void;
   onSelectArtifact?: (path: string) => void;
+  cameoEpoch?: number;
+  sourceDocumentName?: string | null;
 }
 
 const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
@@ -94,6 +98,8 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
   onContinue,
   onFocusScene,
   onSelectArtifact,
+  cameoEpoch = 0,
+  sourceDocumentName = null,
 }) => {
   const { t } = useTranslation();
   const runStatus = useRunStatusFull();
@@ -101,12 +107,36 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const columnRef = useRef<HTMLDivElement>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [cameos, setCameos] = useState<CameoPhoto[]>([]);
   const [lightbox, setLightbox] = useState<{ items: StudioSessionMedia[]; index: number } | null>(
     null
   );
 
   const variant: StudioStageVariant = isAction ? 'action' : 'film';
   const liveBusy = busy || runStatus?.status === 'planning' || runStatus?.status === 'rendering';
+
+  useEffect(() => {
+    if (isAction || !sessionId) {
+      setCameos([]);
+      return;
+    }
+    let cancelled = false;
+    void listCameos(sessionId)
+      .then((photos) => {
+        if (!cancelled) setCameos(photos);
+      })
+      .catch(() => {
+        if (!cancelled) setCameos([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, isAction, cameoEpoch]);
+
+  const briefMedia = useMemo(
+    () => [...collectCameoMedia(cameos), ...collectSourceDocumentMedia(sourceDocumentName)],
+    [cameos, sourceDocumentName]
+  );
 
   useEffect(() => {
     if (!liveBusy || hidden) return;
@@ -129,6 +159,7 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
         actionAssetsReady,
         variant,
         runStatus: runStatus?.status,
+        briefMedia,
       }),
     [
       sourceText,
@@ -141,6 +172,7 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
       isAction,
       actionAssetsReady,
       variant,
+      briefMedia,
     ]
   );
 

@@ -29,6 +29,7 @@ The user will provide the following input.
 [Guidelines]
 - Ensure all output values (except keys) match the language used in the script.
 - Each shot must have a clear narrative purpose—such as establishing the setting, showing character relationships, or highlighting reactions. Every shot must CHANGE something visible or audible (new info / emotion / action). Ban back-to-back redundant wide establishes and empty "looks around slowly" holds.
+- **PERFORMANCE, NOT LABELS (show-don't-tell, CRITICAL)**: visual_desc must never state an emotion as a bare label（伤心/愤怒/紧张/震惊/"angry"/"nervous"…）. Cash every emotion as filmable behavior in the SAME row: face (咬紧下颌、眼眶泛红), hands (攥拳、指节发白、捏皱纸张), blocking (后退半步、猛地起身), or a prop interaction. "她攥紧碎纸塞进袖口，指节发白" is a shot; "她很愤怒" is not. This is a DENSITY rule, not a coverage rule — externalize the emotion inside the existing row, never add a row or a cut for it.
 - Use cinematic language deliberately: close-ups for emotion, wide shots for context, and varied angles to direct audience attention. Angle changes that cover the SAME story beat belong in the SAME JSON object (CUT TO), not a new object.
 - Do NOT start a new storyboard row because the camera moved, the shot size changed, or you need a reverse. A new row is a new story unit (turn, time jump, new conflict) or a line that would 吞字.
 - **PACING (CRITICAL)**: {clip_duration_rules}

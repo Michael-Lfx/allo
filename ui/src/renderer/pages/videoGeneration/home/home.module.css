@@ -820,11 +820,24 @@
   z-index: 1200 !important;
 }
 
+.lookPopover {
+  max-width: min(400px, calc(100vw - 24px)) !important;
+  padding: 0 !important;
+  z-index: 1200 !important;
+}
+
+.lookPopover :global(.arco-popover-content) {
+  max-width: 100%;
+  overflow: hidden;
+}
+
 .skillPopover :global(.arco-popover-content) {
   max-width: 100%;
   overflow: hidden;
 }
 
+.lookPopover :global(.arco-popover-arrow),
+.lookPopover :global(.arco-trigger-arrow),
 .skillPopover :global(.arco-popover-arrow),
 .skillPopover :global(.arco-trigger-arrow),
 .composer :global(.arco-popover-arrow),

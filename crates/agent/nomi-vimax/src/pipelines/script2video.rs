@@ -16,7 +16,9 @@ use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
 use crate::media_local::SpliceSeam;
 use crate::progress::ProgressCallback;
-use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
+use crate::session::{
+    copy_json_artifact_if_readable, read_json_artifact, write_json_artifact, write_text_artifact,
+};
 
 use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
@@ -30,8 +32,8 @@ use super::privacy_face::{
 };
 use super::{
     artifact_cache::{
-        load_or_write_json_cached, plan_artifacts_sidecar_complete,
-        script2video_plan_fingerprint, sidecar_matches,
+        load_json_if_cached, load_or_write_json_cached, plan_artifacts_sidecar_complete,
+        script2video_plan_fingerprint, sidecar_matches, write_sidecar,
     },
     PipelineBackends, emit, emit_meta, emit_pct, emit_pct_meta, group_shots_into_cameras,
     resolve_film_root, safe_component, sanitize_camera_tree,
@@ -115,90 +117,96 @@ impl Script2VideoPipeline {
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
 
         let plan_started = std::time::Instant::now();
+        let film_root = resolve_film_root(&self.working_dir);
+        // idea2video / script_film / novel2video fan out 3 scene planners at once.
+        // Each used to rewrite film-root registries (portraits / world / cover),
+        // so a sibling could read a truncated empty JSON and fail with
+        // `JSON error: EOF while parsing a value at line 1 column 0`.
+        let scene_only = film_root != self.working_dir;
 
-        let session_root = resolve_session_root(&self.working_dir);
-        emit_pct(
-            &progress,
-            "classify_references",
-            "正在识别用户上传参考图类型",
-            10.0,
-        );
-        let _ = classify_session_references(
-            &session_root,
-            Arc::clone(&self.backends.chat),
-        )
-        .await?;
+        if !scene_only {
+            let session_root = resolve_session_root(&self.working_dir);
+            emit_pct(
+                &progress,
+                "classify_references",
+                "正在识别用户上传参考图类型",
+                10.0,
+            );
+            let _ = classify_session_references(
+                &session_root,
+                Arc::clone(&self.backends.chat),
+            )
+            .await?;
+        }
 
         emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 12.0);
-        let characters = self
+        let mut characters = self
             .extract_characters(script, user_requirement, &style, &plan_fp)
             .await?;
 
-        emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 15.0);
-        let characters = self.ensure_character_voices(characters, script, &style).await?;
+        if !scene_only {
+            emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 15.0);
+            characters = self
+                .ensure_character_voices(characters, script, &style)
+                .await?;
 
-        emit_pct(
-            &progress,
-            "cameo_bind",
-            "正在绑定用户角色参考图（仅真实照片人脸才做隐私换脸）",
-            18.0,
-        );
-        apply_session_cameos(
-            &self.working_dir,
-            &characters,
-            Arc::clone(&self.backends.image),
-            Arc::clone(&self.backends.chat),
-        )
-        .await?;
-
-        // Global cast bible during planning (text-to-image only — style via prompt, not look plate).
-        emit_pct(
-            &progress,
-            "character_portraits_start",
-            "正在生成全局角色定妆图",
-            22.0,
-        );
-        let _ = self
-            .generate_character_portraits(&characters, &style, script, &progress)
+            emit_pct(
+                &progress,
+                "cameo_bind",
+                "正在绑定用户角色参考图（仅真实照片人脸才做隐私换脸）",
+                18.0,
+            );
+            apply_session_cameos(
+                &self.working_dir,
+                &characters,
+                Arc::clone(&self.backends.image),
+                Arc::clone(&self.backends.chat),
+            )
             .await?;
 
-        emit_pct(
-            &progress,
-            "voice_references_start",
-            "正在生成角色音色参考音频",
-            24.0,
-        );
-        self.ensure_character_voice_references(&characters, &progress).await?;
-
-        let film_root = resolve_film_root(&self.working_dir);
-        emit_pct(
-            &progress,
-            "look_plate_start",
-            "正在锁定全片画风",
-            28.0,
-        );
-        emit_pct(
-            &progress,
-            "world_assets_start",
-            "正在生成全局环境与道具参考图",
-            30.0,
-        );
-        {
-            let world_planner = WorldAssetsPlanner::new(
-                Arc::clone(&self.backends.chat),
-                Arc::clone(&self.backends.image),
+            // Global cast bible during planning (text-to-image only — style via prompt, not look plate).
+            emit_pct(
+                &progress,
+                "character_portraits_start",
+                "正在生成全局角色定妆图",
+                22.0,
             );
-            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-            let _ = world_planner
-                .ensure(
-                    &film_root,
-                    script,
-                    &style,
-                    &style_refs,
-                    &scene_hint,
-                    &lock_token,
-                )
+            let _ = self
+                .generate_character_portraits(&characters, &style, script, &progress)
                 .await?;
+
+            emit_pct(
+                &progress,
+                "voice_references_start",
+                "正在生成角色音色参考音频",
+                24.0,
+            );
+            self.ensure_character_voice_references(&characters, &progress)
+                .await?;
+
+            emit_pct(
+                &progress,
+                "world_assets_start",
+                "正在生成全局环境与道具参考图",
+                30.0,
+            );
+            {
+                let world_planner = WorldAssetsPlanner::new(
+                    Arc::clone(&self.backends.chat),
+                    Arc::clone(&self.backends.image),
+                );
+                let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
+                let _ = world_planner
+                    .ensure(
+                        &film_root,
+                        script,
+                        &style,
+                        &style_refs,
+                        &scene_hint,
+                        &lock_token,
+                    )
+                    .await?;
+            }
         }
 
         emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
@@ -210,25 +218,29 @@ impl Script2VideoPipeline {
         let shot_descriptions = self
             .decompose_visual_descriptions(&storyboard, &characters, &plan_fp)
             .await?;
+        let storyboard = read_json_artifact(&self.working_dir.join("storyboard.json"))
+            .await
+            .unwrap_or(storyboard);
 
         emit_pct(&progress, "construct_camera_tree", "正在构建机位树", 85.0);
         let camera_tree = self
             .construct_camera_tree(&shot_descriptions, &plan_fp)
             .await?;
 
-        // Poster is display-only (not muxed). Prefer film root so multi-scene shares one cover.
-        let film_root = resolve_film_root(&self.working_dir);
-        let synopsis = format!("{script}\n{user_requirement}");
-        let cover_aspect = crate::aspect::load_aspect_from_dir(&film_root).await;
-        let _ = ensure_film_cover(
-            &film_root,
-            Arc::clone(&self.backends.chat),
-            self.backends.poster_image(&cover_aspect),
-            &style,
-            &synopsis,
-            &progress,
-        )
-        .await;
+        if !scene_only {
+            // Poster is display-only (not muxed). Prefer film root so multi-scene shares one cover.
+            let synopsis = format!("{script}\n{user_requirement}");
+            let cover_aspect = crate::aspect::load_aspect_from_dir(&film_root).await;
+            let _ = ensure_film_cover(
+                &film_root,
+                Arc::clone(&self.backends.chat),
+                self.backends.poster_image(&cover_aspect),
+                &style,
+                &synopsis,
+                &progress,
+            )
+            .await;
+        }
 
         emit_pct(&progress, "planned", "文本规划完成（含全局定妆图）", 100.0);
         tracing::info!(
@@ -280,19 +292,27 @@ impl Script2VideoPipeline {
         let clip_count_on_disk = shot_descriptions.len();
         let (synced, shot_descriptions) =
             super::clip_beats::align_storyboard_and_clips(storyboard.clone(), shot_descriptions);
+        let (synced, shot_descriptions, idx_map) =
+            commit_packed_shot_layout(wd, synced, shot_descriptions).await;
+        let densified = idx_map.iter().any(|(old, new)| old != new);
         if super::clip_beats::storyboard_differs(&storyboard, &synced)
             || shot_descriptions.len() != clip_count_on_disk
+            || densified
         {
             tracing::info!(
                 before_briefs = storyboard.len(),
                 after_briefs = synced.len(),
                 before_clips = clip_count_on_disk,
                 after_clips = shot_descriptions.len(),
+                densified,
                 "aligned storyboard to clips; board never grows at video start"
             );
             write_json_artifact(&wd.join("storyboard.json"), &synced).await?;
             write_json_artifact(&wd.join("shot_descriptions.json"), &shot_descriptions).await?;
-            prune_unkept_shot_dirs(wd, &synced).await;
+        }
+        let mut camera_tree = camera_tree;
+        if remap_camera_tree_shot_idxs(&mut camera_tree, &idx_map) {
+            write_json_artifact(&wd.join("camera_tree.json"), &camera_tree).await?;
         }
         let storyboard = synced;
         apply_session_cameos(
@@ -506,17 +526,28 @@ impl Script2VideoPipeline {
         let film_chars = film_root.join("characters.json");
         let path = self.working_dir.join("characters.json");
         // Always prefer the film-level cast so every scene/shot shares identifiers.
-        if film_chars.exists() {
-            if film_chars != path {
-                tokio::fs::copy(&film_chars, &path).await?;
-                super::artifact_cache::write_sidecar(&path, plan_fp).await?;
-                return read_json_artifact(&path).await;
+        // Never `tokio::fs::copy` here: it truncates the dest first, and an empty
+        // film-root leftover used to fail the first scene with
+        // `JSON error: EOF while parsing a value at line 1 column 0`.
+        if film_chars != path && film_chars.is_file() {
+            match read_json_artifact::<Vec<CharacterInScene>>(&film_chars).await {
+                Ok(characters) => {
+                    write_json_artifact(&path, &characters).await?;
+                    super::artifact_cache::write_sidecar(&path, plan_fp).await?;
+                    return Ok(characters);
+                }
+                Err(e) => {
+                    return Err(VimaxError::msg(format!(
+                        "film-root characters.json unreadable at {}: {e}",
+                        film_chars.display()
+                    )));
+                }
             }
         } else if !path.exists() {
             if let Some(parent) = self.working_dir.parent() {
                 let parent_chars = parent.join("characters.json");
-                if parent_chars.exists() {
-                    tokio::fs::copy(&parent_chars, &path).await?;
+                if parent_chars.exists() && parent_chars != path {
+                    let _ = copy_json_artifact_if_readable(&parent_chars, &path).await?;
                 }
             }
         }
@@ -566,12 +597,17 @@ impl Script2VideoPipeline {
         plan_fp: &str,
     ) -> VimaxResult<Vec<ShotBriefDescription>> {
         let path = self.working_dir.join("storyboard.json");
-        let mut storyboard = load_or_write_json_cached(&path, plan_fp, || async {
-            self.storyboard
-                .design_storyboard(script, characters, user_requirement)
-                .await
-        })
-        .await?;
+        // Draft stays in RAM. `storyboard.json` is the published clip list
+        // (one row = one video). Writing the LLM's micro-shots first is what
+        // made 「故事分镜」 flash absorbed cards during planning.
+        let mut storyboard = match load_json_if_cached(&path, plan_fp).await {
+            Some(cached) => cached,
+            None => {
+                self.storyboard
+                    .design_storyboard(script, characters, user_requirement)
+                    .await?
+            }
+        };
         let budget = load_target_duration_secs(&self.working_dir).await;
         if let Some(budget) = budget {
             let max_shots = crate::planning::max_shots_for_budget(self.backends.clip, budget);
@@ -581,35 +617,37 @@ impl Script2VideoPipeline {
                     kept = storyboard.len(),
                     "truncated storyboard to respect duration budget"
                 );
-                write_json_artifact(&path, &storyboard).await?;
-                invalidate_downstream_of_storyboard(&self.working_dir, &storyboard).await;
             }
         }
         if ensure_brief_audio_descs(&mut storyboard) {
             tracing::info!("filled missing storyboard audio_desc with ambient defaults");
-            write_json_artifact(&path, &storyboard).await?;
         }
         // Pack here — not at render — so each storyboard row is one generated
         // video (in-file CUT allowed). Micro-shots the LLM still emitted are
-        // collapsed and reindexed before the user ever sees 「故事分镜」.
+        // collapsed and reindexed before the first persist.
+        let draft_len = storyboard.len();
         let packed = super::clip_beats::pack_scene_briefs(self.backends.clip, storyboard);
-        if super::clip_beats::storyboard_differs(
-            &read_json_artifact::<Vec<ShotBriefDescription>>(&path)
-                .await
-                .unwrap_or_default(),
-            &packed,
-        ) {
+        if packed.len() != draft_len {
             tracing::info!(
+                before = draft_len,
                 after = packed.len(),
                 "packed storyboard into renderable clips (one row = one video)"
             );
-            write_json_artifact(&path, &packed).await?;
-            invalidate_downstream_of_storyboard(&self.working_dir, &packed).await;
         }
-        let storyboard = packed;
-        let bgm = ensure_scene_bgm_brief(&self.working_dir, &storyboard).await?;
+        persist_published_storyboard(&self.working_dir, &path, &packed, plan_fp).await?;
+        // Density inside the packed rows — never extra rows. Same-camera
+        // performance beats let clip_timeline compile a Seedance script so a
+        // one-prose-line clip does not linger as a thin pose.
+        let densified = self.storyboard.densify_in_clip_beats(packed).await;
+        if persist_published_storyboard(&self.working_dir, &path, &densified, plan_fp).await? {
+            tracing::info!(
+                rows = densified.len(),
+                "filled in-clip performance beats (row count unchanged)"
+            );
+        }
+        let bgm = ensure_scene_bgm_brief(&self.working_dir, &densified).await?;
         tracing::info!(bgm = %bgm, "scene BGM brief locked for shot continuity");
-        Ok(storyboard)
+        Ok(densified)
     }
 
     async fn decompose_visual_descriptions(
@@ -623,15 +661,16 @@ impl Script2VideoPipeline {
             let packed: Vec<ShotDescription> = read_json_artifact(&aggregate).await?;
             let (synced, packed) =
                 super::clip_beats::align_storyboard_and_clips(briefs.to_vec(), packed);
+            let (synced, packed, _) =
+                commit_packed_shot_layout(&self.working_dir, synced, packed).await;
             if super::clip_beats::storyboard_differs(briefs, &synced) {
                 tracing::info!(
                     before = briefs.len(),
                     after = synced.len(),
                     "aligned cached shot_descriptions to storyboard (no extra last shot)"
                 );
-                write_json_artifact(&self.working_dir.join("storyboard.json"), &synced).await?;
-                prune_unkept_shot_dirs(&self.working_dir, &synced).await;
             }
+            write_json_artifact(&self.working_dir.join("storyboard.json"), &synced).await?;
             write_json_artifact(&aggregate, &packed).await?;
             return Ok(packed);
         }
@@ -708,15 +747,16 @@ impl Script2VideoPipeline {
         let packed = super::clip_beats::pack_scene_clips(self.backends.clip, out);
         let (synced, packed) =
             super::clip_beats::align_storyboard_and_clips(briefs.to_vec(), packed);
+        let (synced, packed, _) =
+            commit_packed_shot_layout(&self.working_dir, synced, packed).await;
         if super::clip_beats::storyboard_differs(briefs, &synced) {
             tracing::info!(
                 before = briefs.len(),
                 after = synced.len(),
                 "synced storyboard after clip packing"
             );
-            write_json_artifact(&self.working_dir.join("storyboard.json"), &synced).await?;
-            prune_unkept_shot_dirs(&self.working_dir, &synced).await;
         }
+        write_json_artifact(&self.working_dir.join("storyboard.json"), &synced).await?;
 
         write_json_artifact(&aggregate, &packed).await?;
         super::artifact_cache::write_sidecar(&aggregate, plan_fp).await?;
@@ -803,7 +843,7 @@ impl Script2VideoPipeline {
                     .await
                     .map_err(|_| VimaxError::msg("semaphore closed"))?;
                 portraits
-                    .generate_all_views(&character, &style, &theme, &dir, &[])
+                    .generate_all_views(&character, &style, &theme, &dir)
                     .await
             });
         }
@@ -2860,6 +2900,173 @@ async fn invalidate_downstream_of_storyboard(
     prune_unkept_shot_dirs(working_dir, storyboard).await;
 }
 
+/// Write `storyboard.json` only as the published clip list.
+///
+/// Returns whether the file changed. A matching sidecar is always kept so
+/// resume still skips the LLM draft; callers must pass the packed (and
+/// optionally in-clip-densified) rows, never the pre-pack draft.
+async fn persist_published_storyboard(
+    working_dir: &Path,
+    path: &Path,
+    board: &[ShotBriefDescription],
+    plan_fp: &str,
+) -> VimaxResult<bool> {
+    let on_disk = if path.is_file() {
+        read_json_artifact::<Vec<ShotBriefDescription>>(path)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    if on_disk
+        .as_ref()
+        .is_some_and(|disk| !super::clip_beats::storyboard_differs(disk, board))
+    {
+        if !sidecar_matches(path, plan_fp).await {
+            write_sidecar(path, plan_fp).await?;
+        }
+        return Ok(false);
+    }
+    write_json_artifact(path, &board).await?;
+    write_sidecar(path, plan_fp).await?;
+    invalidate_downstream_of_storyboard(working_dir, board).await;
+    Ok(true)
+}
+
+/// Persist the packed clip list as consecutive `shots/0..n` dirs.
+///
+/// Clip packing keeps each run's first idx, which leaves holes the UI reads
+/// as skipped middles. Prune absorbed dirs first (keep billed video), then
+/// rename survivors onto `0..n` and rewrite per-shot JSON.
+async fn commit_packed_shot_layout(
+    working_dir: &Path,
+    mut synced: Vec<ShotBriefDescription>,
+    mut packed: Vec<ShotDescription>,
+) -> (
+    Vec<ShotBriefDescription>,
+    Vec<ShotDescription>,
+    HashMap<i32, i32>,
+) {
+    packed.sort_by_key(|clip| clip.idx);
+    prune_unkept_shot_dirs(working_dir, &synced).await;
+    let briefs_dense = synced
+        .iter()
+        .enumerate()
+        .all(|(i, brief)| brief.idx == i as i32);
+    let map = if super::clip_beats::clip_indices_are_dense(&packed) && briefs_dense {
+        packed.iter().map(|clip| (clip.idx, clip.idx)).collect()
+    } else {
+        let map = super::clip_beats::densify_aligned_indices(&mut synced, &mut packed);
+        relocate_shot_dirs(working_dir, &map).await;
+        prune_unkept_shot_dirs(working_dir, &synced).await;
+        map
+    };
+    for clip in &packed {
+        let path = working_dir
+            .join("shots")
+            .join(clip.idx.to_string())
+            .join("shot_description.json");
+        if let Some(parent) = path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let _ = write_json_artifact(&path, clip).await;
+    }
+    (synced, packed, map)
+}
+
+async fn relocate_shot_dirs(working_dir: &Path, old_to_new: &HashMap<i32, i32>) {
+    let shots_root = working_dir.join("shots");
+    if !shots_root.is_dir() {
+        return;
+    }
+    let moves: Vec<(i32, i32)> = old_to_new
+        .iter()
+        .filter_map(|(&old, &new)| (old != new).then_some((old, new)))
+        .collect();
+    if moves.is_empty() {
+        return;
+    }
+
+    for (old, _) in &moves {
+        let from = shots_root.join(old.to_string());
+        if !from.exists() {
+            continue;
+        }
+        let tmp = shots_root.join(format!(".reloc-{old}"));
+        if tmp.exists() {
+            let _ = tokio::fs::remove_dir_all(&tmp).await;
+        }
+        if let Err(e) = tokio::fs::rename(&from, &tmp).await {
+            tracing::warn!(
+                from = %from.display(),
+                error = %e,
+                "could not park shot dir for reindex"
+            );
+        }
+    }
+
+    for (old, new) in &moves {
+        let tmp = shots_root.join(format!(".reloc-{old}"));
+        if !tmp.exists() {
+            continue;
+        }
+        let to = shots_root.join(new.to_string());
+        if to.exists() {
+            park_or_delete_shot_dir(&to).await;
+        }
+        if let Err(e) = tokio::fs::rename(&tmp, &to).await {
+            tracing::warn!(
+                from = %tmp.display(),
+                to = %to.display(),
+                error = %e,
+                "could not move shot dir onto dense idx"
+            );
+        }
+    }
+}
+
+async fn park_or_delete_shot_dir(path: &Path) {
+    let video = path.join("video.mp4");
+    if media_local::is_usable_video_file(&video) {
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("shot");
+        let parked = parent.join("_absorbed").join(name);
+        if let Some(dir) = parked.parent() {
+            let _ = tokio::fs::create_dir_all(dir).await;
+        }
+        if parked.exists() {
+            let _ = tokio::fs::remove_dir_all(&parked).await;
+        }
+        if tokio::fs::rename(path, &parked).await.is_ok() {
+            tracing::info!(shot = name, "parked absorbed shot dir with billed video");
+        }
+        return;
+    }
+    let _ = tokio::fs::remove_dir_all(path).await;
+}
+
+fn remap_camera_tree_shot_idxs(cameras: &mut [Camera], old_to_new: &HashMap<i32, i32>) -> bool {
+    if old_to_new.iter().all(|(old, new)| old == new) {
+        return false;
+    }
+    for camera in cameras.iter_mut() {
+        camera.active_shot_idxs = camera
+            .active_shot_idxs
+            .iter()
+            .filter_map(|idx| old_to_new.get(idx).copied())
+            .collect();
+        if let Some(parent) = camera.parent_shot_idx {
+            camera.parent_shot_idx = old_to_new.get(&parent).copied();
+        }
+    }
+    true
+}
+
 async fn prune_unkept_shot_dirs(working_dir: &Path, storyboard: &[ShotBriefDescription]) {
     let keep: HashSet<i32> = storyboard.iter().map(|s| s.idx).collect();
     let shots_root = working_dir.join("shots");
@@ -4480,5 +4687,77 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         assert!(ensure_brief_audio_descs(&mut shots));
         assert!(shots[0].audio_desc.as_ref().is_some_and(|s| !s.trim().is_empty()));
         assert!(!ensure_brief_audio_descs(&mut shots));
+    }
+}
+
+#[cfg(test)]
+mod storyboard_publish_tests {
+    use super::*;
+    use crate::domain::ShotBriefDescription;
+
+    const SEEDANCE: ClipBounds = ClipBounds::new(5, 15);
+
+    fn brief(idx: i32, cam_idx: i32, visual: &str) -> ShotBriefDescription {
+        ShotBriefDescription {
+            idx,
+            is_last: false,
+            cam_idx,
+            visual_desc: visual.into(),
+            audio_desc: None,
+            beats: Vec::new(),
+        }
+    }
+
+    fn micro_draft() -> Vec<ShotBriefDescription> {
+        vec![
+            brief(0, 0, "她转身开门"),
+            brief(1, 0, "她看见他"),
+            brief(2, 1, "他抬头"),
+            brief(3, 2, "窗外雨"),
+        ]
+    }
+
+    #[tokio::test]
+    async fn first_storyboard_write_is_the_packed_clip_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = dir.path();
+        let path = wd.join("storyboard.json");
+        let draft = micro_draft();
+        let packed = super::super::clip_beats::pack_scene_briefs(SEEDANCE, draft);
+        assert!(packed.len() < 4, "draft must collapse so this tests publish");
+        assert!(!path.exists());
+        let wrote = persist_published_storyboard(wd, &path, &packed, "plan-fp")
+            .await
+            .unwrap();
+        assert!(wrote);
+        let disk: Vec<ShotBriefDescription> = read_json_artifact(&path).await.unwrap();
+        assert_eq!(disk.len(), packed.len());
+        assert_eq!(disk[0].idx, 0);
+        assert_eq!(disk.last().map(|row| row.idx), Some((packed.len() - 1) as i32));
+        assert!(sidecar_matches(&path, "plan-fp").await);
+    }
+
+    #[tokio::test]
+    async fn persist_replaces_an_unpacked_draft_left_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = dir.path();
+        let path = wd.join("storyboard.json");
+        let draft = micro_draft();
+        write_json_artifact(&path, &draft).await.unwrap();
+        write_sidecar(&path, "plan-fp").await.unwrap();
+        let packed = super::super::clip_beats::pack_scene_briefs(SEEDANCE, draft.clone());
+        assert!(packed.len() < draft.len());
+        let wrote = persist_published_storyboard(wd, &path, &packed, "plan-fp")
+            .await
+            .unwrap();
+        assert!(wrote);
+        let disk: Vec<ShotBriefDescription> = read_json_artifact(&path).await.unwrap();
+        assert_eq!(disk.len(), packed.len());
+        assert!(disk.iter().enumerate().all(|(i, row)| row.idx == i as i32));
+        assert!(sidecar_matches(&path, "plan-fp").await);
+        let again = persist_published_storyboard(wd, &path, &packed, "plan-fp")
+            .await
+            .unwrap();
+        assert!(!again);
     }
 }

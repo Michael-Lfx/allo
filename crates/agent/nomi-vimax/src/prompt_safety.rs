@@ -61,6 +61,8 @@ pub fn looks_like_vacant_world_prompt(prompt: &str) -> bool {
         "prop bible",
         "unoccupied",
         "no people",
+        "catalog product",
+        "studio white",
         "空场",
         "无人",
         "仅物体",

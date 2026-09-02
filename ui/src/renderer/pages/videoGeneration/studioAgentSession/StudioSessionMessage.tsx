@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Attention, PlayOne, Robot, User } from '@icon-park/react';
 import { loadArtifactMediaUrlCached } from '../api';
+import { loadStudioMediaPreviewUrl } from './collectStudioMedia';
 import type { FailureKind } from '../classifyFailure';
 import type { StudioSessionMedia, StudioSessionMessage } from './types';
 import styles from './index.module.css';
@@ -84,24 +85,45 @@ const MediaThumb: React.FC<{
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    if (item.kind === 'file') {
+      setUrl(null);
+      return;
+    }
     let cancelled = false;
-    void loadArtifactMediaUrlCached(sessionId, item.path)
+    let blobUrl: string | null = null;
+    void loadStudioMediaPreviewUrl(sessionId, item)
       .then((next) => {
-        if (!cancelled) setUrl(next);
+        if (cancelled) {
+          if (item.origin === 'cameo') URL.revokeObjectURL(next);
+          return;
+        }
+        if (item.origin === 'cameo') blobUrl = next;
+        setUrl(next);
       })
       .catch(() => {
         if (!cancelled) setUrl(null);
       });
     return () => {
       cancelled = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-  }, [sessionId, item.path]);
+  }, [sessionId, item.path, item.kind, item.origin]);
+
+  if (item.kind === 'file') {
+    return (
+      <span className={styles.fileChip} title={item.label ?? item.path}>
+        {item.label || item.path}
+      </span>
+    );
+  }
+
+  const previewable = gallery.filter((card) => card.kind !== 'file');
 
   return (
     <button
       type='button'
       className={styles.mediaCard}
-      onClick={() => onOpen?.(item, gallery)}
+      onClick={() => onOpen?.(item, previewable)}
       title={item.label || t('videoGeneration.agentSession.preview.open', { defaultValue: '放大预览' })}
     >
       {url && item.kind === 'video' ? (
@@ -231,17 +253,34 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
         {item.kind === 'film_ready' && media.length > 0 ? (
           <FilmPreview sessionId={sessionId} items={media} onOpen={onOpenMedia} />
         ) : media.length > 0 ? (
-          <div className={styles.mediaGrid}>
-            {media.map((card) => (
-              <MediaThumb
-                key={card.id}
-                sessionId={sessionId}
-                item={card}
-                gallery={media}
-                onOpen={onOpenMedia}
-              />
-            ))}
-          </div>
+          <>
+            {media
+              .filter((card) => card.kind === 'file')
+              .map((card) => (
+                <MediaThumb
+                  key={card.id}
+                  sessionId={sessionId}
+                  item={card}
+                  gallery={media}
+                  onOpen={onOpenMedia}
+                />
+              ))}
+            {media.some((card) => card.kind !== 'file') ? (
+              <div className={styles.mediaGrid}>
+                {media
+                  .filter((card) => card.kind !== 'file')
+                  .map((card) => (
+                    <MediaThumb
+                      key={card.id}
+                      sessionId={sessionId}
+                      item={card}
+                      gallery={media}
+                      onOpen={onOpenMedia}
+                    />
+                  ))}
+              </div>
+            ) : null}
+          </>
         ) : null}
         {meta || item.live ? (
           <div className={styles.bubbleMeta}>

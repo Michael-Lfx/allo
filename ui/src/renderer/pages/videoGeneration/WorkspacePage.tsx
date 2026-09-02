@@ -57,7 +57,6 @@ import { normalizeWorkflow, isActionImitationWorkflow, statusLabel, statusTagCol
 import StoryboardBoard from './components/StoryboardBoard';
 import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceActionAssets from './components/WorkspaceActionAssets';
-import WorkspaceCameoStrip from './components/WorkspaceCameoStrip';
 import type { VideoCreateDraft } from './home/types';
 import type { StoryboardScene, StoryboardSceneSave } from './artifactPresentation';
 import {
@@ -76,7 +75,6 @@ import {
   normalizeVideoResolution,
   type VideoResolution,
 } from '@renderer/services/videoModelCapabilities';
-import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
@@ -109,6 +107,29 @@ const TextArea = Input.TextArea;
 
 /** Dedupes home→workspace auto-plan across React Strict Mode remounts. */
 const autoPlannedSessions = new Set<string>();
+
+function sourceDocumentStorageKey(sessionId: string): string {
+  return `vimax-source-document:${sessionId}`;
+}
+
+function readStoredSourceDocument(sessionId: string): string | null {
+  if (!sessionId || typeof sessionStorage === 'undefined') return null;
+  try {
+    const value = sessionStorage.getItem(sourceDocumentStorageKey(sessionId));
+    return value?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function storeSourceDocument(sessionId: string, name: string): void {
+  if (!sessionId || typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(sourceDocumentStorageKey(sessionId), name);
+  } catch {
+    // ignore quota / private mode
+  }
+}
 
 type WorkspaceLaunchState = {
   launchDraft?: VideoCreateDraft;
@@ -144,7 +165,7 @@ const WorkspacePage: React.FC = () => {
 
   const [sourceText, setSourceText] = useState('');
   const [requirement, setRequirement] = useState('');
-  const [style, setStyle] = useState(DEFAULT_VISUAL_STYLE_PROMPT);
+  const [style, setStyle] = useState('');
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_SEEDANCE_ASPECT_RATIO);
   const [resolution, setResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
   const [fps, setFps] = useState(DEFAULT_VIDEO_FPS);
@@ -194,7 +215,7 @@ const WorkspacePage: React.FC = () => {
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const storyboardVisibleTracked = useRef(false);
   const [actionAssetsReady, setActionAssetsReady] = useState(false);
-  /** Bump so WorkspaceCameoStrip re-lists after plan / artifact changes. */
+  /** Bump so the agent session re-lists Cameo stills after home upload. */
   const [cameoRefreshToken, setCameoRefreshToken] = useState(0);
   const [focusSceneId, setFocusSceneId] = useState<string | null>(null);
   const studioShellRef = useRef<HTMLDivElement>(null);
@@ -232,6 +253,13 @@ const WorkspacePage: React.FC = () => {
   const launchState = (location.state as WorkspaceLaunchState | null) ?? null;
   const launchDraft = launchState?.launchDraft;
   const shouldAutoPlan = Boolean(launchState?.autoPlan) && !launchState?.launchError;
+  const sourceDocumentName =
+    launchDraft?.sourceDocumentName?.trim() || readStoredSourceDocument(sessionId);
+
+  useEffect(() => {
+    const name = launchDraft?.sourceDocumentName?.trim();
+    if (name) storeSourceDocument(sessionId, name);
+  }, [sessionId, launchDraft?.sourceDocumentName]);
 
   const sourceField = session ? sourceFieldForWorkflow(session.workflow) : 'idea';
 
@@ -273,7 +301,7 @@ const WorkspacePage: React.FC = () => {
       rememberVideoGenerationSession(sessionId, s.title);
       setSourceText(s.idea || s.script || s.novel_text || launchDraft?.sourceText || '');
       setRequirement(s.user_requirement || launchDraft?.requirement || '');
-      setStyle(s.style?.trim() || launchDraft?.style?.trim() || DEFAULT_VISUAL_STYLE_PROMPT);
+      setStyle(s.style?.trim() || launchDraft?.style?.trim() || '');
       setAspectRatio(
         normalizeSeedanceAspectRatio(
           s.aspect_ratio ||
@@ -388,6 +416,11 @@ const WorkspacePage: React.FC = () => {
       'render_scene_done',
       'concat_done',
       'render_done',
+      'design_storyboard',
+      'decompose_shots',
+      'construct_camera_tree',
+      'planned',
+      'reuse_plan',
     ]);
     // Include message + updated_at so consecutive shots finishing with the
     // same stage name still trigger a refresh.
@@ -1468,17 +1501,6 @@ const WorkspacePage: React.FC = () => {
               disabled={busy}
               className='!text-14px !leading-23px'
             />
-            {sessionId ? (
-              <WorkspaceCameoStrip
-                sessionId={sessionId}
-                disabled={busy}
-                refreshToken={cameoRefreshToken}
-                onChanged={() => {
-                  setCameoRefreshToken((n) => n + 1);
-                  void refreshArtifacts();
-                }}
-              />
-            ) : null}
             <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
               <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                 <span>
@@ -1497,24 +1519,7 @@ const WorkspacePage: React.FC = () => {
                   })}
                 </span>
               </div>
-              <label className='flex flex-col gap-6px text-12px text-[var(--color-text-3)] md:col-span-2'>
-                {t('videoGeneration.workspace.source.requirementLabel', {
-                  defaultValue: '额外要求（可选）',
-                })}
-                <Input
-                  value={requirement}
-                  onChange={setRequirement}
-                  disabled={busy}
-                  placeholder={t('videoGeneration.workspace.source.requirementPlaceholder', {
-                    defaultValue: '节奏、受众等（画幅请在上方比例中选择）',
-                  })}
-                />
-              </label>
-              <div
-                className={`flex flex-col gap-6px text-12px text-[var(--color-text-3)] ${
-                  isMobile ? '' : 'col-span-2'
-                }`}
-              >
+              <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                 <span>
                   {t('videoGeneration.workspace.source.styleLabel', {
                     defaultValue: '视觉风格（人物与成片）',
@@ -1773,6 +1778,8 @@ const WorkspacePage: React.FC = () => {
             onContinue={handleContinue}
             onFocusScene={setFocusSceneId}
             onSelectArtifact={setSelectedPath}
+            cameoEpoch={cameoRefreshToken}
+            sourceDocumentName={sourceDocumentName}
           />
         ) : null}
       </div>

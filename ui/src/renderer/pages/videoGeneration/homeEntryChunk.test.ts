@@ -18,6 +18,7 @@ describe('video generation home entry chunk', () => {
     expect(composer.includes('loadGenerationPreferencesPopover')).toBe(true);
     expect(composer.includes('prefetchGenerationPreferencesPanel')).toBe(true);
     expect(composer.includes('prefetchVerticalSkillMenu')).toBe(true);
+    expect(composer.includes('prefetchLookStyleMenu')).toBe(true);
     expect(composer.includes('prefetchCanvasAssistantPanel')).toBe(true);
     expect(composer.includes("import CampaignCarousel from")).toBe(false);
     expect(composer.includes("lazy(() => import('../components/CampaignCarousel'))")).toBe(true);
@@ -26,6 +27,7 @@ describe('video generation home entry chunk', () => {
     expect(composer.includes("from './BriefingPreferenceFields'")).toBe(false);
     expect(composer.includes("from './BriefingModelFields'")).toBe(false);
     expect(composer.includes("import VerticalSkillMenu from")).toBe(false);
+    expect(composer.includes("import LookStyleMenu from")).toBe(false);
 
     const popover = source('./home/GenerationPreferencesPopover.tsx');
     expect(popover.includes("from '../components/ModelSelectors'")).toBe(false);
@@ -46,10 +48,12 @@ describe('video generation home entry chunk', () => {
     const prefetch = source('./prefetch.ts');
     expect(prefetch.includes('prefetchGenerationPreferencesPanel')).toBe(true);
     expect(prefetch.includes('prefetchVerticalSkillMenu')).toBe(true);
+    expect(prefetch.includes('prefetchLookStyleMenu')).toBe(true);
     expect(prefetch.includes('prefetchCanvasAssistantPanel')).toBe(true);
     expect(prefetch.includes('./home/GenerationPreferencesPopover')).toBe(true);
     expect(prefetch.includes('@/renderer/hooks/agent/useMediaModels')).toBe(true);
     expect(prefetch.includes('./home/VerticalSkillMenu')).toBe(true);
+    expect(prefetch.includes('./home/LookStyleMenu')).toBe(true);
     expect(composer.includes("import VerticalSkillCreateModal from")).toBe(false);
     expect(composer.includes("import CameoCastEditor from")).toBe(false);
     expect(composer.includes('onPasteCapture')).toBe(true);

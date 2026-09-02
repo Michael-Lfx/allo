@@ -14,6 +14,7 @@ import {
   patchShotDescriptionsInArtifact,
   patchShotGenerationSpecInArtifact,
   patchVisualDescriptionInArtifact,
+  storyboardRefreshSignature,
 } from './artifactPresentation';
 import type { ArtifactNode } from './types';
 
@@ -208,6 +209,7 @@ describe('video artifact presentation', () => {
     );
     expect(shots).toHaveLength(1);
     expect(shots[0]?.index).toBe(0);
+    expect(shots[0]?.beatCount).toBe(2);
     expect(shots[0]?.visualDescription).toContain('男生在画面左侧刹车');
     expect(shots[0]?.visualDescription).toContain('反打女生捡书');
   });
@@ -602,5 +604,103 @@ describe('shot generation spec overlay', () => {
     expect(obj.motion_desc).toBe('new motion');
     expect(obj.lf_desc).toBe('new last');
     expect(obj.audio_desc).toBe('new audio');
+  });
+
+  test('storyboardRefreshSignature changes when packed shot dirs disappear', () => {
+    const packed = storyboardRefreshSignature(tree);
+    const gapped: ArtifactNode[] = [
+      {
+        name: 'script2video',
+        path: 'script2video',
+        is_dir: true,
+        children: [
+          {
+            name: 'storyboard.json',
+            path: 'script2video/storyboard.json',
+            is_dir: false,
+            size: 120,
+          },
+          {
+            name: 'shots',
+            path: 'script2video/shots',
+            is_dir: true,
+            children: [
+              {
+                name: '0',
+                path: 'script2video/shots/0',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'shot_description.json',
+                    path: 'script2video/shots/0/shot_description.json',
+                    is_dir: false,
+                  },
+                ],
+              },
+              {
+                name: '2',
+                path: 'script2video/shots/2',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'shot_description.json',
+                    path: 'script2video/shots/2/shot_description.json',
+                    is_dir: false,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const dense: ArtifactNode[] = [
+      {
+        name: 'script2video',
+        path: 'script2video',
+        is_dir: true,
+        children: [
+          {
+            name: 'storyboard.json',
+            path: 'script2video/storyboard.json',
+            is_dir: false,
+            size: 80,
+          },
+          {
+            name: 'shots',
+            path: 'script2video/shots',
+            is_dir: true,
+            children: [
+              {
+                name: '0',
+                path: 'script2video/shots/0',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'shot_description.json',
+                    path: 'script2video/shots/0/shot_description.json',
+                    is_dir: false,
+                  },
+                ],
+              },
+              {
+                name: '1',
+                path: 'script2video/shots/1',
+                is_dir: true,
+                children: [
+                  {
+                    name: 'shot_description.json',
+                    path: 'script2video/shots/1/shot_description.json',
+                    is_dir: false,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(storyboardRefreshSignature(gapped)).not.toBe(packed);
+    expect(storyboardRefreshSignature(dense)).not.toBe(storyboardRefreshSignature(gapped));
   });
 });

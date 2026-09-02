@@ -281,6 +281,22 @@
   margin-top: 8px;
 }
 
+.fileChip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  margin-top: 8px;
+  padding: 5px 9px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--color-fill-2);
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mediaCard {
   position: relative;
   overflow: hidden;

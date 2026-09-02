@@ -1247,9 +1247,21 @@ impl VimaxService {
             record.user_requirement.as_str(),
         ];
         // Vertical skills inject at plan-time only — do not overwrite the user's raw requirement.
+        // Idea-driven films with no explicitly chosen skill get the built-in
+        // short-drama director: drama-density rules only (requirement overlay,
+        // no style overlay), so it never overrides a user-picked vertical or
+        // the user's visual style.
+        let default_short_drama = [crate::skills::DEFAULT_SHORT_DRAMA_SKILL_ID.to_string()];
+        let skill_ids: &[String] = if record.vertical_skill_ids.is_empty()
+            && record.workflow == WorkflowKind::Idea2Video
+        {
+            &default_short_drama
+        } else {
+            &record.vertical_skill_ids
+        };
         let skill_overlay = self.skills.compose_for_plan(
             record.workflow,
-            &record.vertical_skill_ids,
+            skill_ids,
             &record.user_requirement,
             &record.style,
         )?;

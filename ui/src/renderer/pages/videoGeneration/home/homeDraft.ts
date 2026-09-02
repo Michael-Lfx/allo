@@ -8,7 +8,6 @@ import {
   normalizeVideoFps,
   normalizeVideoResolution,
 } from '@renderer/services/videoModelCapabilities';
-import { DEFAULT_VISUAL_STYLE_PROMPT } from '../visualStylePresets';
 import type { VimaxWorkflow } from '../types';
 import type {
   BriefingModelPick,
@@ -69,10 +68,11 @@ export function defaultDraft(): VideoCreateDraft {
     creationPrompt: '',
     creationSkillId: 'cinematic',
     requirement: '',
-    style: DEFAULT_VISUAL_STYLE_PROMPT,
+    style: '',
     verticalSkillIds: [],
     preferences: DEFAULT_PREFERENCES,
     cameos: [],
+    sourceDocumentName: null,
     canvasReferences: [],
     actionCharacter: null,
     actionVideo: null,
@@ -139,10 +139,7 @@ export function loadDraft(): VideoCreateDraft {
         typeof parsed.creationPrompt === 'string' ? parsed.creationPrompt : '',
       creationSkillId,
       requirement: typeof parsed.requirement === 'string' ? parsed.requirement : '',
-      style:
-        typeof parsed.style === 'string' && parsed.style.trim()
-          ? parsed.style
-          : DEFAULT_VISUAL_STYLE_PROMPT,
+      style: typeof parsed.style === 'string' ? parsed.style : '',
       verticalSkillIds,
       preferences: {
         automatic: parsedPreferences.automatic === true,
@@ -174,6 +171,10 @@ export function loadDraft(): VideoCreateDraft {
       },
       // Files intentionally cannot survive reloads.
       cameos: [],
+      sourceDocumentName:
+        typeof parsed.sourceDocumentName === 'string' && parsed.sourceDocumentName.trim()
+          ? parsed.sourceDocumentName.trim()
+          : null,
       canvasReferences: [],
       actionCharacter: null,
       actionVideo: null,

@@ -24,7 +24,7 @@ export type StudioNarrativeBeat =
   | 'action_assets'
   | 'action_generate';
 
-export type StudioMediaKind = 'image' | 'video';
+export type StudioMediaKind = 'image' | 'video' | 'file';
 
 export interface StudioSessionMedia {
   id: string;
@@ -33,6 +33,8 @@ export interface StudioSessionMedia {
   label?: string;
   /** Matches `StoryboardScene.id` when this card is a shot. */
   sceneId?: string;
+  /** Cameo previews load via the Cameo file API, not the artifact tree. */
+  origin?: 'artifact' | 'cameo';
 }
 
 export interface StudioSessionMessage {
@@ -69,6 +71,8 @@ export interface ProjectStudioSessionInput {
   notes?: StudioUserNote[];
   variant?: StudioStageVariant;
   runStatus?: VimaxRunStatus | null;
+  /** Home-uploaded Cameo stills / script files shown on the user brief bubble. */
+  briefMedia?: StudioSessionMedia[];
 }
 
 export interface StudioComposerActionInput {

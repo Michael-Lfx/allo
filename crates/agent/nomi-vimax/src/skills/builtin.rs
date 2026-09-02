@@ -42,7 +42,15 @@ const BUILTIN_SKILLS: &[(&str, &str)] = &[
         "music-visual",
         include_str!("../../skills/builtin/music-visual/SKILL.md"),
     ),
+    (
+        "short-drama",
+        include_str!("../../skills/builtin/short-drama/SKILL.md"),
+    ),
 ];
+
+/// Qualified id of the default director injected for idea-driven films when
+/// the user selected no vertical skill (see `service` plan composition).
+pub const DEFAULT_SHORT_DRAMA_SKILL_ID: &str = "builtin:short-drama";
 
 pub fn load_builtin_skills() -> VimaxResult<Vec<VerticalSkill>> {
     let mut out = Vec::with_capacity(BUILTIN_SKILLS.len());
@@ -63,9 +71,21 @@ mod tests {
     #[test]
     fn all_builtins_parse() {
         let skills = load_builtin_skills().unwrap();
-        assert_eq!(skills.len(), 9);
+        assert_eq!(skills.len(), 10);
         assert!(skills.iter().any(|s| s.name == "luxury-tvc"));
         assert!(skills.iter().any(|s| s.name == "product-demo"));
         assert!(skills.iter().all(|s| s.compatible_modes.is_empty()));
+    }
+
+    #[test]
+    fn default_short_drama_skill_is_requirement_only() {
+        let skills = load_builtin_skills().unwrap();
+        let skill = skills
+            .iter()
+            .find(|s| s.id.qualified() == DEFAULT_SHORT_DRAMA_SKILL_ID)
+            .expect("short-drama builtin");
+        assert!(skill.requirement_overlay.contains("NEVER add shots"));
+        // Default-injected: it must not hijack the user's visual style.
+        assert!(skill.style_overlay.trim().is_empty());
     }
 }

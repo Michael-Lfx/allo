@@ -5,10 +5,11 @@ use serde::Deserialize;
 
 use crate::backends::VimaxChat;
 use crate::clip_bounds::ClipBounds;
+use crate::drama::{DramaEngine, lint_drama_engine};
 use crate::error::{VimaxError, VimaxResult};
 use crate::json_util::{LLM_JSON_PARSE_ATTEMPTS, complete_and_parse_llm_json, parse_llm_json};
 
-use super::formats::SCRIPT_SCENES;
+use super::formats::{DRAMA_ENGINE, SCRIPT_SCENES};
 
 pub struct Screenwriter {
     chat: Arc<dyn VimaxChat>,
@@ -20,6 +21,55 @@ pub struct Screenwriter {
 impl Screenwriter {
     pub fn new(chat: Arc<dyn VimaxChat>, clip: ClipBounds) -> Self {
         Self { chat, clip }
+    }
+
+    /// Generate the film's dramatic engine and validate it with the
+    /// deterministic lints in [`crate::drama`]: generate → lint → one repair
+    /// round with the concrete defect list → lint again. A still-failing
+    /// engine is a hard error — spending video credits on a story with no
+    /// want/obstacle/reversal is exactly the "戏太瘦" failure this prevents.
+    pub async fn develop_validated_drama_engine(
+        &self,
+        idea: &str,
+        user_requirement: &str,
+    ) -> VimaxResult<DramaEngine> {
+        let system = include_str!(
+            "../../prompts/screenwriter__system_prompt_template_develop_drama_engine.txt"
+        )
+        .replace("{format_instructions}", DRAMA_ENGINE);
+        let user = include_str!(
+            "../../prompts/screenwriter__human_prompt_template_develop_drama_engine.txt"
+        )
+        .replace("{idea}", idea)
+        .replace("{user_requirement}", user_requirement);
+
+        let engine =
+            complete_and_parse_llm_json::<DramaEngine>(self.chat.as_ref(), &system, &user).await?;
+        let issues = lint_drama_engine(&engine);
+        if issues.is_empty() {
+            return Ok(engine);
+        }
+
+        tracing::info!(
+            issues = issues.len(),
+            "drama engine failed lint; running one repair round"
+        );
+        let repair_user = format!(
+            "{user}\n\n[LINT_FEEDBACK]\nYour previous engine was:\n{}\n\nIt has these defects — fix ALL of them and keep everything that was not flagged:\n- {}",
+            serde_json::to_string_pretty(&engine).unwrap_or_default(),
+            issues.join("\n- ")
+        );
+        let repaired =
+            complete_and_parse_llm_json::<DramaEngine>(self.chat.as_ref(), &system, &repair_user)
+                .await?;
+        let remaining = lint_drama_engine(&repaired);
+        if remaining.is_empty() {
+            return Ok(repaired);
+        }
+        Err(VimaxError::Llm(format!(
+            "drama engine still fails lint after repair: {}",
+            remaining.join("; ")
+        )))
     }
 
     pub async fn develop_story(
@@ -94,6 +144,64 @@ like「场景一」「场景二」/「Scene 1」. Prefer 「」 quotes inside di
             "failed to parse screenwriter scenes JSON and lenient salvage found no scenes; body={}",
             &raw.chars().take(300).collect::<String>()
         )))
+    }
+
+    /// Best-effort show-don't-tell polish: action lines that only NAME an
+    /// emotion get one rewrite round into visible behavior. Infallible by
+    /// design — a scene script with a residual mood word is worth rendering,
+    /// so lint failures here downgrade to warnings, never errors. The scene
+    /// count is guarded: a repair that changes it is discarded.
+    pub async fn polish_scenes_show_dont_tell(&self, scenes: Vec<String>) -> Vec<String> {
+        let issues = crate::drama::lint_scenes(&scenes);
+        if issues.is_empty() {
+            return scenes;
+        }
+        tracing::info!(
+            issues = issues.len(),
+            "scene scripts failed show-don't-tell lint; running one polish round"
+        );
+        let scenes_json = match serde_json::to_string_pretty(&scenes) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot serialize scenes for polish; keeping original");
+                return scenes;
+            }
+        };
+        let system = include_str!(
+            "../../prompts/screenwriter__system_prompt_template_polish_scenes.txt"
+        )
+        .replace("{format_instructions}", SCRIPT_SCENES);
+        let user = include_str!(
+            "../../prompts/screenwriter__human_prompt_template_polish_scenes.txt"
+        )
+        .replace("{scenes_json}", &scenes_json)
+        .replace("{lint_feedback}", &format!("- {}", issues.join("\n- ")));
+
+        match complete_and_parse_llm_json::<ScenesOut>(self.chat.as_ref(), &system, &user).await {
+            Ok(out) => {
+                let polished = out.into_scenes();
+                if polished.len() != scenes.len() {
+                    tracing::warn!(
+                        original = scenes.len(),
+                        polished = polished.len(),
+                        "scene polish changed scene count; discarding polish"
+                    );
+                    return scenes;
+                }
+                let remaining = crate::drama::lint_scenes(&polished);
+                if !remaining.is_empty() {
+                    tracing::warn!(
+                        remaining = remaining.len(),
+                        "show-don't-tell lint still failing after polish; proceeding anyway"
+                    );
+                }
+                polished
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "scene polish round failed; keeping original scenes");
+                scenes
+            }
+        }
     }
 }
 
