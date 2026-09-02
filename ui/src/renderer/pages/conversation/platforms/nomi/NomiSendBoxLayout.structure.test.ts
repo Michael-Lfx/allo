@@ -223,6 +223,19 @@ describe('Nomi sendbox control layout', () => {
     expect(chatSource.includes('await saveNomiDefaultModel(_provider.id, modelName)')).toBe(true);
   });
 
+  test('locks model controls from hydration through an admitted edit-resubmit', () => {
+    const sendBoxSource = readSource(new URL('./NomiSendBox.tsx', import.meta.url));
+    const modelSource = readSource(new URL('./NomiModelSelector.tsx', import.meta.url));
+
+    expect(sendBoxSource.includes('subscribeEditResubmitOperations')).toBe(true);
+    expect(sendBoxSource.includes("operation.phase !== 'editing'")).toBe(true);
+    expect(sendBoxSource.includes('!hasHydratedRunningState')).toBe(true);
+    expect(sendBoxSource.includes('disabled={modelSelectionDisabled}')).toBe(true);
+    expect(sendBoxSource.includes('setIsMobileSheetOpen(false)')).toBe(true);
+    expect(modelSource.includes('disabled={disabled}')).toBe(true);
+    expect(modelSource.includes('aria-disabled={disabled || undefined}')).toBe(true);
+  });
+
   test('keeps the compact reasoning trigger icon at full size when a narrow sendbox expands on hover', () => {
     const sendBoxCss = readSource(new URL('../../../../components/chat/SendBox/sendbox.css', import.meta.url));
     const guidCss = readSource(new URL('../../../guid/index.module.css', import.meta.url));
