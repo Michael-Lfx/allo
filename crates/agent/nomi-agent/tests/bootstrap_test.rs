@@ -390,7 +390,7 @@ async fn bootstrap_config_accessor_returns_config() {
     let config = minimal_config();
     let bootstrap = AgentBootstrap::new(config, "/tmp/ws", null_output());
     assert_eq!(bootstrap.config().model, "gpt-test-model");
-    assert_eq!(bootstrap.config().max_tokens, 1024);
+    assert_eq!(bootstrap.config().output_max_tokens, Some(1024));
 }
 
 #[tokio::test]

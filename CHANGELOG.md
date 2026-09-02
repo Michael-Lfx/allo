@@ -5,6 +5,14 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.9 - 2026-09-02
+
+- News Briefing adds a research-to-voice/stills workflow and starts processing directly after submission.
+- Settings navigation now shows loading and error states and prevents stale interactions during transitions.
+- MCP, plugin, and skill settings are more consistent across the settings surfaces.
+- Video-generation and canvas surfaces integrate briefing controls and improve draft, route, and duration handling.
+- First-party telemetry now preserves error messages, while UI async, type, and component-contract fixes improve cross-page stability.
+
 ## v1.1.8 - 2026-09-01
 
 - Canvas Agent restores the local coding switch and no longer hits a max-update-depth loop on prompt resize.

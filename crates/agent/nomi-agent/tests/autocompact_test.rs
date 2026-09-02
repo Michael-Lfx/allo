@@ -76,7 +76,7 @@ impl LlmProvider for MockProvider {
             .unwrap()
             .pop_front()
             .expect("MockProvider: no more responses queued");
-        *self.last_max_tokens.lock().unwrap() = Some(request.max_tokens);
+        *self.last_max_tokens.lock().unwrap() = request.max_tokens;
         *self.last_messages.lock().unwrap() = Some(request.messages.clone());
 
         match response {
