@@ -11,14 +11,20 @@ import {
   APP_SERVER_PROTOCOL_VERSION,
   type ClientCapabilities,
   type ClientInfo,
+  type ImportDetail,
+  type ImportRequest,
+  type ImportResult,
+  type ImportSummary,
   type InitializeRequest,
   type InitializeResult,
   type WorkspaceRegistration,
 } from "./protocol";
+import { AgentClient } from "./agents";
 import { ConversationClient } from "./conversations";
 import { ConnectorClient } from "./connectors";
 import { RunClient } from "./runs";
 import { SkillClient } from "./skills";
+import { TeamClient } from "./teams";
 import { WorkspaceClient } from "./workspaces";
 import { WebSocketTransport, type NotificationListener } from "./transport";
 
@@ -47,6 +53,10 @@ export class AppServerClient {
   readonly skills: SkillClient;
   /** Agent Store Connector catalog/status/probe/OAuth client. */
   readonly connectors: ConnectorClient;
+  /** Agent Store AgentDefinition catalog client (`agent/list`, `agent/get`). */
+  readonly agents: AgentClient;
+  /** Agent Store Team catalog client (`team/list`, `team/get`). */
+  readonly teams: TeamClient;
   readonly httpBaseUrl?: string;
   readonly token?: string;
   readonly clientInfo: ClientInfo;
@@ -69,6 +79,8 @@ export class AppServerClient {
     this.workspaces = new WorkspaceClient(this.transport);
     this.skills = new SkillClient(this.transport);
     this.connectors = new ConnectorClient(this.transport);
+    this.agents = new AgentClient(this.transport);
+    this.teams = new TeamClient(this.transport);
     this.transport.onNotification((notification) => {
       for (const listener of [...this.notificationListeners]) {
         try {
@@ -137,6 +149,33 @@ export class AppServerClient {
     return this.httpPost<WorkspaceRegistration>("/workspaces", undefined, connectionId);
   }
 
+  /** Import a local CodeBuddy/WorkBuddy source directory (roadmap Phase 1). */
+  async runImport(input: ImportRequest): Promise<ImportResult> {
+    if (!this.httpBaseUrl) {
+      throw new TransportError("send", "httpBaseUrl is required for imports");
+    }
+    const { connectionId } = await this.httpHandshake();
+    return this.httpPost<ImportResult>("/imports", input, connectionId);
+  }
+
+  /** Import history (most recent first). */
+  async listImports(): Promise<ImportSummary[]> {
+    if (!this.httpBaseUrl) {
+      throw new TransportError("send", "httpBaseUrl is required for imports");
+    }
+    const { connectionId } = await this.httpHandshake();
+    return this.httpGet<ImportSummary[]>("/imports", connectionId);
+  }
+
+  /** One immutable snapshot with its standardized components. */
+  async getImport(snapshotId: string): Promise<ImportDetail> {
+    if (!this.httpBaseUrl) {
+      throw new TransportError("send", "httpBaseUrl is required for imports");
+    }
+    const { connectionId } = await this.httpHandshake();
+    return this.httpGet<ImportDetail>(`/imports/${encodeURIComponent(snapshotId)}`, connectionId);
+  }
+
   private async httpHandshake(): Promise<{ connectionId: string }> {
     const response = await fetch(`${this.httpBaseUrl}/initialize`, {
       method: "POST",
@@ -168,6 +207,17 @@ export class AppServerClient {
       method: "POST",
       headers: this.httpHeaders(connectionId),
       body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw await this.httpError(response);
+    }
+    return (await response.json()) as T;
+  }
+
+  private async httpGet<T>(path: string, connectionId: string): Promise<T> {
+    const response = await fetch(`${this.httpBaseUrl}${path}`, {
+      method: "GET",
+      headers: this.httpHeaders(connectionId),
     });
     if (!response.ok) {
       throw await this.httpError(response);

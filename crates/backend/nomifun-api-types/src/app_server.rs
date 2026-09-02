@@ -176,3 +176,198 @@ pub struct AppServerOAuthStartResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Importer / PluginSnapshot (roadmap Phase 1)
+// ---------------------------------------------------------------------------
+
+/// V1 import source kinds (docs/agent-store/02 §1: local directories only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AppServerImportSourceKind {
+    /// `.codebuddy-plugin/plugin.json` plugin root.
+    #[serde(rename = "codebuddy-plugin")]
+    CodeBuddyPlugin,
+    /// `.codebuddy-skill/marketplace.json` skill market directory.
+    #[serde(rename = "workbuddy-skill-market")]
+    WorkBuddySkillMarket,
+    /// `.codebuddy-connector/connectors.json` connector market directory.
+    #[serde(rename = "workbuddy-connector-market")]
+    WorkBuddyConnectorMarket,
+}
+
+impl AppServerImportSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CodeBuddyPlugin => "codebuddy-plugin",
+            Self::WorkBuddySkillMarket => "workbuddy-skill-market",
+            Self::WorkBuddyConnectorMarket => "workbuddy-connector-market",
+        }
+    }
+}
+
+/// `import/run` request. The source path is an operator-chosen local
+/// directory on the trusted host; only relative/offending manifest entries are
+/// echoed back, never the absolute source path (02 §9).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerImportRequest {
+    pub source_path: String,
+    pub source_kind: AppServerImportSourceKind,
+}
+
+/// Three-dimensional compatibility report
+/// (docs/agent-store/03 §1). `reasons` may carry reason codes such as
+/// `ignored-by-source-runtime` (02 §11.2: reason codes are not statuses).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerCompatibilityTriple {
+    /// `compatible` | `compatible_with_adapter` | `manual_review` |
+    /// `unsupported` | `pending_legal_review` (serialized snake_case).
+    pub semantic_status: String,
+    /// `not-verified` | `adapter-verified` | `runtime-verified` |
+    /// `release-eligible`.
+    pub runtime_status: String,
+    /// `local-only` (V1).
+    pub distribution_status: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+/// Synchronous import result (docs/agent-store/02 §11).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerImportResult {
+    pub snapshot_id: String,
+    pub name: String,
+    pub version: String,
+    pub source_kind: String,
+    /// `completed` | `completed-with-warnings` | `blocked` | `failed`.
+    pub status: String,
+    pub content_digest: String,
+    pub component_status: AppServerCompatibilityTriple,
+    pub component_count: usize,
+    pub imported_at: i64,
+    /// `true` when an identical digest already existed and the immutable
+    /// snapshot was reused (idempotent import).
+    pub reused: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
+/// Import history row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerImportSummary {
+    pub snapshot_id: String,
+    pub name: String,
+    pub version: String,
+    pub source_kind: String,
+    pub status: String,
+    pub component_count: usize,
+    pub imported_at: i64,
+}
+
+/// One standardized component produced by an import.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerImportComponent {
+    pub id: String,
+    /// `agent` | `team` | `skill` | `connector` | `command` | `hook` |
+    /// `lsp` | `credential` | `dependency` | `script`.
+    pub kind: String,
+    pub name: String,
+    pub compatibility: AppServerCompatibilityTriple,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Full import detail (history + components).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerImportDetail {
+    #[serde(flatten)]
+    pub summary: AppServerImportSummary,
+    pub content_digest: String,
+    pub component_status: AppServerCompatibilityTriple,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub components: Vec<AppServerImportComponent>,
+}
+
+// ---------------------------------------------------------------------------
+// Agent / Team catalog (docs/agent-store/05 §4.1 / §4.2)
+// ---------------------------------------------------------------------------
+
+/// Agent Store AgentDefinition summary. Never a Runtime Agent instance; never
+/// carries credentials, hidden system instructions or raw prompt bodies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerAgentSummary {
+    pub id: String,
+    pub version: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub connectors: Vec<String>,
+    /// Derived from the frontmatter `model`/`effort` fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_summary: Option<String>,
+    /// Derived from `tools`/`disallowedTools`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_policy_summary: Option<String>,
+    pub source: String,
+    pub compatibility_status: AppServerCompatibilityStatus,
+}
+
+/// AgentDefinition detail: summary plus the structured fields preserved from
+/// `agents/*.md` frontmatter (02 §5.1). No raw prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerAgentDetail {
+    #[serde(flatten)]
+    pub summary: AppServerAgentSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
+    /// Plugin-level Agents: source runtime ignores `mcpServers`/`permissionMode`
+    /// (02 §5.1); importers record the fact instead of mapping it to grants.
+    pub permission_mode_ignored: bool,
+}
+
+/// Agent Team definition summary (02 §6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerTeamSummary {
+    pub id: String,
+    pub version: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `AgentDefinition` id of the planning role.
+    pub lead_agent_id: String,
+    pub member_agent_ids: Vec<String>,
+    pub source: String,
+    pub compatibility_status: AppServerCompatibilityStatus,
+}
+
+/// Team detail: summary plus team policy fields (01 §5). The planning
+/// context body is never returned, only its capabilities list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerTeamDetail {
+    #[serde(flatten)]
+    pub summary: AppServerTeamSummary,
+    pub planner_policy: String,
+    #[serde(default)]
+    pub routing_constraints: Vec<String>,
+    #[serde(default)]
+    pub workflow_limits: serde_json::Value,
+    pub team_runtime_capabilities: Vec<String>,
+}

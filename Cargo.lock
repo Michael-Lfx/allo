@@ -6880,6 +6880,7 @@ dependencies = [
  "nomifun-file",
  "nomifun-gateway",
  "nomifun-idmm",
+ "nomifun-importer",
  "nomifun-insights",
  "nomifun-knowledge",
  "nomifun-learning",
@@ -7441,6 +7442,26 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nomifun-importer"
+version = "1.0.11"
+dependencies = [
+ "async-trait",
+ "hex",
+ "nomifun-api-types",
+ "nomifun-common",
+ "nomifun-db",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "walkdir",
 ]
 
 [[package]]

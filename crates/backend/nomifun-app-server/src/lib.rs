@@ -10,7 +10,8 @@ pub mod workspace_resolver;
 
 pub use agent_store::{AgentStoreConfig, AgentStoreModel, AgentStoreProvider};
 pub use catalog::{
-    ConnectorAuthProvider, ConnectorCatalogProvider, SkillCatalogProvider,
+    AgentCatalogProvider, ConnectorAuthProvider, ConnectorCatalogProvider, ImportProvider,
+    SkillCatalogProvider, TeamCatalogProvider,
 };
 pub use workspace_resolver::{
     FilesystemWorkspaceResolver, ResolvedWorkspace, WorkspaceResolver,
@@ -45,10 +46,13 @@ use nomifun_agent_execution::{AgentRunReceipt, AgentRunResult, AgentRunView};
 use nomifun_auth::CurrentUser;
 use nomifun_common::{MessagePosition, MessageType, ProviderWithModel, UserId, generate_id};
 use nomifun_api_types::{
-    AppServerConnectorDetail, AppServerConnectorProbeResult, AppServerConnectorStatusView,
-    AppServerConnectorSummary, AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, CreateProviderRequest, ListMessagesQuery,
-    MessageResponse, PresetOverrides, PresetSource, PresetTarget, SendMessageRequest,
+    AppServerAgentDetail, AppServerAgentSummary, AppServerConnectorDetail,
+    AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
+    AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
+    AppServerImportSummary, AppServerOAuthStartResult, AppServerOAuthStatusView,
+    AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail, AppServerTeamSummary,
+    CreateProviderRequest, ListMessagesQuery, MessageResponse, PresetOverrides, PresetSource,
+    PresetTarget, SendMessageRequest,
 };
 use nomifun_conversation::{ConversationService, IdempotentMessageDelivery};
 use nomifun_preset::PresetService;
@@ -156,6 +160,9 @@ pub struct CapabilityAvailability {
     pub skills: bool,
     pub connectors: bool,
     pub oauth: bool,
+    pub imports: bool,
+    pub agents: bool,
+    pub teams: bool,
 }
 
 impl CapabilityAvailability {
@@ -166,6 +173,9 @@ impl CapabilityAvailability {
             skills: state.skills.is_some(),
             connectors: state.connectors.is_some(),
             oauth: state.connector_auth.is_some(),
+            imports: state.imports.is_some(),
+            agents: state.agent_catalog.is_some(),
+            teams: state.team_catalog.is_some(),
         }
     }
 }
@@ -339,13 +349,14 @@ pub struct Capabilities {
     pub approvals: bool,
     pub artifacts: bool,
     pub oauth: bool,
+    pub imports: bool,
 }
 
 impl Capabilities {
     fn from_availability(availability: CapabilityAvailability) -> Self {
         Self {
-            agents: availability.runtime,
-            teams: false,
+            agents: availability.runtime || availability.agents,
+            teams: availability.teams,
             team_runtime: false,
             skills: availability.skills,
             connectors: availability.connectors,
@@ -353,6 +364,7 @@ impl Capabilities {
             approvals: false,
             artifacts: false,
             oauth: availability.oauth,
+            imports: availability.imports,
         }
     }
 }
@@ -756,6 +768,14 @@ pub struct AppServerRouterState {
     pub connectors: Option<Arc<dyn ConnectorCatalogProvider>>,
     /// Connector OAuth pass-through. `None` keeps the `oauth` capability off.
     pub connector_auth: Option<Arc<dyn ConnectorAuthProvider>>,
+    /// Agent Store Importer/PluginSnapshot provider. `None` keeps the
+    /// `imports` capability off.
+    pub imports: Option<Arc<dyn ImportProvider>>,
+    /// Agent Store AgentDefinition catalog (05 §4.1). `None` keeps the
+    /// `agents` catalog off; `agent/run` still works off the runtime.
+    pub agent_catalog: Option<Arc<dyn AgentCatalogProvider>>,
+    /// Agent Store Team catalog (05 §4.2). `None` keeps `teams` off.
+    pub team_catalog: Option<Arc<dyn TeamCatalogProvider>>,
 }
 
 impl Default for AppServerRouterState {
@@ -776,6 +796,9 @@ impl Default for AppServerRouterState {
             skills: None,
             connectors: None,
             connector_auth: None,
+            imports: None,
+            agent_catalog: None,
+            team_catalog: None,
         }
     }
 }
@@ -829,6 +852,9 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
             "/api/app-server/connectors/{connector_id}/auth-logout",
             post(connector_auth_logout_route),
         )
+        // Agent Store Importer (roadmap Phase 1)
+        .route("/api/app-server/imports", post(run_import_route).get(list_imports_route))
+        .route("/api/app-server/imports/{snapshot_id}", get(get_import_route))
         .with_state(state)
 }
 
@@ -1192,6 +1218,128 @@ async fn connector_auth_logout_impl(
         .logout(connector_id)
         .await
         .map_err(AppServerError::from)
+}
+
+// ---------------------------------------------------------------------------
+// Agent Store Importer / Agent / Team catalog impls
+// ---------------------------------------------------------------------------
+
+fn import_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn ImportProvider>, AppServerError> {
+    state.imports.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "import pipeline is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+fn agent_catalog_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn AgentCatalogProvider>, AppServerError> {
+    state.agent_catalog.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "agent catalog is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+fn team_catalog_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn TeamCatalogProvider>, AppServerError> {
+    state.team_catalog.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "team catalog is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+async fn run_import_impl(
+    state: &AppServerRouterState,
+    request: AppServerImportRequest,
+) -> Result<AppServerImportResult, AppServerError> {
+    import_provider(state)?.run(request).await.map_err(AppServerError::from)
+}
+
+async fn list_imports_impl(
+    state: &AppServerRouterState,
+    limit: u32,
+) -> Result<Vec<AppServerImportSummary>, AppServerError> {
+    import_provider(state)?.list(limit).await.map_err(AppServerError::from)
+}
+
+async fn get_import_impl(
+    state: &AppServerRouterState,
+    snapshot_id: &str,
+) -> Result<AppServerImportDetail, AppServerError> {
+    import_provider(state)?.get(snapshot_id).await.map_err(AppServerError::from)
+}
+
+async fn list_agents_impl(
+    state: &AppServerRouterState,
+) -> Result<Vec<AppServerAgentSummary>, AppServerError> {
+    agent_catalog_provider(state)?.list().await.map_err(AppServerError::from)
+}
+
+async fn get_agent_impl(
+    state: &AppServerRouterState,
+    agent_id: &str,
+) -> Result<AppServerAgentDetail, AppServerError> {
+    agent_catalog_provider(state)?.get(agent_id).await.map_err(AppServerError::from)
+}
+
+async fn list_teams_impl(
+    state: &AppServerRouterState,
+) -> Result<Vec<AppServerTeamSummary>, AppServerError> {
+    team_catalog_provider(state)?.list().await.map_err(AppServerError::from)
+}
+
+async fn get_team_impl(
+    state: &AppServerRouterState,
+    team_id: &str,
+) -> Result<AppServerTeamDetail, AppServerError> {
+    team_catalog_provider(state)?.get(team_id).await.map_err(AppServerError::from)
+}
+
+const IMPORT_HISTORY_LIMIT: u32 = 50;
+
+async fn run_import_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<AppServerImportRequest>, JsonRejection>,
+) -> Result<Json<AppServerImportResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(request) = body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    Ok(Json(run_import_impl(&state, request).await?))
+}
+
+async fn list_imports_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<Vec<AppServerImportSummary>>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(list_imports_impl(&state, IMPORT_HISTORY_LIMIT).await?))
+}
+
+async fn get_import_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(snapshot_id): Path<String>,
+) -> Result<Json<AppServerImportDetail>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(get_import_impl(&state, &snapshot_id).await?))
 }
 
 async fn list_skills_route(
@@ -1691,6 +1839,16 @@ pub struct ConversationMessageView {
     pub message_type: String,
     pub status: Option<String>,
     pub created_at: i64,
+}
+
+/// Paginated `conversation/messages` response. `has_more` is the exact
+/// server-computed flag (keyset window): `true` when an older page still
+/// exists. The client should drive "load older" off this flag instead of the
+/// legacy "page came back full-sized" heuristic.
+#[derive(Debug, Serialize)]
+struct ConversationMessagesPage {
+    items: Vec<ConversationMessageView>,
+    has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2227,7 +2385,7 @@ async fn list_conversation_messages_for_user(
     user: &CurrentUser,
     conversation_id: &str,
     query: ConversationMessagesQuery,
-) -> Result<Vec<ConversationMessageView>, AppServerError> {
+) -> Result<ConversationMessagesPage, AppServerError> {
     let service = conversation_service(state)?;
     // Verify the marker + ownership first; message listing alone would only
     // prove row ownership and could otherwise cross this public projection.
@@ -2250,7 +2408,10 @@ async fn list_conversation_messages_for_user(
         )
         .await
         .map_err(AppServerError::from)?;
-    Ok(result.items.into_iter().filter_map(project_message).collect())
+    Ok(ConversationMessagesPage {
+        items: result.items.into_iter().filter_map(project_message).collect(),
+        has_more: result.has_more,
+    })
 }
 
 async fn send_conversation_message_for_user(
@@ -2344,7 +2505,7 @@ async fn conversation_messages(
     Extension(user): Extension<CurrentUser>,
     Path(conversation_id): Path<String>,
     Query(query): Query<ConversationMessagesQuery>,
-) -> Result<Json<Vec<ConversationMessageView>>, AppServerError> {
+) -> Result<Json<ConversationMessagesPage>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(
         list_conversation_messages_for_user(&state, &user, &conversation_id, query).await?,
@@ -3492,6 +3653,38 @@ async fn dispatch_websocket_request(
             connector_auth_logout_impl(state, &params.connector_id).await?;
             Ok(ws_response(request_id, serde_json::json!({ "connector_id": params.connector_id, "logged_out": true })))
         }
+        // ---------------- Agent Store Agent catalog (05 §4.1) ----------------
+        "agent/list" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let agents = list_agents_impl(state).await?;
+            Ok(ws_response(request_id, serde_json::to_value(agents).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode agents: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "agent/get" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsAgentQuery>(params)?;
+            let agent = get_agent_impl(state, &params.agent_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(agent).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode agent: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        // ---------------- Agent Store Team catalog (05 §4.2) ----------------
+        "team/list" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let teams = list_teams_impl(state).await?;
+            Ok(ws_response(request_id, serde_json::to_value(teams).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode teams: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "team/get" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsTeamQuery>(params)?;
+            let team = get_team_impl(state, &params.team_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(team).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode team: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         _ => Err(AppServerError::from(ProtocolError::InvalidRequest(
             "unknown App Server method".into(),
         ))),
@@ -3517,6 +3710,18 @@ struct WsConversationQuery {
 #[serde(deny_unknown_fields)]
 struct WsSkillQuery {
     skill_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsAgentQuery {
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsTeamQuery {
+    team_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4681,6 +4886,7 @@ display_name = "MiMo V2.5 Free"
                 skills: true,
                 connectors: true,
                 oauth: true,
+                ..Default::default()
             },
         );
         let result = state.initialize(request()).unwrap();
@@ -4916,5 +5122,165 @@ display_name = "MiMo V2.5 Free"
         .await
         .expect("auth/logout");
         assert_eq!(logout["result"]["logged_out"], true);
+    }
+
+    #[test]
+    fn initialize_advertises_import_agent_and_team_capabilities_when_provided() {
+        let mut state = ConnectionState::with_capabilities(
+            LocalPrincipal::from_authenticated_user(UserId::new(), LocalTransport::WebSocket),
+            CapabilityAvailability {
+                runtime: true,
+                events: true,
+                imports: true,
+                agents: true,
+                teams: true,
+                ..Default::default()
+            },
+        );
+        let result = state.initialize(request()).unwrap();
+        assert!(result.capabilities.imports);
+        assert!(result.capabilities.agents);
+        assert!(result.capabilities.teams);
+        assert!(!result.capabilities.skills, "uninjected capability stays off");
+    }
+
+    fn sample_agent_summary() -> nomifun_api_types::AppServerAgentSummary {
+        nomifun_api_types::AppServerAgentSummary {
+            id: "wb-demo-software-team-lead".into(),
+            version: "1.0.0".into(),
+            name: "software-team-lead".into(),
+            description: Some("lead".into()),
+            skills: vec![],
+            connectors: vec![],
+            model_summary: Some("gpt-5".into()),
+            tool_policy_summary: Some("read_file, write_file".into()),
+            source: "codebuddy-plugin".into(),
+            compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+        }
+    }
+
+    fn sample_team_summary() -> nomifun_api_types::AppServerTeamSummary {
+        nomifun_api_types::AppServerTeamSummary {
+            id: "wb-demo-team".into(),
+            version: "1.0.0".into(),
+            name: "demo".into(),
+            description: Some("demo team".into()),
+            lead_agent_id: "wb-demo-software-team-lead".into(),
+            member_agent_ids: vec!["wb-demo-software-qa-engineer".into()],
+            source: "codebuddy-plugin".into(),
+            compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_dispatch_serves_agent_and_team_catalog_methods() {
+        let state = AppServerRouterState {
+            agent_catalog: Some(Arc::new(crate::catalog::FakeAgentCatalog {
+                agents: vec![sample_agent_summary()],
+            })),
+            team_catalog: Some(Arc::new(crate::catalog::FakeTeamCatalog {
+                teams: vec![sample_team_summary()],
+            })),
+            ..Default::default()
+        };
+        let user = CurrentUser {
+            id: UserId::new(),
+            username: "test-user".into(),
+        };
+        let connection = state.registry.open_with_capabilities(
+            LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
+            CapabilityAvailability::from_state(&state),
+        );
+        state
+            .registry
+            .initialize(connection.connection_id(), request())
+            .expect("initialize");
+        state
+            .registry
+            .mark_initialized(connection.connection_id(), &user.id)
+            .expect("initialized");
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
+
+        let agents = dispatch_websocket_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "agent/list",
+            serde_json::json!({}),
+            Some(serde_json::json!("req-1")),
+        )
+        .await
+        .expect("agent/list");
+        assert_eq!(agents["result"][0]["id"], "wb-demo-software-team-lead");
+
+        let agent = dispatch_websocket_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "agent/get",
+            serde_json::json!({ "agent_id": "wb-demo-software-team-lead" }),
+            Some(serde_json::json!("req-2")),
+        )
+        .await
+        .expect("agent/get");
+        assert_eq!(agent["result"]["name"], "software-team-lead");
+
+        let teams = dispatch_websocket_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "team/list",
+            serde_json::json!({}),
+            Some(serde_json::json!("req-3")),
+        )
+        .await
+        .expect("team/list");
+        assert_eq!(teams["result"][0]["lead_agent_id"], "wb-demo-software-team-lead");
+
+        let team = dispatch_websocket_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "team/get",
+            serde_json::json!({ "team_id": "wb-demo-team" }),
+            Some(serde_json::json!("req-4")),
+        )
+        .await
+        .expect("team/get");
+        assert_eq!(team["result"]["planner_policy"], "planned");
+        assert!(team["result"]["team_runtime_capabilities"].as_array().unwrap().len() >= 8);
+    }
+
+    #[tokio::test]
+    async fn import_impls_route_through_the_provider_and_gate() {
+        let state = AppServerRouterState {
+            imports: Some(Arc::new(crate::catalog::FakeImportProvider::new())),
+            ..Default::default()
+        };
+        let request = AppServerImportRequest {
+            source_path: "/local/source/demo".into(),
+            source_kind: nomifun_api_types::AppServerImportSourceKind::CodeBuddyPlugin,
+        };
+        let result = run_import_impl(&state, request.clone()).await.unwrap();
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.snapshot_id, "snap-demo");
+        assert_eq!(result.source_kind, "codebuddy-plugin");
+
+        let list = list_imports_impl(&state, 10).await.unwrap();
+        assert!(list.is_empty());
+
+        let missing = get_import_impl(&state, "nope").await.unwrap_err();
+        assert_eq!(missing.code, "not_found");
+
+        // Uninjected provider keeps the surface closed.
+        let bare = AppServerRouterState::default();
+        let denied = run_import_impl(&bare, request).await.unwrap_err();
+        assert_eq!(denied.code, "unsupported_operation");
+        let denied_agents = list_agents_impl(&bare).await.unwrap_err();
+        assert_eq!(denied_agents.code, "unsupported_operation");
     }
 }

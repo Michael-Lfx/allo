@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "code-review-api": {
+      "url": "https://mcp.example.com/code-review"
+    }
+  }
+}

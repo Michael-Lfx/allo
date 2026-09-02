@@ -40,6 +40,7 @@ use nomifun_mcp::mcp_routes;
 use nomifun_office::{office_proxy_routes, office_routes};
 use nomifun_agent_execution::{agent_execution_routes, agent_execution_template_routes};
 use nomifun_app_server::{AgentRuntimeAdapter, AppServerRouterState, app_server_routes};
+use nomifun_db::IPluginSnapshotRepository;
 use nomifun_realtime::{UserEventEnvelope, WebSocketManager, WsHandlerState, ws_upgrade_handler};
 use nomifun_requirement::requirement_routes;
 use nomifun_shell::shell_routes;
@@ -967,6 +968,10 @@ pub fn create_router_with_all_state(
 
     // Versioned App Server protocol boundary. Agent Store consumers use this
     // connection lifecycle instead of calling allo UI routes directly.
+    let plugin_snapshot_repository: Arc<dyn IPluginSnapshotRepository> = Arc::new(
+        nomifun_db::SqlitePluginSnapshotRepository::new(services.database.pool().clone()),
+    );
+    let import_root = services.work_dir.join("agent-store-imports");
     let app_server_authenticated = protect_instance_owner(
         app_server_routes(AppServerRouterState {
             registry: Default::default(),
@@ -1010,6 +1015,28 @@ pub fn create_router_with_all_state(
                 crate::app_server_catalog::AppServerConnectorAuth::new(
                     states.mcp.config_service.clone(),
                     states.mcp.oauth_service.clone(),
+                ),
+            )),
+            // Agent Store Importer / PluginSnapshot catalog (roadmap Phase 1).
+            // The importer writes only into the work-dir-owned immutable
+            // cache; source paths stay internal.
+            imports: Some(Arc::new(
+                crate::app_server_importer::AppServerImportProvider::new(
+                    nomifun_importer::ImporterService::new(
+                        import_root,
+                        plugin_snapshot_repository.clone(),
+                    ),
+                    plugin_snapshot_repository.clone(),
+                ),
+            )),
+            agent_catalog: Some(Arc::new(
+                crate::app_server_importer::AppServerAgentCatalog::new(
+                    plugin_snapshot_repository.clone(),
+                ),
+            )),
+            team_catalog: Some(Arc::new(
+                crate::app_server_importer::AppServerTeamCatalog::new(
+                    plugin_snapshot_repository.clone(),
                 ),
             )),
         }),

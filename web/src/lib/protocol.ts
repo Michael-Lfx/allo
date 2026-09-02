@@ -102,6 +102,7 @@ export interface Capabilities {
   approvals: boolean;
   artifacts: boolean;
   oauth: boolean;
+  imports: boolean;
 }
 
 export interface WorkspaceRef { id: string }
@@ -250,6 +251,11 @@ export interface ConversationEvent {
   payload: Record<string, unknown>;
 }
 export interface ConversationMessagesQuery { conversationId: string; page?: number; pageSize?: number; cursor?: string }
+export interface ConversationMessagesPage {
+  items: ConversationMessage[];
+  /** Exact server-computed flag: `true` when an older page still exists. */
+  has_more: boolean;
+}
 export interface ConversationSubscription { conversation_id: string }
 
 // ---------------------------------------------------------------------------
@@ -348,4 +354,116 @@ export interface ConnectorQueryParams {
 
 export interface SkillQueryParams {
   skill_id: string;
+}
+
+// ---------------------------------------------------------------------------
+// Agent Store Importer / PluginSnapshot (docs/agent-store/02, roadmap Phase 1)
+// ---------------------------------------------------------------------------
+
+export type CompatibilityTriple = {
+  /** Wire values: compatible | compatible_with_adapter | manual_review | unsupported | pending_legal_review. */
+  semantic_status: string;
+  /** not-verified | adapter-verified | runtime-verified | release-eligible. */
+  runtime_status: string;
+  /** local-only (V1). */
+  distribution_status: string;
+  reasons: string[];
+};
+
+export type ImportSourceKind = "codebuddy-plugin" | "workbuddy-skill-market" | "workbuddy-connector-market";
+
+export interface ImportRequest {
+  /** Absolute local directory path on the trusted host; validated server-side. */
+  source_path: string;
+  source_kind: ImportSourceKind;
+}
+
+export type ImportStatus = "completed" | "completed-with-warnings" | "blocked" | "failed";
+
+export interface ImportResult {
+  snapshot_id: string;
+  name: string;
+  version: string;
+  source_kind: string;
+  status: ImportStatus;
+  content_digest: string;
+  component_status: CompatibilityTriple;
+  component_count: number;
+  imported_at: number;
+  /** true when an identical digest was already imported (idempotent reuse). */
+  reused: boolean;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface ImportSummary {
+  snapshot_id: string;
+  name: string;
+  version: string;
+  source_kind: string;
+  status: ImportStatus;
+  component_count: number;
+  imported_at: number;
+}
+
+export interface ImportComponent {
+  id: string;
+  kind: string;
+  name: string;
+  compatibility: CompatibilityTriple;
+  warnings: string[];
+}
+
+export interface ImportDetail extends ImportSummary {
+  content_digest: string;
+  component_status: CompatibilityTriple;
+  warnings: string[];
+  errors: string[];
+  components: ImportComponent[];
+}
+
+// ---------------------------------------------------------------------------
+// Agent / Team catalog (docs/agent-store/05 §4.1 / §4.2)
+// ---------------------------------------------------------------------------
+
+export interface AgentSummary {
+  id: string;
+  version: string;
+  name: string;
+  description?: string | null;
+  skills: string[];
+  connectors: string[];
+  model_summary?: string | null;
+  tool_policy_summary?: string | null;
+  source: string;
+  compatibility_status: CompatibilityStatus;
+}
+
+/** `agent/get` — structured frontmatter fields only; raw prompts never cross. */
+export interface AgentDetail extends AgentSummary {
+  effort?: string | null;
+  max_turns?: number | null;
+  disallowed_tools: string[];
+  memory?: string | null;
+  background?: string | null;
+  isolation?: string | null;
+  permission_mode_ignored: boolean;
+}
+
+export interface TeamSummary {
+  id: string;
+  version: string;
+  name: string;
+  description?: string | null;
+  lead_agent_id: string;
+  member_agent_ids: string[];
+  source: string;
+  compatibility_status: CompatibilityStatus;
+}
+
+export interface TeamDetail extends TeamSummary {
+  planner_policy: string;
+  routing_constraints: string[];
+  workflow_limits: Record<string, unknown>;
+  team_runtime_capabilities: string[];
 }

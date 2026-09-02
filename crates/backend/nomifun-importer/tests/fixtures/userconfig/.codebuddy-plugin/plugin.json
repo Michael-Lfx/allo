@@ -1,0 +1,1 @@
+{"name":"userconfig","version":"1.0.0","userConfig":{"apiKey":{"type":"apikey","required":true,"default":"sk-SECRET-VALUE"},"temperature":{"type":"number"}}}

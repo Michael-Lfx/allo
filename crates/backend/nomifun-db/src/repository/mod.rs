@@ -21,6 +21,7 @@ pub mod mcp_server;
 pub mod meeting;
 pub mod oauth_client_registration;
 pub mod oauth_token;
+pub mod plugin_snapshot;
 pub mod provider;
 pub mod provider_connection;
 pub mod provider_model;
@@ -52,6 +53,7 @@ mod sqlite_mcp_server;
 mod sqlite_meeting;
 mod sqlite_oauth_client_registration;
 mod sqlite_oauth_token;
+mod sqlite_plugin_snapshot;
 mod sqlite_provider;
 mod sqlite_provider_connection;
 mod sqlite_provider_model;
@@ -112,6 +114,9 @@ pub use meeting::{
 };
 pub use oauth_client_registration::IOAuthClientRegistrationRepository;
 pub use oauth_token::IOAuthTokenRepository;
+pub use plugin_snapshot::{
+    IPluginSnapshotRepository, NewPluginSnapshot, NewPluginSnapshotComponent,
+};
 pub use provider::IProviderRepository;
 pub use provider_connection::IProviderConnectionRepository;
 pub use provider_model::IProviderModelRepository;
@@ -145,6 +150,7 @@ pub use sqlite_mcp_server::SqliteMcpServerRepository;
 pub use sqlite_meeting::SqliteMeetingRepository;
 pub use sqlite_oauth_client_registration::SqliteOAuthClientRegistrationRepository;
 pub use sqlite_oauth_token::SqliteOAuthTokenRepository;
+pub use sqlite_plugin_snapshot::SqlitePluginSnapshotRepository;
 pub use sqlite_provider::SqliteProviderRepository;
 pub use sqlite_provider_connection::SqliteProviderConnectionRepository;
 pub use sqlite_provider_model::SqliteProviderModelRepository;

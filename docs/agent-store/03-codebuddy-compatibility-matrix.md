@@ -1,9 +1,14 @@
 # CodeBuddy / WorkBuddy 兼容性矩阵
 
-> 状态：架构冻结（Phase 0）；兼容性待运行验证；发布阻断
+> 状态：✅ 状态推导规则已实现（nomifun-importer/src/compat.rs）；运行验收与状态升级仍需 Gate 3/Phase 2 验证
 > 日期：2026-08-26
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`、`02-codebuddy-workbuddy-import-spec.md`
 > 用途：回答「解析之后能不能运行」。导入规范管「怎么解析」，本矩阵管「解析后的运行等级」。
+
+> 实现记录：每个导入组件产生 `CompatTriple{semantic_status, runtime_status,
+> distribution_status, reasons[]}`；`semantic_status` 按本矩阵 §2 推导，
+> `ignored-by-source-runtime` 仅作为原因码（02 §11.2），快照级聚合取「最差」语义。
+> 运行验收（§6）与状态升级记录仍属后续 Gate。
 
 ## 1. 状态定义
 

@@ -11,23 +11,35 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   BookOpen,
+  Bot,
   ChevronRight,
   CircleAlert,
   Plug,
   RefreshCw,
+  Upload,
+  Users,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { formatError, isRetryableError } from "../lib/errors";
 import { useAppStore } from "../store/appStore";
 import type {
+  AgentDetail,
+  AgentSummary,
+  CompatibilityTriple,
   ConnectorDetail,
   ConnectorStatus,
   ConnectorSummary,
+  ImportDetail,
+  ImportResult,
+  ImportSourceKind,
+  ImportSummary,
   SkillDetail,
   SkillSummary,
+  TeamDetail,
+  TeamSummary,
 } from "../lib/protocol";
 
-type CatalogTab = "skills" | "connectors";
+type CatalogTab = "skills" | "connectors" | "agents" | "teams" | "imports";
 
 const CONNECTOR_STATE_KEYS: Record<string, string> = {
   installed: "catalog.stateInstalled",
@@ -81,6 +93,17 @@ export function CatalogView() {
   const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
   const [connectorDetail, setConnectorDetail] = useState<ConnectorDetail | null>(null);
+  // Agent / Team / Importer catalog (agents/teams over WS, imports over HTTP)
+  const [agents, setAgents] = useState<AgentSummary[] | null>(null);
+  const [teams, setTeams] = useState<TeamSummary[] | null>(null);
+  const [agentDetail, setAgentDetail] = useState<AgentDetail | null>(null);
+  const [teamDetail, setTeamDetail] = useState<TeamDetail | null>(null);
+  const [imports, setImports] = useState<ImportSummary[] | null>(null);
+  const [importDetail, setImportDetail] = useState<ImportDetail | null>(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importPath, setImportPath] = useState("");
+  const [importKind, setImportKind] = useState<ImportSourceKind>("codebuddy-plugin");
+  const [importBusy, setImportBusy] = useState(false);
   const [detailBusy, setDetailBusy] = useState<string | null>(null);
   const [authMap, setAuthMap] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +125,9 @@ export function CatalogView() {
   const reload = useCallback(() => {
     setSkills(null);
     setConnectors(null);
+    setAgents(null);
+    setTeams(null);
+    setImports(null);
     setError(null);
     setReloadTick((tick) => tick + 1);
   }, []);
@@ -111,18 +137,27 @@ export function CatalogView() {
     let cancelled = false;
     const load = async () => {
       try {
-        const [skillList, connectorList] = await Promise.all([
+        const [skillList, connectorList, agentList, teamList, importList] = await Promise.all([
           capabilities?.skills ? client.skills.list() : Promise.resolve([]),
           capabilities?.connectors ? client.connectors.list() : Promise.resolve([]),
+          capabilities?.agents ? client.agents.list() : Promise.resolve([]),
+          capabilities?.teams ? client.teams.list() : Promise.resolve([]),
+          capabilities?.imports ? client.listImports() : Promise.resolve([]),
         ]);
         if (cancelled || !activeRef.current) return;
         setSkills(skillList);
         setConnectors(connectorList);
+        setAgents(agentList);
+        setTeams(teamList);
+        setImports(importList);
       } catch (caught) {
         if (cancelled || !activeRef.current) return;
         reportError(caught);
         setSkills(null);
         setConnectors(null);
+        setAgents(null);
+        setTeams(null);
+        setImports(null);
       }
     };
     void load();
@@ -244,6 +279,83 @@ export function CatalogView() {
     }
   }, [client]);
 
+  const openAgent = useCallback(async (agentId: string) => {
+    if (!client) return;
+    setDetailBusy(agentId);
+    const previous = agentDetail;
+    setAgentDetail(null);
+    try {
+      const detail = await client.agents.get(agentId);
+      if (!activeRef.current) return;
+      setAgentDetail(detail);
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+      setAgentDetail(previous);
+    } finally {
+      if (activeRef.current) setDetailBusy(null);
+    }
+  }, [client, agentDetail]);
+
+  const openTeam = useCallback(async (teamId: string) => {
+    if (!client) return;
+    setDetailBusy(teamId);
+    const previous = teamDetail;
+    setTeamDetail(null);
+    try {
+      const detail = await client.teams.get(teamId);
+      if (!activeRef.current) return;
+      setTeamDetail(detail);
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+      setTeamDetail(previous);
+    } finally {
+      if (activeRef.current) setDetailBusy(null);
+    }
+  }, [client, teamDetail]);
+
+  const runImport = useCallback(async () => {
+    if (!client || importPath.trim().length === 0) {
+      setError(t("catalog.importEmptySource"));
+      return;
+    }
+    setImportBusy(true);
+    setImportResult(null);
+    setImportDetail(null);
+    try {
+      const result = await client.runImport({ source_path: importPath.trim(), source_kind: importKind });
+      if (!activeRef.current) return;
+      setImportResult(result);
+      const list = await client.listImports();
+      if (!activeRef.current) return;
+      setImports(list);
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setImportBusy(false);
+    }
+  }, [client, importPath, importKind, t]);
+
+  const openImport = useCallback(async (snapshotId: string) => {
+    if (!client) return;
+    setDetailBusy(snapshotId);
+    const previous = importDetail;
+    setImportDetail(null);
+    try {
+      const detail = await client.getImport(snapshotId);
+      if (!activeRef.current) return;
+      setImportDetail(detail);
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+      setImportDetail(previous);
+    } finally {
+      if (activeRef.current) setDetailBusy(null);
+    }
+  }, [client, importDetail]);
+
   return (
     <section className="catalog-view" aria-label={t("catalog.ariaLabel")}>
       <header className="catalog-topbar">
@@ -280,6 +392,39 @@ export function CatalogView() {
             onClick={() => { setTab("connectors"); setConnectorDetail(null); }}
           >
             <Plug size={15} strokeWidth={1.7} /> {t("catalog.tabConnectors")}
+          </button>
+        )}
+        {capabilities?.agents !== false && (
+          <button
+            className={`catalog-tab ${tab === "agents" ? "is-active" : ""}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === "agents"}
+            onClick={() => { setTab("agents"); setAgentDetail(null); }}
+          >
+            <Bot size={15} strokeWidth={1.7} /> {t("catalog.tabAgents")}
+          </button>
+        )}
+        {capabilities?.teams !== false && (
+          <button
+            className={`catalog-tab ${tab === "teams" ? "is-active" : ""}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === "teams"}
+            onClick={() => { setTab("teams"); setTeamDetail(null); }}
+          >
+            <Users size={15} strokeWidth={1.7} /> {t("catalog.tabTeams")}
+          </button>
+        )}
+        {capabilities?.imports !== false && (
+          <button
+            className={`catalog-tab ${tab === "imports" ? "is-active" : ""}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === "imports"}
+            onClick={() => { setTab("imports"); setImportDetail(null); }}
+          >
+            <Upload size={15} strokeWidth={1.7} /> {t("catalog.tabImports")}
           </button>
         )}
       </div>
@@ -369,6 +514,163 @@ export function CatalogView() {
                 />
               ) : (
                 <p className="catalog-detail-empty">{t("catalog.selectConnector")}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === "agents" && (
+          <div className="catalog-layout">
+            <div className="catalog-list">
+              {!client && <p className="catalog-empty">{t("catalog.connectFirst")}</p>}
+              {client && agents === null && <p className="catalog-empty">{t("catalog.loadingAgents")}</p>}
+              {client && agents !== null && agents.length === 0 && (
+                <p className="catalog-empty">{t("catalog.noAgents")}</p>
+              )}
+              {agents?.map((agent) => (
+                <button
+                  className={`catalog-row ${agentDetail?.id === agent.id ? "is-active" : ""}`}
+                  type="button"
+                  key={agent.id}
+                  onClick={() => void openAgent(agent.id)}
+                >
+                  <div className="catalog-row-main">
+                    <span className="catalog-row-title">{agent.name}</span>
+                    {agent.description && <span className="catalog-row-sub">{agent.description}</span>}
+                  </div>
+                  <div className="catalog-row-meta">
+                    <span className="source-chip">{agent.source}</span>
+                    <span className="compat-chip">{agent.compatibility_status}</span>
+                    {detailBusy === agent.id && <span className="row-busy">{t("catalog.loading")}</span>}
+                    <ChevronRight size={15} strokeWidth={1.7} />
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="catalog-detail">
+              {agentDetail ? (
+                <AgentDetailPane detail={agentDetail} />
+              ) : (
+                <p className="catalog-detail-empty">{t("catalog.selectAgent")}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === "teams" && (
+          <div className="catalog-layout">
+            <div className="catalog-list">
+              {!client && <p className="catalog-empty">{t("catalog.connectFirst")}</p>}
+              {client && teams === null && <p className="catalog-empty">{t("catalog.loadingTeams")}</p>}
+              {client && teams !== null && teams.length === 0 && (
+                <p className="catalog-empty">{t("catalog.noTeams")}</p>
+              )}
+              {teams?.map((team) => (
+                <button
+                  className={`catalog-row ${teamDetail?.id === team.id ? "is-active" : ""}`}
+                  type="button"
+                  key={team.id}
+                  onClick={() => void openTeam(team.id)}
+                >
+                  <div className="catalog-row-main">
+                    <span className="catalog-row-title">{team.name}</span>
+                    {team.description && <span className="catalog-row-sub">{team.description}</span>}
+                  </div>
+                  <div className="catalog-row-meta">
+                    <span className="source-chip">{team.source}</span>
+                    <span className="compat-chip">{team.compatibility_status}</span>
+                    <span className="catalog-row-sub">{team.member_agent_ids.length + 1} {t("catalog.teamMembers")}</span>
+                    {detailBusy === team.id && <span className="row-busy">{t("catalog.loading")}</span>}
+                    <ChevronRight size={15} strokeWidth={1.7} />
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="catalog-detail">
+              {teamDetail ? (
+                <TeamDetailPane detail={teamDetail} />
+              ) : (
+                <p className="catalog-detail-empty">{t("catalog.selectTeam")}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === "imports" && (
+          <div className="catalog-layout catalog-layout-imports">
+            <div className="catalog-list">
+              <div className="import-form">
+                <label htmlFor="import-path">{t("catalog.importPath")}</label>
+                <div className="import-form-row">
+                  <select
+                    id="import-kind"
+                    className="import-kind"
+                    value={importKind}
+                    onChange={(event) => setImportKind(event.target.value as ImportSourceKind)}
+                    aria-label={t("catalog.importSource")}
+                  >
+                    <option value="codebuddy-plugin">{t("catalog.importKindPlugin")}</option>
+                    <option value="workbuddy-skill-market">{t("catalog.importKindSkills")}</option>
+                    <option value="workbuddy-connector-market">{t("catalog.importKindConnectors")}</option>
+                  </select>
+                  <input
+                    id="import-path"
+                    className="import-path"
+                    type="text"
+                    placeholder={t("catalog.importPathPlaceholder")}
+                    value={importPath}
+                    onChange={(event) => setImportPath(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter") void runImport(); }}
+                  />
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={importBusy}
+                    onClick={() => void runImport()}
+                  >
+                    {importBusy ? t("catalog.importing") : t("catalog.importRun")}
+                  </button>
+                </div>
+              </div>
+
+              {importResult && (
+                <ImportResultCard
+                  result={importResult}
+                  onOpen={() => void openImport(importResult.snapshot_id)}
+                />
+              )}
+
+              {!client && <p className="catalog-empty">{t("catalog.connectFirst")}</p>}
+              {client && imports === null && <p className="catalog-empty">{t("catalog.loadingImports")}</p>}
+              {client && imports !== null && imports.length === 0 && (
+                <p className="catalog-empty">{t("catalog.noImports")}</p>
+              )}
+              {imports?.map((item) => (
+                <button
+                  className={`catalog-row ${importDetail?.snapshot_id === item.snapshot_id ? "is-active" : ""}`}
+                  type="button"
+                  key={item.snapshot_id}
+                  onClick={() => void openImport(item.snapshot_id)}
+                >
+                  <div className="catalog-row-main">
+                    <span className="catalog-row-title">{item.name} <small>v{item.version}</small></span>
+                    <span className="catalog-row-sub">
+                      {item.source_kind} · {t("catalog.importComponents", { count: item.component_count })}
+                    </span>
+                  </div>
+                  <div className="catalog-row-meta">
+                    <span className={`import-status ${importStatusClass(item.status)}`}>{importStatusLabel(t, item.status)}</span>
+                    {detailBusy === item.snapshot_id && <span className="row-busy">{t("catalog.loading")}</span>}
+                    <ChevronRight size={15} strokeWidth={1.7} />
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="catalog-detail">
+              {importDetail ? (
+                <ImportDetailPane detail={importDetail} />
+              ) : (
+                <p className="catalog-detail-empty">{t("catalog.selectImport")}</p>
               )}
             </div>
           </div>
@@ -489,6 +791,193 @@ function ConnectorDetailPane({
             ))}
           </ul>
         )}
+      </details>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent / Team / Importer panes
+// ---------------------------------------------------------------------------
+
+const IMPORT_STATUS_KEYS: Record<string, string> = {
+  completed: "catalog.importStatusCompleted",
+  "completed-with-warnings": "catalog.importStatusWarnings",
+  blocked: "catalog.importStatusBlocked",
+  failed: "catalog.importStatusFailed",
+};
+
+function importStatusLabel(t: (key: string, opts?: Record<string, unknown>) => string, status: string): string {
+  const key = IMPORT_STATUS_KEYS[status];
+  return key ? t(key) : t("catalog.stateOther", { status });
+}
+
+function importStatusClass(status: string): string {
+  switch (status) {
+    case "completed":
+      return "is-success";
+    case "completed-with-warnings":
+      return "is-warn";
+    case "blocked":
+    case "failed":
+      return "is-error";
+    default:
+      return "";
+  }
+}
+
+function semanticLabel(t: (key: string, opts?: Record<string, unknown>) => string, status: string): string {
+  const key = `catalog.semantic_${status}`;
+  const label = t(key) as string;
+  return label.startsWith("catalog.") ? status : label;
+}
+
+/** Three-dimensional compatibility report chips (03 §1). */
+function CompatTripleChips({ triple, t }: { triple: CompatibilityTriple; t: (key: string, opts?: Record<string, unknown>) => string }) {
+  if (!triple) return null;
+  return (
+    <div className="compat-triple">
+      <span className="compat-chip">{semanticLabel(t, triple.semantic_status)}</span>
+      <span className={`compat-chip ${triple.runtime_status === "not-verified" ? "is-warn" : ""}`}>
+        {t("catalog.compatRuntime")}: {triple.runtime_status}
+      </span>
+      <span className="compat-chip">{t("catalog.compatDistribution")}: {triple.distribution_status}</span>
+      {triple.reasons.length > 0 && (
+        <details className="compat-reasons">
+          <summary>{t("catalog.compatReasons")}</summary>
+          <ul>
+            {triple.reasons.map((reason, index) => <li key={index}>{reason}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function AgentDetailPane({ detail }: { detail: AgentDetail }) {
+  const { t } = useTranslation();
+  return (
+    <div className="catalog-detail-card">
+      <div className="catalog-detail-head">
+        <h2>{detail.name}</h2>
+        <span className="source-chip">{detail.source}</span>
+        <span className="compat-chip">{detail.compatibility_status}</span>
+      </div>
+      {detail.description && <p className="catalog-detail-desc">{detail.description}</p>}
+      <dl className="catalog-detail-meta">
+        <div><dt>{t("catalog.fieldVersion")}</dt><dd>{detail.version}</dd></div>
+        <div><dt>{t("catalog.fieldModel")}</dt><dd>{detail.model_summary ?? "—"}</dd></div>
+        {detail.effort && <div><dt>{t("catalog.fieldEffort")}</dt><dd>{detail.effort}</dd></div>}
+        {detail.max_turns != null && <div><dt>{t("catalog.fieldMaxTurns")}</dt><dd>{detail.max_turns}</dd></div>}
+        {detail.tool_policy_summary && <div><dt>{t("catalog.fieldToolPolicy")}</dt><dd>{detail.tool_policy_summary}</dd></div>}
+        {(detail.disallowed_tools ?? []).length > 0 && (
+          <div><dt>{t("catalog.fieldDisallowedTools")}</dt><dd>{(detail.disallowed_tools ?? []).join(", ")}</dd></div>
+        )}
+        {(detail.skills ?? []).length > 0 && (
+          <div><dt>{t("catalog.fieldSkills")}</dt><dd>{(detail.skills ?? []).join(", ")}</dd></div>
+        )}
+        {detail.memory && <div><dt>{t("catalog.fieldMemory")}</dt><dd>{detail.memory}</dd></div>}
+        {detail.background && <div><dt>{t("catalog.fieldBackground")}</dt><dd>{detail.background}</dd></div>}
+        {detail.isolation && <div><dt>{t("catalog.fieldIsolation")}</dt><dd>{detail.isolation}</dd></div>}
+      </dl>
+      {detail.permission_mode_ignored && (
+        <p className="catalog-detail-hint">{t("catalog.agentPermissionIgnored")}</p>
+      )}
+    </div>
+  );
+}
+
+function TeamDetailPane({ detail }: { detail: TeamDetail }) {
+  const { t } = useTranslation();
+  return (
+    <div className="catalog-detail-card">
+      <div className="catalog-detail-head">
+        <h2>{detail.name}</h2>
+        <span className="source-chip">{detail.source}</span>
+        <span className="compat-chip">{detail.compatibility_status}</span>
+      </div>
+      {detail.description && <p className="catalog-detail-desc">{detail.description}</p>}
+      <dl className="catalog-detail-meta">
+        <div><dt>{t("catalog.fieldVersion")}</dt><dd>{detail.version}</dd></div>
+        <div><dt>{t("catalog.fieldLead")}</dt><dd>{detail.lead_agent_id}</dd></div>
+        <div><dt>{t("catalog.fieldMembers")}</dt><dd>{detail.member_agent_ids.join(", ")}</dd></div>
+        <div><dt>{t("catalog.fieldPlanner")}</dt><dd>{detail.planner_policy}</dd></div>
+        <div><dt>{t("catalog.fieldWorkflowLimits")}</dt><dd>{JSON.stringify(detail.workflow_limits)}</dd></div>
+        <div><dt>{t("catalog.fieldCapabilities")}</dt><dd>{detail.team_runtime_capabilities.join(", ")}</dd></div>
+      </dl>
+    </div>
+  );
+}
+
+function ImportResultCard({ result, onOpen }: { result: ImportResult; onOpen: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="import-result">
+      <div className="import-result-head">
+        <span className={`import-status ${importStatusClass(result.status)}`}>
+          {importStatusLabel(t, result.status)}
+        </span>
+        <span className="catalog-row-title">{result.name} <small>v{result.version}</small></span>
+        {result.reused && <span className="source-chip">{t("catalog.importReused")}</span>}
+      </div>
+      <dl className="catalog-detail-meta">
+        <div><dt>{t("catalog.importDigest")}</dt><dd className="import-digest">{result.content_digest}</dd></div>
+        <div><dt>{t("catalog.importComponents", { count: result.component_count })}</dt><dd>{result.component_count}</dd></div>
+      </dl>
+      <CompatTripleChips triple={result.component_status} t={t} />
+      {result.warnings.length > 0 && (
+        <details className="compat-reasons"><summary>{t("catalog.importWarnings", { count: result.warnings.length })}</summary>
+          <ul>{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+        </details>
+      )}
+      {result.errors.length > 0 && (
+        <details className="compat-reasons" open><summary>{t("catalog.importErrors", { count: result.errors.length })}</summary>
+          <ul>{result.errors.map((error, index) => <li key={index}>{error}</li>)}</ul>
+        </details>
+      )}
+      <button className="quiet-button" type="button" onClick={onOpen}>{t("catalog.importOpenDetail")}</button>
+    </div>
+  );
+}
+
+function ImportDetailPane({ detail }: { detail: ImportDetail }) {
+  const { t } = useTranslation();
+  return (
+    <div className="catalog-detail-card">
+      <div className="catalog-detail-head">
+        <h2>{detail.name} <small>v{detail.version}</small></h2>
+        <span className={`import-status ${importStatusClass(detail.status)}`}>
+          {importStatusLabel(t, detail.status)}
+        </span>
+      </div>
+      <dl className="catalog-detail-meta">
+        <div><dt>{t("catalog.fieldVersion")}</dt><dd>{detail.version}</dd></div>
+        <div><dt>{t("catalog.importDigest")}</dt><dd className="import-digest">{detail.content_digest}</dd></div>
+        <div><dt>{t("catalog.importComponents", { count: detail.components.length })}</dt><dd>{detail.components.length}</dd></div>
+      </dl>
+      <CompatTripleChips triple={detail.component_status} t={t} />
+      {detail.warnings.length > 0 && (
+        <details className="compat-reasons"><summary>{t("catalog.importWarnings", { count: detail.warnings.length })}</summary>
+          <ul>{detail.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+        </details>
+      )}
+      {detail.errors.length > 0 && (
+        <details className="compat-reasons" open><summary>{t("catalog.importErrors", { count: detail.errors.length })}</summary>
+          <ul>{detail.errors.map((error, index) => <li key={index}>{error}</li>)}</ul>
+        </details>
+      )}
+      <details className="catalog-tools" open>
+        <summary>{t("catalog.importComponents", { count: detail.components.length })}</summary>
+        <ul className="catalog-tool-list">
+          {detail.components.map((component) => (
+            <li key={component.id} className="import-component">
+              <span className="import-component-main">
+                <span className="tool-name">{component.kind}: {component.name}</span>
+                <CompatTripleChips triple={component.compatibility} t={t} />
+              </span>
+            </li>
+          ))}
+        </ul>
       </details>
     </div>
   );

@@ -1,0 +1,27 @@
+[package]
+name = "nomifun-importer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nomifun-common.workspace = true
+nomifun-db.workspace = true
+nomifun-api-types.workspace = true
+async-trait.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+nomifun-db.workspace = true
+nomifun-api-types.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+walkdir.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

@@ -9,9 +9,12 @@
 use async_trait::async_trait;
 
 use nomifun_api_types::{
+    AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityTriple,
     AppServerConnectorDetail, AppServerConnectorProbeResult, AppServerConnectorStatusView,
-    AppServerConnectorSummary, AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary,
+    AppServerConnectorSummary, AppServerImportDetail, AppServerImportRequest,
+    AppServerImportResult, AppServerImportSummary, AppServerOAuthStartResult,
+    AppServerOAuthStatusView, AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail,
+    AppServerTeamSummary,
 };
 use nomifun_common::AppError;
 
@@ -39,6 +42,31 @@ pub trait ConnectorAuthProvider: Send + Sync {
     /// Kick off the browser flow on the trusted host and return immediately.
     async fn auth_start(&self, id: &str) -> Result<AppServerOAuthStartResult, AppError>;
     async fn logout(&self, id: &str) -> Result<(), AppError>;
+}
+
+/// Import pipeline seam (`import/run`, `import/list`, `import/get`). The
+/// source path is resolved and copied on the trusted host; providers return
+/// only public projections (no absolute source paths, no credentials).
+#[async_trait]
+pub trait ImportProvider: Send + Sync {
+    async fn run(&self, request: AppServerImportRequest) -> Result<AppServerImportResult, AppError>;
+    async fn list(&self, limit: u32) -> Result<Vec<AppServerImportSummary>, AppError>;
+    async fn get(&self, snapshot_id: &str) -> Result<AppServerImportDetail, AppError>;
+}
+
+/// Read-side Agent catalog (`agent/list`, `agent/get`, docs/agent-store/05
+/// §4.1): Agent Store AgentDefinitions, never Runtime Agent instances.
+#[async_trait]
+pub trait AgentCatalogProvider: Send + Sync {
+    async fn list(&self) -> Result<Vec<AppServerAgentSummary>, AppError>;
+    async fn get(&self, id: &str) -> Result<AppServerAgentDetail, AppError>;
+}
+
+/// Read-side Team catalog (`team/list`, `team/get`, docs/agent-store/05 §4.2).
+#[async_trait]
+pub trait TeamCatalogProvider: Send + Sync {
+    async fn list(&self) -> Result<Vec<AppServerTeamSummary>, AppError>;
+    async fn get(&self, id: &str) -> Result<AppServerTeamDetail, AppError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +208,132 @@ impl ConnectorAuthProvider for FakeConnectorAuth {
         })?;
         authenticated.retain(|value| value != id);
         Ok(())
+    }
+}
+
+/// In-memory import fake: canned run result + history.
+pub struct FakeImportProvider {
+    pub run_result: AppServerImportResult,
+    pub summaries: Vec<AppServerImportSummary>,
+    pub detail: Option<AppServerImportDetail>,
+}
+
+impl FakeImportProvider {
+    pub fn new() -> Self {
+        Self {
+            run_result: AppServerImportResult {
+                snapshot_id: "snap-demo".into(),
+                name: "demo".into(),
+                version: "1.0.0".into(),
+                source_kind: "codebuddy-plugin".into(),
+                status: "completed".into(),
+                content_digest: "abc".into(),
+                component_status: AppServerCompatibilityTriple {
+                    semantic_status: "compatible_with_adapter".into(),
+                    runtime_status: "not-verified".into(),
+                    distribution_status: "local-only".into(),
+                    reasons: vec![],
+                },
+                component_count: 0,
+                imported_at: 1,
+                reused: false,
+                warnings: vec![],
+                errors: vec![],
+            },
+            summaries: vec![],
+            detail: None,
+        }
+    }
+}
+
+impl Default for FakeImportProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ImportProvider for FakeImportProvider {
+    async fn run(&self, _request: AppServerImportRequest) -> Result<AppServerImportResult, AppError> {
+        Ok(self.run_result.clone())
+    }
+
+    async fn list(&self, _limit: u32) -> Result<Vec<AppServerImportSummary>, AppError> {
+        Ok(self.summaries.clone())
+    }
+
+    async fn get(&self, snapshot_id: &str) -> Result<AppServerImportDetail, AppError> {
+        self.detail
+            .clone()
+            .ok_or_else(|| AppError::NotFound(format!("snapshot {snapshot_id} not found")))
+    }
+}
+
+/// In-memory Agent catalog fake (05 §4.1 shapes).
+pub struct FakeAgentCatalog {
+    pub agents: Vec<AppServerAgentSummary>,
+}
+
+#[async_trait]
+impl AgentCatalogProvider for FakeAgentCatalog {
+    async fn list(&self) -> Result<Vec<AppServerAgentSummary>, AppError> {
+        Ok(self.agents.clone())
+    }
+
+    async fn get(&self, id: &str) -> Result<AppServerAgentDetail, AppError> {
+        let summary = self
+            .agents
+            .iter()
+            .find(|agent| agent.id == id || agent.name == id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("agent {id} not found")))?;
+        Ok(AppServerAgentDetail {
+            summary,
+            effort: None,
+            max_turns: None,
+            disallowed_tools: vec![],
+            memory: None,
+            background: None,
+            isolation: None,
+            permission_mode_ignored: false,
+        })
+    }
+}
+
+/// In-memory Team catalog fake (05 §4.2 shapes).
+pub struct FakeTeamCatalog {
+    pub teams: Vec<AppServerTeamSummary>,
+}
+
+#[async_trait]
+impl TeamCatalogProvider for FakeTeamCatalog {
+    async fn list(&self) -> Result<Vec<AppServerTeamSummary>, AppError> {
+        Ok(self.teams.clone())
+    }
+
+    async fn get(&self, id: &str) -> Result<AppServerTeamDetail, AppError> {
+        let summary = self
+            .teams
+            .iter()
+            .find(|team| team.id == id || team.name == id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("team {id} not found")))?;
+        Ok(AppServerTeamDetail {
+            summary,
+            planner_policy: "planned".into(),
+            routing_constraints: vec![],
+            workflow_limits: serde_json::json!({ "max_parallel": 4 }),
+            team_runtime_capabilities: vec![
+                "fixed_members".into(),
+                "planning_context".into(),
+                "planned_dag".into(),
+                "local_parallel".into(),
+                "retry".into(),
+                "replan".into(),
+                "events".into(),
+                "artifacts".into(),
+            ],
+        })
     }
 }
 

@@ -176,6 +176,10 @@ path = "tests/suites/content.rs"
 name = "vimax_cameo_e2e"
 path = "tests/vimax_cameo_e2e.rs"
 
+[[test]]
+name = "importer_e2e"
+path = "tests/importer_e2e.rs"
+
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot"]
 telegram = ["nomifun-channel/telegram"]
@@ -252,6 +256,7 @@ nomifun-canvas.workspace = true
 nomifun-cloud.workspace = true
 nomifun-agent-execution.workspace = true
 nomifun-app-server.workspace = true
+nomifun-importer.workspace = true
 nomifun-companion.workspace = true
 nomifun-robot.workspace = true
 nomifun-customer-service.workspace = true

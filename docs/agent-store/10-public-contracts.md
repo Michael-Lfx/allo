@@ -155,8 +155,11 @@ unauthenticated | invalid_issuer | invalid_audience | insufficient_scope
 policy_denied | protocol_version_unsupported | idempotency_conflict
 approval_expired | approval_already_resolved | unsupported_operation
 recovery_required | credential_unavailable | reauthorization_required
+import_source_not_found | import_blocked | import_failed
 internal_error
 ```
+
+`import_source_not_found`：`import/run` 的本地来源目录不存在或不可读（HTTP 404，对应 `NotFound`）；`import_blocked` / `import_failed`：快照因路径安全、清单身份缺失或 digest 冲突而阻断，或导入器内部失败。阻断原因以结构化 `ImportResult.errors` 返回，错误文本只含清单相对值与原因码，**不得包含绝对来源路径或凭据**（02 §9）。
 
 错误响应不得包含真实凭据、内部路径、内部 ID 或未脱敏的上游响应。
 
