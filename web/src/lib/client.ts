@@ -41,6 +41,18 @@ export interface AppServerClientOptions {
 
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
+/** Derive the HTTP helper base URL from the WebSocket URL. */
+function deriveHttpBaseUrl(wsUrl: string): string | undefined {
+  try {
+    const url = new URL(wsUrl);
+    const protocol = url.protocol === "wss:" ? "https:" : "http:";
+    const path = url.pathname.replace(/\/ws\/?$/, "") || "";
+    return `${protocol}//${url.host}${path}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export class AppServerClient {
   readonly transport: WebSocketTransport;
   /** Legacy preset/execution workflow client. */
@@ -68,7 +80,10 @@ export class AppServerClient {
   constructor(options: AppServerClientOptions) {
     this.clientInfo = options.client;
     this.capabilities = options.capabilities;
-    this.httpBaseUrl = options.httpBaseUrl;
+    // HTTP helpers (workspaces, imports) share the App Server base URL with
+    // the WebSocket. When the caller only configured `wsUrl`, derive the HTTP
+    // base (`ws://host/api/app-server/ws` → `http://host/api/app-server`).
+    this.httpBaseUrl = options.httpBaseUrl ?? deriveHttpBaseUrl(options.wsUrl);
     this.token = options.token;
     this.transport = new WebSocketTransport(options.wsUrl, {
       requestTimeoutMs: options.requestTimeoutMs,

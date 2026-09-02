@@ -5,6 +5,7 @@ import type {
   ConversationCreateInput,
   ConversationEvent,
   ConversationMessage,
+  ConversationMessagesPage,
   ConversationMessagesQuery,
   ConversationModelOptions,
   ConversationSendReceipt,
@@ -53,8 +54,8 @@ export class ConversationClient {
     return this.transport.request<ConversationView>("conversation/get", { conversation_id: conversationId });
   }
 
-  messages(query: ConversationMessagesQuery): Promise<ConversationMessage[]> {
-    return this.transport.request<ConversationMessage[]>("conversation/messages", {
+  messages(query: ConversationMessagesQuery): Promise<ConversationMessagesPage> {
+    return this.transport.request<ConversationMessagesPage>("conversation/messages", {
       conversation_id: query.conversationId,
       page: query.page,
       page_size: query.pageSize,
