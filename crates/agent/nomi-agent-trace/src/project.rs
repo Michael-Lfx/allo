@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::{
-    ids_from_payload, ExecutionStatus, Integrity, ObservationEvent, ObservationScope,
+    ids_from_payload, ExecutionStatus, Integrity, ObservationEvent, ObservationIds,
+    ObservationScope,
     EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE, EVENT_OBSERVATION_GAP, EVENT_TOOL_EXECUTION_CANCELLED,
     EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
     EVENT_TURN_END, EVENT_TURN_START,
@@ -320,15 +321,12 @@ pub fn strip_projected_turn_payloads(turn: &mut ProjectedTurn) {
 }
 
 fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
-    let first_ids = events
-        .first()
-        .map(|event| ids_from_payload(&event.payload))
-        .unwrap_or_default();
-    let root_turn_id = first_ids
+    let turn_ids = project_turn_ids(events);
+    let root_turn_id = turn_ids
         .root_turn_id
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| first_ids.boundary_id());
+        .unwrap_or_else(|| turn_ids.boundary_id());
 
     let mut calls: Vec<ProjectedModelCall> = Vec::new();
     let mut gaps = Vec::new();
@@ -508,12 +506,12 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
 
     ProjectedTurn {
         root_turn_id,
-        conversation_id: first_ids.conversation_id,
-        msg_id: first_ids.msg_id,
-        session_kind: first_ids.session_kind,
-        execution_id: first_ids.execution_id,
-        step_id: first_ids.step_id,
-        execution_attempt_id: first_ids.execution_attempt_id,
+        conversation_id: turn_ids.conversation_id,
+        msg_id: turn_ids.msg_id,
+        session_kind: turn_ids.session_kind,
+        execution_id: turn_ids.execution_id,
+        step_id: turn_ids.step_id,
+        execution_attempt_id: turn_ids.execution_attempt_id,
         status,
         integrity,
         interrupted,
@@ -529,6 +527,44 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
         timeline,
         model_calls: calls,
         gaps,
+    }
+}
+
+/// Event envelopes are allowed to carry only the IDs relevant to that event.
+/// Merge the first non-empty value for each field so boundary/gap events cannot
+/// erase identity that is present on a later request or response event.
+fn project_turn_ids(events: &[&ObservationEvent]) -> ObservationIds {
+    let mut ids = ObservationIds::default();
+    for event in events {
+        let candidate = ids_from_payload(&event.payload);
+        fill_first_nonempty(&mut ids.conversation_id, candidate.conversation_id);
+        fill_first_nonempty(&mut ids.msg_id, candidate.msg_id);
+        fill_first_nonempty(&mut ids.root_turn_id, candidate.root_turn_id);
+        fill_first_nonempty(&mut ids.session_kind, candidate.session_kind);
+        fill_first_nonempty(&mut ids.execution_id, candidate.execution_id);
+        fill_first_nonempty(&mut ids.step_id, candidate.step_id);
+        fill_first_nonempty(
+            &mut ids.execution_attempt_id,
+            candidate.execution_attempt_id,
+        );
+    }
+    ids
+}
+
+fn fill_first_nonempty(target: &mut Option<String>, candidate: Option<String>) {
+    if target
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return;
+    }
+    if candidate
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        *target = candidate;
     }
 }
 
@@ -1481,6 +1517,47 @@ mod tests {
         assert!(!turns[0].interrupted);
         assert!(turns[0].model_calls[0].request.is_some());
         assert!(turns[0].model_calls[0].response.is_some());
+    }
+
+    #[test]
+    fn merges_turn_identity_from_all_events() {
+        let events = vec![
+            event(
+                EVENT_TURN_START,
+                1,
+                ObservationIds {
+                    conversation_id: Some("conversation-1".into()),
+                    root_turn_id: Some("turn-1".into()),
+                    ..ObservationIds::default()
+                },
+                serde_json::json!({ "status": "running" }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                ObservationIds {
+                    conversation_id: Some("conversation-1".into()),
+                    root_turn_id: Some("turn-1".into()),
+                    msg_id: Some("message-1".into()),
+                    session_kind: Some("agent".into()),
+                    execution_id: Some("execution-1".into()),
+                    step_id: Some("step-1".into()),
+                    execution_attempt_id: Some("attempt-1".into()),
+                    model_call_id: Some("call-1".into()),
+                    ..ObservationIds::default()
+                },
+                serde_json::json!({ "call_kind": "agent_turn" }),
+            ),
+        ];
+
+        let turn = &project_turns(&events)[0];
+        assert_eq!(turn.conversation_id.as_deref(), Some("conversation-1"));
+        assert_eq!(turn.root_turn_id, "turn-1");
+        assert_eq!(turn.msg_id.as_deref(), Some("message-1"));
+        assert_eq!(turn.session_kind.as_deref(), Some("agent"));
+        assert_eq!(turn.execution_id.as_deref(), Some("execution-1"));
+        assert_eq!(turn.step_id.as_deref(), Some("step-1"));
+        assert_eq!(turn.execution_attempt_id.as_deref(), Some("attempt-1"));
     }
 
     #[test]
