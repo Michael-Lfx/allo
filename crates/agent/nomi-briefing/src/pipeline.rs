@@ -15,7 +15,7 @@ use crate::voice::{
     align_chunks, align_from_asr, align_from_durations, apply_timing_to_beats, chunk_beats,
     load_asr_words, persist_tts_chunks, AsrWord, TtsChunk, VoiceSynth,
 };
-use crate::compose::{compose_working_dir, write_beats_file};
+use crate::compose::{compose_working_dir_with_progress, write_beats_file};
 
 pub struct PipelineOutcome {
     pub status: RunStatus,
@@ -154,7 +154,10 @@ pub fn run_pipeline(
     snapshot.emit("compose", "compose original news cards");
     persist(index, &mut record, &snapshot)?;
 
-    let composed = compose_working_dir(&working, &script)?;
+    let composed = compose_working_dir_with_progress(&working, &script, |message, meta| {
+        snapshot.emit_meta("compose", message, meta);
+        let _ = persist(index, &mut record, &snapshot);
+    })?;
     if let Some(video) = composed.video_path.clone() {
         record.final_video = Some(video.clone());
         snapshot.final_video = Some(video);

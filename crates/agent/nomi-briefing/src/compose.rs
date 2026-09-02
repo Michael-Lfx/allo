@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::cards::CARD_CATALOG;
 use crate::error::BriefingResult;
@@ -42,6 +44,14 @@ pub fn write_beats_file(working_dir: &Path, script: &BeatScript, timing: &Timing
 }
 
 pub fn compose_working_dir(working_dir: &Path, script: &BeatScript) -> BriefingResult<ComposeResult> {
+    compose_working_dir_with_progress(working_dir, script, |_, _| {})
+}
+
+pub fn compose_working_dir_with_progress(
+    working_dir: &Path,
+    script: &BeatScript,
+    mut on_progress: impl FnMut(&str, Option<Value>),
+) -> BriefingResult<ComposeResult> {
     let card_report = card_lint(&script.beats);
     let motion_report = motion_check(&script.beats);
     let qa = merge_reports(&[card_report, motion_report]);
@@ -62,13 +72,22 @@ pub fn compose_working_dir(working_dir: &Path, script: &BeatScript) -> BriefingR
         serde_json::to_vec_pretty(&plan)?,
     )?;
 
-    if let Some(video) = spawn_compositor(working_dir) {
+    if let Some(video) = spawn_compositor(working_dir, &mut on_progress) {
         return Ok(ComposeResult {
             video_path: Some(video),
             mode: "compositor".into(),
             qa,
         });
     }
+    on_progress(
+        "encode fallback stills",
+        Some(serde_json::json!({
+            "phase": "clip",
+            "step": 0,
+            "total": script.beats.len(),
+            "message": "encode fallback stills",
+        })),
+    );
     if let Some(video) = ffmpeg_stills(working_dir, script) {
         return Ok(ComposeResult {
             video_path: Some(video),
@@ -83,19 +102,66 @@ pub fn compose_working_dir(working_dir: &Path, script: &BeatScript) -> BriefingR
     })
 }
 
-fn spawn_compositor(working_dir: &Path) -> Option<String> {
+fn spawn_compositor(
+    working_dir: &Path,
+    on_progress: &mut impl FnMut(&str, Option<Value>),
+) -> Option<String> {
     let cli = locate_compositor()?;
-    let status = silent_command("node")
+    let mut child = silent_command("node")
         .arg(&cli)
         .arg("--input")
         .arg(working_dir)
-        .status()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    if !status.success() {
-        return None;
+    let progress_path = working_dir.join("compose-progress.json");
+    let mut last_raw = String::new();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                pump_compose_progress(&progress_path, &mut last_raw, on_progress);
+                if !status.success() {
+                    return None;
+                }
+                break;
+            }
+            Ok(None) => {
+                pump_compose_progress(&progress_path, &mut last_raw, on_progress);
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                return None;
+            }
+        }
     }
     let mp4 = working_dir.join("briefing.mp4");
     mp4.exists().then(|| mp4.to_string_lossy().into_owned())
+}
+
+fn pump_compose_progress(
+    path: &Path,
+    last_raw: &mut String,
+    on_progress: &mut impl FnMut(&str, Option<Value>),
+) {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if raw == *last_raw {
+        return;
+    }
+    *last_raw = raw.clone();
+    let Ok(value) = serde_json::from_str::<Value>(raw.trim()) else {
+        return;
+    };
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("compose original news cards")
+        .to_string();
+    on_progress(&message, Some(value));
 }
 
 fn silent_command(program: &str) -> Command {
@@ -143,6 +209,12 @@ fn ffmpeg_stills(working_dir: &Path, script: &BeatScript) -> Option<String> {
             &color,
             "-pix_fmt",
             "yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "stillimage",
             "-movflags",
             "+faststart",
             video_only.to_str()?,
@@ -256,5 +328,8 @@ mod tests {
         let source = std::fs::read_to_string(cli).unwrap();
         assert!(!source.contains("video-talkcraft"));
         assert!(!source.contains("@remotion"));
+        assert!(!source.contains("zoompan"));
+        assert!(source.contains("compose-progress.json"));
+        assert!(source.contains("ultrafast"));
     }
 }
