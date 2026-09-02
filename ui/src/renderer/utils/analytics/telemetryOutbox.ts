@@ -28,6 +28,7 @@ const ALLOWED_PROPERTIES = new Set([
   'duration_ms',
   'duration_secs',
   'error_code',
+  'error_message',
   'failure_channel',
   'feature',
   'has_references',

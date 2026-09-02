@@ -16,6 +16,7 @@ const ALLOWED_PROPERTIES = new Set([
   'conversation_type',
   'duration_secs',
   'error_code',
+  'error_message',
   'failure_channel',
   'feature',
   'finalization_gap_ms',
