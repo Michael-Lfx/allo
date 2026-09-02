@@ -1045,6 +1045,7 @@
     "previewMissing": "Not recorded",
     "loadCall": "Load call detail",
     "retentionRemoved": "This call detail was removed by the observation retention policy",
+    "callDetailUnavailable": "No observation detail is available for this stage",
     "omittedField": "Omitted",
     "omittedReason": "reason",
     "originalBytes": "original bytes",

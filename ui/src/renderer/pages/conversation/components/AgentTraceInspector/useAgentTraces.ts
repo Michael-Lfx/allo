@@ -9,6 +9,7 @@ import {
   buildBackendAuthHeaders,
   getBaseUrl,
   httpRequest,
+  notifyHttpAuthFailure,
 } from '@/common/adapter/httpBridge';
 import { ipcBridge } from '@/common';
 import { isDesktopShell } from '@renderer/utils/platform';
@@ -419,6 +420,7 @@ export async function downloadSessionObservation(
     } catch {
       // Keep plain-text backend errors readable.
     }
+    notifyHttpAuthFailure(response.status, body);
     throw new BackendHttpError({ method: 'GET', path, status: response.status, body });
   }
   const exportData = await response.text();

@@ -712,7 +712,13 @@ const CallInspector: React.FC<{
         );
     } else {
       const tool = matchingDetail.tools.find((item) => item.tool_call_id === toolCallId);
-      inner = tool ? <ToolInspector tool={tool} /> : null;
+      inner = tool ? (
+        <ToolInspector tool={tool} />
+      ) : (
+        <div className='session-logs-inspector__empty text-12px text-[var(--color-text-2)]'>
+          {t('conversation.agentTrace.callDetailUnavailable')}
+        </div>
+      );
     }
   } else if (errorKey) {
     inner = (
@@ -721,7 +727,11 @@ const CallInspector: React.FC<{
       </div>
     );
   } else {
-    inner = null;
+    inner = (
+      <div className='session-logs-inspector__empty text-12px text-[var(--color-text-2)]'>
+        {t('conversation.agentTrace.callDetailUnavailable')}
+      </div>
+    );
   }
 
   if (!inner) return null;

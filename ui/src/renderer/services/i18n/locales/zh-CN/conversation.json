@@ -1045,6 +1045,7 @@
     "previewMissing": "观测未记录",
     "loadCall": "查看调用详情",
     "retentionRemoved": "此调用详情已被观测保留策略清理",
+    "callDetailUnavailable": "此阶段暂时没有可用的观测详情",
     "omittedField": "已省略",
     "omittedReason": "原因",
     "originalBytes": "原始字节",

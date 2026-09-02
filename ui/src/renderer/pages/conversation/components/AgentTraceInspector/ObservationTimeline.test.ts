@@ -10,6 +10,7 @@ import {
   findTimelineEventSeq,
   timelineRowIconKind,
   timelineRowRelativeTime,
+  timelineScrollAxis,
   timelineWaitDurations,
 } from './ObservationTimeline';
 import type {
@@ -245,5 +246,32 @@ describe('ObservationTimeline projection', () => {
     for (const row of rows) {
       expect(timelineRowRelativeTime(row)).toMatch(/^\+/);
     }
+  });
+
+  test('uses horizontal scrolling only for the compact responsive rail', () => {
+    expect(
+      timelineScrollAxis({
+        clientHeight: 88,
+        clientWidth: 320,
+        scrollHeight: 88,
+        scrollWidth: 640,
+      }),
+    ).toBe('horizontal');
+    expect(
+      timelineScrollAxis({
+        clientHeight: 320,
+        clientWidth: 320,
+        scrollHeight: 640,
+        scrollWidth: 320,
+      }),
+    ).toBe('vertical');
+    expect(
+      timelineScrollAxis({
+        clientHeight: 320,
+        clientWidth: 320,
+        scrollHeight: 640,
+        scrollWidth: 640,
+      }),
+    ).toBe('vertical');
   });
 });

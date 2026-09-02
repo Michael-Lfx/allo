@@ -233,6 +233,7 @@ describe('AgentTraceInspector', () => {
     expect(workflow.includes('useVirtualizer')).toBe(true);
     expect(workflow.includes('omittedField')).toBe(true);
     expect(workflow.includes('retentionRemoved')).toBe(true);
+    expect(workflow.includes('callDetailUnavailable')).toBe(true);
     expect(workflow.includes('inspectSystem')).toBe(true);
     expect(workflow.includes('inspectSystemHint')).toBe(true);
     expect(workflow.includes('inspectToolDefsHint')).toBe(true);

@@ -1330,6 +1330,7 @@ export type I18nKey =
   | 'conversation.agentTrace.integrityHint'
   | 'conversation.agentTrace.interrupted'
   | 'conversation.agentTrace.loadCall'
+  | 'conversation.agentTrace.callDetailUnavailable'
   | 'conversation.agentTrace.loadFailed'
   | 'conversation.agentTrace.maximizeInspector'
   | 'conversation.agentTrace.metricDuration'

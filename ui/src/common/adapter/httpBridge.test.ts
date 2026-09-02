@@ -16,6 +16,7 @@ import {
   isBackendHttpError,
   isHandledAuthExpiredHttpError,
   isInvalidCloudSessionError,
+  notifyHttpAuthFailure,
   redactSensitiveText,
   wsEmitter,
   wsMappedEmitter,
@@ -408,6 +409,27 @@ describe('httpRequest client deadline + network-failure diagnosis', () => {
     });
     expect(isAuthExpiredHttpError(caught)).toBe(false);
     expect(isInvalidCloudSessionError(caught)).toBe(false);
+  });
+
+  test('raw download requests can reuse auth-expired notification handling', () => {
+    const emitted: string[] = [];
+    installBrowserGlobals({
+      dispatchEvent: ((event: Event) => {
+        emitted.push(event.type);
+        return true;
+      }) as Window['dispatchEvent'],
+    });
+
+    try {
+      notifyHttpAuthFailure(401, {
+        success: false,
+        error: 'Unauthorized: Invalid or expired token',
+        code: 'UNAUTHORIZED',
+      });
+      expect(emitted).toContain(CLOUD_AUTH_EXPIRED_EVENT);
+    } finally {
+      restoreBrowserGlobals();
+    }
   });
 
   test('webui 400 expired cloud token does not redirect to local login', async () => {

@@ -259,6 +259,17 @@ export function timelineWaitDurations(rows: TimelineRow[]): number[] {
     .filter((duration) => duration >= TIMELINE_WAITING_THRESHOLD_MS);
 }
 
+export type TimelineScrollMetrics = Pick<
+  HTMLElement,
+  'clientHeight' | 'clientWidth' | 'scrollHeight' | 'scrollWidth'
+>;
+
+export function timelineScrollAxis(metrics: TimelineScrollMetrics): 'horizontal' | 'vertical' {
+  const hasHorizontalOverflow = metrics.scrollWidth - metrics.clientWidth > 1;
+  const hasVerticalOverflow = metrics.scrollHeight - metrics.clientHeight > 1;
+  return hasHorizontalOverflow && !hasVerticalOverflow ? 'horizontal' : 'vertical';
+}
+
 export function timelineRowTitle(t: Translator, row: TimelineRow): string {
   if (row.eventType === 'turn/start') return t('conversation.agentTrace.timelineTurnStart');
   if (row.eventType === 'turn/end') return t('conversation.agentTrace.timelineTurnEnd');
@@ -400,7 +411,9 @@ export const ObservationTimelinePanel: React.FC<ObservationTimelinePanelProps> =
     const element = scrollRef.current;
     if (!element) return;
     atBottomRef.current =
-      element.scrollHeight - element.clientHeight - element.scrollTop <= 12;
+      timelineScrollAxis(element) === 'horizontal'
+        ? element.scrollWidth - element.clientWidth - element.scrollLeft <= 12
+        : element.scrollHeight - element.clientHeight - element.scrollTop <= 12;
     if (atBottomRef.current) setHasNewEvents(false);
   }, []);
 
@@ -421,7 +434,11 @@ export const ObservationTimelinePanel: React.FC<ObservationTimelinePanelProps> =
     const element = scrollRef.current;
     if (atBottomRef.current && element) {
       const frame = window.requestAnimationFrame(() => {
-        element.scrollTop = element.scrollHeight;
+        if (timelineScrollAxis(element) === 'horizontal') {
+          element.scrollLeft = element.scrollWidth;
+        } else {
+          element.scrollTop = element.scrollHeight;
+        }
       });
       return () => window.cancelAnimationFrame(frame);
     }
@@ -438,7 +455,13 @@ export const ObservationTimelinePanel: React.FC<ObservationTimelinePanelProps> =
 
   const showLatest = () => {
     const element = scrollRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
+    if (element) {
+      if (timelineScrollAxis(element) === 'horizontal') {
+        element.scrollLeft = element.scrollWidth;
+      } else {
+        element.scrollTop = element.scrollHeight;
+      }
+    }
     atBottomRef.current = true;
     setHasNewEvents(false);
   };
