@@ -16,7 +16,10 @@ use std::time::Duration;
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+// Keep in sync with the runtime transport's CLIENT_PROTOCOL_VERSION
+// (nomi-mcp remote_peer.rs). Real-world gateways (e.g. QQ Mail MCP) reject
+// older protocol years with a server-side error.
+const PROTOCOL_VERSION: &str = "2025-11-25";
 const CLIENT_NAME: &str = "nomifun-mcp-test";
 const CLIENT_VERSION: &str = "1.0.0";
 
@@ -529,6 +532,37 @@ pub(super) fn auth_result(headers: &reqwest::header::HeaderMap) -> McpConnection
         auth_method,
         www_authenticate,
     }
+}
+
+pub(super) fn auth_result_from_www_authenticate(value: Option<String>) -> McpConnectionTestResult {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(value) = value
+        && let Ok(value) = reqwest::header::HeaderValue::from_str(&value)
+    {
+        headers.insert(reqwest::header::WWW_AUTHENTICATE, value);
+    }
+    auth_result(&headers)
+}
+
+pub(super) fn reauthorization_result() -> McpConnectionTestResult {
+    McpConnectionTestResult {
+        success: false,
+        tools: None,
+        error: Some("OAuth reauthorization required".into()),
+        code: Some(McpConnectionTestErrorCode::ReauthorizationRequired),
+        details: None,
+        needs_auth: Some(true),
+        auth_method: Some(McpAuthMethod::Oauth),
+        www_authenticate: None,
+    }
+}
+
+pub(super) fn oauth_error_result(error: String) -> McpConnectionTestResult {
+    error_result(
+        McpConnectionTestErrorCode::ConnectionFailed,
+        format!("OAuth request failed: {error}"),
+        Some(serde_json::json!({ "transport": "oauth" })),
+    )
 }
 
 fn detect_auth_method(www_authenticate: &str) -> McpAuthMethod {

@@ -1,4 +1,8 @@
 mod acp_session;
+mod app_server_context_usage;
+mod app_server_idempotency;
+mod app_server_run_mapping;
+mod app_server_workspace;
 mod agent_metadata;
 mod agent_execution;
 mod agent_execution_template;
@@ -36,6 +40,16 @@ mod webhook;
 mod workshop;
 
 pub use acp_session::AcpSessionRow;
+pub use app_server_context_usage::AppServerContextUsageRow;
+pub use app_server_idempotency::{
+    AppServerIdempotencyReceiptRow, AppServerIdempotencyScope,
+    NewAppServerIdempotencyReceipt,
+};
+pub use app_server_run_mapping::AppServerRunMappingRow;
+pub use app_server_workspace::{
+    AppServerWorkspaceRow, APP_SERVER_WORKSPACE_STATUS_ACTIVE,
+    APP_SERVER_WORKSPACE_STATUS_REVOKED,
+};
 pub use agent_metadata::{AgentMetadataRow, UpdateAgentHandshakeParams, UpsertAgentMetadataParams};
 pub use agent_execution::*;
 pub use agent_execution_template::*;

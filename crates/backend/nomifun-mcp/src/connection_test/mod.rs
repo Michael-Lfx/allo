@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::types::McpServerTransport;
+use crate::oauth_service::McpOAuthService;
+use crate::error::McpError;
 use protocol::{
     JsonRpcRequest, JsonRpcResponse, SseEvent, build_http_headers, build_initialize_request,
     build_initialized_notification, build_tools_list_request, error_result, read_sse_events, rpc_error_result,
@@ -39,6 +41,7 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct McpConnectionTestService {
     http_client: HttpClientFactory,
     timeout: Duration,
+    oauth_service: Option<McpOAuthService>,
 }
 
 type HttpClientFactory = Arc<dyn Fn() -> reqwest::Client + Send + Sync>;
@@ -48,6 +51,7 @@ impl McpConnectionTestService {
         Self {
             http_client: Arc::new(move || http_client.clone()),
             timeout: CONNECTION_TIMEOUT,
+            oauth_service: None,
         }
     }
 
@@ -55,6 +59,7 @@ impl McpConnectionTestService {
         Self {
             http_client: Arc::new(nomifun_net::http_client),
             timeout: CONNECTION_TIMEOUT,
+            oauth_service: None,
         }
     }
 
@@ -65,6 +70,15 @@ impl McpConnectionTestService {
     /// Override the connection test timeout (default: 30s).
     pub fn with_timeout(self, timeout: Duration) -> Self {
         Self { timeout, ..self }
+    }
+
+    /// Use stored OAuth credentials for HTTP and SSE probes when the transport
+    /// does not already provide an explicit Authorization header.
+    pub fn with_oauth_service(self, oauth_service: McpOAuthService) -> Self {
+        Self {
+            oauth_service: Some(oauth_service),
+            ..self
+        }
     }
 
     /// Test connectivity to an MCP server.
@@ -133,7 +147,10 @@ impl McpConnectionTestService {
 
     async fn test_http_inner(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
         let client = self.http_client();
-        let mut req_headers = build_http_headers(headers);
+        let (mut req_headers, oauth_managed) = match self.request_headers(url, headers).await {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
         req_headers.insert(
             reqwest::header::CONTENT_TYPE,
             "application/json".parse().expect("valid header"),
@@ -145,7 +162,13 @@ impl McpConnectionTestService {
 
         // 1. initialize
         let init_resp = match self
-            .http_post_mcp(&client, url, &req_headers, &build_initialize_request(1))
+            .http_post_mcp_with_auth(
+                &client,
+                url,
+                &mut req_headers,
+                oauth_managed,
+                &build_initialize_request(1),
+            )
             .await
         {
             Ok(r) => r,
@@ -172,7 +195,13 @@ impl McpConnectionTestService {
 
         // 3. tools/list
         let tools_resp = match self
-            .http_post_mcp(&client, url, &req_headers, &build_tools_list_request(2))
+            .http_post_mcp_with_auth(
+                &client,
+                url,
+                &mut req_headers,
+                oauth_managed,
+                &build_tools_list_request(2),
+            )
             .await
         {
             Ok(r) => r,
@@ -237,6 +266,76 @@ impl McpConnectionTestService {
         Ok(HttpMcpResponse { rpc, session_id })
     }
 
+    async fn request_headers(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+    ) -> Result<(reqwest::header::HeaderMap, bool), McpConnectionTestResult> {
+        let mut request_headers = build_http_headers(headers);
+        if request_headers.contains_key(reqwest::header::AUTHORIZATION) {
+            return Ok((request_headers, false));
+        }
+        let Some(oauth_service) = self.oauth_service.as_ref() else {
+            return Ok((request_headers, false));
+        };
+        let token = match oauth_service.get_token(url).await {
+            Ok(token) => token,
+            Err(McpError::ReauthorizationRequired) => {
+                return Err(protocol::reauthorization_result());
+            }
+            Err(error) => {
+                return Err(protocol::oauth_error_result(error.to_string()));
+            }
+        };
+        let Some(token) = token else {
+            return Ok((request_headers, false));
+        };
+        request_headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                .expect("OAuth access token must be a valid header value"),
+        );
+        Ok((request_headers, true))
+    }
+
+    async fn http_post_mcp_with_auth(
+        &self,
+        client: &reqwest::Client,
+        url: &str,
+        headers: &mut reqwest::header::HeaderMap,
+        oauth_managed: bool,
+        body: &JsonRpcRequest,
+    ) -> Result<HttpMcpResponse, McpConnectionTestResult> {
+        let mut refreshed = false;
+        loop {
+            match self.http_post_mcp(client, url, headers, body).await {
+                Err(result)
+                    if result.needs_auth == Some(true) && oauth_managed && !refreshed =>
+                {
+                    let Some(oauth_service) = self.oauth_service.as_ref() else {
+                        return Err(result);
+                    };
+                    let token = match oauth_service.refresh_access_token(url).await {
+                        Ok(token) => token,
+                        Err(McpError::ReauthorizationRequired) => {
+                            return Err(protocol::reauthorization_result());
+                        }
+                        Err(error) => {
+                            return Err(protocol::oauth_error_result(error.to_string()));
+                        }
+                    };
+                    headers.insert(
+                        reqwest::header::AUTHORIZATION,
+                        reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                            .expect("OAuth access token must be a valid header value"),
+                    );
+                    refreshed = true;
+                }
+                result => return result,
+            }
+        }
+    }
+
     // -- SSE transport ----------------------------------------------------
 
     async fn test_sse(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
@@ -248,24 +347,50 @@ impl McpConnectionTestService {
 
     async fn test_sse_inner(&self, url: &str, headers: &HashMap<String, String>) -> McpConnectionTestResult {
         let client = self.http_client();
-        let mut req_headers = build_http_headers(headers);
+        let (mut req_headers, oauth_managed) = match self.request_headers(url, headers).await {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
 
         // 1. Open SSE connection
-        let resp = match client
-            .get(url)
-            .headers(req_headers.clone())
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return error_result(
-                    McpConnectionTestErrorCode::ConnectionFailed,
-                    format!("Connection failed: {e}"),
-                    Some(serde_json::json!({ "transport": "sse" })),
+        let mut refreshed = false;
+        let resp = loop {
+            let response = match client
+                .get(url)
+                .headers(req_headers.clone())
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    return error_result(
+                        McpConnectionTestErrorCode::ConnectionFailed,
+                        format!("Connection failed: {error}"),
+                        Some(serde_json::json!({ "transport": "sse" })),
+                    );
+                }
+            };
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED && oauth_managed && !refreshed {
+                let Some(oauth_service) = self.oauth_service.as_ref() else {
+                    break response;
+                };
+                let token = match oauth_service.refresh_access_token(url).await {
+                    Ok(token) => token,
+                    Err(McpError::ReauthorizationRequired) => {
+                        return protocol::reauthorization_result();
+                    }
+                    Err(error) => return protocol::oauth_error_result(error.to_string()),
+                };
+                req_headers.insert(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                        .expect("OAuth access token must be a valid header value"),
                 );
+                refreshed = true;
+                continue;
             }
+            break response;
         };
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return protocol::auth_result(resp.headers());
@@ -287,7 +412,9 @@ impl McpConnectionTestService {
             "application/json".parse().expect("valid header"),
         );
 
-        let result = self.run_sse_protocol(&client, url, &req_headers, &mut event_rx).await;
+        let result = self
+            .run_sse_protocol(&client, url, &mut req_headers, oauth_managed, &mut event_rx)
+            .await;
         reader_handle.abort();
         result
     }
@@ -296,7 +423,8 @@ impl McpConnectionTestService {
         &self,
         client: &reqwest::Client,
         base_url: &str,
-        headers: &reqwest::header::HeaderMap,
+        headers: &mut reqwest::header::HeaderMap,
+        oauth_managed: bool,
         event_rx: &mut mpsc::Receiver<SseEvent>,
     ) -> McpConnectionTestResult {
         // 3. Wait for endpoint event
@@ -312,12 +440,19 @@ impl McpConnectionTestService {
         };
 
         // 4. initialize
-        if let Err(e) = self.sse_post(client, &endpoint, headers, &build_initialize_request(1)).await {
-            return error_result(
-                McpConnectionTestErrorCode::ProtocolError,
-                format!("Failed to send initialize: {e}"),
-                Some(serde_json::json!({ "transport": "sse", "stage": "initialize_send" })),
-            );
+        if let Err(result) = self
+            .sse_post_with_auth(
+                client,
+                base_url,
+                &endpoint,
+                headers,
+                oauth_managed,
+                &build_initialize_request(1),
+                "initialize_send",
+            )
+            .await
+        {
+            return result;
         }
         let init_resp = match wait_for_jsonrpc_response(event_rx).await {
             Ok(r) => r,
@@ -335,16 +470,31 @@ impl McpConnectionTestService {
 
         // 5. initialized notification
         let _ = self
-            .sse_post(client, &endpoint, headers, &build_initialized_notification())
+            .sse_post_with_auth(
+                client,
+                base_url,
+                &endpoint,
+                headers,
+                oauth_managed,
+                &build_initialized_notification(),
+                "initialized_send",
+            )
             .await;
 
         // 6. tools/list
-        if let Err(e) = self.sse_post(client, &endpoint, headers, &build_tools_list_request(2)).await {
-            return error_result(
-                McpConnectionTestErrorCode::ProtocolError,
-                format!("Failed to send tools/list: {e}"),
-                Some(serde_json::json!({ "transport": "sse", "stage": "tools_list_send" })),
-            );
+        if let Err(result) = self
+            .sse_post_with_auth(
+                client,
+                base_url,
+                &endpoint,
+                headers,
+                oauth_managed,
+                &build_tools_list_request(2),
+                "tools_list_send",
+            )
+            .await
+        {
+            return result;
         }
         let tools_resp = match wait_for_jsonrpc_response(event_rx).await {
             Ok(r) => r,
@@ -370,15 +520,81 @@ impl McpConnectionTestService {
         endpoint: &str,
         headers: &reqwest::header::HeaderMap,
         body: &T,
-    ) -> Result<(), String> {
-        client
+    ) -> Result<SsePostResponse, String> {
+        let response = client
             .post(endpoint)
             .headers(headers.clone())
             .json(body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(SsePostResponse {
+            status: response.status(),
+            www_authenticate: response
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+        })
+    }
+
+    async fn sse_post_with_auth<T: Serialize>(
+        &self,
+        client: &reqwest::Client,
+        oauth_url: &str,
+        endpoint: &str,
+        headers: &mut reqwest::header::HeaderMap,
+        oauth_managed: bool,
+        body: &T,
+        stage: &str,
+    ) -> Result<(), McpConnectionTestResult> {
+        let mut refreshed = false;
+        loop {
+            let response = self
+                .sse_post(client, endpoint, headers, body)
+                .await
+                .map_err(|error| {
+                    error_result(
+                        McpConnectionTestErrorCode::ConnectionFailed,
+                        format!("Failed to send {stage}: {error}"),
+                        Some(serde_json::json!({ "transport": "sse", "stage": stage })),
+                    )
+                })?;
+            if response.status == reqwest::StatusCode::UNAUTHORIZED && oauth_managed && !refreshed {
+                let Some(oauth_service) = self.oauth_service.as_ref() else {
+                    return Err(protocol::auth_result_from_www_authenticate(
+                        response.www_authenticate,
+                    ));
+                };
+                let token = match oauth_service.refresh_access_token(oauth_url).await {
+                    Ok(token) => token,
+                    Err(McpError::ReauthorizationRequired) => {
+                        return Err(protocol::reauthorization_result());
+                    }
+                    Err(error) => return Err(protocol::oauth_error_result(error.to_string())),
+                };
+                headers.insert(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                        .expect("OAuth access token must be a valid header value"),
+                );
+                refreshed = true;
+                continue;
+            }
+            if response.status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(protocol::auth_result_from_www_authenticate(
+                    response.www_authenticate,
+                ));
+            }
+            if !response.status.is_success() {
+                return Err(error_result(
+                    McpConnectionTestErrorCode::HttpError,
+                    format!("HTTP {} from server", response.status),
+                    Some(serde_json::json!({ "transport": "sse", "stage": stage })),
+                ));
+            }
+            return Ok(());
+        }
     }
 }
 
@@ -398,6 +614,11 @@ fn resolve_stdio_command(command: &str) -> OsString {
 struct HttpMcpResponse {
     rpc: JsonRpcResponse,
     session_id: Option<String>,
+}
+
+struct SsePostResponse {
+    status: reqwest::StatusCode,
+    www_authenticate: Option<String>,
 }
 
 #[cfg(test)]

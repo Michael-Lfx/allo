@@ -4,6 +4,7 @@
 //! submodules. All logic lives in the modules below.
 
 mod config;
+pub mod app_server_catalog;
 // Spec D2 delivery-notify observer (public so integration tests can drive
 // the full receipt loop without the whole app harness).
 pub mod delivery_notify;

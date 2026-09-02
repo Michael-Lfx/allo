@@ -14,6 +14,8 @@ pub use database::{
 pub use error::DbError;
 pub use id_schema_contract::{validate_id_data_contract, validate_id_schema_contract};
 pub use models::{
+    AppServerIdempotencyReceiptRow, AppServerIdempotencyScope,
+    AppServerRunMappingRow, NewAppServerIdempotencyReceipt,
     AgentExecutionAttemptDetailRow, AgentExecutionAttemptRow, AgentExecutionDetailRows,
     AgentExecutionEventRow, AgentExecutionParticipantRow, AgentExecutionRow,
     AgentExecutionStepDependencyRow, AgentExecutionStepDetailRow, AgentExecutionStepRow,
@@ -88,6 +90,11 @@ pub use repository::ssh_host::{
 pub use repository::SqliteSshHostRepository;
 pub use models::SshHostRow;
 pub use repository::{
+    AppServerIdempotencyCommit, AppServerIdempotencyLookup,
+    IAppServerIdempotencyRepository, IAppServerRunMappingRepository,
+    IAppServerWorkspaceRepository,
+    SqliteAppServerIdempotencyRepository, SqliteAppServerRunMappingRepository,
+    SqliteAppServerWorkspaceRepository,
     AdoptAgentExecutionStepOutputParams, AgentExecutionAttemptRecoveryDisposition,
     AgentExecutionAttemptRecoveryResult, AgentExecutionLeaseToken, AgentExecutionTurnAuthority,
     AppendAgentExecutionStepsFromAttemptParams, AppendAgentExecutionStepsFromAttemptResult,

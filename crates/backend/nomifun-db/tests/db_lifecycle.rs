@@ -32,6 +32,8 @@ const AUTOWORK_PROVENANCE_AUTHORITY_RECOVERY: &str =
     include_str!("../migrations/013_autowork_provenance_authority_recovery.sql");
 const ROBOT_STAGE_DIRECTION_BACKFILL: &str =
     include_str!("../migrations/032_robot_stage_direction_backfill.sql");
+const APP_SERVER_IDEMPOTENCY_RECEIPTS: &str =
+    include_str!("../migrations/048_app_server_idempotency_receipts.sql");
 const AUTOWORK_PROVENANCE_CONFLICT_NOTE: &str = "AutoWork did not start another turn because \
     durable Conversation state is ambiguous: AutoWork Requirement authority was revoked, \
     superseded, or targets another Conversation. Explicit reset or human review is required.";
@@ -1327,6 +1329,11 @@ async fn migrations_preserve_the_published_v3_baseline_and_apply_additive_upgrad
     assert!(CONVERSATION_RECEIPT_LIFECYCLE.contains("OLD.status = 'completed'"));
     assert!(CONVERSATION_RECEIPT_LIFECYCLE.contains("NEW.status IS NOT OLD.status"));
     assert!(AUTOWORK_PROVENANCE_AUTHORITY_RECOVERY.contains("created_by IN ('user', 'agent')"));
+    assert!(migrations.iter().any(|(version, description)| *version == 48
+        && description.contains("app server idempotency receipts")));
+    assert!(APP_SERVER_IDEMPOTENCY_RECEIPTS.contains(
+        "UNIQUE (principal_id, client_id, method, idempotency_key)"
+    ));
     assert_eq!(BASELINE.matches("CREATE TABLE ").count(), 64);
 }
 

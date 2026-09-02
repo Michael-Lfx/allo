@@ -430,6 +430,19 @@ impl AttemptRunner for ConversationAttemptRunner {
             extra["preset_snapshot"] = serde_json::to_value(snapshot)
                 .map_err(|error| AppError::Internal(format!("encode preset snapshot: {error}")))?;
         }
+        // Preset MCP references reach the runtime through the Conversation
+        // layer's standard `selected_mcp_server_ids` seam: the create path
+        // validates the UUIDv7 ids, filters enabled servers and persists the
+        // frozen `mcp_server_ids` on the conversation, which the Nomi factory
+        // injects for instance owners. Missing/disabled ids are dropped there —
+        // the App Server run entry rejects them up-front with
+        // `connector_unavailable` (execute_agent_run pre-validation).
+        if let Some(snapshot) = participant.preset_snapshot.as_ref()
+            && !snapshot.mcp_server_ids.is_empty()
+        {
+            extra["selected_mcp_server_ids"] =
+                Value::Array(snapshot.mcp_server_ids.iter().cloned().map(Value::String).collect());
+        }
 
         let request = CreateConversationRequest {
             r#type: AgentType::Nomi,

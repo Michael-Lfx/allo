@@ -28,6 +28,7 @@ const UNCONDITIONAL_UUIDV7_BUSINESS_IDS: &[(&str, &str)] = &[
     ("providers", "provider_id"),
     ("agent_execution_templates", "execution_template_id"),
     ("agent_executions", "execution_id"),
+    ("app_server_run_mappings", "public_run_id"),
     ("agent_metadata", "agent_id"),
     ("knowledge_bases", "knowledge_base_id"),
     ("knowledge_bindings", "knowledge_binding_id"),
@@ -127,7 +128,7 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     .await
     .expect("tables");
 
-    assert_eq!(tables.len(), 102);
+    assert_eq!(tables.len(), 110);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
@@ -302,6 +303,8 @@ async fn runtime_v3_schema_has_no_physical_foreign_keys_or_cascades_and_only_gua
     assert_eq!(
         triggers,
         vec![
+            "app_server_idempotency_receipts_immutable",
+            "app_server_idempotency_receipts_no_delete",
             "channel_inbound_receipts_identity_immutable",
             "channel_inbound_receipts_no_delete",
             "channel_inbound_receipts_scope_set_once",

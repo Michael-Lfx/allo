@@ -30,6 +30,9 @@ pub enum McpError {
     #[error("OAuth error: {0}")]
     OAuth(String),
 
+    #[error("OAuth reauthorization required")]
+    ReauthorizationRequired,
+
     #[error("{0}")]
     Database(#[from] nomifun_db::DbError),
 
@@ -48,6 +51,9 @@ impl From<McpError> for AppError {
             McpError::AgentOperationFailed(msg) => AppError::Internal(msg),
             McpError::ConnectionFailed(msg) => AppError::BadGateway(msg),
             McpError::OAuth(msg) => AppError::Internal(format!("OAuth error: {msg}")),
+            McpError::ReauthorizationRequired => {
+                AppError::Unauthorized("OAuth reauthorization required".into())
+            }
             McpError::Database(db_err) => AppError::from(db_err),
             McpError::Json(e) => AppError::Internal(format!("JSON error: {e}")),
         }
@@ -104,6 +110,12 @@ mod tests {
     fn oauth_maps_to_internal() {
         let err: AppError = McpError::OAuth("discovery failed".into()).into();
         assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn reauthorization_required_maps_to_unauthorized() {
+        let err: AppError = McpError::ReauthorizationRequired.into();
+        assert!(matches!(err, AppError::Unauthorized(_)));
     }
 
     #[test]

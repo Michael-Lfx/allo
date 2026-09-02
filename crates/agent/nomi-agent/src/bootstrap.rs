@@ -462,6 +462,11 @@ pub struct AgentBootstrap {
     /// copy and Bash refuses known broad/dangerous scans. Not an OS sandbox.
     coding_boundary: bool,
     observation: Option<Arc<crate::observation::ObservationSession>>,
+    /// Host-provided OAuth token refresher for remote MCP servers. When a
+    /// tool request is rejected with 401, the MCP manager refreshes the token
+    /// once, updates the transport's Authorization header and retries once.
+    /// `None` keeps the current fail-fast behavior.
+    mcp_oauth_refresher: Option<Arc<dyn nomi_mcp::manager::McpOAuthRefresher>>,
 }
 
 impl AgentBootstrap {
@@ -486,7 +491,19 @@ impl AgentBootstrap {
             ssh_session: None,
             coding_boundary: false,
             observation: None,
+            mcp_oauth_refresher: None,
         }
+    }
+
+    /// Register the host-provided MCP OAuth refresher (401 → refresh once →
+    /// update Authorization header → single retry). The application layer
+    /// owns the encrypted token store; the engine only carries the URL.
+    pub fn mcp_oauth_refresher(
+        mut self,
+        refresher: Option<Arc<dyn nomi_mcp::manager::McpOAuthRefresher>>,
+    ) -> Self {
+        self.mcp_oauth_refresher = refresher;
+        self
     }
 
     pub fn observation(mut self, session: Arc<crate::observation::ObservationSession>) -> Self {
@@ -799,7 +816,12 @@ impl AgentBootstrap {
 
         let mut mcp_managers: Vec<Arc<McpManager>> = Vec::new();
         let mcp_manager = if !self.config.mcp.servers.is_empty() {
-            match McpManager::connect_all(&self.config.mcp.servers).await {
+            match McpManager::connect_all_with_oauth(
+                &self.config.mcp.servers,
+                self.mcp_oauth_refresher.clone(),
+            )
+            .await
+            {
                 Ok(mgr) => {
                     let mgr = Arc::new(mgr);
                     mcp_managers.push(mgr.clone());

@@ -39,6 +39,7 @@ use nomifun_cloud::cloud_routes;
 use nomifun_mcp::mcp_routes;
 use nomifun_office::{office_proxy_routes, office_routes};
 use nomifun_agent_execution::{agent_execution_routes, agent_execution_template_routes};
+use nomifun_app_server::{AgentRuntimeAdapter, AppServerRouterState, app_server_routes};
 use nomifun_realtime::{UserEventEnvelope, WebSocketManager, WsHandlerState, ws_upgrade_handler};
 use nomifun_requirement::requirement_routes;
 use nomifun_shell::shell_routes;
@@ -741,12 +742,22 @@ pub fn create_router_with_all_state(
         token_validator: services.companion_token_validator.clone(),
     };
 
+    // The App Server owns no provider UI of its own: it reuses the system
+    // provider service (encryption + model rows) when it registers providers
+    // that came from the local agent-store config.
+    let app_server_provider_service = states.system.provider_service.clone();
+
     // System routes protected by auth middleware
     let system_authenticated = protect_instance_owner(
         system_routes(states.system),
         &auth_mw_state,
         &instance_owner_state,
     );
+
+    // App Server and first-party routes deliberately share this exact
+    // Conversation module so one Nomi runtime/session can be resumed through
+    // either transport without a parallel chat state machine.
+    let app_server_conversation = states.conversation.clone();
 
     // Conversation routes protected by auth middleware
     let conversation_authenticated = conversation_routes(states.conversation.clone())
@@ -813,7 +824,7 @@ pub fn create_router_with_all_state(
 
     // MCP routes protected by auth middleware
     let mcp_authenticated = protect_instance_owner(
-        mcp_routes(states.mcp),
+        mcp_routes(states.mcp.clone()),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -834,7 +845,7 @@ pub fn create_router_with_all_state(
 
     // Skill routes protected by auth middleware
     let skill_authenticated = protect_instance_owner(
-        skill_routes(states.skill),
+        skill_routes(states.skill.clone()),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -950,6 +961,58 @@ pub fn create_router_with_all_state(
     // state machine. They share the same Engine facade and auth boundary.
     let agent_execution_template_authenticated = protect_instance_owner(
         agent_execution_template_routes(states.agent_execution.clone()),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
+    // Versioned App Server protocol boundary. Agent Store consumers use this
+    // connection lifecycle instead of calling allo UI routes directly.
+    let app_server_authenticated = protect_instance_owner(
+        app_server_routes(AppServerRouterState {
+            registry: Default::default(),
+            runtime: Some(AgentRuntimeAdapter::new(states.agent_execution.clone())),
+            conversation_service: Some(app_server_conversation.service.clone()),
+            conversation_runtime_registry: Some(app_server_conversation.runtime_registry.clone()),
+            preset_service: Some(states.preset.service.clone()),
+            idempotency: Some(Arc::new(nomifun_db::SqliteAppServerIdempotencyRepository::new(
+                services.database.pool().clone(),
+            ))),
+            run_mappings: Some(Arc::new(nomifun_db::SqliteAppServerRunMappingRepository::new(
+                services.database.pool().clone(),
+            ))),
+            workspaces: Some(Arc::new(nomifun_db::SqliteAppServerWorkspaceRepository::new(
+                services.database.pool().clone(),
+            ))),
+            workspace_resolver: Some(Arc::new(
+                nomifun_app_server::FilesystemWorkspaceResolver::new(&services.work_dir)
+                    .expect("App Server workspace registry must be available at router startup"),
+            )),
+            event_bus: Some(services.event_bus.clone()),
+            provider_service: Some(Arc::new(app_server_provider_service)),
+            agent_store_config_path: None,
+            // Agent Store Skill/Connector catalog over the system services.
+            // `None` keeps the capabilities off and yields
+            // `unsupported_operation` on the protocol surface; production
+            // always wires them.
+            skills: Some(Arc::new(
+                crate::app_server_catalog::AppServerSkillCatalog::new(
+                    states.skill.skill_paths.clone(),
+                ),
+            )),
+            connectors: Some(Arc::new(
+                crate::app_server_catalog::AppServerConnectorCatalog::new(
+                    states.mcp.config_service.clone(),
+                    states.mcp.connection_test_service.clone(),
+                    states.mcp.oauth_service.clone(),
+                ),
+            )),
+            connector_auth: Some(Arc::new(
+                crate::app_server_catalog::AppServerConnectorAuth::new(
+                    states.mcp.config_service.clone(),
+                    states.mcp.oauth_service.clone(),
+                ),
+            )),
+        }),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -1175,6 +1238,7 @@ pub fn create_router_with_all_state(
         .merge(webhook_authenticated)
         .merge(agent_execution_authenticated)
         .merge(agent_execution_template_authenticated)
+        .merge(app_server_authenticated)
         .merge(secret_authenticated)
         .merge(terminal_authenticated)
         .merge(office_authenticated)

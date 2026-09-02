@@ -356,4 +356,68 @@ mod tests {
         drop(events);
         assert!(repository.list_unpublished_events(100).await.unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn event_cursor_and_version_fence_are_persistent() {
+        let database = init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool()).await.unwrap();
+        let repository = SqliteAgentExecutionRepository::new(database.pool().clone());
+        let params = create_params();
+        let execution = repository
+            .create_execution_with_participants(
+                &owner_id,
+                &params,
+                &[NewAgentExecutionParticipant {
+                    provider_id: None,
+                    model: None,
+                    ..participant("0190f5fe-7c00-7a00-8000-000000000041")
+                }],
+                &created_event(),
+            )
+            .await
+            .unwrap();
+
+        let first_page = repository
+            .list_events(&owner_id, &execution.execution_id, 0, 1)
+            .await
+            .unwrap();
+        assert_eq!(first_page.len(), 1);
+        assert_eq!(first_page[0].sequence, 1);
+        assert_eq!(first_page[0].event_type, "created");
+
+        let second_event = NewAgentExecutionEvent {
+            event_type: AgentExecutionEventKind::StatusChanged,
+            step_id: None,
+            attempt_id: None,
+            actor: AgentExecutionActor::system(),
+            payload: r#"{"status":"running"}"#.to_owned(),
+        };
+        repository
+            .append_event(
+                &owner_id,
+                &execution.execution_id,
+                execution.version,
+                &second_event,
+            )
+            .await
+            .unwrap();
+
+        let second_page = repository
+            .list_events(&owner_id, &execution.execution_id, first_page[0].sequence, 10)
+            .await
+            .unwrap();
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].sequence, 2);
+        assert_eq!(second_page[0].event_type, "status_changed");
+
+        let stale = repository
+            .append_event(
+                &owner_id,
+                &execution.execution_id,
+                execution.version,
+                &second_event,
+            )
+            .await;
+        assert!(stale.is_err(), "a stale execution version must be fenced");
+    }
 }

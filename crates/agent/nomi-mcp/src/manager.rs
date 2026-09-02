@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use base64::Engine as _;
 use nomi_tools::ToolExecutionContext;
 use serde_json::{Value, json};
@@ -72,6 +73,24 @@ pub struct McpManager {
     stdio_cleanup_registries: Vec<Arc<ConnectionCleanupRegistry>>,
     /// Monotonically increasing request ID counter for all JSON-RPC calls
     next_id: AtomicU64,
+    /// Optional OAuth refresher for remote (SSE/Streamable HTTP) servers.
+    /// When a request is rejected with 401, the manager refreshes the token
+    /// once, updates the transport's Authorization header and retries once.
+    oauth_refresher: Option<Arc<dyn McpOAuthRefresher>>,
+    /// Server name → remote URL, populated at connect time for transports
+    /// that can carry a bearer token (SSE / Streamable HTTP).
+    oauth_urls: HashMap<String, String>,
+}
+
+/// Host-provided OAuth token refresher for the 401 path.
+///
+/// Implemented by the application layer (which owns the encrypted token
+/// store); the engine only knows the server URL. Returning `Ok(None)` means
+/// "no token available / refresh not applicable" — the manager surfaces the
+/// original 401 without retrying.
+#[async_trait]
+pub trait McpOAuthRefresher: Send + Sync {
+    async fn refresh(&self, url: &str) -> Result<Option<String>, McpError>;
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -180,8 +199,30 @@ fn validate_resource_uri(uri: &str) -> Result<ValidatedResourceUri<'_>, McpError
 impl McpManager {
     /// Connect to all configured MCP servers
     pub async fn connect_all(configs: &HashMap<String, McpServerConfig>) -> Result<Self, McpError> {
+        Self::connect_all_with_oauth(configs, None).await
+    }
+
+    /// Connect to all configured MCP servers, registering an optional OAuth
+    /// refresher for the 401-refresh-retry path on remote transports.
+    pub async fn connect_all_with_oauth(
+        configs: &HashMap<String, McpServerConfig>,
+        oauth_refresher: Option<Arc<dyn McpOAuthRefresher>>,
+    ) -> Result<Self, McpError> {
         let mut servers = HashMap::new();
         let mut stdio_cleanup_registries = Vec::new();
+        let mut oauth_urls = HashMap::new();
+        if oauth_refresher.is_some() {
+            for (name, config) in configs {
+                match config.transport {
+                    TransportType::Sse | TransportType::StreamableHttp => {
+                        if let Some(url) = config.url.as_deref().filter(|url| !url.trim().is_empty()) {
+                            oauth_urls.insert(name.clone(), url.to_owned());
+                        }
+                    }
+                    TransportType::Stdio => {}
+                }
+            }
+        }
 
         for (name, config) in configs {
             let cleanup_registry = ConnectionCleanupRegistry::new();
@@ -220,6 +261,8 @@ impl McpManager {
             servers,
             stdio_cleanup_registries,
             next_id: AtomicU64::new(10),
+            oauth_refresher,
+            oauth_urls,
         })
     }
 
@@ -343,10 +386,33 @@ impl McpManager {
     }
 
     async fn request_server(
+        &self,
+        server_name: &str,
         server: &McpServer,
         request: &JsonRpcRequest,
     ) -> Result<super::protocol::JsonRpcResponse, McpError> {
         let _request = server.request_gate.lock().await;
+        let outcome = Self::request_with_timeout(&*server.transport, server.request_timeout, request).await;
+        let Err(McpError::Unauthorized { .. }) = outcome else {
+            return outcome;
+        };
+        // 401: refresh the OAuth token once (when a refresher is registered
+        // for this remote server), update the transport's Authorization header
+        // and retry exactly once. A failed/absent refresh surfaces the
+        // original 401 — never an unbounded retry loop.
+        let Some(url) = self.oauth_urls.get(server_name).cloned() else {
+            return outcome;
+        };
+        let Some(refresher) = self.oauth_refresher.as_ref() else {
+            return outcome;
+        };
+        let Some(token) = refresher.refresh(&url).await? else {
+            return outcome;
+        };
+        server
+            .transport
+            .update_auth_header(&format!("Bearer {token}"))
+            .await?;
         Self::request_with_timeout(&*server.transport, server.request_timeout, request).await
     }
 
@@ -416,7 +482,7 @@ impl McpManager {
             request = request.with_execution_operation_id(context.operation_id());
         }
 
-        let response = Self::request_server(server, &request).await?;
+        let response = self.request_server(server_name, server, &request).await?;
 
         let result_value = response
             .result
@@ -579,7 +645,7 @@ impl McpManager {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = JsonRpcRequest::new(id, "resources/list", None);
-        let response = Self::request_server(server, &request).await?;
+        let response = self.request_server(server_name, server, &request).await?;
 
         let result_value = response
             .result
@@ -600,7 +666,7 @@ impl McpManager {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = JsonRpcRequest::new(id, "resources/read", Some(json!({ "uri": uri })));
-        let response = Self::request_server(server, &request).await?;
+        let response = self.request_server(server_name, server, &request).await?;
 
         let result_value = response
             .result
@@ -664,6 +730,8 @@ impl McpManager {
             servers,
             stdio_cleanup_registries: Vec::new(),
             next_id: AtomicU64::new(10),
+            oauth_refresher: None,
+            oauth_urls: HashMap::new(),
         }
     }
 
@@ -690,6 +758,8 @@ impl McpManager {
             servers,
             stdio_cleanup_registries: Vec::new(),
             next_id: AtomicU64::new(10),
+            oauth_refresher: None,
+            oauth_urls: HashMap::new(),
         }
     }
 
@@ -718,6 +788,8 @@ impl McpManager {
             servers,
             stdio_cleanup_registries: Vec::new(),
             next_id: AtomicU64::new(10),
+            oauth_refresher: None,
+            oauth_urls: HashMap::new(),
         }
     }
 }
@@ -1388,5 +1460,121 @@ mod tests {
 
             assert!(mgr.call_tool("srv", "export", json!({})).await.is_err());
         }
+    }
+
+    // -- OAuth 401 refresh + single retry ------------------------------------
+
+    struct FakeOAuthRefresher {
+        calls: std::sync::atomic::AtomicUsize,
+        token: String,
+    }
+
+    #[async_trait]
+    impl McpOAuthRefresher for FakeOAuthRefresher {
+        async fn refresh(&self, _url: &str) -> Result<Option<String>, McpError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Some(self.token.clone()))
+        }
+    }
+
+    /// Remote transport that rejects the first request with 401 and succeeds
+    /// on the retry; records whether the auth header was updated.
+    struct UnauthorizedOnceTransport {
+        calls: std::sync::atomic::AtomicUsize,
+        auth_updated: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl McpTransport for UnauthorizedOnceTransport {
+        async fn request(&self, _req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed);
+            if call == 0 {
+                return Err(McpError::Unauthorized { server: "remote".into() });
+            }
+            Ok(JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: Some(1),
+                result: Some(json!({
+                    "content": [{"type": "text", "text": "pong"}],
+                    "isError": false
+                })),
+                error: None,
+            })
+        }
+
+        async fn notify(&self, _req: &JsonRpcRequest) -> Result<(), McpError> {
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<(), McpError> {
+            Ok(())
+        }
+
+        async fn update_auth_header(&self, value: &str) -> Result<(), McpError> {
+            assert!(value.starts_with("Bearer refreshed-token"));
+            self.auth_updated.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_401_refreshes_once_and_retries_once() {
+        let transport = UnauthorizedOnceTransport {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            auth_updated: std::sync::atomic::AtomicBool::new(false),
+        };
+        let refresh_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refresh_calls_for_refresher = refresh_calls.clone();
+        let refresher = FakeOAuthRefresher {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            token: "refreshed-token".into(),
+        };
+        // Share the same counter with the trait object via a wrapper closure.
+        let refresher: Arc<dyn McpOAuthRefresher> = Arc::new(CountingRefresher {
+            inner: refresher,
+            calls: refresh_calls_for_refresher,
+        });
+        let mut mgr = McpManager::new_for_test(vec![("remote", false, Box::new(transport))]);
+        mgr.oauth_refresher = Some(refresher);
+        mgr.oauth_urls
+            .insert("remote".into(), "https://example.test/mcp".into());
+
+        let out = mgr.call_tool("remote", "ping", json!({})).await.expect("retry succeeds");
+        assert_eq!(out.text, "pong");
+        assert_eq!(
+            refresh_calls.load(Ordering::Relaxed),
+            1,
+            "the refresher must be called exactly once"
+        );
+    }
+
+    /// Wraps a refresher while counting calls through an Arc the test can read
+    /// without downcasting the trait object.
+    struct CountingRefresher {
+        inner: FakeOAuthRefresher,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl McpOAuthRefresher for CountingRefresher {
+        async fn refresh(&self, url: &str) -> Result<Option<String>, McpError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.refresh(url).await
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_401_without_refresher_surfaces_original_error() {
+        let transport = UnauthorizedOnceTransport {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            auth_updated: std::sync::atomic::AtomicBool::new(false),
+        };
+        let mut mgr = McpManager::new_for_test(vec![("remote", false, Box::new(transport))]);
+        // No refresher, no url mapping: 401 must propagate unchanged.
+        let error = mgr
+            .call_tool("remote", "ping", json!({}))
+            .await
+            .expect_err("401 must fail");
+        assert!(matches!(error, McpError::Unauthorized { .. }));
     }
 }

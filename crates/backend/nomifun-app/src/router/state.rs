@@ -1000,7 +1000,10 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
     McpRouterState {
         config_service: McpConfigService::new(repo.clone()),
         sync_service: McpSyncService::new(adapters),
-        connection_test_service: McpConnectionTestService::new_dynamic(),
+        connection_test_service: McpConnectionTestService::new_dynamic()
+            .with_oauth_service(nomifun_mcp::McpOAuthService::new_dynamic(
+                oauth_token_repo.clone(),
+            )),
         oauth_service: nomifun_mcp::McpOAuthService::new_dynamic(oauth_token_repo),
     }
 }
@@ -1612,7 +1615,7 @@ pub fn build_agent_execution_engine(
         provider_repository,
         provider_model_repository,
         preset_service,
-        realtime: services.ws_manager.clone(),
+        realtime: services.event_bus.clone(),
         conversation,
         runtime_registry: services.agent_runtime_registry.clone(),
         encryption_key: services.encryption_key,

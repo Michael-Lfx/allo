@@ -14,7 +14,7 @@ pub struct SseTransport {
     client: reqwest::Client,
     /// The POST endpoint URL (received from the SSE stream's "endpoint" event)
     post_url: String,
-    headers: HeaderMap,
+    headers: StdMutex<HeaderMap>,
     /// Pending request-response channels, keyed by JSON-RPC id
     pending: Arc<StdMutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     /// Handle to the background SSE listener task
@@ -134,7 +134,7 @@ impl SseTransport {
         Ok(Self {
             client,
             post_url,
-            headers: header_map,
+            headers: StdMutex::new(header_map),
             pending,
             _listener: listener,
         })
@@ -194,10 +194,15 @@ impl McpTransport for SseTransport {
         let body = serde_json::to_string(req)
             .map_err(|e| McpError::Transport(format!("JSON serialize error: {}", e)))?;
 
+        let headers = self
+            .headers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let response = self
             .client
             .post(&self.post_url)
-            .headers(self.headers.clone())
+            .headers(headers)
             .header("Content-Type", "application/json")
             .body(body)
             .send()
@@ -210,6 +215,9 @@ impl McpTransport for SseTransport {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&req_id);
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(McpError::Unauthorized { server: self.post_url.clone() });
+            }
             return Err(McpError::Transport(format!(
                 "POST returned status: {}",
                 response.status()
@@ -236,9 +244,14 @@ impl McpTransport for SseTransport {
         let body = serde_json::to_string(req)
             .map_err(|e| McpError::Transport(format!("JSON serialize error: {}", e)))?;
 
+        let headers = self
+            .headers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         self.client
             .post(&self.post_url)
-            .headers(self.headers.clone())
+            .headers(headers)
             .header("Content-Type", "application/json")
             .body(body)
             .send()
@@ -254,6 +267,20 @@ impl McpTransport for SseTransport {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        Ok(())
+    }
+
+    async fn update_auth_header(&self, value: &str) -> Result<(), McpError> {
+        let mut headers = self
+            .headers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            HeaderValue::from_str(value).map_err(|e| {
+                McpError::Transport(format!("Invalid authorization header value: {e}"))
+            })?,
+        );
         Ok(())
     }
 }

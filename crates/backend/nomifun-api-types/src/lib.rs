@@ -1,6 +1,7 @@
 //! All HTTP request/response DTOs shared across the API surface.
 mod agent_eval;
 mod acp;
+pub mod app_server;
 mod agent_build_extra;
 mod agent_discovery;
 mod agent_error;
@@ -65,6 +66,12 @@ pub use acp::{
     SetModeRequest, SetModelRequest, SideQuestionRequest, SideQuestionResponse,
     TryConnectCustomAgentRequest, TryConnectCustomAgentResponse, WorkspaceBrowseQuery,
     WorkspaceEntry,
+};
+pub use app_server::{
+    AppServerCompatibilityStatus, AppServerConnectorDetail, AppServerConnectorProbeResult,
+    AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
+    AppServerConnectorTool, AppServerOAuthStartResult, AppServerOAuthStatusView,
+    AppServerSkillDetail, AppServerSkillSummary,
 };
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,

@@ -196,6 +196,7 @@ pub enum McpConnectionTestErrorCode {
     Timeout,
     RpcError,
     ProtocolError,
+    ReauthorizationRequired,
 }
 
 impl McpConnectionTestErrorCode {
@@ -209,6 +210,7 @@ impl McpConnectionTestErrorCode {
             Self::Timeout => "MCP_TIMEOUT",
             Self::RpcError => "MCP_RPC_ERROR",
             Self::ProtocolError => "MCP_PROTOCOL_ERROR",
+            Self::ReauthorizationRequired => "MCP_REAUTHORIZATION_REQUIRED",
         }
     }
 }

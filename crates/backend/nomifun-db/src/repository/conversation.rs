@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DbError;
 use crate::models::{
-    ConversationArtifactRow, ConversationDeliveryReceiptRow, ConversationRow,
-    ConversationSkillLoad, MessageRow, NewConversationSkillLoad,
+    AppServerContextUsageRow, ConversationArtifactRow, ConversationDeliveryReceiptRow,
+    ConversationRow, ConversationSkillLoad, MessageRow, NewConversationSkillLoad,
 };
 
 /// Remove only runtime/session instance state that can resume work after an
@@ -907,6 +907,33 @@ pub trait IConversationRepository: Send + Sync {
     ) -> Result<Vec<String>, DbError> {
         self.delete(conversation_id).await?;
         Ok(Vec::new())
+    }
+
+    /// Persist the server-measured context occupancy snapshot for an App
+    /// Server chat. One row per conversation; a fresh value replaces the old
+    /// snapshot. Observability only — failure must never fail a turn.
+    async fn upsert_app_server_context_usage(
+        &self,
+        _conversation_id: &str,
+        _context_tokens: i64,
+        _window_tokens: i64,
+        _updated_at: i64,
+    ) -> Result<(), DbError> {
+        Err(DbError::Init(
+            "App Server context usage persistence is not supported by this repository".to_owned(),
+        ))
+    }
+
+    /// Read the latest measured context occupancy for an App Server chat.
+    /// `None` means no `TurnCompleted` with usage has been recorded yet (or
+    /// the conversation is not an App Server chat).
+    async fn get_app_server_context_usage(
+        &self,
+        _conversation_id: &str,
+    ) -> Result<Option<AppServerContextUsageRow>, DbError> {
+        Err(DbError::Init(
+            "App Server context usage reads are not supported by this repository".to_owned(),
+        ))
     }
 
     /// Lists conversations with cursor-based pagination and optional filters.

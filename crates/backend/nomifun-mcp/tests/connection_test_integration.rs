@@ -8,10 +8,14 @@
 //! - SSE auth probe (M-33 coverage)
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nomifun_mcp::McpConnectionTestService;
+use nomifun_db::{IOAuthTokenRepository, SqliteOAuthTokenRepository, UpsertOAuthTokenParams};
+use nomifun_mcp::{McpConnectionTestService, McpOAuthService};
 use nomifun_mcp::McpServerTransport;
+use nomifun_mcp::McpError;
+use axum::response::IntoResponse;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 

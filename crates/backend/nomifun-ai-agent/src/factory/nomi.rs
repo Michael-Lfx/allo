@@ -15,9 +15,11 @@ use nomifun_common::{
 };
 use nomifun_db::IMcpServerRepository;
 use nomifun_db::models::McpServerRow;
+use nomifun_mcp::McpOAuthService;
 use nomifun_runtime::resolve_command_path;
 use tracing::{debug, info, warn};
 
+use crate::factory::mcp_oauth::{NomiMcpOAuthRefresher, inject_oauth_bearer};
 use crate::runtime_handle::AgentRuntimeHandle;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
@@ -34,6 +36,11 @@ use crate::types::{
 /// MCP, platform domains, knowledge mounts, autonomous goal loop or Agent
 /// delegation.  The non-empty allowlist is intentional because an empty
 /// `retain_named` list means "keep everything".
+/// Marker written only by the trusted ConversationService App Server creation
+/// seam. It is not a client-facing capability grant: factory code uses it only
+/// to subtract integrations from an already-authorized Nomi runtime.
+const APP_SERVER_CHAT_EXTRA_KEY: &str = "app_server_chat";
+
 fn apply_model_only_ceiling(overrides: &mut NomiBuildExtra) {
     overrides.computer_use = Some(false);
     overrides.browser_use = Some(false);
@@ -54,6 +61,18 @@ fn apply_model_only_ceiling(overrides: &mut NomiBuildExtra) {
     overrides.delegation_policy = DelegationPolicy::Disabled;
     // Summon loads local companion memories/skills — installation-owner only.
     overrides.summon = None;
+}
+
+/// App Server chat is an owner-visible Nomi session, but intentionally not an
+/// integration host. Keep ordinary local Agent tools available while removing
+/// every dynamic Team/Skill/MCP path before any process-owned gateway or
+/// repository-backed server configuration is considered.
+fn apply_app_server_chat_ceiling(overrides: &mut NomiBuildExtra) {
+    overrides.gateway_mcp_config = None;
+    overrides.mcp_server_ids = None;
+    overrides.session_mcp_servers.clear();
+    overrides.summon = None;
+    overrides.delegation_policy = DelegationPolicy::Disabled;
 }
 
 fn retarget_resumed_session(session: &mut Session, provider: &str, model: &str) -> bool {
@@ -134,6 +153,11 @@ pub(super) async fn build(
     ctx: FactoryContext,
     authority: ExecutionAuthority,
 ) -> Result<AgentRuntimeHandle, AppError> {
+    let is_app_server_chat = options
+        .extra
+        .get(APP_SERVER_CHAT_EXTRA_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let mut overrides: NomiBuildExtra = serde_json::from_value(options.extra)
         .map_err(|error| AppError::BadRequest(format!("Invalid Nomi build options: {error}")))?;
     overrides.user_id = Some(options.user_id.clone());
@@ -141,6 +165,9 @@ pub(super) async fn build(
     // open-ended extra payload override execution policy.
     overrides.delegation_policy = options.delegation_policy;
     let is_instance_owner = authority.controls_host();
+    if is_app_server_chat {
+        apply_app_server_chat_ceiling(&mut overrides);
+    }
 
     // Gateway entitlement is derived from the immutable principal, never from
     // persisted/open JSON. Process-owned config is injected only after the
@@ -186,7 +213,7 @@ pub(super) async fn build(
     // non-companion work sessions. The persona is never taken
     // over — the system prompt gains exactly one loading notice; memories are
     // injected per turn by a ContextContributor and stay read-only.
-    let summon_config = if is_instance_owner && !overrides.companion {
+    let summon_config = if is_instance_owner && !is_app_server_chat && !overrides.companion {
         overrides.summon.clone()
     } else {
         None
@@ -255,7 +282,7 @@ pub(super) async fn build(
                     }
                 }
             }
-            None if is_instance_owner && !overrides.companion => {
+            None if is_instance_owner && !is_app_server_chat && !overrides.companion => {
                 // A cleared (or never-set) summon unloads its manifest-owned
                 // skills on the next build. No-op without a manifest; companion
                 // threads manage their own manifest and are excluded above.
@@ -279,7 +306,8 @@ pub(super) async fn build(
 
     // A process-owned configuration object is the capability. There is no
     // serializable boolean grant that persisted or client JSON can forge.
-    let platform_gateway_entitled = is_instance_owner && overrides.allowed_tools.is_empty();
+    let platform_gateway_entitled =
+        is_instance_owner && !is_app_server_chat && overrides.allowed_tools.is_empty();
     overrides.gateway_mcp_config = if platform_gateway_entitled {
         deps.gateway_mcp_config.clone()
     } else {
@@ -296,23 +324,26 @@ pub(super) async fn build(
 
     let (mut extra_mcp_servers, loopback_capability_leases) =
         resolve_mcp_servers(&overrides, &ctx.conversation_id);
-    if is_instance_owner && let Some(repo) = deps.mcp_server_repo.as_ref() {
+    if is_instance_owner && !is_app_server_chat && let Some(repo) = deps.mcp_server_repo.as_ref() {
         for (name, config) in load_user_mcp_servers(
             repo.as_ref(),
             overrides.mcp_server_ids.as_deref(),
             &ctx.conversation_id,
+            deps.mcp_oauth_service.as_ref(),
         )
         .await
         {
             extra_mcp_servers.entry(name).or_insert(config);
         }
     }
-    if is_instance_owner {
+    if is_instance_owner && !is_app_server_chat {
         merge_session_snapshot_mcp_servers(
             &mut extra_mcp_servers,
             &overrides.session_mcp_servers,
             &ctx.conversation_id,
-        );
+            deps.mcp_oauth_service.as_ref(),
+        )
+        .await;
     }
 
     // Per-surface write policy (spec §3.2 unit 5): companion → direct, external
@@ -934,6 +965,14 @@ pub(super) async fn build(
         browser_lane_binding,
         ssh_backend: ssh_session.as_ref().map(|s| Arc::clone(&s.backend)),
         ssh_lease: ssh_session.map(|s| s.lease),
+        // Engine-side OAuth refresh hook: on a 401 the MCP manager refreshes
+        // once, updates the Authorization header and retries once.
+        mcp_oauth_refresher: deps
+            .mcp_oauth_service
+            .as_ref()
+            .map(|oauth| -> Arc<dyn nomi_mcp::manager::McpOAuthRefresher> {
+                Arc::new(NomiMcpOAuthRefresher::new(oauth.clone()))
+            }),
     };
     let agent = NomiAgentManager::new_with_search_provider(
         ctx.conversation_id,
@@ -1605,6 +1644,7 @@ async fn load_user_mcp_servers(
     repo: &dyn IMcpServerRepository,
     selected_ids: Option<&[McpServerId]>,
     conversation_id: &str,
+    oauth: Option<&McpOAuthService>,
 ) -> HashMap<String, McpServerConfig> {
     let rows_result = match selected_ids {
         Some(ids) => {
@@ -1638,7 +1678,24 @@ async fn load_user_mcp_servers(
         }
 
         match row_to_mcp_server_config(&row) {
-            Ok(config) => {
+            Ok(mut config) => {
+                // Request-time OAuth bearer injection for remote transports
+                // (stdio servers carry no URL; user-configured Authorization
+                // headers win). A missing token leaves the header untouched —
+                // the engine's 401-refresh path covers expiry at call time.
+                if let Some(url) = config.url.clone()
+                    && let Some(headers) = config.headers.as_mut()
+                {
+                    if let Err(error) = inject_oauth_bearer(oauth, &url, headers).await {
+                        warn!(
+                            conversation_id,
+                            mcp_server_id = %row.mcp_server_id,
+                            server_name = %row.name,
+                            %error,
+                            "user_mcp: oauth token lookup failed; continuing without injection"
+                        );
+                    }
+                }
                 servers.insert(row.name.clone(), config);
             }
             Err(err) => {
@@ -1820,14 +1877,28 @@ fn session_server_to_mcp_server_config(
     }
 }
 
-fn merge_session_snapshot_mcp_servers(
+async fn merge_session_snapshot_mcp_servers(
     extra_mcp_servers: &mut HashMap<String, McpServerConfig>,
     session_mcp_servers: &[SessionMcpServer],
     conversation_id: &str,
+    oauth: Option<&McpOAuthService>,
 ) {
     for server in session_mcp_servers {
         match session_server_to_mcp_server_config(server) {
-            Ok(config) => {
+            Ok(mut config) => {
+                if let Some(url) = config.url.clone()
+                    && let Some(headers) = config.headers.as_mut()
+                {
+                    if let Err(error) = inject_oauth_bearer(oauth, &url, headers).await {
+                        warn!(
+                            conversation_id = %conversation_id,
+                            mcp_server_id = %server.mcp_server_id,
+                            server_name = %server.name,
+                            %error,
+                            "session_mcp: oauth token lookup failed; continuing without injection"
+                        );
+                    }
+                }
                 if extra_mcp_servers
                     .insert(server.name.clone(), config)
                     .is_some()
@@ -2029,6 +2100,39 @@ mod tests {
             binary.into(),
             Arc::<str>::from(owner),
         )
+    }
+
+    #[test]
+    fn app_server_chat_ceiling_removes_all_mcp_and_summon_configuration() {
+        let mcp_server_id = McpServerId::new();
+        let mut overrides = NomiBuildExtra {
+            mcp_server_ids: Some(vec![mcp_server_id.clone()]),
+            session_mcp_servers: vec![SessionMcpServer {
+                mcp_server_id,
+                name: "test-mcp".into(),
+                transport: SessionMcpTransport::Stdio {
+                    command: "server".into(),
+                    args: Vec::new(),
+                    env: Default::default(),
+                },
+            }],
+            summon: Some(nomifun_api_types::SummonConfig {
+                companion_id: "0190f5fe-7c00-7a00-8abc-012345678969".into(),
+                memory_ids: vec![],
+                skill_exclusions: vec![],
+                summoned_at: 1,
+            }),
+            delegation_policy: DelegationPolicy::Automatic,
+            ..Default::default()
+        };
+
+        apply_app_server_chat_ceiling(&mut overrides);
+
+        assert!(overrides.gateway_mcp_config.is_none());
+        assert!(overrides.mcp_server_ids.is_none());
+        assert!(overrides.session_mcp_servers.is_empty());
+        assert!(overrides.summon.is_none());
+        assert_eq!(overrides.delegation_policy, DelegationPolicy::Disabled);
     }
 
     #[test]
@@ -2561,8 +2665,8 @@ mod tests {
         assert!(leases.is_empty());
     }
 
-    #[test]
-    fn session_snapshot_overrides_repo_backed_mcp_config() {
+    #[tokio::test]
+    async fn session_snapshot_overrides_repo_backed_mcp_config() {
         let mut servers = HashMap::from([(
             "demo-mcp".to_owned(),
             McpServerConfig {
@@ -2587,7 +2691,7 @@ mod tests {
             },
         }];
 
-        merge_session_snapshot_mcp_servers(&mut servers, &snapshot, "conv-override");
+        merge_session_snapshot_mcp_servers(&mut servers, &snapshot, "conv-override", None).await;
 
         let server = servers.get("demo-mcp").expect("snapshot should remain");
         assert_eq!(server.transport, TransportType::Stdio);

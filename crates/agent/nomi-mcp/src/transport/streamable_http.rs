@@ -12,7 +12,7 @@ use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 pub struct StreamableHttpTransport {
     client: reqwest::Client,
     url: String,
-    headers: HeaderMap,
+    headers: tokio::sync::Mutex<HeaderMap>,
     session_id: Mutex<Option<String>>,
 }
 
@@ -31,17 +31,22 @@ impl StreamableHttpTransport {
         Ok(Self {
             client: super::bounded_http_client()?,
             url: url.to_string(),
-            headers: header_map,
+            headers: tokio::sync::Mutex::new(header_map),
             session_id: Mutex::new(None),
         })
     }
 
     /// Build request with session ID header if available
     async fn build_request(&self, body: &str) -> reqwest::RequestBuilder {
+        let headers = self
+            .headers
+            .lock()
+            .await
+            .clone();
         let mut req = self
             .client
             .post(&self.url)
-            .headers(self.headers.clone())
+            .headers(headers)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
 
@@ -142,6 +147,9 @@ impl McpTransport for StreamableHttpTransport {
             .map_err(|e| McpError::Transport(format!("HTTP request failed: {}", e)))?;
 
         if !response.status().is_success() {
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(McpError::Unauthorized { server: self.url.clone() });
+            }
             return Err(McpError::Transport(format!(
                 "HTTP request returned status: {}",
                 response.status()
@@ -175,6 +183,17 @@ impl McpTransport for StreamableHttpTransport {
 
     async fn close(&self) -> Result<(), McpError> {
         // No persistent connection to close for HTTP
+        Ok(())
+    }
+
+    async fn update_auth_header(&self, value: &str) -> Result<(), McpError> {
+        let mut headers = self.headers.lock().await;
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            HeaderValue::from_str(value).map_err(|e| {
+                McpError::Transport(format!("Invalid authorization header value: {e}"))
+            })?,
+        );
         Ok(())
     }
 }

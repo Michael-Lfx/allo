@@ -474,6 +474,10 @@ pub(crate) struct NomiHostWiring {
     /// engine) so teardown has something to report on: a runtime that dropped its
     /// lease could never say whether the operator's shell survived it.
     pub ssh_lease: Option<Arc<dyn crate::SshSessionLease>>,
+    /// MCP OAuth refresher (401 → refresh once → update Authorization header →
+    /// single retry). Backed by the encrypted token store; `None` keeps the
+    /// fail-fast behavior.
+    pub mcp_oauth_refresher: Option<Arc<dyn nomi_mcp::manager::McpOAuthRefresher>>,
 }
 
 impl Default for NomiHostWiring {
@@ -483,6 +487,7 @@ impl Default for NomiHostWiring {
             browser_lane_binding: None,
             ssh_backend: None,
             ssh_lease: None,
+            mcp_oauth_refresher: None,
         }
     }
 }
@@ -1016,6 +1021,7 @@ impl NomiAgentManager {
             .coding_boundary(
                 nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref()).is_coding(),
             )
+            .mcp_oauth_refresher(host_wiring.mcp_oauth_refresher.clone())
             .observation(Arc::clone(&observation));
         bootstrap = match search_provider {
             nomi_agent::SearchProviderBinding::Provided(provider) => {
