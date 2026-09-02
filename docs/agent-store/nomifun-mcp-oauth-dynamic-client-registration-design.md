@@ -1,6 +1,6 @@
 # Nomifun MCP OAuth Dynamic Client Registration 技术方案
 
-> 状态：待开发
+> 状态：✅ 已实现（2026-09-02，见「§12 实现记录」）
 > 范围：Agent Store 出站远程 MCP Connector 的 OAuth 登录与凭据生命周期
 > 关联：[Connector、OAuth 与安全模型](06-connector-oauth-security.md)、[MCP OAuth 运行时闭环验证证据](mcp-oauth-runtime-evidence.zh.md)
 
@@ -321,3 +321,62 @@ cargo clippy -p nomifun-mcp -p nomi-mcp -- -D warnings
 本方案的完成条件是：动态注册服务可在首次登录后持久化 client identity，应用重启后仍使用同一 identity 刷新 token，并能通过真实 MCP `initialize` POST 的 OAuth challenge 完成标准发现。
 
 厂商是否接受具体 loopback URI、是否支持动态注册以及实际 scope 授权，属于上游 OAuth Server 能力。接入某个真实服务前仍需独立完成浏览器授权、`tools/list` 与 refresh 验证，不能由模拟测试替代。
+
+## 12. 实现记录（2026-09-02）
+
+### 交付内容
+
+| 模块 | 实现 |
+|---|---|
+| `nomifun-db` | migration `052_oauth_client_registrations.sql`（registrations 表 + `oauth_tokens.registration_id/principal_id` 逻辑关联列 + 索引）；`OAuthClientRegistrationRow`、`IOAuthClientRegistrationRepository`、`SqliteOAuthClientRegistrationRepository`（身份键 upsert/查询/删除 + 单测）；`OAuthTokenRow` 扩展、`IOAuthTokenRepository::get_by_registration`、`UpsertOAuthTokenParams` 增 `registration_id/principal_id`；v3 schema 注册（`PRODUCT_TABLES`/`NON_REFERENCE_ID_COLUMNS`） |
+| `nomifun-mcp` | `MCP_PROTOCOL_VERSION` 常量（与 `nomi-mcp::MCP_PROTOCOL_VERSION` 一致，由 `nomifun-ai-agent` 断言）；`discover_endpoints` → `ResolvedOAuthServer`（RFC 9728 `resource` + issuer）；**未认证 initialize POST 回退发现**；`resolve_client_identity`（预注册 > 持久化动态注册 > RFC 7591 > `pre_registered_client_required`）；`register_client` 持久化 + 错误分类（`redirect_uri_not_allowed`/`dynamic_registration_failed`/`invalid_registration_response`）；exchange/refresh 绑定原 registration（refresh 不再回退默认 client）；固定 loopback redirect 校验（host/port/path）；callback path 校验；`McpError` 结构化错误码 + `oauth_error_code()`；服务注解 |
+| `nomifun-api-types` | `OAuthStatusResponse.state`（§8 状态机枚举）保留 `authenticated` 兼容；`OAuthLoginResponse.error_code` |
+| `nomifun-app` | `services.rs` 注入 `SqliteOAuthClientRegistrationRepository` |
+| `nomifun-ai-agent` | `MCP_PROTOCOL_VERSION` 跨 crate 一致性断言 |
+
+### 验收结果（mock OAuth + MCP Server，无真实服务）
+
+`crates/backend/nomifun-mcp/tests/dynamic_registration_integration.rs` —— **9/9 通过**：
+
+```text
+✅ 1 no_registration_endpoint_without_pre_registered_client_fails_loudly
+      （pre_registered_client_required；无 register/token/authorize 请求）
+✅ 2 dynamic_registration_persists_and_exchange_uses_registered_id
+      （RFC 7591 payload；authorize/exchange 以注册 client 认证 + PKCE verifier）
+✅ 3 rebuilt_service_reuses_registration_for_refresh
+      （重建服务不重新注册；refresh 以原动态 client 身份 Basic 认证）
+✅ 4 pre_registered_client_skips_dynamic_registration（env 通道；零注册请求）
+✅ 5 registration_rejects_redirect_uri（redirect_uri_not_allowed；authorize 未发起）
+✅ 6 discovery_via_initialize_post_when_get_rejected（GET 405 → POST 401 发现）
+✅ 7 callback_state_mismatch_is_rejected / callback_path_mismatch_is_rejected
+✅ 9 login_errors_carry_no_sensitive_material（不含 code/state/verifier/授权 URL）
+#8 401 → refresh → 单次重试由 nomifun-ai-agent/tests/mcp_oauth_e2e.rs 覆盖
+```
+
+### 全量门禁（实际命令与结果）
+
+```text
+cargo fmt -p nomifun-mcp -p nomi-mcp -p nomifun-db -p nomifun-ai-agent --check   ✅ 无差异
+cargo test -p nomifun-db --lib                                                 ✅ 431 passed
+cargo test -p nomifun-mcp                                                      ✅ 251 lib + 集成全过
+cargo test -p nomi-mcp --lib                                                   ✅ 122 passed
+cargo test -p nomifun-ai-agent --test mcp_oauth_e2e                            ✅ 全链路通过
+cargo clippy -p nomifun-mcp --all-targets                                      ✅ 本方案文件零警告
+cargo clippy -p nomi-mcp --all-targets                                         ✅ 本方案文件零警告
+```
+
+说明：`clippy -D warnings` 在依赖 crate 上不干净属于仓库既有基线（nomi-coding、
+nomi-agent-trace、nomi-process-runtime、nomifun-common 等存量 warning，与本次改动
+无关）；本次新增/修改文件（oauth_service、dynamic_registration_integration、
+remote_peer 常量导出、db repository/模型等）在 `--all-targets` 下零警告。
+
+### 关键行为变更（与旧实现的差异）
+
+- **不再回退 `DEFAULT_CLIENT_ID`**：无预注册 client 且服务方无 `registration_endpoint` 时登录返回
+  `pre_registered_client_required`（原先默默使用内置 `nomifun` id）；
+- **refresh 绑定原 identity**：token 无 `registration_id` 且无 env 预注册 client 时，
+  refresh 返回 `reauthorization_required` 而非猜测身份（兼容通道：env 预注册仍可用）；
+- **callback 严格化**：固定 `MCP_OAUTH_REDIRECT_URI` 只接受 loopback + 显式端口 + 明确 path，
+  回调请求 path 必须精确匹配注册的 redirect path，否则 `unsupported_auth` 且不消耗登录状态；
+- `login()` 对发现/注册失败返回结构化 `OAuthLoginResponse`（`success=false` +
+  `error_code`），不再以 `Err` 直接抛出。

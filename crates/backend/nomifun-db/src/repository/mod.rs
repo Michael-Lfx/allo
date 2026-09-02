@@ -19,6 +19,7 @@ pub mod companion_token;
 pub mod knowledge;
 pub mod mcp_server;
 pub mod meeting;
+pub mod oauth_client_registration;
 pub mod oauth_token;
 pub mod provider;
 pub mod provider_connection;
@@ -49,6 +50,7 @@ mod sqlite_companion_token;
 mod sqlite_knowledge;
 mod sqlite_mcp_server;
 mod sqlite_meeting;
+mod sqlite_oauth_client_registration;
 mod sqlite_oauth_token;
 mod sqlite_provider;
 mod sqlite_provider_connection;
@@ -108,6 +110,7 @@ pub use meeting::{
     IMeetingRepository, InsertMeetingSessionParams, UpdateMeetingSessionParams,
     UpsertMeetingSegmentParams, UpsertMeetingSpeakerParams, UpsertMeetingVoiceprintParams,
 };
+pub use oauth_client_registration::IOAuthClientRegistrationRepository;
 pub use oauth_token::IOAuthTokenRepository;
 pub use provider::IProviderRepository;
 pub use provider_connection::IProviderConnectionRepository;
@@ -140,6 +143,7 @@ pub use sqlite_companion_token::SqliteCompanionTokenRepository;
 pub use sqlite_knowledge::SqliteKnowledgeRepository;
 pub use sqlite_mcp_server::SqliteMcpServerRepository;
 pub use sqlite_meeting::SqliteMeetingRepository;
+pub use sqlite_oauth_client_registration::SqliteOAuthClientRegistrationRepository;
 pub use sqlite_oauth_token::SqliteOAuthTokenRepository;
 pub use sqlite_provider::SqliteProviderRepository;
 pub use sqlite_provider_connection::SqliteProviderConnectionRepository;

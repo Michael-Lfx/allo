@@ -234,6 +234,7 @@ pub use mcp::{
     OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest,
     OAuthStatusResponse, TestMcpConnectionRequest, UpdateMcpServerRequest,
 };
+pub use mcp::oauth_state;
 pub use media::{
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,
     MediaModelListResponse, MediaModelOption, MediaSettingsResponse, MediaTurnCreditUsage,

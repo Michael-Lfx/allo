@@ -33,13 +33,15 @@ impl IOAuthTokenRepository for SqliteOAuthTokenRepository {
         sqlx::query(
             "INSERT INTO oauth_tokens \
                 (server_url, access_token, refresh_token, token_type, \
-                 expires_at, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
+                 expires_at, registration_id, principal_id, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(server_url) DO UPDATE SET \
                 access_token = excluded.access_token, \
                 refresh_token = excluded.refresh_token, \
                 token_type = excluded.token_type, \
                 expires_at = excluded.expires_at, \
+                registration_id = excluded.registration_id, \
+                principal_id = excluded.principal_id, \
                 updated_at = excluded.updated_at",
         )
         .bind(params.server_url)
@@ -47,6 +49,8 @@ impl IOAuthTokenRepository for SqliteOAuthTokenRepository {
         .bind(params.refresh_token)
         .bind(params.token_type)
         .bind(params.expires_at)
+        .bind(params.registration_id)
+        .bind(params.principal_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -58,6 +62,18 @@ impl IOAuthTokenRepository for SqliteOAuthTokenRepository {
             .await?
             .ok_or_else(|| DbError::Init("Upsert succeeded but row not found".to_string()))?;
 
+        Ok(row)
+    }
+
+    async fn get_by_registration(
+        &self,
+        registration_id: i64,
+    ) -> Result<Option<OAuthTokenRow>, DbError> {
+        let row =
+            sqlx::query_as::<_, OAuthTokenRow>("SELECT * FROM oauth_tokens WHERE registration_id = ?")
+                .bind(registration_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row)
     }
 
@@ -101,6 +117,8 @@ mod tests {
             refresh_token: Some("enc_refresh_token_456"),
             token_type: "bearer",
             expires_at: Some(1700000000000),
+            registration_id: None,
+            principal_id: None,
         }
     }
 
@@ -136,6 +154,8 @@ mod tests {
                 refresh_token: None,
                 token_type: "bearer",
                 expires_at: Some(1800000000000),
+                registration_id: None,
+                principal_id: None,
             })
             .await
             .unwrap();
@@ -190,6 +210,8 @@ mod tests {
             refresh_token: None,
             token_type: "bearer",
             expires_at: None,
+            registration_id: None,
+            principal_id: None,
         })
         .await
         .unwrap();
@@ -198,5 +220,30 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://mcp.example.com".to_string()));
         assert!(urls.contains(&"https://other.example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn upsert_links_registration_and_get_by_registration() {
+        let (repo, _db) = setup().await;
+        repo.upsert(UpsertOAuthTokenParams {
+            server_url: "https://mcp.example.com",
+            access_token: "tok-a",
+            refresh_token: None,
+            token_type: "bearer",
+            expires_at: None,
+            registration_id: Some(42),
+            principal_id: Some("principal-1"),
+        })
+        .await
+        .unwrap();
+
+        let linked = repo.get_by_registration(42).await.unwrap().unwrap();
+        assert_eq!(linked.access_token, "tok-a");
+        assert_eq!(linked.registration_id, Some(42));
+        assert_eq!(linked.principal_id.as_deref(), Some("principal-1"));
+
+        // Different registration → no row, and the URL still resolves.
+        assert!(repo.get_by_registration(43).await.unwrap().is_none());
+        assert!(repo.get_by_url("https://mcp.example.com").await.unwrap().is_some());
     }
 }

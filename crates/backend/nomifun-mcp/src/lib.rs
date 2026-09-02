@@ -17,7 +17,7 @@ pub use adapters::{
 };
 pub use connection_test::McpConnectionTestService;
 pub use error::McpError;
-pub use oauth_service::McpOAuthService;
+pub use oauth_service::{MCP_PROTOCOL_VERSION, McpOAuthService};
 pub use routes::{McpRouterState, mcp_routes};
 pub use service::McpConfigService;
 pub use session_injection::{AcpMcpCapabilities, parse_acp_mcp_capabilities};

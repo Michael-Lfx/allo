@@ -49,6 +49,8 @@ impl IOAuthTokenRepository for MemoryTokenRepo {
             refresh_token: params.refresh_token.map(str::to_owned),
             token_type: params.token_type.to_owned(),
             expires_at: params.expires_at,
+            registration_id: params.registration_id,
+            principal_id: params.principal_id.map(str::to_owned),
             created_at: now,
             updated_at: now,
         };

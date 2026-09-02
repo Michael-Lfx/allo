@@ -103,21 +103,36 @@ async fn http_probe_injects_oauth_and_retries_once_after_401() {
         refresh_token: Some("refresh-token"),
         token_type: "bearer",
         expires_at: Some(nomifun_common::now_ms() + 3_600_000),
+    registration_id: None,
+    principal_id: None,
     })
     .await
     .unwrap();
 
     let oauth = McpOAuthService::new(repo.clone(), test_http_client());
     let service = McpConnectionTestService::new(test_http_client()).with_oauth_service(oauth);
-    let result = service
-        .test_connection(
-            "oauth-server",
-            &McpServerTransport::Http {
-                url: server_url.clone(),
-                headers: HashMap::new(),
-            },
-        )
-        .await;
+
+    // The seeded token predates registration tracking (legacy row). Design
+    // doc §4.3: a legacy token only refreshes through an explicit
+    // pre-registered client identity — never a fabricated default. Verify
+    // that legacy + env pre-registered client refresh path end to end.
+    unsafe {
+        std::env::set_var("MCP_OAUTH_CLIENT_ID", "pre-registered-legacy");
+        std::env::remove_var("MCP_OAUTH_CLIENT_SECRET");
+    }
+    let result = async {
+        service
+            .test_connection(
+                "oauth-server",
+                &McpServerTransport::Http {
+                    url: server_url.clone(),
+                    headers: HashMap::new(),
+                },
+            )
+            .await
+    }
+    .await;
+    unsafe { std::env::remove_var("MCP_OAUTH_CLIENT_ID") };
 
     assert!(result.success, "OAuth retry should complete: {result:?}");
     let seen = seen.lock().unwrap().clone();
