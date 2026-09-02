@@ -38,6 +38,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
   const { t } = useTranslation();
   const [localPopupVisible, setLocalPopupVisible] = useState(false);
   const popupVisible = popupVisibleProp ?? localPopupVisible;
+  const effectivePopupVisible = disabled ? false : popupVisible;
   const popupInstanceId = useId().replace(/:/g, '');
   const orderedOptions = useMemo(() => {
     const order = new Map(AUTO_TIER_ORDER.map((tier, index) => [tier, index]));
@@ -65,7 +66,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
     expandedWidth: 108,
     cssVariablePrefix: 'strategy',
     slotSelector: '.sendbox-strategy-slot',
-    open: popupVisible,
+    open: effectivePopupVisible,
   });
   if (!current) return null;
 
@@ -74,6 +75,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
   const currentLabel = labelForTier(current.autoTier);
   const popupId = `auto-tier-selector-popup-${popupInstanceId}`;
   const handlePopupVisibleChange = (visible: boolean) => {
+    if (disabled) return;
     if (popupVisibleProp === undefined) setLocalPopupVisible(visible);
     onPopupVisibleChange?.(visible);
   };
@@ -82,7 +84,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
     <Dropdown
       trigger='click'
       getPopupContainer={() => document.body}
-      popupVisible={popupVisible}
+      popupVisible={effectivePopupVisible}
       onVisibleChange={handlePopupVisibleChange}
       droplist={
         <div
@@ -139,14 +141,15 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
         disabled={disabled}
         className={classNames(
           'sendbox-responsive-reasoning-btn flowy-icon-text-btn',
-          popupVisible && 'sendbox-responsive-control-open',
+          effectivePopupVisible && 'sendbox-responsive-control-open',
           className,
         )}
+        aria-disabled={disabled || undefined}
         aria-label={`${autoTierLabel}: ${currentLabel}`}
         aria-haspopup='dialog'
         aria-controls={popupId}
-        aria-expanded={popupVisible}
-        data-popup-open={popupVisible ? 'true' : undefined}
+        aria-expanded={effectivePopupVisible}
+        data-popup-open={effectivePopupVisible ? 'true' : undefined}
         data-chat-strategy-expand-side={strategyTriggerExpansion.side}
         data-testid='auto-tier-selector'
         title={`${autoTierLabel}: ${currentLabel}`}

@@ -108,6 +108,8 @@ const CANCEL_TEARDOWN_GRACE: Duration = Duration::from_secs(7);
 const CANCEL_HANDLER_GRACE: Duration = Duration::from_secs(11);
 const CANCEL_AUTH_PREFLIGHT_GRACE: Duration = Duration::from_secs(2);
 const KNOWLEDGE_AUTOGEN_MODEL_PREF_KEY: &str = "knowledge.autogenModel";
+const RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR: &str =
+    "conversation runtime configuration cannot change while the turn is active";
 /// Client preference key holding the preferred conversation-title model
 /// (`ProviderWithModel` JSON: `{provider_id, model}`), written from the
 /// model-routing settings UI. Absent/invalid falls back to the session model.
@@ -3939,6 +3941,59 @@ impl ConversationService {
         })
     }
 
+    /// Reserve the conversation-wide runtime configuration boundary before a
+    /// sensitive setting is persisted or forwarded to an ACP runtime.
+    ///
+    /// This is deliberately non-blocking: an active turn, stop, completion,
+    /// or preparation owner must make the request fail with 409 rather than
+    /// leaving a settings request waiting behind a stream that it could
+    /// otherwise invalidate.
+    pub(crate) async fn try_acquire_runtime_configuration_guard(
+        &self,
+        conversation_id: &str,
+        durable_status: Option<&str>,
+    ) -> Result<ConversationPreparationGuard, AppError> {
+        if durable_status == Some("running") {
+            return Err(AppError::Conflict(
+                RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR.to_owned(),
+            ));
+        }
+
+        let guard = self
+            .runtime_state
+            .try_acquire_preparation_gate(conversation_id)
+            .map_err(|error| match error {
+                AppError::Conflict(_) => {
+                    AppError::Conflict(RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR.to_owned())
+                }
+                other => other,
+            })?;
+        if self.runtime_state.has_active_turn(conversation_id)
+            || self.runtime_state.is_stop_in_progress(conversation_id)
+            || self.runtime_state.is_completion_in_progress(conversation_id)
+        {
+            return Err(AppError::Conflict(
+                RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR.to_owned(),
+            ));
+        }
+
+        // The caller's row was read before gate admission. Re-read the
+        // authoritative durable status while this guard is held so a running
+        // transition that won a separate durable boundary cannot be followed
+        // by a configuration write based on a stale idle snapshot.
+        let current = self
+            .conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        if current.status.as_deref() == Some("running") {
+            return Err(AppError::Conflict(
+                RUNTIME_CONFIGURATION_ACTIVE_TURN_ERROR.to_owned(),
+            ));
+        }
+        Ok(guard)
+    }
+
     /// Soft reads (mode / model / slash-commands / usage) use this so a
     /// missing runtime returns empty defaults instead of NotFound.
     pub(crate) fn optional_runtime_handle(
@@ -6017,6 +6072,9 @@ impl ConversationService {
                 AppError::Internal(format!("Failed to serialize execution model pool: {error}"))
             })?)),
         };
+        let execution_model_pool_changed = execution_model_pool
+            .as_ref()
+            .is_some_and(|next| existing.execution_model_pool.as_ref() != next.as_ref());
         let decision_policy = req
             .decision_policy
             .map(|policy| policy.as_str().to_owned());
@@ -6026,6 +6084,15 @@ impl ConversationService {
                 AppError::BadRequest(format!("invalid execution_template_id: {error}"))
             })?;
         }
+        let execution_template_id_changed = execution_template_id
+            .as_ref()
+            .is_some_and(|next| existing.execution_template_id.as_ref() != next.as_ref());
+        let runtime_configuration_changed = model_changed
+            || workspace_changed
+            || delegation_policy_changed
+            || execution_model_pool_changed
+            || execution_template_id_changed;
+        let runtime_recycle_required = model_changed || workspace_changed || delegation_policy_changed;
 
         let updates = ConversationRowUpdate {
             name: req.name,
@@ -6047,9 +6114,18 @@ impl ConversationService {
             updated_at: Some(now),
         };
 
+        let configuration_guard = if runtime_configuration_changed {
+            Some(self.try_acquire_runtime_configuration_guard(
+                id,
+                existing.status.as_deref(),
+            )
+            .await?)
+        } else {
+            None
+        };
         self.conversation_repo.update(parse_conv_id(id)?, &updates).await?;
 
-        if model_changed || workspace_changed || delegation_policy_changed {
+        if runtime_recycle_required {
             info!(
                 model_changed,
                 workspace_changed,
@@ -6066,9 +6142,7 @@ impl ConversationService {
         }
 
         if (reasoning_effort_changed || task_profile_changed)
-            && !model_changed
-            && !workspace_changed
-            && !delegation_policy_changed
+            && !runtime_recycle_required
         {
             if let Some(runtime) = runtime_registry.get_runtime(id) {
                 runtime.request_turn_boundary_recycle();
@@ -6080,6 +6154,8 @@ impl ConversationService {
                 );
             }
         }
+
+        drop(configuration_guard);
 
         // Re-fetch to return the updated version
         let updated = self
@@ -6098,7 +6174,9 @@ impl ConversationService {
     }
 
     /// Merge backend-owned Agent metadata into `conversation.extra` without
-    /// touching the typed conversation fields or terminating its runtime.
+    /// touching the typed conversation fields. Workspace changes use the same
+    /// runtime configuration gate as the typed update path and recycle only an
+    /// idle runtime after the new value is persisted.
     ///
     /// Execution identity and policy are deliberately rejected here: they have
     /// first-class persistence and must not regain a second source of truth via
@@ -6129,10 +6207,32 @@ impl ConversationService {
                 "Conversation {conversation_id} extra must be a JSON object"
             )));
         }
+        let existing_workspace = merged
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
         merge_json(&mut merged, &patch);
         if patch.get("workspace").is_some() {
             normalize_workspace_extra(&mut merged)?;
         }
+        let workspace_changed = patch.get("workspace").is_some()
+            && existing_workspace
+                != merged
+                    .get("workspace")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+
+        let configuration_guard = if workspace_changed {
+            Some(
+                self.try_acquire_runtime_configuration_guard(
+                    conversation_id,
+                    existing.status.as_deref(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
 
         let updates = ConversationRowUpdate {
             extra: Some(
@@ -6143,8 +6243,91 @@ impl ConversationService {
             ..Default::default()
         };
         self.conversation_repo.update(parse_conv_id(conversation_id)?, &updates).await?;
+        if workspace_changed {
+            Self::terminate_runtime_with_proof(
+                &self.runtime_registry,
+                conversation_id,
+                AgentKillReason::ConfigurationChanged,
+                "backend workspace configuration update",
+            )
+            .await?;
+        }
+        drop(configuration_guard);
         debug!("Conversation extra merged");
         Ok(())
+    }
+
+    /// Apply a trusted workspace reconcile action while the runtime
+    /// configuration gate is held. The callback receives the authoritative
+    /// workspace value re-read after gate admission, so filesystem movement
+    /// cannot be based on a stale pre-gate snapshot.
+    pub async fn update_workspace_extra_with<F>(
+        &self,
+        conversation_id: &str,
+        apply: F,
+    ) -> Result<bool, AppError>
+    where
+        F: FnOnce(&str) -> Option<String>,
+    {
+        let initial = self
+            .conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        let configuration_guard = self
+            .try_acquire_runtime_configuration_guard(conversation_id, initial.status.as_deref())
+            .await?;
+        let current = self
+            .conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        let mut extra: serde_json::Value = serde_json::from_str(&current.extra).map_err(|error| {
+            AppError::Internal(format!(
+                "Conversation {conversation_id} has invalid extra JSON: {error}"
+            ))
+        })?;
+        if !extra.is_object() {
+            return Err(AppError::Internal(format!(
+                "Conversation {conversation_id} extra must be a JSON object"
+            )));
+        }
+        let current_workspace = extra
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        let Some(next_workspace) = apply(&current_workspace) else {
+            drop(configuration_guard);
+            return Ok(false);
+        };
+        if next_workspace.trim() == current_workspace {
+            drop(configuration_guard);
+            return Ok(false);
+        }
+        extra["workspace"] = serde_json::Value::String(next_workspace);
+        normalize_workspace_extra(&mut extra)?;
+        let updates = ConversationRowUpdate {
+            extra: Some(
+                serde_json::to_string(&extra)
+                    .map_err(|error| AppError::Internal(format!("Failed to serialize extra: {error}")))?,
+            ),
+            updated_at: Some(now_ms()),
+            ..Default::default()
+        };
+        self.conversation_repo
+            .update(parse_conv_id(conversation_id)?, &updates)
+            .await?;
+        Self::terminate_runtime_with_proof(
+            &self.runtime_registry,
+            conversation_id,
+            AgentKillReason::ConfigurationChanged,
+            "trusted workspace reconcile",
+        )
+        .await?;
+        drop(configuration_guard);
+        Ok(true)
     }
 
     /// Replace the immutable skill snapshot for a backend-owned conversation.

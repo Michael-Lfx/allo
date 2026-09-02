@@ -94,6 +94,7 @@ const NomiModelSelector: React.FC<{
   });
 
   if (disabled || !selection) {
+    const lockedLabel = selection ? label : t('conversation.welcome.useCliModel');
     return (
       <Button
         ref={modelTriggerExpansion.ref}
@@ -107,17 +108,19 @@ const NomiModelSelector: React.FC<{
         )}
         shape='round'
         size='small'
+        disabled={disabled}
         loading={selection?.isModelCatalogLoading}
         style={{ cursor: 'default', ...modelTriggerExpansion.style }}
         aria-label={
           selection?.isModelCatalogLoading
             ? t('common.loading')
-            : t('conversation.welcome.useCliModel')
+            : lockedLabel
         }
+        aria-disabled={disabled || undefined}
         title={
           selection?.isModelCatalogLoading
             ? t('common.loading')
-            : t('conversation.welcome.useCliModel')
+            : lockedLabel
         }
         data-chat-model-expand-side={modelTriggerExpansion.side}
       >
@@ -126,7 +129,7 @@ const NomiModelSelector: React.FC<{
             {renderLogo()}
           </span>
           <span className='sendbox-responsive-label block truncate min-w-0'>
-            {t('conversation.welcome.useCliModel')}
+            {selection ? lockedLabel : t('conversation.welcome.useCliModel')}
           </span>
         </span>
       </Button>

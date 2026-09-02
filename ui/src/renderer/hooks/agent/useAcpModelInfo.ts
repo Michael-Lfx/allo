@@ -106,6 +106,7 @@ export const useAcpModelInfo = ({
   prepareRuntime,
   prepareRuntimeForMutation,
   enabled = true,
+  disabled = false,
   onSelectModelSuccess,
   onSelectModelFailed,
 }: {
@@ -118,10 +119,16 @@ export const useAcpModelInfo = ({
   /** Explicit user model selection may prepare a new runtime generation. */
   prepareRuntimeForMutation?: () => Promise<void>;
   enabled?: boolean;
+  /** Disable model mutation while the conversation has an active turn. */
+  disabled?: boolean;
   onSelectModelSuccess?: (model_id: string) => void;
   onSelectModelFailed?: (model_id: string, error: unknown) => void;
 }): UseAcpModelInfoResult => {
   const hasUserChangedModel = useRef(false);
+  const disabledRef = useRef(disabled);
+  // Keep this synchronous with render so a model click that started before a
+  // turn begins cannot continue after a potentially blocking warmup.
+  disabledRef.current = disabled;
   const prevConversationIdRef = useRef(conversation_id);
   const modelInfoRef = useRef<AcpModelInfo | null>(null);
   const handshakeModelInfoRef = useRef<AcpModelInfo | null>(null);
@@ -387,7 +394,7 @@ export const useAcpModelInfo = ({
 
   const selectModel = useCallback(
     (model_id: string) => {
-      if (!enabled) return;
+      if (!enabled || disabled) return;
       hasUserChangedModel.current = true;
       const previousModelInfo = model_info;
       logAcpModelInfo('select_model_requested', {
@@ -400,23 +407,35 @@ export const useAcpModelInfo = ({
       void (async () => {
         try {
           await (prepareRuntimeForMutation ?? prepareRuntime)?.();
+          if (disabledRef.current) {
+            // A stale click may have waited behind runtime preparation. Do not
+            // apply it after the conversation became busy; the backend gate
+            // remains the authority for races that happen after this check.
+            hasUserChangedModel.current = false;
+            return;
+          }
           await ipcBridge.acpConversation.setModel.invoke({ conversation_id, model: model_id });
         } catch (error) {
           hasUserChangedModel.current = false;
+          const activeTurnConflict = isBackendHttpError(error) && error.status === 409;
           logAcpModelInfo('select_model_failed', {
             conversation_id,
             backend,
             requested_model_id: model_id,
             error: error instanceof Error ? error.message : String(error),
           });
-          console.error('[useAcpModelInfo] Failed to set model:', error);
+          if (!activeTurnConflict) {
+            console.error('[useAcpModelInfo] Failed to set model:', error);
+          }
           if (previousModelInfo) {
             updateModelInfo(previousModelInfo);
           } else {
             void mutateModelInfo(null, false);
           }
-          onSelectModelFailed?.(model_id, error);
-          void reloadModelInfo().catch(() => {});
+          if (!activeTurnConflict) {
+            onSelectModelFailed?.(model_id, error);
+            void reloadModelInfo().catch(() => {});
+          }
           return;
         }
 
@@ -490,6 +509,7 @@ export const useAcpModelInfo = ({
     [
       backend,
       conversation_id,
+      disabled,
       enabled,
       model_info,
       mutateModelInfo,
@@ -502,7 +522,7 @@ export const useAcpModelInfo = ({
     ]
   );
 
-  const canSwitch = enabled && Boolean(model_info && model_info.available_models.length > 0);
+  const canSwitch = enabled && !disabled && Boolean(model_info && model_info.available_models.length > 0);
 
   return { model_info, canSwitch, selectModel };
 };

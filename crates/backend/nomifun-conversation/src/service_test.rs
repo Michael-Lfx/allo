@@ -22,7 +22,7 @@ use nomifun_api_types::{
     CloneConversationRequest, ConfirmRequest, CreateConversationRequest, ListConversationsQuery,
     ExecutionModelPool, ExecutionModelRef, ListMessagesQuery, ModelPreference,
     PresetKnowledgePolicy, PresetTarget, ResolvedPresetSnapshot, SearchMessagesQuery,
-    SendMessageRequest, UpdateConversationRequest, WebSocketMessage,
+    SendMessageRequest, SetModelRequest, UpdateConversationRequest, WebSocketMessage,
 };
 use nomifun_common::{
     AdaptationPolicy, AgentExecutionEventKind, AgentExecutionStatus, AgentKillReason,
@@ -30,7 +30,8 @@ use nomifun_common::{
     ConversationSource,
     ConversationId, ConversationStatus,
     DecisionPolicy, DelegationPolicy, ExecutionAttemptStatus, ExecutionStepKind,
-    ExecutionStepStatus, MessageId, PaginatedResult, ParticipantAssignmentSource, PlanGate,
+    ExecutionStepStatus, AgentExecutionTemplateId, MessageId, PaginatedResult,
+    ParticipantAssignmentSource, PlanGate,
     StepFailurePolicy, TimestampMs, now_ms,
 };
 use nomifun_db::models::{
@@ -56,6 +57,7 @@ use nomifun_db::{
 use nomifun_realtime::{EventBroadcaster, UserEventSink};
 use serde_json::json;
 use tokio::sync::{Notify, broadcast};
+use tokio_util::sync::CancellationToken;
 
 use crate::service::{
     BackgroundTurnReconciliationDisposition, ConversationService,
@@ -2812,6 +2814,161 @@ async fn internal_update_extra_rejects_every_backend_owned_lifecycle_key_without
 }
 
 #[tokio::test]
+async fn internal_update_extra_rejects_active_workspace_change_without_side_effects() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_trait: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let service = ConversationService::new(
+        Arc::<str>::from(TEST_USER_1),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry_trait,
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = service
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/old" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let agent = Arc::new(MockAgent::new(&conversation.conversation_id));
+    runtime_registry.insert_agent(
+        &conversation.conversation_id,
+        AgentRuntimeHandle::Mock(agent),
+    );
+    repo.update(
+        &conversation.conversation_id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let before = repo
+        .get(&conversation.conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .extra;
+
+    let error = service
+        .update_extra(
+            &conversation.conversation_id,
+            json!({ "workspace": "/new" }),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AppError::Conflict(message) if message.contains("cannot change")
+    ));
+    assert_eq!(repo.get(&conversation.conversation_id).await.unwrap().unwrap().extra, before);
+    assert_eq!(runtime_registry.termination_count(), 0);
+    assert!(runtime_registry.get_runtime(&conversation.conversation_id).is_some());
+}
+
+#[tokio::test]
+async fn trusted_workspace_reconcile_rejects_active_turn_before_callback() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_trait: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let service = ConversationService::new(
+        Arc::<str>::from(TEST_USER_1),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry_trait,
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = service
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/old" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    repo.update(
+        &conversation.conversation_id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let invoked = Arc::new(AtomicBool::new(false));
+    let invoked_in_callback = invoked.clone();
+
+    let error = service
+        .update_workspace_extra_with(&conversation.conversation_id, move |_| {
+            invoked_in_callback.store(true, Ordering::SeqCst);
+            Some("/new".into())
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AppError::Conflict(message) if message.contains("cannot change")
+    ));
+    assert!(!invoked.load(Ordering::SeqCst));
+    let stored = repo.get(&conversation.conversation_id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&stored.extra).unwrap();
+    assert_eq!(extra["workspace"], "/old");
+    assert_eq!(runtime_registry.termination_count(), 0);
+}
+
+#[tokio::test]
+async fn trusted_workspace_reconcile_updates_idle_workspace() {
+    let (service, _broadcaster, repo, _runtime_registry) = make_service();
+    let conversation = service
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/old", "keep": true }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let applied = service
+        .update_workspace_extra_with(&conversation.conversation_id, |_| Some("/new".into()))
+        .await
+        .unwrap();
+
+    assert!(applied);
+    let stored = repo.get(&conversation.conversation_id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&stored.extra).unwrap();
+    assert_eq!(extra["workspace"], "/new");
+    assert_eq!(extra["keep"], true);
+}
+
+#[tokio::test]
 async fn update_model() {
     let (svc, _broadcaster, _repo, _runtime_registry) = make_service();
 
@@ -2840,6 +2997,442 @@ async fn update_model() {
         mock.termination_wait_count(),
         1,
         "model update must await old agent teardown"
+    );
+}
+
+#[tokio::test]
+async fn update_model_rejects_durable_running_conversation_before_persist_or_terminate() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let conv = svc
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/project" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    repo.update(
+        &conv.conversation_id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_trait: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let error = svc
+        .update(
+            TEST_USER_1,
+            &conv.conversation_id,
+            serde_json::from_value(json!({
+                "model": { "provider_id": PROVIDER_ID_2, "model": "new-model" }
+            }))
+            .unwrap(),
+            &runtime_registry_trait,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AppError::Conflict(message)
+            if message == "conversation runtime configuration cannot change while the turn is active"
+    ));
+    let stored = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+    assert_eq!(stored.model, conv.model.map(|model| serde_json::to_string(&model).unwrap()));
+    assert_eq!(stored.status.as_deref(), Some("running"));
+    assert_eq!(runtime_registry.termination_count(), 0);
+
+    let renamed = svc
+        .update(
+            TEST_USER_1,
+            &conv.conversation_id,
+            serde_json::from_value(json!({ "name": "still-renamable" })).unwrap(),
+            &runtime_registry_trait,
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.name, "still-renamable");
+}
+
+#[tokio::test]
+async fn runtime_configuration_guard_rechecks_durable_status_after_gate_admission() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let conv = svc
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/project" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    repo.update(
+        &conv.conversation_id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = svc
+        .try_acquire_runtime_configuration_guard(&conv.conversation_id, Some("pending"))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("cannot change")));
+}
+
+#[tokio::test]
+async fn update_model_rejects_active_turn_without_mutating_or_terminating() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let conv = svc
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/project" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let active_turn = svc
+        .runtime_state()
+        .try_acquire_turn(&conv.conversation_id)
+        .expect("active turn");
+
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_trait: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let error = svc
+        .update(
+            TEST_USER_1,
+            &conv.conversation_id,
+            serde_json::from_value(json!({
+                "model": { "provider_id": PROVIDER_ID_2, "model": "new-model" }
+            }))
+            .unwrap(),
+            &runtime_registry_trait,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("cannot change")));
+    assert_eq!(
+        repo.get(&conv.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model,
+        conv.model.map(|model| serde_json::to_string(&model).unwrap())
+    );
+    assert_eq!(runtime_registry.termination_count(), 0);
+    drop(active_turn);
+}
+
+#[tokio::test]
+async fn update_pool_or_template_rejects_active_turn_without_mutating() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let conv = svc
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "execution_model_pool": {
+                    "mode": "range",
+                    "models": [
+                        { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                        { "provider_id": PROVIDER_ID_3, "model": "collaborator" }
+                    ]
+                },
+                "extra": { "workspace": "/project" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let original_pool = conv.execution_model_pool.clone();
+    let active_turn = svc
+        .runtime_state()
+        .try_acquire_turn(&conv.conversation_id)
+        .expect("active turn");
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_trait: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+
+    let pool_error = svc
+        .update(
+            TEST_USER_1,
+            &conv.conversation_id,
+            serde_json::from_value(json!({
+                "execution_model_pool": {
+                    "mode": "range",
+                    "models": [
+                        { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                        { "provider_id": PROVIDER_ID_2, "model": "replacement" }
+                    ]
+                }
+            }))
+            .unwrap(),
+            &runtime_registry_trait,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(pool_error, AppError::Conflict(message) if message.contains("cannot change")));
+
+    let template_id = AgentExecutionTemplateId::new().into_string();
+    let template_error = svc
+        .update(
+            TEST_USER_1,
+            &conv.conversation_id,
+            serde_json::from_value(json!({
+                "execution_template_id": template_id
+            }))
+            .unwrap(),
+            &runtime_registry_trait,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(template_error, AppError::Conflict(message) if message.contains("cannot change")));
+
+    let stored = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+    assert_eq!(stored.execution_model_pool, original_pool.map(|pool| serde_json::to_string(&pool).unwrap()));
+    assert!(stored.execution_template_id.is_none());
+    assert_eq!(runtime_registry.termination_count(), 0);
+    drop(active_turn);
+}
+
+#[tokio::test]
+async fn update_model_rejects_busy_preparation_gate_without_waiting_or_mutating() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let conv = svc
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/project" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let gate = svc
+        .runtime_state()
+        .acquire_preparation_gate(&conv.conversation_id, &CancellationToken::new())
+        .await
+        .expect("preparation gate");
+
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_trait: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let result = tokio::time::timeout(
+        Duration::from_millis(100),
+        svc.update(
+            TEST_USER_1,
+            &conv.conversation_id,
+            serde_json::from_value(json!({
+                "model": { "provider_id": PROVIDER_ID_2, "model": "new-model" }
+            }))
+            .unwrap(),
+            &runtime_registry_trait,
+        ),
+    )
+    .await
+    .expect("configuration update must not wait for the active gate")
+    .unwrap_err();
+
+    assert!(matches!(result, AppError::Conflict(message) if message.contains("cannot change")));
+    assert_eq!(
+        repo.get(&conv.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model,
+        conv.model.map(|model| serde_json::to_string(&model).unwrap())
+    );
+    assert_eq!(runtime_registry.termination_count(), 0);
+    drop(gate);
+}
+
+#[tokio::test]
+async fn update_model_rejects_stop_in_progress_without_mutating_or_terminating() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let conv = svc
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/project" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let stop = svc
+        .runtime_state()
+        .begin_conversation_stop(&conv.conversation_id)
+        .expect("stop admission")
+        .expect("stop fence");
+
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_trait: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let error = svc
+        .update(
+            TEST_USER_1,
+            &conv.conversation_id,
+            serde_json::from_value(json!({
+                "model": { "provider_id": PROVIDER_ID_2, "model": "new-model" }
+            }))
+            .unwrap(),
+            &runtime_registry_trait,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("cannot change")));
+    assert_eq!(
+        repo.get(&conv.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model,
+        conv.model.map(|model| serde_json::to_string(&model).unwrap())
+    );
+    assert_eq!(runtime_registry.termination_count(), 0);
+    drop(stop);
+}
+
+#[tokio::test]
+async fn update_model_rejects_completion_in_progress_without_mutating_or_terminating() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let conv = svc
+        .create(
+            TEST_USER_1,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": { "workspace": "/project" }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut turn = svc
+        .runtime_state()
+        .try_acquire_turn(&conv.conversation_id)
+        .expect("active turn");
+    let completion = svc
+        .runtime_state()
+        .begin_turn_completion(&conv.conversation_id, turn.turn_id())
+        .expect("completion admission")
+        .expect("completion fence");
+    assert!(turn.release());
+
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_trait: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let error = svc
+        .update(
+            TEST_USER_1,
+            &conv.conversation_id,
+            serde_json::from_value(json!({
+                "model": { "provider_id": PROVIDER_ID_2, "model": "new-model" }
+            }))
+            .unwrap(),
+            &runtime_registry_trait,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("cannot change")));
+    assert_eq!(
+        repo.get(&conv.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model,
+        conv.model.map(|model| serde_json::to_string(&model).unwrap())
+    );
+    assert_eq!(runtime_registry.termination_count(), 0);
+    drop(completion);
+}
+
+#[tokio::test]
+async fn acp_set_model_reuses_runtime_configuration_gate() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let registry_trait: Arc<dyn AgentRuntimeRegistry> = registry.clone();
+    let service = ConversationService::new(
+        Arc::<str>::from(TEST_USER_1),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        registry_trait,
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = service.create(TEST_USER_1, make_create_req()).await.unwrap();
+    let agent = Arc::new(MockAgent::new(&conversation.conversation_id));
+    registry.insert_agent(
+        &conversation.conversation_id,
+        AgentRuntimeHandle::Mock(agent.clone()),
+    );
+
+    service
+        .set_model(
+            TEST_USER_1,
+            &conversation.conversation_id,
+            SetModelRequest {
+                model_id: "idle-model".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        agent.set_model_calls.lock().unwrap().as_slice(),
+        ["idle-model".to_owned()]
+    );
+
+    repo.update(
+        &conversation.conversation_id,
+        &ConversationRowUpdate {
+            status: Some("running".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let error = service
+        .set_model(
+            TEST_USER_1,
+            &conversation.conversation_id,
+            SetModelRequest {
+                model_id: "running-model".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("cannot change")));
+    assert_eq!(
+        agent.set_model_calls.lock().unwrap().as_slice(),
+        ["idle-model".to_owned()]
     );
 }
 
@@ -5255,6 +5848,7 @@ struct MockAgent {
     confirmations: Mutex<Vec<Confirmation>>,
     approval_memory: Mutex<std::collections::HashMap<String, bool>>,
     allow_direct_confirm: bool,
+    set_model_calls: Mutex<Vec<String>>,
     /// Optional workspace override. Simple mocks fall back to the host's real
     /// temporary directory so workspace canonicalization behaves identically
     /// on Windows, Linux, and macOS.
@@ -5271,6 +5865,7 @@ impl MockAgent {
             confirmations: Mutex::new(vec![]),
             approval_memory: Mutex::new(std::collections::HashMap::new()),
             allow_direct_confirm: false,
+            set_model_calls: Mutex::new(Vec::new()),
             workspace_override: None,
         }
     }
@@ -5284,6 +5879,7 @@ impl MockAgent {
             confirmations: Mutex::new(confirmations),
             approval_memory: Mutex::new(std::collections::HashMap::new()),
             allow_direct_confirm: false,
+            set_model_calls: Mutex::new(Vec::new()),
             workspace_override: None,
         }
     }
@@ -5297,6 +5893,7 @@ impl MockAgent {
             confirmations: Mutex::new(vec![]),
             approval_memory: Mutex::new(std::collections::HashMap::new()),
             allow_direct_confirm: true,
+            set_model_calls: Mutex::new(Vec::new()),
             workspace_override: None,
         }
     }
@@ -5346,6 +5943,11 @@ impl AgentRuntimeControl for MockAgent {
 
 #[async_trait::async_trait]
 impl MockAgentRuntime for MockAgent {
+    async fn set_model(&self, model_id: &str) -> Result<(), AppError> {
+        self.set_model_calls.lock().unwrap().push(model_id.to_owned());
+        Ok(())
+    }
+
     fn get_confirmations(&self) -> Vec<Confirmation> {
         self.confirmations.lock().unwrap().clone()
     }

@@ -42,6 +42,7 @@ import {
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import { isConversationModelSelectionDisabled } from '@/renderer/pages/conversation/utils/conversationModelSelection';
 import { CHAT_COMPOSER_WRAPPER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import {
   warmupConversation,
@@ -147,7 +148,13 @@ const AcpSendBox: React.FC<{
   const conversationContext = useConversationContextSafe();
   const loadedMcpStatuses = conversationContext?.loadedMcpStatuses ?? [];
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
+  const isBusy = running || aiProcessing || isStopping;
+  const modelSelectionDisabled = isConversationModelSelectionDisabled({
+    hasHydratedRunningState,
+    isBusy,
+  });
   const prepareRuntimeSync = useCallback(async () => {
     await warmupConversation(conversation_id);
   }, [conversation_id]);
@@ -166,6 +173,7 @@ const AcpSendBox: React.FC<{
     prepareRuntime: prepareRuntimeForRead,
     prepareRuntimeForMutation: prepareRuntimeSync,
     enabled: isMobile,
+    disabled: modelSelectionDisabled,
     onSelectModelSuccess: () => Message.success(t('agent.model.switchSuccess')),
     onSelectModelFailed: () => Message.error(t('agent.model.switchFailed')),
   });
@@ -230,8 +238,10 @@ const AcpSendBox: React.FC<{
     setAtPath,
     setUploadFile,
   });
-  const [isStopping, setIsStopping] = useState(false);
-  const isBusy = running || aiProcessing || isStopping;
+  useEffect(() => {
+    if (modelSelectionDisabled) setIsMobileSheetOpen(false);
+  }, [modelSelectionDisabled]);
+
   const { beginStopAttempt, getStopAttemptStatus } = useConversationStopAttemptGuard(
     conversation_id,
     getTurnStartGeneration,
@@ -722,6 +732,7 @@ Please check your local CLI tool authentication status`,
               backend={backend}
               initialModelId={initialModelId}
               waitForWarmup
+              disabled={modelSelectionDisabled}
             />
           </div>
         }
@@ -778,7 +789,7 @@ Please check your local CLI tool authentication status`,
       {isMobile && (
         <>
           <MobileActionSheet
-            open={isMobileSheetOpen}
+            open={modelSelectionDisabled ? false : isMobileSheetOpen}
             onClose={() => setIsMobileSheetOpen(false)}
             title={t('common.more', { defaultValue: 'More' })}
             entries={sheetEntries}

@@ -306,6 +306,35 @@ impl ConversationRuntimeStateService {
         Ok(ConversationPreparationGuard { _guard: guard })
     }
 
+    /// Try to acquire the per-conversation preparation/reconciliation gate
+    /// without waiting for an in-flight send, runtime preparation, stop, or
+    /// other lifecycle operation to finish.
+    pub fn try_acquire_preparation_gate(
+        self: &Arc<Self>,
+        conversation_id: &str,
+    ) -> Result<ConversationPreparationGuard, AppError> {
+        let gate = {
+            let mut gates = self.preparation_gates.lock().map_err(|_| {
+                AppError::Internal("conversation preparation gate map poisoned".into())
+            })?;
+            gates.retain(|_, gate| gate.strong_count() > 0);
+            if let Some(gate) = gates.get(conversation_id).and_then(Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(AsyncMutex::new(()));
+                gates.insert(conversation_id.to_owned(), Arc::downgrade(&gate));
+                gate
+            }
+        };
+
+        let guard = gate.try_lock_owned().map_err(|_| {
+            AppError::Conflict(format!(
+                "conversation {conversation_id} runtime preparation is busy"
+            ))
+        })?;
+        Ok(ConversationPreparationGuard { _guard: guard })
+    }
+
     /// Read-only liveness probe: true when this conversation's preparation
     /// gate is currently held by a live owner. Used by edit-resubmit state
     /// observation to distinguish a reservation → admission owner that has not
@@ -3121,6 +3150,26 @@ mod tests {
             .expect("cancelled waiter task");
         assert!(matches!(result, Err(AppError::Conflict(_))));
         drop(held);
+    }
+
+    #[tokio::test]
+    async fn try_preparation_gate_is_non_blocking() {
+        let state = Arc::new(ConversationRuntimeStateService::default());
+        let token = CancellationToken::new();
+        let held = state
+            .acquire_preparation_gate("conv-nonblocking", &token)
+            .await
+            .expect("held gate");
+
+        let started = std::time::Instant::now();
+        let result = state.try_acquire_preparation_gate("conv-nonblocking");
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(matches!(result, Err(AppError::Conflict(_))));
+
+        drop(held);
+        state
+            .try_acquire_preparation_gate("conv-nonblocking")
+            .expect("gate should be available after release");
     }
 
     #[tokio::test]
