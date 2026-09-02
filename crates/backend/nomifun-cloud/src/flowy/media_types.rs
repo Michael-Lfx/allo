@@ -120,25 +120,222 @@ impl VideoTaskRecord {
     }
 
     /// Best-effort upstream failure reason from `result` JSON.
+    ///
+    /// Ark/Seedance failures store `error` as `{ code, message }`. Do **not**
+    /// fall back to `status: "failed"` — that is a state label, not a reason.
     pub fn failure_detail(&self) -> Option<String> {
         let result = self.result.as_ref()?;
-        for key in ["error", "message", "fail_reason", "reason"] {
-            if let Some(s) = result.get(key).and_then(|v| v.as_str()) {
-                let t = s.trim();
-                if !t.is_empty() {
-                    return Some(t.to_string());
-                }
+        if let Some(detail) = result.get("error").and_then(format_provider_error_node) {
+            return Some(detail);
+        }
+        let code = json_nonempty_str(result.get("error_code"));
+        let message = json_nonempty_str(result.get("error_message"))
+            .or_else(|| json_nonempty_str(result.get("message")));
+        if let Some(formatted) = format_provider_code_message(code, message) {
+            return Some(formatted);
+        }
+        for key in ["fail_reason", "reason"] {
+            if let Some(detail) = result.get(key).and_then(format_provider_error_node) {
+                return Some(detail);
             }
         }
-        result
-            .get("status")
-            .and_then(|v| v.as_str())
-            .filter(|s| {
-                let lower = s.to_ascii_lowercase();
-                lower.contains("fail") || lower.contains("error")
-            })
-            .map(str::to_string)
+        None
     }
+}
+
+fn json_nonempty_str(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn is_status_label(s: &str) -> bool {
+    matches!(
+        s.trim().to_ascii_lowercase().as_str(),
+        "failed" | "fail" | "error" | "cancelled" | "canceled" | "expired" | "succeeded" | "success"
+    )
+}
+
+fn format_provider_code_message(code: Option<&str>, message: Option<&str>) -> Option<String> {
+    match (code, message) {
+        (Some(code), Some(message)) if is_status_label(code) && is_status_label(message) => None,
+        (Some(code), Some(message)) if message.starts_with(code) => Some(message.to_string()),
+        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
+        (Some(code), None) if !is_status_label(code) => Some(code.to_string()),
+        (None, Some(message)) if !is_status_label(message) => Some(message.to_string()),
+        _ => None,
+    }
+}
+
+fn format_provider_error_node(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || is_status_label(trimmed) {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Object(map) => format_provider_code_message(
+            json_nonempty_str(map.get("code")),
+            json_nonempty_str(map.get("message")).or_else(|| json_nonempty_str(map.get("msg"))),
+        ),
+        _ => None,
+    }
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn is_provider_error_code(token: &str) -> bool {
+    let Some((left, right)) = token.split_once('.') else {
+        return false;
+    };
+    if left.is_empty()
+        || right.is_empty()
+        || token.bytes().filter(|b| *b == b'.').count() != 1
+        || !left.chars().all(|c| c.is_ascii_alphanumeric())
+        || !right.chars().all(|c| c.is_ascii_alphanumeric())
+        || left.chars().all(|c| c.is_ascii_digit())
+        || right.chars().all(|c| c.is_ascii_digit())
+        || left.len() < 8
+    {
+        return false;
+    }
+    let lower = token.to_ascii_lowercase();
+    left.chars().any(|c| c.is_ascii_uppercase())
+        || lower.contains("sensitive")
+        || lower.contains("policy")
+        || lower.contains("privacy")
+        || lower.contains("inspection")
+}
+
+/// Stable upstream code such as `OutputVideoSensitiveContentDetected.PolicyViolation`.
+pub fn extract_provider_error_code(blob: &str) -> Option<String> {
+    for raw in blob.split(|c: char| {
+        c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '"' | '\'')
+    }) {
+        let token = raw.trim_matches(|c: char| matches!(c, ':' | '。' | '，'));
+        if is_provider_error_code(token) {
+            return Some(token.to_string());
+        }
+    }
+    None
+}
+
+/// Provider message after `CODE:`, otherwise a copyright/policy sentence.
+pub fn extract_provider_error_message(blob: &str) -> Option<String> {
+    if let Some(code) = extract_provider_error_code(blob) {
+        let needle = format!("{code}:");
+        if let Some(idx) = blob.find(&needle) {
+            let rest = blob[idx + needle.len()..].trim();
+            let line = rest.lines().next().unwrap_or(rest).trim();
+            if !line.is_empty() && !is_status_label(line) {
+                return Some(truncate_chars(line, 256));
+            }
+        }
+    }
+    let lower = blob.to_ascii_lowercase();
+    for marker in [
+        "the request failed because",
+        "output video may be related to copyright",
+        "input text may be related to copyright",
+        "may contain real person",
+    ] {
+        if let Some(idx) = lower.find(marker) {
+            let rest = blob[idx..].lines().next().unwrap_or(&blob[idx..]).trim();
+            if !rest.is_empty() {
+                return Some(truncate_chars(rest, 256));
+            }
+        }
+    }
+    None
+}
+
+fn fallback_film_error_code(blob: &str) -> Option<String> {
+    let lower = blob.to_ascii_lowercase();
+    if lower.contains("insufficient_credit")
+        || lower.contains("insufficient credit")
+        || blob.contains("积分不足")
+        || blob.contains("INSUFFICIENT_CREDITS")
+    {
+        return Some("insufficient_credits".into());
+    }
+    if lower.contains("copyright") || blob.contains("版权") {
+        return Some("copyright_restriction".into());
+    }
+    if lower.contains("privacyinformation")
+        || lower.contains("inputimagesensitive")
+        || lower.contains("real person")
+        || blob.contains("含真人")
+    {
+        return Some("input_image_privacy".into());
+    }
+    if lower.contains("sensitivecontent")
+        || lower.contains("policyviolation")
+        || lower.contains("datainspection")
+        || blob.contains("内容安全")
+        || blob.contains("敏感内容")
+    {
+        return Some("content_policy".into());
+    }
+    if lower.contains("video generation failed") || lower.contains("video task") {
+        return Some("video_generation_failed".into());
+    }
+    None
+}
+
+/// `(error_code, error_message)` for `film_failed` telemetry. Never a status word.
+pub fn film_telemetry_error(blob: &str) -> (Option<String>, Option<String>) {
+    let trimmed = blob.trim();
+    if trimmed.is_empty() {
+        return (None, None);
+    }
+    let code = extract_provider_error_code(trimmed).or_else(|| fallback_film_error_code(trimmed));
+    let message = extract_provider_error_message(trimmed).or_else(|| {
+        if is_status_label(trimmed) {
+            None
+        } else {
+            Some(truncate_chars(trimmed, 256))
+        }
+    });
+    (code, message)
+}
+
+/// Best-effort channel for VG facts (`llm` / `image` / `video` / `pipeline`).
+pub fn infer_film_failure_channel(blob: &str) -> &'static str {
+    let lower = blob.to_ascii_lowercase();
+    if lower.contains("insufficient_credit") || blob.contains("积分不足") {
+        return "pipeline";
+    }
+    if lower.contains("inputimagesensitive")
+        || lower.contains("privacyinformation")
+        || (lower.contains("image")
+            && !lower.contains("outputvideo")
+            && !lower.contains("video generation"))
+    {
+        return "image";
+    }
+    if lower.contains("llm failed")
+        || lower.contains("chat_completions")
+        || lower.contains("规划模型")
+    {
+        return "llm";
+    }
+    if lower.contains("video")
+        || lower.contains("seedance")
+        || lower.contains("kling")
+        || lower.contains("minimax")
+        || lower.contains("policyviolation")
+        || lower.contains("sensitivecontent")
+        || lower.contains("copyright")
+    {
+        return "video";
+    }
+    "pipeline"
 }
 
 /// Reference image / frame in a Seedance `content` array.
@@ -433,4 +630,81 @@ pub struct OssPresignPutData {
     /// HTTPS download URL for video/image generation `content[].image_url.url`.
     #[serde(default)]
     pub public_url: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn record(result: serde_json::Value) -> VideoTaskRecord {
+        VideoTaskRecord {
+            id: 1,
+            task_id: Some("cgt-test".into()),
+            status: VIDEO_TASK_STATUS_FAILED,
+            credits_consumed: 0,
+            result: Some(result),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn failure_detail_reads_seedance_error_object() {
+        let rec = record(json!({
+            "status": "failed",
+            "error": {
+                "code": "OutputVideoSensitiveContentDetected.PolicyViolation",
+                "message": "The request failed because the output video may be related to copyright restrictions. Request id: abc"
+            }
+        }));
+        assert_eq!(
+            rec.failure_detail().as_deref(),
+            Some("OutputVideoSensitiveContentDetected.PolicyViolation: The request failed because the output video may be related to copyright restrictions. Request id: abc")
+        );
+    }
+
+    #[test]
+    fn failure_detail_ignores_status_failed() {
+        let rec = record(json!({ "status": "failed" }));
+        assert_eq!(rec.failure_detail(), None);
+    }
+
+    #[test]
+    fn failure_detail_reads_flattened_error_code_fields() {
+        let rec = record(json!({
+            "status": "failed",
+            "error_code": "OutputVideoSensitiveContentDetected.PolicyViolation",
+            "error_message": "The request failed because the output video may be related to copyright restrictions."
+        }));
+        assert!(rec
+            .failure_detail()
+            .unwrap()
+            .starts_with("OutputVideoSensitiveContentDetected.PolicyViolation:"));
+    }
+
+    #[test]
+    fn extract_provider_error_code_from_wrapped_pipeline_text() {
+        let blob = "video generation failed: Scene 2/7 render failed: Shot 1: video generation failed: OutputVideoSensitiveContentDetected.PolicyViolation: The request failed because the output video may be related to copyright restrictions.";
+        assert_eq!(
+            extract_provider_error_code(blob).as_deref(),
+            Some("OutputVideoSensitiveContentDetected.PolicyViolation")
+        );
+        assert!(extract_provider_error_message(blob)
+            .unwrap()
+            .contains("copyright restrictions"));
+        let (code, _) = film_telemetry_error(blob);
+        assert_eq!(
+            code.as_deref(),
+            Some("OutputVideoSensitiveContentDetected.PolicyViolation")
+        );
+        assert_eq!(infer_film_failure_channel(blob), "video");
+    }
+
+    #[test]
+    fn film_telemetry_error_does_not_use_status_word() {
+        let (code, message) = film_telemetry_error("failed");
+        assert!(code.is_none());
+        assert!(message.is_none());
+    }
 }

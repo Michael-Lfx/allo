@@ -98,7 +98,7 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
       ? models?.llm_model
       : failure?.kind === 'image'
         ? models?.image_model
-        : failure?.kind === 'video'
+        : failure?.kind === 'video' || failure?.kind === 'moderation'
           ? models?.video_model
           : undefined;
 

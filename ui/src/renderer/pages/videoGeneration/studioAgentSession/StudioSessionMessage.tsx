@@ -125,6 +125,7 @@ const ISSUE_KIND_KEY: Record<FailureKind, string> = {
   llm: 'videoGeneration.agentSession.issue.kind.llm',
   image: 'videoGeneration.agentSession.issue.kind.image',
   video: 'videoGeneration.agentSession.issue.kind.video',
+  moderation: 'videoGeneration.agentSession.issue.kind.moderation',
   unknown: 'videoGeneration.agentSession.issue.kind.unknown',
 };
 
@@ -133,6 +134,7 @@ const ISSUE_KIND_FALLBACK: Record<FailureKind, string> = {
   llm: '规划模型',
   image: '图片模型',
   video: '视频模型',
+  moderation: '内容审核',
   unknown: '任务',
 };
 

@@ -1034,6 +1034,29 @@ mod tests {
     }
 
     #[test]
+    fn video_task_failure_message_includes_policy_code() {
+        let rec = VideoTaskRecord {
+            id: 1,
+            task_id: None,
+            status: VIDEO_TASK_STATUS_FAILED,
+            credits_consumed: 0,
+            result: Some(serde_json::json!({
+                "status": "failed",
+                "error": {
+                    "code": "OutputVideoSensitiveContentDetected.PolicyViolation",
+                    "message": "The request failed because the output video may be related to copyright restrictions."
+                }
+            })),
+            created_at: None,
+            updated_at: None,
+        };
+        let msg = video_task_failure_message(&rec);
+        assert!(msg.contains("OutputVideoSensitiveContentDetected.PolicyViolation"));
+        assert!(msg.contains("copyright restrictions"));
+        assert!(!msg.ends_with(": failed"));
+    }
+
+    #[test]
     fn build_video_create_body_text_only() {
         let body = FlowyApiClient::build_video_create_body(
             "flowy/doubao-seedance-1-0-pro",
