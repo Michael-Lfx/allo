@@ -6174,7 +6174,9 @@ impl ConversationService {
     }
 
     /// Merge backend-owned Agent metadata into `conversation.extra` without
-    /// touching the typed conversation fields or terminating its runtime.
+    /// touching the typed conversation fields. Workspace changes use the same
+    /// runtime configuration gate as the typed update path and recycle only an
+    /// idle runtime after the new value is persisted.
     ///
     /// Execution identity and policy are deliberately rejected here: they have
     /// first-class persistence and must not regain a second source of truth via
@@ -6205,10 +6207,32 @@ impl ConversationService {
                 "Conversation {conversation_id} extra must be a JSON object"
             )));
         }
+        let existing_workspace = merged
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
         merge_json(&mut merged, &patch);
         if patch.get("workspace").is_some() {
             normalize_workspace_extra(&mut merged)?;
         }
+        let workspace_changed = patch.get("workspace").is_some()
+            && existing_workspace
+                != merged
+                    .get("workspace")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+
+        let configuration_guard = if workspace_changed {
+            Some(
+                self.try_acquire_runtime_configuration_guard(
+                    conversation_id,
+                    existing.status.as_deref(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
 
         let updates = ConversationRowUpdate {
             extra: Some(
@@ -6219,8 +6243,91 @@ impl ConversationService {
             ..Default::default()
         };
         self.conversation_repo.update(parse_conv_id(conversation_id)?, &updates).await?;
+        if workspace_changed {
+            Self::terminate_runtime_with_proof(
+                &self.runtime_registry,
+                conversation_id,
+                AgentKillReason::ConfigurationChanged,
+                "backend workspace configuration update",
+            )
+            .await?;
+        }
+        drop(configuration_guard);
         debug!("Conversation extra merged");
         Ok(())
+    }
+
+    /// Apply a trusted workspace reconcile action while the runtime
+    /// configuration gate is held. The callback receives the authoritative
+    /// workspace value re-read after gate admission, so filesystem movement
+    /// cannot be based on a stale pre-gate snapshot.
+    pub async fn update_workspace_extra_with<F>(
+        &self,
+        conversation_id: &str,
+        apply: F,
+    ) -> Result<bool, AppError>
+    where
+        F: FnOnce(&str) -> Option<String>,
+    {
+        let initial = self
+            .conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        let configuration_guard = self
+            .try_acquire_runtime_configuration_guard(conversation_id, initial.status.as_deref())
+            .await?;
+        let current = self
+            .conversation_repo
+            .get(parse_conv_id(conversation_id)?)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        let mut extra: serde_json::Value = serde_json::from_str(&current.extra).map_err(|error| {
+            AppError::Internal(format!(
+                "Conversation {conversation_id} has invalid extra JSON: {error}"
+            ))
+        })?;
+        if !extra.is_object() {
+            return Err(AppError::Internal(format!(
+                "Conversation {conversation_id} extra must be a JSON object"
+            )));
+        }
+        let current_workspace = extra
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        let Some(next_workspace) = apply(&current_workspace) else {
+            drop(configuration_guard);
+            return Ok(false);
+        };
+        if next_workspace.trim() == current_workspace {
+            drop(configuration_guard);
+            return Ok(false);
+        }
+        extra["workspace"] = serde_json::Value::String(next_workspace);
+        normalize_workspace_extra(&mut extra)?;
+        let updates = ConversationRowUpdate {
+            extra: Some(
+                serde_json::to_string(&extra)
+                    .map_err(|error| AppError::Internal(format!("Failed to serialize extra: {error}")))?,
+            ),
+            updated_at: Some(now_ms()),
+            ..Default::default()
+        };
+        self.conversation_repo
+            .update(parse_conv_id(conversation_id)?, &updates)
+            .await?;
+        Self::terminate_runtime_with_proof(
+            &self.runtime_registry,
+            conversation_id,
+            AgentKillReason::ConfigurationChanged,
+            "trusted workspace reconcile",
+        )
+        .await?;
+        drop(configuration_guard);
+        Ok(true)
     }
 
     /// Replace the immutable skill snapshot for a backend-owned conversation.
