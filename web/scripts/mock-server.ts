@@ -14,6 +14,8 @@
 
 import type { ServerWebSocket } from "bun";
 
+import { decodeHistoryCursor } from "../src/lib/history-cursor";
+
 const PORT = Number(process.argv[2] ?? 17860);
 const PROTOCOL_VERSION = "2026-08-26";
 const AGENT_ID = "0190f5fe-7c00-7a00-8000-000000000004";
@@ -417,8 +419,38 @@ function conversationView(conversation: MockConversation) {
   };
 }
 
-function conversationMessages(conversation: MockConversation) {
-  return conversation.messages;
+function conversationMessages(
+  conversation: MockConversation,
+  params: { page_size?: unknown; cursor?: unknown } = {},
+): { items: Array<Record<string, unknown>>; has_more: boolean } {
+  const all = [...conversation.messages].sort(
+    (left, right) => (left.created_at as number) - (right.created_at as number),
+  );
+  const pageSize = typeof params.page_size === "number" && params.page_size > 0 ? params.page_size : 60;
+  const cursor = typeof params.cursor === "string" && params.cursor.length > 0 ? params.cursor : undefined;
+  let window: Array<Record<string, unknown>>;
+  if (cursor) {
+    const decoded = decodeHistoryCursor(cursor);
+    if (decoded) {
+      // Keyset: return the page strictly earlier than the cursor (id tie-break).
+      const earlier = all.filter(
+        (message) =>
+          (message.created_at as number) < decoded.created_at
+          || ((message.created_at as number) === decoded.created_at && (message.message_id as string) < decoded.message_id),
+      );
+      const start = Math.max(0, earlier.length - pageSize);
+      // An older page exists when the window didn't start at the very first row.
+      return { items: earlier.slice(start), has_more: start > 0 };
+    }
+    window = [];
+  } else {
+    // No cursor: most recent window, ascending.
+    const start = Math.max(0, all.length - pageSize);
+    window = all.slice(start);
+    // An older page exists when the window didn't start at the very first row.
+    return { items: window, has_more: start > 0 };
+  }
+  return { items: window, has_more: false };
 }
 
 function runConversationTurn(conversation: MockConversation, userMessage: Record<string, unknown>) {
@@ -592,7 +624,7 @@ function handleConversationMethod(socket: ServerWebSocket, id: unknown, method: 
     conversation.modified_at = Date.now();
     respond(socket, id, conversationView(conversation));
   }
-  else if (method === "conversation/messages" && conversation) respond(socket, id, conversationMessages(conversation));
+  else if (method === "conversation/messages" && conversation) respond(socket, id, conversationMessages(conversation, { page_size: params?.page_size, cursor: params?.cursor }));
   else if (method === "conversation/send" && conversation) {
     const key = String(params?.idempotency_key ?? "");
     const replay = conversationIdempotent.get(key);

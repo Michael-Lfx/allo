@@ -7,6 +7,7 @@ import {
   type ConversationStreamState,
   upsertConversation,
 } from "../lib/conversation-events";
+import { encodeHistoryCursor } from "../lib/history-cursor";
 import { formatError } from "../lib/errors";
 import { modelKeyToSelection } from "../ui/format";
 import type { ConnectionPhase } from "../ui/connection";
@@ -22,6 +23,9 @@ import type {
 
 const DEFAULT_WS_URL = "ws://127.0.0.1:8787/api/app-server/ws";
 const STORAGE_KEY = "allo-app-server-chat-settings-v1";
+
+/** Messages fetched per history page (first screen + each scroll-up load). */
+const HISTORY_PAGE_SIZE = 60;
 
 type StoredSettings = {
   wsUrl: string;
@@ -119,6 +123,7 @@ export type AppState = {
   connect: () => Promise<void>;
   disconnect: () => void;
   loadConversation: (conversationId: string, follow?: boolean) => Promise<void>;
+  loadOlderHistory: () => Promise<void>;
   selectConversation: (conversationId: string) => void;
   openCreatedConversation: (created: ConversationView) => Promise<void>;
   createConversation: () => Promise<void>;
@@ -248,11 +253,23 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const [view, history] = await Promise.all([
         client.conversations.get(conversationId),
-        client.conversations.messages({ conversationId, pageSize: 200 }),
+        // Empty cursor opts into the keyset "latest window" path (see backend
+        // `ListMessagesQuery.cursor`); omitting it would fall back to offset
+        // pagination and return the OLDEST page instead of the newest.
+        client.conversations.messages({ conversationId, pageSize: HISTORY_PAGE_SIZE, cursor: "" }),
       ]);
       if (get().selectedConversationId !== conversationId) return;
-      get().dispatchStream({ type: "reset", messages: history, isProcessing: view.is_processing });
-      set((s) => ({ conversations: upsertConversation(s.conversations, view) }));
+      get().dispatchStream({ type: "reset", messages: history.items, isProcessing: view.is_processing });
+      set((s) => ({
+        conversations: upsertConversation(s.conversations, view),
+        stream: {
+          ...s.stream,
+          historyCursor: history.items.length > 0 ? encodeHistoryCursor(history.items[0]) : null,
+          // Use the server-computed `has_more` instead of guessing from page fill.
+          hasMore: history.has_more,
+          loadingOlder: false,
+        },
+      }));
 
       if (!follow || get().selectedConversationId !== conversationId) return;
       const subscription = await client.conversations.follow(conversationId);
@@ -268,6 +285,43 @@ export const useAppStore = create<AppState>()((set, get) => ({
       });
     } catch (caught) {
       set({ error: formatError(caught) });
+    }
+  },
+
+  loadOlderHistory: async () => {
+    const { client, selectedConversationId, stream } = get();
+    if (!client || !selectedConversationId) return;
+    const { historyCursor, hasMore, loadingOlder } = stream;
+    if (loadingOlder || !hasMore || !historyCursor) return;
+    const conversationId = selectedConversationId;
+    set((s) => ({ stream: { ...s.stream, loadingOlder: true } }));
+    try {
+      const page = await client.conversations.messages({
+        conversationId,
+        pageSize: HISTORY_PAGE_SIZE,
+        cursor: historyCursor,
+      });
+      // Another conversation may have been selected while the request was in flight.
+      if (get().selectedConversationId !== conversationId) return;
+      const items = page.items;
+      if (items.length > 0) {
+        get().dispatchStream({ type: "prependHistory", messages: items });
+        set((s) => ({
+          stream: {
+            ...s.stream,
+            historyCursor: encodeHistoryCursor(items[0]),
+            // Use the server-computed `has_more`: exact, and avoids one wasted
+            // boundary request when the last page happens to come back full-sized.
+            hasMore: page.has_more,
+            loadingOlder: false,
+          },
+        }));
+      } else {
+        set((s) => ({ stream: { ...s.stream, hasMore: false, loadingOlder: false } }));
+      }
+    } catch {
+      // Non-fatal: keep `hasMore` so the user can retry by scrolling up again.
+      set((s) => ({ stream: { ...s.stream, loadingOlder: false } }));
     }
   },
 

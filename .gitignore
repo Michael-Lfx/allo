@@ -25,6 +25,9 @@ node_modules/
 **/node_modules/
 ui/dist/
 web/dist/
+# Site (Flowy Agent Store 官网, React Router v8 静态构建产物)
+site/build/
+site/.react-router/
 .bun/
 *.tsbuildinfo
 

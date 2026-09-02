@@ -280,7 +280,7 @@ async function runRealConversationFlow(
   for (let attempt = 0; attempt < 10 && !userPersisted; attempt += 1) {
     if (attempt > 0) await Bun.sleep(1000);
     const history = await client.conversations.messages({ conversationId: created.conversation_id, pageSize: 50 });
-    userPersisted = history.some(
+    userPersisted = history.items.some(
       (message) => message.role === "user" && textOf(message.content) === "hello from real smoke",
     );
   }
@@ -477,7 +477,7 @@ async function runConversationPath(client: AppServerClient, workspaceId: string,
     fail("conversation realtime", observed.join(", ") || "no event received");
   }
   const history = await client.conversations.messages({ conversationId: created.conversation_id, pageSize: 50 });
-  if (history.some((message) => message.role === "user") && history.some((message) => message.role === "assistant")) {
+  if (history.items.some((message) => message.role === "user") && history.items.some((message) => message.role === "assistant")) {
     ok("conversation/messages replays durable user and assistant history");
   } else {
     fail("conversation/messages", JSON.stringify(history));

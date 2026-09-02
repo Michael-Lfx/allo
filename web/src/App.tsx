@@ -12,17 +12,13 @@ import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { WorkspaceRemoveDialog } from "./components/dialogs/WorkspaceRemoveDialog";
 
 export default function App() {
-  const messageScrollerRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const autoConnectRef = useRef(false);
-  const stickToBottomRef = useRef(true);
 
   const sidebarCompact = useAppStore((s) => s.sidebarCompact);
   const mainView = useAppStore((s) => s.mainView);
   const selectedConversationId = useAppStore((s) => s.selectedConversationId);
   const openMenu = useAppStore((s) => s.openMenu);
-  const messages = useAppStore((s) => s.stream.messages);
-  const isProcessing = useAppStore((s) => s.stream.isProcessing);
   const contextUsage = useAppStore((s) => s.stream.contextUsage);
   const connect = useAppStore((s) => s.connect);
   const persistSettings = useAppStore((s) => s.persistSettings);
@@ -41,24 +37,6 @@ export default function App() {
       state.client?.close();
     };
   }, []);
-
-  useEffect(() => {
-    const scroller = messageScrollerRef.current;
-    if (!scroller) return;
-    const updateStickiness = () => {
-      const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      stickToBottomRef.current = distanceFromBottom < 72;
-    };
-    updateStickiness();
-    scroller.addEventListener("scroll", updateStickiness, { passive: true });
-    return () => scroller.removeEventListener("scroll", updateStickiness);
-  }, [selectedConversationId]);
-
-  useEffect(() => {
-    const scroller = messageScrollerRef.current;
-    if (!scroller || !stickToBottomRef.current) return;
-    scroller.scrollTop = scroller.scrollHeight;
-  }, [messages, isProcessing]);
 
   /** Close whichever conversation menu is open when clicking outside it or
    *  pressing Escape. A single handler covers both the sidebar row menu and
@@ -114,7 +92,7 @@ export default function App() {
       ) : (
         <section className="chat-main">
           <Topbar />
-          <MessageList scrollerRef={messageScrollerRef} />
+          <MessageList />
           <Composer composerRef={composerRef} />
         </section>
       )}

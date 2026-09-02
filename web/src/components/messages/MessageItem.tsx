@@ -1,6 +1,8 @@
+import { memo } from "react";
 import { Copy, Ellipsis } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../IconButton";
+import { Markdown } from "../Markdown";
 import { ActivityItem } from "./ActivityItem";
 import { contentToText, isActivityMessageType } from "../../lib/activity";
 import type { ConversationMessage } from "../../lib/protocol";
@@ -10,7 +12,7 @@ async function copyText(value: string): Promise<void> {
   await navigator.clipboard.writeText(value);
 }
 
-export function MessageItem({ message }: { message: ConversationMessage }) {
+export const MessageItem = memo(function MessageItem({ message }: { message: ConversationMessage }) {
   const { t } = useTranslation();
   const text = contentToText(message.content);
   if (message.role === "activity" || isActivityMessageType(message.message_type)) {
@@ -40,10 +42,10 @@ export function MessageItem({ message }: { message: ConversationMessage }) {
   return <article className="message-row assistant-message">
     <div className="assistant-meta"><span>Allo</span>{message.status === "sending" && <span>{t("message.generating")}</span>}</div>
     <div className="assistant-divider" />
-    <div className="message-text">{text || (message.status === "sending" ? t("message.generatingReply") : "")}</div>
+    <div className="message-text markdown-body">{text ? <Markdown source={text} /> : (message.status === "sending" ? t("message.generatingReply") : "")}</div>
     <div className="message-actions" aria-label={t("message.moreActions")}>
       <IconButton label={t("message.copyReply")} className="message-action" onClick={() => void copyText(text)}><Copy size={15} strokeWidth={1.7} /></IconButton>
       <IconButton label={t("message.moreActions")} className="message-action"><Ellipsis size={15} strokeWidth={1.7} /></IconButton>
     </div>
   </article>;
-}
+});

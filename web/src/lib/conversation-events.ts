@@ -34,11 +34,19 @@ export type ConversationStreamState = {
    * shell can mirror it into the conversation list with an effect.
    */
   contextUsage: { conversationId: string; usage: ContextUsage | null } | null;
+  /** Keyset of the oldest loaded message; null before first load / when unknown. */
+  historyCursor: string | null;
+  /** Whether an earlier page may exist (true when the last page came back full-sized). */
+  hasMore: boolean;
+  /** Guard against concurrent older-page loads. */
+  loadingOlder: boolean;
 };
 
 export type ConversationStreamAction =
   /** Replace the transcript: switching chats, loading history, disconnecting. */
   | { type: "reset"; messages: ConversationMessage[]; isProcessing?: boolean }
+  /** Prepend an earlier page of history (loaded via cursor). Merged by id, ascending. */
+  | { type: "prependHistory"; messages: ConversationMessage[] }
   /** One server event from the conversation subscription. */
   | { type: "event"; event: ConversationEvent }
   /** Optimistic user row, before the send receipt lands. */
@@ -58,6 +66,9 @@ export const initialConversationStream: ConversationStreamState = {
   messages: [],
   isProcessing: false,
   contextUsage: null,
+  historyCursor: null,
+  hasMore: false,
+  loadingOlder: false,
 };
 
 export function conversationStreamReducer(
@@ -70,7 +81,15 @@ export function conversationStreamReducer(
         ...state,
         messages: action.messages,
         isProcessing: action.isProcessing ?? state.isProcessing,
+        historyCursor: null,
+        hasMore: false,
+        loadingOlder: false,
       };
+    case "prependHistory":
+      // Older page: merge by id (dedup) and let the ascending sort slot it in
+      // before the existing messages. Same merge path the realtime events use,
+      // so history and live deltas can never disagree on ordering or duplicates.
+      return { ...state, messages: mergeMessagesById(state.messages, action.messages) };
     case "event":
       return applyEvent(state, action.event);
     case "appendPending":

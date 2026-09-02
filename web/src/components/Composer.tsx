@@ -101,38 +101,42 @@ export function Composer(props: {
         aria-keyshortcuts="Enter"
       />
       <div className="composer-footer">
-        <div className="composer-add-menu">
-          <IconButton label={t("composer.addMenu")} className="composer-add" onClick={toggleComposerMenu} aria-expanded={composerMenuOpen}>
-            <Plus size={19} strokeWidth={1.8} />
-          </IconButton>
-          {composerMenuOpen && <div className="composer-popover" role="menu">
-            <button type="button" role="menuitem" onClick={() => void newChat()}><MessageSquarePlus aria-hidden="true" size={16} /> {t("composer.newChat")}</button>
-            <button type="button" role="menuitem" onClick={() => { toggleComposerMenu(); openSettings(); }}><SlidersHorizontal aria-hidden="true" size={16} /> {t("composer.connectionSettings")}</button>
-          </div>}
+        <div className="composer-footer-left">
+          <div className="composer-add-menu">
+            <IconButton label={t("composer.addMenu")} className="composer-add" onClick={toggleComposerMenu} aria-expanded={composerMenuOpen}>
+              <Plus size={19} strokeWidth={1.8} />
+            </IconButton>
+            {composerMenuOpen && <div className="composer-popover" role="menu">
+              <button type="button" role="menuitem" onClick={() => void newChat()}><MessageSquarePlus aria-hidden="true" size={16} /> {t("composer.newChat")}</button>
+              <button type="button" role="menuitem" onClick={() => { toggleComposerMenu(); openSettings(); }}><SlidersHorizontal aria-hidden="true" size={16} /> {t("composer.connectionSettings")}</button>
+            </div>}
+          </div>
+          <span className="composer-mode">{connected ? t("composer.modeAgent") : t("composer.modeOffline")}</span>
         </div>
-        <div className="model-picker-wrap">
-          <button className="model-chip" type="button" onClick={toggleModelPicker} title={t("composer.modelPickerTitle")} aria-expanded={modelPickerOpen}>
-            <span className={`composer-model-dot ${phase}`} aria-hidden="true" />
-            <span>{modelChipLabel(currentModel, selectedModelKey, modelOptions, t("modelPicker.defaultModel"))}</span>
-            <ChevronDown aria-hidden="true" size={13} strokeWidth={1.8} />
+        <div className="composer-footer-right">
+          {currentConversation && <ContextIndicator usage={currentConversation.context_usage ?? null} compact />}
+          <div className="model-picker-wrap">
+            <button className="model-chip" type="button" onClick={toggleModelPicker} title={t("composer.modelPickerTitle")} aria-expanded={modelPickerOpen}>
+              <span className={`composer-model-dot ${phase}`} aria-hidden="true" />
+              <span>{modelChipLabel(currentModel, selectedModelKey, modelOptions, t("modelPicker.defaultModel"))}</span>
+              <ChevronDown aria-hidden="true" size={13} strokeWidth={1.8} />
+            </button>
+            {modelPickerOpen && (
+              <ModelPicker
+                options={modelOptions}
+                selectedKey={selectedModelKey}
+                effort={selectedEffort}
+                hasConversation={hasConversation}
+                onSelectModel={chooseModel}
+                onSelectEffort={chooseEffort}
+                onClose={closeModelPicker}
+              />
+            )}
+          </div>
+          <button className="send-button" type="button" onClick={() => void send()} disabled={!connected || !draft.trim() || isSending || isProcessing} aria-label={t("composer.send")}>
+            <ArrowUp size={18} strokeWidth={2} />
           </button>
-          {modelPickerOpen && (
-            <ModelPicker
-              options={modelOptions}
-              selectedKey={selectedModelKey}
-              effort={selectedEffort}
-              hasConversation={hasConversation}
-              onSelectModel={chooseModel}
-              onSelectEffort={chooseEffort}
-              onClose={closeModelPicker}
-            />
-          )}
         </div>
-        {currentConversation && <ContextIndicator usage={currentConversation.context_usage ?? null} compact />}
-        <span className="composer-mode">{connected ? t("composer.modeAgent") : t("composer.modeOffline")}</span>
-        <button className="send-button" type="button" onClick={() => void send()} disabled={!connected || !draft.trim() || isSending || isProcessing} aria-label={t("composer.send")}>
-          <ArrowUp size={18} strokeWidth={2} />
-        </button>
       </div>
     </div>
     <p className="composer-disclaimer">{t("composer.disclaimer")}</p>
