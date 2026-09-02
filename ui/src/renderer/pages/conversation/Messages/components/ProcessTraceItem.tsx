@@ -347,7 +347,6 @@ const ToolFileGroupTraceRow: React.FC<{ rows: ToolReceiptDetailRow[]; workspaceR
         expandable
         expanded={expanded}
         onToggle={() => setExpanded((value) => !value)}
-        animated={false}
       />
       {expanded && <ToolFileListDetail rows={rows} workspaceRoots={workspaceRoots} showLabel={false} />}
     </div>
@@ -482,7 +481,6 @@ const ToolTraceRow: React.FC<{
         expandable={hasDetail}
         expanded={expanded}
         onToggle={hasDetail ? () => setExpanded((value) => !value) : undefined}
-        animated={false}
       />
       {hasDetail && expanded ? <ToolTraceDetail row={row} workspaceRoots={workspaceRoots} /> : null}
     </div>
@@ -496,7 +494,6 @@ const ProcessTraceRows: React.FC<{ rows: ProcessTraceRow[] }> = ({ rows }) => {
     <div className='turn-process-trace'>
       <TaskRows
         layout='list'
-        animated={false}
         items={rows.map((row) => ({
           id: row.key,
           title: row.label,

@@ -158,7 +158,7 @@ const CampaignSubmitModal: React.FC<CampaignSubmitModalProps> = ({
               disabled={publishingId != null}
               onClick={() => void publishSession(session)}
             >
-              <span className='flex h-36px w-52px shrink-0 items-center justify-center rd-8px bg-[var(--color-fill-2)] text-[rgb(var(--primary-6))]'>
+              <span className='flex h-36px w-52px shrink-0 items-center justify-center rd-8px bg-[var(--color-fill-2)] text-primary-6'>
                 <VideoOne theme='outline' size={16} fill='currentColor' />
               </span>
               <span className='min-w-0 flex-1'>
@@ -180,7 +180,7 @@ const CampaignSubmitModal: React.FC<CampaignSubmitModalProps> = ({
               disabled={publishingId != null}
               onClick={() => void publishCanvas(project)}
             >
-              <span className='flex h-36px w-52px shrink-0 items-center justify-center rd-8px bg-[var(--color-fill-2)] text-[rgb(var(--primary-6))]'>
+              <span className='flex h-36px w-52px shrink-0 items-center justify-center rd-8px bg-[var(--color-fill-2)] text-primary-6'>
                 <Platte theme='outline' size={16} fill='currentColor' />
               </span>
               <span className='min-w-0 flex-1'>

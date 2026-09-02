@@ -444,7 +444,9 @@ const MessageText: React.FC<{
   });
   const creditProvider = useMemo(() => {
     if (conversation?.type !== 'nomi') return undefined;
-    return findProviderById(providerList ?? [], conversation.model?.id) ?? conversation.model;
+    const provider = findProviderById(providerList ?? [], conversation.model?.id);
+    if (provider) return provider;
+    return conversation.model ? { ...conversation.model, models: [] } : undefined;
   }, [conversation, providerList]);
   const creditFallbackModel = conversation?.type === 'nomi' ? conversation.model?.use_model : undefined;
   const turnCreditDetails = useMemo(
@@ -543,7 +545,8 @@ const MessageText: React.FC<{
     isLatestUserMessage;
 
   const isCodingProfile =
-    typeof conversation?.extra?.task_profile === 'string' &&
+    conversation?.type === 'nomi' &&
+    typeof conversation.extra.task_profile === 'string' &&
     conversation.extra.task_profile.toLowerCase() === 'coding';
 
   const { data: codingRollbackAvailability } = useSWR(

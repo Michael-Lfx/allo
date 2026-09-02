@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ipcBridge } from '@/common';
 import type { IMcpServer } from '@/common/config/storage';
 import { ensureBackendMcpCatalog } from './catalog';
@@ -13,34 +13,42 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
   const [mcpServers, setMcpServers] = useState<IMcpServer[]>([]);
   const [extensionMcpServers, setExtensionMcpServers] = useState<ExtensionMcpServerContribution[]>([]);
   const [isMcpServersLoading, setIsMcpServersLoading] = useState(enabled);
+  const [isExtensionMcpServersLoading, setIsExtensionMcpServersLoading] = useState(enabled);
   const [mcpServersLoadFailed, setMcpServersLoadFailed] = useState(false);
+  const [extensionMcpServersLoadFailed, setExtensionMcpServersLoadFailed] = useState(false);
+  const requestIdRef = useRef(0);
 
-  useEffect(() => {
-    if (!enabled) {
-      setIsMcpServersLoading(false);
-      return;
-    }
+  const loadMcpServers = useCallback(() => {
+    if (!enabled) return;
 
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     setIsMcpServersLoading(true);
+    setIsExtensionMcpServersLoading(true);
+    setMcpServersLoadFailed(false);
+    setExtensionMcpServersLoadFailed(false);
     void ensureBackendMcpCatalog()
       .then(({ allServers }) => {
+        if (requestIdRef.current !== requestId) return;
         setMcpServers(allServers);
         setMcpServersLoadFailed(false);
       })
       .catch((error) => {
+        if (requestIdRef.current !== requestId) return;
         console.error('[useMcpServers] Failed to load MCP catalog:', error);
-        setMcpServers([]);
         setMcpServersLoadFailed(true);
       })
       .finally(() => {
-        setIsMcpServersLoading(false);
+        if (requestIdRef.current === requestId) setIsMcpServersLoading(false);
       });
 
     void ipcBridge.extensions.getMcpServers
       .invoke()
       .then((extServers) => {
+        if (requestIdRef.current !== requestId) return;
         if (!extServers || extServers.length === 0) {
           setExtensionMcpServers([]);
+          setExtensionMcpServersLoadFailed(false);
           return;
         }
 
@@ -51,12 +59,33 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
           );
         }
         setExtensionMcpServers(converted);
+        setExtensionMcpServersLoadFailed(false);
       })
       .catch((error) => {
+        if (requestIdRef.current !== requestId) return;
         console.error('[useMcpServers] Failed to load extension MCP servers:', error);
-        setExtensionMcpServers([]);
+        setExtensionMcpServersLoadFailed(true);
+      })
+      .finally(() => {
+        if (requestIdRef.current === requestId) setIsExtensionMcpServersLoading(false);
       });
   }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled) {
+      requestIdRef.current += 1;
+      setIsMcpServersLoading(false);
+      setIsExtensionMcpServersLoading(false);
+      setMcpServersLoadFailed(false);
+      setExtensionMcpServersLoadFailed(false);
+      return;
+    }
+
+    loadMcpServers();
+    return () => {
+      requestIdRef.current += 1;
+    };
+  }, [enabled, loadMcpServers]);
 
   const saveMcpServers = useCallback((serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => {
     return new Promise<void>((resolve) => {
@@ -70,8 +99,9 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
 
   return {
     mcpServers,
-    isMcpServersLoading,
-    mcpServersLoadFailed,
+    isMcpServersLoading: isMcpServersLoading || isExtensionMcpServersLoading,
+    mcpServersLoadFailed: mcpServersLoadFailed || extensionMcpServersLoadFailed,
+    reloadMcpServers: loadMcpServers,
     allMcpServers: [...mcpServers, ...extensionMcpServers],
     extensionMcpServers,
     setMcpServers,

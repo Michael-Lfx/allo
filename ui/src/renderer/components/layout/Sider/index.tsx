@@ -13,6 +13,7 @@ import { safeDecodeUriComponent } from '@/common/utils/localPath';
 import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import { useSlidingSelectionIndicator } from '@renderer/hooks/ui/useSlidingSelectionIndicator';
+import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
 import {
   ConversationSiderActions,
   SiderConversationEntry,
@@ -59,6 +60,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const location = useLocation();
   const { pathname, search, hash } = location;
   const navigate = useNavigate();
+  const { navigateWithSettingsTransition } = useSettingsNavigationTransition();
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
   const [batchMode, setBatchMode] = useState(false);
@@ -196,8 +198,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
         console.error('Navigation failed:', error);
       });
     } else {
-      Promise.resolve(navigate('/settings/system')).catch((error) => {
-        console.error('Navigation failed:', error);
+      navigateWithSettingsTransition('/settings/system', () => {
+        Promise.resolve(navigate('/settings/system')).catch((error) => {
+          console.error('Navigation failed:', error);
+        });
       });
     }
     if (onSessionClick) {

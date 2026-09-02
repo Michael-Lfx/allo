@@ -49,6 +49,18 @@
       "group": "check",
       "desc": "静态校验错误面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限"
     },
+    "check:support-surface": {
+      "group": "check",
+      "desc": "使用 Windows Edge 矩阵验证客服入口、摘要与窄屏布局"
+    },
+    "check:support-surface-contract": {
+      "group": "check",
+      "desc": "静态校验客服面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限"
+    },
+    "check:dead-css": {
+      "group": "check",
+      "desc": "扫描不会生成有效 CSS 的 UnoCSS 工具类并维护只减不增的基线"
+    },
     "check:button-layout-contract": {
       "group": "check",
       "desc": "扫描所有 Arco 图标文字按钮并校验共享横向布局契约"
@@ -68,6 +80,8 @@
     "build:clean": { "group": "build", "desc": "显式清理构建缓存并提示下一次会冷编译" },
     "make:latest":   { "group": "build", "desc": "扫描本机更新产物，生成/合并自动更新清单 latest.json" },
     "upload:modelscope": { "group": "build", "desc": "上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN）" },
+    "rollback:modelscope": { "group": "maint", "desc": "回滚 ModelScope 上的桌面发布指针（需 MODELSCOPE_TOKEN）" },
+    "verify:modelscope": { "group": "maint", "desc": "校验 ModelScope 桌面发布清单与制品（需 MODELSCOPE_TOKEN）" },
     "release:mac":   { "group": "build", "desc": "一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },
     "release:win":   { "group": "build", "desc": "一键 Windows 发版：自动判定追加/首发；指纹可用时自动 Authenticode；-Signed/-NoSigned；-DryRun 只预检" },
     "release:linux": { "group": "build", "desc": "一键 Linux 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },

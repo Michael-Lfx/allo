@@ -18,8 +18,8 @@ describe('agent eval lab', () => {
     expect(page.includes("useState('office_tasks')")).toBe(true);
     expect(page.includes('evalApi.startRun')).toBe(true);
     expect(page.includes('evalApi.cancelRun')).toBe(true);
-    expect(page.includes('evalApi.getCaseTrace')).toBe(true);
-    expect(page.includes('evalApi.getCaseObservation')).toBe(true);
+    expect(page.includes('getCaseTrace')).toBe(true);
+    expect(page.includes('getCaseObservation')).toBe(true);
     expect(page.includes('current_trace')).toBe(true);
     expect(page.includes('conversation_id')).toBe(true);
     expect(page.includes('workspace_label')).toBe(true);

@@ -157,7 +157,7 @@ const WorkspaceCameoStrip: React.FC<WorkspaceCameoStripProps> = ({
           <Spin size={18} />
         </div>
       ) : listError ? (
-        <p className='m-0 text-12px text-[rgb(var(--danger-6))]'>
+        <p className='m-0 text-12px text-danger-6'>
           {t('videoGeneration.workspace.cameo.loadFailed', {
             defaultValue: '参考图列表加载失败：{{error}}',
             error: listError,

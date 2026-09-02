@@ -1,5 +1,7 @@
 import classNames from 'classnames';
-import React from 'react';
+import React, { useLayoutEffect } from 'react';
+import SettingsContentLoading from '@/renderer/components/layout/SettingsContentLoading';
+import { useSettingsNavigationTransition } from '@/renderer/components/layout/SettingsNavigationTransition';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { SettingsViewModeProvider } from '@/renderer/components/settings/SettingsModal/settingsViewContext';
 import {
@@ -33,6 +35,8 @@ interface SettingsPageWrapperProps {
   className?: string;
   contentClassName?: string;
   layout?: 'form' | 'hub';
+  /** Initial data loading state. Refreshes with existing data should stay inline. */
+  loading?: boolean;
 }
 
 const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentType<any>> = {
@@ -60,14 +64,27 @@ const MobileNavIcon: React.FC<{ item: SettingsNavItem }> = ({ item }) => {
   return <Icon theme='outline' size='16' />;
 };
 
-const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, className, contentClassName, layout: layoutMode = 'form' }) => {
+const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({
+  children,
+  className,
+  contentClassName,
+  layout: layoutMode = 'form',
+  loading = false,
+}) => {
   const { t } = useTranslation();
   const layoutContext = useLayoutContext();
   const isMobile = layoutContext?.isMobile ?? false;
   const navigate = useNavigate();
+  const { navigateWithSettingsTransition, markSettingsNavigationReady, pendingTarget } =
+    useSettingsNavigationTransition();
   const { pathname } = useLocation();
+  const navigationPathname = pendingTarget?.split(/[?#]/u, 1)[0] || pathname;
   const { groups } = useSettingsNavigation();
   const menuItems = React.useMemo(() => groups.flatMap((group) => group.items), [groups]);
+
+  useLayoutEffect(() => {
+    if (!loading) markSettingsNavigationReady();
+  }, [loading, markSettingsNavigationReady]);
 
   const containerClass = classNames(
     'app-page-shell settings-page-wrapper w-full min-h-0 flex-1 box-border overflow-y-auto',
@@ -85,7 +102,7 @@ const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, cla
         {isMobile && (
           <nav className='settings-mobile-top-nav' aria-label={t('settings.title')}>
             {menuItems.map((item) => {
-              const active = isSettingsNavItemActive(pathname, item);
+              const active = isSettingsNavItemActive(navigationPathname, item);
               const target = item.path.startsWith('/') ? item.path : `/settings/${item.path}`;
               return (
                 <button
@@ -95,7 +112,11 @@ const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, cla
                   className={classNames('settings-mobile-top-nav__item', {
                     'settings-mobile-top-nav__item--active': active,
                   })}
-                  onClick={() => void navigate(target, { replace: true })}
+                  onClick={() =>
+                    navigateWithSettingsTransition(target, () => {
+                      void navigate(target, { replace: true });
+                    })
+                  }
                 >
                   <span className='settings-mobile-top-nav__icon'>
                     <MobileNavIcon item={item} />
@@ -106,7 +127,9 @@ const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, cla
             })}
           </nav>
         )}
-        <main className={contentClass} data-settings-page-content>{children}</main>
+        <main className={contentClass} data-settings-page-content aria-busy={loading || undefined}>
+          {loading ? <SettingsContentLoading /> : children}
+        </main>
       </div>
     </SettingsViewModeProvider>
   );

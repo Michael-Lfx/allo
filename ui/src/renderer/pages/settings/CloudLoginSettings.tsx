@@ -138,7 +138,7 @@ const CloudLoginSettings: React.FC = () => {
   if (!developerMode) return <Navigate to='/settings/system' replace />;
 
   return (
-    <SettingsPageWrapper>
+    <SettingsPageWrapper loading={loading && (serverSettings === null || whoami === null)}>
       <div className='space-y-24px'>
         <SettingsPageHeader title={t('cloudLogin.title')} description={t('cloudLogin.description')} />
 

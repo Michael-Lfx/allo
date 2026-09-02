@@ -164,7 +164,7 @@ export function CanvasPresetPicker({
                     </div>
                 )}
                 {!query.trim() && !skillPresets.length ? (
-                    <div className="mt-1 border-t border-foreground/8 px-2 py-2 text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
+                    <div className="mt-1 border-t border-t-solid border-t-[var(--border)] px-2 py-2 text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
                         {canvasT("videoCanvas.preset.skillsHint", "画布上的技能节点会出现在这里（例如从首页带风格进入创作时）。")}
                     </div>
                 ) : null}

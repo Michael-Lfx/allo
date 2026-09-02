@@ -7,6 +7,7 @@ import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Down, Plus } from '@icon-park/react';
 import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import SettingsContentLoading from '@/renderer/components/layout/SettingsContentLoading';
 import AddMcpServerModal from '@/renderer/pages/settings/components/AddMcpServerModal';
 import ExtensionMcpServerItem from '@/renderer/pages/settings/ToolsSettings/ExtensionMcpServerItem';
 import McpServerItem from '@/renderer/pages/settings/ToolsSettings/McpServerItem';
@@ -109,6 +110,9 @@ function McpInstalledList({
   showEditMcpModal,
   showDeleteConfirm,
   testersRef,
+  isMcpServersLoading,
+  mcpServersLoadFailed,
+  reloadMcpServers,
 }: {
   message: MessageInstance;
   mcpServers: IMcpServer[];
@@ -120,6 +124,9 @@ function McpInstalledList({
   showEditMcpModal: (server: IMcpServer) => void;
   showDeleteConfirm: (serverId: IMcpServer['mcp_server_id']) => void;
   testersRef: React.RefObject<McpConnectionTesters | null>;
+  isMcpServersLoading: boolean;
+  mcpServersLoadFailed: boolean;
+  reloadMcpServers?: () => void;
 }) {
   const { t } = useTranslation();
   const { oauthStatus, loggingIn, checkOAuthStatus, markLoginRequired, clearLoginRequired, login } = useMcpOAuth();
@@ -137,6 +144,8 @@ function McpInstalledList({
       `${server.name} ${server.description ?? ''} ${server.source_key}`.toLowerCase().includes(query)
     );
   }, [extensionMcpServers, searchQuery]);
+  const hasServers = mcpServers.length > 0 || extensionMcpServers.length > 0;
+  const hasVisibleServers = visibleMcpServers.length > 0 || visibleExtensionServers.length > 0;
 
   const handleAuthRequired = useCallback(
     (server: IMcpServer) => {
@@ -179,6 +188,7 @@ function McpInstalledList({
   );
 
   useEffect(() => {
+    if (isMcpServersLoading || mcpServersLoadFailed) return;
     const httpServers = mcpServers.filter(
       (s) => s.transport.type === 'http' || s.transport.type === 'sse' || s.transport.type === 'streamable_http'
     );
@@ -187,45 +197,78 @@ function McpInstalledList({
         void checkOAuthStatus(server);
       });
     }
-  }, [mcpServers, checkOAuthStatus]);
+  }, [checkOAuthStatus, isMcpServersLoading, mcpServers, mcpServersLoadFailed]);
+
+  const loadErrorNotice = mcpServersLoadFailed ? (
+    <div
+      className='flex items-center justify-between gap-12px rd-12px border border-dashed border-arco-2 px-16px py-12px text-13px text-t-secondary'
+      role='alert'
+    >
+      <span>{t('settings.mcpSyncError')}</span>
+      {reloadMcpServers ? (
+        <Button size='small' type='secondary' onClick={reloadMcpServers}>
+          {t('common.retry')}
+        </Button>
+      ) : null}
+    </div>
+  ) : null;
 
   return (
     <div className='flex-1 min-h-0'>
-      {visibleMcpServers.length === 0 && visibleExtensionServers.length === 0 ? (
-        <div className='py-24px text-center text-t-secondary text-14px border border-dashed border-border-2 rd-12px'>
-          {t('settings.mcpNoServersFound')}
+      {isMcpServersLoading ? (
+        <SettingsContentLoading className='min-h-220px' />
+      ) : mcpServersLoadFailed && !hasServers ? (
+        <div
+          className='flex min-h-180px flex-col items-center justify-center gap-10px rd-12px border border-dashed border-arco-2 px-24px py-24px text-center'
+          role='alert'
+        >
+          <div className='text-14px text-t-secondary'>{t('settings.mcpSyncError')}</div>
+          {reloadMcpServers ? (
+            <Button size='small' type='secondary' onClick={reloadMcpServers}>
+              {t('common.retry')}
+            </Button>
+          ) : null}
         </div>
       ) : (
         <div className='space-y-12px'>
-          {visibleMcpServers.map((server) => {
-            const uiKey = mcpServerUiKey(server.mcp_server_id);
-            return (
-              <McpServerItem
-                key={server.mcp_server_id}
-                server={server}
-                isCollapsed={mcpCollapseKey[uiKey] || false}
-                isTestingConnection={testingServers[server.mcp_server_id] || false}
-                oauthStatus={oauthStatus[server.mcp_server_id]}
-                isLoggingIn={loggingIn[server.mcp_server_id]}
-                onToggleCollapse={() => toggleServerCollapse(uiKey)}
-                onTestConnection={handleTestMcpConnection}
-                onEditServer={showEditMcpModal}
-                onDeleteServer={showDeleteConfirm}
-                onOAuthLogin={handleOAuthLogin}
-              />
-            );
-          })}
-          {visibleExtensionServers.map((server) => {
-            const uiKey = extensionMcpUiKey(server.source_key);
-            return (
-              <ExtensionMcpServerItem
-                key={uiKey}
-                server={server}
-                isCollapsed={mcpCollapseKey[uiKey] || false}
-                onToggleCollapse={() => toggleServerCollapse(uiKey)}
-              />
-            );
-          })}
+          {loadErrorNotice}
+          {hasVisibleServers ? (
+            <>
+              {visibleMcpServers.map((server) => {
+                const uiKey = mcpServerUiKey(server.mcp_server_id);
+                return (
+                  <McpServerItem
+                    key={server.mcp_server_id}
+                    server={server}
+                    isCollapsed={mcpCollapseKey[uiKey] || false}
+                    isTestingConnection={testingServers[server.mcp_server_id] || false}
+                    oauthStatus={oauthStatus[server.mcp_server_id]}
+                    isLoggingIn={loggingIn[server.mcp_server_id]}
+                    onToggleCollapse={() => toggleServerCollapse(uiKey)}
+                    onTestConnection={handleTestMcpConnection}
+                    onEditServer={showEditMcpModal}
+                    onDeleteServer={showDeleteConfirm}
+                    onOAuthLogin={handleOAuthLogin}
+                  />
+                );
+              })}
+              {visibleExtensionServers.map((server) => {
+                const uiKey = extensionMcpUiKey(server.source_key);
+                return (
+                  <ExtensionMcpServerItem
+                    key={uiKey}
+                    server={server}
+                    isCollapsed={mcpCollapseKey[uiKey] || false}
+                    onToggleCollapse={() => toggleServerCollapse(uiKey)}
+                  />
+                );
+              })}
+            </>
+          ) : (
+            <div className='py-24px text-center text-t-secondary text-14px border border-dashed border-border-2 rd-12px'>
+              {t('settings.mcpNoServersFound')}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -243,8 +286,23 @@ const ModalMcpManagementSection = React.forwardRef<
     hideChrome?: boolean;
     searchQuery?: string;
     showList?: boolean;
+    isMcpServersLoading?: boolean;
+    mcpServersLoadFailed?: boolean;
+    reloadMcpServers?: () => void;
   }
->(({ message, mcpServers, extensionMcpServers, setMcpServers, saveMcpServers, hideChrome = false, searchQuery = '', showList = true }, ref) => {
+>(({
+  message,
+  mcpServers,
+  extensionMcpServers,
+  setMcpServers,
+  saveMcpServers,
+  hideChrome = false,
+  searchQuery = '',
+  showList = true,
+  isMcpServersLoading = false,
+  mcpServersLoadFailed = false,
+  reloadMcpServers,
+}, ref) => {
   const { t } = useTranslation();
   const testersRef = useRef<McpConnectionTesters | null>(null);
   const {
@@ -344,6 +402,9 @@ const ModalMcpManagementSection = React.forwardRef<
           showEditMcpModal={showEditMcpModal}
           showDeleteConfirm={showDeleteConfirm}
           testersRef={testersRef}
+          isMcpServersLoading={isMcpServersLoading}
+          mcpServersLoadFailed={mcpServersLoadFailed}
+          reloadMcpServers={reloadMcpServers}
         />
       ) : null}
 
@@ -380,7 +441,15 @@ ModalMcpManagementSection.displayName = 'ModalMcpManagementSection';
 
 const ToolsModalContent: React.FC = () => {
   const [mcpMessage, mcpMessageContext] = useArcoMessage({ maxCount: 10 });
-  const { mcpServers, extensionMcpServers, saveMcpServers, setMcpServers } = useMcpServers();
+  const {
+    mcpServers,
+    extensionMcpServers,
+    isMcpServersLoading,
+    mcpServersLoadFailed,
+    reloadMcpServers,
+    saveMcpServers,
+    setMcpServers,
+  } = useMcpServers();
   return (
     <ToolsModalContentWithState
       mcpMessage={mcpMessage}
@@ -389,6 +458,9 @@ const ToolsModalContent: React.FC = () => {
       extensionMcpServers={extensionMcpServers}
       saveMcpServers={saveMcpServers}
       setMcpServers={setMcpServers}
+      isMcpServersLoading={isMcpServersLoading}
+      mcpServersLoadFailed={mcpServersLoadFailed}
+      reloadMcpServers={reloadMcpServers}
     />
   );
 };
@@ -410,8 +482,24 @@ export const ToolsModalContentWithState = React.forwardRef<
     hideChrome?: boolean;
     searchQuery?: string;
     showList?: boolean;
+    isMcpServersLoading?: boolean;
+    mcpServersLoadFailed?: boolean;
+    reloadMcpServers?: () => void;
   }
->(({ mcpMessage, mcpMessageContext, mcpServers, extensionMcpServers, saveMcpServers, setMcpServers, hideChrome, searchQuery, showList }, ref) => {
+>(({
+  mcpMessage,
+  mcpMessageContext,
+  mcpServers,
+  extensionMcpServers,
+  saveMcpServers,
+  setMcpServers,
+  hideChrome,
+  searchQuery,
+  showList,
+  isMcpServersLoading,
+  mcpServersLoadFailed,
+  reloadMcpServers,
+}, ref) => {
   return (
     <div className='flex flex-col h-full w-full'>
       {mcpMessageContext}
@@ -427,6 +515,9 @@ export const ToolsModalContentWithState = React.forwardRef<
           hideChrome={hideChrome}
           searchQuery={searchQuery}
           showList={showList}
+          isMcpServersLoading={isMcpServersLoading}
+          mcpServersLoadFailed={mcpServersLoadFailed}
+          reloadMcpServers={reloadMcpServers}
         />
       </div>
     </div>

@@ -25,6 +25,7 @@ import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
 import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
 import { isMiniMaxH3ResolutionToken } from '@oc/lib/video-generation-options';
 import { parsePersistedChatSessions, projectToCanvasDocument } from './canvasChatPersist';
+import { isCanvasHomeAgentLaunch } from './home-agent-launch';
 
 export type CanvasHomeLaunch = {
   prompt: string;

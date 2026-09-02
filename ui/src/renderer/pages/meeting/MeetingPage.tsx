@@ -115,7 +115,7 @@ const MeetingPage: React.FC = () => {
             </h1>
             <p className='m-0 mt-6px text-13px leading-20px text-t-secondary'>{t('meeting.description')}</p>
           </div>
-          <Button type='primary' icon={<Plus theme='outline' size={14} />} loading={creating} onClick={handleNew}>
+          <Button type='primary' className='flowy-icon-text-btn' icon={<Plus theme='outline' size={14} />} loading={creating} onClick={handleNew}>
             {t('meeting.newMeeting')}
           </Button>
         </div>

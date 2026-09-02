@@ -167,7 +167,7 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete,
 
         {(!videoUrl || !previewReady) && (
           <div className={styles.projectCoverFallback}>
-            <span className='flex h-28px w-28px items-center justify-center rd-8px border border-solid border-[rgba(var(--primary-6),0.2)] bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'>
+            <span className='flex h-28px w-28px items-center justify-center rd-8px border border-solid border-[rgba(var(--primary-6),0.2)] bg-[rgba(var(--primary-6),0.12)] text-primary-6'>
               {task.status === 'queued' || task.status === 'running' ? (
                 <LoadingOne theme='outline' size={15} fill='currentColor' className='animate-spin' />
               ) : (
@@ -209,7 +209,7 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete,
                     title={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
                     className={[
                       'inline-flex items-center justify-center w-24px h-24px rd-6px',
-                      'text-[var(--color-text-3)] hover:text-[rgb(var(--danger-6))]',
+                      'text-[var(--color-text-3)] hover:text-danger-6',
                       'hover:bg-[var(--color-fill-2)] transition-colors',
                       deleting ? 'opacity-40 pointer-events-none' : '',
                     ].join(' ')}

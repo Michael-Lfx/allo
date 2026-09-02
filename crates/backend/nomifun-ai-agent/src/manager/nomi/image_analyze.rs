@@ -207,7 +207,7 @@ async fn analyze_in_batches(
         .join("\n\n"))
 }
 
-/// Execute the internal image-analysis tool. It is orchestrated by the host,
+/// Execute the internal image-analysis tool. It is coordinated by the host,
 /// never exposed as a model-selectable tool, so the main text model cannot
 /// accidentally skip it or receive the source image data.
 pub(super) async fn analyze_image_blocks(

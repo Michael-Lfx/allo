@@ -1,14 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const currentDir = dirname(fileURLToPath(import.meta.url));
 
 const routerSource = readFileSync(
-  join(import.meta.dir, '../../components/layout/Router.tsx'),
+  join(currentDir, '../../components/layout/Router.tsx'),
   'utf8'
 );
-const pageSource = readFileSync(join(import.meta.dir, 'index.tsx'), 'utf8');
+const pageSource = readFileSync(join(currentDir, 'index.tsx'), 'utf8');
 const refreshSource = readFileSync(
-  join(import.meta.dir, '../../hooks/agent/agentDetectionRefresh.ts'),
+  join(currentDir, '../../hooks/agent/agentDetectionRefresh.ts'),
   'utf8'
 );
 

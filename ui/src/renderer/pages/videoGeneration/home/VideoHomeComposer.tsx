@@ -761,7 +761,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             <Popover
               trigger='click'
               position='bl'
-              showArrow={false}
+              triggerProps={{ showArrow: false }}
               getPopupContainer={getComposerPopupContainer}
               popupVisible={modeMenuOpen}
               onVisibleChange={(open) => {
@@ -843,7 +843,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             <Popover
               trigger='click'
               position='bl'
-              showArrow={false}
+              triggerProps={{ showArrow: false }}
               getPopupContainer={getComposerPopupContainer}
               popupVisible={slashMenuOpen}
               onVisibleChange={(open) => {
@@ -882,9 +882,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
               <Popover
                 trigger='click'
                 position='bl'
-                showArrow={false}
+                triggerProps={{ showArrow: false, autoFitPosition: false, updateOnScroll: true }}
                 getPopupContainer={getComposerPopupContainer}
-                triggerProps={{ autoFitPosition: false, updateOnScroll: true }}
                 className={styles.skillPopover}
                 style={{ maxWidth: 380, padding: 0 }}
                 popupVisible={skillHubOpen}

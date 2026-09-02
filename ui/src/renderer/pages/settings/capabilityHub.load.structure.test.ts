@@ -43,6 +43,42 @@ describe('capability hub load contracts', () => {
     expect(getAgentsCall).toBeLessThan(listFn);
   });
 
+  test('capability installed views distinguish loading from an empty result', () => {
+    const presetList = read('./PresetSettings/PresetListPanel.tsx');
+    const skills = read('./SkillsHubSettings.tsx');
+    const plugins = read('../mcp/PluginSettingsPanel.tsx');
+    const mcp = read('../../components/settings/SettingsModal/contents/ToolsModalContent.tsx');
+
+    for (const source of [presetList, skills, plugins, mcp]) {
+      expect(source).toContain('SettingsContentLoading');
+    }
+    expect(presetList).toContain('loading ?');
+    expect(presetList).toContain('error && presets.length > 0');
+    expect(skills).toContain('{loading && availableSkills.length === 0 ? (');
+    expect(skills).toContain('loadError && availableSkills.length === 0');
+    expect(skills).toContain('loadError && availableSkills.length > 0');
+    expect(plugins).toContain('{loading ? (');
+    expect(plugins).toContain('requestIdRef');
+    expect(plugins).toContain('if (requestIdRef.current !== requestId) return;');
+    expect(plugins).toContain('loadError && extensions.length > 0');
+    expect(mcp).toContain('{isMcpServersLoading ? (');
+    expect(mcp).toContain('mcpServersLoadFailed && !hasServers');
+    expect(mcp).toContain('loadErrorNotice');
+    expect(mcp).toContain('mcpServersLoadFailed');
+    expect(mcp).toContain("t('common.retry')");
+  });
+
+  test('MCP catalog refreshes expose one combined loading state and ignore stale responses', () => {
+    const hook = read('../../hooks/mcp/useMcpServers.ts');
+
+    expect(hook).toContain('requestIdRef');
+    expect(hook).toContain('if (requestIdRef.current !== requestId) return;');
+    expect(hook).toContain('extensionMcpServersLoadFailed');
+    expect(hook).toContain('mcpServersLoadFailed || extensionMcpServersLoadFailed');
+    expect(hook).toContain('isMcpServersLoading: isMcpServersLoading || isExtensionMcpServersLoading');
+    expect(hook).toContain('reloadMcpServers: loadMcpServers');
+  });
+
   test('skill market reuses the available-skills SWR key and does not scan home-dir agents', () => {
     const market = read('./SkillMarketSettings.tsx');
     const importMenu = read('./skill/SkillImportMenu.tsx');

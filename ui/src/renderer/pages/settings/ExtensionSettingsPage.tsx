@@ -123,7 +123,7 @@ const ExtensionSettingsPage: React.FC = () => {
   }, [loading, postLocaleInit]);
 
   return (
-    <SettingsPageWrapper layout='hub'>
+    <SettingsPageWrapper layout='hub' loading={pageState === 'loading' && extensionTabs.length === 0}>
       <div className='space-y-24px'>
         <SettingsPageHeader
           title={tab ? resolveExtTabName(tab) : t('settings.extensionSettingsTitle')}

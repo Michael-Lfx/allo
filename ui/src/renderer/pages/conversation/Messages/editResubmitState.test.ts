@@ -143,9 +143,7 @@ describe('retry operation mutex (P1-1)', () => {
     const admission = retryBranch.indexOf('if (activeRetryOperationRef.current !== null) return;');
     const stamp = retryBranch.indexOf('activeRetryOperationRef.current = retryOperationId;');
     const setLoading = retryBranch.indexOf('setIsLoading(true);');
-    const catchGuard = retryBranch.indexOf(
-      'activeRetryOperationRef.current === retryOperationId &&'
-    );
+    const catchGuard = retryBranch.indexOf('shouldRestoreRetrySubmittedInput({');
     const restoreInput = retryBranch.indexOf('setInput(content);', catchGuard);
     const finallyIndex = retryBranch.indexOf('} finally {');
     const release = retryBranch.indexOf('activeRetryOperationRef.current = null;', finallyIndex);
@@ -158,6 +156,12 @@ describe('retry operation mutex (P1-1)', () => {
     expect(setLoading).toBeGreaterThan(stamp);
     // Failure restore requires BOTH the token and the untouched input revision.
     expect(catchGuard).toBeGreaterThan(-1);
+    expect(retryBranch.slice(catchGuard, restoreInput)).toContain(
+      'activeOperationId: activeRetryOperationRef.current'
+    );
+    expect(retryBranch.slice(catchGuard, restoreInput)).toContain(
+      'revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision'
+    );
     expect(restoreInput).toBeGreaterThan(catchGuard);
     // finally releases the mutex before lowering the loading flag.
     expect(finallyIndex).toBeGreaterThan(-1);

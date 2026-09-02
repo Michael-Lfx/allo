@@ -290,7 +290,7 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                 <span className={styles.canvasCardPreview}>
                   {isOpening ? (
                     <>
-                      <Spin size='small' />
+                      <Spin size={16} />
                       <small>
                         {t('videoGeneration.create.gallery.opening', {
                           defaultValue: '正在打开…',
