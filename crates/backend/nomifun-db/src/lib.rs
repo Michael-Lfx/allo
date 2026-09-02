@@ -47,6 +47,7 @@ pub use models::{
     NewProviderModel, ProviderConnectionRow, ProviderModelRow, ProviderModelUpdate,
     UpsertProviderConnectionParams,
 };
+pub use models::OAuthClientRegistrationRow;
 pub use models::GoalRow;
 pub use models::{
     MeetingSegmentRow, MeetingSessionRow, MeetingSpeakerRow, MeetingVoiceprintRow,
@@ -78,6 +79,7 @@ pub use repository::cron::{
     UpdateCronJobParams,
 };
 pub use repository::mcp_server::{CreateMcpServerParams, UpdateMcpServerParams};
+pub use repository::oauth_client_registration::UpsertOAuthClientRegistrationParams;
 pub use repository::oauth_token::UpsertOAuthTokenParams;
 pub use repository::provider::{
     CreateProviderParams, FLOWY_CATALOG_CREDIT_RATE_PARAM, FLOWY_CATALOG_MAX_TOKENS_PARAM,
@@ -115,7 +117,7 @@ pub use repository::{
     IConversationRepository, ICronRepository, IIdmmInterventionRepository,
     IdmmActionReservationKey, IdmmActionReserveResult, IdmmActionSettleResult,
     IdmmActionSettlement, IdmmActionTurnIdentity, IKnowledgeRepository,
-    IMcpServerRepository, IOAuthTokenRepository,
+    IMcpServerRepository, IOAuthClientRegistrationRepository, IOAuthTokenRepository,
     IProviderConnectionRepository, IProviderModelRepository, IProviderRepository,
     IRemoteAgentRepository, IRequirementRepository, ISettingsRepository, ISkillTagRepository,
     ITagSettingRepository, ITerminalRepository, IUserRepository, IWebhookRepository,
@@ -129,6 +131,7 @@ pub use repository::{
     SqliteChannelRepository, SqliteClientPreferenceRepository, SqliteCompanionTokenRepository,
     SqliteConversationRepository, SqliteCronRepository,
     SqliteIdmmInterventionRepository, SqliteKnowledgeRepository, SqliteMcpServerRepository,
+    SqliteOAuthClientRegistrationRepository,
     SqliteOAuthTokenRepository,
     SqliteProviderConnectionRepository, SqliteProviderModelRepository, SqliteProviderRepository,
     SqliteRemoteAgentRepository, SqliteRequirementRepository, SqliteSettingsRepository,

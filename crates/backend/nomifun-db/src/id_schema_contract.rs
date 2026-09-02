@@ -89,6 +89,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "meeting_voiceprints",
     "message_correlations",
     "messages",
+    "oauth_client_registrations",
     "oauth_tokens",
     "preset_agent_preferences",
     "preset_examples",
@@ -281,6 +282,14 @@ const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("meeting_speakers", "session_id"),
     ("meeting_voiceprints", "voiceprint_id"),
     ("messages", "message_id"),
+    // OAuth client identity handle, not a relational link to another row.
+    ("oauth_client_registrations", "client_id"),
+    // Application-managed link to a local INTEGER-registry row (v3 logical
+    // references only model TEXT/UUID links); integrity is enforced by the
+    // OAuth service, and `principal_id` is reserved for a future multi-user
+    // owner, not a `users` row in the current single-device mode.
+    ("oauth_tokens", "registration_id"),
+    ("oauth_tokens", "principal_id"),
     // Source-qualified Skill catalog key, not a relational business ID.
     ("preset_skill_bindings", "skill_id"),
     ("preset_tags", "preset_tag_id"),

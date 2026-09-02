@@ -22,6 +22,7 @@ mod knowledge;
 mod mcp_server;
 mod meeting;
 mod message;
+mod oauth_client_registration;
 mod oauth_token;
 mod provider;
 mod provider_connection;
@@ -85,6 +86,7 @@ pub use meeting::{
     MeetingSegmentRow, MeetingSessionRow, MeetingSpeakerRow, MeetingVoiceprintRow,
 };
 pub use message::MessageRow;
+pub use oauth_client_registration::OAuthClientRegistrationRow;
 pub use oauth_token::OAuthTokenRow;
 pub use provider::Provider;
 pub use provider_connection::{ProviderConnectionRow, UpsertProviderConnectionParams};

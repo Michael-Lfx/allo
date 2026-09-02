@@ -78,6 +78,22 @@ pub async fn inject_oauth_bearer(
 mod tests {
     use super::*;
 
+    /// The OAuth discovery probe (`nomifun-mcp::MCP_PROTOCOL_VERSION`) must
+    /// stay byte-identical with the runtime transport's advertised version
+    /// (`nomi-mcp::MCP_PROTOCOL_VERSION`), otherwise servers whose OAuth
+    /// challenge only appears on `initialize` POST would be probed with a
+    /// version the runtime itself never uses.
+    #[test]
+    fn shared_mcp_protocol_version_stays_in_sync_across_crates() {
+        assert_eq!(
+            nomifun_mcp::MCP_PROTOCOL_VERSION,
+            nomi_mcp::MCP_PROTOCOL_VERSION,
+            "OAuth discovery must reuse the runtime MCP protocol version \
+             (design doc §5.1)"
+        );
+        assert_eq!(nomifun_mcp::MCP_PROTOCOL_VERSION, "2025-11-25");
+    }
+
     #[tokio::test]
     async fn inject_oauth_bearer_without_service_is_a_no_op() {
         let mut headers = HashMap::new();

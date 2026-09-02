@@ -20,10 +20,12 @@ use nomifun_conversation::{
 };
 use nomifun_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, ICompanionTokenRepository,
-    IConversationRepository, IMcpServerRepository, IOAuthTokenRepository, IProviderModelRepository,
+    IConversationRepository, IMcpServerRepository, IOAuthClientRegistrationRepository,
+    IOAuthTokenRepository, IProviderModelRepository,
     IProviderRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
-    SqliteOAuthTokenRepository, SqliteProviderModelRepository, SqliteProviderRepository,
+    SqliteOAuthClientRegistrationRepository, SqliteOAuthTokenRepository,
+    SqliteProviderModelRepository, SqliteProviderRepository,
     SqliteRemoteAgentRepository, SqliteTerminalRepository, SqliteUserRepository,
 };
 use nomifun_db::{IClientPreferenceRepository, SqliteClientPreferenceRepository};
@@ -2173,7 +2175,10 @@ impl AppServices {
         let mcp_oauth_service = nomifun_mcp::McpOAuthService::new_dynamic(
             Arc::new(SqliteOAuthTokenRepository::new(database.pool().clone()))
                 as Arc<dyn IOAuthTokenRepository>,
-        );
+        )
+        .with_registration_repository(Arc::new(
+            SqliteOAuthClientRegistrationRepository::new(database.pool().clone()),
+        ) as Arc<dyn IOAuthClientRegistrationRepository>);
 
         let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> =
             Arc::new(SqliteAgentMetadataRepository::new(database.pool().clone()));

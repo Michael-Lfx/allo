@@ -23,8 +23,15 @@ use crate::protocol::{
     ToolsListResult,
 };
 
+/// The MCP protocol version this client advertises when initializing.
+///
+/// `pub` so downstream layers (e.g. `nomifun-mcp` OAuth discovery probes)
+/// can stay in sync without copying the literal. Cross-crate drift is guarded
+/// by an equality assertion in `nomifun-ai-agent`.
+pub const CLIENT_PROTOCOL_VERSION_STR: &str = "2025-11-25";
+
 const CLIENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2025_11_25;
-const LEGACY_PROTOCOL_VERSION: &str = "2025-11-25";
+const LEGACY_PROTOCOL_VERSION: &str = CLIENT_PROTOCOL_VERSION_STR;
 // Search stays well below this. Fetch admission observed Chinese articles and
 // long RFC pages just over 1 MiB, so the shared peer needs 2 MiB headroom.
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
