@@ -8,7 +8,16 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Modal, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { Copy, FullScreen, Hourglass, Info, SortAmountDown, SortAmountUp } from '@icon-park/react';
+import {
+  Copy,
+  Down,
+  FullScreen,
+  Hourglass,
+  Info,
+  Right,
+  SortAmountDown,
+  SortAmountUp,
+} from '@icon-park/react';
 import { JsonView, defaultStyles } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import { copyText } from '@renderer/utils/ui/clipboard';
@@ -207,27 +216,45 @@ const ScanBody: React.FC<{ result: ObservationScanResult; newestFirst: boolean }
 export interface ObservationJsonTreeProps {
   label: string;
   value: unknown;
+  /** Optional value shown when the user switches from the scan to Raw. */
+  rawValue?: unknown;
   hint?: string;
   /** Render strings and primitives as text even when wrapping objects exist. */
   textValue?: boolean;
   scan?: ObservationScanKind;
+  /** Message scans read oldest-to-newest when this is false. */
+  initialNewestFirst?: boolean;
   /** Call/tile identity. Poll updates must not pass a new key. */
   resetKey?: string;
+  /** Render the toolbar as the single collapsible section header. */
+  collapsible?: boolean;
+  expanded?: boolean;
+  onToggle?: () => void;
+  stateLabel?: string;
+  /** Additional controls rendered in the same header row, before inspection actions. */
+  headerAddon?: React.ReactNode;
 }
 
 const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
   label,
   value,
+  rawValue = value,
   hint,
   textValue = false,
   scan,
+  initialNewestFirst = true,
   resetKey = '',
+  collapsible = false,
+  expanded = true,
+  onToggle,
+  stateLabel,
+  headerAddon,
 }) => {
   const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [newestFirst, setNewestFirst] = useState(true);
-  const copyPayload = useMemo(() => formatJson(value), [value]);
+  const copyPayload = useMemo(() => formatJson(rawValue), [rawValue]);
   const copyLabel = t('conversation.agentTrace.copyField', { label });
   const scanResult = useMemo(
     () => (scan ? projectObservationScan(value, scan) : { kind: 'unscannable' as const }),
@@ -237,8 +264,8 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
 
   useEffect(() => {
     setShowRaw(false);
-    setNewestFirst(true);
-  }, [resetKey]);
+    setNewestFirst(initialNewestFirst);
+  }, [initialNewestFirst, resetKey]);
 
   const onCopy = useCallback(async () => {
     try {
@@ -250,6 +277,7 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
   }, [copyPayload, t]);
 
   const canSortMessages = canScan && scan === 'messages' && !showRaw;
+  const bodyExpanded = !collapsible || expanded;
   const sortLabel = newestFirst
     ? t('conversation.agentTrace.newestFirst')
     : t('conversation.agentTrace.oldestFirst');
@@ -258,14 +286,35 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
     canScan && !showRaw ? (
       <ScanBody result={scanResult} newestFirst={newestFirst} />
     ) : (
-      <TreeBody value={value} forceText={textValue} />
+      <TreeBody value={rawValue} forceText={textValue} />
     );
 
   return (
     <div className='session-logs-json-tree'>
-      <div className='session-logs-json-tree__toolbar'>
+      <div
+        className='session-logs-json-tree__toolbar'
+      >
         <div className='session-logs-json-tree__caption'>
-          {label}
+          {collapsible && onToggle ? (
+            <button
+              type='button'
+              className='session-logs-json-tree__caption-toggle'
+              aria-expanded={bodyExpanded}
+              onClick={onToggle}
+            >
+              <span className='session-logs-json-tree__caption-label'>{label}</span>
+              {stateLabel ? (
+                <span className='session-logs-json-tree__state'>{stateLabel}</span>
+              ) : null}
+              {bodyExpanded ? (
+                <Down theme='outline' size='12' strokeWidth={3} />
+              ) : (
+                <Right theme='outline' size='12' strokeWidth={3} />
+              )}
+            </button>
+          ) : (
+            <span className='session-logs-json-tree__caption-label'>{label}</span>
+          )}
           {hint ? (
             <Tooltip
               content={<HintTip hint={hint} />}
@@ -281,6 +330,9 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
             </Tooltip>
           ) : null}
         </div>
+        {headerAddon ? (
+          <div className='session-logs-json-tree__header-addon'>{headerAddon}</div>
+        ) : null}
         <div className='session-logs-json-tree__actions'>
           {canScan ? (
             <button
@@ -335,7 +387,9 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
           </Tooltip>
         </div>
       </div>
-      <div className='session-logs-json-tree__body'>{renderBody()}</div>
+      {bodyExpanded ? (
+        <div className='session-logs-json-tree__body'>{renderBody()}</div>
+      ) : null}
       <Modal
         title={label}
         visible={maximized}
