@@ -65,7 +65,10 @@ Rules:
 - Every lesson must cite an exact FILE path supplied in the samples. Never invent paths.
 - Every lesson binds at least one concept; prefer the concept it teaches most.
 - Order lessons inside each module from foundational to advanced.
-- The number of modules and lessons per module must match the requested size exactly.
+- Course size is yours to decide: derive the number of modules and lessons per
+  module from the scope and complexity of the material — compact for narrow
+  topics, broader for wide ones. Every lesson must carry real substance; never
+  pad or cram to hit an arbitrary count.
 - Output JSON only, without Markdown fences or commentary."#;
 
 

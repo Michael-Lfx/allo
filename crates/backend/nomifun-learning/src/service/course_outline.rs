@@ -183,12 +183,7 @@ impl LearningService {
         // Defensive: the deterministic draft→blueprint conversion must
         // satisfy the blueprint contract; a violation here is an
         // implementation bug, not model output.
-        if let Err(error) = validate_blueprint(
-            &blueprint,
-            &draft.samples,
-            draft.brief.module_count,
-            draft.brief.lessons_per_module,
-        ) {
+        if let Err(error) = validate_blueprint(&blueprint, &draft.samples) {
             return Err(AppError::Internal(format!(
                 "outline draft → blueprint conversion mismatch: {error}"
             )));

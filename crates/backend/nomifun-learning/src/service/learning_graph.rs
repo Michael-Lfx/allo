@@ -52,13 +52,50 @@ impl LearningService {
         let engine = engine.ok_or_else(|| {
             AppError::Conflict("learning graph generation is not configured".into())
         })?;
-        engine
+        self.begin_learning_graph_generation(topic);
+        let result = engine
             .generate(
                 user_id,
                 topic,
                 model_override.map(|(provider, model)| (provider.as_str(), model)),
             )
-            .await
+            .await;
+        self.end_learning_graph_generation();
+        result
+    }
+
+    /// 续建一份仍存活的草稿:与 [`Self::generate_learning_graph`] 同一套
+    /// slot 串行化与引擎解析,只是引擎入口换成 `resume`。草稿定位与主题
+    /// 提取在 [`Self::resume_learning_graph_course`] 完成。
+    pub async fn resume_learning_graph(
+        &self,
+        user_id: &UserId,
+        draft_id: &str,
+        topic: &str,
+        provider_id: Option<ProviderId>,
+        model: Option<String>,
+    ) -> Result<crate::learning_graph::LearningGraphRecord, AppError> {
+        let model_override = provider_id.as_ref().zip(model.as_deref());
+        let _slot = self.acquire_generation_slot(user_id, "learning-graph".to_owned())?;
+        let engine = self
+            .learning_graph_engine
+            .read()
+            .map_err(|_| AppError::Internal("learning graph engine lock poisoned".into()))?
+            .clone();
+        let engine = engine.ok_or_else(|| {
+            AppError::Conflict("learning graph generation is not configured".into())
+        })?;
+        self.begin_learning_graph_generation(topic);
+        let result = engine
+            .resume(
+                user_id,
+                draft_id,
+                topic,
+                model_override.map(|(provider, model)| (provider.as_str(), model)),
+            )
+            .await;
+        self.end_learning_graph_generation();
+        result
     }
 
     /// Persist the generation provenance next to the audit snapshot
@@ -235,6 +272,121 @@ impl LearningService {
         let course_id = LearningCourseId::parse(&record.id)
             .map_err(|error| AppError::Internal(format!("invalid learning graph id: {error}")))?;
         self.course_detail(&course_id, Some(user_id)).await
+    }
+
+    /// 续建入口:定位最近活跃的存活草稿并重入生成循环。草稿只在内存存活
+    /// (TTL 1 小时,重启即失);无可续草稿时返回 NotFound,前端据此回退
+    /// 全量重生成。slot 串行化保证同时只有一个生成会话,所以按最后活跃
+    /// 时间取最新即唯一候选。
+    pub async fn resume_learning_graph_course(
+        &self,
+        user_id: &UserId,
+        provider_id: Option<ProviderId>,
+        model: Option<String>,
+    ) -> Result<CourseDetail, AppError> {
+        let (draft_id, topic) = {
+            let drafts = self
+                .learning_graph_drafts
+                .read()
+                .map_err(|_| AppError::Internal("learning graph draft lock poisoned".into()))?;
+            let now = std::time::Instant::now();
+            drafts
+                .iter()
+                .filter(|(_, (_, created))| now.duration_since(*created) < LEARNING_GRAPH_DRAFT_TTL)
+                .max_by_key(|(_, (_, created))| *created)
+                .map(|(id, (draft, _))| (id.clone(), draft.topic.clone()))
+                .ok_or_else(|| {
+                    AppError::NotFound(
+                        "no live learning graph draft to resume (drafts survive for 1 hour)"
+                            .into(),
+                    )
+                })?
+        };
+        let record = self
+            .resume_learning_graph(user_id, &draft_id, &topic, provider_id, model)
+            .await?;
+        let course_id = LearningCourseId::parse(&record.id)
+            .map_err(|error| AppError::Internal(format!("invalid learning graph id: {error}")))?;
+        self.course_detail(&course_id, Some(user_id)).await
+    }
+
+    // ── Generation registry: background visibility + cancellation ─────────
+    // The generation runs inside the HTTP request, but the dialog can be
+    // closed at any moment — the run must stay discoverable (status) and
+    // stoppable (cancel) from the outside. The flag Arc is cloned by the
+    // engine into its CancellableProvider, so setting it here reaches the
+    // running loop at the next LLM request boundary.
+
+    /// 登记一次生成：清零取消旗标并记录主题/开始时刻（slot 串行化保证
+    /// 同时刻至多一个运行，登记即覆盖残留）。
+    pub(crate) fn begin_learning_graph_generation(&self, topic: &str) {
+        self.learning_graph_generation
+            .cancel
+            .store(false, AtomicOrdering::Relaxed);
+        *self
+            .learning_graph_generation
+            .run
+            .lock()
+            .expect("learning graph generation run lock poisoned") =
+            Some(LearningGraphGenerationRun {
+                topic: topic.to_owned(),
+                started_at: std::time::Instant::now(),
+            });
+    }
+
+    /// 生成到达终态（成功/失败/超时）后注销。
+    pub(crate) fn end_learning_graph_generation(&self) {
+        *self
+            .learning_graph_generation
+            .run
+            .lock()
+            .expect("learning graph generation run lock poisoned") = None;
+    }
+
+    /// 生成状态（后台指示条的数据源）：进行中时带主题与已运行秒数。
+    pub fn learning_graph_generation_status(
+        &self,
+    ) -> crate::models::LearningGraphGenerationStatus {
+        let run_guard = self
+            .learning_graph_generation
+            .run
+            .lock()
+            .expect("learning graph generation run lock poisoned");
+        match run_guard.as_ref() {
+            Some(run) => crate::models::LearningGraphGenerationStatus {
+                running: true,
+                topic: Some(run.topic.clone()),
+                elapsed_secs: Some(run.started_at.elapsed().as_secs()),
+            },
+            None => crate::models::LearningGraphGenerationStatus {
+                running: false,
+                topic: None,
+                elapsed_secs: None,
+            },
+        }
+    }
+
+    /// 置位取消旗标；返回是否存在进行中的生成（无则幂等 no-op，前端不必
+    /// 区分竞态）。
+    pub fn cancel_learning_graph_generation(&self) -> bool {
+        let has_run = self
+            .learning_graph_generation
+            .run
+            .lock()
+            .expect("learning graph generation run lock poisoned")
+            .is_some();
+        if has_run {
+            self.learning_graph_generation
+                .cancel
+                .store(true, AtomicOrdering::Relaxed);
+        }
+        has_run
+    }
+
+    /// 引擎侧取旗标：循环开始前克隆给 CancellableProvider（见
+    /// nomifun-ai-agent 的 learning_graph_loop）。
+    pub fn learning_graph_cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.learning_graph_generation.cancel)
     }
 
     /// 组装学习图课程的图视图。课时行直接复用 `course_detail` 已构建的
@@ -463,6 +615,12 @@ impl LearningService {
         draft_id: &str,
     ) -> Result<crate::learning_graph::draft::InspectView, AppError> {
         Ok(self.draft(draft_id)?.inspect())
+    }
+
+    /// 全图紧凑清单（`lg_inspect` 的 `full=true` 附段）：agent 续建恢复认
+    /// 知、上交前语义自查共用的一次性全图读取通道。
+    pub fn dump_learning_graph_draft(&self, draft_id: &str) -> Result<String, AppError> {
+        Ok(self.draft(draft_id)?.compact_dump())
     }
 
     /// Filtered unit list (name substring / sub-domain overlap / limit).

@@ -13,8 +13,7 @@ async fn setup() -> SqlitePool {
 }
 
 fn request_json() -> String {
-    r#"{"knowledge_base_id":"0190f5fe-7c00-7a00-8abc-012345678903","domain":"trading","module_count":3,"lessons_per_module":3}"#
-        .to_owned()
+    r#"{"knowledge_base_id":"0190f5fe-7c00-7a00-8abc-012345678903","domain":"trading"}"#.to_owned()
 }
 
 const INSERT_JOB: &str = concat!(

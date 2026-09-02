@@ -6,6 +6,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
+import { CourseGenerationPill } from './components/CourseGenerationPill';
 import { CourseWorkspace } from './components/CourseWorkspace';
 // 知识诊断暂时下线：恢复时改回 import { CourseWorkspace, DiagnosticModal } 并取消下方相关注释
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
@@ -152,6 +153,15 @@ const LearningPage: React.FC = () => {
     setReviews,
   });
   const creation = useCourseCreation({ navigate, t, setBusyId });
+
+  // 页面挂载时恢复后台生成状态（服务端注册表是事实来源）：有进行中的
+  // 学习图生成时，悬浮指示条与对话框进度视图随之恢复。
+  useEffect(() => {
+    void creation.refreshGenerationStatus();
+    // 仅挂载时执行一次；refreshGenerationStatus 闭包内的 generation 守卫
+    // 依赖首次渲染值，对一次性恢复语义足够。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const importCourse = useCallback(async () => {
     let pack: unknown;
@@ -440,9 +450,20 @@ const LearningPage: React.FC = () => {
             onTabChange={creation.setCreationTab}
             onDescriptionChange={creation.setCreationDescription}
             onRetry={creation.retryGeneration}
+            onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}
           />
         </Suspense>
+
+        {/* 后台生成指示条：对话框关闭后生成仍在继续，从这里查看进度或取消 */}
+        {creation.generation && !creation.generateVisible && (
+          <CourseGenerationPill
+            status={creation.generation.status}
+            topic={creation.generation.request.description ?? ''}
+            onView={() => void creation.openGenerator()}
+            onCancel={() => void creation.cancelGeneration()}
+          />
+        )}
 
         <Modal
           title={t('learning.importTitle')}

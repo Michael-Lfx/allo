@@ -2518,6 +2518,7 @@ impl AppServices {
         learning_service.set_learning_graph_engine(Arc::new(
             nomifun_ai_agent::LiveLearningGraphAgentEngine {
                 service: learning_service.clone(),
+                round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
                 deps: nomifun_ai_agent::OneShotDeps {
                     provider_repo: provider_repo.clone()
                         as Arc<dyn nomifun_db::IProviderRepository>,

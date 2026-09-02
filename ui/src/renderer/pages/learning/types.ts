@@ -15,8 +15,14 @@ export interface GenerateCourseRequest {
   domain?: string;
   provider_id?: string;
   model?: string;
-  module_count?: number;
-  lessons_per_module?: number;
+}
+
+/** 学习图生成状态（后台指示条/取消入口的数据源）。生成在 HTTP 请求内同步
+ * 执行，创建对话框可以随时关闭——服务端注册表让运行对外可发现、可取消。 */
+export interface LearningGraphGenerationStatus {
+  running: boolean;
+  topic: string | null;
+  elapsed_secs: number | null;
 }
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传 */

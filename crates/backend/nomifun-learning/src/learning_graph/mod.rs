@@ -148,6 +148,17 @@ pub trait LearningGraphAgentEngine: Send + Sync {
         topic: &str,
         model_override: Option<(&str, &str)>,
     ) -> Result<LearningGraphRecord, AppError>;
+
+    /// 续建一份中断后仍存活的草稿:草稿槽预置后重入生成循环(`lg_start`
+    /// 幂等返回现有草稿,模型从现有网络接着补建),审计门禁与修复循环
+    /// 与全新生成完全一致。
+    async fn resume(
+        &self,
+        user_id: &UserId,
+        draft_id: &str,
+        topic: &str,
+        model_override: Option<(&str, &str)>,
+    ) -> Result<LearningGraphRecord, AppError>;
 }
 
 /// List entry without the full node/edge payload.
@@ -582,20 +593,28 @@ pub(crate) fn merge_batch(graph: &LearningGraphData, batch: &NormalizedBatch) ->
 const SCOPE_SYSTEM: &str = r#"你负责在学习目标被拆解为学习单元网络之前，先厘清这个目标到底覆盖什么。
 只回复一个 JSON 对象，形状如下：
 {
+  "goal": "完成整个学习网络后应达到的最终状态——可检验的能力描述",
+  "baseline": "学习者被假定的起点状态",
   "scope": "一句话界定该目标覆盖什么、从哪里开始",
   "blocks": ["大块概念一", "大块概念二"]
 }
 规则：
-- "scope"：一句话划清目标的边界——起点、要达到的水平、主题广度。当学习者基线不明且没有明确要求起点时，默认从零开始：假定学习者对该主题没有任何先备知识与技能，并据此设定起点。
-- "blocks"：该目标真正覆盖的大块概念，按从基础到高级排序，合起来必须铺满从起点到目标的整条路径。这是严格完备的覆盖清单——一个完整课程该包含的大块概念都要列入；漏列是最严重的失败，拿不准时把一个大块拆成两个，也不要把两个合并成一个。数量不固定：复杂的目标多列，简单的目标少列。
+- "goal"：明确的学习目标。从学习目标描述中提炼学习者完成整个网络后能做到什么、理解到什么程度——写成可检验的能力陈述，而不是重复用户的原话。
+- "baseline"：用户起点。当学习者基线不明且没有明确要求起点时，一律视作用户对目标相关领域彻底的一无所知——没有任何先备知识、技能与直觉，baseline 就写成这个最朴素的零基状态（从日常经验可触及处描述），绝不能替用户脑补一个"听起来合理"的部分基线；只有用户明确说出自己已具备的知识或技能时，才照实记录。
+- "scope"：一句话划清目标的边界——起点、要达到的水平、主题广度，须与 goal 和 baseline 保持一致。
+- "blocks"：该目标真正覆盖的大块概念，按从基础到高级排序，合起来必须铺满从 baseline 到 goal 的整条路径。这是严格完备的覆盖清单——一个完整课程该包含的大块概念都要列入；漏列是最严重的失败，拿不准时把一个大块拆成两个，也不要把两个合并成一个。数量不固定：复杂的目标多列，简单的目标少列。第一块必须落在 baseline 之内——baseline 是零基状态时，第一块就是最基础的大块概念。
 - 用学习目标的语言书写。
 - 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
 
 /// Resolved scope reference fed into the generation call. `blocks` is
 /// deliberately coarse: large-block concepts the generator decomposes into
-/// final unit names, never exact unit names themselves.
+/// final unit names, never exact unit names themselves. `goal`/`baseline`
+/// pin the target state and the assumed starting state (zero-basis by
+/// default — see [`SCOPE_SYSTEM`]); both stay empty on old-shape replies.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ScopeAnalysis {
+    pub goal: String,
+    pub baseline: String,
     pub scope: String,
     pub blocks: Vec<String>,
 }
@@ -605,6 +624,10 @@ pub(crate) struct ScopeAnalysis {
 /// instead of failing the whole analysis.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct RawScope {
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub baseline: String,
     #[serde(default)]
     pub scope: String,
     #[serde(default, deserialize_with = "de_pre_list")]
@@ -616,6 +639,8 @@ pub(crate) struct RawScope {
 fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
     let parsed = crate::generation::parse_json_object::<RawScope>(raw).ok()?;
     Some(ScopeAnalysis {
+        goal: parsed.goal.trim().to_owned(),
+        baseline: parsed.baseline.trim().to_owned(),
         scope: parsed.scope.trim().to_owned(),
         blocks: parsed.blocks,
     })
@@ -923,8 +948,10 @@ mod tests {
 
     #[test]
     fn parse_scope_reply_accepts_the_documented_shape() {
-        let raw = r#"{"scope":"零基础到本科","blocks":["算术","配方法"]}"#;
+        let raw = r#"{"goal":"能独立解一元二次方程","baseline":"对代数一无所知","scope":"零基础到本科","blocks":["算术","配方法"]}"#;
         let scope = parse_scope_reply(raw).unwrap();
+        assert_eq!(scope.goal, "能独立解一元二次方程");
+        assert_eq!(scope.baseline, "对代数一无所知");
         assert_eq!(scope.scope, "零基础到本科");
         assert_eq!(scope.blocks, vec!["算术", "配方法"]);
     }
@@ -940,6 +967,9 @@ mod tests {
         let raw = r#"{"scope":"x","blocks":"算术"}"#;
         let scope = parse_scope_reply(raw).unwrap();
         assert_eq!(scope.blocks, vec!["算术"]);
+        // Old-shape replies (no goal/baseline) degrade to empty strings.
+        assert_eq!(scope.goal, "");
+        assert_eq!(scope.baseline, "");
     }
 
     #[test]

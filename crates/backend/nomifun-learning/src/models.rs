@@ -39,10 +39,6 @@ pub struct GenerateCourseRequest {
     pub provider_id: Option<ProviderId>,
     #[serde(default)]
     pub model: Option<String>,
-    #[serde(default = "default_module_count")]
-    pub module_count: u8,
-    #[serde(default = "default_lessons_per_module")]
-    pub lessons_per_module: u8,
     #[serde(default)]
     pub mode: CourseGenerationMode,
     /// 课程类型（beta）：`learning_graph` 走学习图生成（描述即学习目标），
@@ -51,10 +47,29 @@ pub struct GenerateCourseRequest {
     pub course_kind: CourseKind,
 }
 
+/// 续建学习图生成的请求体：全部字段可选——模型缺省走默认解析，草稿由
+/// 服务端按「最近活跃」自行定位（草稿仅在内存存活，TTL 1 小时）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ResumeLearningGraphRequest {
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// 学习图生成状态（后台指示条/取消入口的数据源）。生成在 HTTP 请求内同步
+/// 执行，但创建对话框可以随时关闭——注册表让运行对外可发现、可取消。
+#[derive(Debug, Serialize)]
+pub struct LearningGraphGenerationStatus {
+    pub running: bool,
+    pub topic: Option<String>,
+    pub elapsed_secs: Option<u64>,
+}
+
 impl GenerateCourseRequest {
     /// Shared request validation for the synchronous generate endpoint and
-    /// the agent tool sink: model fields come as a pair, the sizing bounds
-    /// hold, and exactly one of the two generation sources is chosen.
+    /// the agent tool sink: model fields come as a pair and exactly one of
+    /// the two generation sources is chosen.
     pub fn validate(&self) -> Result<(), AppError> {
         if self.provider_id.is_some() != self.model.is_some() {
             return Err(AppError::BadRequest(
@@ -85,16 +100,6 @@ impl GenerateCourseRequest {
                 return Err(AppError::BadRequest("description must not be empty".into()));
             }
             return Ok(());
-        }
-        if !(1..=6).contains(&self.module_count) {
-            return Err(AppError::BadRequest(
-                "module_count must be between 1 and 6".into(),
-            ));
-        }
-        if !(1..=6).contains(&self.lessons_per_module) {
-            return Err(AppError::BadRequest(
-                "lessons_per_module must be between 1 and 6".into(),
-            ));
         }
         if self.knowledge_base_id.is_some() == self.description.is_some() {
             return Err(AppError::BadRequest(
@@ -168,14 +173,6 @@ pub struct RepairFigureRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepairFigureResponse {
     pub code: String,
-}
-
-const fn default_module_count() -> u8 {
-    3
-}
-
-const fn default_lessons_per_module() -> u8 {
-    3
 }
 
 fn default_domain() -> String {

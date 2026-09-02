@@ -1617,8 +1617,6 @@ export interface ILearningCourseGenerationEvent {
   phase: 'started' | 'scope' | 'round' | 'audit' | 'publishing' | 'completed' | 'failed';
   /** 生成来源：课程简报 / 知识库 */
   kind?: 'description' | 'knowledge_base';
-  module_count?: number;
-  lessons_per_module?: number;
   /** agent loop 轮次：loop=generate|repair、round/max_rounds、本轮工具调用与摘要文本 */
   loop?: 'generate' | 'repair';
   round?: number;

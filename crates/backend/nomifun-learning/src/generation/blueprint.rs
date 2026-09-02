@@ -10,8 +10,6 @@ pub(crate) async fn generate_blueprint(
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     prompt: &str,
     samples: &[(String, String)],
-    module_count: u8,
-    lessons_per_module: u8,
 ) -> Result<Blueprint, AppError> {
     let mut system = BLUEPRINT_SYSTEM.to_owned();
     if samples.is_empty() {
@@ -27,7 +25,7 @@ pub(crate) async fn generate_blueprint(
         } else {
             format!(
                 "{prompt}\n\nThe previous blueprint was rejected: {last_error}\n\
-                 Return a corrected blueprint JSON now, keeping the requested size."
+                 Return a corrected blueprint JSON now."
             )
         };
         let raw = complete(
@@ -39,7 +37,7 @@ pub(crate) async fn generate_blueprint(
         )
         .await?;
         match parse_json_object::<Blueprint>(&raw) {
-            Ok(blueprint) => match validate_blueprint(&blueprint, samples, module_count, lessons_per_module) {
+            Ok(blueprint) => match validate_blueprint(&blueprint, samples) {
                 Ok(()) => return Ok(blueprint),
                 Err(error) => last_error = error,
             },
@@ -56,13 +54,12 @@ pub(crate) fn build_blueprint_prompt(
     name: &str,
     description: &str,
     domain: Option<&str>,
-    module_count: u8,
-    lessons_per_module: u8,
     samples: &[(String, String)],
 ) -> String {
     let mut prompt = format!(
         "Knowledge base name: {}\nKnowledge base description: {}\n\
-         Target size: exactly {module_count} modules and {lessons_per_module} lessons per module.\n",
+         Course size is yours to decide: choose the number of modules and lessons \
+         per module from the scope and complexity of the sampled material.\n",
         name.trim(),
         description.trim()
     );
@@ -90,12 +87,11 @@ every lesson in the course brief itself and omit the \"source\" field from every
 pub(crate) fn build_description_blueprint_prompt(
     description: &str,
     domain: Option<&str>,
-    module_count: u8,
-    lessons_per_module: u8,
 ) -> String {
     let mut prompt = format!(
         "Course brief:\n{}\n\
-         Target size: exactly {module_count} modules and {lessons_per_module} lessons per module.\n",
+         Course size is yours to decide: choose the number of modules and lessons \
+         per module from the brief's scope and complexity.\n",
         description.trim()
     );
     if let Some(domain) = domain.map(str::trim).filter(|domain| !domain.is_empty()) {
@@ -109,20 +105,12 @@ pub(crate) fn build_description_blueprint_prompt(
 pub(crate) fn validate_blueprint(
     blueprint: &Blueprint,
     samples: &[(String, String)],
-    module_count: u8,
-    lessons_per_module: u8,
 ) -> Result<(), String> {
     if blueprint.title.trim().is_empty() {
         return Err("blueprint title is empty".into());
     }
     if blueprint.modules.is_empty() {
         return Err("blueprint has no modules".into());
-    }
-    if blueprint.modules.len() != module_count as usize {
-        return Err(format!(
-            "blueprint has {} modules, expected {module_count}",
-            blueprint.modules.len()
-        ));
     }
     let mut concept_keys = HashSet::new();
     for concept in &blueprint.concepts {
@@ -148,20 +136,11 @@ pub(crate) fn validate_blueprint(
         return Err("concept prerequisites form a cycle".into());
     }
     let source_paths: HashSet<&str> = samples.iter().map(|(path, _)| path.as_str()).collect();
-    let mut lesson_count = 0usize;
     for module in &blueprint.modules {
         if module.title.trim().is_empty() || module.lessons.is_empty() {
             return Err("each module needs a title and at least one lesson".into());
         }
-        if module.lessons.len() != lessons_per_module as usize {
-            return Err(format!(
-                "module \"{}\" has {} lessons, expected {lessons_per_module}",
-                module.title,
-                module.lessons.len()
-            ));
-        }
         for lesson in &module.lessons {
-            lesson_count += 1;
             if lesson.title.trim().is_empty() {
                 return Err("lesson title is required".into());
             }
@@ -191,12 +170,6 @@ pub(crate) fn validate_blueprint(
                 }
             }
         }
-    }
-    if lesson_count != module_count as usize * lessons_per_module as usize {
-        return Err(format!(
-            "blueprint has {lesson_count} lessons, expected {}",
-            module_count as usize * lessons_per_module as usize
-        ));
     }
     Ok(())
 }

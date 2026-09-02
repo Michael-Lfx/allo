@@ -19,6 +19,7 @@
 use std::sync::{Arc, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
+use nomi_types::llm::ThinkingConfig;
 use nomifun_common::{AppError, ProviderId};
 use nomifun_learning::{
     Blueprint, CourseOutlineAgentEngine, LearningService, OutlineBrief, OutlineOp, OutlineQuery,
@@ -35,14 +36,14 @@ use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 /// Generation-loop system prompt. The model builds the whole outline via the
 /// draft tools; the audit gate still has the last word at `co_finish`.
 const GENERATE_AGENT_SYSTEM: &str = r#"你是一名课程大纲设计代理：把给定的课程简报（自由文本描述或知识库采样）设计成一门结构完整、可直接开课的课程——模块（module）、课时（lesson）、概念（concept），并通过工具逐步构建。
-- 尺寸是硬约束：模块数与每模块课时数必须与任务给出的目标尺寸完全一致，审计会把尺寸不符判为 danger 阻断发布。
+- 课程规模由你决策：根据简报/采样资料的范围与复杂度决定模块数与每模块课时数——小而聚焦的主题一两节课即可讲透，体系庞大的主题则需要更多模块与课时；每个课时都必须有实质内容，不要为凑数拆分，也不要为省事硬塞。
 - 概念是课时之间的知识锚点：key 全局唯一且稳定（snake_case 或简短英文短语），title 是名词短语；概念之间用 prerequisites 画依赖（必须无环、不得自引用）；每个课时绑定 2-5 个概念 key。
 - 课时：title 是学习目标句（学完能做什么），purpose 一句话说清这节课解决什么问题、用什么方式；概念绑定必须取自已存在的概念 key。
 - kb 流：每个课时的 source 必须是采样文件的真实路径（co_start 返回的清单或 co_read 见到的路径）；描述流省略 source。
 - 模块从易到难排列，整体形成一条连续的学习路径；模块 title 简短，课时内容不越界到相邻模块的主题。
 
 【工具使用纪律】
-1. 第一步必须调用 co_start 创建草稿——它会先做范围分析，返回 draft_id、目标尺寸与（kb 流）采样文件清单。
+1. 第一步必须调用 co_start 创建草稿——它会先做范围分析，返回 draft_id 与（kb 流）采样文件清单。
 2. kb 流：动手设计前先用 co_read 阅读采样文件（至少浏览与主题最相关的若干文件），让大纲真正落在资料上；描述流：简报是唯一 grounding，逐条落实简报中的要点。
 3. 每次 co_patch 前后用 co_inspect 掌握全局；patch 里引用的模块/课时/概念 key 必须与草稿中完全一致（或引用本批前面创建的 key），拿不准先 co_query。
 4. 分批构建：每批少于 25 个操作，宁可多批，不要超长批次。
@@ -63,7 +64,6 @@ const REPAIR_AGENT_SYSTEM: &str = r#"你是一名课程大纲修复代理：基�
 5. 全部 danger 消除后调用 co_finish 发布。
 
 【常见修复动作对照】
-- 尺寸不符：按目标尺寸 add_module / add_lesson 补齐，或 remove_* 裁掉多余项。
 - 课时缺 title|purpose|concepts：update_lesson 补齐缺失字段。
 - 未知概念引用：add_concept 创建缺失概念，或 update_lesson 把课时改绑到已有概念。
 - 重复 key：update_module / update_lesson / update_concept 重命名其中一个，或 remove 多余项。
@@ -204,6 +204,8 @@ impl LiveCourseOutlineAgentEngine {
             &generate_tools,
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
+            ThinkingConfig::Disabled,
+            false,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -285,6 +287,8 @@ impl LiveCourseOutlineAgentEngine {
                 &repair_tools,
                 REPAIR_MAX_ROUNDS,
                 AGENT_MAX_TOKENS,
+                ThinkingConfig::Disabled,
+                false,
                 "repair",
                 Some(ctx.as_ref()),
             )
@@ -448,9 +452,9 @@ fn audit_report(
     Ok(report)
 }
 
-/// The generation loop's user turn: the brief's grounding plus the target
-/// size. The kb flow names the sampled corpus and points at `co_read`; the
-/// description flow hands over the brief text alone.
+/// The generation loop's user turn: the brief's grounding. The kb flow names
+/// the sampled corpus and points at `co_read`; the description flow hands
+/// over the brief text alone.
 fn brief_user_text(brief: &OutlineBrief) -> String {
     let mut text = String::new();
     match (&brief.description, &brief.knowledge_base) {
@@ -474,10 +478,6 @@ fn brief_user_text(brief: &OutlineBrief) -> String {
     if let Some(domain) = brief.domain.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
         text.push_str(&format!("领域标签：{domain}\n"));
     }
-    text.push_str(&format!(
-        "目标尺寸：恰好 {} 个模块，每模块恰好 {} 个课时。\n",
-        brief.module_count, brief.lessons_per_module
-    ));
     text
 }
 
@@ -507,7 +507,7 @@ fn course_outline_tools(ctx: Arc<LoopContext>, with_start: bool) -> Vec<OneShotT
 fn co_start(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "co_start".into(),
-        description: "启动课程大纲草稿：先做范围分析（失败时降级为无 scope），返回 draft_id、目标尺寸与（kb 流）采样文件清单。这是你的第一个工具调用；幂等——已有活动草稿时直接返回现有草稿。".into(),
+        description: "启动课程大纲草稿：先做范围分析（失败时降级为无 scope），返回 draft_id 与（kb 流）采样文件清单。这是你的第一个工具调用；幂等——已有活动草稿时直接返回现有草稿。".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         handler: one_shot_handler(move |_input| {
             let ctx = Arc::clone(&ctx);
@@ -545,7 +545,7 @@ fn co_start(ctx: Arc<LoopContext>) -> OneShotTool {
 fn co_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "co_inspect".into(),
-        description: "当前草稿全局概览：课程标题/描述、目标尺寸与实际模块/课时/概念数、每个模块的课时清单、审计摘要、采样路径。每次 co_patch 前后调用，保持全局认知。".into(),
+        description: "当前草稿全局概览：课程标题/描述、实际模块/课时/概念数、每个模块的课时清单、审计摘要、采样路径。每次 co_patch 前后调用，保持全局认知。".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         handler: one_shot_handler(move |_input| {
             let ctx = Arc::clone(&ctx);
@@ -870,8 +870,6 @@ mod tests {
             }),
             samples: vec![("docs/basics.md".into(), "期权的定义……".into())],
             domain: Some("trading".into()),
-            module_count: 2,
-            lessons_per_module: 2,
         }
     }
 
@@ -881,8 +879,6 @@ mod tests {
             knowledge_base: None,
             samples: Vec::new(),
             domain: None,
-            module_count: 2,
-            lessons_per_module: 2,
         }
     }
 
@@ -1019,6 +1015,8 @@ mod tests {
             &course_outline_tools(Arc::clone(&ctx), true),
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
+            ThinkingConfig::Disabled,
+            false,
             "generate",
             Some(ctx.as_ref()),
         )

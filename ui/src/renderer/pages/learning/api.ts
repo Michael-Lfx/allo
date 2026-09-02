@@ -14,6 +14,7 @@ import type {
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
   GeneratedLessonActivity,
+  LearningGraphGenerationStatus,
   Lesson,
   LessonStatus,
   QuestionEntry,
@@ -40,6 +41,24 @@ export const learningApi = {
   // WS 的 `learning.course-generation` 推送，终态以本响应为准。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
+  // 续建失败的学习图生成：服务端定位最近活跃草稿接着建（草稿内存存活
+  // 1 小时）；无存活草稿（404）或引擎未配置（409）时报错，调用方回退
+  // 全量重生成。
+  resumeLearningGraph: (request: { provider_id?: string; model?: string } = {}) =>
+    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate/resume`, request),
+  // 学习图生成状态/取消：关闭对话框后生成仍在后台继续（HTTP 请求内同步
+  // 执行），页面用这对端点恢复悬浮指示条与取消入口。
+  generationStatus: () =>
+    httpRequest<LearningGraphGenerationStatus>(
+      'GET',
+      `${BASE}/courses/generate/status`
+    ),
+  cancelGeneration: () =>
+    httpRequest<{ cancelled: boolean }>(
+      'POST',
+      `${BASE}/courses/generate/cancel`,
+      {}
+    ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>

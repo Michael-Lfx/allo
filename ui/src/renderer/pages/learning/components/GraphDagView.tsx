@@ -180,10 +180,15 @@ interface GraphDagViewProps {
 }
 
 /**
- * 学习图 DAG 视图。500 节点规模的两层性能保障：
+ * 学习图 DAG 视图。性能与结构完整性的折衷：
  * 1. dagre 布局仅在输入变化时计算（useMemo）；
- * 2. `onlyRenderVisibleElements` 只渲染视口内节点/边。
+ * 2. ≤300 节点全量渲染——`onlyRenderVisibleElements` 会把「一端在视口外」
+ *    的整条边裁掉，平移浏览时结构断裂，中小图直接关掉；
+ * 3. >300 节点开启视口裁剪保住 500 节点级的流畅度。
+ * 画布 key 绑定节点数：图结构变化（重建/增删节点）时重挂载并重新 fitView。
  */
+const VIEWPORT_CULL_THRESHOLD = 300;
+
 const GraphDagView: React.FC<GraphDagViewProps> = ({
   nodes,
   edges,
@@ -208,10 +213,11 @@ const GraphDagView: React.FC<GraphDagViewProps> = ({
   return (
     <div className='h-full w-full'>
       <ReactFlow
+        key={flowNodes.length}
         nodes={markedNodes}
         edges={flowEdges}
         nodeTypes={NODE_TYPES}
-        onlyRenderVisibleElements
+        onlyRenderVisibleElements={flowNodes.length > VIEWPORT_CULL_THRESHOLD}
         fitView
         fitViewOptions={{ padding: 0.15 }}
         minZoom={0.08}
