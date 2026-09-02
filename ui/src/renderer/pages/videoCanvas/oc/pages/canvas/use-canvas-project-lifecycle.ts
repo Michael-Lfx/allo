@@ -3,7 +3,7 @@ import { App } from "antd";
 import { useNavigate } from "react-router-dom";
 
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
-import { canvasAppearanceBaseTheme, normalizeCanvasAppearance, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
+import { canvasAppearanceBaseTheme, DEFAULT_CANVAS_COLOR_THEME, resolveStoredCanvasAppearance, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { removeCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
 import { hydrateAssistantImages, hydrateCanvasImages, resetInterruptedGeneration } from "@oc/lib/canvas/canvas-project-generation";
 import { normalizeCanvasNodeTimestamps } from "@oc/lib/canvas/canvas-node-timestamps";
@@ -87,12 +87,14 @@ export function useCanvasProjectLifecycle({
     // hydrate 的 setNodes/setChatSessions 不是用户编辑，落盘会触发一串
     // 无意义的 doc PUT（历史上还会把一次性 blob: URL 写进服务端文档）。
     const persistPausedRef = useRef(createCanvasPersistPause());
+    const [persistReady, setPersistReady] = useState(false);
 
     useEffect(() => {
         if (!hydrated) return;
         let cancelled = false;
         setProjectLoaded(false);
         persistPausedRef.current.pause();
+        setPersistReady(false);
         const project = openProject(projectId);
         if (!project) {
             navigate("/video-generation?mode=creation", { replace: true });
@@ -117,9 +119,9 @@ export function useCanvasProjectLifecycle({
             setChatSessions(snapshot.chatSessions);
             setActiveChatId(snapshot.activeChatId);
             setBackgroundMode(snapshot.backgroundMode);
-            const restoredAppearance = normalizeCanvasAppearance(project.appearance, canvasAppearanceBaseTheme(project.appearance, "dark"));
+            const restoredAppearance = resolveStoredCanvasAppearance(project.appearance);
             setCanvasAppearance(restoredAppearance);
-            const restoredTheme = canvasAppearanceBaseTheme(restoredAppearance, useThemeStore.getState().theme);
+            const restoredTheme = canvasAppearanceBaseTheme(restoredAppearance, DEFAULT_CANVAS_COLOR_THEME);
             if (restoredTheme !== useThemeStore.getState().theme) useThemeStore.getState().setTheme(restoredTheme);
             setShowImageInfo(snapshot.showImageInfo);
             setViewport(project.viewport);
@@ -144,6 +146,7 @@ export function useCanvasProjectLifecycle({
             // 合并已调度完成，恢复持久化；随后的首次 updateProject 携带的就是
             // 干净的合并结果，而不是 hydrate 过程的中间态。
             persistPausedRef.current.resume();
+            setPersistReady(true);
         };
         void restore();
         return () => {
@@ -167,9 +170,9 @@ export function useCanvasProjectLifecycle({
     }, [projectLoaded]);
 
     useEffect(() => {
-        if (!projectLoaded || historyPausedRef.current || persistPausedRef.current.paused) return;
+        if (!projectLoaded || !persistReady || historyPausedRef.current || persistPausedRef.current.paused) return;
         updateProject(projectId, { nodes, connections, chatSessions, activeChatId, appearance: canvasAppearance, backgroundMode, showImageInfo });
-    }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connections, historyPausedRef, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
+    }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connections, historyPausedRef, nodes, persistReady, projectId, projectLoaded, showImageInfo, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded || persistPausedRef.current.paused) return;

@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
 import { nanoid } from "nanoid";
-import { normalizeCanvasAppearance, readCanvasAppearanceDefault, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
+import { canvasAppearanceForTheme, DEFAULT_CANVAS_COLOR_THEME, normalizeCanvasAppearance, readCanvasAppearanceDefault, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import type { CanvasStarterMode } from "@oc/lib/canvas/canvas-starter";
 import { localForageStorage } from "@oc/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
@@ -137,7 +137,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     connections: [],
                     chatSessions: [],
                     activeChatId: null,
-                    appearance: appearanceDefault?.appearance,
+                    appearance: appearanceDefault?.appearance ?? canvasAppearanceForTheme(DEFAULT_CANVAS_COLOR_THEME),
                     backgroundMode: appearanceDefault?.backgroundMode || "lines",
                     showImageInfo: false,
                     viewport: initialViewport,
@@ -160,7 +160,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     chatSessions: source.chatSessions || [],
                     activeChatId: source.activeChatId || null,
                     starterMode: source.starterMode,
-                    appearance: source.appearance ? normalizeCanvasAppearance(source.appearance, "dark") : appearanceDefault?.appearance,
+                    appearance: source.appearance ? normalizeCanvasAppearance(source.appearance, DEFAULT_CANVAS_COLOR_THEME) : appearanceDefault?.appearance ?? canvasAppearanceForTheme(DEFAULT_CANVAS_COLOR_THEME),
                     backgroundMode: source.backgroundMode || appearanceDefault?.backgroundMode || "lines",
                     showImageInfo: source.showImageInfo || false,
                     viewport: source.viewport || initialViewport,
