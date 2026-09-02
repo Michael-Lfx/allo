@@ -5,6 +5,7 @@
 
 mod config;
 pub mod app_server_catalog;
+pub mod app_server_importer;
 // Spec D2 delivery-notify observer (public so integration tests can drive
 // the full receipt loop without the whole app harness).
 pub mod delivery_notify;

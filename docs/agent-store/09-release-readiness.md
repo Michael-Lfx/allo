@@ -215,10 +215,16 @@ restrictions
 
 ## 9. 当前准入判断
 
-本文档本身不替代实际测试。当前状态只能在执行 `agent-store-v1-test-cases.md` 并保存证据后填写：
+本文档本身不替代实际测试。以下为截至 2026-08 迭代（Importer/Phase 1 落地后）的如实快照；更新前必须重新执行测试主表：
 
 ```text
-release_status: not-assessed
-assessed_at: <未评估>
-blocking_items: <待填写>
+release_status: not-assessed（Gate 4/部分 Gate 2 已有关键证据，其余门禁未执行）
+assessed_at: 2026-08-26（评估快照，非门禁结果）
+blocking_items:
+  - Gate 4（Connector/OAuth：登录注入、401 刷新、重试、探针）：OAuth 运行证据已留存（mcp-oauth-runtime-evidence.zh.md），TC-CONN/TC-OAUTH 其余用例未全量执行
+  - Gate 2（Importer）：TC-IMP-001~009 已通过（importer-runtime-evidence.zh.md）；GitHub/Git/HTTP 市场源未实现
+  - Gate 1/3/5（Runtime 真实链路、App Server 双传输 E2E、安全扫描与来源审核）：未执行
+  - V1 默认不启用：Hook/LSP/bin/scripts 执行、跨市场依赖
 ```
+
+签署清单（上文 §8）仍全部未勾选；只有 P0 测试全部通过、凭据安全检查通过、来源审核完成后才能标记 `ready`。

@@ -1,0 +1,26 @@
+{
+  "name": "software-company",
+  "version": "1.2.0",
+  "description": "Software engineering team (V1 fixture)",
+  "author": "Agent Store Fixtures",
+  "agents": ["./agents"],
+  "skills": ["./skills"],
+  "commands": ["./commands"],
+  "teamInfo": {
+    "leadAgent": "software-team-lead",
+    "memberAgents": [
+      "software-product-manager",
+      "software-architect",
+      "software-engineer",
+      "software-qa-engineer"
+    ],
+    "expertType": "team"
+  },
+  "userConfig": {
+    "apiKey": { "type": "apikey", "required": true },
+    "temperature": { "type": "number", "required": false }
+  },
+  "dependencies": [
+    { "name": "shared-helpers", "version": "1.0.0" }
+  ]
+}

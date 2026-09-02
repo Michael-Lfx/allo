@@ -1,0 +1,1 @@
+{"name":"demo-connectors","version":"0.1.0","connectors":[{"name":"jira","type":"remote-mcp","url":"https://mcp.example.com/jira","auth":"oauth"},{"name":"slack","type":"http-api","url":"https://api.example.com/slack","auth":"apikey"}]}

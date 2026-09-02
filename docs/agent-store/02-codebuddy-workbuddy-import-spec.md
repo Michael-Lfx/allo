@@ -1,9 +1,14 @@
 # CodeBuddy / WorkBuddy 导入规范
 
-> 状态：架构冻结（Phase 0）；Importer 待实现验证；发布阻断
+> 状态：✅ 已实现（nomifun-importer，2026-08 迭代落地 Phase 1）；市场来源（GitHub/Git/HTTP）与导入后运行时激活留待后续
 > 日期：2026-08-26
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`
 > 依据：https://www.codebuddy.cn/docs/cli/plugins、/plugins-reference、/plugin-marketplaces、/sub-agents、/agent-teams（官方文档已提取正文部分）
+
+> 实现记录：V1 支持本地目录三类来源（`codebuddy-plugin` / `workbuddy-skill-market` /
+> `workbuddy-connector-market`）。导入流程、路径安全（§7/§11.1）、幂等与 digest 冲突
+> （§9）、部分失败（§11.2）、凭据只建 Schema（§10）均已按本规范落地；验收结果见
+> `importer-runtime-evidence.zh.md`。
 
 ## 1. 导入范围
 

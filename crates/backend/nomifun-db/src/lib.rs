@@ -48,6 +48,7 @@ pub use models::{
     UpsertProviderConnectionParams,
 };
 pub use models::OAuthClientRegistrationRow;
+pub use models::{PluginSnapshotComponentRow, PluginSnapshotRow};
 pub use models::GoalRow;
 pub use models::{
     MeetingSegmentRow, MeetingSessionRow, MeetingSpeakerRow, MeetingVoiceprintRow,
@@ -118,6 +119,7 @@ pub use repository::{
     IdmmActionReservationKey, IdmmActionReserveResult, IdmmActionSettleResult,
     IdmmActionSettlement, IdmmActionTurnIdentity, IKnowledgeRepository,
     IMcpServerRepository, IOAuthClientRegistrationRepository, IOAuthTokenRepository,
+    IPluginSnapshotRepository,
     IProviderConnectionRepository, IProviderModelRepository, IProviderRepository,
     IRemoteAgentRepository, IRequirementRepository, ISettingsRepository, ISkillTagRepository,
     ITagSettingRepository, ITerminalRepository, IUserRepository, IWebhookRepository,
@@ -133,12 +135,14 @@ pub use repository::{
     SqliteIdmmInterventionRepository, SqliteKnowledgeRepository, SqliteMcpServerRepository,
     SqliteOAuthClientRegistrationRepository,
     SqliteOAuthTokenRepository,
+    SqlitePluginSnapshotRepository,
     SqliteProviderConnectionRepository, SqliteProviderModelRepository, SqliteProviderRepository,
     SqliteRemoteAgentRepository, SqliteRequirementRepository, SqliteSettingsRepository,
     SqliteSkillTagRepository, SqliteTagSettingRepository, SqliteTerminalRepository,
     SqliteUserRepository, SqliteWebhookRepository, TerminalTurnAdmissionClaim,
     TerminalTurnAdmissionKey, TerminalTurnAdmissionScope, TerminalTurnEffectsStart,
     TerminalTurnOutcome, TerminalTurnSettlement, TTL_MS,
+    NewPluginSnapshot, NewPluginSnapshotComponent,
 };
 pub use repository::{
     IPresetRepository, IPresetStateRepository, IPresetTagRepository,

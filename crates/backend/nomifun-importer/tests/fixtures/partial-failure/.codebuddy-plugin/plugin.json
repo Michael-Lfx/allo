@@ -1,0 +1,1 @@
+{"name":"partial-failure","version":"1.0.0","agents":["./agents"],"commands":["./missing-commands"]}

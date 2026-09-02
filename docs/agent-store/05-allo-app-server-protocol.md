@@ -131,7 +131,7 @@ Server Request   服务端向客户端请求审批/输入/确认
 }
 ```
 
-`run_notifications` 仅在 WebSocket 传输且服务端事件源可用时为 `true`；`agents` 仅在 Runtime 可用时为 `true`。`skills`/`connectors`/`oauth` 仅在对应 Catalog/OAuth provider 注入时启用（生产装配注入系统 Skill/MCP 服务适配器）；未注入时对应方法返回 `unsupported_operation`。Team、Approval、Artifact 能力在当前单 Agent Phase 保持 `false`，由后续 Phase 逐个启用。
+`run_notifications` 仅在 WebSocket 传输且服务端事件源可用时为 `true`；`agents` 在 Runtime 或 Agent Catalog provider 注入时为 `true`。`skills`/`connectors`/`oauth` 仅在对应 Catalog/OAuth provider 注入时启用（生产装配注入系统 Skill/MCP 服务适配器）；`imports` 仅在 Importer provider 注入时启用，`teams` 仅在 Team Catalog provider 注入时启用；未注入时对应方法返回 `unsupported_operation`。Approval、Artifact 能力在当前单 Agent Phase 保持 `false`，由后续 Phase 逐个启用。
 
 `team_runtime=true` 仅表示 V1 最小 Team Runtime：固定成员、Planning Context、planned DAG、局部并行、retry/replan；不表示完整 Mailbox/成员直连能力。
 
@@ -220,6 +220,47 @@ connector/status
 ```
 
 Connector 返回工具摘要、认证状态和策略摘要，不返回 Token/API Key。工具名必须为命名空间后的公开名称。
+
+### 4.4 Import 与 PluginSnapshot（roadmap Phase 1）
+
+导入是**带本地路径的一次性操作**，走 HTTP 辅助通道（与 workspace 注册同构，见 05 §5 的 HTTP 直连模式；每次调用独立握手）：
+
+```text
+POST /api/app-server/imports          # import/run  {@link AppServerImportRequest}
+GET  /api/app-server/imports          # import/list（最近 50 条）
+GET  /api/app-server/imports/{snapshot_id}   # import/get（组件与三态兼容报告）
+```
+
+请求体：
+
+```text
+{ "source_path": "<本地目录绝对路径>", "source_kind": "codebuddy-plugin" |
+  "workbuddy-skill-market" | "workbuddy-connector-market" }
+```
+
+响应（`AppServerImportResult`）：
+
+```text
+snapshot_id / name / version / source_kind
+status            # completed | completed-with-warnings | blocked | failed
+content_digest    # sha256 树摘要（02 §9）
+component_status  # {semantic_status, runtime_status, distribution_status, reasons[]}
+component_count / imported_at / reused
+warnings[] / errors[]
+```
+
+规则：
+
+- 相同 `plugin_id + version + content_digest` 重复导入 → `reused=true`，返回既有不可变快照；
+- digest 冲突 → `status=blocked`，不覆盖既有快照；
+- 绝对来源路径只入库（`source_uri`，仅内部追溯），**不出现在任何公共响应**（02 §9）；
+- 清单相对路径/相对文件路径可出现在 errors/warnings，用于定位问题组件。
+
+`agent/list`、`agent/get`（§4.1）与 `team/list`、`team/get`（§4.2）在 Importer 注入后由
+`plugin_snapshot_components` 提供数据：`agent/get` 只返回结构化 frontmatter 字段
+（model/effort/maxTurns/tools/disallowedTools/skills/memory/isolation…），不返回原始
+Prompt；`team/get` 只返回 lead/members/策略与 `team_runtime_capabilities`，不返回
+Planning Context 正文。
 
 ## 5. Thread 与 Run
 
@@ -538,7 +579,7 @@ preset-backed 执行面相互独立：聊天直接复用 Allo 的 Conversation �
 | `conversation/update` | 更新名称、模型（`model`）或思考等级（`reasoning_effort`）；Nomi 运行时在下一次回复时生效 |
 | `conversation/list` | 该 owner 的 App Server 聊天列表（按 modified_at 倒序） |
 | `conversation/get` | 单会话视图 |
-| `conversation/messages` | 分页历史（升序，`page_size` 1..=200） |
+| `conversation/messages` | 分页历史（升序，`page_size` 1..=200）。响应体为 `{ "items": [...], "has_more": bool }`：`items` 为消息数组（升序），`has_more` 是服务端 keyset 算出的精确标志——还有更旧消息时为 `true`。客户端以 `cursor: ""` 取最新窗口，以最旧已加载消息的 `created_at:message_id` 翻更早页；"向上加载"应直接读 `has_more`，不要以"页是否装满"近似推断 |
 | `conversation/send` | 发送消息，必带 `idempotency_key` |
 | `conversation/cancel` | 停止当前 turn |
 | `conversation/delete` | 删除 App Server 会话（HTTP 为 `DELETE /api/app-server/conversations/:id`）；委托既有会话删除语义：运行中先按 stop/orphan fence 处理，保留的 execution transcript 拒绝删除，删除失败返回稳定错误码 |

@@ -4,6 +4,9 @@
 > 日期：2026-08-26
 > 前置：`00-architecture-decision.md` 至 `08-flowy-web-integration.md`、`10-public-contracts.md`
 > 说明：阶段按两周迭代组织；具体排期须在 Spike 和实测后校准，不构成承诺
+> 进展：Phase 0 的 OAuth 注入实测已完成（`mcp-oauth-runtime-evidence.zh.md`）；
+> Phase 1 的 Importer 已落地（TC-IMP-001~009 通过，`importer-runtime-evidence.zh.md`）；
+> 单 Agent Runtime 真实链路实测与 `software-company` 端到端运行尚未完成，排期仍待校准。
 
 ## 1. V1 目标
 
@@ -121,6 +124,9 @@ V1 不要求：
 - 如果 OAuth 注入未贯通，Connector 只能标记 partial，不得宣称 connected。
 
 ### Phase 1：Importer 与 Catalog（两周迭代）
+
+> 状态：✅ 主体已实现（`nomifun-importer` + `plugin_snapshots` Catalog + App Server
+> `import/*`、`agent/list`、`team/list`）；GitHub/Git/HTTP 市场源与运行时激活属后续
 
 交付：
 

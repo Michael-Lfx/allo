@@ -68,10 +68,13 @@ pub use acp::{
     WorkspaceEntry,
 };
 pub use app_server::{
-    AppServerCompatibilityStatus, AppServerConnectorDetail, AppServerConnectorProbeResult,
+    AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityStatus,
+    AppServerCompatibilityTriple, AppServerConnectorDetail, AppServerConnectorProbeResult,
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
-    AppServerConnectorTool, AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary,
+    AppServerConnectorTool, AppServerImportComponent, AppServerImportDetail,
+    AppServerImportRequest, AppServerImportResult, AppServerImportSourceKind,
+    AppServerImportSummary, AppServerOAuthStartResult, AppServerOAuthStatusView,
+    AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail, AppServerTeamSummary,
 };
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,

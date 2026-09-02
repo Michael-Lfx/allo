@@ -58,6 +58,7 @@ nomifun-audio = { path = "crates/backend/nomifun-audio" }
 sherpa-onnx = { path = "crates/vendor/sherpa-onnx", default-features = false, features = ["static"] }
 sherpa-onnx-sys = { path = "crates/vendor/sherpa-onnx-sys", default-features = false, features = ["static"] }
 nomifun-ssh = { path = "crates/backend/nomifun-ssh" }
+nomifun-importer = { path = "crates/backend/nomifun-importer" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
