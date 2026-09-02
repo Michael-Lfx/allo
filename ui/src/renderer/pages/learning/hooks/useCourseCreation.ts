@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
@@ -121,17 +122,106 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     t,
   ]);
 
-  // 重试失败的生成：原样重发上一次请求
+  // 重试失败的生成：学习图优先续建存活草稿（中断前可能已建几十轮），
+  // 仅当续建不可用（草稿过期/重启 404、引擎未配置 409）时回退全量重生
+  // 成——续建本身再失败时不回退，草稿仍在，再次重试还会接着建。
   const retryGeneration = useCallback(() => {
     if (generation?.status !== 'failed') return;
-    void generateCourse(generation.request);
-  }, [generateCourse, generation]);
+    const failed = generation;
+    if (failed.request.course_kind !== 'learning_graph') {
+      void generateCourse(failed.request);
+      return;
+    }
+    setBusyId('generate');
+    setGeneration({ status: 'running', request: failed.request, result: null, error: null });
+    void (async () => {
+      try {
+        const detail = await learningApi.resumeLearningGraph({
+          provider_id: modelChoice?.provider_id,
+          model: modelChoice?.model,
+        });
+        setGeneration({
+          status: 'completed',
+          request: failed.request,
+          result: detail,
+          error: null,
+        });
+      } catch (resumeError) {
+        const resumeUnavailable =
+          isBackendHttpError(resumeError) &&
+          (resumeError.status === 404 || resumeError.status === 409);
+        if (!resumeUnavailable) {
+          setGeneration({
+            status: 'failed',
+            request: failed.request,
+            result: null,
+            error: errorMessage(t, resumeError),
+          });
+          return;
+        }
+        try {
+          const detail = await learningApi.generateCourse(failed.request);
+          setGeneration({
+            status: 'completed',
+            request: failed.request,
+            result: detail,
+            error: null,
+          });
+        } catch (retryError) {
+          setGeneration({
+            status: 'failed',
+            request: failed.request,
+            result: null,
+            error: errorMessage(t, retryError),
+          });
+        }
+      } finally {
+        setBusyId(null);
+      }
+    })();
+  }, [generateCourse, generation, modelChoice, setBusyId, t]);
 
-  // 关闭对话框即放弃等待：后端 handler future 在 await 点被 drop，
-  // agent loop 随之终止（进程内未入库的草稿一并丢弃）
+  // 页面挂载时恢复后台生成状态：对话框状态是易失的（切页即丢），服务端
+  // 注册表是事实来源。running 时重建 generation 状态，让悬浮指示条与对话
+  // 框进度视图恢复；完成/失败态无法可靠恢复（进程内会话可能已终结），由
+  // 用户从课程列表查看或重新发起。
+  const refreshGenerationStatus = useCallback(async () => {
+    if (generation) return;
+    try {
+      const status = await learningApi.generationStatus();
+      if (status.running && status.topic) {
+        setGeneration({
+          status: 'running',
+          request: { course_kind: 'learning_graph', description: status.topic },
+          result: null,
+          error: null,
+        });
+      }
+    } catch {
+      // 状态查询失败不影响主流程（后端不可达等）
+    }
+  }, [generation]);
+
+  // 取消后台生成：置位服务端取消旗标，循环在下一个 LLM 请求边界失败收场
+  // （草稿保持存活，失败面板可续建）。挂起的 HTTP 生成请求随后以失败终态
+  // 返回，指示条自动转为失败态。
+  const cancelGeneration = useCallback(async () => {
+    try {
+      const result = await learningApi.cancelGeneration();
+      if (result.cancelled) {
+        Message.success(t('learning.genCancelRequested'));
+      } else {
+        Message.info(t('learning.genNotRunning'));
+      }
+    } catch (cancelError) {
+      Message.error(errorMessage(t, cancelError));
+    }
+  }, [t]);
+
+  // 关闭对话框只是隐藏：生成在 HTTP 请求内继续执行，页面右下角的悬浮指
+  // 示条保持可见（查看进度 / 取消）。重新打开对话框会回到进度视图。
   const closeGenerator = useCallback(() => {
     setGenerateVisible(false);
-    setGeneration(null);
   }, []);
 
   // 生成完成后进入课程
@@ -164,6 +254,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     submitGeneration,
     retryGeneration,
     closeGenerator,
+    refreshGenerationStatus,
+    cancelGeneration,
     startLearning,
   };
 }

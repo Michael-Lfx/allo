@@ -32,18 +32,13 @@ pub const LEARNING_GENERATE_COURSE_TOOL_NAME: &str = "learning_generate_course";
 /// generate tool so the agent can report progress without a per-call approval.
 pub const LEARNING_COURSE_STATUS_TOOL_NAME: &str = "learning_course_status";
 
-/// Default course shape when the model omits sizing (matches the HTTP API).
-const DEFAULT_MODULE_COUNT: u8 = 3;
-const DEFAULT_LESSONS_PER_MODULE: u8 = 3;
-/// Backend validation bound (`GenerateCourseRequest::validate`).
-const MAX_SIZE: u8 = 6;
-
 /// A model-issued course-generation request, resolved by the tool to one of
 /// the session's bound bases (or a free-text brief) before forwarding to the
 /// backend. Exactly one of `kb_id` / `description` is set. The session's
 /// active `(provider_id, model)` rides along so generation runs on the model
 /// the user picked in this conversation; `None` falls back to the backend's
-/// default completer.
+/// default completer. Course size is not part of the request: the backend's
+/// generation model decides the module/lesson layout from the source itself.
 #[derive(Debug, Clone)]
 pub struct CourseGenerationRequest {
     /// kb flow: the base to ground the course in.
@@ -53,8 +48,6 @@ pub struct CourseGenerationRequest {
     pub domain: Option<String>,
     pub provider_id: Option<String>,
     pub model: Option<String>,
-    pub module_count: u8,
-    pub lessons_per_module: u8,
     /// Only "on_demand" is supported today (default): the outline is imported
     /// immediately and each lesson's body is generated when the learner opens
     /// it. Kept as an extension point for future generation strategies (e.g.
@@ -217,14 +210,6 @@ impl Tool for LearningGenerateCourseTool {
                     "type": "string",
                     "description": "Optional short domain label for the course, e.g. \"trading\" or \"rust\"."
                 },
-                "module_count": {
-                    "type": "integer",
-                    "description": "Number of course modules (default 3, max 6)."
-                },
-                "lessons_per_module": {
-                    "type": "integer",
-                    "description": "Lessons per module (default 3, max 6)."
-                },
                 "mode": {
                     "type": "string",
                     "description": "Generation strategy. Only \"on_demand\" is supported (default): the course outline is imported first and each lesson's body is generated when the learner opens it. Reserved for future strategies; do not pass other values."
@@ -289,8 +274,6 @@ impl Tool for LearningGenerateCourseTool {
             .map(str::trim)
             .filter(|d| !d.is_empty())
             .map(ToOwned::to_owned);
-        let module_count = size_arg(&input, "module_count", DEFAULT_MODULE_COUNT);
-        let lessons_per_module = size_arg(&input, "lessons_per_module", DEFAULT_LESSONS_PER_MODULE);
         let mode = input
             .get("mode")
             .and_then(Value::as_str)
@@ -323,8 +306,6 @@ impl Tool for LearningGenerateCourseTool {
             domain,
             provider_id,
             model,
-            module_count,
-            lessons_per_module,
             mode,
         };
         match self
@@ -444,17 +425,6 @@ impl Tool for LearningCourseStatusTool {
             format!("learning_course_status '{job_id}'")
         }
     }
-}
-
-/// Parse an optional sizing argument, falling back to the default and clamping
-/// to the backend's 1..=6 validation bound so the model gets a course instead
-/// of a service rejection.
-fn size_arg(input: &Value, key: &str, default: u8) -> u8 {
-    input
-        .get(key)
-        .and_then(Value::as_u64)
-        .map(|n| (n as u16).clamp(1, MAX_SIZE as u16) as u8)
-        .unwrap_or(default)
 }
 
 #[cfg(test)]
@@ -590,7 +560,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn starts_job_immediately_with_defaults_on_single_base() {
+    async fn starts_job_immediately_on_single_base() {
         let (tool, sink) = tool(vec![("kb1", "金融知识库")]);
         let res = tool.execute(json!({})).await;
         assert!(!res.is_error, "{res:?}");
@@ -602,32 +572,18 @@ mod tests {
         assert_eq!(req.kb_id.as_ref(), Some(&kb_id("kb1")));
         assert!(req.description.is_none());
         assert!(req.domain.is_none());
-        assert_eq!(req.module_count, DEFAULT_MODULE_COUNT);
-        assert_eq!(req.lessons_per_module, DEFAULT_LESSONS_PER_MODULE);
     }
 
     #[tokio::test]
     async fn resolves_base_by_name_and_forwards_options() {
         let (tool, sink) = tool(vec![("kb1", "Finance"), ("kb2", "Ops")]);
         let res = tool
-            .execute(json!({"base": " ops ", "domain": " ops-runbook ", "module_count": 4, "lessons_per_module": 2}))
+            .execute(json!({"base": " ops ", "domain": " ops-runbook "}))
             .await;
         assert!(!res.is_error, "{res:?}");
         let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
         assert_eq!(req.kb_id.as_ref(), Some(&kb_id("kb2")));
         assert_eq!(req.domain.as_deref(), Some("ops-runbook"));
-        assert_eq!(req.module_count, 4);
-        assert_eq!(req.lessons_per_module, 2);
-    }
-
-    #[tokio::test]
-    async fn sizes_are_clamped_to_backend_bounds() {
-        let (tool, sink) = tool(vec![("kb1", "Finance")]);
-        let res = tool.execute(json!({"module_count": 0, "lessons_per_module": 99})).await;
-        assert!(!res.is_error, "{res:?}");
-        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
-        assert_eq!(req.module_count, 1, "below-range sizes clamp to 1");
-        assert_eq!(req.lessons_per_module, MAX_SIZE, "above-range sizes clamp to {MAX_SIZE}");
     }
 
     #[tokio::test]

@@ -60,19 +60,22 @@ function summarizeTools(tools: ILearningGenerationToolCall[] | undefined): strin
 
 /** 课程生成过程视图：CreateCourseDialog 提交后就地展示。
  * 过程事件经 WS best-effort 推送（不重放不补发），事件流只是增强——
- * 终态一律以同步 HTTP 响应（status/result/error）为准。 */
+ * 终态一律以同步 HTTP 响应（status/result/error）为准。运行中可取消，
+ * 关闭对话框不会终止生成（后台继续，右下角指示条可回到这里）。 */
 export function CourseGenerationProgress({
   status,
   result,
   error,
   onStartLearning,
   onRetry,
+  onCancel,
 }: {
   status: 'running' | 'completed' | 'failed';
   result: CourseDetail | null;
   error: string | null;
   onStartLearning: (courseId: string) => void;
   onRetry: () => void;
+  onCancel: () => void;
 }) {
   const { t } = useTranslation();
   const [events, setEvents] = useState<ILearningCourseGenerationEvent[]>([]);
@@ -188,9 +191,14 @@ export function CourseGenerationProgress({
       </div>
 
       {running && (
-        <div className='flex items-center gap-8px'>
-          <Spin size={16} />
-          <Text type='secondary'>{t('learning.genRunningHint')}</Text>
+        <div className='flex items-center justify-between gap-8px'>
+          <div className='flex items-center gap-8px'>
+            <Spin size={16} />
+            <Text type='secondary'>{t('learning.genRunningHint')}</Text>
+          </div>
+          <Button size='mini' status='danger' onClick={onCancel}>
+            {t('learning.genCancel')}
+          </Button>
         </div>
       )}
 
@@ -219,7 +227,13 @@ export function CourseGenerationProgress({
           content={
             <div className='flex flex-col gap-8px'>
               <span>{t('learning.genFailed')}</span>
-              {error && <span className='break-all text-13px'>{error}</span>}
+              {/* 失败详情可能携带后端附加的草稿审计长文，而 Modal 内容区
+                  不可滚动：限高滚动保证「重试」按钮始终首屏可见 */}
+              {error && (
+                <div className='max-h-160px overflow-y-auto whitespace-pre-wrap break-all rounded-8px bg-[var(--color-fill-1)] p-8px text-13px'>
+                  {error}
+                </div>
+              )}
               <div>
                 <Button size='small' type='primary' onClick={onRetry}>
                   {t('learning.genRetry')}

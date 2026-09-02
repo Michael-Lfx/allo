@@ -23,13 +23,11 @@
             "ICT",
             "Trading course",
             Some("trading"),
-            3,
-            4,
             &[("lessons/liquidity.md".into(), "# Liquidity\nText".into())],
         );
         assert!(prompt.contains("--- FILE: lessons/liquidity.md ---"));
         assert!(prompt.contains("Requested domain label: trading"));
-        assert!(prompt.contains("exactly 3 modules and 4 lessons per module"));
+        assert!(prompt.contains("Course size is yours to decide"));
         assert!(BLUEPRINT_SYSTEM.contains("untrusted source material"));
         assert!(BLUEPRINT_SYSTEM.contains("Never invent paths"));
     }
@@ -189,7 +187,7 @@
     }
 
     #[test]
-    fn blueprint_validator_rejects_unknown_paths_and_cycles() {
+    fn blueprint_validator_rejects_cycles_unsampled_sources_and_empty_outline() {
         let samples = vec![("real.md".to_owned(), "# Real".to_owned())];
         let blueprint = Blueprint {
             title: "C".into(),
@@ -226,7 +224,7 @@
             }],
         };
         assert!(
-            validate_blueprint(&blueprint, &samples, 1, 1).is_err(),
+            validate_blueprint(&blueprint, &samples).is_err(),
             "prerequisite cycle must be rejected"
         );
 
@@ -237,16 +235,17 @@
             end: None,
         });
         assert!(
-            validate_blueprint(&bad, &samples, 1, 1).is_err(),
+            validate_blueprint(&bad, &samples).is_err(),
             "unsampled source path must be rejected"
         );
 
-        let mut sized = blueprint.clone();
-        sized.concepts[0].prerequisites = Vec::new();
-        sized.concepts[1].prerequisites = Vec::new();
+        // Course size is the model's call; only an unteachable outline
+        // (no modules at all) is rejected.
+        let mut empty = blueprint.clone();
+        empty.modules.clear();
         assert!(
-            validate_blueprint(&sized, &samples, 2, 1).is_err(),
-            "module count mismatch must be rejected"
+            validate_blueprint(&empty, &samples).is_err(),
+            "blueprint without modules must be rejected"
         );
     }
 
@@ -577,8 +576,6 @@
             domain: None,
             provider_id: None,
             model: None,
-            module_count: 3,
-            lessons_per_module: 3,
             mode: crate::models::CourseGenerationMode::OnDemand,
         };
         assert_eq!(request.knowledge_base_id, Some(id));

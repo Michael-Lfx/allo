@@ -85,6 +85,17 @@ const LearningGraphWorkspace: React.FC<{
     (lessonId: string) => graph?.recommended.includes(lessonId) ?? false,
     [graph]
   );
+  const primaryReady = useMemo(() => {
+    const first = graph?.recommended[0];
+    return first ? nodesById.get(first) ?? null : null;
+  }, [graph, nodesById]);
+  const otherReady = useMemo(
+    () =>
+      (graph?.recommended.slice(1) ?? [])
+        .map((id) => nodesById.get(id))
+        .filter((node): node is GraphNodeView => Boolean(node)),
+    [graph, nodesById]
+  );
   // 进度面板的分段：绿=已完成、蓝=进行中、深灰=已跳过、浅蓝=可学习
   // （未锁定且未开始）、浅灰=未解锁， flexGrow 即段宽比例。
   const segments = useMemo(() => {
@@ -142,7 +153,8 @@ const LearningGraphWorkspace: React.FC<{
   const nodeActionBusy = busyId !== null;
 
   return (
-    <div className='flex h-full min-h-0 flex-col gap-12px'>
+    <div className='app-page-shell h-full w-full box-border overflow-y-auto'>
+      <div className='mx-auto flex h-full w-full flex-col gap-10px md:max-w-1400px'>
       {/* 头部：返回 + 标题/Beta + 学习目标 + 模型选择（对齐传统课程工作区） */}
       <Button type='text' className='self-start !px-0' onClick={onBack}>
         {t('learning.back')}
@@ -168,76 +180,155 @@ const LearningGraphWorkspace: React.FC<{
         />
       </div>
 
-      {/* 进度面板：分段进度条（绿=完成/蓝=进行/灰=跳过/浅蓝=可学/浅灰=未解锁）
-          + 图例 + 视图切换，替代原先一排无层级的状态 Tag */}
-      <div className='rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-14px py-10px'>
-        <div className='mb-8px flex flex-wrap items-center justify-between gap-8px'>
-          <Text bold className='text-13px'>
-            {t('learning.learningGraphProgressTitle')}
-          </Text>
-          <Radio.Group
-            type='button'
-            size='mini'
-            value={view}
-            onChange={(value) => setView(value as 'dag' | 'list')}
+      {/* 主从布局：左=继续学习面板（页面主入口），右=图/列表画布 */}
+      <div className='flex min-h-0 flex-1 gap-12px'>
+        <aside className='flex w-280px shrink-0 flex-col gap-10px overflow-y-auto'>
+          {/* 主推荐卡：当前应学的节点——页面最重要的学习入口 */}
+          <div
+            className='cursor-pointer rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-12px transition-colors hover:border-[var(--color-primary-6)]'
+            onClick={() => primaryReady && setSelected(primaryReady)}
           >
-            <Radio value='dag'>{t('learning.learningGraphViewDag')}</Radio>
-            <Radio value='list'>{t('learning.learningGraphViewList')}</Radio>
-          </Radio.Group>
-        </div>
-        <div className='h-8px overflow-hidden rounded-full bg-[var(--color-fill-2)]'>
-          {stats.total === 0 ? null : (
-            <div className='flex h-full'>
-              {segments
-                .filter((segment) => segment.count > 0)
-                .map((segment) => (
-                  <span
-                    key={segment.key}
-                    className='h-full'
-                    style={{ flexGrow: segment.count, backgroundColor: segment.color }}
-                  />
+            <div className='mb-6px flex items-center justify-between gap-6px'>
+              <Text bold className='text-13px'>
+                {t('learning.learningGraphContinueTitle')}
+              </Text>
+              {primaryReady &&
+                (primaryReady.generated ? (
+                  <Tag size='small' color='green' className='!mx-0'>
+                    {t('learning.learningGraphGenerated')}
+                  </Tag>
+                ) : (
+                  <Tag size='small' color='orange' className='!mx-0'>
+                    {t('learning.learningGraphNotGenerated')}
+                  </Tag>
                 ))}
             </div>
+            {primaryReady ? (
+              <>
+                <div className='text-14px font-600 leading-20px text-[var(--color-text-1)]'>
+                  {primaryReady.title}
+                </div>
+                {primaryReady.purpose.trim() !== '' && (
+                  <Paragraph className='!mb-6px !mt-4px line-clamp-3 text-12px leading-18px text-t-secondary'>
+                    {primaryReady.purpose}
+                  </Paragraph>
+                )}
+                <div className='flex flex-wrap items-center gap-x-8px gap-y-2px text-11px text-t-tertiary'>
+                  <span>L{primaryReady.depth + 1}</span>
+                  <span>
+                    {t('learning.learningGraphNodeMinutes', { min: primaryReady.estimated_minutes })}
+                  </span>
+                  <span>
+                    {t('learning.learningGraphNodePrerequisites', {
+                      count: primaryReady.prerequisite_count,
+                    })}
+                  </span>
+                </div>
+                <div className='mt-10px flex items-center gap-8px'>
+                  {!primaryReady.generated && (
+                    <Button
+                      type='primary'
+                      size='small'
+                      disabled={nodeActionBusy}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void generateContent(primaryReady);
+                      }}
+                    >
+                      {t('learning.learningGraphGenerateContent')}
+                    </Button>
+                  )}
+                  <Button
+                    size='small'
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelected(primaryReady);
+                    }}
+                  >
+                    {t('learning.learningGraphNodeViewDetail')}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <Empty description={t('learning.learningGraphReadyEmpty')} />
+            )}
+          </div>
+          {/* 其他可学节点 */}
+          {otherReady.length > 0 && (
+            <div className='rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-10px'>
+              <Text type='secondary' className='text-12px'>
+                {t('learning.learningGraphReadyMore', { count: otherReady.length })}
+              </Text>
+              <div className='mt-4px flex flex-col'>
+                {otherReady.map((node) => (
+                  <button
+                    key={node.lesson_id}
+                    type='button'
+                    onClick={() => setSelected(node)}
+                    className='rd-6px flex cursor-pointer items-center justify-between gap-8px border-none bg-transparent px-6px py-6px text-left font-inherit text-13px text-[var(--color-text-1)] transition-colors hover:bg-[var(--color-fill-1)]'
+                  >
+                    <span className='min-w-0 truncate'>{node.title}</span>
+                    <span className='shrink-0 text-11px text-t-tertiary'>
+                      {t('learning.learningGraphNodeMinutes', { min: node.estimated_minutes })}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
-        </div>
-        <div className='mt-8px flex flex-wrap items-center gap-x-16px gap-y-4px text-12px text-t-secondary'>
-          {segments.map((segment) => (
-            <span key={segment.key} className='inline-flex items-center gap-4px'>
-              <span
-                className='h-8px w-8px rounded-full'
-                style={{ backgroundColor: segment.color }}
-              />
-              {segment.label} {segment.count}
-            </span>
-          ))}
-        </div>
-      </div>
+          {/* 进度面板 */}
+          <div className='mt-auto rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-10px'>
+            <Text bold className='text-12px'>
+              {t('learning.learningGraphProgressTitle')}
+            </Text>
+            <div className='mt-6px h-6px overflow-hidden rounded-full bg-[var(--color-fill-2)]'>
+              {stats.total === 0 ? null : (
+                <div className='flex h-full'>
+                  {segments
+                    .filter((segment) => segment.count > 0)
+                    .map((segment) => (
+                      <span
+                        key={segment.key}
+                        className='h-full'
+                        style={{ flexGrow: segment.count, backgroundColor: segment.color }}
+                      />
+                    ))}
+                </div>
+              )}
+            </div>
+            <div className='mt-6px flex flex-wrap items-center gap-x-12px gap-y-2px text-11px text-t-secondary'>
+              {segments.map((segment) => (
+                <span key={segment.key} className='inline-flex items-center gap-4px'>
+                  <span
+                    className='h-7px w-7px rounded-full'
+                    style={{ backgroundColor: segment.color }}
+                  />
+                  {segment.label} {segment.count}
+                </span>
+              ))}
+            </div>
+          </div>
+        </aside>
 
-      {/* 下一步推荐（就绪集 ≤10）：前置全部完成/已跳过的节点 */}
-      {graph.recommended.length > 0 && (
-        <div className='flex flex-wrap items-center gap-6px'>
-          <Text bold className='text-13px'>
-            {t('learning.learningGraphRecommended')}
-          </Text>
-          {graph.recommended.map((lessonId) => {
-            const node = nodesById.get(lessonId);
-            if (!node) return null;
-            return (
-              <Tag
-                key={lessonId}
-                color='gold'
-                className='cursor-pointer'
-                onClick={() => setSelected(node)}
-              >
-                ★ {node.title}
-              </Tag>
-            );
-          })}
-        </div>
-      )}
-
-      {/* DAG / 列表双视图 */}
-      <div className='min-h-0 flex-1 overflow-hidden rounded-8px border-1 border-solid border-[var(--color-border-2)]'>
+        {/* 右侧画布/列表：视图切换与作用对象同层 */}
+        <section className='flex min-w-0 flex-1 flex-col overflow-hidden rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)]'>
+          <div className='flex shrink-0 items-center justify-between gap-8px border-b-1 border-solid border-[var(--color-border-2)] px-12px py-6px'>
+            <Text type='secondary' className='text-12px'>
+              {view === 'dag'
+                ? t('learning.learningGraphCanvasHint')
+                : t('learning.learningGraphListHint')}
+            </Text>
+            <Radio.Group
+              type='button'
+              size='mini'
+              value={view}
+              onChange={(value) => setView(value as 'dag' | 'list')}
+            >
+              <Radio value='dag'>{t('learning.learningGraphViewDag')}</Radio>
+              <Radio value='list'>{t('learning.learningGraphViewList')}</Radio>
+            </Radio.Group>
+          </div>
+          <div className='min-h-0 flex-1'>
         {view === 'dag' ? (
           <React.Suspense fallback={<div className='flex h-full items-center justify-center'><Spin /></div>}>
             <GraphDagView
@@ -291,7 +382,9 @@ const LearningGraphWorkspace: React.FC<{
               </div>
             )}
           </div>
-        )}
+          )}
+          </div>
+        </section>
       </div>
 
       {/* 节点详情抽屉：结构信息 + 生成内容 + 跳过操作 */}
@@ -366,6 +459,7 @@ const LearningGraphWorkspace: React.FC<{
           </div>
         )}
       </Drawer>
+      </div>
     </div>
   );
 };

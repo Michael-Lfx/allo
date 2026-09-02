@@ -333,6 +333,32 @@ pub async fn resolve_provider_config(
     model: &str,
     workspace: &Path,
 ) -> Result<Config, AppError> {
+    resolve_provider_config_with_output_limit(
+        provider_repo,
+        provider_model_repo,
+        encryption_key,
+        provider_id,
+        model,
+        workspace,
+    )
+    .await
+    .map(|(config, _)| config)
+}
+
+/// [`resolve_provider_config`] plus the resolved model's output ceiling.
+/// Callers that push a large per-round `max_tokens` (the learning-graph
+/// loop) clamp their request to it: strict gateways reject an over-limit
+/// ceiling outright instead of silently truncating. `None` = neither the
+/// model row nor the Flowy catalog declares a limit; keep the requested
+/// value and let the gateway rule.
+pub(crate) async fn resolve_provider_config_with_output_limit(
+    provider_repo: &Arc<dyn IProviderRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
+    encryption_key: &[u8; 32],
+    provider_id: &str,
+    model: &str,
+    workspace: &Path,
+) -> Result<(Config, Option<u32>), AppError> {
     let (provider_id, model) = replace_disabled_free_reference(
         provider_repo,
         provider_model_repo,
@@ -395,7 +421,7 @@ pub async fn resolve_provider_config(
     // stripping is moot. Only the nomi agent manager applies it. Do not add it
     // for "consistency"; it would be dead config on this path.
 
-    Ok(config)
+    Ok((config, fields.output_limit))
 }
 
 /// Resolve a stale managed-free reference to the current Flowy Cloud default.

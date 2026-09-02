@@ -1,6 +1,7 @@
 pub(super) use std::cmp::Ordering;
 pub(super) use std::collections::{HashMap, HashSet};
 pub(super) use std::str::FromStr;
+pub(super) use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 pub(super) use std::sync::{Arc, Mutex, RwLock};
 
 pub(super) use chrono::Datelike;
@@ -91,6 +92,22 @@ pub struct LearningService {
     /// restart loses in-flight generations, and a 1-3 minute task is
     /// simply re-issued.
     agent_course_jobs: Arc<Mutex<HashMap<String, AgentCourseJobEntry>>>,
+    /// 学习图生成的运行注册与取消旗标：`begin` 清零旗标并登记主题/开始
+    /// 时刻，取消端点置位旗标，状态端点读取。旗标 Arc 永不更换——引擎在
+    /// 循环开始前克隆给 CancellableProvider，置位即可达。内存态，与草稿
+    /// 存储同生命周期（重启即失）。
+    learning_graph_generation: Arc<LearningGraphGenerationState>,
+}
+
+/// 学习图生成注册的内部状态（见 [`LearningService::learning_graph_generation`]）。
+pub(super) struct LearningGraphGenerationState {
+    cancel: Arc<AtomicBool>,
+    run: Mutex<Option<LearningGraphGenerationRun>>,
+}
+
+pub(super) struct LearningGraphGenerationRun {
+    pub(super) topic: String,
+    pub(super) started_at: std::time::Instant,
 }
 
 impl LearningService {
@@ -108,6 +125,10 @@ impl LearningService {
             event_sink: Arc::new(RwLock::new(None)),
             generation_slots: Arc::new(Mutex::new(HashSet::new())),
             agent_course_jobs: Arc::new(Mutex::new(HashMap::new())),
+            learning_graph_generation: Arc::new(LearningGraphGenerationState {
+                cancel: Arc::new(AtomicBool::new(false)),
+                run: Mutex::new(None),
+            }),
         }
     }
 

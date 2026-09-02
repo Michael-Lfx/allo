@@ -26,7 +26,8 @@ use crate::models::{ConceptPack, SourceSpan};
 use super::OutlineBrief;
 
 /// Hard caps so a runaway agent loop cannot inflate the draft without
-/// bound; both leave generous headroom above the requested sizes (max 6×6).
+/// bound; both leave generous headroom above any course shape the model
+/// may reasonably pick for itself.
 const MAX_MODULES: usize = 12;
 const MAX_LESSONS_PER_MODULE: usize = 12;
 const MAX_CONCEPTS: usize = 96;
@@ -872,12 +873,10 @@ impl OutlineDraft {
         }
         lines.push("==== Audit report ====".into());
         lines.push(format!(
-            "{} modules / {} lessons / {} concepts（目标 {} 模块 × {} 课时）",
+            "{} modules / {} lessons / {} concepts",
             self.modules.len(),
             self.lessons.len(),
-            self.concepts.len(),
-            self.brief.module_count,
-            self.brief.lessons_per_module
+            self.concepts.len()
         ));
         if self.findings.is_empty() {
             lines.push("No findings. Ready to finish.".into());
@@ -969,8 +968,6 @@ impl OutlineDraft {
 /// Run every deterministic structural check over the draft.
 fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
     let mut findings = Vec::new();
-    let module_target = draft.brief.module_count as usize;
-    let lessons_target = draft.brief.lessons_per_module as usize;
 
     if draft.meta.title.trim().is_empty() {
         findings.push(finding(
@@ -980,27 +977,23 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
             vec![],
         ));
     }
-    if draft.modules.len() != module_target {
+    // Structural minimum only — the course size itself is the model's call.
+    // Without these the finish gate would let an empty outline through and
+    // the import would blow up on a blueprint with no teachable content.
+    if draft.modules.is_empty() {
         findings.push(finding(
-            "size_mismatch",
+            "no_modules",
             SEV_DANGER,
-            format!(
-                "outline has {} modules, expected exactly {module_target}",
-                draft.modules.len()
-            ),
+            "outline has no modules (add_module first)".into(),
             vec![],
         ));
     }
     for module in &draft.modules {
-        if module.lessons.len() != lessons_target {
+        if module.lessons.is_empty() {
             findings.push(finding(
-                "size_mismatch",
+                "empty_module",
                 SEV_DANGER,
-                format!(
-                    "module '{}' has {} lessons, expected exactly {lessons_target}",
-                    module.key,
-                    module.lessons.len()
-                ),
+                format!("module '{}' carries no lessons (add_lesson first)", module.key),
                 vec![module.key.clone()],
             ));
         }
@@ -1140,22 +1133,6 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
             "concept prerequisites form a cycle".into(),
             vec![],
         ));
-    }
-
-    if lessons_target > 1 {
-        for module in &draft.modules {
-            if module.lessons.len() == 1 {
-                findings.push(finding(
-                    "single_lesson_module",
-                    SEV_WARNING,
-                    format!(
-                        "module '{}' carries a single lesson (planned {lessons_target} per module)",
-                        module.key
-                    ),
-                    vec![module.key.clone()],
-                ));
-            }
-        }
     }
 
     for key in draft
@@ -1308,8 +1285,6 @@ pub struct OutlineDraftView {
     pub kind: String,
     /// kb name or the description head — log/event context only.
     pub topic_hint: String,
-    pub module_count: u8,
-    pub lessons_per_module: u8,
     /// kb flow: the sample paths `co_read` can open.
     pub sample_paths: Vec<String>,
     pub scope: Option<ScopeSummary>,
@@ -1373,8 +1348,6 @@ pub struct OutlineInspectView {
     pub kind: String,
     pub title: String,
     pub description: String,
-    pub module_target: u8,
-    pub lessons_target: u8,
     pub modules: usize,
     pub lessons: usize,
     pub concepts: usize,
@@ -1416,8 +1389,6 @@ impl OutlineDraft {
             draft_id: draft_id.to_owned(),
             kind: self.brief.kind().to_owned(),
             topic_hint,
-            module_count: self.brief.module_count,
-            lessons_per_module: self.brief.lessons_per_module,
             sample_paths: self.sample_paths(),
             scope: self.scope.as_ref().map(|scope| ScopeSummary {
                 scope: scope.scope.clone(),
@@ -1446,8 +1417,6 @@ impl OutlineDraft {
             kind: self.brief.kind().to_owned(),
             title: self.meta.title.clone(),
             description: self.meta.description.clone(),
-            module_target: self.brief.module_count,
-            lessons_target: self.brief.lessons_per_module,
             modules: self.modules.len(),
             lessons: self.lessons.len(),
             concepts: self.concepts.len(),
@@ -1522,8 +1491,6 @@ mod tests {
             }),
             samples: Vec::new(),
             domain: Some("math".into()),
-            module_count: 1,
-            lessons_per_module: 1,
         }
     }
 
@@ -1533,8 +1500,6 @@ mod tests {
             knowledge_base: None,
             samples: Vec::new(),
             domain: Some("math".into()),
-            module_count: 1,
-            lessons_per_module: 1,
         }
     }
 
@@ -1604,7 +1569,7 @@ mod tests {
     fn fresh_draft_carries_danger_from_birth() {
         let draft = OutlineDraft::new(kb_brief(), samples(), None);
         let kinds = danger_kinds(&draft);
-        assert!(kinds.contains(&"size_mismatch"));
+        assert!(kinds.contains(&"no_modules"));
         assert!(kinds.contains(&"meta_missing"));
         // The fresh-draft audit is what a premature finish gate rejects on.
         assert!(
@@ -1662,6 +1627,7 @@ mod tests {
             Some(ScopeAnalysis {
                 scope: "向量代数".into(),
                 blocks: vec!["特征值".into()],
+                ..Default::default()
             }),
         );
         let mut complete = build_complete_draft(kb_brief());
@@ -1679,6 +1645,7 @@ mod tests {
         let scope = ScopeAnalysis {
             scope: "数据结构".into(),
             blocks: vec!["栈".into()],
+            ..Default::default()
         };
         let mut covered = build_complete_draft(kb_brief());
         covered.apply_ops(vec![op(
@@ -1789,15 +1756,7 @@ mod tests {
 
     #[test]
     fn duplicate_title_is_a_warning_not_a_danger() {
-        let mut draft = OutlineDraft::new(
-            OutlineBrief {
-                module_count: 1,
-                lessons_per_module: 2,
-                ..kb_brief()
-            },
-            samples(),
-            None,
-        );
+        let mut draft = OutlineDraft::new(kb_brief(), samples(), None);
         draft.apply_ops(vec![
             op(r#"{"op":"set_meta","title":"T"}"#),
             op(r#"{"op":"add_module","key":"m1","title":"M"}"#),

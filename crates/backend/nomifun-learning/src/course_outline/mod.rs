@@ -43,8 +43,6 @@ pub struct OutlineBrief {
     pub samples: Vec<(String, String)>,
     #[serde(default)]
     pub domain: Option<String>,
-    pub module_count: u8,
-    pub lessons_per_module: u8,
 }
 
 impl OutlineBrief {

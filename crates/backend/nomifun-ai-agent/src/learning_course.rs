@@ -60,8 +60,6 @@ impl LearningCourseSink for LiveLearningCourseSink {
             domain: req.domain,
             provider_id,
             model: req.model,
-            module_count: req.module_count,
-            lessons_per_module: req.lessons_per_module,
             mode,
         };
         let job_id = self

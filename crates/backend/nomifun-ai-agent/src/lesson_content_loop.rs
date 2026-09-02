@@ -18,6 +18,7 @@
 use std::sync::{Arc, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
+use nomi_types::llm::ThinkingConfig;
 use nomifun_common::{AppError, ProviderId, UserId};
 use nomifun_learning::{
     LessonContentAgentEngine, LessonGenerationContext, LessonOp, LessonOutput, LearningService,
@@ -215,6 +216,8 @@ impl LiveLessonContentAgentEngine {
             &generate_tools,
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
+            ThinkingConfig::Disabled,
+            false,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -295,6 +298,8 @@ impl LiveLessonContentAgentEngine {
                 &repair_tools,
                 REPAIR_MAX_ROUNDS,
                 AGENT_MAX_TOKENS,
+                ThinkingConfig::Disabled,
+                false,
                 "repair",
                 Some(ctx.as_ref()),
             )
@@ -1065,6 +1070,8 @@ mod tests {
             &lesson_content_tools(Arc::clone(&ctx), true),
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
+            ThinkingConfig::Disabled,
+            false,
             "generate",
             Some(ctx.as_ref()),
         )

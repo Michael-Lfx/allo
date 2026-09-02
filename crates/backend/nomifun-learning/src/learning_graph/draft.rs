@@ -853,6 +853,32 @@ impl DraftGraph {
 
     // ── Lookups the agent queries with ────────────────────────────────────
 
+    /// 全图紧凑清单：每行一个单元 `标题 [分钟] <- 前置1; 前置2`（无前置
+    /// 省略箭头段）。供 agent 一次性通读全图——续建恢复认知、上交前的语
+    /// 义自查都用它；行式文本比 JSON 紧凑一个量级（600 节点约 10k token）。
+    pub(crate) fn compact_dump(&self) -> String {
+        let mut lines = Vec::with_capacity(self.graph.nodes.len());
+        for node in &self.graph.nodes {
+            let mut line = match node.min {
+                Some(min) => format!("{} [{min}]", node.title),
+                None => node.title.clone(),
+            };
+            let pres: Vec<&str> = self
+                .graph
+                .edges
+                .iter()
+                .filter(|edge| edge.to == node.title)
+                .map(|edge| edge.from.as_str())
+                .collect();
+            if !pres.is_empty() {
+                line.push_str(" <- ");
+                line.push_str(&pres.join("; "));
+            }
+            lines.push(line);
+        }
+        lines.join("\n")
+    }
+
     /// One-line overview: sizes, workload, sub-domain distribution,
     /// entry/terminal units and the audit summary.
     pub(crate) fn inspect(&self) -> InspectView {
@@ -1070,6 +1096,12 @@ impl DraftGraph {
     pub(crate) fn scope_reference(&self) -> Option<String> {
         let scope = self.scope.as_ref()?;
         let mut parts: Vec<String> = Vec::new();
+        if !scope.goal.is_empty() {
+            parts.push(format!("最终目标：{}", scope.goal));
+        }
+        if !scope.baseline.is_empty() {
+            parts.push(format!("用户起点：{}", scope.baseline));
+        }
         if !scope.scope.is_empty() {
             parts.push(format!("范围界定：{}", scope.scope));
         }
@@ -1091,6 +1123,8 @@ impl DraftGraph {
             node_count: self.graph.nodes.len(),
             edge_count: self.graph.edges.len(),
             scope: self.scope.as_ref().map(|scope| ScopeView {
+                goal: scope.goal.clone(),
+                baseline: scope.baseline.clone(),
                 scope: scope.scope.clone(),
                 blocks: scope.blocks.clone(),
             }),
@@ -1166,9 +1200,14 @@ pub struct DraftView {
 }
 
 /// The scope reference in a serializable shape (the internal
-/// [`ScopeAnalysis`] stays crate-private).
+/// [`ScopeAnalysis`] stays crate-private). `goal`/`baseline` are omitted
+/// when empty (scope-free or old-shape replies).
 #[derive(Debug, Clone, Serialize)]
 pub struct ScopeView {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub goal: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub baseline: String,
     pub scope: String,
     pub blocks: Vec<String>,
 }
@@ -1375,6 +1414,16 @@ mod tests {
         ]);
         assert!(report.accepted.len() == 4 && report.rejected.is_empty());
         graph
+    }
+
+    #[test]
+    fn compact_dump_lists_units_with_minutes_and_pres() {
+        let graph = seeded();
+        let dump = graph.compact_dump();
+        assert!(dump.contains("a [10]"), "{dump}");
+        assert!(dump.contains("b [15] <- a"), "{dump}");
+        assert!(dump.contains("d [25] <- b; c"), "{dump}");
+        assert_eq!(dump.lines().count(), 4, "one line per unit");
     }
 
     #[test]
@@ -1790,6 +1839,7 @@ mod tests {
         graph.scope = Some(ScopeAnalysis {
             scope: String::new(),
             blocks: vec!["一元二次方程".into()],
+            ..Default::default()
         });
         graph.apply_ops(vec![
             op_add("用配方法解一元二次方程", &[], 15),
@@ -1847,12 +1897,16 @@ mod tests {
     fn audit_report_and_scope_reference_render_the_checklists() {
         let mut graph = draft();
         graph.scope = Some(ScopeAnalysis {
+            goal: "能独立解一元二次方程并解释判别式的含义".into(),
+            baseline: "对代数一无所知，只会四则运算".into(),
             scope: "零基础到一元二次方程".into(),
             blocks: vec!["配方法".into()],
         });
         graph.apply_ops(vec![op_add("用配方法解一元二次方程", &[], 15)]);
         let reference = graph.scope_reference().unwrap();
         assert!(reference.contains("零基础到一元二次方程"));
+        assert!(reference.contains("最终目标：能独立解一元二次方程"));
+        assert!(reference.contains("用户起点：对代数一无所知"));
         assert!(reference.contains("大块概念"));
         assert!(!reference.contains("预期单元规模"), "{reference}");
         let report = graph.audit_report();

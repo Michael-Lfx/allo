@@ -31,16 +31,39 @@ pub(crate) const TOTAL_TIMEOUT_SECS: u64 = 600;
 /// Token budget per model round. Generous because a round often carries
 /// planning prose AND a large patch JSON; 4096 was observed cut off
 /// mid-arguments (EOF in a tool-call JSON → whole pipeline aborts). 8192
-/// matches the scope-analysis budget.
+/// matches the scope-analysis budget. A loop that needs more headroom, or
+/// wants thinking, declares its OWN budget locally (see the learning-graph
+/// loop's `ROUND_TOKEN_BUDGET`) instead of raising this shared constant.
 pub(crate) const AGENT_MAX_TOKENS: u32 = 8192;
+
+/// Total same-round retries per loop for a corrupted tool-call arguments
+/// JSON (see [`is_round_retryable_stream_error`]). A long multi-round
+/// generation dies as a whole when ANY round hits it — one retry squares
+/// that per-round probability; the cap bounds the cost when a provider is
+/// systematically broken.
+const ROUND_RETRY_LIMIT: usize = 3;
+
+/// Whether a mid-stream `LlmEvent::Error` may be answered by re-sending the
+/// identical round request. Malformed tool-call arguments JSON (a model
+/// syntax slip, or a gateway dropping a delta chunk while still finishing
+/// cleanly) is safe to replay: the fail-closed argument parser guarantees
+/// the failed round produced NO executable tool call, so the conversation
+/// state is unchanged and the request goes out verbatim. Transport-level
+/// stream failures stay fatal — replaying those is deliberately outside the
+/// contract (`ProviderError::StreamTruncated`).
+fn is_round_retryable_stream_error(message: &str) -> bool {
+    message.contains("malformed JSON arguments")
+}
 
 /// One open-phase retry for transient provider faults — the loop sibling of
 /// the legacy single-call pipeline's one retry (`image_analyze` applies the
 /// same policy to `BadGateway`). A dropped connect (`error sending request`)
 /// or a 429 at the very last round would otherwise kill a multi-minute
-/// generation. Only the stream OPEN is retried: an open that already
-/// produced events is never replayed and mid-stream errors stay fatal
-/// (replay safety — see `ProviderError::StreamTruncated`'s contract).
+/// generation. Only the stream OPEN is retried here: an open that already
+/// produced events is never replayed and transport-level stream failures
+/// stay fatal (replay safety — see `ProviderError::StreamTruncated`'s
+/// contract). The one mid-stream exception is a corrupted tool-call
+/// arguments JSON — see [`is_round_retryable_stream_error`].
 const STREAM_OPEN_RETRY_DELAY_MS: u64 = 2_000;
 const STREAM_OPEN_RETRY_MAX_DELAY_MS: u64 = 30_000;
 
@@ -147,6 +170,8 @@ pub(crate) async fn run_agent_loop(
     tools: &[OneShotTool],
     max_rounds: usize,
     max_tokens: u32,
+    thinking: ThinkingConfig,
+    round_retry: bool,
     loop_label: &str,
     sink: Option<&dyn LoopEventSink>,
 ) -> Result<String, AppError> {
@@ -167,7 +192,12 @@ pub(crate) async fn run_agent_loop(
         vec![ContentBlock::Text { text: user_text.to_owned() }],
     )];
 
-    for round in 0..max_rounds {
+    // Manual round counter (not a `for` loop): a corrupted-arguments retry
+    // re-runs the SAME round, so the round index must not advance on retry.
+    let mut round = 0usize;
+    let mut round_retries: usize = 0;
+    let mut retried_round: Option<usize> = None;
+    while round < max_rounds {
         let request = LlmRequest {
             model: model.to_owned(),
             system: system.to_owned(),
@@ -178,8 +208,9 @@ pub(crate) async fn run_agent_loop(
             // emit `content` after thinking is disabled; without this field
             // the whole token budget is silently consumed by reasoning and
             // rounds end with an empty `max_tokens` cut-off (mirrors
-            // `one_shot_completion` / `llm_chat.rs`).
-            thinking: Some(ThinkingConfig::Disabled),
+            // `one_shot_completion` / `llm_chat.rs`). The value is per-loop
+            // policy, cloned per round.
+            thinking: Some(thinking.clone()),
             reasoning_effort: None,
             temperature: None,
             retain_provider_round: false,
@@ -191,6 +222,7 @@ pub(crate) async fn run_agent_loop(
             Vec::new();
         let mut stop_reason: Option<StopReason> = None;
         let mut done = false;
+        let mut retry_round = false;
         while let Some(event) = rx.recv().await {
             match event {
                 LlmEvent::TextDelta(delta) => text.push_str(&delta),
@@ -208,6 +240,30 @@ pub(crate) async fn run_agent_loop(
                     break;
                 }
                 LlmEvent::Error(message) => {
+                    // One same-round retry for a corrupted tool-call
+                    // arguments JSON: the failed round executed nothing
+                    // (fail-closed parse), so the identical request is
+                    // re-sent and the round index stays put. Gated by
+                    // `round_retry` — loops that did not opt in keep the
+                    // exact fail-fast behavior.
+                    if round_retry
+                        && round_retries < ROUND_RETRY_LIMIT
+                        && retried_round != Some(round)
+                        && is_round_retryable_stream_error(&message)
+                    {
+                        round_retries += 1;
+                        retried_round = Some(round);
+                        if let Some(sink) = sink {
+                            sink.log("round_retry", serde_json::json!({
+                                "loop": loop_label,
+                                "round": round + 1,
+                                "retries_used": round_retries,
+                                "error": message,
+                            }));
+                        }
+                        retry_round = true;
+                        break;
+                    }
                     if let Some(sink) = sink {
                         sink.log("agent_loop_end", serde_json::json!({
                             "loop": loop_label,
@@ -220,6 +276,9 @@ pub(crate) async fn run_agent_loop(
                 }
                 _ => {}
             }
+        }
+        if retry_round {
+            continue;
         }
         if tool_uses.is_empty() {
             // No tool calls this round: log what the model said and why the
@@ -299,6 +358,7 @@ pub(crate) async fn run_agent_loop(
             }));
         }
         messages.push(Message::new(Role::User, result_blocks));
+        round += 1;
     }
 
     if let Some(sink) = sink {

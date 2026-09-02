@@ -10,8 +10,8 @@ import { CourseGenerationProgress } from './CourseGenerationProgress';
 const { Text, Paragraph } = Typography;
 
 /** 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）。
- * 提交后就地切换为生成视图：agent loop 同步执行需要一些时间，
- * 过程事件实时展示，关闭对话框即中止。 */
+ * 提交后就地切换为生成视图：agent loop 同步执行需要一些时间，过程事件实时
+ * 展示；关闭对话框不会终止生成（后台继续，悬浮指示条可回到这里）。 */
 export function CreateCourseDialog({
   visible,
   busy,
@@ -31,6 +31,7 @@ export function CreateCourseDialog({
   onTabChange,
   onDescriptionChange,
   onRetry,
+  onCancel,
   onStartLearning,
 }: {
   visible: boolean;
@@ -51,6 +52,7 @@ export function CreateCourseDialog({
   onTabChange: (tab: 'base' | 'description' | 'graph') => void;
   onDescriptionChange: (value: string) => void;
   onRetry: () => void;
+  onCancel: () => void;
   onStartLearning: (courseId: string) => void;
 }) {
   const { t } = useTranslation();
@@ -62,7 +64,7 @@ export function CreateCourseDialog({
       confirmLoading={busy}
       onCancel={onClose}
       onOk={onOk}
-      // 生成视图：隐藏主按钮，只保留关闭（关闭即中止生成）
+      // 生成视图：隐藏主按钮，只保留关闭（后台继续，不终止生成）
       footer={
         generating ? (
           <Button onClick={onClose}>{t('learning.genClose')}</Button>
@@ -77,6 +79,7 @@ export function CreateCourseDialog({
           error={generation.error}
           onStartLearning={onStartLearning}
           onRetry={onRetry}
+          onCancel={onCancel}
         />
       ) : (
         <>

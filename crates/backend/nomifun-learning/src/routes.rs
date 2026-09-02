@@ -16,8 +16,9 @@ use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest,
-    SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
+    LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
+    RepairFigureResponse, ResumeLearningGraphRequest, SetTagsRequest, SubmitAttemptRequest,
+    UpdateLessonProgressRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -28,6 +29,18 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
+        .route(
+            "/api/learning/courses/generate/resume",
+            post(resume_learning_graph),
+        )
+        .route(
+            "/api/learning/courses/generate/status",
+            get(learning_graph_generation_status),
+        )
+        .route(
+            "/api/learning/courses/generate/cancel",
+            post(cancel_learning_graph_generation),
+        )
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
         .route("/api/learning/courses/{id}/tags", put(set_course_tags))
@@ -150,6 +163,44 @@ async fn generate_course(
     Ok(Json(ApiResponse::ok(
         state.service.generate_course(&user.id, request).await?,
     )))
+}
+
+async fn resume_learning_graph(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<ResumeLearningGraphRequest>,
+) -> Result<Json<ApiResponse<crate::models::CourseDetail>>, AppError> {
+    // 续建失败的学习图生成:与 generate_course 同一套同步执行契约——请求
+    // 中断即终止循环,过程事件经 WS 推送,终态以本响应为准。无存活草稿时
+    // 返回 NotFound,前端回退全量重生成。
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .resume_learning_graph_course(&user.id, request.provider_id, request.model)
+            .await?,
+    )))
+}
+
+/// 学习图生成状态：后台指示条的数据源。生成在 HTTP 请求内同步执行，但
+/// 创建对话框可以随时关闭——注册表让运行对外可发现（主题 + 已运行时长）。
+async fn learning_graph_generation_status(
+    State(state): State<LearningRouterState>,
+) -> Result<Json<ApiResponse<LearningGraphGenerationStatus>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.learning_graph_generation_status(),
+    )))
+}
+
+/// 取消进行中的学习图生成：置位旗标，循环在下一个 LLM 请求边界停止；草稿
+/// 保持存活可续建。无进行中的生成时返回 cancelled=false（幂等，前端不必
+/// 区分竞态）。
+async fn cancel_learning_graph_generation(
+    State(state): State<LearningRouterState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let cancelled = state.service.cancel_learning_graph_generation();
+    Ok(Json(ApiResponse::ok(serde_json::json!({
+        "cancelled": cancelled,
+    }))))
 }
 
 async fn get_course(

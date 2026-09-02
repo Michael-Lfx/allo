@@ -46,8 +46,6 @@ impl LearningService {
         self.emit_course_event(serde_json::json!({
             "phase": "started",
             "kind": brief.kind(),
-            "module_count": brief.module_count,
-            "lessons_per_module": brief.lessons_per_module,
         }));
         let blueprint = match self
             .generate_course_blueprint(&brief, model_override, &session)
@@ -121,8 +119,6 @@ impl LearningService {
                     }),
                     samples,
                     domain: request.domain.clone(),
-                    module_count: request.module_count,
-                    lessons_per_module: request.lessons_per_module,
                 })
             }
             (None, Some(description)) => Ok(OutlineBrief {
@@ -130,8 +126,6 @@ impl LearningService {
                 knowledge_base: None,
                 samples: Vec::new(),
                 domain: request.domain.clone(),
-                module_count: request.module_count,
-                lessons_per_module: request.lessons_per_module,
             }),
             (None, None) => Err(AppError::BadRequest(
                 "provide either a knowledge base or a course description".into(),
@@ -177,18 +171,13 @@ impl LearningService {
                 AppError::Conflict("course generation is not configured".into())
             })?;
         let prompt = match (&brief.description, &brief.knowledge_base) {
-            (Some(description), _) => build_description_blueprint_prompt(
-                description,
-                brief.domain.as_deref(),
-                brief.module_count,
-                brief.lessons_per_module,
-            ),
+            (Some(description), _) => {
+                build_description_blueprint_prompt(description, brief.domain.as_deref())
+            }
             (_, Some(kb)) => build_blueprint_prompt(
                 &kb.name,
                 &kb.description,
                 brief.domain.as_deref(),
-                brief.module_count,
-                brief.lessons_per_module,
                 &brief.samples,
             ),
             _ => {
@@ -208,8 +197,6 @@ impl LearningService {
             model_override,
             &prompt,
             &brief.samples,
-            brief.module_count,
-            brief.lessons_per_module,
         )
         .await?;
         tracing::info!(
