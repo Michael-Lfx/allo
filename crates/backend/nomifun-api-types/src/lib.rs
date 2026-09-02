@@ -296,9 +296,11 @@ pub use shell::{
 };
 pub use session_observation::{
     ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
-    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestSummaryDto,
-    SessionObservationResponseSummaryDto, SessionObservationTokenUsageDto,
-    SessionObservationToolDto, SessionObservationTurnDto,
+    SessionObservationEventDto, SessionObservationExportDto, SessionObservationExportTurnDto,
+    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestMessageViewDto,
+    SessionObservationRequestSummaryDto, SessionObservationResponseSummaryDto,
+    SessionObservationTimelineEventDto, SessionObservationTokenUsageDto, SessionObservationToolDto,
+    SessionObservationTurnDto,
 };
 pub use skill::{
     AddExternalPathRequest, BuiltinAutoSkillResponse, ExportSkillRequest,
