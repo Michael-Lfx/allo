@@ -10,7 +10,10 @@
 //! Packing belongs to **planning**, not render: the storyboard the user sees
 //! must be the same list the renderer submits. [`pack_scene_briefs`] collapses
 //! leftover micro-shots before decompose; [`pack_scene_clips`] is the same
-//! rule on already-decomposed shots (resume / stale plans).
+//! rule on already-decomposed shots (resume / stale plans). The LLM draft
+//! never becomes `storyboard.json` — only the packed list is published.
+//! After align, [`densify_aligned_indices`] renumbers surviving clips `0..n`
+//! so shot directories and the filmstrip do not keep absorbed holes.
 //!
 //! What is left after packing (a run too long for one clip) is handled by the
 //! seam machinery in [`crate::media_local`]: head trim plus de-click fade for a
@@ -831,6 +834,42 @@ fn reindex_briefs(briefs: &mut [ShotBriefDescription]) {
     }
 }
 
+/// True when clip idxs are already the dense render list `0..n`.
+pub(crate) fn clip_indices_are_dense(clips: &[ShotDescription]) -> bool {
+    clips
+        .iter()
+        .enumerate()
+        .all(|(i, clip)| clip.idx == i as i32)
+}
+
+/// Renumber an aligned board+clip pair to `0..n`.
+///
+/// [`pack_scene_clips`] keeps each run's first idx so concat can find the
+/// original shot dir. After absorb, that leaves holes (`0, 3, 5`). The
+/// filmstrip and `shots/` tree then look like skipped middles. Mapping
+/// returned here is `old_idx → new_idx` for directory relocate.
+pub(crate) fn densify_aligned_indices(
+    briefs: &mut Vec<ShotBriefDescription>,
+    clips: &mut Vec<ShotDescription>,
+) -> HashMap<i32, i32> {
+    clips.sort_by_key(|clip| clip.idx);
+    let mut map = HashMap::new();
+    let last_clip = clips.len().saturating_sub(1);
+    for (i, clip) in clips.iter_mut().enumerate() {
+        let new_idx = i as i32;
+        map.insert(clip.idx, new_idx);
+        clip.idx = new_idx;
+        clip.is_last = i == last_clip;
+    }
+    briefs.sort_by_key(|brief| brief.idx);
+    let last_brief = briefs.len().saturating_sub(1);
+    for (i, brief) in briefs.iter_mut().enumerate() {
+        brief.idx = map.get(&brief.idx).copied().unwrap_or(i as i32);
+        brief.is_last = i == last_brief;
+    }
+    map
+}
+
 /// Join beat visuals, inserting an explicit cut when the camera changes so the
 /// storyboard caption and the decompose LLM both see the in-file transition.
 fn join_visual_with_cuts<'a>(parts: impl IntoIterator<Item = (i32, &'a str)>) -> String {
@@ -1390,5 +1429,20 @@ mod tests {
         let synced = sync_storyboard_to_clips(&briefs, &clipped);
         assert_eq!(synced.len(), 2);
         assert!(synced.iter().all(|b| b.idx != 3));
+    }
+
+    #[test]
+    fn densify_aligned_indices_closes_pack_holes() {
+        let mut briefs = vec![brief(0, 0, "开门", None), brief(3, 1, "反打", None)];
+        briefs[1].is_last = true;
+        let mut clips = vec![shot(0, 0, "开门", None), shot(3, 1, "反打", None)];
+        clips[1].is_last = true;
+        let map = densify_aligned_indices(&mut briefs, &mut clips);
+        assert_eq!(clips.iter().map(|c| c.idx).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(briefs.iter().map(|b| b.idx).collect::<Vec<_>>(), vec![0, 1]);
+        assert!(clips[1].is_last);
+        assert!(briefs[1].is_last);
+        assert_eq!(map.get(&3), Some(&1));
+        assert!(clip_indices_are_dense(&clips));
     }
 }

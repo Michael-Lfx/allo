@@ -12,7 +12,7 @@ Prefer fewer, high-value assets.
 
 [Guidelines]
 - Environments: unique places with a clear slugline-like name (e.g. "INT. COFFEE SHOP - NIGHT") and a detailed EMPTY-SET description (architecture, era materials, lighting, weather, furniture, color palette). Describe the room as vacant — never mention people, crowds, patrons, staff, or actions.
-- Props: only distinctive recurring objects that matter for recognition. Describe the object alone — never "a man holding X".
+- Props: only distinctive recurring objects that matter for recognition. Describe the object alone — never "a man holding X". Include a real-world size class (handheld / tabletop / furniture / vehicle) so later catalog plates keep true physical scale.
 - Cap: at most 5 environments and 8 props.
 - Match the language of the input text for names/descriptions.
 - Honor the provided Visual style when it affects materials/lighting/rendering medium (e.g. noir wet streets, ink-wash interiors, anime painted backgrounds). If Style is anime/animation/illustration, describe environments/props as belonging to that drawn world — not photoreal live-action sets.

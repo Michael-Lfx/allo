@@ -6,13 +6,6 @@ use crate::backends::VimaxImage;
 use crate::domain::CharacterInScene;
 use crate::error::VimaxResult;
 
-/// Instruction when a vacant production look plate is passed as img2img.
-/// Match medium only — copying the look-plate location would destroy the studio turnaround.
-const LOOK_PLATE_REF_INSTRUCTION: &str = "\n\
-LOOK BIBLE (reference image): match ONLY the rendering medium, color science, lighting quality, \
-and material treatment. Do NOT copy its location, architecture, or composition. \
-Output remains a clean studio three-view turnaround on a light seamless backdrop.";
-
 pub struct CharacterPortraitsGenerator {
     image: Arc<dyn VimaxImage>,
 }
@@ -51,22 +44,15 @@ impl CharacterPortraitsGenerator {
 
     /// One character → one `{id}_three_view.png` (meaningful name for multi-ref prompts).
     ///
-    /// `style_refs` is the vacant production look plate (and never a cast portrait).
+    /// Always text-to-image. Style lives in the prompt (`production_look_lock`);
+    /// never pass a look plate or other image as img2img.
     pub async fn generate_all_views(
         &self,
         character: &CharacterInScene,
         style: &str,
         _theme: &str,
         character_dir: &Path,
-        style_refs: &[&Path],
     ) -> VimaxResult<HashMap<String, HashMap<String, HashMap<String, String>>>> {
-        let style_refs: Vec<&Path> = style_refs
-            .iter()
-            .copied()
-            .filter(|p| crate::media_local::is_usable_image_file(p))
-            .collect();
-        let style_refs = style_refs.as_slice();
-
         tokio::fs::create_dir_all(character_dir).await?;
         let id_safe = safe_file_stem(&character.identifier_in_scene);
         let sheet_name = format!("{id_safe}_three_view.png");
@@ -94,13 +80,13 @@ impl CharacterPortraitsGenerator {
         .await;
 
         if !sheet.exists() {
-            let prompt = Self::prompt_with_look_refs(character, style, style_refs);
-            self.image.generate(&prompt, style_refs, &sheet).await?;
+            let prompt = Self::build_three_view_prompt(character, style);
+            self.image.generate(&prompt, &[], &sheet).await?;
         } else if !crate::media_local::is_usable_image_file(&sheet) {
             // e.g. JPEG bytes saved as .png without decode support — regenerate.
             let _ = tokio::fs::remove_file(&sheet).await;
-            let prompt = Self::prompt_with_look_refs(character, style, style_refs);
-            self.image.generate(&prompt, style_refs, &sheet).await?;
+            let prompt = Self::build_three_view_prompt(character, style);
+            self.image.generate(&prompt, &[], &sheet).await?;
         }
 
         let id = &character.identifier_in_scene;
@@ -126,18 +112,6 @@ impl CharacterPortraitsGenerator {
         let mut registry = HashMap::new();
         registry.insert(character.identifier_in_scene.clone(), views);
         Ok(registry)
-    }
-
-    fn prompt_with_look_refs(
-        character: &CharacterInScene,
-        style: &str,
-        style_refs: &[&Path],
-    ) -> String {
-        let mut prompt = Self::build_three_view_prompt(character, style);
-        if !style_refs.is_empty() {
-            prompt.push_str(LOOK_PLATE_REF_INSTRUCTION);
-        }
-        prompt
     }
 }
 

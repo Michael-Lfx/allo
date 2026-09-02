@@ -7,6 +7,7 @@ pub mod backends;
 pub mod clip_bounds;
 pub mod creative;
 pub mod domain;
+pub mod drama;
 pub mod error;
 pub mod json_util;
 pub mod media_local;
@@ -44,6 +45,7 @@ pub use backends::{
     VimaxVideo,
 };
 pub use domain::WorkflowKind;
+pub use drama::{BeatRole, DramaBeat, DramaEngine, lint_drama_engine};
 pub use error::{VimaxError, VimaxResult};
 pub use progress::{
     INTERRUPTED_SUMMARY, ProgressCallback, ProgressEvent, RenderStatus, RunStatus,

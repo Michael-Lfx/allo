@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { CloseSmall, Left, Right } from '@icon-park/react';
-import { loadArtifactMediaUrlCached } from '../api';
+import { loadStudioMediaPreviewUrl } from './collectStudioMedia';
 import type { StudioSessionMedia } from './types';
 import styles from './index.module.css';
 
@@ -27,28 +27,35 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!current) {
+    if (!current || current.kind === 'file') {
       setUrl(null);
       return;
     }
     let cancelled = false;
+    let blobUrl: string | null = null;
     setUrl(null);
-    void loadArtifactMediaUrlCached(sessionId, current.path)
+    void loadStudioMediaPreviewUrl(sessionId, current)
       .then((next) => {
-        if (!cancelled) setUrl(next);
+        if (cancelled) {
+          if (current.origin === 'cameo') URL.revokeObjectURL(next);
+          return;
+        }
+        if (current.origin === 'cameo') blobUrl = next;
+        setUrl(next);
       })
       .catch(() => {
         if (!cancelled) setUrl(null);
       });
     return () => {
       cancelled = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-  }, [sessionId, current?.path]);
+  }, [sessionId, current?.path, current?.kind, current?.origin]);
 
   useEffect(() => {
     const neighbor = items[index + 1] ?? items[index - 1];
-    if (!neighbor) return;
-    void loadArtifactMediaUrlCached(sessionId, neighbor.path).catch(() => undefined);
+    if (!neighbor || neighbor.kind === 'file') return;
+    void loadStudioMediaPreviewUrl(sessionId, neighbor).catch(() => undefined);
   }, [sessionId, items, index]);
 
   const step = useCallback(

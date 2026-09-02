@@ -166,6 +166,36 @@ pub fn wants_stylized_non_photoreal(user_style: &str) -> bool {
         "blind box",
         "paper-cut",
         "papercut",
+        "ukiyo-e",
+        "ukiyo e",
+        "low-poly",
+        "low poly",
+        "shinkai",
+        "game-engine",
+        "game engine",
+        "unreal engine",
+        "toon-shaded",
+        "toon shaded",
+        "lego",
+        "brickfilm",
+        "felted",
+        "wool felt",
+        "crayon",
+        "charcoal",
+        "line-art",
+        "line art",
+        "dunhuang",
+        "stained-glass",
+        "stained glass",
+        "art nouveau",
+        "pop art",
+        "shadow puppet",
+        "gouache",
+        "shoujo",
+        "shojo",
+        "voxel",
+        "origami",
+        "glitch",
     ];
     let positive_en = EN.iter().any(|n| positive_style_needle(&lower_raw, n));
     const ZH: &[&str] = &[
@@ -190,6 +220,23 @@ pub fn wants_stylized_non_photoreal(user_style: &str) -> bool {
         "盲盒",
         "潮玩",
         "等距",
+        "漫剧",
+        "浮世绘",
+        "剪纸",
+        "乐高",
+        "毛毡",
+        "蜡笔",
+        "炭笔",
+        "敦煌",
+        "皮影",
+        "折纸",
+        "体素",
+        "三渲二",
+        "线稿",
+        "波普",
+        "少女漫",
+        "连环画",
+        "故障",
     ];
     let positive_zh = ZH.iter().any(|n| positive_style_needle_zh(raw, n));
     positive_en || positive_zh
@@ -286,8 +333,10 @@ pub fn production_medium_lock_line(user_style: &str) -> String {
 
 /// Canonical production-look lock for bible images (three-view, environment, prop).
 ///
-/// T2I calls do not share a session. Consistency only comes from (1) this identical
-/// medium contract on every bible prompt and (2) a shared vacant look plate as img2img.
+/// T2I calls do not share a session. Cast three-views, vacant environments, and
+/// catalog prop plates are text-to-image: consistency comes from this identical
+/// medium contract on every bible prompt. Do not img2img from a look plate —
+/// Seedream copies that plate's layout as a background and warps subject scale.
 /// Subject content (faces / architecture / objects) stays in the per-asset template.
 pub fn production_look_lock(user_style: &str) -> String {
     let phrase = production_style_phrase(user_style);
@@ -1853,6 +1902,22 @@ mod tests {
             "premium pixel-art animation, deliberate low-resolution mosaic"
         ));
         assert!(wants_stylized_non_photoreal("黏土定格动画风格"));
+        assert!(wants_stylized_non_photoreal(
+            "3D CG animation style, game-engine quality render, semi-realistic stylized characters"
+        ));
+        assert!(wants_stylized_non_photoreal(
+            "Japanese anime style, cel shading, clean crisp line art"
+        ));
+        assert!(wants_stylized_non_photoreal(
+            "toon-shaded 3D animation, 2D anime lighting on 3D models"
+        ));
+        assert!(wants_stylized_non_photoreal(
+            "LEGO brickfilm stop-motion animation, visible plastic studs"
+        ));
+        assert!(wants_stylized_non_photoreal(
+            "voxel 3D animation, cubic blocky forms"
+        ));
+        assert!(wants_stylized_non_photoreal("glitch art video, datamosh pixel smear"));
         assert!(!wants_stylized_non_photoreal("cinematic film look"));
         assert!(!wants_stylized_non_photoreal(""));
         // Negated mentions must not flip cinematic prompts into stylized mode.

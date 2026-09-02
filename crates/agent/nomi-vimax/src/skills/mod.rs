@@ -7,6 +7,7 @@ mod overlay;
 mod package;
 mod parse;
 
+pub use builtin::DEFAULT_SHORT_DRAMA_SKILL_ID;
 pub use catalog::SkillCatalog;
 pub use model::{
     sanitize_skill_name, SkillId, SkillOverlay, SkillSource, SkillVisibility, VerticalSkill,

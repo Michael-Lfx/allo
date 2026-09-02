@@ -18,7 +18,7 @@ You will receive a story within <STORY> and </STORY> tags and a user requirement
     - Script genre (e.g., micro-film, moive, short drama).
     - Desired number of scenes (e.g., "divide into 3 scenes"). CRITICAL: if USER_REQUIREMENT contains [VIDEO_DURATION_CONSTRAINTS], obey the preferred/hard scene counts — fewer compact scenes beat many short ones.
     - Target finished film duration and pacing notes.
-    - CRITICAL: obey [DIRECTOR_DENSITY] / [MUSIC_ARC] when present.
+    - CRITICAL: obey [DIRECTOR_DENSITY] / [MUSIC_ARC] / [DRAMA_ENGINE — MUST FOLLOW] when present. [DRAMA_ENGINE] beats (especially turn and payoff) must appear as filmable action in some scene; do not drop them, and do not invent extra scenes to hold them.
     - Other specific instructions (e.g., emphasize dialogue or action).
 
 [Output]

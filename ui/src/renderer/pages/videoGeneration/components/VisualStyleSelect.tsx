@@ -33,8 +33,9 @@ const VisualStyleSelect: React.FC<VisualStyleSelectProps> = ({ value, onChange, 
 
   return (
     <Select
-      value={selectValue}
+      value={selectValue || undefined}
       disabled={disabled}
+      allowClear
       placeholder={t('videoGeneration.workspace.source.stylePlaceholder', {
         defaultValue: '选择视觉风格',
       })}
@@ -51,6 +52,10 @@ const VisualStyleSelect: React.FC<VisualStyleSelectProps> = ({ value, onChange, 
         autoAlignPopupWidth: true,
       }}
       onChange={(key) => {
+        if (key === undefined || key === null || key === '') {
+          onChange('');
+          return;
+        }
         if (typeof key !== 'string' || key === '__custom__') return;
         onChange(promptForVisualStyleKey(key));
       }}

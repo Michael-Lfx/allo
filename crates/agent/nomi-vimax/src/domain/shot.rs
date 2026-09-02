@@ -27,9 +27,10 @@ pub struct ShotBriefDescription {
     pub audio_desc: Option<String>,
     /// Timeline-ordered beats this row plays in one generation.
     ///
-    /// Empty for a single-beat row. Two or more marks a packed clip (see
-    /// [`ShotBriefDescription::is_merged`]): the storyboard must not show the
-    /// absorbed rows, because they will never be rendered on their own.
+    /// Empty for a single-beat row. Two or more is an inner timeline of the
+    /// SAME generated file: packing may have absorbed adjacent rows (a reverse
+    /// CUT keeps a different `cam_idx`), or a same-camera densify split one
+    /// prose line into performance beats. Extra beats are never extra files.
     #[serde(default)]
     pub beats: Vec<ShotBriefBeat>,
 }

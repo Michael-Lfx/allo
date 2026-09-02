@@ -797,19 +797,118 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> VimaxResult<()> {
     Ok(())
 }
 
-/// Persist JSON artifact helper used by pipelines.
+fn unique_part_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact.json");
+    path.with_file_name(format!("{name}.{}.part", Uuid::new_v4().simple()))
+}
+
+/// Persist JSON via a unique temp file + rename so concurrent readers never
+/// observe a truncated empty body (`EOF while parsing a value at line 1 column 0`).
 pub async fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> VimaxResult<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     let raw = serde_json::to_string_pretty(value)?;
-    tokio::fs::write(path, raw).await?;
-    Ok(())
+    let tmp = unique_part_path(path);
+    tokio::fs::write(&tmp, &raw).await?;
+    // Unix `rename` replaces the dest atomically. Windows cannot replace, so only
+    // then remove+rename — readers retry `NotFound` across that tiny window.
+    match tokio::fs::rename(&tmp, path).await {
+        Ok(()) => Ok(()),
+        Err(_) if path.exists() => {
+            let _ = tokio::fs::remove_file(path).await;
+            if let Err(e) = tokio::fs::rename(&tmp, path).await {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return Err(e.into());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(e.into())
+        }
+    }
 }
 
 pub async fn read_json_artifact<T: for<'de> Deserialize<'de>>(path: &Path) -> VimaxResult<T> {
-    let raw = tokio::fs::read_to_string(path).await?;
-    Ok(serde_json::from_str(&raw)?)
+    const ATTEMPTS: u32 = 6;
+    let mut last_err: Option<String> = None;
+    for attempt in 1..=ATTEMPTS {
+        let raw = match tokio::fs::read_to_string(path).await {
+            Ok(raw) => raw,
+            Err(e)
+                if attempt < ATTEMPTS
+                    && (e.kind() == std::io::ErrorKind::NotFound
+                        || e.kind() == std::io::ErrorKind::Interrupted) =>
+            {
+                last_err = Some(format!("JSON artifact missing at {}: {e}", path.display()));
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            last_err = Some(format!(
+                "empty JSON artifact at {} (interrupted write or concurrent planner)",
+                path.display()
+            ));
+            if attempt < ATTEMPTS {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                continue;
+            }
+            break;
+        }
+        match serde_json::from_str(trimmed) {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < ATTEMPTS && e.is_eof() => {
+                last_err = Some(format!("JSON error at {}: {e}", path.display()));
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(e) => {
+                return Err(VimaxError::msg(format!(
+                    "JSON error at {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Err(VimaxError::msg(last_err.unwrap_or_else(|| {
+        format!("unreadable JSON artifact at {}", path.display())
+    })))
+}
+
+/// Copy JSON only when the source parses. Destination is written atomically so
+/// concurrent readers never see a truncated empty file.
+pub async fn copy_json_artifact_if_readable(src: &Path, dest: &Path) -> VimaxResult<bool> {
+    if !src.is_file() {
+        return Ok(false);
+    }
+    if tokio::fs::metadata(src)
+        .await
+        .map(|m| m.len() == 0)
+        .unwrap_or(false)
+    {
+        return Ok(false);
+    }
+    match read_json_artifact::<Value>(src).await {
+        Ok(value) => {
+            write_json_artifact(dest, &value).await?;
+            Ok(true)
+        }
+        Err(e) => {
+            tracing::warn!(
+                src = %src.display(),
+                dest = %dest.display(),
+                error = %e,
+                "skipping copy of unreadable JSON artifact"
+            );
+            Ok(false)
+        }
+    }
 }
 
 pub async fn write_text_artifact(path: &Path, text: &str) -> VimaxResult<()> {
@@ -1170,5 +1269,80 @@ mod import_export_tests {
         let tree = index.list_artifacts(&record.session_id).unwrap();
         let names: Vec<_> = tree.iter().map(|n| n.name.as_str()).collect();
         assert!(!names.contains(&RUN_STATUS_FILENAME));
+    }
+
+    #[tokio::test]
+    async fn write_json_artifact_is_never_empty_on_disk() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("characters.json");
+        write_json_artifact(&path, &serde_json::json!({"ok": true}))
+            .await
+            .unwrap();
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(!raw.trim().is_empty());
+        let value: serde_json::Value = read_json_artifact(&path).await.unwrap();
+        assert_eq!(value["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn read_json_artifact_rejects_empty_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.json");
+        tokio::fs::write(&path, "").await.unwrap();
+        let err = read_json_artifact::<serde_json::Value>(&path)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("empty JSON artifact"), "{msg}");
+        assert!(
+            !msg.contains("EOF while parsing a value at line 1 column 0"),
+            "{msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_json_artifact_skips_empty_source() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("empty.json");
+        let dest = dir.path().join("dest.json");
+        tokio::fs::write(&src, "").await.unwrap();
+        assert!(!copy_json_artifact_if_readable(&src, &dest).await.unwrap());
+        assert!(!dest.exists());
+    }
+
+    #[tokio::test]
+    async fn json_artifact_readers_never_see_empty_during_overwrite() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("shared.json");
+        write_json_artifact(&path, &serde_json::json!({"n": 0}))
+            .await
+            .unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let path_w = path.clone();
+        let writer = tokio::spawn(async move {
+            for i in 1..=30 {
+                write_json_artifact(&path_w, &serde_json::json!({ "n": i }))
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let path = path.clone();
+            let stop = std::sync::Arc::clone(&stop);
+            readers.push(tokio::spawn(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    let value: serde_json::Value = read_json_artifact(&path).await.unwrap();
+                    assert!(value.get("n").is_some(), "{value}");
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+        writer.await.unwrap();
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.await.unwrap();
+        }
     }
 }

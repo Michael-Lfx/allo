@@ -60,7 +60,120 @@ impl StoryboardArtist {
         }
         let resp: Resp =
             complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
-        Ok(resp.storyboard)
+        let rows = resp.storyboard;
+
+        // Performance lint: emotions must be visible behavior, filler holds are
+        // banned. One repair round rewrites TEXT inside flagged rows only; a
+        // repair that changes the row/beat/camera skeleton is discarded so this
+        // pass can never regrow the shot count ("镜太多" stays fixed).
+        let issues = crate::drama::lint_storyboard_performance(&rows);
+        if issues.is_empty() {
+            return Ok(rows);
+        }
+        tracing::info!(
+            issues = issues.len(),
+            "storyboard failed performance lint; running one text-only repair round"
+        );
+        let repair_user = format!(
+            "{user}\n\n[LINT_FEEDBACK]\nYour previous storyboard was:\n{}\n\n\
+It has these performance defects — rewrite ONLY the flagged text so every emotion \
+becomes visible behavior (face/hands/blocking/props) and every filler hold becomes a \
+plot-advancing action:\n- {}\n\n\
+HARD RULES: return the SAME number of rows with the SAME idx / cam_idx / is_last, and \
+inside each row the SAME number of beats with the SAME beat cam_idx values. Do NOT add, \
+split, merge, or re-camera anything — only the wording of visual/audio descriptions may change.",
+            serde_json::to_string_pretty(&rows).unwrap_or_default(),
+            issues.join("\n- ")
+        );
+        match complete_and_parse_llm_json::<Resp>(self.chat.as_ref(), &system, &repair_user).await
+        {
+            Ok(repaired) if crate::drama::storyboard_structure_matches(&rows, &repaired.storyboard) => {
+                let remaining = crate::drama::lint_storyboard_performance(&repaired.storyboard);
+                if !remaining.is_empty() {
+                    tracing::warn!(
+                        remaining = remaining.len(),
+                        "storyboard performance lint still failing after repair; proceeding with repaired board"
+                    );
+                }
+                Ok(repaired.storyboard)
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    "storyboard repair changed row/beat/camera structure; discarding repair and keeping original board"
+                );
+                Ok(rows)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "storyboard repair round failed; keeping original board");
+                Ok(rows)
+            }
+        }
+    }
+
+    /// After packing, fill 2–3 same-camera performance beats into rows that
+    /// still have a single prose `visual_desc`. Infallible: a failed or
+    /// structure-breaking round keeps the packed board so this can never
+    /// grow the shot count.
+    pub async fn densify_in_clip_beats(
+        &self,
+        rows: Vec<ShotBriefDescription>,
+    ) -> Vec<ShotBriefDescription> {
+        let thin: Vec<i32> = rows
+            .iter()
+            .filter(|row| crate::drama::needs_in_clip_beats(row))
+            .map(|row| row.idx)
+            .collect();
+        if thin.is_empty() {
+            return rows;
+        }
+        let storyboard_json = match serde_json::to_string_pretty(&rows) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot serialize storyboard for in-clip densify");
+                return rows;
+            }
+        };
+        tracing::info!(
+            thin = thin.len(),
+            "storyboard rows lack in-clip performance beats; densifying same-camera actions"
+        );
+        let system = include_str!(
+            "../../prompts/storyboard_artist__system_prompt_template_densify_in_clip_beats.txt"
+        )
+        .replace("{format_instructions}", formats::IN_CLIP_BEATS);
+        let user = include_str!(
+            "../../prompts/storyboard_artist__human_prompt_template_densify_in_clip_beats.txt"
+        )
+        .replace("{storyboard_json}", &storyboard_json)
+        .replace(
+            "{thin_idx_list}",
+            &thin
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+
+        #[derive(Deserialize)]
+        struct Resp {
+            storyboard: Vec<ShotBriefDescription>,
+        }
+        match complete_and_parse_llm_json::<Resp>(self.chat.as_ref(), &system, &user).await {
+            Ok(resp) => match crate::drama::apply_in_clip_performance_beats(&rows, &resp.storyboard)
+            {
+                Some(merged) => merged,
+                None => {
+                    tracing::warn!(
+                        "in-clip densify changed row identity/count; discarding densify"
+                    );
+                    rows
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "in-clip densify round failed; keeping packed board");
+                rows
+            }
+        }
     }
 
     pub async fn decompose_visual_description(

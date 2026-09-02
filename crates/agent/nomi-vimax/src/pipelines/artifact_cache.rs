@@ -103,6 +103,32 @@ pub(crate) async fn write_sidecar(path: &Path, fingerprint: &str) -> VimaxResult
     Ok(())
 }
 
+/// Load a cached JSON artifact without writing.
+///
+/// `None` when the file is missing, the sidecar fingerprint does not match
+/// `cache_key`, or the body is unreadable — the caller regenerates. Use this
+/// when the on-disk document is a *published* form of `generate()`, not the
+/// raw return value (e.g. `storyboard.json` after clip packing).
+pub(crate) async fn load_json_if_cached<T>(path: &Path, cache_key: &str) -> Option<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    if !path.exists() || !sidecar_matches(path, cache_key).await {
+        return None;
+    }
+    match read_json_artifact(path).await {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "cached JSON artifact unreadable; regenerating"
+            );
+            None
+        }
+    }
+}
+
 /// Load or generate JSON with a cache sidecar.
 ///
 /// When `path` exists **and** the sidecar fingerprint matches `cache_key`,
@@ -118,8 +144,8 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = VimaxResult<T>>,
 {
-    if path.exists() && sidecar_matches(path, cache_key).await {
-        return read_json_artifact(path).await;
+    if let Some(v) = load_json_if_cached(path, cache_key).await {
+        return Ok(v);
     }
     let value = generate().await?;
     write_json_artifact(path, &value).await?;
@@ -305,5 +331,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again, "stable");
+    }
+
+    #[tokio::test]
+    async fn empty_cached_json_is_regenerated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("characters.json");
+        let fp = artifact_fingerprint(&["story", "style", ""]);
+        tokio::fs::write(&path, "").await.unwrap();
+        write_sidecar(&path, &fp).await.unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&calls);
+        let value: serde_json::Value = load_or_write_json_cached(&path, &fp, || {
+            let c = Arc::clone(&c);
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({"cast": "fresh"}))
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(value["cast"], "fresh");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn load_json_if_cached_miss_does_not_create_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("storyboard.json");
+        let fp = artifact_fingerprint(&["script", "req", "style"]);
+        let hit: Option<serde_json::Value> = load_json_if_cached(&path, &fp).await;
+        assert!(hit.is_none());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn load_json_if_cached_returns_the_published_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("storyboard.json");
+        let fp = artifact_fingerprint(&["script", "req", "style"]);
+        let body = serde_json::json!([{"idx": 0}]);
+        let written: serde_json::Value = load_or_write_json_cached(&path, &fp, || {
+            let body = body.clone();
+            async move { Ok(body) }
+        })
+        .await
+        .unwrap();
+        let hit: serde_json::Value = load_json_if_cached(&path, &fp).await.expect("cache hit");
+        assert_eq!(hit, written);
+        let other = artifact_fingerprint(&["other", "req", "style"]);
+        let miss: Option<serde_json::Value> = load_json_if_cached(&path, &other).await;
+        assert!(miss.is_none());
+        assert!(path.is_file());
     }
 }

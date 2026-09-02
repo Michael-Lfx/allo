@@ -92,6 +92,16 @@ ref_image_indices: 0-based indices into the provided image list (max 8). text_pr
 {"classifications":[{"photo_id":"string","category":"character|environment|prop|style","summary":"string","suggested_label":"string"}]}
 One entry per input image. category MUST be exactly one of: character, environment, prop, style. photo_id MUST match the provided id. summary = one short visual description. suggested_label may be empty. Prose MUST match the user's label language when Chinese."#;
 
+    /// Same-camera performance beats inside an already-packed storyboard row.
+    /// Row count / cam_idx are fixed; this is density, not coverage.
+    pub const IN_CLIP_BEATS: &str = r#"Return a JSON object:
+{"storyboard":[{"idx":0,"cam_idx":0,"is_last":false,"visual_desc":"string","beats":[{"visual_desc":"string","cam_idx":0}]}]}
+Return EVERY input row, same idx/cam_idx/is_last/visual_desc. For rows that still need densify, beats MUST have 2 or 3 entries and EVERY beat.cam_idx MUST equal that row's cam_idx (same camera — these are performance beats inside one take, NEVER a new cut or a new storyboard row). Each beat.visual_desc is ONE filmable body/face/blocking/prop action, never a bare mood word. Rows that already have ≥2 beats: copy them unchanged. Values MUST match the user's input language (Chinese input → 简体中文)."#;
+
+    pub const DRAMA_ENGINE: &str = r#"Return a JSON object:
+{"protagonist":"string","want":"string","obstacle":"string","stakes":"string","status_start":"string","status_end":"string","reversal":"string","visual_motif":"string","beats":[{"role":"hook","action":"string","advance":"string"}]}
+beats: 4-8 entries in play order; role MUST be one of hook|incite|escalate|turn|payoff|button; the FIRST beat MUST be "hook"; include at least one "turn" and one "payoff". action = ONE filmable visible behavior (bodies, props, space — never a bare mood word like 伤心/愤怒/nervous); advance = what this beat changes in plot, relationship, or status. want/obstacle/stakes must be concrete and in conflict; status_start and status_end MUST describe different positions. visual_motif = one recurring filmable object/gesture/light cue. Values MUST match the user's input language (Chinese input → 简体中文)."#;
+
     pub const SCRIPT_SCENES: &str = r#"Return a JSON object:
 {"scenes":["scene script string", "..."]}
 Each string is one scene's screenplay (heading, action, dialogue). Screenplay text MUST match the user's input language (Chinese input → 简体中文).

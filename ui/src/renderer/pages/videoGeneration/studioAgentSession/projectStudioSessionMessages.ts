@@ -220,12 +220,14 @@ export function projectStudioSessionMessages(
   const busy = runStatus === 'planning' || runStatus === 'rendering';
 
   const brief = input.sourceText?.trim() ?? '';
-  if (brief) {
+  const briefMedia = input.briefMedia ?? [];
+  if (brief || briefMedia.length > 0) {
     messages.push({
       id: 'user-brief',
       role: 'user',
       kind: 'user_brief',
       text: brief,
+      media: briefMedia.length > 0 ? briefMedia : undefined,
     });
   }
 

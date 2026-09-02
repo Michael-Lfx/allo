@@ -107,7 +107,11 @@ const TreeRow: React.FC<TreeRowProps> = ({ node, depth, selectedPath, onSelect }
         )}
       </button>
       {node.is_dir && open && node.children?.length
-        ? node.children.map((child) => (
+        ? node.children
+            .filter(
+              (child) => child.name !== '_absorbed' && !child.name.startsWith('.reloc-')
+            )
+            .map((child) => (
             <TreeRow
               key={child.path}
               node={child}

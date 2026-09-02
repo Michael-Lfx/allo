@@ -1,0 +1,6 @@
+<STORYBOARD_JSON>
+{storyboard_json}
+</STORYBOARD_JSON>
+
+Rows that still need 2–3 same-camera performance beats (all other rows: copy unchanged):
+{thin_idx_list}

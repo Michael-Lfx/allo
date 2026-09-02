@@ -12,7 +12,8 @@ use crate::session::{read_json_artifact, write_json_artifact};
 
 use super::formats::WORLD_ASSETS;
 
-/// Vacant production-look bible — shared img2img anchor for cast, sets, and props.
+/// Optional vacant look bible. Env/prop plates do **not** img2img from this file
+/// (Seedream copies its layout as a background). Style lock is text-only.
 pub const LOOK_PLATE_FILENAME: &str = "look_plate.png";
 const LOOK_PLATE_LOCK_FILENAME: &str = "look_plate_lock.txt";
 
@@ -137,7 +138,8 @@ impl WorldAssetsPlanner {
         Ok(spec)
     }
 
-    /// Vacant production-look plate used as the shared img2img style bible.
+    /// Vacant production-look plate. Kept for optional inspection; `ensure()` does
+    /// not feed it into env/prop generation (layout leak / scale warp).
     ///
     /// Best-effort: returns an empty vec when generation fails so planning can
     /// still proceed on the text [`crate::planning::production_look_lock`].
@@ -208,8 +210,10 @@ impl WorldAssetsPlanner {
 
     /// Extract (if needed) and generate missing environment / prop plates under `film_root`.
     ///
-    /// When `style_refs` / `style_lock_token` come from user Cameo photos, plates are
-    /// regenerated if the lock token changes so scenery stays consistent with uploads.
+    /// Props are always text-to-image catalog plates (white studio, true scale).
+    /// Environments are text-to-image with the production look lock; user Cameo
+    /// location photos may restyle lighting/materials but are never look_plate.png.
+    /// When `style_lock_token` changes, plates regenerate so scenery stays consistent.
     pub async fn ensure(
         &self,
         film_root: &Path,
@@ -259,15 +263,15 @@ impl WorldAssetsPlanner {
             }
         }
 
-        let style_ref_paths: Vec<PathBuf> = {
-            let mut refs = self.look_style_refs(film_root, &style, &theme).await;
-            for p in style_refs {
-                if crate::media_local::is_usable_image_file(p) && !refs.iter().any(|e| e == p) {
-                    refs.push(p.clone());
-                }
-            }
-            refs
-        };
+        let env_ref_paths: Vec<PathBuf> = style_refs
+            .iter()
+            .filter(|p| {
+                crate::media_local::is_usable_image_file(p)
+                    && is_safe_world_style_ref(p)
+                    && !is_look_plate_path(p)
+            })
+            .cloned()
+            .collect();
 
         let spec: WorldAssetsSpec = if spec_path.exists() {
             read_json_artifact(&spec_path).await?
@@ -333,7 +337,7 @@ impl WorldAssetsPlanner {
                 None
             };
             let detail: String = stripped_desc.chars().take(120).collect();
-            let cameo_note = if style_ref_paths.is_empty() {
+            let cameo_note = if env_ref_paths.is_empty() {
                 String::new()
             } else {
                 " Style-locked to user Cameo references.".into()
@@ -375,13 +379,8 @@ impl WorldAssetsPlanner {
                 None
             };
             let detail: String = stripped_desc.chars().take(100).collect();
-            let cameo_note = if style_ref_paths.is_empty() {
-                String::new()
-            } else {
-                " Style-locked to user Cameo references.".into()
-            };
             let registry_desc = format!(
-                "File [{plate_name}] = GLOBAL prop bible (object only, no people): <{key}>. {detail}. Lock shape, materials, colors.{cameo_note}"
+                "File [{plate_name}] = GLOBAL prop bible (object only, no people, white studio catalog): <{key}>. {detail}. Lock shape, materials, colors, real-world scale."
             );
             prepared.push(PreparedPlate {
                 group: "props",
@@ -404,7 +403,13 @@ impl WorldAssetsPlanner {
                 };
                 let image = Arc::clone(&self.image);
                 let chat = Arc::clone(&self.chat);
-                let style_refs = style_ref_paths.clone();
+                // Props are always T2I catalog plates. Env may restyle from Cameo
+                // location photos, never from look_plate.png.
+                let style_refs = if plate.group == "props" {
+                    Vec::new()
+                } else {
+                    env_ref_paths.clone()
+                };
                 let out = plate.out.clone();
                 let permit = Arc::clone(&sem);
                 set.spawn(async move {
@@ -505,17 +510,19 @@ impl WorldAssetsPlanner {
         let style_refs: Vec<&Path> = style_refs
             .iter()
             .copied()
-            .filter(|p| is_safe_world_style_ref(p))
+            .filter(|p| is_safe_world_style_ref(p) && !is_look_plate_path(p))
             .collect();
         let prompted = if style_refs.is_empty() {
             prompt.to_string()
         } else {
             format!(
                 "{prompt}\n\n\
-STYLE/SCENE CONTEXT from reference image(s): match era, palette, materials, lighting mood, \
-and setting type from the references. Do NOT copy any person, face, body, hand, or silhouette \
-from the references. Output must remain a completely unoccupied empty-set plate — never a \
-group photo, portrait, selfie, or framed photo of people."
+STYLE from reference image(s): borrow color science, lighting quality, and material treatment ONLY. \
+Do NOT copy the reference's composition, camera, horizon, room layout, or use it as a background layer. \
+This output is a NEW plate of the subject described above, at real-world scale, filling the frame. \
+Do NOT copy any person, face, body, hand, or silhouette from the references. \
+Output must remain a completely unoccupied empty-set plate — never a group photo, portrait, selfie, \
+or framed photo of people."
             )
         };
 
@@ -795,7 +802,14 @@ fn is_people_centric_prop(name: &str, desc: &str) -> bool {
     NEEDLES.iter().any(|n| blob.contains(n))
 }
 
-/// Style refs safe for vacant env/prop img2img (atmosphere plates only; never cast portraits).
+fn is_look_plate_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|n| n.to_ascii_lowercase().contains("look_plate"))
+        .unwrap_or(false)
+}
+
+/// Style refs safe for vacant env img2img (atmosphere / Cameo location photos; never cast).
 fn is_safe_world_style_ref(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -962,9 +976,8 @@ fn match_tokens(blob: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorldAssetsSpec, is_people_centric_prop, is_safe_world_style_ref, rank_world_pairs_for_frame,
-        environment_plate_prompt, prop_plate_prompt,
-        strip_people_mentions,
+        WorldAssetsSpec, environment_plate_prompt, is_look_plate_path, is_people_centric_prop,
+        is_safe_world_style_ref, prop_plate_prompt, rank_world_pairs_for_frame, strip_people_mentions,
     };
     use std::path::{Path, PathBuf};
 
@@ -1012,6 +1025,20 @@ mod tests {
         assert!(!prop.to_ascii_lowercase().contains("faces:"));
         assert!(!env.contains("If Style is anime"));
         assert!(!prop.contains("If Style is anime"));
+        let prop_l = prop.to_ascii_lowercase();
+        assert!(prop_l.contains("white") || prop_l.contains("cyclorama"));
+        assert!(prop_l.contains("catalog") || prop_l.contains("studio"));
+        assert!(prop_l.contains("real-world") || prop_l.contains("scale"));
+        assert!(prop_l.contains("prop bible"));
+        assert!(env.to_ascii_lowercase().contains("architectural scale"));
+        assert!(env.to_ascii_lowercase().contains("full frame"));
+    }
+
+    #[test]
+    fn look_plate_is_never_a_world_generation_ref() {
+        assert!(is_look_plate_path(Path::new("look_plate.png")));
+        assert!(is_look_plate_path(Path::new("film/look_plate.png")));
+        assert!(!is_look_plate_path(Path::new("props/0_key/key_prop.png")));
     }
 
     #[test]

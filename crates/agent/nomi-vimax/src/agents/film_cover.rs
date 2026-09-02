@@ -121,6 +121,9 @@ async fn generate_cover(
     ));
 
     let ref_paths: Vec<&Path> = refs.iter().map(|p| p.as_path()).collect();
+    if !ref_paths.is_empty() {
+        prompt.push_str(cover_reference_clause(brief.include_cast));
+    }
     image.generate(&prompt, &ref_paths, out).await?;
     let _ = crate::session::write_text_artifact(
         &film_dir.join("cover_generation_prompt.txt"),
@@ -172,12 +175,15 @@ Rules:
 - include_cast=false for mood pieces, landscapes, object-driven stories, or when faces would distract.
 - title_text: a short theme-bearing title / wordmark (1–8 words or a few Chinese characters) that captures the film's meaning. Match the user's story language (Chinese story → 简体中文 title). Prefer evocative poster titles over literal long sentences. Empty only when lettering would hurt the image.
 - prompt: detailed image-model instructions for one poster still. Prefer English for visual directions, but quote title_text exactly as given so the model can render those glyphs.
+- The poster MUST feel like authored key art: literary, culturally specific to the story's world (period, region, ritual, craft, costume, architecture, motif), not a generic Hollywood action one-sheet and not a UI screenshot.
+- Ground the composition in the story's central image — one relationship, object, place, or gesture — rather than a collage of every asset.
+- If include_cast=true, the prompt MUST tell the image model to use character reference images for identity only, place figures at natural human scale in a coherent 3D space (clear foreground / midground / background), and keep readable spatial relationships between people, props, and architecture. Never copy a three-view character sheet layout, never stamp faces as stickers, never shrink a person into a miniature on a landscape plate.
 - The poster MUST match the requested aspect / frame orientation.
 - The poster SHOULD include integrated title lettering (painted / typeset into the key art) when title_text is non-empty — like a real movie poster, not a UI overlay.
 - Never ask for logos, subtitles blocks, watermarks, or player/UI chrome."#;
 
     let user = format!(
-        "Visual style: {style}\nPoster frame: {frame} ({aspect})\n\nStory / synopsis:\n{syn}\n\nAvailable reference assets:\n{asset_lines}\nChoose include_cast, invent a short title_text, and write the poster prompt."
+        "Visual style: {style}\nPoster frame: {frame} ({aspect})\n\nStory / synopsis:\n{syn}\n\nAvailable reference assets:\n{asset_lines}\nChoose include_cast, invent a short title_text, and write the poster prompt. If include_cast is true, name which character refs should lock identity and describe their spatial placement in the frame."
     );
 
     match complete_and_parse_llm_json::<CoverBrief>(chat, system, &user).await {
@@ -199,11 +205,14 @@ Rules:
 
 fn filter_refs_for_brief(candidates: &[(PathBuf, String)], include_cast: bool) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    // Prefer env → prop → cast (cast last / skipped).
-    for want in ["environment", "prop", "cast"] {
-        if want == "cast" && !include_cast {
-            continue;
-        }
+    // When the poster includes people, identity refs first so the model does not
+    // collage empty sets. Env/prop fill remaining slots for setting/motif.
+    let order: &[&str] = if include_cast {
+        &["cast", "environment", "prop"]
+    } else {
+        &["environment", "prop"]
+    };
+    for want in order {
         for (path, kind) in candidates {
             if kind == want && out.len() < MAX_COVER_REFS {
                 out.push(path.clone());
@@ -253,14 +262,27 @@ fn collect_cover_candidates(film_dir: &Path) -> Vec<(PathBuf, String)> {
             prop.push((path.to_path_buf(), "prop".into()));
         }
     }
-    // Cap each bucket so WalkDir order doesn't flood refs.
+    // Cap each bucket so WalkDir order doesn't flood refs. Prefer Cameo identity
+    // photos over three-view sheets when both exist.
+    cast.sort_by_key(|(p, _)| {
+        let n = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if n.contains("cameo") {
+            0u8
+        } else {
+            1
+        }
+    });
     cast.truncate(3);
     env.truncate(3);
     prop.truncate(2);
     let mut all = Vec::new();
+    all.extend(cast);
     all.extend(env);
     all.extend(prop);
-    all.extend(cast);
     all
 }
 
@@ -275,11 +297,15 @@ fn default_cover_prompt(
     let frame = crate::aspect::aspect_prompt_clause(aspect);
     let base = if include_cast {
         format!(
-            "{frame} cinematic key art poster, style: {style}. Story mood: {syn}. Hero characters in a dramatic still, film-poster lighting."
+            "{frame} authored film-poster key art, literary and culturally specific, style: {style}. \
+Story motif: {syn}. Hero characters at natural human scale in a coherent 3D space with clear \
+foreground/midground/background; lock identity to character reference images — do not copy a \
+three-view sheet layout or stamp faces as stickers."
         )
     } else {
         format!(
-            "{frame} cinematic key art poster, style: {style}. Story mood: {syn}. Evocative location/atmosphere only, no people."
+            "{frame} authored film-poster key art, literary and culturally specific, style: {style}. \
+Story motif: {syn}. Evocative location, object, or atmosphere only — no people."
         )
     };
     if title_text.trim().is_empty() {
@@ -289,6 +315,14 @@ fn default_cover_prompt(
             "{base} Integrate elegant poster title lettering reading exactly \"{}\".",
             title_text.trim()
         )
+    }
+}
+
+fn cover_reference_clause(include_cast: bool) -> &'static str {
+    if include_cast {
+        " Reference images are identity, palette, and setting cues only. Compose a NEW poster: do not copy a three-view character sheet, catalog white backdrop, or vacant location plate as the layout. Place people at natural human scale in shared 3D space with readable spatial relationships to architecture and props."
+    } else {
+        " Reference images are palette and setting cues only. Compose a NEW poster still — do not duplicate a vacant location plate or catalog product shot as the poster layout."
     }
 }
 
@@ -373,6 +407,40 @@ mod tests {
             !n.contains("three_view")
         }));
         assert_eq!(refs.len(), 2);
+    }
+
+    #[test]
+    fn filter_puts_cast_first_when_poster_includes_people() {
+        let candidates = vec![
+            (PathBuf::from("room_environment_plate.png"), "environment".into()),
+            (PathBuf::from("key_prop.png"), "prop".into()),
+            (PathBuf::from("a_three_view.png"), "cast".into()),
+        ];
+        let refs = filter_refs_for_brief(&candidates, true);
+        assert_eq!(
+            refs[0].file_name().and_then(|s| s.to_str()),
+            Some("a_three_view.png")
+        );
+        assert!(refs.iter().any(|p| {
+            p.file_name().and_then(|s| s.to_str()) == Some("room_environment_plate.png")
+        }));
+    }
+
+    #[test]
+    fn default_cover_prompt_asks_for_literary_scale() {
+        let with_cast = default_cover_prompt(
+            "ink-wash",
+            "A lantern festival on the river",
+            true,
+            "夜航",
+            "16:9",
+        );
+        let lower = with_cast.to_ascii_lowercase();
+        assert!(lower.contains("literary") || lower.contains("culturally"));
+        assert!(lower.contains("human scale") || lower.contains("3d space"));
+        assert!(with_cast.contains("夜航"));
+        let no_cast = default_cover_prompt("ink-wash", "empty temple", false, "", "16:9");
+        assert!(no_cast.to_ascii_lowercase().contains("no people"));
     }
 
     #[test]

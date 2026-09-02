@@ -18,6 +18,10 @@ export function prefetchVerticalSkillMenu(): void {
   void import('./home/VerticalSkillMenu').catch(() => undefined);
 }
 
+export function prefetchLookStyleMenu(): void {
+  void import('./home/LookStyleMenu').catch(() => undefined);
+}
+
 export function prefetchCanvasAssistantPanel(): void {
   void loadCanvasAssistantPanel().catch(() => undefined);
 }
@@ -35,4 +39,5 @@ export function prefetchVideoGenerationHome(): void {
   void import('./home/CanvasProjectGallery').catch(() => undefined);
   prefetchGenerationPreferencesPanel();
   prefetchVerticalSkillMenu();
+  prefetchLookStyleMenu();
 }

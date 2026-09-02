@@ -1,5 +1,6 @@
 import { flattenArtifacts } from '../artifactPresentation';
-import type { ArtifactNode } from '../types';
+import { loadArtifactMediaUrlCached, loadCameoPreviewUrl } from '../api';
+import type { ArtifactNode, CameoPhoto } from '../types';
 import type { StudioSessionMedia } from './types';
 
 const IMAGE_RE = /\.(png|jpe?g|webp|gif)$/i;
@@ -50,11 +51,13 @@ export function collectWorldMedia(nodes: ArtifactNode[]): StudioSessionMedia[] {
     .filter((file) => {
       const path = normalize(file.path);
       if (!isImage(path)) return false;
+      // Vacant look plate is an internal img2img bible for env/prop plates, not a
+      // user-facing world asset (and never a character reference).
+      if (/(^|\/)look_plate\.png$/i.test(path)) return false;
       return (
-        /(^|\/)look_plate\.png$/i.test(path) ||
-        /\/environments\//i.test(path) ||
-        /\/props\//i.test(path) ||
-        /\/world_assets\//i.test(path)
+        /(^|\/)environments\//i.test(path) ||
+        /(^|\/)props\//i.test(path) ||
+        /(^|\/)world_assets\//i.test(path)
       );
     })
     .map((file) => ({
@@ -117,4 +120,40 @@ export function collectFilmMedia(
     });
   }
   return out;
+}
+
+export function collectCameoMedia(photos: CameoPhoto[]): StudioSessionMedia[] {
+  return photos.map((photo) => ({
+    id: `cameo:${photo.id}`,
+    kind: 'image' as const,
+    path: photo.id,
+    label: photo.character_name.trim() || photo.rel_path.split('/').pop() || photo.id,
+    origin: 'cameo' as const,
+  }));
+}
+
+export function collectSourceDocumentMedia(name?: string | null): StudioSessionMedia[] {
+  const trimmed = name?.trim();
+  if (!trimmed) return [];
+  return [
+    {
+      id: `doc:${trimmed}`,
+      kind: 'file',
+      path: trimmed,
+      label: trimmed,
+    },
+  ];
+}
+
+export async function loadStudioMediaPreviewUrl(
+  sessionId: string,
+  item: StudioSessionMedia
+): Promise<string> {
+  if (item.kind === 'file') {
+    throw new Error('file attachments have no preview url');
+  }
+  if (item.origin === 'cameo') {
+    return loadCameoPreviewUrl(sessionId, item.path);
+  }
+  return loadArtifactMediaUrlCached(sessionId, item.path);
 }

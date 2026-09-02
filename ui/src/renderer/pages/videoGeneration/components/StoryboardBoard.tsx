@@ -12,6 +12,7 @@ import {
   parseShotGenerationSpec,
   parseStoryboard,
   sceneHasGenerationSpec,
+  storyboardRefreshSignature,
   type ShotGenerationSpec,
   type StoryboardScene,
   type StoryboardSceneSave,
@@ -217,6 +218,10 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const specPaths = useMemo(() => findShotDescriptionPaths(artifacts), [artifacts]);
   const storyboardPathKey = storyboardPaths.join('|');
   const specPathKey = specPaths.join('|');
+  const storyboardRefreshKey = useMemo(
+    () => storyboardRefreshSignature(artifacts),
+    [artifacts]
+  );
   const [storyboardEntries, setStoryboardEntries] = useState<
     Array<{ path: string; shots: StoryboardShot[] }>
   >([]);
@@ -259,8 +264,8 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- paths cover the board set
-  }, [sessionId, storyboardPathKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- paths + packed content/dirs
+  }, [sessionId, storyboardPathKey, storyboardRefreshKey]);
 
   useEffect(() => {
     if (!specPathKey) {
@@ -538,6 +543,12 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               number: sceneNumber,
               defaultValue: '镜头 {{number}}',
             })}
+            {activeScene.beatCount != null
+              ? ` · ${t('videoGeneration.studio.storyboard.packedBeats', {
+                  count: activeScene.beatCount,
+                  defaultValue: '{{count}} 个切镜一次生成',
+                })}`
+              : ''}
           </span>
         </div>
         <aside className={styles.storyInspector}>
@@ -546,6 +557,14 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               defaultValue: '画面描述',
             })}
           </div>
+          {activeScene.beatCount != null ? (
+            <p className='m-0 mb-8px text-12px leading-18px text-white/55'>
+              {t('videoGeneration.studio.storyboard.packedBeatsHint', {
+                count: activeScene.beatCount,
+                defaultValue: '相邻短镜头已合并进这一条成片，生成时只出一条视频。',
+              })}
+            </p>
+          ) : null}
 
           {editMode ? (
             <>
@@ -797,6 +816,14 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                 <span className='absolute bottom-6px left-6px z-1 rd-full bg-black/70 px-6px py-2px text-10px font-700 text-white'>
                   {String(number).padStart(2, '0')}
                 </span>
+                {scene.beatCount != null ? (
+                  <span className={styles.shotPackedBadge}>
+                    {t('videoGeneration.studio.storyboard.packedBeatsShort', {
+                      count: scene.beatCount,
+                      defaultValue: '{{count}} 切',
+                    })}
+                  </span>
+                ) : null}
               </span>
               <span className='block truncate px-9px py-8px text-11px'>
                 {scene.visualDescription ||

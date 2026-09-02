@@ -94,6 +94,8 @@ export interface VideoCreateDraft {
   preferences: GenerationPreferences;
   /** Agent-only local Cameo drafts. Files and object URLs are never persisted. */
   cameos: CameoDraftItem[];
+  /** Original filename when `sourceText` came from an uploaded script/document. */
+  sourceDocumentName: string | null;
   /** Generate / creation image references. Files and object URLs are never persisted. */
   canvasReferences: CanvasReferenceDraft[];
   /** Action-imitation character still. File and object URL are never persisted. */

@@ -1,9 +1,11 @@
-Wide 16:9 isolated object / prop bible on clean neutral studio backdrop.
+Isolated object / prop bible — catalog product plate on seamless studio white.
 HARD: zero people, zero humans, zero faces, zero hands, zero body parts. Object alone only.
 Never a group photo, portrait, selfie, framed photo of people, or mannequin.
-Theme: {theme}
+Never a location, landscape, interior set, or atmospheric scenery. Theme is for the OBJECT's materials and era only — do not paint the story's environment behind it.
+Theme (materials/era only): {theme}
 Prop: {name}
 Object only: {description}
 {style}
-HARD LOOK LOCK: this PROP must share the SAME production look as the cast three-views and environment plates — one medium, one palette, one material language. Do not switch medium (no photoreal product shot if Style is drawn; no illustration if Style is live-action).
-Output: prop bible plate in that locked look — inanimate object alone, no people.
+HARD LOOK LOCK: this PROP must share the SAME production look as the cast three-views and environment plates — one medium, one palette, one material language. Do not switch medium (no photoreal product shot if Style is drawn; no illustration if Style is live-action). The BACKDROP stays seamless pure white / very light gray cyclorama regardless of Style.
+SCALE (CRITICAL): true real-world physical size and proportions. Fill about 60–75% of the frame with the object. Handheld items stay handheld-sized; furniture or vehicles show their real bulk with a small contact shadow on the cyclorama. Do not miniaturize the object into a wide landscape. Do not enlarge it into architecture. Do not place it as a tiny inset on another plate.
+Output: one catalog prop bible — inanimate object alone, centered, even studio lighting, pure white/light-gray backdrop, no environment, no look-plate scenery, no text.

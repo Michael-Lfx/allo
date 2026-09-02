@@ -5,6 +5,8 @@ export interface StoryboardShot {
   index: number;
   visualDescription: string;
   audioDescription?: string;
+  /** Packed adjacent beats in this row; omitted when the row is a single beat. */
+  beatCount?: number;
 }
 
 /** Per-shot generation spec from `shots/N/shot_description.json` (drives I2V). */
@@ -18,6 +20,7 @@ export interface ShotGenerationSpec {
   audioDescription?: string;
   /** Copy of the planning brief stored on the spec file. */
   planningBrief?: string;
+  beatCount?: number;
 }
 
 export interface StoryboardSceneSave {
@@ -49,6 +52,8 @@ export interface StoryboardScene {
   sceneRoot?: string;
   /** Shot index within its pipeline scene. */
   shotIndex?: number;
+  /** Packed beats in this clip (`>= 2`); one card still renders as one video. */
+  beatCount?: number;
 }
 
 /** Location of a shot under a pipeline scene workspace. */
@@ -68,6 +73,24 @@ export function flattenArtifacts(nodes: ArtifactNode[]): ArtifactNode[] {
     }
   }
   return flattened;
+}
+
+/** Invalidate the filmstrip fetch when packed `storyboard.json` or shot dirs change. */
+export function storyboardRefreshSignature(nodes: ArtifactNode[]): string {
+  const files = flattenArtifacts(nodes);
+  const boards = files
+    .filter((file) => /(^|\/)storyboard\.json$/i.test(file.path.replace(/\\/g, '/')))
+    .map((file) => `${file.path.replace(/\\/g, '/')}:${file.size ?? 0}`)
+    .sort();
+  const shotDirs = [
+    ...new Set(
+      files.flatMap((file) => {
+        const match = file.path.replace(/\\/g, '/').match(/^(.*)\/shots\/(\d+)\//i);
+        return match ? [`${match[1]}/shots/${match[2]}`] : [];
+      })
+    ),
+  ].sort();
+  return `${boards.join('|')}#${shotDirs.join('|')}`;
 }
 
 export function findStoryboardPath(nodes: ArtifactNode[]): string | undefined {
@@ -98,6 +121,7 @@ export function parseStoryboard(text: string | undefined): StoryboardShot[] {
       const visual = visualFromStoryboardRow(value);
       if (!visual) return [];
       const rawIndex = value.idx ?? value.index ?? value.shot_index;
+      const beatCount = beatCountFromStoryboardRow(value);
       return [
         {
           index: typeof rawIndex === 'number' ? rawIndex : fallbackIndex,
@@ -106,6 +130,7 @@ export function parseStoryboard(text: string | undefined): StoryboardShot[] {
             stringValue(value.audio_desc) ??
             stringValue(value.audioDescription) ??
             stringValue(value.audio),
+          ...(beatCount != null ? { beatCount } : {}),
         },
       ];
     });
@@ -166,6 +191,7 @@ export function buildStoryboardScenesFromStoryboards(
         storyboardPath: board.path,
         sceneRoot,
         shotIndex: shot.index,
+        ...(shot.beatCount != null ? { beatCount: shot.beatCount } : {}),
       });
     }
   }
@@ -290,6 +316,9 @@ export function parseShotGenerationSpec(
         stringValue(value.audio),
       planningBrief:
         stringValue(value.visual_desc) ?? stringValue(value.visualDescription),
+      ...(Array.isArray(value.beats) && value.beats.length >= 2
+        ? { beatCount: value.beats.length }
+        : {}),
     };
   } catch {
     return null;
@@ -319,6 +348,7 @@ export function applyShotGenerationSpecs(
       motionDescription: spec.motionDescription,
       generationSpecPath: spec.path,
       revisionPath: spec.path,
+      beatCount: spec.beatCount ?? scene.beatCount,
     };
   });
 }
@@ -497,6 +527,11 @@ function patchShotRowInList(
     );
   }
   setDescriptionFields(target, visual, audio);
+}
+
+function beatCountFromStoryboardRow(value: Record<string, unknown>): number | undefined {
+  if (!Array.isArray(value.beats) || value.beats.length < 2) return undefined;
+  return value.beats.length;
 }
 
 function visualFromStoryboardRow(value: Record<string, unknown>): string | undefined {

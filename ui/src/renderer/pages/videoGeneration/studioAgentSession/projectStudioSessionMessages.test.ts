@@ -103,6 +103,27 @@ describe('projectStudioSessionMessages', () => {
     expect(messages[0].text).toBe('A rainy alley fight.');
   });
 
+  test('attaches home uploads onto the user brief', () => {
+    const messages = projectStudioSessionMessages({
+      sourceText: 'A rainy alley fight.',
+      artifacts: [],
+      hasStoryboard: false,
+      hasFinalVideo: false,
+      isAction: false,
+      briefMedia: [
+        {
+          id: 'cameo:a',
+          kind: 'image',
+          path: 'a',
+          label: 'Hero',
+          origin: 'cameo',
+        },
+        { id: 'doc:script.md', kind: 'file', path: 'script.md', label: 'script.md' },
+      ],
+    });
+    expect(messages[0].media?.map((m) => m.id)).toEqual(['cameo:a', 'doc:script.md']);
+  });
+
   test('collapses planning stages into one live bubble', () => {
     const status: SessionStatus = {
       stage: 'write_script',
@@ -292,6 +313,18 @@ describe('projectStudioSessionMessages', () => {
       ...portraitTree,
       { name: 'look_plate.png', path: 'look_plate.png', is_dir: false },
       {
+        name: 'environments',
+        path: 'environments',
+        is_dir: true,
+        children: [
+          {
+            name: 'alley_environment_plate.png',
+            path: 'environments/alley_environment_plate.png',
+            is_dir: false,
+          },
+        ],
+      },
+      {
         name: 'shots',
         path: 'script2video/shots',
         is_dir: true,
@@ -336,6 +369,10 @@ describe('projectStudioSessionMessages', () => {
       'render_frames',
       'render_clips',
       'film',
+    ]);
+    const world = messages.find((m) => m.beat === 'world');
+    expect(world?.media?.map((m) => m.path)).toEqual([
+      'environments/alley_environment_plate.png',
     ]);
     expect(messages.some((m) => m.kind === 'user_brief')).toBe(true);
   });

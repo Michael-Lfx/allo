@@ -8,6 +8,7 @@ use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, VoiceProfileGenerator,
     VoiceReferenceGenerator, WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
 };
+use crate::drama::{DramaEngine, with_drama_engine};
 use crate::error::VimaxResult;
 use crate::media_local;
 use crate::planning::{
@@ -15,7 +16,9 @@ use crate::planning::{
     enrich_requirement_for_scene_model_decides, normalize_target_duration_secs,
 };
 use crate::progress::ProgressCallback;
-use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
+use crate::session::{
+    copy_json_artifact_if_readable, read_json_artifact, write_json_artifact, write_text_artifact,
+};
 
 use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
@@ -59,6 +62,23 @@ impl Idea2VideoPipeline {
         None
     }
 
+    /// Requirement enriched with the persisted drama engine, when planning
+    /// wrote one. Absence is not an error — legacy sessions planned before the
+    /// engine existed keep rendering with the raw requirement.
+    async fn requirement_with_drama_engine(&self, user_requirement: &str) -> String {
+        let path = self.working_dir.join("drama_engine.json");
+        if !path.exists() {
+            return user_requirement.to_string();
+        }
+        match read_json_artifact::<DramaEngine>(&path).await {
+            Ok(engine) => with_drama_engine(user_requirement, &engine),
+            Err(e) => {
+                tracing::warn!(error = %e, "drama_engine.json unreadable; rendering without it");
+                user_requirement.to_string()
+            }
+        }
+    }
+
     /// Share film-level cast + optional per-scene duration budget.
     async fn prepare_scene_workspace(&self, scene_dir: &Path, budget: Option<u32>) -> VimaxResult<()> {
         tokio::fs::create_dir_all(scene_dir).await?;
@@ -72,16 +92,16 @@ impl Idea2VideoPipeline {
 
         let root_chars = self.working_dir.join("characters.json");
         let scene_chars = scene_dir.join("characters.json");
-        if root_chars.exists() {
+        if root_chars.is_file() {
             let mut cast_changed = !scene_chars.exists();
             if scene_chars.exists() {
                 let a = tokio::fs::read(&root_chars).await.unwrap_or_default();
                 let b = tokio::fs::read(&scene_chars).await.unwrap_or_default();
                 cast_changed = a != b;
             }
-            tokio::fs::copy(&root_chars, &scene_chars).await?;
+            let copied = copy_json_artifact_if_readable(&root_chars, &scene_chars).await?;
             // Scene-local storyboards / shot lists tied to a divergent cast must be rebuilt.
-            if cast_changed {
+            if copied && cast_changed {
                 for name in [
                     "storyboard.json",
                     "shot_descriptions.json",
@@ -100,21 +120,17 @@ impl Idea2VideoPipeline {
         }
 
         let root_reg = self.working_dir.join("character_portraits_registry.json");
-        if root_reg.exists() {
-            tokio::fs::copy(
-                &root_reg,
-                scene_dir.join("character_portraits_registry.json"),
-            )
-            .await?;
-        }
+        let _ = copy_json_artifact_if_readable(
+            &root_reg,
+            &scene_dir.join("character_portraits_registry.json"),
+        )
+        .await?;
         let root_world = self.working_dir.join("world_assets_registry.json");
-        if root_world.exists() {
-            tokio::fs::copy(
-                &root_world,
-                scene_dir.join("world_assets_registry.json"),
-            )
-            .await?;
-        }
+        let _ = copy_json_artifact_if_readable(
+            &root_world,
+            &scene_dir.join("world_assets_registry.json"),
+        )
+        .await?;
         // Portraits live only at film root — drop any leftover scene-local sheets.
         let local_portraits = scene_dir.join("character_portraits");
         if local_portraits.is_dir() {
@@ -133,14 +149,38 @@ impl Idea2VideoPipeline {
         tokio::fs::create_dir_all(&self.working_dir).await?;
         let film_total = self.film_target_secs().await;
 
+        // Dramatic engine first: a lint-validated want/obstacle/reversal beat
+        // sheet that every downstream text artifact must honor. It shapes the
+        // drama INSIDE the clips planning already produces — clip packing and
+        // shot counts are untouched.
+        emit_pct(
+            &progress,
+            "drama_engine",
+            "正在设计戏剧引擎（欲望/阻力/反转/节拍）",
+            6.0,
+        );
+        let engine_fp = artifact_fingerprint(&[idea, user_requirement]);
+        let engine: DramaEngine = load_or_write_json_cached(
+            &self.working_dir.join("drama_engine.json"),
+            &engine_fp,
+            || async {
+                self.screenwriter
+                    .develop_validated_drama_engine(idea, user_requirement)
+                    .await
+            },
+        )
+        .await?;
+        let drama_requirement = with_drama_engine(user_requirement, &engine);
+        let drama_requirement = drama_requirement.as_str();
+
         emit_pct(&progress, "develop_story", "正在根据灵感扩写故事", 10.0);
-        let story_fp = artifact_fingerprint(&[idea, user_requirement]);
+        let story_fp = artifact_fingerprint(&[idea, drama_requirement]);
         let story = load_or_write_text_cached(
             &self.working_dir.join("story.txt"),
             &story_fp,
             || async {
                 self.screenwriter
-                    .develop_story(idea, user_requirement)
+                    .develop_story(idea, drama_requirement)
                     .await
             },
         )
@@ -202,18 +242,7 @@ impl Idea2VideoPipeline {
         )
         .await?;
 
-        let world_planner = WorldAssetsPlanner::new(
-            Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
-        );
-        let look_theme = crate::planning::portrait_theme_excerpt(&story);
-        emit_pct(&progress, "look_plate_start", "正在锁定全片画风", 33.0);
-        let look_refs = world_planner
-            .look_style_refs(&self.working_dir, &style, &look_theme)
-            .await;
-        let look_ref_paths: Vec<&Path> = look_refs.iter().map(|p| p.as_path()).collect();
-
-        // Global cast bible during planning (before per-scene storyboards).
+        // Global cast bible during planning — text-to-image only (style via prompt).
         emit_pct(
             &progress,
             "character_portraits_start",
@@ -243,7 +272,7 @@ impl Idea2VideoPipeline {
                 ));
                 let entry = self
                     .portraits
-                    .generate_all_views(character, &style, &story, &dir, &look_ref_paths)
+                    .generate_all_views(character, &style, &story, &dir)
                     .await?;
                 registry.extend(entry);
                 write_json_artifact(&registry_path, &registry).await?;
@@ -296,6 +325,10 @@ impl Idea2VideoPipeline {
             45.0,
         );
         {
+            let world_planner = WorldAssetsPlanner::new(
+                Arc::clone(&self.backends.chat),
+                Arc::clone(&self.backends.image),
+            );
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
             // Prefer full story for location/prop coverage across scenes.
             // When Cameo photos exist, plates are style-locked to those uploads.
@@ -318,14 +351,18 @@ impl Idea2VideoPipeline {
         }
 
         emit_pct(&progress, "write_script", "正在撰写分场剧本", 52.0);
-        let script_fp = artifact_fingerprint(&[&story, user_requirement]);
+        let script_fp = artifact_fingerprint(&[&story, drama_requirement]);
         let mut scenes: Vec<String> = load_or_write_json_cached(
             &self.working_dir.join("script.json"),
             &script_fp,
             || async {
-                self.screenwriter
-                    .write_script_based_on_story(&story, user_requirement)
-                    .await
+                let scenes = self
+                    .screenwriter
+                    .write_script_based_on_story(&story, drama_requirement)
+                    .await?;
+                // Show-don't-tell polish before caching, so resumed sessions
+                // reuse the already-polished script without extra LLM calls.
+                Ok(self.screenwriter.polish_scenes_show_dont_tell(scenes).await)
             },
         )
         .await?;
@@ -373,7 +410,7 @@ impl Idea2VideoPipeline {
             let scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
                     clip,
-                    user_requirement,
+                    drama_requirement,
                     budget,
                     i,
                     scene_count,
@@ -381,7 +418,7 @@ impl Idea2VideoPipeline {
                 ),
                 _ => enrich_requirement_for_scene_model_decides(
                     clip,
-                    user_requirement,
+                    drama_requirement,
                     i,
                     scene_count,
                 ),
@@ -458,6 +495,11 @@ impl Idea2VideoPipeline {
                 .await?;
         }
 
+        // Same dramatic contract planning saw — a resumed render must not
+        // silently drop the engine block from scene requirements.
+        let drama_requirement = self.requirement_with_drama_engine(user_requirement).await;
+        let drama_requirement = drama_requirement.as_str();
+
         let story = tokio::fs::read_to_string(&story_path).await?;
         let characters: Vec<crate::domain::CharacterInScene> = serde_json::from_str(
             &tokio::fs::read_to_string(self.working_dir.join("characters.json")).await?,
@@ -471,17 +513,7 @@ impl Idea2VideoPipeline {
         )
         .await?;
 
-        let world_planner = WorldAssetsPlanner::new(
-            Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
-        );
-        let look_theme = crate::planning::portrait_theme_excerpt(&story);
-        let look_refs = world_planner
-            .look_style_refs(&self.working_dir, &style, &look_theme)
-            .await;
-        let look_ref_paths: Vec<&Path> = look_refs.iter().map(|p| p.as_path()).collect();
-
-        // Global portraits at idea root — single source of truth for all scenes.
+        // Global portraits at idea root — text-to-image only (style via prompt).
         let registry_path = self.working_dir.join("character_portraits_registry.json");
         {
             let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
@@ -523,7 +555,7 @@ impl Idea2VideoPipeline {
                     ));
                     let entry = self
                         .portraits
-                        .generate_all_views(character, &style, &story, &dir, &look_ref_paths)
+                        .generate_all_views(character, &style, &story, &dir)
                         .await?;
                     registry.extend(entry);
                     write_json_artifact(&registry_path, &registry).await?;
@@ -564,7 +596,7 @@ impl Idea2VideoPipeline {
             let scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
                     clip,
-                    user_requirement,
+                    drama_requirement,
                     budget,
                     i,
                     scene_total,
@@ -572,7 +604,7 @@ impl Idea2VideoPipeline {
                 ),
                 _ => enrich_requirement_for_scene_model_decides(
                     clip,
-                    user_requirement,
+                    drama_requirement,
                     i,
                     scene_total,
                 ),

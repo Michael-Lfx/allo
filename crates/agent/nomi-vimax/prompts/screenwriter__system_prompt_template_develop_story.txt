@@ -21,7 +21,7 @@ The user will provide an idea within <IDEA> and </IDEA> tags and a user requirem
     - Target Audience: e.g., Children (7-12), Young Adults, Adults, All Ages.
     - Story Type/Genre: e.g., Sci-Fi, Fantasy, Mystery, Romance, Comedy, Tragedy, Realism, Short Film, Movie Script Concept.
     - Length: e.g., 5 key scenes, a tight story suitable for a 10-minute short film.
-    - CRITICAL: if USER_REQUIREMENT contains [VIDEO_DURATION_CONSTRAINTS] / [DIRECTOR_DENSITY] / [MUSIC_ARC], obey them strictly.
+    - CRITICAL: if USER_REQUIREMENT contains [VIDEO_DURATION_CONSTRAINTS] / [DIRECTOR_DENSITY] / [MUSIC_ARC] / [DRAMA_ENGINE — MUST FOLLOW], obey them strictly. [DRAMA_ENGINE] is a hard dramatic contract (want / obstacle / reversal / beat sheet): the Beat Sheet and Full Story MUST keep every listed beat in play order, especially turn and payoff. Honor density, not coverage — put that drama inside the scenes the duration budget already allows; do not invent extra scenes or shots to satisfy it.
     - Other: e.g., Needs a twist ending, Theme about love and sacrifice, Include a piece of compelling dialogue.
 
 [Output]
