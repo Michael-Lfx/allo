@@ -26,6 +26,7 @@ import {
   requestTileMeta,
   requestTileTitle,
   responseTileCopy,
+  toolTileTitle,
 } from './scanCopy';
 import {
   type InspectStage,
@@ -451,9 +452,6 @@ function RequestInspector({
   const systemStateLabel = (() => {
     if (systemPromptState === 'unchanged') return t('conversation.agentTrace.systemPromptReused');
     if (systemPromptState === 'changed') return t('conversation.agentTrace.systemPromptChanged');
-    if (systemPromptState === 'unavailable') {
-      return t('conversation.agentTrace.systemPromptUnavailable');
-    }
     return '';
   })();
   const messageTitle =
@@ -476,10 +474,17 @@ function RequestInspector({
             initialNewestFirst={false}
             resetKey={resetKey}
             headerAddon={
+              requestMessageView?.mode === 'omitted' ? (
+                <span className='session-logs-json-tree__state'>
+                  {t('conversation.agentTrace.omittedField')}
+                </span>
+              ) : null
+            }
+            bodyAddon={
               canFoldHistory ? (
                 <button
                   type='button'
-                  className='session-logs-history-toggle session-logs-history-toggle--header'
+                  className='session-logs-history-toggle'
                   aria-expanded={historyOpen}
                   onClick={() => setHistoryOpen((open) => !open)}
                 >
@@ -489,10 +494,6 @@ function RequestInspector({
                         count: hiddenMessageCount,
                       })}
                 </button>
-              ) : requestMessageView?.mode === 'omitted' ? (
-                <span className='session-logs-json-tree__state'>
-                  {t('conversation.agentTrace.omittedField')}
-                </span>
               ) : null
             }
           />
@@ -562,7 +563,7 @@ function RequestInspector({
             collapsible
             expanded={systemOpen}
             onToggle={() => setSystemOpen((open) => !open)}
-            stateLabel={systemStateLabel || (!systemOpen ? t('conversation.agentTrace.systemPromptCollapsed') : undefined)}
+            stateLabel={systemStateLabel || undefined}
           />
         </aside>
       </div>
@@ -640,11 +641,13 @@ function ToolInspector({ tool }: { tool: ProjectedToolExecution }) {
 
 function inspectorTitle(
   t: (key: string) => string,
-  stage: InspectStage
+  stage: InspectStage,
+  toolName?: string
 ): string {
   if (stage === 'request') return t('conversation.agentTrace.inspectRequestTitle');
   if (stage === 'response') return t('conversation.agentTrace.inspectResponseTitle');
-  return t('conversation.agentTrace.inspectToolTitle');
+  const title = t('conversation.agentTrace.inspectToolTitle');
+  return toolName ? `${toolName} · ${title}` : title;
 }
 
 const CallInspector: React.FC<{
@@ -652,6 +655,7 @@ const CallInspector: React.FC<{
   toolCallId?: string;
   modelCallId: string;
   callLabel?: string;
+  toolName?: string;
   detail: ProjectedModelCall | null;
   loading: boolean;
   errorKey: ObservationWorkflowProps['callErrorKey'];
@@ -662,6 +666,7 @@ const CallInspector: React.FC<{
   toolCallId,
   modelCallId,
   callLabel,
+  toolName,
   detail,
   loading,
   errorKey,
@@ -670,6 +675,8 @@ const CallInspector: React.FC<{
 }) => {
   const { t } = useTranslation();
   const matchingDetail = detail?.model_call_id === modelCallId ? detail : null;
+  const selectedTool = matchingDetail?.tools.find((item) => item.tool_call_id === toolCallId);
+  const resolvedToolName = selectedTool?.name?.trim() || toolName?.trim();
   let inner: React.ReactNode = null;
   if (loading && !matchingDetail) {
     inner = (
@@ -745,7 +752,7 @@ const CallInspector: React.FC<{
           </div>
           <div className='session-logs-inspector__title'>
             {callLabel ? callLabel + ' · ' : ''}
-            {inspectorTitle(t, stage)}
+            {inspectorTitle(t, stage, resolvedToolName)}
           </div>
         </div>
         <Tooltip content={t('conversation.agentTrace.collapseInspector')}>
@@ -875,11 +882,7 @@ const ModelCallSection: React.FC<{
                   stage='tool'
                   icon={<Tool theme='outline' size='14' strokeWidth={3} />}
                   label={t('conversation.agentTrace.toolStageLabel')}
-                  title={
-                    tool.argument_preview?.trim() ||
-                    tool.name?.trim() ||
-                    t('conversation.agentTrace.tools')
-                  }
+                  title={toolTileTitle(t, tool)}
                   meta={[statusLabel, duration].filter(Boolean).join(' · ')}
                   toolCallId={tool.tool_call_id}
                   selected={selected?.stage === 'tool' && selected.toolCallId === tool.tool_call_id}
@@ -919,6 +922,11 @@ const ModelCallSection: React.FC<{
             stage={selected!.stage}
             toolCallId={selected!.toolCallId}
             callLabel={t('conversation.agentTrace.modelCallLabel', { n: index + 1 })}
+            toolName={
+              selected?.stage === 'tool'
+                ? header.tools.find((tool) => tool.tool_call_id === selected.toolCallId)?.name ?? undefined
+                : undefined
+            }
             detail={callDetail}
             loading={callLoading}
             errorKey={callErrorKey}

@@ -233,6 +233,8 @@ export interface ObservationJsonTreeProps {
   stateLabel?: string;
   /** Additional controls rendered in the same header row, before inspection actions. */
   headerAddon?: React.ReactNode;
+  /** Optional content-level controls rendered above the inspected value. */
+  bodyAddon?: React.ReactNode;
 }
 
 const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
@@ -249,6 +251,7 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
   onToggle,
   stateLabel,
   headerAddon,
+  bodyAddon,
 }) => {
   const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
@@ -388,7 +391,10 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
         </div>
       </div>
       {bodyExpanded ? (
-        <div className='session-logs-json-tree__body'>{renderBody()}</div>
+        <div className='session-logs-json-tree__body'>
+          {bodyAddon ? <div className='session-logs-json-tree__body-addon'>{bodyAddon}</div> : null}
+          {renderBody()}
+        </div>
       ) : null}
       <Modal
         title={label}

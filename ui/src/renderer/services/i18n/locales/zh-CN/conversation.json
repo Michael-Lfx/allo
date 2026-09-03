@@ -994,8 +994,6 @@
     "historyContextExpanded": "已展开历史上下文，点击收起",
     "systemPromptReused": "已沿用第 1 次调用",
     "systemPromptChanged": "本次有变化",
-    "systemPromptUnavailable": "系统提示内容不完整",
-    "systemPromptCollapsed": "系统提示已收起",
     "currentlyViewing": "当前查看",
     "selectStageHint": "点击阶段卡片查看请求、响应或工具详情",
     "usedTools": "本次实际工具",

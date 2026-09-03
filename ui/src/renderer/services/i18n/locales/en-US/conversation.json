@@ -994,8 +994,6 @@
     "historyContextExpanded": "Historical context expanded; click to collapse",
     "systemPromptReused": "Reused from call #1",
     "systemPromptChanged": "Changed for this call",
-    "systemPromptUnavailable": "System prompt is incomplete",
-    "systemPromptCollapsed": "System prompt is collapsed",
     "currentlyViewing": "Currently viewing",
     "selectStageHint": "Select a stage card to inspect the request, response, or tool",
     "usedTools": "Tools used this call",
