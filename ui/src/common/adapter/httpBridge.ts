@@ -364,7 +364,7 @@ function emitCloudAuthExpiredEvent(): void {
   emitWindowEvent(CLOUD_AUTH_EXPIRED_EVENT);
 }
 
-function notifyHttpAuthFailure(status: number, body: unknown): void {
+export function notifyHttpAuthFailure(status: number, body: unknown): void {
   const authExpired = isAuthExpiredResponse(status, body);
   const unauthorized = status === 401;
   // WebUI local JWT rejection stays on the existing /login redirect.

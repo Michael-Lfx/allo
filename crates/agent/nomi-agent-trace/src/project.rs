@@ -1,10 +1,13 @@
 //! Project JSONL events into per-turn workflow views. Sort only by `event_seq`.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::{
-    ids_from_payload, ExecutionStatus, Integrity, ObservationEvent, ObservationScope,
+    ids_from_payload, ExecutionStatus, Integrity, ObservationEvent, ObservationIds,
+    ObservationScope,
     EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE, EVENT_OBSERVATION_GAP, EVENT_TOOL_EXECUTION_CANCELLED,
     EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
     EVENT_TURN_END, EVENT_TURN_START,
@@ -43,6 +46,52 @@ pub enum ToolExecutionStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestMessageViewMode {
+    CurrentSuffix,
+    Full,
+    Omitted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectedRequestMessageView {
+    pub mode: RequestMessageViewMode,
+    pub hidden_message_count: u32,
+    pub visible_message_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPromptState {
+    First,
+    Unchanged,
+    Changed,
+    Unavailable,
+}
+
+/// Lightweight event metadata for the detail timeline. Payloads stay on the
+/// corresponding request/response/tool detail and are never duplicated here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObservationTimelineEvent {
+    pub event_seq: u64,
+    pub event_type: String,
+    pub timestamp_ms: u64,
+    pub relative_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -95,6 +144,8 @@ pub struct ProjectedTurn {
     #[serde(default)]
     pub has_turn_end: bool,
     pub gap_count: u32,
+    #[serde(default)]
+    pub timeline: Vec<ObservationTimelineEvent>,
     pub model_calls: Vec<ProjectedModelCall>,
     pub gaps: Vec<ProjectedGap>,
 }
@@ -163,6 +214,10 @@ pub struct ProjectedModelCall {
     pub response: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_summary: Option<ProjectedRequestSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_message_view: Option<ProjectedRequestMessageView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_state: Option<SystemPromptState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_summary: Option<ProjectedResponseSummary>,
     #[serde(default)]
@@ -266,15 +321,12 @@ pub fn strip_projected_turn_payloads(turn: &mut ProjectedTurn) {
 }
 
 fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
-    let first_ids = events
-        .first()
-        .map(|event| ids_from_payload(&event.payload))
-        .unwrap_or_default();
-    let root_turn_id = first_ids
+    let turn_ids = project_turn_ids(events);
+    let root_turn_id = turn_ids
         .root_turn_id
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| first_ids.boundary_id());
+        .unwrap_or_else(|| turn_ids.boundary_id());
 
     let mut calls: Vec<ProjectedModelCall> = Vec::new();
     let mut gaps = Vec::new();
@@ -449,14 +501,17 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
         ExecutionStatus::Unknown
     };
 
+    populate_request_metadata(&mut calls);
+    let timeline = project_timeline(events, started_at_ms);
+
     ProjectedTurn {
         root_turn_id,
-        conversation_id: first_ids.conversation_id,
-        msg_id: first_ids.msg_id,
-        session_kind: first_ids.session_kind,
-        execution_id: first_ids.execution_id,
-        step_id: first_ids.step_id,
-        execution_attempt_id: first_ids.execution_attempt_id,
+        conversation_id: turn_ids.conversation_id,
+        msg_id: turn_ids.msg_id,
+        session_kind: turn_ids.session_kind,
+        execution_id: turn_ids.execution_id,
+        step_id: turn_ids.step_id,
+        execution_attempt_id: turn_ids.execution_attempt_id,
         status,
         integrity,
         interrupted,
@@ -469,8 +524,47 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
         has_turn_start,
         has_turn_end,
         gap_count: gaps.len() as u32,
+        timeline,
         model_calls: calls,
         gaps,
+    }
+}
+
+/// Event envelopes are allowed to carry only the IDs relevant to that event.
+/// Merge the first non-empty value for each field so boundary/gap events cannot
+/// erase identity that is present on a later request or response event.
+fn project_turn_ids(events: &[&ObservationEvent]) -> ObservationIds {
+    let mut ids = ObservationIds::default();
+    for event in events {
+        let candidate = ids_from_payload(&event.payload);
+        fill_first_nonempty(&mut ids.conversation_id, candidate.conversation_id);
+        fill_first_nonempty(&mut ids.msg_id, candidate.msg_id);
+        fill_first_nonempty(&mut ids.root_turn_id, candidate.root_turn_id);
+        fill_first_nonempty(&mut ids.session_kind, candidate.session_kind);
+        fill_first_nonempty(&mut ids.execution_id, candidate.execution_id);
+        fill_first_nonempty(&mut ids.step_id, candidate.step_id);
+        fill_first_nonempty(
+            &mut ids.execution_attempt_id,
+            candidate.execution_attempt_id,
+        );
+    }
+    ids
+}
+
+fn fill_first_nonempty(target: &mut Option<String>, candidate: Option<String>) {
+    if target
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return;
+    }
+    if candidate
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        *target = candidate;
     }
 }
 
@@ -556,10 +650,405 @@ fn upsert_call<'a>(calls: &'a mut Vec<ProjectedModelCall>, model_call_id: &str) 
         request: None,
         response: None,
         request_summary: None,
+        request_message_view: None,
+        system_prompt_state: None,
         response_summary: None,
         tools: Vec::new(),
     });
     calls.last_mut().expect("just pushed")
+}
+
+fn project_timeline(
+    events: &[&ObservationEvent],
+    started_at_ms: Option<u64>,
+) -> Vec<ObservationTimelineEvent> {
+    let base_timestamp_ms = started_at_ms.or_else(|| events.first().map(|event| event.timestamp_ms));
+    let mut call_starts = HashMap::<String, u64>::new();
+    let mut call_kinds = HashMap::<String, String>::new();
+    let mut tool_starts = HashMap::<(String, String), u64>::new();
+    let mut tool_names = HashMap::<(String, String), String>::new();
+    let mut timeline = Vec::with_capacity(events.len());
+
+    for event in events {
+        let ids = ids_from_payload(&event.payload);
+        let model_call_id = ids.model_call_id.clone();
+        let direct_call_kind = string_field(&event.payload, "call_kind");
+        if let (Some(model_call_id), Some(call_kind)) =
+            (model_call_id.as_ref(), direct_call_kind.as_ref())
+        {
+            call_kinds.insert(model_call_id.clone(), call_kind.clone());
+        }
+        let call_kind = direct_call_kind.or_else(|| {
+            model_call_id
+                .as_ref()
+                .and_then(|model_call_id| call_kinds.get(model_call_id).cloned())
+        });
+        let is_tool_event = matches!(
+            event.event_type.as_str(),
+            EVENT_TOOL_EXECUTION_STARTED
+                | EVENT_TOOL_EXECUTION_COMPLETED
+                | EVENT_TOOL_EXECUTION_FAILED
+                | EVENT_TOOL_EXECUTION_CANCELLED
+        );
+        let tool_call_id = if is_tool_event {
+            let call_key = model_call_id
+                .as_deref()
+                .unwrap_or_else(|| "anonymous");
+            Some(tool_call_id_from_event(event, call_key))
+        } else {
+            None
+        };
+        let tool_name = if is_tool_event {
+            string_field(&event.payload, "name")
+                .or_else(|| string_field(&event.payload, "tool_name"))
+                .or_else(|| {
+                    model_call_id.as_ref().and_then(|model_call_id| {
+                        tool_call_id.as_ref().and_then(|tool_call_id| {
+                            tool_names
+                                .get(&(model_call_id.clone(), tool_call_id.clone()))
+                                .cloned()
+                        })
+                    })
+                })
+        } else {
+            None
+        };
+
+        if event.event_type == EVENT_TOOL_EXECUTION_STARTED {
+            if let (Some(model_call_id), Some(tool_call_id), Some(tool_name)) = (
+                model_call_id.as_ref(),
+                tool_call_id.as_ref(),
+                tool_name.as_ref(),
+            ) {
+                tool_names.insert(
+                    (model_call_id.clone(), tool_call_id.clone()),
+                    tool_name.clone(),
+                );
+            }
+        }
+
+        let duration_ms = match event.event_type.as_str() {
+            EVENT_LLM_RESPONSE => event
+                .payload
+                .get("elapsed_ms")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    model_call_id.as_ref().and_then(|model_call_id| {
+                        call_starts
+                            .get(model_call_id)
+                            .map(|started| event.timestamp_ms.saturating_sub(*started))
+                    })
+                }),
+            EVENT_TOOL_EXECUTION_COMPLETED
+            | EVENT_TOOL_EXECUTION_FAILED
+            | EVENT_TOOL_EXECUTION_CANCELLED => tool_call_id.as_ref().and_then(|tool_call_id| {
+                model_call_id.as_ref().and_then(|model_call_id| {
+                    tool_starts
+                        .get(&(model_call_id.clone(), tool_call_id.clone()))
+                        .map(|started| event.timestamp_ms.saturating_sub(*started))
+                })
+            }),
+            EVENT_TURN_END => event
+                .payload
+                .get("elapsed_ms")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    base_timestamp_ms.map(|started| event.timestamp_ms.saturating_sub(started))
+                }),
+            _ => None,
+        };
+
+        timeline.push(ObservationTimelineEvent {
+            event_seq: event.event_seq,
+            event_type: event.event_type.clone(),
+            timestamp_ms: event.timestamp_ms,
+            relative_ms: base_timestamp_ms
+                .map(|started| event.timestamp_ms.saturating_sub(started))
+                .unwrap_or(0),
+            model_call_id: model_call_id.clone(),
+            tool_call_id: tool_call_id.clone(),
+            call_kind,
+            tool_name,
+            status: timeline_status(event),
+            duration_ms,
+        });
+
+        match event.event_type.as_str() {
+            EVENT_LLM_REQUEST => {
+                if let Some(model_call_id) = model_call_id {
+                    call_starts.insert(model_call_id, event.timestamp_ms);
+                }
+            }
+            EVENT_TOOL_EXECUTION_STARTED => {
+                if let (Some(model_call_id), Some(tool_call_id)) = (model_call_id, tool_call_id) {
+                    tool_starts.insert((model_call_id, tool_call_id), event.timestamp_ms);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    timeline
+}
+
+fn timeline_status(event: &ObservationEvent) -> Option<String> {
+    let status = match event.event_type.as_str() {
+        EVENT_TURN_START => "running",
+        EVENT_TURN_END => return string_field(&event.payload, "status").or_else(|| Some("completed".into())),
+        EVENT_LLM_REQUEST => "started",
+        EVENT_LLM_RESPONSE => {
+            let has_error = event
+                .payload
+                .get("error")
+                .is_some_and(|error| !error.is_null())
+                || event.payload.get("stop_reason").and_then(Value::as_str) == Some("error");
+            if has_error {
+                "failed"
+            } else if event.payload.get("stop_reason").and_then(Value::as_str) == Some("max_tokens") {
+                "truncated"
+            } else {
+                "completed"
+            }
+        }
+        EVENT_TOOL_EXECUTION_STARTED => "started",
+        EVENT_TOOL_EXECUTION_COMPLETED => "completed",
+        EVENT_TOOL_EXECUTION_FAILED => "failed",
+        EVENT_TOOL_EXECUTION_CANCELLED => "cancelled",
+        EVENT_OBSERVATION_GAP => "degraded",
+        _ => return None,
+    };
+    Some(status.to_owned())
+}
+
+fn populate_request_metadata(calls: &mut [ProjectedModelCall]) {
+    // Auxiliary calls can be interleaved with workflow calls. They have their
+    // own context and must not become the baseline for the next agent request.
+    let mut previous_agent_messages: Option<Value> = None;
+    let mut system_baseline: Option<Value> = None;
+    let mut agent_call_seen = false;
+
+    for call in calls {
+        let Some(request_payload) = call.request.as_ref() else {
+            continue;
+        };
+        let request = request_object(request_payload);
+        let is_agent_call = is_agent_workflow_call(call.call_kind.as_deref());
+        call.request_message_view = Some(request_message_view(
+            request,
+            if is_agent_call {
+                previous_agent_messages.as_ref()
+            } else {
+                None
+            },
+        ));
+
+        if !is_agent_call {
+            continue;
+        }
+        previous_agent_messages = request
+            .get("messages")
+            .filter(|messages| !value_is_omitted(messages))
+            .cloned();
+
+        let system = comparable_system_value(request);
+        if !agent_call_seen {
+            agent_call_seen = true;
+            system_baseline = system;
+            call.system_prompt_state = Some(SystemPromptState::First);
+        } else {
+            call.system_prompt_state = Some(match (system_baseline.as_ref(), system.as_ref()) {
+                (Some(baseline), Some(current)) if baseline == current => SystemPromptState::Unchanged,
+                (Some(_), Some(_)) => SystemPromptState::Changed,
+                _ => SystemPromptState::Unavailable,
+            });
+        }
+    }
+}
+
+fn is_agent_workflow_call(call_kind: Option<&str>) -> bool {
+    call_kind.is_none_or(|kind| kind == "agent_turn")
+}
+
+fn comparable_system_value(request: &Value) -> Option<Value> {
+    if value_is_omitted(request) {
+        return None;
+    }
+    let Some(system) = request.get("system") else {
+        // A request without a system prompt is still comparable with another
+        // request without one. `None` is reserved for an incomplete capture.
+        return Some(Value::Null);
+    };
+    if value_is_incomplete(system) {
+        return None;
+    }
+    Some(system.clone())
+}
+
+fn request_message_view(
+    request: &Value,
+    previous_messages: Option<&Value>,
+) -> ProjectedRequestMessageView {
+    if value_is_omitted(request) {
+        return ProjectedRequestMessageView {
+            mode: RequestMessageViewMode::Omitted,
+            hidden_message_count: 0,
+            visible_message_count: 0,
+        };
+    }
+    let Some(messages) = request.get("messages") else {
+        return ProjectedRequestMessageView {
+            mode: RequestMessageViewMode::Full,
+            hidden_message_count: 0,
+            visible_message_count: 0,
+        };
+    };
+    if value_is_omitted(messages) {
+        return ProjectedRequestMessageView {
+            mode: RequestMessageViewMode::Omitted,
+            hidden_message_count: 0,
+            visible_message_count: 0,
+        };
+    }
+    let Some(current) = messages.as_array() else {
+        return ProjectedRequestMessageView {
+            mode: RequestMessageViewMode::Full,
+            hidden_message_count: 0,
+            visible_message_count: 0,
+        };
+    };
+    // A nested capture marker only describes one message or content block. It
+    // must not make the whole request look non-diffable: identical captured
+    // history can still be safely folded, while the marker remains visible
+    // when that history is expanded.
+    if current.is_empty() {
+        return ProjectedRequestMessageView {
+            mode: RequestMessageViewMode::Full,
+            hidden_message_count: 0,
+            visible_message_count: current.len() as u32,
+        };
+    }
+
+    let hidden = if let Some(previous) = previous_messages {
+        let Some(previous) = previous.as_array() else {
+            return full_message_view(current);
+        };
+        let common = common_message_prefix(previous, current);
+        if current.len() < previous.len() || (common == 0 && !previous.is_empty()) {
+            return full_message_view(current);
+        }
+        common.min(current.len())
+    } else {
+        current_message_start(current).unwrap_or(0)
+    };
+
+    ProjectedRequestMessageView {
+        mode: RequestMessageViewMode::CurrentSuffix,
+        hidden_message_count: hidden as u32,
+        visible_message_count: (current.len() - hidden) as u32,
+    }
+}
+
+fn full_message_view(messages: &[Value]) -> ProjectedRequestMessageView {
+    ProjectedRequestMessageView {
+        mode: RequestMessageViewMode::Full,
+        hidden_message_count: 0,
+        visible_message_count: messages.len() as u32,
+    }
+}
+
+fn common_message_prefix(previous: &[Value], current: &[Value]) -> usize {
+    previous
+        .iter()
+        .zip(current)
+        .take_while(|(left, right)| messages_equivalent(left, right))
+        .count()
+}
+
+/// Compare the stable message contract when providers add non-semantic
+/// envelope fields between retries. Non-identical content with an
+/// omission/truncation marker remains intentionally unmatchable so the UI does
+/// not hide uncertain data; exact identical captured values may still fold.
+fn messages_equivalent(left: &Value, right: &Value) -> bool {
+    if left == right {
+        return true;
+    }
+    match (stable_message_value(left), stable_message_value(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn stable_message_value(message: &Value) -> Option<Value> {
+    let object = message.as_object()?;
+    let role = object.get("role").and_then(Value::as_str)?;
+    let content = object.get("content")?;
+    if value_is_incomplete(content)
+        || object.get("name").is_some_and(value_is_incomplete)
+        || object.get("tool_call_id").is_some_and(value_is_incomplete)
+    {
+        return None;
+    }
+    Some(serde_json::json!({
+        "role": role,
+        "content": content,
+        "name": object.get("name"),
+        "tool_call_id": object.get("tool_call_id"),
+    }))
+}
+
+fn current_message_start(messages: &[Value]) -> Option<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| is_current_user_message(message))
+        .map(|(index, _)| index)
+        .or_else(|| {
+            messages
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, message)| {
+                    matches!(
+                        message.get("role").and_then(Value::as_str),
+                        Some("assistant") | Some("tool")
+                    )
+                })
+                .map(|(index, _)| index)
+        })
+}
+
+fn is_current_user_message(message: &Value) -> bool {
+    if message.get("role").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    match message.get("content") {
+        Some(Value::String(text)) => !text.trim().is_empty() && !is_leading_context_block(text),
+        Some(Value::Array(blocks)) => blocks.iter().enumerate().any(|(index, block)| {
+            let Some(block) = block.as_object() else {
+                return false;
+            };
+            if block.get("type").and_then(Value::as_str) != Some("text") {
+                return false;
+            }
+            let Some(text) = block.get("text").and_then(Value::as_str) else {
+                return false;
+            };
+            !text.trim().is_empty() && !(index == 0 && is_leading_context_block(text))
+        }),
+        _ => false,
+    }
+}
+
+fn value_is_incomplete(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.contains("…(truncated)") || text.contains("[REDACTED_SECRET]"),
+        Value::Array(items) => items.iter().any(value_is_incomplete),
+        Value::Object(object) => {
+            value_is_omitted(value) || object.values().any(value_is_incomplete)
+        }
+        _ => false,
+    }
 }
 
 fn upsert_tool<'a>(
@@ -976,8 +1465,8 @@ mod tests {
     use super::*;
     use crate::event::{
         ObservationEvent, ObservationIds, EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE,
-        EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED, EVENT_TURN_END,
-        EVENT_TURN_START,
+        EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
+        EVENT_TURN_END, EVENT_TURN_START,
     };
 
     fn event(event_type: &str, seq: u64, ids: ObservationIds, extra: Value) -> ObservationEvent {
@@ -1074,6 +1563,47 @@ mod tests {
         assert!(!turns[0].interrupted);
         assert!(turns[0].model_calls[0].request.is_some());
         assert!(turns[0].model_calls[0].response.is_some());
+    }
+
+    #[test]
+    fn merges_turn_identity_from_all_events() {
+        let events = vec![
+            event(
+                EVENT_TURN_START,
+                1,
+                ObservationIds {
+                    conversation_id: Some("conversation-1".into()),
+                    root_turn_id: Some("turn-1".into()),
+                    ..ObservationIds::default()
+                },
+                serde_json::json!({ "status": "running" }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                ObservationIds {
+                    conversation_id: Some("conversation-1".into()),
+                    root_turn_id: Some("turn-1".into()),
+                    msg_id: Some("message-1".into()),
+                    session_kind: Some("agent".into()),
+                    execution_id: Some("execution-1".into()),
+                    step_id: Some("step-1".into()),
+                    execution_attempt_id: Some("attempt-1".into()),
+                    model_call_id: Some("call-1".into()),
+                    ..ObservationIds::default()
+                },
+                serde_json::json!({ "call_kind": "agent_turn" }),
+            ),
+        ];
+
+        let turn = &project_turns(&events)[0];
+        assert_eq!(turn.conversation_id.as_deref(), Some("conversation-1"));
+        assert_eq!(turn.root_turn_id, "turn-1");
+        assert_eq!(turn.msg_id.as_deref(), Some("message-1"));
+        assert_eq!(turn.session_kind.as_deref(), Some("agent"));
+        assert_eq!(turn.execution_id.as_deref(), Some("execution-1"));
+        assert_eq!(turn.step_id.as_deref(), Some("step-1"));
+        assert_eq!(turn.execution_attempt_id.as_deref(), Some("attempt-1"));
     }
 
     #[test]
@@ -1605,5 +2135,376 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, Some(4));
         assert_eq!(usage.cache_creation_tokens, Some(1));
         assert_ne!(usage.input_tokens, Some(14));
+    }
+
+    #[test]
+    fn timeline_follows_event_sequence_and_calculates_durations() {
+        let events = vec![
+            event(
+                EVENT_TURN_START,
+                1,
+                ObservationIds {
+                    conversation_id: Some("c1".into()),
+                    root_turn_id: Some("t1".into()),
+                    ..ObservationIds::default()
+                },
+                serde_json::json!({}),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "call_kind": "agent_turn" }),
+            ),
+            event(
+                EVENT_LLM_RESPONSE,
+                3,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "stop_reason": "tool_use", "elapsed_ms": 1000 }),
+            ),
+            event(
+                EVENT_TOOL_EXECUTION_STARTED,
+                4,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "tool_call_id": "tool-1", "name": "bash" }),
+            ),
+            event(
+                EVENT_TOOL_EXECUTION_COMPLETED,
+                5,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "tool_call_id": "tool-1", "name": "bash" }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                6,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({ "call_kind": "agent_turn" }),
+            ),
+            event(
+                EVENT_LLM_RESPONSE,
+                7,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({ "text": "done", "elapsed_ms": 600 }),
+            ),
+            event(
+                EVENT_TURN_END,
+                8,
+                ObservationIds {
+                    conversation_id: Some("c1".into()),
+                    root_turn_id: Some("t1".into()),
+                    ..ObservationIds::default()
+                },
+                serde_json::json!({ "status": "completed", "elapsed_ms": 2050 }),
+            ),
+        ];
+
+        let turn = &project_turns(&events)[0];
+        assert_eq!(
+            turn.timeline.iter().map(|event| event.event_seq).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(
+            turn.timeline
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                EVENT_TURN_START,
+                EVENT_LLM_REQUEST,
+                EVENT_LLM_RESPONSE,
+                EVENT_TOOL_EXECUTION_STARTED,
+                EVENT_TOOL_EXECUTION_COMPLETED,
+                EVENT_LLM_REQUEST,
+                EVENT_LLM_RESPONSE,
+                EVENT_TURN_END,
+            ]
+        );
+        assert_eq!(turn.timeline[2].relative_ms, 2);
+        assert_eq!(turn.timeline[2].duration_ms, Some(1000));
+        assert_eq!(turn.timeline[4].duration_ms, Some(1));
+        assert_eq!(turn.timeline[6].duration_ms, Some(600));
+        assert_eq!(turn.timeline[7].duration_ms, Some(2050));
+        assert_eq!(turn.timeline[3].tool_name.as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn request_views_fold_history_and_track_system_prompt_changes() {
+        let first_messages = serde_json::json!([
+            { "role": "user", "content": "old" },
+            { "role": "assistant", "content": "old answer" },
+            { "role": "user", "content": "current question" }
+        ]);
+        let second_messages = serde_json::json!([
+            { "role": "user", "content": "old" },
+            { "role": "assistant", "content": "old answer" },
+            { "role": "user", "content": "current question" },
+            { "role": "assistant", "content": [{ "type": "tool_use", "name": "bash" }] },
+            { "role": "user", "content": [{ "type": "tool_result", "content": "ok" }] }
+        ]);
+        let events = vec![
+            event(
+                EVENT_LLM_REQUEST,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "system": "base", "messages": first_messages }
+                }),
+            ),
+            event(
+                EVENT_LLM_RESPONSE,
+                2,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "stop_reason": "tool_use" }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                3,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "system": "base", "messages": second_messages }
+                }),
+            ),
+            event(
+                EVENT_LLM_RESPONSE,
+                4,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({}),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                5,
+                turn_ids("t1", "mc3"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "system": "changed", "messages": second_messages }
+                }),
+            ),
+        ];
+
+        let calls = &project_turns(&events)[0].model_calls;
+        assert_eq!(
+            calls[0].request_message_view,
+            Some(ProjectedRequestMessageView {
+                mode: RequestMessageViewMode::CurrentSuffix,
+                hidden_message_count: 2,
+                visible_message_count: 1,
+            })
+        );
+        assert_eq!(calls[0].system_prompt_state, Some(SystemPromptState::First));
+        assert_eq!(
+            calls[1].request_message_view,
+            Some(ProjectedRequestMessageView {
+                mode: RequestMessageViewMode::CurrentSuffix,
+                hidden_message_count: 3,
+                visible_message_count: 2,
+            })
+        );
+        assert_eq!(calls[1].system_prompt_state, Some(SystemPromptState::Unchanged));
+        assert_eq!(calls[2].system_prompt_state, Some(SystemPromptState::Changed));
+    }
+
+    #[test]
+    fn request_views_ignore_interleaved_auxiliary_calls() {
+        let first_messages = serde_json::json!([
+            { "role": "user", "content": "old" },
+            { "role": "assistant", "content": "old answer" }
+        ]);
+        let second_messages = serde_json::json!([
+            { "role": "user", "content": "old" },
+            { "role": "assistant", "content": "old answer" },
+            { "role": "user", "content": "current question" }
+        ]);
+        let events = vec![
+            event(
+                EVENT_LLM_REQUEST,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "messages": first_messages }
+                }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                turn_ids("t1", "aux1"),
+                serde_json::json!({
+                    "call_kind": "goal_judge",
+                    "request": { "messages": [{ "role": "user", "content": "auxiliary" }] }
+                }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                3,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "messages": second_messages }
+                }),
+            ),
+        ];
+
+        let calls = &project_turns(&events)[0].model_calls;
+        assert_eq!(
+            calls[2].request_message_view,
+            Some(ProjectedRequestMessageView {
+                mode: RequestMessageViewMode::CurrentSuffix,
+                hidden_message_count: 2,
+                visible_message_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn request_views_ignore_non_semantic_message_fields() {
+        let events = vec![
+            event(
+                EVENT_LLM_REQUEST,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": {
+                        "messages": [
+                            { "role": "user", "content": "old", "message_id": "first" },
+                            { "role": "assistant", "content": "answer", "message_id": "first-answer" }
+                        ]
+                    }
+                }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": {
+                        "messages": [
+                            { "role": "user", "content": "old", "message_id": "second" },
+                            { "role": "assistant", "content": "answer", "message_id": "second-answer" },
+                            { "role": "user", "content": "current question" }
+                        ]
+                    }
+                }),
+            ),
+        ];
+
+        let calls = &project_turns(&events)[0].model_calls;
+        assert_eq!(
+            calls[1].request_message_view,
+            Some(ProjectedRequestMessageView {
+                mode: RequestMessageViewMode::CurrentSuffix,
+                hidden_message_count: 2,
+                visible_message_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn request_views_fold_identical_truncated_history() {
+        let truncated_history = serde_json::json!({
+            "role": "assistant",
+            "content": "previous response…(truncated)"
+        });
+        let events = vec![
+            event(
+                EVENT_LLM_REQUEST,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": {
+                        "messages": [
+                            { "role": "user", "content": "old" },
+                            truncated_history
+                        ]
+                    }
+                }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": {
+                        "messages": [
+                            { "role": "user", "content": "old" },
+                            truncated_history,
+                            { "role": "user", "content": "current question" }
+                        ]
+                    }
+                }),
+            ),
+        ];
+
+        let calls = &project_turns(&events)[0].model_calls;
+        assert_eq!(
+            calls[1].request_message_view,
+            Some(ProjectedRequestMessageView {
+                mode: RequestMessageViewMode::CurrentSuffix,
+                hidden_message_count: 2,
+                visible_message_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn request_view_falls_back_when_prefix_is_not_reliable() {
+        let events = vec![
+            event(
+                EVENT_LLM_REQUEST,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "messages": [{ "role": "user", "content": "one" }] }
+                }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "messages": [{ "role": "user", "content": "two" }] }
+                }),
+            ),
+        ];
+        let calls = &project_turns(&events)[0].model_calls;
+        assert_eq!(
+            calls[1].request_message_view.as_ref().map(|view| view.mode),
+            Some(RequestMessageViewMode::Full)
+        );
+        assert_eq!(calls[1].system_prompt_state, Some(SystemPromptState::Unchanged));
+    }
+
+    #[test]
+    fn incomplete_system_prompt_is_unavailable_after_first_call() {
+        let events = vec![
+            event(
+                EVENT_LLM_REQUEST,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "system": { "omitted_reason": "event_size_limit" } }
+                }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                turn_ids("t1", "mc2"),
+                serde_json::json!({
+                    "call_kind": "agent_turn",
+                    "request": { "system": "base" }
+                }),
+            ),
+        ];
+        let calls = &project_turns(&events)[0].model_calls;
+        assert_eq!(calls[0].system_prompt_state, Some(SystemPromptState::First));
+        assert_eq!(calls[1].system_prompt_state, Some(SystemPromptState::Unavailable));
     }
 }
