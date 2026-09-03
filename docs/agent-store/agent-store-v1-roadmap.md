@@ -6,6 +6,8 @@
 > 说明：阶段按两周迭代组织；具体排期须在 Spike 和实测后校准，不构成承诺
 > 进展：Phase 0 的 OAuth 注入实测已完成（`mcp-oauth-runtime-evidence.zh.md`）；
 > Phase 1 的 Importer 已落地（TC-IMP-001~009 通过，`importer-runtime-evidence.zh.md`）；
+> 安装模式与市场（Phase 2 提前落地）已完成（install/*、market/* 四类源、
+> @mention 解析与 run 注入 TC-INS-001~007）；
 > 单 Agent Runtime 真实链路实测与 `software-company` 端到端运行尚未完成，排期仍待校准。
 
 ## 1. V1 目标

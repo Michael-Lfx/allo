@@ -202,6 +202,19 @@ NOT_RUN
   声明外部源（GitHub/NPM）条目标记 `source_kind=external`，导入返回 `bad_request`；
   `refresh` 带 `If-None-Match`，`304`/相同 ETag → `changed=false`
 
+### TC-INS-007：@Mention 解析与 run 注入（阶段 B 扩展）
+
+- 等级：P1
+- 操作：Composer `@` 菜单选中 agent/skill/connector → `agent/run` 携带
+  `mentions`（agent/skill/connector 三类）→ 观察
+- 断言：
+  - agent mention 解析为已安装 preset（未安装 → `agent_not_installed`；
+    多个 agent → `invalid_mentions`；与显式 `agent_id` 冲突 → `invalid_mentions`）；
+  - skill mention 冻结进 `included_skills`（run 上下文随 agent 挂载）；
+  - connector mention 追加 `mcp_server_ids`（未启用 → `connector_unavailable`）；
+  - `mentions` 缺省时行为与旧 `agent/run` 一致（向后兼容）；
+  - 任意用户 preset（`agent-store:` 前缀外）不能通过 `agent/run` 启动
+
 ## 4. 单 Agent Runtime
 
 ### TC-RT-001：单 Agent Run

@@ -309,6 +309,11 @@ pub struct AppServerAgentSummary {
     pub id: String,
     pub version: String,
     pub name: String,
+    /// Preset created by the installer for this agent definition (`install/*`
+    /// of roadmap Phase 2). `None` until the snapshot was installed; only a
+    /// preset-backed definition can be started through `agent/run`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default)]
@@ -325,8 +330,8 @@ pub struct AppServerAgentSummary {
     pub compatibility_status: AppServerCompatibilityStatus,
 }
 
-/// AgentDefinition detail: summary plus the structured fields preserved from
-/// `agents/*.md` frontmatter (02 §5.1). No raw prompt.
+/// Agent Store AgentDefinition summary. Never a Runtime Agent instance; never
+/// carries credentials, hidden system instructions or raw prompt bodies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerAgentDetail {
     #[serde(flatten)]

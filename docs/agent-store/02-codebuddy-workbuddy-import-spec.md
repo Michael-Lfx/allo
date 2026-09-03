@@ -168,7 +168,10 @@ Members: software-product-manager, software-architect,
 - **实现状态（2026-08 迭代 Phase 2 阶段 B）**：`directory` + `github` + `git` + `url`
   全部落地（`plugin_marketplaces` 注册表 + `market_fetch` 获取层：git2 克隆 /
   HTTP 条件下载 → staging 校验 → 原子晋升 → last-good；`market/refresh` 按
-  resolved_revision/ETag 新鲜度短路）；URL 市场条目外源标记 `external`（文档语义：
+  resolved_revision/ETag 新鲜度短路）+ `agent/run` 结构化 `mentions`
+  （agent→已安装 preset、skill→`included_skills`、connector→`mcp_server_ids`，
+  TC-INS-007）；agent-store preset `agent-store: <name>` 命名进入兼容白名单；
+  URL 市场条目外源标记 `external`（文档语义：
   只镜像清单内联条目）；
 - 市场条目字段（name、source、version、strict、commands、agents、skills、hooks、mcpServers）可与插件 Manifest 合并，检查冲突；
 - `strict=true`：要求插件源自带 plugin.json；`strict=false`：市场条目可补充/代替清单；

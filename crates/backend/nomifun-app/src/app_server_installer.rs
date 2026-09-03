@@ -25,6 +25,11 @@ use nomifun_common::AppError;
 use nomifun_db::{ComponentRuntimeRef, IPluginSnapshotRepository};
 use nomifun_importer::{InstallerConfig, InstallerService};
 
+/// Internal Nomi runtime agent id (`agent_builtin_nomi`). The App Server
+/// compatibility surface only allows Presets resolved to a Nomi Runtime
+/// Agent, so agent-store presets pin this agent to be runnable.
+const NOMI_RUNTIME_AGENT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000114";
+
 /// MCP config seam (kept narrow so tests can fake it; the production adapter
 /// wraps `nomifun_mcp::McpConfigService`).
 #[async_trait]
@@ -41,6 +46,8 @@ pub trait PresetRegistrar: Send + Sync {
         &self,
         name: &str,
         description: Option<&str>,
+        agent_id: Option<&str>,
+        model: Option<nomifun_api_types::ModelPreference>,
     ) -> Result<String, AppError>;
 }
 
@@ -92,6 +99,8 @@ impl PresetRegistrar for AppServerPresetRegistrar {
         &self,
         name: &str,
         description: Option<&str>,
+        agent_id: Option<&str>,
+        model: Option<nomifun_api_types::ModelPreference>,
     ) -> Result<String, AppError> {
         let response = self
             .service
@@ -104,8 +113,13 @@ impl PresetRegistrar for AppServerPresetRegistrar {
                 avatar: None,
                 fallback_allowed: false,
                 targets: vec![],
-                agent_preferences: vec![],
-                model_preferences: vec![],
+                agent_preferences: agent_id
+                    .map(|agent_id| vec![nomifun_api_types::AgentPreference {
+                        agent_id: agent_id.to_owned(),
+                        required: true,
+                    }])
+                    .unwrap_or_default(),
+                model_preferences: model.into_iter().collect(),
                 included_skills: vec![],
                 excluded_auto_skills: vec![],
                 knowledge_policy: Default::default(),
@@ -210,7 +224,11 @@ impl InstallProvider for AppServerInstallProvider {
             }
         }
 
-        // 2. agent/team → Preset
+        // 2. agent/team → Preset. The agent-store preset binds the internal
+        // Nomi runtime agent (`agent_builtin_nomi`, the only runtime type the
+        // App Server compatibility surface accepts) so `agent/run` can resolve
+        // it to a Nomi Runtime Agent; the model stays unbound and the run
+        // layer falls back to the owner's first enabled provider/model.
         for component in &components {
             if component.kind != "agent" && component.kind != "team" {
                 continue;
@@ -220,7 +238,7 @@ impl InstallProvider for AppServerInstallProvider {
             let preset_name = format!("agent-store: {}", component.name);
             match self
                 .presets
-                .create_agent_store_preset(&preset_name, description)
+                .create_agent_store_preset(&preset_name, description, Some(NOMI_RUNTIME_AGENT_ID), None)
                 .await
             {
                 Ok(preset_id) => pending.push(Pending {

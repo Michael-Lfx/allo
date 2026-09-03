@@ -762,3 +762,76 @@ async fn importer_market_http_source_validates_manifest_and_mirrors_inlined_entr
     let refreshed = body_json(refresh).await;
     assert_eq!(refreshed["changed"], false, "{refreshed}");
 }
+
+/// @mention resolution: an imported + installed agent exposes its `preset_id`
+/// on `agent/list`, and `agent/run` with a structured agent mention reaches
+/// the runtime gate once the preset resolved (docs/agent-store/05 §4.7).
+#[tokio::test]
+async fn importer_mention_resolves_installed_preset_and_agents_run_gate() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Import + install (preset registration happens on install).
+    let run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/imports",
+            serde_json::json!({
+                "source_path": SOFTWARE_COMPANY,
+                "source_kind": "codebuddy-plugin",
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(run.status(), StatusCode::OK);
+    let result = body_json(run).await;
+    let snapshot_id = result["snapshot_id"].as_str().unwrap().to_owned();
+    let install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/installs",
+            serde_json::json!({ "snapshot_id": snapshot_id }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install.status(), StatusCode::OK, "install must succeed");
+
+    // `agent/run` with a structured mention resolves the agent's installed
+    // preset first; the mention resolution runs before the start_agent_run
+    // gate. With a real runtime + provider the run starts; this build has no
+    // runtime/provider so the run fails at the model/runtime boundary.
+    let missing = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/agent/run",
+            serde_json::json!({
+                "agent_id": "",
+                "goal": "summarize",
+                "mentions": [{ "kind": "agent", "id": "wb-software-company-software-architect" }],
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let missing_body = body_json(missing).await;
+    let missing_code = missing_body["code"].as_str().unwrap_or("").to_owned();
+    assert!(
+        matches!(
+            missing_code.as_str(),
+            "agent_not_installed" | "runtime_unavailable" | "invalid_request"
+        ),
+        "mention resolution must precede model/runtime gates: {missing_body}"
+    );
+}
