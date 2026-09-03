@@ -960,6 +960,7 @@ mod tests {
             local: true,
             log_level: None,
             command: None,
+            agent_store_config: None,
         }
     }
 
