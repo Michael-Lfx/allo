@@ -23,8 +23,6 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
 }) => {
   const { t } = useTranslation();
   const label = t('learning.title');
-  const devLabel = t('learning.dev.tag');
-  const tooltipContent = t('learning.dev.navTooltip');
   const icon = (
     <BookOpen
       theme='outline'
@@ -36,7 +34,7 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
   );
 
   return (
-    <Tooltip {...siderTooltipProps} content={tooltipContent} position='right'>
+    <Tooltip {...siderTooltipProps} content={label} position='right'>
       <div
         className={classNames(
           'box-border group h-34px w-full flex items-center cursor-pointer transition-colors rd-8px text-t-primary',
@@ -56,12 +54,6 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
           <>
             <span className='size-22px flex items-center justify-center shrink-0'>{icon}</span>
             <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
-            <span
-              className='collapsed-hidden ml-auto shrink-0 text-9px font-600 leading-none tracking-wide uppercase px-4px py-2px rd-4px bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'
-              aria-hidden='true'
-            >
-              {devLabel}
-            </span>
           </>
         )}
       </div>

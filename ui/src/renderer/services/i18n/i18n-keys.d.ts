@@ -3070,8 +3070,6 @@ export type I18nKey =
   | 'learning.deleteCourseTitle'
   | 'learning.deletedCourse'
   | 'learning.describeRequired'
-  | 'learning.dev.navTooltip'
-  | 'learning.dev.tag'
   | 'learning.diagnosticComplete'
   | 'learning.diagnosticTitle'
   | 'learning.domain'
