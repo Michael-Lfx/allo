@@ -583,6 +583,11 @@ async fn importer_store_lists_mcp_connectors_with_index_display_and_installs() {
         r#"{"runtime":{"type":"node","version":">=18"},"init":{"script":"main.js"}}"#,
     )
     .unwrap();
+    // Market-level icons (`icons/<source-basename>.<ext>`) — the connector
+    // avatar fallback when the entry ships no plugin.json avatar.
+    std::fs::create_dir_all(market_root.join("icons")).unwrap();
+    std::fs::write(market_root.join("icons/agent-earth.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>\n").unwrap();
+    std::fs::write(market_root.join("icons/wecom.png"), [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
 
     let add = app
         .clone()
@@ -623,12 +628,36 @@ async fn importer_store_lists_mcp_connectors_with_index_display_and_installs() {
     assert_eq!(earth["name"], "智能地球", "{earth}");
     assert_eq!(earth["version"], "1.0.0", "{earth}");
     assert_eq!(earth["installed"], false, "{earth}");
+    // Market-level icon fallback: no plugin.json avatar → icons/agent-earth.svg.
+    let earth_avatar = earth["avatar_url"].as_str().unwrap_or("");
+    assert!(earth_avatar.contains("icons/agent-earth.svg"), "{earth}");
     let wecom = items
         .iter()
         .find(|item| item["entry_name"] == "wecom")
         .expect("wecom entry present");
     assert_eq!(wecom["kind"], "connector", "{wecom}");
     assert_eq!(wecom["name"], "企业微信", "{wecom}");
+    assert!(wecom["avatar_url"].as_str().unwrap_or("").contains("icons/wecom.png"), "{wecom}");
+
+    // The market-level icon asset endpoint serves the SVG without any
+    // app-server connection header (plain `<img>` tags).
+    let icon_asset = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/api/app-server/store/{marketplace_id}/entries/agent-earth/assets/icons/agent-earth.svg"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(icon_asset.status(), StatusCode::OK, "market icon asset must be served");
+    assert_eq!(
+        icon_asset.headers().get("content-type").unwrap(),
+        "image/svg+xml",
+        "icon content-type must be image/svg+xml"
+    );
 
     // One-click install of the MCP connector (import + register).
     let install = app

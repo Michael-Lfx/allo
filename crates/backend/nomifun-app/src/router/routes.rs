@@ -987,9 +987,8 @@ pub fn create_router_with_all_state(
             )),
         ),
     );
-    let app_server_authenticated = protect_instance_owner(
-        app_server_routes(AppServerRouterState {
-            registry: Default::default(),
+    let app_server_state = AppServerRouterState {
+        registry: Default::default(),
             runtime: Some(AgentRuntimeAdapter::new(states.agent_execution.clone())),
             conversation_service: Some(app_server_conversation.service.clone()),
             conversation_runtime_registry: Some(app_server_conversation.runtime_registry.clone()),
@@ -1101,7 +1100,13 @@ pub fn create_router_with_all_state(
                 ),
             )),
             snapshot_assets_root: Some(import_root.clone()),
-        }),
+    };
+    // Display assets (avatars / market icons) are referenced by plain
+    // `<img>` tags and must not sit behind the owner auth middleware.
+    let app_server_public =
+        nomifun_app_server::app_server_public_routes(app_server_state.clone());
+    let app_server_authenticated = protect_instance_owner(
+        app_server_routes(app_server_state),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -1370,7 +1375,8 @@ pub fn create_router_with_all_state(
     .merge(public_assets)
     .merge(companion_public)
     .merge(workshop_public)
-    .merge(video_canvas_public);
+    .merge(video_canvas_public)
+    .merge(app_server_public);
 
     // Robot device face. `nest` (not `merge`) scopes it to `/robot`, and it sits
     // in this post-CSRF group on purpose: a robot presents a bearer token minted

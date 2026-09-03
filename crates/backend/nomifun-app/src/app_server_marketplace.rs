@@ -801,8 +801,6 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // plain plugins.
         let source_kind = if source.join("cli.json").is_file() {
             SourceKind::WorkBuddyCliConnector
-        } else if source.join("mcp.json").is_file() {
-            SourceKind::WorkBuddyMcpConnector
         } else if source.join(".codebuddy-skill/marketplace.json").is_file() {
             SourceKind::WorkBuddySkillMarket
         } else if source.join(".codebuddy-plugin/plugin.json").is_file() {
@@ -820,7 +818,12 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 SourceKind::CodeBuddyPlugin
             }
         } else if source.join("SKILL.md").is_file() {
+            // A root SKILL.md is the strongest skill signal: skill-market
+            // entries may carry an auxiliary mcp.json next to it (e.g. 腾讯云知),
+            // so the skill wins over the MCP marker.
             SourceKind::WorkBuddySkillMarket
+        } else if source.join("mcp.json").is_file() {
+            SourceKind::WorkBuddyMcpConnector
         } else {
             row_source_kind(&row)
         };
@@ -873,6 +876,22 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
             &self.market_root,
             marketplace_id,
             &entry.source_uri,
+        ))
+    }
+
+    /// Resolve the on-disk root of a marketplace (internal path, trusted host
+    /// only) — e.g. `icons/` assets that live outside any single entry dir.
+    async fn market_dir(
+        &self,
+        marketplace_id: &str,
+    ) -> Result<std::path::PathBuf, AppError> {
+        let row = self.verify_market_row(marketplace_id).await?;
+        Ok(crate::market_fetch::entry_source_path(
+            &row.source_kind,
+            &row.source_uri,
+            &self.market_root,
+            marketplace_id,
+            ".",
         ))
     }
 }

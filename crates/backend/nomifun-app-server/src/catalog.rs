@@ -134,6 +134,11 @@ pub trait MarketplaceProvider: Send + Sync {
         marketplace_id: &str,
         entry_name: &str,
     ) -> Result<std::path::PathBuf, AppError>;
+
+    /// Resolve the on-disk root of one marketplace (internal path, trusted
+    /// host only). Used by the store asset endpoint for market-level assets
+    /// (`icons/…`) that live outside any single entry directory.
+    async fn market_dir(&self, marketplace_id: &str) -> Result<std::path::PathBuf, AppError>;
 }
 
 /// Read-side Agent catalog (`agent/list`, `agent/get`, docs/agent-store/05
@@ -608,6 +613,13 @@ impl MarketplaceProvider for FakeMarketplaceProvider {
             return Err(AppError::NotFound(format!("entry {entry_name} not found")));
         }
         Ok(std::path::PathBuf::from("/tmp/market/company-tools/plugins/formatter"))
+    }
+
+    async fn market_dir(&self, marketplace_id: &str) -> Result<std::path::PathBuf, AppError> {
+        if marketplace_id != self.added.marketplace_id {
+            return Err(AppError::NotFound(format!("marketplace {marketplace_id} not found")));
+        }
+        Ok(std::path::PathBuf::from("/tmp/market/company-tools"))
     }
 }
 
