@@ -1,4 +1,4 @@
-//! Importer acceptance tests mapped to `docs/agent-store/agent-store-v1-test-cases.md`
+﻿//! Importer acceptance tests mapped to `docs/agent-store/agent-store-v1-test-cases.md`
 //! TC-IMP-001..009. Static fixtures live in `tests/fixtures/`; dynamic
 //! malicious trees (symlink escape) are built at runtime.
 
@@ -47,6 +47,9 @@ async fn tc_imp_001_002_software_company_imports_five_agents_and_one_team() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("software-company"),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -132,6 +135,9 @@ async fn tc_imp_003_agents_only_never_creates_a_team() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("agents-only"),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -153,7 +159,10 @@ async fn tc_imp_004_path_traversal_and_absolute_paths_are_blocked() {
             .run_import(&ImportRequest {
                 source_path: fixtures().join(fixture),
                 source_kind: SourceKind::CodeBuddyPlugin,
-            })
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
             .await
             .unwrap();
         assert_eq!(result.status, "blocked", "{fixture} must block");
@@ -197,6 +206,9 @@ async fn tc_imp_005_symlink_escape_is_rejected() {
         .run_import(&ImportRequest {
             source_path: source,
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -232,6 +244,9 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("digest-a"),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -244,6 +259,9 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("digest-a"),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -257,6 +275,9 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("digest-b"),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -279,6 +300,9 @@ async fn tc_imp_007_partial_component_failure_keeps_good_components() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("partial-failure"),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -302,6 +326,9 @@ async fn tc_imp_008_high_risk_components_are_static_imports_only() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("hooks-scripts"),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -335,6 +362,9 @@ async fn tc_imp_009_credential_values_never_enter_snapshot_or_repository() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("userconfig"),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -361,6 +391,9 @@ async fn skill_market_imports_skills_with_market_identity() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("skill-market"),
             source_kind: SourceKind::WorkBuddySkillMarket,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -381,15 +414,233 @@ async fn connector_market_imports_connector_entries() {
         .run_import(&ImportRequest {
             source_path: fixtures().join("connector-market"),
             source_kind: SourceKind::WorkBuddyConnectorMarket,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
     assert_eq!(result.status, "completed");
     let components = repo.get_components(&result.snapshot_id).await.unwrap();
-    assert_eq!(count_kind(&components, "connector"), 2);
+    assert_eq!(count_kind(&components, "connector"), 4);
     assert!(components
         .iter()
-        .any(|component| component.name == "jira" && component.payload_json.contains("oauth")));
+        .any(|component| component.name == "Jira" && component.payload_json.contains("oauth")));
+    // Chinese display names use their ASCII id for the opaque component id
+    assert!(components.iter().any(|c| c.component_id == "wb-market-demo-connectors-wecom"));
+    assert!(components.iter().any(|c| c.component_id == "wb-market-demo-connectors-tmeet"));
+}
+
+// ---------------------------------------------------------------------------
+// TC-IMP-010: real CodeBuddy market shape — file-path declarations +
+// object-form dependencies (stock-partner-team style)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tc_imp_010_file_path_declarations_and_object_dependencies() {
+    let (service, _temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("file-paths"),
+            source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, "completed", "errors: {:?}", result.errors);
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+
+    // file-path agents are imported one-by-one (02 §5.1)
+    assert_eq!(count_kind(&components, "agent"), 2, "2 file-path agents");
+    assert!(
+        components.iter().any(|component| component.component_id == "wb-file-paths-plugin-lead-agent"),
+        "lead agent must resolve from the file path declaration"
+    );
+
+    // file-path skills are imported one-by-one
+    assert_eq!(count_kind(&components, "skill"), 2, "2 file-path skills");
+    assert!(
+        components.iter().any(|component| component.component_id == "wb-file-paths-plugin-hello"),
+        "hello skill must resolve from the file path declaration"
+    );
+    assert!(
+        components.iter().any(|component| component.component_id == "wb-file-paths-plugin-formatting"),
+        "formatting skill must resolve from the file path declaration"
+    );
+
+    // teamInfo linkage survives: lead + member resolve to imported agents
+    let team = find_kind(&components, "team").pop().unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&team.payload_json).unwrap();
+    assert_eq!(payload["lead_agent_id"], "wb-file-paths-plugin-lead-agent");
+    let members = payload["member_agent_ids"].as_array().unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0], "wb-file-paths-plugin-member-agent");
+
+    // command from file declaration
+    assert_eq!(count_kind(&components, "command"), 1, "triage command");
+
+    // object-form dependencies normalize to 2 entries with `group`
+    let deps = find_kind(&components, "dependency");
+    assert_eq!(deps.len(), 2, "connectors + plugins");
+    let declared: Vec<serde_json::Value> = deps
+        .iter()
+        .map(|row| serde_json::from_str::<serde_json::Value>(&row.payload_json).unwrap())
+        .collect();
+    assert!(declared.iter().any(|value| value["declared"]["group"] == "connectors"
+        && value["declared"]["name"] == "westock-mcp"));
+    assert!(declared.iter().any(|value| value["declared"]["group"] == "plugins"
+        && value["declared"]["name"] == "shared-helpers"));
+}
+
+// ---------------------------------------------------------------------------
+// TC-IMP-011: single CLI connector directory (wecom-style: cli.json +
+// skills/*/SKILL.md) imports a connector + its bundled skills
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tc_imp_011_cli_connector_directory_imports_connector_and_skills() {
+    let (service, temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("cli-connector"),
+            source_kind: SourceKind::WorkBuddyCliConnector,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, "completed", "errors: {:?}", result.errors);
+    assert_eq!(result.source_kind, "workbuddy-cli-connector");
+    // identity comes from the directory name (cli.json carries none)
+    assert_eq!(result.name, "cli-connector");
+    assert!(result.component_count == 3, "1 connector + 2 skills, got {}", result.component_count);
+
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    let connectors = find_kind(&components, "connector");
+    assert_eq!(connectors.len(), 1);
+    let connector = connectors[0];
+    assert_eq!(connector.name, "cli-connector");
+    let payload: serde_json::Value = serde_json::from_str(&connector.payload_json).unwrap();
+    assert_eq!(payload["kind"], "cli");
+    assert_eq!(payload["auth_mode"], "cli-auth");
+    assert_eq!(payload["runtime"]["type"], "node");
+    assert_eq!(payload["auth"]["domain"], "demo.example.com");
+    // tool namespace is connector-scoped
+    assert_eq!(payload["tool_filter"], "connector__cli-connector__<tool>");
+
+    // the bundled skills are imported (02 §5)
+    assert_eq!(count_kind(&components, "skill"), 2);
+    assert!(components
+        .iter()
+        .any(|component| component.component_id == "wb-market-cli-connector-cli-hello"));
+    assert!(components
+        .iter()
+        .any(|component| component.component_id == "wb-market-cli-connector-cli-format"));
+
+    // materialized snapshot keeps the whole tree
+    assert!(temp
+        .path()
+        .join("agent-store-imports")
+        .join(&result.snapshot_id)
+        .join("skills/cli-hello/SKILL.md")
+        .exists());
+}
+
+// ---------------------------------------------------------------------------
+// TC-IMP-012: market shapes — CRLF frontmatter, malformed YAML, object
+// author, string component roots, connector id slugs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tc_imp_012_market_frontmatter_compat() {
+    let (service, _temp, repo) = setup().await;
+
+    // CRLF SKILL.md (airbnb-style) parses fine
+    let crlf = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("crlf-skill"),
+            source_kind: SourceKind::WorkBuddySkillMarket,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(crlf.status, "completed", "CRLF skill: {:?}", crlf.errors);
+    let comps = repo.get_components(&crlf.snapshot_id).await.unwrap();
+    assert_eq!(count_kind(&comps, "skill"), 1, "CRLF skill survives");
+
+    // malformed YAML frontmatter (unquoted quotes) degrades to loose parse
+    let loose = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("loose-skill"),
+            source_kind: SourceKind::WorkBuddySkillMarket,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+    // loose parse keeps at least the name → completed (with warnings at worst)
+    assert!(
+        loose.status == "completed" || loose.status == "completed-with-warnings",
+        "loose frontmatter must not block: {:?}",
+        loose.errors
+    );
+    let comps = repo.get_components(&loose.snapshot_id).await.unwrap();
+    assert_eq!(count_kind(&comps, "skill"), 1, "malformed frontmatter skill survives");
+}
+
+#[tokio::test]
+async fn tc_imp_013_author_object_and_string_component_roots() {
+    let (service, _temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("author-object"),
+            source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        result.status == "completed" || result.status == "completed-with-warnings",
+        "author-object must import: {:?}",
+        result.errors
+    );
+    let comps = repo.get_components(&result.snapshot_id).await.unwrap();
+    // agent + disambiguated skill (same slug) = 2 components, no agent lost
+    assert_eq!(count_kind(&comps, "agent"), 1);
+    assert_eq!(count_kind(&comps, "skill"), 1);
+    let skill = find_kind(&comps, "skill").pop().unwrap();
+    assert_eq!(skill.component_id, "wb-author-object-author-object-skill", "skill disambiguated");
+}
+
+#[tokio::test]
+async fn tc_imp_014_single_skill_directory_without_marketplace_json() {
+    let (service, _temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("single-skill-dir"),
+            source_kind: SourceKind::WorkBuddySkillMarket,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.status, "completed", "single skill dir: {:?}", result.errors);
+    assert_eq!(result.name, "single-skill-dir", "identity = directory name");
+    let comps = repo.get_components(&result.snapshot_id).await.unwrap();
+    assert_eq!(count_kind(&comps, "skill"), 1);
+    let skill = find_kind(&comps, "skill").pop().unwrap();
+    assert_eq!(skill.component_id, "wb-market-single-skill-dir-single-skill-dir");
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +655,9 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
         .run_import(&ImportRequest {
             source_path: empty.path().to_path_buf(),
             source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         })
         .await
         .unwrap();
@@ -413,7 +667,10 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
             .run_import(&ImportRequest {
                 source_path: fixtures().join("does-not-exist"),
                 source_kind: SourceKind::CodeBuddyPlugin,
-            })
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
             .await,
         Err(nomifun_importer::ImportError::SourceNotFound)
     ));

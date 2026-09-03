@@ -4,6 +4,7 @@
 > 目标：`docs/agent-store/02-codebuddy-workbuddy-import-spec.md`（Importer 落地）与
 > `03-...-compatibility-matrix.md`（三态兼容推导），对齐 `agent-store-v1-test-cases.md` TC-IMP-001~009
 > 状态：✅ 全部通过（`software-company` fixture：5 个 AgentDefinition + 1 个 AgentTeamDefinition）
+> 扩展：TC-IMP-010/011（文件路径声明+对象依赖；CLI 连接器目录）
 
 ## 1. 实现范围
 
@@ -30,13 +31,24 @@
 | TC-IMP-007 | 单组件坏 frontmatter → `completed-with-warnings`，其余组件照常导入 | ✅ |
 | TC-IMP-008 | hooks/bin/scripts/lsp → 静态导入（`manual_review`/`static_only`），不执行 | ✅ |
 | TC-IMP-009 | userConfig 敏感字段 → 只生成 CredentialSchema；`[REDACTED]` 警告；值不进入 DB/日志/公共响应 | ✅ |
+| TC-IMP-010 | 组件以文件路径声明（`./agents/lead.md`）+ `dependencies` 对象形式 → 每个文件导入为组件；对象依赖归一化（带 `group`） | ✅ |
+| TC-IMP-011 | CLI 连接器目录（`cli.json` + `skills/*/SKILL.md`）→ 1 connector（kind=cli）+ 全部随附 SkillDefinition | ✅ |
+| TC-IMP-012 | CRLF 行尾 frontmatter + 非严格 YAML → CRLF 正常解析；非严格回退到宽松行级解析（name/description 存活） | ✅ |
+| TC-IMP-013 | `author` 对象 + 字符串组件根（`agents: "./agents/x.md"`）→ 归一化导入；同名 Agent+Skill 自动 `-skill` 消歧 | ✅ |
+| TC-IMP-014 | 单 Skill 目录（无 marketplace.json，根含 SKILL.md）→ 身份=目录名，可导入 | ✅ |
 
 另含市场来源用例：`workbuddy-skill-market` → 2 个 Skill（保留 `$ARGUMENTS`）；`workbuddy-connector-market` → 2 个 Connector；缺失清单 → `blocked`；来源目录不存在 → `ImportError::SourceNotFound`（HTTP 404 `import_source_not_found`）。
+
+真实市场目录验证（本机 `~/.workbuddy/`）：
+- `connectors-marketplace` 根（`workbuddy-connector-market`、193 个索引条目采样）→ `completed`，153/153 组件（中文 display name 用 ASCII `id` 生成组件 id）；
+- `skills-marketplace` 根（`workbuddy-skill-market`）→ `completed`，262/262 技能组件（含 CRLF 与宽松 YAML 文件）；
+- `plugins/marketplaces/experts|codebuddy-plugins-official|cb_teams_marketplace` 全部插件目录 → 0 blocked（`author` 对象、字符串组件根、同名 Agent+Skill 均兼容）；
+- 单 skill 目录（`skills/qcc-company` 等）→ 全部 `completed`。
 
 ## 3. 自动化证据
 
 ```text
-cargo test -p nomifun-importer（lib 16 项 + 集成 10 项）            ✅ 全过
+cargo test -p nomifun-importer（lib 16 项 + 集成 15 项）            ✅ 全过
 cargo test -p nomifun-app-server                                     ✅ 50 passed（含 agent/team/imports WS 与 HTTP impl 契约测试）
 cargo test -p nomifun-db --lib                                        ✅ 436 passed（含新增 plugin_snapshot 仓储 5 项）
 cargo test -p nomifun-app --test importer_e2e                         ✅ 真 app HTTP 全链路（init → import → history → detail → 幂等复用 → 404）

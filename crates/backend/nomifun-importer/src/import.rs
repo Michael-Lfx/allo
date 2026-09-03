@@ -40,6 +40,59 @@ pub enum ImportError {
 pub struct ImportRequest {
     pub source_path: PathBuf,
     pub source_kind: SourceKind,
+    /// Marketplace provenance (roadmap Phase 2): set when the import is the
+    /// materialization of a marketplace entry.
+    pub marketplace_id: Option<String>,
+    pub entry_name: Option<String>,
+    /// Source revision (git commit / HTTP marker) that produced this snapshot;
+    /// internal traceability only.
+    pub source_revision: Option<String>,
+}
+
+impl ImportRequest {
+    /// Manual import (no marketplace provenance).
+    pub fn manual(source_path: PathBuf, source_kind: SourceKind) -> Self {
+        Self {
+            source_path,
+            source_kind,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        }
+    }
+
+    /// Marketplace-entry import with provenance linkage.
+    pub fn from_marketplace(
+        source_path: PathBuf,
+        source_kind: SourceKind,
+        marketplace_id: String,
+        entry_name: String,
+    ) -> Self {
+        Self {
+            source_path,
+            source_kind,
+            marketplace_id: Some(marketplace_id),
+            entry_name: Some(entry_name),
+            source_revision: None,
+        }
+    }
+
+    /// Marketplace-entry import with provenance + source revision.
+    pub fn from_marketplace_revision(
+        source_path: PathBuf,
+        source_kind: SourceKind,
+        marketplace_id: String,
+        entry_name: String,
+        source_revision: String,
+    ) -> Self {
+        Self {
+            source_path,
+            source_kind,
+            marketplace_id: Some(marketplace_id),
+            entry_name: Some(entry_name),
+            source_revision: Some(source_revision),
+        }
+    }
 }
 
 /// Importer entry point. `snapshot_root` is the versioned immutable cache
@@ -119,10 +172,21 @@ impl ImporterService {
                 build_plugin_components(&source, manifest, &meta, &mut builder, &mut agents);
             }
             (_, SourceKind::WorkBuddySkillMarket) => {
-                build_skill_market_components(&source, &meta, &mut builder);
+                match &parsed {
+                    crate::manifest::ParsedManifest::SingleSkill(dir) => {
+                        build_single_skill_components(&source, dir, &meta, &mut builder);
+                    }
+                    _ => build_skill_market_components(&source, &meta, &mut builder),
+                }
             }
             (crate::manifest::ParsedManifest::Market(market), SourceKind::WorkBuddyConnectorMarket) => {
                 build_connector_market_components(&market.connectors, &meta, &mut builder);
+            }
+            (
+                crate::manifest::ParsedManifest::Cli(cli, directory_name),
+                SourceKind::WorkBuddyCliConnector,
+            ) => {
+                build_cli_connector_components(&source, cli, directory_name, &meta, &mut builder);
             }
             // Unreachable: market manifests never parse as plugins and vice
             // versa — parse_manifest dispatches by source kind.
@@ -233,6 +297,9 @@ impl ImporterService {
                 resolved_revision: None,
                 content_digest: &content_digest,
                 status,
+                marketplace_id: request.marketplace_id.as_deref(),
+                entry_name: request.entry_name.as_deref(),
+                source_revision: request.source_revision.as_deref(),
                 components,
             })
             .await
@@ -285,10 +352,33 @@ impl ComponentBuilder {
     }
 
     fn push(&mut self, component: Component) {
+        // Agent and Skill definitions share one component-id namespace per
+        // plugin. Real expert plugins frequently name both the agent and its
+        // companion skill after the plugin (`aihot` + `skills/aihot`), which
+        // collides on `wb-<plugin>-aihot`. Skills yield to the agent: on a
+        // collision the skill gets a `-skill` suffix so nothing is lost.
         if self.claimed.contains(&component.component_id) {
+            let original_id = component.component_id.clone();
+            let original_name = component.name.clone();
+            if component.kind == crate::models::KIND_SKILL {
+                let mut disambiguated = component;
+                disambiguated.component_id = format!("{original_id}-skill");
+                if !self.claimed.contains(&disambiguated.component_id) {
+                    self.warn(format!(
+                        "组件 id 冲突，技能已加后缀消歧：{}（{}）",
+                        disambiguated.component_id, disambiguated.name
+                    ));
+                    self.claimed.insert(disambiguated.component_id.clone());
+                    self.components.push(disambiguated);
+                    return;
+                }
+                self.errors.push(format!(
+                    "组件 id 冲突，已跳过：{original_id}（{original_name}）"
+                ));
+                return;
+            }
             self.errors.push(format!(
-                "组件 id 冲突，已跳过：{}（{}）",
-                component.component_id, component.name
+                "组件 id 冲突，已跳过：{original_id}（{original_name}）"
             ));
             return;
         }
@@ -320,7 +410,17 @@ fn build_plugin_components(
     // --- agents (02 §5.1) ---
     let agent_dirs = component_dirs(manifest.agents.as_slice(), "agents", source, builder);
     for dir in agent_dirs {
-        for (rel, text) in scan_markdown(source, &dir, builder) {
+        let root = source.join(&dir);
+        let scanned: Vec<(String, String)> = if root.is_file() {
+            // Explicit file declaration (`./agents/lead.md`).
+            let rel = dir.replace('\\', "/");
+            read_optional(&root, &rel, builder)
+                .map(|text| vec![(rel, text)])
+                .unwrap_or_default()
+        } else {
+            scan_markdown(source, &dir, builder)
+        };
+        for (rel, text) in scanned {
             let stem = rel
                 .rsplit('/')
                 .next()
@@ -351,6 +451,15 @@ fn build_plugin_components(
     let skill_dirs = component_dirs(manifest.skills.as_slice(), "skills", source, builder);
     for dir in skill_dirs {
         let root = source.join(&dir);
+        if root.is_file() {
+            // Explicit single-file declaration (`./skills/foo/SKILL.md`).
+            let rel = dir.replace('\\', "/");
+            let version = builder.version.clone();
+            if let Some(text) = read_optional(&root, &rel, builder) {
+                skill_from_text(&text, &rel, &meta.plugin_id, &version, builder);
+            }
+            continue;
+        }
         if !root.is_dir() {
             continue;
         }
@@ -373,37 +482,11 @@ fn build_plugin_components(
                 .and_then(|path| path.to_str())
                 .map(|path| path.replace('\\', "/"))
                 .unwrap_or_default();
-            let slug = rel
-                .rsplit_once('/')
-                .map(|(parent, _)| parent.rsplit('/').next().unwrap_or("skill"))
-                .unwrap_or("skill");
             match std::fs::read_to_string(abs) {
-                Ok(text) => match parse_skill(&text, &rel) {
-                    Ok(doc) => {
-                        let id = component_id(&meta.plugin_id, slug);
-                        let payload = json!({
-                            "id": id,
-                            "version": builder.version,
-                            "name": doc.name,
-                            "slug": slug,
-                            "description": doc.description,
-                            "mode": "store-agent",
-                            "invocation_policy": "model-auto",
-                            "instructions_ref": rel,
-                            "relative_path": rel,
-                            "has_arguments_note": doc.has_arguments_note,
-                        });
-                        builder.push(Component::new(
-                            crate::models::KIND_SKILL,
-                            id,
-                            doc.name,
-                            Some(rel),
-                            compat::skill(),
-                            payload,
-                        ));
-                    }
-                    Err(error) => builder.error(format!("技能文件解析失败 {rel}: {error}")),
-                },
+                Ok(text) => {
+                    let version = builder.version.clone();
+                    skill_from_text(&text, &rel, &meta.plugin_id, &version, builder);
+                }
                 Err(error) => builder.warn(format!("技能文件不可读 {rel}: {error}")),
             }
         }
@@ -412,7 +495,17 @@ fn build_plugin_components(
     // --- commands (02 §5) ---
     let command_dirs = component_dirs(manifest.commands.as_slice(), "commands", source, builder);
     for dir in command_dirs {
-        for (rel, _text) in scan_markdown(source, &dir, builder) {
+        let root = source.join(&dir);
+        let scanned: Vec<(String, String)> = if root.is_file() {
+            // Explicit file declaration (`./commands/triage.md`).
+            let rel = dir.replace('\\', "/");
+            read_optional(&root, &rel, builder)
+                .map(|text| vec![(rel, text)])
+                .unwrap_or_default()
+        } else {
+            scan_markdown(source, &dir, builder)
+        };
+        for (rel, _text) in scanned {
             let stem = rel
                 .rsplit('/')
                 .next()
@@ -679,6 +772,54 @@ fn build_skill_market_components(
     }
 }
 
+/// Single skill directory (`skills/<slug>/`): the root holds the SKILL.md
+/// directly; identity = directory name. Distinct from the market root, which
+/// scans `skills/*/SKILL.md` one level deep.
+fn build_single_skill_components(
+    source: &Path,
+    directory_name: &str,
+    meta: &crate::models::SnapshotMeta,
+    builder: &mut ComponentBuilder,
+) {
+    let skill_md = source.join("SKILL.md");
+    if !skill_md.is_file() {
+        builder.warn("技能目录缺少 SKILL.md".into());
+        return;
+    }
+    let rel = format!("{directory_name}/SKILL.md");
+    match std::fs::read_to_string(&skill_md) {
+        Ok(text) => {
+            let slug = directory_name.to_owned();
+            let id = component_id(&meta.plugin_id, &slug);
+            match parse_skill(&text, &rel) {
+                Ok(doc) => {
+                    builder.push(Component::new(
+                        crate::models::KIND_SKILL,
+                        id.clone(),
+                        doc.name.clone(),
+                        Some(rel.clone()),
+                        compat::skill(),
+                        json!({
+                            "id": id,
+                            "version": builder.version,
+                            "name": doc.name,
+                            "slug": slug,
+                            "description": doc.description,
+                            "mode": "store-agent",
+                            "invocation_policy": "model-auto",
+                            "instructions_ref": rel,
+                            "relative_path": rel,
+                            "has_arguments_note": doc.has_arguments_note,
+                        }),
+                    ));
+                }
+                Err(error) => builder.error(format!("技能文件解析失败 {rel}: {error}")),
+            }
+        }
+        Err(error) => builder.warn(format!("技能文件不可读 {rel}: {error}")),
+    }
+}
+
 fn build_connector_market_components(
     entries: &[serde_json::Value],
     meta: &crate::models::SnapshotMeta,
@@ -686,11 +827,29 @@ fn build_connector_market_components(
 ) {
     for (index, entry) in entries.iter().enumerate() {
         let fallback = format!("connector-{index}");
+        // Market index rows carry an ASCII `id` (unique) plus a display
+        // `name` that is often Chinese (「企业微信」). The opaque component id
+        // and the tool namespace must stay ASCII-unique; the display name may
+        // be localized freely.
+        let id_value = entry
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(sanitize_slug)
+            .filter(|slug| !slug.is_empty())
+            .unwrap_or_else(|| {
+                sanitize_slug(
+                    entry
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(&fallback),
+                )
+            });
+        let slug = if id_value.is_empty() { fallback.clone() } else { id_value };
         let name = entry
             .get("name")
             .and_then(|value| value.as_str())
-            .unwrap_or(&fallback);
-        let slug = sanitize_slug(name);
+            .unwrap_or(&slug)
+            .to_owned();
         let id = component_id(&meta.plugin_id, &slug);
         let kind = entry
             .get("type")
@@ -712,7 +871,7 @@ fn build_connector_market_components(
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
             id.clone(),
-            name.to_owned(),
+            name.clone(),
             None,
             compat::connector(),
             json!({
@@ -722,9 +881,118 @@ fn build_connector_market_components(
                 "kind": kind,
                 "transport_summary": transport,
                 "auth_mode": auth_mode,
-                "tool_filter": format!("connector__{name}__<tool>"),
+                "tool_filter": format!("connector__{slug}__<tool>"),
             }),
         ));
+    }
+}
+
+/// Build components for a single CLI connector directory (`cli.json` +
+/// `skills/`), the layout used by real CodeBuddy connector markets (wecom /
+/// feishu / tmeet / …).
+///
+/// - one `connector` component (kind `cli`) describing runtime + auth
+///   lifecycle derived from `cli.json`;
+/// - one `skill` component per `skills/<dir>/SKILL.md` (02 §5); a missing
+///   `skills/` directory degrades to a warning, never a block.
+fn build_cli_connector_components(
+    source: &Path,
+    cli: &crate::manifest::CliManifest,
+    directory_name: &str,
+    meta: &crate::models::SnapshotMeta,
+    builder: &mut ComponentBuilder,
+) {
+    let id = component_id(&meta.plugin_id, directory_name);
+    let runtime_type = cli
+        .runtime
+        .as_ref()
+        .and_then(|value| value.get("type"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown")
+        .to_owned();
+    let runtime_version = cli
+        .runtime
+        .as_ref()
+        .and_then(|value| value.get("version"))
+        .and_then(|value| value.as_str())
+        .map(str::to_owned);
+    let version_check = crate::manifest::platform_summary(&cli.version_check)
+        .unwrap_or_default();
+    let init_summary = crate::manifest::platform_summary(&cli.init).unwrap_or_default();
+    let auth_summary = crate::manifest::platform_summary(&cli.auth).unwrap_or_default();
+    let status_summary = crate::manifest::platform_summary(&cli.status).unwrap_or_default();
+    let auth_domain = cli.auth_url_domain.clone().unwrap_or_default();
+    let auth_mode = if auth_summary.is_empty() {
+        "none".to_owned()
+    } else {
+        "cli-auth".to_owned()
+    };
+    builder.push(Component::new(
+        crate::models::KIND_CONNECTOR,
+        id.clone(),
+        directory_name.to_owned(),
+        None,
+        compat::connector(),
+        json!({
+            "id": id,
+            "version": builder.version,
+            "name": directory_name,
+            "kind": "cli",
+            "runtime": {
+                "type": runtime_type,
+                "version": runtime_version,
+            },
+            "transport_summary": if init_summary.is_empty() {
+                format!("cli:{}", directory_name)
+            } else {
+                init_summary.clone()
+            },
+            "auth_mode": auth_mode,
+            "auth": {
+                "init": init_summary,
+                "status": status_summary,
+                "status_match": cli.status_match.clone(),
+                "domain": auth_domain,
+            },
+            "version_check": version_check,
+            "tool_filter": format!("connector__{directory_name}__<tool>"),
+        }),
+    ));
+
+    // skills/ scan (one SKILL.md per subdirectory; shallow, mirrors the
+    // plugin skills branch). Depends on `source.join("skills")` — the dir is
+    // copied verbatim by walk.rs.
+    let skills_root = source.join("skills");
+    if !skills_root.is_dir() {
+        builder.warn("CLI 连接器缺少 skills/ 目录".into());
+        return;
+    }
+    for entry in walkdir::WalkDir::new(&skills_root)
+        .min_depth(1)
+        .max_depth(2)
+        .sort_by_file_name()
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() || entry.file_name() != "SKILL.md" {
+            continue;
+        }
+        let abs = entry.path();
+        let rel = abs
+            .strip_prefix(source)
+            .ok()
+            .and_then(|path| path.to_str())
+            .map(|path| path.replace('\\', "/"))
+            .unwrap_or_default();
+        match std::fs::read_to_string(abs) {
+            Ok(text) => {
+                let version = builder.version.clone();
+                skill_from_text(&text, &rel, &meta.plugin_id, &version, builder);
+            }
+            Err(error) => builder.warn(format!("技能文件不可读 {rel}: {error}")),
+        }
     }
 }
 
@@ -793,8 +1061,12 @@ fn is_sensitive_field(key: &str, schema_type: &str, schema: &serde_json::Value) 
     schema.get("sensitive").and_then(|value| value.as_bool()).unwrap_or(false)
 }
 
-/// Manifest-declared component dirs, or the default dir when the list is
-/// empty (02 §4: custom dirs replace defaults unless the default is listed).
+/// Manifest-declared component roots: directories or individual files.
+///
+/// Real CodeBuddy markets declare both shapes: a directory
+/// (`"./agents"`) that is scanned recursively, and explicit file paths
+/// (`"./agents/lead.md"`) that are imported one-by-one. V1 (02 §4) treats
+/// every declared root as a scan target; files are imported directly.
 fn component_dirs(
     declared: &[String],
     default_dir: &str,
@@ -802,7 +1074,7 @@ fn component_dirs(
     builder: &mut ComponentBuilder,
 ) -> Vec<String> {
     let explicitly_declared = !declared.is_empty();
-    let mut dirs: Vec<String> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     let list: Vec<String> = if explicitly_declared {
         declared.to_vec()
     } else {
@@ -810,22 +1082,72 @@ fn component_dirs(
     };
     for raw in list {
         match validate_relative_path(&raw) {
-            Ok(dir) if dir.is_empty() => dirs.push(String::new()),
-            Ok(dir) => dirs.push(dir),
+            Ok(dir) if dir.is_empty() => out.push(String::new()),
+            Ok(dir) => {
+                let path = source.join(&dir);
+                if path.is_file() || path.is_dir() {
+                    out.push(dir);
+                } else if explicitly_declared {
+                    builder.warn(format!("清单声明的目录/文件不存在：{dir}"));
+                }
+            }
             Err(error) => builder.block(format!("忽略不安全路径 {raw}: {error}")),
         }
     }
-    dirs.into_iter()
-        .filter(|dir| {
-            let exists = dir.is_empty() || source.join(dir).is_dir();
-            // Only *declared* missing dirs are a warning; the implicit default
-            // dirs (agents/skills/commands) are optional for any plugin.
-            if !exists && explicitly_declared {
-                builder.warn(format!("清单声明的目录不存在：{dir}"));
-            }
-            exists
-        })
-        .collect()
+    out
+}
+
+/// Read a single declared component file; missing files degrade to a warning
+/// rather than blocking (02 §11.1).
+fn read_optional(path: &Path, rel: &str, builder: &mut ComponentBuilder) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) => {
+            builder.warn(format!("组件文件不可读 {rel}: {error}"));
+            None
+        }
+    }
+}
+
+/// Parse a `SKILL.md` text and push a skill component. Shared by directory
+/// scans and explicit file declarations.
+fn skill_from_text(
+    text: &str,
+    rel: &str,
+    plugin_id: &str,
+    version: &str,
+    builder: &mut ComponentBuilder,
+) {
+    let slug = rel
+        .rsplit_once('/')
+        .map(|(parent, _)| parent.rsplit('/').next().unwrap_or("skill"))
+        .unwrap_or("skill");
+    match parse_skill(text, rel) {
+        Ok(doc) => {
+            let id = component_id(plugin_id, slug);
+            let payload = json!({
+                "id": id,
+                "version": version,
+                "name": doc.name,
+                "slug": slug,
+                "description": doc.description,
+                "mode": "store-agent",
+                "invocation_policy": "model-auto",
+                "instructions_ref": rel,
+                "relative_path": rel,
+                "has_arguments_note": doc.has_arguments_note,
+            });
+            builder.push(Component::new(
+                crate::models::KIND_SKILL,
+                id,
+                doc.name,
+                Some(rel.to_owned()),
+                compat::skill(),
+                payload,
+            ));
+        }
+        Err(error) => builder.error(format!("技能文件解析失败 {rel}: {error}")),
+    }
 }
 
 /// `.md` files under `source/dir` (sorted, shallow recursion).

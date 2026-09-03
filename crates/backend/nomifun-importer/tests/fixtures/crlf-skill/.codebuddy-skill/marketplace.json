@@ -1,0 +1,6 @@
+{
+  "name": "codebuddy-skills-compat",
+  "description": "Fixture: market with CRLF + malformed frontmatter skills",
+  "owner": { "name": "Fixtures", "email": "fixtures@example.com" },
+  "skills": []
+}

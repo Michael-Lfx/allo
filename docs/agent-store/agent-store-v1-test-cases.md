@@ -125,6 +125,83 @@ NOT_RUN
 - 操作：导入含 userConfig/token schema 的插件
 - 断言：只生成 CredentialSchema/Binding 引用；真实值不进入 Snapshot、日志和公共响应
 
+### TC-IMP-010：文件路径声明 + 对象形式依赖
+
+- 等级：P1
+- 操作：导入 manifest 以文件路径声明组件（`./agents/lead.md`）且 `dependencies` 为对象（`{"connectors":["x"]}`）的插件
+- 断言：文件被逐个导入为组件；对象依赖归一化为条目（带 `group` 标记）；不因形状差异发生 blocked
+
+### TC-IMP-011：CLI 连接器目录
+
+- 等级：P1
+- 操作：导入 `connectors/<id>/`（`cli.json` + `skills/*/SKILL.md`）
+- 断言：生成 1 个 `connector` 组件（kind=cli，含 runtime/auth 摘要）与随附 `skills/` 全部 SkillDefinition；`cli.json` 缺名下以目录名为身份
+
+### TC-IMP-012：市场格式兼容（CRLF / 宽松 YAML）
+
+- 等级：P1
+- 操作：导入含 CRLF 行尾 SKILL.md、以及含未加引号引号/内嵌 JSON 的非严格 frontmatter 的市场
+- 断言：CRLF 正常解析；非严格 YAML 回退到宽松行级解析（name/description 至少保留），不整篇丢弃
+
+### TC-IMP-013：author 对象 + 字符串组件根
+
+- 等级：P1
+- 操作：导入 `author: {"name": "..."}` 且 `agents: "./agents/x.md"`（字符串而非数组）的插件
+- 断言：author 归一化为 `name <email>`；字符串组件根等价于单元素数组；同名 Agent+Skill 时 Skill 加 `-skill` 后缀消歧
+
+### TC-IMP-014：单 Skill 目录
+
+- 等级：P1
+- 操作：以 `workbuddy-skill-market` 导入 `skills/<slug>/`（无 marketplace.json，根含 SKILL.md）
+- 断言：单技能可导入；身份 = 目录名；不因缺 marketplace.json 被 blocked
+
+### TC-INS-001：安装注册到运行时
+
+- 等级：P1
+- 操作：导入 software-company 后执行 `install/run`
+- 断言：`installed_count > 0`；skill 物化到 `{skills}/agent-store/{snapshot_id}/{slug}/`；
+  agent/team 创建 Preset；connector upsert 进 `mcp_servers`；组件状态 `installed`
+
+### TC-INS-002：禁用 / 启用 / 卸载状态机
+
+- 等级：P1
+- 操作：对已安装组件依次 `disable` → `enable` → `uninstall`
+- 断言：状态 `installed → disabled → installed → not-installed`；卸载后快照与组件行保留
+
+### TC-INS-003：市场添加与条目发现
+
+- 等级：P1
+- 操作：`market/add`（directory 源，含 `.codebuddy-skill/marketplace.json` + `skills/`）
+- 断言：注册表行出现；`market/list` 返回 1 项；`market/get` 条目数 = 清单条目数；
+  同源重复添加幂等（不产生新行）
+- 注：非 directory 源返回 `bad_request`；不含任何清单/插件子目录的路径返回 `not_found`
+
+### TC-INS-004：条目导入 + 级联卸载
+
+- 等级：P1
+- 操作：`market/get` → `entries/{entry}/import` → `install/run` → `market/remove`
+  （cascade=true）
+- 断言：条目导入复用导入管线并记录 provenance（不出现于公共响应）；安装成功；
+  remove 后已安装组件状态回到 `not-installed`（快照行保留于 history）；市场从
+  `market/list` 消失；二次 remove 返回 `not_found`
+
+### TC-INS-005：Git 源获取与刷新（阶段 B）
+
+- 等级：P1
+- 操作：以 `git` 源添加市场（本地 bare repo 作 origin）→ `market/get` →
+  `market/refresh` 两次
+- 断言：add 同步克隆并渲染条目（相对路径解析完整树）；`refresh` 同 commit →
+  `changed=false`（no-op）；live 根存在于工作区市场目录；条目导入后快照携带
+  `resolved_revision` provenance
+
+### TC-INS-006：HTTP 源清单校验与外部条目（阶段 B）
+
+- 等级：P1
+- 操作：以 `url` 源添加市场（本地 mock server 返回 marketplace.json）→ refresh
+- 断言：清单无 `name`/无条目数组 → add 返回错误；合法清单 → 条目可发现；
+  声明外部源（GitHub/NPM）条目标记 `source_kind=external`，导入返回 `bad_request`；
+  `refresh` 带 `If-None-Match`，`304`/相同 ETag → `changed=false`
+
 ## 4. 单 Agent Runtime
 
 ### TC-RT-001：单 Agent Run

@@ -193,6 +193,10 @@ pub enum AppServerImportSourceKind {
     /// `.codebuddy-connector/connectors.json` connector market directory.
     #[serde(rename = "workbuddy-connector-market")]
     WorkBuddyConnectorMarket,
+    /// A single CLI connector directory (`connectors/<id>/` with `cli.json`
+    /// + `skills/`), e.g. wecom / feishu / tmeet.
+    #[serde(rename = "workbuddy-cli-connector")]
+    WorkBuddyCliConnector,
 }
 
 impl AppServerImportSourceKind {
@@ -201,6 +205,7 @@ impl AppServerImportSourceKind {
             Self::CodeBuddyPlugin => "codebuddy-plugin",
             Self::WorkBuddySkillMarket => "workbuddy-skill-market",
             Self::WorkBuddyConnectorMarket => "workbuddy-connector-market",
+            Self::WorkBuddyCliConnector => "workbuddy-cli-connector",
         }
     }
 }
@@ -370,4 +375,198 @@ pub struct AppServerTeamDetail {
     #[serde(default)]
     pub workflow_limits: serde_json::Value,
     pub team_runtime_capabilities: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Installer / runtime registration (roadmap Phase 2)
+// ---------------------------------------------------------------------------
+
+/// `install/run` request: which snapshot to install. The source kinds mirror
+/// the import kinds — installation always acts on an existing snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerInstallRequest {
+    pub snapshot_id: String,
+}
+
+/// Installation state of one component (wire values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AppServerInstallState {
+    /// Never installed; only catalogued by an import.
+    #[serde(rename = "not-installed")]
+    NotInstalled,
+    /// Installed and enabled (usable at runtime).
+    #[serde(rename = "installed")]
+    Installed,
+    /// Installed but disabled (runtime artifacts remain, not usable).
+    #[serde(rename = "disabled")]
+    Disabled,
+}
+
+impl AppServerInstallState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotInstalled => "not-installed",
+            Self::Installed => "installed",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+/// Per-component installation state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerInstallComponent {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub state: AppServerInstallState,
+    /// Runtime target summary: skill path / preset id / mcp server name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_location: Option<String>,
+    /// Preset id created for agent/team components.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+}
+
+/// `install/run` result (one snapshot installation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerInstallResult {
+    pub snapshot_id: String,
+    pub name: String,
+    pub version: String,
+    /// Number of components registered into the runtime.
+    pub installed_count: usize,
+    /// Components that could not be installed (skipped with a reason).
+    #[serde(default)]
+    pub skipped: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
+/// Install state projection for one snapshot (or empty when not installed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerInstallStatus {
+    pub snapshot_id: String,
+    pub components: Vec<AppServerInstallComponent>,
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace (roadmap Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Marketplace source kinds (docs/agent-store/02 §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AppServerMarketplaceSourceKind {
+    /// Local directory on the trusted host.
+    #[serde(rename = "directory")]
+    Directory,
+    /// GitHub repository (`owner/repo`).
+    #[serde(rename = "github")]
+    Github,
+    /// Any Git remote.
+    #[serde(rename = "git")]
+    Git,
+    /// HTTP(S) `marketplace.json`.
+    #[serde(rename = "url")]
+    Url,
+}
+
+impl AppServerMarketplaceSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Directory => "directory",
+            Self::Github => "github",
+            Self::Git => "git",
+            Self::Url => "url",
+        }
+    }
+}
+
+/// `market/add` request. The raw source is resolved on the trusted host.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketplaceAddRequest {
+    /// Optional stable name; derived from the source when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub source_kind: AppServerMarketplaceSourceKind,
+    /// Local directory path / `owner/repo` / Git URL / HTTP URL.
+    pub source: String,
+}
+
+/// `market/list` row: registry projection, no entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketplaceSummary {
+    pub marketplace_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub auto_update: bool,
+    pub enabled: bool,
+    /// Entry count from the entries projection.
+    pub entry_count: usize,
+    pub added_at: i64,
+}
+
+/// One discovered entry (`market/get`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketplaceEntry {
+    pub name: String,
+    pub source_kind: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+}
+
+/// Snapshot provenance on an entry (what import/install produced).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketplaceEntrySnapshot {
+    pub snapshot_id: String,
+    pub name: String,
+    pub version: String,
+    pub status: String,
+    pub component_count: usize,
+    pub imported_at: i64,
+}
+
+/// `market/get` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketplaceDetail {
+    #[serde(flatten)]
+    pub summary: AppServerMarketplaceSummary,
+    #[serde(default)]
+    pub entries: Vec<AppServerMarketplaceEntry>,
+}
+
+/// `market/remove` result: what was uninstalled by the cascade.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketplaceRemoveResult {
+    pub marketplace_id: String,
+    /// Snapshots that were installed from this marketplace.
+    pub snapshots: Vec<String>,
+    /// Component ids whose install state was cleared by cascade uninstall.
+    pub uninstalled_components: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// `market/refresh` result: one fetch + projection cycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMarketplaceRefreshResult {
+    pub marketplace_id: String,
+    /// `true` when the remote revision changed and the projection was rebuilt.
+    pub changed: bool,
+    /// Resolved revision for this fetch (git commit / freshness marker);
+    /// internal traceability only, never a public identity.
+    pub resolved_revision: String,
+    pub entry_count: usize,
+    pub warnings: Vec<String>,
 }

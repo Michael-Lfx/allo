@@ -5,10 +5,10 @@
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`
 > 依据：https://www.codebuddy.cn/docs/cli/plugins、/plugins-reference、/plugin-marketplaces、/sub-agents、/agent-teams（官方文档已提取正文部分）
 
-> 实现记录：V1 支持本地目录三类来源（`codebuddy-plugin` / `workbuddy-skill-market` /
-> `workbuddy-connector-market`）。导入流程、路径安全（§7/§11.1）、幂等与 digest 冲突
-> （§9）、部分失败（§11.2）、凭据只建 Schema（§10）均已按本规范落地；验收结果见
-> `importer-runtime-evidence.zh.md`。
+> 实现记录：V1 支持本地目录四类来源（`codebuddy-plugin` / `workbuddy-skill-market` /
+> `workbuddy-connector-market` / `workbuddy-cli-connector`）。导入流程、路径安全（§7/§11.1）、
+> 幂等与 digest 冲突（§9）、部分失败（§11.2）、凭据只建 Schema（§10）均已按本规范落地；
+> 验收结果见 `importer-runtime-evidence.zh.md`。
 
 ## 1. 导入范围
 
@@ -16,9 +16,20 @@
 |---|---|---|
 | CodeBuddy/WorkBuddy 插件 | `.codebuddy-plugin/plugin.json` + 组件目录 | PluginSnapshot |
 | WorkBuddy Skill 市场 | `.codebuddy-skill/marketplace.json` + `skills/<slug>/` | SkillDefinition |
+| WorkBuddy Skill 单目录 | `skills/<slug>/SKILL.md`（无 marketplace.json） | SkillDefinition |
 | WorkBuddy Connector 市场 | `.codebuddy-connector/connectors.json` + `connectors/<slug>/` | ConnectorDefinition + CredentialSchema |
+| CLI 连接器（单目录） | `connectors/<id>/cli.json` + `skills/<slug>/SKILL.md` | ConnectorDefinition（cli）+ SkillDefinition（随附技能） |
 
 约束：导入器只把来源当作输入格式，不要求 allo 原生解析器理解来源字段；标准输出为不可变 PluginSnapshot 与标准化定义。
+
+> 注 1：CLI 连接器目录（`cli.json` + `skills/`）是真实 CodeBuddy 市场的布局（wecom / feishu /
+> tmeet 等）。`cli.json` 本身不携带身份（name/version 均无），V1 用**目录名**作为插件身份，
+> 无版本声明时以 `1.0.0` 参与快照版本（§4 默认值规则）。随附 `skills/` 下的每个
+> `SKILL.md` 解析为 SkillDefinition（02 §5）。
+
+> 注 2：单 Skill 目录（`skills/<slug>/`）没有 marketplace.json——真实市场根与「单 skill 目录」
+> 共用 `workbuddy-skill-market` 来源类型：目录根含 `SKILL.md` 即视为单个 skill，身份 = 目录名
+> （02 §4 默认值规则）。这样用户可粘贴任意市场根或单个 skill 目录路径。
 
 ## 2. 导入流程（固定顺序）
 
@@ -57,21 +68,22 @@ plugin-root/
 | 字段（官方文档确认） | 导入处理 |
 |---|---|
 | `name`（唯一必填） | 插件身份 + Skill 命名空间来源 |
-| `version` / `description` / `author` | 元数据；version 参与快照版本 |
-| `agents` | 目录引用（相对、`./` 开头）→ AgentDefinition |
-| `skills` | 目录引用 → SkillDefinition |
-| `commands` | 目录引用 → CommandDefinition |
-| `hooks` | 文件/目录引用 → LifecycleHookDefinition |
+| `version` / `description` / `author` | 元数据；version 参与快照版本（`author` 兼容字符串与 `{"name","email"}` 对象） |
+| `agents` | 目录或文件路径引用（相对、`./` 开头；兼容字符串单值与数组）→ AgentDefinition |
+| `skills` | 目录或文件路径引用（同左）→ SkillDefinition |
+| `commands` | 目录或文件路径引用（同左）→ CommandDefinition |
+| `hooks` | 文件/目录引用 → LifecycleHookDefinition（`hooks` 兼容对象与字符串值——字符串仅保留元数据） |
 | `mcpServers` / `.mcp.json` | 插件级 MCP 配置 → ConnectorDefinition |
-| `lspServers` / `.lsp.json` | → LspDefinition（V1 元数据级） |
+| `lspServers` / `.lsp.json` | → LspDefinition（V1 元数据级；兼容字符串值——仅保留服务器名清单） |
 | `userConfig` | 配置 schema → CredentialSchema；敏感项进安全存储 |
-| `dependencies` | 插件依赖（可含版本/市场约束）→ PluginDependency |
+| `dependencies` | 插件依赖（数组或 `{"connectors":[...]}` 对象形式；对象展开为条目并带 `group` 标记）→ PluginDependency |
 | `defaultEnabled` / `channels` | 安装/启用策略元数据 |
 
 规则：
 
 - Manifest 路径一律相对于插件根，必须以 `./` 开头；自定义组件路径替换默认目录，除非默认目录也列入数组；
-- `name` 同时是 Skill 命名空间（如 `my-plugin:hello`），导入后保留该命名空间语义（`plugin:skill` 形态）。
+- `name` 同时是 Skill 命名空间（如 `my-plugin:hello`），导入后保留该命名空间语义（`plugin:skill` 形态）；
+- Agent 与 Skill 共用组件 id 命名空间；同名时（如 `aihot` 插件含 agent `aihot` + skill `skills/aihot`）Skill 自动加 `-skill` 后缀消歧，不丢组件。
 
 ## 5. 组件映射总表
 
@@ -90,6 +102,13 @@ plugin-root/
 | `teamInfo`（WorkBuddy 扩展） | AgentTeamDefinition | V1 导入固定成员、Leader 引用和 Team 策略；不创建 ExecutionTemplate，由 Runtime Adapter 在 TeamRun 创建时物化；支持 planned DAG、局部并行、事件、重试和 replan；不要求完整 Mailbox | 见 §6 |
 
 ### 5.1 agents/*.md 字段保留清单
+
+Frontmatter 解析（`frontmatter.rs`）对真实市场文件做了兼容处理：
+- **CRLF 行尾**（`\r\n`）：透明归一化后再解析；
+- **非严格 YAML**（未加引号的引号、内嵌 JSON 字符串、折叠标量）：严格 YAML 失败时回退到
+  **宽松行级解析**——只提取顶层 `key: value` 标量（name/description/version/homepage 等仍
+  可结构化保留），复杂/多行值降级为字符串文本；该回退保证 `name` 至少存活，绝不因格式
+  不规则丢弃整篇定义。
 
 CodeBuddy 子代理 frontmatter（官方文档已证实），导入后必须结构化保留：
 
@@ -146,6 +165,11 @@ Members: software-product-manager, software-architect,
 ## 8. 市场与依赖
 
 - 市场来源支持：本地目录 / GitHub 仓库 / Git URL / HTTP marketplace.json（官方文档已证实）；
+- **实现状态（2026-08 迭代 Phase 2 阶段 B）**：`directory` + `github` + `git` + `url`
+  全部落地（`plugin_marketplaces` 注册表 + `market_fetch` 获取层：git2 克隆 /
+  HTTP 条件下载 → staging 校验 → 原子晋升 → last-good；`market/refresh` 按
+  resolved_revision/ETag 新鲜度短路）；URL 市场条目外源标记 `external`（文档语义：
+  只镜像清单内联条目）；
 - 市场条目字段（name、source、version、strict、commands、agents、skills、hooks、mcpServers）可与插件 Manifest 合并，检查冲突；
 - `strict=true`：要求插件源自带 plugin.json；`strict=false`：市场条目可补充/代替清单；
 - 依赖可用字符串或对象（name + version + marketplace），版本用 SemVer 范围；
@@ -219,6 +243,21 @@ failed
 - 来源字段被来源运行时忽略。
 
 部分失败不得产生“可运行”状态。定义只有在必要字段完整、依赖满足、目标 Runtime 适配通过后，才能标记 `compatible` 或 `compatible-with-adapter`。
+
+### 11.3 安装状态机（roadmap Phase 2）
+
+导入只登记不可变快照（`installed=0`）；安装把组件注册进运行时并记录状态：
+
+```text
+not-installed ── install ──▶ installed ── disable ──▶ disabled
+     ▲                          │  ▲                    │
+     └────── uninstall ─────────┘  └──── enable ────────┘
+```
+
+- `installed` / `disabled` 字段存放在 `plugin_snapshot_components`（迁移 054）；
+- `runtime_ref`（JSON：`{type, location, mcp_server_id}`）与 `preset_id`（agent/team）记录运行时目标，仅供内部追溯；
+- `uninstall` 移除运行时产物并清除状态（快照行保留）；`disable` 保留产物只翻转状态位；
+- 安装幂等：重复 `install` 覆盖相同的运行时注册，不产生重复行。
 
 ## 12. 输出物（Importer 交付验收）
 

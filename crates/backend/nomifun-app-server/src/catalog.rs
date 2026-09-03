@@ -12,9 +12,12 @@ use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityTriple,
     AppServerConnectorDetail, AppServerConnectorProbeResult, AppServerConnectorStatusView,
     AppServerConnectorSummary, AppServerImportDetail, AppServerImportRequest,
-    AppServerImportResult, AppServerImportSummary, AppServerOAuthStartResult,
-    AppServerOAuthStatusView, AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail,
-    AppServerTeamSummary,
+    AppServerImportResult, AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
+    AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
+    AppServerMarketplaceEntry, AppServerMarketplaceRefreshResult,
+    AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
+    AppServerOAuthStartResult, AppServerOAuthStatusView,
+    AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail, AppServerTeamSummary,
 };
 use nomifun_common::AppError;
 
@@ -52,6 +55,75 @@ pub trait ImportProvider: Send + Sync {
     async fn run(&self, request: AppServerImportRequest) -> Result<AppServerImportResult, AppError>;
     async fn list(&self, limit: u32) -> Result<Vec<AppServerImportSummary>, AppError>;
     async fn get(&self, snapshot_id: &str) -> Result<AppServerImportDetail, AppError>;
+}
+
+/// Installer seam (`install/run|status|enable|disable|uninstall`, roadmap
+/// Phase 2). Installation registers an imported snapshot's components into
+/// the runtime; providers return only public projections.
+#[async_trait]
+pub trait InstallProvider: Send + Sync {
+    /// Install a snapshot: register its components into the runtime.
+    async fn install(&self, request: AppServerInstallRequest) -> Result<AppServerInstallResult, AppError>;
+
+    /// Current per-component installation state for a snapshot.
+    async fn status(&self, snapshot_id: &str) -> Result<AppServerInstallStatus, AppError>;
+
+    /// Disable installed components (runtime artifacts stay).
+    async fn disable(&self, snapshot_id: &str, component_ids: &[String]) -> Result<AppServerInstallStatus, AppError>;
+
+    /// Re-enable previously disabled components.
+    async fn enable(&self, snapshot_id: &str, component_ids: &[String]) -> Result<AppServerInstallStatus, AppError>;
+
+    /// Uninstall: remove runtime artifacts and clear the state (snapshot kept).
+    async fn uninstall(&self, snapshot_id: &str, component_ids: &[String]) -> Result<AppServerInstallStatus, AppError>;
+}
+
+/// Marketplace seam (`market/add|list|get|remove|auto-update|entries/{e}/import`,
+/// roadmap Phase 2). A marketplace is a catalog of discoverable plugins; adding
+/// one registers its source, entries are imported through the normal snapshot
+/// pipeline, and removal cascades uninstalls when confirmed.
+#[async_trait]
+pub trait MarketplaceProvider: Send + Sync {
+    /// Register a marketplace source on the trusted host (directory in Phase A).
+    async fn add(
+        &self,
+        request: AppServerMarketplaceAddRequest,
+    ) -> Result<AppServerMarketplaceSummary, AppError>;
+
+    /// All active marketplaces (registry projection, no entries).
+    async fn list(&self) -> Result<Vec<AppServerMarketplaceSummary>, AppError>;
+
+    /// One marketplace with its discovered entries.
+    async fn get(&self, marketplace_id: &str) -> Result<AppServerMarketplaceDetail, AppError>;
+
+    /// Remove a marketplace. `cascade` uninstalls snapshots installed from it
+    /// (CodeBuddy semantics); snapshots themselves are kept.
+    async fn remove(
+        &self,
+        marketplace_id: &str,
+        cascade: bool,
+    ) -> Result<AppServerMarketplaceRemoveResult, AppError>;
+
+    /// Toggle auto-update for a marketplace.
+    async fn set_auto_update(
+        &self,
+        marketplace_id: &str,
+        enabled: bool,
+    ) -> Result<AppServerMarketplaceSummary, AppError>;
+
+    /// Re-fetch the marketplace source and rebuild the entries projection when
+    /// the resolved revision changed (freshness short-circuit otherwise).
+    async fn refresh(
+        &self,
+        marketplace_id: &str,
+    ) -> Result<AppServerMarketplaceRefreshResult, AppError>;
+
+    /// Import one discovered entry (provenance links the snapshot back).
+    async fn import_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerImportResult, AppError>;
 }
 
 /// Read-side Agent catalog (`agent/list`, `agent/get`, docs/agent-store/05
@@ -266,6 +338,232 @@ impl ImportProvider for FakeImportProvider {
         self.detail
             .clone()
             .ok_or_else(|| AppError::NotFound(format!("snapshot {snapshot_id} not found")))
+    }
+}
+
+/// In-memory install fake: canned install result + per-component state.
+pub struct FakeInstallProvider {
+    pub install_result: AppServerInstallResult,
+    pub status: AppServerInstallStatus,
+}
+
+impl FakeInstallProvider {
+    pub fn new() -> Self {
+        Self {
+            install_result: AppServerInstallResult {
+                snapshot_id: "snap-demo".into(),
+                name: "demo".into(),
+                version: "1.0.0".into(),
+                installed_count: 0,
+                skipped: vec![],
+                warnings: vec![],
+                errors: vec![],
+            },
+            status: AppServerInstallStatus { snapshot_id: "snap-demo".into(), components: vec![] },
+        }
+    }
+}
+
+impl Default for FakeInstallProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl InstallProvider for FakeInstallProvider {
+    async fn install(
+        &self,
+        _request: AppServerInstallRequest,
+    ) -> Result<AppServerInstallResult, AppError> {
+        Ok(self.install_result.clone())
+    }
+
+    async fn status(&self, snapshot_id: &str) -> Result<AppServerInstallStatus, AppError> {
+        if snapshot_id != self.status.snapshot_id {
+            return Err(AppError::NotFound(format!("snapshot {snapshot_id} not found")));
+        }
+        Ok(self.status.clone())
+    }
+
+    async fn disable(
+        &self,
+        _snapshot_id: &str,
+        _component_ids: &[String],
+    ) -> Result<AppServerInstallStatus, AppError> {
+        Ok(self.status.clone())
+    }
+
+    async fn enable(
+        &self,
+        _snapshot_id: &str,
+        _component_ids: &[String],
+    ) -> Result<AppServerInstallStatus, AppError> {
+        Ok(self.status.clone())
+    }
+
+    async fn uninstall(
+        &self,
+        _snapshot_id: &str,
+        _component_ids: &[String],
+    ) -> Result<AppServerInstallStatus, AppError> {
+        Ok(self.status.clone())
+    }
+}
+
+/// In-memory marketplace fake: one canned market + canned remove result.
+pub struct FakeMarketplaceProvider {
+    pub added: AppServerMarketplaceSummary,
+    pub detail: AppServerMarketplaceDetail,
+    pub remove_result: AppServerMarketplaceRemoveResult,
+    pub imported: AppServerImportResult,
+}
+
+impl FakeMarketplaceProvider {
+    pub fn new() -> Self {
+        let summary = AppServerMarketplaceSummary {
+            marketplace_id: "company-tools".into(),
+            name: "company-tools".into(),
+            description: Some("team catalog".into()),
+            source_kind: "directory".into(),
+            version: Some("1.0.0".into()),
+            auto_update: false,
+            enabled: true,
+            entry_count: 2,
+            added_at: 1,
+        };
+        Self {
+            detail: AppServerMarketplaceDetail {
+                summary: summary.clone(),
+                entries: vec![
+                    AppServerMarketplaceEntry {
+                        name: "formatter".into(),
+                        source_kind: "directory".into(),
+                        source: "./plugins/formatter".into(),
+                        version: Some("2.1.0".into()),
+                        description: Some("Automatic code formatting".into()),
+                        keywords: vec![],
+                        category: None,
+                    },
+                    AppServerMarketplaceEntry {
+                        name: "deploy".into(),
+                        source_kind: "github".into(),
+                        source: "company/deploy-plugin".into(),
+                        version: None,
+                        description: None,
+                        keywords: vec![],
+                        category: None,
+                    },
+                ],
+            },
+            added: summary,
+            remove_result: AppServerMarketplaceRemoveResult {
+                marketplace_id: "company-tools".into(),
+                snapshots: vec!["snap-demo".into()],
+                uninstalled_components: vec!["wb-company-tools-formatter".into()],
+                warnings: vec![],
+            },
+            imported: AppServerImportResult {
+                snapshot_id: "snap-demo".into(),
+                name: "formatter".into(),
+                version: "2.1.0".into(),
+                source_kind: "codebuddy-plugin".into(),
+                status: "completed".into(),
+                content_digest: "digest-abc".into(),
+                component_status: AppServerCompatibilityTriple {
+                    semantic_status: "compatible_with_adapter".into(),
+                    runtime_status: "not-verified".into(),
+                    distribution_status: "local-only".into(),
+                    reasons: vec![],
+                },
+                component_count: 3,
+                imported_at: 1,
+                reused: false,
+                warnings: vec![],
+                errors: vec![],
+            },
+        }
+    }
+}
+
+impl Default for FakeMarketplaceProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl MarketplaceProvider for FakeMarketplaceProvider {
+    async fn add(
+        &self,
+        _request: AppServerMarketplaceAddRequest,
+    ) -> Result<AppServerMarketplaceSummary, AppError> {
+        Ok(self.added.clone())
+    }
+
+    async fn list(&self) -> Result<Vec<AppServerMarketplaceSummary>, AppError> {
+        Ok(vec![self.added.clone()])
+    }
+
+    async fn get(&self, marketplace_id: &str) -> Result<AppServerMarketplaceDetail, AppError> {
+        if marketplace_id != self.added.marketplace_id {
+            return Err(AppError::NotFound(format!("marketplace {marketplace_id} not found")));
+        }
+        Ok(self.detail.clone())
+    }
+
+    async fn remove(
+        &self,
+        marketplace_id: &str,
+        _cascade: bool,
+    ) -> Result<AppServerMarketplaceRemoveResult, AppError> {
+        if marketplace_id != self.added.marketplace_id {
+            return Err(AppError::NotFound(format!("marketplace {marketplace_id} not found")));
+        }
+        Ok(self.remove_result.clone())
+    }
+
+    async fn set_auto_update(
+        &self,
+        marketplace_id: &str,
+        enabled: bool,
+    ) -> Result<AppServerMarketplaceSummary, AppError> {
+        if marketplace_id != self.added.marketplace_id {
+            return Err(AppError::NotFound(format!("marketplace {marketplace_id} not found")));
+        }
+        let mut summary = self.added.clone();
+        summary.auto_update = enabled;
+        Ok(summary)
+    }
+
+    async fn refresh(
+        &self,
+        marketplace_id: &str,
+    ) -> Result<AppServerMarketplaceRefreshResult, AppError> {
+        if marketplace_id != self.added.marketplace_id {
+            return Err(AppError::NotFound(format!("marketplace {marketplace_id} not found")));
+        }
+        Ok(AppServerMarketplaceRefreshResult {
+            marketplace_id: marketplace_id.to_owned(),
+            changed: true,
+            resolved_revision: "abc123def".into(),
+            entry_count: self.detail.entries.len(),
+            warnings: vec![],
+        })
+    }
+
+    async fn import_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerImportResult, AppError> {
+        if marketplace_id != self.added.marketplace_id {
+            return Err(AppError::NotFound(format!("marketplace {marketplace_id} not found")));
+        }
+        if !self.detail.entries.iter().any(|entry| entry.name == entry_name) {
+            return Err(AppError::NotFound(format!("entry {entry_name} not found")));
+        }
+        Ok(self.imported.clone())
     }
 }
 

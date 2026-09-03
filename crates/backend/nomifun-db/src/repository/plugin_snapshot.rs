@@ -1,5 +1,5 @@
 use crate::error::DbError;
-use crate::models::{PluginSnapshotComponentRow, PluginSnapshotRow};
+use crate::models::{PluginSnapshotComponentRow, PluginSnapshotListRow, PluginSnapshotRow};
 
 /// One component to persist with a snapshot.
 #[derive(Debug, Clone)]
@@ -26,7 +26,25 @@ pub struct NewPluginSnapshot<'a> {
     pub resolved_revision: Option<&'a str>,
     pub content_digest: &'a str,
     pub status: &'a str,
+    /// Marketplace provenance (roadmap Phase 2): set when the snapshot was
+    /// imported from a marketplace entry.
+    pub marketplace_id: Option<&'a str>,
+    pub entry_name: Option<&'a str>,
+    pub source_revision: Option<&'a str>,
     pub components: Vec<NewPluginSnapshotComponent<'a>>,
+}
+
+/// Runtime registration for one installed component. `location` is the
+/// on-disk path (skills) / connector name (mcp_servers) / preset id.
+#[derive(Debug, Clone)]
+pub struct ComponentRuntimeRef<'a> {
+    pub component_id: &'a str,
+    /// `skill` | `connector` | `preset`.
+    pub runtime_type: &'a str,
+    /// On-disk path or logical runtime target identifier.
+    pub location: &'a str,
+    /// MCP server row id when the component became a configured connector.
+    pub mcp_server_id: Option<&'a str>,
 }
 
 /// Importer Catalog data access (`docs/agent-store/02-...-import-spec.md` §2
@@ -45,8 +63,9 @@ pub trait IPluginSnapshotRepository: Send + Sync {
         snapshot_id: &str,
     ) -> Result<Vec<PluginSnapshotComponentRow>, DbError>;
 
-    /// Most recently imported snapshots first (history list).
-    async fn list_snapshots(&self, limit: u32) -> Result<Vec<PluginSnapshotRow>, DbError>;
+    /// Most recently imported snapshots first (history list), with each
+    /// snapshot's component count resolved in the same query.
+    async fn list_snapshots(&self, limit: u32) -> Result<Vec<PluginSnapshotListRow>, DbError>;
 
     /// Idempotency probe: an identical `(plugin_id, declared_version,
     /// content_digest)` import reuses this snapshot instead of inserting.
@@ -76,5 +95,37 @@ pub trait IPluginSnapshotRepository: Send + Sync {
     async fn list_components_by_kind(
         &self,
         kind: &str,
+    ) -> Result<Vec<PluginSnapshotComponentRow>, DbError>;
+
+    // --- installer state (roadmap Phase 2) ---------------------------------
+
+    /// Marks components as installed (enabled) with their runtime references.
+    /// One transaction; unknown component ids are skipped.
+    async fn mark_components_installed(
+        &self,
+        refs: &[ComponentRuntimeRef<'_>],
+        installed_at: i64,
+    ) -> Result<(), DbError>;
+
+    /// Sets `disabled` for the given components. Idempotent.
+    async fn set_components_disabled(
+        &self,
+        component_ids: &[&str],
+        disabled: bool,
+    ) -> Result<(), DbError>;
+
+    /// Clears the installation state for the given components (uninstall):
+    /// `installed=0`, `disabled=0`, staggered refs nulled. The snapshot rows
+    /// themselves are kept.
+    async fn clear_components_installed(
+        &self,
+        component_ids: &[&str],
+    ) -> Result<(), DbError>;
+
+    /// Installation state projection for a snapshot's components, or for all
+    /// installed components when `snapshot_id` is `None`.
+    async fn list_installation_state(
+        &self,
+        snapshot_id: Option<&str>,
     ) -> Result<Vec<PluginSnapshotComponentRow>, DbError>;
 }

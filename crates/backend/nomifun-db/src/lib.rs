@@ -48,7 +48,7 @@ pub use models::{
     UpsertProviderConnectionParams,
 };
 pub use models::OAuthClientRegistrationRow;
-pub use models::{PluginSnapshotComponentRow, PluginSnapshotRow};
+pub use models::{MarketplaceEntry, PluginMarketplaceRow, PluginSnapshotComponentRow, PluginSnapshotListRow, PluginSnapshotRow};
 pub use models::GoalRow;
 pub use models::{
     MeetingSegmentRow, MeetingSessionRow, MeetingSpeakerRow, MeetingVoiceprintRow,
@@ -119,7 +119,7 @@ pub use repository::{
     IdmmActionReservationKey, IdmmActionReserveResult, IdmmActionSettleResult,
     IdmmActionSettlement, IdmmActionTurnIdentity, IKnowledgeRepository,
     IMcpServerRepository, IOAuthClientRegistrationRepository, IOAuthTokenRepository,
-    IPluginSnapshotRepository,
+    IPluginSnapshotRepository, ComponentRuntimeRef,
     IProviderConnectionRepository, IProviderModelRepository, IProviderRepository,
     IRemoteAgentRepository, IRequirementRepository, ISettingsRepository, ISkillTagRepository,
     ITagSettingRepository, ITerminalRepository, IUserRepository, IWebhookRepository,
@@ -143,6 +143,10 @@ pub use repository::{
     TerminalTurnAdmissionKey, TerminalTurnAdmissionScope, TerminalTurnEffectsStart,
     TerminalTurnOutcome, TerminalTurnSettlement, TTL_MS,
     NewPluginSnapshot, NewPluginSnapshotComponent,
+};
+pub use repository::{
+    IMarketplaceRepository, NewPluginMarketplace,
+    SqliteMarketplaceRepository,
 };
 pub use repository::{
     IPresetRepository, IPresetStateRepository, IPresetTagRepository,

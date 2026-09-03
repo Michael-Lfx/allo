@@ -235,7 +235,8 @@ GET  /api/app-server/imports/{snapshot_id}   # import/get（组件与三态兼�
 
 ```text
 { "source_path": "<本地目录绝对路径>", "source_kind": "codebuddy-plugin" |
-  "workbuddy-skill-market" | "workbuddy-connector-market" }
+  "workbuddy-skill-market" | "workbuddy-connector-market" |
+  "workbuddy-cli-connector" }
 ```
 
 响应（`AppServerImportResult`）：
@@ -261,6 +262,129 @@ warnings[] / errors[]
 （model/effort/maxTurns/tools/disallowedTools/skills/memory/isolation…），不返回原始
 Prompt；`team/get` 只返回 lead/members/策略与 `team_runtime_capabilities`，不返回
 Planning Context 正文。
+
+### 4.5 Install 与运行时注册（roadmap Phase 2）
+
+导入只登记不可变快照；**安装**把快照组件注册进运行时，使其真正可用。安装走与导入相同的
+HTTP 辅助通道：
+
+```text
+POST /api/app-server/installs                      # install/run  {@link AppServerInstallRequest}
+GET  /api/app-server/installs/{snapshot_id}        # install/status（逐组件状态）
+POST /api/app-server/installs/{snapshot_id}/disable   # install/disable（组件 id 列表）
+POST /api/app-server/installs/{snapshot_id}/enable    # install/enable
+POST /api/app-server/installs/{snapshot_id}/uninstall # install/uninstall（快照行保留）
+```
+
+请求体（`install/run`）：
+
+```text
+{ "snapshot_id": "<已导入快照 id>" }
+```
+
+`install/status` 响应（`AppServerInstallStatus`）：
+
+```text
+snapshot_id
+components[] { id / kind / name / state / runtime_location / preset_id }
+state: "not-installed" | "installed" | "disabled"
+```
+
+运行时注册映射：
+
+| 组件 kind | 运行时目标 | 说明 |
+|---|---|---|
+| `skill` | 服务端技能根 `{data_dir}/skills/agent-store/{snapshot_id}/{slug}/` | 系统 skill 扫描可发现；拷贝不执行 |
+| `agent` / `team` | Preset（`PresetService.create`，名称 `agent-store: <name>`） | 预设列表可直接使用；不创建 ExecutionTemplate |
+| `connector` | `mcp_servers` 表（`McpConfigService.add_server` 按名 upsert） | 运输层由组件 payload 的 `transport_summary` 推导 |
+
+规则：
+
+- 安装只复制/注册，**不执行**任何内容（02 §10）；凭据值永不进入安装状态列；
+- `uninstall` 移除运行时产物并清除组件安装状态，**快照与组件行保留**（历史可追溯）；
+- `enable`/`disable` 只翻转 `disabled` 位（运行时产物保留）；
+- 文档化状态机：`not-installed → installed → disabled →（enable）installed`；
+  卸载任意时刻可用。
+
+### 4.6 Marketplace（roadmap Phase 2）
+
+市场（Marketplace）是**插件目录**：先添加市场，再浏览/导入/安装其条目（CodeBuddy
+语义：两步流程）。源类型：
+
+- `directory`：本地目录（Phase A）；
+- `github`：GitHub 仓库（`owner/repo`，Phase B）；
+- `git`：任意 Git 仓库（HTTPS/SSH URL 或本地 `.git` 路径，Phase B）；
+- `url`：HTTP(S) `marketplace.json`（Phase B）。
+
+能力协商：`capabilities.marketplaces`。
+
+```text
+POST   /api/app-server/markets                     # market/add     {@link AppServerMarketplaceAddRequest}
+GET    /api/app-server/markets                     # market/list（注册表投影，无条目）
+GET    /api/app-server/markets/{marketplace_id}    # market/get（含发现条目）
+POST   /api/app-server/markets/{marketplace_id}/remove          # market/remove（默认 cascade=true）
+POST   /api/app-server/markets/{marketplace_id}/auto-update     # market/auto-update {enabled}
+POST   /api/app-server/markets/{marketplace_id}/refresh         # market/refresh（fetch + 投影重建）
+POST   /api/app-server/markets/{marketplace_id}/entries/{entry}/import  # 条目导入（复用 import 管线）
+```
+
+`market/add` 请求体：
+
+```text
+{ "name": "<可选稳定名>", "source_kind": "directory|github|git|url", "source": "<源>" }
+```
+
+- `marketplace_id` 从 `name` 推导（无则源 basename），kebab-case 稳定名（内部唯一）；
+- 同源重复添加幂等：返回既有市场行，不报错；
+- 远端源（github/git/url）添加时**同步获取**：克隆/下载到 staging → 完整清单校验 →
+  原子晋升到 live 根（backup+rename）；失败不注册且 last-good 不被触碰。
+
+`market/refresh` 响应（`AppServerMarketplaceRefreshResult`）：
+
+```text
+{ marketplace_id, changed: bool, resolved_revision, entry_count, warnings[] }
+```
+
+- Git：重新解析 HEAD commit；与已记录 revision 相同 → `changed=false`（no-op），
+  stale staging 丢弃；
+- URL：带 `If-None-Match` 条件请求；`304` → `changed=false`；200 时校验清单并比较
+  ETag/Last-Modified 摘要，相同 → no-op；
+- `directory`：重新探测目录，内容摘要变化才更新投影；
+- `resolved_revision` 仅内部追溯，不是公共身份标识。
+
+远端源获取语义（对齐 CodeBuddy 文档）：
+
+- 克隆/下载先落独立 staging 目录，`marketplace.json` 清单与完整条目树校验通过后才
+  原子替换 live 根（backup → rename → 清理 backup）；失败保留旧 live（last-good）；
+- URL 市场是 catalog 分发：只有清单内联条目可导入；含 `skills`/`commands` 文件树或
+  声明外部源（GitHub/NPM）的条目标记 `source_kind=external`，导入返回 `bad_request`
+  （提示把该源作为独立市场添加）——不把只下载到清单的条目误当完整插件目录；
+- Git 市场条目在 clone 出的完整树内解析相对路径（含 `skills/`、`hooks/` 等目录）。
+
+`market/get` 条目字段：
+
+```text
+name / source_kind（directory|external）/ source / version / description / keywords / category
+```
+
+`market/remove` 请求体 `{ "cascade": true }`（默认 true）。响应
+（`AppServerMarketplaceRemoveResult`）：
+
+```text
+{ marketplace_id, snapshots: [快照 id], uninstalled_components: [组件 id], warnings: [] }
+```
+
+规则：
+
+- **级联卸载（默认）**：市场中被导入过的快照，其已安装组件全部卸载（复用
+  `install/*` 的 uninstall 语义）；快照与组件行保留（历史可追溯），provenance 清除；
+- 市场注册行软删除（`removed_at`），`market/list` 不再出现；已安装资源随级联清理；
+- 条目导入经 `/entries/{entry}/import` 走标准导入管线，并把
+  `marketplace_id + entry_name`（远端再附 `resolved_revision`）记为快照 provenance
+  （内部溯源，不出现在公共响应）；
+- 市场源路径与条目 `source` 只在服务端解析；公共响应不含绝对路径；
+- `auto-update` 开关仅记录（第三方默认关闭），Phase B 无后台自动刷新任务
+  （手动 `market/refresh` 触发同一 fetch 管线）。
 
 ## 5. Thread 与 Run
 

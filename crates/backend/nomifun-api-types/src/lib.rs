@@ -73,7 +73,12 @@ pub use app_server::{
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerConnectorTool, AppServerImportComponent, AppServerImportDetail,
     AppServerImportRequest, AppServerImportResult, AppServerImportSourceKind,
-    AppServerImportSummary, AppServerOAuthStartResult, AppServerOAuthStatusView,
+    AppServerImportSummary, AppServerInstallComponent, AppServerInstallRequest,
+    AppServerInstallResult, AppServerInstallState, AppServerInstallStatus,
+    AppServerMarketplaceAddRequest, AppServerMarketplaceDetail, AppServerMarketplaceEntry,
+    AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
+    AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
+    AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail, AppServerTeamSummary,
 };
 pub use agent_build_extra::{

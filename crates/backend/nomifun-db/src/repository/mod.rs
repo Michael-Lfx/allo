@@ -17,6 +17,7 @@ pub mod customer_service;
 pub mod idmm_intervention;
 pub mod companion_token;
 pub mod knowledge;
+pub mod marketplace;
 pub mod mcp_server;
 pub mod meeting;
 pub mod oauth_client_registration;
@@ -49,6 +50,7 @@ mod sqlite_customer_service;
 mod sqlite_idmm_intervention;
 mod sqlite_companion_token;
 mod sqlite_knowledge;
+mod sqlite_marketplace;
 mod sqlite_mcp_server;
 mod sqlite_meeting;
 mod sqlite_oauth_client_registration;
@@ -107,6 +109,7 @@ pub use idmm_intervention::{
 };
 pub use companion_token::ICompanionTokenRepository;
 pub use knowledge::IKnowledgeRepository;
+pub use marketplace::{IMarketplaceRepository, NewPluginMarketplace};
 pub use mcp_server::IMcpServerRepository;
 pub use meeting::{
     IMeetingRepository, InsertMeetingSessionParams, UpdateMeetingSessionParams,
@@ -115,7 +118,8 @@ pub use meeting::{
 pub use oauth_client_registration::IOAuthClientRegistrationRepository;
 pub use oauth_token::IOAuthTokenRepository;
 pub use plugin_snapshot::{
-    IPluginSnapshotRepository, NewPluginSnapshot, NewPluginSnapshotComponent,
+    ComponentRuntimeRef, IPluginSnapshotRepository, NewPluginSnapshot,
+    NewPluginSnapshotComponent,
 };
 pub use provider::IProviderRepository;
 pub use provider_connection::IProviderConnectionRepository;
@@ -146,6 +150,7 @@ pub use sqlite_customer_service::SqliteCustomerServiceRepository;
 pub use sqlite_idmm_intervention::SqliteIdmmInterventionRepository;
 pub use sqlite_companion_token::SqliteCompanionTokenRepository;
 pub use sqlite_knowledge::SqliteKnowledgeRepository;
+pub use sqlite_marketplace::SqliteMarketplaceRepository;
 pub use sqlite_mcp_server::SqliteMcpServerRepository;
 pub use sqlite_meeting::SqliteMeetingRepository;
 pub use sqlite_oauth_client_registration::SqliteOAuthClientRegistrationRepository;

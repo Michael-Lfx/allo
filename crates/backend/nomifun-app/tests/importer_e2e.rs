@@ -139,6 +139,11 @@ async fn importer_end_to_end_imports_software_company() {
     assert_eq!(list.status(), StatusCode::OK);
     let history = body_json(list).await;
     assert_eq!(history.as_array().unwrap().len(), 1);
+    assert_eq!(
+        history[0]["component_count"].as_u64().unwrap(),
+        16,
+        "history list must resolve the real component count"
+    );
 
     // Detail exposes the standardized components: 5 agents + 1 team.
     let detail = app
@@ -206,4 +211,554 @@ async fn importer_end_to_end_imports_software_company() {
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     let missing_json = body_json(missing).await;
     assert_eq!(missing_json["code"], "not_found");
+}
+
+#[tokio::test]
+async fn importer_install_registers_components_into_runtime() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Import first (same flow as the main e2e).
+    let run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/imports",
+            serde_json::json!({
+                "source_path": SOFTWARE_COMPANY,
+                "source_kind": "codebuddy-plugin",
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(run.status(), StatusCode::OK);
+    let result = body_json(run).await;
+    assert_eq!(result["status"], "completed", "{result}");
+    let snapshot_id = result["snapshot_id"].as_str().unwrap().to_owned();
+
+    // Install the snapshot.
+    let install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/installs",
+            serde_json::json!({ "snapshot_id": snapshot_id }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install.status(), StatusCode::OK, "install must succeed");
+    let install_json = body_json(install).await;
+    assert_eq!(install_json["snapshot_id"], snapshot_id);
+    assert!(
+        install_json["installed_count"].as_u64().unwrap() > 0,
+        "at least skills/agents/connectors must be registered: {install_json}"
+    );
+
+    // Status reflects per-component state.
+    let status = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/installs/{snapshot_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+    let status_json = body_json(status).await;
+    let components = status_json["components"].as_array().unwrap();
+    assert!(!components.is_empty());
+    let skill = components
+        .iter()
+        .find(|component| component["kind"] == "skill")
+        .expect("installed snapshot exposes a skill component");
+    assert_eq!(skill["state"], "installed");
+    assert!(skill["runtime_location"].as_str().is_some(), "skill records its runtime path");
+
+    // Disable / re-enable / uninstall round-trip on the skill component.
+    let skill_id = skill["id"].as_str().unwrap().to_owned();
+    let disable = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/installs/{snapshot_id}/disable"),
+            serde_json::json!({ "component_ids": [skill_id] }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let disabled = body_json(disable).await;
+    let disabled_skill = disabled["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["id"] == skill_id)
+        .unwrap();
+    assert_eq!(disabled_skill["state"], "disabled");
+
+    let uninstall = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/installs/{snapshot_id}/uninstall"),
+            serde_json::json!({ "component_ids": [skill_id] }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let uninstalled = body_json(uninstall).await;
+    let uninstalled_skill = uninstalled["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["id"] == skill_id)
+        .unwrap();
+    assert_eq!(uninstalled_skill["state"], "not-installed");
+
+    // The actual skill file materialized under the managed skills root.
+    let managed = services
+        .skill_paths
+        .user_skills_dir
+        .join("agent-store")
+        .join(&snapshot_id)
+        .join("release-notes")
+        .join("SKILL.md");
+    assert!(managed.is_file(), "managed skill must exist on disk: {}", managed.display());
+}
+
+#[tokio::test]
+async fn importer_market_add_list_import_and_cascade_remove() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Build a full market dir with an index so the discovery probe sees
+    // entries (the skill-market fixture's marketplace.json declares no
+    // `skills` array; it is used by the importer tests as a bare market).
+    let market_root = std::env::temp_dir().join(format!("as-e2e-market-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(market_root.join(".codebuddy-skill")).unwrap();
+    std::fs::create_dir_all(market_root.join("skills/formatting")).unwrap();
+    std::fs::create_dir_all(market_root.join("skills/hello")).unwrap();
+    std::fs::write(
+        market_root.join(".codebuddy-skill/marketplace.json"),
+        r#"{
+            "name": "e2e-skills",
+            "version": "0.1.0",
+            "skills": [
+                { "name": "formatting", "source": "./skills/formatting", "description": "Formatting skill" },
+                { "name": "hello", "source": "./skills/hello", "description": "Greeting skill" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("skills/formatting/SKILL.md"),
+        "---\nname: formatting\ndescription: Apply consistent formatting\n---\n\nApply consistent formatting.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("skills/hello/SKILL.md"),
+        "---\nname: hello\ndescription: Greet warmly\n---\n\nGreet warmly.\n",
+    )
+    .unwrap();
+
+    // Add the marketplace (directory source).
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({
+                "source_kind": "directory",
+                "source": market_root.to_string_lossy(),
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "market add must succeed: {}", body_json(add).await);
+    let added = body_json(add).await;
+    assert_eq!(added["name"], "e2e-skills");
+    assert_eq!(added["entry_count"], 2);
+    let marketplace_id = added["marketplace_id"].as_str().unwrap().to_owned();
+
+    // List shows the market.
+    let list = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/markets", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let markets = body_json(list).await;
+    assert_eq!(markets.as_array().unwrap().len(), 1);
+    assert_eq!(markets[0]["marketplace_id"], marketplace_id);
+
+    // Detail exposes the discovered entries.
+    let get = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/markets/{marketplace_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    let detail = body_json(get).await;
+    let entries = detail["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    let entry_names: Vec<&str> = entries.iter().filter_map(|entry| entry["name"].as_str()).collect();
+    assert!(entry_names.contains(&"formatting"));
+    assert!(entry_names.contains(&"hello"));
+
+    // Import one entry through the market route (provenance linked).
+    let import = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/markets/{marketplace_id}/entries/formatting/import"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(import.status(), StatusCode::OK, "entry import must succeed");
+    let imported = body_json(import).await;
+    assert_eq!(imported["status"], "completed", "{imported}");
+    let snapshot_id = imported["snapshot_id"].as_str().unwrap().to_owned();
+
+    // Install the imported snapshot (runtime registration).
+    let install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/installs",
+            serde_json::json!({ "snapshot_id": snapshot_id }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install.status(), StatusCode::OK, "install must succeed");
+    let installed = body_json(install).await;
+    assert!(installed["installed_count"].as_u64().unwrap() >= 1, "{installed}");
+    let managed = services
+        .skill_paths
+        .user_skills_dir
+        .join("agent-store")
+        .join(&snapshot_id)
+        .join("formatting")
+        .join("SKILL.md");
+    assert!(managed.is_file(), "entry skill must materialize: {}", managed.display());
+
+    // Remove with cascade: the installed snapshot's components are uninstalled
+    // (installed state cleared), the snapshot row itself stays.
+    let remove = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/markets/{marketplace_id}/remove"),
+            serde_json::json!({ "cascade": true }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(remove.status(), StatusCode::OK, "market remove must succeed");
+    let removed = body_json(remove).await;
+    assert!(removed["snapshots"].as_array().unwrap().contains(&serde_json::Value::String(snapshot_id.clone())));
+    assert!(!removed["uninstalled_components"].as_array().unwrap().is_empty());
+
+    // The snapshot remains in the history (kept after cascade); install state
+    // is cleared.
+    let history = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/imports", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    let history_json = body_json(history).await;
+    assert!(
+        history_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["snapshot_id"] == snapshot_id),
+        "cascade keeps the snapshot row: {history_json}"
+    );
+    let install_status = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/installs/{snapshot_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    let install_status_json = body_json(install_status).await;
+    let states: Vec<&str> = install_status_json["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|component| component["state"].as_str())
+        .collect();
+    assert!(states.iter().all(|state| *state == "not-installed"), "{states:?}");
+
+    // Removed market no longer lists; a second remove is a 404.
+    let list_after = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/markets", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    let markets_after = body_json(list_after).await;
+    assert!(markets_after.as_array().unwrap().is_empty());
+}
+
+/// Build a local git repo (bare) whose `main` tip is a marketplace catalog.
+fn init_git_market(repo_path: &std::path::Path, files: &[(&str, &str)]) {
+    let work = std::env::temp_dir().join(format!("as-git-work-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(&work).unwrap();
+    let repo = git2::Repository::init(&work).unwrap();
+    for (name, content) in files {
+        let path = work.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(name)).unwrap();
+        index.write().unwrap();
+    }
+    let sig = git2::Signature::now("e2e", "e2e@example.com").unwrap();
+    let mut index = repo.index().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "market", &tree, &[]).unwrap();
+
+    // Push into the bare repo as `main` and point its HEAD at main.
+    let bare = git2::Repository::init_bare(repo_path).unwrap();
+    {
+        let mut remote = repo.remote("origin", repo_path.to_str().unwrap()).unwrap();
+        remote.push(&["refs/heads/master:refs/heads/main"], None).unwrap();
+    }
+    bare.set_head("refs/heads/main").unwrap();
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[tokio::test]
+async fn importer_market_git_source_fetch_refresh_and_entry_import() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Build a git-served marketplace (repo root = market root).
+    let bare = std::env::temp_dir().join(format!("as-git-market-{}.git", nomifun_common::generate_id()));
+    init_git_market(
+        &bare,
+        &[
+            (
+                ".codebuddy-skill/marketplace.json",
+                r#"{
+                    "name": "git-skills",
+                    "version": "0.1.0",
+                    "skills": [
+                        { "name": "formatting", "source": "./skills/formatting", "description": "Formatting skill" },
+                        { "name": "hello", "source": "./skills/hello", "description": "Greeting skill" }
+                    ]
+                }"#,
+            ),
+            (
+                "skills/formatting/SKILL.md",
+                "---\nname: formatting\ndescription: Formatting\n---\n\nBody.\n",
+            ),
+            (
+                "skills/hello/SKILL.md",
+                "---\nname: hello\ndescription: Greeting\n---\n\nBody.\n",
+            ),
+        ],
+    );
+
+    // Add the marketplace as a `git` source.
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({
+                "source_kind": "git",
+                "source": bare.to_string_lossy(),
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "git market add must succeed: {}", body_json(add).await);
+    let added = body_json(add).await;
+    assert_eq!(added["source_kind"], "git");
+    assert_eq!(added["entry_count"], 2, "{added}");
+    let marketplace_id = added["marketplace_id"].as_str().unwrap().to_owned();
+
+    // Detail exposes entries; each has a relative source inside the live tree.
+    let detail = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/markets/{marketplace_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    let detail_json = body_json(detail).await;
+    assert_eq!(detail_json["entries"].as_array().unwrap().len(), 2);
+
+    // First refresh resolves the same revision (no-op, unchanged).
+    let refresh1 = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/markets/{marketplace_id}/refresh"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let refresh1_json = body_json(refresh1).await;
+    assert_eq!(refresh1_json["changed"], false, "same commit must be a no-op: {refresh1_json}");
+    assert!(!refresh1_json["resolved_revision"].as_str().unwrap().is_empty());
+
+    // Import one entry: provenance + installable skill materializes.
+    let import = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/markets/{marketplace_id}/entries/formatting/import"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(import.status(), StatusCode::OK, "git entry import must succeed: {}", body_json(import).await);
+    let imported = body_json(import).await;
+    assert_eq!(imported["status"], "completed", "{imported}");
+    assert_eq!(imported["component_count"], 1, "{imported}");
+
+    // The materialized live checkout exists under the work-dir market root.
+    let live_root = services
+        .work_dir
+        .join("agent-store-markets")
+        .join(&marketplace_id)
+        .join("live");
+    assert!(live_root.join("skills/formatting/SKILL.md").is_file(), "live checkout must hold the market tree");
+}
+
+#[tokio::test]
+async fn importer_market_http_source_validates_manifest_and_mirrors_inlined_entries() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Serve a manifest whose entries are inlined (relative paths into a tree
+    // the URL market cannot mirror — CodeBuddy documents this limitation).
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/marketplace.json"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"v1-etag\"")
+                .set_body_json(serde_json::json!({
+                    "name": "http-skills",
+                    "version": "1.0.0",
+                    "skills": [
+                        { "name": "inline-skill", "source": "./skills/inline-skill", "description": "Fully inlined" },
+                        { "name": "external-tool", "source": "https://github.com/org/tool", "description": "External source" }
+                    ]
+                })),
+        )
+        .mount(&mock)
+        .await;
+
+    // Add the marketplace as a `url` source.
+    let url = format!("{}/marketplace.json", mock.uri());
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({
+                "source_kind": "url",
+                "source": url,
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "url market add: {}", body_json(add).await);
+    let added = body_json(add).await;
+    assert_eq!(added["source_kind"], "url");
+    let marketplace_id = added["marketplace_id"].as_str().unwrap().to_owned();
+
+    // Entries: the inlined relative one is importable; the external one is
+    // flagged `external` (not silently dropped — documented boundary).
+    let detail = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/markets/{marketplace_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    let detail_json = body_json(detail).await;
+    let entries = detail_json["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{detail_json}");
+    let inline = entries.iter().find(|entry| entry["name"] == "inline-skill").unwrap();
+    assert_eq!(inline["source_kind"], "external", "inlined relative path without a mirrored tree is external: {inline}");
+    let external = entries.iter().find(|entry| entry["name"] == "external-tool").unwrap();
+    assert_eq!(external["source_kind"], "external");
+
+    // A refresh with the same etag is a no-op (freshness short-circuit).
+    let refresh = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/markets/{marketplace_id}/refresh"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let refreshed = body_json(refresh).await;
+    assert_eq!(refreshed["changed"], false, "{refreshed}");
 }

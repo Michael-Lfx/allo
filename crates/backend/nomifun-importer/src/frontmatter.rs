@@ -14,19 +14,61 @@ pub enum DocError {
 
 /// Split leading `---` frontmatter from the body. Returns `None` when the
 /// document has no frontmatter block.
+///
+/// Real marketplace files use both LF and CRLF line endings, and their YAML
+/// is frequently *not* strictly parseable (unquoted quotes, embedded JSON
+/// strings, folded scalars). The parser therefore degrades lazily: strict
+/// YAML first, then a line-oriented fallback that keeps every top-level
+/// `key: value` scalar so at least `name` / `description` survive.
 pub fn parse_frontmatter(text: &str) -> Option<(Value, String)> {
+    // Normalize CRLF to LF up front so all subsequent scans see one shape.
+    let text = text.replace("\r\n", "\n");
     let rest = text.strip_prefix("---\n")?;
     let end = rest.find("\n---")?;
     let yaml = &rest[..end];
     let mut body = &rest[end + "\n---".len()..];
     body = body.strip_prefix('\n').unwrap_or(body);
+
     match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
         Ok(value) => match serde_json::to_value(value) {
             Ok(json) => Some((json, body.to_owned())),
-            Err(_) => None,
+            Err(_) => Some((loose_frontmatter(yaml), body.to_owned())),
         },
-        Err(_) => None,
+        Err(_) => Some((loose_frontmatter(yaml), body.to_owned())),
     }
+}
+
+/// Line-oriented fallback: extract every **top-level** (no leading space)
+/// `key: value` scalar as a string. Unknown keys keep their raw scalar so
+/// structured fields (`description_zh`, `version`, `homepage`, …) still
+/// survive; complex/multiline values are dropped rather than guessed.
+fn loose_frontmatter(yaml: &str) -> Value {
+    let mut fields = Map::new();
+    for line in yaml.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') || line.trim().is_empty() {
+            continue;
+        }
+        let Some(colon) = line.find(':') else { continue };
+        let key = line[..colon].trim().to_owned();
+        if key.is_empty() {
+            continue;
+        }
+        let raw = line[colon + 1..].trim().to_owned();
+        let value = unquote_scalar(&raw);
+        fields.insert(key, Value::String(value));
+    }
+    Value::Object(fields)
+}
+
+/// Strip a single wrapping pair of matching quotes from a scalar.
+fn unquote_scalar(raw: &str) -> String {
+    let s = raw.trim();
+    let trimmed = match s {
+        _ if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 => &s[1..s.len() - 1],
+        _ if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 => &s[1..s.len() - 1],
+        _ => s,
+    };
+    trimmed.to_owned()
 }
 
 /// Strict variant: frontmatter must exist and parse; used for definitions

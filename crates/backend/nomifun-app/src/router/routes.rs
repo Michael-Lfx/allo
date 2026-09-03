@@ -972,6 +972,21 @@ pub fn create_router_with_all_state(
         nomifun_db::SqlitePluginSnapshotRepository::new(services.database.pool().clone()),
     );
     let import_root = services.work_dir.join("agent-store-imports");
+    // Shared Agent Store Installer: used by the `installs` capability and by
+    // marketplace remove-cascade (uninstalls snapshots imported from a market).
+    let installer: std::sync::Arc<dyn nomifun_app_server::InstallProvider> = std::sync::Arc::new(
+        crate::app_server_installer::AppServerInstallProvider::new(
+            import_root.clone(),
+            states.skill.skill_paths.user_skills_dir.clone(),
+            plugin_snapshot_repository.clone(),
+            std::sync::Arc::new(crate::app_server_installer::AppServerPresetRegistrar::new(
+                states.preset.service.clone(),
+            )),
+            std::sync::Arc::new(crate::app_server_installer::AppServerMcpRegistrar::new(
+                states.mcp.config_service.clone(),
+            )),
+        ),
+    );
     let app_server_authenticated = protect_instance_owner(
         app_server_routes(AppServerRouterState {
             registry: Default::default(),
@@ -1023,10 +1038,29 @@ pub fn create_router_with_all_state(
             imports: Some(Arc::new(
                 crate::app_server_importer::AppServerImportProvider::new(
                     nomifun_importer::ImporterService::new(
-                        import_root,
+                        import_root.clone(),
                         plugin_snapshot_repository.clone(),
                     ),
                     plugin_snapshot_repository.clone(),
+                ),
+            )),
+            // Agent Store Installer (roadmap Phase 2): materializes snapshot
+            // components into the runtime (skills root / Presets / MCP config).
+            installs: Some(installer.clone()),
+            // Agent Store Marketplaces (roadmap Phase 2): directory catalogs
+            // discovered on the trusted host; entries import through the same
+            // snapshot pipeline with provenance linkage.
+            markets: Some(Arc::new(
+                crate::app_server_marketplace::AppServerMarketplaceProvider::new(
+                    nomifun_importer::ImporterService::new(
+                        import_root,
+                        plugin_snapshot_repository.clone(),
+                    ),
+                    Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
+                        services.database.pool().clone(),
+                    )),
+                    installer,
+                    services.work_dir.join("agent-store-markets"),
                 ),
             )),
             agent_catalog: Some(Arc::new(
@@ -1365,7 +1399,14 @@ pub fn create_router_with_all_state(
                 Method::DELETE,
                 Method::OPTIONS,
             ])
-            .allow_headers(Any);
+            .allow_headers(Any)
+            // The App Server HTTP helpers (workspace registration, imports)
+            // hand back their connection id in this response header; without
+            // exposing it, cross-origin browsers silently drop it and the 200
+            // response is misread as a failure ("http 200 from app-server").
+            .expose_headers([
+                axum::http::header::HeaderName::from_static("x-app-server-connection-id"),
+            ]);
         router.layer(cors)
     } else {
         router
