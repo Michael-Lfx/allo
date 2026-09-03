@@ -631,7 +631,7 @@ export const SessionLogWorkspace: React.FC = () => {
     callErrorKey,
     refreshWorkspace,
   } = useSessionLogs();
-  const { ref: workspaceRef, width: workspaceWidth } = useContainerWidth<HTMLDivElement>({
+  const { ref: workspaceRef } = useContainerWidth<HTMLDivElement>({
     fallbackToWindowWidth: true,
   });
   const [downloadState, setDownloadState] = useState<
@@ -643,8 +643,7 @@ export const SessionLogWorkspace: React.FC = () => {
   const [navCollapseTooltipVisible, setNavCollapseTooltipVisible] = useState(false);
   const navCollapseTooltipSuppressedRef = useRef(false);
   const [selection, setSelection] = useState<TraceSelection | null>(null);
-  const [timelineCollapsed, setTimelineCollapsed] = useState(false);
-  const previousTimelineStackedRef = useRef<boolean | null>(null);
+  const [timelineCollapsed, setTimelineCollapsed] = useState(true);
   const rounds = useMemo(() => assignTurnRounds(entries), [entries]);
   const displayed = useMemo(
     () => (newestFirst ? [...entries].reverse() : entries),
@@ -661,22 +660,9 @@ export const SessionLogWorkspace: React.FC = () => {
     [selectedEventSeq, timelineRows]
   );
 
-  const timelineStacked = workspaceWidth > 0 && workspaceWidth < 900;
-  const timelineStackedRef = useRef(timelineStacked);
-  timelineStackedRef.current = timelineStacked;
-
-  useEffect(() => {
-    if (workspaceWidth <= 0) return;
-    if (previousTimelineStackedRef.current !== timelineStacked) {
-      previousTimelineStackedRef.current = timelineStacked;
-      setTimelineCollapsed(timelineStacked);
-    }
-  }, [timelineStacked, workspaceWidth]);
-
   useEffect(() => {
     setSelection(null);
-    setTimelineCollapsed(timelineStackedRef.current);
-    previousTimelineStackedRef.current = timelineStackedRef.current;
+    setTimelineCollapsed(true);
   }, [conversationId]);
 
   useEffect(() => {

@@ -832,11 +832,24 @@ button.session-logs-tile:disabled:hover {
 }
 
 .session-logs-timeline__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
   min-width: 0;
   color: var(--color-text-1);
   font-size: 12px;
   font-weight: 600;
   line-height: 18px;
+}
+
+.session-logs-timeline__title-icon {
+  flex: 0 0 auto;
+  color: rgb(var(--primary-6));
+}
+
+.session-logs-timeline__title-text {
+  min-width: 0;
 }
 
 .session-logs-timeline__count {
@@ -984,8 +997,8 @@ button.session-logs-tile:disabled:hover {
   aspect-ratio: 1;
   border: 2px solid var(--color-bg-1);
   border-radius: 50%;
-  background: rgb(var(--primary-6));
-  color: var(--color-text-1);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, var(--color-bg-1));
+  color: var(--flowy-text-primary, var(--color-text-1));
   box-shadow: 0 0 0 1px color-mix(in srgb, rgb(var(--primary-6)) 45%, transparent);
 }
 
@@ -1021,13 +1034,21 @@ button.session-logs-tile:disabled:hover {
 }
 
 .session-logs-timeline__item.is-degraded .session-logs-timeline__dot {
-  background: var(--color-text-2);
+  background: color-mix(in srgb, var(--warning) 16%, var(--color-bg-1));
+  color: color-mix(in srgb, var(--warning) 72%, var(--color-text-1));
   box-shadow: 0 0 0 1px var(--color-text-3);
 }
 
 .session-logs-timeline__item.is-meta-event .session-logs-timeline__dot {
-  background: var(--color-text-2);
+  background: var(--color-fill-2);
+  color: var(--flowy-text-primary, var(--color-text-1));
   box-shadow: 0 0 0 1px var(--color-text-3);
+}
+
+.session-logs-timeline__item.is-selected .session-logs-timeline__dot {
+  background: color-mix(in srgb, rgb(var(--primary-6)) 20%, var(--color-bg-1));
+  color: var(--flowy-text-primary, var(--color-text-1));
+  box-shadow: 0 0 0 2px color-mix(in srgb, rgb(var(--primary-6)) 72%, transparent);
 }
 
 .session-logs-timeline__head {
@@ -1105,6 +1126,10 @@ button.session-logs-tile:disabled:hover {
   display: block;
 }
 
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__title-text {
+  display: none;
+}
+
 .session-logs-timeline-column.is-collapsed .session-logs-timeline__label {
   display: none;
 }
@@ -1137,6 +1162,12 @@ button.session-logs-tile:disabled:hover {
 
 .session-logs-timeline-column.is-collapsed .session-logs-timeline__collapsed-time {
   display: block;
+}
+
+.session-logs-timeline-column.is-collapsed .session-logs-timeline__count {
+  width: 20px;
+  max-width: 20px;
+  padding-inline: 0;
 }
 
 .session-logs-glossary__section {
@@ -1295,7 +1326,7 @@ button.session-logs-tile:disabled:hover {
 .session-logs-history-toggle {
   appearance: none;
   align-self: flex-start;
-  margin: 8px 10px 0;
+  margin: 0;
   padding: 0;
   border: 0;
   background: transparent;
@@ -1312,16 +1343,6 @@ button.session-logs-tile:disabled:hover {
 
 .session-logs-history-toggle.is-open {
   color: var(--color-text-2);
-}
-
-.session-logs-history-toggle--header {
-  align-self: auto;
-  max-width: 220px;
-  margin: 0;
-  padding: 2px 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .session-logs-used-tools__list {
@@ -1492,6 +1513,14 @@ button.session-logs-tile:disabled:hover {
   overflow-anchor: none;
   padding: 10px 12px;
   scrollbar-gutter: stable;
+}
+
+.session-logs-json-tree__body-addon {
+  display: flex;
+  min-width: 0;
+  margin: -2px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border-2);
 }
 
 .session-logs-scan {

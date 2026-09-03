@@ -15,6 +15,7 @@ import {
   MessageOne,
   PlayOne,
   SendOne,
+  Timeline,
   Tool,
 } from '@icon-park/react';
 import { formatDurationMs } from './format';
@@ -353,7 +354,12 @@ export function timelineRowIconKind(row: TimelineRow): TimelineIconKind {
 }
 
 const TimelineEventIcon: React.FC<{ row: TimelineRow }> = ({ row }) => {
-  const props = { theme: 'outline' as const, size: '14', strokeWidth: 3 };
+  const props = {
+    theme: 'outline' as const,
+    size: '14',
+    strokeWidth: 3,
+    fill: 'currentColor',
+  };
   switch (timelineRowIconKind(row)) {
     case 'start':
       return <PlayOne {...props} />;
@@ -476,7 +482,17 @@ export const ObservationTimelinePanel: React.FC<ObservationTimelinePanelProps> =
       <div className='session-logs-timeline__header'>
         <div className='session-logs-timeline__heading'>
           <div id={eventsId + '-title'} className='session-logs-timeline__title'>
-            {t('conversation.agentTrace.timeline')}
+            <Timeline
+              theme='outline'
+              size='14'
+              strokeWidth={3}
+              fill='currentColor'
+              className='session-logs-timeline__title-icon'
+              aria-hidden='true'
+            />
+            <span className='session-logs-timeline__title-text'>
+              {t('conversation.agentTrace.timeline')}
+            </span>
           </div>
           <span
             className='session-logs-timeline__count'

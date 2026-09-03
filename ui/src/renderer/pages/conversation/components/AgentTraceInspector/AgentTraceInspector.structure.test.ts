@@ -107,7 +107,8 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('session-logs-nav__list')).toBe(true);
     expect(css.includes('@container session-logs (min-width: 768px) and (max-width: 899px)')).toBe(true);
     expect(css.includes('@container session-logs (max-width: 767px)')).toBe(true);
-    expect(inspector.includes('const timelineStacked = workspaceWidth > 0 && workspaceWidth < 900')).toBe(true);
+    expect(inspector.includes('const [timelineCollapsed, setTimelineCollapsed] = useState(true);')).toBe(true);
+    expect(inspector.includes('setTimelineCollapsed(timelineStacked)')).toBe(false);
     expect(inspector.includes('const timelineCompact = workspaceWidth > 0 && workspaceWidth < 1200')).toBe(false);
     expect(css.includes('.session-logs-timeline-column.is-collapsed {\n    width: 100%;\n    min-width: 0;')).toBe(true);
     const mediumContainer = css.match(
@@ -177,6 +178,9 @@ describe('AgentTraceInspector', () => {
     expect(timeline.includes('event_seq')).toBe(true);
     expect(timeline.includes('relative_ms')).toBe(true);
     expect(timeline.includes('eventSeqs')).toBe(true);
+    expect(timeline.includes("import {\n  Attention,")).toBe(true);
+    expect(timeline.includes('Timeline')).toBe(true);
+    expect(timeline.includes("fill: 'currentColor'")).toBe(true);
     expect(selection.includes('TraceSelection')).toBe(true);
     expect(workflow.includes('session-logs-call-details')).toBe(true);
     expect(workflow.includes('session-logs-flow__arrow')).toBe(false);
@@ -227,7 +231,7 @@ describe('AgentTraceInspector', () => {
     expect(workflow.includes("className='session-logs-call__inspector-slot'")).toBe(true);
     expect(workflow.includes('onCollapse={onCollapse}')).toBe(true);
     expect(workflow.includes('responseTileCopy(t, matchingDetail.response_summary).title')).toBe(false);
-    expect(workflow.includes('argument_preview')).toBe(true);
+    expect(workflow.includes('title={toolTileTitle(t, tool)}')).toBe(true);
     expect(workflow.includes('root_turn_id')).toBe(true);
     expect(workflow.includes('canonicalRequestFromPayload')).toBe(true);
     expect(workflow.includes('useVirtualizer')).toBe(true);
@@ -269,8 +273,10 @@ describe('AgentTraceInspector', () => {
     expect(requestInspector.includes('expanded={systemOpen}')).toBe(true);
     expect(requestInspector.includes('const [systemOpen, setSystemOpen] = useState(false);')).toBe(true);
     expect(requestInspector.includes('setSystemOpen(false)')).toBe(true);
-    expect(requestInspector.includes('stateLabel={systemStateLabel ||')).toBe(true);
+    expect(requestInspector.includes('stateLabel={systemStateLabel || undefined}')).toBe(true);
+    expect(requestInspector.includes('systemPromptCollapsed')).toBe(false);
     expect(requestInspector.includes('headerAddon')).toBe(true);
+    expect(requestInspector.includes('bodyAddon')).toBe(true);
     expect(requestInspector.includes('usedTools')).toBe(true);
     expect(requestInspector.includes('toolDefinitionsCollapsed')).toBe(false);
     expect(requestInspector.includes('rawValue={messageValue}')).toBe(true);
@@ -384,6 +390,10 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('aspect-ratio: 1')).toBe(true);
     expect(css.includes('flex: 0 0 28px')).toBe(true);
     expect(css.includes('.session-logs-timeline__collapsed-time')).toBe(true);
+    expect(css.includes('.session-logs-timeline__title-icon')).toBe(true);
+    expect(css.includes('.session-logs-timeline-column.is-collapsed .session-logs-timeline__title-text')).toBe(true);
+    expect(css.includes('.session-logs-timeline-column.is-collapsed .session-logs-timeline__count')).toBe(true);
+    expect(css.includes('background: color-mix(in srgb, rgb(var(--primary-6)) 12%, var(--color-bg-1))')).toBe(true);
     expect(css.includes('.session-logs-timeline__compact')).toBe(false);
     expect(css.includes('.session-logs-used-tools')).toBe(true);
     expect(css.includes('height: 84px')).toBe(true);
