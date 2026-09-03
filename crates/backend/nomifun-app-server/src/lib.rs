@@ -890,12 +890,6 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         // Agent Store Importer (roadmap Phase 1)
         .route("/api/app-server/imports", post(run_import_route).get(list_imports_route))
         .route("/api/app-server/imports/{snapshot_id}", get(get_import_route))
-        // Snapshot-attached public display assets (avatars etc.), served from
-        // the immutable snapshot with strict path + MIME whitelist.
-        .route(
-            "/api/app-server/imports/{snapshot_id}/assets/{*asset_path}",
-            get(snapshot_asset_route),
-        )
         // Agent Store Installer (roadmap Phase 2)
         .route("/api/app-server/installs", post(run_install_route))
         .route("/api/app-server/installs/{snapshot_id}", get(install_status_route))
@@ -933,7 +927,23 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
             "/api/app-server/store/{marketplace_id}/entries/{entry_name}/install",
             post(store_install_entry_route),
         )
-        // Store entry display assets (avatars for not-yet-imported entries)
+        .with_state(state)
+}
+
+/// Public (no-login) display-asset routes for the Agent Store: snapshot
+/// avatars and store entry avatars / market icons. They are referenced by
+/// plain `<img>` tags, which cannot carry the app-server connection header
+/// or an Authorization header, so they must not sit behind the owner auth
+/// middleware. Strict path + MIME whitelists stay in the handlers.
+pub fn app_server_public_routes(state: AppServerRouterState) -> Router {
+    Router::new()
+        // Snapshot-attached public display assets (avatars etc.), served from
+        // the immutable snapshot with strict path + MIME whitelist.
+        .route(
+            "/api/app-server/imports/{snapshot_id}/assets/{*asset_path}",
+            get(snapshot_asset_route),
+        )
+        // Store entry display assets (avatars / market icons)
         .route(
             "/api/app-server/store/{marketplace_id}/entries/{entry_name}/assets/{*asset_path}",
             get(store_asset_route),
@@ -1648,11 +1658,10 @@ async fn get_import_route(
 /// files (`SKILL.md`/`*.md` are never served here).
 async fn snapshot_asset_route(
     State(state): State<AppServerRouterState>,
-    headers: HeaderMap,
-    Extension(user): Extension<CurrentUser>,
     Path((snapshot_id, asset_path)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppServerError> {
-    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    // Public display content (avatars from imported snapshots) referenced by
+    // plain `<img>` tags: no connection header, no owner auth.
     let root = state.snapshot_assets_root.as_ref().ok_or_else(|| {
         AppServerError::new(
             "unsupported_operation",
@@ -1724,11 +1733,13 @@ async fn snapshot_asset_route(
 /// non-whitelisted types; prompt files are never served.
 async fn store_asset_route(
     State(state): State<AppServerRouterState>,
-    headers: HeaderMap,
-    Extension(user): Extension<CurrentUser>,
     Path((marketplace_id, entry_name, asset_path)): Path<(String, String, String)>,
 ) -> Result<impl IntoResponse, AppServerError> {
-    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    // Assets are public display content (avatars / icons) referenced by
+    // plain `<img>` tags, which cannot carry the app-server connection
+    // header. Only the auth middleware (`Extension<CurrentUser>`) guards
+    // the route; the connection lifecycle does not apply to stateless
+    // asset GETs.
     let ext = asset_path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     let content_type = match ext.as_str() {
         "png" => "image/png",
@@ -1746,36 +1757,47 @@ async fn store_asset_route(
             ));
         }
     };
-    let base = marketplace_provider(&state)?
-        .entry_dir(&marketplace_id, &entry_name)
-        .await?;
-    let canonical_base = std::fs::canonicalize(&base).map_err(|_| {
-        AppServerError::new("not_found", "entry not found", StatusCode::NOT_FOUND, false)
-    })?;
-    let target = base.join(&asset_path);
-    let canonical_target = std::fs::canonicalize(&target).map_err(|_| {
-        AppServerError::new("not_found", "asset not found", StatusCode::NOT_FOUND, false)
-    })?;
-    if !canonical_target.starts_with(&canonical_base) {
-        return Err(AppServerError::new(
-            "invalid_asset",
-            "asset path escapes the entry",
-            StatusCode::BAD_REQUEST,
-            false,
-        ));
+    let provider = marketplace_provider(&state)?;
+    // Entry-level assets (plugin.json `avatar`, e.g. `avatars/expert.png`);
+    // market-level assets (`icons/<id>.svg`) live on the market root instead.
+    let mut bases = vec![provider.entry_dir(&marketplace_id, &entry_name).await?];
+    if !bases[0].join(&asset_path).is_file() {
+        if let Ok(market) = provider.market_dir(&marketplace_id).await {
+            bases.push(market);
+        }
     }
-    if !canonical_target.is_file() {
-        return Err(AppServerError::new(
-            "not_found",
-            "asset not found",
-            StatusCode::NOT_FOUND,
-            false,
-        ));
+    for base in bases {
+        let target = base.join(&asset_path);
+        let canonical_base = match std::fs::canonicalize(&base) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        let canonical_target = match std::fs::canonicalize(&target) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        if !canonical_target.starts_with(&canonical_base) {
+            return Err(AppServerError::new(
+                "invalid_asset",
+                "asset path escapes the entry",
+                StatusCode::BAD_REQUEST,
+                false,
+            ));
+        }
+        if !canonical_target.is_file() {
+            continue;
+        }
+        let bytes = tokio::fs::read(&canonical_target).await.map_err(|_| {
+            AppServerError::new("not_found", "asset not found", StatusCode::NOT_FOUND, false)
+        })?;
+        return Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes));
     }
-    let bytes = tokio::fs::read(&canonical_target).await.map_err(|_| {
-        AppServerError::new("not_found", "asset not found", StatusCode::NOT_FOUND, false)
-    })?;
-    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
+    Err(AppServerError::new(
+        "not_found",
+        "asset not found",
+        StatusCode::NOT_FOUND,
+        false,
+    ))
 }
 
 /// Validate a snapshot id is a bare UUIDv7-like opaque id (36 chars, hex+dash)

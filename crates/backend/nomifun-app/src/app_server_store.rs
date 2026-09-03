@@ -132,6 +132,28 @@ fn market_root_dir(market: &PluginMarketplaceRow, market_root: &Path) -> Option<
     }
 }
 
+/// Icon extensions the store asset endpoint serves, in probe order.
+const ICON_EXTS: [&str; 6] = ["png", "svg", "jpg", "jpeg", "webp", "gif"];
+
+/// Resolve the market-level icon for an entry (`icons/<base>.<ext>` in the
+/// market root, where `<base>` is the entry source basename — e.g.
+/// `tencent-docs.svg`, `agent-earth.png`). Skills and connectors declare no
+/// plugin.json avatar; the market ships an `icons/` directory instead.
+/// Returns the icon file name (relative to the market root) when present.
+fn market_icon_for(root: &Path, source_uri: &str) -> Option<String> {
+    let base = Path::new(source_uri)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())?;
+    for ext in ICON_EXTS {
+        let icon = root.join("icons").join(format!("{base}.{ext}"));
+        if icon.is_file() {
+            return Some(format!("icons/{base}.{ext}"));
+        }
+    }
+    None
+}
+
 #[async_trait]
 impl StoreProvider for AppServerStoreProvider {
     async fn list(&self) -> Result<AppServerStoreList, AppError> {
@@ -145,8 +167,10 @@ impl StoreProvider for AppServerStoreProvider {
             if market.enabled != 1 {
                 continue;
             }
-            let index = market_root_dir(&market, &self.market_root)
-                .map(|root| read_connector_index(&root))
+            let market_root = market_root_dir(&market, &self.market_root);
+            let index = market_root
+                .as_ref()
+                .map(|root| read_connector_index(root))
                 .unwrap_or_default();
             for entry in market.entries() {
                 // Resolve the entry payload directory (internal).
@@ -194,7 +218,13 @@ impl StoreProvider for AppServerStoreProvider {
                     .as_ref()
                     .and_then(|m| m.avatar.as_ref())
                     .cloned()
-                    .or_else(|| None);
+                    .or_else(|| {
+                        // Skills / connectors carry no plugin.json avatar;
+                        // the market ships `icons/<source-basename>.<ext>`.
+                        market_root
+                            .as_ref()
+                            .and_then(|root| market_icon_for(root, &entry.source_uri))
+                    });
 
                 // Installed state via provenance.
                 let snapshot = self
@@ -359,7 +389,7 @@ impl StoreProvider for AppServerStoreProvider {
 /// team marker → agent/team; a `SKILL.md` (with or without a plugin.json that
 /// declares no agents) → skill; otherwise the market's source kind.
 fn derive_kind(source: &std::path::Path, source_kind: &str, manifest: &Option<PluginManifest>) -> &'static str {
-    if source.join("cli.json").is_file() || source.join("mcp.json").is_file() {
+    if source.join("cli.json").is_file() {
         return "connector";
     }
     if let Some(manifest) = manifest {
@@ -373,10 +403,14 @@ fn derive_kind(source: &std::path::Path, source_kind: &str, manifest: &Option<Pl
             return "agent";
         }
     }
-    // A skill directory normally ships `SKILL.md`; plugin.json skill plugins
-    // declare no agents, so a SKILL.md wins over the fallback kind.
+    // A root `SKILL.md` is the strongest skill signal: skill-market entries
+    // frequently ship an auxiliary `mcp.json` next to it (e.g. 腾讯云知), so
+    // a skill wins over the MCP marker unless the dir is a CLI connector.
     if source.join("SKILL.md").is_file() {
         return "skill";
+    }
+    if source.join("mcp.json").is_file() {
+        return "connector";
     }
     match source_kind {
         "workbuddy-connector-market" => "connector",
