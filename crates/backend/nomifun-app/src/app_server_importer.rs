@@ -237,6 +237,7 @@ fn agent_summary(row: &PluginSnapshotComponentRow) -> AppServerAgentSummary {
         id: row.component_id.clone(),
         version: string_field(&value, "version").unwrap_or_default(),
         name: row.name.clone(),
+        preset_id: row.preset_id.clone(),
         description: string_field(&value, "description"),
         skills: string_array(&value, "skills"),
         connectors: vec![],

@@ -1870,11 +1870,47 @@ async fn execute_agent_run(
             true,
         )
     })?;
-    let preset = preset_service.get(&request.preset_id).await?;
-    validate_agent_store_preset_source(preset.source, preset.source_key.as_deref())?;
-    let snapshot = preset_service
-        .resolve(&request.preset_id, PresetTarget::ExecutionStep, None, PresetOverrides::default())
+    let mut resolved_preset_id = request.preset_id.clone();
+    let mut overrides = PresetOverrides::default();
+    // Structured `@` mentions resolve against the runtime seams and project
+    // into the frozen snapshot (docs/agent-store/05 §4.7):
+    // - an agent mention selects the installed preset for the definition
+    //   (replacing the legacy `agent_id`/`preset_id` field);
+    // - skill mentions mount into `included_skills`;
+    // - connector mentions attach MCP servers (validated enabled below).
+    apply_mentions(state, &mut resolved_preset_id, &mut overrides, &request.mentions).await?;
+    let preset = preset_service.get(&resolved_preset_id).await?;
+    validate_agent_store_preset_source(preset.source, preset.source_key.as_deref(), Some(&preset.name))?;
+    let mut snapshot = preset_service
+        .resolve(
+            &resolved_preset_id,
+            PresetTarget::ExecutionStep,
+            None,
+            overrides,
+        )
         .await?;
+    // Installed agent-store presets are created without a model binding
+    // (the definition payload has no model mandate). A run without a
+    // resolved model is rejected at the runtime boundary, so fall back to
+    // the owner's first enabled provider/model when the preset left the
+    // model unbound.
+    if snapshot.resolved_model.is_none() {
+        if let Some(model) = default_run_model(state).await? {
+            let retry = preset_service
+                .resolve(
+                    &resolved_preset_id,
+                    PresetTarget::ExecutionStep,
+                    None,
+                    PresetOverrides {
+                        model: Some(model.model.clone()),
+                        provider_id: model.provider_id.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            snapshot = retry;
+        }
+    }
     validate_nomi_runtime_type(snapshot.resolved_agent_type.as_deref())?;
     // Preset MCP references must exist and be enabled before the run starts.
     // The attempt runner projects them into the attempt conversation later;
@@ -3139,6 +3175,32 @@ pub struct AgentRunRequest {
     pub command_id: Option<String>,
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    /// Structured Agent Store references resolved from the composer `@`
+    /// mentions. The client never sends raw text; it sends resolved catalog
+    /// refs and the server enforces the runtime seam for each kind
+    /// (docs/agent-store/05 §4.7).
+    #[serde(default)]
+    pub mentions: Vec<MentionRef>,
+}
+
+/// One resolved `@` mention reference. `id` is an opaque catalog id
+/// (`wb-<plugin>-<slug>` for agent/skill, MCP server id for connector).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MentionRef {
+    pub kind: MentionKind,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MentionKind {
+    /// `@expert`: AgentDefinition with an installed preset (`preset_id`).
+    Agent,
+    /// `@skill`: SkillDefinition mounted into the run context.
+    Skill,
+    /// `@connector` / `@mcp`: configured MCP server attached to the run.
+    Connector,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3177,8 +3239,96 @@ impl AgentRunRequest {
     }
 }
 
-fn request_fingerprint<T: Serialize>(request: &T) -> Result<String, AppServerError> {
-    let bytes = serde_json::to_vec(request).map_err(|error| {
+/// Resolve structured `@` mentions into run-level seams. Each kind enforces
+/// its own runtime contract:
+/// - `agent`: resolve the AgentDefinition id to its installed `preset_id`
+///   (only one agent mention is allowed — two definitions cannot both be the
+///   run's lead);
+/// - `skill`: mount the definition id into `include_skills` (the resolver
+///   freezes it into `included_skills` on the snapshot);
+/// - `connector`: attach the MCP server id via `mcp_server_ids` (validated
+///   enabled by the caller's connector catalog check).
+async fn apply_mentions(
+    state: &AppServerRouterState,
+    resolved_preset_id: &mut String,
+    overrides: &mut PresetOverrides,
+    mentions: &[MentionRef],
+) -> Result<(), AppServerError> {
+    for mention in mentions {
+        match mention.kind {
+            MentionKind::Agent => {
+                let agent = agent_catalog_provider(state)?
+                    .get(&mention.id)
+                    .await
+                    .map_err(AppServerError::from)?;
+                let Some(preset_id) = agent.summary.preset_id.as_deref() else {
+                    return Err(AppServerError::new(
+                        "agent_not_installed",
+                        format!("agent {} is not installed; run install/* before starting it", mention.id),
+                        StatusCode::BAD_REQUEST,
+                        false,
+                    ));
+                };
+                if mentions.iter().filter(|m| m.kind == MentionKind::Agent).count() > 1 {
+                    return Err(AppServerError::new(
+                        "invalid_mentions",
+                        "only one agent may be mentioned per run",
+                        StatusCode::BAD_REQUEST,
+                        false,
+                    ));
+                }
+                if !resolved_preset_id.is_empty() && *resolved_preset_id != preset_id {
+                    return Err(AppServerError::new(
+                        "invalid_mentions",
+                        "the agent mention conflicts with the explicit agent_id",
+                        StatusCode::BAD_REQUEST,
+                        false,
+                    ));
+                }
+                *resolved_preset_id = preset_id.to_owned();
+            }
+            MentionKind::Skill => {
+                // Skill ids stay as source-qualified catalog refs; the preset
+                // resolver freezes them into `included_skills`.
+                if !overrides.include_skills.contains(&mention.id) {
+                    overrides.include_skills.push(mention.id.clone());
+                }
+            }
+            MentionKind::Connector => {
+                if let Some(ids) = overrides.mcp_server_ids.as_mut() {
+                    if !ids.contains(&mention.id) {
+                        ids.push(mention.id.clone());
+                    }
+                } else {
+                    overrides.mcp_server_ids = Some(vec![mention.id.clone()]);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// First enabled provider/model pair for the run model fallback. Returns
+/// `None` when no provider is available; the run then fails at the runtime
+/// boundary with the standard `InvalidSnapshot` (no silently wrong model).
+async fn default_run_model(
+    state: &AppServerRouterState,
+) -> Result<Option<nomifun_api_types::ModelPreference>, AppServerError> {
+    let Some(provider_service) = state.provider_service.as_ref() else {
+        return Ok(None);
+    };
+    let providers = provider_service.list().await.map_err(AppServerError::from)?;
+    Ok(providers
+        .into_iter()
+        .find(|provider| provider.enabled && !provider.models.is_empty())
+        .map(|provider| nomifun_api_types::ModelPreference {
+            provider_id: Some(provider.provider_id),
+            model: provider.models[0].clone(),
+            required: true,
+        }))
+}
+
+fn request_fingerprint<T: Serialize>(request: &T) -> Result<String, AppServerError> {    let bytes = serde_json::to_vec(request).map_err(|error| {
         AppServerError::new(
             "invalid_request",
             format!("request cannot be fingerprinted: {error}"),
@@ -3192,10 +3342,17 @@ fn request_fingerprint<T: Serialize>(request: &T) -> Result<String, AppServerErr
 fn validate_agent_store_preset_source(
     source: PresetSource,
     source_key: Option<&str>,
+    preset_name: Option<&str>,
 ) -> Result<(), nomifun_common::AppError> {
-    if source != PresetSource::Builtin || source_key != Some("builtin-office") {
+    let legacy_builtin = source == PresetSource::Builtin && source_key == Some("builtin-office");
+    // Agent Store installs register user presets named `agent-store: <name>`.
+    // Only those user presets may start runs; arbitrary user presets stay
+    // out of the App Server compatibility surface.
+    let agent_store_user =
+        source == PresetSource::User && preset_name.is_some_and(|name| name.starts_with("agent-store: "));
+    if !legacy_builtin && !agent_store_user {
         return Err(nomifun_common::AppError::Forbidden(
-            "App Server compatibility policy only allows the builtin-office Preset".into(),
+            "App Server compatibility policy only allows the builtin-office Preset and installed agent-store Presets".into(),
         ));
     }
     Ok(())
@@ -4306,11 +4463,15 @@ mod tests {
     }
 
     #[test]
-    fn app_server_only_allows_the_builtin_office_preset_source() {
-        assert!(validate_agent_store_preset_source(PresetSource::Builtin, Some("builtin-office")).is_ok());
-        assert!(validate_agent_store_preset_source(PresetSource::User, Some("builtin-office")).is_err());
-        assert!(validate_agent_store_preset_source(PresetSource::Extension, Some("builtin-office")).is_err());
-        assert!(validate_agent_store_preset_source(PresetSource::Builtin, Some("other-preset")).is_err());
+    fn app_server_preset_source_policy_covers_builtin_and_installed_agent_store() {
+        assert!(validate_agent_store_preset_source(PresetSource::Builtin, Some("builtin-office"), Some("Office")).is_ok());
+        // Installed agent-store presets are user presets named `agent-store: <name>`.
+        assert!(validate_agent_store_preset_source(PresetSource::User, None, Some("agent-store: software-engineer")).is_ok());
+        // Arbitrary user presets stay outside the compatibility surface.
+        assert!(validate_agent_store_preset_source(PresetSource::User, None, Some("my-personal-preset")).is_err());
+        assert!(validate_agent_store_preset_source(PresetSource::User, Some("builtin-office"), Some("Office")).is_err());
+        assert!(validate_agent_store_preset_source(PresetSource::Extension, Some("builtin-office"), Some("Office")).is_err());
+        assert!(validate_agent_store_preset_source(PresetSource::Builtin, Some("other-preset"), Some("Other")).is_err());
     }
 
     #[test]
@@ -4364,6 +4525,107 @@ mod tests {
         .unwrap();
         assert_eq!(request.preset_id, "0190f5fe-7c00-7a00-8000-000000000004");
         assert_eq!(request.normalized_goal().unwrap(), "inspect the repository");
+    }
+
+    #[test]
+    fn agent_run_wire_accepts_structured_mentions() {
+        let request: AgentRunRequest = serde_json::from_value(serde_json::json!({
+            "agent_id": "0190f5fe-7c00-7a00-8000-000000000004",
+            "goal": "summarize the repo",
+            "mentions": [
+                {"kind": "agent", "id": "wb-demo-software-architect"},
+                {"kind": "skill", "id": "wb-demo-release-notes"},
+                {"kind": "connector", "id": "0190f5fe-7c00-7a00-8000-000000000020"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(request.mentions.len(), 3);
+        assert_eq!(request.mentions[1].kind, MentionKind::Skill);
+        assert_eq!(request.mentions[2].id, "0190f5fe-7c00-7a00-8000-000000000020");
+        // Omitted mentions default to the empty vec (backward compatible).
+        let bare: AgentRunRequest =
+            serde_json::from_value(serde_json::json!({"agent_id": "x"})).unwrap();
+        assert!(bare.mentions.is_empty());
+    }
+
+    #[test]
+    fn agent_run_wire_rejects_unknown_mention_kind() {
+        assert!(serde_json::from_value::<AgentRunRequest>(serde_json::json!({
+            "agent_id": "x",
+            "mentions": [{"kind": "team", "id": "wb-t"}]
+        }))
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn apply_mentions_resolves_agent_to_installed_preset() {
+        let mut state = AppServerRouterState::default();
+        state.agent_catalog = Some(Arc::new(crate::catalog::FakeAgentCatalog {
+            agents: vec![nomifun_api_types::AppServerAgentSummary {
+                id: "wb-demo-software-architect".into(),
+                version: "1.0.0".into(),
+                name: "software-architect".into(),
+                preset_id: Some("0190f5fe-7c00-7a00-8000-000000000030".into()),
+                description: None,
+                skills: vec![],
+                connectors: vec![],
+                model_summary: None,
+                tool_policy_summary: None,
+                source: "imported".into(),
+                compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+            }],
+        }));
+        let mut preset_id = String::new();
+        let mut overrides = PresetOverrides::default();
+        apply_mentions(
+            &state,
+            &mut preset_id,
+            &mut overrides,
+            &[
+                MentionRef { kind: MentionKind::Agent, id: "wb-demo-software-architect".into() },
+                MentionRef { kind: MentionKind::Skill, id: "wb-demo-release-notes".into() },
+                MentionRef { kind: MentionKind::Connector, id: "0190f5fe-7c00-7a00-8000-000000000020".into() },
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(preset_id, "0190f5fe-7c00-7a00-8000-000000000030");
+        assert_eq!(overrides.include_skills, vec!["wb-demo-release-notes"]);
+        assert_eq!(
+            overrides.mcp_server_ids,
+            Some(vec!["0190f5fe-7c00-7a00-8000-000000000020".into()])
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_mentions_rejects_uninstalled_agent() {
+        let mut state = AppServerRouterState::default();
+        state.agent_catalog = Some(Arc::new(crate::catalog::FakeAgentCatalog {
+            agents: vec![nomifun_api_types::AppServerAgentSummary {
+                id: "wb-demo-uninstalled".into(),
+                version: "1.0.0".into(),
+                name: "uninstalled".into(),
+                preset_id: None,
+                description: None,
+                skills: vec![],
+                connectors: vec![],
+                model_summary: None,
+                tool_policy_summary: None,
+                source: "imported".into(),
+                compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+            }],
+        }));
+        let mut preset_id = String::new();
+        let mut overrides = PresetOverrides::default();
+        let error = apply_mentions(
+            &state,
+            &mut preset_id,
+            &mut overrides,
+            &[MentionRef { kind: MentionKind::Agent, id: "wb-demo-uninstalled".into() }],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "agent_not_installed");
     }
 
     #[test]
@@ -5587,6 +5849,7 @@ display_name = "MiMo V2.5 Free"
             id: "wb-demo-software-team-lead".into(),
             version: "1.0.0".into(),
             name: "software-team-lead".into(),
+            preset_id: None,
             description: Some("lead".into()),
             skills: vec![],
             connectors: vec![],

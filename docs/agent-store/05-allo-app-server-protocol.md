@@ -386,6 +386,39 @@ name / source_kind（directory|external）/ source / version / description / key
 - `auto-update` 开关仅记录（第三方默认关闭），Phase B 无后台自动刷新任务
   （手动 `market/refresh` 触发同一 fetch 管线）。
 
+### 4.7 Mentions（@专家 / @技能 / @连接器，roadmap Phase 2 扩展）
+
+Composer 的 `@` 引用以**结构化 mention** 传入 `agent/run`，客户端不发原始
+文本（服务端不解析 `@` 语法）：
+
+```json
+{
+  "goal": "总结仓库并生成 release notes",
+  "mentions": [
+    {"kind": "agent", "id": "wb-demo-software-architect"},
+    {"kind": "skill", "id": "wb-demo-release-notes"},
+    {"kind": "connector", "id": "0190f5fe-...-000000000020"}
+  ]
+}
+```
+
+每类 mention 的运行时语义：
+
+| kind | 注入点 | 约束 |
+|---|---|---|
+| `agent` | 通过 `agent/get` 的 `preset_id` 选择运行 preset（替换 `agent_id` 字段）；overrides 沿 preset resolve 面展开 | 至多一个；target AgentDefinition 必须已 `install/*`（否则 `agent_not_installed`）；与显式 `agent_id` 冲突返回 `invalid_mentions` |
+| `skill` | 挂载到 `included_skills`（冻结进 `ResolvedPresetSnapshot`，随 run 上下文交给 Agent） | 只记录/挂载；不执行、不展开正文 |
+| `connector` | 追加到 `mcp_server_ids`（经既有的 connector 存在+enabled 校验后注入 run） | 必须是存在的已启用 MCP server |
+
+规则：
+
+- `mentions` 可省略（向后兼容），此时行为与旧 `agent/run` 一致；
+- 未知 kind 反序列化失败（严格 wire 契约）；
+- agent-store 安装 preset（`agent-store: <name>` 命名）在 `validate_agent_store_preset_source`
+  白名单内（Builtin+builtin-office 保持不变）；任意用户 preset 仍被拒绝；
+- preset 未绑定 model 时，服务端回退到 owner 的第一个启用 provider/model
+  （`default_run_model`），避免 `resolved_model=None` 在运行时边界被拒。
+
 ## 5. Thread 与 Run
 
 ### 5.1 Thread
@@ -465,7 +498,8 @@ WS   workspace/revoke             移除（注销）owner 的一个 workspace
   "agent_version": "1.0.0",
   "input": {"text": "..."},
   "workspace": {"id": "ws_01..."},
-  "idempotency_key": "client-op-01"
+  "idempotency_key": "client-op-01",
+  "mentions": [{"kind": "skill", "id": "wb-demo-release-notes"}]
 }
 ```
 
