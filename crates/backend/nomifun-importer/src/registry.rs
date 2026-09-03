@@ -46,6 +46,9 @@ mod tests {
             status: "completed".into(),
             imported_at: 1,
             updated_at: 1,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         }
     }
 

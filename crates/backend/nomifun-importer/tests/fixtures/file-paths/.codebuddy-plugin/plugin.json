@@ -1,0 +1,28 @@
+{
+  "name": "file-paths-plugin",
+  "version": "1.0.7",
+  "description": "Fixture: real CodeBuddy market manifest shape (file paths + object dependencies)",
+  "author": "Agent Store Fixtures",
+  "expertType": "team",
+  "agentName": "file-paths-lead",
+  "teamInfo": {
+    "leadAgent": "lead-agent",
+    "memberAgents": ["member-agent"]
+  },
+  "agents": [
+    "./agents/lead-agent.md",
+    "./agents/member-agent.md"
+  ],
+  "skills": [
+    "./skills/hello/SKILL.md",
+    "./skills/formatting/SKILL.md"
+  ],
+  "commands": [
+    "./commands/triage.md"
+  ],
+  "dependencies": {
+    "connectors": ["westock-mcp"],
+    "plugins": ["shared-helpers"]
+  },
+  "plugin": "file-paths-plugin"
+}

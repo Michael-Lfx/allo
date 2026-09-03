@@ -1,0 +1,38 @@
+{
+  "runtime": {
+    "type": "node",
+    "version": ">=18"
+  },
+  "init": {
+    "darwin": "npm install -g @demo/cli",
+    "linux": "npm install -g @demo/cli",
+    "win32": "npm install -g @demo/cli"
+  },
+  "versionCheck": {
+    "command": {
+      "darwin": "demo-cli --version",
+      "linux": "demo-cli --version",
+      "win32": "demo-cli.cmd --version"
+    },
+    "minVersion": "1.2.0"
+  },
+  "auth": {
+    "darwin": "demo-cli auth init --noninteractive --no-browser",
+    "linux": "demo-cli auth init --noninteractive --no-browser",
+    "win32": "demo-cli.cmd auth init --noninteractive --no-browser"
+  },
+  "unAuth": {
+    "darwin": "rm -rf \"$HOME/.config/demo\"",
+    "linux": "rm -rf \"$HOME/.config/demo\"",
+    "win32": "rmdir /s /q \"%USERPROFILE%\\.config\\demo\""
+  },
+  "status": {
+    "darwin": "demo-cli auth show",
+    "linux": "demo-cli auth show",
+    "win32": "demo-cli.cmd auth show"
+  },
+  "statusMatch": "\\bauthorized\\b",
+  "authUrlDomain": "demo.example.com",
+  "authWaitForExit": true,
+  "authQrModal": true
+}

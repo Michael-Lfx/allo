@@ -126,7 +126,10 @@ V1 不要求：
 ### Phase 1：Importer 与 Catalog（两周迭代）
 
 > 状态：✅ 主体已实现（`nomifun-importer` + `plugin_snapshots` Catalog + App Server
-> `import/*`、`agent/list`、`team/list`）；GitHub/Git/HTTP 市场源与运行时激活属后续
+> `import/*`、`agent/list`、`team/list`）+ 安装模式（`install/*`，Phase 2 提前落地）+
+> 市场（`market/*`，directory/github/git/url 四类源：git2 克隆 + HTTP 条件下载 +
+> staging 校验 → 原子晋升 → last-good；`market/refresh` 新鲜度短路；级联卸载）；
+> 自动更新后台任务、安装作用域与团队分发（阶段 C/D）留待后续
 
 交付：
 

@@ -11,7 +11,7 @@ pub mod workspace_resolver;
 pub use agent_store::{AgentStoreConfig, AgentStoreModel, AgentStoreProvider};
 pub use catalog::{
     AgentCatalogProvider, ConnectorAuthProvider, ConnectorCatalogProvider, ImportProvider,
-    SkillCatalogProvider, TeamCatalogProvider,
+    InstallProvider, MarketplaceProvider, SkillCatalogProvider, TeamCatalogProvider,
 };
 pub use workspace_resolver::{
     FilesystemWorkspaceResolver, ResolvedWorkspace, WorkspaceResolver,
@@ -49,7 +49,11 @@ use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
-    AppServerImportSummary, AppServerOAuthStartResult, AppServerOAuthStatusView,
+    AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
+    AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
+    AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
+    AppServerMarketplaceSummary,
+    AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail, AppServerTeamSummary,
     CreateProviderRequest, ListMessagesQuery, MessageResponse, PresetOverrides, PresetSource,
     PresetTarget, SendMessageRequest,
@@ -161,6 +165,8 @@ pub struct CapabilityAvailability {
     pub connectors: bool,
     pub oauth: bool,
     pub imports: bool,
+    pub installs: bool,
+    pub marketplaces: bool,
     pub agents: bool,
     pub teams: bool,
 }
@@ -174,6 +180,8 @@ impl CapabilityAvailability {
             connectors: state.connectors.is_some(),
             oauth: state.connector_auth.is_some(),
             imports: state.imports.is_some(),
+            installs: state.installs.is_some(),
+            marketplaces: state.markets.is_some(),
             agents: state.agent_catalog.is_some(),
             teams: state.team_catalog.is_some(),
         }
@@ -350,6 +358,8 @@ pub struct Capabilities {
     pub artifacts: bool,
     pub oauth: bool,
     pub imports: bool,
+    pub installs: bool,
+    pub marketplaces: bool,
 }
 
 impl Capabilities {
@@ -365,6 +375,8 @@ impl Capabilities {
             artifacts: false,
             oauth: availability.oauth,
             imports: availability.imports,
+            installs: availability.installs,
+            marketplaces: availability.marketplaces,
         }
     }
 }
@@ -771,6 +783,12 @@ pub struct AppServerRouterState {
     /// Agent Store Importer/PluginSnapshot provider. `None` keeps the
     /// `imports` capability off.
     pub imports: Option<Arc<dyn ImportProvider>>,
+    /// Agent Store Installer provider (roadmap Phase 2). `None` keeps the
+    /// `installs` capability off.
+    pub installs: Option<Arc<dyn InstallProvider>>,
+    /// Agent Store Marketplace provider (roadmap Phase 2). `None` keeps the
+    /// `marketplaces` capability off.
+    pub markets: Option<Arc<dyn MarketplaceProvider>>,
     /// Agent Store AgentDefinition catalog (05 §4.1). `None` keeps the
     /// `agents` catalog off; `agent/run` still works off the runtime.
     pub agent_catalog: Option<Arc<dyn AgentCatalogProvider>>,
@@ -797,6 +815,8 @@ impl Default for AppServerRouterState {
             connectors: None,
             connector_auth: None,
             imports: None,
+            installs: None,
+            markets: None,
             agent_catalog: None,
             team_catalog: None,
         }
@@ -855,6 +875,37 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         // Agent Store Importer (roadmap Phase 1)
         .route("/api/app-server/imports", post(run_import_route).get(list_imports_route))
         .route("/api/app-server/imports/{snapshot_id}", get(get_import_route))
+        // Agent Store Installer (roadmap Phase 2)
+        .route("/api/app-server/installs", post(run_install_route))
+        .route("/api/app-server/installs/{snapshot_id}", get(install_status_route))
+        .route(
+            "/api/app-server/installs/{snapshot_id}/disable",
+            post(install_disable_route),
+        )
+        .route(
+            "/api/app-server/installs/{snapshot_id}/enable",
+            post(install_enable_route),
+        )
+        .route(
+            "/api/app-server/installs/{snapshot_id}/uninstall",
+            post(install_uninstall_route),
+        )
+        // Agent Store Marketplaces (roadmap Phase 2)
+        .route("/api/app-server/markets", post(market_add_route).get(market_list_route))
+        .route("/api/app-server/markets/{marketplace_id}", get(market_get_route))
+        .route("/api/app-server/markets/{marketplace_id}/remove", post(market_remove_route))
+        .route(
+            "/api/app-server/markets/{marketplace_id}/auto-update",
+            post(market_auto_update_route),
+        )
+        .route(
+            "/api/app-server/markets/{marketplace_id}/refresh",
+            post(market_refresh_route),
+        )
+        .route(
+            "/api/app-server/markets/{marketplace_id}/entries/{entry_name}/import",
+            post(market_entry_import_route),
+        )
         .with_state(state)
 }
 
@@ -1284,6 +1335,146 @@ async fn get_import_impl(
     import_provider(state)?.get(snapshot_id).await.map_err(AppServerError::from)
 }
 
+// --- install seam (roadmap Phase 2) ----------------------------------------
+
+fn install_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn InstallProvider>, AppServerError> {
+    state.installs.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "install pipeline is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+async fn install_impl(
+    state: &AppServerRouterState,
+    request: AppServerInstallRequest,
+) -> Result<AppServerInstallResult, AppServerError> {
+    install_provider(state)?.install(request).await.map_err(AppServerError::from)
+}
+
+async fn install_status_impl(
+    state: &AppServerRouterState,
+    snapshot_id: &str,
+) -> Result<AppServerInstallStatus, AppServerError> {
+    install_provider(state)?.status(snapshot_id).await.map_err(AppServerError::from)
+}
+
+async fn install_disable_impl(
+    state: &AppServerRouterState,
+    snapshot_id: &str,
+    component_ids: &[String],
+) -> Result<AppServerInstallStatus, AppServerError> {
+    install_provider(state)?
+        .disable(snapshot_id, component_ids)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn install_enable_impl(
+    state: &AppServerRouterState,
+    snapshot_id: &str,
+    component_ids: &[String],
+) -> Result<AppServerInstallStatus, AppServerError> {
+    install_provider(state)?
+        .enable(snapshot_id, component_ids)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn install_uninstall_impl(
+    state: &AppServerRouterState,
+    snapshot_id: &str,
+    component_ids: &[String],
+) -> Result<AppServerInstallStatus, AppServerError> {
+    install_provider(state)?
+        .uninstall(snapshot_id, component_ids)
+        .await
+        .map_err(AppServerError::from)
+}
+
+// --- marketplace seam (roadmap Phase 2) -------------------------------------
+
+fn marketplace_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn MarketplaceProvider>, AppServerError> {
+    state.markets.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "marketplace pipelines are not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+async fn market_add_impl(
+    state: &AppServerRouterState,
+    request: AppServerMarketplaceAddRequest,
+) -> Result<AppServerMarketplaceSummary, AppServerError> {
+    marketplace_provider(state)?.add(request).await.map_err(AppServerError::from)
+}
+
+async fn market_list_impl(
+    state: &AppServerRouterState,
+) -> Result<Vec<AppServerMarketplaceSummary>, AppServerError> {
+    marketplace_provider(state)?.list().await.map_err(AppServerError::from)
+}
+
+async fn market_get_impl(
+    state: &AppServerRouterState,
+    marketplace_id: &str,
+) -> Result<AppServerMarketplaceDetail, AppServerError> {
+    marketplace_provider(state)?.get(marketplace_id).await.map_err(AppServerError::from)
+}
+
+async fn market_remove_impl(
+    state: &AppServerRouterState,
+    marketplace_id: &str,
+    cascade: bool,
+) -> Result<AppServerMarketplaceRemoveResult, AppServerError> {
+    marketplace_provider(state)?
+        .remove(marketplace_id, cascade)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn market_auto_update_impl(
+    state: &AppServerRouterState,
+    marketplace_id: &str,
+    enabled: bool,
+) -> Result<AppServerMarketplaceSummary, AppServerError> {
+    marketplace_provider(state)?
+        .set_auto_update(marketplace_id, enabled)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn market_refresh_impl(
+    state: &AppServerRouterState,
+    marketplace_id: &str,
+) -> Result<AppServerMarketplaceRefreshResult, AppServerError> {
+    marketplace_provider(state)?
+        .refresh(marketplace_id)
+        .await
+        .map_err(AppServerError::from)
+}
+
+async fn market_entry_import_impl(
+    state: &AppServerRouterState,
+    marketplace_id: &str,
+    entry_name: &str,
+) -> Result<AppServerImportResult, AppServerError> {
+    marketplace_provider(state)?
+        .import_entry(marketplace_id, entry_name)
+        .await
+        .map_err(AppServerError::from)
+}
+
 async fn list_agents_impl(
     state: &AppServerRouterState,
 ) -> Result<Vec<AppServerAgentSummary>, AppServerError> {
@@ -1340,6 +1531,168 @@ async fn get_import_route(
 ) -> Result<Json<AppServerImportDetail>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(get_import_impl(&state, &snapshot_id).await?))
+}
+
+// --- install route handlers (roadmap Phase 2) ------------------------------
+
+async fn run_install_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<AppServerInstallRequest>, JsonRejection>,
+) -> Result<Json<AppServerInstallResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(request) = body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    Ok(Json(install_impl(&state, request).await?))
+}
+
+async fn install_status_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(snapshot_id): Path<String>,
+) -> Result<Json<AppServerInstallStatus>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(install_status_impl(&state, &snapshot_id).await?))
+}
+
+async fn install_disable_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(snapshot_id): Path<String>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Json<AppServerInstallStatus>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(value) =
+        body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    let component_ids: Vec<String> = value
+        .get("component_ids")
+        .and_then(|value| value.as_array())
+        .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    Ok(Json(install_disable_impl(&state, &snapshot_id, &component_ids).await?))
+}
+
+async fn install_enable_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(snapshot_id): Path<String>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Json<AppServerInstallStatus>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(value) =
+        body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    let component_ids: Vec<String> = value
+        .get("component_ids")
+        .and_then(|value| value.as_array())
+        .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    Ok(Json(install_enable_impl(&state, &snapshot_id, &component_ids).await?))
+}
+
+async fn install_uninstall_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(snapshot_id): Path<String>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Json<AppServerInstallStatus>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(value) =
+        body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    let component_ids: Vec<String> = value
+        .get("component_ids")
+        .and_then(|value| value.as_array())
+        .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    Ok(Json(install_uninstall_impl(&state, &snapshot_id, &component_ids).await?))
+}
+
+async fn market_add_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<AppServerMarketplaceAddRequest>, JsonRejection>,
+) -> Result<Json<AppServerMarketplaceSummary>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(request) =
+        body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    Ok(Json(market_add_impl(&state, request).await?))
+}
+
+async fn market_list_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<Vec<AppServerMarketplaceSummary>>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(market_list_impl(&state).await?))
+}
+
+async fn market_get_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(marketplace_id): Path<String>,
+) -> Result<Json<AppServerMarketplaceDetail>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(market_get_impl(&state, &marketplace_id).await?))
+}
+
+async fn market_remove_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(marketplace_id): Path<String>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Json<AppServerMarketplaceRemoveResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(value) =
+        body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    let cascade = value
+        .get("cascade")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    Ok(Json(market_remove_impl(&state, &marketplace_id, cascade).await?))
+}
+
+async fn market_auto_update_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(marketplace_id): Path<String>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Json<AppServerMarketplaceSummary>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let Json(value) =
+        body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    let enabled = value
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    Ok(Json(market_auto_update_impl(&state, &marketplace_id, enabled).await?))
+}
+
+async fn market_refresh_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(marketplace_id): Path<String>,
+) -> Result<Json<AppServerMarketplaceRefreshResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(market_refresh_impl(&state, &marketplace_id).await?))
+}
+
+async fn market_entry_import_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path((marketplace_id, entry_name)): Path<(String, String)>,
+) -> Result<Json<AppServerImportResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(market_entry_import_impl(&state, &marketplace_id, &entry_name).await?))
 }
 
 async fn list_skills_route(
@@ -5132,6 +5485,8 @@ display_name = "MiMo V2.5 Free"
                 runtime: true,
                 events: true,
                 imports: true,
+                installs: true,
+                marketplaces: true,
                 agents: true,
                 teams: true,
                 ..Default::default()
@@ -5139,9 +5494,92 @@ display_name = "MiMo V2.5 Free"
         );
         let result = state.initialize(request()).unwrap();
         assert!(result.capabilities.imports);
+        assert!(result.capabilities.installs);
+        assert!(result.capabilities.marketplaces);
         assert!(result.capabilities.agents);
         assert!(result.capabilities.teams);
         assert!(!result.capabilities.skills, "uninjected capability stays off");
+    }
+
+    #[tokio::test]
+    async fn install_impls_route_through_the_provider_and_gate() {
+        let mut install = crate::catalog::FakeInstallProvider::new();
+        install.install_result.installed_count = 3;
+        install.install_result.skipped = vec!["wb-demo-hole".into()];
+        install.status.components = vec![nomifun_api_types::AppServerInstallComponent {
+            id: "wb-demo-skill".into(),
+            kind: "skill".into(),
+            name: "demo-skill".into(),
+            state: nomifun_api_types::AppServerInstallState::Installed,
+            runtime_location: Some("/data/skills/agent-store/x/demo-skill/SKILL.md".into()),
+            preset_id: None,
+        }];
+        let state = AppServerRouterState {
+            installs: Some(Arc::new(install)),
+            ..Default::default()
+        };
+        let request = nomifun_api_types::AppServerInstallRequest {
+            snapshot_id: "snap-demo".into(),
+        };
+        let result = install_impl(&state, request.clone()).await.unwrap();
+        assert_eq!(result.installed_count, 3);
+        assert_eq!(result.skipped, vec!["wb-demo-hole"]);
+
+        let status = install_status_impl(&state, "snap-demo").await.unwrap();
+        assert_eq!(status.components.len(), 1);
+        assert_eq!(status.components[0].state.as_str(), "installed");
+
+        // Uninjected provider keeps the surface closed.
+        let bare = AppServerRouterState::default();
+        let denied = install_impl(&bare, request).await.unwrap_err();
+        assert_eq!(denied.code, "unsupported_operation");
+        let denied_status = install_status_impl(&bare, "snap-demo").await.unwrap_err();
+        assert_eq!(denied_status.code, "unsupported_operation");
+    }
+
+    #[tokio::test]
+    async fn market_impls_route_through_the_provider_and_gate() {
+        let market = crate::catalog::FakeMarketplaceProvider::new();
+        let state = AppServerRouterState {
+            markets: Some(Arc::new(market)),
+            ..Default::default()
+        };
+        let request = nomifun_api_types::AppServerMarketplaceAddRequest {
+            name: None,
+            source_kind: nomifun_api_types::AppServerMarketplaceSourceKind::Directory,
+            source: "/tmp/company-tools".into(),
+        };
+        let summary = market_add_impl(&state, request.clone()).await.unwrap();
+        assert_eq!(summary.marketplace_id, "company-tools");
+        assert_eq!(summary.entry_count, 2);
+
+        let listed = market_list_impl(&state).await.unwrap();
+        assert_eq!(listed.len(), 1);
+
+        let detail = market_get_impl(&state, "company-tools").await.unwrap();
+        assert_eq!(detail.entries.len(), 2);
+        assert_eq!(detail.entries[0].name, "formatter");
+
+        let removed = market_remove_impl(&state, "company-tools", true).await.unwrap();
+        assert_eq!(removed.snapshots, vec!["snap-demo"]);
+
+        let toggled = market_auto_update_impl(&state, "company-tools", true).await.unwrap();
+        assert!(toggled.auto_update);
+
+        let refreshed = market_refresh_impl(&state, "company-tools").await.unwrap();
+        assert!(refreshed.changed);
+        assert_eq!(refreshed.entry_count, 2);
+        assert_eq!(refreshed.resolved_revision, "abc123def");
+
+        let imported = market_entry_import_impl(&state, "company-tools", "formatter").await.unwrap();
+        assert_eq!(imported.snapshot_id, "snap-demo");
+
+        // Uninjected provider keeps the surface closed.
+        let bare = AppServerRouterState::default();
+        let denied = market_add_impl(&bare, request).await.unwrap_err();
+        assert_eq!(denied.code, "unsupported_operation");
+        let denied_list = market_list_impl(&bare).await.unwrap_err();
+        assert_eq!(denied_list.code, "unsupported_operation");
     }
 
     fn sample_agent_summary() -> nomifun_api_types::AppServerAgentSummary {

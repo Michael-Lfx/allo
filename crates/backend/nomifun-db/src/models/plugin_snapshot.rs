@@ -1,5 +1,6 @@
 use nomifun_common::TimestampMs;
 use serde::{Deserialize, Serialize};
+use sqlx::Row as _;
 
 /// Row mapping for the `plugin_snapshots` table.
 ///
@@ -30,6 +31,29 @@ pub struct PluginSnapshotRow {
     pub status: String,
     pub imported_at: TimestampMs,
     pub updated_at: TimestampMs,
+    /// Marketplace provenance (roadmap Phase 2): set when the snapshot was
+    /// imported from a marketplace entry; `None` for manual imports.
+    pub marketplace_id: Option<String>,
+    pub entry_name: Option<String>,
+    /// Source revision at the time of import (git commit / HTTP marker);
+    /// internal traceability only.
+    pub source_revision: Option<String>,
+}
+
+/// History-list projection: a snapshot row plus its component count,
+/// produced by `IPluginSnapshotRepository::list_snapshots` in one JOIN.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginSnapshotListRow {
+    pub snapshot: PluginSnapshotRow,
+    pub component_count: i64,
+}
+
+impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for PluginSnapshotListRow {
+    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        let snapshot = PluginSnapshotRow::from_row(row)?;
+        let component_count: i64 = row.try_get("component_count")?;
+        Ok(Self { snapshot, component_count })
+    }
 }
 
 /// Row mapping for the `plugin_snapshot_components` table.
@@ -39,6 +63,10 @@ pub struct PluginSnapshotRow {
 /// `payload_json` holds the normalized definition; it never contains
 /// credential values. `compatibility_json` holds the three-dimensional
 /// compatibility report of `docs/agent-store/03-...-compatibility-matrix.md`.
+///
+/// Installation state (roadmap Phase 2) lives on the row: `installed` /
+/// `disabled` flags plus the runtime registration (`preset_id` for agent/team
+/// components, `runtime_ref` JSON `{type, location, mcp_server_id}`).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, PartialEq, Eq)]
 pub struct PluginSnapshotComponentRow {
     pub id: i64,
@@ -54,4 +82,15 @@ pub struct PluginSnapshotComponentRow {
     pub relative_path: Option<String>,
     pub compatibility_json: String,
     pub payload_json: String,
+    /// 1 when the installer registered this component into the runtime.
+    pub installed: i64,
+    /// 1 when installed but disabled; runtime artifacts stay in place.
+    pub disabled: i64,
+    /// When the component was installed (ms epoch).
+    pub installed_at: Option<i64>,
+    /// Preset created for agent/team components (nullable for other kinds).
+    pub preset_id: Option<String>,
+    /// JSON `{ "type": "skill"|"connector"|"preset",
+    /// "location": "...", "mcp_server_id": "..." }` (internal traceability).
+    pub runtime_ref: Option<String>,
 }

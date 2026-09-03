@@ -10,15 +10,19 @@ pub mod compat;
 pub mod digest;
 pub mod frontmatter;
 pub mod import;
+pub mod install;
 pub mod manifest;
 pub mod models;
 pub mod registry;
 pub mod walk;
 
 pub use import::{ImportError, ImporterService, ImportRequest};
+pub use install::{
+    InstallError, InstallerConfig, InstallerService, InstalledSkillLocation, MaterializeOutcome,
+};
 pub use manifest::{
-    ManifestError, MarketManifest, ParsedManifest, PluginManifest, TeamInfo,
-    validate_relative_path,
+    CliManifest, ManifestError, MarketManifest, ParsedManifest, PluginManifest, TeamInfo,
+    platform_summary, validate_relative_path,
 };
 pub use models::{
     CompatTriple, Component, SourceKind, component_id, sanitize_slug,

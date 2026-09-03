@@ -40,6 +40,9 @@ pub enum SourceKind {
     WorkBuddySkillMarket,
     /// `.codebuddy-connector/connectors.json` connector market directory.
     WorkBuddyConnectorMarket,
+    /// A single connector directory (`connectors/<id>/`) with `cli.json`
+    /// + `skills/` (CLI connectors like wecom / feishu / tmeet).
+    WorkBuddyCliConnector,
 }
 
 impl SourceKind {
@@ -48,6 +51,7 @@ impl SourceKind {
             Self::CodeBuddyPlugin => "codebuddy-plugin",
             Self::WorkBuddySkillMarket => "workbuddy-skill-market",
             Self::WorkBuddyConnectorMarket => "workbuddy-connector-market",
+            Self::WorkBuddyCliConnector => "workbuddy-cli-connector",
         }
     }
 
@@ -57,6 +61,7 @@ impl SourceKind {
             Self::CodeBuddyPlugin => ".codebuddy-plugin/plugin.json",
             Self::WorkBuddySkillMarket => ".codebuddy-skill/marketplace.json",
             Self::WorkBuddyConnectorMarket => ".codebuddy-connector/connectors.json",
+            Self::WorkBuddyCliConnector => "cli.json",
         }
     }
 }

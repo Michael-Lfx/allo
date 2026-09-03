@@ -63,10 +63,16 @@ impl ImportProvider for AppServerImportProvider {
             nomifun_api_types::AppServerImportSourceKind::WorkBuddyConnectorMarket => {
                 nomifun_importer::SourceKind::WorkBuddyConnectorMarket
             }
+            nomifun_api_types::AppServerImportSourceKind::WorkBuddyCliConnector => {
+                nomifun_importer::SourceKind::WorkBuddyCliConnector
+            }
         };
         let import_request = nomifun_importer::ImportRequest {
             source_path: request.source_path.into(),
             source_kind,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
         };
         self.importer
             .run_import(&import_request)
@@ -79,13 +85,13 @@ impl ImportProvider for AppServerImportProvider {
         Ok(rows
             .into_iter()
             .map(|row| AppServerImportSummary {
-                snapshot_id: row.snapshot_id,
-                name: row.name,
-                version: row.version,
-                source_kind: row.source_kind,
-                status: row.status,
-                component_count: 0,
-                imported_at: row.imported_at,
+                snapshot_id: row.snapshot.snapshot_id,
+                name: row.snapshot.name,
+                version: row.snapshot.version,
+                source_kind: row.snapshot.source_kind,
+                status: row.snapshot.status,
+                component_count: row.component_count.max(0) as usize,
+                imported_at: row.snapshot.imported_at,
             })
             .collect())
     }

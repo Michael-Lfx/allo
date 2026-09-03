@@ -1,12 +1,15 @@
 //! Manifest parsing and path validation (docs/agent-store/02 §2 steps 1–4).
 //!
-//! V1 supports three local source kinds. A marketplace manifest is a much
+//! V1 supports four local source kinds. A marketplace manifest is a much
 //! lighter shape than a plugin manifest; both converge on the same
-//! `PluginManifest`-like identity fields.
+//! `PluginManifest`-like identity fields. A single CLI connector directory
+//! (`cli.json` + `skills/`) has no manifest identity of its own — the
+//! directory name becomes the plugin id (real CodeBuddy markets layout).
 
 use std::path::Path;
 
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::models::SourceKind;
 
@@ -44,13 +47,18 @@ pub struct PluginManifest {
     pub version: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
+    /// Display metadata; real markets use both `"author": "name"` and
+    /// `"author": {"name": "...", "email": "..."}` — normalized to the human
+    /// name (email appended when present).
+    #[serde(default, deserialize_with = "deserialize_author")]
     pub author: Option<String>,
-    #[serde(default)]
+    /// One-shot component roots; real markets declare both a single string
+    /// (`"./agents/"`) and an array (`["./agents/a.md"]`).
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub agents: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub skills: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub commands: Vec<String>,
     #[serde(default)]
     pub hooks: Option<serde_json::Value>,
@@ -60,7 +68,13 @@ pub struct PluginManifest {
     pub lsp_servers: Option<serde_json::Value>,
     #[serde(default)]
     pub user_config: Option<serde_json::Value>,
-    #[serde(default)]
+    /// Declared dependencies, normalized to a flat array of entries.
+    ///
+    /// Real CodeBuddy markets use both shapes: a legacy array
+    /// (`[{"name": "x"}]`) and an object grouped by kind
+    /// (`{"connectors": ["westock-mcp"]}`). The object form is expanded
+    /// into one entry per item with a `group` marker (02 §8).
+    #[serde(default, deserialize_with = "deserialize_dependencies")]
     pub dependencies: Vec<serde_json::Value>,
     #[serde(default)]
     pub team_info: Option<TeamInfo>,
@@ -94,11 +108,142 @@ impl MarketManifest {
     }
 }
 
+/// A single CLI connector directory (`cli.json` + `skills/`), e.g. wecom /
+/// feishu / tmeet in `~/.workbuddy/connectors-marketplace/connectors/`.
+///
+/// `cli.json` carries no identity of its own; the sibling `connectors.json`
+/// index row (`id`, `name`, `description`, `examples_*`, `minWorkbuddyVersion`)
+/// supplies metadata. V1 uses the directory name as the plugin id and derives
+/// a display name from the directory name when no index row is available.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliManifest {
+    /// E.g. `{ "type": "node", "version": ">=18" }`.
+    #[serde(default)]
+    pub runtime: Option<serde_json::Value>,
+    #[serde(default)]
+    pub init: Option<serde_json::Value>,
+    #[serde(default)]
+    pub version_check: Option<serde_json::Value>,
+    #[serde(default)]
+    pub auth: Option<serde_json::Value>,
+    #[serde(default)]
+    pub un_auth: Option<serde_json::Value>,
+    #[serde(default)]
+    pub status: Option<serde_json::Value>,
+    #[serde(default)]
+    pub status_match: Option<serde_json::Value>,
+    #[serde(default)]
+    pub status_match_json: Option<serde_json::Value>,
+    #[serde(default)]
+    pub auth_url_domain: Option<String>,
+    #[serde(default)]
+    pub auth_wait_for_exit: Option<bool>,
+    #[serde(default)]
+    pub auth_qr_modal: Option<bool>,
+}
+
+/// Flatten a per-platform map (`{"win32": "...", "darwin": "..."}`) to its
+/// first resolved value for a summary string.
+pub fn platform_summary(value: &Option<serde_json::Value>) -> Option<String> {
+    let value = value.as_ref()?;
+    match value {
+        serde_json::Value::String(platform) => Some(platform.clone()),
+        serde_json::Value::Object(map) => Some(
+            map.values()
+                .filter_map(|value| value.as_str())
+                .find(|s| !s.is_empty())
+                .map(str::to_owned)?,
+        ),
+        _ => None,
+    }
+}
+
+/// Normalize `dependencies` into a flat array for the V1 component model.
+///
+/// Accepts either a JSON array of entry objects (legacy shape) or an
+/// object keyed by kind (`connectors` / `plugins` / `skills` …) whose
+/// values are lists of names or entry objects. Each expanded item gains a
+/// `group` field capturing the original kind when it came from the object
+/// form, so consumers can still distinguish `westock-mcp` (a connector)
+/// from a plugin dependency.
+fn deserialize_dependencies<'de, D>(deserializer: D) -> Result<Vec<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(map) => {
+            let mut out: Vec<serde_json::Value> = Vec::new();
+            for (group, entries) in map {
+                for entry in entries.as_array().cloned().unwrap_or_default() {
+                    let mut item = match entry {
+                        serde_json::Value::String(name) => json!({ "name": name }),
+                        serde_json::Value::Object(object) => serde_json::Value::Object(object),
+                        other => other,
+                    };
+                    if let Some(object) = item.as_object_mut() {
+                        object.insert("group".into(), json!(group));
+                    }
+                    out.push(item);
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
+    })
+}
+
+/// `author`, `displayName`, `profession`, … fields that real markets emit
+/// both as a plain string and as an object (`{"name": "...", "email": "..."}`).
+fn deserialize_author<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::String(name) => Some(name),
+        serde_json::Value::Object(map) => {
+            let name = map.get("name").and_then(|value| value.as_str()).unwrap_or("");
+            let email = map.get("email").and_then(|value| value.as_str()).filter(|e| !e.is_empty());
+            let joined = match email {
+                Some(email) => format!("{name} <{email}>"),
+                None => name.to_owned(),
+            };
+            Some(joined)
+        }
+        _ => None,
+    })
+}
+
+/// Component root declarations: `"./agents/"` (single string) or
+/// `["./agents/a.md", "./agents/b.md"]` (array).
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::String(item) => vec![item],
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
 /// Parsed manifest for any supported source kind.
 #[derive(Debug, Clone)]
 pub enum ParsedManifest {
     Plugin(PluginManifest),
     Market(MarketManifest),
+    /// Single CLI connector directory identity (name derived from directory).
+    Cli(CliManifest, String),
+    /// Single skill directory (`skills/<slug>/` without a marketplace.json);
+    /// identity is the directory name.
+    SingleSkill(String),
 }
 
 impl ParsedManifest {
@@ -106,6 +251,8 @@ impl ParsedManifest {
         match self {
             Self::Plugin(manifest) => &manifest.name,
             Self::Market(manifest) => &manifest.name,
+            Self::Cli(_, directory_name) => directory_name,
+            Self::SingleSkill(directory_name) => directory_name,
         }
     }
 
@@ -113,6 +260,10 @@ impl ParsedManifest {
         match self {
             Self::Plugin(manifest) => manifest.version(),
             Self::Market(manifest) => manifest.version(),
+            // CLI connectors do not declare a version in cli.json; V1 uses a
+            // stable placeholder so identity stays honest (ads 02 §4 defaults).
+            Self::Cli(_, _) => "1.0.0",
+            Self::SingleSkill(_) => "1.0.0",
         }
     }
 }
@@ -164,13 +315,56 @@ pub fn parse_manifest(
 ) -> Result<ParsedManifest, ManifestError> {
     let rel = source_kind.manifest_rel_path();
     let path = root.join(rel);
-    let text = std::fs::read_to_string(&path).map_err(|error| {
-        ManifestError::Io(format!("{}: {error}", path.display()))
-    })?;
     match source_kind {
-        SourceKind::CodeBuddyPlugin => parse_plugin_manifest(&text).map(ParsedManifest::Plugin),
-        _ => parse_market_manifest(&text).map(ParsedManifest::Market),
+        SourceKind::WorkBuddySkillMarket if !path.is_file() => {
+            // Single skill directory (`skills/<slug>/`): the identity manifest
+            // is absent by design; accept the root when it contains a
+            // SKILL.md directly. Identity = directory name (02 §4).
+            let directory_name = root
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if directory_name.trim().is_empty() {
+                return Err(ManifestError::MissingIdentity("skill directory name".into()));
+            }
+            if !root.join("SKILL.md").is_file() {
+                return Err(ManifestError::Io(format!(
+                    "{}: expected marketplace.json or SKILL.md",
+                    path.display()
+                )));
+            }
+            Ok(ParsedManifest::SingleSkill(directory_name))
+        }
+        _ => {
+            let text = std::fs::read_to_string(&path).map_err(|error| {
+                ManifestError::Io(format!("{}: {error}", path.display()))
+            })?;
+            match source_kind {
+                SourceKind::CodeBuddyPlugin => {
+                    parse_plugin_manifest(&text).map(ParsedManifest::Plugin)
+                }
+                SourceKind::WorkBuddyCliConnector => {
+                    let directory_name = root
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if directory_name.trim().is_empty() {
+                        return Err(ManifestError::MissingIdentity("connector directory name".into()));
+                    }
+                    parse_cli_manifest(&text).map(|manifest| {
+                        ParsedManifest::Cli(manifest, directory_name)
+                    })
+                }
+                _ => parse_market_manifest(&text).map(ParsedManifest::Market),
+            }
+        }
     }
+}
+
+pub fn parse_cli_manifest(text: &str) -> Result<CliManifest, ManifestError> {
+    let manifest: CliManifest =
+        serde_json::from_str(text).map_err(|error| ManifestError::Json(error.to_string()))?;
+    Ok(manifest)
 }
 
 pub fn parse_market_manifest(text: &str) -> Result<MarketManifest, ManifestError> {
