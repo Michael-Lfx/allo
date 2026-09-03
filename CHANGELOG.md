@@ -5,6 +5,13 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.10 - 2026-09-03
+
+- Learning courses use a graph/list workspace with on-demand generation, interrupt/resume, and faster first paint.
+- Session Trace timeline, folding, and diagnostics are clearer; conversation errors include model context and block mid-stream model switches.
+- Video canvas allows connecting video nodes and defaults to a light theme. Vimax adds style catalog, session Cameo, and clearer provider moderation errors.
+- Coding recon is bounded by provider round-trips, with corrected turn credits.
+
 ## v1.1.9 - 2026-09-02
 
 - News Briefing adds a research-to-voice/stills workflow and starts processing directly after submission.
