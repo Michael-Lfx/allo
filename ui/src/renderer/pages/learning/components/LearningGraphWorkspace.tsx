@@ -4,47 +4,71 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Alert, Button, Drawer, Empty, Message, Radio, Spin, Tag, Typography } from '@arco-design/web-react';
-import React, { useCallback, useMemo, useState } from 'react';
+import { Alert, Button, Empty, Modal, Spin, Tag, Typography } from '@arco-design/web-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { learningApi } from '../api';
-import { errorMessage } from '../utils';
-import type { CourseDetail, GraphNodeView, LessonStatus } from '../types';
+import { statusColors } from '../constants';
+import { statusLabel } from '../utils';
+import type {
+  Activity,
+  AttemptResult,
+  CourseDetail,
+  GraphNodeView,
+  Lesson,
+  LessonStatus,
+} from '../types';
+import { LessonBlock } from './CourseWorkspace';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import GraphDagView from './GraphDagView';
 
 const { Text, Title, Paragraph } = Typography;
 
-const STATUS_TAG_COLOR: Record<LessonStatus, string> = {
-  not_started: 'gray',
-  in_progress: 'arcoblue',
-  completed: 'green',
-  skipped: 'gray',
-};
-
-const STATUS_LABEL_KEY: Record<LessonStatus, string> = {
-  not_started: 'learning.learningGraphStatusNotStarted',
-  in_progress: 'learning.learningGraphStatusInProgress',
-  completed: 'learning.learningGraphStatusCompleted',
-  skipped: 'learning.learningGraphStatusSkipped',
-};
-
 /**
- * 学习图课程工作区（beta）：取代传统课程的大纲导航。
- * 头部是全图进度概览与「下一步推荐」就绪集；下方 DAG / 列表双视图共享
- * 同一份图投影；节点操作（生成内容、跳过）在详情抽屉内完成。
+ * 学习图课程工作区（beta）：以「节点课时学习」为主体——左栏是继续学习
+ * 就绪集导航，中央内容区复用普通课程的 LessonBlock（Markdown 正文 +
+ * 练习题作答 + 完成课时 + 生成进度反馈）。全图 DAG 降级为弹窗入口：
+ * 图只在刚生成、零进度时自动弹出一次，之后的日常学习都在内容区完成。
  */
 const LearningGraphWorkspace: React.FC<{
   detail: CourseDetail;
   busyId: string | null;
+  attemptResults: Record<string, AttemptResult>;
   onBack: () => void;
+  onProgress: (lesson: Lesson, status: LessonStatus) => void;
+  onAttempt: (activity: Activity, response: unknown) => void;
+  onGenerate: (lesson: Lesson) => void;
   onRefresh: () => void;
-}> = ({ detail, busyId, onBack, onRefresh }) => {
+}> = ({
+  detail,
+  busyId,
+  attemptResults,
+  onBack,
+  onProgress,
+  onAttempt,
+  onGenerate,
+  onRefresh,
+}) => {
   const { t } = useTranslation();
   const model = useLearningAutogenModel();
   const graph = detail.graph;
-  const [view, setView] = useState<'dag' | 'list'>('dag');
-  const [selected, setSelected] = useState<GraphNodeView | null>(null);
+
+  // 学习图课程只有一个隐含模块；课时的完整视图（含 activities）从这里取，
+  // graph.nodes 只承载结构投影（标题/状态/深度/生成标记）。
+  const lessons = useMemo(
+    () => detail.modules.flatMap((module) => module.lessons),
+    [detail.modules]
+  );
+  const lessonsById = useMemo(
+    () => new Map(lessons.map((lesson) => [lesson.id, lesson])),
+    [lessons]
+  );
+
+  const [selectedLessonId, setSelectedLessonId] = useState<string | null>(
+    () => graph?.recommended[0] ?? null
+  );
+  const [graphOpen, setGraphOpen] = useState(false);
+  // 全图自动弹出只发生一次；用户关闭后（或已有进度后）不再打扰。
+  const autoOpenedRef = useRef(false);
 
   const stats = useMemo(() => {
     const nodes = graph?.nodes ?? [];
@@ -59,6 +83,15 @@ const LearningGraphWorkspace: React.FC<{
       minutes: nodes.reduce((sum, node) => sum + node.estimated_minutes, 0),
     };
   }, [graph]);
+
+  // 零进度（刚生成的课程）：首次进入自动弹出全图，先纵览再学习。
+  useEffect(() => {
+    if (autoOpenedRef.current) return;
+    if (stats.total > 0 && stats.completed + stats.inProgress + stats.skipped === 0) {
+      autoOpenedRef.current = true;
+      setGraphOpen(true);
+    }
+  }, [stats.total, stats.completed, stats.inProgress, stats.skipped]);
 
   const nodesById = useMemo(
     () => new Map((graph?.nodes ?? []).map((node) => [node.lesson_id, node])),
@@ -79,8 +112,6 @@ const LearningGraphWorkspace: React.FC<{
     }
     return locked;
   }, [graph]);
-  const selectedNode = selected ? nodesById.get(selected.lesson_id) ?? selected : null;
-  const selectedLocked = selectedNode ? lockedIds.has(selectedNode.lesson_id) : false;
   const isRecommended = useCallback(
     (lessonId: string) => graph?.recommended.includes(lessonId) ?? false,
     [graph]
@@ -102,55 +133,45 @@ const LearningGraphWorkspace: React.FC<{
     const readyToStudy =
       stats.total - stats.completed - stats.inProgress - stats.skipped - lockedIds.size;
     return [
-      { key: 'completed', count: stats.completed, color: 'var(--color-success-6)', label: t('learning.learningGraphStatusCompleted') },
-      { key: 'inProgress', count: stats.inProgress, color: 'var(--color-primary-6)', label: t('learning.learningGraphStatusInProgress') },
+      // primary/success 的 `-6` 色阶变量主题未导出，必须带字面 fallback
+      // （同 GraphDagView 的 STATUS_COLOR 注释）。
+      { key: 'completed', count: stats.completed, color: 'var(--color-success-6, #00b42a)', label: t('learning.learningGraphStatusCompleted') },
+      { key: 'inProgress', count: stats.inProgress, color: 'var(--color-primary-6, #165dff)', label: t('learning.learningGraphStatusInProgress') },
       { key: 'skipped', count: stats.skipped, color: 'var(--color-text-3)', label: t('learning.learningGraphStatusSkipped') },
-      { key: 'ready', count: Math.max(0, readyToStudy), color: 'var(--color-primary-3)', label: t('learning.learningGraphUnlocked') },
+      { key: 'ready', count: Math.max(0, readyToStudy), color: 'var(--color-primary-3, #94bfff)', label: t('learning.learningGraphUnlocked') },
       { key: 'locked', count: lockedIds.size, color: 'var(--color-fill-3)', label: t('learning.learningGraphLocked') },
     ];
   }, [lockedIds, stats.completed, stats.inProgress, stats.skipped, stats.total, t]);
 
-  const toggleSkip = useCallback(
-    async (node: GraphNodeView) => {
-      const next: LessonStatus = node.status === 'skipped' ? 'not_started' : 'skipped';
-      try {
-        await learningApi.updateLessonProgress(node.lesson_id, next);
-        Message.success(
-          next === 'skipped'
-            ? t('learning.learningGraphSkipDone')
-            : t('learning.learningGraphUnskipDone')
-        );
-        setSelected(null);
-        onRefresh();
-      } catch (actionError) {
-        Message.error(errorMessage(t, actionError));
-      }
-    },
-    [onRefresh, t]
-  );
+  // 完成节点后推荐首位会推进：内容区自动跟随到下一个应学节点；
+  // 用户手动点选不被覆盖（与普通课程工作区的跟随策略一致）。
+  const recommendedFirst = graph?.recommended[0] ?? null;
+  const lastRecommendedIdRef = useRef<string | null>(recommendedFirst);
+  useEffect(() => {
+    if (recommendedFirst && recommendedFirst !== lastRecommendedIdRef.current) {
+      lastRecommendedIdRef.current = recommendedFirst;
+      setSelectedLessonId(recommendedFirst);
+    }
+  }, [recommendedFirst]);
 
-  const generateContent = useCallback(
-    async (node: GraphNodeView) => {
-      try {
-        await learningApi.generateLesson(node.lesson_id, {
-          provider_id: model.choice?.provider_id,
-          model: model.choice?.model,
-        });
-        Message.success(t('learning.learningGraphGenerateDone', { title: node.title }));
-        setSelected(null);
-        onRefresh();
-      } catch (actionError) {
-        Message.error(errorMessage(t, actionError));
-      }
-    },
-    [model.choice, onRefresh, t]
+  // 选中的课时在前端数据里消失时（课程刷新后结构变化）回退到推荐首位
+  const selectedLesson = useMemo(
+    () =>
+      (selectedLessonId ? lessonsById.get(selectedLessonId) : null) ??
+      (recommendedFirst ? lessonsById.get(recommendedFirst) : null) ??
+      null,
+    [lessonsById, selectedLessonId, recommendedFirst]
   );
+  const selectedNode: GraphNodeView | null = selectedLesson
+    ? nodesById.get(selectedLesson.id) ?? null
+    : null;
+  const selectedLocked =
+    selectedLesson && selectedNode ? lockedIds.has(selectedLesson.id) : false;
+  const primaryLesson = primaryReady ? lessonsById.get(primaryReady.lesson_id) ?? null : null;
 
   if (!graph) {
     return <Empty description={t('learning.learningGraphEmpty')} />;
   }
-
-  const nodeActionBusy = busyId !== null;
 
   return (
     <div className='app-page-shell h-full w-full box-border overflow-y-auto'>
@@ -180,13 +201,13 @@ const LearningGraphWorkspace: React.FC<{
         />
       </div>
 
-      {/* 主从布局：左=继续学习面板（页面主入口），右=图/列表画布 */}
+      {/* 主从布局：左=继续学习就绪集导航，右=选中节点的课时学习区 */}
       <div className='flex min-h-0 flex-1 gap-12px'>
         <aside className='flex w-280px shrink-0 flex-col gap-10px overflow-y-auto'>
-          {/* 主推荐卡：当前应学的节点——页面最重要的学习入口 */}
+          {/* 主推荐卡：当前应学的节点——最重要的学习入口，点击即进入学习 */}
           <div
             className='cursor-pointer rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-12px transition-colors hover:border-[var(--color-primary-6)]'
-            onClick={() => primaryReady && setSelected(primaryReady)}
+            onClick={() => primaryReady && setSelectedLessonId(primaryReady.lesson_id)}
           >
             <div className='mb-6px flex items-center justify-between gap-6px'>
               <Text bold className='text-13px'>
@@ -224,30 +245,21 @@ const LearningGraphWorkspace: React.FC<{
                     })}
                   </span>
                 </div>
-                <div className='mt-10px flex items-center gap-8px'>
-                  {!primaryReady.generated && (
+                {primaryLesson && !primaryReady.generated && (
+                  <div className='mt-10px'>
                     <Button
                       type='primary'
                       size='small'
-                      disabled={nodeActionBusy}
+                      loading={busyId === primaryLesson.id}
                       onClick={(event) => {
                         event.stopPropagation();
-                        void generateContent(primaryReady);
+                        onGenerate(primaryLesson);
                       }}
                     >
                       {t('learning.learningGraphGenerateContent')}
                     </Button>
-                  )}
-                  <Button
-                    size='small'
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelected(primaryReady);
-                    }}
-                  >
-                    {t('learning.learningGraphNodeViewDetail')}
-                  </Button>
-                </div>
+                  </div>
+                )}
               </>
             ) : (
               <Empty description={t('learning.learningGraphReadyEmpty')} />
@@ -264,8 +276,12 @@ const LearningGraphWorkspace: React.FC<{
                   <button
                     key={node.lesson_id}
                     type='button'
-                    onClick={() => setSelected(node)}
-                    className='rd-6px flex cursor-pointer items-center justify-between gap-8px border-none bg-transparent px-6px py-6px text-left font-inherit text-13px text-[var(--color-text-1)] transition-colors hover:bg-[var(--color-fill-1)]'
+                    onClick={() => setSelectedLessonId(node.lesson_id)}
+                    className={`rd-6px flex cursor-pointer items-center justify-between gap-8px border-none bg-transparent px-6px py-6px text-left font-inherit text-13px transition-colors hover:bg-[var(--color-fill-1)] ${
+                      selectedLessonId === node.lesson_id
+                        ? 'bg-primary-1 font-500 text-primary-6'
+                        : 'text-[var(--color-text-1)]'
+                    }`}
                   >
                     <span className='min-w-0 truncate'>{node.title}</span>
                     <span className='shrink-0 text-11px text-t-tertiary'>
@@ -308,158 +324,118 @@ const LearningGraphWorkspace: React.FC<{
               ))}
             </div>
           </div>
+          {/* 全图入口：DAG 降级为弹窗——图只在首次纵览与宏观导航时需要 */}
+          <Button long onClick={() => setGraphOpen(true)}>
+            {t('learning.learningGraphOpenGraph')}
+          </Button>
         </aside>
 
-        {/* 右侧画布/列表：视图切换与作用对象同层 */}
+        {/* 中央内容区：选中节点的完整课时学习（正文/练习题/完成/追加练习） */}
         <section className='flex min-w-0 flex-1 flex-col overflow-hidden rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)]'>
-          <div className='flex shrink-0 items-center justify-between gap-8px border-b-1 border-solid border-[var(--color-border-2)] px-12px py-6px'>
-            <Text type='secondary' className='text-12px'>
-              {view === 'dag'
-                ? t('learning.learningGraphCanvasHint')
-                : t('learning.learningGraphListHint')}
-            </Text>
-            <Radio.Group
-              type='button'
-              size='mini'
-              value={view}
-              onChange={(value) => setView(value as 'dag' | 'list')}
-            >
-              <Radio value='dag'>{t('learning.learningGraphViewDag')}</Radio>
-              <Radio value='list'>{t('learning.learningGraphViewList')}</Radio>
-            </Radio.Group>
-          </div>
-          <div className='min-h-0 flex-1'>
-        {view === 'dag' ? (
-          <React.Suspense fallback={<div className='flex h-full items-center justify-center'><Spin /></div>}>
+          {!selectedLesson || !selectedNode ? (
+            <div className='flex h-full flex-1 items-center justify-center'>
+              <Empty description={t('learning.learningGraphContentEmpty')} />
+            </div>
+          ) : (
+            <div className='h-full overflow-y-auto p-16px'>
+              <div className='flex flex-wrap items-center gap-8px'>
+                <Title heading={4} className='!m-0'>
+                  {selectedLesson.title}
+                </Title>
+                <Tag size='small' color={statusColors[selectedLesson.status]} className='!mx-0'>
+                  {statusLabel(selectedLesson.status, t)}
+                </Tag>
+                {selectedLocked && (
+                  <Tag size='small' color='gray' className='!mx-0'>
+                    {t('learning.learningGraphLocked')}
+                  </Tag>
+                )}
+                {isRecommended(selectedLesson.id) && (
+                  <Tag size='small' color='gold' className='!mx-0'>
+                    {t('learning.learningGraphRecommendedShort')}
+                  </Tag>
+                )}
+                <span className='flex-1' />
+                <Button
+                  size='small'
+                  disabled={busyId !== null}
+                  onClick={() =>
+                    onProgress(
+                      selectedLesson,
+                      selectedLesson.status === 'skipped' ? 'not_started' : 'skipped'
+                    )
+                  }
+                >
+                  {selectedLesson.status === 'skipped'
+                    ? t('learning.learningGraphUnskip')
+                    : t('learning.learningGraphSkip')}
+                </Button>
+              </div>
+              {selectedLocked ? (
+                <>
+                  <Alert type='info' content={t('learning.learningGraphLockedHint')} className='!mt-10px' />
+                  {selectedNode.purpose.trim() !== '' && (
+                    <Paragraph className='!mb-0 !mt-10px text-t-secondary'>
+                      {selectedNode.purpose}
+                    </Paragraph>
+                  )}
+                  <Text type='secondary' className='mt-10px block'>
+                    {t('learning.learningGraphNodeMeta', {
+                      depth: selectedNode.depth + 1,
+                      min: selectedNode.estimated_minutes,
+                    })}
+                  </Text>
+                </>
+              ) : (
+                <div className='mt-12px'>
+                  <LessonBlock
+                    lesson={selectedLesson}
+                    sourceKbId={detail.course.source_kb_id}
+                    busyId={busyId}
+                    attemptResults={attemptResults}
+                    onProgress={onProgress}
+                    onAttempt={onAttempt}
+                    onGenerate={(target) => onGenerate(target)}
+                    onRefresh={onRefresh}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      </div>
+      </div>
+
+      {/* 全图弹窗：DAG 视图（可从图上点任意节点跳转学习，含已完成复习） */}
+      <Modal
+        title={t('learning.learningGraphTabTitle')}
+        visible={graphOpen}
+        footer={null}
+        onCancel={() => setGraphOpen(false)}
+        style={{ width: 1200 }}
+        unmountOnExit
+      >
+        <div className='h-[70vh]'>
+          <React.Suspense
+            fallback={
+              <div className='flex h-full items-center justify-center'>
+                <Spin />
+              </div>
+            }
+          >
             <GraphDagView
               nodes={graph.nodes}
               edges={graph.edges}
               recommended={graph.recommended}
               lockedIds={lockedIds}
-              onSelect={(lessonId) => setSelected(nodesById.get(lessonId) ?? null)}
+              onSelect={(lessonId) => {
+                setGraphOpen(false);
+                setSelectedLessonId(lessonId);
+              }}
             />
           </React.Suspense>
-        ) : (
-          <div className='h-full overflow-y-auto p-8px'>
-            {graph.nodes.length === 0 ? (
-              <Empty description={t('learning.learningGraphEmpty')} />
-            ) : (
-              <div className='flex flex-col gap-6px'>
-                {[...graph.nodes]
-                  .sort((a, b) => a.position - b.position)
-                  .map((node) => (
-                    <div
-                      key={node.lesson_id}
-                      className='flex cursor-pointer items-center gap-10px rounded-6px border-1 border-solid border-[var(--color-border-2)] px-12px py-8px hover:bg-[var(--color-fill-1)]'
-                      onClick={() => setSelected(node)}
-                    >
-                      <Tag size='small' color={STATUS_TAG_COLOR[node.status]}>
-                        {t(STATUS_LABEL_KEY[node.status])}
-                      </Tag>
-                      {lockedIds.has(node.lesson_id) && (
-                        <Tag size='small' color='gray' className='!mx-0'>
-                          {t('learning.learningGraphLocked')}
-                        </Tag>
-                      )}
-                      <span className='flex-1 truncate text-13px'>
-                        {isRecommended(node.lesson_id) && (
-                          <span className='mr-4px text-[var(--color-warning-6)]'>★</span>
-                        )}
-                        <span className={lockedIds.has(node.lesson_id) ? 'opacity-55' : ''}>
-                          {node.title}
-                        </span>
-                      </span>
-                      {!node.generated && (
-                        <Tag size='small' color='orange'>
-                          {t('learning.learningGraphNotGenerated')}
-                        </Tag>
-                      )}
-                      <span className='shrink-0 text-12px text-t-tertiary'>
-                        {t('learning.learningGraphNodeMinutes', { min: node.estimated_minutes })}
-                      </span>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </div>
-          )}
-          </div>
-        </section>
-      </div>
-
-      {/* 节点详情抽屉：结构信息 + 生成内容 + 跳过操作 */}
-      <Drawer
-        width={420}
-        title={selectedNode?.title ?? ''}
-        visible={selectedNode !== null}
-        onCancel={() => setSelected(null)}
-        footer={null}
-        unmountOnExit
-      >
-        {selectedNode && (
-          <div className='flex flex-col gap-12px'>
-            <div className='flex flex-wrap items-center gap-6px'>
-              <Tag color={STATUS_TAG_COLOR[selectedNode.status]}>
-                {t(STATUS_LABEL_KEY[selectedNode.status])}
-              </Tag>
-              {selectedLocked && (
-                <Tag color='gray'>{t('learning.learningGraphLocked')}</Tag>
-              )}
-              {isRecommended(selectedNode.lesson_id) && (
-                <Tag color='gold'>{t('learning.learningGraphRecommendedShort')}</Tag>
-              )}
-              {selectedNode.generated ? (
-                <Tag color='green'>{t('learning.learningGraphGenerated')}</Tag>
-              ) : (
-                <Tag color='orange'>{t('learning.learningGraphNotGenerated')}</Tag>
-              )}
-            </div>
-            {selectedLocked && (
-              <Alert type='info' content={t('learning.learningGraphLockedHint')} />
-            )}
-            {selectedNode.purpose.trim() !== '' && (
-              <div>
-                <Text bold>{t('learning.learningGraphNodePurpose')}</Text>
-                <Paragraph className='!mb-0'>{selectedNode.purpose}</Paragraph>
-              </div>
-            )}
-            <Text type='secondary'>
-              {t('learning.learningGraphNodeMeta', {
-                depth: selectedNode.depth + 1,
-                min: selectedNode.estimated_minutes,
-              })}
-            </Text>
-            {selectedNode.summary.trim() !== '' && (
-              <div>
-                <Text bold>{t('learning.learningGraphNodeSummary')}</Text>
-                <Paragraph className='!mb-0 max-h-320px overflow-y-auto whitespace-pre-wrap'>
-                  {selectedNode.summary}
-                </Paragraph>
-              </div>
-            )}
-            <div className='flex flex-wrap gap-8px'>
-              {!selectedNode.generated && (
-                <Button
-                  type='primary'
-                  disabled={nodeActionBusy || selectedLocked}
-                  onClick={() => void generateContent(selectedNode)}
-                >
-                  {t('learning.learningGraphGenerateContent')}
-                </Button>
-              )}
-              <Button
-                disabled={nodeActionBusy}
-                onClick={() => void toggleSkip(selectedNode)}
-              >
-                {selectedNode.status === 'skipped'
-                  ? t('learning.learningGraphUnskip')
-                  : t('learning.learningGraphSkip')}
-              </Button>
-            </div>
-          </div>
-        )}
-      </Drawer>
-      </div>
+        </div>
+      </Modal>
     </div>
   );
 };

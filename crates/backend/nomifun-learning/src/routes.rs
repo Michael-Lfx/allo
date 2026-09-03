@@ -181,23 +181,22 @@ async fn resume_learning_graph(
     )))
 }
 
-/// 学习图生成状态：后台指示条的数据源。生成在 HTTP 请求内同步执行，但
-/// 创建对话框可以随时关闭——注册表让运行对外可发现（主题 + 已运行时长）。
+/// 课程生成状态（学习图与大纲流共用）：后台指示条的数据源。生成在 HTTP
+/// 请求内同步执行，但创建对话框可以随时关闭——注册表让运行对外可发现
+/// （主题 + 已运行时长）。
 async fn learning_graph_generation_status(
     State(state): State<LearningRouterState>,
 ) -> Result<Json<ApiResponse<LearningGraphGenerationStatus>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.learning_graph_generation_status(),
-    )))
+    Ok(Json(ApiResponse::ok(state.service.generation_status())))
 }
 
-/// 取消进行中的学习图生成：置位旗标，循环在下一个 LLM 请求边界停止；草稿
-/// 保持存活可续建。无进行中的生成时返回 cancelled=false（幂等，前端不必
-/// 区分竞态）。
+/// 取消进行中的课程生成：置位旗标，循环在下一个 LLM 请求边界停止（取消
+/// 不保留草稿，重试即全新生成）。无进行中的生成时返回 cancelled=false
+/// （幂等，前端不必区分竞态）。
 async fn cancel_learning_graph_generation(
     State(state): State<LearningRouterState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let cancelled = state.service.cancel_learning_graph_generation();
+    let cancelled = state.service.cancel_generation();
     Ok(Json(ApiResponse::ok(serde_json::json!({
         "cancelled": cancelled,
     }))))

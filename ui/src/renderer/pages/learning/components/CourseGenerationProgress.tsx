@@ -70,7 +70,7 @@ export function CourseGenerationProgress({
   onRetry,
   onCancel,
 }: {
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   result: CourseDetail | null;
   error: string | null;
   onStartLearning: (courseId: string) => void;
@@ -81,7 +81,7 @@ export function CourseGenerationProgress({
   const [events, setEvents] = useState<ILearningCourseGenerationEvent[]>([]);
   const streamRef = useRef<HTMLDivElement>(null);
 
-  // 仅运行中订阅过程事件；HTTP 终态（completed/failed）后停止消费，
+  // 仅运行中订阅过程事件；HTTP 终态（completed/failed/cancelled）后停止消费，
   // 已收到的活动流保留用于回看
   useEffect(() => {
     if (status !== 'running') return;
@@ -98,6 +98,11 @@ export function CourseGenerationProgress({
 
   const { step, repairRounds, sawDanger } = useMemo(() => deriveStep(events), [events]);
   const running = status === 'running';
+  // 「无可见事件」的判定不能是 events.length===0：循环开始等事件（如
+  // started/generating）会被收进列表但渲染为空行，把等待提示挤掉。
+  const visibleCount = events.filter((event) =>
+    ['round', 'audit', 'publishing', 'started'].includes(event.phase),
+  ).length;
   const steps = [t('learning.genStepPrepare'), t('learning.genStepOutline'), t('learning.genStepAudit')];
   // 修复段仅在审计不过后出现，避免空轮次误导
   if (repairRounds > 0 || sawDanger) steps.push(t('learning.genStepRepair'));
@@ -106,7 +111,19 @@ export function CourseGenerationProgress({
 
   return (
     <div className='flex flex-col gap-16px'>
-      <Steps size='small' current={stepIndex} status={running ? 'process' : status === 'failed' ? 'error' : 'finish'}>
+      <Steps
+        size='small'
+        current={stepIndex}
+        status={
+          running
+            ? 'process'
+            : status === 'failed'
+              ? 'error'
+              : status === 'cancelled'
+                ? 'wait'
+                : 'finish'
+        }
+      >
         {steps.map((label) => (
           <Steps.Step key={label} title={label} />
         ))}
@@ -117,13 +134,20 @@ export function CourseGenerationProgress({
         ref={streamRef}
         className='flex max-h-260px min-h-120px flex-col gap-6px overflow-y-auto rounded-8px bg-[var(--color-fill-1)] p-12px'
       >
-        {events.length === 0 && running && (
+        {visibleCount === 0 && running && (
           <div className='flex items-center justify-center gap-8px py-24px'>
             <Spin size={16} />
             <Text type='secondary'>{t('learning.genWaitingEvents')}</Text>
           </div>
         )}
         {events.map((event, index) => {
+          if (event.phase === 'started') {
+            return (
+              <div key={index} className='text-13px text-t-secondary'>
+                {event.text ?? t('learning.genWaitingEvents')}
+              </div>
+            );
+          }
           if (event.phase === 'round') {
             const repair = event.loop === 'repair';
             const roundLabel = repair
@@ -234,9 +258,32 @@ export function CourseGenerationProgress({
                   {error}
                 </div>
               )}
+              <div className='flex flex-col gap-4px'>
+                <div>
+                  <Button size='small' type='primary' onClick={onRetry}>
+                    {t('learning.genRetryResume')}
+                  </Button>
+                </div>
+                <Text type='secondary' className='text-12px'>
+                  {t('learning.genRetryResumeHint')}
+                </Text>
+              </div>
+            </div>
+          }
+        />
+      )}
+
+      {/* 取消是中性终态而非失败：无错误详情；取消不保留草稿，重试即
+          全新生成 */}
+      {status === 'cancelled' && (
+        <Alert
+          type='warning'
+          content={
+            <div className='flex flex-col gap-8px'>
+              <span>{t('learning.genCancelled')}</span>
               <div>
                 <Button size='small' type='primary' onClick={onRetry}>
-                  {t('learning.genRetry')}
+                  {t('learning.genRetryFresh')}
                 </Button>
               </div>
             </div>

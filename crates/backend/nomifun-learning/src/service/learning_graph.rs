@@ -52,16 +52,14 @@ impl LearningService {
         let engine = engine.ok_or_else(|| {
             AppError::Conflict("learning graph generation is not configured".into())
         })?;
-        self.begin_learning_graph_generation(topic);
-        let result = engine
+        let _run = self.begin_generation(topic);
+        engine
             .generate(
                 user_id,
                 topic,
                 model_override.map(|(provider, model)| (provider.as_str(), model)),
             )
-            .await;
-        self.end_learning_graph_generation();
-        result
+            .await
     }
 
     /// 续建一份仍存活的草稿:与 [`Self::generate_learning_graph`] 同一套
@@ -85,17 +83,15 @@ impl LearningService {
         let engine = engine.ok_or_else(|| {
             AppError::Conflict("learning graph generation is not configured".into())
         })?;
-        self.begin_learning_graph_generation(topic);
-        let result = engine
+        let _run = self.begin_generation(topic);
+        engine
             .resume(
                 user_id,
                 draft_id,
                 topic,
                 model_override.map(|(provider, model)| (provider.as_str(), model)),
             )
-            .await;
-        self.end_learning_graph_generation();
-        result
+            .await
     }
 
     /// Persist the generation provenance next to the audit snapshot
@@ -311,47 +307,43 @@ impl LearningService {
     }
 
     // ── Generation registry: background visibility + cancellation ─────────
-    // The generation runs inside the HTTP request, but the dialog can be
-    // closed at any moment — the run must stay discoverable (status) and
-    // stoppable (cancel) from the outside. The flag Arc is cloned by the
-    // engine into its CancellableProvider, so setting it here reaches the
-    // running loop at the next LLM request boundary.
+    // Generation runs inside the HTTP request (or an agent-session task),
+    // but the dialog can be closed at any moment — the run must stay
+    // discoverable (status) and stoppable (cancel) from the outside. The
+    // registry is the single data source for the status/cancel endpoints
+    // and is shared by BOTH generation flows: the learning graph loop and
+    // the course outline loop. Each engine clones the flag Arc into its
+    // CancellableProvider, so setting it here reaches the running loop at
+    // the next LLM request boundary. Single-run by design: concurrent
+    // generations under different slot keys overwrite each other's entry
+    // (the UI surfaces one generation at a time anyway).
 
-    /// 登记一次生成：清零取消旗标并记录主题/开始时刻（slot 串行化保证
-    /// 同时刻至多一个运行，登记即覆盖残留）。
-    pub(crate) fn begin_learning_graph_generation(&self, topic: &str) {
-        self.learning_graph_generation
+    /// 登记一次生成：清零取消旗标并记录主题/开始时刻，返回 RAII 守卫，
+    /// drop 时注销——正常返回、失败、HTTP 客户端断连中止、agent 任务
+    /// abort 四种退出路径都经析构收敛，注册表不残留。slot 串行化保证
+    /// 同一 (user, key) 至多一个运行，登记即覆盖残留。
+    pub(crate) fn begin_generation(&self, topic: &str) -> GenerationRunGuard<'_> {
+        self.generation_registry
             .cancel
             .store(false, AtomicOrdering::Relaxed);
         *self
-            .learning_graph_generation
+            .generation_registry
             .run
             .lock()
-            .expect("learning graph generation run lock poisoned") =
-            Some(LearningGraphGenerationRun {
-                topic: topic.to_owned(),
-                started_at: std::time::Instant::now(),
-            });
-    }
-
-    /// 生成到达终态（成功/失败/超时）后注销。
-    pub(crate) fn end_learning_graph_generation(&self) {
-        *self
-            .learning_graph_generation
-            .run
-            .lock()
-            .expect("learning graph generation run lock poisoned") = None;
+            .expect("generation run lock poisoned") = Some(GenerationRun {
+            topic: topic.to_owned(),
+            started_at: std::time::Instant::now(),
+        });
+        GenerationRunGuard(self)
     }
 
     /// 生成状态（后台指示条的数据源）：进行中时带主题与已运行秒数。
-    pub fn learning_graph_generation_status(
-        &self,
-    ) -> crate::models::LearningGraphGenerationStatus {
+    pub fn generation_status(&self) -> crate::models::LearningGraphGenerationStatus {
         let run_guard = self
-            .learning_graph_generation
+            .generation_registry
             .run
             .lock()
-            .expect("learning graph generation run lock poisoned");
+            .expect("generation run lock poisoned");
         match run_guard.as_ref() {
             Some(run) => crate::models::LearningGraphGenerationStatus {
                 running: true,
@@ -366,27 +358,34 @@ impl LearningService {
         }
     }
 
-    /// 置位取消旗标；返回是否存在进行中的生成（无则幂等 no-op，前端不必
-    /// 区分竞态）。
-    pub fn cancel_learning_graph_generation(&self) -> bool {
+    /// 置位取消旗标；返回置位时是否存在进行中的生成（仅用于前端区分竞态
+    /// 提示）。旗标无条件置位——begin 时清零，空置的旗标不影响下一次生
+    /// 成；这同时覆盖"注册与首个 LLM 请求之间"的取消竞态窗口。循环失败
+    /// 路径据此把取消收敛为干净的中性终态消息，而不是当作故障附加诊断
+    /// 长文；取消不保留草稿（见 discard_learning_graph_draft）。
+    pub fn cancel_generation(&self) -> bool {
         let has_run = self
-            .learning_graph_generation
+            .generation_registry
             .run
             .lock()
-            .expect("learning graph generation run lock poisoned")
+            .expect("generation run lock poisoned")
             .is_some();
-        if has_run {
-            self.learning_graph_generation
-                .cancel
-                .store(true, AtomicOrdering::Relaxed);
-        }
+        self.generation_registry
+            .cancel
+            .store(true, AtomicOrdering::Relaxed);
         has_run
     }
 
+    /// 取消是否已被请求（旗标仅在下次 begin 时清零）。循环失败路径据此
+    /// 把取消收敛为干净的中性终态消息，而不是当作故障附加诊断长文。
+    pub fn generation_cancel_requested(&self) -> bool {
+        self.generation_registry.cancel.load(AtomicOrdering::Relaxed)
+    }
+
     /// 引擎侧取旗标：循环开始前克隆给 CancellableProvider（见
-    /// nomifun-ai-agent 的 learning_graph_loop）。
-    pub fn learning_graph_cancel_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.learning_graph_generation.cancel)
+    /// nomifun-ai-agent 的 learning_graph_loop 与 course_outline_loop）。
+    pub fn generation_cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.generation_registry.cancel)
     }
 
     /// 组装学习图课程的图视图。课时行直接复用 `course_detail` 已构建的
@@ -536,6 +535,15 @@ impl LearningService {
             .filter(|(_, created)| created.elapsed() < LEARNING_GRAPH_DRAFT_TTL)
             .map(|(graph, _)| graph.clone())
             .ok_or_else(|| AppError::NotFound(format!("learning graph draft {draft_id}")))
+    }
+
+    /// Discard a live draft without publishing: user cancellation does not
+    /// keep the draft for resume — a retry starts a fresh generation.
+    /// Idempotent: discarding an unknown/expired id is a no-op.
+    pub fn discard_learning_graph_draft(&self, draft_id: &str) {
+        if let Ok(mut drafts) = self.learning_graph_drafts.write() {
+            drafts.remove(draft_id);
+        }
     }
 
     /// Start a draft: resolve the scope reference first (best-effort — a

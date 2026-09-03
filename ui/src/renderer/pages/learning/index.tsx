@@ -260,7 +260,11 @@ const LearningPage: React.FC = () => {
           <LearningGraphWorkspace
             detail={detail}
             busyId={busyId}
+            attemptResults={courseLearning.attemptResults}
             onBack={() => navigate('/learn')}
+            onProgress={courseLearning.updateProgress}
+            onAttempt={courseLearning.submitAttempt}
+            onGenerate={courseLearning.generateLesson}
             onRefresh={() => void load()}
           />
         </Suspense>
@@ -319,7 +323,7 @@ const LearningPage: React.FC = () => {
               />
             </div>
             <Button onClick={() => setImportVisible(true)}>{t('learning.import')}</Button>
-            <Button type='primary' onClick={() => void creation.openGenerator()}>
+            <Button type='primary' onClick={() => creation.openCreateForm()}>
               {t('learning.generate')}
             </Button>
           </div>

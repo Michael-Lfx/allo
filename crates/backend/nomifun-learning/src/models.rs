@@ -57,8 +57,9 @@ pub struct ResumeLearningGraphRequest {
     pub model: Option<String>,
 }
 
-/// 学习图生成状态（后台指示条/取消入口的数据源）。生成在 HTTP 请求内同步
-/// 执行，但创建对话框可以随时关闭——注册表让运行对外可发现、可取消。
+/// 课程生成状态（后台指示条/取消入口的数据源，学习图与大纲流共用）。生成
+/// 在 HTTP 请求内同步执行，但创建对话框可以随时关闭——注册表让运行对外
+/// 可发现、可取消。
 #[derive(Debug, Serialize)]
 pub struct LearningGraphGenerationStatus {
     pub running: bool,

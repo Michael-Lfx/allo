@@ -36,37 +36,42 @@ use tokio::sync::mpsc;
 use crate::factory::provider_config::resolve_provider_config_with_output_limit;
 use crate::knowledge_completer::resolve_default_model;
 use crate::loop_core::{
-    GENERATE_MAX_ROUNDS, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS, json_compact,
-    log_text, run_agent_loop,
+    LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS, json_compact, log_text, run_agent_loop,
 };
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
-/// 学习图循环自己的每轮 token 预算：构建是长程规划任务，思考开启后预算要
-/// 同时容纳推理与大批量 patch JSON，取共享默认（`AGENT_MAX_TOKENS`）的
-/// 4 倍。绝不改共享常量——course_outline / lesson_content 循环按各自默认
-/// 值运行；该预算在解析时还会收敛到模型声明的输出上限（见
+/// 生成循环的轮次上限：学习图本地覆盖共享默认（loop_core 的 50）——200+
+/// 节点的构建每轮只落一小批 patch，复杂目标 50 轮必然中途断头。共享常量
+/// 不动（course_outline / lesson_content 循环按各自默认值运行）。
+const GENERATE_MAX_ROUNDS: usize = 100;
+
+/// 学习图循环自己的每轮 token 预算：构建是长程规划任务，大批量 patch JSON
+/// 需要大输出预算，取共享默认（`AGENT_MAX_TOKENS`）的 4 倍。绝不改共享常
+/// 量——course_outline / lesson_content 循环按各自默认值运行；该预算在解
+/// 析时还会收敛到模型声明的输出上限（见
 /// `resolve_provider_config_with_output_limit`）。
 const ROUND_TOKEN_BUDGET: u32 = 32768;
 
-/// 本循环的总时长预算（生成 + 修复 + 审计门禁）：共享默认 600s 是禁思考
-/// 时代定的，思考开启后每轮耗时翻倍以上，200 节点规模的构建必然撞墙。
-/// 超时不是模型可解决的错误，而是预算墙——本地声明而非改共享常量（调用
-/// 方本地覆盖，见 loop_core 的 `TOTAL_TIMEOUT_SECS`）。超时后草稿与轮次
-/// 日志存活，续建接着建。
+/// 本循环的总时长预算（生成 + 修复 + 审计门禁）：200 节点规模的构建要
+/// 跑多轮生成与修复循环，共享默认 600s 必然撞墙。超时不是模型可解决的
+/// 错误，而是预算墙——本地声明而非改共享常量（调用方本地覆盖，见
+/// loop_core 的 `TOTAL_TIMEOUT_SECS`）。超时后草稿与轮次日志存活，续建
+/// 接着建。
 const GENERATE_TIMEOUT_SECS: u64 = 1800;
 
 /// 取消提示语：以 `LlmEvent::Error` / `ProviderError::Api` 注入。循环的
 /// 错误分支不会把它当作可同轮重试的错误（只匹配 malformed JSON），整个
-/// 生成以"已取消"失败收场；草稿保持存活，可续建。
-const CANCEL_MESSAGE: &str = "生成已被用户取消";
+/// 生成以"已取消"失败收场。取消不保留草稿（重试即全新生成）；真实失
+/// 败仍保留草稿供续建。学习图与课程大纲两个生成循环共用。
+pub(crate) const CANCEL_MESSAGE: &str = "生成已被用户取消";
 
-/// 学习图生成专用的 provider 包装：每次 LLM 请求开始前与流转发途中轮询
+/// 生成循环共用的 provider 包装：每次 LLM 请求开始前与流转发途中轮询
 /// 取消旗标（旗标挂在 [`LearningService`] 的生成注册上，取消端点置位）。
 /// 取消在流边界即刻生效——请求前直接拒绝；流中把取消作为 Error 事件注入
 /// 并停止转发（下游 receiver 被 drop 后上游发送失败，HTTP 流随之终止）。
-struct CancellableProvider {
-    inner: Arc<dyn LlmProvider>,
-    cancel: Arc<AtomicBool>,
+pub(crate) struct CancellableProvider {
+    pub(crate) inner: Arc<dyn LlmProvider>,
+    pub(crate) cancel: Arc<AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -109,9 +114,7 @@ fn compose_opening_user_text(
     scope_reference: Option<&str>,
     previous_rounds: &[String],
 ) -> String {
-    let mut text = format!(
-        "{topic}\n\n【已为你预创建草稿（直接开始构建，无需启动）】\n{draft_view_json}"
-    );
+    let mut text = format!("{topic}\n\n{draft_view_json}");
     match scope_reference {
         Some(reference) => {
             text.push_str("\n\n【范围参考】\n");
@@ -139,26 +142,30 @@ fn compose_opening_user_text(
 
 /// Generation-loop system prompt. The model builds the whole network via
 /// the draft tools; the audit gate still has the last word at `lg_finish`.
-const GENERATE_AGENT_SYSTEM: &str = r#"你是一名学习图构建代理：把一个宽泛学习目标分解为完整的"学习单元网络"，并通过工具逐步构建成图。
+const GENERATE_AGENT_SYSTEM: &str = r#"你是一名具有教育领域专业知识的专家，任务目标是根据要求通过工具逐步构建出一张学习单元网络图。
 - 认知学习单元不一定是原子概念，过度解构原子概念不适合作为人类单次学习行为单元，但也可能有些原子概念本身就足够复杂这种情况可以作为单独节点。不能是太复合的概念，过于复合的概念没有意义不是单次学习行为能够解决的问题，应该拆分成多个节点
-- *无依赖的节点一定是最简单的（重点）*，如果这些基础概念本身有更精准但过于抽象复杂或者说需要前置条件时，也应先创建一个简单的节点在前，而不是放一个实际不可用的零依赖起点
-    - 想想以用户的视角为起点，他到底满不满足以这个为起点的条件
-- 要有整体规划，学习线路应该从易到难，不能有过突兀过大的难度曲线变化导致不可控的认知负荷，难度本身有提高的必要但应时渐进的
+- 对每个无依赖节点，自问：一个完全零基础的学习者能否在 30 分钟内学会？若不能，则必须为其补充前置节点或将其拆解
+- 要有整体规划，学习线路应该从易到难，不能有过突兀过大的难度曲线变化导致不可控的认知负荷，难度本身有提高的必要但应是渐进的
 - 生成的学习单元网络一定要完整，宁愿节点过多不要过少-节点关系没有必要冗余，但应该是无环的复杂网络，如果节点的连接过少大概率是认知切分方式的或连接存在问题
-- 对于最终的目标应该是真正彻底的学会而非只是会使用，所以可以按需存在具有元（meta）或者说抽象 本质 证明等性质的节点，但应满足上面提到的螺旋上升与渐进的原则
+- 复杂场景目标节点数通常 >200，但优先保证认知合理性
+- 真实依赖关系优先于难度曲线；当二者冲突时，先保证依赖正确，再通过增加铺垫节点或调整切分来缓解难度跳跃。
 【工具使用】
-1. 草稿与范围参考已在任务开头注入（服务端预创建，无需也无法再“启动”）——这就是你的参考清单，除了覆盖清单你也可以发挥主观能动性，一切以完成用户目标为标准；需要重看清单时用 lg_scope 取回。
-2. 常用 lg_inspect 掌握全局；操作图动手前用 lg_query / lg_subgraph 查清单元名的精确写法——patch 里的引用必须与图中名称完全一致，否则整个操作被拒。3. 分批构建：每批小于 25 个操作，宁可多批，不要超长批次。
-4. 全部构建完成后调用 lg_audit 自查
+1. 先使用lg_scope，这就是你的参考清单，除了覆盖清单你也可以发挥主观能动性，一切以完成用户目标为标准。
+2. 常用 lg_inspect 掌握全局；操作图动手前可以用 lg_query / lg_subgraph 查清单元名的精确写法——patch 里的引用必须与图中名称完全一致，否则整个操作被拒。
+3. 分批构建：每批小于 25 个操作，宁可多批，不要超长批次。
+4. 整张图全部构建完成后调用 lg_audit 自查
 
 【单元命名】（与单次生成管线同标准）
-- 节点大多数 name 可以是动作句（允许例外）：包含 解/求/证明/推导/比较/判定/构造/区分/计算/应用/理解/辨析/建立/验证/化简/变形/转化/估计/近似/检验/分类/归纳/抽象/训练 等等词以及它们之间的组合存在。                    
-- 螺旋式学习合法：同一主题在不同深度以不同视角出现，但名字不得重复或近似。
+- 节点大多数 name 是动作句（有必要可以例外）：包含 解/求/证明/推导/比较/判定/构造/区分/计算/应用/理解/辨析/建立/验证/化简/变形/转化/估计/近似/检验/分类/归纳/抽象/训练 等等词以及它们之间的组合存在。  
+    - 人对概念的单次学习行为应该是种动作                  
+- 螺旋式学习合法：同一主题在不同深度以不同视角出现，完整名称不得完全相同；允许共享主题关键词，但必须通过动作词或限定语体现认知层级差异。
+    - 正例： “计算简单导数” / “应用导数解决优化问题” / “证明导数中值定理” 是合法螺旋；
+    - “理解导数” / “学习导数” 属于近似且层级不清，应避免。
 - 单元是通常 30 分钟内可完成的一个学习会话；极困难的综合课最多 60 分钟。
 
 【依赖契约】
 - 充分性（SUFFICIENCY）：pre 是完整的直接前置集合——可以存在可选项但不能因为过少导致无法理解后续内容；不要为了缩短回复而裁剪 pre。
-- 收敛：真实知识是 DAG 不是链——两个早期线程交汇处应出现带 n 个前置的汇聚单元。
+- 收敛：真实知识是 DAG 不是树
 - 除真正的无需基础的入门单元外，pre 不得为空。
 - 连通性：整个网络必须是一个连通结构；真实依赖处必须交叉链接
 
@@ -167,10 +174,11 @@ const GENERATE_AGENT_SYSTEM: &str = r#"你是一名学习图构建代理：把�
 - min 是学习分钟预算：常规 5-30 分钟（软上限，尽量不超过 30），极困难单课最多 60 分钟（硬上限）；超过 60 会被拒。
 - 引用名必须恰好等于图中已存在的单元名；拿不准时先 lg_query。
 
-【上交前自查】（调用 lg_audit 自查与 lg_finish 发布之前，逐条过一遍）
+【上交前自查】（调用 lg_audit 自查之前，逐条过一遍）
+上交前先用 lg_inspect(full=true) 通读全图，再用 lg_scope / lg_query 以图的当前真实状态重新核对。
 1. 起点基础性：无依赖入口是否真的足够基础？尤其当无依赖入口只有一个、或目标本身复杂而全图节点数少于 200 时，着重检查——不要拿一个宏大抽象的概念当可用起点，宁可先补一层更简单的铺垫单元。
 2. 覆盖完整性：从用户视角反思覆盖是否完整——scope 清单是下限不是上限，用户目标隐含的子领域、必备的常识性概念即使清单没列也要补上；不要只局限于工具给出的范围。
-3. 切分与衔接：反思节点划分是否足够细致、相连节点难度是否跳跃过大（过大跳跃意味着中间缺了铺垫单元）；构建是多轮进行的，早期对 scope 与全局的记忆可能已经不完整、不够用——上交前先用 lg_inspect(full=true) 通读全图，再用 lg_scope / lg_query 以图的当前真实状态重新核对，不要依赖记忆。
+3. 切分与衔接：反思节点划分是否足够细致、相连节点难度是否跳跃过大（过大跳跃意味着中间缺了铺垫单元）；
 
 【结束条件】
 - 只有当你确认图已完整覆盖 scope 且 lg_audit 基本健康时，才调用 lg_finish；否则继续构建。"#;
@@ -260,16 +268,16 @@ impl LiveLearningGraphAgentEngine {
             self.resolve_provider(model_override).await?;
         // 请求预算用本循环的 ROUND_TOKEN_BUDGET（4×），但绝不越过模型声明
         // 的输出上限——目录/模型行给出更小的 output_limit 时自动降档到该
-        // 上限（严格网关会对超限请求直接 400）。思考预算取轮预算的一半，
-        // 轮预算过小则退回禁用。
+        // 上限（严格网关会对超限请求直接 400）。思考模式禁用（实验中；开
+        // 启版本为 round_budget/2 预算的 Enabled，见 dad18d00d）。
         let round_budget =
             output_limit.map_or(ROUND_TOKEN_BUDGET, |ceiling| ROUND_TOKEN_BUDGET.min(ceiling));
-        let thinking = round_thinking(round_budget);
+        let thinking = ThinkingConfig::Disabled;
         // 取消旗标：挂在服务端生成注册上，取消端点置位；包装后的 provider
         // 在每次 LLM 请求边界轮询（见 `CancellableProvider`）。
         let provider: Arc<dyn LlmProvider> = Arc::new(CancellableProvider {
             inner: provider,
-            cancel: self.service.learning_graph_cancel_flag(),
+            cancel: self.service.generation_cancel_flag(),
         });
         tracing::info!(
             topic,
@@ -284,32 +292,68 @@ impl LiveLearningGraphAgentEngine {
         // （思考开启下每轮都是几十秒的实打实开销），“忘记建草稿”这一故
         // 障模式随之消失。lg_scope 保留为只读工具，供建图后期（上下文衰减
         // 时）重取参考清单。
-        let (draft_id, draft_view_json) = match resume_draft.as_ref() {
-            Some(draft_id) => {
-                let view = self.service.inspect_learning_graph_draft(draft_id)?;
-                (draft_id.clone(), json_compact(&view))
-            }
-            None => {
-                let view = self
-                    .service
-                    .create_learning_graph_draft(topic, None, Some((&provider_id, model.as_str())))
-                    .await?;
-                (view.draft_id.clone(), json_compact(&view))
-            }
-        };
-        let scope_reference = self
-            .service
-            .scope_reference_learning_graph_draft(&draft_id)
-            .ok()
-            .flatten();
-        // 续建时取出上次会话的轮次日志（中断前的计划轨迹）注入开场，恢复
-        // 模型对「做到哪了、接下来干什么」的认知；新会话为空。
-        let previous_rounds = resume_draft.as_ref().and_then(|draft_id| {
-            self.round_logs
-                .lock()
-                .ok()
-                .and_then(|mut logs| logs.remove(draft_id))
-        });
+        // 注入含一次范围分析 one-shot 调用，在总时长壳之外——单独加 60s
+        // 兜底：分析挂住时不能让 HTTP 永久悬空、连超时错误都给不出。
+        let (draft_id, draft_view_json, scope_reference, previous_rounds) =
+            tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                async {
+                    let (draft_id, draft_view_json) = match resume_draft.as_ref() {
+                        Some(draft_id) => {
+                            let view =
+                                self.service.inspect_learning_graph_draft(draft_id)?;
+                            let mut draft_json = json_compact(&view);
+                            // 续建附全图清单（行式紧凑文本）：概览只有节点
+                            // 数等数字，模型看不到具体单元无从接续，会把大
+                            // 图误判为待从零构建。
+                            if let Ok(dump) = self.service.dump_learning_graph_draft(draft_id)
+                            {
+                                if !dump.is_empty() {
+                                    draft_json.push_str(
+                                        "\n\n【当前全图清单】名称 [分钟] <- 前置：\n",
+                                    );
+                                    draft_json.push_str(&dump);
+                                }
+                            }
+                            (draft_id.clone(), draft_json)
+                        }
+                        None => {
+                            let view = self
+                                .service
+                                .create_learning_graph_draft(
+                                    topic,
+                                    None,
+                                    Some((&provider_id, model.as_str())),
+                                )
+                                .await?;
+                            (view.draft_id.clone(), json_compact(&view))
+                        }
+                    };
+                    let scope_reference = self
+                        .service
+                        .scope_reference_learning_graph_draft(&draft_id)
+                        .ok()
+                        .flatten();
+                    // 续建时取出上次会话的轮次日志（中断前的计划轨迹）注入
+                    // 开场，恢复模型对「做到哪了、接下来干什么」的认知。
+                    let previous_rounds = resume_draft.as_ref().and_then(|draft_id| {
+                        self.round_logs
+                            .lock()
+                            .ok()
+                            .and_then(|mut logs| logs.remove(draft_id))
+                    });
+                    Ok::<_, AppError>((
+                        draft_id,
+                        draft_view_json,
+                        scope_reference,
+                        previous_rounds,
+                    ))
+                },
+            )
+            .await
+            .map_err(|_| {
+                AppError::Internal("草稿准备超时：范围分析未在 60 秒内完成，请重试".into())
+            })??;
         let user_text = compose_opening_user_text(
             topic,
             &draft_view_json,
@@ -328,6 +372,16 @@ impl LiveLearningGraphAgentEngine {
             published_slot: Arc::new(Mutex::new(None)),
             round_log: Mutex::new(Vec::new()),
         });
+
+        // 注入完成即广播一条可见事件：第一轮 LLM（思考开启）要 1-2 分钟才
+        // 产生首个 round 事件，此前进度面板不能是一片空白。
+        ctx.log(
+            "draft_ready",
+            serde_json::json!({
+                "phase": "started",
+                "text": "草稿与范围参考已就绪，开始构建学习单元网络…",
+            }),
+        );
 
         match tokio::time::timeout(
             std::time::Duration::from_secs(GENERATE_TIMEOUT_SECS),
@@ -379,19 +433,30 @@ impl LiveLearningGraphAgentEngine {
                 // Attach the surviving draft's context (the timeout branch's
                 // behavior): a mid-flight failure may leave dozens of built
                 // units behind — the message must say they are still alive.
+                // 用户取消例外：只留一句中性终态消息。
                 let error = attach_draft_context(&self.service, &ctx, error);
-                // 轮次日志归档到草稿名下：续建时注入开场恢复认知。
-                if let Some(draft_id) = ctx
-                    .draft_slot
-                    .lock()
-                    .ok()
-                    .and_then(|slot| slot.clone())
-                {
-                    if let (Ok(mut logs), Ok(round_log)) =
-                        (self.round_logs.lock(), ctx.round_log.lock())
-                    {
-                        logs.insert(draft_id, round_log.clone());
+                let draft_id = ctx.draft_slot.lock().ok().and_then(|slot| slot.clone());
+                // 取消不保留草稿：草稿与轮次日志一并丢弃，重试即全新生成；
+                // 其余失败仍把轮次日志归档到草稿名下，续建时注入开场恢复
+                // 认知。
+                let cancelled = self.service.generation_cancel_requested()
+                    || matches!(&error, AppError::BadGateway(message) if message.contains(CANCEL_MESSAGE));
+                match (cancelled, draft_id) {
+                    (true, Some(draft_id)) => {
+                        // 草稿已在 attach_draft_context 中丢弃，这里只清轮次日志。
+                        if let Ok(mut logs) = self.round_logs.lock() {
+                            logs.remove(&draft_id);
+                        }
                     }
+                    (false, Some(draft_id)) => {
+                        // 轮次日志归档到草稿名下：续建时注入开场恢复认知。
+                        if let (Ok(mut logs), Ok(round_log)) =
+                            (self.round_logs.lock(), ctx.round_log.lock())
+                        {
+                            logs.insert(draft_id, round_log.clone());
+                        }
+                    }
+                    _ => {}
                 }
                 ctx.log("session_end", serde_json::json!({
                     "ok": false,
@@ -486,7 +551,7 @@ impl LiveLearningGraphAgentEngine {
             "tool_count": learning_graph_tools(Arc::clone(&ctx)).len(),
         }));
         let generate_tools = learning_graph_tools(Arc::clone(&ctx));
-        let final_text = run_agent_loop(
+        let loop_result = run_agent_loop(
             provider.clone(),
             model,
             GENERATE_AGENT_SYSTEM,
@@ -495,12 +560,12 @@ impl LiveLearningGraphAgentEngine {
             GENERATE_MAX_ROUNDS,
             max_tokens,
             thinking.clone(),
-            true,
             "generate",
             Some(ctx.as_ref()),
         )
-        .await
-        .map_err(|error| attach_draft_context(&self.service, &ctx, error))?;
+        .await;
+        // lg_finish 可能在循环的最后一轮成功发布（预算恰好在发布轮耗尽）
+        // ——发布优先于任何循环错误：已入库的成果不能被预算墙吞掉。
         if let Some(record) = take_published(&ctx) {
             ctx.log("publish_ok", serde_json::json!({
                 "phase": "publishing",
@@ -509,6 +574,8 @@ impl LiveLearningGraphAgentEngine {
             }));
             return Ok(record);
         }
+        let final_text = loop_result
+            .map_err(|error| attach_draft_context(&self.service, &ctx, error))?;
         let draft_id = ctx
             .draft_slot
             .lock()
@@ -577,7 +644,7 @@ impl LiveLearningGraphAgentEngine {
                 .service
                 .inspect_learning_graph_draft(&draft_id)?
                 .revision;
-            let final_text = run_agent_loop(
+            let loop_result = run_agent_loop(
                 provider.clone(),
                 model,
                 REPAIR_AGENT_SYSTEM,
@@ -586,12 +653,11 @@ impl LiveLearningGraphAgentEngine {
                 REPAIR_MAX_ROUNDS,
                 max_tokens,
                 thinking.clone(),
-                true,
                 "repair",
                 Some(ctx.as_ref()),
             )
-            .await
-            .map_err(|error| attach_draft_context(&self.service, &ctx, error))?;
+            .await;
+            // 发布优先于循环错误（同 generate 循环）。
             if let Some(record) = take_published(&ctx) {
                 ctx.log("publish_ok", serde_json::json!({
                     "phase": "publishing",
@@ -601,6 +667,8 @@ impl LiveLearningGraphAgentEngine {
                 }));
                 return Ok(record);
             }
+            let final_text = loop_result
+                .map_err(|error| attach_draft_context(&self.service, &ctx, error))?;
             let revision_after = ctx
                 .service
                 .inspect_learning_graph_draft(&draft_id)?
@@ -731,6 +799,21 @@ impl LoopContext {
                     "text": fields.get("text").cloned().unwrap_or_default(),
                 })
             }
+            "round_feedback" => {
+                // 损坏降级上 WS：否则用户会看到轮次凭空从 1 跳到 2，不知道
+                // 中间发生过一次传输损坏与自动恢复。复用 round 行渲染。
+                serde_json::json!({
+                    "kind": "learning_graph",
+                    "phase": "round",
+                    "loop": fields.get("loop"),
+                    "round": fields.get("round"),
+                    "tools": [],
+                    "text": format!(
+                        "工具调用参数损坏，本轮操作未执行——已自动要求模型重新提交（第 {} 次）",
+                        fields.get("feedbacks_used").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                    ),
+                })
+            }
             _other if fields.get("phase").is_some() => {
                 let mut payload = fields.clone();
                 if let Some(object) = payload.as_object_mut() {
@@ -775,30 +858,29 @@ fn parse_course_id(raw: &str) -> Result<LearningCourseId, String> {
     LearningCourseId::parse(raw).map_err(|error| error.to_string())
 }
 
-/// 学习图构建是长程规划任务，开启思考换规划质量：思考预算取轮预算的一半
-/// （Anthropic 系要求 budget < max_tokens；OpenAI 兼容网关把该值透传进
-/// thinking 字段）。轮预算过小时不足以同时容纳推理与构建输出，退回禁用。
-fn round_thinking(round_budget: u32) -> ThinkingConfig {
-    if round_budget >= 2048 {
-        ThinkingConfig::Enabled {
-            budget_tokens: (round_budget / 2).min(16384),
-        }
-    } else {
-        ThinkingConfig::Disabled
-    }
-}
-
 /// Failure-path diagnostics: append the surviving draft's context to the
 /// error message (same as the timeout branch). A mid-flight failure can
 /// leave dozens of built units behind; the message must say the draft is
 /// still alive and what state it is in, or a resume has no entry point.
 /// `UnprocessableEntity` (repair budget exhausted) already carries the full
 /// blocking report — it passes through untouched.
+///
+/// 用户取消走单独出口：那是中性终态而非故障，且取消不保留草稿——就地
+/// 丢弃（幂等，覆盖 run_loops 内层与 run_generation 尾部所有调用点），
+/// 消息只有一句，无诊断附文。轮次日志的清理由 run_generation 尾部负责。
 fn attach_draft_context(
     service: &LearningService,
     ctx: &LoopContext,
     error: AppError,
 ) -> AppError {
+    if service.generation_cancel_requested()
+        || matches!(&error, AppError::BadGateway(message) if message.contains(CANCEL_MESSAGE))
+    {
+        if let Some(draft_id) = ctx.draft_slot.lock().ok().and_then(|slot| slot.clone()) {
+            service.discard_learning_graph_draft(&draft_id);
+        }
+        return AppError::BadGateway(CANCEL_MESSAGE.to_owned());
+    }
     let Some(draft_id) = ctx
         .draft_slot
         .lock()
@@ -807,6 +889,14 @@ fn attach_draft_context(
     else {
         return error;
     };
+    // 幂等：run_loops 内层与 run_generation 外层都会调用本函数，避免同一段
+    // 审计转储在用户可见的错误消息里出现两遍。
+    if matches!(&error,
+        AppError::BadGateway(message) | AppError::Internal(message)
+            if message.contains("可续建"))
+    {
+        return error;
+    }
     let note = match service.audit_learning_graph_draft(&draft_id) {
         Ok(audit) => format!(
             "\n\n草稿 {draft_id} 仍在(TTL 1 小时,可续建)——当前审计状态:\n{audit}"
@@ -1328,8 +1418,7 @@ mod tests {
             &tools,
             GENERATE_MAX_ROUNDS,
             ROUND_TOKEN_BUDGET,
-            round_thinking(ROUND_TOKEN_BUDGET),
-            true,
+            ThinkingConfig::Disabled,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -1343,10 +1432,8 @@ mod tests {
         }
         let thinking = provider.seen_thinking.lock().unwrap();
         assert!(
-            thinking
-                .iter()
-                .all(|t| matches!(t, Some(ThinkingConfig::Enabled { budget_tokens: 16384 }))),
-            "every round must explicitly carry the thinking policy: {thinking:?}"
+            thinking.iter().all(|t| matches!(t, Some(ThinkingConfig::Disabled))),
+            "every round must explicitly disable thinking: {thinking:?}"
         );
         let rounds = provider.seen_messages.lock().unwrap();
         let followup = &rounds[1];
@@ -1381,7 +1468,6 @@ mod tests {
             2,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
-            false,
             "test",
             None,
         )
@@ -1461,6 +1547,61 @@ mod tests {
         let published = service.list_learning_graphs().await.unwrap();
         assert_eq!(published.len(), 1, "exactly one published record");
         assert_eq!(published[0].node_count, 30, "the repaired graph publishes");
+    }
+
+    /// 预算恰好在发布轮耗尽：lg_finish 在最后一轮成功发布后循环才撞上
+    /// 轮次墙——发布必须优先于循环错误，已入库的成果不能被吞掉。
+    #[tokio::test]
+    async fn publish_on_final_round_survives_round_budget() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = seeded_context(Arc::clone(&service)).await;
+
+        // 无 scope（FakeCompleter）下 coverage 门是固定 min_units——用与
+        // empty_graph 测试同款的 30 节点收敛网，确保 lg_finish 过门禁。
+        let mut operations = vec![
+            add_op("n1", &[]),
+            add_op("n2", &["n1"]),
+            add_op("n3", &["n1"]),
+            add_op("n4", &["n1", "n2", "n3"]),
+            add_op("n5", &["n1", "n2"]),
+            add_op("n6", &["n4", "n5"]),
+        ];
+        for index in 7..=30 {
+            operations.push(add_op(&format!("n{index}"), &["n6"]));
+        }
+        let mut script: Vec<Vec<LlmEvent>> = (0..GENERATE_MAX_ROUNDS - 2)
+            .map(|_| {
+                vec![
+                    tool_use("lg_inspect", serde_json::json!({})),
+                    done(StopReason::ToolUse),
+                ]
+            })
+            .collect();
+        script.push(vec![
+            tool_use(
+                "lg_patch",
+                serde_json::json!({ "operations": operations }),
+            ),
+            done(StopReason::ToolUse),
+        ]);
+        script.push(vec![
+            tool_use("lg_finish", serde_json::json!({})),
+            done(StopReason::ToolUse),
+        ]);
+
+        let record = engine(Arc::clone(&service))
+            .run_loops(
+                ScriptedProvider::new(script),
+                "test-model",
+                "数学基础",
+                ctx,
+                ROUND_TOKEN_BUDGET,
+                ThinkingConfig::Disabled,
+            )
+            .await
+            .expect("publish on the final round must win over the round-budget error");
+        assert_eq!(record.topic, "数学基础");
+        assert_eq!(record.graph.nodes.len(), 30);
     }
 
     /// 修复 loop：生成 loop 只铺了 2 个单元（coverage danger）——发布被
@@ -1617,7 +1758,6 @@ mod tests {
             3,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
-            true,
             "test",
             None,
         )
@@ -1633,10 +1773,10 @@ mod tests {
         );
     }
 
-    /// 重试限额：同一轮第二次流错误不再重试，错误按原样传播（每轮至多
-    /// 一次；总量上限由 ROUND_RETRY_LIMIT 另行约束）。
+    /// 同轮重试耗尽后损坏降级为轮内反馈：第 1 轮损坏 → 原样重试；重试再
+    /// 损坏 → 注入系统反馈推进到下一轮，模型重新提交（不再判死会话）。
     #[tokio::test]
-    async fn stream_error_retry_is_capped_per_round() {
+    async fn corrupted_round_degrades_to_feedback_and_recovers() {
         let tool = OneShotTool {
             name: "ping".into(),
             description: "test".into(),
@@ -1648,9 +1788,13 @@ mod tests {
                 "OpenAI-compatible provider returned malformed JSON arguments for tool `ping` (call `call_x`): expected `,` or `}` at line 1 column 2183".into(),
             )
         };
-        let provider = ScriptedProvider::new(vec![vec![malformed()], vec![malformed()]]);
-        let error = run_agent_loop(
-            provider,
+        let provider = ScriptedProvider::new(vec![
+            vec![malformed()], // 第 1 轮：同轮重试
+            vec![malformed()], // 重试再损坏：转入反馈轮
+            vec![LlmEvent::TextDelta("ok".into()), done(StopReason::EndTurn)],
+        ]);
+        let text = run_agent_loop(
+            provider.clone(),
             "test-model",
             "system",
             "user",
@@ -1658,7 +1802,66 @@ mod tests {
             3,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
-            true,
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(text, "ok");
+        let seen = provider.seen_messages.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            3,
+            "initial + same-round retry + feedback round"
+        );
+        // 反馈轮的请求历史末尾携带系统反馈（损坏轮本身零副作用，不污染历史）。
+        let last_round = &seen[2];
+        let feedback = last_round.last().unwrap();
+        assert!(
+            matches!(
+                &feedback.content[0],
+                ContentBlock::Text { text, .. } if text.contains("参数格式有误")
+            ),
+            "{feedback:?}"
+        );
+    }
+
+    /// 持续损坏（网关系统性丢块）：同轮重试与反馈注入的上限逐层耗尽后，
+    /// 仍以原错误失败——降级不是无限烧钱的免死金牌。
+    #[tokio::test]
+    async fn sustained_corruption_eventually_fails() {
+        let tool = OneShotTool {
+            name: "ping".into(),
+            description: "test".into(),
+            input_schema: serde_json::json!({}),
+            handler: one_shot_handler(|_| async { Ok("pong".to_owned()) }),
+        };
+        let malformed = || {
+            LlmEvent::Error(
+                "OpenAI-compatible provider returned malformed JSON arguments for tool `ping` (call `call_x`): expected `,` or `}` at line 1 column 2183".into(),
+            )
+        };
+        let provider = ScriptedProvider::new(vec![
+            vec![malformed()],
+            vec![malformed()],
+            vec![malformed()],
+            vec![malformed()],
+            vec![malformed()],
+            vec![malformed()],
+            vec![malformed()],
+            vec![malformed()],
+            vec![malformed()],
+            vec![malformed()],
+        ]);
+        let error = run_agent_loop(
+            provider,
+            "test-model",
+            "system",
+            "user",
+            std::slice::from_ref(&tool),
+            30,
+            AGENT_MAX_TOKENS,
+            ThinkingConfig::Disabled,
             "test",
             None,
         )
@@ -1703,6 +1906,39 @@ mod tests {
         assert!(
             text.contains("empty_graph"),
             "the draft's live audit state rides along: {text}"
+        );
+    }
+
+    /// 取消不保留草稿（2026-09 决策）：取消旗标置位后循环失败 → 终态消息
+    /// 只有一句中性提示，草稿与轮次日志一并丢弃，重试即全新生成。
+    #[tokio::test]
+    async fn cancellation_discards_the_draft_instead_of_keeping_it() {
+        let (service, _dir) = test_service().await;
+        let (ctx, draft_slot, _published) = seeded_context(Arc::clone(&service)).await;
+        let draft_id = draft_slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("seeded draft registers its id");
+        service.cancel_generation();
+        let provider = ScriptedProvider::new(vec![vec![LlmEvent::Error("provider exploded".into())]]);
+        let error = engine(Arc::clone(&service))
+            .run_loops(
+                provider,
+                "test-model",
+                "数学基础",
+                ctx,
+                ROUND_TOKEN_BUDGET,
+                ThinkingConfig::Disabled,
+            )
+            .await
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("生成已被用户取消"), "{text}");
+        assert!(!text.contains("可续建"), "cancel keeps no draft note: {text}");
+        assert!(
+            service.inspect_learning_graph_draft(&draft_id).is_err(),
+            "the draft must be discarded on cancellation"
         );
     }
 
@@ -1831,7 +2067,9 @@ mod tests {
         let log = ctx.round_log.lock().unwrap();
         assert_eq!(log.len(), 2);
         assert!(
-            log[0].contains("第12轮(构建)") && log[0].contains("lg_patch ✓ · lg_inspect ✓"),
+            log[0].contains("第12轮(构建)")
+                && log[0].contains("lg_patch✓")
+                && log[0].contains("lg_inspect✓"),
             "{log:?}"
         );
         assert!(
@@ -1840,7 +2078,7 @@ mod tests {
             log[0]
         );
         assert!(
-            log[1].contains("第1轮(修复)") && log[1].contains("lg_patch ✗"),
+            log[1].contains("第1轮(修复)") && log[1].contains("lg_patch✗"),
             "{log:?}"
         );
     }
@@ -1895,7 +2133,6 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             ROUND_TOKEN_BUDGET,
             ThinkingConfig::Disabled,
-            false,
             "test",
             Some(ctx.as_ref()),
         )
@@ -1906,7 +2143,9 @@ mod tests {
             matches!(
                 &message.content[0],
                 ContentBlock::ToolResult { content, .. }
-                    if content.contains("全图清单") && content.contains("a [10] <-")
+                    if content.contains("全图清单")
+                        && content.contains("a [10]")
+                        && content.contains("b [15] <- a")
             )
         });
         assert!(dumped, "full inspect must dump units with minutes and pres");

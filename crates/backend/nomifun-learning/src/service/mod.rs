@@ -92,20 +92,21 @@ pub struct LearningService {
     /// restart loses in-flight generations, and a 1-3 minute task is
     /// simply re-issued.
     agent_course_jobs: Arc<Mutex<HashMap<String, AgentCourseJobEntry>>>,
-    /// 学习图生成的运行注册与取消旗标：`begin` 清零旗标并登记主题/开始
-    /// 时刻，取消端点置位旗标，状态端点读取。旗标 Arc 永不更换——引擎在
-    /// 循环开始前克隆给 CancellableProvider，置位即可达。内存态，与草稿
-    /// 存储同生命周期（重启即失）。
-    learning_graph_generation: Arc<LearningGraphGenerationState>,
+    /// 课程生成的运行注册与取消旗标（学习图与大纲两条生成流共用，是
+    /// status/cancel 端点的唯一数据源）：`begin` 清零旗标并登记主题/开始
+    /// 时刻（RAII 守卫注销），取消端点置位旗标，状态端点读取。旗标 Arc
+    /// 永不更换——引擎在循环开始前克隆给 CancellableProvider，置位即可达。
+    /// 内存态，与草稿存储同生命周期（重启即失）。
+    generation_registry: Arc<GenerationRegistry>,
 }
 
-/// 学习图生成注册的内部状态（见 [`LearningService::learning_graph_generation`]）。
-pub(super) struct LearningGraphGenerationState {
+/// 生成注册的内部状态（见 [`LearningService::generation_registry`]）。
+pub(super) struct GenerationRegistry {
     cancel: Arc<AtomicBool>,
-    run: Mutex<Option<LearningGraphGenerationRun>>,
+    run: Mutex<Option<GenerationRun>>,
 }
 
-pub(super) struct LearningGraphGenerationRun {
+pub(super) struct GenerationRun {
     pub(super) topic: String,
     pub(super) started_at: std::time::Instant,
 }
@@ -125,7 +126,7 @@ impl LearningService {
             event_sink: Arc::new(RwLock::new(None)),
             generation_slots: Arc::new(Mutex::new(HashSet::new())),
             agent_course_jobs: Arc::new(Mutex::new(HashMap::new())),
-            learning_graph_generation: Arc::new(LearningGraphGenerationState {
+            generation_registry: Arc::new(GenerationRegistry {
                 cancel: Arc::new(AtomicBool::new(false)),
                 run: Mutex::new(None),
             }),
@@ -510,6 +511,23 @@ impl Drop for GenerationSlotGuard {
         if let Ok(mut slots) = self.slots.lock() {
             slots.remove(&self.key);
         }
+    }
+}
+
+/// RAII deregistration for one registered generation run; dropping it
+/// clears the run entry so every exit path (normal return, failure,
+/// aborted HTTP handler, aborted agent task) leaves no stale entry behind.
+/// See `service::learning_graph::begin_generation`.
+pub(crate) struct GenerationRunGuard<'a>(&'a LearningService);
+
+impl Drop for GenerationRunGuard<'_> {
+    fn drop(&mut self) {
+        *self
+            .0
+            .generation_registry
+            .run
+            .lock()
+            .expect("generation run lock poisoned") = None;
     }
 }
 

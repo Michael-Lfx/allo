@@ -27,6 +27,7 @@ use nomifun_learning::{
 
 use crate::factory::provider_config::resolve_provider_config;
 use crate::knowledge_completer::resolve_default_model;
+use crate::learning_graph_loop::{CANCEL_MESSAGE, CancellableProvider};
 use crate::loop_core::{
     AGENT_MAX_TOKENS, GENERATE_MAX_ROUNDS, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS,
     TOTAL_TIMEOUT_SECS, json_compact, log_text, run_agent_loop,
@@ -111,7 +112,13 @@ impl CourseOutlineAgentEngine for LiveCourseOutlineAgentEngine {
             &self.deps.workspace,
         )
         .await?;
-        let provider: Arc<dyn LlmProvider> = create_provider(&cfg);
+        // 取消旗标：挂在服务端生成注册上，取消端点置位；包装后的 provider
+        // 在每次 LLM 请求边界轮询（复用 learning_graph_loop 的
+        // CancellableProvider），传统课程生成由此获得与学习图一致的取消能力。
+        let provider: Arc<dyn LlmProvider> = Arc::new(CancellableProvider {
+            inner: create_provider(&cfg),
+            cancel: self.service.generation_cancel_flag(),
+        });
         tracing::info!(
             kind = brief.kind(),
             provider = provider_id.as_str(),
@@ -146,6 +153,15 @@ impl CourseOutlineAgentEngine for LiveCourseOutlineAgentEngine {
                 Ok(blueprint)
             }
             Ok(Err(error)) => {
+                // 用户取消是中性终态而非故障：收敛为一句干净消息（大纲草稿
+                // 没有续建语义，不附草稿说明），其余失败原样透传。
+                let error = if self.service.generation_cancel_requested()
+                    || error.to_string().contains(CANCEL_MESSAGE)
+                {
+                    AppError::BadGateway(CANCEL_MESSAGE.to_owned())
+                } else {
+                    error
+                };
                 ctx.log("session_end", serde_json::json!({
                     "ok": false,
                     "error": error.to_string(),
@@ -205,7 +221,6 @@ impl LiveCourseOutlineAgentEngine {
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
-            false,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -288,7 +303,6 @@ impl LiveCourseOutlineAgentEngine {
                 REPAIR_MAX_ROUNDS,
                 AGENT_MAX_TOKENS,
                 ThinkingConfig::Disabled,
-                false,
                 "repair",
                 Some(ctx.as_ref()),
             )
@@ -1016,7 +1030,6 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
-            false,
             "generate",
             Some(ctx.as_ref()),
         )
