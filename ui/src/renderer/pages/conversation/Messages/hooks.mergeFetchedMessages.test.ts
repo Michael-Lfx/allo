@@ -1025,13 +1025,23 @@ describe('normalizeDbMessage', () => {
         content: {
           content: 'provider failed',
           type: 'error',
-          error: { message: 'provider failed', code: 'USER_LLM_PROVIDER_RATE_LIMITED' },
+          error: {
+            message: 'provider failed',
+            model_id: 'claude-sonnet-4-20250514',
+            provider_id: '019b0000-0000-7000-8000-000000000914',
+            code: 'USER_LLM_PROVIDER_RATE_LIMITED',
+          },
         } as any,
       })
     );
 
     expect(normalized.type).toBe('tips');
+    if (normalized.type !== 'tips') throw new Error('expected an error tips message');
     expect(normalized.turn_id).toBe(turnId);
+    expect(normalized.content.error).toMatchObject({
+      model_id: 'claude-sonnet-4-20250514',
+      provider_id: '019b0000-0000-7000-8000-000000000914',
+    });
   });
 
   test('keeps persisted turn identity for generic tools, ACP tools, and text', () => {

@@ -36,6 +36,7 @@ export const statusColors: Record<LessonStatus, string> = {
   not_started: 'gray',
   in_progress: 'blue',
   completed: 'green',
+  skipped: 'gray',
 };
 
 // Sentinel value for the review-queue course filter that selects

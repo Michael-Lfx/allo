@@ -70,6 +70,8 @@ pub struct SessionObservationTurnDto {
     pub has_turn_end: bool,
     pub gap_count: u32,
     #[serde(default)]
+    pub timeline: Vec<SessionObservationTimelineEventDto>,
+    #[serde(default)]
     pub model_calls: Vec<SessionObservationCallDto>,
     #[serde(default)]
     pub gaps: Vec<SessionObservationGapDto>,
@@ -98,9 +100,40 @@ pub struct SessionObservationCallDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_summary: Option<SessionObservationRequestSummaryDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_message_view: Option<SessionObservationRequestMessageViewDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_summary: Option<SessionObservationResponseSummaryDto>,
     #[serde(default)]
     pub tools: Vec<SessionObservationToolDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionObservationRequestMessageViewDto {
+    pub mode: String,
+    pub hidden_message_count: u32,
+    pub visible_message_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionObservationTimelineEventDto {
+    pub event_seq: u64,
+    pub event_type: String,
+    pub timestamp_ms: u64,
+    pub relative_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -186,4 +219,63 @@ pub struct SessionObservationGapDto {
     pub from_seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionObservationEventDto {
+    pub schema_version: u32,
+    pub event_type: String,
+    pub event_seq: u64,
+    pub timestamp: String,
+    pub timestamp_ms: u64,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionObservationExportTurnDto {
+    pub root_turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_attempt_id: Option<String>,
+    pub status: String,
+    pub integrity: String,
+    pub interrupted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_preview: Option<String>,
+    #[serde(default)]
+    pub prompt_preview_context_only: bool,
+    pub max_event_seq: u64,
+    pub has_turn_start: bool,
+    pub has_turn_end: bool,
+    pub gap_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionObservationExportDto {
+    pub export_version: u32,
+    pub schema_version: u32,
+    pub exported_at_ms: u64,
+    pub conversation_id: String,
+    pub root_turn_id: String,
+    pub status: String,
+    pub integrity: String,
+    pub coverage: String,
+    pub has_turn_end: bool,
+    pub turn: SessionObservationExportTurnDto,
+    pub events: Vec<SessionObservationEventDto>,
 }

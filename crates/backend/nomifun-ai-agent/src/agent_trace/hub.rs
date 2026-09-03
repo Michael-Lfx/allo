@@ -2,20 +2,25 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use nomifun_api_types::{
     ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
-    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestSummaryDto,
-    SessionObservationResponseSummaryDto, SessionObservationTokenUsageDto,
+    SessionObservationEventDto, SessionObservationExportDto, SessionObservationExportTurnDto,
+    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestMessageViewDto,
+    SessionObservationRequestSummaryDto, SessionObservationResponseSummaryDto,
+    SessionObservationTimelineEventDto, SessionObservationTokenUsageDto,
     SessionObservationToolDto, SessionObservationTurnDto,
 };
 use nomifun_db::IClientPreferenceRepository;
 use nomi_agent_trace::{
     project_call_detail, project_turn_by_id, project_turns, strip_projected_turn_payloads,
-    ExecutionStatus, Integrity, ObservationRecorder, ObservationScope, ObservationSummary,
-    ProjectedGap, ProjectedModelCall, ProjectedRequestSummary, ProjectedResponseSummary,
+    ExecutionStatus, Integrity, ObservationEvent, ObservationRecorder, ObservationScope,
+    ObservationSummary, ObservationTimelineEvent, ProjectedGap, ProjectedModelCall,
+    ProjectedRequestMessageView, ProjectedRequestSummary, ProjectedResponseSummary,
     ProjectedTokenUsage, ProjectedToolExecution, ProjectedTurn, RecorderError, RecorderHealth,
-    RecorderHealthStatus, ToolExecutionStatus,
+    RecorderHealthStatus, RequestMessageViewMode, SystemPromptState, ToolExecutionStatus,
+    COVERAGE_RETAINED_OBSERVATION_HISTORY, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -117,6 +122,31 @@ fn request_summary_dto(value: ProjectedRequestSummary) -> SessionObservationRequ
     }
 }
 
+fn request_message_view_dto(
+    value: ProjectedRequestMessageView,
+) -> SessionObservationRequestMessageViewDto {
+    SessionObservationRequestMessageViewDto {
+        mode: match value.mode {
+            RequestMessageViewMode::CurrentSuffix => "current_suffix",
+            RequestMessageViewMode::Full => "full",
+            RequestMessageViewMode::Omitted => "omitted",
+        }
+        .to_owned(),
+        hidden_message_count: value.hidden_message_count,
+        visible_message_count: value.visible_message_count,
+    }
+}
+
+fn system_prompt_state_string(value: SystemPromptState) -> String {
+    match value {
+        SystemPromptState::First => "first",
+        SystemPromptState::Unchanged => "unchanged",
+        SystemPromptState::Changed => "changed",
+        SystemPromptState::Unavailable => "unavailable",
+    }
+    .to_owned()
+}
+
 fn response_summary_dto(value: ProjectedResponseSummary) -> SessionObservationResponseSummaryDto {
     SessionObservationResponseSummaryDto {
         has_text: value.has_text,
@@ -155,6 +185,21 @@ fn gap_dto(value: ProjectedGap) -> SessionObservationGapDto {
     }
 }
 
+fn timeline_event_dto(value: ObservationTimelineEvent) -> SessionObservationTimelineEventDto {
+    SessionObservationTimelineEventDto {
+        event_seq: value.event_seq,
+        event_type: value.event_type,
+        timestamp_ms: value.timestamp_ms,
+        relative_ms: value.relative_ms,
+        model_call_id: value.model_call_id,
+        tool_call_id: value.tool_call_id,
+        call_kind: value.call_kind,
+        tool_name: value.tool_name,
+        status: value.status,
+        duration_ms: value.duration_ms,
+    }
+}
+
 fn call_dto(value: ProjectedModelCall) -> SessionObservationCallDto {
     SessionObservationCallDto {
         model_call_id: value.model_call_id,
@@ -169,6 +214,8 @@ fn call_dto(value: ProjectedModelCall) -> SessionObservationCallDto {
         request: value.request,
         response: value.response,
         request_summary: value.request_summary.map(request_summary_dto),
+        request_message_view: value.request_message_view.map(request_message_view_dto),
+        system_prompt_state: value.system_prompt_state.map(system_prompt_state_string),
         response_summary: value.response_summary.map(response_summary_dto),
         tools: value.tools.into_iter().map(tool_dto).collect(),
     }
@@ -195,6 +242,7 @@ fn turn_dto(value: ProjectedTurn) -> SessionObservationTurnDto {
         has_turn_start: value.has_turn_start,
         has_turn_end: value.has_turn_end,
         gap_count: value.gap_count,
+        timeline: value.timeline.into_iter().map(timeline_event_dto).collect(),
         model_calls: value.model_calls.into_iter().map(call_dto).collect(),
         gaps: value.gaps.into_iter().map(gap_dto).collect(),
     }
@@ -217,6 +265,49 @@ pub fn session_observation_turn_dto(value: ProjectedTurn) -> SessionObservationT
 /// Convert the agent-layer model-call projection to the stable HTTP contract.
 pub fn session_observation_call_dto(value: ProjectedModelCall) -> SessionObservationCallDto {
     call_dto(value)
+}
+
+fn export_event_dto(value: ObservationEvent) -> SessionObservationEventDto {
+    SessionObservationEventDto {
+        schema_version: value.schema_version,
+        event_type: value.event_type,
+        event_seq: value.event_seq,
+        timestamp: value.timestamp,
+        timestamp_ms: value.timestamp_ms,
+        payload: value.payload,
+    }
+}
+
+fn export_turn_dto(value: &ProjectedTurn) -> SessionObservationExportTurnDto {
+    SessionObservationExportTurnDto {
+        root_turn_id: value.root_turn_id.clone(),
+        conversation_id: value.conversation_id.clone(),
+        msg_id: value.msg_id.clone(),
+        session_kind: value.session_kind.clone(),
+        execution_id: value.execution_id.clone(),
+        step_id: value.step_id.clone(),
+        execution_attempt_id: value.execution_attempt_id.clone(),
+        status: execution_status_string(value.status),
+        integrity: integrity_string(value.integrity),
+        interrupted: value.interrupted,
+        started_at_ms: value.started_at_ms,
+        ended_at_ms: value.ended_at_ms,
+        elapsed_ms: value.elapsed_ms,
+        prompt_preview: value.prompt_preview.clone(),
+        prompt_preview_context_only: value.prompt_preview_context_only,
+        max_event_seq: value.max_event_seq,
+        has_turn_start: value.has_turn_start,
+        has_turn_end: value.has_turn_end,
+        gap_count: value.gap_count,
+    }
+}
+
+fn unix_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -332,6 +423,7 @@ impl AgentTraceHub {
             let start = all.len().saturating_sub(limit);
             let mut turns = all.split_off(start);
             for turn in &mut turns {
+                turn.timeline.clear();
                 strip_projected_turn_payloads(turn);
             }
             Ok(SessionObservationList {
@@ -385,6 +477,44 @@ impl AgentTraceHub {
             })
             .await?;
         resolve_session_observation_call(not_found_id, call)
+    }
+
+    /// Export all retained, already-captured events for one user turn. The
+    /// export intentionally keeps raw observation envelopes rather than the
+    /// UI projection, so collapsed fields remain available to other agents.
+    pub async fn export_session_observation(
+        &self,
+        conversation_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Option<SessionObservationExportDto>, TraceApiError> {
+        self.require_developer_mode().await?;
+        let conversation_id = conversation_id.to_owned();
+        let root_turn_id = root_turn_id.to_owned();
+        let exported_at_ms = unix_timestamp_ms();
+        let recorder = Arc::clone(&self.recorder);
+        self.with_read(move || {
+            let mut events = recorder.read_events_for_turn(Some(&conversation_id), &root_turn_id)?;
+            events.sort_by_key(|event| event.event_seq);
+            let Some(turn) = project_turn_by_id(&events, &root_turn_id) else {
+                return Ok(None);
+            };
+            let status = execution_status_string(turn.status);
+            let integrity = integrity_string(turn.integrity);
+            Ok(Some(SessionObservationExportDto {
+                export_version: 1,
+                schema_version: SCHEMA_VERSION,
+                exported_at_ms,
+                conversation_id,
+                root_turn_id,
+                status,
+                integrity,
+                coverage: COVERAGE_RETAINED_OBSERVATION_HISTORY.to_owned(),
+                has_turn_end: turn.has_turn_end,
+                turn: export_turn_dto(&turn),
+                events: events.into_iter().map(export_event_dto).collect(),
+            }))
+        })
+        .await
     }
 }
 
@@ -453,6 +583,42 @@ impl TraceApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use nomifun_db::{DbError, IClientPreferenceRepository};
+    use nomifun_db::models::ClientPreference;
+
+    use crate::agent_trace::prefs::DEVELOPER_MODE_PREF_KEY;
+
+    struct EnabledClientPreferenceRepo;
+
+    #[async_trait::async_trait]
+    impl IClientPreferenceRepository for EnabledClientPreferenceRepo {
+        async fn get_all(&self) -> Result<Vec<ClientPreference>, DbError> {
+            Ok(vec![ClientPreference {
+                id: 1,
+                key: DEVELOPER_MODE_PREF_KEY.into(),
+                value: "true".into(),
+                updated_at: 1,
+            }])
+        }
+
+        async fn get_by_keys(&self, keys: &[&str]) -> Result<Vec<ClientPreference>, DbError> {
+            if keys.contains(&DEVELOPER_MODE_PREF_KEY) {
+                self.get_all().await
+            } else {
+                Ok(vec![])
+            }
+        }
+
+        async fn upsert_batch(&self, _entries: &[(&str, &str)]) -> Result<(), DbError> {
+            Ok(())
+        }
+
+        async fn delete_keys(&self, _keys: &[&str]) -> Result<(), DbError> {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn session_observation_reads_require_developer_mode() {
@@ -463,6 +629,120 @@ mod tests {
             .await
             .expect_err("developer mode must gate observation reads");
         assert!(matches!(error, TraceApiError::DeveloperModeRequired));
+    }
+
+    #[tokio::test]
+    async fn export_keeps_retained_events_and_marks_running_or_degraded_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = Arc::new(EnabledClientPreferenceRepo);
+        let hub = AgentTraceHub::new(dir.path(), Some(prefs));
+        let recorder = hub.observation_recorder();
+        recorder.set_enabled(true);
+        let ids = |model_call_id: Option<&str>| {
+            serde_json::json!({
+                "conversation_id": "conv-export",
+                "root_turn_id": "turn-export",
+                "model_call_id": model_call_id,
+                "call_kind": "agent_turn",
+                "observation_scope": "session_workflow"
+            })
+        };
+
+        recorder
+            .emit(
+                nomi_agent_trace::EVENT_TURN_START,
+                &nomi_agent_trace::ObservationIds {
+                    conversation_id: Some("conv-export".into()),
+                    root_turn_id: Some("turn-export".into()),
+                    ..nomi_agent_trace::ObservationIds::default()
+                },
+                serde_json::json!({ "prompt_preview": "hello" }),
+            )
+            .unwrap();
+        recorder
+            .emit(
+                nomi_agent_trace::EVENT_LLM_REQUEST,
+                &nomi_agent_trace::ObservationIds {
+                    conversation_id: Some("conv-export".into()),
+                    root_turn_id: Some("turn-export".into()),
+                    model_call_id: Some("call-export".into()),
+                    ..nomi_agent_trace::ObservationIds::default()
+                },
+                serde_json::json!({
+                    "ids": ids(Some("call-export")),
+                    "request": {
+                        "model": "test-model",
+                        "messages": [{
+                            "role": "user",
+                            "content": [{"type": "text", "text": "kept for another agent"}]
+                        }]
+                    }
+                }),
+            )
+            .unwrap();
+
+        let running = hub
+            .export_session_observation("conv-export", "turn-export")
+            .await
+            .unwrap()
+            .expect("running turn should be exportable");
+        assert_eq!(running.status, "running");
+        assert_eq!(running.integrity, "complete");
+        assert!(!running.has_turn_end);
+        assert_eq!(
+            running
+                .events
+                .iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            running.events[1].payload["request"]["messages"][0]["content"][0]["text"],
+            "kept for another agent"
+        );
+
+        recorder
+            .emit_gap(
+                &nomi_agent_trace::ObservationIds {
+                    conversation_id: Some("conv-export".into()),
+                    root_turn_id: Some("turn-export".into()),
+                    ..nomi_agent_trace::ObservationIds::default()
+                },
+                "queue_dropped",
+                Some(3),
+                Some(3),
+                Some(1),
+            )
+            .unwrap();
+        recorder
+            .emit(
+                nomi_agent_trace::EVENT_TURN_END,
+                &nomi_agent_trace::ObservationIds {
+                    conversation_id: Some("conv-export".into()),
+                    root_turn_id: Some("turn-export".into()),
+                    ..nomi_agent_trace::ObservationIds::default()
+                },
+                serde_json::json!({ "status": "completed", "elapsed_ms": 10 }),
+            )
+            .unwrap();
+
+        let degraded = hub
+            .export_session_observation("conv-export", "turn-export")
+            .await
+            .unwrap()
+            .expect("ended turn should be exportable");
+        assert_eq!(degraded.status, "completed");
+        assert_eq!(degraded.integrity, "degraded");
+        assert!(degraded.has_turn_end);
+        assert!(degraded
+            .events
+            .windows(2)
+            .all(|events| events[0].event_seq < events[1].event_seq));
+        assert!(degraded
+            .events
+            .iter()
+            .any(|event| event.event_type == nomi_agent_trace::EVENT_OBSERVATION_GAP));
     }
 
     #[test]
@@ -503,6 +783,8 @@ mod tests {
             request: None,
             response: None,
             request_summary: None,
+            request_message_view: None,
+            system_prompt_state: None,
             response_summary: None,
             tools: Vec::new(),
         }
@@ -545,6 +827,7 @@ mod tests {
                 has_turn_start: true,
                 has_turn_end: true,
                 gap_count: 1,
+                timeline: vec![],
                 model_calls: vec![empty_call("call-1")],
                 gaps: vec![],
             }],

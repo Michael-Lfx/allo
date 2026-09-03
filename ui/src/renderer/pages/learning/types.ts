@@ -1,28 +1,32 @@
 export type ActivityKind = 'single_choice' | 'true_false' | 'reflection' | 'fill_in_blank';
-export type LessonStatus = 'not_started' | 'in_progress' | 'completed';
+export type LessonStatus = 'not_started' | 'in_progress' | 'completed' | 'skipped';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
 export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archived';
+/** 课程类型：传统课程（大纲驱动）与学习图（beta，前置网络驱动） */
+export type CourseKind = 'traditional' | 'learning_graph';
 
+/** 生成课程请求：知识库流与描述流二选一（都传时后端以知识库为准）。
+ * 学习图课程只走描述流（描述即学习目标），由后端按 course_kind 分流。 */
 export interface GenerateCourseRequest {
-  knowledge_base_id: string;
+  course_kind?: CourseKind;
+  knowledge_base_id?: string;
+  description?: string;
   domain?: string;
   provider_id?: string;
   model?: string;
-  module_count?: number;
-  lessons_per_module?: number;
-  /** 'full' 一次性生成全部课时；'on_demand' 先出大纲，学习时按需生成课时 */
-  mode?: 'full' | 'on_demand';
+}
+
+/** 学习图生成状态（后台指示条/取消入口的数据源）。生成在 HTTP 请求内同步
+ * 执行，创建对话框可以随时关闭——服务端注册表让运行对外可发现、可取消。 */
+export interface LearningGraphGenerationStatus {
+  running: boolean;
+  topic: string | null;
+  elapsed_secs: number | null;
 }
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传 */
 export interface GenerateLessonRequest {
-  provider_id?: string;
-  model?: string;
-}
-
-/** 重试课程生成任务时可选的模型偏好；两个字段同时传或不传 */
-export interface RetryCourseJobRequest {
   provider_id?: string;
   model?: string;
 }
@@ -39,6 +43,7 @@ export interface CourseSummary {
   completed_lessons: number;
   updated_at: number;
   tags: string[];
+  course_kind: CourseKind;
 }
 
 export interface Activity {
@@ -100,6 +105,8 @@ export interface CourseDetail {
   concepts: Concept[];
   next_lesson_id: string | null;
   due_review_count: number;
+  /** 仅 learning_graph 课程携带：图投影 + 下一步推荐节点 */
+  graph: LearningGraphView | null;
 }
 
 export interface AttemptResult {
@@ -304,35 +311,40 @@ export interface SetTagsRequest {
   apply_to_children?: boolean;
 }
 
-export type CourseJobSource = 'http' | 'agent';
+// ── 学习图（beta，对应后端 learning_graph 类型） ──────────────────────
 
-export type CourseJobStatus =
-  | 'queued'
-  | 'sampling'
-  | 'blueprint'
-  | 'lessons'
-  | 'importing'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'interrupted';
+/** 图节点：底层课时 + 图坐标（拓扑序 position、层深 depth）+ 学习者进度。
+ * 正文不进全图载荷——内容经现有课时接口按需拉取。 */
+export interface GraphNodeView {
+  lesson_id: string;
+  title: string;
+  summary: string;
+  purpose: string;
+  estimated_minutes: number;
+  generated: boolean;
+  /** 发布时的 Kahn 拓扑序（也是推荐排序键） */
+  position: number;
+  /** 前置层深（零前置为 0），供分层渲染与宏观 LOD 使用 */
+  depth: number;
+  status: LessonStatus;
+  prerequisite_count: number;
+}
 
-/** 持久化课程生成任务的公开投影（对应后端 CourseJobView） */
-export interface CourseJobView {
-  job_id: string;
-  source: CourseJobSource;
-  status: CourseJobStatus;
-  /** 1 起始的模块索引；蓝图完成前为 0 */
-  current_module: number;
-  /** 已完成课时数（0..=total_lessons） */
-  current_lesson: number;
-  total_lessons: number;
-  error: string | null;
-  course_id: string | null;
-  /** 任务对应的知识库名称（库已被删除时为 null） */
-  knowledge_base_name: string | null;
-  /** 用户填写的课程领域（请求快照中，未填时为 null） */
-  domain: string | null;
-  created_at: number;
-  updated_at: number;
+/** 前置边：from 应先于 to 被满足（lesson_id 引用） */
+export interface GraphEdgeView {
+  from: string;
+  to: string;
+  reason: string;
+}
+
+/** 图视图（挂在 CourseDetail.graph 下）：结构投影 + 就绪集推荐（≤10） */
+export interface LearningGraphView {
+  goal: string;
+  scope: string;
+  nodes: GraphNodeView[];
+  edges: GraphEdgeView[];
+  /** 下一步推荐学习的节点（就绪集按拓扑序，≤10） */
+  recommended: string[];
+  /** 课程行 graph_meta_json 透传（审计快照/生成留档/扩展备注） */
+  meta: Record<string, unknown> | null;
 }

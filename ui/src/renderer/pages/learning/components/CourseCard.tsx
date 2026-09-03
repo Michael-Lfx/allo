@@ -36,7 +36,14 @@ export function CourseCard({
       }
       title={
         <div className='min-w-0'>
-          <div className='truncate text-16px font-600'>{course.title}</div>
+          <div className='flex items-center gap-6px'>
+            <span className='truncate text-16px font-600'>{course.title}</span>
+            {course.course_kind === 'learning_graph' && (
+              <Tag size='small' color='orangered' className='!mx-0 shrink-0'>
+                {t('learning.learningGraphBeta')}
+              </Tag>
+            )}
+          </div>
           <div className='mt-2px text-12px text-t-tertiary'>{course.domain}</div>
         </div>
       }

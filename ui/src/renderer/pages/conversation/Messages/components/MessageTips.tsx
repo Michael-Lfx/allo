@@ -4,7 +4,7 @@ import type { IMessageTips } from '@/common/chat/chatLib';
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { toDisplayText } from '@/common/chat/displayText';
-import { Button, Collapse, Tag } from '@arco-design/web-react';
+import { Button, Collapse } from '@arco-design/web-react';
 import { Attention, CheckOne } from '@icon-park/react';
 import { theme } from '@/platform';
 import { AppMessage as Message } from '@/renderer/components/notifications';
@@ -276,15 +276,13 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
           defaultValue: t('conversation.agentError.ownership.unknown_upstream'),
         })
       : null;
-    const retryHint =
-      structuredError?.retryable === undefined
-        ? null
-        : structuredError.retryable
-          ? t('conversation.agentError.retryable')
-          : t('conversation.agentError.notRetryable');
     const resolutionText = structuredError?.resolution
       ? t(`conversation.agentError.resolution.${structuredError.resolution.kind}`)
       : null;
+    const hasDirectFeedbackAction = structuredError?.resolution?.kind === 'send_feedback';
+    const shouldShowResolution = Boolean(
+      resolutionText && !retryPayload && !recoveryAction && !hasDirectFeedbackAction
+    );
     return (
       <div className='w-full'>
         <div className={classNames('message-error-note', ownership && `message-error-note--${ownership}`)}>
@@ -295,21 +293,22 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                 {ownershipLabel && <span className='message-error-note__owner'>{ownershipLabel}</span>}
               </div>
               <div className='message-error-note__meta'>
-                {retryHint && (
-                  <Tag
-                    size='small'
-                    color={structuredError?.retryable ? 'green' : 'gray'}
-                    className={classNames(
-                      'message-error-note__tag',
-                      structuredError?.retryable
-                        ? 'message-error-note__tag--retryable'
-                        : 'message-error-note__tag--neutral'
-                    )}
-                  >
-                    {retryHint}
-                  </Tag>
+                {code && (
+                  <div className='message-error-note__meta-row'>
+                    <span className='message-error-note__meta-label'>{t('conversation.agentError.errorCode')}</span>
+                    <code className='message-error-note__code' title={code}>
+                      {code}
+                    </code>
+                  </div>
                 )}
-                {code && <span className='message-error-note__code'>{code}</span>}
+                {diagnostic.modelId && (
+                  <div className='message-error-note__meta-row'>
+                    <span className='message-error-note__meta-label'>{t('conversation.agentError.modelId')}</span>
+                    <code className='message-error-note__model' title={diagnostic.modelId}>
+                      {diagnostic.modelId}
+                    </code>
+                  </div>
+                )}
               </div>
             </div>
             <div className='message-error-note__main'>
@@ -321,7 +320,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                 </span>
                 <span className='message-error-note__diagnostic-text'>{diagnosticSummary}</span>
               </div>
-              {resolutionText && (
+              {shouldShowResolution && (
                 <div className='message-error-note__resolution'>
                   <span className='message-error-note__resolution-label'>
                     {t('conversation.agentError.resolutionPrefix')}

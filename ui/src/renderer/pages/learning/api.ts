@@ -5,7 +5,6 @@ import type {
   CheckinStatus,
   ConceptRef,
   CourseDetail,
-  CourseJobView,
   CourseSummary,
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
@@ -15,10 +14,10 @@ import type {
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
   GeneratedLessonActivity,
+  LearningGraphGenerationStatus,
   Lesson,
   LessonStatus,
   QuestionEntry,
-  RetryCourseJobRequest,
   ReviewAnswerResult,
   ReviewRating,
   ReviewResult,
@@ -38,19 +37,28 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
+  // 同步生成：agent loop 全程在 HTTP 请求内执行，过程事件经
+  // WS 的 `learning.course-generation` 推送，终态以本响应为准。
   generateCourse: (request: GenerateCourseRequest) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/courses/generate`, request),
-  listCourseJobs: () => httpRequest<CourseJobView[]>('GET', `${BASE}/course-jobs`),
-  getCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('GET', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
-  cancelCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/cancel`),
-  resumeCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/resume`),
-  retryCourseJob: (id: string, request: RetryCourseJobRequest) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/retry`, request),
-  deleteCourseJob: (id: string) =>
-    httpRequest<void>('DELETE', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
+    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
+  // 续建失败的学习图生成：服务端定位最近活跃草稿接着建（草稿内存存活
+  // 1 小时）；无存活草稿（404）或引擎未配置（409）时报错，调用方回退
+  // 全量重生成。
+  resumeLearningGraph: (request: { provider_id?: string; model?: string } = {}) =>
+    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate/resume`, request),
+  // 学习图生成状态/取消：关闭对话框后生成仍在后台继续（HTTP 请求内同步
+  // 执行），页面用这对端点恢复悬浮指示条与取消入口。
+  generationStatus: () =>
+    httpRequest<LearningGraphGenerationStatus>(
+      'GET',
+      `${BASE}/courses/generate/status`
+    ),
+  cancelGeneration: () =>
+    httpRequest<{ cancelled: boolean }>(
+      'POST',
+      `${BASE}/courses/generate/cancel`,
+      {}
+    ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>

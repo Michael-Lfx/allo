@@ -35,20 +35,20 @@ async fn read_dedup_returns_stub_on_second_read() {
 
     let input = json!({ "file_path": path_str });
 
-    // First read: should return full line-numbered content (line:hash→text).
+    // First read: should return full line:hash→numbered content.
     let r1 = read_tool.execute(input.clone()).await;
     assert!(!r1.is_error, "first read should succeed: {}", r1.content);
     assert!(
-        r1.content.contains("line one") && r1.content.contains('\u{2192}'),
+        r1.content.contains("1:") && r1.content.contains("→line one"),
         "first read should contain line-numbered content, got: {}",
         r1.content
     );
     assert!(
-        r1.content.contains("line two"),
+        r1.content.contains("→line two"),
         "first read should contain line 2"
     );
     assert!(
-        r1.content.contains("line three"),
+        r1.content.contains("→line three"),
         "first read should contain line 3"
     );
 

@@ -1774,18 +1774,12 @@ fn read_dir_events_for_turn(
     root_turn_id: &str,
 ) -> Result<Vec<ObservationEvent>, RecorderError> {
     let mut newest_first_chunks: Vec<Vec<ObservationEvent>> = Vec::new();
-    let mut found = false;
     for path in event_files_newest_first(dir)? {
         let mut chunk = Vec::new();
         read_jsonl_file(&path, &mut chunk, Some(root_turn_id))?;
-        if chunk.is_empty() {
-            if found {
-                break;
-            }
-            continue;
+        if !chunk.is_empty() {
+            newest_first_chunks.push(chunk);
         }
-        found = true;
-        newest_first_chunks.push(chunk);
     }
     Ok(newest_first_chunks.into_iter().rev().flatten().collect())
 }
@@ -1888,6 +1882,7 @@ fn read_jsonl_file(
 ) -> Result<(), RecorderError> {
     let file = File::open(path)?;
     let mut last_good: Option<ObservationEvent> = None;
+    let mut last_good_for_turn: Option<ObservationEvent> = None;
     let mut corrupt = 0u64;
     for line in BufReader::new(file).lines() {
         let line = line?;
@@ -1902,6 +1897,7 @@ fn read_jsonl_file(
                     if !event_belongs_to_turn(&event, turn_id) {
                         continue;
                     }
+                    last_good_for_turn = Some(event.clone());
                 }
                 out.push(event);
             }
@@ -1911,9 +1907,12 @@ fn read_jsonl_file(
             }
         }
     }
+    let gap_context = root_turn_id
+        .and(last_good_for_turn.as_ref())
+        .or(last_good.as_ref());
     attach_jsonl_corrupt_gap(
         out,
-        last_good.as_ref(),
+        gap_context,
         corrupt,
         root_turn_id,
     );
@@ -2196,6 +2195,64 @@ mod tests {
             ids_from_payload(&only_b[0].payload).root_turn_id.as_deref(),
             Some("turn-b")
         );
+    }
+
+    #[test]
+    fn read_events_for_turn_scans_all_rotated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        let conversation = recorder.root().join("conv-a");
+        fs::create_dir_all(&conversation).unwrap();
+
+        let target_start = ObservationEvent::new(
+            EVENT_LLM_REQUEST,
+            1,
+            "2026-08-18T10:00:00Z",
+            100,
+            json!({ "ids": ids("target") }),
+        );
+        let unrelated = ObservationEvent::new(
+            EVENT_LLM_REQUEST,
+            1,
+            "2026-08-18T10:00:01Z",
+            200,
+            json!({ "ids": ids("other") }),
+        );
+        let target_end = ObservationEvent::new(
+            EVENT_LLM_RESPONSE,
+            2,
+            "2026-08-18T10:00:02Z",
+            300,
+            json!({ "ids": ids("target") }),
+        );
+
+        // The requested turn appears in the oldest and newest segments, with
+        // an unrelated turn in between. A turn read must not stop at the gap.
+        fs::write(
+            conversation.join("events.1.jsonl"),
+            format!("{}\n", serde_json::to_string(&target_start).unwrap()),
+        )
+        .unwrap();
+        fs::write(
+            conversation.join("events.2.jsonl"),
+            format!("{}\n", serde_json::to_string(&unrelated).unwrap()),
+        )
+        .unwrap();
+        fs::write(
+            conversation.join(EVENTS_FILE),
+            format!("{}\n", serde_json::to_string(&target_end).unwrap()),
+        )
+        .unwrap();
+
+        let events = recorder
+            .read_events_for_turn(Some("conv-a"), "target")
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, EVENT_LLM_REQUEST);
+        assert_eq!(events[1].event_type, EVENT_LLM_RESPONSE);
+        assert!(events.iter().all(|event| {
+            ids_from_payload(&event.payload).root_turn_id.as_deref() == Some("target")
+        }));
     }
 
     #[test]
@@ -2518,6 +2575,43 @@ mod tests {
         assert_eq!(turns[0].integrity, crate::event::Integrity::Degraded);
         let summary = recorder.read_summary(Some("conv-a")).unwrap();
         assert_eq!(summary.integrity, crate::event::Integrity::Degraded);
+    }
+
+    #[test]
+    fn filtered_corrupt_gap_uses_the_requested_turn_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        let target = ObservationEvent::new(
+            EVENT_LLM_REQUEST,
+            1,
+            "2026-08-18T10:00:00Z",
+            100,
+            json!({ "ids": ids("target") }),
+        );
+        let other = ObservationEvent::new(
+            EVENT_LLM_REQUEST,
+            1,
+            "2026-08-18T10:00:01Z",
+            200,
+            json!({ "ids": ids("other") }),
+        );
+        let jsonl = recorder.root().join("conv-a").join(EVENTS_FILE);
+        std::fs::create_dir_all(jsonl.parent().unwrap()).unwrap();
+        let mut file = File::create(&jsonl).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&target).unwrap()).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&other).unwrap()).unwrap();
+        file.write_all(b"{not-json\n").unwrap();
+
+        let events = recorder
+            .read_events_for_turn(Some("conv-a"), "target")
+            .unwrap();
+        let gap = events
+            .iter()
+            .find(|event| event.event_type == EVENT_OBSERVATION_GAP)
+            .expect("corrupt line should surface as a gap");
+        assert_eq!(gap.timestamp_ms, target.timestamp_ms);
+        assert_eq!(gap.timestamp, target.timestamp);
+        assert_eq!(ids_from_payload(&gap.payload).root_turn_id.as_deref(), Some("target"));
     }
 
     #[test]

@@ -70,7 +70,14 @@ async fn grep_tool_searches_relative_to_injected_cwd() {
 
     let tool = GrepTool::new(workspace.path().to_path_buf());
     let result = tool
-        .execute(json!({"pattern": "unique_cwd_injection_marker_99", "path": "."}))
+        .execute(json!({
+            "pattern": "unique_cwd_injection_marker_99",
+            "path": ".",
+            // Workspace-root searches without a glob are auto-limited to common
+            // source file types (which exclude .txt); the explicit glob keeps
+            // this test about cwd injection, not about the source-glob filter.
+            "glob": "*.txt"
+        }))
         .await;
 
     assert!(!result.is_error, "unexpected error: {}", result.content);

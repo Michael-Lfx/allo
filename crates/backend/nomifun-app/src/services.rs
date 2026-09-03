@@ -2383,6 +2383,18 @@ impl AppServices {
                 workspace: data_dir.clone(),
             });
         knowledge_service.set_completer(knowledge_completer.clone());
+        // The learning pipeline gets its OWN completer instance on its own
+        // trait (`LearningCompleter`, with per-stage max_tokens budgets):
+        // course generation / concept graphs / reflection grading must not
+        // share the knowledge autogen instance, whose 8192-token cap is
+        // tuned for README overviews and cannot be overridden per call.
+        let learning_completer: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(nomifun_ai_agent::LiveLearningCompleter {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                provider_model_repo: provider_model_repo.clone(),
+                encryption_key,
+                workspace: data_dir.clone(),
+            });
         // Recover profiles left by an interrupted earlier browser runtime
         // before constructing any Host authority. If ownership/termination
         // cannot be proven, Browser functionality remains degraded for this
@@ -2498,8 +2510,63 @@ impl AppServices {
         ));
         learning_service.set_generation_dependencies(
             knowledge_service.clone(),
-            knowledge_completer,
+            learning_completer,
         );
+        // Learning-graph agent engine: the two-loop tool-driven pipeline
+        // (generation loop + audit-gated repair loops, `lg_*` tool set).
+        // Generation requires the engine — there is no fallback pipeline.
+        learning_service.set_learning_graph_engine(Arc::new(
+            nomifun_ai_agent::LiveLearningGraphAgentEngine {
+                service: learning_service.clone(),
+                round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+                deps: nomifun_ai_agent::OneShotDeps {
+                    provider_repo: provider_repo.clone()
+                        as Arc<dyn nomifun_db::IProviderRepository>,
+                    provider_model_repo: provider_model_repo.clone(),
+                    encryption_key,
+                    workspace: data_dir.clone(),
+                },
+            },
+        ));
+        // Course outline agent engine: the two-loop tool-driven pipeline
+        // (generation loop + audit-gated repair loops, `co_*` tool set) for
+        // BOTH the kb and description flows; the legacy one-shot pipeline
+        // stays as the no-engine fallback.
+        learning_service.set_course_outline_engine(Arc::new(
+            nomifun_ai_agent::LiveCourseOutlineAgentEngine {
+                service: learning_service.clone(),
+                deps: nomifun_ai_agent::OneShotDeps {
+                    provider_repo: provider_repo.clone()
+                        as Arc<dyn nomifun_db::IProviderRepository>,
+                    provider_model_repo: provider_model_repo.clone(),
+                    encryption_key,
+                    workspace: data_dir.clone(),
+                },
+            },
+        ));
+        // Lesson content agent engine: the two-loop tool-driven pipeline
+        // (document + activities via the `ls_*` tool set, audit-gated
+        // publish); the legacy two-stage pipeline stays as the no-engine
+        // fallback.
+        learning_service.set_lesson_engine(Arc::new(
+            nomifun_ai_agent::LiveLessonContentAgentEngine {
+                service: learning_service.clone(),
+                deps: nomifun_ai_agent::OneShotDeps {
+                    provider_repo: provider_repo.clone()
+                        as Arc<dyn nomifun_db::IProviderRepository>,
+                    provider_model_repo: provider_model_repo.clone(),
+                    encryption_key,
+                    workspace: data_dir.clone(),
+                },
+            },
+        ));
+        // Best-effort WebSocket progress for course/lesson generation —
+        // same event bus and authoritative-user pattern as the knowledge
+        // emitter; absent a sink (tests, CLI) all emissions are skipped.
+        learning_service.set_event_sink(nomifun_learning::LearningEventEmitter::new(
+            event_bus.clone(),
+            authoritative_user_id.clone(),
+        ));
         // Tutorial seed is TEMPORARILY DISABLED: first-boot creation of the
         // "Flowy 使用指南" knowledge base and the "学习模块上手指南" example
         // course is paused while its value is under review (uncertain the
@@ -2511,12 +2578,6 @@ impl AppServices {
             if let Err(error) = learning_service.seed_tutorial_content(&data_dir).await {
                 tracing::warn!(%error, "tutorial learning content seed failed; continuing");
             }
-        }
-        // Boot-resume: re-claim course-generation jobs left running by a
-        // previous process so interrupted generations continue from their
-        // last persisted snapshot. Failures are non-fatal.
-        if let Err(error) = learning_service.recover_interrupted_jobs().await {
-            tracing::warn!(%error, "course-generation job resume sweep failed; continuing");
         }
 
         // Knowledge MCP server: gives ACP sessions with bound knowledge bases

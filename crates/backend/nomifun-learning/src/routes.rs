@@ -13,11 +13,12 @@ use serde::Deserialize;
 use url::form_urlencoded;
 
 use crate::models::{
-    AnswerReviewRequest, CalendarStats, CheckinStatus, CourseJobSource, CoursePack,
+    AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    RateReviewRequest, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
-    UpdateQuestionRequest,
+    LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
+    RepairFigureResponse, ResumeLearningGraphRequest, SetTagsRequest, SubmitAttemptRequest,
+    UpdateLessonProgressRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -28,19 +29,17 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
-        .route("/api/learning/course-jobs", get(list_course_jobs))
-        .route("/api/learning/course-jobs/{id}", get(get_course_job).delete(delete_course_job))
         .route(
-            "/api/learning/course-jobs/{id}/cancel",
-            post(cancel_course_job),
+            "/api/learning/courses/generate/resume",
+            post(resume_learning_graph),
         )
         .route(
-            "/api/learning/course-jobs/{id}/resume",
-            post(resume_course_job),
+            "/api/learning/courses/generate/status",
+            get(learning_graph_generation_status),
         )
         .route(
-            "/api/learning/course-jobs/{id}/retry",
-            post(retry_course_job),
+            "/api/learning/courses/generate/cancel",
+            post(cancel_learning_graph_generation),
         )
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
@@ -66,6 +65,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/lessons/{id}/activities/generate",
             post(generate_lesson_activity),
         )
+        .route("/api/learning/figures/repair", post(repair_figure))
         .route(
             "/api/learning/activities/{id}/attempts",
             post(submit_attempt),
@@ -154,78 +154,52 @@ async fn generate_course(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<GenerateCourseRequest>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    // Submit a background job and return immediately; progress is polled via
-    // the course-jobs endpoints and the Learning page job panel.
+) -> Result<Json<ApiResponse<crate::models::CourseDetail>>, AppError> {
+    // The whole generation runs synchronously inside the handler (mirroring
+    // the concept graph endpoint): the loop pushes progress over the
+    // best-effort WebSocket stream, and the response carries the imported
+    // course. Aborting the request drops this future at the next await
+    // point, which ends the loop and releases the in-flight slot.
+    Ok(Json(ApiResponse::ok(
+        state.service.generate_course(&user.id, request).await?,
+    )))
+}
+
+async fn resume_learning_graph(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<ResumeLearningGraphRequest>,
+) -> Result<Json<ApiResponse<crate::models::CourseDetail>>, AppError> {
+    // 续建失败的学习图生成:与 generate_course 同一套同步执行契约——请求
+    // 中断即终止循环,过程事件经 WS 推送,终态以本响应为准。无存活草稿时
+    // 返回 NotFound,前端回退全量重生成。
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .start_course_job(request, &user.id, CourseJobSource::Http, None)
+            .resume_learning_graph_course(&user.id, request.provider_id, request.model)
             .await?,
     )))
 }
 
-async fn list_course_jobs(
+/// 课程生成状态（学习图与大纲流共用）：后台指示条的数据源。生成在 HTTP
+/// 请求内同步执行，但创建对话框可以随时关闭——注册表让运行对外可发现
+/// （主题 + 已运行时长）。
+async fn learning_graph_generation_status(
     State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<ApiResponse<Vec<crate::models::CourseJobView>>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.list_course_jobs(&user.id).await?,
-    )))
+) -> Result<Json<ApiResponse<LearningGraphGenerationStatus>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.generation_status())))
 }
 
-async fn get_course_job(
+/// 取消进行中的课程生成：置位旗标，循环在下一个 LLM 请求边界停止（取消
+/// 不保留草稿，重试即全新生成）。无进行中的生成时返回 cancelled=false
+/// （幂等，前端不必区分竞态）。
+async fn cancel_learning_graph_generation(
     State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .course_job(&user.id, &id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("course generation job {id}")))?,
-    )))
-}
-
-async fn cancel_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.cancel_course_job(&user.id, &id).await?,
-    )))
-}
-
-async fn resume_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.resume_course_job(&user.id, &id).await?,
-    )))
-}
-
-async fn retry_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-    Json(request): Json<crate::models::RetryCourseJobRequest>,
-) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.retry_course_job(&user.id, &id, &request).await?,
-    )))
-}
-
-async fn delete_course_job(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    state.service.delete_course_job(&user.id, &id).await?;
-    Ok(Json(ApiResponse::ok(())))
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let cancelled = state.service.cancel_generation();
+    Ok(Json(ApiResponse::ok(serde_json::json!({
+        "cancelled": cancelled,
+    }))))
 }
 
 async fn get_course(
@@ -290,7 +264,6 @@ async fn generate_lesson(
             .await?,
     )))
 }
-
 async fn create_lesson_activity(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -303,6 +276,16 @@ async fn create_lesson_activity(
             .service
             .create_lesson_activity(&user.id, &id, request)
             .await?,
+    )))
+}
+
+async fn repair_figure(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(request): Json<RepairFigureRequest>,
+) -> Result<Json<ApiResponse<RepairFigureResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.repair_figure(&request).await?,
     )))
 }
 

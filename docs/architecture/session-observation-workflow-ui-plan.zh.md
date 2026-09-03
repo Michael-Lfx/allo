@@ -1,6 +1,6 @@
 # Session Logs — 执行计划（U0–U5）
 
-> **最后维护：** 2026-08-24（元数据复核，未重写结论；核对基准 commit `d791691c6`）  
+> **最后维护：** 2026-09-02（增量加入详情 timeline、请求渐进式展示、单回合 JSON 导出、三栏工作区与窄轨收起优化；核对基准为当前实现）
 > **文档状态：实施稿；U0–U5 已合入 `main`；配额 GC 与请求扫描列表随 PR #119 落地。现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准**  
 > 日期：2026-08-19  
 > 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口；U3 请求 `messages`/`tools` 默认扫描列表。  
@@ -227,7 +227,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 7. 开发者模式只门控 HTTP 读取与支持包；采集始终写盘。  
 8. 观测/队列/磁盘失败不 `?` 打断 Agent。  
 9. 不扩大采集（one_shot / health / speech / ACP）。  
-10. 不做 replay / OTel / 导出 Sink。  
+10. 不做 replay / OTel / 导出 Sink；用户导出仅提供单个 `root_turn_id` 的已保留 JSONL 事件文档。
 11. 虚拟列表用已有 `@tanstack/react-virtual`（或 `react-virtuoso`），不手写。Call 检查器允许 `react-json-view-lite`；禁止自写树，禁止把树用在 List/Turn。  
 12. 不上子进程 / mmap / 观测 SQLite / 无界 channel。
 
@@ -360,9 +360,18 @@ GET .../turns/{root_turn_id}?conversation_id=
 
 GET .../turns/{root_turn_id}/calls/{model_call_id}?conversation_id=
   { request, response, tools }
+
+GET .../turns/{root_turn_id}/export?conversation_id=
+  { export_version, schema_version, status, integrity, coverage,
+    has_turn_end, turn, events[] }       // 单回合完整保留事件，按 event_seq 升序
 ```
 
 鉴权不变。Call GET 同样 developer mode + 会话归属。
+
+Turn GET 额外返回轻量 `timeline[]`，以及每个模型调用的
+`request_message_view` / `system_prompt_state`。List GET 仍清除 timeline 和正文，仅保留回合与调用 headers。
+
+Export GET 同样要求登录、会话归属与 Developer Mode；回合仍在执行时返回已写盘事件并标记 `status=running`、`has_turn_end=false`。找到 gap、截断或损坏记录时仍返回 JSON，但 `integrity=degraded` 或事件中的 gap 必须保留。找不到 retention 范围内的回合返回 404。
 
 Call GET 在 header 还在、segment 已 GC：返回 **410**，body `reason=observation_retention`。仅当 **turn 已 `has_turn_end` 且 call payload 全空**；turn 仍在跑时的空 body 回 **200**，不得当成 retention。在 `routes_trace.rs` 映射即可，**不要**为调试 API 去扩公共 `AppError`（现无 Gone 变体）。UI：「此调用详情已被观测保留策略清理」，不是「加载失败」。
 
@@ -387,8 +396,9 @@ Trigger: writer persist-idle ≥30s and last scan ≥1h; or estimated total ≥1
 - 左列顶是标注四数（数字 + 短标签）与图标排序/刷新；释义合一到工具条左 Info Popover。写入器 health 仅异常时强调；顶栏不出完整/降级字，降级只在回合行 flags。  
 - 回合行：第 N 轮（按 `started_at_ms` 升序编号，与显示倒正向无关）、预览、时钟、模型/工具次数、时长。默认最新在上。  
 - Call 行 `useVirtualizer`，overscan 3–5。宽屏横轴可横滚。窄对话列（`@container` ~720px，按列宽不是 window）左列改横向回合条，检查器单列。  
-- 点瓦片才 GET call detail，不自动展开第一张；关详情 unmount。瓦片 `aria-expanded`。工具瓦片 title 用 `argument_preview`，无则 name。`最终回复` 是不可点文案终点，不是瓦片。  
-- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。`messages` / `tools` 默认扫描投影（role / 块类型 / 开头摘要，或工具名 + 描述），工具条「原始」才切回对象树；复制仍是 canonical JSON。消息扫描默认最新在上，排序随 `model_call_id` 重置、不随 poll 数组变长重置；工具定义不排序。`[Context]` 是保留前缀，仅识别 user 消息的第一个文本块，不参与主预览；真实用户文本优先显示。Context 仅通过 hover tooltip 显示 `上下文 · Current date: ...`，不增加摘要行；Context-only 消息保留且不显示为「观测未记录」。整段 `{ omitted_reason }` 显示已省略，`[]` 显示没有消息/没有工具，缺字段显示观测未记录；行上有预览时仍带 omitted 标记。短 string 与响应 reasoning/content 直接展示。系统提示、响应、工具执行不走扫描列表。放大弹层与 320px 面板各自渲染，禁止共用同一个 React 节点。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。
+- 点时间线事件或请求/响应/工具阶段按钮才 GET call detail，不自动展开第一张；关详情 unmount。时间线按 `turn/start → llm/request → llm/response → tool lifecycle → next llm/request → ... → turn/end` 展示，每项带 `+relative`，模型响应区分工具请求/最终回答，工具名、状态和耗时单独呈现；事件、模型调用卡片与阶段按钮双向高亮。工具瓦片 title 用 `argument_preview`，无则 name。
+- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。请求消息按服务器给出的 `request_message_view` 默认展示当前尾部，历史公共前缀收起在顶部；无法可靠区分时展示完整上下文。`messages` / `tools` 默认扫描投影（role / 块类型 / 开头摘要，或工具名 + 描述），工具条「原始」才切回对象树；复制仍是 canonical JSON。消息扫描按原始顺序展示当前请求；工具定义默认收起，实际调用工具优先。`[Context]` 是保留前缀，仅识别 user 消息的第一个文本块，不参与主预览；真实用户文本优先显示。Context 仅通过 hover tooltip 显示 `上下文 · Current date: ...`，不增加摘要行；Context-only 消息保留且不额外生成摘要。整段 `{ omitted_reason }` 显示已省略，`[]` 显示没有消息/没有工具，缺字段显示观测未记录；行上有预览时仍带 omitted 标记。短 string 与响应 reasoning/content 直接展示。系统提示首次默认展开，后续未变化默认收起并显示沿用，变化/不可比较显式标记。放大弹层与 320px 面板各自渲染，禁止共用同一个 React 节点。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。
+- 当前回合标题栏右侧提供「下载本轮 JSON」；进行中显示「下载当前记录」，下载中防重复，成功通知服务端文件名，失败留在当前回合区域提示。导出不受 UI 折叠影响；retention/gap 语义显式显示。
 - 缓存：summary + ≤200 turn headers + `MAX_CALL_DETAIL_CACHE=2` LRU。换会话 `clear()`。切回对话保持 poll 与 LRU。  
 - Token 芯片：U3 只显示原始 `input_tokens` / cache_read / cache_write / output。不画未命中，不发明 `input_uncached`。  
 - omitted 字段必须可见，不得显示成「观测未记录 / 加载失败」。不展示 `msg=` / `turn=` / `mc-xxxx`。  
@@ -410,6 +420,93 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 
 退避：1.5s → 3s → 5s → 最大 10s；`max_event_seq` 变化则回到 1.5s。  
 `turn/end` 或 health 已 `storage_error`/`writer_disconnected` → 停 poll。`queue_dropped` 只作顶栏警告，不停 poll。
+
+### 7.2 三栏 Trace 工作区（现行 UI 行为）
+
+> **现行状态：** 本节描述当前实现的 Trace 工作区行为。三栏布局、时间线收起、当前事件详情和窄屏退化均已落地；本次只改变前端布局与展示投影，不改变 JSONL、投影 DTO、导出接口、Call 懒加载或 retention 语义。
+
+#### 7.2.1 目标与空间契约
+
+物理场景：用户在明暗不同的桌面环境中长时间审查 Agent 执行过程，需要同时保持因果方向、当前事件和正文证据的空间连续性。三栏布局服务于定位与阅读，不把三个区域做成等宽卡片网格。
+
+~~~text
+回合列表               时间线导航栏                  当前事件详情
+Round navigator  →     Timeline rail          →      Event inspector
+~~~
+
+- 应用级侧栏、对话标题栏、观测入口和回合列表语义保持不变。
+- 宽屏（可用容器宽度 ≥1200px）：回合列表约 260px，时间线展开约 288px，收起约 88px，详情占用剩余空间。
+- 不使用三列等宽，不给时间线分配与详情相同的正文空间。时间线是定位 rail，详情是主要阅读 surface。
+- 回合标题、状态和下载动作固定在详情区顶部；时间线拥有自己的小标题与收起按钮。
+- 使用 Trace 工作区的 container query 判断列宽，不只依赖 viewport。应用侧栏、窄窗口或面板折叠后，仍需重新计算三栏是否可用。
+
+回合列表、时间线和详情工作区均设置 min-width: 0、min-height: 0，避免长文本撑破父级布局。详情标题固定，模型调用列表拥有自己的滚动容器，选中的调用在其卡片下方承载详情。选择时间线事件只定位对应调用卡片，不滚动整个页面；轮询更新不得重置时间线或详情滚动位置。展开的时间线本身承担当前回合全览，不再额外渲染重复的回合全览面板。
+
+#### 7.2.2 时间线密度与收起
+
+时间线应保持“低噪声、可定位、可恢复”的密度：
+
+- 事件行建议 44–60px，只保留标题、相对时间、状态和必要的调用/工具标识。
+- 间隔 0s 不单独占行。只有超过可感知阈值的等待才显示为连接线上的轻量文字，不能伪装成业务事件。
+- tool/execution_started 与终态事件默认合并为一个可读的“工具执行”行，显示工具名、状态和总耗时；展开或进入详情时仍能查看开始、完成、失败、取消等原始生命周期。不得修改导出中的事件或 event_seq。
+- 模型请求和模型响应继续分开。响应必须明确标识“请求调用工具”或“最终回答”，不能用卡片排列方向推断因果。
+- 回合开始、回合结束和 gap 使用更轻量的节点样式；辅助调用保留，但通过标签弱化，不默认抢占主视觉。
+- 事件序号是诊断辅助信息，放在次级位置。相对时间、状态和耗时优先于内部 ID。
+
+时间线支持两级状态：
+
+1. **展开 rail：** 显示事件标题、相对时间、状态和工具名。
+2. **桌面窄 rail：** 900–1199px 时收起为约 88px 的固定轨道，只显示事件图标和相对时间；完整语义通过展开状态、无障碍名称和左侧图标说明查看，不能出现没有语义的空白可点击行；图标固定为正圆。
+3. **顶部折叠区：** 899px 以下时间线移动到详情顶部，收起态使用约 88px 高的横向事件条，事件按钮只显示图标和相对时间，不把圆形节点压缩成椭圆。
+
+收起按钮必须提供 aria-expanded 与 aria-controls。收起或展开不得丢失选中的 InspectTarget、时间线滚动位置和键盘焦点。折叠状态 v1 只保存在当前工作区，不新增 localStorage 或其他持久化状态。移动端可以进一步把 rail 变成“时间线”折叠区或切换项，但不能让用户失去当前回合上下文。
+
+#### 7.2.3 详情区的当前事件优先
+
+点击模型请求、响应或工具事件后，上下文条与 inspector 紧贴在对应模型调用卡片下方：
+
+~~~text
+回合 3 / 模型调用 #2 / 模型响应 · 请求调用工具
++12.4s · 用时 3.2s · 首 token 420ms
+~~~
+
+- 模型调用列表不额外渲染重复的分组标题；模型调用信息卡片与详情处于同一滚动流；每个模型调用只保留紧凑 header、请求/响应/工具阶段入口，选中的模型调用才在自身卡片下方嵌入完整 inspector。响应详情只保留一个 inspector，不再追加重复的“最终回复”卡片。
+- 选中详情使用固定高度范围的 slot，建议 `height: clamp(320px, 42vh, 520px)`，正文和 JSON 树在 slot 内部滚动。加载中、失败、retention 和正常内容共用同一边界，不因正文长度推动其他模型调用卡片。
+- 点击 request、response、tool 卡片时，必须反向高亮时间线对应事件；工具生命周期合并显示时高亮对应事件范围。
+- 选择新事件只让对应模型调用卡片进入可见范围；切换阶段时保持调用卡片位置。轮询只能更新内容，不能强制改变用户当前阅读位置。
+- 未选择事件时保留模型调用摘要和“选择时间线事件查看详情”提示；回合全览由展开的时间线承担。
+- 回合开始、结束和 gap 没有模型调用归属时，使用独立的固定高度事件详情槽，并在上下文条中显示事件序号和来源。
+- 请求消息继续使用服务端 request_message_view；系统提示、历史上下文、实际工具和工具定义的渐进式展示规则保持不变。
+- 下载按钮仍属于当前回合标题区域，不移动到全局导航，也不因时间线收起而消失。点击后由桌面原生保存对话框或浏览器文件保存选择器让用户选择目标位置，再写入 JSON；不使用浏览器默认下载目录。用户取消选择时保持空闲状态，不显示下载成功。
+
+#### 7.2.4 响应式退化
+
+按 Trace 容器宽度而非单一设备型号退化：
+
+- ≥1200px：完整三栏，详情列为主阅读区；时间线展开约 288px，收起约 88px。
+- 900–1199px：保留回合列表与详情主列，时间线使用约 88px 的固定窄 rail，默认允许收起。
+- 768–899px：回合列表沿用现有窄列行为，时间线变成详情顶部约 88px 高的横向可收起区域。
+- <768px：回合列表沿用横向窄列，时间线与详情纵向排列；时间线使用横向滚动事件条，详情占满宽度，不强行压缩三栏。
+- 200% 缩放时，按钮文本不得互相覆盖，时间线事件可以换行，详情正文保持可读宽度。
+- 360px 下不依赖 hover 提示来理解选中状态；工具名、状态和耗时至少有文本或图标辅助。
+
+#### 7.2.5 交互、可访问性与性能验收
+
+- 键盘 Tab 顺序为回合列表 → 时间线收起按钮 → 时间线事件 → 详情操作；Enter/Space 可选择事件。
+- 当前事件同时使用边界、文本和 aria-pressed 表达，不能只依赖紫色高亮。
+- 时间线新增事件提示使用 aria-live="polite"，用户不在底部时不得自动滚动。
+- Reduced Motion 关闭 rail、详情和 chevron 的位移动画，只保留即时状态变化。
+- 时间线继续只消费轻量 metadata，不把 request、response、工具参数复制到每个节点。
+- 选择事件只触发必要的 Call GET；收起时间线不触发网络请求；导出仍始终读取完整保留事件。
+- 空回合、无工具、单工具、多工具、失败、取消、运行中、gap、retention、长消息和大量工具定义都必须能在详情首屏理解当前状态。
+
+#### 7.2.6 当前实现边界
+
+1. Trace 工作区由回合列表、时间线导航栏和详情工作区组成；模型调用卡片与当前详情属于同一右侧滚动流，非 Call 事件使用固定高度事件详情槽。
+2. 时间线使用 event_seq 投影，工具开始与终态只做视觉合并；详情和导出仍可追溯原始事件。
+3. 模型调用卡片只保留紧凑阶段入口；选中卡片在自身下方渲染一个固定高度详情 slot，详情内容不再脱离来源卡片。
+4. 容器宽度低于 900px 时默认收起时间线为约 88px 紧凑轨道；900–1199px 仍保持三栏横向布局。收起态只显示图标和相对时间；899px 以下改为约 88px 高的横向时间线顶部区域，收起状态不写入 localStorage。
+5. 后续改动须继续通过键盘、200% 缩放、Reduced Motion、双主题和真实长日志验收。
 
 ---
 

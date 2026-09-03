@@ -11,6 +11,8 @@ import {
 } from './errorDiagnostics';
 
 const labels: ErrorDiagnosticLabels = {
+  modelId: 'Model ID',
+  providerId: 'Provider ID',
   errorCode: 'Error code',
   incidentId: 'Incident ID',
   ownership: 'Ownership',
@@ -27,6 +29,8 @@ describe('error diagnostics', () => {
   test('builds a concise summary and complete safe diagnostic text', () => {
     const error: AgentStreamErrorInfo = {
       message: 'The provider rejected the request',
+      model_id: 'claude-sonnet-4-20250514',
+      provider_id: 'provider-1',
       incident_id: 'incident-1',
       code: 'USER_LLM_PROVIDER_INVALID_TOOL_SCHEMA',
       ownership: 'user_llm_provider',
@@ -40,6 +44,8 @@ describe('error diagnostics', () => {
 
     expect(diagnostic.summary).toBe('Invalid schema for function Read');
     expect(text).toContain('Error code: USER_LLM_PROVIDER_INVALID_TOOL_SCHEMA');
+    expect(text).toContain('Model ID: claude-sonnet-4-20250514');
+    expect(text).toContain('Provider ID: provider-1');
     expect(text).toContain('Incident ID: incident-1');
     expect(text).toContain('Resolution target: provider_settings');
     expect(text).toContain('The provider returned status 400.');

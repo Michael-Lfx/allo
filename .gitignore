@@ -101,3 +101,4 @@ Thumbs.db
 
 # Local absorb scratch (never commit)
 .absorb_tmp/
+.jspace/

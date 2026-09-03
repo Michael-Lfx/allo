@@ -3,7 +3,7 @@
 use axum::Extension;
 use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Deserialize;
@@ -74,9 +74,28 @@ pub fn conversation_trace_routes() -> Router<ConversationRouterState> {
             get(get_session_observation_turn),
         )
         .route(
+            "/api/debug/session-observations/turns/{root_turn_id}/export",
+            get(export_session_observation),
+        )
+        .route(
             "/api/debug/session-observations/turns/{root_turn_id}/calls/{model_call_id}",
             get(get_session_observation_call),
         )
+}
+
+fn export_filename(root_turn_id: &str) -> String {
+    let safe_id: String = root_turn_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let safe_id = if safe_id.is_empty() { "turn" } else { &safe_id };
+    format!("flowy-observation-{safe_id}.json")
 }
 
 async fn list_session_observations(
@@ -151,5 +170,62 @@ async fn get_session_observation_call(
         }
         Err(TraceApiError::ObservationRetention) => Ok(observation_retention_response()),
         Err(error) => Err(error.into_app_error()),
+    }
+}
+
+async fn export_session_observation(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(root_turn_id): Path<String>,
+    Query(query): Query<SessionObservationQuery>,
+) -> Result<Response, AppError> {
+    let hub = require_hub(&state)?;
+    let conversation_id = query.conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err(AppError::BadRequest(
+            "conversation_id query parameter is required".into(),
+        ));
+    }
+    state.service.get(&user.id, conversation_id).await?;
+    let export = hub
+        .export_session_observation(conversation_id, &root_turn_id)
+        .await
+        .map_err(|error| error.into_app_error())?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "session observation turn '{root_turn_id}' not found"
+            ))
+        })?;
+    let filename = export_filename(&root_turn_id);
+    let body = serde_json::to_string_pretty(&export).map_err(|error| {
+        AppError::Internal(format!("failed to serialize session observation export: {error}"))
+    })?;
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(axum::body::Body::from(body))
+        .map_err(|error| AppError::Internal(format!("failed to build export response: {error}")))?;
+    Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::export_filename;
+
+    #[test]
+    fn export_filename_is_safe_for_download_headers() {
+        assert_eq!(
+            export_filename("turn_42"),
+            "flowy-observation-turn_42.json"
+        );
+        assert_eq!(
+            export_filename("turn/42 with spaces"),
+            "flowy-observation-turn-42-with-spaces.json"
+        );
+        assert_eq!(export_filename(""), "flowy-observation-turn.json");
     }
 }

@@ -1,5 +1,5 @@
 use nomifun_ai_agent::AgentSendError;
-use nomifun_common::{AppError, ErrorChain, now_ms};
+use nomifun_common::{AppError, ErrorChain, ProviderWithModel, now_ms};
 use nomifun_db::models::MessageRow;
 use tracing::warn;
 
@@ -21,9 +21,20 @@ impl ConversationService {
         conversation_id: &str,
         turn_id: Option<&str>,
         err: &AppError,
+        model: Option<&ProviderWithModel>,
     ) -> Option<MessageRow> {
         let conv_id = conversation_id.to_owned();
-        let stream_error = AgentSendError::from_app_error_ref(err).into_stream_error();
+        let mut stream_error = AgentSendError::from_app_error_ref(err).into_stream_error();
+        if let Some(model) = model {
+            stream_error.model_id = Some(
+                model
+                    .use_model
+                    .as_deref()
+                    .unwrap_or(&model.model)
+                    .to_owned(),
+            );
+            stream_error.provider_id = Some(model.provider_id.clone());
+        }
         let id = Self::mint_msg_id();
         let row = MessageRow {
             id: 0,

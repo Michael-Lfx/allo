@@ -448,6 +448,127 @@ const createInitStyle = (
     border-radius: 999px;
     border-top-color: var(--text-secondary);
   }
+  .markdown-figure-block {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .markdown-figure-surface {
+    overflow: hidden;
+    overflow-x: auto;
+    border: 1px solid var(--bg-3);
+    border-radius: 6px;
+    background: var(--bg-1);
+  }
+  .markdown-figure-header {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid var(--bg-3);
+    background: var(--bg-2);
+    padding: 6px 10px;
+  }
+  .markdown-figure-leading,
+  .markdown-figure-toolbar,
+  .markdown-figure-segmented {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+  }
+  .markdown-figure-leading {
+    gap: 8px;
+  }
+  .markdown-figure-toolbar {
+    flex: none;
+    color: var(--text-secondary);
+  }
+  .markdown-figure-language {
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 20px;
+  }
+  .markdown-figure-segmented {
+    gap: 2px;
+    border: 1px solid var(--bg-3);
+    border-radius: 4px;
+    background: var(--bg-1);
+    padding: 2px;
+  }
+  .markdown-figure-segment {
+    min-height: 24px;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 20px;
+    padding: 1px 6px;
+  }
+  .markdown-figure-segment:hover {
+    background: var(--bg-3);
+    color: var(--text-primary);
+  }
+  .markdown-figure-segment:active {
+    background: var(--bg-2);
+  }
+  .markdown-figure-segment[aria-pressed='true'] {
+    background: var(--bg-3);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .markdown-figure-segment:focus-visible {
+    outline: 2px solid var(--color-link, ${theme.Color.PrimaryColor});
+    outline-offset: 1px;
+  }
+  .markdown-figure-svg {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+    background: var(--bg-1);
+    color: var(--text-primary);
+    padding: 12px;
+  }
+  .markdown-figure-svg svg {
+    max-width: 100%;
+    height: auto;
+    display: block;
+  }
+  .markdown-figure-jsxgraph {
+    /* Minimal stand-in for jsxgraph.css's .jxgbox: the package's "exports"
+       map does not expose the stylesheet, so the rules the board needs
+       (relative, clipped, no touch scrolling) are owned here. */
+    position: relative;
+    overflow: hidden;
+    touch-action: none;
+    width: 100%;
+    height: 340px;
+    background: var(--bg-1);
+  }
+  .markdown-figure-source {
+    background: var(--bg-1);
+  }
+  .markdown-figure-error {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--bg-3);
+    color: var(--color-danger, #f53f3f);
+    font-size: 12px;
+    line-height: 20px;
+    padding: 6px 10px;
+  }
+  .markdown-figure-error-text {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+  }
+  .markdown-figure-error .markdown-figure-segment {
+    flex: none;
+  }
   @media (hover: hover) and (pointer: fine) {
     .markdown-code-toolbar {
       opacity: 0;
@@ -457,7 +578,9 @@ const createInitStyle = (
     .markdown-code-block:hover .markdown-code-toolbar,
     .markdown-code-block:focus-within .markdown-code-toolbar,
     .markdown-mermaid-block:hover .markdown-mermaid-toolbar,
-    .markdown-mermaid-block:focus-within .markdown-mermaid-toolbar {
+    .markdown-mermaid-block:focus-within .markdown-mermaid-toolbar,
+    .markdown-figure-block:hover .markdown-figure-toolbar,
+    .markdown-figure-block:focus-within .markdown-figure-toolbar {
       opacity: 1;
       pointer-events: auto;
     }

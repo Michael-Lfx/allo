@@ -67,6 +67,11 @@
   "terminalNeedsWorkspace": "Bind a workspace before opening a terminal",
   "openInPanelTooltip": "View in preview panel",
   "mermaidTitle": "Mermaid Diagram",
+  "replay": "Replay",
+  "repairWithAI": "Repair with AI",
+  "repairing": "Repairing…",
+  "repairFailed": "Figure repair failed, please try again later",
+  "svgSanitizeFailed": "SVG cannot be rendered: the content is invalid or was filtered for safety",
   "largeTextTruncatedHint": "Large file preview mode: showing first {{count}} characters for performance.",
   "truncatedBanner": "Preview content was truncated. Click download to view the full file.",
   "errors": {

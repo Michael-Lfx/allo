@@ -231,33 +231,33 @@ body[arco-theme='dark'] .message-error-note {
 }
 
 .message-error-note__meta {
-  flex: 1 1 240px;
-  flex-wrap: wrap;
+  flex: 0 1 460px;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.message-error-note__meta-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  line-height: 20px;
 }
 
-.message-error-note__tag {
-  margin: 0;
-  border: 1px solid transparent;
-  font-weight: 600;
-}
-
-.message-error-note__tag--retryable {
-  border-color: color-mix(in srgb, var(--success, var(--flowy-success, #15803d)) 28%, transparent) !important;
-  background: color-mix(in srgb, var(--success, var(--flowy-success, #15803d)) 12%, var(--message-error-panel)) !important;
-  color: var(--success, var(--flowy-success, #15803d)) !important;
-}
-
-.message-error-note__tag--neutral {
-  border-color: var(--message-error-border) !important;
-  background: var(--message-error-surface) !important;
-  color: var(--color-text-2) !important;
+.message-error-note__meta-label {
+  flex: none;
+  color: var(--color-text-3);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .message-error-note__code {
   min-width: 0;
-  max-width: 100%;
+  max-width: 360px;
+  overflow: hidden;
   border-radius: 5px;
   background: color-mix(in srgb, var(--message-error-accent) 8%, transparent);
   color: var(--color-text-2);
@@ -265,8 +265,23 @@ body[arco-theme='dark'] .message-error-note {
   font-size: 11px;
   line-height: 18px;
   padding: 1px 6px;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-error-note__model {
+  min-width: 0;
+  max-width: 360px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--message-error-accent) 8%, transparent);
+  color: var(--color-text-2);
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 1px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message-error-note__diagnostic-summary {
@@ -574,11 +589,19 @@ body[arco-theme='dark'] .message-error-note {
     justify-content: flex-start;
   }
 
+  .message-error-note__meta-row {
+    justify-content: flex-start;
+  }
+
   .message-error-note__actions {
     width: 100%;
   }
 
   .message-error-note__code {
+    max-width: 100%;
+  }
+
+  .message-error-note__model {
     max-width: 100%;
   }
 

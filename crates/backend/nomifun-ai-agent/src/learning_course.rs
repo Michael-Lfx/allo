@@ -1,12 +1,15 @@
-//! Production `LearningCourseSink` over the `LearningService` job API. The
-//! trait lives in `nomi-agent`; this backend adapter maps the agent-facing
-//! requests to the learning service's persistent course-generation jobs
-//! (sample the base's markdown, drive the model, validate, import — all in a
-//! background task per job). The generate call returns immediately with a
-//! `job_id`; progress is polled through `generation_status`. The session's
-//! active `(provider_id, model)` is forwarded so generation honors the model
-//! the user picked in the conversation; without one the service's default
-//! completer resolves the model (same fallback as the HTTP generate endpoint).
+//! Backend adapter for the agent-facing course-generation seam (the
+//! [`LearningCourseSink`] trait lives in `nomi-agent`). It maps requests onto
+//! the learning service's in-memory agent-job registry
+//! (`start_agent_course_generation`): the request is validated, registered as
+//! `running`, and the same synchronous pipeline the HTTP generate endpoint
+//! uses (sample → outline agent loop → import) runs in a spawned background
+//! task. The generate call returns immediately with a `job_id`; progress is
+//! polled through `generation_status`. The session's active
+//! `(provider_id, model)` is forwarded so generation honors the model the
+//! user picked in the conversation; without one the service's default
+//! completer resolves the model (same fallback as the HTTP generate
+//! endpoint).
 
 use std::sync::Arc;
 
@@ -14,14 +17,14 @@ use async_trait::async_trait;
 use nomi_agent::learning_tools::{
     CourseGenerationRequest, CourseJobStarted, CourseJobStatus, LearningCourseSink,
 };
-use nomifun_common::{LearningCourseId, ProviderId, UserId};
+use nomifun_common::{ProviderId, UserId};
 use nomifun_learning::{
-    CourseGenerationMode, CourseJobSource, GenerateCourseRequest, LearningService,
+    CourseGenerationMode, CourseKind, GenerateCourseRequest, LearningService,
 };
 
 /// Bridges the agent-facing course-generation trait to the backend
 /// LearningService. The sink is shared across sessions, so the caller's
-/// `user_id`/`session_id` arrive per call.
+/// `user_id` arrives per call; the in-memory registry isolates jobs by user.
 pub struct LiveLearningCourseSink {
     pub service: Arc<LearningService>,
 }
@@ -31,7 +34,7 @@ impl LearningCourseSink for LiveLearningCourseSink {
     async fn start_generation(
         &self,
         user_id: &str,
-        session_id: Option<&str>,
+        _session_id: Option<&str>,
         req: CourseGenerationRequest,
     ) -> Result<CourseJobStarted, String> {
         let user = UserId::parse(user_id).map_err(|e| format!("invalid user id {user_id}: {e}"))?;
@@ -42,29 +45,28 @@ impl LearningCourseSink for LiveLearningCourseSink {
                     .map_err(|e| format!("invalid provider id {provider}: {e}"))
             })
             .transpose()?;
+        // Only on-demand generation exists today; the field is an extension
+        // point for future strategies, so any other value is rejected.
         let mode = match req.mode.as_deref() {
-            None | Some("full") => CourseGenerationMode::Full,
-            Some("on_demand") => CourseGenerationMode::OnDemand,
+            None | Some("on_demand") => CourseGenerationMode::OnDemand,
             Some(other) => return Err(format!("unsupported course generation mode: {other}")),
         };
         let request = GenerateCourseRequest {
+            // The agent tool surface only covers traditional courses; the
+            // learning-graph flow has its own `lg_*` tool entry.
+            course_kind: CourseKind::Traditional,
             knowledge_base_id: req.kb_id,
+            description: req.description,
             domain: req.domain,
             provider_id,
             model: req.model,
-            module_count: req.module_count,
-            lessons_per_module: req.lessons_per_module,
             mode,
         };
-        let view = self
+        let job_id = self
             .service
-            .start_course_job(request, &user, CourseJobSource::Agent, session_id)
-            .await
+            .start_agent_course_generation(&user, request)
             .map_err(|e| e.to_string())?;
-        Ok(CourseJobStarted {
-            job_id: view.job_id,
-            status: view.status.as_str().to_owned(),
-        })
+        Ok(CourseJobStarted { job_id, status: "running".to_owned() })
     }
 
     async fn generation_status(
@@ -75,38 +77,21 @@ impl LearningCourseSink for LiveLearningCourseSink {
         let user = UserId::parse(user_id).map_err(|e| format!("invalid user id {user_id}: {e}"))?;
         let view = self
             .service
-            .course_job(&user, job_id)
-            .await
-            .map_err(|e| e.to_string())?
+            .agent_course_job_status(&user, job_id)
             .ok_or_else(|| format!("course generation job {job_id} not found"))?;
-        let mut status = CourseJobStatus {
-            job_id: view.job_id,
-            status: view.status.as_str().to_owned(),
-            current_lesson: view.current_lesson,
-            total_lessons: view.total_lessons,
+        Ok(CourseJobStatus {
+            job_id: job_id.to_owned(),
+            status: view.status,
             error: view.error,
-            course_id: view.course_id.clone(),
-            title: None,
-        };
-        // Completed jobs report the course title so the agent can hand the
-        // user an actionable result without another lookup.
-        if view.status == nomifun_learning::CourseJobStatus::Completed
-            && let Some(course_id) = view
-                .course_id
-                .as_deref()
-                .and_then(|id| LearningCourseId::parse(id).ok())
-            && let Ok(detail) = self.service.course_detail(&course_id, Some(&user)).await
-        {
-            status.title = Some(detail.course.title);
-        }
-        Ok(status)
+            course_id: view.course_id,
+            title: view.title,
+        })
     }
 
     async fn cancel_generation(&self, user_id: &str, job_id: &str) -> Result<(), String> {
         let user = UserId::parse(user_id).map_err(|e| format!("invalid user id {user_id}: {e}"))?;
         self.service
-            .cancel_course_job(&user, job_id)
-            .await
+            .cancel_agent_course_job(&user, job_id)
             .map_err(|e| e.to_string())?;
         Ok(())
     }

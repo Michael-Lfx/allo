@@ -38,13 +38,13 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('sider-conversation-entry')).toBe(false);
   });
 
-  test('places Learning directly below Knowledge with a development badge', () => {
+  test('places Learning directly below Knowledge without a development badge', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
     const learningEntrySource = readSource(new URL('./SiderNav/SiderLearningEntry.tsx', import.meta.url));
 
     expect(siderSource.indexOf('<SiderKnowledgeEntry')).toBeLessThan(siderSource.indexOf('<SiderLearningEntry'));
-    expect(learningEntrySource.includes("t('learning.dev.tag')")).toBe(true);
-    expect(learningEntrySource.includes("t('learning.dev.navTooltip')")).toBe(true);
+    expect(learningEntrySource.includes("t('learning.dev.tag')")).toBe(false);
+    expect(learningEntrySource.includes("t('learning.dev.navTooltip')")).toBe(false);
   });
 
   test('warms the learning page chunk on hover and idle before the sider click', () => {
