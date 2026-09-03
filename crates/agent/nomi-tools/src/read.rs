@@ -58,6 +58,9 @@ const MAX_BATCH_FILES: usize = 32;
 /// Batch sections share the same result budget advertised by `ReadTool`.
 const MAX_RESULT_BYTES: usize = crate::MAX_PROVIDER_TOOL_OUTPUT_BYTES;
 
+/// Default page when `limit` is omitted and the file is longer than this.
+const DEFAULT_READ_PAGE_LINES: usize = 500;
+
 #[derive(Clone, Copy)]
 struct BatchImageBudget {
     data_bytes: usize,
@@ -274,16 +277,29 @@ impl ReadTool {
         let lines: Vec<&str> = text.lines().collect();
 
         let effective_offset = offset.unwrap_or(0);
-        let effective_limit = limit.unwrap_or(lines.len());
+        let paged_default = limit.is_none() && lines.len() > DEFAULT_READ_PAGE_LINES;
+        let effective_limit = limit.unwrap_or(if paged_default {
+            DEFAULT_READ_PAGE_LINES
+        } else {
+            lines.len()
+        });
 
-        let end = effective_offset.saturating_add(effective_limit).min(lines.len());
+        let end = effective_offset
+            .saturating_add(effective_limit)
+            .min(lines.len());
         let slice = &lines[effective_offset.min(lines.len())..end];
 
-        let numbered: Vec<String> = crate::anchors::render_anchored_lines(slice, effective_offset + 1);
+        let numbered: Vec<String> =
+            crate::anchors::render_anchored_lines(slice, effective_offset + 1);
 
-        let result_content = numbered.join("\n");
+        let mut result_content = numbered.join("\n");
+        if let Some(footer) = unread_ranges_footer(effective_offset, end, lines.len()) {
+            result_content.push_str("\n\n");
+            result_content.push_str(&footer);
+        }
 
-        // Update cache after successful read.
+        // Update cache after successful read. Key on the requested range so a
+        // later identical Read (same offset/limit) can stub without re-I/O.
         if let Some(cache_arc) = &self.file_cache
             && let (Ok(mut cache), Some(mtime)) = (cache_arc.write(), mtime_ms)
         {
@@ -396,6 +412,27 @@ impl ReadTool {
     }
 }
 
+fn unread_ranges_footer(offset: usize, end: usize, total: usize) -> Option<String> {
+    if total == 0 || (offset == 0 && end >= total) {
+        return None;
+    }
+    let mut unread = Vec::new();
+    if offset > 0 {
+        unread.push(format!("0-{offset}"));
+    }
+    if end < total {
+        unread.push(format!("{end}-{total}"));
+    }
+    if unread.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "[unread_ranges: {} of {total} lines] This Read is not the whole file. \
+         Pass offset/limit to cover unread ranges before editing them.",
+        unread.join(", ")
+    ))
+}
+
 #[async_trait]
 impl Tool for ReadTool {
     fn name(&self) -> &str {
@@ -407,7 +444,8 @@ impl Tool for ReadTool {
          Usage:\n\
          - Use file_path for one file, or file_paths for several already-known files that need the same slice.\n\
          - Prefer absolute paths; relative paths are resolved against the session working directory.\n\
-         - By default, it reads the entire file. Use offset and limit for partial reads on large files.\n\
+         - By default, files longer than 500 lines return the first page plus `unread_ranges`. \
+         Use offset and limit to read the rest — do not assume a default Read is the whole file.\n\
          - Each line is prefixed with `line:hash→` (e.g. `42:h7x2→code`). Copy the whole `line:hash` \
          prefix into Edit anchor mode — never fabricate hashes.\n\
          - Image files (jpg/png/gif/webp) are returned as viewable images.\n\
@@ -572,14 +610,19 @@ mod tests {
         let result = tool.execute(input).await;
 
         assert!(!result.is_error);
-        let lines: Vec<&str> = result.content.lines().collect();
-        assert_eq!(lines.len(), 3);
-        assert!(lines[0].contains("3:"));
-        assert!(lines[0].contains("line 3"));
-        assert!(lines[1].contains("4:"));
-        assert!(lines[1].contains("line 4"));
-        assert!(lines[2].contains("5:"));
-        assert!(lines[2].contains("line 5"));
+        let numbered: Vec<&str> = result
+            .content
+            .lines()
+            .filter(|line| line.contains(crate::anchors::ANCHOR_SEPARATOR))
+            .collect();
+        assert_eq!(numbered.len(), 3);
+        assert!(numbered[0].contains("3:"));
+        assert!(numbered[0].contains("line 3"));
+        assert!(numbered[1].contains("4:"));
+        assert!(numbered[1].contains("line 4"));
+        assert!(numbered[2].contains("5:"));
+        assert!(numbered[2].contains("line 5"));
+        assert!(result.content.contains("unread_ranges"));
     }
 
     #[tokio::test]
@@ -697,6 +740,28 @@ mod tests {
         assert!(lines[0].contains("line number 1"));
         assert!(lines[199].contains("200:"));
         assert!(lines[199].contains("line number 200"));
+    }
+
+    #[tokio::test]
+    async fn default_read_pages_long_files_and_reports_unread_ranges() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("paged.txt");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        for i in 1..=600 {
+            writeln!(file, "line number {i}").unwrap();
+        }
+        drop(file);
+
+        let tool = ReadTool::new(None, None);
+        let input = json!({ "file_path": file_path.to_str().unwrap() });
+        let result = tool.execute(input).await;
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("unread_ranges"));
+        assert!(result.content.contains("1:"));
+        assert!(result.content.contains("line number 1"));
+        assert!(result.content.contains("line number 500"));
+        assert!(!result.content.contains("line number 600"));
     }
 
     // -- Dedup tests (with cache) --

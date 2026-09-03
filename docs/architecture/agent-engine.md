@@ -165,3 +165,40 @@ Older specs describe the agent layer as mechanically extraction-ready and list
 only 11 crates. Those files are historical. The current code still keeps a
 strong boundary, but browser/computer bridge work and public gateway surfaces
 mean the real rule is “primary seam plus documented feature-gated exceptions.”
+
+## Coding / office harness v2
+
+There is still one loop: `AgentEngine::execute_turn_inner` plus an optional
+`CodingHarness` overlay (`task_profile=coding`). Office uses the same engine
+without the coding overlay.
+
+- **WorkingSet** (`nomi-coding`) records which file ranges were actually read
+  or edited. Autocompact must not `file_cache.clear()`. Compact reinjects a
+  WorkingSet index, not a file dump.
+- **Read** pages large files (~500 lines) and reports `unread_ranges`. Oversized
+  tool results become `[content_ref …]` locators (budget reduction). Snip drops
+  old plain turns before microcompact; LLM autocompact remains last.
+- **Turn shape:** coding constitution is a cache-stable system prefix. After
+  tool results, thinking budget and `reasoning_effort` drop. Tool batches use
+  path-overlap: disjoint Read/Grep may run with a disjoint Edit; Bash/Edit/Write
+  /Browser/Computer stay exclusive. Readonly tool failures no longer cascade.
+- **Explore vs delegate:** `explore_code` / `verify_change` / `research` are
+  depth-1 isolated `AgentEngine` forks. They return a summary only and are not
+  `nomi_delegate` (canvas Agent Execution). Parent explore hard-stop counts
+  only the parent's own tour turns. `Lsp` is in the coding core advertise list
+  when servers are configured. `verify_change` with an exact `command` runs
+  shell directly (no nested LLM). Non-verify Bash is recon and does not reset
+  the tour budget; request-lifetime recon and consecutive 1-tool round-trip
+  caps also apply. Engine hard-stop only forced-finalizes — it does not
+  `reset_progress`.
+- **Completion:** coding defaults to EvidenceRequired (`HardGate`). Natural
+  EndTurn after Edit/Write needs a verify receipt (or a harness-classified
+  trivial mutation). Format/test retries cap at 3. `ExitPlanMode` can carry a
+  `PlanArtifact`. Office Q&A stays conversational; file writes and
+  Browser/Computer side effects take the same evidence nudge once.
+- **Hot path:** intermediate tool rounds persist compact JSON without rewriting
+  the session index. `ContextContributor`s that are `parallel_safe` run
+  concurrently with an optional token cap.
+- **KPIs** (logged at EndTurn): `tools_per_turn`, `recon_turns`, `serial_recon`,
+  `time_to_first_edit`, `unique_path_reread_rate`, `verify_before_end`,
+  `contributor_ms`, `checkpoint_ms`, `ttft_ms`, `tool_wall_ms`.

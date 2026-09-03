@@ -113,6 +113,15 @@ impl ExitPlanModeTool {
     }
 }
 
+fn exit_plan_text(input: &Value) -> Option<&str> {
+    input
+        .get("plan")
+        .or_else(|| input.get("plan_content"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
 #[async_trait]
 impl Tool for ExitPlanModeTool {
     fn name(&self) -> &str {
@@ -127,7 +136,16 @@ impl Tool for ExitPlanModeTool {
     fn input_schema(&self) -> JsonSchema {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "plan": {
+                    "type": "string",
+                    "description": "Implementation plan: goal, scope, and verify commands"
+                },
+                "plan_content": {
+                    "type": "string",
+                    "description": "Alias for plan"
+                }
+            },
             "required": []
         })
     }
@@ -140,7 +158,7 @@ impl Tool for ExitPlanModeTool {
         true
     }
 
-    async fn execute(&self, _input: Value) -> ToolResult {
+    async fn execute(&self, input: Value) -> ToolResult {
         if !self.plan_active.load(Ordering::Acquire) {
             return ToolResult {
                 content: "Not in plan mode. Use EnterPlanMode to enter plan mode first."
@@ -150,18 +168,27 @@ impl Tool for ExitPlanModeTool {
             };
         }
 
+        let mut content = String::from(
+            "Exited plan mode. Full tool access has been restored. \
+             You can now proceed with implementing the plan.",
+        );
+        if let Some(plan) = exit_plan_text(&input) {
+            content.push_str("\n\n");
+            content.push_str(plan);
+        }
+
         ToolResult {
-            content: "Exited plan mode. Full tool access has been restored. \
-                      You can now proceed with implementing the plan."
-                .to_string(),
+            content,
             is_error: false,
             images: Vec::new(),
         }
     }
 
-    fn context_modifier_for(&self, _input: &Value) -> Option<ContextModifier> {
+    fn context_modifier_for(&self, input: &Value) -> Option<ContextModifier> {
         Some(ContextModifier {
-            plan_mode_transition: Some(PlanModeTransition::Exit { plan_content: None }),
+            plan_mode_transition: Some(PlanModeTransition::Exit {
+                plan_content: exit_plan_text(input).map(str::to_string),
+            }),
             ..Default::default()
         })
     }
@@ -296,6 +323,25 @@ mod tests {
         let result = tool.execute(json!({})).await;
         assert!(!result.is_error);
         assert!(result.content.contains("Exited plan mode"));
+    }
+
+    #[tokio::test]
+    async fn exit_echoes_plan_content() {
+        let tool = ExitPlanModeTool::new(make_shared_flag(true));
+        let result = tool
+            .execute(json!({ "plan": "# Goal\nFix the parser\nVerify: cargo test -p parser" }))
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("Fix the parser"));
+        let modifier = tool.context_modifier_for(&json!({
+            "plan": "# Goal\nFix the parser"
+        }));
+        assert!(matches!(
+            modifier.and_then(|m| m.plan_mode_transition),
+            Some(PlanModeTransition::Exit {
+                plan_content: Some(text)
+            }) if text.contains("Fix the parser")
+        ));
     }
 
     #[tokio::test]

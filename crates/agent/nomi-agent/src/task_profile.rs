@@ -6,8 +6,9 @@
 pub use nomi_coding::{
     CODING_EDIT_CONVERGE_NUDGE, CODING_EXPLORE_BUDGET_NUDGE, CODING_EXPLORE_NUDGE,
     CODING_VERIFY_NUDGE, CodingConfig, CodingEnvContext, CodingHarness, CodingProgressAction,
-    CodingProgressGuard, CompactPolicyOverrides, FinishDecision, TaskProfile, ToolCallOutcome,
-    ToolSuccessFlags, ToolTurnNudge, VerificationMode, advertise_tool, coding_overlay_instructions,
-    coding_turn_tail, format_env_context, is_explore_tool, is_mutating_tool,
+    CodingProgressGuard, CompactPolicyOverrides, ExploreBudgetKind, FinishDecision, TaskProfile,
+    ToolCallOutcome, ToolSuccessFlags, ToolTurnNudge, VerificationMode, advertise_tool,
+    coding_overlay_instructions, coding_turn_tail, format_env_context, is_explore_tool,
+    is_isolated_subagent_tool, is_mutating_tool, is_recon_tool, is_side_effect_tool,
     looks_like_verification_command,
 };

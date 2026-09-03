@@ -73,7 +73,8 @@ pub use output_truncation::{TruncationBudget, truncate_middle};
 pub const MAX_PROVIDER_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 pub use anchors::{
     ANCHOR_SEPARATOR, AnchorValidation, ParsedAnchor, anchor_line_hash, parse_anchor,
-    render_anchor_region, render_anchored_lines, validate_anchor_default,
+    render_anchor_region, render_anchored_lines, strip_copied_read_prefixes,
+    validate_anchor_default,
 };
 
 pub use registry::ToolRegistry;

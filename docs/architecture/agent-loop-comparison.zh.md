@@ -56,7 +56,7 @@ Flowy 的直接 Agent Loop 是 `nomi-agent::AgentEngine::execute_turn_inner`。�
 | 工具安全 | 每次请求生成 authority；调用前做 schema、审批和 deferred tool 检查 | 安全边界清晰，不应为追求并发绕过 | 只扩充已证明无副作用工具的 `is_concurrency_safe` |
 | 工具并发 | 独立且声明安全的调用可批量并行，结果保持输入顺序 | 对 I/O 工具的关键路径有潜在优势，但没有统一基准 | 增加 tool critical-path 指标，按实际 profile 扩容 |
 | 长上下文 | microcompact、LLM autocompact、emergency gate 已有 | 能避免 context 直接溢出；压缩会改变历史并造成 cache reset | 测量压缩前后任务成功率，不要只追求 token 数下降 |
-| 终止语义 | 普通会话自然 `EndTurn` 即返回；Goal Judge 仅 opt-in | 普通副作用任务可能自报完成 | 引入 `CompletionPolicy` 和结构化 evidence gate |
+| 终止语义 | 普通会话自然 `EndTurn` 即返回；Goal Judge 仅 opt-in；coding recon 超预算走 forced finalize | 普通副作用任务可能自报完成 | coding 用 recon 轮次预算，不靠 prompt 单独拦串行 Read |
 | 失败恢复 | schema retry + stagnation nudge/abort | 能止损，但运行时失败没有统一 recovery action | 增加结构化 failure class、retryability 和替代策略 |
 | 计划能力 | plan mode 过滤为 Info 工具，计划写在响应文本 | 是安全模式，不是可审计计划对象 | `PlanArtifact` + 用户批准 + 步骤 receipt |
 | 动态上下文 | host 注册 contributor，每轮串行读取，放在 turn tail | cache prefix 设计正确，但等待和预算合同不完整 | TTL、预算、provenance、受控并发与 last-known-good |
@@ -81,12 +81,9 @@ Flowy 的对应长程边界已经是 `nomifun-agent-execution`。
 
 ## 4. 优化优先级
 
-1. 对需要实际产物的任务启用 `CompletionPolicy::EvidenceRequired`，解决“模型说完成但没验证”。
-2. 让 tool failure 产生结构化 recovery hint，减少重复失败调用。
-3. 测量 contributor、prompt assembly、checkpoint、provider TTFT 和 tool critical path，
-   再决定并发读取或 checkpoint worker。
-4. 将 plan mode 的响应文本升级成可批准、可恢复的 PlanArtifact。
-5. 只有在以上指标证明 cache 或 provider 是瓶颈时，才做 provider-aware cache 优化。
+Harness v2 已把下列项做成运行时默认（见 `agent-engine.md`）：coding
+`EvidenceRequired`、失败 nudge、contributor 并行与 coalesced checkpoint、KPI 拆分、
+`ExitPlanMode` 的 PlanArtifact。仍待观测的是真实 KPI 是否还要把 32KB/keep-recent 当旋钮拧。
 
 ## 5. 不应作出的结论
 

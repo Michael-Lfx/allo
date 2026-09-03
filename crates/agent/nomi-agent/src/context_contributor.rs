@@ -33,6 +33,16 @@ pub trait ContextContributor: Send + Sync {
     fn label(&self) -> &str {
         "context_contributor"
     }
+
+    /// Independent contributors may be awaited together. Default true.
+    fn parallel_safe(&self) -> bool {
+        true
+    }
+
+    /// Optional token budget for this contribution. `None` means unbounded.
+    fn max_tokens(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Append non-empty contributor contributions to `system`, each under a blank
@@ -101,6 +111,24 @@ pub fn without_leading_turn_tail(
         }
         _ => content.to_vec(),
     }
+}
+
+/// True when a user message exists only to carry persisted turn-tail extras.
+/// Truncation restarts drop these so a later `[Context]` append does not hide
+/// the original requirement and trigger a duplicate re-push.
+pub fn is_context_only_user_content(
+    content: &[nomi_types::message::ContentBlock],
+) -> bool {
+    matches!(
+        content.first(),
+        Some(nomi_types::message::ContentBlock::Text { text })
+            if is_turn_tail_context_text(text)
+    ) && without_leading_turn_tail(content)
+        .iter()
+        .all(|block| match block {
+            nomi_types::message::ContentBlock::Text { text } => text.trim().is_empty(),
+            _ => false,
+        })
 }
 
 fn turn_tail_text_block(ctx: &str) -> nomi_types::message::ContentBlock {
@@ -483,5 +511,26 @@ mod tests {
             ContentBlock::Text { text } => assert_eq!(text, "hello"),
             _ => panic!("expected original user text"),
         }
+    }
+
+    #[test]
+    fn context_only_user_is_an_appended_turn_tail() {
+        use nomi_types::message::ContentBlock;
+        let extra = vec![ContentBlock::Text {
+            text: "[Context]\nCurrent date: 2025-01-01\n\n[resumable round 2/3]".into(),
+        }];
+        assert!(is_context_only_user_content(&extra));
+        let requirement = vec![
+            ContentBlock::Text {
+                text: "[Context]\nCurrent date: 2025-01-01".into(),
+            },
+            ContentBlock::Text {
+                text: "write a.html".into(),
+            },
+        ];
+        assert!(!is_context_only_user_content(&requirement));
+        assert!(!is_context_only_user_content(&[ContentBlock::Text {
+            text: "write a.html".into(),
+        }]));
     }
 }

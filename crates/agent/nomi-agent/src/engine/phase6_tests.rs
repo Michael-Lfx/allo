@@ -62,6 +62,7 @@ fn make_engine(model: &str, allow_list: Vec<String>) -> super::AgentEngine {
         moa: None,
         stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
         coding_harness: None,
+        harness_runtime: Default::default(),
         compact_config_base: nomi_config::compact::CompactConfig::default(),
         file_cache: None,
         context_contributors: Vec::new(),

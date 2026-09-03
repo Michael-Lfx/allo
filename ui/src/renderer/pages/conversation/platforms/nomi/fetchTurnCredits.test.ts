@@ -7,9 +7,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { TurnCreditUsageData } from '@/common/config/storage';
 import {
+  normalizeTurnCreditUsage,
   pickRicherTurnCredits,
   shouldReuseCachedTurnCredits,
   TURN_CREDIT_LATE_REFRESH_MS,
+  TURN_CREDIT_SETTLE_MS,
 } from './fetchTurnCredits';
 
 const usage = (creditsConsumed: number, callCount: number): TurnCreditUsageData => ({
@@ -37,5 +39,28 @@ describe('turn credit cache', () => {
 
   test('follows write-back billing with bounded late refreshes', () => {
     expect(TURN_CREDIT_LATE_REFRESH_MS).toEqual([2500, 8000, 22000]);
+    expect(TURN_CREDIT_SETTLE_MS).toEqual([1500, 2500, 4000, 8000]);
+  });
+
+  test('raises aggregate credits to the per-call sum', () => {
+    expect(
+      normalizeTurnCreditUsage({
+        turnId: 'turn-1',
+        creditsConsumed: 10,
+        callCount: 1,
+        calls: [
+          { modelName: 'm', creditConsumed: 40 },
+          { modelName: 'm', creditConsumed: 30 },
+        ],
+      })
+    ).toEqual({
+      turnId: 'turn-1',
+      creditsConsumed: 70,
+      callCount: 2,
+      calls: [
+        { modelName: 'm', creditConsumed: 40 },
+        { modelName: 'm', creditConsumed: 30 },
+      ],
+    });
   });
 });

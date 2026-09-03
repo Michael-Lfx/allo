@@ -118,8 +118,10 @@ already in context is sufficient.
 instead of separate Read calls or a shell reader. This preserves the native read-before-edit cache.
  - Prefer Edit over Write for modifying existing files — Edit sends only \
 the diff, which is easier to review.
- - Always Read a file before editing it. Prefer Edit anchor mode: copy `line:hash` \
-prefixes from Read/Grep output into `edits:[{anchor, new_text, ...}]`.
+ - Read each unread range once before the first Edit of that range. Prefer Edit \
+anchor mode: copy `line:hash` prefixes from Read/Grep output into \
+`edits:[{anchor, new_text, ...}]`. After a successful Edit, reuse the returned \
+anchors — do not re-Read covered ranges or the whole file.
  - When ApplyPatch is available (non-coding profiles), prefer one ApplyPatch call when one logical edit spans multiple files.
  - Prefer DirTree or Glob for directory orientation over shell `find`/`ls` tours.
  - When exec_command script mode is available, use it for a deterministic, homogeneous, local, non-interactive batch \
@@ -1083,7 +1085,7 @@ mod tests {
             false,
         );
         assert!(
-            result.contains("Read a file before editing"),
+            result.contains("Read each unread range once before the first Edit"),
             "should contain Read-before-Edit rule"
         );
     }

@@ -886,37 +886,35 @@ impl AgentBootstrap {
             self.config.tools.skills.allow.clone(),
             self.config.tools.auto_approve,
         );
-        // No-gateway CLI/embedded engines share one Agent invocation runner
-        // between fork-mode skills and embedded `nomi_delegate`. Platform
-        // Gateway sessions disable the embedded deployment and expose the same
-        // AgentExecution contract through the platform, so a model sees one tool.
-        let local_invocation_runner = if self.install_embedded_agent_execution {
-            Some(Arc::new(
-                crate::local_agent_invocation::LocalAgentInvocationRunner::new(
-                    provider.clone(),
-                    self.config.clone(),
-                    cwd_path.to_path_buf(),
-                )
-                .with_process_capability(
-                    process_capability.clone(),
-                    write_root.clone(),
-                    self.config.tools.builtin_allowlist.clone(),
-                )
-                .with_token_budget(
-                    self.config
-                        .tools
-                        .delegation_token_budget
-                        .map(|limit| {
-                            Arc::new(crate::local_agent_invocation::TokenBudget::new(limit))
-                        }),
-                ),
-            ))
+        // Isolated explore/verify/research run as nested engines with a
+        // capability-scoped child catalog. They do not install `nomi_delegate`,
+        // so Platform Gateway sessions still get them.
+        let local_invocation_runner = Arc::new(
+            crate::local_agent_invocation::LocalAgentInvocationRunner::new(
+                provider.clone(),
+                self.config.clone(),
+                cwd_path.to_path_buf(),
+            )
+            .with_process_capability(
+                process_capability.clone(),
+                write_root.clone(),
+                self.config.tools.builtin_allowlist.clone(),
+            )
+            .with_token_budget(
+                self.config
+                    .tools
+                    .delegation_token_budget
+                    .map(|limit| {
+                        Arc::new(crate::local_agent_invocation::TokenBudget::new(limit))
+                    }),
+            ),
+        );
+        let skill_invocation_runner = if self.install_embedded_agent_execution {
+            Some(Arc::clone(&local_invocation_runner)
+                as Arc<dyn nomi_types::agent::AgentInvocationRunner>)
         } else {
             None
         };
-        let skill_invocation_runner = local_invocation_runner.as_ref().map(|runner| {
-            Arc::clone(runner) as Arc<dyn nomi_types::agent::AgentInvocationRunner>
-        });
         registry.register(Box::new(
             crate::skill_tool::SkillTool::with_invocation_runner(
                 skills_arc,
@@ -927,9 +925,25 @@ impl AgentBootstrap {
             )
             .with_process_supervisor(Arc::clone(&process_supervisor)),
         ));
-        if let Some(runner) = local_invocation_runner {
-            registry.register(Box::new(crate::local_delegate_tool::LocalDelegateTool::new(runner)));
+        if self.install_embedded_agent_execution {
+            registry.register(Box::new(crate::local_delegate_tool::LocalDelegateTool::new(
+                Arc::clone(&local_invocation_runner),
+            )));
         }
+        let isolated_permits = Arc::new(tokio::sync::Semaphore::new(4));
+        registry.register(Box::new(crate::isolated_subagent::IsolatedSubagentTool::explore(
+            Arc::clone(&local_invocation_runner),
+            Arc::clone(&isolated_permits),
+        )));
+        registry.register(Box::new(
+            crate::isolated_subagent::IsolatedSubagentTool::verify(Arc::clone(
+                &local_invocation_runner,
+            )),
+        ));
+        registry.register(Box::new(crate::isolated_subagent::IsolatedSubagentTool::research(
+            local_invocation_runner,
+            isolated_permits,
+        )));
 
         let plan_active_flag = Arc::new(AtomicBool::new(false));
         if self.config.plan.enabled {

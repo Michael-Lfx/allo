@@ -74,6 +74,8 @@ impl Tool for GrepTool {
          workspace root without a glob auto-limits to common source file types.\n\
          - Matching lines are formatted as `path:line:hash: content` — the `line:hash` \
          part is an Edit anchor you can copy verbatim.\n\
+         - All-lowercase patterns are case-insensitive unless `case_insensitive` is set \
+         (so `minimax` matches `MiniMax`). Mixed-case patterns stay case-sensitive.\n\
          - Set context_lines (e.g. 2) to include surrounding lines for each match.\n\
          - Output stops after ~250 matching lines (process is killed early) — \
          refine path/glob rather than asking for more lines.\n\
@@ -137,7 +139,9 @@ impl Tool for GrepTool {
         }
 
         let glob_pattern = input["glob"].as_str();
-        let case_insensitive = input["case_insensitive"].as_bool().unwrap_or(false);
+        let case_insensitive = input["case_insensitive"]
+            .as_bool()
+            .unwrap_or_else(|| infer_case_insensitive(pattern));
         let context_lines = input["context_lines"].as_u64().unwrap_or(0) as usize;
         let auto_source_globs = glob_pattern.is_none() && is_broad_search_root(&path, &self.cwd);
 
@@ -188,6 +192,11 @@ impl Tool for GrepTool {
         let raw_path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         format!("Grep '{}' in {}", pattern, raw_path)
     }
+}
+
+fn infer_case_insensitive(pattern: &str) -> bool {
+    let has_letter = pattern.chars().any(|c| c.is_ascii_alphabetic());
+    has_letter && !pattern.chars().any(|c| c.is_ascii_uppercase())
 }
 
 fn is_broad_search_root(path: &str, cwd: &Path) -> bool {
@@ -663,5 +672,14 @@ mod tests {
             "got: {}",
             result.content
         );
+    }
+
+    #[test]
+    fn lowercase_patterns_infer_case_insensitive() {
+        assert!(infer_case_insensitive("minimax"));
+        assert!(infer_case_insensitive("deepseek|zhipu"));
+        assert!(!infer_case_insensitive("MiniMax"));
+        assert!(!infer_case_insensitive("[A-Z]+"));
+        assert!(!infer_case_insensitive("123"));
     }
 }
