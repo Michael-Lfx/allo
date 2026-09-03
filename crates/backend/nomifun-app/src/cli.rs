@@ -110,6 +110,15 @@ pub struct Cli {
     #[arg(long)]
     pub local: bool,
 
+    /// Agent-store config file (`~/.agent-store/config.toml` convention).
+    /// When set, default marketplace sources declared under
+    /// `[default_marketplaces.*]` are auto-registered before the first
+    /// store/market call. The `nomifun-web` host defaults it to
+    /// `~/.agent-store/config.toml` when unset; other hosts keep `None`
+    /// (no auto-registration).
+    #[arg(long)]
+    pub agent_store_config: Option<PathBuf>,
+
     /// Directory for log files. Defaults to {data-dir}/logs/.
     #[arg(long)]
     pub log_dir: Option<PathBuf>,

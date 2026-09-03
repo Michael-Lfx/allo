@@ -17,7 +17,8 @@ use nomifun_api_types::{
     AppServerMarketplaceEntry, AppServerMarketplaceRefreshResult,
     AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail, AppServerTeamSummary,
+    AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
+    AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };
 use nomifun_common::AppError;
 
@@ -124,6 +125,15 @@ pub trait MarketplaceProvider: Send + Sync {
         marketplace_id: &str,
         entry_name: &str,
     ) -> Result<AppServerImportResult, AppError>;
+
+    /// Resolve the on-disk root of one entry (internal path, trusted host
+    /// only). Used by the store asset endpoint to serve display assets
+    /// (avatars) of entries that are not yet imported.
+    async fn entry_dir(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<std::path::PathBuf, AppError>;
 }
 
 /// Read-side Agent catalog (`agent/list`, `agent/get`, docs/agent-store/05
@@ -132,6 +142,26 @@ pub trait MarketplaceProvider: Send + Sync {
 pub trait AgentCatalogProvider: Send + Sync {
     async fn list(&self) -> Result<Vec<AppServerAgentSummary>, AppError>;
     async fn get(&self, id: &str) -> Result<AppServerAgentDetail, AppError>;
+}
+
+/// Unified store catalog seam (`store/list`, `store/install-entry`, roadmap
+/// Phase 3): winget-style aggregated catalog over all enabled marketplaces.
+/// Items carry display metadata (plugin.json fidelity) and the current local
+/// install state; install-entry runs import + runtime registration in one
+/// idempotent call so clients only ever see a single "Install" action.
+#[async_trait]
+pub trait StoreProvider: Send + Sync {
+    /// All store items across enabled marketplaces (grouped client-side).
+    async fn list(&self) -> Result<AppServerStoreList, AppError>;
+
+    /// Install one marketplace entry: import missing snapshots and register
+    /// their components into the runtime. Idempotent — an already-installed
+    /// entry returns the current state.
+    async fn install_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerStoreInstallResult, AppError>;
 }
 
 /// Read-side Team catalog (`team/list`, `team/get`, docs/agent-store/05 §4.2).
@@ -565,6 +595,20 @@ impl MarketplaceProvider for FakeMarketplaceProvider {
         }
         Ok(self.imported.clone())
     }
+
+    async fn entry_dir(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<std::path::PathBuf, AppError> {
+        if marketplace_id != self.added.marketplace_id {
+            return Err(AppError::NotFound(format!("marketplace {marketplace_id} not found")));
+        }
+        if !self.detail.entries.iter().any(|entry| entry.name == entry_name) {
+            return Err(AppError::NotFound(format!("entry {entry_name} not found")));
+        }
+        Ok(std::path::PathBuf::from("/tmp/market/company-tools/plugins/formatter"))
+    }
 }
 
 /// In-memory Agent catalog fake (05 §4.1 shapes).
@@ -638,6 +682,79 @@ impl TeamCatalogProvider for FakeTeamCatalog {
                 "artifacts".into(),
             ],
         })
+    }
+}
+
+/// In-memory store fake: canned item list + install result.
+pub struct FakeStoreProvider {
+    pub items: Vec<AppServerStoreItem>,
+    pub install_result: AppServerStoreInstallResult,
+}
+
+impl Default for FakeStoreProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FakeStoreProvider {
+    pub fn new() -> Self {
+        Self {
+            items: vec![AppServerStoreItem {
+                id: "company-tools/formatter".into(),
+                marketplace_id: "company-tools".into(),
+                marketplace_name: "company-tools".into(),
+                entry_name: "formatter".into(),
+                kind: "agent".into(),
+                name: "formatter".into(),
+                display_name: None,
+                profession: None,
+                description: Some("Automatic code formatting".into()),
+                display_description: None,
+                tags: vec![],
+                quick_prompts: vec![],
+                avatar_url: None,
+                version: "2.1.0".into(),
+                source_kind: "directory".into(),
+                installed: false,
+                update_available: false,
+                snapshot_id: None,
+                installed_version: None,
+            }],
+            install_result: AppServerStoreInstallResult {
+                marketplace_id: "company-tools".into(),
+                entry_name: "formatter".into(),
+                snapshot_id: "snap-demo".into(),
+                version: "2.1.0".into(),
+                reused: false,
+                installed_count: 3,
+                warnings: vec![],
+                errors: vec![],
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl StoreProvider for FakeStoreProvider {
+    async fn list(&self) -> Result<AppServerStoreList, AppError> {
+        Ok(AppServerStoreList { items: self.items.clone() })
+    }
+
+    async fn install_entry(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<AppServerStoreInstallResult, AppError> {
+        if self
+            .items
+            .iter()
+            .any(|item| item.marketplace_id == marketplace_id && item.entry_name == entry_name)
+        {
+            Ok(self.install_result.clone())
+        } else {
+            Err(AppError::NotFound(format!("entry {entry_name} not found")))
+        }
     }
 }
 

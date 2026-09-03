@@ -88,6 +88,23 @@ pub trait IMarketplaceRepository: Send + Sync {
         removed_at: i64,
     ) -> Result<(), DbError>;
 
+    /// Reactivate a previously soft-removed marketplace: clear the removal
+    /// stamp, re-enable it, replace its entries projection and **update its
+    /// source** — a re-add may point at a different source than the original
+    /// registration, and the duplicate probe (`find_by_source`) must match the
+    /// *current* source afterwards. The row keeps its opaque id (the id column
+    /// is unique, so re-adding a source reuses the row instead of inserting a
+    /// duplicate).
+    async fn reactivate_marketplace(
+        &self,
+        marketplace_id: &str,
+        source_kind: &str,
+        source_uri: &str,
+        entries: &[MarketplaceEntry],
+        content_digest: &str,
+        version: Option<&str>,
+    ) -> Result<(), DbError>;
+
     /// Snapshots imported from this marketplace entry (provenance lookup),
     /// newest first.
     async fn list_snapshots_by_marketplace(

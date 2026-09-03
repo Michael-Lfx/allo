@@ -66,6 +66,9 @@ impl ImportProvider for AppServerImportProvider {
             nomifun_api_types::AppServerImportSourceKind::WorkBuddyCliConnector => {
                 nomifun_importer::SourceKind::WorkBuddyCliConnector
             }
+            nomifun_api_types::AppServerImportSourceKind::WorkBuddyMcpConnector => {
+                nomifun_importer::SourceKind::WorkBuddyMcpConnector
+            }
         };
         let import_request = nomifun_importer::ImportRequest {
             source_path: request.source_path.into(),

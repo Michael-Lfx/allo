@@ -197,6 +197,10 @@ pub enum AppServerImportSourceKind {
     /// + `skills/`), e.g. wecom / feishu / tmeet.
     #[serde(rename = "workbuddy-cli-connector")]
     WorkBuddyCliConnector,
+    /// A single MCP connector directory (`connectors/<id>/` with `mcp.json`
+    /// `mcpServers` + `skills/`), e.g. agent-earth / datayes-data.
+    #[serde(rename = "workbuddy-mcp-connector")]
+    WorkBuddyMcpConnector,
 }
 
 impl AppServerImportSourceKind {
@@ -206,6 +210,7 @@ impl AppServerImportSourceKind {
             Self::WorkBuddySkillMarket => "workbuddy-skill-market",
             Self::WorkBuddyConnectorMarket => "workbuddy-connector-market",
             Self::WorkBuddyCliConnector => "workbuddy-cli-connector",
+            Self::WorkBuddyMcpConnector => "workbuddy-mcp-connector",
         }
     }
 }
@@ -608,4 +613,75 @@ pub struct AppServerMarketplaceRefreshResult {
     pub resolved_revision: String,
     pub entry_count: usize,
     pub warnings: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Store (winget-style aggregated catalog over all enabled marketplaces)
+// ---------------------------------------------------------------------------
+
+/// One store item: a marketplace entry projected into the unified store
+/// catalog with its display metadata (plugin.json fidelity) plus the current
+/// local installation state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerStoreItem {
+    /// Stable composite id: `<marketplace_id>/<entry_name>`.
+    pub id: String,
+    pub marketplace_id: String,
+    pub marketplace_name: String,
+    pub entry_name: String,
+    /// `agent` | `team` | `skill` | `connector` (entry kind derived from the
+    /// entry's manifest shape).
+    pub kind: String,
+    /// Display name: `displayName` (localized) when present, else entry name.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<AppServerLocalizedText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profession: Option<AppServerLocalizedText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_description: Option<AppServerLocalizedText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<AppServerLocalizedText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quick_prompts: Vec<AppServerLocalizedText>,
+    /// Public avatar URL (store asset endpoint); relative to the API host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    /// Available version from the marketplace entry / plugin manifest.
+    pub version: String,
+    /// Entry source kind (`directory` / `external` …).
+    pub source_kind: String,
+    /// `true` when a snapshot from this entry exists and at least one of its
+    /// components is installed into the runtime.
+    pub installed: bool,
+    /// `true` when the entry's available version differs from the installed
+    /// snapshot version.
+    pub update_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+}
+
+/// `store/list` response: the unified catalog over all enabled marketplaces.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerStoreList {
+    pub items: Vec<AppServerStoreItem>,
+}
+
+/// `market install-entry` result: import (when missing) + runtime
+/// registration in one idempotent call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerStoreInstallResult {
+    pub marketplace_id: String,
+    pub entry_name: String,
+    pub snapshot_id: String,
+    pub version: String,
+    /// `true` when the components were already registered (no-op install).
+    pub reused: bool,
+    pub installed_count: usize,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
 }

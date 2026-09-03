@@ -344,6 +344,328 @@ async fn importer_install_registers_components_into_runtime() {
 }
 
 #[tokio::test]
+async fn importer_store_lists_aggregated_entries_with_install_state() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Build a plugin market in the real WorkBuddy expert-market layout:
+    //   market/.codebuddy-plugin/marketplace.json { plugins: [...] }
+    //   market/plugins/<id>/.codebuddy-plugin/plugin.json (+ display fields)
+    let market_root = std::env::temp_dir().join(format!("as-store-market-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(market_root.join(".codebuddy-plugin")).unwrap();
+    std::fs::create_dir_all(market_root.join("plugins/fbsir-super-partner/.codebuddy-plugin")).unwrap();
+    std::fs::create_dir_all(market_root.join("plugins/fbsir-super-partner/agents")).unwrap();
+    std::fs::create_dir_all(market_root.join("plugins/fbsir-super-partner/avatars")).unwrap();
+    std::fs::create_dir_all(market_root.join("plugins/software-company/.codebuddy-plugin")).unwrap();
+    std::fs::write(
+        market_root.join(".codebuddy-plugin/marketplace.json"),
+        r#"{
+            "name": "experts",
+            "version": "0.1.0",
+            "plugins": [
+                { "name": "fbsir-super-partner", "source": "./plugins/fbsir-super-partner", "description": "Super partner" },
+                { "name": "software-company", "source": "./plugins/software-company", "description": "Software company" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("plugins/fbsir-super-partner/.codebuddy-plugin/plugin.json"),
+        r#"{
+            "name": "fbsir-super-partner",
+            "version": "1.2.0",
+            "displayName": { "en": "FBSir", "zh": "FBSir" },
+            "profession": { "en": "Super Partner", "zh": "超级合伙人" },
+            "displayDescription": { "en": "One-call super partner", "zh": "一站式超级合伙人" },
+            "tags": [{ "en": "business", "zh": "商务" }],
+            "quickPrompts": [{ "en": "Plan a roadmap", "zh": "制定路线图" }],
+            "avatar": "avatars/expert.png",
+            "expertType": "agent",
+            "categoryId": "12-IndustryConsultant",
+            "agents": ["./agents"]
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("plugins/fbsir-super-partner/agents/fb.md"),
+        "---\nname: fb\n---\n\nbody\n",
+    )
+    .unwrap();
+    // Minimal 1x1 PNG (73 bytes) for the store asset endpoint.
+    std::fs::write(
+        market_root.join("plugins/fbsir-super-partner/avatars/expert.png"),
+        [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0xC4, 0x0F, 0xBE, 0x8B, 0x00, 0x00, 0x00, 0x0F, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0xFC, 0xCF, 0xC0, 0xF0, 0x9F, 0x81, 0x81, 0x81, 0x01, 0x00, 0xFF, 0x03,
+            0x00, 0x01, 0x0F, 0x06, 0xDA, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+            0x42, 0x60, 0x82,
+        ],
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("plugins/software-company/.codebuddy-plugin/plugin.json"),
+        r#"{ "name": "software-company", "version": "0.9.0", "agents": ["./agents"] }"#,
+    )
+    .unwrap();
+
+    // Add the market (directory source).
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({
+                "source_kind": "directory",
+                "source": market_root.to_string_lossy(),
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "market add must succeed: {}", body_json(add).await);
+    let added = body_json(add).await;
+    assert_eq!(added["entry_count"], 2, "{added}");
+    let marketplace_id = added["marketplace_id"].as_str().unwrap().to_owned();
+
+    // Store lists all entries with display metadata + install state (uninstalled).
+    let store = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/store", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(store.status(), StatusCode::OK, "store list must succeed");
+    let store_json = body_json(store).await;
+    let items = store_json["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{store_json}");
+    let fbsir = items
+        .iter()
+        .find(|item| item["entry_name"] == "fbsir-super-partner")
+        .expect("fbsir entry present");
+    assert_eq!(fbsir["kind"], "agent", "{fbsir}");
+    assert_eq!(fbsir["name"], "FBSir", "{fbsir}");
+    assert_eq!(fbsir["version"], "1.2.0", "{fbsir}");
+    assert_eq!(fbsir["installed"], false, "{fbsir}");
+    assert_eq!(fbsir["update_available"], false, "{fbsir}");
+    assert!(fbsir["avatar_url"].as_str().unwrap().contains("/store/"), "{fbsir}");
+
+    // Store asset endpoint serves the declared avatar with the right MIME.
+    let asset = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/api/app-server/store/{marketplace_id}/entries/fbsir-super-partner/assets/avatars/expert.png"
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", &csrf)
+                .header("cookie", format!("nomifun-csrf-token={csrf}"))
+                .header("x-app-server-connection-id", &connection_id)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), StatusCode::OK, "store avatar must be served");
+    assert_eq!(
+        asset.headers().get("content-type").unwrap(),
+        "image/png",
+        "store asset content-type must be image/png"
+    );
+
+    // One-click install through the store (import + register behind one call).
+    let install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/store/{marketplace_id}/entries/fbsir-super-partner/install"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install.status(), StatusCode::OK, "store install must succeed: {}", body_json(install).await);
+    let installed = body_json(install).await;
+    assert_eq!(installed["entry_name"], "fbsir-super-partner", "{installed}");
+    assert_eq!(installed["reused"], false, "{installed}");
+    let snapshot_id = installed["snapshot_id"].as_str().unwrap().to_owned();
+    assert!(installed["installed_count"].as_u64().unwrap() >= 1, "{installed}");
+
+    // The store now reports the entry installed with the snapshot id.
+    let store2 = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/store", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    let store2_json = body_json(store2).await;
+    let fbsir2 = store2_json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["entry_name"] == "fbsir-super-partner")
+        .expect("fbsir entry present after install");
+    assert_eq!(fbsir2["installed"], true, "{fbsir2}");
+    assert_eq!(fbsir2["snapshot_id"], snapshot_id, "{fbsir2}");
+
+    // A second install is a no-op (idempotent).
+    let install2 = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/store/{marketplace_id}/entries/fbsir-super-partner/install"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install2.status(), StatusCode::OK);
+    let installed2 = body_json(install2).await;
+    assert_eq!(installed2["reused"], true, "{installed2}");
+}
+
+#[tokio::test]
+async fn importer_store_lists_mcp_connectors_with_index_display_and_installs() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // Real CodeBuddy connector-market layout:
+    //   market/.codebuddy-connector/connectors.json { connectors: [...] }
+    //   market/connectors/<id>/mcp.json (MCP servers) | cli.json (CLI)
+    //   market/connectors/<id>/skills/<dir>/SKILL.md
+    let market_root = std::env::temp_dir().join(format!("as-store-conn-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(market_root.join(".codebuddy-connector")).unwrap();
+    std::fs::create_dir_all(market_root.join("connectors/agent-earth")).unwrap();
+    std::fs::create_dir_all(market_root.join("connectors/wecom")).unwrap();
+    std::fs::create_dir_all(market_root.join("connectors/agent-earth/skills/earth")).unwrap();
+    std::fs::write(
+        market_root.join(".codebuddy-connector/connectors.json"),
+        r#"{
+            "name": "codebuddy-connectors-official",
+            "connectors": [
+                { "id": "agent-earth", "name": "AgentEarth", "name_zh": "智能地球", "version": "1.0.0", "description": "Unified expert-grade API platform", "type": "mcp" },
+                { "id": "wecom", "name": "企业微信", "name_zh": "企业微信", "version": "1.2.0", "description": "WeCom CLI connector", "type": "cli" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("connectors/agent-earth/mcp.json"),
+        r#"{
+            "preAuth": "cli",
+            "mcpServers": {
+                "agent-earth": {
+                    "type": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@agentearth/mcp"],
+                    "runtime": { "type": "node", "version": ">=20" }
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("connectors/agent-earth/skills/earth/SKILL.md"),
+        "---\nname: earth\n---\n\nbody\n",
+    )
+    .unwrap();
+    std::fs::write(
+        market_root.join("connectors/wecom/cli.json"),
+        r#"{"runtime":{"type":"node","version":">=18"},"init":{"script":"main.js"}}"#,
+    )
+    .unwrap();
+
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({
+                "source_kind": "directory",
+                "source": market_root.to_string_lossy(),
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "market add must succeed: {}", body_json(add).await);
+    let added = body_json(add).await;
+    assert_eq!(added["entry_count"], 2, "{added}");
+    let marketplace_id = added["marketplace_id"].as_str().unwrap().to_owned();
+
+    // Store classifies both connectors and falls back to the index display
+    // names when no plugin.json display block exists.
+    let store = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/store", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(store.status(), StatusCode::OK, "store list must succeed");
+    let store_json = body_json(store).await;
+    let items = store_json["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{store_json}");
+    let earth = items
+        .iter()
+        .find(|item| item["entry_name"] == "agent-earth")
+        .expect("agent-earth entry present");
+    assert_eq!(earth["kind"], "connector", "{earth}");
+    assert_eq!(earth["name"], "智能地球", "{earth}");
+    assert_eq!(earth["version"], "1.0.0", "{earth}");
+    assert_eq!(earth["installed"], false, "{earth}");
+    let wecom = items
+        .iter()
+        .find(|item| item["entry_name"] == "wecom")
+        .expect("wecom entry present");
+    assert_eq!(wecom["kind"], "connector", "{wecom}");
+    assert_eq!(wecom["name"], "企业微信", "{wecom}");
+
+    // One-click install of the MCP connector (import + register).
+    let install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/store/{marketplace_id}/entries/agent-earth/install"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install.status(), StatusCode::OK, "MCP store install must succeed: {}", body_json(install).await);
+    let installed = body_json(install).await;
+    assert_eq!(installed["entry_name"], "agent-earth", "{installed}");
+    assert_eq!(installed["reused"], false, "{installed}");
+    assert!(installed["installed_count"].as_u64().unwrap() >= 1, "{installed}");
+
+    // Store now reports it installed.
+    let store2 = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/store", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    let store2_json = body_json(store2).await;
+    let earth2 = store2_json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["entry_name"] == "agent-earth")
+        .expect("agent-earth present after install");
+    assert_eq!(earth2["installed"], true, "{earth2}");
+}
+
+#[tokio::test]
 async fn importer_market_add_list_import_and_cascade_remove() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;

@@ -193,6 +193,12 @@ impl ImporterService {
             ) => {
                 build_cli_connector_components(&source, cli, directory_name, &meta, &mut builder);
             }
+            (
+                crate::manifest::ParsedManifest::Mcp(value, directory_name),
+                SourceKind::WorkBuddyMcpConnector,
+            ) => {
+                build_mcp_connector_components(&source, value, directory_name, &meta, &mut builder);
+            }
             // Unreachable: market manifests never parse as plugins and vice
             // versa — parse_manifest dispatches by source kind.
             _ => {}
@@ -1010,6 +1016,102 @@ fn build_cli_connector_components(
     let skills_root = source.join("skills");
     if !skills_root.is_dir() {
         builder.warn("CLI 连接器缺少 skills/ 目录".into());
+        return;
+    }
+    for entry in walkdir::WalkDir::new(&skills_root)
+        .min_depth(1)
+        .max_depth(2)
+        .sort_by_file_name()
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() || entry.file_name() != "SKILL.md" {
+            continue;
+        }
+        let abs = entry.path();
+        let rel = abs
+            .strip_prefix(source)
+            .ok()
+            .and_then(|path| path.to_str())
+            .map(|path| path.replace('\\', "/"))
+            .unwrap_or_default();
+        match std::fs::read_to_string(abs) {
+            Ok(text) => {
+                let version = builder.version.clone();
+                skill_from_text(&text, &rel, &meta.plugin_id, &version, builder);
+            }
+            Err(error) => builder.warn(format!("技能文件不可读 {rel}: {error}")),
+        }
+    }
+}
+
+/// Build components for a single MCP connector directory (`mcp.json`):
+/// - one `connector` component per `mcpServers` entry (kind `remote-mcp` /
+///   `stdio-mcp`, transport from `url` / `command`);
+/// - one `skill` component per `skills/<dir>/SKILL.md` (02 §5); a missing
+///   `skills/` directory degrades to a warning, never a block.
+fn build_mcp_connector_components(
+    source: &Path,
+    value: &serde_json::Value,
+    directory_name: &str,
+    meta: &crate::models::SnapshotMeta,
+    builder: &mut ComponentBuilder,
+) {
+    let pre_auth = value
+        .get("preAuth")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let servers = value
+        .get("mcpServers")
+        .and_then(|value| value.as_object());
+    let Some(servers) = servers else {
+        builder.error("mcp.json: missing mcpServers object".into());
+        return;
+    };
+    for (name, config) in servers {
+        let url = config
+            .get("url")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_owned());
+        let command = config
+            .get("command")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_owned());
+        let kind = if url.is_some() { "remote-mcp" } else { "stdio-mcp" };
+        let transport_summary = url
+            .clone()
+            .unwrap_or_else(|| command.clone().unwrap_or_else(|| name.clone()));
+        let id = component_id(&meta.plugin_id, &format!("mcp-{}", sanitize_slug(name)));
+        builder.push(Component::new(
+            crate::models::KIND_CONNECTOR,
+            id.clone(),
+            name.clone(),
+            Some("mcp.json".to_owned()),
+            compat::connector(),
+            json!({
+                "id": id,
+                "version": builder.version,
+                "name": name,
+                "connector_id": directory_name,
+                "kind": kind,
+                "transport_summary": transport_summary,
+                "auth_mode": if pre_auth.is_empty() {
+                    "oauth".to_owned()
+                } else {
+                    pre_auth.clone()
+                },
+                "tool_filter": format!("connector__{name}__<tool>"),
+            }),
+        ));
+    }
+
+    // skills/ scan (mirrors the CLI connector branch).
+    let skills_root = source.join("skills");
+    if !skills_root.is_dir() {
+        builder.warn("MCP 连接器缺少 skills/ 目录".into());
         return;
     }
     for entry in walkdir::WalkDir::new(&skills_root)

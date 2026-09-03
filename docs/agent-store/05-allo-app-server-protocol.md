@@ -315,15 +315,17 @@ state: "not-installed" | "installed" | "disabled"
 - 文档化状态机：`not-installed → installed → disabled →（enable）installed`；
   卸载任意时刻可用。
 
-### 4.6 Marketplace（roadmap Phase 2）
+### 4.6 Marketplace（市场源，roadmap Phase 2）
 
-市场（Marketplace）是**插件目录**：先添加市场，再浏览/导入/安装其条目（CodeBuddy
-语义：两步流程）。源类型：
+市场（Marketplace）是**软件源**（类似 winget source）：按 `github` / `git` /
+`url` 远程源为主，`directory` 本地目录仅用于开发/调试。添加市场后由
+Store（4.7）把所有源聚合为商店视图；市场自身提供源管理（加/删/刷新）与
+条目投影。源类型：
 
-- `directory`：本地目录（Phase A）；
 - `github`：GitHub 仓库（`owner/repo`，Phase B）；
 - `git`：任意 Git 仓库（HTTPS/SSH URL 或本地 `.git` 路径，Phase B）；
-- `url`：HTTP(S) `marketplace.json`（Phase B）。
+- `url`：HTTP(S) `marketplace.json`（Phase B）；
+- `directory`：本地目录（仅开发用；UI 排序在最后）。
 
 能力协商：`capabilities.marketplaces`。
 
@@ -376,6 +378,18 @@ POST   /api/app-server/markets/{marketplace_id}/entries/{entry}/import  # 条目
 name / source_kind（directory|external）/ source / version / description / keywords / category
 ```
 
+目录探测形态（`probe_directory`，Phase A+）：
+
+- `.codebuddy-connector/connectors.json` → 每个 connector 一条目（连接器市场）；
+- `.codebuddy-skill/marketplace.json` → 每个 skill 一条目（技能市场）；
+- **`.codebuddy-plugin/marketplace.json`（`plugins[]` 数组）→ 每个 plugin 一条目**
+  ——真实 WorkBuddy 专家市场布局（如 `marketplaces/experts/.codebuddy-plugin/marketplace.json`，
+  `plugins: [{name, source: ./plugins/<id>, description}]`；条目目录须含
+  `.codebuddy-plugin/plugin.json` 才纳入，缺失跳过）；
+- 根 `.codebuddy-plugin/plugin.json` → 单插件根即一个条目；
+- 根 `cli.json` → 单个 CLI 连接器条目；
+- 其余：含 plugin.json/cli.json/SKILL.md 子目录的插件集合。
+
 `market/remove` 请求体 `{ "cascade": true }`（默认 true）。响应
 （`AppServerMarketplaceRemoveResult`）：
 
@@ -395,7 +409,59 @@ name / source_kind（directory|external）/ source / version / description / key
 - `auto-update` 开关仅记录（第三方默认关闭），Phase B 无后台自动刷新任务
   （手动 `market/refresh` 触发同一 fetch 管线）。
 
-### 4.7 Mentions（@专家 / @技能 / @连接器，roadmap Phase 2 扩展）
+### 4.7 Store（winget 式应用商店，roadmap Phase 2 + Store 扩展）
+
+市场（4.6）是**软件源**；Store 是把**所有启用市场的全部条目**聚合为一个
+`winget` 式应用商店视图：专家 / 专家团 / 技能 / 连接器四类内容同屏展示，
+用户只需点「安装」——导入 + 运行时注册在一个幂等调用内完成，中间
+PluginSnapshot 对用户不可见。
+
+能力协商：`capabilities.store`（`AppServerStoreProvider` 注入时开启）。
+
+```text
+GET  /api/app-server/store                                      # store/list（聚合目录）
+POST /api/app-server/store/{marketplace_id}/entries/{entry}/install  # store/install-entry（一键安装）
+GET  /api/app-server/store/{marketplace_id}/entries/{entry}/assets/{*path}  # 条目展示资产（头像等）
+```
+
+`store/list` 响应（`AppServerStoreList`）：
+
+```text
+items[] {
+  id,                                  # "<marketplace_id>/<entry_name>"
+  marketplace_id, marketplace_name,
+  entry_name,
+  kind,                                # "agent" | "team" | "skill" | "connector"
+  name,                                # displayName 本地化值，否则条目名
+  display_name / profession / display_description,   # LocalizedText（plugin.json 保真）
+  tags[] / quick_prompts[],            # LocalizedText 数组（plugin.json 保真）
+  description,
+  avatar_url,                          # store 资产端点相对 URL
+  version, source_kind,
+  installed,                           # provenance 下快照组件已注册进运行时
+  update_available,                    # 条目可用版本 ≠ 已装快照版本
+  snapshot_id, installed_version       # 已装时非空
+}
+```
+
+规则：
+
+- 聚合范围 = `enabled=1` 的市场（`plugin_marketplaces.enabled`），条目清单来自
+  市场探测投影；**未导入的条目照样出现**（商店内容=源内容，不依赖本地导入状态）；
+- 展示元数据来自条目目录的 `.codebuddy-plugin/plugin.json`（复用
+  `read_plugin_display`，与导入管线同一解析器），`displayName` / `profession` /
+  `displayDescription` / `tags` / `quickPrompts` / `avatar` 全保真；
+- `installed` 由 `marketplace_id + entry_name` provenance 查快照，再查组件
+  `installed=1`；`update_available` = 快照版本 ≠ 条目版本；
+- `store/install-entry` 幂等：已有 provenance 且组件已装 → 直接返回
+  `reused=true`；否则 `market import_entry`（或快照复用）→ `install/run`
+  注册，返回 `{ snapshot_id, version, installed_count, errors[] }`；
+- store 资产端点与快照资产端点同一 MIME 白名单与路径穿越校验；条目目录通过
+  市场 seam（`entry_dir`）解析，绝不暴露绝对路径；
+- 市场条目在来源 tab 也走「安装」（store install-entry），不再单独暴露
+  「导入」作为主路径；本地导入（4.5）保留为高级/调试入口。
+
+### 4.8 Mentions（@专家 / @技能 / @连接器，roadmap Phase 2 扩展）
 
 Composer 的 `@` 引用以**结构化 mention** 传入 `agent/run`，客户端不发原始
 文本（服务端不解析 `@` 语法）：

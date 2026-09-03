@@ -345,6 +345,9 @@ pub enum ParsedManifest {
     Market(MarketManifest),
     /// Single CLI connector directory identity (name derived from directory).
     Cli(CliManifest, String),
+    /// Single MCP connector directory (`mcp.json` raw `mcpServers` payload;
+    /// identity derived from the directory name).
+    Mcp(serde_json::Value, String),
     /// Single skill directory (`skills/<slug>/` without a marketplace.json);
     /// identity is the directory name.
     SingleSkill(String),
@@ -356,6 +359,7 @@ impl ParsedManifest {
             Self::Plugin(manifest) => &manifest.name,
             Self::Market(manifest) => &manifest.name,
             Self::Cli(_, directory_name) => directory_name,
+            Self::Mcp(_, directory_name) => directory_name,
             Self::SingleSkill(directory_name) => directory_name,
         }
     }
@@ -367,6 +371,7 @@ impl ParsedManifest {
             // CLI connectors do not declare a version in cli.json; V1 uses a
             // stable placeholder so identity stays honest (ads 02 §4 defaults).
             Self::Cli(_, _) => "1.0.0",
+            Self::Mcp(_, _) => "1.0.0",
             Self::SingleSkill(_) => "1.0.0",
         }
     }
@@ -459,6 +464,23 @@ pub fn parse_manifest(
                         ParsedManifest::Cli(manifest, directory_name)
                     })
                 }
+                SourceKind::WorkBuddyMcpConnector => {
+                    let directory_name = root
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if directory_name.trim().is_empty() {
+                        return Err(ManifestError::MissingIdentity("connector directory name".into()));
+                    }
+                    let value: serde_json::Value = serde_json::from_str(&text)
+                        .map_err(|error| ManifestError::Json(error.to_string()))?;
+                    if value.get("mcpServers").and_then(|v| v.as_object()).is_none() {
+                        return Err(ManifestError::Json(
+                            "mcp.json: missing mcpServers object".into(),
+                        ));
+                    }
+                    Ok(ParsedManifest::Mcp(value, directory_name))
+                }
                 _ => parse_market_manifest(&text).map(ParsedManifest::Market),
             }
         }
@@ -488,6 +510,18 @@ pub fn parse_plugin_manifest(text: &str) -> Result<PluginManifest, ManifestError
         return Err(ManifestError::MissingIdentity("name".into()));
     }
     Ok(manifest)
+}
+
+/// Sniff an entry directory and extract its *display* identity without running
+/// the import pipeline. Used by the store catalog to project un-installed
+/// entries with their `plugin.json` fidelity (02 §4 display fields).
+///
+/// Returns `None` when the directory does not declare a `plugin.json` (skills /
+/// connector entries keep their own identity elsewhere).
+pub fn read_plugin_display(root: &Path) -> Option<PluginManifest> {
+    let path = root.join(".codebuddy-plugin/plugin.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_plugin_manifest(&text).ok()
 }
 
 #[cfg(test)]
@@ -533,6 +567,16 @@ mod tests {
             parse_market_manifest(r#"{"name":"mc","connectors":[{"name":"c"}]}"#).unwrap();
         assert_eq!(connector_market.connectors.len(), 1);
         assert!(parse_market_manifest(r#"{"version":"1"}"#).is_err());
+    }
+
+    #[test]
+    fn mcp_connector_manifest_requires_mcp_servers() {
+        let text = r#"{"preAuth":"cli","mcpServers":{"ai-hive":{"type":"stdio","command":"npx","args":["-y","@infimind-next/ai-hive-mcp@latest"]}}}"#;
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(value.get("mcpServers").and_then(|v| v.as_object()).is_some());
+        let broken = r#"{"preAuth":"cli"}"#;
+        let value: serde_json::Value = serde_json::from_str(broken).unwrap();
+        assert!(value.get("mcpServers").and_then(|v| v.as_object()).is_none());
     }
 
     #[test]

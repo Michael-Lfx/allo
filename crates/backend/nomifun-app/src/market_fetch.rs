@@ -96,7 +96,17 @@ pub async fn fetch_remote(
                         let _ = std::fs::remove_dir_all(&staging);
                         return Ok(RemoteFetchOutcome::Unchanged { revision });
                     }
-                    (revision, true)
+                    // Full-tree URL market: when the source exposes a file
+                    // listing (`/_files.txt`), mirror every listed asset over
+                    // HTTP so relative entry sources resolve inside the live
+                    // tree (unlike a manifest-only market, whose entries are
+                    // mirror-impossible and stay `external`).
+                    let has_listing = market_source::has_file_listing(&normalized).await;
+                    if has_listing {
+                        market_source::mirror_http_tree(&normalized, &staging).await
+                            .map_err(|error| AppError::Internal(error))?;
+                    }
+                    (revision, !has_listing)
                 }
             }
         }
@@ -278,6 +288,8 @@ pub fn entry_source_path(
 }
 
 /// Register a marketplace row for a remote source after a successful fetch.
+/// A previously soft-removed row (same `marketplace_id`) is reactivated
+/// instead of inserted (the id column is unique).
 pub async fn register_remote(
     markets: Arc<dyn IMarketplaceRepository>,
     marketplace_id: &str,
@@ -287,21 +299,40 @@ pub async fn register_remote(
     fetched: &FetchedEntrySet,
 ) -> Result<(), AppError> {
     let entries: Vec<MarketplaceEntry> = fetched.entries.iter().map(|(entry, _)| entry.clone()).collect();
-    markets
-        .insert_marketplace(nomifun_db::NewPluginMarketplace {
-            marketplace_id,
-            name,
-            description: None,
-            source_kind,
-            source_uri: source,
-            owner_json: None,
-            version: None,
-            content_digest: None,
-            entries,
-            auto_update: false,
-        })
+    let existing = markets
+        .get_marketplace(marketplace_id)
         .await
         .map_err(AppError::from)?;
+    let reactivating = existing.as_ref().is_some_and(|row| row.removed_at.is_some());
+    if reactivating {
+        markets
+            .reactivate_marketplace(
+                marketplace_id,
+                source_kind,
+                source,
+                &entries,
+                &fetched.revision,
+                None,
+            )
+            .await
+            .map_err(AppError::from)?;
+    } else {
+        markets
+            .insert_marketplace(nomifun_db::NewPluginMarketplace {
+                marketplace_id,
+                name,
+                description: None,
+                source_kind,
+                source_uri: source,
+                owner_json: None,
+                version: None,
+                content_digest: None,
+                entries,
+                auto_update: false,
+            })
+            .await
+            .map_err(AppError::from)?;
+    }
     markets
         .record_resolved_revision(
             marketplace_id,

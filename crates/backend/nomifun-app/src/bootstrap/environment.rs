@@ -396,6 +396,7 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
         app_version: cli.app_version.clone(),
         auth_policy,
         local_trust_secret: None,
+        agent_store_config_path: cli.agent_store_config.clone(),
     };
     info!(
         "Running with auth policy {:?} — authentication is {}",

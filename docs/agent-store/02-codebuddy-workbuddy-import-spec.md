@@ -174,6 +174,11 @@ Members: software-product-manager, software-architect,
   `plugin.json` 展示元数据完整保真（displayName/profession/displayDescription/
   tags/quickPrompts/defaultInitPrompt/expertType/categoryId + avatars 资产经
   受控资产端点 serve，TC-IMP-015）；
+  **Store（winget 式商店）**：`store/list` 聚合所有启用市场条目（含未导入的，
+  四类 kind + plugin.json 展示保真 + 安装状态/可更新标记）、
+  `store install-entry` 一键安装（导入+注册幂等）、store 资产端点；
+  市场探测新增 `.codebuddy-plugin/marketplace.json`（`plugins[]`，WorkBuddy
+  专家市场布局，TC-IMP-016）；
   URL 市场条目外源标记 `external`（文档语义：
   只镜像清单内联条目）；
 - 市场条目字段（name、source、version、strict、commands、agents、skills、hooks、mcpServers）可与插件 Manifest 合并，检查冲突；

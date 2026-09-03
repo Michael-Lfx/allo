@@ -8,10 +8,10 @@ pub mod agent_store;
 pub mod catalog;
 pub mod workspace_resolver;
 
-pub use agent_store::{AgentStoreConfig, AgentStoreModel, AgentStoreProvider};
+pub use agent_store::{AgentStoreConfig, AgentStoreMarketplace, AgentStoreModel, AgentStoreProvider};
 pub use catalog::{
     AgentCatalogProvider, ConnectorAuthProvider, ConnectorCatalogProvider, ImportProvider,
-    InstallProvider, MarketplaceProvider, SkillCatalogProvider, TeamCatalogProvider,
+    InstallProvider, MarketplaceProvider, SkillCatalogProvider, StoreProvider, TeamCatalogProvider,
 };
 pub use workspace_resolver::{
     FilesystemWorkspaceResolver, ResolvedWorkspace, WorkspaceResolver,
@@ -54,7 +54,8 @@ use nomifun_api_types::{
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
     AppServerMarketplaceSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail, AppServerTeamSummary,
+    AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
+    AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
     CreateProviderRequest, ListMessagesQuery, MessageResponse, PresetOverrides, PresetSource,
     PresetTarget, SendMessageRequest,
 };
@@ -169,6 +170,7 @@ pub struct CapabilityAvailability {
     pub marketplaces: bool,
     pub agents: bool,
     pub teams: bool,
+    pub store: bool,
 }
 
 impl CapabilityAvailability {
@@ -184,6 +186,7 @@ impl CapabilityAvailability {
             marketplaces: state.markets.is_some(),
             agents: state.agent_catalog.is_some(),
             teams: state.team_catalog.is_some(),
+            store: state.store.is_some(),
         }
     }
 }
@@ -360,6 +363,7 @@ pub struct Capabilities {
     pub imports: bool,
     pub installs: bool,
     pub marketplaces: bool,
+    pub store: bool,
 }
 
 impl Capabilities {
@@ -377,6 +381,7 @@ impl Capabilities {
             imports: availability.imports,
             installs: availability.installs,
             marketplaces: availability.marketplaces,
+            store: availability.store,
         }
     }
 }
@@ -794,6 +799,10 @@ pub struct AppServerRouterState {
     pub agent_catalog: Option<Arc<dyn AgentCatalogProvider>>,
     /// Agent Store Team catalog (05 §4.2). `None` keeps `teams` off.
     pub team_catalog: Option<Arc<dyn TeamCatalogProvider>>,
+    /// Unified store catalog (winget-style): aggregated items over all enabled
+    /// marketplaces with install state + one-click install. `None` keeps the
+    /// `store` capability off.
+    pub store: Option<Arc<dyn StoreProvider>>,
     /// Agent Store immutable snapshot root (`{work_dir}/agent-store-imports`).
     /// `Some` enables the public asset endpoint for snapshot-attached display
     /// assets (avatars etc.); `None` keeps it off.
@@ -823,6 +832,7 @@ impl Default for AppServerRouterState {
             markets: None,
             agent_catalog: None,
             team_catalog: None,
+            store: None,
             snapshot_assets_root: None,
         }
     }
@@ -916,6 +926,17 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route(
             "/api/app-server/markets/{marketplace_id}/entries/{entry_name}/import",
             post(market_entry_import_route),
+        )
+        // Agent Store unified store catalog (winget-style)
+        .route("/api/app-server/store", get(store_list_route))
+        .route(
+            "/api/app-server/store/{marketplace_id}/entries/{entry_name}/install",
+            post(store_install_entry_route),
+        )
+        // Store entry display assets (avatars for not-yet-imported entries)
+        .route(
+            "/api/app-server/store/{marketplace_id}/entries/{entry_name}/assets/{*asset_path}",
+            get(store_asset_route),
         )
         .with_state(state)
 }
@@ -1423,6 +1444,47 @@ fn marketplace_provider(
     })
 }
 
+/// Register marketplace sources declared under `[default_marketplaces.*]` in
+/// the agent-store config. Idempotent (same source returns the existing row),
+/// so it is safe to run before every store/market listing. Failures are
+/// non-fatal: a broken default source is reported as a warning and the rest
+/// keeps working. Network reach is bounded by `tokio::time::timeout`.
+async fn ensure_default_marketplaces(state: &AppServerRouterState) {
+    let provider = match marketplace_provider(state) {
+        Ok(provider) => provider,
+        Err(_) => return,
+    };
+    // Only an *explicitly injected* config path enables default marketplace
+    // auto-registration (production passes the agent-store config; tests keep
+    // `None` so the host user's personal sources never leak into test state).
+    let Some(path) = state.agent_store_config_path.clone() else {
+        return;
+    };
+    let Ok(config) = AgentStoreConfig::load(&path) else { return };
+    for (marketplace_id, entry) in &config.default_marketplaces {
+        let Some((source_kind, source)) = entry.resolved() else { continue };
+        let request = AppServerMarketplaceAddRequest {
+            name: Some(marketplace_id.clone()),
+            source_kind: match source_kind.as_str() {
+                "github" => nomifun_api_types::AppServerMarketplaceSourceKind::Github,
+                "git" => nomifun_api_types::AppServerMarketplaceSourceKind::Git,
+                "directory" => nomifun_api_types::AppServerMarketplaceSourceKind::Directory,
+                _ => nomifun_api_types::AppServerMarketplaceSourceKind::Url,
+            },
+            source,
+        };
+        // Best effort: default sources are convenience, never a hard failure.
+        // Timeout-bounded so a dead source cannot block store/market listing.
+        // Full-tree mirrors (e.g. hundreds of expert assets over local HTTP)
+        // can take tens of seconds, so the bound is generous: 120s.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            provider.add(request),
+        )
+        .await;
+    }
+}
+
 async fn market_add_impl(
     state: &AppServerRouterState,
     request: AppServerMarketplaceAddRequest,
@@ -1433,6 +1495,7 @@ async fn market_add_impl(
 async fn market_list_impl(
     state: &AppServerRouterState,
 ) -> Result<Vec<AppServerMarketplaceSummary>, AppServerError> {
+    ensure_default_marketplaces(state).await;
     marketplace_provider(state)?.list().await.map_err(AppServerError::from)
 }
 
@@ -1440,6 +1503,7 @@ async fn market_get_impl(
     state: &AppServerRouterState,
     marketplace_id: &str,
 ) -> Result<AppServerMarketplaceDetail, AppServerError> {
+    ensure_default_marketplaces(state).await;
     marketplace_provider(state)?.get(marketplace_id).await.map_err(AppServerError::from)
 }
 
@@ -1482,6 +1546,39 @@ async fn market_entry_import_impl(
 ) -> Result<AppServerImportResult, AppServerError> {
     marketplace_provider(state)?
         .import_entry(marketplace_id, entry_name)
+        .await
+        .map_err(AppServerError::from)
+}
+
+// --- store seam (winget-style unified catalog, roadmap Phase 3) -------------
+
+fn store_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn StoreProvider>, AppServerError> {
+    state.store.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "store pipeline is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+async fn store_list_impl(
+    state: &AppServerRouterState,
+) -> Result<AppServerStoreList, AppServerError> {
+    ensure_default_marketplaces(state).await;
+    store_provider(state)?.list().await.map_err(AppServerError::from)
+}
+
+async fn store_install_entry_impl(
+    state: &AppServerRouterState,
+    marketplace_id: &str,
+    entry_name: &str,
+) -> Result<AppServerStoreInstallResult, AppServerError> {
+    store_provider(state)?
+        .install_entry(marketplace_id, entry_name)
         .await
         .map_err(AppServerError::from)
 }
@@ -1602,6 +1699,67 @@ async fn snapshot_asset_route(
         return Err(AppServerError::new(
             "invalid_asset",
             "asset path escapes the snapshot",
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    if !canonical_target.is_file() {
+        return Err(AppServerError::new(
+            "not_found",
+            "asset not found",
+            StatusCode::NOT_FOUND,
+            false,
+        ));
+    }
+    let bytes = tokio::fs::read(&canonical_target).await.map_err(|_| {
+        AppServerError::new("not_found", "asset not found", StatusCode::NOT_FOUND, false)
+    })?;
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
+}
+
+/// Serve a public display asset from a marketplace entry that is not
+/// imported yet (store card avatar). The entry directory is resolved through
+/// the marketplace seam; the path and MIME whitelist mirror the snapshot
+/// asset endpoint. Skips the whitelist for svg (allowed) and rejects
+/// non-whitelisted types; prompt files are never served.
+async fn store_asset_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path((marketplace_id, entry_name, asset_path)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let ext = asset_path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let content_type = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        _ => {
+            return Err(AppServerError::new(
+                "invalid_asset",
+                "asset type is not served",
+                StatusCode::BAD_REQUEST,
+                false,
+            ));
+        }
+    };
+    let base = marketplace_provider(&state)?
+        .entry_dir(&marketplace_id, &entry_name)
+        .await?;
+    let canonical_base = std::fs::canonicalize(&base).map_err(|_| {
+        AppServerError::new("not_found", "entry not found", StatusCode::NOT_FOUND, false)
+    })?;
+    let target = base.join(&asset_path);
+    let canonical_target = std::fs::canonicalize(&target).map_err(|_| {
+        AppServerError::new("not_found", "asset not found", StatusCode::NOT_FOUND, false)
+    })?;
+    if !canonical_target.starts_with(&canonical_base) {
+        return Err(AppServerError::new(
+            "invalid_asset",
+            "asset path escapes the entry",
             StatusCode::BAD_REQUEST,
             false,
         ));
@@ -1795,6 +1953,25 @@ async fn market_entry_import_route(
 ) -> Result<Json<AppServerImportResult>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(market_entry_import_impl(&state, &marketplace_id, &entry_name).await?))
+}
+
+async fn store_list_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<AppServerStoreList>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(store_list_impl(&state).await?))
+}
+
+async fn store_install_entry_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path((marketplace_id, entry_name)): Path<(String, String)>,
+) -> Result<Json<AppServerStoreInstallResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(store_install_entry_impl(&state, &marketplace_id, &entry_name).await?))
 }
 
 async fn list_skills_route(
@@ -4297,6 +4474,22 @@ async fn dispatch_websocket_request(
                 AppServerError::new("internal_error", format!("failed to encode team: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // ---------------- Agent Store unified store catalog (Phase 3) ----------------
+        "store/list" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let store = store_list_impl(state).await?;
+            Ok(ws_response(request_id, serde_json::to_value(store).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode store: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "store/install-entry" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsStoreEntry>(params)?;
+            let result = store_install_entry_impl(state, &params.marketplace_id, &params.entry_name).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode store install: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         _ => Err(AppServerError::from(ProtocolError::InvalidRequest(
             "unknown App Server method".into(),
         ))),
@@ -4334,6 +4527,13 @@ struct WsAgentQuery {
 #[serde(deny_unknown_fields)]
 struct WsTeamQuery {
     team_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsStoreEntry {
+    marketplace_id: String,
+    entry_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -5959,6 +6159,31 @@ display_name = "MiMo V2.5 Free"
         assert_eq!(denied.code, "unsupported_operation");
         let denied_list = market_list_impl(&bare).await.unwrap_err();
         assert_eq!(denied_list.code, "unsupported_operation");
+    }
+
+    #[tokio::test]
+    async fn store_impls_route_through_the_provider_and_gate() {
+        let store = crate::catalog::FakeStoreProvider::new();
+        let state = AppServerRouterState {
+            store: Some(Arc::new(store)),
+            ..Default::default()
+        };
+
+        let listed = store_list_impl(&state).await.unwrap();
+        assert_eq!(listed.items.len(), 1);
+        assert_eq!(listed.items[0].id, "company-tools/formatter");
+        assert_eq!(listed.items[0].entry_name, "formatter");
+
+        let installed = store_install_entry_impl(&state, "company-tools", "formatter").await.unwrap();
+        assert_eq!(installed.snapshot_id, "snap-demo");
+        assert_eq!(installed.installed_count, 3);
+
+        // Uninjected provider keeps the surface closed.
+        let bare = AppServerRouterState::default();
+        let denied = store_list_impl(&bare).await.unwrap_err();
+        assert_eq!(denied.code, "unsupported_operation");
+        let denied_install = store_install_entry_impl(&bare, "company-tools", "formatter").await.unwrap_err();
+        assert_eq!(denied_install.code, "unsupported_operation");
     }
 
     fn sample_agent_summary() -> nomifun_api_types::AppServerAgentSummary {

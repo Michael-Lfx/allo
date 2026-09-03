@@ -80,7 +80,8 @@ pub use app_server::{
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
     AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, AppServerTeamDetail, AppServerTeamSummary,
+    AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
+    AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,
