@@ -303,8 +303,10 @@ pub async fn register_remote(
         .get_marketplace(marketplace_id)
         .await
         .map_err(AppError::from)?;
-    let reactivating = existing.as_ref().is_some_and(|row| row.removed_at.is_some());
-    if reactivating {
+    // Any existing row is reactivated with the current source — a re-source
+    // (same id, new source, e.g. default sources re-pointed in config.toml)
+    // must update the row instead of tripping the unique id on insert.
+    if let Some(_) = existing {
         markets
             .reactivate_marketplace(
                 marketplace_id,

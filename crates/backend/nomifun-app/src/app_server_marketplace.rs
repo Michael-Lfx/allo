@@ -197,7 +197,9 @@ fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {    l
         if name.is_empty() {
             continue;
         }
-        // `source` may be a directory or a direct SKILL.md path.
+        // `source` may be a directory or a direct SKILL.md path. Real
+        // workbuddy skill markets keep entries under `skills/<source>/`
+        // (or `skills/<source>/SKILL.md`), so probe both layouts.
         let source = item
             .get("source")
             .and_then(|v| v.as_str())
@@ -209,12 +211,18 @@ fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {    l
         } else {
             format!("{source}/SKILL.md")
         };
-        if !root.join(&relative).is_file() && !root.join(&source).is_dir() {
+        let entry_dir = if root.join("skills").join(&source).is_dir() {
+            format!("skills/{source}")
+        } else if root.join("skills").join(&relative).is_file() {
+            format!("skills/{source}")
+        } else if root.join(&relative).is_file() || root.join(&source).is_dir() {
+            source.clone()
+        } else {
             continue;
-        }
+        };
         entries.push(ScannedEntry {
             name: name.to_owned(),
-            relative: source,
+            relative: entry_dir,
             description: item.get("description").and_then(|v| v.as_str()).map(str::to_owned),
             keywords: item
                 .get("keywords")
@@ -406,6 +414,9 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // Duplicate-add probe: same active source must not be registered
         // twice (idempotent return). A previously *removed* row is reactivated
         // below instead of returned as-is, so re-adding a source revives it.
+        // A same-id add with a *different* source is a re-source: the row is
+        // reactivated (active or removed) with the current source, because the
+        // id column is unique and the user explicitly asked for the new source.
         let reactivate = match self
             .markets
             .find_by_source(source_kind, &request.source)
@@ -416,7 +427,17 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 return Ok(to_summary(&existing));
             }
             Some(existing) => Some(existing.marketplace_id),
-            None => None,
+            None => {
+                // Same marketplace_id under a different source (e.g. the
+                // default sources were re-pointed in config.toml): reactivate
+                // the existing row with the new source rather than inserting a
+                // duplicate id.
+                self.markets
+                    .get_marketplace(&marketplace_id)
+                    .await
+                    .map_err(AppError::from)?
+                    .map(|existing| existing.marketplace_id)
+            }
         };
         let reactivating = reactivate.is_some();
         let reactivating_id = reactivate.as_deref();
@@ -952,6 +973,31 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].name, "code-review");
         assert_eq!(entries[0].relative, "skills/code-review");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_skill_market_handles_source_without_skills_prefix() {
+        // Real workbuddy skills-marketplace layout: manifest `source` is the
+        // bare directory name and entries live under `skills/<source>/`.
+        let dir = std::env::temp_dir().join(format!("as-mkt-skill2-{}", nomifun_common::generate_id()));
+        write(
+            &dir.join(".codebuddy-skill/marketplace.json"),
+            r#"{
+                "name": "skills-marketplace",
+                "skills": [
+                    { "name": "腾讯文档", "source": "tencent-docs", "description": "docs" },
+                    { "name": "腾讯会议", "source": "tencent-meeting-skill", "description": "meeting" }
+                ]
+            }"#,
+        );
+        write(&dir.join("skills/tencent-docs/SKILL.md"), "# docs\n");
+        write(&dir.join("skills/tencent-meeting-skill/SKILL.md"), "# meeting\n");
+        let (kind, entries) = probe_directory(&dir).unwrap();
+        assert_eq!(kind, MarketKind::Skills);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "腾讯文档");
+        assert_eq!(entries[0].relative, "skills/tencent-docs");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
