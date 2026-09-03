@@ -10238,6 +10238,11 @@ impl ConversationService {
         let observation_execution = durable_delivery
             .as_ref()
             .and_then(|delivery| delivery.execution_authority.clone());
+        // Keep the latest effective model available to the panic finalizer. The
+        // turn-local variable below is dropped when the owner future unwinds,
+        // while this shared snapshot survives long enough to annotate the
+        // fallback terminal error.
+        let panic_model_context = Arc::new(tokio::sync::Mutex::new(runtime_options.model.clone()));
         #[cfg(test)]
         self.reach_public_admission_cutpoint(PublicAdmissionCutpoint::BeforeOwnerSpawn)
             .await;
@@ -10248,6 +10253,7 @@ impl ConversationService {
             let panic_conversation_id = conv_id.clone();
             let panic_stable_turn_id = stable_turn_id.clone();
             let panic_runtime_registry = Arc::clone(&runtime_registry);
+            let turn_model_context = Arc::clone(&panic_model_context);
             let panic_wire_context = TurnWireContext {
                 companion,
                 companion_id: companion_id.clone(),
@@ -10779,6 +10785,7 @@ impl ConversationService {
                     failover_switches_done += 1;
                     failover_tried.push(switch.picked.clone());
                     successful_turn_model = Some(switch.picked.clone());
+                    *turn_model_context.lock().await = successful_turn_model.clone();
                     info!(
                         conversation_id = %conv_id,
                         switch = failover_switches_done,
@@ -11158,6 +11165,7 @@ impl ConversationService {
                     None,
                 )
                 .with_root_turn_id(panic_stable_turn_id.clone())
+                .with_model_context(panic_model_context.lock().await.as_ref())
                 .with_companion_context(
                     panic_wire_context.companion,
                     panic_wire_context.companion_id.clone(),

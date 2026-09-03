@@ -279,7 +279,10 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
     const resolutionText = structuredError?.resolution
       ? t(`conversation.agentError.resolution.${structuredError.resolution.kind}`)
       : null;
-    const shouldShowResolution = Boolean(resolutionText && !retryPayload && !recoveryAction);
+    const hasDirectFeedbackAction = structuredError?.resolution?.kind === 'send_feedback';
+    const shouldShowResolution = Boolean(
+      resolutionText && !retryPayload && !recoveryAction && !hasDirectFeedbackAction
+    );
     return (
       <div className='w-full'>
         <div className={classNames('message-error-note', ownership && `message-error-note--${ownership}`)}>

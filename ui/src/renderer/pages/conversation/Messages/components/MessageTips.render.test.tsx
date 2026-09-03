@@ -155,4 +155,17 @@ describe('MessageTips error render contract', () => {
     expect(html).toContain('message-error-note__feedback');
     expect(html).not.toContain('message-error-note__retry');
   });
+
+  test('uses the feedback button instead of duplicating feedback guidance', () => {
+    const html = renderMessage({
+      message: '模型服务商拒绝了请求',
+      code: 'USER_LLM_PROVIDER_INVALID_REQUEST',
+      ownership: 'user_llm_provider',
+      retryable: false,
+      resolution: { kind: 'send_feedback', target: 'feedback' },
+    });
+
+    expect(html).not.toContain('message-error-note__resolution');
+    expect(html).toContain('message-error-note__feedback');
+  });
 });
