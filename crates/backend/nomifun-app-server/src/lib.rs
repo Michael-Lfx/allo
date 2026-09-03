@@ -794,6 +794,10 @@ pub struct AppServerRouterState {
     pub agent_catalog: Option<Arc<dyn AgentCatalogProvider>>,
     /// Agent Store Team catalog (05 §4.2). `None` keeps `teams` off.
     pub team_catalog: Option<Arc<dyn TeamCatalogProvider>>,
+    /// Agent Store immutable snapshot root (`{work_dir}/agent-store-imports`).
+    /// `Some` enables the public asset endpoint for snapshot-attached display
+    /// assets (avatars etc.); `None` keeps it off.
+    pub snapshot_assets_root: Option<std::path::PathBuf>,
 }
 
 impl Default for AppServerRouterState {
@@ -819,6 +823,7 @@ impl Default for AppServerRouterState {
             markets: None,
             agent_catalog: None,
             team_catalog: None,
+            snapshot_assets_root: None,
         }
     }
 }
@@ -875,6 +880,12 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         // Agent Store Importer (roadmap Phase 1)
         .route("/api/app-server/imports", post(run_import_route).get(list_imports_route))
         .route("/api/app-server/imports/{snapshot_id}", get(get_import_route))
+        // Snapshot-attached public display assets (avatars etc.), served from
+        // the immutable snapshot with strict path + MIME whitelist.
+        .route(
+            "/api/app-server/imports/{snapshot_id}/assets/{*asset_path}",
+            get(snapshot_asset_route),
+        )
         // Agent Store Installer (roadmap Phase 2)
         .route("/api/app-server/installs", post(run_install_route))
         .route("/api/app-server/installs/{snapshot_id}", get(install_status_route))
@@ -1531,6 +1542,97 @@ async fn get_import_route(
 ) -> Result<Json<AppServerImportDetail>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(get_import_impl(&state, &snapshot_id).await?))
+}
+
+/// Serve a public display asset from an immutable snapshot (avatar images
+/// declared by `plugin.json`). The snapshot id and asset path are validated:
+/// the resolved path must stay under the snapshot root and the extension
+/// must be on the public whitelist. No directory listings, no raw prompt
+/// files (`SKILL.md`/`*.md` are never served here).
+async fn snapshot_asset_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path((snapshot_id, asset_path)): Path<(String, String)>,
+) -> Result<impl IntoResponse, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let root = state.snapshot_assets_root.as_ref().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "snapshot assets are not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })?;
+    let ext = asset_path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let content_type = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        _ => {
+            return Err(AppServerError::new(
+                "invalid_asset",
+                "asset type is not served",
+                StatusCode::BAD_REQUEST,
+                false,
+            ));
+        }
+    };
+    // Snapshot ids are opaque UUIDv7; asset path must be a safe relative path.
+    let Some(snapshot_dir) = snapshot_dir_name(&snapshot_id) else {
+        return Err(AppServerError::new(
+            "invalid_asset",
+            "invalid snapshot id",
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    };
+    let base = root.join(&snapshot_dir);
+    let canonical_base = std::fs::canonicalize(&base).map_err(|_| {
+        AppServerError::new("not_found", "snapshot not found", StatusCode::NOT_FOUND, false)
+    })?;
+    let target = base.join(&asset_path);
+    let canonical_target = std::fs::canonicalize(&target).map_err(|_| {
+        AppServerError::new("not_found", "asset not found", StatusCode::NOT_FOUND, false)
+    })?;
+    if !canonical_target.starts_with(&canonical_base) {
+        return Err(AppServerError::new(
+            "invalid_asset",
+            "asset path escapes the snapshot",
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    if !canonical_target.is_file() {
+        return Err(AppServerError::new(
+            "not_found",
+            "asset not found",
+            StatusCode::NOT_FOUND,
+            false,
+        ));
+    }
+    let bytes = tokio::fs::read(&canonical_target).await.map_err(|_| {
+        AppServerError::new("not_found", "asset not found", StatusCode::NOT_FOUND, false)
+    })?;
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
+}
+
+/// Validate a snapshot id is a bare UUIDv7-like opaque id (36 chars, hex+dash)
+/// so it cannot be used as a path traversal vector.
+fn snapshot_dir_name(snapshot_id: &str) -> Option<String> {
+    if snapshot_id.len() == 36
+        && snapshot_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-')
+        && snapshot_id.chars().filter(|c| *c == '-').count() == 4
+    {
+        Some(snapshot_id.to_owned())
+    } else {
+        None
+    }
 }
 
 // --- install route handlers (roadmap Phase 2) ------------------------------
@@ -4573,6 +4675,9 @@ mod tests {
                 tool_policy_summary: None,
                 source: "imported".into(),
                 compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+                display_name: None,
+                profession: None,
+                avatar_url: None,
             }],
         }));
         let mut preset_id = String::new();
@@ -4598,8 +4703,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_mentions_rejects_uninstalled_agent() {
-        let mut state = AppServerRouterState::default();
+    async fn apply_mentions_rejects_uninstalled_agent() {        let mut state = AppServerRouterState::default();
         state.agent_catalog = Some(Arc::new(crate::catalog::FakeAgentCatalog {
             agents: vec![nomifun_api_types::AppServerAgentSummary {
                 id: "wb-demo-uninstalled".into(),
@@ -4613,6 +4717,9 @@ mod tests {
                 tool_policy_summary: None,
                 source: "imported".into(),
                 compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+                display_name: None,
+                profession: None,
+                avatar_url: None,
             }],
         }));
         let mut preset_id = String::new();
@@ -4626,6 +4733,16 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.code, "agent_not_installed");
+    }
+
+    #[test]
+    fn snapshot_asset_path_validation_rejects_traversal_and_non_whitelist() {
+        // Bare UUID-like opaque ids pass; anything else (traversal candidates)
+        // is rejected before touching the filesystem.
+        assert!(snapshot_dir_name("0190f5fe-7c00-7a00-8000-000000000004").is_some());
+        assert!(snapshot_dir_name("../etc/passwd").is_none());
+        assert!(snapshot_dir_name("foo").is_none());
+        assert!(snapshot_dir_name("0190f5fe-7c00-7a00-8000-000000000004/../../../").is_none());
     }
 
     #[test]
@@ -5857,6 +5974,9 @@ display_name = "MiMo V2.5 Free"
             tool_policy_summary: Some("read_file, write_file".into()),
             source: "codebuddy-plugin".into(),
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+            display_name: None,
+            profession: None,
+            avatar_url: None,
         }
     }
 

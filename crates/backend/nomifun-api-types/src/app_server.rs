@@ -328,6 +328,25 @@ pub struct AppServerAgentSummary {
     pub tool_policy_summary: Option<String>,
     pub source: String,
     pub compatibility_status: AppServerCompatibilityStatus,
+    /// Localized display metadata preserved from `plugin.json`/frontmatter.
+    /// `None` when the source did not carry the field (02 §5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<AppServerLocalizedText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profession: Option<AppServerLocalizedText>,
+    /// Public avatar URL (`/api/app-server/imports/{snapshot}/assets/{path}`).
+    /// `None` when the source did not declare an avatar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+}
+
+/// A localized display value (`{en, zh}` subset; both optional).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppServerLocalizedText {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub en: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zh: Option<String>,
 }
 
 /// Agent Store AgentDefinition summary. Never a Runtime Agent instance; never
@@ -351,6 +370,21 @@ pub struct AppServerAgentDetail {
     /// Plugin-level Agents: source runtime ignores `mcpServers`/`permissionMode`
     /// (02 §5.1); importers record the fact instead of mapping it to grants.
     pub permission_mode_ignored: bool,
+    /// Localized market description (`displayDescription`). Never the raw
+    /// prompt body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_description: Option<AppServerLocalizedText>,
+    /// `quickPrompts`: the "专家帮你做" entries shown on the expert card.
+    #[serde(default)]
+    pub quick_prompts: Vec<AppServerLocalizedText>,
+    #[serde(default)]
+    pub tags: Vec<AppServerLocalizedText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_init_prompt: Option<AppServerLocalizedText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expert_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
 }
 
 /// Agent Team definition summary (02 §6).

@@ -130,6 +130,10 @@ pub struct AgentDoc {
     /// Plugin-level Agents: `permissionMode` is ignored by the source runtime
     /// itself (02 §5.1) — tracked so the compatibility report can say so.
     pub permission_mode: Option<String>,
+    /// Localized display metadata (WorkBuddy experts carry these on the agent
+    /// frontmatter too, mirroring `plugin.json`).
+    pub display_name: crate::manifest::LocalizedText,
+    pub profession: crate::manifest::LocalizedText,
     pub body: String,
 }
 
@@ -152,6 +156,8 @@ impl AgentDoc {
         set_opt(&mut payload, "memory", &self.memory);
         set_opt(&mut payload, "background", &self.background);
         set_opt(&mut payload, "isolation", &self.isolation);
+        set_localized(&mut payload, "display_name", &self.display_name);
+        set_localized(&mut payload, "profession", &self.profession);
         payload
     }
 
@@ -164,6 +170,41 @@ fn set_opt<T: serde::Serialize>(payload: &mut Value, key: &str, value: &Option<T
     if let Some(value) = value {
         payload[key] = serde_json::to_value(value).unwrap_or(Value::Null);
     }
+}
+
+fn set_localized(payload: &mut Value, key: &str, value: &crate::manifest::LocalizedText) {
+    if !value.is_empty() {
+        let mut map = serde_json::Map::new();
+        if let Some(en) = &value.en {
+            map.insert("en".into(), json!(en));
+        }
+        if let Some(zh) = &value.zh {
+            map.insert("zh".into(), json!(zh));
+        }
+        payload[key] = Value::Object(map);
+    }
+}
+
+/// Parse a locale map or plain string into `LocalizedText`
+/// (`displayName: {en, zh}` or `displayName: "FBSir"`).
+fn parse_localized(fields: &Value, key: &str) -> crate::manifest::LocalizedText {
+    let mut out = crate::manifest::LocalizedText::default();
+    match fields.get(key) {
+        Some(Value::String(text)) => out.zh = Some(text.clone()),
+        Some(Value::Object(map)) => {
+            for (k, v) in map {
+                if let Some(text) = v.as_str() {
+                    match k.as_str() {
+                        "en" => out.en = Some(text.to_owned()),
+                        "zh" => out.zh = Some(text.to_owned()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 pub fn parse_agent(text: &str, what: &str) -> Result<AgentDoc, DocError> {
@@ -184,6 +225,8 @@ pub fn parse_agent(text: &str, what: &str) -> Result<AgentDoc, DocError> {
         background: str_field(&fields, "background"),
         isolation: str_field(&fields, "isolation"),
         permission_mode: str_field(&fields, "permissionMode"),
+        display_name: parse_localized(&fields, "displayName"),
+        profession: parse_localized(&fields, "profession"),
         body,
     })
 }

@@ -157,10 +157,19 @@ agent/get
 `agent/get` 返回的是 Agent Store AgentDefinition，而不是 Claude Code/Codex 等 Runtime Agent 实例。当前 Runtime Spike 仅允许其中的 `builtin-office` Preset 进入 Agent Run：
 
 ```text
-id / version / name / description
+id / version / name / description / preset_id
 skills / connectors / model_summary / tool_policy_summary
 source / compatibility_status
+display_name / profession / avatar_url            （market 展示元数据，localized）
+display_description / quick_prompts / tags / default_init_prompt / expert_type / category_id（detail only）
 ```
+
+`preset_id` 在 `install/*` 后非空（@mention 解析用）。`display_name`/`profession`/
+`display_description`/`quick_prompts`/`tags`/`default_init_prompt` 为双语文案
+（`{en, zh}`，源为 `plugin.json`，agent frontmatter 的 `displayName`/`profession`
+作为缺失时的回退）；`avatar_url` 指向服务端带校验的快照资产端点
+（`/api/app-server/imports/{snapshot}/assets/{path}`，仅白名单图片类型，
+永不暴露 prompt 文件）。
 
 不返回真实凭据、隐藏系统指令或任意内部 Prompt（除非调用方策略允许且产品明确需要）。
 

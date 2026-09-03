@@ -155,6 +155,21 @@ NOT_RUN
 - 操作：以 `workbuddy-skill-market` 导入 `skills/<slug>/`（无 marketplace.json，根含 SKILL.md）
 - 断言：单技能可导入；身份 = 目录名；不因缺 marketplace.json 被 blocked
 
+### TC-IMP-015：展示元数据保真（plugin.json 完整镜像）
+
+- 等级：P1
+- 操作：导入真实专家结构（`plugin.json` 携带 `displayName`/`profession`/
+  `displayDescription`/`tags`/`quickPrompts`/`defaultInitPrompt`/`avatar`/
+  `expertType`/`categoryId` + agent frontmatter 同名字段 + `avatars/*.png`）
+- 断言：
+  - 全部展示字段进入 agent payload（plugin.json 优先于 frontmatter）；
+  - `quickPrompts`/`tags` 双语数组完整保留（=WorkBuddy 专家卡「专家帮你做」）；
+  - 头像资产文件随快照拷贝（`avatars/expert.png` 在快照内）；
+  - `agent/get` 暴露 `display_name`/`profession`/`avatar_url`/`quick_prompts`；
+  - 资产端点：`GET /imports/{snapshot}/assets/avatars/expert.png` 返回
+    `image/png`；路径穿越/非白名单类型/非法 snapshot id → 4xx；prompt
+    文件（`SKILL.md`/`*.md`）永不被 serve
+
 ### TC-INS-001：安装注册到运行时
 
 - 等级：P1

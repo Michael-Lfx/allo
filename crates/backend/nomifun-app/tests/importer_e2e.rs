@@ -5,6 +5,7 @@
 mod common;
 
 use axum::http::StatusCode;
+use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use common::{body_json, build_app, setup_and_login};
@@ -12,6 +13,10 @@ use common::{body_json, build_app, setup_and_login};
 const SOFTWARE_COMPANY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../nomifun-importer/tests/fixtures/software-company"
+);
+const DISPLAY_METADATA: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../nomifun-importer/tests/fixtures/display-metadata"
 );
 const PROTOCOL_VERSION: &str = "2026-08-26";
 
@@ -834,4 +839,85 @@ async fn importer_mention_resolves_installed_preset_and_agents_run_gate() {
         ),
         "mention resolution must precede model/runtime gates: {missing_body}"
     );
+}
+
+/// Snapshot display assets (avatars) are served from the immutable snapshot
+/// with path + MIME validation; traversal and disallowed types are rejected.
+#[tokio::test]
+async fn importer_snapshot_asset_endpoint_serves_avatar_and_rejects_escape() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/imports",
+            serde_json::json!({
+                "source_path": DISPLAY_METADATA,
+                "source_kind": "codebuddy-plugin",
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert!(run.status().is_success(), "display metadata import: {}", body_json(run).await);
+    let result = body_json(run).await;
+    let snapshot_id = result["snapshot_id"].as_str().unwrap().to_owned();
+
+    // The declared avatar is served with the correct content type.
+    let asset = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/api/app-server/imports/{snapshot_id}/assets/avatars/expert.png"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", &csrf)
+                .header("cookie", format!("nomifun-csrf-token={csrf}"))
+                .header("x-app-server-connection-id", &connection_id)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), StatusCode::OK, "avatar asset must be served");
+    assert_eq!(
+        asset.headers().get("content-type").unwrap(),
+        "image/png",
+        "content-type must be image/png"
+    );
+    let bytes = asset.into_body().collect().await.unwrap().to_bytes();
+    assert!(bytes.len() > 0, "asset body must be non-empty");
+
+    // Traversal / wrong snapshot id / disallowed type are all rejected.
+    for uri in [
+        format!("/api/app-server/imports/{snapshot_id}/assets/../plugin.json"),
+        format!("/api/app-server/imports/not-a-uuid/assets/avatars/expert.png"),
+        format!("/api/app-server/imports/{snapshot_id}/assets/agents/fbsir-super-partner.md"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("x-csrf-token", &csrf)
+                    .header("cookie", format!("nomifun-csrf-token={csrf}"))
+                    .header("x-app-server-connection-id", &connection_id)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_client_error(),
+            "unsafe asset request must be a client error (status {})",
+            response.status()
+        );
+    }
 }
