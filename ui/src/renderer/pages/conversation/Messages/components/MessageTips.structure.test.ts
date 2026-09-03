@@ -48,9 +48,11 @@ describe('MessageTips structured error presentation', () => {
     expect(cssSource.includes('var(--warning, var(--flowy-warning')).toBe(true);
   });
 
-  test('keeps feedback and retry/configuration status close to the diagnosis header', () => {
+  test('keeps diagnostics in the header and recovery actions in the footer', () => {
     expect(source.includes('message-error-note__meta')).toBe(true);
     expect(source.includes('message-error-note__actions')).toBe(true);
+    expect(source.includes('retryable === false')).toBe(true);
+    expect(source.includes('message-error-note__tag')).toBe(false);
     expect(source.includes('message-error-note__retry')).toBe(true);
     expect(source.includes("emitter.emit('sendbox.retry'")).toBe(true);
   });
