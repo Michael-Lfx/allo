@@ -171,6 +171,9 @@ Members: software-product-manager, software-architect,
   resolved_revision/ETag 新鲜度短路）+ `agent/run` 结构化 `mentions`
   （agent→已安装 preset、skill→`included_skills`、connector→`mcp_server_ids`，
   TC-INS-007）；agent-store preset `agent-store: <name>` 命名进入兼容白名单；
+  `plugin.json` 展示元数据完整保真（displayName/profession/displayDescription/
+  tags/quickPrompts/defaultInitPrompt/expertType/categoryId + avatars 资产经
+  受控资产端点 serve，TC-IMP-015）；
   URL 市场条目外源标记 `external`（文档语义：
   只镜像清单内联条目）；
 - 市场条目字段（name、source、version、strict、commands、agents、skills、hooks、mcpServers）可与插件 Manifest 合并，检查冲突；

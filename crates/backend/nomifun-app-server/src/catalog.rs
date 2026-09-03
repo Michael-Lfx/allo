@@ -594,6 +594,12 @@ impl AgentCatalogProvider for FakeAgentCatalog {
             background: None,
             isolation: None,
             permission_mode_ignored: false,
+            display_description: None,
+            quick_prompts: vec![],
+            tags: vec![],
+            default_init_prompt: None,
+            expert_type: None,
+            category_id: None,
         })
     }
 }

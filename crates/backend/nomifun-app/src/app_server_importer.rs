@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityStatus,
     AppServerCompatibilityTriple, AppServerImportComponent, AppServerImportDetail,
-    AppServerImportRequest, AppServerImportResult, AppServerImportSummary, AppServerTeamDetail,
-    AppServerTeamSummary,
+    AppServerImportRequest, AppServerImportResult, AppServerImportSummary, AppServerLocalizedText,
+    AppServerTeamDetail, AppServerTeamSummary,
 };
 use nomifun_app_server::{AgentCatalogProvider, ImportProvider, TeamCatalogProvider};
 use nomifun_common::AppError;
@@ -174,6 +174,56 @@ fn string_field(value: &serde_json::Value, key: &str) -> Option<String> {
     value.get(key).and_then(|value| value.as_str()).map(str::to_owned)
 }
 
+fn localized_field(value: &serde_json::Value, key: &str) -> Option<AppServerLocalizedText> {
+    let field = value.get(key)?;
+    let mut out = AppServerLocalizedText { en: None, zh: None };
+    match field {
+        serde_json::Value::String(text) => out.zh = Some(text.clone()),
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                if let Some(text) = v.as_str() {
+                    match k.as_str() {
+                        "en" => out.en = Some(text.to_owned()),
+                        "zh" => out.zh = Some(text.to_owned()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    if out.en.is_none() && out.zh.is_none() { None } else { Some(out) }
+}
+
+fn localized_list(value: &serde_json::Value, key: &str) -> Vec<AppServerLocalizedText> {
+    value
+        .get(key)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    serde_json::Value::String(text) => Some(AppServerLocalizedText { en: None, zh: Some(text.clone()) }),
+                    serde_json::Value::Object(map) => {
+                        let mut out = AppServerLocalizedText { en: None, zh: None };
+                        for (k, v) in map {
+                            if let Some(text) = v.as_str() {
+                                match k.as_str() {
+                                    "en" => out.en = Some(text.to_owned()),
+                                    "zh" => out.zh = Some(text.to_owned()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if out.en.is_none() && out.zh.is_none() { None } else { Some(out) }
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn string_array(value: &serde_json::Value, key: &str) -> Vec<String> {
     value
         .get(key)
@@ -245,6 +295,9 @@ fn agent_summary(row: &PluginSnapshotComponentRow) -> AppServerAgentSummary {
         tool_policy_summary,
         source: string_field(&value, "source").unwrap_or_else(|| "imported".into()),
         compatibility_status: semantic_status(&triple),
+        display_name: localized_field(&value, "display_name"),
+        profession: localized_field(&value, "profession"),
+        avatar_url: asset_url(&value, row),
     }
 }
 
@@ -262,7 +315,25 @@ fn agent_detail(row: &PluginSnapshotComponentRow) -> AppServerAgentDetail {
             .get("permission_mode_ignored")
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
+        display_description: localized_field(&value, "display_description"),
+        quick_prompts: localized_list(&value, "quick_prompts"),
+        tags: localized_list(&value, "tags"),
+        default_init_prompt: localized_field(&value, "default_init_prompt"),
+        expert_type: string_field(&value, "expert_type"),
+        category_id: string_field(&value, "category_id"),
     }
+}
+
+/// Build the public asset URL for an avatar declared as a snapshot-relative
+/// path (`avatars/expert.png`). The asset endpoint validates the path and
+/// serves only whitelisted types; `None` when no avatar was declared.
+fn asset_url(value: &serde_json::Value, row: &PluginSnapshotComponentRow) -> Option<String> {
+    let avatar = value.get("avatar").and_then(|value| value.as_str())?;
+    Some(format!(
+        "/api/app-server/imports/{}/assets/{}",
+        row.snapshot_id,
+        avatar.trim_start_matches('/')
+    ))
 }
 
 /// Team catalog over snapshot components (docs 05 §4.2).

@@ -1,4 +1,4 @@
-﻿//! Importer acceptance tests mapped to `docs/agent-store/agent-store-v1-test-cases.md`
+//! Importer acceptance tests mapped to `docs/agent-store/agent-store-v1-test-cases.md`
 //! TC-IMP-001..009. Static fixtures live in `tests/fixtures/`; dynamic
 //! malicious trees (symlink escape) are built at runtime.
 
@@ -641,6 +641,48 @@ async fn tc_imp_014_single_skill_directory_without_marketplace_json() {
     assert_eq!(count_kind(&comps, "skill"), 1);
     let skill = find_kind(&comps, "skill").pop().unwrap();
     assert_eq!(skill.component_id, "wb-market-single-skill-dir-single-skill-dir");
+}
+
+/// Display metadata preservation (real WorkBuddy experts): `plugin.json` +
+/// agent frontmatter carry localized displayName / profession / description /
+/// tags / quickPrompts / defaultInitPrompt / avatar. All of them must survive
+/// the import into the component payload (02 §5.1 extension).
+#[tokio::test]
+async fn tc_imp_015_display_metadata_preserved() {
+    let (service, _temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("display-metadata"),
+            source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+    assert!(result.status == "completed" || result.status == "completed-with-warnings", "{result:?}");
+    let comps = repo.get_components(&result.snapshot_id).await.unwrap();
+    let agent = find_kind(&comps, "agent").pop().unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&agent.payload_json).unwrap();
+    // Localized display metadata: the plugin manifest is the market card
+    // source of truth (wins over the agent frontmatter's own displayName).
+    assert_eq!(payload["display_name"]["zh"], "FBSir", "{payload}");
+    assert_eq!(payload["profession"]["zh"], "超级合伙人", "{payload}");
+    assert_eq!(payload["display_description"]["zh"], "带上目标或真实材料。", "{payload}");
+    assert_eq!(payload["default_init_prompt"]["zh"], "交付魔镜行动启动卡。", "{payload}");
+    assert_eq!(payload["avatar"], "avatars/expert.png", "{payload}");
+    let quick = payload["quick_prompts"].as_array().unwrap();
+    assert_eq!(quick.len(), 2, "{payload}");
+    assert_eq!(quick[0]["zh"], "交付魔镜行动启动卡。");
+    assert_eq!(quick[1]["en"], "Use material red team on my attachment.");
+    let tags = payload["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 2, "{payload}");
+    assert_eq!(tags[1]["zh"], "决策");
+    assert_eq!(payload["expert_type"], "agent");
+    assert_eq!(payload["category_id"], "12-IndustryConsultant");
+    // The avatar asset itself was copied into the immutable snapshot.
+    let snapshot_dir = service.snapshot_root().join(&result.snapshot_id);
+    assert!(snapshot_dir.join("avatars/expert.png").is_file(), "avatar asset must be in the snapshot");
 }
 
 // ---------------------------------------------------------------------------

@@ -108,6 +108,11 @@ impl ImporterService {
         Self { snapshot_root, repo }
     }
 
+    /// The immutable snapshot cache root (`{work_dir}/agent-store-imports/`).
+    pub fn snapshot_root(&self) -> &std::path::Path {
+        &self.snapshot_root
+    }
+
     pub async fn run_import(
         &self,
         request: &ImportRequest,
@@ -400,6 +405,41 @@ impl ComponentBuilder {
     }
 }
 
+/// Attach plugin-level display metadata (`plugin.json`) to an agent payload.
+/// The market card is the primary display surface, so plugin manifest values
+/// WIN over agent-frontmatter values (`plugin.json` is the market's source of
+/// truth for display name/profession; the frontmatter only carries the agent
+/// definition's own presentation when no manifest field exists).
+fn attach_plugin_display(payload: &mut serde_json::Value, manifest: &PluginManifest) {
+    if let Some(text) = &manifest.display_name {
+        payload["display_name"] = serde_json::to_value(text).unwrap_or_default();
+    }
+    if let Some(text) = &manifest.profession {
+        payload["profession"] = serde_json::to_value(text).unwrap_or_default();
+    }
+    if let Some(text) = &manifest.display_description {
+        payload["display_description"] = serde_json::to_value(text).unwrap_or_default();
+    }
+    if let Some(prompt) = &manifest.default_init_prompt {
+        payload["default_init_prompt"] = serde_json::to_value(prompt).unwrap_or_default();
+    }
+    if !manifest.quick_prompts.is_empty() {
+        payload["quick_prompts"] = serde_json::to_value(&manifest.quick_prompts).unwrap_or_default();
+    }
+    if !manifest.tags.is_empty() {
+        payload["tags"] = serde_json::to_value(&manifest.tags).unwrap_or_default();
+    }
+    if let Some(avatar) = &manifest.avatar {
+        payload["avatar"] = json!(avatar);
+    }
+    if let Some(expert_type) = &manifest.expert_type {
+        payload["expert_type"] = json!(expert_type);
+    }
+    if let Some(category_id) = &manifest.category_id {
+        payload["category_id"] = json!(category_id);
+    }
+}
+
 fn build_plugin_components(
     source: &Path,
     manifest: &PluginManifest,
@@ -431,6 +471,11 @@ fn build_plugin_components(
                     let id = component_id(&meta.plugin_id, &stem);
                     let mut payload = doc.to_payload(&id, &builder.version, &rel);
                     payload["source"] = json!(meta.source_kind.as_str());
+                    // Plugin-level display metadata: the agent frontmatter
+                    // may carry its own displayName/profession; the plugin
+                    // manifest fields are the source of truth for the market
+                    // card, so they attach whenever present.
+                    attach_plugin_display(&mut payload, manifest);
                     let component = Component::new(
                         crate::models::KIND_AGENT,
                         id.clone(),

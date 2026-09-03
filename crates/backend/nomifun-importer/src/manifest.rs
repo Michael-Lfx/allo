@@ -35,6 +35,86 @@ pub struct TeamInfo {
     pub expert_type: Option<String>,
 }
 
+/// Localized display metadata. Real markets emit both a plain string
+/// (`"displayName": "FBSir"`) and a locale map
+/// (`{"en": "...", "zh": "..."}`); both normalize to a locale map.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LocalizedText {
+    pub en: Option<String>,
+    pub zh: Option<String>,
+}
+
+impl LocalizedText {
+    /// First value that is non-empty, preferring `zh` when both exist.
+    pub fn primary(&self) -> Option<&str> {
+        self.zh.as_deref().or(self.en.as_deref())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.en.is_none() && self.zh.is_none()
+    }
+}
+
+fn deserialize_localized_text<'de, D>(deserializer: D) -> Result<Option<LocalizedText>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::String(text) if !text.is_empty() => Some(LocalizedText { en: None, zh: Some(text) }),
+        serde_json::Value::Object(map) => {
+            let mut out = LocalizedText::default();
+            for (key, value) in map {
+                if let Some(text) = value.as_str() {
+                    match key.as_str() {
+                        "en" => out.en = Some(text.to_owned()),
+                        "zh" => out.zh = Some(text.to_owned()),
+                        _ => {}
+                    }
+                }
+            }
+            if out.is_empty() { None } else { Some(out) }
+        }
+        _ => None,
+    })
+}
+
+/// A list of localized strings (`quickPrompts` / `tags`): either an array of
+/// plain strings (`["text-a", "text-b"]`) or an array of locale maps
+/// (`[{"en": "...", "zh": "..."}]`). Each item retains its own locale pair.
+fn deserialize_localized_list<'de, D>(deserializer: D) -> Result<Vec<LocalizedText>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                serde_json::Value::String(text) if !text.is_empty() => {
+                    Some(LocalizedText { en: None, zh: Some(text) })
+                }
+                serde_json::Value::Object(map) => {
+                    let mut out = LocalizedText::default();
+                    for (key, value) in map {
+                        if let Some(text) = value.as_str() {
+                            match key.as_str() {
+                                "en" => out.en = Some(text.to_owned()),
+                                "zh" => out.zh = Some(text.to_owned()),
+                                _ => {}
+                            }
+                        }
+                    }
+                    if out.is_empty() { None } else { Some(out) }
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
 /// CodeBuddy/WorkBuddy `plugin.json` declared subset (02 §4).
 ///
 /// Wire keys are camelCase (`teamInfo`, `userConfig`, `mcpServers`,
@@ -78,6 +158,30 @@ pub struct PluginManifest {
     pub dependencies: Vec<serde_json::Value>,
     #[serde(default)]
     pub team_info: Option<TeamInfo>,
+    /// Localized display metadata (real WorkBuddy experts carry all of these;
+    /// none of them affect the runtime, so all stay optional).
+    #[serde(default, deserialize_with = "deserialize_localized_text")]
+    pub display_name: Option<LocalizedText>,
+    #[serde(default, deserialize_with = "deserialize_localized_text")]
+    pub profession: Option<LocalizedText>,
+    #[serde(default, deserialize_with = "deserialize_localized_text")]
+    pub display_description: Option<LocalizedText>,
+    #[serde(default)]
+    pub default_init_prompt: Option<LocalizedText>,
+    #[serde(default, deserialize_with = "deserialize_localized_list")]
+    pub quick_prompts: Vec<LocalizedText>,
+    #[serde(default, deserialize_with = "deserialize_localized_list")]
+    pub tags: Vec<LocalizedText>,
+    /// Relative path to the avatar asset (e.g. `avatars/expert.png`). The
+    /// asset itself is already copied into the immutable snapshot.
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub expert_type: Option<String>,
+    #[serde(default)]
+    pub category_id: Option<String>,
+    #[serde(default)]
+    pub agent_name: Option<String>,
 }
 
 impl PluginManifest {

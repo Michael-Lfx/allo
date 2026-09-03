@@ -1,0 +1,51 @@
+{
+  "name": "fbsir-super-partner",
+  "version": "26.7.15",
+  "description": "A single execution partner that delivers a usable artifact now.",
+  "author": {
+    "name": "FBSir",
+    "email": "unique@u3w.com"
+  },
+  "license": "MIT",
+  "agents": [
+    "./agents/fbsir-super-partner.md"
+  ],
+  "skills": [
+    "./skills/super-partner-core"
+  ],
+  "expertType": "agent",
+  "agentName": "fbsir-super-partner",
+  "displayName": {
+    "en": "FBSir",
+    "zh": "FBSir"
+  },
+  "profession": {
+    "en": "Super Partner",
+    "zh": "超级合伙人"
+  },
+  "displayDescription": {
+    "en": "Bring a goal or real material.",
+    "zh": "带上目标或真实材料。"
+  },
+  "avatar": "avatars/expert.png",
+  "categoryId": "12-IndustryConsultant",
+  "defaultInitPrompt": {
+    "en": "Deliver a Mirror Action Launch Card now.",
+    "zh": "交付魔镜行动启动卡。"
+  },
+  "plugin": "fbsir-super-partner",
+  "tags": [
+    { "en": "Execution", "zh": "近期执行" },
+    { "en": "Decision", "zh": "决策" }
+  ],
+  "quickPrompts": [
+    {
+      "en": "Deliver a Mirror Action Launch Card now.",
+      "zh": "交付魔镜行动启动卡。"
+    },
+    {
+      "en": "Use material red team on my attachment.",
+      "zh": "用材料红队审视我的附件。"
+    }
+  ]
+}
