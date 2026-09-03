@@ -22,7 +22,7 @@ use crate::runtime_state::{AgentTurnCancellation, ConversationRuntimeStateServic
 use nomifun_api_types::{AgentErrorCode, ConversationRuntimeSummary, WebSocketMessage};
 use nomifun_common::{
     CompanionId, ErrorChain, MessageId, generate_id, normalize_keys_to_snake_case, now_ms,
-    stage_direction::StageDirectionFilter,
+    ProviderWithModel, stage_direction::StageDirectionFilter,
 };
 
 use crate::service::ConversationService;
@@ -1867,6 +1867,11 @@ pub struct StreamRelay {
     /// the final database commit barrier. Runtime event payloads are untrusted:
     /// a marker proves an atomic DB transition, not that bytes exist.
     artifact_workspace: Option<PathBuf>,
+    /// Effective provider/model for the current relay attempt. These values
+    /// are stamped onto terminal errors so historical diagnostics remain
+    /// accurate after a later model switch or failover.
+    error_model_id: Option<String>,
+    error_provider_id: Option<String>,
 }
 
 impl StreamRelay {
@@ -1927,6 +1932,8 @@ impl StreamRelay {
             primary_message_owner: StdMutex::new(PrimaryMessageOwner::Unclaimed),
             root_state_error: StdMutex::new(None),
             artifact_workspace: None,
+            error_model_id: None,
+            error_provider_id: None,
         }
     }
 
@@ -1975,6 +1982,20 @@ impl StreamRelay {
 
     pub fn with_artifact_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
         self.artifact_workspace = Some(workspace.into());
+        self
+    }
+
+    /// Attach the effective model for this relay attempt to terminal errors.
+    /// `use_model` is the runtime's selected model override when present.
+    pub fn with_model_context(mut self, model: Option<&ProviderWithModel>) -> Self {
+        self.error_model_id = model.map(|model| {
+            model
+                .use_model
+                .as_deref()
+                .unwrap_or(&model.model)
+                .to_owned()
+        });
+        self.error_provider_id = model.map(|model| model.provider_id.clone());
         self
     }
 
@@ -2054,7 +2075,8 @@ impl StreamRelay {
         event: &AgentStreamEvent,
         cancellation: &AgentTurnCancellation,
     ) -> bool {
-        let AgentStreamEvent::Error(data) = event else {
+        let event = self.annotate_error_event(event.clone());
+        let AgentStreamEvent::Error(data) = &event else {
             return false;
         };
         if !cancellation.try_claim_terminal_surface() {
@@ -2066,7 +2088,7 @@ impl StreamRelay {
             return false;
         }
         let error_message_id = ConversationService::mint_msg_id();
-        self.forward_to_websocket_with_msg_id(&error_message_id, event);
+        self.forward_to_websocket_with_msg_id(&error_message_id, &event);
         // This projection belongs to the still-authoritative turn owner.  Do
         // not detach or time out the insert: cancelling an in-flight database
         // future can make its commit result ambiguous and lets a later turn
@@ -2255,6 +2277,7 @@ impl StreamRelay {
                     {
                         event = Self::cancelled_finish_event();
                     }
+                    event = self.annotate_error_event(event);
                     if !first_agent_event_logged {
                         first_agent_event_logged = true;
                         info!(
@@ -3587,6 +3610,19 @@ impl StreamRelay {
             AgentStreamEvent::RequestTrace(_) => "RequestTrace",
             AgentStreamEvent::SessionAssigned(_) => "SessionAssigned",
         }
+    }
+
+    fn annotate_error_event(&self, event: AgentStreamEvent) -> AgentStreamEvent {
+        let AgentStreamEvent::Error(mut data) = event else {
+            return event;
+        };
+        if data.model_id.is_none() {
+            data.model_id = self.error_model_id.clone();
+        }
+        if data.provider_id.is_none() {
+            data.provider_id = self.error_provider_id.clone();
+        }
+        AgentStreamEvent::Error(data)
     }
 
     fn terminal_from_event(event: &AgentStreamEvent) -> RelayTerminal {
@@ -6257,6 +6293,35 @@ mod tests {
         assert_eq!(attempt.billing_turn_id, "wire-turn-id");
         let rejected = attempt.with_billing_turn_id("a".repeat(65));
         assert_eq!(rejected.billing_turn_id, "wire-turn-id");
+    }
+
+    #[test]
+    fn relay_stamps_effective_model_on_unstructured_errors() {
+        let model = ProviderWithModel {
+            provider_id: "flowyai".into(),
+            model: "claude-3-7-sonnet".into(),
+            use_model: Some("claude-sonnet-4-20250514".into()),
+        };
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            Arc::new(RecordingRepo::new()),
+            Arc::new(TestUserEventBus::new(8)),
+            None,
+        )
+        .with_model_context(Some(&model));
+
+        let annotated = relay.annotate_error_event(AgentStreamEvent::Error(ErrorEventData::legacy(
+            "provider failed",
+            Some(AgentErrorCode::UserLlmProviderNetworkError),
+        )));
+        let AgentStreamEvent::Error(data) = annotated else {
+            panic!("expected an error event");
+        };
+
+        assert_eq!(data.model_id.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert_eq!(data.provider_id.as_deref(), Some("flowyai"));
     }
 
     #[test]

@@ -22,6 +22,20 @@ import {
 } from './chatLib';
 
 describe('agent stream error normalization', () => {
+  test('preserves the effective model and provider identifiers', () => {
+    expect(
+      normalizeAgentStreamError({
+        message: 'provider failed',
+        model_id: 'claude-sonnet-4-20250514',
+        provider_id: '019c0000-0000-7000-8000-000000000005',
+        code: 'USER_LLM_PROVIDER_NETWORK_ERROR',
+      })
+    ).toMatchObject({
+      model_id: 'claude-sonnet-4-20250514',
+      provider_id: '019c0000-0000-7000-8000-000000000005',
+    });
+  });
+
   test('preserves incident correlation and accepts historical errors without it', () => {
     expect(
       normalizeAgentStreamError({
@@ -117,6 +131,27 @@ describe('knowledge writeback attempt ordering', () => {
 });
 
 describe('transformMessage runtime field normalization', () => {
+  test('carries model identifiers from live error events into tips', () => {
+    const message = transformMessage(
+      baseWire({
+        type: 'error',
+        data: {
+          message: 'provider failed',
+          model_id: 'claude-sonnet-4-20250514',
+          provider_id: '019c0000-0000-7000-8000-000000000005',
+          code: 'USER_LLM_PROVIDER_NETWORK_ERROR',
+        },
+      })
+    );
+
+    expect(message?.type).toBe('tips');
+    if (!message || message.type !== 'tips') throw new Error('expected an error tips message');
+    expect(message.content.error).toMatchObject({
+      model_id: 'claude-sonnet-4-20250514',
+      provider_id: '019c0000-0000-7000-8000-000000000005',
+    });
+  });
+
   test('keeps ACP permission option kinds for localized labels and omits unknown kinds', () => {
     const message = transformMessage(
       baseWire({

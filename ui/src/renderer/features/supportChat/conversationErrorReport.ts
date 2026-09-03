@@ -64,6 +64,8 @@ export function buildConversationErrorReportMetadata(context: ConversationErrorR
     ...(diagnostic.incidentId ? { incidentId: diagnostic.incidentId } : {}),
     error: {
       message: safeMessage,
+      ...(diagnostic.modelId ? { modelId: diagnostic.modelId } : {}),
+      ...(diagnostic.providerId ? { providerId: diagnostic.providerId } : {}),
       ...(diagnostic.code ? { code: diagnostic.code } : {}),
       ...(diagnostic.ownership ? { ownership: diagnostic.ownership } : {}),
       ...(error.retryable !== undefined ? { retryable: error.retryable } : {}),
