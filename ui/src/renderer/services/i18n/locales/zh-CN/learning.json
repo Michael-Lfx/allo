@@ -1,9 +1,5 @@
 {
   "title": "学习",
-  "dev": {
-    "tag": "dev",
-    "navTooltip": "学习（dev）"
-  },
   "subtitle": "基于知识库的课程、练习、掌握度与间隔复习",
   "tagsEmpty": "未设置标签",
   "tagsLabel": "标签",
@@ -336,7 +332,7 @@
   "learningGraphBeta": "Beta",
   "learningGraphTabTitle": "学习图",
   "learningGraphGoalInputLabel": "学习目标",
-  "learningGraphGoalInputPlaceholder": "例如：我想通盘认识期权交易的基础框架",
+  "learningGraphGoalInputPlaceholder": "例如：通盘认识期权交易的基础框架",
   "learningGraphCreateHint": "内容复杂、边界不明确或想覆盖整个领域时，用学习图把目标拆成一张前置依赖网络：每个节点一次学习，按推荐顺序推进。",
   "learningGraphRecommendedShort": "推荐",
   "learningGraphStatusNotStarted": "未开始",

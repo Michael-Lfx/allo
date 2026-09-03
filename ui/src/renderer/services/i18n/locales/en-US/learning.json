@@ -1,9 +1,5 @@
 {
   "title": "Learning",
-  "dev": {
-    "tag": "dev",
-    "navTooltip": "Learning (dev)"
-  },
   "subtitle": "Knowledge-backed courses, practice, mastery, and spaced review",
   "tagsEmpty": "No tags yet",
   "tagsLabel": "Tags",
@@ -336,7 +332,7 @@
   "learningGraphBeta": "Beta",
   "learningGraphTabTitle": "Learning Graph",
   "learningGraphGoalInputLabel": "Learning goal",
-  "learningGraphGoalInputPlaceholder": "e.g. I want a complete picture of options trading basics",
+  "learningGraphGoalInputPlaceholder": "e.g. a complete picture of options trading basics",
   "learningGraphCreateHint": "When the topic is complex or open-ended, a learning graph splits your goal into a prerequisite network: one node per study session, follow the recommendations in order.",
   "learningGraphRecommendedShort": "Next",
   "learningGraphStatusNotStarted": "Not started",
