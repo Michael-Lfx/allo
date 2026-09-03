@@ -30,11 +30,14 @@ const NODE_HEIGHT = 54;
  * 学习进度五态色板（Arco 语义 token，随主题切换）：
  * not_started 中性、in_progress 主色、completed 成功绿、
  * skipped 灰（已声明掌握）、recommended 琥珀（下一步推荐）。
+ * 注意：主题体系未导出 warning/primary/success 的 `-6` 色阶变量，
+ * 必须带字面 fallback——SVG stroke 的 var() 失效时会 fallback 到
+ * 初始值 none，连线直接消失（HTML 属性只是变色，不会消失）。
  */
 const STATUS_COLOR: Record<LessonStatus, string> = {
   not_started: 'var(--color-text-4)',
-  in_progress: 'var(--color-primary-6)',
-  completed: 'var(--color-success-6)',
+  in_progress: 'var(--color-primary-6, #165dff)',
+  completed: 'var(--color-success-6, #00b42a)',
   skipped: 'var(--color-text-3)',
 };
 
@@ -56,7 +59,7 @@ type GraphFlowNode = Node<
 const GraphNodeInner: React.FC<NodeProps<GraphFlowNode>> = ({ data }) => {
   const { t } = useTranslation();
   const accent = data.recommended
-    ? 'var(--color-warning-6)'
+    ? 'var(--color-warning-6, #ff7d00)'
     : data.locked
       ? 'var(--color-text-4)'
       : STATUS_COLOR[data.status];
@@ -148,16 +151,26 @@ function layoutGraph(
     };
   });
   // 汇入推荐节点的边用琥珀描边做视线引导，其余保持极淡的背景级灰。
+  // 琥珀 token 必须带字面 fallback（见 STATUS_COLOR 注释）：var() 失效时
+  // SVG stroke 变 none，推荐节点的全部前置线会从图上消失。
   const flowEdges = edges.map<Edge>((edge) => {
     const highlighted = recommendedSet.has(edge.to);
-    const stroke = highlighted ? 'var(--color-warning-6)' : 'var(--color-border-2)';
+    const stroke = highlighted
+      ? 'var(--color-warning-6, #ff7d00)'
+      : 'var(--color-border-2)';
     return {
       id: `${edge.from}->${edge.to}`,
       source: edge.from,
       target: edge.to,
       sourceHandle: 'graph-source',
       targetHandle: 'graph-target',
-      style: { stroke, strokeWidth: highlighted ? 1.5 : 1 },
+      // non-scaling-stroke：大图 fitView 后 zoom 极低，1px 线会被变换成
+      // 亚像素而视觉消失；锁定屏幕像素宽度让连线在任何缩放级别可见。
+      style: {
+        stroke,
+        strokeWidth: highlighted ? 1.5 : 1,
+        vectorEffect: 'non-scaling-stroke',
+      },
       markerEnd: {
         type: MarkerType.ArrowClosed,
         width: 10,
@@ -239,7 +252,9 @@ const GraphDagView: React.FC<GraphDagViewProps> = ({
           nodeColor={(node) => {
             const data = (node as GraphFlowNode).data;
             if (data.locked) return 'var(--color-text-4)';
-            return data.recommended ? 'var(--color-warning-6)' : STATUS_COLOR[data.status];
+            return data.recommended
+              ? 'var(--color-warning-6, #ff7d00)'
+              : STATUS_COLOR[data.status];
           }}
         />
       </ReactFlow>

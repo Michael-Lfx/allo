@@ -217,7 +217,6 @@ impl LiveLessonContentAgentEngine {
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
-            false,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -299,7 +298,6 @@ impl LiveLessonContentAgentEngine {
                 REPAIR_MAX_ROUNDS,
                 AGENT_MAX_TOKENS,
                 ThinkingConfig::Disabled,
-                false,
                 "repair",
                 Some(ctx.as_ref()),
             )
@@ -1071,7 +1069,6 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
-            false,
             "generate",
             Some(ctx.as_ref()),
         )

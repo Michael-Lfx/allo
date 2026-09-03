@@ -240,7 +240,9 @@ function LessonSourcePanel({
   );
 }
 
-function LessonBlock({
+/** 普通课程与学习图课程共用的课时学习块：未生成时展示目的与生成入口，
+ * 已生成时渲染 Markdown 正文、练习题、原文面板与追加练习题。 */
+export function LessonBlock({
   lesson,
   sourceKbId,
   busyId,
@@ -311,16 +313,6 @@ function LessonBlock({
         <Text type='secondary'>
           {lesson.estimated_minutes} {t('learning.minutes')}
         </Text>
-        {lesson.status !== 'completed' && (
-          <Button
-            size='small'
-            type='primary'
-            loading={busyId === lesson.id}
-            onClick={() => onProgress(lesson, 'completed')}
-          >
-            {t('learning.complete')}
-          </Button>
-        )}
       </div>
       {lesson.source && (
         <LessonSourcePanel knowledgeBaseId={sourceKbId} source={lesson.source} />
@@ -339,6 +331,19 @@ function LessonBlock({
             />
           ))}
         </div>
+      )}
+      {/* 完成是学习循环的终点动作：放在练习题之后，做完再标记——学习图
+          工作区完成即推进到下一推荐节点，提前放置会诱导用户在练习未做时
+          点完成而被跳走（普通课程完成后同样跳 next_lesson，一并受益） */}
+      {lesson.status !== 'completed' && (
+        <Button
+          type='primary'
+          className='self-start'
+          loading={busyId === lesson.id}
+          onClick={() => onProgress(lesson, 'completed')}
+        >
+          {t('learning.complete')}
+        </Button>
       )}
       {/* 仅已生成课时可追加练习（手动创建或 AI 生成） */}
       <div className='rounded-10px border border-dashed border-[var(--color-border-2)] p-10px'>

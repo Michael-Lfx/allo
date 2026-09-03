@@ -4,14 +4,14 @@ import { Button, Card, Spin, Tag, Typography } from '@arco-design/web-react';
 const { Text } = Typography;
 
 /** 后台生成悬浮指示条：创建对话框关闭后，生成仍在 HTTP 请求内继续——
- * 运行中/失败/完成三种状态都从这里回到对话框进度视图，运行中可取消。 */
+ * 运行中/失败/取消/完成四种状态都从这里回到对话框进度视图，运行中可取消。 */
 export function CourseGenerationPill({
   status,
   topic,
   onView,
   onCancel,
 }: {
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   topic: string;
   onView: () => void;
   onCancel: () => void;
@@ -22,7 +22,9 @@ export function CourseGenerationPill({
       ? t('learning.genBgRunning')
       : status === 'failed'
         ? t('learning.genBgFailed')
-        : t('learning.genBgDone');
+        : status === 'cancelled'
+          ? t('learning.genCancelled')
+          : t('learning.genBgDone');
   return (
     <div className='fixed right-24px bottom-24px z-100'>
       <Card size='small' className='shadow-lg'>
@@ -30,8 +32,12 @@ export function CourseGenerationPill({
           {status === 'running' ? (
             <Spin size={14} />
           ) : (
-            <Tag size='small' color={status === 'failed' ? 'red' : 'green'} className='!mx-0'>
-              {status === 'failed' ? '✕' : '✓'}
+            <Tag
+              size='small'
+              color={status === 'failed' ? 'red' : status === 'cancelled' ? 'orange' : 'green'}
+              className='!mx-0'
+            >
+              {status === 'completed' ? '✓' : '✕'}
             </Tag>
           )}
           <div className='min-w-0 max-w-260px'>

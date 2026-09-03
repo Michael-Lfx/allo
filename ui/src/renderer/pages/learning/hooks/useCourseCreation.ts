@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
@@ -8,10 +8,11 @@ import { learningApi } from '../api';
 import type { CourseDetail, GenerateCourseRequest } from '../types';
 import { errorMessage, type Translate } from '../utils';
 
-/** 对话框内生成视图的一次完整尝试：运行中 / 已完成（课程入库）/ 失败。
+/** 对话框内生成视图的一次完整尝试：运行中 / 已完成（课程入库）/
+ * 失败 / 已取消（用户主动取消，学习图草稿保留可续建）。
  * request 保留用于失败后的「重试」。 */
 export interface CourseGenerationState {
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   request: GenerateCourseRequest;
   result: CourseDetail | null;
   error: string | null;
@@ -38,6 +39,10 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState<string>();
   const [generationDomain, setGenerationDomain] = useState('');
   const [generation, setGeneration] = useState<CourseGenerationState | null>(null);
+  // 用户取消标记：cancelGeneration 被服务端受理（cancelled=true）后置位，
+  // 挂起的生成请求随后以任意错误形态返回——据此呈现中性的「已取消」终态
+  // 而非失败。取消动作与终态判定在同一 hook 内闭合，不依赖后端错误码。
+  const cancelRequestedRef = useRef(false);
 
   const openGenerator = useCallback(async () => {
     setGenerateVisible(true);
@@ -60,21 +65,33 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     }
   }, [t]);
 
+  // 「创建课程」入口：终态（cancelled/failed/completed）视为已消费——清掉
+  // 残留回到表单，否则对话框永远停在上一次的重试/取消视图，无法再次创建；
+  // 运行中保持不变（重开对话框回到进度视图）。悬浮指示条的「查看」仍走
+  // openGenerator，保留查看终态详情的入口。
+  const openCreateForm = useCallback(() => {
+    setGeneration((current) => (current && current.status === 'running' ? current : null));
+    void openGenerator();
+  }, [openGenerator]);
+
   const generateCourse = useCallback(
     async (request: GenerateCourseRequest) => {
+      cancelRequestedRef.current = false;
       setBusyId('generate');
       setGeneration({ status: 'running', request, result: null, error: null });
       try {
         const detail = await learningApi.generateCourse(request);
         setGeneration({ status: 'completed', request, result: detail, error: null });
       } catch (actionError) {
+        const cancelled = cancelRequestedRef.current;
         setGeneration({
-          status: 'failed',
+          status: cancelled ? 'cancelled' : 'failed',
           request,
           result: null,
-          error: errorMessage(t, actionError),
+          error: cancelled ? null : errorMessage(t, actionError),
         });
       } finally {
+        cancelRequestedRef.current = false;
         setBusyId(null);
       }
     },
@@ -126,9 +143,12 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 仅当续建不可用（草稿过期/重启 404、引擎未配置 409）时回退全量重生
   // 成——续建本身再失败时不回退，草稿仍在，再次重试还会接着建。
   const retryGeneration = useCallback(() => {
-    if (generation?.status !== 'failed') return;
+    if (generation?.status !== 'failed' && generation?.status !== 'cancelled') return;
     const failed = generation;
-    if (failed.request.course_kind !== 'learning_graph') {
+    cancelRequestedRef.current = false;
+    // 取消不保留草稿：取消后的重试直接全量重生成；仅真实失败的学习图走
+    // 续建（草稿仍存活时接续，404/409 再回退全量）。
+    if (failed.request.course_kind !== 'learning_graph' || failed.status === 'cancelled') {
       void generateCourse(failed.request);
       return;
     }
@@ -147,6 +167,15 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
           error: null,
         });
       } catch (resumeError) {
+        if (cancelRequestedRef.current) {
+          setGeneration({
+            status: 'cancelled',
+            request: failed.request,
+            result: null,
+            error: null,
+          });
+          return;
+        }
         const resumeUnavailable =
           isBackendHttpError(resumeError) &&
           (resumeError.status === 404 || resumeError.status === 409);
@@ -168,14 +197,16 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
             error: null,
           });
         } catch (retryError) {
+          const cancelled = cancelRequestedRef.current;
           setGeneration({
-            status: 'failed',
+            status: cancelled ? 'cancelled' : 'failed',
             request: failed.request,
             result: null,
-            error: errorMessage(t, retryError),
+            error: cancelled ? null : errorMessage(t, retryError),
           });
         }
       } finally {
+        cancelRequestedRef.current = false;
         setBusyId(null);
       }
     })();
@@ -209,6 +240,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     try {
       const result = await learningApi.cancelGeneration();
       if (result.cancelled) {
+        cancelRequestedRef.current = true;
         Message.success(t('learning.genCancelRequested'));
       } else {
         Message.info(t('learning.genNotRunning'));
@@ -251,6 +283,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     setGenerationDomain,
     generation,
     openGenerator,
+    openCreateForm,
     submitGeneration,
     retryGeneration,
     closeGenerator,

@@ -43,6 +43,11 @@ pub(crate) const AGENT_MAX_TOKENS: u32 = 8192;
 /// systematically broken.
 const ROUND_RETRY_LIMIT: usize = 3;
 
+/// 同轮重试耗尽后的降级上限：把损坏作为轮内反馈注入对话（模型重发/拆小
+/// 批次），而不是判死整个会话。连续超过该次数说明网关系统性损坏，继续只
+/// 是烧钱——以原错误失败（轮次上限是另一道兜底）。
+const CORRUPT_FEEDBACK_LIMIT: usize = 5;
+
 /// Whether a mid-stream `LlmEvent::Error` may be answered by re-sending the
 /// identical round request. Malformed tool-call arguments JSON (a model
 /// syntax slip, or a gateway dropping a delta chunk while still finishing
@@ -161,7 +166,11 @@ pub(crate) fn stop_reason_name(reason: Option<StopReason>) -> String {
 /// 30-round generation. `loop_label` names the loop and `sink` (when given)
 /// streams one `agent_round` event per round into the host's event channel
 /// so a failed run stays diagnosable offline. Transient provider faults at
-/// the stream open get one retry (see [`open_stream_with_retry`]).
+/// the stream open get one retry (see [`open_stream_with_retry`]). A
+/// corrupted tool-call arguments JSON is shared-loop resilience, applied
+/// uniformly to every consumer: first retried verbatim (same round), then —
+/// once the retry budget is spent — downgraded to an in-loop feedback
+/// message so the model can re-plan (see [`CORRUPT_FEEDBACK_LIMIT`]).
 pub(crate) async fn run_agent_loop(
     provider: Arc<dyn LlmProvider>,
     model: &str,
@@ -171,7 +180,6 @@ pub(crate) async fn run_agent_loop(
     max_rounds: usize,
     max_tokens: u32,
     thinking: ThinkingConfig,
-    round_retry: bool,
     loop_label: &str,
     sink: Option<&dyn LoopEventSink>,
 ) -> Result<String, AppError> {
@@ -197,6 +205,7 @@ pub(crate) async fn run_agent_loop(
     let mut round = 0usize;
     let mut round_retries: usize = 0;
     let mut retried_round: Option<usize> = None;
+        let mut corrupt_feedbacks: usize = 0;
     while round < max_rounds {
         let request = LlmRequest {
             model: model.to_owned(),
@@ -223,6 +232,7 @@ pub(crate) async fn run_agent_loop(
         let mut stop_reason: Option<StopReason> = None;
         let mut done = false;
         let mut retry_round = false;
+        let mut feedback_round = false;
         while let Some(event) = rx.recv().await {
             match event {
                 LlmEvent::TextDelta(delta) => text.push_str(&delta),
@@ -243,11 +253,9 @@ pub(crate) async fn run_agent_loop(
                     // One same-round retry for a corrupted tool-call
                     // arguments JSON: the failed round executed nothing
                     // (fail-closed parse), so the identical request is
-                    // re-sent and the round index stays put. Gated by
-                    // `round_retry` — loops that did not opt in keep the
-                    // exact fail-fast behavior.
-                    if round_retry
-                        && round_retries < ROUND_RETRY_LIMIT
+                    // re-sent and the round index stays put. This is shared
+                    // loop resilience — every consumer benefits equally.
+                    if round_retries < ROUND_RETRY_LIMIT
                         && retried_round != Some(round)
                         && is_round_retryable_stream_error(&message)
                     {
@@ -264,6 +272,35 @@ pub(crate) async fn run_agent_loop(
                         retry_round = true;
                         break;
                     }
+                    // 降级路径（同轮重试不可用时）：损坏轮零副作用（fail-
+                    // closed 解析，历史未污染），把故障作为反馈注入对话让模
+                    // 型自己调整——重发这批操作或拆成更小的批次——而不是
+                    // 判死整个会话。这是共享循环韧性的下半段（与同轮重试同
+                    // 一故障的两级处置，所有循环一致）；独立的注入上限防止
+                    // 系统性损坏时无限烧钱。
+                    if corrupt_feedbacks < CORRUPT_FEEDBACK_LIMIT
+                        && is_round_retryable_stream_error(&message)
+                    {
+                        corrupt_feedbacks += 1;
+                        messages.push(Message::new(
+                            Role::User,
+                            vec![ContentBlock::Text {
+                                text: format!(
+                                    "系统提示：上一轮的工具调用参数格式有误（第 {corrupt_feedbacks} 次），该轮操作全部未执行。请重新提交这批操作；若单次提交内容较大，拆分成多次较小的提交。"
+                                ),
+                            }],
+                        ));
+                        if let Some(sink) = sink {
+                            sink.log("round_feedback", serde_json::json!({
+                                "loop": loop_label,
+                                "round": round + 1,
+                                "feedbacks_used": corrupt_feedbacks,
+                                "error": message,
+                            }));
+                        }
+                        feedback_round = true;
+                        break;
+                    }
                     if let Some(sink) = sink {
                         sink.log("agent_loop_end", serde_json::json!({
                             "loop": loop_label,
@@ -278,6 +315,12 @@ pub(crate) async fn run_agent_loop(
             }
         }
         if retry_round {
+            continue;
+        }
+        if feedback_round {
+            // 反馈轮是一次真实的模型交互：推进轮次预算，模型基于反馈重新
+            // 规划（损坏轮没有产生任何 tool call，跳过空结果处理）。
+            round += 1;
             continue;
         }
         if tool_uses.is_empty() {

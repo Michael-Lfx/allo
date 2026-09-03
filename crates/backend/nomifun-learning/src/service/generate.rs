@@ -38,6 +38,15 @@ impl LearningService {
             _ => unreachable!("validated request always carries one source"),
         };
         let _slot = self.acquire_generation_slot(user_id, kind_key)?;
+        // 登记生成注册（status/cancel 端点的唯一数据源，学习图流同样登
+        // 记）：RAII 守卫在请求结束——含客户端断连中止——时注销。主题取
+        // 描述前 120 字或知识库名，供悬浮指示条展示。
+        let topic: String = match (&brief.description, &brief.knowledge_base) {
+            (Some(description), _) => description.trim().chars().take(120).collect(),
+            (_, Some(kb)) => kb.name.clone(),
+            _ => unreachable!("validated request always carries one source"),
+        };
+        let _run = self.begin_generation(&topic);
         let session = generate_id();
         let model_override = request
             .provider_id
@@ -136,7 +145,8 @@ impl LearningService {
     /// Blueprint production: the injected two-loop agent engine owns the
     /// whole lifecycle (draft + `co_*` tools, audit-gated publish); without
     /// one the legacy one-shot pipeline runs (fallback for tests and
-    /// direct calls).
+    /// direct calls). The legacy fallback cannot observe the cancel flag
+    /// mid-call — production always has the engine injected.
     async fn generate_course_blueprint(
         &self,
         brief: &OutlineBrief,
