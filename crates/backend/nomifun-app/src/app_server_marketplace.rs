@@ -38,6 +38,10 @@ pub enum MarketKind {
     Connectors,
     /// `.codebuddy-skill/marketplace.json`: each skill is an entry.
     Skills,
+    /// `.codebuddy-plugin/marketplace.json`: each plugin (often under
+    /// `plugins/<id>/`) is an entry. This is the real WorkBuddy expert-market
+    /// layout (`marketplaces/experts/.codebuddy-plugin/marketplace.json`).
+    PluginMarket,
     /// `.codebuddy-plugin/plugin.json` at the root: the root itself is one
     /// plugin entry (CodeBuddy plugin directory).
     PluginRoot,
@@ -53,6 +57,7 @@ impl MarketKind {
         match self {
             Self::Connectors => "connector-market",
             Self::Skills => "skill-market",
+            Self::PluginMarket => "plugin-market",
             Self::PluginRoot => "plugin-root",
             Self::CliConnector => "cli-connector",
             Self::PluginCollection => "plugin-collection",
@@ -90,6 +95,12 @@ pub fn probe_directory(root: &Path) -> Result<(MarketKind, Vec<ScannedEntry>), A
     if root.join(".codebuddy-skill/marketplace.json").is_file() {
         let entries = probe_skill_market(root)?;
         return Ok((MarketKind::Skills, entries));
+    }
+    // 2b. plugin market: `.codebuddy-plugin/marketplace.json` (WorkBuddy
+    // expert markets; `plugins` array, entries under `plugins/<id>/`).
+    if root.join(".codebuddy-plugin/marketplace.json").is_file() {
+        let entries = probe_plugin_market(root)?;
+        return Ok((MarketKind::PluginMarket, entries));
     }
     // 3. plugin root / CLI connector at the root
     if root.join(".codebuddy-plugin/plugin.json").is_file() {
@@ -172,8 +183,7 @@ fn probe_connector_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
     Ok(entries)
 }
 
-fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
-    let text = std::fs::read_to_string(root.join(".codebuddy-skill/marketplace.json"))
+fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {    let text = std::fs::read_to_string(root.join(".codebuddy-skill/marketplace.json"))
         .map_err(|error| AppError::Internal(format!("read marketplace.json: {error}")))?;
     let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|error| AppError::Internal(format!("parse marketplace.json: {error}")))?;
@@ -217,11 +227,65 @@ fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
     Ok(entries)
 }
 
+/// Probe a `.codebuddy-plugin/marketplace.json` market: each `plugins[]`
+/// row is an entry (real WorkBuddy expert markets, e.g.
+/// `marketplaces/experts/.codebuddy-plugin/marketplace.json` with
+/// `plugins: [{ name, source: ./plugins/<id>, description }]`).
+fn probe_plugin_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
+    let text = std::fs::read_to_string(root.join(".codebuddy-plugin/marketplace.json"))
+        .map_err(|error| AppError::Internal(format!("read plugin marketplace.json: {error}")))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| AppError::Internal(format!("parse plugin marketplace.json: {error}")))?;
+    let list = value
+        .get("plugins")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| AppError::BadRequest("plugin marketplace.json has no plugins array".into()))?;
+    let mut entries = Vec::new();
+    for item in list {
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        // `source` is relative to the market root (`./plugins/<id>`); fall
+        // back to `plugins/<name>` when absent.
+        let source = item
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or(name)
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_owned();
+        let source = if source.contains('/') || source.ends_with(".json") {
+            source
+        } else {
+            format!("plugins/{source}")
+        };
+        let resolved = root.join(&source);
+        if !resolved.join(".codebuddy-plugin/plugin.json").is_file() {
+            // Skip rows whose plugin directory is missing.
+            continue;
+        }
+        entries.push(ScannedEntry {
+            name: name.to_owned(),
+            relative: source,
+            description: item.get("description").and_then(|v| v.as_str()).map(str::to_owned),
+            keywords: item
+                .get("keywords")
+                .and_then(|v| v.as_array())
+                .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default(),
+            category: item.get("category").and_then(|v| v.as_str()).map(str::to_owned),
+        });
+    }
+    Ok(entries)
+}
+
 /// Read the market manifest `name` (marketplace.json / connectors.json /
 /// plugin.json) for display; falls back to `None` so the caller keeps the
 /// derived id.
 fn read_manifest_name(root: &Path) -> Option<String> {
     for candidate in [
+        ".codebuddy-plugin/marketplace.json",
         ".codebuddy-skill/marketplace.json",
         ".codebuddy-connector/connectors.json",
         ".codebuddy-plugin/plugin.json",
@@ -339,15 +403,23 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         let marketplace_id = derive_marketplace_id(request.name.as_deref(), &request.source);
         let source_kind = request.source_kind.as_str();
 
-        // Duplicate-add probe: same source must not be registered twice.
-        if let Some(existing) = self
+        // Duplicate-add probe: same active source must not be registered
+        // twice (idempotent return). A previously *removed* row is reactivated
+        // below instead of returned as-is, so re-adding a source revives it.
+        let reactivate = match self
             .markets
             .find_by_source(source_kind, &request.source)
             .await
             .map_err(AppError::from)?
         {
-            return Ok(to_summary(&existing));
-        }
+            Some(existing) if existing.removed_at.is_none() => {
+                return Ok(to_summary(&existing));
+            }
+            Some(existing) => Some(existing.marketplace_id),
+            None => None,
+        };
+        let reactivating = reactivate.is_some();
+        let reactivating_id = reactivate.as_deref();
 
         // Remote sources: fetch + validate + promote, then register.
         if source_kind != "directory" {
@@ -401,22 +473,41 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // Display name: marketplace.json `name` when declared, else directory
         // basename (the fixtures' manifests declare `name`).
         let declared_name = read_manifest_name(&root);
-        let row = self
-            .markets
-            .insert_marketplace(NewPluginMarketplace {
-                marketplace_id: &marketplace_id,
-                name: declared_name.as_deref().unwrap_or(&marketplace_id),
-                description: None,
-                source_kind: "directory",
-                source_uri: &request.source,
-                owner_json: None,
-                version: None,
-                content_digest: None,
-                entries,
-                auto_update: false,
-            })
-            .await
-            .map_err(AppError::from)?;
+        let row = if reactivating {
+            let digest = simple_tree_digest(&root);
+            self.markets
+                .reactivate_marketplace(
+                    reactivating_id.expect("reactivating id is set"),
+                    "directory",
+                    &request.source,
+                    &entries,
+                    &digest,
+                    None,
+                )
+                .await
+                .map_err(AppError::from)?;
+            self.markets
+                .get_marketplace(&marketplace_id)
+                .await
+                .map_err(AppError::from)?
+                .expect("marketplace exists after reactivation")
+        } else {
+            self.markets
+                .insert_marketplace(NewPluginMarketplace {
+                    marketplace_id: &marketplace_id,
+                    name: declared_name.as_deref().unwrap_or(&marketplace_id),
+                    description: None,
+                    source_kind: "directory",
+                    source_uri: &request.source,
+                    owner_json: None,
+                    version: None,
+                    content_digest: None,
+                    entries,
+                    auto_update: false,
+                })
+                .await
+                .map_err(AppError::from)?
+        };
         Ok(to_summary(&row))
     }
 
@@ -689,10 +780,24 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // plain plugins.
         let source_kind = if source.join("cli.json").is_file() {
             SourceKind::WorkBuddyCliConnector
+        } else if source.join("mcp.json").is_file() {
+            SourceKind::WorkBuddyMcpConnector
         } else if source.join(".codebuddy-skill/marketplace.json").is_file() {
             SourceKind::WorkBuddySkillMarket
         } else if source.join(".codebuddy-plugin/plugin.json").is_file() {
-            SourceKind::CodeBuddyPlugin
+            // Skill plugins carry `SKILL.md` and declare no agents; importing
+            // them as CodeBuddy plugins would scan empty `agents`/`skills`
+            // roots and yield zero components. Treat those as single-skill
+            // directories instead.
+            let manifest = nomifun_importer::read_plugin_display(&source);
+            let has_agents = manifest
+                .as_ref()
+                .is_some_and(|m| !m.agents.is_empty() || m.team_info.is_some());
+            if !has_agents && source.join("SKILL.md").is_file() {
+                SourceKind::WorkBuddySkillMarket
+            } else {
+                SourceKind::CodeBuddyPlugin
+            }
         } else if source.join("SKILL.md").is_file() {
             SourceKind::WorkBuddySkillMarket
         } else {
@@ -727,6 +832,28 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 nomifun_importer::ImportError::Internal(message) => AppError::Internal(message),
             })
     }
+
+    /// Resolve the on-disk root of one entry (trusted host only; used by the
+    /// store asset endpoint for un-imported entries' display assets).
+    async fn entry_dir(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<std::path::PathBuf, AppError> {
+        let row = self.verify_market_row(marketplace_id).await?;
+        let entry = row
+            .entries()
+            .into_iter()
+            .find(|entry| entry.name == entry_name)
+            .ok_or_else(|| AppError::NotFound(format!("entry {entry_name} not found")))?;
+        Ok(crate::market_fetch::entry_source_path(
+            &row.source_kind,
+            &row.source_uri,
+            &self.market_root,
+            marketplace_id,
+            &entry.source_uri,
+        ))
+    }
 }
 
 fn row_source_kind(row: &PluginMarketplaceRow) -> SourceKind {
@@ -734,6 +861,7 @@ fn row_source_kind(row: &PluginMarketplaceRow) -> SourceKind {
         "workbuddy-connector-market" => SourceKind::WorkBuddyConnectorMarket,
         "workbuddy-skill-market" => SourceKind::WorkBuddySkillMarket,
         "workbuddy-cli-connector" => SourceKind::WorkBuddyCliConnector,
+        "workbuddy-mcp-connector" => SourceKind::WorkBuddyMcpConnector,
         _ => SourceKind::CodeBuddyPlugin,
     }
 }
@@ -838,6 +966,39 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().any(|entry| entry.name == "formatter"));
         assert!(entries.iter().any(|entry| entry.name == "deploy"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_plugin_market_derives_entries_from_plugins_array() {
+        // Real WorkBuddy expert-market layout:
+        //   market/.codebuddy-plugin/marketplace.json { plugins: [{name, source, description}] }
+        //   market/plugins/<id>/.codebuddy-plugin/plugin.json
+        let dir = std::env::temp_dir().join(format!("as-mkt-pm-{}", nomifun_common::generate_id()));
+        write(
+            &dir.join(".codebuddy-plugin/marketplace.json"),
+            r#"{
+                "name": "experts",
+                "plugins": [
+                    { "name": "fbsir-super-partner", "source": "./plugins/fbsir-super-partner", "description": "Super partner" },
+                    { "name": "software-company", "source": "./plugins/software-company", "description": "Software company" }
+                ]
+            }"#,
+        );
+        write(
+            &dir.join("plugins/fbsir-super-partner/.codebuddy-plugin/plugin.json"),
+            r#"{ "name": "fbsir-super-partner", "displayName": "FBSir", "profession": "Super Partner", "agents": ["./agents"] }"#,
+        );
+        write(
+            &dir.join("plugins/software-company/.codebuddy-plugin/plugin.json"),
+            r#"{ "name": "software-company" }"#,
+        );
+        let (kind, entries) = probe_directory(&dir).unwrap();
+        assert_eq!(kind, MarketKind::PluginMarket);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "fbsir-super-partner");
+        assert_eq!(entries[0].relative, "plugins/fbsir-super-partner");
+        assert_eq!(entries[0].description.as_deref(), Some("Super partner"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

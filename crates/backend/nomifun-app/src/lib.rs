@@ -8,6 +8,7 @@ pub mod app_server_catalog;
 pub mod app_server_importer;
 pub mod app_server_installer;
 pub mod app_server_marketplace;
+pub mod app_server_store;
 pub mod market_fetch;
 pub mod market_source;
 // Spec D2 delivery-notify observer (public so integration tests can drive

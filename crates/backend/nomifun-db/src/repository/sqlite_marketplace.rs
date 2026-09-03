@@ -183,6 +183,38 @@ impl IMarketplaceRepository for SqliteMarketplaceRepository {
         Ok(())
     }
 
+    async fn reactivate_marketplace(
+        &self,
+        marketplace_id: &str,
+        source_kind: &str,
+        source_uri: &str,
+        entries: &[MarketplaceEntry],
+        content_digest: &str,
+        version: Option<&str>,
+    ) -> Result<(), DbError> {
+        let entries_json = serde_json::to_string(entries)
+            .map_err(|error| DbError::Init(format!("encode entries: {error}")))?;
+        let now = nomifun_common::now_ms();
+        sqlx::query(
+            "UPDATE plugin_marketplaces \
+             SET source_kind = ?, source_uri = ?, removed_at = NULL, enabled = 1, \
+                 entries_json = ?, content_digest = ?, version = ?, updated_at = ?, \
+                 last_checked_at = ? \
+             WHERE marketplace_id = ?",
+        )
+        .bind(source_kind)
+        .bind(source_uri)
+        .bind(entries_json)
+        .bind(content_digest)
+        .bind(version)
+        .bind(now)
+        .bind(now)
+        .bind(marketplace_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn list_snapshots_by_marketplace(
         &self,
         marketplace_id: &str,
@@ -325,6 +357,48 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn removed_row_is_found_and_then_marked_active_by_reactivate() {
+        let (repo, _db) = setup().await;
+        repo.insert_marketplace(sample("company-tools", "/tmp/company-tools"))
+            .await
+            .unwrap();
+        repo.soft_remove_marketplace("company-tools", 99).await.unwrap();
+        // find_by_source still returns the removed row (it owns the source);
+        // the caller decides whether to reactivate it.
+        let found = repo
+            .find_by_source("directory", "/tmp/company-tools")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.removed_at, Some(99));
+
+        repo.reactivate_marketplace(
+            "company-tools",
+            "directory",
+            "/tmp/company-tools-v2",
+            &[sample_entry("formatter")],
+            "digest-x",
+            None,
+        )
+        .await
+        .unwrap();
+        let row = repo.get_marketplace("company-tools").await.unwrap().unwrap();
+        assert_eq!(row.removed_at, None);
+        assert_eq!(row.enabled, 1);
+        assert_eq!(row.entries().len(), 1);
+        // The re-add source is persisted, so the duplicate probe finds the
+        // row under its *current* source.
+        assert_eq!(row.source_uri, "/tmp/company-tools-v2");
+        assert!(repo
+            .find_by_source("directory", "/tmp/company-tools-v2")
+            .await
+            .unwrap()
+            .is_some());
+        let listed = repo.list_marketplaces().await.unwrap();
+        assert_eq!(listed.len(), 1);
     }
 
     #[tokio::test]

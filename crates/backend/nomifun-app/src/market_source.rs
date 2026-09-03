@@ -15,6 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use futures_util::future::join_all;
 use git2::Repository;
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -84,6 +85,116 @@ pub fn looks_like_market(root: &Path) -> bool {
         || root.join(MARKET_MANIFEST_PLUGIN).is_file()
         || root.join("marketplace.json").is_file()
         || root.join("cli.json").is_file()
+}
+
+/// Derive the market root base URL from a manifest URL:
+/// - `http://h/.codebuddy-plugin/marketplace.json` → `http://h` (preferred;
+///   must be checked before the generic root suffix, which would otherwise
+///   cut into the `.codebuddy-plugin/` segment)
+/// - `http://h/.codebuddy-skill/marketplace.json` → `http://h`
+/// - `http://h/.codebuddy-connector/connectors.json` → `http://h`
+/// - `http://h/marketplace.json` → `http://h`
+fn manifest_base_url(manifest_url: &str) -> Option<String> {
+    let trimmed = manifest_url.trim_end_matches('/');
+    let base = trimmed
+        .strip_suffix("/.codebuddy-plugin/marketplace.json")
+        .or_else(|| trimmed.strip_suffix("/.codebuddy-skill/marketplace.json"))
+        .or_else(|| trimmed.strip_suffix("/.codebuddy-connector/connectors.json"))
+        .or_else(|| trimmed.strip_suffix("/marketplace.json"))?;
+    (!base.is_empty()).then(|| base.to_owned())
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("allo-agent-store/1.0")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|error| format!("build http client: {error}"))
+}
+
+/// A listing is exposed at `{base}/_files.txt` with one relative path per
+/// line; when present the URL market is a full-tree mirror (not manifest-only).
+pub async fn has_file_listing(manifest_url: &str) -> bool {
+    let Some(base) = manifest_base_url(manifest_url) else {
+        return false;
+    };
+    let url = format!("{base}/_files.txt");
+    let Ok(client) = http_client() else { return false };
+    match client.get(&url).send().await {
+        Ok(response) => response.status() == StatusCode::OK,
+        Err(_) => false,
+    }
+}
+
+/// Mirror every file listed in `{base}/_files.txt` into `staging`, preserving
+/// relative paths. The listing itself is skipped; `..` traversal or absolute
+/// entries are rejected (the listing is untrusted input).
+pub async fn mirror_http_tree(manifest_url: &str, staging: &Path) -> Result<(), String> {
+    let Some(base) = manifest_base_url(manifest_url) else {
+        return Err(format!("cannot derive base URL from {manifest_url}"));
+    };
+    let client = http_client()?;
+    let listing_url = format!("{base}/_files.txt");
+    let response = client
+        .get(&listing_url)
+        .send()
+        .await
+        .map_err(|error| format!("fetch {listing_url}: {error}"))?;
+    if response.status() != StatusCode::OK {
+        return Err(format!("fetch {listing_url}: HTTP {}", response.status()));
+    }
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("read {listing_url}: {error}"))?;
+    let files: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != "_files.txt")
+        // Untrusted listing: reject absolute / traversal paths.
+        .filter(|relative| {
+            !relative.starts_with('/') && !relative.contains("..") && !relative.contains('\\')
+        })
+        .map(str::to_owned)
+        .collect();
+
+    // Download concurrently in small batches: user markets routinely carry
+    // hundreds of small assets (avatars, prompts), and serial GETs would make
+    // a refresh take tens of seconds over a local server.
+    const BATCH: usize = 8;
+    for chunk in files.chunks(BATCH) {
+        let futures = chunk.iter().map(|relative| {
+            let client = client.clone();
+            let base = base.clone();
+            async move {
+                let url = format!("{base}/{relative}");
+                let file_response = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|error| format!("fetch {url}: {error}"))?;
+                if file_response.status() != StatusCode::OK {
+                    return Err(format!("fetch {url}: HTTP {}", file_response.status()));
+                }
+                let bytes = file_response
+                    .bytes()
+                    .await
+                    .map_err(|error| format!("read {url}: {error}"))?;
+                Ok::<_, String>((relative.clone(), bytes.to_vec()))
+            }
+        });
+        let results = join_all(futures).await;
+        for result in results {
+            let (relative, bytes) = result?;
+            let target = staging.join(&relative);
+            let Some(parent) = target.parent() else { continue };
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create {}: {error}", parent.display()))?;
+            std::fs::write(&target, &bytes)
+                .map_err(|error| format!("write {}: {error}", target.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Shallow-clone `url` into `staging` (a fresh directory) and return the raw
@@ -326,6 +437,49 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, HttpFetchOutcome::NotModified));
+    }
+
+    #[tokio::test]
+    async fn file_listing_and_tree_mirror_download_every_asset() {
+        let mock = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::path("/_files.txt"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(
+                ".codebuddy-plugin/marketplace.json\nplugins/demo/.codebuddy-plugin/plugin.json\nplugins/demo/agents/demo.md\n",
+            ))
+            .mount(&mock)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::path("/.codebuddy-plugin/marketplace.json"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(
+                r#"{"name":"tree-market","plugins":[{"name":"demo","source":"./plugins/demo"}]}"#,
+            ))
+            .mount(&mock)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::path("/plugins/demo/.codebuddy-plugin/plugin.json"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(
+                r#"{"name":"demo","displayName":"Demo","agents":["./agents"]}"#,
+            ))
+            .mount(&mock)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::path("/plugins/demo/agents/demo.md"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("---\nname: demo\n---\n"))
+            .mount(&mock)
+            .await;
+
+        // The manifest URL uses the `.codebuddy-plugin/` sub-path, as the
+        // locally served experts market does.
+        let manifest_url = format!("{}/.codebuddy-plugin/marketplace.json", mock.uri());
+        assert!(
+            has_file_listing(&manifest_url).await,
+            "listing must be detected"
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        mirror_http_tree(&manifest_url, &staging).await.unwrap();
+        assert!(staging.join(".codebuddy-plugin/marketplace.json").is_file());
+        assert!(staging.join("plugins/demo/.codebuddy-plugin/plugin.json").is_file());
+        assert!(staging.join("plugins/demo/agents/demo.md").is_file());
     }
 
     #[test]

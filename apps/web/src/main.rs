@@ -241,6 +241,15 @@ fn main() -> Result<ExitCode> {
     cli.data_dir =
         nomifun_app::bootstrap::resolve_startup_data_root(args.data_dir.clone());
     cli.local = insecure_no_auth;
+    // The web host wires the user's agent-store config so default marketplaces
+    // declared there register automatically (winget-style sources). Default:
+    // `~/.agent-store/config.toml` (Windows USERPROFILE, else HOME).
+    if cli.agent_store_config.is_none() {
+        let home = std::env::var_os("USERPROFILE")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from));
+        cli.agent_store_config = home.map(|home| home.join(".agent-store").join("config.toml"));
+    }
 
     // Same ordering as the nomicore bin: runtime init + PATH enhancement BEFORE
     // any worker thread / tokio runtime exists.

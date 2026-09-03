@@ -170,6 +170,32 @@ NOT_RUN
     `image/png`；路径穿越/非白名单类型/非法 snapshot id → 4xx；prompt
     文件（`SKILL.md`/`*.md`）永不被 serve
 
+### TC-IMP-016：插件市场探测（`.codebuddy-plugin/marketplace.json`）
+
+- 等级：P1
+- 操作：以 `directory` 源添加真实 WorkBuddy 专家市场布局
+  （`market/.codebuddy-plugin/marketplace.json` 含 `plugins[]` +
+  `market/plugins/<id>/.codebuddy-plugin/plugin.json`）
+- 断言：探测到 1 个 plugin-market 市场；`market/get` 条目数 = `plugins[]` 数
+  （每个条目 source = `plugins/<id>`，描述来自清单）；缺 plugin.json 的
+  行被跳过；市场名取自清单 `name`
+
+### TC-IMP-017：Store 聚合与一键安装
+
+- 等级：P1
+- 操作：`market/add`（专家市场）后 `store/list` →
+  `store/{market}/entries/{entry}/install` → 再 `store/list`
+- 断言：
+  - `store/list` 返回全部条目（含未导入的）；kind 正确（agent/team/skill/
+    connector）；`name`/`display_name`/`profession`/`quick_prompts`/`avatar_url`
+    保真；`installed=false`、`update_available=false`、`snapshot_id` 空；
+  - `store install-entry` 返回 `snapshot_id`/`version`/`installed_count>=1`，
+    `reused=false`；
+  - 再次 `store/list`：该条目 `installed=true`、`snapshot_id` 非空；
+  - 再次 `store install-entry`：`reused=true`（幂等）；
+  - store 资产端点：`GET /store/{market}/entries/{entry}/assets/{path}` 白名单
+    类型 200；穿越/非白名单 → 4xx
+
 ### TC-INS-001：安装注册到运行时
 
 - 等级：P1

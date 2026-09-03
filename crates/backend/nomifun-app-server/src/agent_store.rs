@@ -42,6 +42,42 @@ pub struct AgentStoreConfig {
     /// Keyed by `"<provider>/<model>"`.
     #[serde(default)]
     pub models: HashMap<String, AgentStoreModel>,
+    /// Default marketplace sources (store software sources) registered
+    /// automatically by the App Server; keyed by a stable marketplace id
+    /// (`experts` etc.).
+    ///
+    /// ```toml
+    /// [default_marketplaces.experts]
+    /// source_kind = "url"      # url | github | git | directory
+    /// source = "http://127.0.0.1:8300/marketplace.json"
+    /// ```
+    #[serde(default)]
+    pub default_marketplaces: HashMap<String, AgentStoreMarketplace>,
+}
+
+/// One default marketplace source declared in `~/.agent-store/config.toml`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentStoreMarketplace {
+    /// `url` | `github` | `git` | `directory`.
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+impl AgentStoreMarketplace {
+    /// Resolve to `(source_kind, source)` when both are present and valid.
+    pub fn resolved(&self) -> Option<(String, String)> {
+        let kind = self.source_kind.as_deref()?.trim().to_owned();
+        let source = self.source.as_deref()?.trim().to_owned();
+        if kind.is_empty() || source.is_empty() {
+            return None;
+        }
+        if !matches!(kind.as_str(), "url" | "github" | "git" | "directory") {
+            return None;
+        }
+        Some((kind, source))
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

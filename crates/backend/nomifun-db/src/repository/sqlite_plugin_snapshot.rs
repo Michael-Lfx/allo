@@ -97,6 +97,23 @@ impl IPluginSnapshotRepository for SqlitePluginSnapshotRepository {
         Ok(rows)
     }
 
+    async fn find_snapshot_by_provenance(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<Option<PluginSnapshotRow>, DbError> {
+        let row = sqlx::query_as::<_, PluginSnapshotRow>(
+            "SELECT * FROM plugin_snapshots \
+             WHERE marketplace_id = ? AND entry_name = ? \
+             ORDER BY imported_at DESC, id DESC LIMIT 1",
+        )
+        .bind(marketplace_id)
+        .bind(entry_name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     async fn insert_snapshot_with_components(
         &self,
         params: NewPluginSnapshot<'_>,
@@ -294,8 +311,8 @@ mod tests {
             resolved_revision: None,
             content_digest: digest,
             status: "completed",
-            marketplace_id: None,
-            entry_name: None,
+            marketplace_id: Some("company-tools"),
+            entry_name: Some("formatter"),
             source_revision: None,
             components: vec![
                 NewPluginSnapshotComponent {
@@ -384,6 +401,32 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn provenance_lookup_returns_newest_matching_snapshot() {
+        let (repo, _db) = setup().await;
+        let first_id = nomifun_common::generate_id();
+        let second_id = nomifun_common::generate_id();
+        repo.insert_snapshot_with_components(sample(&first_id, "digest-a"))
+            .await
+            .unwrap();
+        repo.insert_snapshot_with_components(sample(&second_id, "digest-b"))
+            .await
+            .unwrap();
+
+        let found = repo
+            .find_snapshot_by_provenance("company-tools", "formatter")
+            .await
+            .unwrap()
+            .expect("provenance snapshot must be found");
+        assert_eq!(found.snapshot_id, second_id, "newest import wins");
+        assert_eq!(found.content_digest, "digest-b");
+        assert!(repo
+            .find_snapshot_by_provenance("company-tools", "missing")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

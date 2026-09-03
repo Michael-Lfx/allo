@@ -29,6 +29,11 @@ pub struct AppConfig {
     /// Per-boot secret the desktop's own webview presents to be trusted as the
     /// local client. Only `Some` under `AuthPolicy::TrustLocalToken`.
     pub local_trust_secret: Option<Arc<str>>,
+    /// Explicit path to the agent-store config file (`~/.agent-store/config.toml`
+    /// convention). `None` disables default-marketplace auto-registration —
+    /// tests rely on that (an injected `None` keeps the store free of the
+    /// host user's personal sources).
+    pub agent_store_config_path: Option<PathBuf>,
 }
 
 impl AppConfig {
@@ -82,6 +87,7 @@ impl Default for AppConfig {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             auth_policy: AuthPolicy::Required,
             local_trust_secret: None,
+            agent_store_config_path: None,
         }
     }
 }

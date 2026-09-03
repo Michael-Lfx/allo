@@ -84,6 +84,14 @@ pub trait IPluginSnapshotRepository: Send + Sync {
         declared_version: &str,
     ) -> Result<Vec<PluginSnapshotRow>, DbError>;
 
+    /// Newest snapshot with the given marketplace provenance (store
+    /// installed-state lookup).
+    async fn find_snapshot_by_provenance(
+        &self,
+        marketplace_id: &str,
+        entry_name: &str,
+    ) -> Result<Option<PluginSnapshotRow>, DbError>;
+
     /// Persists a snapshot and its components atomically.
     async fn insert_snapshot_with_components(
         &self,

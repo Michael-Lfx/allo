@@ -1009,7 +1009,7 @@ pub fn create_router_with_all_state(
             )),
             event_bus: Some(services.event_bus.clone()),
             provider_service: Some(Arc::new(app_server_provider_service)),
-            agent_store_config_path: None,
+            agent_store_config_path: services.agent_store_config_path.clone(),
             // Agent Store Skill/Connector catalog over the system services.
             // `None` keeps the capabilities off and yields
             // `unsupported_operation` on the protocol surface; production
@@ -1053,13 +1053,13 @@ pub fn create_router_with_all_state(
             markets: Some(Arc::new(
                 crate::app_server_marketplace::AppServerMarketplaceProvider::new(
                     nomifun_importer::ImporterService::new(
-                        import_root,
+                        import_root.clone(),
                         plugin_snapshot_repository.clone(),
                     ),
                     Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
                         services.database.pool().clone(),
                     )),
-                    installer,
+                    installer.clone(),
                     services.work_dir.join("agent-store-markets"),
                 ),
             )),
@@ -1073,6 +1073,34 @@ pub fn create_router_with_all_state(
                     plugin_snapshot_repository.clone(),
                 ),
             )),
+            // Winget-style unified store: aggregated items over all enabled
+            // marketplaces with install state + one-click install.
+            store: Some(Arc::new(
+                crate::app_server_store::AppServerStoreProvider::new(
+                    Arc::new(crate::app_server_marketplace::AppServerMarketplaceProvider::new(
+                        nomifun_importer::ImporterService::new(
+                            import_root.clone(),
+                            plugin_snapshot_repository.clone(),
+                        ),
+                        Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
+                            services.database.pool().clone(),
+                        )),
+                        installer.clone(),
+                        services.work_dir.join("agent-store-markets"),
+                    )),
+                    Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
+                        services.database.pool().clone(),
+                    )),
+                    plugin_snapshot_repository.clone(),
+                    nomifun_importer::ImporterService::new(
+                        import_root.clone(),
+                        plugin_snapshot_repository.clone(),
+                    ),
+                    installer,
+                    services.work_dir.join("agent-store-markets"),
+                ),
+            )),
+            snapshot_assets_root: Some(import_root.clone()),
         }),
         &auth_mw_state,
         &instance_owner_state,

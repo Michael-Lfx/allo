@@ -1173,6 +1173,9 @@ pub struct AppServices {
     pub data_dir: PathBuf,
     pub work_dir: PathBuf,
     pub work_dir_is_cli_override: bool,
+    /// Explicit agent-store config path (or `None` in tests / when default
+    /// default-marketplace auto-registration is disabled).
+    pub agent_store_config_path: Option<PathBuf>,
     pub runtime_capabilities: RuntimeCapabilities,
     /// Authentication policy (single source of truth, replaces `local: bool`).
     pub auth_policy: AuthPolicy,
@@ -3202,6 +3205,7 @@ impl AppServices {
             data_dir,
             work_dir,
             work_dir_is_cli_override,
+            agent_store_config_path: config.agent_store_config_path.clone(),
             runtime_capabilities: capabilities.runtime_capabilities,
             auth_policy,
             local_trust_secret,
