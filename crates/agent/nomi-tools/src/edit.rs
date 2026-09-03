@@ -53,7 +53,8 @@ fn apply_anchor_edits(content: &str, ops: &[AnchorEditOp]) -> Result<(String, us
             None => {
                 return Err(format!(
                     "edits[{i}].anchor {:?} is not a valid line:hash anchor. Copy the WHOLE \
-                     \"line:hash\" prefix from Read/Grep output (e.g. \"42:h7x2\").",
+                     \"line:hash\" prefix from Read/Grep output (e.g. \"42:h7x2\"), or the unique \
+                     4-char hash when the line is unambiguous.",
                     op.anchor
                 ));
             }
@@ -396,7 +397,8 @@ impl Tool for EditTool {
         "Edit a file surgically. Two modes — anchor mode (preferred) and exact-text mode.\n\n\
          ANCHOR MODE (preferred): pass `edits`, an array of { anchor, end_anchor?, new_text, insert_after? }.\n\
          - Anchors are the `line:hash` prefixes in Read/Grep/Edit output (e.g. `42:h7x2` from \
-         `42:h7x2→…`). Copy them VERBATIM — never fabricate hashes.\n\
+         `42:h7x2→…`). Copy them VERBATIM — never fabricate hashes. A unique 4-char hash \
+         without the line number is accepted when it matches exactly one line.\n\
          - One edit replaces the anchor line (or inclusive range anchor..end_anchor) with new_text. \
          Empty new_text deletes the range. insert_after: true inserts after the anchor line.\n\
          - Atomic: if ANY anchor is stale the whole batch is rejected and fresh anchors are returned.\n\n\
@@ -428,13 +430,13 @@ impl Tool for EditTool {
                 },
                 "edits": {
                     "type": "array",
-                    "description": "Batch edits: either anchor-mode objects ({anchor, new_text, ...}) or exact-text objects ({old_string, new_string}). Do not mix modes in one call. Atomic.",
+                    "description": "Batch edits: prefer anchor-mode objects ({anchor, new_text}). Extra old_string/new_string on an anchor edit are ignored. Exact-text objects ({old_string, new_string}) are the fallback. Atomic.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "anchor": {
                                 "type": "string",
-                                "description": "Anchor mode: whole line:hash prefix from Read/Grep (e.g. \"42:h7x2\")"
+                                "description": "Anchor mode: whole line:hash prefix from Read/Grep (e.g. \"42:h7x2\"). Unique 4-char hash without the line number is also accepted."
                             },
                             "end_anchor": {
                                 "type": "string",
@@ -502,16 +504,6 @@ impl Tool for EditTool {
             if edits_array_is_anchor_mode(arr) {
                 let mut ops = Vec::with_capacity(arr.len());
                 for (i, e) in arr.iter().enumerate() {
-                    if e.get("old_string").is_some() || e.get("new_string").is_some() {
-                        return ToolResult {
-                            content: format!(
-                                "edit #{}: do not mix anchor fields with old_string/new_string in one batch",
-                                i + 1
-                            ),
-                            is_error: true,
-                            images: Vec::new(),
-                        };
-                    }
                     let Some(anchor) = e["anchor"].as_str() else {
                         return ToolResult {
                             content: format!("edit #{}: missing anchor", i + 1),
@@ -519,7 +511,10 @@ impl Tool for EditTool {
                             images: Vec::new(),
                         };
                     };
-                    let Some(new_text) = e["new_text"].as_str() else {
+                    let Some(new_text) = e["new_text"]
+                        .as_str()
+                        .or_else(|| e["new_string"].as_str())
+                    else {
                         return ToolResult {
                             content: format!("edit #{}: missing new_text", i + 1),
                             is_error: true,
@@ -529,7 +524,7 @@ impl Tool for EditTool {
                     ops.push(AnchorEditOp {
                         anchor: anchor.to_string(),
                         end_anchor: e["end_anchor"].as_str().map(str::to_string),
-                        new_text: new_text.to_string(),
+                        new_text: crate::anchors::strip_copied_read_prefixes(new_text),
                         insert_after: e["insert_after"].as_bool().unwrap_or(false),
                     });
                 }
@@ -554,8 +549,8 @@ impl Tool for EditTool {
                     };
                 };
                 ops.push(EditOp {
-                    old_string: o.to_string(),
-                    new_string: n.to_string(),
+                    old_string: crate::anchors::strip_copied_read_prefixes(o),
+                    new_string: crate::anchors::strip_copied_read_prefixes(n),
                     replace_all: e["replace_all"].as_bool().unwrap_or(false),
                 });
             }
@@ -576,8 +571,8 @@ impl Tool for EditTool {
                 };
             };
             Some(vec![EditOp {
-                old_string: old_string.to_string(),
-                new_string: new_string.to_string(),
+                old_string: crate::anchors::strip_copied_read_prefixes(old_string),
+                new_string: crate::anchors::strip_copied_read_prefixes(new_string),
                 replace_all: input["replace_all"].as_bool().unwrap_or(false),
             }])
         };
@@ -799,6 +794,91 @@ mod tests {
         assert!(result.is_error, "a failing hunk must fail the whole edit");
         // Atomic: the first (matching) hunk must NOT have been written.
         assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "alpha beta");
+    }
+
+    #[tokio::test]
+    async fn mixed_anchor_and_string_fields_use_anchor_mode() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("m.txt");
+        std::fs::write(&file_path, "alpha\nbeta\n").unwrap();
+        let tool = EditTool::new(None);
+        let hash = crate::anchors::anchor_line_hash("alpha");
+        let anchor = format!("1:{hash}");
+        let result = tool
+            .execute(json!({
+                "file_path": file_path.to_str().unwrap(),
+                "edits": [{
+                    "anchor": anchor,
+                    "new_text": "ALPHA",
+                    "old_string": "alpha",
+                    "new_string": "ALPHA"
+                }]
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "ALPHA\nbeta\n");
+    }
+
+    #[tokio::test]
+    async fn hash_only_anchor_with_copied_read_prefixes() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("identity.ts");
+        std::fs::write(
+            &file_path,
+            "\t| \"volcengine-openai-completions\"\n\t| \"anthropic-messages\"\n",
+        )
+        .unwrap();
+        let tool = EditTool::new(None);
+        let hash = crate::anchors::anchor_line_hash("\t| \"volcengine-openai-completions\"");
+        let arrow = crate::anchors::ANCHOR_SEPARATOR;
+        let new_text = format!(
+            "\t{hash}{arrow}\t| \"volcengine-openai-completions\"\n\txxxx{arrow}\t| \"minimax-openai-completions\""
+        );
+        let result = tool
+            .execute(json!({
+                "file_path": file_path.to_str().unwrap(),
+                "edits": [{
+                    "anchor": hash,
+                    "new_text": new_text,
+                    "insert_after": false
+                }]
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let written = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            !written.contains(arrow),
+            "copied Read prefixes must be stripped: {written}"
+        );
+        assert!(
+            written.contains("| \"minimax-openai-completions\""),
+            "{written}"
+        );
+        assert!(
+            written.contains("| \"volcengine-openai-completions\""),
+            "{written}"
+        );
+    }
+
+    #[tokio::test]
+    async fn strips_copied_read_prefixes_from_new_string() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("m.ts");
+        std::fs::write(&file_path, "const x = 1;\n").unwrap();
+        let tool = EditTool::new(None);
+        let arrow = crate::anchors::ANCHOR_SEPARATOR;
+        let new_string = format!("1:abcd{arrow}const x = 2;");
+        let result = tool
+            .execute(json!({
+                "file_path": file_path.to_str().unwrap(),
+                "old_string": "const x = 1;",
+                "new_string": new_string
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let written = std::fs::read_to_string(&file_path).unwrap();
+        assert!(!written.contains(arrow), "{written}");
+        assert!(written.contains("const x = 2;"), "{written}");
     }
 
     // -- Legacy tests (no cache) --

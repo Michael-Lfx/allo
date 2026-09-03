@@ -19,7 +19,7 @@ use nomi_agent::compact::prompt::{
     build_compact_prompt, build_summary_content, format_compact_summary,
 };
 use nomi_agent::compact::state::CompactState;
-use nomi_config::compact::CompactConfig;
+use nomi_config::compact::{CompactConfig, window_output_unit};
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::compact::CompactTrigger;
 use nomi_types::llm::{LlmEvent, LlmRequest};

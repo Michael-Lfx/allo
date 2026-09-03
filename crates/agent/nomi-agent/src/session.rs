@@ -123,6 +123,16 @@ impl SessionManager {
 
     /// Save current session state (called after each turn)
     pub fn save(&self, session: &Session) -> anyhow::Result<()> {
+        self.write_session_file(session, true)
+    }
+
+    /// Compact JSON, used on intermediate tool rounds so checkpoint IO does not
+    /// sit on the next-turn TTFT path. Callers skip index updates.
+    pub fn save_coalesced(&self, session: &Session) -> anyhow::Result<()> {
+        self.write_session_file(session, false)
+    }
+
+    fn write_session_file(&self, session: &Session, pretty: bool) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.directory)?;
         let filename = format!(
             "{}_{}.json",
@@ -130,7 +140,11 @@ impl SessionManager {
             session.id
         );
         let path = self.directory.join(&filename);
-        let json = serde_json::to_string_pretty(session)?;
+        let json = if pretty {
+            serde_json::to_string_pretty(session)?
+        } else {
+            serde_json::to_string(session)?
+        };
         std::fs::write(path, json)?;
         Ok(())
     }

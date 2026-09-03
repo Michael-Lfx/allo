@@ -2,7 +2,7 @@
 
 use crate::profile::TaskProfile;
 
-/// Tools advertised in coding mode (plus MCP / companion that pass the allow path).
+/// Tools advertised in coding mode. Anything else (MCP, briefing, desktop) stays hidden.
 ///
 /// Keep shell defaults simple (`Bash`) while still exposing long-running process
 /// controls (`exec_command` + `write_stdin`) for bounded polling workflows.
@@ -25,7 +25,10 @@ const CODING_CORE_TOOLS: &[&str] = &[
     "ExitPlanMode",
     "web_search",
     "web_extract",
-    "update_goal",
+    "Lsp",
+    "explore_code",
+    "verify_change",
+    "research",
 ];
 
 /// Always hide these in coding mode even if registered.
@@ -50,21 +53,9 @@ pub fn advertise_tool(profile: TaskProfile, tool_name: &str) -> bool {
     {
         return false;
     }
-    if CODING_CORE_TOOLS
+    CODING_CORE_TOOLS
         .iter()
         .any(|name| name.eq_ignore_ascii_case(tool_name))
-    {
-        return true;
-    }
-    // Allow MCP / companion / knowledge / requirement / summon / ssh tools.
-    !matches!(
-        tool_name,
-        "Browser"
-            | "Computer"
-            | "LaunchApp"
-            | "computer_use"
-            | "ApplyPatch"
-    )
 }
 
 #[cfg(test)]
@@ -76,11 +67,18 @@ mod tests {
         assert!(!advertise_tool(TaskProfile::Coding, "Browser"));
         assert!(!advertise_tool(TaskProfile::Coding, "Computer"));
         assert!(!advertise_tool(TaskProfile::Coding, "ApplyPatch"));
+        assert!(!advertise_tool(TaskProfile::Coding, "LaunchApp"));
+        assert!(!advertise_tool(TaskProfile::Coding, "briefing_create"));
+        assert!(!advertise_tool(TaskProfile::Coding, "mcp__server__tool"));
         assert!(advertise_tool(TaskProfile::Coding, "exec_command"));
         assert!(advertise_tool(TaskProfile::Coding, "write_stdin"));
         assert!(advertise_tool(TaskProfile::Coding, "Edit"));
         assert!(advertise_tool(TaskProfile::Coding, "Bash"));
         assert!(advertise_tool(TaskProfile::Coding, "DirTree"));
+        assert!(advertise_tool(TaskProfile::Coding, "Lsp"));
+        assert!(advertise_tool(TaskProfile::Coding, "explore_code"));
+        assert!(advertise_tool(TaskProfile::Coding, "verify_change"));
+        assert!(advertise_tool(TaskProfile::Coding, "research"));
         assert!(advertise_tool(TaskProfile::Office, "Browser"));
         assert!(advertise_tool(TaskProfile::Office, "ApplyPatch"));
         assert!(advertise_tool(TaskProfile::Office, "exec_command"));

@@ -214,7 +214,9 @@ impl FlowyApiClient {
             "/credits/usageByTurn?turnId={}",
             form_urlencode(turn_id)
         );
-        self.get_data(&path, Some(session)).await
+        self.get_data(&path, Some(session))
+            .await
+            .map(TurnCreditUsage::normalize)
     }
 
     pub async fn send_bind_email_code(

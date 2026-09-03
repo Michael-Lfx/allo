@@ -14,6 +14,8 @@ import { mutate } from 'swr';
 const MAX_TURN_CREDIT_ENTRIES = 40;
 /** Late queries after finish: knowledge write-back / title / review bill after the Agent Run. */
 export const TURN_CREDIT_LATE_REFRESH_MS = [2500, 8000, 22000] as const;
+/** Extra polls on the first fetch so a 50-call coding turn is not frozen at the first positive snapshot. */
+export const TURN_CREDIT_SETTLE_MS = [1500, 2500, 4000, 8000] as const;
 
 /** Survives MessageText remounts (first-turn list reconcile races the emit). */
 const turnCreditsMemory = new Map<string, TurnCreditUsageData>();
@@ -78,6 +80,19 @@ export function shouldReuseCachedTurnCredits(
   force: boolean
 ): boolean {
   return !force && isPositiveTurnCreditUsage(cached);
+}
+
+/** Prefer call-sum when Flowy's aggregate lags the per-call list. */
+export function normalizeTurnCreditUsage(usage: TurnCreditUsageData): TurnCreditUsageData {
+  const calls = usage.calls ?? [];
+  const callSum = calls.reduce((sum, call) => sum + (Number(call.creditConsumed) || 0), 0);
+  const creditsConsumed = Math.max(Number(usage.creditsConsumed) || 0, callSum);
+  const callCount = Math.max(Number(usage.callCount) || 0, calls.length);
+  return { ...usage, creditsConsumed, callCount, calls };
+}
+
+function turnCreditFingerprint(usage: TurnCreditUsageData): string {
+  return `${usage.creditsConsumed}|${usage.callCount}|${usage.calls?.length ?? 0}`;
 }
 
 /** Keep the richer of two snapshots so a late write-back cannot be overwritten by a stale poll. */
@@ -259,25 +274,13 @@ export async function fetchAndPersistTurnCredits(params: {
 
     const queryOnce = async () => ipcBridge.media.getCreditsUsageByTurn.invoke({ turnId });
 
-    try {
-      let result = await queryOnce();
-      if (!result?.authenticated) {
-        return null;
-      }
-
-      if (!params.force) {
-        const backoffMs = [1200, 2000];
-        for (const wait of backoffMs) {
-          if ((result.callCount ?? 0) > 0 || (result.creditsConsumed ?? 0) > 0) break;
-          await new Promise((resolve) => setTimeout(resolve, wait));
-          const retry = await queryOnce();
-          if (retry?.authenticated) {
-            result = retry;
-          }
-        }
-      }
-
-      const fetched: TurnCreditUsageData = {
+    const toUsage = (result: {
+      turnId?: string;
+      creditsConsumed?: number;
+      callCount?: number;
+      calls?: Array<{ modelName: string; creditConsumed: number; callStatus?: string }>;
+    }): TurnCreditUsageData =>
+      normalizeTurnCreditUsage({
         turnId: result.turnId || turnId,
         creditsConsumed: result.creditsConsumed ?? 0,
         callCount: result.callCount ?? 0,
@@ -286,9 +289,30 @@ export async function fetchAndPersistTurnCredits(params: {
           creditConsumed: call.creditConsumed,
           callStatus: call.callStatus,
         })),
-      };
+      });
+
+    try {
+      let result = await queryOnce();
+      if (!result?.authenticated) {
+        return null;
+      }
+
+      let usage = toUsage(result);
+      if (!params.force) {
+        let previous = turnCreditFingerprint(usage);
+        for (const wait of TURN_CREDIT_SETTLE_MS) {
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          const retry = await queryOnce();
+          if (!retry?.authenticated) break;
+          usage = pickRicherTurnCredits(usage, toUsage(retry));
+          const next = turnCreditFingerprint(usage);
+          if (next === previous && isPositiveTurnCreditUsage(usage)) break;
+          previous = next;
+        }
+      }
+
       const prior = peekTurnCredits(params.conversation_id, turnId);
-      const usage = pickRicherTurnCredits(prior, fetched);
+      usage = pickRicherTurnCredits(prior, usage);
 
       emitter.emit('nomi.credits.balance.refresh');
       scheduleLateTurnCreditRefresh(params);

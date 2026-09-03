@@ -1,6 +1,6 @@
 # Flowy Agent Harness 能力、性能与优化审查
 
-> **最后维护：** 2026-08-24（元数据维护，未重写结论）· 核对基准：commit `d791691c6` ·
+> **最后维护：** 2026-09-02 · 核对基准：Harness v2（WorkingSet / EvidenceRequired / Explore 子 Agent）
 > 文档性质：能力/性能审查记录（时点快照）· 内容基线：2026-08-06
 >
 > 这里的主项目是当前工作区 `C:\code\flowy\allo`，项目名为 Flowy。本文审查的是
@@ -13,20 +13,37 @@
 
 ## 结论
 
-当前 Flowy 的 Agent Harness 已经是一个完整的模型-工具执行循环，短板不在“有没有
-loop”，而在以下三个层次：
+当前 Flowy 的 Agent Harness 已经是一个完整的模型-工具执行循环。Harness v2 把
+短板补成运行时默认行为，而不再只靠提示词：
 
-1. **能力正确性（P0）**：普通任务的“完成”仍主要由模型自然返回 `EndTurn` 决定。
-   系统提示要求模型在结束前验证，但默认没有统一的运行时 completion/evidence gate。
-   Goal Judge 可以补上这一层，但它是显式启用的 per-session 能力，不是普通会话默认行为。
-2. **失败恢复（P1）**：已有 schema retry、stagnation nudge 和硬上限，能防止失控，
-   但运行时工具失败没有统一的失败分类和替代策略，恢复更多依赖下一次模型自行判断。
-3. **本地热路径（P1）**：ContextContributor 串行读取、每轮复制消息、同步保存完整会话和
-   index，可能把本地准备时间混进用户感知的首 token/下一轮延迟。
+1. **完成证据（P0，已落地默认）：** coding 模式默认 `VerificationMode::HardGate`
+   （EvidenceRequired）。有 Edit/Write 后的自然 `EndTurn` 必须看到验证 receipt
+   （或 harness 分类的琐碎改动），否则 continuation；预算用尽返回 Incomplete 语义
+   的 forced finalize，不伪装成功。办公模式对文件写入 / Browser / Computer 副作用
+   走一次 evidence 续轮；纯问答保持 Conversation。Goal Judge 仍是可选的长程裁判。
+2. **失败恢复（P1，部分落地）：** `ToolFailureContext` 在 coding 工具失败时注入
+   推荐动作（含 stale-anchor：禁止失败后再整文件 Read）。格式/测试重试封顶 3。
+3. **本地热路径（P1，部分落地）：** `parallel_safe` 的 ContextContributor 有界并行；
+   工具中间轮 coalesced checkpoint（compact JSON，跳过 index）；EndTurn 才 pretty
+   保存。KPI 拆 `contributor_ms` / `checkpoint_ms` / `ttft_ms` / `tool_wall_ms`。
 
-模型缓存是这些问题的支撑因素，不是本文主线。当前代码已经把稳定 system prompt 与动态
-turn tail 分开，并记录 cache read/create usage；优化时不应把所有 Agent 能力问题归因于
-provider 缓存。
+补充（原审查未覆盖的主因，现已作为 v2 基础设施）：
+
+- WorkingSet + 分页 Read + content reference；autocompact 不再清空 file cache。
+- 五层压缩里便宜的先跑：budget reduction → snip → microcompact → collapse notice →
+  LLM autocompact。
+- 稳定 coding system prefix、续轮降 thinking、path-overlap 并发。
+- `explore_code` / `verify_change` / `research` 与 `nomi_delegate` 分家。
+
+**Harness v3（loop 成本模型，非个例适配）：** coding 墙钟 ≈ Σ provider RTT。
+`StagnationGuard` 只拦相同 outcome / 全失败；串行 `Read A` → `Read B` → `git status`
+不会碰撞。进度守卫因此按 **recon 轮次** 记账，而不是把成功 Bash 当成进展：
+
+- 非 verify 的 Bash/exec 计为 recon，不能清掉连续探测 streak。
+- 请求级 recon 轮次上限（默认软 10 / 硬 16）在 Edit 后仍累计。
+- 连续单工具 recon（默认软 3 / 硬 6）按 round-trip 税硬停。
+- `verify_change` 带精确 `command` 时走直接 shell，不再套一层 nested Agent。
+- engine hard-stop 只 `begin_forced_finalize`，不再 `reset_progress`。
 
 ## 1. 当前架构边界
 
@@ -63,7 +80,7 @@ nomifun-agent-execution::AgentExecutionEngine
 | 工具安全执行 | 支持 schema 校验、审批、工具结果和 artifact media delivery；媒体投递失败会把结果转为错误，迫使模型重试 | `engine/mod.rs:1747-1778`, `1962-2064` |
 | 工具并发 | 工具层按 `is_concurrency_safe` 等条件分批并发，同时保留结果顺序和错误屏障 | `crates/agent/nomi-agent/src/tool_execution.rs` |
 | 长上下文 | 每次 API 前执行 microcompact、autocompact 和 emergency gate | `engine/mod.rs:2273-2360` |
-| 停滞保护 | 相同工具结果和 all-failed turns 进入 nudge/abort 状态机；另有默认安全 `max_turns` | `engine/mod.rs:1284-1296`, `2085-2177` |
+| 停滞保护 | 相同工具结果和 all-failed turns 进入 nudge/abort 状态机；另有默认安全 `max_turns`。coding 的串行 recon / 请求级 recon 由 `CodingProgressGuard` 管，不扩 `StagnationGuard` 签名 | `engine/mod.rs` stagnation + `nomi-coding/src/progress.rs` |
 | 工具 schema retry | `ToolRetryTracker` 只对相邻轮次中明确的 pre-dispatch schema failure 建立 retry lineage | `engine/mod.rs:72-187`, `2067-2072` |
 | steering | 运行中用户插话进入 inbox，在工具结果或自然结束边界被吸收，不需要重启整个 turn | `engine/mod.rs:551-562`, `1847-1869`, `2117-2167` |
 | plan mode | 进入 plan mode 后仅向 provider 暴露 Info 工具，退出后恢复原 allow-list | `engine/mod.rs:1319-1329`, `2400-2412` |
@@ -74,29 +91,30 @@ nomifun-agent-execution::AgentExecutionEngine
 
 ## 3. 需要优化的地方
 
-### P0-A：普通任务没有统一的完成证据闸门
+### P0-A：完成证据闸门（coding 已默认开启）
 
 **当前现状**
 
 `AgentEngine::new_with_provider` 和 `resume_with_provider` 默认把 `goal` 设为 `None`。
 `AgentBootstrap::goal` 也明确是 opt-in，只有宿主传入 `GoalSpec` 时才调用 `set_goal`。
-在 `execute_turn_inner` 中，只要 provider 返回无工具的正常 `EndTurn`，且没有 steering，
-就直接保存并返回 `AgentResult`；Goal Judge 只在 `self.goal` 存在时运行
-（`engine/mod.rs:1840-1905`）。
+Goal Judge 仍只在 `self.goal` 存在时运行。
 
-系统提示确实要求“修改后运行构建和测试再报告完成”（`context.rs:109-117`），但这是
-模型可被忽略的 prompt 约束，不是运行时事实检查。工具结果里的 artifact delivery 也只
-保证结果已交付，不会自动判断用户目标是否已经满足。
+**Harness v2：** `task_profile=coding` 安装的 `CodingHarness` 默认
+`VerificationMode::HardGate`（EvidenceRequired）。自然 `EndTurn` 若本请求已
+Edit/Write，必须看到 Bash/`verify_change` receipt（琐碎改动可由 harness 分类跳过），
+否则 continuation；verify 失败 streak 封顶 3。办公模式对文件写入 / Browser / Computer
+副作用走一次 evidence 续轮；纯问答仍直接 `EndTurn`。
 
-**为什么不合适**
+系统提示仍要求“修改后运行构建和测试再报告完成”，但这已不再是唯一防线。
 
-对“改代码并通过测试”“生成文件”“完成浏览器操作”这类任务，模型可以在没有执行验证的
-情况下返回一段看起来完整的文本，Harness 仍会把它当成正常结束。这是 Agent 能力缺口，
-不是 provider 速度问题；仅增加 eval 数量只能暴露问题，不能修复完成语义。
+**此前缺口**
 
-**怎么优化**
+未设完成闸门时，模型可以在没有执行验证的情况下返回看起来完整的文本，Harness
+仍会把它当成正常结束。仅增加 eval 数量只能暴露问题，不能修复完成语义。
 
-在宿主到 engine 的任务配置中增加一个可选 `CompletionPolicy`，至少包含：
+**已落地（Harness v2）：** coding 默认 `EvidenceRequired`；办公仅在文件写入或
+Browser/Computer 副作用时续一轮。Goal Judge 仍是 opt-in。下面的 CompletionPolicy
+三分法是同一设计，不再是待做项。
 
 - `Conversation`：普通问答保持当前低延迟行为；
 - `EvidenceRequired`：自然 `EndTurn` 前必须有结构化工具 receipt、artifact locator 或

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nomi_config::compact::CompactConfig;
 use nomi_config::config::Config;
@@ -10,7 +10,7 @@ use nomi_config::hooks::HookEngine;
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_tools::registry::ToolRegistry;
 use nomi_types::context_usage::ContextUsageBreakdown;
-use nomi_types::llm::{LlmEvent, LlmRequest};
+use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{
     ContentBlock, Message, Role, StopReason, TokenUsage, clear_provider_round_ids,
 };
@@ -20,7 +20,7 @@ use tracing::Instrument;
 
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
 use crate::compact::state::CompactState;
-use crate::compact::{auto, emergency, estimate, micro, CompactReason};
+use crate::compact::{auto, emergency, estimate, micro, snip, CompactReason};
 use crate::confirm::ToolConfirmer;
 use crate::tool_execution::{
     ExecutionControl, ProviderToolAuthority, SKIPPED_AFTER_PRIOR_ERROR,
@@ -69,7 +69,9 @@ const STREAM_IDLE_ACTIVITY_AFTER: Duration = Duration::from_millis(1_200);
 /// Hard limit for complete structured tool calls emitted by one provider
 /// turn. The engine consumes the entire provider turn before dispatching any
 /// call, so rejecting the first call beyond this bound keeps the oversized
-/// turn out of both approval and execution paths.
+/// turn out of both approval and execution paths. Independent Read/Grep/Edit
+/// then share a concurrent group via path-overlap partition (Hermes-style);
+/// mid-stream dispatch is not used because `ToolRegistry` is not `'static`.
 const MAX_PROVIDER_TURN_TOOL_CALLS: usize = 128;
 const MAX_PROVIDER_ROUND_ID_BYTES: usize = 512;
 
@@ -532,6 +534,46 @@ impl ToolEfficiencyStats {
 /// thrice) — well clear of legitimate retries/polling.
 pub(crate) const STAGNATION_THRESHOLD: usize = 3;
 
+const OFFICE_EVIDENCE_NUDGE: &str = "\
+This request wrote files or used Browser/Computer. Before finishing, run a \
+verification command that exits 0, or explain why no test applies. Do not \
+claim success from the write or click alone.";
+
+#[derive(Debug, Default)]
+struct HarnessRuntime {
+    kpi: nomi_coding::HarnessKpi,
+    continuation_after_tools: bool,
+    office_mutated: bool,
+    office_side_effect: bool,
+    office_verified: bool,
+    office_nudge_sent: bool,
+    office_working_set: nomi_coding::WorkingSet,
+}
+
+impl HarnessRuntime {
+    fn reset_for_user_request(&mut self) {
+        self.kpi.reset_for_user_request();
+        self.continuation_after_tools = false;
+        self.office_mutated = false;
+        self.office_side_effect = false;
+        self.office_verified = false;
+        self.office_nudge_sent = false;
+        self.office_working_set.reset();
+    }
+}
+
+fn cap_contributor_text(text: String, max_tokens: Option<usize>) -> String {
+    let Some(max) = max_tokens.filter(|n| *n > 0) else {
+        return text;
+    };
+    let max_chars = max.saturating_mul(4);
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let trimmed: String = text.chars().take(max_chars).collect();
+    format!("{trimmed}\n…[contributor truncated]")
+}
+
 pub struct AgentEngine {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
@@ -592,6 +634,7 @@ pub struct AgentEngine {
     /// Policy (prompt, verify, tool surface, compact prefs) lives in
     /// `nomi-coding`; the engine only invokes hooks.
     coding_harness: Option<nomi_coding::CodingHarness>,
+    harness_runtime: HarnessRuntime,
     /// Baseline compact config from session construction. Coding overlays are
     /// applied on top of this and restored when leaving coding mode.
     compact_config_base: nomi_config::compact::CompactConfig,
@@ -700,6 +743,7 @@ impl AgentEngine {
             moa: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             coding_harness: None,
+            harness_runtime: HarnessRuntime::default(),
             context_contributors: Vec::new(),
             steering_inbox: None,
             system_resource_inbox: None,
@@ -788,6 +832,7 @@ impl AgentEngine {
             moa: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
             coding_harness: None,
+            harness_runtime: HarnessRuntime::default(),
             context_contributors: Vec::new(),
             steering_inbox: None,
             system_resource_inbox: None,
@@ -1142,14 +1187,88 @@ impl AgentEngine {
         env: Option<crate::task_profile::CodingEnvContext>,
         config: nomi_coding::CodingConfig,
     ) {
+        self.ensure_coding_system_prefix();
         let harness = nomi_coding::CodingHarness::new(env, config);
         self.apply_coding_compact_overrides(harness.compact_overrides());
         self.coding_harness = Some(harness);
     }
 
     pub fn clear_coding_harness(&mut self) {
+        self.strip_coding_system_prefix();
         self.coding_harness = None;
         self.compact_config = self.compact_config_base.clone();
+    }
+
+    fn ensure_coding_system_prefix(&mut self) {
+        if self
+            .system_prompt
+            .contains(nomi_coding::CODING_SYSTEM_PREFIX_MARKER)
+        {
+            return;
+        }
+        let overlay = nomi_coding::coding_overlay_instructions();
+        if self.system_prompt.is_empty() {
+            self.system_prompt = overlay.to_string();
+        } else {
+            self.system_prompt.push_str("\n\n");
+            self.system_prompt.push_str(overlay);
+        }
+    }
+
+    fn strip_coding_system_prefix(&mut self) {
+        let marker = nomi_coding::CODING_SYSTEM_PREFIX_MARKER;
+        let overlay = nomi_coding::coding_overlay_instructions();
+        let Some(idx) = self.system_prompt.find(marker) else {
+            return;
+        };
+        if !self.system_prompt[idx..].starts_with(overlay) {
+            return;
+        }
+        let start = if idx >= 2 && &self.system_prompt[idx - 2..idx] == "\n\n" {
+            idx - 2
+        } else {
+            idx
+        };
+        let end = idx + overlay.len();
+        self.system_prompt.replace_range(start..end, "");
+    }
+
+    fn kpi_mut(&mut self) -> &mut nomi_coding::HarnessKpi {
+        if let Some(harness) = self.coding_harness.as_mut() {
+            harness.kpi_mut()
+        } else {
+            &mut self.harness_runtime.kpi
+        }
+    }
+
+    fn kpi(&self) -> &nomi_coding::HarnessKpi {
+        if let Some(harness) = self.coding_harness.as_ref() {
+            harness.kpi()
+        } else {
+            &self.harness_runtime.kpi
+        }
+    }
+
+    fn thinking_for_request(&self) -> Option<ThinkingConfig> {
+        let Some(cfg) = self.thinking.clone() else {
+            return None;
+        };
+        if self.plan_state.is_active || !self.harness_runtime.continuation_after_tools {
+            return Some(cfg);
+        }
+        match cfg {
+            ThinkingConfig::Enabled { budget_tokens } => Some(ThinkingConfig::Enabled {
+                budget_tokens: (budget_tokens / 4).max(1024),
+            }),
+            ThinkingConfig::Disabled => Some(ThinkingConfig::Disabled),
+        }
+    }
+
+    fn reasoning_effort_for_request(&self) -> Option<String> {
+        if self.plan_state.is_active || !self.harness_runtime.continuation_after_tools {
+            return self.current_reasoning_effort.clone();
+        }
+        Some("low".into())
     }
 
     fn apply_coding_compact_overrides(&mut self, overrides: nomi_coding::CompactPolicyOverrides) {
@@ -1345,7 +1464,11 @@ impl AgentEngine {
         let result = cmd.execute(&mut ctx, args).await;
         if result.is_ok() && matches!(name, "clear" | "compact") {
             self.editable_turn = None;
-            self.sent_prefix_len = 0;
+            self.sent_prefix_len = if name == "clear" {
+                0
+            } else {
+                self.messages.len()
+            };
             if name == "clear" {
                 self.frozen_provider_tools = None;
             }
@@ -1513,6 +1636,7 @@ impl AgentEngine {
         // Stagnation is scoped to one user-request execution. A later user
         // instruction starts with a clean progress window.
         self.stagnation_guard.reset();
+        self.harness_runtime.reset_for_user_request();
         if let Some(harness) = self.coding_harness.as_mut() {
             harness.reset_for_user_request();
         }
@@ -1643,13 +1767,15 @@ impl AgentEngine {
                     turn_tail_extras.push(tail);
                 }
             }
-            // §3.5: let registered contributors inject dynamic per-turn context
-            // (knowledge RAG, memory, …) into the turn tail. No-op when none
-            // are registered.
-            for contributor in &self.context_contributors {
-                if let Some(extra) = contributor.pre_turn_context().await {
-                    turn_tail_extras.push(extra);
-                }
+            // §3.5: registered contributors inject dynamic per-turn context.
+            let contrib_started = Instant::now();
+            let contributor_blocks = self.collect_contributor_context().await;
+            self.kpi_mut()
+                .add_contributor_ms(contrib_started.elapsed().as_millis() as u64);
+            turn_tail_extras.extend(contributor_blocks);
+            if self.coding_harness.is_none() && !self.harness_runtime.office_working_set.is_empty()
+            {
+                turn_tail_extras.push(self.harness_runtime.office_working_set.index_block());
             }
             if let Some(ctx) = self.goal.as_ref().and_then(|g| g.turn_context()) {
                 turn_tail_extras.push(ctx);
@@ -1766,8 +1892,8 @@ impl AgentEngine {
                 messages,
                 tools: tools.clone(),
                 max_tokens: self.output_max_tokens,
-                thinking: self.thinking.clone(),
-                reasoning_effort: self.current_reasoning_effort.clone(),
+                thinking: self.thinking_for_request(),
+                reasoning_effort: self.reasoning_effort_for_request(),
                 temperature: None,
                 retain_provider_round: self.compat.chain_rounds(),
             };
@@ -1877,6 +2003,7 @@ impl AgentEngine {
                 {
                     first_token_logged = true;
                     let ttft_ms = stream_start.elapsed().as_millis();
+                    self.kpi_mut().note_ttft_ms(ttft_ms as u64);
                     tracing::debug!(
                         target: "nomi_agent",
                         ttft_ms,
@@ -2462,6 +2589,19 @@ impl AgentEngine {
                     // unsent copies so a truncation restart can still replay
                     // request N-1 byte-for-byte.
                     self.redact_user_images_since(self.sent_prefix_len);
+                    // Drop `[Context]`-only extras from prior passes. Those
+                    // messages are cache-stable appends, not the requirement;
+                    // leaving them as the tail makes `requirement_is_tail`
+                    // false and re-pushes the original request every restart.
+                    while self.messages.last().is_some_and(|tail| {
+                        tail.role == Role::User
+                            && crate::context_contributor::is_context_only_user_content(
+                                &tail.content,
+                            )
+                    }) {
+                        self.messages.pop();
+                    }
+                    self.sent_prefix_len = self.sent_prefix_len.min(self.messages.len());
                     // Re-push the requirement only when it is not already the
                     // tail, so a first-pass truncation does not send the same
                     // request twice in a row.
@@ -2581,6 +2721,23 @@ impl AgentEngine {
 
                 // Coding harness finish policy (HardGate / todo continuation /
                 // system-continuation budget). Runs before goal continuation.
+                if self.coding_harness.is_none()
+                    && (self.harness_runtime.office_mutated
+                        || self.harness_runtime.office_side_effect)
+                    && !self.harness_runtime.office_verified
+                    && !self.harness_runtime.office_nudge_sent
+                {
+                    self.harness_runtime.office_nudge_sent = true;
+                    self.messages.push(Message::now(
+                        Role::User,
+                        vec![ContentBlock::Text {
+                            text: OFFICE_EVIDENCE_NUDGE.to_string(),
+                        }],
+                    ));
+                    self.persist_session(true);
+                    turn += 1;
+                    continue;
+                }
                 if let Some(harness) = self.coding_harness.as_mut() {
                     match harness.on_natural_end() {
                         nomi_coding::FinishDecision::Allow => {}
@@ -2637,7 +2794,12 @@ impl AgentEngine {
                 if stop_reason == StopReason::EndTurn {
                     self.run_compaction(CompactReason::TurnEnd).await?;
                 }
-                self.save_session();
+                tracing::info!(
+                    target: "nomi_agent",
+                    "{}",
+                    self.kpi().summary_line()
+                );
+                self.persist_session(true);
                 return Ok(AgentResult {
                     text: assistant_text,
                     stop_reason,
@@ -2650,16 +2812,10 @@ impl AgentEngine {
                 });
             }
 
-            let cascade_policy = if self
-                .coding_harness
-                .as_ref()
-                .is_some_and(|h| h.prefers_relaxed_error_cascade())
-            {
-                crate::tool_execution::ErrorCascadePolicy::HaltAfterMutatingOrGate
-            } else {
-                crate::tool_execution::ErrorCascadePolicy::HaltAllSubsequent
-            };
+            let cascade_policy =
+                crate::tool_execution::ErrorCascadePolicy::HaltAfterMutatingOrGate;
             self.observe_tool_calls_started(&tool_calls);
+            let tool_started = Instant::now();
             let mut outcome = if let Some(ref approval_mgr) = self.approval_manager {
                 // JSON stream mode: use protocol-based approval
                 let writer = self
@@ -2713,6 +2869,8 @@ impl AgentEngine {
                     }
                 }
             };
+            self.kpi_mut()
+                .add_tool_wall_ms(tool_started.elapsed().as_millis() as u64);
             self.observe_tool_calls_finished(&tool_calls, &outcome.results);
             let confirmed_invalid_argument_call_ids =
                 confirmed_predispatch_schema_invalid_call_ids(
@@ -2977,6 +3135,14 @@ impl AgentEngine {
                         .and_then(|v| v.as_str())
                         .map(str::to_owned);
                     let file_path = coding_tool_file_path(name, input);
+                    let offset = input
+                        .get("offset")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize);
+                    let limit = input
+                        .get("limit")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize);
                     outcomes.push(nomi_coding::ToolCallOutcome {
                         name: name.clone(),
                         success,
@@ -2984,6 +3150,8 @@ impl AgentEngine {
                         file_path,
                         error_content,
                         result_content,
+                        offset,
+                        limit,
                     });
                 }
                 if let Some(harness) = self.coding_harness.as_mut() {
@@ -2991,6 +3159,10 @@ impl AgentEngine {
                     coding_nudge_texts = nudge.texts;
                     coding_hard_stop = nudge.hard_stop;
                 }
+            }
+            self.harness_runtime.continuation_after_tools = true;
+            if self.coding_harness.is_none() {
+                self.observe_office_tool_turn(&tool_calls, &outcome.results);
             }
 
             // Apply any context modifiers from skill executions before the next turn
@@ -3061,9 +3233,10 @@ impl AgentEngine {
                 .push(Message::now(Role::User, tool_result_blocks));
             self.prune_old_tool_images();
 
-            // Save session after each turn
+            // Coalesced checkpoint after tools — pretty JSON + index wait for
+            // EndTurn / user-message durable saves.
             *safe_messages = self.messages.clone();
-            self.save_session();
+            self.persist_session(false);
             if stagnation_action == crate::loop_guard::StagnationAction::Abort {
                 if let Some(harness) = self.coding_harness.as_mut() {
                     harness.reset_progress();
@@ -3074,7 +3247,10 @@ impl AgentEngine {
             }
             if let Some(reason) = coding_hard_stop {
                 if let Some(harness) = self.coding_harness.as_mut() {
-                    harness.reset_progress();
+                    // Do not reset_progress here: that clears force_allow_finish
+                    // and WorkingSet. Forced finalize already skips verify/todo
+                    // continuations; wiping the guard would let a later natural
+                    // EndTurn reopen a recon tour.
                     harness.begin_forced_finalize(reason.clone());
                 }
                 tracing::warn!(
@@ -3222,6 +3398,7 @@ impl AgentEngine {
                     self.compact_state.last_input_tokens,
                     &self.compact_config,
                 ) {
+                    self.run_snip_layer();
                     self.run_microcompact();
                 }
                 if !self.compact_state.is_compact_stuck() {
@@ -3231,6 +3408,7 @@ impl AgentEngine {
             }
             CompactReason::EmergencyRecovery => {
                 if self.compact_config.enabled {
+                    self.run_snip_layer();
                     self.run_microcompact();
                     let force_mechanical = self.compact_state.is_compact_stuck()
                         || self.compact_state.is_circuit_broken(&self.compact_config);
@@ -3330,7 +3508,7 @@ impl AgentEngine {
         }
         let result = micro::microcompact(&mut self.messages, &self.compact_config);
         if result.cleared_count > 0 {
-            self.sent_prefix_len = 0;
+            self.sent_prefix_len = self.messages.len();
             clear_provider_round_ids(&mut self.messages);
             self.output.emit_info(&format!(
                 "Microcompact: cleared {} tool results (~{} tokens freed)",
@@ -3399,27 +3577,37 @@ impl AgentEngine {
             Ok(result) => {
                 let compacted = result.messages_summarized > 0;
                 if compacted {
-                    self.output.emit_info(&format!(
-                        "Autocompact: summarized {} messages ({} tokens → compact)",
-                        result.messages_summarized, result.pre_compact_tokens
-                    ));
-                    self.messages = result.messages;
-                    self.editable_turn = None;
-                    self.sent_prefix_len = 0;
-                    self.cache_detector.notify_compaction();
-                    if let Some(harness) = self.coding_harness.as_ref() {
-                        let reinject = harness.post_compact_reinject();
-                        self.messages.push(Message::now(
-                            Role::User,
-                            vec![ContentBlock::Text { text: reinject }],
+                    let previous = std::mem::replace(&mut self.messages, result.messages);
+                    let new_estimate = self.request_token_estimate();
+                    if !force_mechanical && new_estimate >= result.pre_compact_tokens {
+                        // Folding 69 messages into a summary that does not shrink
+                        // occupancy only burns prefix cache (cold TTFT). Keep the
+                        // original transcript so subsequent rounds can still hit cache.
+                        self.messages = previous;
+                        self.output.emit_info(&format!(
+                            "Autocompact: skipped apply ({} tokens → {new_estimate}, not smaller)",
+                            result.pre_compact_tokens
                         ));
-                        if let Some(cache) = &self.file_cache
-                            && let Ok(mut guard) = cache.write()
-                        {
-                            guard.clear();
+                        self.apply_compact_watermark(0);
+                    } else {
+                        self.output.emit_info(&format!(
+                            "Autocompact: summarized {} messages ({} tokens → compact)",
+                            result.messages_summarized, result.pre_compact_tokens
+                        ));
+                        self.editable_turn = None;
+                        // Freeze the rewritten prefix BEFORE post_compact_reinject
+                        // so persist_turn_tail cannot mutate it (prefix-cache).
+                        self.sent_prefix_len = self.messages.len();
+                        self.cache_detector.notify_compaction();
+                        if let Some(harness) = self.coding_harness.as_ref() {
+                            let reinject = harness.post_compact_reinject();
+                            self.messages.push(Message::now(
+                                Role::User,
+                                vec![ContentBlock::Text { text: reinject }],
+                            ));
                         }
+                        self.apply_compact_watermark(result.messages_summarized);
                     }
-                    self.apply_compact_watermark(result.messages_summarized);
                 } else if !auto::should_autocompact(
                     self.compact_state.last_input_tokens,
                     &self.compact_config,
@@ -3485,21 +3673,156 @@ impl AgentEngine {
     }
 
     fn save_session(&mut self) {
+        self.persist_session(true);
+    }
+
+    fn persist_session(&mut self, durable: bool) {
+        let started = Instant::now();
+        let mut save_err: Option<String> = None;
+        let mut index_err: Option<String> = None;
         if let (Some(mgr), Some(session)) = (&self.session_manager, &mut self.current_session) {
             session.messages = self.messages.clone();
             session.total_usage = self.total_usage.clone();
             session.activated_deferred_tools = self.tools.session_deferred_tool_identities();
             session.editable_turn = self.editable_turn.clone();
             session.updated_at = chrono::Utc::now();
-            if let Err(e) = mgr.save(session) {
-                self.output
-                    .emit_warning(&format!("Failed to save session: {}", e));
+            let save_result = if durable {
+                mgr.save(session)
+            } else {
+                mgr.save_coalesced(session)
+            };
+            if let Err(e) = save_result {
+                save_err = Some(e.to_string());
             }
-            if let Err(e) = mgr.update_index_for(session) {
-                self.output
-                    .emit_warning(&format!("Failed to update session index: {}", e));
+            if durable && let Err(e) = mgr.update_index_for(session) {
+                index_err = Some(e.to_string());
+            }
+        } else {
+            return;
+        }
+        if let Some(e) = save_err {
+            self.output
+                .emit_warning(&format!("Failed to save session: {e}"));
+        }
+        if let Some(e) = index_err {
+            self.output
+                .emit_warning(&format!("Failed to update session index: {e}"));
+        }
+        self.kpi_mut()
+            .add_checkpoint_ms(started.elapsed().as_millis() as u64);
+    }
+
+    async fn collect_contributor_context(&self) -> Vec<String> {
+        if self.context_contributors.is_empty() {
+            return Vec::new();
+        }
+        let mut parallel = Vec::new();
+        let mut serial = Vec::new();
+        for contributor in &self.context_contributors {
+            if contributor.parallel_safe() {
+                parallel.push(contributor);
+            } else {
+                serial.push(contributor);
             }
         }
+        let mut out = Vec::new();
+        if !parallel.is_empty() {
+            let budgets: Vec<Option<usize>> = parallel.iter().map(|c| c.max_tokens()).collect();
+            let futs = parallel.iter().map(|c| c.pre_turn_context());
+            for (budget, extra) in budgets.into_iter().zip(futures::future::join_all(futs).await)
+            {
+                if let Some(text) = extra {
+                    out.push(cap_contributor_text(text, budget));
+                }
+            }
+        }
+        for contributor in serial {
+            if let Some(extra) = contributor.pre_turn_context().await {
+                out.push(cap_contributor_text(extra, contributor.max_tokens()));
+            }
+        }
+        out
+    }
+
+    fn observe_office_tool_turn(
+        &mut self,
+        tool_calls: &[ContentBlock],
+        results: &[ContentBlock],
+    ) {
+        self.harness_runtime
+            .kpi
+            .observe_assistant_tools(tool_calls.len());
+        for call in tool_calls {
+            let ContentBlock::ToolUse { id, name, input, .. } = call else {
+                continue;
+            };
+            let success = results.iter().any(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } if tool_use_id == id => !is_error,
+                _ => false,
+            });
+            if !success {
+                continue;
+            }
+            if matches!(name.as_str(), "Edit" | "Write" | "ApplyPatch") {
+                self.harness_runtime.office_mutated = true;
+                self.harness_runtime.kpi.observe_edit();
+            }
+            if matches!(
+                name.as_str(),
+                "Browser" | "Computer" | "LaunchApp" | "computer" | "browser"
+            ) {
+                self.harness_runtime.office_side_effect = true;
+            }
+            let command = input.get("command").and_then(|v| v.as_str());
+            if name.eq_ignore_ascii_case("verify_change")
+                || (matches!(name.as_str(), "Bash" | "exec_command")
+                    && command.is_some_and(nomi_coding::looks_like_verification_command))
+            {
+                self.harness_runtime.office_verified = true;
+                self.harness_runtime.kpi.verify_before_end = true;
+            }
+            if name.eq_ignore_ascii_case("Read")
+                && let Some(path) = input.get("file_path").and_then(|v| v.as_str())
+            {
+                let offset = input
+                    .get("offset")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(0);
+                let limit = input
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(500);
+                self.harness_runtime
+                    .office_working_set
+                    .record_read(path, offset, limit, offset.saturating_add(limit), None);
+                self.harness_runtime
+                    .kpi
+                    .observe_read_key(&format!("{path}#{offset}:{limit}"));
+            }
+        }
+    }
+
+    fn run_snip_layer(&mut self) {
+        let removed = snip::snip_old_plain_turns(&mut self.messages, snip::DEFAULT_SNIP_KEEP_TAIL);
+        if removed == 0 {
+            return;
+        }
+        self.messages.push(Message::now(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: snip::collapse_notice(removed),
+            }],
+        ));
+        self.sent_prefix_len = self.messages.len();
+        clear_provider_round_ids(&mut self.messages);
+        self.output
+            .emit_info(&format!("Snip: dropped {removed} older plain turns"));
     }
 
     /// Stamp the owning-conversation token onto the current session and persist

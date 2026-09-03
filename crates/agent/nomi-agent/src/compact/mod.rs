@@ -1,8 +1,11 @@
 //! Multi-level context compaction for long conversations.
 //!
-//! Three levels, from lightest to heaviest:
-//! - **Microcompact**: clears old tool result content (no LLM call)
-//! - **Autocompact**: watermark-triggered LLM summarization
+//! Cheap layers first (Claude-style lazy degradation):
+//! - **Budget reduction**: oversized tool results become `[content_ref …]` locators
+//! - **Snip**: drop old plain user/assistant turns without splitting tool pairs
+//! - **Microcompact**: stub old tool result bodies (no LLM call)
+//! - **Context collapse**: a structured snip notice in the transcript
+//! - **Autocompact**: watermark-triggered LLM summarization (last)
 //! - **Emergency**: blocks API calls when near the context window limit
 
 pub mod auto;
@@ -10,6 +13,7 @@ pub mod emergency;
 pub mod estimate;
 pub mod micro;
 pub mod prompt;
+pub mod snip;
 pub mod state;
 
 /// Why the engine is running the compaction pipeline.

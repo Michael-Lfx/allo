@@ -8,9 +8,9 @@ pub const DEFAULT_READ_REPEAT_SOFT: usize = 2;
 /// Hard stop after this many successful Reads of the same path.
 pub const DEFAULT_READ_REPEAT_HARD: usize = 3;
 
-pub const CODING_READ_REPEAT_NUDGE: &str = "Coding read-repeat: you already Read this file earlier \
-in this request. Do **not** Read it again. Use the earlier Read/Grep output (including line:hash \
-anchors). Either Edit/Write now, or stop with a short status. Re-reading unchanged content is not progress.";
+pub const CODING_READ_REPEAT_NUDGE: &str = "Coding read-repeat: you already Read this file **range** earlier \
+in this request. Do **not** Read the same offset/limit again. Unread ranges are listed in the Read footer \
+and WorkingSet. Use earlier line:hash anchors. Either Edit/Write now, or Read only an uncovered range.";
 
 pub const CODING_READ_REPEAT_HARD_STOP: &str = "Coding read-repeat hard-stop: the same file was Read \
 repeatedly without a file mutation. Stop now. Summarize what you already know and either apply the \
@@ -57,9 +57,20 @@ pub enum ReadRepeatAction {
     UnchangedStubNudge,
 }
 
+fn range_key(path: &str, offset: Option<usize>, limit: Option<usize>) -> String {
+    format!(
+        "{}#{}:{}",
+        normalize_read_path(path),
+        offset.unwrap_or(0),
+        limit
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "end".to_string())
+    )
+}
+
 #[derive(Debug, Default)]
 pub struct ReadRepeatTracker {
-    /// Successful Read counts per normalized path this root request.
+    /// Successful Read counts per normalized path+range this root request.
     counts: HashMap<String, usize>,
     soft_nudge_sent: HashMap<String, bool>,
     hard_stop_sent: bool,
@@ -72,10 +83,23 @@ impl ReadRepeatTracker {
     }
 
     /// Observe one successful Read. `result_content` detects dedup stubs.
+    /// Repeat is keyed by path **and** offset/limit so paging a file is not a loop.
     pub fn observe_read(
         &mut self,
         path: Option<&str>,
         result_content: Option<&str>,
+        soft_threshold: usize,
+        hard_threshold: usize,
+    ) -> ReadRepeatAction {
+        self.observe_read_range(path, result_content, None, None, soft_threshold, hard_threshold)
+    }
+
+    pub fn observe_read_range(
+        &mut self,
+        path: Option<&str>,
+        result_content: Option<&str>,
+        offset: Option<usize>,
+        limit: Option<usize>,
         soft_threshold: usize,
         hard_threshold: usize,
     ) -> ReadRepeatAction {
@@ -84,9 +108,9 @@ impl ReadRepeatTracker {
 
         if result_content.is_some_and(is_unchanged_stub) && !self.unchanged_nudge_sent {
             self.unchanged_nudge_sent = true;
-            // Still count the path if present.
+            // Still count the range if present.
             if let Some(p) = path.filter(|p| !p.is_empty()) {
-                let key = normalize_read_path(p);
+                let key = range_key(p, offset, limit);
                 *self.counts.entry(key).or_insert(0) += 1;
             }
             return ReadRepeatAction::UnchangedStubNudge;
@@ -95,7 +119,7 @@ impl ReadRepeatTracker {
         let Some(path) = path.filter(|p| !p.is_empty()) else {
             return ReadRepeatAction::None;
         };
-        let key = normalize_read_path(path);
+        let key = range_key(path, offset, limit);
         let count = {
             let e = self.counts.entry(key.clone()).or_insert(0);
             *e = e.saturating_add(1);
@@ -114,8 +138,12 @@ impl ReadRepeatTracker {
     }
 
     pub fn count_for(&self, path: &str) -> usize {
+        self.count_for_range(path, None, None)
+    }
+
+    pub fn count_for_range(&self, path: &str, offset: Option<usize>, limit: Option<usize>) -> usize {
         self.counts
-            .get(&normalize_read_path(path))
+            .get(&range_key(path, offset, limit))
             .copied()
             .unwrap_or(0)
     }
@@ -163,5 +191,19 @@ mod tests {
             t.observe_read(Some("b.rs"), Some("y"), 2, 3),
             ReadRepeatAction::None
         );
+    }
+
+    #[test]
+    fn different_ranges_of_same_path_are_independent() {
+        let mut t = ReadRepeatTracker::default();
+        assert_eq!(
+            t.observe_read_range(Some("a.rs"), Some("head"), Some(0), Some(50), 2, 3),
+            ReadRepeatAction::None
+        );
+        assert_eq!(
+            t.observe_read_range(Some("a.rs"), Some("tail"), Some(50), Some(50), 2, 3),
+            ReadRepeatAction::None
+        );
+        assert_eq!(t.count_for_range("a.rs", Some(0), Some(50)), 1);
     }
 }

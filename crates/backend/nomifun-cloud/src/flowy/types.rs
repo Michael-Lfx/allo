@@ -1,6 +1,6 @@
 //! Flowy API request/response types.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SendEmailCodeRequest {
@@ -213,18 +213,34 @@ pub struct TurnCreditUsage {
     pub turn_id: String,
     #[serde(default)]
     pub session_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i32_lenient")]
     pub call_count: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub credits_consumed: i64,
     #[serde(default)]
     pub calls: Vec<TurnCreditUsageCall>,
 }
 
+impl TurnCreditUsage {
+    /// Prefer the richer of the aggregate vs the per-call sum so a laggy
+    /// `creditsConsumed` cannot under-report a complete `calls` list.
+    pub fn normalize(mut self) -> Self {
+        let call_sum: i64 = self.calls.iter().map(|c| c.credit_consumed).sum();
+        if call_sum > self.credits_consumed {
+            self.credits_consumed = call_sum;
+        }
+        let n = i32::try_from(self.calls.len()).unwrap_or(i32::MAX);
+        if n > self.call_count {
+            self.call_count = n;
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnCreditUsageCall {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub chat_id: i64,
     #[serde(default)]
     pub model_name: String,
@@ -236,12 +252,63 @@ pub struct TurnCreditUsageCall {
     pub completion_tokens: Option<i64>,
     #[serde(default)]
     pub cache_tokens: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub credit_consumed: i64,
     #[serde(default)]
     pub call_status: String,
     #[serde(default)]
     pub created_at: Option<String>,
+}
+
+fn deserialize_i64_lenient<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(parse_lenient_i64(serde_json::Value::deserialize(deserializer)?))
+}
+
+fn deserialize_i32_lenient<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v = parse_lenient_i64(serde_json::Value::deserialize(deserializer)?);
+    i32::try_from(v).or_else(|_| {
+        if v > i64::from(i32::MAX) {
+            Ok(i32::MAX)
+        } else {
+            Ok(0)
+        }
+    })
+}
+
+fn parse_lenient_i64(value: serde_json::Value) -> i64 {
+    match value {
+        serde_json::Value::Null => 0,
+        serde_json::Value::Bool(_) => 0,
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_u64().and_then(|v| i64::try_from(v).ok()))
+            .or_else(|| n.as_f64().map(round_credit))
+            .unwrap_or(0),
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                return 0;
+            }
+            s.parse::<i64>()
+                .ok()
+                .or_else(|| s.parse::<f64>().ok().map(round_credit))
+                .unwrap_or(0)
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => 0,
+    }
+}
+
+fn round_credit(v: f64) -> i64 {
+    if !v.is_finite() {
+        return 0;
+    }
+    v.round() as i64
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -607,5 +674,54 @@ mod plan_label_tests {
             None
         );
         assert_eq!(ClawModelExtra::parse("not-json").context_window_tokens(), None);
+    }
+}
+
+#[cfg(test)]
+mod turn_credit_usage_tests {
+    use super::{TurnCreditUsage, TurnCreditUsageCall};
+
+    #[test]
+    fn deserializes_float_and_string_credit_fields() {
+        let usage: TurnCreditUsage = serde_json::from_str(
+            r#"{
+                "turnId":"t1",
+                "callCount":"2",
+                "creditsConsumed":12.4,
+                "calls":[
+                    {"modelName":"m","creditConsumed":"6.2"},
+                    {"modelName":"m","creditConsumed":7}
+                ]
+            }"#,
+        )
+        .expect("lenient credit payload");
+        let usage = usage.normalize();
+        assert_eq!(usage.call_count, 2);
+        assert_eq!(usage.credits_consumed, 13);
+        assert_eq!(usage.calls[0].credit_consumed, 6);
+        assert_eq!(usage.calls[1].credit_consumed, 7);
+    }
+
+    #[test]
+    fn normalize_raises_aggregate_to_call_sum() {
+        let usage = TurnCreditUsage {
+            turn_id: "t1".into(),
+            call_count: 1,
+            credits_consumed: 10,
+            calls: vec![
+                TurnCreditUsageCall {
+                    credit_consumed: 40,
+                    ..Default::default()
+                },
+                TurnCreditUsageCall {
+                    credit_consumed: 30,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+        .normalize();
+        assert_eq!(usage.credits_consumed, 70);
+        assert_eq!(usage.call_count, 2);
     }
 }

@@ -34,6 +34,7 @@ pub mod task_profile;
 mod local_agent_invocation;
 mod local_delegation_progress;
 mod local_delegate_tool;
+mod isolated_subagent;
 
 // Re-export the skills crate so existing callers (nomi-cli, tests) can use
 // `nomi_agent::skills::` without changing their import paths.
