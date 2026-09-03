@@ -450,14 +450,23 @@ items[] {
   市场探测投影；**未导入的条目照样出现**（商店内容=源内容，不依赖本地导入状态）；
 - 展示元数据来自条目目录的 `.codebuddy-plugin/plugin.json`（复用
   `read_plugin_display`，与导入管线同一解析器），`displayName` / `profession` /
-  `displayDescription` / `tags` / `quickPrompts` / `avatar` 全保真；
+  `displayDescription` / `tags` / `quickPrompts` / `avatar` 全保真；技能与
+  连接器无 plugin.json，显示名回退 `connectors.json` 索引（name_zh/name_en/
+  version），头像回退市场根 `icons/<source-basename>.<ext>`（png/svg/jpg/
+  jpeg/webp/gif）；
 - `installed` 由 `marketplace_id + entry_name` provenance 查快照，再查组件
   `installed=1`；`update_available` = 快照版本 ≠ 条目版本；
 - `store/install-entry` 幂等：已有 provenance 且组件已装 → 直接返回
   `reused=true`；否则 `market import_entry`（或快照复用）→ `install/run`
   注册，返回 `{ snapshot_id, version, installed_count, errors[] }`；
-- store 资产端点与快照资产端点同一 MIME 白名单与路径穿越校验；条目目录通过
-  市场 seam（`entry_dir`）解析，绝不暴露绝对路径；
+- store 资产端点与快照资产端点同一 MIME 白名单与路径穿越校验；**不要求
+  App Server 连接头**（`<img>` 标签无法携带，头像/图标是公开展示内容）：
+  先按条目目录（`entry_dir`，plugin.json `avatar`）解析，缺失时回退市场根
+  （`market_dir`，`icons/…`）；绝不暴露绝对路径；
+- 条目 kind 判定优先级：`cli.json` → connector；plugin.json 带 agents/
+  teamInfo → agent/team；**根 `SKILL.md` → skill**（skill 条目可随附
+  `mcp.json`，技能信号更强）；`mcp.json` → connector；否则回退市场来源
+  kind；
 - 市场条目在来源 tab 也走「安装」（store install-entry），不再单独暴露
   「导入」作为主路径；本地导入（4.5）保留为高级/调试入口。
 
