@@ -1439,20 +1439,20 @@ html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
 .conversation-error-diagnostic__meta {
   display: flex;
   min-width: 0;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  overflow-wrap: anywhere;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
 }
 
 .conversation-error-diagnostic__meta > span {
   min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .conversation-error-diagnostic__meta-item {
   display: inline-flex;
+  box-sizing: border-box;
   min-width: 0;
-  max-width: 100%;
+  width: 100%;
   align-items: baseline;
   gap: 4px;
   padding: 2px 6px;
@@ -1470,6 +1470,10 @@ html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
 
 .conversation-error-diagnostic__meta-item code {
   min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   overflow-wrap: anywhere;
   color: var(--flowy-text-primary, var(--color-text-1));
   font: inherit;

@@ -634,9 +634,23 @@ const normalizePersistedWorkspaceRuntimeError = (
 
   const persistedError = isRecord(parsed.error) ? parsed.error : undefined;
   const detail = typeof persistedError?.detail === 'string' ? persistedError.detail : message;
+  const model_id =
+    typeof persistedError?.model_id === 'string'
+      ? persistedError.model_id
+      : typeof persistedError?.modelId === 'string'
+        ? persistedError.modelId
+        : undefined;
+  const provider_id =
+    typeof persistedError?.provider_id === 'string'
+      ? persistedError.provider_id
+      : typeof persistedError?.providerId === 'string'
+        ? persistedError.providerId
+        : undefined;
 
   return {
     message,
+    ...(model_id ? { model_id } : {}),
+    ...(provider_id ? { provider_id } : {}),
     code: 'WORKSPACE_PATH_EDGE_WHITESPACE_RUNTIME_UNSUPPORTED',
     ownership: 'nomifun',
     detail,

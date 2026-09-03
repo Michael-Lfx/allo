@@ -191,6 +191,10 @@ export type AgentErrorResolution = {
 
 export type AgentStreamErrorInfo = {
   message: string;
+  /** Effective model used by the failed turn attempt, when known. */
+  model_id?: string;
+  /** Provider owning the effective model, when known. */
+  provider_id?: string;
   incident_id?: string;
   code?: string;
   ownership?: AgentErrorOwnership;
@@ -819,6 +823,18 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
       ? (value.ownership as AgentErrorOwnership)
       : undefined;
   const detail = typeof value.detail === 'string' ? value.detail : undefined;
+  const model_id =
+    typeof value.model_id === 'string'
+      ? value.model_id
+      : typeof value.modelId === 'string'
+        ? value.modelId
+        : undefined;
+  const provider_id =
+    typeof value.provider_id === 'string'
+      ? value.provider_id
+      : typeof value.providerId === 'string'
+        ? value.providerId
+        : undefined;
   const workspacePath = typeof value.workspacePath === 'string' ? value.workspacePath : undefined;
   const retryable = typeof value.retryable === 'boolean' ? value.retryable : undefined;
   const feedback_recommended = typeof value.feedback_recommended === 'boolean' ? value.feedback_recommended : undefined;
@@ -826,6 +842,8 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
 
   if (
     !incident_id &&
+    !model_id &&
+    !provider_id &&
     !code &&
     !ownership &&
     !detail &&
@@ -839,6 +857,8 @@ export const normalizeAgentStreamError = (value: unknown): AgentStreamErrorInfo 
 
   return {
     message: value.message,
+    ...(model_id ? { model_id } : {}),
+    ...(provider_id ? { provider_id } : {}),
     ...(incident_id ? { incident_id } : {}),
     ...(code ? { code } : {}),
     ...(ownership ? { ownership } : {}),

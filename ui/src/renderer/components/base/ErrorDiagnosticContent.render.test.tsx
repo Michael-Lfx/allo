@@ -26,6 +26,7 @@ const renderDiagnostic = (detail?: string): string =>
       <ErrorDiagnosticContent
         diagnostic={buildAgentErrorDiagnostic({
           message: '模型服务商拒绝了请求',
+          model_id: 'claude-sonnet-4-20250514',
           code: 'USER_LLM_PROVIDER_INVALID_TOOL_SCHEMA',
           incident_id: 'incident-render-1',
           ownership: 'user_llm_provider',
@@ -51,6 +52,8 @@ describe('ErrorDiagnosticContent render contract', () => {
     const html = renderDiagnostic('workspace_path=C:\\Users\\secret\\workspace\\project\nToken=secret');
 
     expect(html).toContain('错误码');
+    expect(html).toContain('模型 ID');
+    expect(html).toContain('claude-sonnet-4-20250514');
     expect(html).toContain('USER_LLM_PROVIDER_INVALID_TOOL_SCHEMA');
     const meta = html.match(/<div class="conversation-error-diagnostic__meta">([\s\S]*?)<\/div>/)?.[1] ?? '';
     expect(meta).not.toContain('incident-render-1');

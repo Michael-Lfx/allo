@@ -144,6 +144,8 @@
   },
   "agentError": {
     "fallbackTitle": "The agent could not reply",
+    "modelId": "Model ID",
+    "providerId": "Provider ID",
     "errorCode": "Error code",
     "incidentId": "Incident ID",
     "httpStatus": "HTTP status",

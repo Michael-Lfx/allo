@@ -318,6 +318,7 @@ const makeSupportMessages = (scenario: string): SupportChatState => {
 const makeErrorContext = (scenario: string): Parameters<typeof ConversationErrorReportModal>[0]['context'] => {
   const error: AgentStreamErrorInfo = {
     message: 'Provider returned an unavailable response',
+    model_id: 'claude-sonnet-4-20250514',
     code: 'PROVIDER_UNAVAILABLE',
     ownership: 'unknown_upstream',
     retryable: true,

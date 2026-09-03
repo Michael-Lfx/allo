@@ -144,6 +144,8 @@
   },
   "agentError": {
     "fallbackTitle": "Agent 未能回复",
+    "modelId": "模型 ID",
+    "providerId": "服务商 ID",
     "errorCode": "错误码",
     "incidentId": "关联 ID",
     "httpStatus": "HTTP 状态",

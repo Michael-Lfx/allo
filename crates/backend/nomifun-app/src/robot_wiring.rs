@@ -1159,6 +1159,8 @@ mod tests {
         let error = |ownership| {
             AgentStreamEvent::Error(nomifun_api_types::AgentStreamErrorData {
                 message: "boom".to_owned(),
+                model_id: None,
+                provider_id: None,
                 incident_id: None,
                 code: None,
                 ownership,

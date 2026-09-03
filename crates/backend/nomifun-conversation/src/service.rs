@@ -9728,7 +9728,9 @@ impl ConversationService {
                             error = %ErrorChain(&err),
                             "Failed to build runtime options for message send"
                         );
-                        let _ = self.persist_send_failure_tip(conversation_id, None, &err).await;
+                        let _ = self
+                            .persist_send_failure_tip(conversation_id, None, &err, None)
+                            .await;
                         let receipt_error = format!("{}", ErrorChain(&err));
                         if !durable_delivery
                             .as_ref()
@@ -10287,6 +10289,7 @@ impl ConversationService {
                             &conv_id,
                             Some(&stable_turn_id),
                             &err,
+                            successful_turn_model.as_ref(),
                         )
                         .await;
                     let receipt_error = format!("{}", ErrorChain(&err));
@@ -10361,6 +10364,7 @@ impl ConversationService {
                         &conv_id,
                         Some(&stable_turn_id),
                         &err,
+                        successful_turn_model.as_ref(),
                     )
                     .await;
                 let receipt_error = format!("{}", ErrorChain(&err));
@@ -10428,6 +10432,7 @@ impl ConversationService {
                         &conv_id,
                         Some(&stable_turn_id),
                         &err,
+                        successful_turn_model.as_ref(),
                     )
                     .await;
                 let receipt_error = format!("{}", ErrorChain(&err));
@@ -10579,6 +10584,7 @@ impl ConversationService {
                     cron_service.clone(),
                 )
                 .with_root_turn_id(stable_turn_id.clone())
+                .with_model_context(successful_turn_model.as_ref())
                 .with_source_user_message_id(truncated_recovery_source_message_id.clone())
                 .with_cancellation(turn_cancellation.clone())
                 .with_companion_context(companion, companion_id.clone())
@@ -10878,6 +10884,7 @@ impl ConversationService {
                         cron_service.clone(),
                     )
                     .with_root_turn_id(stable_turn_id.clone())
+                    .with_model_context(successful_turn_model.as_ref())
                     .with_companion_context(companion, companion_id.clone())
                     .with_origin(origin.clone())
                     .with_channel_platform(channel_platform.clone())
@@ -12246,8 +12253,12 @@ impl ConversationService {
         conversation_id: &str,
         turn_id: Option<&str>,
         err: &AppError,
+        model: Option<&ProviderWithModel>,
     ) {
-        let Some(row) = self.persist_send_failure_tip(conversation_id, turn_id, err).await else {
+        let Some(row) = self
+            .persist_send_failure_tip(conversation_id, turn_id, err, model)
+            .await
+        else {
             return;
         };
 
