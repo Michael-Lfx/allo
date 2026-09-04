@@ -9,6 +9,7 @@ import {
     parseCanvasAgentMentionTokens,
     resolveCanvasAgentNodeId,
     resolveCanvasAgentNodeIds,
+    stampCanvasAgentAliases,
 } from "./canvas-agent-ids";
 
 function snapshot(): CanvasAgentSnapshot {
@@ -32,6 +33,21 @@ describe("canvas agent ids", () => {
         expect(canvasAgentShortId("text-b", aliases)).toBe("n2");
         expect(resolveCanvasAgentNodeId(snapshot(), "n2")).toBe("text-b");
         expect(resolveCanvasAgentNodeId(snapshot(), "text-a")).toBe("text-a");
+    });
+
+    test("keeps stamped aliases when a new node sorts earlier", () => {
+        const stamped = stampCanvasAgentAliases(snapshot().nodes);
+        expect(stamped.find((node) => node.id === "text-a")?.metadata?.agentAlias).toBe("n1");
+        expect(stamped.find((node) => node.id === "text-b")?.metadata?.agentAlias).toBe("n2");
+        const withNew = stampCanvasAgentAliases([
+            { id: "aaa-new", type: CanvasNodeType.Image, title: "新图", position: { x: 0, y: 0 }, width: 100, height: 80, metadata: {} },
+            ...stamped,
+        ]);
+        expect(withNew.find((node) => node.id === "text-a")?.metadata?.agentAlias).toBe("n1");
+        expect(withNew.find((node) => node.id === "aaa-new")?.metadata?.agentAlias).toBe("n3");
+        const aliases = buildCanvasAgentAliasMap(withNew);
+        expect(canvasAgentShortId("text-a", aliases)).toBe("n1");
+        expect(canvasAgentShortId("aaa-new", aliases)).toBe("n3");
     });
 
     test("parses @[node:id] and @n1 mention tokens", () => {

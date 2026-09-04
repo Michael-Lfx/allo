@@ -38,7 +38,7 @@ import { useCanvasNodeEditor } from "./use-canvas-node-editor";
 import { useCanvasNodeOperations } from "./use-canvas-node-operations";
 import { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import { useCanvasProjectShare } from "./use-canvas-project-share";
-import { homeAgentAutoStartFromCreative, readHomeLaunchSidecar } from "@renderer/pages/videoCanvas/lib/home-agent-launch";
+import { homeAgentAutoStartFromCreative, canvasConfigPatchFromHomeLaunch, readHomeLaunchSidecar } from "@renderer/pages/videoCanvas/lib/home-agent-launch";
 import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
 import { loadCanvasAssistantPanel } from "@renderer/pages/videoCanvas/loadAssistantPanel";
 import { useCanvasRenderModel } from "./use-canvas-render-model";
@@ -119,6 +119,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const interactionSetters = { setHoveredNodeId, setToolbarNodeId };
 
     const config = useConfigStore((state) => state.config);
+    const replaceConfig = useConfigStore((state) => state.replaceConfig);
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const assets = useAssetStore((state) => state.assets);
@@ -182,6 +183,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const { assistantWidth, setAssistantWidth } = useCanvasAssistantPanelWidth();
     const [homeAgentAutoStart, setHomeAgentAutoStart] = useState(() => peekHomeAgentAutoStart(projectId));
     const homeAutoAgentTriedRef = useRef(homeAgentAutoStart !== null);
+    const homePrefsAppliedKeyRef = useRef<string | null>(null);
     const { agentMode, assistantClosing, assistantMounted, assistantOpen, closeAgent, openAgent, setAgentMode } = useCanvasAssistantVisibility({
         initialOpen: homeAgentAutoStart !== null,
     });
@@ -729,6 +731,18 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     ]);
 
     useEffect(() => {
+        if (!projectLoaded || !modelCatalogReady) return;
+        const launch = readHomeLaunchSidecar(currentProject?.alloCreative);
+        if (!launch) return;
+        const key = `${projectId}::${launch.createdAt}`;
+        if (homePrefsAppliedKeyRef.current === key) return;
+        homePrefsAppliedKeyRef.current = key;
+        const patch = canvasConfigPatchFromHomeLaunch(launch.preferences);
+        if (!Object.keys(patch).length) return;
+        replaceConfig({ ...useConfigStore.getState().config, ...patch });
+    }, [currentProject?.alloCreative, modelCatalogReady, projectId, projectLoaded, replaceConfig]);
+
+    useEffect(() => {
         if (!projectLoaded || homeAutoAgentTriedRef.current) return;
         const autoStart = homeAgentAutoStartFromCreative(currentProject?.alloCreative);
         if (!autoStart) return;
@@ -978,6 +992,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                             extractFramesForAgent={extractVideoFramesForAgent}
                             autoStart={homeAgentAutoStart}
                             onAutoStartConsumed={consumeHomeAgentAutoStart}
+                            modelCatalogReady={modelCatalogReady}
                         />
                     </div>
                     {/* 选区框、连接草稿与节点弹层（HideWhileSelectionBox/HideWhileNodeDragging 隔离）统一在此编排 */}

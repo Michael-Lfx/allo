@@ -31,10 +31,10 @@ describe("video canvas project entry chunk", () => {
         expect(chainSource.includes('from "@oc/components/canvas/canvas-local-agent-panel"')).toBe(false);
         expect(chainSource.includes("loadCanvasAssistantPanel")).toBe(true);
         expect(source("./loadAssistantPanel.ts").includes("import('@oc/components/canvas/canvas-assistant-panel')")).toBe(true);
-        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-text-editor-modal"')).toBe(true);
-        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-local-agent-panel"')).toBe(true);
+        expect(chainSource.includes('import("@oc/components/canvas/canvas-text-editor-modal")')).toBe(true);
+        expect(chainSource.includes('import("@oc/components/canvas/canvas-local-agent-panel")')).toBe(true);
         expect(/import\s*\{[^}]*\bCanvasScriptEditor\b/.test(chainSource)).toBe(false);
-        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-script-editor"')).toBe(true);
+        expect(chainSource.includes('import("@oc/components/canvas/canvas-script-editor")')).toBe(true);
         expect(chainSource.includes("CanvasScriptNodeContent")).toBe(true);
         expect(chainSource.includes('from "@oc/components/canvas/canvas-script-node"')).toBe(true);
     });

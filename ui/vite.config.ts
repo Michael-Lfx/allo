@@ -115,6 +115,32 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       host: '127.0.0.1',
       proxy,
+      // Pre-crawl canvas lazy chunks so first-open of text/3D does not
+      // discover new deps and trigger a full client reload mid-session.
+      warmup: {
+        clientFiles: [
+          './src/renderer/pages/videoCanvas/oc/lib/canvas/canvas-rich-text.ts',
+          './src/renderer/pages/videoCanvas/oc/components/canvas/canvas-text-editor-modal.tsx',
+          './src/renderer/pages/videoCanvas/oc/components/canvas/canvas-script-editor.tsx',
+          './src/renderer/pages/videoCanvas/oc/components/canvas/canvas-emotion-workspace.tsx',
+        ],
+      },
+    },
+    optimizeDeps: {
+      include: [
+        '@tiptap/react',
+        '@tiptap/core',
+        '@tiptap/starter-kit',
+        '@tiptap/extension-character-count',
+        '@tiptap/extension-color',
+        '@tiptap/extension-highlight',
+        '@tiptap/extension-placeholder',
+        '@tiptap/extension-text-align',
+        '@tiptap/extension-text-style',
+        'three',
+        '@react-three/fiber',
+        '@react-three/drei',
+      ],
     },
     // Tailwind v4 powers the ported open-ai-canvas (oc/) utility classes + globals.css.
     // UnoCSS remains for the rest of allo UI.

@@ -1,4 +1,18 @@
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
+import { isMiniMaxH3ResolutionToken } from "@oc/lib/video-generation-options";
+import { isMiniMaxH3VideoModel } from "@renderer/services/videoModelCapabilities";
+import { encodeChannelModel, isChannelModelValue } from "@oc/stores/use-config-store";
+
+const ALLO_MEDIA_CHANNEL_ID = "allo-media";
+
+export type HomeLaunchConfigPatch = {
+  size?: string;
+  videoSeconds?: string;
+  vquality?: string;
+  videoModel?: string;
+  imageModel?: string;
+};
 
 export type CanvasHomeLaunchSkill = {
   id: string;
@@ -70,11 +84,18 @@ export function shouldAutoStartHomeAgent(launch: CanvasHomeLaunchSidecar | undef
   return Boolean(launch && launch.autoAgent && !launch.agentBriefSent && launch.intent !== "generate" && launch.prompt);
 }
 
-export function homeAgentAutoStartFromCreative(creative: unknown): { prompt: string; modelContext: string } | null {
+export type CanvasHomeAgentAutoStart = {
+  prompt: string;
+  meta: string;
+  modelContext: string;
+};
+
+export function homeAgentAutoStartFromCreative(creative: unknown): CanvasHomeAgentAutoStart | null {
   const launch = readHomeLaunchSidecar(creative);
   if (!shouldAutoStartHomeAgent(launch) || !launch) return null;
   return {
-    prompt: launch.prompt,
+    prompt: buildCanvasHomeUserBrief(launch),
+    meta: buildCanvasHomeUserMeta(launch),
     modelContext: buildCanvasHomeAgentContext({
       mediaKind: launch.mediaKind,
       skill: launch.skill,
@@ -85,6 +106,65 @@ export function homeAgentAutoStartFromCreative(creative: unknown): { prompt: str
   };
 }
 
+export function buildCanvasHomeUserBrief(launch: {
+  prompt: string;
+  mediaKind: "image" | "video";
+  skill?: CanvasHomeLaunchSkill;
+  preferences: CanvasHomeLaunchPreferences;
+  requirement?: string;
+}) {
+  return [
+    launch.prompt.trim(),
+    buildCanvasHomeUserMeta(launch),
+    launch.requirement?.trim()
+      ? canvasT("videoCanvas.agent.homeLaunchRequirement", "附加说明：{{text}}", { text: launch.requirement.trim() })
+      : "",
+  ].filter(Boolean).join("\n");
+}
+
+export function buildCanvasHomeUserMeta(launch: {
+  mediaKind: "image" | "video";
+  skill?: CanvasHomeLaunchSkill;
+  preferences: CanvasHomeLaunchPreferences;
+}) {
+  const mediaKind = launch.mediaKind === "image" ? "image" : "video";
+  const model = mediaKind === "image" ? launch.preferences.imageModel : launch.preferences.videoModel;
+  return [
+    mediaKind === "image"
+      ? canvasT("videoCanvas.agent.homeLaunchMediaImage", "图片")
+      : canvasT("videoCanvas.agent.homeLaunchMediaVideo", "视频"),
+    launch.skill?.label?.trim() || "",
+    launch.preferences.aspectRatio || "16:9",
+    launch.preferences.resolution || "1080p",
+    mediaKind === "video" ? `${launch.preferences.targetDurationSecs || 5}秒` : "",
+    model?.trim() || "",
+  ].filter(Boolean).join(" · ");
+}
+
+export function canvasConfigPatchFromHomeLaunch(preferences: CanvasHomeLaunchPreferences | undefined): HomeLaunchConfigPatch {
+  if (!preferences) return {};
+  const patch: HomeLaunchConfigPatch = {};
+  if (preferences.aspectRatio?.trim()) patch.size = preferences.aspectRatio.trim();
+  if (preferences.targetDurationSecs) patch.videoSeconds = String(preferences.targetDurationSecs);
+  const videoModel = preferences.videoModel?.trim() || "";
+  if (preferences.resolution?.trim()) patch.vquality = storedVqualityFromHomeLaunch(preferences);
+  if (videoModel) patch.videoModel = encodeHomeMediaModel(videoModel);
+  if (preferences.imageModel?.trim()) patch.imageModel = encodeHomeMediaModel(preferences.imageModel.trim());
+  return patch;
+}
+
+function encodeHomeMediaModel(model: string) {
+  return isChannelModelValue(model) ? model : encodeChannelModel(ALLO_MEDIA_CHANNEL_ID, model);
+}
+
+export function storedVqualityFromHomeLaunch(preferences: CanvasHomeLaunchPreferences) {
+  const videoModel = preferences.videoModel || "";
+  const canonical = canonicalizeVideoResolution(videoModel, preferences.resolution);
+  return isMiniMaxH3VideoModel(videoModel) || isMiniMaxH3ResolutionToken(canonical)
+    ? canonical
+    : String(canonical).replace(/p$/i, "");
+}
+
 export function buildCanvasHomeAgentContext(launch: {
   mediaKind: "image" | "video";
   skill?: CanvasHomeLaunchSkill;
@@ -93,9 +173,6 @@ export function buildCanvasHomeAgentContext(launch: {
   references?: unknown[];
 }) {
   const mediaKind = launch.mediaKind === "image" ? "image" : "video";
-  const pipeline = mediaKind === "image"
-    ? canvasT("videoCanvas.agent.homeLaunchPipelineImage", "提示词 → 图片")
-    : canvasT("videoCanvas.agent.homeLaunchPipelineVideo", "提示词 → 关键帧图 → 视频");
   const model = mediaKind === "image"
     ? launch.preferences.imageModel
     : launch.preferences.videoModel;
@@ -122,14 +199,13 @@ export function buildCanvasHomeAgentContext(launch: {
       ? canvasT("videoCanvas.agent.homeLaunchRequirement", "附加说明：{{text}}", { text: launch.requirement.trim() })
       : "",
     launch.references?.length
-      ? canvasT("videoCanvas.agent.homeLaunchRefs", "参考图已作为画布图片节点，请接入流水线作为角色或画面参考。")
+      ? canvasT("videoCanvas.agent.homeLaunchRefs", "参考图已作为画布图片节点，请接到你设计的画面或角色节点上。")
       : "",
   ].filter(Boolean);
   return [
     canvasT(
       "videoCanvas.agent.homeLaunchBrief",
-      "这是从视频生成首页「创作模式」发起的首轮任务，等同于用户在画布 Agent 对话框发送需求。画布目前几乎为空。用户消息已含画布快照，直接用 canvas_create_workflow 搭建可执行流水线（{{pipeline}}），节点必须带真实提示词，套用下列风格与生成参数，autoRun 为 true，并 canvas_wait_generation 等到完成。禁止只放空配置卡或风格技能卡。不要先 canvas_get_context。",
-      { pipeline },
+      "这是从视频生成首页「创作模式」发起的首轮任务。画布已放入用户提示、风格技能（如有）、首页尺寸/时长/模型配置卡，以及参考图（如有）。这些是输入约束，不是成品流水线：请你自己设计生成节点并连线，用一次 canvas_apply（必须含 nodes 和 edges，禁止只传 description）写入画布，再用 canvas_run 提交并等待。成片时长、画幅、风格必须遵守配置卡；视频需要可执行的分镜与画面，但镜头数、是否角色卡、如何复用参考图由你根据内容决定。节点要有真实提示词。不要只改配置卡就宣称完成。队列未空时不要说已完成。",
     ),
     ...extras,
   ].join("\n");

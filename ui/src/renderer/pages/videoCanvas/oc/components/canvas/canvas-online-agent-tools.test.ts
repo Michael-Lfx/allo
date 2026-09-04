@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import i18n from "i18next";
 
+import { CANVAS_AGENT_ADVERTISED_TOOLS } from "@oc/lib/canvas/canvas-agent-harness";
 import { defaultConfig } from "@oc/stores/use-config-store";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
 import { CanvasNodeType } from "@oc/types/canvas";
@@ -12,6 +13,7 @@ import {
     ONLINE_AGENT_TOOLS,
     describeCanvasSnapshot,
     describeOnlineToolProgress,
+    inspectCanvasOps,
     isWritableToolCall,
     onlineToolToOps,
     parseToolArguments,
@@ -58,6 +60,14 @@ describe("parseToolArguments", () => {
         expect(throws(() => parseToolArguments("[1,2]"))).toBe(true);
         expect(throws(() => parseToolArguments("not json"))).toBe(true);
         expect(throws(() => parseToolArguments('"text"'))).toBe(true);
+    });
+
+    test("accepts object payloads and repairs truncated workflow JSON", () => {
+        expect(parseToolArguments({ prompt: "一只猫" })).toEqual({ prompt: "一只猫" });
+        expect(parseToolArguments("```json\n{\"prompt\":\"一只猫\"}\n```")).toEqual({ prompt: "一只猫" });
+        expect(parseToolArguments('{"nodes":[{"ref":"a","kind":"text","title":"剧本"')).toEqual({
+            nodes: [{ ref: "a", kind: "text", title: "剧本" }],
+        });
     });
 });
 
@@ -108,6 +118,23 @@ describe("onlineToolToOps", () => {
         expect(ops.some((op) => op.type === "select_nodes")).toBe(true);
     });
 
+    test("canvas_apply compiles the same semantic graph as create_workflow", () => {
+        const ops = onlineToolToOps("canvas_apply", {
+            nodes: [
+                { ref: "script", kind: "script", title: "剧本", content: "小猫出门" },
+                { ref: "shot1", kind: "image", title: "镜头1", prompt: "出门" },
+                { ref: "video", kind: "video", title: "成片", prompt: "一天", seconds: "6" },
+            ],
+            edges: [
+                { from: "script", to: "shot1" },
+                { from: "shot1", to: "video" },
+            ],
+        }, snapshot(), defaultConfig);
+        const video = ops.find((op): op is AddNodeOp => op.type === "add_node" && op.nodeType === CanvasNodeType.Video);
+        expect(String(video?.metadata?.prompt || "")).toMatch(/@\[node:/);
+        expect(video?.metadata?.videoStartFrameNodeId).toBeTruthy();
+    });
+
     test("canvas_create_text_nodes rejects workflow-like copy", () => {
         expect(throws(() => onlineToolToOps("canvas_create_text_nodes", { items: [{ text: "搭一条工作流管线" }] }, snapshot(), defaultConfig))).toBe(true);
     });
@@ -121,13 +148,22 @@ describe("requireOps", () => {
     });
 });
 
+describe("inspectCanvasOps", () => {
+    test("returns actionable issues instead of throwing on incomplete run_generation", () => {
+        const inspected = inspectCanvasOps([{ type: "run_generation", nodeType: "video", y: 400 }]);
+        expect(inspected.ops).toEqual([]);
+        expect(inspected.issues[0]).toContain("nodeId 必须是非空字符串");
+        expect(inspected.issues[0]).toContain("canvas_apply");
+    });
+});
+
 describe("tool call helpers", () => {
     test("isWritableToolCall treats read-only tools as non-writable", () => {
-        expect(isWritableToolCall({ id: "1", type: "function", function: { name: "canvas_get_state", arguments: "{}" } })).toBe(false);
-        expect(isWritableToolCall({ id: "1b", type: "function", function: { name: "canvas_get_context", arguments: "{}" } })).toBe(false);
-        expect(isWritableToolCall({ id: "1c", type: "function", function: { name: "canvas_wait_generation", arguments: "{}" } })).toBe(false);
-        expect(isWritableToolCall({ id: "2", type: "function", function: { name: "canvas_apply_ops", arguments: "{}" } })).toBe(true);
-        expect(isWritableToolCall({ id: "3", type: "function", function: { name: "canvas_create_workflow", arguments: "{}" } })).toBe(true);
+        expect(isWritableToolCall({ id: "1", type: "function", function: { name: "canvas_inspect", arguments: "{}" } })).toBe(false);
+        expect(isWritableToolCall({ id: "1b", type: "function", function: { name: "canvas_propose", arguments: "{}" } })).toBe(false);
+        expect(isWritableToolCall({ id: "1c", type: "function", function: { name: "canvas_critique", arguments: "{}" } })).toBe(false);
+        expect(isWritableToolCall({ id: "2", type: "function", function: { name: "canvas_apply", arguments: "{}" } })).toBe(true);
+        expect(isWritableToolCall({ id: "3", type: "function", function: { name: "canvas_run", arguments: "{}" } })).toBe(true);
     });
 
     test("toolCallsFromDetail filters malformed entries", () => {
@@ -136,19 +172,24 @@ describe("tool call helpers", () => {
         expect(toolCallsFromDetail({})).toEqual([]);
     });
 
+    test("toolCallsFromDetail stringifies object arguments from proxies", () => {
+        const detail = { toolCalls: [{ id: "a", type: "function", function: { name: "canvas_create_workflow", arguments: { nodes: [{ ref: "script" }] } } }] };
+        expect(toolCallsFromDetail(detail)).toEqual([{ id: "a", type: "function", function: { name: "canvas_create_workflow", arguments: '{"nodes":[{"ref":"script"}]}' } }]);
+    });
+
     test("toolCallToResponseInput maps to a function_call message", () => {
-        expect(toolCallToResponseInput({ id: "a", type: "function", function: { name: "canvas_get_state", arguments: "{}" } })).toEqual({ type: "function_call", call_id: "a", name: "canvas_get_state", arguments: "{}" });
+        expect(toolCallToResponseInput({ id: "a", type: "function", function: { name: "canvas_inspect", arguments: "{}" } })).toEqual({ type: "function_call", call_id: "a", name: "canvas_inspect", arguments: "{}" });
     });
 
     test("summarizeToolCalls joins localized labels", () => {
-        const summary = summarizeToolCalls([{ id: "a", type: "function", function: { name: "canvas_get_state", arguments: "{}" } }, { id: "b", type: "function", function: { name: "canvas_apply_ops", arguments: "{}" } }]);
-        expect(summary).toContain("读取画布");
-        expect(summary).toContain("画布操作");
+        const summary = summarizeToolCalls([{ id: "a", type: "function", function: { name: "canvas_inspect", arguments: "{}" } }, { id: "b", type: "function", function: { name: "canvas_apply", arguments: "{}" } }]);
+        expect(summary).toContain("观察画布");
+        expect(summary).toContain("更新画布");
     });
 
     test("previewOnlineToolCalls ignores read-only tools and counts generation ops", () => {
         const calls = [
-            { id: "a", type: "function" as const, function: { name: "canvas_get_state", arguments: "{}" } },
+            { id: "a", type: "function" as const, function: { name: "canvas_inspect", arguments: "{}" } },
             { id: "b", type: "function" as const, function: { name: "canvas_generate_image", arguments: JSON.stringify({ prompt: "一只猫" }) } },
         ];
         const impact = previewOnlineToolCalls(calls, snapshot(), defaultConfig);
@@ -170,30 +211,34 @@ describe("describeCanvasSnapshot", () => {
 });
 
 describe("ONLINE_AGENT_TOOLS", () => {
-    test("exposes the full tool surface with strict schemas", () => {
+    test("exposes intent tools instead of a flat canvas_* dump", () => {
         const names = ONLINE_AGENT_TOOLS.map((tool) => tool.function.name);
-        expect(names).toContain("canvas_get_state");
-        expect(names).toContain("canvas_get_context");
-        expect(names).toContain("canvas_create_workflow");
-        expect(names).toContain("canvas_list_skills");
-        expect(names).toContain("canvas_apply_ops");
-        expect(names).toContain("canvas_generate_audio");
-        expect(names).toContain("canvas_wait_generation");
-        expect(names).toContain("canvas_create_folder");
-        expect(names).toContain("canvas_create_frame");
-        expect(names).toContain("canvas_set_video_frames");
-        expect(names).toContain("canvas_create_variants");
-        expect(names).toContain("canvas_extract_frames");
+        expect(names).toEqual([
+            "canvas_list_skills",
+            "canvas_get_skill",
+            "canvas_inspect",
+            "canvas_propose",
+            "canvas_apply",
+            "canvas_run",
+            "canvas_critique",
+            "canvas_repair",
+        ]);
         expect(names).not.toContain("canvas_create_cinematic_session");
+        expect(names).not.toContain("canvas_apply_ops");
+        expect(names).not.toContain("canvas_create_workflow");
         expect(ONLINE_AGENT_TOOLS.every((tool) => tool.function.parameters.additionalProperties === false)).toBe(true);
+        expect(names).toEqual([...CANVAS_AGENT_ADVERTISED_TOOLS]);
     });
 });
 
 describe("ONLINE_AGENT_PROMPT", () => {
-    test("does not force a first-turn canvas_get_context round trip", () => {
-        expect(ONLINE_AGENT_PROMPT).toContain("用户消息已包含当前画布压缩快照");
+    test("describes an observe-act loop without hardcoded pipelines", () => {
+        expect(ONLINE_AGENT_PROMPT).toContain("感知—行动—观察");
+        expect(ONLINE_AGENT_PROMPT).toContain("canvas_apply");
+        expect(ONLINE_AGENT_PROMPT).toContain("自己根据用户目标设计图");
         expect(ONLINE_AGENT_PROMPT).not.toContain("首轮必须调用 canvas_get_context");
-        expect(ONLINE_AGENT_PROMPT).toContain("不要为它们再 canvas_get_node");
-        expect(describeOnlineToolProgress("canvas_create_workflow")).toContain("创建工作流");
+        expect(ONLINE_AGENT_PROMPT).not.toContain("必须使用 canvas_create_workflow");
+        expect(ONLINE_AGENT_PROMPT).not.toContain("关键帧图 prompt 必须来自分镜行");
+        expect(describeOnlineToolProgress("canvas_apply")).toContain("更新画布");
     });
 });

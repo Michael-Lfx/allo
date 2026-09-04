@@ -10,20 +10,48 @@ export type CanvasAgentAliasMap = {
     byNodeId: Map<string, string>;
 };
 
-/** 短 ID 按节点 id 稳定排序，跨轮对话保持 n1 指向同一节点。 */
+/** 优先使用已落盘的 agentAlias；其余按节点 id 排序补号，避免加节点后 n1 换人。 */
 export function buildCanvasAgentAliasMap(nodes: CanvasNodeData[]): CanvasAgentAliasMap {
     const byShortId = new Map<string, string>();
     const byNodeId = new Map<string, string>();
+    const used = new Set<string>();
+    for (const node of nodes) {
+        const alias = normalizeAlias(node.metadata?.agentAlias);
+        if (!alias || used.has(alias) || byShortId.has(alias)) continue;
+        used.add(alias);
+        byShortId.set(alias, node.id);
+        byNodeId.set(node.id, alias);
+    }
+    let next = 1;
     [...nodes]
         .map((node) => node.id)
         .filter(Boolean)
         .sort((left, right) => left.localeCompare(right))
-        .forEach((id, index) => {
-            const shortId = `n${index + 1}`;
+        .forEach((id) => {
+            if (byNodeId.has(id)) return;
+            while (used.has(`n${next}`)) next += 1;
+            const shortId = `n${next}`;
+            next += 1;
+            used.add(shortId);
             byShortId.set(shortId, id);
             byNodeId.set(id, shortId);
         });
     return { byShortId, byNodeId };
+}
+
+export function stampCanvasAgentAliases(nodes: CanvasNodeData[]): CanvasNodeData[] {
+    const aliases = buildCanvasAgentAliasMap(nodes);
+    return nodes.map((node) => {
+        const alias = canvasAgentShortId(node.id, aliases);
+        if (node.metadata?.agentAlias === alias) return node;
+        return { ...node, metadata: { ...node.metadata, agentAlias: alias } };
+    });
+}
+
+function normalizeAlias(value: unknown) {
+    if (typeof value !== "string") return "";
+    const alias = value.trim().toLowerCase();
+    return SHORT_ID_PATTERN.test(alias) ? alias : "";
 }
 
 export function canvasAgentShortId(nodeId: string, aliases: CanvasAgentAliasMap) {

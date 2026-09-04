@@ -1,6 +1,6 @@
 import { Canvas, useLoader, useThree } from "@react-three/fiber";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Suspense, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Suspense, Component, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ErrorInfo, type ReactNode } from "react";
 import { ScanFace, Sparkles, X } from "lucide-react";
 import { Box3, Color, Mesh, MeshStandardMaterial, Vector3, type Object3D } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -19,6 +19,7 @@ import {
     type CanvasFaceBox,
 } from "@oc/lib/canvas/canvas-emotion";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { CANVAS_BASIS_TRANSCODER_PATH, CANVAS_FACECAP_MODEL_URL } from "@oc/lib/canvas/canvas-static-assets";
 
 export type CanvasImageEmotionPayload = CanvasEmotionParams & {
     label: string;
@@ -193,13 +194,15 @@ function EmotionHeadPreview({ preset }: { preset: CanvasEmotionPreset }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div className="relative overflow-hidden rounded-[var(--r-lg)] border" style={{ background: "#26272a", borderColor: theme.toolbar.border }}>
-            <Canvas frameloop="demand" dpr={[1, 1.5]} camera={{ fov: 38, near: 0.1, far: 20, position: [0, 0, 4.15] }} gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}>
-                <color attach="background" args={["#26272a"]} />
-                <ambientLight intensity={0.82} />
-                <directionalLight position={[-2.8, 4, 3]} intensity={1.45} color="#ffffff" />
-                <directionalLight position={[3, 1, 2]} intensity={0.5} color="#c9d0dc" />
-                <Suspense fallback={null}><EmotionFaceModel preset={preset} /></Suspense>
-            </Canvas>
+            <EmotionPreviewBoundary fallback={<EmotionPreviewFallback preset={preset} />}>
+                <Canvas frameloop="demand" dpr={[1, 1.5]} camera={{ fov: 38, near: 0.1, far: 20, position: [0, 0, 4.15] }} gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}>
+                    <color attach="background" args={["#26272a"]} />
+                    <ambientLight intensity={0.82} />
+                    <directionalLight position={[-2.8, 4, 3]} intensity={1.45} color="#ffffff" />
+                    <directionalLight position={[3, 1, 2]} intensity={0.5} color="#c9d0dc" />
+                    <Suspense fallback={null}><EmotionFaceModel preset={preset} /></Suspense>
+                </Canvas>
+            </EmotionPreviewBoundary>
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/55 to-transparent" />
             <AnimatePresence mode="wait" initial={false}>
                 <motion.span key={preset.id} initial={{ opacity: 0, filter: "blur(6px)" }} animate={{ opacity: 1, filter: "blur(0px)" }} exit={{ opacity: 0, filter: "blur(5px)" }} transition={{ duration: aceternityMotion.duration.state }} className="pointer-events-none absolute bottom-2 left-2.5 text-[var(--fs-tiny)] font-medium text-white/72">实时预览 · {preset.label}</motion.span>
@@ -208,10 +211,43 @@ function EmotionHeadPreview({ preset }: { preset: CanvasEmotionPreset }) {
     );
 }
 
+class EmotionPreviewBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
+    state = { failed: false };
+    static getDerivedStateFromError() {
+        return { failed: true };
+    }
+    componentDidCatch(error: Error, _info: ErrorInfo) {
+        console.warn("[canvas-emotion] 3D preview unavailable", error.message);
+    }
+    render() {
+        return this.state.failed ? this.props.fallback : this.props.children;
+    }
+}
+
+function EmotionPreviewFallback({ preset }: { preset: CanvasEmotionPreset }) {
+    const smile = Math.max(0, preset.intimacy);
+    const open = Math.max(0, preset.arousal);
+    return (
+        <div className="grid h-full place-items-center" aria-hidden="true">
+            <div className="relative size-24 rounded-full bg-[#3a3b40] shadow-[inset_0_-18px_28px_rgba(0,0,0,0.35)]">
+                <span className="absolute left-[28%] top-[38%] size-2 rounded-full bg-[#d7d8dc]" />
+                <span className="absolute right-[28%] top-[38%] size-2 rounded-full bg-[#d7d8dc]" />
+                <span
+                    className="absolute left-1/2 top-[58%] h-3 w-8 -translate-x-1/2 rounded-full border-2 border-[#d7d8dc]"
+                    style={{
+                        borderTopColor: open > 0 ? "#d7d8dc" : "transparent",
+                        transform: `translateX(-50%) scaleY(${0.45 + open * 0.2}) rotate(${smile * -6}deg)`,
+                    }}
+                />
+            </div>
+        </div>
+    );
+}
+
 function EmotionFaceModel({ preset }: { preset: CanvasEmotionPreset }) {
     const renderer = useThree((state) => state.gl);
-    const gltf = useLoader(GLTFLoader, "/canvas/models/facecap.glb", (loader) => {
-        loader.setKTX2Loader(new KTX2Loader().setTranscoderPath("/three/basis/").detectSupport(renderer));
+    const gltf = useLoader(GLTFLoader, CANVAS_FACECAP_MODEL_URL, (loader) => {
+        loader.setKTX2Loader(new KTX2Loader().setTranscoderPath(CANVAS_BASIS_TRANSCODER_PATH).detectSupport(renderer));
         loader.setMeshoptDecoder(MeshoptDecoder);
     });
     const invalidate = useThree((state) => state.invalidate);

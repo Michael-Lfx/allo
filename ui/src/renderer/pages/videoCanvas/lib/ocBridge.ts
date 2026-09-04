@@ -21,11 +21,8 @@ import type { CanvasNodeData, CanvasConnection, ViewportTransform } from '@oc/ty
 import { CanvasNodeType } from '@oc/types/canvas';
 import { createCanvasNode } from '@oc/lib/canvas/canvas-project-domain';
 import { encodeChannelModel } from '@oc/stores/use-config-store';
-import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
-import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
-import { isMiniMaxH3ResolutionToken } from '@oc/lib/video-generation-options';
 import { parsePersistedChatSessions, projectToCanvasDocument } from './canvasChatPersist';
-import { isCanvasHomeAgentLaunch } from './home-agent-launch';
+import { isCanvasHomeAgentLaunch, storedVqualityFromHomeLaunch } from './home-agent-launch';
 
 export type CanvasHomeLaunch = {
   prompt: string;
@@ -88,14 +85,14 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
     ),
     title: reference.title || `参考图 ${index + 1}`,
   }));
-  const seeded = autoAgent ? { nodes: referenceNodes, connections: [] as CanvasConnection[] } : seedLegacyHomeGraph(launch, isGenerate, skill, referenceNodes);
+  const seeded = autoAgent
+    ? seedHomeAgentConstraintGraph(launch, skill, referenceNodes)
+    : seedLegacyHomeGraph(launch, isGenerate, skill, referenceNodes);
   return {
     ...project,
     nodes: seeded.nodes,
     connections: seeded.connections,
-    viewport: autoAgent
-      ? { x: 80, y: 60, k: 1 }
-      : { x: 80, y: 60, k: referenceNodes.length > 2 ? 0.72 : 0.86 },
+    viewport: { x: 80, y: 60, k: referenceNodes.length > 2 ? 0.72 : 0.86 },
     alloCreative: {
       ...(project.alloCreative ?? {}),
       homeLaunch: {
@@ -116,11 +113,53 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
   };
 }
 
+function seedHomeAgentConstraintGraph(
+  launch: CanvasHomeLaunch,
+  skill: CanvasHomeLaunch['skill'],
+  referenceNodes: CanvasNodeData[],
+) {
+  const { promptNode, skillNode, configNode } = buildHomeInputNodes(launch, false, skill, 'agent');
+  return {
+    nodes: [
+      promptNode,
+      ...(skillNode ? [skillNode] : []),
+      ...referenceNodes,
+      configNode,
+    ],
+    connections: [
+      connection(promptNode.id, configNode.id),
+      ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
+    ],
+  };
+}
+
 function seedLegacyHomeGraph(
   launch: CanvasHomeLaunch,
   isGenerate: boolean,
   skill: CanvasHomeLaunch['skill'],
   referenceNodes: CanvasNodeData[],
+) {
+  const { promptNode, skillNode, configNode } = buildHomeInputNodes(launch, isGenerate, skill, 'generate');
+  return {
+    nodes: [
+      promptNode,
+      ...(skillNode ? [skillNode] : []),
+      ...referenceNodes,
+      configNode,
+    ],
+    connections: [
+      connection(promptNode.id, configNode.id),
+      ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
+      ...referenceNodes.map((node) => connection(node.id, configNode.id)),
+    ],
+  };
+}
+
+function buildHomeInputNodes(
+  launch: CanvasHomeLaunch,
+  isGenerate: boolean,
+  skill: CanvasHomeLaunch['skill'],
+  mode: 'generate' | 'agent',
 ) {
   const promptNode = {
     ...createCanvasNode(CanvasNodeType.Text, { x: 220, y: 190 }, {
@@ -162,15 +201,6 @@ function seedLegacyHomeGraph(
     launch.mediaKind === 'image'
       ? launch.preferences.imageModel
       : launch.preferences.videoModel;
-  const videoModel = selectedModel || '';
-  const canonicalVquality = canonicalizeVideoResolution(
-    videoModel,
-    launch.preferences.resolution,
-  );
-  const storedVquality =
-    isMiniMaxH3VideoModel(videoModel) || isMiniMaxH3ResolutionToken(canonicalVquality)
-      ? canonicalVquality
-      : String(canonicalVquality).replace(/p$/i, '');
   const composedPrompt = [
     launch.prompt,
     !isGenerate ? skill?.stylePrompt : undefined,
@@ -193,31 +223,23 @@ function seedLegacyHomeGraph(
         : undefined,
       size: launch.preferences.aspectRatio,
       seconds: String(launch.preferences.targetDurationSecs),
-      vquality: storedVquality,
+      vquality: storedVqualityFromHomeLaunch(launch.preferences),
       workflowKind: isGenerate ? 'shot' : 'styleboard',
-      workflowTitle: isGenerate
-        ? '视频生成'
-        : `${skill?.label ?? '创作'}创作`,
+      workflowTitle: mode === 'agent'
+        ? '首页约束'
+        : isGenerate
+          ? '视频生成'
+          : `${skill?.label ?? '创作'}创作`,
       workflowDescription: launch.requirement,
       ...(skill && !isGenerate
         ? { stylePresetId: skill.id, skillId: skill.id }
         : {}),
     }),
-    title: launch.mediaKind === 'image' ? '图片生成配置' : '视频生成配置',
+    title: mode === 'agent'
+      ? '首页约束'
+      : launch.mediaKind === 'image' ? '图片生成配置' : '视频生成配置',
   };
-  return {
-    nodes: [
-      promptNode,
-      ...(skillNode ? [skillNode] : []),
-      ...referenceNodes,
-      configNode,
-    ],
-    connections: [
-      connection(promptNode.id, configNode.id),
-      ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
-      ...referenceNodes.map((node) => connection(node.id, configNode.id)),
-    ],
-  };
+  return { promptNode, skillNode, configNode };
 }
 
 function docToProject(projectId: string, title: string, doc: CanvasDocument, existing?: CanvasProject): CanvasProject {

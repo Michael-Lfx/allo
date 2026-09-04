@@ -44,7 +44,14 @@ export type TaskLike = {
   prompt?: string | null;
   status?: string | null;
   updated_at?: number | string | null;
+  /** Canvas node jobs set this; home 「视频生成」 clips leave it empty. */
+  project_id?: string | null;
 };
+
+/** Home clip recents: tasks that are not bound to a canvas project. */
+export function isStandaloneClipTask(task: { project_id?: string | null }): boolean {
+  return !String(task.project_id ?? '').trim();
+}
 
 export type CanvasLike = {
   project_id: string;
@@ -83,6 +90,7 @@ function catalogFrom(
     });
   }
   for (const t of tasks) {
+    if (!isStandaloneClipTask(t)) continue;
     catalog.set(t.task_id, {
       title: taskTitleFromPrompt(t.prompt),
       status: t.status ?? null,

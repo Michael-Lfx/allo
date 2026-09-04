@@ -49,16 +49,18 @@ type CanvasAssistantPanelProps = {
     onCollapse: () => void;
     onExtractFrames?: (nodeId: string, timesMs: number[]) => Promise<{ createdNodeIds: string[]; message: string }>;
     resizing?: boolean;
-    autoStart?: { prompt: string; modelContext?: string } | null;
+    autoStart?: { prompt: string; modelContext?: string; meta?: string } | null;
     onAutoStartConsumed?: () => void;
     appearImmediately?: boolean;
+    modelCatalogReady?: boolean;
 };
 
-export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onApplyOps, canUndoOps, undoOpsCount, onUndoOps, onPasteImage, agentMode = "online", onAgentModeChange, autoConnectLocal, closing, onCollapse, onExtractFrames, resizing = false, autoStart, onAutoStartConsumed, appearImmediately = false }: CanvasAssistantPanelProps) {
+export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onApplyOps, canUndoOps, undoOpsCount, onUndoOps, onPasteImage, agentMode = "online", onAgentModeChange, autoConnectLocal, closing, onCollapse, onExtractFrames, resizing = false, autoStart, onAutoStartConsumed, appearImmediately = false, modelCatalogReady = true }: CanvasAssistantPanelProps) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const user = useUserStore((state) => state.user);
     const effectiveConfig = useEffectiveConfig();
+    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const cleanupImages = useAssetStore((state) => state.cleanupImages);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const confirmTools = useCanvasAgentStore((state) => state.confirmTools);
@@ -92,7 +94,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     const appendMessage = (sessionId: string, message: CanvasAssistantMessage) => {
         updateSession(sessionId, (session) => ({
             ...session,
-            title: session.messages.length ? session.title : message.text.slice(0, 18) || canvasT("videoCanvas.agent.newChatFallback", "新对话"),
+            title: session.messages.length ? session.title : message.text.split("\n")[0].trim().slice(0, 18) || canvasT("videoCanvas.agent.newChatFallback", "新对话"),
             messages: [...session.messages, message],
             updatedAt: new Date().toISOString(),
         }));
@@ -103,7 +105,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
             const exists = session.messages.some((item) => item.id === message.id);
             return {
                 ...session,
-                title: session.messages.length ? session.title : message.text.slice(0, 18) || canvasT("videoCanvas.agent.newChatFallback", "新对话"),
+                title: session.messages.length ? session.title : message.text.split("\n")[0].trim().slice(0, 18) || canvasT("videoCanvas.agent.newChatFallback", "新对话"),
                 messages: exists ? session.messages.map((item) => (item.id === message.id ? { ...item, ...message } : item)) : [...session.messages, message],
                 updatedAt: new Date().toISOString(),
             };
@@ -129,6 +131,12 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     });
 
     const agentBusy = isRunning || safeSessions.some((session) => session.pendingBackendSession?.status === "pending");
+    const plannerModel = effectiveConfig.textModel || effectiveConfig.model;
+    const plannerReady = modelCatalogReady && isAiConfigReady({ ...effectiveConfig, model: plannerModel }, plannerModel);
+    const waitingForPlanner = Boolean(autoStart?.prompt.trim() && !plannerReady && !messages.some((message) => message.role === "user"));
+    const plannerWaitActivity = !modelCatalogReady
+        ? canvasT("videoCanvas.agent.activityConnectingPlanner", "正在连接规划模型…")
+        : canvasT("videoCanvas.agent.activitySelectPlanner", "请先选择规划用的文本模型");
     const autoStartTriedRef = useRef(false);
 
     useEffect(() => {
@@ -169,6 +177,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
             onAutoStartConsumed?.();
             return;
         }
+        if (!plannerReady) return;
         const startKey = `${snapshot.projectId}::${autoStart.prompt.trim()}`;
         if (startedHomeAgentKeys.has(startKey) || autoStartTriedRef.current) {
             onAutoStartConsumed?.();
@@ -176,7 +185,12 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
         }
         autoStartTriedRef.current = true;
         startedHomeAgentKeys.add(startKey);
-        void sendMessage(autoStart.prompt.trim(), messages, undefined, { modelContext: autoStart.modelContext, skipConfirm: true }).then((sent) => {
+        void sendMessage(autoStart.prompt.trim(), messages, undefined, {
+            modelContext: autoStart.modelContext,
+            meta: autoStart.meta,
+            skipConfirm: true,
+            onUnready: "wait",
+        }).then((sent) => {
             if (sent) {
                 onAutoStartConsumed?.();
                 return;
@@ -184,7 +198,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
             autoStartTriedRef.current = false;
             startedHomeAgentKeys.delete(startKey);
         });
-    }, [agentBusy, autoStart, messages, onAutoStartConsumed, sendMessage, snapshot.projectId]);
+    }, [agentBusy, autoStart, messages, onAutoStartConsumed, plannerReady, sendMessage, snapshot.projectId]);
 
     // 稳定回调身份：配合 memo(AgentChatMessage) 避免任一状态变化重渲全部历史消息。
     const rejectOnlineToolRef = useRef(rejectOnlineTool);
@@ -306,7 +320,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
                         theme={theme}
                         user={user}
                         busy={agentBusy}
-                        activity={agentActivity}
+                        activity={agentActivity || (waitingForPlanner ? plannerWaitActivity : null)}
                         nodeCount={contextSummary.nodeCount}
                         onSelectPrompt={setPrompt}
                         onRejectTool={stableRejectOnlineTool}

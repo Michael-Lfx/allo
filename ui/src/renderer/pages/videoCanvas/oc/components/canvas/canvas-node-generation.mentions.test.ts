@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { buildNodeGenerationContext } from "./canvas-node-generation";
+import { buildNodeMentionReferences } from "@oc/lib/canvas/canvas-resource-references";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
 
 function node(id: string, type: CanvasNodeType, content: string): CanvasNodeData {
@@ -29,6 +30,11 @@ describe("canvas node generation mentions", () => {
         expect(context.referenceImages.map((image) => image.id)).toEqual([source.id]);
         expect(context.imageCount).toBe(1);
         expect(context.prompt).toBe("将 图片1 图片变清晰");
+    });
+
+    test("an isolated image node does not list itself as an inbound mention resource", () => {
+        const source = node("image-self", CanvasNodeType.Image, "data:image/png;base64,a");
+        expect(buildNodeMentionReferences(source, [source], []).map((item) => item.nodeId)).toEqual([]);
     });
 
     test("an existing image node is not silently reused as img2img without an @ mention", () => {
@@ -99,5 +105,40 @@ describe("canvas node generation mentions", () => {
         expect(context.prompt).toBe("镜头向前推进");
         expect(context.referenceImages.map((item) => item.id)).toEqual(["image-a"]);
         expect(context.textCount).toBe(0);
+    });
+
+    test("video composer mentions still keep configured start/end frames", () => {
+        const target = node("target", CanvasNodeType.Video, "");
+        target.metadata = { ...target.metadata, videoStartFrameNodeId: "image-a", videoEndFrameNodeId: "image-b" };
+        const imageA = node("image-a", CanvasNodeType.Image, "data:image/png;base64,a");
+        const imageB = node("image-b", CanvasNodeType.Image, "data:image/png;base64,b");
+        const context = buildNodeGenerationContext(
+            target.id,
+            [imageA, imageB, target],
+            [connection(imageA.id), connection(imageB.id)],
+            "让 @图片1 进入画面",
+            true,
+        );
+
+        expect(context.referenceImages.map((image) => image.id).sort()).toEqual(["image-a", "image-b"]);
+    });
+
+    test("video keyframe tokens submit all connected images including the middle reference", () => {
+        const target = node("target", CanvasNodeType.Video, "");
+        target.metadata = { ...target.metadata, videoStartFrameNodeId: "image-a", videoEndFrameNodeId: "image-c" };
+        const imageA = node("image-a", CanvasNodeType.Image, "data:image/png;base64,a");
+        const imageB = node("image-b", CanvasNodeType.Image, "data:image/png;base64,b");
+        const imageC = node("image-c", CanvasNodeType.Image, "data:image/png;base64,c");
+        const context = buildNodeGenerationContext(
+            target.id,
+            [imageA, imageB, imageC, target],
+            [connection(imageA.id), connection(imageB.id), connection(imageC.id)],
+            "@[node:image-a] @[node:image-b] @[node:image-c]\n小猫走过一天",
+            true,
+        );
+
+        expect(context.referenceImages.map((image) => image.id)).toEqual(["image-a", "image-b", "image-c"]);
+        expect(context.prompt).toContain("小猫走过一天");
+        expect(context.prompt).not.toContain("@[node:");
     });
 });

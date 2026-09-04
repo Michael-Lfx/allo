@@ -116,7 +116,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
     try {
       const [sessionsResult, taskResult, canvasResult, briefingResult] = await Promise.allSettled([
         listSessions(),
-        listGenerationTasks(20, 0).then((r) => r.tasks),
+        listGenerationTasks(20, 0, { standalone: true }).then((r) => r.tasks),
         listCanvasProjects(),
         listBriefingSessions(),
       ]);

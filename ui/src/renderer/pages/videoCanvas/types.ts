@@ -21,6 +21,7 @@ export type CanvasGenerationMode = 'text' | 'image' | 'video' | 'audio';
 export type CanvasVideoEditOperation =
   | 'text_to_video'
   | 'image_to_video'
+  | 'reference_to_video'
   | 'extend'
   | 'camera_motion'
   | 'concat';

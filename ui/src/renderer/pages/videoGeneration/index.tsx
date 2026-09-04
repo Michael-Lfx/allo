@@ -69,7 +69,7 @@ import {
   type CanvasProjectMeta,
   type GenerationTaskView,
 } from '../videoCanvas/api';
-import { toUpdatedAtMs } from './recentCreations';
+import { isStandaloneClipTask, toUpdatedAtMs } from './recentCreations';
 import styles from './index.module.css';
 
 /**
@@ -170,7 +170,7 @@ const VideoGenerationListPage: React.FC = () => {
     const results = await Promise.allSettled([
       listSessions(),
       listBriefingSessions(),
-      listGenerationTasks(30, 0).then((result) => result.tasks),
+      listGenerationTasks(30, 0, { standalone: true }).then((result) => result.tasks),
       listCanvasProjects(),
     ]);
     const sessionsResult = results[0];
@@ -241,7 +241,7 @@ const VideoGenerationListPage: React.FC = () => {
         updatedAt: toUpdatedAtMs(session.updated_at ?? session.created_at),
         session,
       })),
-      ...generationTasks.map((task) => ({
+      ...generationTasks.filter(isStandaloneClipTask).map((task) => ({
         kind: 'task' as const,
         id: task.task_id,
         updatedAt: toUpdatedAtMs(task.updated_at || task.created_at),

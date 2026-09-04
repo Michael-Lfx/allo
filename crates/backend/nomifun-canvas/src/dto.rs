@@ -62,6 +62,9 @@ pub struct GenerationTaskView {
     pub first_frame_media_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_frame_media_id: Option<String>,
+    /// Canvas project this job belongs to. Empty for home 「视频生成」 clips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

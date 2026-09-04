@@ -1,3 +1,4 @@
+import { shouldSubmitVideoImagesAsReferences } from "@oc/services/api/video-reference-roles";
 import { type GenerationTask } from "@oc/services/api/task-center";
 import { backendProviderConfig, runBackendGenerationTask } from "@oc/services/api/generation-task";
 import { configuredModelMatchesCapability, defaultConfig, resolveModelRequestConfig, type AiConfig } from "@oc/stores/use-config-store";
@@ -194,8 +195,12 @@ function resolveVideoEditOperation(
     },
 ): CanvasVideoEditOperation {
     const storedOperation = node?.metadata?.videoEditOperation;
+    const imageCount = context?.referenceImages.length || 0;
+    if (shouldSubmitVideoImagesAsReferences({ videoEditOperation: storedOperation }, imageCount)) {
+        return "reference_to_video";
+    }
     // 连接关系是生成时的真实输入，不能让分镜节点残留的文生视频模式丢弃后来连接的参考图。
-    if (storedOperation === "text_to_video" && context?.referenceImages.length) return "image_to_video";
+    if (storedOperation === "text_to_video" && imageCount) return "image_to_video";
     if (storedOperation) return storedOperation;
     if (context?.referenceAudios.length && !context.referenceImages.length && !context.referenceVideos.length) return "audio_to_video";
     if (context?.referenceVideos.length) return "extend";

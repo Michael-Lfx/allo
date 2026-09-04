@@ -15,7 +15,7 @@ import {
 } from "@oc/lib/seedance-video";
 
 /** Canvas maps video/audio refs to these ops; Seedance + MiniMax-H3 both accept them. */
-export const VIDEO_REFERENCE_OPERATIONS = ["text_to_video", "image_to_video", "extend", "audio_to_video"] as const;
+export const VIDEO_REFERENCE_OPERATIONS = ["text_to_video", "image_to_video", "reference_to_video", "extend", "audio_to_video"] as const;
 
 export type ModelCapabilityConfig = {
     version: number;
