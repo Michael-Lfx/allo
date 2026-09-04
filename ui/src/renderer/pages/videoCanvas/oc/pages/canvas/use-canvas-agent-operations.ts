@@ -37,6 +37,8 @@ export type CanvasAgentChange = {
 
 type CanvasAgentUndoBatch = { snapshot: CanvasAgentSnapshot; afterNodes: CanvasNodeData[]; afterConnections: CanvasConnection[]; change: Omit<CanvasAgentChange, "undoCount"> };
 
+const NODE_STATUS_LOADING = "loading" as const;
+
 export function useCanvasAgentOperations({
     projectId,
     domainProjectId,
@@ -96,7 +98,7 @@ export function useCanvasAgentOperations({
         const canStartGeneration = generationOps.length > 0 && Boolean(generateNodeRef.current);
         const appliedNodes = canStartGeneration
             ? next.nodes.map((node) => generationTargetIds.has(node.id) && node.metadata?.status !== "success"
-                ? { ...node, metadata: { ...node.metadata, status: "pending", taskStage: "正在提交生成任务" } }
+                ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_LOADING, taskStage: "正在提交生成任务" } }
                 : node)
             : next.nodes;
         nodesRef.current = appliedNodes;
