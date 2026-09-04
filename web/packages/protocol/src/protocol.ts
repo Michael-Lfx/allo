@@ -211,6 +211,7 @@ export interface RunView {
 }
 export type RunResult = RunView;
 export interface CancelRunInput { runId: string; expectedVersion: number; commandId?: string; idempotencyKey?: string }
+export interface SteerRunInput { runId: string; text: string; expectedVersion: number; commandId?: string; idempotencyKey?: string }
 export interface RunEvent { run_id: string; sequence: number; event_type: string; payload: Record<string, unknown> }
 export interface RunEventsQuery { runId: string; afterSequence?: number; limit?: number }
 export interface RunSubscriptionParams { run_id: string }

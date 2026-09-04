@@ -7,6 +7,7 @@
       "dependencies": {
         "@agent-store/client": "workspace:*",
         "@agent-store/protocol": "workspace:*",
+        "@agent-store/sdk": "workspace:*",
         "@fontsource-variable/geist-mono": "^5.3.0",
         "@fontsource-variable/inter": "^5.3.0",
         "@fontsource-variable/noto-sans-sc": "^5.3.0",
@@ -39,7 +40,7 @@
       "name": "@agent-store/client",
       "version": "0.1.0",
       "dependencies": {
-        "@agent-store/protocol": "workspace:*",
+        "@agent-store/protocol": "0.1.0",
       },
     },
     "packages/protocol": {
@@ -50,8 +51,8 @@
       "name": "@agent-store/sdk",
       "version": "0.1.0",
       "dependencies": {
-        "@agent-store/client": "workspace:*",
-        "@agent-store/protocol": "workspace:*",
+        "@agent-store/client": "0.1.0",
+        "@agent-store/protocol": "0.1.0",
       },
     },
   },
