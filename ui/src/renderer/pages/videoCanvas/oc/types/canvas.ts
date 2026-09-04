@@ -1,3 +1,4 @@
+import type { ArtCritiqueNodeState } from "@oc/lib/art-critique/contracts";
 import type { AssetCategory } from "@oc/lib/asset-category";
 import type { CanvasColorGrade } from "@oc/lib/canvas/canvas-color-grade";
 import type { PortraitTextureSettings } from "@oc/lib/canvas/canvas-portrait-texture";
@@ -32,6 +33,7 @@ export enum CanvasNodeType {
     Compare = "compare",
     Chart = "chart",
     ColorGrade = "colorgrade",
+    ArtCritique = "ai-art-critique",
 }
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
@@ -176,6 +178,8 @@ export type CanvasNodeMetadata = {
     vquality?: string;
     generateAudio?: string;
     watermark?: string;
+    /** Copied media nodes regenerate in place; parameter variants keep a new-version lineage. */
+    generationResultPlacement?: "replace-node" | "new-version";
     audioVoice?: string;
     audioFormat?: string;
     audioSpeed?: string;
@@ -273,6 +277,7 @@ export type CanvasNodeMetadata = {
     subtitleHighlights?: SubtitleHighlight[];
     subtitleStyle?: SubtitleStyle;
     subtitleUpdatedAt?: string;
+    artCritique?: ArtCritiqueNodeState;
     skillId?: string;
     skillVersion?: number;
     skillSnapshot?: CanvasSkillSnapshot;

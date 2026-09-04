@@ -10,7 +10,14 @@ const BATCH_CHILD_GAP = 36;
 const NODE_CLEARANCE = 36;
 
 export function canGenerateImageInPlace(sourceNode: CanvasNodeData | undefined) {
-    return sourceNode?.type === CanvasNodeType.Image && !sourceNode.metadata?.content;
+    return canGenerateMediaInPlace(sourceNode, CanvasNodeType.Image);
+}
+
+export function canGenerateMediaInPlace(sourceNode: CanvasNodeData | undefined, mediaType: typeof CanvasNodeType.Image | typeof CanvasNodeType.Video | typeof CanvasNodeType.Audio) {
+    if (sourceNode?.type !== mediaType) return false;
+    if (sourceNode.metadata?.generationResultPlacement) return sourceNode.metadata.generationResultPlacement === "replace-node";
+    if (!sourceNode.metadata?.content) return true;
+    return Boolean(sourceNode.metadata?.copiedFromNodeId || sourceNode.metadata?.versionOfNodeId);
 }
 
 export function imageGenerationGroupSize(rootSize: Size, imageSize: Size, childCount: number): Size {

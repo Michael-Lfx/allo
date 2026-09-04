@@ -33,7 +33,7 @@ function encodeOptions(models: IMediaModelOption[], channelId: string) {
 }
 
 function costEntries(
-  models: Array<{ id: string; name?: string; icon?: string }>,
+  models: Array<{ id: string; name?: string; icon?: string; supportsVision?: boolean }>,
   capability: ModelCapability,
   serverBaseUrl?: string
 ): NonNullable<ModelChannel['modelCosts']> {
@@ -51,6 +51,7 @@ function costEntries(
         unitPriceMicrocredits: 0,
         ...(capability === 'text' ? { protocol: 'chat-completion' as const } : {}),
         ...(capability === 'audio' ? { protocol: 'openai-audio' as const } : {}),
+        ...(m.supportsVision ? { supportsVision: true } : {}),
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -59,7 +60,7 @@ function costEntries(
 function catalogIconFromProviderDetail(
   providers: Array<{
     id: string;
-    models_detail?: Array<{ model: string; params?: unknown }>;
+    models_detail?: Array<{ model: string; params?: unknown; traits?: string[] }>;
   }>,
   providerId: string,
   modelId: string
@@ -74,7 +75,39 @@ function catalogIconFromProviderDetail(
   return typeof icon === 'string' ? icon : undefined;
 }
 
-async function fetchAlloChatModels(): Promise<Array<{ id: string; name: string; icon?: string }>> {
+function catalogSupportsVision(
+  providers: Array<{
+    id: string;
+    models_detail?: Array<{ model: string; traits?: string[]; params?: unknown }>;
+  }>,
+  providerId: string,
+  modelId: string
+): boolean {
+  const detail = providers
+    .find((p) => p.id === providerId)
+    ?.models_detail?.find((row) => row.model === modelId);
+  const traits = detail?.traits ?? [];
+  if (traits.some((trait) => trait === 'vision_input')) return true;
+  const params = detail?.params;
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return false;
+  const extra = (params as Record<string, unknown>).extra;
+  const parsed =
+    typeof extra === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(extra) as { input?: unknown };
+          } catch {
+            return null;
+          }
+        })()
+      : extra && typeof extra === 'object'
+        ? (extra as { input?: unknown })
+        : null;
+  const input = parsed?.input;
+  return Array.isArray(input) && input.some((item) => String(item).toLowerCase() === 'image');
+}
+
+async function fetchAlloChatModels(): Promise<Array<{ id: string; name: string; icon?: string; supportsVision?: boolean }>> {
   const [resolved, providers] = await Promise.all([
     ipcBridge.modelProfile.resolve.invoke({ task: 'chat' }),
     ipcBridge.mode.listProviders.invoke(),
@@ -84,7 +117,7 @@ async function fetchAlloChatModels(): Promise<Array<{ id: string; name: string; 
     (providers ?? []).map((p) => [p.id, p.name || p.id] as const)
   );
   const seen = new Set<string>();
-  const models: Array<{ id: string; name: string; icon?: string }> = [];
+  const models: Array<{ id: string; name: string; icon?: string; supportsVision?: boolean }> = [];
   for (const ref of refs) {
     const id = (ref.model || '').trim();
     if (!id || seen.has(id)) continue;
@@ -97,6 +130,7 @@ async function fetchAlloChatModels(): Promise<Array<{ id: string; name: string; 
       id,
       name: (desc || (providerLabel ? `${providerLabel} · ${id}` : id)).trim(),
       ...(icon ? { icon } : {}),
+      ...(catalogSupportsVision(providers ?? [], ref.provider_id, id) ? { supportsVision: true } : {}),
     });
   }
   return models;
@@ -106,7 +140,7 @@ export type AlloCatalogModels = {
   image: IMediaModelOption[];
   video: IMediaModelOption[];
   audio: IMediaModelOption[];
-  chat: Array<{ id: string; name: string; icon?: string }>;
+  chat: Array<{ id: string; name: string; icon?: string; supportsVision?: boolean }>;
   /** Flowy API origin used to resolve relative catalog `icon` paths. */
   serverBaseUrl?: string;
 };
@@ -253,7 +287,7 @@ export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
     fetchMediaModels().catch(() => ({ image_models: [], video_models: [], audio_models: [] })),
     fetchAlloChatModels().catch((err) => {
       console.warn('[videoCanvas] fetchAlloChatModels failed', err);
-      return [] as Array<{ id: string; name: string; icon?: string }>;
+      return [] as Array<{ id: string; name: string; icon?: string; supportsVision?: boolean }>;
     }),
     ipcBridge.cloud.whoami.invoke().catch(() => null),
   ]);

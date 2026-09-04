@@ -4,8 +4,8 @@ import copyToClipboard from "copy-to-clipboard";
 import { nanoid } from "nanoid";
 
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_HEADER_HEIGHT, getFrameChildIds, getFrameChildren, isFrameNode } from "@oc/lib/canvas/canvas-frame";
-import { alignCanvasNodes, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@oc/lib/canvas/canvas-layout";
-import { createCanvasNode, removeCanvasNodes } from "@oc/lib/canvas/canvas-project-domain";
+import { alignCanvasNodes, layoutCanvasAuto, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@oc/lib/canvas/canvas-layout";
+import { createCanvasNode, isHiddenBatchChild, removeCanvasNodes } from "@oc/lib/canvas/canvas-project-domain";
 import { isolateCopiedNodeMetadata, nextCopiedNodeTitle } from "@oc/lib/canvas/canvas-node-copy";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
@@ -131,7 +131,7 @@ export function useCanvasNodeOperations({
         const node = createCanvasNode(type, position || getCanvasCenter(), type === CanvasNodeType.Drawing ? { drawingEngine: defaultDrawingEngine } : undefined);
         commitNodes([...nodesRef.current, node]);
         selectNodes(new Set([node.id]));
-        if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== CanvasNodeType.Markdown && type !== CanvasNodeType.Svg && type !== CanvasNodeType.Html && type !== CanvasNodeType.Panorama && type !== CanvasNodeType.Compare && type !== CanvasNodeType.Chart && type !== CanvasNodeType.ColorGrade && type !== CanvasNodeType.Config) setDialogNodeId(node.id);
+        if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== CanvasNodeType.Markdown && type !== CanvasNodeType.Svg && type !== CanvasNodeType.Html && type !== CanvasNodeType.Panorama && type !== CanvasNodeType.Compare && type !== CanvasNodeType.Chart && type !== CanvasNodeType.ColorGrade && type !== CanvasNodeType.Config && type !== CanvasNodeType.ArtCritique) setDialogNodeId(node.id);
     }, [commitNodes, defaultDrawingEngine, getCanvasCenter, message, nodesRef, selectNodes, setDialogNodeId, tldrawLicenseKey]);
 
     const createFolder = useCallback((position?: Position) => {
@@ -161,6 +161,28 @@ export function useCanvasNodeOperations({
         const positions = mode === "flow" ? layoutCanvasFlow(selected, connectionsRef.current) : layoutCanvasNodes(selected, mode);
         commitNodes(nodesRef.current.map((node) => positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node));
         message.success(mode === "flow" ? "已按连线整理" : "已整理选中节点");
+    }, [commitNodes, connectionsRef, message, nodesRef, selectedNodeIdsRef]);
+
+    const autoArrangeCanvasNodes = useCallback(() => {
+        const currentNodes = nodesRef.current;
+        const selectedIds = selectedNodeIdsRef.current;
+        const hasSelection = selectedIds.size > 0;
+        const candidates = currentNodes.filter((node) => {
+            if (node.metadata?.locked || isFrameNode(node) || isHiddenBatchChild(node, currentNodes)) return false;
+            if (hasSelection) return selectedIds.has(node.id);
+            return !node.parentId;
+        });
+        if (candidates.length < 2) {
+            message.info(hasSelection
+                ? canvasT("videoCanvas.zoom.arrangeNeedSelection", "请至少选择两个可整理节点")
+                : canvasT("videoCanvas.zoom.arrangeNeedCanvas", "画布中至少需要两个可整理节点"));
+            return;
+        }
+        const positions = layoutCanvasAuto(candidates, connectionsRef.current);
+        commitNodes(currentNodes.map((node) => (positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node)));
+        message.success(hasSelection
+            ? canvasT("videoCanvas.zoom.arrangedSelection", "已按媒体分类整理选中节点")
+            : canvasT("videoCanvas.zoom.arrangedCanvas", "已按媒体分类整理画布"));
     }, [commitNodes, connectionsRef, message, nodesRef, selectedNodeIdsRef]);
 
     const alignSelectedNodes = useCallback((mode: CanvasAlignmentMode) => {
@@ -315,13 +337,14 @@ export function useCanvasNodeOperations({
             : canvasT("videoCanvas.share.coverCleared", "已取消封面，发布时将自动选择图片"));
     }, [commitNodes, message, nodesRef]);
 
-    const duplicateNode = useCallback((nodeId: string) => {
+    const duplicateNode = useCallback((nodeId: string, duplicateMode: "variant" | "copy" = "variant") => {
         const source = nodesRef.current.find((node) => node.id === nodeId);
         if (!source) return;
         const sources = isFrameNode(source) ? [source, ...getFrameChildren(source.id, nodesRef.current)] : [source];
         const idMap = new Map(sources.map((node, index) => [node.id, `${node.type}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`]));
-        const versionRootId = isFrameNode(source) ? undefined : source.metadata?.versionOfNodeId || source.id;
+        const versionRootId = duplicateMode === "variant" && !isFrameNode(source) ? source.metadata?.versionOfNodeId || source.id : undefined;
         const versionLabel = versionRootId ? nextCanvasVersionLabel(versionRootId, nodesRef.current) : undefined;
+        const copyTitle = duplicateMode === "copy" ? nextCopiedNodeTitle(source.title, nodesRef.current.map((node) => node.title)) : undefined;
         const copiedNodes = sources.map((node) => {
             const metadata = isolateCopiedNodeMetadata(node, idMap);
             if (node.type === CanvasNodeType.Drawing) {
@@ -339,7 +362,7 @@ export function useCanvasNodeOperations({
             return {
                 ...node,
                 id: idMap.get(node.id)!,
-                title: node.id === source.id ? `${node.title.replace(/ · [A-Z]$/, "")} · ${versionLabel || "副本"}` : node.title,
+                title: node.id === source.id ? copyTitle || `${node.title.replace(/ · [A-Z]$/, "")} · ${versionLabel || "副本"}` : node.title,
                 position: { x: node.position.x + 36, y: node.position.y + 36 },
                 parentId: node.parentId ? idMap.get(node.parentId) || node.parentId : undefined,
                 metadata,
@@ -354,7 +377,7 @@ export function useCanvasNodeOperations({
         }
         const id = idMap.get(source.id)!;
         const nextNodes = [
-            ...nodesRef.current.map((node) => node.id === source.id && versionRootId && !node.metadata?.versionLabel ? { ...node, title: `${node.title} · A`, metadata: { ...node.metadata, versionOfNodeId: versionRootId, versionLabel: "A", versionPrimary: true } } : node),
+            ...nodesRef.current.map((node) => node.id === source.id && versionRootId && !node.metadata?.versionLabel ? { ...node, title: `${node.title} · A`, metadata: { ...node.metadata, versionOfNodeId: versionRootId, versionLabel: "A", versionPrimary: true, generationResultPlacement: "replace-node" as const } } : node),
             ...copiedNodes,
         ];
         commitNodes(nextNodes);
@@ -505,6 +528,7 @@ export function useCanvasNodeOperations({
     return {
         alignSelectedNodes,
         arrangeSelectedNodes,
+        autoArrangeCanvasNodes,
         copyNodesToClipboard,
         copySelectedNodes,
         createFolder,

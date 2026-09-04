@@ -6,7 +6,7 @@ import { Popconfirm, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne } from '@icon-park/react';
 import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
 import { isCanvasTvShow, isCanvasWorkflow, normalizeWorkflow } from '../workflowKind';
-import { loadArtifactMediaUrlCached } from '../api';
+import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
 
@@ -97,12 +97,14 @@ interface SessionCardProps {
 const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, deleting }) => {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [coverUrl, setCoverUrl] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [hovering, setHovering] = useState(false);
   const [loadVideo, setLoadVideo] = useState(false);
   const [visible, setVisible] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const coverRel = visible ? session.cover?.trim() || null : null;
+  const videoRel = loadVideo ? session.final_video?.trim() || null : null;
+  const { url: coverUrl } = useArtifactMediaUrl(session.id, coverRel);
+  const { url: videoUrl } = useArtifactMediaUrl(session.id, videoRel);
 
   const updatedMs = toEpochMs(session.updated_at ?? session.created_at);
   const meta: string[] = [
@@ -134,45 +136,6 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const coverRel = session.cover?.trim();
-    if (!visible || !coverRel) {
-      setCoverUrl(null);
-      return;
-    }
-    // Cached loader — the cache owns the blob URL lifecycle; no manual revokes.
-    void loadArtifactMediaUrlCached(session.id, coverRel)
-      .then((url) => {
-        if (!cancelled) setCoverUrl(url);
-      })
-      .catch(() => {
-        /* keep gradient fallback */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [session.id, session.cover, visible]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const videoRel = session.final_video?.trim();
-    if (!loadVideo || !videoRel) {
-      setVideoUrl(null);
-      return;
-    }
-    void loadArtifactMediaUrlCached(session.id, videoRel)
-      .then((url) => {
-        if (!cancelled) setVideoUrl(url);
-      })
-      .catch(() => {
-        /* optional hover preview */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [loadVideo, session.id, session.final_video]);
 
   const handleEnter = () => {
     setHovering(true);
@@ -249,6 +212,10 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
             ]
               .filter(Boolean)
               .join(' ')}
+            onLoadedMetadata={(event) => {
+              const el = event.currentTarget;
+              if (el.duration > 0.15 && el.currentTime < 0.05) el.currentTime = 0.08;
+            }}
           />
         ) : null}
         {!coverUrl && !videoUrl ? (

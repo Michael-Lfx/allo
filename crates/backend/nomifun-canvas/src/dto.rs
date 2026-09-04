@@ -30,6 +30,25 @@ pub struct CanvasMediaMeta {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasTranscription {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineExportClip {
+    pub media_id: String,
+    #[serde(default)]
+    pub source_start_ms: Option<u64>,
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub gap_before_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationTaskStatus {

@@ -18,6 +18,7 @@ export function useCanvasDialogState() {
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [subtitleNodeId, setSubtitleNodeId] = useState<string | null>(null);
     const [timelineNodeId, setTimelineNodeId] = useState<string | null>(null);
+    const [artCritiqueNodeId, setArtCritiqueNodeId] = useState<string | null>(null);
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [scriptEditorNodeId, setScriptEditorNodeId] = useState<string | null>(null);
@@ -65,6 +66,8 @@ export function useCanvasDialogState() {
         setSubtitleNodeId,
         timelineNodeId,
         setTimelineNodeId,
+        artCritiqueNodeId,
+        setArtCritiqueNodeId,
         superResolveNodeId,
         setSuperResolveNodeId,
         previewNodeId,

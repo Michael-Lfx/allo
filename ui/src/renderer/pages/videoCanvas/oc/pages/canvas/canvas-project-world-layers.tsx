@@ -133,6 +133,7 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                         toScrollTop={props.scriptScrollTopById[to.id] || 0}
                         active={props.selectedConnectionId === connection.id || relatedHighlight.connectionIds.has(connection.id)}
                         visualMode="hover-only"
+                        hideVisual={isNodeDragging}
                         onSelect={() => props.onConnectionSelect(connection.id)}
                         onContextMenu={(event) => props.onConnectionContextMenu(event, connection.id)}
                     />

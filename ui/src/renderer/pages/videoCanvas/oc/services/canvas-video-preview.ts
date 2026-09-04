@@ -1,3 +1,4 @@
+import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { captureVideoPoster } from "@oc/lib/video-poster";
 import { resolveMediaUrl } from "@oc/services/file-storage";
 import { uploadImage } from "@oc/services/image-storage";
@@ -8,7 +9,7 @@ type VideoPreview = NonNullable<CanvasNodeMetadata["videoPreview"]>;
 const previewRequests = new Map<string, Promise<VideoPreview | null>>();
 
 export function hydrateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSignal) {
-    const sourceKey = node.metadata?.storageKey || node.metadata?.content || "";
+    const sourceKey = node.metadata?.storageKey || canvasNodeDisplayUrl(node) || node.metadata?.content || "";
     if (!sourceKey) return Promise.resolve(null);
     const requestKey = `${node.id}:${sourceKey}`;
     const existing = previewRequests.get(requestKey);
@@ -28,7 +29,7 @@ export function hydrateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSi
 async function generateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSignal): Promise<VideoPreview | null> {
     await waitForBrowserIdle(signal);
     throwIfAborted(signal);
-    const source = await resolveMediaUrl(node.metadata?.storageKey, node.metadata?.content || "");
+    const source = await resolveMediaUrl(node.metadata?.storageKey, canvasNodeDisplayUrl(node) || node.metadata?.content || "");
     if (!source) return null;
     const captured = await captureVideoPoster(source, { signal, maxWidth: 400 });
     throwIfAborted(signal);

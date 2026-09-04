@@ -12,7 +12,8 @@ import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewp
 import { canvasNodeAssetCategory } from "@oc/lib/canvas/canvas-node-asset";
 import { getNodeLabel } from "@oc/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@oc/lib/image-utils";
-import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError, localizeGenerationErrorText } from "@oc/lib/generation-error";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@oc/lib/generation-error";
 import { useCopyText } from "@oc/hooks/use-copy-text";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode, type ViewportTransform } from "@oc/types/canvas";
@@ -658,7 +659,7 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
 
                             {node.metadata?.errorDetails ? (
                                 <div className="rounded-2xl border p-3 text-red-500" style={{ borderColor: theme.node.stroke }}>
-                                    {localizeGenerationErrorText(generationErrorMessage(node.metadata.errorDetails))}
+                                    {formatCanvasUserError(node.metadata.errorDetails)}
                                 </div>
                             ) : null}
                         </div>

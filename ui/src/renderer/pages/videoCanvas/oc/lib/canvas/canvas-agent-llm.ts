@@ -10,6 +10,7 @@ import { resolveModelRequestConfig, type AiConfig } from "@oc/stores/use-config-
 import {
   streamCanvasChatCompletions,
   toCanvasLlmTransportError,
+  type CanvasChatStreamResult,
 } from "@renderer/pages/videoCanvas/lib/canvasLlm";
 
 export type CanvasAgentTextMessage = {
@@ -43,11 +44,13 @@ export type CanvasAgentTurnResult = {
   toolCalls: CanvasAgentToolCall[];
 };
 
-export type CanvasAgentToolChoice = "auto" | "required";
+export type CanvasAgentToolChoice = "auto" | "required" | { type: "function"; function: { name: string } };
 
 export type CanvasAgentLlmOptions = {
   onDelta?: (text: string) => void;
   signal?: AbortSignal;
+  /** Default true so the agent panel can stream tokens. Tool-only stages should pass false. */
+  stream?: boolean;
 };
 
 /** @deprecated Use CanvasAgent* names. Kept so UI host files can migrate without a flag day. */
@@ -57,6 +60,27 @@ export type ResponseInputMessage = CanvasAgentInputMessage;
 /** @deprecated Use CanvasAgentFunctionTool. */
 export type ResponseFunctionTool = CanvasAgentFunctionTool;
 
+export function isCanvasLlmCompatibilityError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /tool[_\s-]?choice|parallel_tool_calls|thinking\s+mode|unknown (?:field|parameter|argument)|unrecognized.*(strict|tool)|does not support.*(?:tool|strict)|extra inputs are not permitted|unsupported.*(tool|parameter)/i.test(message);
+}
+
+function isCanvasAbortError(error: unknown) {
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  return error instanceof Error && (error.name === "AbortError" || error.message === "请求已取消");
+}
+
+function toFlowyChatTools(tools: CanvasAgentFunctionTool[]) {
+  return tools.map((tool) => ({
+    type: "function" as const,
+    function: {
+      name: tool.function.name,
+      ...(tool.function.description ? { description: tool.function.description } : {}),
+      parameters: tool.function.parameters,
+    },
+  }));
+}
+
 export async function requestCanvasAgentTurn(
   config: AiConfig,
   messages: CanvasAgentInputMessage[],
@@ -65,23 +89,53 @@ export async function requestCanvasAgentTurn(
   options: CanvasAgentLlmOptions = {},
 ): Promise<CanvasAgentTurnResult> {
   const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+  const toolsPayload = toFlowyChatTools(tools);
+  const base: Record<string, unknown> = {
+    model: requestConfig.model,
+    messages: toCanvasChatMessages(messages),
+    ...(toolsPayload.length ? { tools: toolsPayload } : {}),
+  };
+
+  const complete = async (payload: Record<string, unknown>, stream = options.stream) => {
+    const result = await streamCanvasChatCompletions(payload, {
+      onDelta: options.onDelta,
+      signal: options.signal,
+      stream,
+    });
+    if (stream !== false && toolsPayload.length && !result.toolCalls.length && !result.content.trim()) {
+      return streamCanvasChatCompletions(payload, { signal: options.signal, stream: false });
+    }
+    return result;
+  };
+
   try {
-    const result = await streamCanvasChatCompletions(
-      {
-        model: requestConfig.model,
-        messages: toCanvasChatMessages(messages),
-        tools,
-        tool_choice: toolChoice,
-        parallel_tool_calls: false,
-      },
-      { onDelta: options.onDelta, signal: options.signal },
-    );
-    return {
-      content: result.content,
-      toolCalls: result.toolCalls,
-    };
+    const result = await completeTurnWithToolChoiceFallback(base, toolsPayload.length > 0, toolChoice, complete);
+    return { content: result.content, toolCalls: result.toolCalls };
   } catch (error) {
     throw toCanvasLlmTransportError(error);
+  }
+}
+
+async function completeTurnWithToolChoiceFallback(
+  base: Record<string, unknown>,
+  hasTools: boolean,
+  toolChoice: CanvasAgentToolChoice,
+  complete: (payload: Record<string, unknown>) => Promise<CanvasChatStreamResult>,
+): Promise<CanvasChatStreamResult> {
+  if (!hasTools) return complete(base);
+
+  try {
+    return await complete({ ...base, tool_choice: toolChoice, parallel_tool_calls: false });
+  } catch (error) {
+    if (isCanvasAbortError(error) || !isCanvasLlmCompatibilityError(error)) throw error;
+    if (toolChoice !== "auto") {
+      try {
+        return await complete({ ...base, tool_choice: "auto", parallel_tool_calls: false });
+      } catch (autoError) {
+        if (isCanvasAbortError(autoError) || !isCanvasLlmCompatibilityError(autoError)) throw autoError;
+      }
+    }
+    return complete(base);
   }
 }
 

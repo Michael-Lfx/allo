@@ -8,9 +8,11 @@ import { buildGenerationConfig, isGenerationCanceled, supportsVideoReferenceAudi
 import { isGenerationTaskCapacityError } from "@oc/lib/canvas/canvas-generation-batch";
 import { waitForInboundCanvasImages } from "@oc/lib/canvas/canvas-agent-wait";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
 import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
-import { generationErrorMessage, generationFailureMetadata, localizeGenerationErrorText } from "@oc/lib/generation-error";
+import { modelPromptLengthError } from "@oc/lib/model-capabilities";
+import { generationErrorMessage, generationFailureMetadata } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import type { Skill } from "@oc/services/api/skills";
 import type { GenerationTask } from "@oc/services/api/task-center";
@@ -147,7 +149,7 @@ export function useCanvasGenerationExecutor({
                 );
             } catch (error) {
                 const errorDetails = generationErrorMessage(error);
-                message.error(localizeGenerationErrorText(errorDetails));
+                message.error(formatCanvasUserError(error));
                 return;
             }
 
@@ -161,6 +163,11 @@ export function useCanvasGenerationExecutor({
                 );
             }
             const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
+            const promptLengthError = mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
+            if (promptLengthError) {
+                message.error(promptLengthError);
+                return;
+            }
             if (mode === "audio" && generationContext.characterReferences.length) {
                 if (generationContext.characterReferences.length !== 1) {
                     message.error("角色配音一次只能引用一个角色卡");
@@ -282,7 +289,7 @@ export function useCanvasGenerationExecutor({
                     }));
                     return;
                 }
-                message.error(localizeGenerationErrorText(failure.errorDetails));
+                message.error(formatCanvasUserError(failure.errorDetails));
                 setNodes((current) => current.map((node) => (node.id === nodeId || pendingNodeIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...failure, ...((mode === "image" || mode === "video" || mode === "audio") && node.metadata?.taskStatus === "succeeded" ? { resourceReloadAvailable: true } : {}) } }) : node)));
             } finally {
                 finishGenerationRequest(nodeId, controller);

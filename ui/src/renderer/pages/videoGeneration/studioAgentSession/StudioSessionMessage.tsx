@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Attention, PlayOne, Robot, User } from '@icon-park/react';
-import { getArtifact, loadArtifactMediaUrlCached } from '../api';
+import { getArtifact } from '../api';
+import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
+import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import {
   groupPortraitMedia,
   loadStudioMediaPreviewUrl,
@@ -47,39 +49,8 @@ const FilmPreview: React.FC<{
   const { t } = useTranslation();
   const video = items.find((item) => item.kind === 'video');
   const cover = items.find((item) => item.kind === 'image');
-  const videoPath = video?.path;
-  const coverPath = cover?.path;
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [coverUrl, setCoverUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (videoPath) {
-      void loadArtifactMediaUrlCached(sessionId, videoPath)
-        .then((next) => {
-          if (!cancelled) setVideoUrl(next);
-        })
-        .catch(() => {
-          if (!cancelled) setVideoUrl(null);
-        });
-    } else {
-      setVideoUrl(null);
-    }
-    if (coverPath) {
-      void loadArtifactMediaUrlCached(sessionId, coverPath)
-        .then((next) => {
-          if (!cancelled) setCoverUrl(next);
-        })
-        .catch(() => {
-          if (!cancelled) setCoverUrl(null);
-        });
-    } else {
-      setCoverUrl(null);
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, videoPath, coverPath]);
+  const { url: videoUrl, reload: reloadVideo } = useArtifactMediaUrl(sessionId, video?.path);
+  const { url: coverUrl, reload: reloadCover } = useArtifactMediaUrl(sessionId, cover?.path);
 
   const target = video ?? cover;
   if (!target) return null;
@@ -92,9 +63,22 @@ const FilmPreview: React.FC<{
       title={t('videoGeneration.agentSession.preview.open', { defaultValue: '放大预览' })}
     >
       {coverUrl ? (
-        <img className={styles.filmPreviewImg} src={coverUrl} alt={cover?.label ?? ''} />
+        <img
+          className={styles.filmPreviewImg}
+          src={coverUrl}
+          alt={cover?.label ?? ''}
+          onError={() => reloadCover()}
+        />
       ) : videoUrl ? (
-        <video className={styles.filmPreviewVideo} src={videoUrl} muted playsInline preload='metadata' />
+        <video
+          className={styles.filmPreviewVideo}
+          src={videoUrl}
+          muted
+          playsInline
+          preload='metadata'
+          onError={() => reloadVideo()}
+          onLoadedMetadata={(event) => seekMediaElementToFirstFrame(event.currentTarget)}
+        />
       ) : (
         <span className={styles.mediaPending} />
       )}
@@ -110,21 +94,7 @@ const AudioClip: React.FC<{ sessionId: string; item: StudioSessionMedia }> = ({
   item,
 }) => {
   const { t } = useTranslation();
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadStudioMediaPreviewUrl(sessionId, item)
-      .then((next) => {
-        if (!cancelled) setUrl(next);
-      })
-      .catch(() => {
-        if (!cancelled) setUrl(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, item.path, item.kind, item.origin]);
+  const { url, reload } = useArtifactMediaUrl(sessionId, item.path);
 
   const label = t('videoGeneration.agentSession.document.voiceLabel', {
     defaultValue: '参考音频',
@@ -134,7 +104,7 @@ const AudioClip: React.FC<{ sessionId: string; item: StudioSessionMedia }> = ({
     <div className={styles.audioClip}>
       <span className={styles.audioClipLabel}>{label}</span>
       {url ? (
-        <audio className={styles.audioPlayer} src={url} controls preload='metadata' />
+        <audio className={styles.audioPlayer} src={url} controls preload='metadata' onError={() => reload()} />
       ) : (
         <span className={styles.mediaPending} />
       )}
@@ -252,11 +222,16 @@ const MediaThumb: React.FC<{
   onOpen?: (item: StudioSessionMedia, gallery: StudioSessionMedia[]) => void;
 }> = ({ sessionId, item, gallery, onOpen }) => {
   const { t } = useTranslation();
-  const [url, setUrl] = useState<string | null>(null);
+  const artifactPath =
+    item.origin === 'cameo' || item.kind === 'file' || item.kind === 'document' || item.kind === 'audio'
+      ? null
+      : item.path;
+  const { url: artifactUrl, reload } = useArtifactMediaUrl(sessionId, artifactPath);
+  const [cameoUrl, setCameoUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (item.kind === 'file' || item.kind === 'document' || item.kind === 'audio') {
-      setUrl(null);
+    if (item.origin !== 'cameo' || item.kind === 'file' || item.kind === 'document' || item.kind === 'audio') {
+      setCameoUrl(null);
       return;
     }
     let cancelled = false;
@@ -264,20 +239,22 @@ const MediaThumb: React.FC<{
     void loadStudioMediaPreviewUrl(sessionId, item)
       .then((next) => {
         if (cancelled) {
-          if (item.origin === 'cameo') URL.revokeObjectURL(next);
+          URL.revokeObjectURL(next);
           return;
         }
-        if (item.origin === 'cameo') blobUrl = next;
-        setUrl(next);
+        blobUrl = next;
+        setCameoUrl(next);
       })
       .catch(() => {
-        if (!cancelled) setUrl(null);
+        if (!cancelled) setCameoUrl(null);
       });
     return () => {
       cancelled = true;
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [sessionId, item.path, item.kind, item.origin]);
+
+  const url = item.origin === 'cameo' ? cameoUrl : artifactUrl;
 
   if (item.kind === 'file') {
     return (
@@ -299,9 +276,17 @@ const MediaThumb: React.FC<{
       title={item.label || t('videoGeneration.agentSession.preview.open', { defaultValue: '放大预览' })}
     >
       {url && item.kind === 'video' ? (
-        <video className={styles.mediaCardVideo} src={url} muted playsInline preload='metadata' />
+        <video
+          className={styles.mediaCardVideo}
+          src={url}
+          muted
+          playsInline
+          preload='metadata'
+          onError={() => reload()}
+          onLoadedMetadata={(event) => seekMediaElementToFirstFrame(event.currentTarget)}
+        />
       ) : url ? (
-        <img className={styles.mediaCardImg} src={url} alt={item.label ?? ''} />
+        <img className={styles.mediaCardImg} src={url} alt={item.label ?? ''} onError={() => reload()} />
       ) : (
         <span className={styles.mediaPending} />
       )}

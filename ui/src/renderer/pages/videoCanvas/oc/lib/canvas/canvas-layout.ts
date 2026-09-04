@@ -144,7 +144,7 @@ export function layoutCanvasAuto(nodes: CanvasNodeData[], connections: CanvasCon
 export function canvasLayoutLane(node: CanvasNodeData): CanvasLayoutLane {
     if (node.type === CanvasNodeType.Video) return "video";
     if (node.type === CanvasNodeType.Audio) return "audio";
-    if (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Drawing || node.type === CanvasNodeType.Panorama || node.type === CanvasNodeType.Compare || node.type === CanvasNodeType.ColorGrade) return "image";
+    if (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Drawing || node.type === CanvasNodeType.Panorama || node.type === CanvasNodeType.Compare || node.type === CanvasNodeType.ColorGrade || node.type === CanvasNodeType.ArtCritique) return "image";
     return "text";
 }
 

@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { App, Button, Modal } from "antd";
-import { Clapperboard, Plus } from "lucide-react";
+import { Clapperboard, Film, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { appendMediaNodeToTimeline, createEmptyTimeline } from "@oc/lib/timeline/timeline-project";
+import { buildTimelineExportRequest } from "@oc/lib/timeline/timeline-export";
+import { exportCanvasTimeline } from "@renderer/pages/videoCanvas/api";
 import type { TimelineProject } from "@oc/types/timeline";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
+import type { CanvasMediaMeta } from "@renderer/pages/videoCanvas/api";
 
 type CanvasTimelineDialogProps = {
     open: boolean;
@@ -15,13 +19,15 @@ type CanvasTimelineDialogProps = {
     timeline: TimelineProject | undefined;
     onClose: () => void;
     onSave: (timeline: TimelineProject) => void;
+    onExportMedia?: (meta: CanvasMediaMeta) => void;
 };
 
 /** MVP：项目级时间线编辑壳，数据落在 doc.timeline，经 PUT /doc 持久化。 */
-export function CanvasTimelineDialog({ open, seedNode, nodes, timeline, onClose, onSave }: CanvasTimelineDialogProps) {
+export function CanvasTimelineDialog({ open, seedNode, nodes, timeline, onClose, onSave, onExportMedia }: CanvasTimelineDialogProps) {
     useTranslation();
     const { message } = App.useApp();
     const [draft, setDraft] = useState<TimelineProject>(() => timeline || createEmptyTimeline());
+    const [exporting, setExporting] = useState(false);
 
     useEffect(() => {
         if (!open) return;
@@ -43,6 +49,27 @@ export function CanvasTimelineDialog({ open, seedNode, nodes, timeline, onClose,
         onClose();
     };
 
+    const exportFilm = async () => {
+        const request = buildTimelineExportRequest(draft, nodes, seedNode?.title ? `${seedNode.title} 成片` : undefined);
+        if ("error" in request) {
+            message.warning(request.error === "no-clips"
+                ? canvasT("videoCanvas.timeline.exportNeedClips", "请先添加至少一个视频片段")
+                : canvasT("videoCanvas.timeline.exportNeedMedia", "片段缺少本地媒体，无法导出"));
+            return;
+        }
+        setExporting(true);
+        try {
+            const meta = await exportCanvasTimeline(request);
+            onExportMedia?.(meta);
+            message.success(canvasT("videoCanvas.timeline.exported", "已导出成片并添加到画布"));
+            onClose();
+        } catch (error) {
+            message.error(formatCanvasUserError(error, canvasT("videoCanvas.timeline.exportFailed", "时间线导出失败")));
+        } finally {
+            setExporting(false);
+        }
+    };
+
     return (
         <Modal
             title={canvasT("videoCanvas.timeline.title", "时间线")}
@@ -52,6 +79,7 @@ export function CanvasTimelineDialog({ open, seedNode, nodes, timeline, onClose,
             centered
             footer={[
                 <Button key="cancel" onClick={onClose}>{canvasT("videoCanvas.timeline.cancel", "取消")}</Button>,
+                <Button key="export" icon={<Film className="size-3.5" />} loading={exporting} onClick={() => void exportFilm()}>{canvasT("videoCanvas.timeline.export", "导出成片")}</Button>,
                 <Button key="save" type="primary" onClick={save}>{canvasT("videoCanvas.timeline.save", "保存到画布文档")}</Button>,
             ]}
         >

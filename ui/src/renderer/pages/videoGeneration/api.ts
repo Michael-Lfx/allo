@@ -50,13 +50,33 @@ let sessionListGeneration = 0;
 
 /**
  * Resolve a backend-relative serve path to an absolute URL usable in
- * `<img src>` / `<video src>`. Absolute / blob / data URLs pass through.
+ * `<img src>` / `<video src>`. Historical sessions often persist
+ * `http://127.0.0.1:{oldPort}/api/vimax/...` from a previous desktop launch —
+ * rewrite those onto `getBaseUrl()`. Live `blob:` / `data:` / external https
+ * pass through.
  */
 export function resolveVimaxUrl(path: string | null | undefined): string | null {
   if (!path) return null;
-  if (/^(https?:|blob:|data:)/i.test(path)) return path;
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+  if (/^(blob:|data:)/i.test(trimmed)) return trimmed;
+  const loopbackApi = loopbackApiPath(trimmed);
+  if (loopbackApi) {
+    const base = getBaseUrl();
+    return `${base}${loopbackApi}`;
+  }
+  if (/^https?:/i.test(trimmed)) return trimmed;
   const base = getBaseUrl();
-  return path.startsWith('/') ? `${base}${path}` : `${base}/${path}`;
+  return trimmed.startsWith('/') ? `${base}${trimmed}` : `${base}/${trimmed}`;
+}
+
+function loopbackApiPath(url: string): string | null {
+  const match = url.match(/^https?:\/\/(?:127\.0\.0\.1|localhost):\d+(\/api\/[^?#]*)/i);
+  return match?.[1] ?? null;
+}
+
+function isAuthorizedVimaxMediaUrl(url: string): boolean {
+  return /\/api\/vimax\//i.test(url) || /\/api\/video-canvas\/media\//i.test(url);
 }
 
 /** Absolute URL for fetching an artifact file (binary or text). */
@@ -312,6 +332,35 @@ export async function listArtifacts(id: string): Promise<ArtifactNode[]> {
   return data?.tree ?? data?.artifacts ?? [];
 }
 
+async function blobContentFromResponse(
+  response: Response,
+  contentType: string,
+  lowerPath: string
+): Promise<ArtifactContent> {
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const isVideo = contentType.startsWith('video/') || /\.(mp4|webm|mov|avi|mkv)$/i.test(lowerPath);
+  const isAudio =
+    contentType.startsWith('audio/') ||
+    /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(lowerPath);
+  return {
+    kind: 'url',
+    url: objectUrl,
+    mime: contentType || (isVideo ? 'video/mp4' : isAudio ? 'audio/wav' : undefined),
+  };
+}
+
+async function fetchAuthorizedMediaBlob(url: string, artifactPath: string): Promise<ArtifactContent> {
+  const headers: Record<string, string> = { ...buildBackendAuthHeaders('GET') };
+  const response = await fetch(url, { method: 'GET', headers });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Failed to load artifact (${response.status}): ${detail || response.statusText}`);
+  }
+  const contentType = response.headers.get('Content-Type') ?? '';
+  return blobContentFromResponse(response, contentType, artifactPath.toLowerCase());
+}
+
 /**
  * Fetch an artifact. Media is returned as an authenticated blob: URL so
  * `<img>` / `<video>` work (raw API paths require Authorization headers).
@@ -337,18 +386,7 @@ export async function getArtifact(sessionId: string, artifactPath: string): Prom
     contentType.includes('octet-stream') ||
     /\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|mkv|mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(lowerPath)
   ) {
-    const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const isVideo =
-      contentType.startsWith('video/') || /\.(mp4|webm|mov|avi|mkv)$/i.test(lowerPath);
-    const isAudio =
-      contentType.startsWith('audio/') ||
-      /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(lowerPath);
-    return {
-      kind: 'url',
-      url: objectUrl,
-      mime: contentType || (isVideo ? 'video/mp4' : isAudio ? 'audio/wav' : undefined),
-    };
+    return blobContentFromResponse(response, contentType, lowerPath);
   }
 
   if (contentType.includes('application/json')) {
@@ -365,7 +403,15 @@ export async function getArtifact(sessionId: string, artifactPath: string): Prom
     if (payload && typeof payload === 'object') {
       const obj = payload as Record<string, unknown>;
       if (typeof obj.url === 'string') {
-        return { kind: 'url', url: resolveVimaxUrl(obj.url) ?? obj.url, mime: typeof obj.mime === 'string' ? obj.mime : contentType };
+        const resolved = resolveVimaxUrl(obj.url) ?? obj.url;
+        if (isAuthorizedVimaxMediaUrl(resolved)) {
+          return fetchAuthorizedMediaBlob(resolved, artifactPath);
+        }
+        return {
+          kind: 'url',
+          url: resolved,
+          mime: typeof obj.mime === 'string' ? obj.mime : contentType,
+        };
       }
       if (typeof obj.content === 'string') {
         const looksJson = obj.content.trim().startsWith('{') || obj.content.trim().startsWith('[');
@@ -404,49 +450,58 @@ export async function loadArtifactMediaUrl(
 }
 
 // ── Cached media blob URLs (LRU) ────────────────────────────────────────────
-// Remount-heavy components (session cards, storyboard filmstrip thumbs) would
-// re-download the same artifact file on every mount otherwise. The cache owns
-// the blob URL lifecycle: callers must NOT revoke returned URLs. Eviction
-// revokes, so entries may disappear under memory pressure — acceptable for
-// display-only previews.
-const MEDIA_URL_CACHE_LIMIT = 24;
-const mediaUrlCache = new Map<string, string>();
+// Remount-heavy components (session cards, storyboard filmstrip, agent session)
+// share this cache. Eviction must not revoke a blob that is still on screen —
+// that is what made historical storyboard / agent thumbs go blank. Entries
+// with refs > 0 stay until every display hook releases them.
+const MEDIA_URL_CACHE_LIMIT = 96;
+type ArtifactMediaCacheEntry = { url: string; refs: number };
+const mediaUrlCache = new Map<string, ArtifactMediaCacheEntry>();
 const mediaUrlInflight = new Map<string, Promise<string>>();
 
-/**
- * Like {@link loadArtifactMediaUrl} but memoized per `${sessionId}:${path}`.
- * Concurrent callers share one download; repeated mounts get the same URL.
- */
-export function loadArtifactMediaUrlCached(
-  sessionId: string,
-  artifactPath: string
-): Promise<string> {
-  const key = `${sessionId}:${artifactPath}`;
+function artifactMediaCacheKey(sessionId: string, artifactPath: string) {
+  return `${sessionId}:${artifactPath}`;
+}
+
+function touchArtifactMediaEntry(key: string, entry: ArtifactMediaCacheEntry) {
+  mediaUrlCache.delete(key);
+  mediaUrlCache.set(key, entry);
+}
+
+function evictIdleArtifactMedia() {
+  while (mediaUrlCache.size > MEDIA_URL_CACHE_LIMIT) {
+    let victim: string | undefined;
+    for (const [key, entry] of mediaUrlCache) {
+      if (entry.refs <= 0) {
+        victim = key;
+        break;
+      }
+    }
+    if (!victim) break;
+    const entry = mediaUrlCache.get(victim);
+    mediaUrlCache.delete(victim);
+    if (entry?.url.startsWith('blob:')) URL.revokeObjectURL(entry.url);
+  }
+}
+
+async function getOrCreateCachedArtifactUrl(sessionId: string, artifactPath: string): Promise<string> {
+  const key = artifactMediaCacheKey(sessionId, artifactPath);
   const hit = mediaUrlCache.get(key);
-  if (hit != null) {
-    // Refresh LRU recency.
-    mediaUrlCache.delete(key);
-    mediaUrlCache.set(key, hit);
-    return Promise.resolve(hit);
+  if (hit) {
+    touchArtifactMediaEntry(key, hit);
+    return hit.url;
   }
   const inflight = mediaUrlInflight.get(key);
   if (inflight) return inflight;
   const request = loadArtifactMediaUrl(sessionId, artifactPath)
     .then((url) => {
       const existing = mediaUrlCache.get(key);
-      if (existing != null) {
-        // Another caller populated the entry first — drop our duplicate.
-        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
-        return existing;
+      if (existing) {
+        if (url.startsWith('blob:') && url !== existing.url) URL.revokeObjectURL(url);
+        return existing.url;
       }
-      mediaUrlCache.set(key, url);
-      while (mediaUrlCache.size > MEDIA_URL_CACHE_LIMIT) {
-        const oldestKey = mediaUrlCache.keys().next().value;
-        if (oldestKey == null) break;
-        const oldest = mediaUrlCache.get(oldestKey);
-        mediaUrlCache.delete(oldestKey);
-        if (oldest?.startsWith('blob:')) URL.revokeObjectURL(oldest);
-      }
+      mediaUrlCache.set(key, { url, refs: 0 });
+      evictIdleArtifactMedia();
       return url;
     })
     .finally(() => {
@@ -454,6 +509,51 @@ export function loadArtifactMediaUrlCached(
     });
   mediaUrlInflight.set(key, request);
   return request;
+}
+
+/** Hold a cached artifact URL so LRU eviction cannot revoke it while it is on screen. */
+export async function acquireCachedArtifactMediaUrl(
+  sessionId: string,
+  artifactPath: string
+): Promise<string> {
+  const url = await getOrCreateCachedArtifactUrl(sessionId, artifactPath);
+  const key = artifactMediaCacheKey(sessionId, artifactPath);
+  const entry = mediaUrlCache.get(key);
+  if (entry) {
+    entry.refs += 1;
+    touchArtifactMediaEntry(key, entry);
+  } else {
+    mediaUrlCache.set(key, { url, refs: 1 });
+  }
+  return url;
+}
+
+export function releaseCachedArtifactMediaUrl(sessionId: string, artifactPath: string) {
+  const key = artifactMediaCacheKey(sessionId, artifactPath);
+  const entry = mediaUrlCache.get(key);
+  if (!entry) return;
+  entry.refs = Math.max(0, entry.refs - 1);
+  evictIdleArtifactMedia();
+}
+
+export function invalidateCachedArtifactMediaUrl(sessionId: string, artifactPath: string) {
+  const key = artifactMediaCacheKey(sessionId, artifactPath);
+  const entry = mediaUrlCache.get(key);
+  if (!entry) return;
+  mediaUrlCache.delete(key);
+  if (entry.url.startsWith('blob:') && entry.refs <= 1) URL.revokeObjectURL(entry.url);
+}
+
+/**
+ * Warm the cache without taking a display loan. Prefer
+ * {@link acquireCachedArtifactMediaUrl} (or `useArtifactMediaUrl`) for anything
+ * mounted as `<img>` / `<video>`.
+ */
+export function loadArtifactMediaUrlCached(
+  sessionId: string,
+  artifactPath: string
+): Promise<string> {
+  return getOrCreateCachedArtifactUrl(sessionId, artifactPath);
 }
 
 function looksLikeJson(s: string): boolean {

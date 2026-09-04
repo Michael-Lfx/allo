@@ -62,6 +62,8 @@ export function useCanvasNodeActions(input: CanvasNodeActionsInput) {
             setDrawingNodeId(node.id);
         } else if (node.type === CanvasNodeType.Script) {
             setDialogNodeId(null);
+        } else if (node.type === CanvasNodeType.ArtCritique) {
+            setDialogNodeId(null);
         } else if (node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Frame) {
             setDialogNodeId((current) => (current === node.id ? current : null));
         } else {

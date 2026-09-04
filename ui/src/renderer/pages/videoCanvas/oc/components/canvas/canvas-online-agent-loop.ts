@@ -13,6 +13,7 @@ import { waitCanvasAgentGeneration } from "@oc/lib/canvas/canvas-agent-wait";
 import { collectCanvasSkills } from "@oc/lib/canvas/canvas-skill-mentions";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { requestCanvasAgentTurn, type CanvasAgentInputMessage as ResponseInputMessage, type CanvasAgentToolCall as ResponseToolCall } from "@oc/lib/canvas/canvas-agent-llm";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { canvasHarness, CANVAS_AGENT_INCOMPLETE_NUDGE } from "@oc/lib/canvas/canvas-agent-harness";
 import { imageToDataUrl } from "@oc/services/image-storage";
 import { useConfigStore, type AiConfig } from "@oc/stores/use-config-store";
@@ -167,7 +168,7 @@ export function useCanvasOnlineAgentLoop({
             addOnlineLog(canvasT("videoCanvas.agent.logLoopEnd", "Agent Tool Loop {{step}} 结束", { step: loop.step }), { reply: result.content });
         } catch (error) {
             addOnlineLog(canvasT("videoCanvas.agent.logRequestFailed", "请求失败"), error instanceof Error ? error.message : error);
-            appendMessage(sessionId, { id: nanoid(), role: "error", title: canvasT("videoCanvas.agent.opFailed", "操作失败"), text: error instanceof Error ? error.message : canvasT("videoCanvas.agent.opFailed", "操作失败") });
+            appendMessage(sessionId, { id: nanoid(), role: "error", title: canvasT("videoCanvas.agent.opFailed", "操作失败"), text: formatCanvasUserError(error, canvasT("videoCanvas.agent.opFailed", "操作失败")) });
         } finally {
             setAgentActivity(null);
             setIsRunning(false);
@@ -404,7 +405,7 @@ export function useCanvasOnlineAgentLoop({
             return { ok: result.ok, message: result.changed ? canvasAgentPostconditionMessage(result) : result.noopReason, data: result.data || result };
         } catch (error) {
             if (isAgentSessionPollingAbort(error)) throw error;
-            const message = error instanceof Error ? error.message : canvasT("videoCanvas.agent.toolExecFailed", "工具执行失败");
+            const message = formatCanvasUserError(error, canvasT("videoCanvas.agent.toolExecFailed", "工具执行失败"));
             return {
                 ok: false,
                 message,
@@ -437,7 +438,7 @@ export function useCanvasOnlineAgentLoop({
             return { toolCallId: toolCall.id, name, result };
         } catch (error) {
             if (isAgentSessionPollingAbort(error)) throw error;
-            const message = error instanceof Error ? error.message : canvasT("videoCanvas.agent.toolParamError", "工具参数错误");
+            const message = formatCanvasUserError(error, canvasT("videoCanvas.agent.toolParamError", "工具参数错误"));
             upsertMessage(sessionId, {
                 id: runningId,
                 role: "tool",
@@ -485,7 +486,7 @@ export function useCanvasOnlineAgentLoop({
             await continueOnlineToolLoopAfterResults(session.id, assistantId, previousMessages, toolCalls, results, pendingContext?.step || Number(detail.step) || 1);
         } catch (error) {
             addOnlineLog(canvasT("videoCanvas.agent.continueRunFailed", "工具续跑失败"), error instanceof Error ? error.message : error);
-            appendMessage(session.id, { id: nanoid(), role: "error", title: canvasT("videoCanvas.agent.opFailed", "操作失败"), text: error instanceof Error ? error.message : canvasT("videoCanvas.agent.opFailed", "操作失败") });
+            appendMessage(session.id, { id: nanoid(), role: "error", title: canvasT("videoCanvas.agent.opFailed", "操作失败"), text: formatCanvasUserError(error, canvasT("videoCanvas.agent.opFailed", "操作失败")) });
         } finally {
             setAgentActivity(null);
             setIsRunning(false);

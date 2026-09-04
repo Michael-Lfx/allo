@@ -3,6 +3,7 @@ import { AlertCircle, LoaderCircle, Pause, Play } from "lucide-react";
 
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { useCanvasNodeActions } from "@oc/components/canvas/canvas-node-action-context";
 import { getCanvasAudioPlaybackSnapshot, seekCanvasAudio, stopCanvasAudio, subscribeCanvasAudioNode, toggleCanvasAudio } from "@oc/services/canvas-audio-playback";
 import type { CanvasNodeData } from "@oc/types/canvas";
@@ -20,7 +21,7 @@ export function CanvasAudioPlayer({ node, theme }: CanvasAudioPlayerProps) {
     const source = useMemo(
         () => ({
             nodeId: node.id,
-            content: node.metadata?.content || "",
+            content: canvasNodeDisplayUrl(node) || node.metadata?.content || "",
             storageKey: node.metadata?.storageKey,
             mimeType: node.metadata?.mimeType,
             durationMs: node.metadata?.durationMs,

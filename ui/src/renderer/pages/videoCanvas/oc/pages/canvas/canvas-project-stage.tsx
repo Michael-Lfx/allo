@@ -11,7 +11,7 @@ import { CanvasFocusModeBar } from "@oc/components/canvas/canvas-focus-mode-bar"
 import { CanvasFileDropOverlay } from "@oc/components/canvas/canvas-file-drop-overlay";
 import { CanvasToolbar } from "@oc/components/canvas/canvas-toolbar";
 import { getContextResourceNodes } from "@oc/lib/canvas/canvas-resource-references";
-import { CanvasNodeType, type CanvasNodeMetadata, type CanvasToolMode, type CanvasWorkspaceMode, type Position, type ViewportTransform } from "@oc/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasToolMode, type CanvasWorkspaceMode, type Position, type ViewportTransform } from "@oc/types/canvas";
 import type { CanvasBackgroundMode, CanvasTheme } from "@oc/lib/canvas-theme";
 import type { CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import type { GenerationTask } from "@oc/services/api/task-center";
@@ -72,6 +72,7 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     historyActions: CanvasHistoryActions;
     assistant: CanvasAssistantState;
     updateNodeMetadata: (nodeId: string, patch: CanvasNodeMetadata) => void;
+    setArtCritiqueNodeId: Dispatch<SetStateAction<string | null>>;
 };
 
 export function CanvasProjectStage(props: CanvasProjectStageProps) {
@@ -160,6 +161,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         historyActions,
         assistant,
         updateNodeMetadata,
+        setArtCritiqueNodeId,
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { assistantOpen, closeAgent, openAgent } = assistant;
@@ -172,6 +174,10 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
     const nodeActionContext = useMemo(
         () => ({
             updateMetadata: updateNodeMetadata,
+            openArtCritique: (node: CanvasNodeData) => {
+                if (node.type !== CanvasNodeType.ArtCritique) return;
+                setArtCritiqueNodeId(node.id);
+            },
             // 图片 onLoad 比例校正：经 onNodeResize 但 markManual:false，避免写成 manualSize。
             resizeNode: (nodeId: string, size: { width: number; height: number }) => {
                 const node = nodeById.get(nodeId);
@@ -183,7 +189,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                 }, { markManual: false });
             },
         }),
-        [nodeById, onNodeResize, updateNodeMetadata],
+        [nodeById, onNodeResize, setArtCritiqueNodeId, updateNodeMetadata],
     );
     return (
         <>

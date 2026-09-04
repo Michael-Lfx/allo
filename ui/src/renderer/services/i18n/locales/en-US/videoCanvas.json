@@ -79,7 +79,8 @@
     "duplicateContent": "This node already submitted a task with the same prompt, model, parameters, and references. Generating again creates a new task and may consume credits.",
     "duplicateOk": "Generate anyway",
     "duplicateCancel": "Cancel",
-    "unresolvedMentions": "{{mentions}} in the prompt do not match a canvas resource. Re-select the reference before generating."
+    "unresolvedMentions": "{{mentions}} in the prompt do not match a canvas resource. Re-select the reference before generating.",
+    "promptTooLong": "This video model's prompt can be at most {{max}} characters; the full prompt is {{actual}} characters. It will not be truncated automatically. Shorten the prompt, connected content, or skill context and try again."
   },
   "frames": {
     "title": "Extract video frames",
@@ -278,8 +279,32 @@
     "frame": "Frame",
     "folder": "Folder",
     "folderDefault": "My files",
+    "artCritique": "AI art critique",
     "unknown": "Unknown node",
     "listSuffix": "{{label}} node"
+  },
+  "artCritique": {
+    "title": "AI art critique",
+    "subtitle": "Visual analysis · SVG markup · original image unchanged",
+    "inputImage": "Input image",
+    "waitInput": "Waiting for an image",
+    "issueCount": "{{count}} priority issues",
+    "optionCount": "{{count}} optional directions, no confirmed issues",
+    "noIssues": "No priority issues this round",
+    "noReport": "No report yet",
+    "multiInput": " · {{count}} images connected, using the first",
+    "connectHint": "Drag a connection from an image node",
+    "stale": "The input image changed; run critique again",
+    "doneSummary": "Finished {{count}} critique items",
+    "running": "Critiquing",
+    "rerun": "Critique again",
+    "viewReport": "View critique report",
+    "start": "Start AI critique",
+    "completed": "Done",
+    "pendingUpdate": "Needs update",
+    "failed": "Failed",
+    "idle": "Not started",
+    "failedRetry": "Art critique failed. Please try again later."
   },
   "director": {
     "openWorkbench": "Open 3D director desk",
@@ -513,7 +538,13 @@
     "save": "Save to canvas document",
     "saved": "Timeline saved ({{count}} clips)",
     "video": "Video",
-    "audio": "Audio"
+    "audio": "Audio",
+    "export": "Export film",
+    "exporting": "Exporting…",
+    "exportNeedClips": "Add at least one video clip first",
+    "exportNeedMedia": "A clip is missing local media and cannot be exported",
+    "exportFailed": "Timeline export failed",
+    "exported": "Exported film added to the canvas"
   },
   "subtitle": {
     "title": "Subtitles · {{name}}",
@@ -528,12 +559,22 @@
     "parseEmpty": "No valid subtitle entries found",
     "importFailed": "Import failed",
     "placeholder": "Subtitle text",
-    "videoFallback": "Video"
+    "videoFallback": "Video",
+    "transcribe": "Transcribe captions",
+    "transcribing": "Transcribing…",
+    "transcribeNeedMedia": "This node has no local media to transcribe",
+    "transcribeFailed": "Transcription failed",
+    "transcribed": "Transcribed {{count}} captions"
   },
   "zoom": {
     "openMinimap": "Open minimap",
     "closeMinimap": "Close minimap",
     "fitAll": "Fit all content",
+    "autoArrange": "Arrange canvas",
+    "arrangeNeedSelection": "Select at least two nodes that can be arranged",
+    "arrangeNeedCanvas": "The canvas needs at least two nodes that can be arranged",
+    "arrangedSelection": "Selected nodes arranged by media type",
+    "arrangedCanvas": "Canvas arranged by media type",
     "zoomOut": "Zoom out",
     "zoomIn": "Zoom in",
     "precision": "Precise zoom",
@@ -575,6 +616,7 @@
     "copyNode": "Copy node",
     "copyImageUrl": "Copy image URL",
     "copyVideoUrl": "Copy video URL",
+    "createGenerationCopy": "Create generation copy",
     "createVariant": "Create parameter variant",
     "nodeActions": "Node actions",
     "expandFrame": "Expand frame",
@@ -1939,6 +1981,19 @@
     "authFailed": "Generation service authentication failed. Check the channel configuration.",
     "urlUnavailable": "Generation service endpoint is unavailable. Check the channel configuration.",
     "failed": "Generation failed. Please try again later."
+  },
+  "userError": {
+    "generic": "Something went wrong. Please try again later.",
+    "cancelled": "Cancelled",
+    "network": "Network or service error. Please try again later.",
+    "busy": "The service is busy. Please try again later.",
+    "auth": "Your session expired or you don’t have access. Sign in again and retry.",
+    "visionModelMissing": "The current text model cannot understand images. Choose a vision-capable model in settings, then try again.",
+    "critiqueFailed": "Image analysis didn’t finish. Try again later. If it keeps failing, switch to a text model that supports image understanding.",
+    "critiqueParse": "The model returned an incomplete analysis. Please try again.",
+    "critiqueMissing": "The model didn’t return analysis in the expected format. Try again later or switch text models.",
+    "toolChoice": "This text model doesn’t support this kind of tool call. Switch models and try again.",
+    "llmFailed": "The text model request failed. Check the network and model settings, then retry."
   },
   "emotion": {
     "detectFailed": "No clear face detected. Select one manually.",

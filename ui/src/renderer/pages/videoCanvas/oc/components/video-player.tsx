@@ -15,8 +15,10 @@ type VideoPlayerProps = {
     title?: string;
     className?: string;
     brandColor?: string;
+    poster?: string;
     preload?: MediaPlayerProps["preload"];
     autoPlay?: boolean;
+    muted?: boolean;
     dataCanvasNoZoom?: boolean;
     compactControls?: boolean;
     onCanPlay?: MediaPlayerProps["onCanPlay"];
@@ -70,7 +72,7 @@ const supportedVideoMimeTypes = new Set<VideoMimeType>(["video/mp4", "video/webm
  * 统一视频播放表面，保留原生媒体 URL 契约，同时提供可访问的完整控件布局。
  * 画布节点需要隔离播放器手势，避免拖动进度条时被误判为拖动画布。
  */
-export function VideoPlayer({ src, mimeType, title = "视频", className, brandColor = "#f5f5f5", preload = "metadata", autoPlay = false, dataCanvasNoZoom = false, compactControls = false, onCanPlay }: VideoPlayerProps) {
+export function VideoPlayer({ src, mimeType, title = "视频", className, brandColor = "#f5f5f5", poster, preload = "metadata", autoPlay = false, muted = false, dataCanvasNoZoom = false, compactControls = false, onCanPlay }: VideoPlayerProps) {
     const stopCanvasControlInteraction = (event: { target: EventTarget | null; stopPropagation: () => void }) => {
         if (!dataCanvasNoZoom || !(event.target instanceof Element)) return;
         if (event.target.closest(".vds-controls,.vds-menu-items")) event.stopPropagation();
@@ -89,6 +91,8 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
             streamType="on-demand"
             playsInline
             autoPlay={autoPlay}
+            muted={muted || autoPlay}
+            poster={poster}
             // Prefer visible/idle so canvas with many video nodes does not
             // initialize every Vidstack player on first paint.
             load={autoPlay ? "eager" : "visible"}

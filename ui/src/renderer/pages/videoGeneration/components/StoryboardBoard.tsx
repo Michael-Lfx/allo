@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Spin } from '@arco-design/web-react';
 import { Edit, Left, LoadingFour, Music, Right, VideoOne } from '@icon-park/react';
-import { getArtifact, loadArtifactMediaUrlCached } from '../api';
+import { getArtifact } from '../api';
+import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
+import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import {
   applyShotGenerationSpecs,
   buildStoryboardScenesFromStoryboards,
@@ -124,29 +126,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
   alt,
   videoStatus = 'pending',
 }) => {
-  const [url, setUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    if (!path) {
-      setUrl(null);
-      setFailed(false);
-      return;
-    }
-    let cancelled = false;
-    setFailed(false);
-    // Cached loader — the cache owns the blob URL lifecycle; do not revoke here.
-    void loadArtifactMediaUrlCached(sessionId, path)
-      .then((nextUrl) => {
-        if (!cancelled) setUrl(nextUrl);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [path, sessionId]);
+  const { url, failed, reload } = useArtifactMediaUrl(sessionId, path ?? null);
 
   // Ready clip — show the video player / filmstrip preview.
   if (video && path) {
@@ -162,6 +142,8 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
         playsInline
         preload={compact ? 'metadata' : 'auto'}
         className={compact ? 'h-full w-full object-contain' : styles.storyShot}
+        onError={() => reload()}
+        onLoadedMetadata={(event) => seekMediaElementToFirstFrame(event.currentTarget)}
       />
     );
   }
@@ -181,6 +163,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
         src={url}
         alt={alt}
         className={compact ? 'h-full w-full object-cover' : styles.storyShot}
+        onError={() => reload()}
       />
     );
   }
@@ -193,6 +176,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
           src={url}
           alt={alt}
           className={compact ? 'h-full w-full object-cover opacity-50' : `${styles.storyShot} opacity-50`}
+          onError={() => reload()}
         />
         <div className={styles.videoStatusOverlay}>
           <VideoStatusPlaceholder compact={compact} status={status} />

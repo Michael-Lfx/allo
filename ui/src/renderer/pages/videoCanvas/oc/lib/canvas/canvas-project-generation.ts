@@ -7,6 +7,7 @@ import { resolveMediaUrl } from "@oc/services/file-storage";
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
+import { resolveModelVideoBooleanOptions } from "@oc/lib/model-capabilities";
 import { normalizeVideoDuration } from "@oc/lib/video-generation-options";
 import { isSeedanceVideoConfig } from "@oc/lib/seedance-video";
 import { imageMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
@@ -291,6 +292,12 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
     const storedModel = node?.metadata?.model;
     const model = storedModel && configuredModelMatchesCapability(config, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(config, defaultModel, mode) ? defaultModel : fallbackModel;
+    const videoBooleans = resolveModelVideoBooleanOptions(
+        config,
+        model,
+        { videoGenerateAudio: node?.metadata?.generateAudio, videoWatermark: node?.metadata?.watermark },
+        { videoGenerateAudio: config.videoGenerateAudio, videoWatermark: config.videoWatermark },
+    );
     return {
         ...config,
         model,
@@ -299,8 +306,8 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         transparentBackground: (node?.metadata?.transparentBackground || config.transparentBackground) === "true" ? "true" : "false",
         videoSeconds: normalizeVideoDuration(node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds),
         vquality: canonicalizeVideoResolution(model, node?.metadata?.vquality || config.vquality || defaultConfig.vquality),
-        videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
-        videoWatermark: node?.metadata?.watermark || config.videoWatermark || defaultConfig.videoWatermark,
+        videoGenerateAudio: videoBooleans.videoGenerateAudio,
+        videoWatermark: videoBooleans.videoWatermark,
         audioVoice: node?.metadata?.audioVoice || config.audioVoice || defaultConfig.audioVoice,
         audioFormat: node?.metadata?.audioFormat || config.audioFormat || defaultConfig.audioFormat,
         audioSpeed: node?.metadata?.audioSpeed || config.audioSpeed || defaultConfig.audioSpeed,
@@ -316,11 +323,15 @@ export function supportsVideoReferenceAudio(config: AiConfig) {
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
     const configHeight = NODE_DEFAULT_SIZE[CanvasNodeType.Config].height;
-    return nodes.map((node) => {
+    let changed = false;
+    const next = nodes.map((node) => {
         const mediaNode = ensureMediaNodeMinimumSize(node);
         const resizedNode = mediaNode.type === CanvasNodeType.Config && mediaNode.height < configHeight ? { ...mediaNode, height: configHeight } : mediaNode.type === CanvasNodeType.Script && mediaNode.height < NODE_DEFAULT_SIZE[CanvasNodeType.Script].height ? { ...mediaNode, height: NODE_DEFAULT_SIZE[CanvasNodeType.Script].height } : mediaNode;
-        return resizedNode.metadata?.status === "loading" ? { ...resizedNode, metadata: { ...resizedNode.metadata, errorDetails: "正在从任务中心恢复生成状态..." } } : resizedNode;
+        const restored = resizedNode.metadata?.status === "loading" ? { ...resizedNode, metadata: { ...resizedNode.metadata, errorDetails: "正在从任务中心恢复生成状态..." } } : resizedNode;
+        if (restored !== node) changed = true;
+        return restored;
     });
+    return changed ? next : nodes;
 }
 
 export function isGenerationCanceled(error: unknown) {

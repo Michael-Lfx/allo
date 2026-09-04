@@ -100,6 +100,22 @@ describe('mergeAlloCatalogIntoConfig TTS (category=8)', () => {
       mergeAlloCatalogIntoConfig(defaultConfig, { image: [], video: [], audio: [], chat: [] })
     ).toBeNull();
   });
+
+  test('stamps multimodal chat models onto allo-chat modelCosts', () => {
+    const merged = mergeAlloCatalogIntoConfig(defaultConfig, {
+      image: [],
+      video: [],
+      audio: [],
+      chat: [
+        { id: 'qwen3-vl', name: 'Qwen3-VL', supportsVision: true },
+        { id: 'gpt-5.5', name: 'GPT-5.5' },
+      ],
+    });
+    expect(merged).not.toBeNull();
+    const chat = merged!.channels.find((c) => c.id === 'allo-chat');
+    expect(chat?.modelCosts?.find((item) => item.model === 'qwen3-vl')?.supportsVision).toBe(true);
+    expect(chat?.modelCosts?.find((item) => item.model === 'gpt-5.5')?.supportsVision).toBeUndefined();
+  });
 });
 
 describe('syncOcModels catalog wiring', () => {
@@ -110,6 +126,9 @@ describe('syncOcModels catalog wiring', () => {
     expect(text.includes("'audio'")).toBe(true);
     expect(text.includes("protocol: 'openai-audio'")).toBe(true);
     expect(text.includes("FLOWY_CLOUD_CHANNEL_NAME")).toBe(true);
+    expect(text.includes("catalogSupportsVision")).toBe(true);
+    expect(text.includes("vision_input")).toBe(true);
+    expect(text.includes("supportsVision")).toBe(true);
     expect(text.includes("rewriteCatalogIconUrl")).toBe(true);
     expect(text.includes("'Allo Media'")).toBe(false);
     expect(text.includes('"Allo Media"')).toBe(false);

@@ -1,4 +1,4 @@
-import { ChartColumn, Clapperboard, Code, Columns2, FileText, Globe, Image as ImageIcon, Music2, PanelTop, Palette, Pencil, Settings2, Shapes, Sparkles, Type, Video } from "lucide-react";
+import { ChartColumn, Clapperboard, Code, Columns2, FileText, Globe, Image as ImageIcon, Music2, PanelTop, Palette, Pencil, ScanSearch, Settings2, Shapes, Sparkles, Type, Video } from "lucide-react";
 
 import { NODE_SPECS } from "@oc/constant/canvas";
 import { MEDIA_NODE_MIN_SIZE } from "@oc/lib/canvas/canvas-node-size";
@@ -158,6 +158,13 @@ const BUILTIN_NODE_TRAITS = {
         // 无条件返回 image：图来自上游而不是自身 metadata。
         resourceKind: () => "image",
         inputKind: "image",
+    },
+    [CanvasNodeType.ArtCritique]: {
+        label: "AI 审美批改",
+        icon: <ScanSearch />,
+        minSize: { width: 360, height: 280 },
+        showInCreateMenu: true,
+        // 不设 inputKind：批改节点接受图片连入，但不作为下游生成的参考素材。
     },
 } satisfies Record<CanvasNodeType, Omit<CanvasNodeDefinition, "type" | "defaultTitle" | "defaultSize" | "defaultMetadata">>;
 

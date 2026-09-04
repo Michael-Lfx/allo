@@ -405,6 +405,226 @@ pub async fn probe_media_duration_secs(path: &Path) -> Option<f64> {
     probe_duration_secs(&ffmpeg, path).await
 }
 
+/// Probe the first video stream size.
+pub async fn probe_media_video_size(path: &Path) -> Option<(u32, u32)> {
+    let ffmpeg = ensure_ffmpeg_ready().await.ok()?;
+    let ffprobe = ffprobe_executable(&ffmpeg);
+    let output = ffmpeg_command(&ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.trim().split([',', 'x', ' ']).filter(|p| !p.is_empty());
+    let width: u32 = parts.next()?.parse().ok()?;
+    let height: u32 = parts.next()?.parse().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// Extract 16 kHz mono PCM WAV for Flowy category-7 ASR.
+pub async fn extract_audio_wav(input: &Path, out_path: &Path) -> VimaxResult<()> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if !input.is_file() {
+        return Err(VimaxError::Media(format!(
+            "media missing: {}",
+            input.display()
+        )));
+    }
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let args = vec![
+        "-y".into(),
+        "-i".into(),
+        input.to_string_lossy().into_owned(),
+        "-vn".into(),
+        "-ac".into(),
+        "1".into(),
+        "-ar".into(),
+        "16000".into(),
+        "-c:a".into(),
+        "pcm_s16le".into(),
+        out_path.to_string_lossy().into_owned(),
+    ];
+    let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+    if !ok {
+        return Err(VimaxError::Media(format!(
+            "ffmpeg extract audio failed for {}{}",
+            input.display(),
+            ffmpeg_stderr_hint(&err)
+                .map(|d| format!(" — ffmpeg: {d}"))
+                .unwrap_or_default()
+        )));
+    }
+    if !out_path.is_file() {
+        return Err(VimaxError::Media(
+            "ffmpeg extract audio produced no wav".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Re-encode an A/V segment for timeline export (safe at arbitrary start times).
+pub async fn extract_av_segment(
+    input: &Path,
+    out_path: &Path,
+    start_secs: f64,
+    duration_secs: f64,
+) -> VimaxResult<()> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if !input.is_file() {
+        return Err(VimaxError::Media(format!(
+            "media missing: {}",
+            input.display()
+        )));
+    }
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let start = start_secs.max(0.0);
+    let dur = duration_secs.max(0.05);
+    let args = vec![
+        "-y".into(),
+        "-ss".into(),
+        format!("{start:.3}"),
+        "-i".into(),
+        input.to_string_lossy().into_owned(),
+        "-t".into(),
+        format!("{dur:.3}"),
+        "-c:v".into(),
+        "libx264".into(),
+        "-preset".into(),
+        "veryfast".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-ac".into(),
+        "2".into(),
+        "-ar".into(),
+        "48000".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        out_path.to_string_lossy().into_owned(),
+    ];
+    let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+    if !ok {
+        return Err(VimaxError::Media(format!(
+            "ffmpeg extract segment failed for {}{}",
+            input.display(),
+            ffmpeg_stderr_hint(&err)
+                .map(|d| format!(" — ffmpeg: {d}"))
+                .unwrap_or_default()
+        )));
+    }
+    if !out_path.is_file() {
+        return Err(VimaxError::Media(
+            "ffmpeg extract segment produced no file".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Black video + silence used to fill timeline gaps.
+pub async fn write_black_gap(
+    out_path: &Path,
+    duration_secs: f64,
+    width: u32,
+    height: u32,
+) -> VimaxResult<()> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let dur = duration_secs.max(0.05);
+    let w = (width.max(2) & !1).max(2);
+    let h = (height.max(2) & !1).max(2);
+    let args = vec![
+        "-y".into(),
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        format!("color=c=black:s={w}x{h}:d={dur:.3}:r=30"),
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        format!("anullsrc=r=48000:cl=stereo:d={dur:.3}"),
+        "-shortest".into(),
+        "-c:v".into(),
+        "libx264".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        out_path.to_string_lossy().into_owned(),
+    ];
+    let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+    if !ok {
+        return Err(VimaxError::Media(format!(
+            "ffmpeg black gap failed{}",
+            ffmpeg_stderr_hint(&err)
+                .map(|d| format!(" — ffmpeg: {d}"))
+                .unwrap_or_default()
+        )));
+    }
+    Ok(())
+}
+
+/// Burn an SRT onto a video. Fails if the local ffmpeg has no libass/`subtitles` filter.
+pub async fn burn_srt_subtitles(video: &Path, srt: &Path, out_path: &Path) -> VimaxResult<()> {
+    let ffmpeg = ensure_ffmpeg_ready().await?;
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let filter = escape_subtitles_filter_path(srt);
+    let args = vec![
+        "-y".into(),
+        "-i".into(),
+        video.to_string_lossy().into_owned(),
+        "-vf".into(),
+        format!("subtitles={filter}"),
+        "-c:a".into(),
+        "copy".into(),
+        out_path.to_string_lossy().into_owned(),
+    ];
+    let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+    if !ok {
+        return Err(VimaxError::Media(format!(
+            "ffmpeg burn subtitles failed{}",
+            ffmpeg_stderr_hint(&err)
+                .map(|d| format!(" — ffmpeg: {d}"))
+                .unwrap_or_default()
+        )));
+    }
+    Ok(())
+}
+
+fn escape_subtitles_filter_path(path: &Path) -> String {
+    let raw = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:")
+        .replace('\'', r"\'");
+    format!("'{raw}'")
+}
+
 /// Probe container duration in seconds (ffprobe preferred; ffmpeg `-i` fallback).
 async fn probe_duration_secs(ffmpeg: &Path, input: &Path) -> Option<f64> {
     let ffprobe = ffprobe_executable(ffmpeg);

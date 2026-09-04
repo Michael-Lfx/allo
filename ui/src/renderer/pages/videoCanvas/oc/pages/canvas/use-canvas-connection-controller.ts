@@ -6,6 +6,7 @@ import type { PendingConnectionCreate } from "@oc/components/canvas/canvas-works
 import { getNodeSpec } from "@oc/constant/canvas";
 import { batchSourceRestriction, buildBatchConnectionCreateRequest, hasBatchConnectionCandidate, planBatchConnections, type CanvasBatchConnectionPreview } from "@oc/lib/canvas/canvas-batch-connection";
 import { canvasConnectionError } from "@oc/lib/canvas/canvas-connection-policy";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { connectedNodeCenterFromEdgeDrop } from "@oc/lib/canvas/canvas-connected-node-placement";
 import { attachNodeToStoryboardRow, createCanvasNode, getConnectionTargetAnchor, isHiddenBatchChild, normalizeConnection, storyboardHandleAtY, storyboardPromptTemplateMetadata, storyboardRowFromHandle } from "@oc/lib/canvas/canvas-project-domain";
 import { createCanvasDrawingFromImage } from "@oc/lib/canvas/canvas-drawing-storage";
@@ -286,7 +287,7 @@ export function useCanvasConnectionController({
                     drawingPageCount: saved.pageCount,
                 };
             } catch (error) {
-                message.error(error instanceof Error ? `创建绘图失败：${error.message}` : "创建绘图失败");
+                message.error(error instanceof Error ? `创建绘图失败：${formatCanvasUserError(error, "创建失败")}` : "创建绘图失败");
                 return;
             }
         }

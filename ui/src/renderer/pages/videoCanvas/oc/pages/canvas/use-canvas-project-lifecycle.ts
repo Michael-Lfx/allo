@@ -6,6 +6,7 @@ import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
 import { canvasAppearanceBaseTheme, DEFAULT_CANVAS_COLOR_THEME, resolveStoredCanvasAppearance, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import { removeCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
 import { hydrateAssistantImages, hydrateCanvasImages, resetInterruptedGeneration } from "@oc/lib/canvas/canvas-project-generation";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { normalizeCanvasNodeTimestamps } from "@oc/lib/canvas/canvas-node-timestamps";
 import { listAddedSkills, type Skill } from "@oc/services/api/skills";
 import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/services/user-data-sync";
@@ -236,7 +237,7 @@ export function useCanvasProjectLifecycle({
             await saveRemoteUserDataNow();
             message.success("画布布局和位置已保存");
         } catch (error) {
-            const detail = error instanceof Error ? error.message : "未知错误";
+            const detail = formatCanvasUserError(error, "未知错误");
             message.warning(`本地画布布局已保存，云端同步失败：${detail}`);
         }
     }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connectionsRef, currentProject?.directorScenes, message, nodesRef, projectId, showImageInfo, updateProject, viewportRef]);

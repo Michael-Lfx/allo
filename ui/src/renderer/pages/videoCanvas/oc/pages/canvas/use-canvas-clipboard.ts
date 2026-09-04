@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import copyToClipboard from "copy-to-clipboard";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { App } from "antd";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
 import type { useCanvasNodeOperations } from "./use-canvas-node-operations";
@@ -79,7 +80,7 @@ export function useCanvasClipboardActions(input: CanvasClipboardActionsInput) {
                 else if (!(await copyToClipboard(mediaURL))) throw new Error(canvasT("videoCanvas.toast.clipboardWriteUnsupportedShort", "当前浏览器不支持写入剪贴板"));
                 message.success(node?.type === CanvasNodeType.Video ? canvasT("videoCanvas.toast.videoUrlCopied", "视频地址已复制") : canvasT("videoCanvas.toast.imageUrlCopied", "图片地址已复制"));
             } catch (error) {
-                message.error(error instanceof Error ? error.message : canvasT("videoCanvas.toast.mediaUrlCopyFailed", "媒体地址复制失败"));
+                message.error(formatCanvasUserError(error, canvasT("videoCanvas.toast.mediaUrlCopyFailed", "媒体地址复制失败")));
             }
         },
         [message, releaseCopiedNodesPastePriority],

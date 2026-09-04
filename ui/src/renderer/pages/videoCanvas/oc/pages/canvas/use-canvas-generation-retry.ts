@@ -24,7 +24,8 @@ import {
 } from "@oc/lib/canvas/canvas-project-generation";
 import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
-import { generationFailureMetadata, localizeGenerationErrorText, unchangedModeratedPrompt } from "@oc/lib/generation-error";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+import { generationFailureMetadata, unchangedModeratedPrompt } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { storeGeneratedAudio } from "@oc/services/api/audio";
 import { storeGeneratedVideo } from "@oc/services/api/video";
@@ -90,7 +91,7 @@ export function useCanvasGenerationRetry({ projectId, domainProjectId, addedSkil
                 rawContext = hasSavedImageMetadata && !baseContext.characterReferences.length ? null : await hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, retryMode, retryMode === "video" && supportsVideoReferenceAudio(generationConfig));
             } catch (error) {
                 const failure = generationFailureMetadata(error, retryPromptSource);
-                message.error(localizeGenerationErrorText(failure.errorDetails));
+                message.error(formatCanvasUserError(failure.errorDetails));
                 setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure, ...(item.metadata?.taskStatus === "succeeded" ? { resourceReloadAvailable: true } : {}) } } : item)));
                 return;
             }
@@ -214,7 +215,7 @@ export function useCanvasGenerationRetry({ projectId, domainProjectId, addedSkil
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
                 const failure = generationFailureMetadata(error, retryPromptSource);
-                message.error(localizeGenerationErrorText(failure.errorDetails));
+                message.error(formatCanvasUserError(failure.errorDetails));
                 setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure } } : item)));
             } finally {
                 finishGenerationRequest(node.id, controller);

@@ -27,7 +27,8 @@ import { buildVideoFrameNodes } from "@oc/lib/canvas/canvas-video-frame-nodes";
 import type { CanvasVideoFrameParams } from "@oc/components/canvas/canvas-video-frame-dialog";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { mergeVideos, type MergeVideoProgress } from "@oc/lib/canvas/canvas-video-merge";
-import { generationErrorMessage, localizeGenerationErrorText } from "@oc/lib/generation-error";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+import { generationErrorMessage } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { storeGeneratedVideo } from "@oc/services/api/video";
 import { getMediaBlob } from "@oc/services/file-storage";
@@ -239,7 +240,7 @@ export function useCanvasMediaTools({
                     : canvasT("videoCanvas.frames.done", "已提取 {{n}} 帧并创建图片节点", { n: frameNodes.length }),
             };
         } catch (error) {
-            const details = error instanceof Error ? error.message : canvasT("videoCanvas.frames.failed", "视频画面提取失败");
+            const details = formatCanvasUserError(error, canvasT("videoCanvas.frames.failed", "视频画面提取失败"));
             progress.fail(details);
             message.error(details);
             return { createdNodeIds: [], message: details };
@@ -305,7 +306,7 @@ export function useCanvasMediaTools({
             setMergeVideoProgress({ phase: "encoding", progress: 100 });
             message.success(`已合并 ${videos.length} 段视频，成片节点已添加`);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "视频合并失败");
+            message.error(formatCanvasUserError(error, "视频合并失败"));
         } finally {
             mergeVideoRunningRef.current = false;
             window.setTimeout(() => setMergeVideoProgress(null), 700);
@@ -373,7 +374,7 @@ export function useCanvasMediaTools({
         } catch (error) {
             if (isGenerationCanceled(error)) return;
             const details = generationErrorMessage(error);
-            message.error(localizeGenerationErrorText(details));
+            message.error(formatCanvasUserError(details));
             setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
         } finally {
             finishGenerationRequest(childId, controller);
@@ -479,7 +480,7 @@ export function useCanvasMediaTools({
         } catch (error) {
             if (isGenerationCanceled(error)) return;
             const details = generationErrorMessage(error);
-            message.error(localizeGenerationErrorText(details));
+            message.error(formatCanvasUserError(details));
             setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
         } finally { finishGenerationRequest(childId, controller); setRunningNodeId(null); }
     }, [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, projectId, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedConnectionId, setSelectedNodeIds, startGenerationRequest]);

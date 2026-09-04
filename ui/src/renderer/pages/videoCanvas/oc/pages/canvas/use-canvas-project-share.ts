@@ -6,6 +6,7 @@ import { isInvalidCloudSessionError, BackendRequestError } from '@/common/adapte
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { canvasT } from '@oc/lib/canvas/canvas-i18n';
+import { formatCanvasUserError } from '@oc/lib/canvas/canvas-user-error';
 import { resourceIdFromStorageKey } from '@oc/services/api/resources';
 import { extractMediaIdFromCanvasMediaUrl } from '../../../api';
 import {
@@ -62,9 +63,10 @@ export function useCanvasProjectShare(project: CanvasProject | undefined) {
       );
     } catch (error) {
       message.error(
-        `${canvasT('videoCanvas.share.exportFailed', '导出失败')}: ${
-          error instanceof Error ? error.message : String(error)
-        }`
+        `${canvasT('videoCanvas.share.exportFailed', '导出失败')}: ${formatCanvasUserError(
+          error,
+          canvasT('videoCanvas.share.exportFailed', '导出失败')
+        )}`
       );
     } finally {
       setExporting(false);
@@ -127,9 +129,10 @@ export function useCanvasProjectShare(project: CanvasProject | undefined) {
         return;
       }
       message.error(
-        `${canvasT('videoCanvas.share.publishFailed', '发布失败')}: ${
-          error instanceof Error ? error.message : String(error)
-        }`
+        `${canvasT('videoCanvas.share.publishFailed', '发布失败')}: ${formatCanvasUserError(
+          error,
+          canvasT('videoCanvas.share.publishFailed', '发布失败')
+        )}`
       );
     } finally {
       hide();

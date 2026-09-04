@@ -1,7 +1,7 @@
 import { modelCapabilityConfigFor } from "@oc/lib/model-capabilities";
 import { getNodeGenerationMode, getNodeInputKind } from "@oc/lib/canvas/node-registry";
 import type { AiConfig } from "@oc/stores/use-config-store";
-import { type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
 
 type ConnectionCandidate = Pick<CanvasConnection, "fromNodeId" | "toNodeId">;
 type CanvasConnectionPolicyOptions = {
@@ -30,6 +30,14 @@ export function canvasConnectionError(
 ) {
   const target = nodes.find((node) => node.id === candidate.toNodeId);
   if (!target) return "找不到连线目标节点";
+  if (target.type === CanvasNodeType.ArtCritique) {
+    const source = nodes.find((node) => node.id === candidate.fromNodeId);
+    if (!source) return "找不到连线源节点";
+    if (source.type !== CanvasNodeType.Image && source.type !== CanvasNodeType.Drawing) {
+      return "审美批改节点只接受图片输入";
+    }
+    return "";
+  }
   const mode = getNodeGenerationMode(target);
   if (!mode) return "";
   const input = connectionInputSummary(target.id, nodes, connections, candidate);

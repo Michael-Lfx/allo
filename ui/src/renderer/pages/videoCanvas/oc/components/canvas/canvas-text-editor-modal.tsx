@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { createCanvasRichTextExtensions, isSafeCanvasRichTextLink } from "@oc/lib/canvas/canvas-rich-text";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -81,7 +82,7 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
             setDirty(false);
             message.success(canvasT("videoCanvas.textEditor.saved", "文本节点已保存"));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : canvasT("videoCanvas.textEditor.saveFailed", "文本保存失败"));
+            message.error(formatCanvasUserError(error, canvasT("videoCanvas.textEditor.saveFailed", "文本保存失败")));
         } finally {
             setSaving(false);
         }

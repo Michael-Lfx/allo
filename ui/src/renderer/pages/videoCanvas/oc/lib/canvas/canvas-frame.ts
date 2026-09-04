@@ -1,4 +1,5 @@
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@oc/types/canvas";
+import { buildCanvasSpatialIndex, canvasNodeBounds, type CanvasSpatialIndex } from "@oc/lib/canvas/canvas-spatial-index";
 
 export const FRAME_HEADER_HEIGHT = 36;
 export const FRAME_PADDING = 24;
@@ -50,29 +51,55 @@ export function findFrameDropTarget(nodes: CanvasNodeData[], draggedNodeIds: Set
     return (
         [...nodes]
             .reverse()
-            .find((frame) => {
-                if (!isFrameNode(frame) || draggedNodeIds.has(frame.id)) return false;
-                // 普通背板折叠后不可再拖入；文件夹折叠态仍可归档。
-                if (frame.metadata?.frame?.collapsed && !isCanvasFolderNode(frame)) return false;
-                const canContain = isCanvasFolderNode(frame) ? canFolderContain : canFrameContain;
-                if (!dragged.every((node) => canContain(node))) return false;
-                const left = frame.position.x;
-                const top = frame.position.y + (isCanvasFolderNode(frame) && frame.metadata?.frame?.collapsed ? 0 : FRAME_HEADER_HEIGHT);
-                const right = frame.position.x + frame.width;
-                const bottom = frame.position.y + frame.height;
-                return dragged.every((node) => {
-                    const centerX = node.position.x + node.width / 2;
-                    const centerY = node.position.y + node.height / 2;
-                    return centerX >= left && centerX <= right && centerY >= top && centerY <= bottom;
-                });
-            })?.id || null
+            .find((frame) => isValidFrameDropTarget(frame, dragged, draggedNodeIds))?.id || null
     );
 }
 
+export type CanvasFrameDropIndex = CanvasSpatialIndex<CanvasNodeData>;
+
+export function buildCanvasFrameDropIndex(nodes: CanvasNodeData[]): CanvasFrameDropIndex {
+    return buildCanvasSpatialIndex(nodes.filter(isFrameNode).map((node) => ({ id: node.id, bounds: canvasNodeBounds(node), value: node })));
+}
+
+/** Finds a drop target using the drag preview offset without rebuilding all node positions. */
+export function findFrameDropTargetFromIndex(index: CanvasFrameDropIndex, draggedNodes: CanvasNodeData[], draggedNodeIds: Set<string>, offset: Position) {
+    const dragged = draggedNodes.filter((node) => canFolderContain(node) || canFrameContain(node));
+    if (!dragged.length) return null;
+    const centers = dragged.map((node) => ({ x: node.position.x + offset.x + node.width / 2, y: node.position.y + offset.y + node.height / 2 }));
+    const left = Math.min(...centers.map((center) => center.x)) - 0.01;
+    const top = Math.min(...centers.map((center) => center.y)) - 0.01;
+    const right = Math.max(...centers.map((center) => center.x)) + 0.01;
+    const bottom = Math.max(...centers.map((center) => center.y)) + 0.01;
+    return [...index.query({ left, top, right, bottom })]
+        .reverse()
+        .find((frame) => isValidFrameDropTarget(frame, dragged, draggedNodeIds, offset))?.id || null;
+}
+
+function isValidFrameDropTarget(frame: CanvasNodeData, dragged: CanvasNodeData[], draggedNodeIds: Set<string>, offset: Position = { x: 0, y: 0 }) {
+    if (!isFrameNode(frame) || draggedNodeIds.has(frame.id)) return false;
+    // 普通背板折叠后不可再拖入；文件夹折叠态仍可归档。
+    if (frame.metadata?.frame?.collapsed && !isCanvasFolderNode(frame)) return false;
+    const canContain = isCanvasFolderNode(frame) ? canFolderContain : canFrameContain;
+    if (!dragged.every((node) => canContain(node))) return false;
+    const left = frame.position.x;
+    const top = frame.position.y + (isCanvasFolderNode(frame) && frame.metadata?.frame?.collapsed ? 0 : FRAME_HEADER_HEIGHT);
+    const right = frame.position.x + frame.width;
+    const bottom = frame.position.y + frame.height;
+    return dragged.every((node) => {
+        const centerX = node.position.x + offset.x + node.width / 2;
+        const centerY = node.position.y + offset.y + node.height / 2;
+        return centerX >= left && centerX <= right && centerY >= top && centerY <= bottom;
+    });
+}
+
 export function applyFrameDrop(nodes: CanvasNodeData[], draggedNodeIds: Set<string>, frameId: string | null) {
-    const target = frameId ? nodes.find((node) => node.id === frameId) : null;
+    const target = frameId ? nodes.find((node) => node.id === frameId && isFrameNode(node)) : null;
     const canContain = target && isCanvasFolderNode(target) ? canFolderContain : canFrameContain;
-    const next = nodes.map((node) => (draggedNodeIds.has(node.id) && canContain(node) ? { ...node, parentId: frameId || undefined } : node));
+    const next = nodes.map((node) => {
+        if (!draggedNodeIds.has(node.id)) return node;
+        if (!frameId) return node.parentId ? { ...node, parentId: undefined } : node;
+        return target && canContain(node) ? { ...node, parentId: frameId } : node;
+    });
     if (!frameId) return next;
 
     const children = getFrameChildren(frameId, next);
@@ -81,7 +108,7 @@ export function applyFrameDrop(nodes: CanvasNodeData[], draggedNodeIds: Set<stri
     if (!frame || !isFrameNode(frame)) return next;
 
     if (isCanvasFolderNode(frame) && frame.metadata?.frame?.collapsed) {
-        return next;
+        return layoutCollapsedFolderChildren(next, frame);
     }
 
     const left = Math.min(frame.position.x, ...children.map((node) => node.position.x - FRAME_PADDING));
@@ -107,6 +134,43 @@ export function applyFrameDrop(nodes: CanvasNodeData[], draggedNodeIds: Set<stri
               }
             : node,
     );
+}
+
+function layoutCollapsedFolderChildren(nodes: CanvasNodeData[], folder: CanvasNodeData) {
+    const children = getFrameChildren(folder.id, nodes);
+    if (!children.length) return nodes;
+    const gap = 24;
+    const padding = FRAME_PADDING;
+    const columns = Math.min(3, Math.ceil(Math.sqrt(children.length)));
+    const rows = Math.ceil(children.length / columns);
+    const cellWidth = Math.max(...children.map((node) => node.width));
+    const cellHeight = Math.max(...children.map((node) => node.height));
+    const expandedWidth = padding * 2 + columns * cellWidth + Math.max(columns - 1, 0) * gap;
+    const expandedHeight = FRAME_HEADER_HEIGHT + padding * 2 + rows * cellHeight + Math.max(rows - 1, 0) * gap;
+    const indexById = new Map(children.map((node, index) => [node.id, index]));
+
+    return nodes.map((node) => {
+        if (node.id === folder.id) {
+            return {
+                ...node,
+                metadata: {
+                    ...node.metadata,
+                    frame: { collapsed: true, expandedWidth, expandedHeight },
+                },
+            };
+        }
+        const index = indexById.get(node.id);
+        if (index === undefined) return node;
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        return {
+            ...node,
+            position: {
+                x: folder.position.x + padding + column * (cellWidth + gap) + (cellWidth - node.width) / 2,
+                y: folder.position.y + FRAME_HEADER_HEIGHT + padding + row * (cellHeight + gap) + (cellHeight - node.height) / 2,
+            },
+        };
+    });
 }
 
 export function resolveFrameConnection(connection: CanvasConnection, nodes: CanvasNodeData[]) {

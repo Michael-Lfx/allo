@@ -42,6 +42,7 @@ type CanvasNodeContextMenuProps = {
     onPaste: () => void;
     onCopyNode: () => void;
     onDuplicate: () => void;
+    onCreateGenerationCopy: () => void;
     onDelete: () => void;
     onSaveAsset: () => void;
     onViewMedia: () => void;
@@ -76,6 +77,7 @@ export function CanvasNodeContextMenu({
     onPaste,
     onCopyNode,
     onDuplicate,
+    onCreateGenerationCopy,
     onDelete,
     onSaveAsset,
     onViewMedia,
@@ -206,6 +208,7 @@ export function CanvasNodeContextMenu({
                                     <MenuSection label={canvasT("videoCanvas.menu.node", "节点")} />
                                     <MenuButton icon={<Copy />} label={canvasT("videoCanvas.menu.copyNode", "复制节点")} shortcut="⌘C" onClick={() => runAction(onCopyNode)} />
                                     <MenuButton icon={<Link2 />} label={isImage ? canvasT("videoCanvas.menu.copyImageUrl", "复制图片地址") : canvasT("videoCanvas.menu.copyVideoUrl", "复制视频地址")} disabled={!canCopyMediaUrl} onClick={() => runAction(onCopyMediaUrl)} />
+                                    <MenuButton icon={<Copy />} label={canvasT("videoCanvas.menu.createGenerationCopy", "创建生成副本")} onClick={() => runAction(onCreateGenerationCopy)} />
                                     <MenuButton icon={<Layers3 />} label={canvasT("videoCanvas.menu.createVariant", "创建参数变体")} shortcut="⌘D" onClick={() => runAction(onDuplicate)} />
                                     <MenuButton icon={<Trash2 />} label={canvasT("videoCanvas.menu.deleteNode", "删除节点")} danger onClick={() => runAction(onDelete)} />
                                 </>

@@ -13,7 +13,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::dto::{
-    CanvasMediaMeta, CanvasProjectMeta, GenerationTaskStatus, GenerationTaskView,
+    CanvasMediaMeta, CanvasProjectMeta, CanvasTranscription, GenerationTaskStatus, GenerationTaskView,
+    TimelineExportClip,
 };
 use crate::fsio::{ensure_dir, read_json_file, write_atomic, write_json_file};
 use crate::{CANVAS_REL_DIR, DEFAULT_DOC, MAX_DOC_BYTES, MAX_MEDIA_BYTES};
@@ -1089,6 +1090,204 @@ impl CanvasService {
             .iter()
             .find(|e| e.media_id == media_id)
             .ok_or_else(|| AppError::Internal("media index missing after concat".into()))?;
+        Ok(Self::entry_to_meta(entry))
+    }
+
+    /// ffmpeg extract + Flowy category-7 ASR. Returns plain text (no word timestamps).
+    pub async fn transcribe_media(
+        &self,
+        media_id: &str,
+        language: Option<String>,
+    ) -> Result<CanvasTranscription, AppError> {
+        let idx = self.load_media_index().await?;
+        let entry = idx
+            .items
+            .iter()
+            .find(|e| e.media_id == media_id)
+            .ok_or_else(|| AppError::NotFound(format!("media {media_id}")))?;
+        if entry.kind != "video" && entry.kind != "audio" {
+            return Err(AppError::BadRequest(format!(
+                "media {media_id} is not audio or video (kind={})",
+                entry.kind
+            )));
+        }
+        let input = self.media_file_path(media_id).await?;
+        let duration_ms = nomi_vimax::media_local::probe_media_duration_secs(&input)
+            .await
+            .filter(|d| *d > 0.0 && d.is_finite())
+            .map(|d| (d * 1000.0).round() as u64)
+            .or(entry.duration_ms);
+        let wav_path = self
+            .root()
+            .join("scratch")
+            .join(format!("asr-{}.wav", generate_id()));
+        crate::fsio::ensure_dir(
+            wav_path
+                .parent()
+                .ok_or_else(|| AppError::Internal("scratch parent missing".into()))?,
+        )
+        .await?;
+        nomi_vimax::media_local::extract_audio_wav(&input, &wav_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("ffmpeg extract audio: {e}")))?;
+        let wav_bytes = tokio::fs::read(&wav_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("read wav: {e}")))?;
+        let _ = tokio::fs::remove_file(&wav_path).await;
+        let (api, session) = crate::llm_proxy::open_flowy(self.data_dir())?;
+        let text = api
+            .transcribe_audio(
+                &session,
+                wav_bytes,
+                "audio.wav",
+                "audio/wav",
+                language.as_deref(),
+            )
+            .await
+            .map_err(|e| e.into_app_error())?;
+        Ok(CanvasTranscription {
+            text,
+            language,
+            duration_ms,
+        })
+    }
+
+    /// Trim / gap / concat / optional SRT burn via local ffmpeg.
+    pub async fn export_timeline(
+        &self,
+        clips: Vec<TimelineExportClip>,
+        srt: Option<String>,
+        burn_subtitles: bool,
+        title: Option<String>,
+    ) -> Result<CanvasMediaMeta, AppError> {
+        if clips.is_empty() {
+            return Err(AppError::BadRequest("export-timeline requires clips".into()));
+        }
+        let scratch = self
+            .root()
+            .join("scratch")
+            .join(format!("timeline-{}", generate_id()));
+        crate::fsio::ensure_dir(&scratch).await?;
+        let cleanup = scratch.clone();
+        let result = self
+            .export_timeline_inner(&scratch, clips, srt, burn_subtitles, title)
+            .await;
+        let _ = tokio::fs::remove_dir_all(&cleanup).await;
+        result
+    }
+
+    async fn export_timeline_inner(
+        &self,
+        scratch: &Path,
+        clips: Vec<TimelineExportClip>,
+        srt: Option<String>,
+        burn_subtitles: bool,
+        title: Option<String>,
+    ) -> Result<CanvasMediaMeta, AppError> {
+        let idx = self.load_media_index().await?;
+        let mut parts: Vec<PathBuf> = Vec::new();
+        let mut canvas = (1920u32, 1080u32);
+        for (index, clip) in clips.iter().enumerate() {
+            let entry = idx
+                .items
+                .iter()
+                .find(|e| e.media_id == clip.media_id)
+                .ok_or_else(|| AppError::NotFound(format!("media {}", clip.media_id)))?;
+            if entry.kind != "video" {
+                return Err(AppError::BadRequest(format!(
+                    "media {} is not a video (kind={})",
+                    clip.media_id, entry.kind
+                )));
+            }
+            let src = self.media_file_path(&clip.media_id).await?;
+            if index == 0 {
+                if let Some(size) = nomi_vimax::media_local::probe_media_video_size(&src).await {
+                    canvas = size;
+                }
+            }
+            if let Some(gap_ms) = clip.gap_before_ms.filter(|ms| *ms > 100) {
+                let gap_path = scratch.join(format!("gap-{index}.mp4"));
+                nomi_vimax::media_local::write_black_gap(
+                    &gap_path,
+                    gap_ms as f64 / 1000.0,
+                    canvas.0,
+                    canvas.1,
+                )
+                .await
+                .map_err(|e| AppError::Internal(format!("ffmpeg gap: {e}")))?;
+                parts.push(gap_path);
+            }
+            let start_ms = clip.source_start_ms.unwrap_or(0);
+            let duration_ms = clip.duration_ms.max(50);
+            let source_secs = nomi_vimax::media_local::probe_media_duration_secs(&src)
+                .await
+                .unwrap_or(0.0);
+            let needs_trim = start_ms > 20
+                || (source_secs > 0.0 && (duration_ms as f64) < source_secs * 1000.0 - 80.0);
+            if needs_trim {
+                let seg = scratch.join(format!("clip-{index}.mp4"));
+                nomi_vimax::media_local::extract_av_segment(
+                    &src,
+                    &seg,
+                    start_ms as f64 / 1000.0,
+                    duration_ms as f64 / 1000.0,
+                )
+                .await
+                .map_err(|e| AppError::Internal(format!("ffmpeg trim: {e}")))?;
+                parts.push(seg);
+            } else {
+                parts.push(src);
+            }
+        }
+        if parts.is_empty() {
+            return Err(AppError::BadRequest("no video clips to export".into()));
+        }
+        let concat_path = scratch.join("concat.mp4");
+        let film_path = if parts.len() == 1 {
+            parts[0].clone()
+        } else {
+            let refs: Vec<nomi_vimax::media_local::ConcatClip<'_>> = parts
+                .iter()
+                .map(|p| nomi_vimax::media_local::ConcatClip::cut(p.as_path()))
+                .collect();
+            nomi_vimax::media_local::concat_videos(&refs, &concat_path)
+                .await
+                .map_err(|e| AppError::Internal(format!("ffmpeg concat: {e}")))?;
+            concat_path
+        };
+        let srt_text = srt.unwrap_or_default();
+        let out_path = if burn_subtitles && !srt_text.trim().is_empty() {
+            let srt_path = scratch.join("timeline.srt");
+            tokio::fs::write(&srt_path, srt_text.as_bytes())
+                .await
+                .map_err(|e| AppError::Internal(format!("write srt: {e}")))?;
+            let burned = scratch.join("burned.mp4");
+            match nomi_vimax::media_local::burn_srt_subtitles(&film_path, &srt_path, &burned).await {
+                Ok(()) => burned,
+                Err(e) => {
+                    tracing::warn!("subtitle burn skipped: {e}");
+                    film_path
+                }
+            }
+        } else {
+            film_path
+        };
+        let bytes = tokio::fs::read(&out_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("read export output: {e}")))?;
+        let title = title
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "timeline-export".into());
+        let media_id = self
+            .store_media_bytes(bytes, "video", "video/mp4", "mp4", title)
+            .await?;
+        let idx = self.load_media_index().await?;
+        let entry = idx
+            .items
+            .iter()
+            .find(|e| e.media_id == media_id)
+            .ok_or_else(|| AppError::Internal("media index missing after export".into()))?;
         Ok(Self::entry_to_meta(entry))
     }
 }

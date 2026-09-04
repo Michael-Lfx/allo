@@ -4,6 +4,7 @@ import { Check, Maximize2, X } from "lucide-react";
 
 import type { CanvasDrawingEditorHandle } from "@oc/components/canvas/canvas-drawing-editor-types";
 import { drawingEngineForNode, drawingEngineLabel, isDrawingEngineAvailable } from "@oc/lib/canvas/canvas-drawing-engine";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { loadCanvasDrawing, saveCanvasDrawing, type CanvasDrawingSnapshot } from "@oc/lib/canvas/canvas-drawing-storage";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
@@ -66,7 +67,7 @@ export function CanvasDrawingEditorModal({ open, projectId, node, onClose, onSav
             onSaved(node.id, saved);
             return true;
         } catch (error) {
-            message.error(error instanceof Error ? `绘图保存失败：${error.message}` : "绘图保存失败");
+            message.error(error instanceof Error ? `绘图保存失败：${formatCanvasUserError(error, "保存失败")}` : "绘图保存失败");
             return false;
         } finally {
             setSaving(false);

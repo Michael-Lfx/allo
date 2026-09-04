@@ -19,7 +19,7 @@ use nomifun_common::AppError;
 
 use crate::MAX_MEDIA_BYTES;
 use crate::archive::MAX_EXTRAS_BYTES;
-use crate::dto::{CanvasMediaMeta, CanvasProjectMeta, GenerationTaskView};
+use crate::dto::{CanvasMediaMeta, CanvasProjectMeta, GenerationTaskView, TimelineExportClip};
 use crate::service::NewGenerationRequest;
 use crate::state::CanvasRouterState;
 
@@ -71,6 +71,14 @@ pub fn video_canvas_routes(state: CanvasRouterState) -> Router {
         )
         .route("/api/video-canvas/media", get(list_media))
         .route("/api/video-canvas/media/concat", post(concat_media))
+        .route(
+            "/api/video-canvas/media/export-timeline",
+            post(export_timeline),
+        )
+        .route(
+            "/api/video-canvas/media/{media_id}/transcribe",
+            post(transcribe_media),
+        )
         .route(
             "/api/video-canvas/media/{media_id}",
             axum::routing::delete(delete_media),
@@ -397,6 +405,50 @@ async fn concat_media(
     let meta = state
         .service
         .concat_media(body.media_ids, body.title)
+        .await?;
+    Ok((StatusCode::CREATED, Json(ApiResponse::ok(meta))))
+}
+
+#[derive(Deserialize)]
+struct TranscribeMediaBody {
+    #[serde(default)]
+    language: Option<String>,
+}
+
+async fn transcribe_media(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(media_id): Path<String>,
+    body: Result<Json<TranscribeMediaBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<crate::dto::CanvasTranscription>>, AppError> {
+    let language = match body {
+        Ok(Json(payload)) => payload.language,
+        Err(_) => None,
+    };
+    let result = state.service.transcribe_media(&media_id, language).await?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+#[derive(Deserialize)]
+struct ExportTimelineBody {
+    clips: Vec<TimelineExportClip>,
+    #[serde(default)]
+    srt: Option<String>,
+    #[serde(default)]
+    burn_subtitles: bool,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+async fn export_timeline(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<ExportTimelineBody>, JsonRejection>,
+) -> Result<impl axum::response::IntoResponse, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let meta = state
+        .service
+        .export_timeline(body.clips, body.srt, body.burn_subtitles, body.title)
         .await?;
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(meta))))
 }

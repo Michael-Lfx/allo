@@ -20,6 +20,8 @@ describe("canvas project world layers isolation", () => {
         expect(/\bhoveredNodeId\b/.test(page)).toBe(false);
         expect(renderModel.includes("hoveredNodeId")).toBe(false);
         expect(renderModel.includes("relatedHighlight")).toBe(false);
+        expect(renderModel.includes("buildCanvasSpatialIndex")).toBe(true);
+        expect(renderModel.includes("CANVAS_MAX_RENDERED_CONNECTIONS")).toBe(true);
     });
 
     test("does not pass pointer-follow box-select or connection draft through the page", () => {

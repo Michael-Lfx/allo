@@ -79,7 +79,8 @@
     "duplicateContent": "当前节点已使用相同提示词、模型、参数和参考素材提交过任务。再次生成会新建任务，并可能再次消耗积分。",
     "duplicateOk": "仍然生成",
     "duplicateCancel": "取消",
-    "unresolvedMentions": "提示词中的 {{mentions}} 没有对应的画布资源，请重新选择引用后再生成"
+    "unresolvedMentions": "提示词中的 {{mentions}} 没有对应的画布资源，请重新选择引用后再生成",
+    "promptTooLong": "当前视频模型提示词最多 {{max}} 个字符，完整提示词为 {{actual}} 个字符。系统不会自动截断，请精简当前输入、连线内容或技能上下文后重试"
   },
   "frames": {
     "title": "提取视频画面",
@@ -278,8 +279,32 @@
     "frame": "背板",
     "folder": "文件夹",
     "folderDefault": "我的文件",
+    "artCritique": "AI 审美批改",
     "unknown": "未知节点",
     "listSuffix": "{{label}}节点"
+  },
+  "artCritique": {
+    "title": "AI 审美批改",
+    "subtitle": "视觉分析 · SVG 标注 · 不修改原图",
+    "inputImage": "输入图片",
+    "waitInput": "等待图片输入",
+    "issueCount": "{{count}} 个重点问题",
+    "optionCount": "{{count}} 个可选方向，无确定问题",
+    "noIssues": "本轮未发现重点问题",
+    "noReport": "尚未生成报告",
+    "multiInput": " · 已连接 {{count}} 张，使用第一张",
+    "connectHint": "从图片节点拖入一条连线",
+    "stale": "输入图片已变化，需要重新批改",
+    "doneSummary": "已完成 {{count}} 项批改",
+    "running": "正在批改",
+    "rerun": "重新批改",
+    "viewReport": "查看批改报告",
+    "start": "开始 AI 批改",
+    "completed": "已完成",
+    "pendingUpdate": "待更新",
+    "failed": "失败",
+    "idle": "未开始",
+    "failedRetry": "AI 批改失败，请稍后重试"
   },
   "director": {
     "openWorkbench": "打开 3D 导演台",
@@ -513,7 +538,13 @@
     "save": "保存到画布文档",
     "saved": "已保存时间线（{{count}} 个片段）",
     "video": "视频",
-    "audio": "音频"
+    "audio": "音频",
+    "export": "导出成片",
+    "exporting": "正在导出…",
+    "exportNeedClips": "请先添加至少一个视频片段",
+    "exportNeedMedia": "片段缺少本地媒体，无法导出",
+    "exportFailed": "时间线导出失败",
+    "exported": "已导出成片并添加到画布"
   },
   "subtitle": {
     "title": "字幕 · {{name}}",
@@ -528,12 +559,22 @@
     "parseEmpty": "未解析到有效字幕条目",
     "importFailed": "导入失败",
     "placeholder": "字幕文本",
-    "videoFallback": "视频"
+    "videoFallback": "视频",
+    "transcribe": "转写自动字幕",
+    "transcribing": "正在转写…",
+    "transcribeNeedMedia": "当前节点没有可转写的本地媒体",
+    "transcribeFailed": "转写失败",
+    "transcribed": "已转写 {{count}} 条字幕"
   },
   "zoom": {
     "openMinimap": "打开小地图",
     "closeMinimap": "关闭小地图",
     "fitAll": "适应全部内容",
+    "autoArrange": "整理画布",
+    "arrangeNeedSelection": "请至少选择两个可整理节点",
+    "arrangeNeedCanvas": "画布中至少需要两个可整理节点",
+    "arrangedSelection": "已按媒体分类整理选中节点",
+    "arrangedCanvas": "已按媒体分类整理画布",
     "zoomOut": "缩小画布",
     "zoomIn": "放大画布",
     "precision": "精确缩放",
@@ -575,6 +616,7 @@
     "copyNode": "复制节点",
     "copyImageUrl": "复制图片地址",
     "copyVideoUrl": "复制视频地址",
+    "createGenerationCopy": "创建生成副本",
     "createVariant": "创建参数变体",
     "nodeActions": "节点操作",
     "expandFrame": "展开背板",
@@ -1939,6 +1981,19 @@
     "authFailed": "生成服务鉴权失败，请检查渠道配置。",
     "urlUnavailable": "生成服务地址不可用，请检查渠道配置。",
     "failed": "生成失败，请稍后重试。"
+  },
+  "userError": {
+    "generic": "操作失败，请稍后重试。",
+    "cancelled": "已取消",
+    "network": "网络或服务异常，请稍后重试。",
+    "busy": "服务当前繁忙，请稍后重试。",
+    "auth": "登录已失效或没有权限，请重新登录后重试。",
+    "visionModelMissing": "当前文本模型不支持理解图片。请到设置中选择支持图片理解的模型后再试。",
+    "critiqueFailed": "画面分析未完成，请稍后重试。若持续失败，请更换支持图片理解的文本模型。",
+    "critiqueParse": "模型返回的分析结果不完整，请重试。",
+    "critiqueMissing": "模型没有按约定返回分析结果，请稍后重试或更换文本模型。",
+    "toolChoice": "当前文本模型不支持这种调用方式，请更换文本模型后重试。",
+    "llmFailed": "文本模型请求失败，请确认网络和模型配置后重试。"
   },
   "emotion": {
     "detectFailed": "未识别到清晰人脸，请手动框选",
