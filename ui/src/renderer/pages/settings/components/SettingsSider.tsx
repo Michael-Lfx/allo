@@ -164,7 +164,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
                   <span className='size-22px flex shrink-0 items-center justify-center line-height-0'>
                     <SettingsNavIconSlot item={item} selected={selected} />
                   </span>
-                  <FlexFullContainer className='h-24px collapsed-hidden'>
+                  <FlexFullContainer className='h-24px min-w-0 collapsed-hidden'>
                     <span
                       className={classNames(
                         'settings-sider__item-label inline-block w-full overflow-hidden text-nowrap text-14px font-500 lh-24px whitespace-nowrap',

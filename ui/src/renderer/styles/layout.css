@@ -43,6 +43,13 @@
   color: var(--sider-section-title-color, var(--text-secondary));
 }
 
+.settings-sider__group-header {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Layout sider base styles */
 .layout-sider {
   overflow-x: hidden;
@@ -361,6 +368,10 @@
 
 .settings-sider__item-label {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-history__placeholder,

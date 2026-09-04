@@ -14,7 +14,7 @@ const readSource = (url: URL) => readFileSync(url, 'utf8');
 const groupLabels: Record<SettingsNavGroupId, string> = {
   application: 'Application',
   intelligence: 'Intelligence & Content',
-  capabilities: 'Capabilities & Extensions',
+  capabilities: 'Capabilities',
   account: 'Account & Other',
 };
 
