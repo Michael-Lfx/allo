@@ -10,7 +10,7 @@ import {
 import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
 import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
-import { hasExplicitVideoFrames, resolveVideoImageReferences } from '@oc/services/api/video-reference-roles';
+import { hasExplicitVideoFrames, resolveVideoImageReferences, shouldSubmitVideoImagesAsReferences } from '@oc/services/api/video-reference-roles';
 import { modelOptionName } from '@oc/stores/use-config-store';
 import {
   cancelGenerationTask as alloCancel,
@@ -218,7 +218,7 @@ export function mapAlloTask(view: GenerationTaskView, extra?: Partial<Generation
   const task: GenerationTask = {
     ...extra,
     id: view.task_id,
-    projectId: extra?.projectId,
+    projectId: extra?.projectId || view.project_id || undefined,
     type: extra?.type || `canvas_${isVideo ? 'video' : 'image'}`,
     status: mapStatus(view.status),
     progress: Math.round((view.progress || 0) * 100),
@@ -282,15 +282,14 @@ export function collectMediaIds(
   // semantics — canvas keeps "first connected image becomes first_frame, rest
   // stay references" unless the user named the frames.
   const namedFrames = Boolean(options?.promoteFirstImageToFrame) && hasExplicitVideoFrames(videoOptions);
-  const rolePlan = namedFrames
-    ? resolveVideoImageReferences(
-        images.flatMap((item) => {
-          if (!item || typeof item !== 'object') return [];
-          const image = item as { id?: string; storageKey?: string };
-          return typeof image.id === 'string' ? [image as { id: string; storageKey?: string }] : [];
-        }),
-        videoOptions,
-      )
+  const imageList = images.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const image = item as { id?: string; storageKey?: string };
+    return typeof image.id === 'string' ? [image as { id: string; storageKey?: string }] : [];
+  });
+  const bindAsReferences = shouldSubmitVideoImagesAsReferences(videoOptions, imageList.length);
+  const rolePlan = namedFrames && !bindAsReferences
+    ? resolveVideoImageReferences(imageList, videoOptions)
     : [];
   const roleFirst = rolePlan.find((item) => item.role === 'first_frame');
   const roleLast = rolePlan.find((item) => item.role === 'last_frame');
@@ -298,6 +297,9 @@ export function collectMediaIds(
     (typeof metadata.firstFrameMediaId === 'string' && metadata.firstFrameMediaId) ||
     (typeof metadata.first_frame_media_id === 'string' && metadata.first_frame_media_id) ||
     undefined;
+  if (bindAsReferences) {
+    return { referenceIds: refs, firstFrameId: undefined, lastFrameId: undefined };
+  }
   const firstFrameId =
     metadataFirstFrame ||
     (roleFirst ? resourceIdFromStorageKey(roleFirst.image.storageKey) : undefined) ||
@@ -325,7 +327,7 @@ export function resolveAlloGenerationMode(input: CreateTaskInput): string {
   let mode = modeRaw;
   if (mode === 't2i' || mode === 'i2i' || mode.includes('image')) mode = 'image';
   if (mode === 't2v' || mode === 'i2v' || mode.includes('video')) mode = 'video';
-  if (operation === 'image_to_video' || operation === 'text_to_video') mode = 'video';
+  if (operation === 'image_to_video' || operation === 'text_to_video' || operation === 'reference_to_video') mode = 'video';
   return mode;
 }
 
@@ -375,6 +377,7 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     reference_media_ids: referenceIds,
     first_frame_media_id: firstFrameId,
     last_frame_media_id: lastFrameId,
+    ...(input.projectId?.trim() ? { project_id: input.projectId.trim() } : {}),
   };
 }
 

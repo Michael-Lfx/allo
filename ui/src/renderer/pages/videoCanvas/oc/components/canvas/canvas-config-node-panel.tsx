@@ -33,6 +33,7 @@ function videoOperationOptions(): Array<{ label: string; value: CanvasVideoEditO
     return [
         { label: canvasT("videoCanvas.config.opTextToVideo", "文生视频"), value: "text_to_video" },
         { label: canvasT("videoCanvas.config.opImageToVideo", "图生视频"), value: "image_to_video" },
+        { label: canvasT("videoCanvas.config.opReferenceToVideo", "多图参考视频"), value: "reference_to_video" },
         { label: canvasT("videoCanvas.config.opExtend", "视频续写"), value: "extend" },
         { label: canvasT("videoCanvas.config.opInpaint", "局部修改"), value: "inpaint" },
         { label: canvasT("videoCanvas.config.opReplace", "元素替换"), value: "replace_element" },
@@ -205,6 +206,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
 function defaultVideoOperation(inputSummary: CanvasConfigNodePanelProps["inputSummary"]): CanvasVideoEditOperation {
     if (inputSummary.audioCount > 0 && inputSummary.imageCount === 0 && inputSummary.videoCount === 0) return "audio_to_video";
     if (inputSummary.videoCount > 0) return "extend";
+    if (inputSummary.imageCount >= 3) return "reference_to_video";
     if (inputSummary.imageCount > 0) return "image_to_video";
     return "image_to_video";
 }
@@ -263,7 +265,7 @@ function videoCapabilityError(profile: NonNullable<ReturnType<typeof modelCapabi
     if (!videoDurationAllowed(profile, Number(seconds))) return "当前模型不支持该视频时长";
     if (Array.from(prompt).length > profile.references.promptMaxChars) return `提示词超过模型限制（最多 ${profile.references.promptMaxChars} 字）`;
     if (input.imageCount > profile.references.maxImages || input.videoCount > profile.references.maxVideos || input.audioCount > profile.references.maxAudios) return "参考素材数量超过当前模型限制";
-    const resolvedOperation = operation || (input.audioCount > 0 && input.imageCount === 0 && input.videoCount === 0 ? "audio_to_video" : input.videoCount > 0 ? "extend" : input.imageCount > 0 ? "image_to_video" : "text_to_video");
+    const resolvedOperation = operation || (input.audioCount > 0 && input.imageCount === 0 && input.videoCount === 0 ? "audio_to_video" : input.videoCount > 0 ? "extend" : input.imageCount >= 3 ? "reference_to_video" : input.imageCount > 0 ? "image_to_video" : "text_to_video");
     if (!profile.operations.includes(resolvedOperation)) return "当前模型不支持该生成模式";
     return "";
 }

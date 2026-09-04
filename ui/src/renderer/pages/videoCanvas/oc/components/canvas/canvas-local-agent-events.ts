@@ -93,6 +93,12 @@ export function isConnectionErrorMessage(item: AgentChatItem) {
 }
 
 const TOOL_NAME_KEYS: Record<string, string> = {
+    canvas_inspect: "canvas_inspect",
+    canvas_propose: "canvas_propose",
+    canvas_apply: "canvas_apply",
+    canvas_run: "canvas_run",
+    canvas_critique: "canvas_critique",
+    canvas_repair: "canvas_repair",
     canvas_apply_ops: "canvas_apply_ops",
     canvas_get_state: "canvas_get_state",
     canvas_get_context: "canvas_get_context",
@@ -138,6 +144,12 @@ const TOOL_NAME_KEYS: Record<string, string> = {
 };
 
 const TOOL_NAME_DEFAULTS: Record<string, string> = {
+    canvas_inspect: "观察画布",
+    canvas_propose: "提出计划",
+    canvas_apply: "更新画布",
+    canvas_run: "提交并等待生成",
+    canvas_critique: "评价产物",
+    canvas_repair: "修复画布",
     canvas_apply_ops: "画布操作",
     canvas_get_state: "读取画布",
     canvas_get_context: "读取上下文",
@@ -189,7 +201,7 @@ export function toolName(name: string) {
 }
 
 function isReadTool(name: string) {
-    return name === "canvas_get_state" || name === "canvas_get_context" || name === "canvas_find_nodes" || name === "canvas_get_node" || name === "canvas_get_connection" || name === "canvas_get_generation_tasks" || name === "canvas_get_resources" || name === "canvas_validate_ops" || name === "canvas_list_skills" || name === "canvas_get_skill" || name === "canvas_get_selection" || name === "canvas_export_snapshot" || isProjectAgentReadTool(name);
+    return name === "canvas_inspect" || name === "canvas_propose" || name === "canvas_critique" || name === "canvas_get_state" || name === "canvas_get_context" || name === "canvas_find_nodes" || name === "canvas_get_node" || name === "canvas_get_connection" || name === "canvas_get_generation_tasks" || name === "canvas_get_resources" || name === "canvas_validate_ops" || name === "canvas_list_skills" || name === "canvas_get_skill" || name === "canvas_get_selection" || name === "canvas_export_snapshot" || isProjectAgentReadTool(name);
 }
 
 function isMcpToolItem(item?: AgentEventItem) {

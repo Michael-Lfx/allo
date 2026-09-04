@@ -30,8 +30,9 @@ type CanvasProjectAssistantColumnProps = {
     extractFramesForAgent: (nodeId: string, timesMs: number[]) => Promise<{ createdNodeIds: string[]; message: string }>;
     agentOps: CanvasAgentOps;
     assistant: CanvasAssistantState;
-    autoStart?: { prompt: string; modelContext?: string } | null;
+    autoStart?: { prompt: string; modelContext?: string; meta?: string } | null;
     onAutoStartConsumed?: () => void;
+    modelCatalogReady?: boolean;
 };
 
 function CanvasAssistantPanelFallback({ busy }: { busy?: boolean }) {
@@ -91,6 +92,7 @@ export function CanvasProjectAssistantColumn(props: CanvasProjectAssistantColumn
         assistant,
         autoStart,
         onAutoStartConsumed,
+        modelCatalogReady,
     } = props;
     const { agentSnapshot, agentUndoCount, applyAgentOps, canUndoAgentOps, undoAgentOps } = agentOps;
     const { agentMode, assistantMounted, assistantClosing, setAgentMode, closeAgent } = assistant;
@@ -124,6 +126,7 @@ export function CanvasProjectAssistantColumn(props: CanvasProjectAssistantColumn
                                             autoStart={autoStart}
                                             onAutoStartConsumed={onAutoStartConsumed}
                                             appearImmediately={Boolean(autoStart)}
+                                            modelCatalogReady={modelCatalogReady}
                                         />
                                     </Suspense>
                                 )}

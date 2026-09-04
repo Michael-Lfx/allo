@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mergeRecentNavItems, toUpdatedAtMs } from './recentCreations';
+import { isStandaloneClipTask, mergeRecentNavItems, toUpdatedAtMs } from './recentCreations';
 
 describe('recentCreations', () => {
   test('toUpdatedAtMs scales unix seconds and keeps millis', () => {
@@ -58,6 +58,35 @@ describe('recentCreations', () => {
     expect(merged.map((row) => ({ id: row.id, source: row.source }))).toEqual([
       { id: 'canvas-local', source: 'canvas' },
       { id: 'sess-1', source: 'session' },
+    ]);
+  });
+
+  test('canvas node generation tasks stay off the clip recents list', () => {
+    expect(isStandaloneClipTask({ project_id: 'canvas-1' })).toBe(false);
+    expect(isStandaloneClipTask({ project_id: '' })).toBe(true);
+    expect(isStandaloneClipTask({})).toBe(true);
+
+    const merged = mergeRecentNavItems(
+      [],
+      [],
+      [],
+      [
+        { task_id: 'clip-1', prompt: '独立成片', status: 'succeeded', updated_at: 200 },
+        {
+          task_id: 'node-1',
+          prompt: '画布节点视频',
+          status: 'succeeded',
+          updated_at: 300,
+          project_id: 'canvas-1',
+        },
+      ],
+      [{ project_id: 'canvas-1', title: '小猫的一天', updated_at: 250 }],
+      [],
+      5
+    );
+    expect(merged.map((row) => ({ id: row.id, source: row.source }))).toEqual([
+      { id: 'canvas-1', source: 'canvas' },
+      { id: 'clip-1', source: 'task' },
     ]);
   });
 });

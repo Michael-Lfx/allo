@@ -1,4 +1,3 @@
-import { lazy, Suspense } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { App } from "antd";
 import { WorkspaceState } from "@oc/components/layout/workspace-state";
@@ -7,6 +6,7 @@ import { CanvasSubtitleDialog } from "@oc/components/canvas/canvas-subtitle-dial
 import { CanvasTimelineDialog } from "@oc/components/canvas/canvas-timeline-dialog";
 import { CanvasCharacterReferenceModal } from "@oc/components/canvas/canvas-character-reference-modal";
 import { CanvasVersionCompareModal } from "@oc/components/canvas/canvas-version-compare-modal";
+import { CanvasLazyEditor } from "@oc/components/canvas/canvas-lazy-editor";
 import { CanvasProjectMediaDialogs } from "./canvas-project-media-dialogs";
 import { CanvasProjectStatusDialogs } from "./canvas-project-status-dialogs";
 import { AssetPickerModal } from "@oc/components/canvas/asset-picker-modal";
@@ -29,11 +29,21 @@ import type { useCanvasGeneration } from "./use-canvas-generation";
 import type { useCanvasAgentOperations } from "./use-canvas-agent-operations";
 import type { CanvasRenderModel, CanvasAgentOps, CanvasAssistantState } from "./canvas-project-bundles";
 
-const CanvasDirectorWorkbench = lazy(() => import("@oc/components/canvas/director/canvas-director-workbench").then((module) => ({ default: module.CanvasDirectorWorkbench })));
-const CanvasDrawingEditorModal = lazy(() => import("@oc/components/canvas/canvas-drawing-editor-modal").then((module) => ({ default: module.CanvasDrawingEditorModal })));
-const CanvasTextEditorModal = lazy(() => import("@oc/components/canvas/canvas-text-editor-modal").then((module) => ({ default: module.CanvasTextEditorModal })));
-const CanvasScriptEditor = lazy(() => import("@oc/components/canvas/canvas-script-editor").then((module) => ({ default: module.CanvasScriptEditor })));
-const CanvasLocalAgentPanel = lazy(() => import("@oc/components/canvas/canvas-local-agent-panel").then((module) => ({ default: module.CanvasLocalAgentPanel })));
+function loadDirectorWorkbench() {
+    return import("@oc/components/canvas/director/canvas-director-workbench").then((module) => ({ default: module.CanvasDirectorWorkbench }));
+}
+function loadDrawingEditor() {
+    return import("@oc/components/canvas/canvas-drawing-editor-modal").then((module) => ({ default: module.CanvasDrawingEditorModal }));
+}
+function loadTextEditor() {
+    return import("@oc/components/canvas/canvas-text-editor-modal").then((module) => ({ default: module.CanvasTextEditorModal }));
+}
+function loadScriptEditor() {
+    return import("@oc/components/canvas/canvas-script-editor").then((module) => ({ default: module.CanvasScriptEditor }));
+}
+function loadLocalAgentPanel() {
+    return import("@oc/components/canvas/canvas-local-agent-panel").then((module) => ({ default: module.CanvasLocalAgentPanel }));
+}
 
 type SetNodeId = Dispatch<SetStateAction<string | null>>;
 type CanvasProjectDialogsProps = {
@@ -224,103 +234,101 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
                     <CanvasCharacterReferenceModal node={characterReferenceNode} open={Boolean(characterReferenceNode)} onClose={() => setCharacterReferenceNodeId(null)} />
 
                     {textEditorNode ? (
-                        <Suspense fallback={null}>
-                            <CanvasTextEditorModal
-                                node={textEditorNode}
-                                open={Boolean(textEditorNode)}
-                                onClose={() => setTextEditorNodeId(null)}
-                                onSave={(nodeId, title, content, richText) => {
-                                    setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, title, metadata: { ...node.metadata, content, richText } } : node)));
-                                }}
-                            />
-                        </Suspense>
+                        <CanvasLazyEditor
+                            load={loadTextEditor}
+                            errorTitle="文本编辑器"
+                            node={textEditorNode}
+                            open={Boolean(textEditorNode)}
+                            onClose={() => setTextEditorNodeId(null)}
+                            onSave={(nodeId, title, content, richText) => {
+                                setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, title, metadata: { ...node.metadata, content, richText } } : node)));
+                            }}
+                        />
                     ) : null}
 
                     {drawingNode ? (
-                        <Suspense
+                        <CanvasLazyEditor
+                            load={loadDrawingEditor}
+                            errorTitle="绘图编辑器"
                             fallback={
                                 <div className="fixed inset-0 z-[var(--z-toast)] grid place-items-center px-5" style={{ background: theme.canvas.background, color: theme.node.text }}>
                                     <WorkspaceState icon="loading" title={canvasT("videoCanvas.toast.loadingDrawingEditor", "正在加载绘图编辑器")} description={canvasT("videoCanvas.toast.preparingDrawing", "正在准备绘图画布。")} />
                                 </div>
                             }
-                        >
-                            <CanvasDrawingEditorModal
-                                node={drawingNode}
-                                projectId={projectId}
-                                open={Boolean(drawingNode)}
-                                onClose={() => setDrawingNodeId(null)}
-                                onSaved={(nodeId, summary) => {
-                                    setNodes((current) =>
-                                        current.map((node) =>
-                                            node.id === nodeId
-                                                ? {
-                                                      ...node,
-                                                      metadata: {
-                                                          ...node.metadata,
-                                                          drawingEngine: summary.engine,
-                                                          drawingRevision: summary.revision,
-                                                          drawingUpdatedAt: summary.updatedAt,
-                                                          drawingShapeCount: summary.shapeCount,
-                                                          drawingPageCount: summary.pageCount,
-                                                      },
-                                                  }
-                                                : node,
-                                        ),
-                                    );
-                                    message.success(canvasT("videoCanvas.toast.drawingSaved", "绘图已保存"));
-                                }}
-                            />
-                        </Suspense>
+                            node={drawingNode}
+                            projectId={projectId}
+                            open={Boolean(drawingNode)}
+                            onClose={() => setDrawingNodeId(null)}
+                            onSaved={(nodeId, summary) => {
+                                setNodes((current) =>
+                                    current.map((node) =>
+                                        node.id === nodeId
+                                            ? {
+                                                  ...node,
+                                                  metadata: {
+                                                      ...node.metadata,
+                                                      drawingEngine: summary.engine,
+                                                      drawingRevision: summary.revision,
+                                                      drawingUpdatedAt: summary.updatedAt,
+                                                      drawingShapeCount: summary.shapeCount,
+                                                      drawingPageCount: summary.pageCount,
+                                                  },
+                                              }
+                                            : node,
+                                    ),
+                                );
+                                message.success(canvasT("videoCanvas.toast.drawingSaved", "绘图已保存"));
+                            }}
+                        />
                     ) : null}
 
                     {activeScriptNode ? (
-                        <Suspense fallback={null}>
-                            <CanvasScriptEditor
-                                node={activeScriptNode}
-                                open={Boolean(activeScriptNode)}
-                                onClose={() => setScriptEditorNodeId(null)}
-                                onUpdateRows={(rows) => activeScriptNode && replaceScriptRows(activeScriptNode.id, rows)}
-                                onVisibleColumnsChange={(visibleColumns: StoryboardColumn[]) => {
-                                    if (!activeScriptNode || !visibleColumns.length) return;
-                                    setNodes((prev) =>
-                                        prev.map((node) =>
-                                            node.id === activeScriptNode.id
-                                                ? { ...node, metadata: { ...node.metadata, storyboard: { rows: node.metadata?.storyboard?.rows || [], visibleColumns, referenceNodeIds: node.metadata?.storyboard?.referenceNodeIds || [] } } }
-                                                : node,
-                                        ),
-                                    );
-                                }}
-                                onGenerateImages={(rowIds) => activeScriptNode && void generateScriptImages(activeScriptNode.id, rowIds)}
-                                onGenerateVideos={(rowIds) => {
-                                    if (!activeScriptNode) return;
-                                    if (activeScriptNode.metadata?.storyboardVideoInputMode === "keyframe") void generateScriptVideos(activeScriptNode.id, rowIds);
-                                    else void createAndGenerateScriptVideos(activeScriptNode.id, rowIds);
-                                }}
-                                onVideoInputModeChange={(storyboardVideoInputMode) => activeScriptNode && handleConfigNodeChange(activeScriptNode.id, { storyboardVideoInputMode })}
-                            />
-                        </Suspense>
+                        <CanvasLazyEditor
+                            load={loadScriptEditor}
+                            errorTitle="分镜编辑器"
+                            node={activeScriptNode}
+                            open={Boolean(activeScriptNode)}
+                            onClose={() => setScriptEditorNodeId(null)}
+                            onUpdateRows={(rows) => activeScriptNode && replaceScriptRows(activeScriptNode.id, rows)}
+                            onVisibleColumnsChange={(visibleColumns: StoryboardColumn[]) => {
+                                if (!activeScriptNode || !visibleColumns.length) return;
+                                setNodes((prev) =>
+                                    prev.map((node) =>
+                                        node.id === activeScriptNode.id
+                                            ? { ...node, metadata: { ...node.metadata, storyboard: { rows: node.metadata?.storyboard?.rows || [], visibleColumns, referenceNodeIds: node.metadata?.storyboard?.referenceNodeIds || [] } } }
+                                            : node,
+                                    ),
+                                );
+                            }}
+                            onGenerateImages={(rowIds) => activeScriptNode && void generateScriptImages(activeScriptNode.id, rowIds)}
+                            onGenerateVideos={(rowIds) => {
+                                if (!activeScriptNode) return;
+                                if (activeScriptNode.metadata?.storyboardVideoInputMode === "keyframe") void generateScriptVideos(activeScriptNode.id, rowIds);
+                                else void createAndGenerateScriptVideos(activeScriptNode.id, rowIds);
+                            }}
+                            onVideoInputModeChange={(storyboardVideoInputMode) => activeScriptNode && handleConfigNodeChange(activeScriptNode.id, { storyboardVideoInputMode })}
+                        />
                     ) : null}
 
                     {directorNodeId && activeDirectorScene ? (
-                        <Suspense
+                        <CanvasLazyEditor
+                            load={loadDirectorWorkbench}
+                            errorTitle="3D 导演台"
                             fallback={
                                 <div className="fixed inset-0 z-[var(--z-toast)] grid place-items-center px-5" style={{ background: theme.canvas.background, color: theme.node.text }}>
                                     <WorkspaceState icon="loading" title={canvasT("videoCanvas.toast.loadingDirector", "正在加载 3D 导演台")} description={canvasT("videoCanvas.toast.preparingDirector", "准备场景、镜头与空间控制。")} />
                                 </div>
                             }
-                        >
-                            <CanvasDirectorWorkbench
-                                open
-                                scene={activeDirectorScene}
-                                imageNodes={nodes.filter((node) => node.type === CanvasNodeType.Image && Boolean(node.metadata?.content))}
-                                onClose={() => setDirectorNodeId(null)}
-                                onChange={saveDirectorScene}
-                                onApply={applyDirectorOutput}
-                                onDeleteImageNode={(nodeId) => deleteNodes(new Set([nodeId]))}
-                                onFlush={() => flushCanvasStorePersistence()}
-                                onboardingScope={directorOnboardingScope}
-                            />
-                        </Suspense>
+                            open
+                            scene={activeDirectorScene}
+                            imageNodes={nodes.filter((node) => node.type === CanvasNodeType.Image && Boolean(node.metadata?.content))}
+                            onClose={() => setDirectorNodeId(null)}
+                            onChange={saveDirectorScene}
+                            onApply={applyDirectorOutput}
+                            onDeleteImageNode={(nodeId) => deleteNodes(new Set([nodeId]))}
+                            onFlush={() => flushCanvasStorePersistence()}
+                            onboardingScope={directorOnboardingScope}
+                        />
                     ) : null}
 
                     <CanvasVersionCompareModal
@@ -379,9 +387,18 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
                         onInsert={(payloads) => handleProjectAssetsInsert(payloads, projectAssetInsertPosition)}
                     />
                     {codexCompactAgent && !assistantMounted ? (
-                        <Suspense fallback={null}>
-                            <CanvasLocalAgentPanel headless snapshot={agentSnapshot} canUndoOps={canUndoAgentOps} undoOpsCount={agentUndoCount} onApplyOps={applyAgentOps} onUndoOps={undoAgentOps} autoConnect={codexAutoConnect} />
-                        </Suspense>
+                        <CanvasLazyEditor
+                            load={loadLocalAgentPanel}
+                            errorTitle="画布本地 Agent"
+                            fallback={null}
+                            headless
+                            snapshot={agentSnapshot}
+                            canUndoOps={canUndoAgentOps}
+                            undoOpsCount={agentUndoCount}
+                            onApplyOps={applyAgentOps}
+                            onUndoOps={undoAgentOps}
+                            autoConnect={codexAutoConnect}
+                        />
                     ) : null}
         </>
     );

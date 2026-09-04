@@ -20,13 +20,26 @@ type VideoReferenceContext = {
     audioCount?: number;
 };
 
+/**
+ * Seedance forbids mixing first/last_frame with extra reference_image slots.
+ * Three or more stills must go as reference_to_video so the middle frames are not dropped.
+ */
+export function shouldSubmitVideoImagesAsReferences(options?: VideoReferenceOptions, imageCount = 0) {
+    return options?.videoEditOperation === "reference_to_video" || imageCount >= 3;
+}
+
+export function videoEditOperationForKeyframeCount(count: number): "image_to_video" | "reference_to_video" | undefined {
+    if (count <= 0) return undefined;
+    return count >= 3 ? "reference_to_video" : "image_to_video";
+}
+
 export function resolveVideoImageReferences<T extends VideoReferenceImage>(
     images: T[],
     options?: VideoReferenceOptions,
     context: VideoReferenceContext = {},
 ): ResolvedVideoImageReference<T>[] {
     const operation = options?.videoEditOperation?.trim();
-    if (operation === "reference_to_video") {
+    if (shouldSubmitVideoImagesAsReferences(options, images.length) || operation === "reference_to_video") {
         return images.map((image) => ({ image, role: "reference_image" as const }));
     }
 

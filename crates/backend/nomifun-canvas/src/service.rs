@@ -50,6 +50,9 @@ pub struct InternalTask {
     pub first_frame_media_id: Option<String>,
     #[serde(default)]
     pub last_frame_media_id: Option<String>,
+    /// Set when the job was started from a canvas node. Home 「视频生成」 clips leave this empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     #[serde(default)]
     pub progress: f32,
     #[serde(default)]
@@ -82,9 +85,18 @@ impl InternalTask {
             reference_media_ids: self.reference_media_ids.clone(),
             first_frame_media_id: self.first_frame_media_id.clone(),
             last_frame_media_id: self.last_frame_media_id.clone(),
+            project_id: self.project_id.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
+    }
+
+    fn is_standalone_clip(&self) -> bool {
+        self.project_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
     }
 }
 
@@ -124,6 +136,7 @@ pub struct NewGenerationRequest {
     pub reference_media_ids: Vec<String>,
     pub first_frame_media_id: Option<String>,
     pub last_frame_media_id: Option<String>,
+    pub project_id: Option<String>,
 }
 
 pub struct CanvasService {
@@ -823,6 +836,13 @@ impl CanvasService {
         {
             let _ = self.media_file_path(id).await?;
         }
+        let project_id = req
+            .project_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(pid) = project_id.as_deref() {
+            validate_project_id(pid)?;
+        }
         let now = now_ms();
         let task_id = generate_id();
         let task = InternalTask {
@@ -837,6 +857,7 @@ impl CanvasService {
             reference_media_ids: req.reference_media_ids,
             first_frame_media_id: req.first_frame_media_id,
             last_frame_media_id: req.last_frame_media_id,
+            project_id: project_id.clone(),
             progress: 0.0,
             error: None,
             result_media_id: None,
@@ -849,6 +870,9 @@ impl CanvasService {
         self.cancels.write().await.insert(task_id.clone(), cancel);
         self.tasks.write().await.insert(task_id.clone(), task);
         self.persist_tasks().await;
+        if let Some(pid) = project_id.as_deref() {
+            self.touch_project(pid).await;
+        }
         let svc = Arc::clone(self);
         tokio::spawn(async move {
             crate::generate::run_generation_task(svc, task_id).await;
@@ -875,18 +899,37 @@ impl CanvasService {
             .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))
     }
 
+    /// Bump a canvas project's recency so 「最近创作」 shows the canvas card,
+    /// not a detached clip task, after a node generation.
+    async fn touch_project(&self, project_id: &str) {
+        let dir = self.project_dir(project_id);
+        let Ok(mut meta) = read_json_file::<CanvasProjectMeta>(&dir.join("meta.json")).await else {
+            return;
+        };
+        meta.updated_at = now_ms();
+        if let Err(error) = write_json_file(&dir.join("meta.json"), &meta).await {
+            tracing::warn!(project_id, error = %error, "failed to touch canvas project after generation");
+        }
+    }
+
     /// List generation tasks ordered by most-recently-updated first.
     ///
     /// `limit` and `offset` paginate a stable, descending sort so callers can
     /// render the first page immediately and stream older items on demand.
+    /// When `standalone_only` is true, canvas-bound node jobs are omitted so
+    /// home 「视频生成」 recents only show clip-mode tasks.
     pub async fn list_tasks(
         &self,
         limit: usize,
         offset: usize,
+        standalone_only: bool,
     ) -> Vec<GenerationTaskView> {
         self.hydrate_tasks().await;
         let guard = self.tasks.read().await;
-        let mut tasks: Vec<&InternalTask> = guard.values().collect();
+        let mut tasks: Vec<&InternalTask> = guard
+            .values()
+            .filter(|task| !standalone_only || task.is_standalone_clip())
+            .collect();
         tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         tasks
             .into_iter()
@@ -898,9 +941,16 @@ impl CanvasService {
 
     /// Total count of persisted generation tasks. Used by the UI to
     /// decide whether more pages can be loaded.
-    pub async fn task_count(&self) -> usize {
+    pub async fn task_count(&self, standalone_only: bool) -> usize {
         self.hydrate_tasks().await;
-        self.tasks.read().await.len()
+        let guard = self.tasks.read().await;
+        if !standalone_only {
+            return guard.len();
+        }
+        guard
+            .values()
+            .filter(|task| task.is_standalone_clip())
+            .count()
     }
 
     /// Drop a finished task from the persisted index. The result media file
@@ -1138,6 +1188,7 @@ mod tests {
             reference_media_ids: vec![],
             first_frame_media_id: None,
             last_frame_media_id: None,
+            project_id: None,
             progress: 1.0,
             error: None,
             result_media_id: Some("media-1".into()),
@@ -1159,7 +1210,7 @@ mod tests {
         first.persist_tasks().await;
 
         let second = CanvasService::new(path);
-        let listed = second.list_tasks(10, 0).await;
+        let listed = second.list_tasks(10, 0, false).await;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].task_id, "t1");
         assert_eq!(listed[0].status, GenerationTaskStatus::Succeeded);
@@ -1179,9 +1230,38 @@ mod tests {
         first.persist_tasks().await;
 
         let second = CanvasService::new(path);
-        let listed = second.list_tasks(10, 0).await;
+        let listed = second.list_tasks(10, 0, false).await;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].status, GenerationTaskStatus::Failed);
         assert!(listed[0].error.as_ref().is_some());
+    }
+
+    #[tokio::test]
+    async fn standalone_task_list_hides_canvas_bound_jobs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = CanvasService::new(dir.path().to_path_buf());
+        let clip = sample_task("clip", GenerationTaskStatus::Succeeded);
+        let mut canvas_job = sample_task("canvas-job", GenerationTaskStatus::Succeeded);
+        canvas_job.project_id = Some("proj-1".into());
+        service
+            .tasks
+            .write()
+            .await
+            .insert("clip".into(), clip);
+        service
+            .tasks
+            .write()
+            .await
+            .insert("canvas-job".into(), canvas_job);
+
+        let all = service.list_tasks(10, 0, false).await;
+        assert_eq!(all.len(), 2);
+
+        let standalone = service.list_tasks(10, 0, true).await;
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].task_id, "clip");
+        assert!(standalone[0].project_id.is_none());
+        assert_eq!(service.task_count(true).await, 1);
+        assert_eq!(service.task_count(false).await, 2);
     }
 }

@@ -6,6 +6,7 @@ import type { CanvasNodeGenerationMode } from "@oc/components/canvas/canvas-node
 import { canvasGenerationRequestFingerprint, canvasGenerationRequestOptions, runCanvasGenerationSubmissionOnce } from "@oc/lib/canvas/canvas-generation-submission";
 import { buildGenerationConfig, isGenerationCanceled, supportsVideoReferenceAudio } from "@oc/lib/canvas/canvas-project-generation";
 import { isGenerationTaskCapacityError } from "@oc/lib/canvas/canvas-generation-batch";
+import { waitForInboundCanvasImages } from "@oc/lib/canvas/canvas-agent-wait";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
 import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
@@ -118,6 +119,21 @@ export function useCanvasGenerationExecutor({
                 ? buildPortraitTexturePrompt(prompt, sourceNode.metadata.portraitTexture)
                 : prompt;
             const isPreparingEmptyImage = mode === "image" && sourceNode?.type === CanvasNodeType.Image && !sourceNode.metadata?.content;
+
+            if (mode === "video") {
+                await waitForInboundCanvasImages(
+                    () => ({
+                        projectId,
+                        domainProjectId,
+                        title: "",
+                        nodes: nodesRef.current,
+                        connections: connectionsRef.current,
+                        selectedNodeIds: [],
+                        viewport: { x: 0, y: 0, k: 1 },
+                    }),
+                    nodeId,
+                );
+            }
 
             let rawGenerationContext: Awaited<ReturnType<typeof hydrateNodeGenerationContext>>;
             const promptOnly = mode === "video";

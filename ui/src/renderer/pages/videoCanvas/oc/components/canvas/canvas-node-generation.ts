@@ -65,25 +65,31 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
               return image ? [{ nodeId: sourceNode.id, type: "image" as const, title: sourceNode.title, image }] : [];
           })()
         : [];
-    // Explicit @ mentions must match the prompt-panel resource set (includes self).
-    // Default auto-inputs stay inbound-only so an existing image is not silently
-    // reused as an img2img reference.
-    const mentionInputs = mergeGenerationInputs(buildNodeMentionGenerationInputs(nodeId, nodes, connections), portraitTextureInput);
+    // @ 提及解析包含当前节点，便于「将 @图片1 变清晰」做 img2img；输入架只展示入边，避免把自己的输出当成输入。
+    const selfMentionInput = sourceNode && sourceNode.id === nodeId
+        ? buildGenerationInputs([sourceNode])
+        : [];
+    const mentionInputs = mergeGenerationInputs(buildNodeMentionGenerationInputs(nodeId, nodes, connections), portraitTextureInput, selfMentionInput);
     const storyboardInputs = getConnectedStoryboardRows(nodeId, nodes, connections);
     assertResolvableGenerationMentions(prompt, mentionInputs);
     const hasExplicitResourceMention = hasResolvableGenerationMention(prompt, mentionInputs);
-    const hasConnectedMedia = connectedInputs.some((input) => input.type === "image" || input.type === "video" || input.type === "audio" || input.type === "character");
     if ((sourceNode?.type === CanvasNodeType.Config && Boolean(sourceNode.metadata?.composerContent?.trim())) || hasExplicitResourceMention) {
         return buildComposerGenerationContext(
             mentionInputs,
             prompt,
-            promptOnly && hasConnectedMedia ? [] : [sourceNode?.metadata?.videoStartFrameNodeId, sourceNode?.metadata?.videoEndFrameNodeId].filter((id): id is string => Boolean(id)),
+            [sourceNode?.metadata?.videoStartFrameNodeId, sourceNode?.metadata?.videoEndFrameNodeId].filter((id): id is string => Boolean(id)),
             promptOnly,
         );
     }
 
     const isStoryboardMedia = sourceNode?.type === CanvasNodeType.Image || sourceNode?.type === CanvasNodeType.Video;
     const basePrompt = isStoryboardMedia && storyboardInputs.length ? removeTrailingInputBlocks(prompt, storyboardInputs) : prompt;
+    const storyboardText = promptOnly
+        ? ""
+        : storyboardInputs
+            .map((input) => input.text?.trim())
+            .filter((text): text is string => Boolean(text && !basePrompt.includes(text.slice(0, Math.min(24, text.length)))))
+            .join("\n\n");
     const textInputs = connectedInputs.filter((input) => input.type === "text");
     const characterReferences = connectedInputs.map((input) => input.character).filter((item): item is CharacterGenerationReference => Boolean(item));
     const upstreamText = textInputs
@@ -95,7 +101,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const referenceAudios = connectedInputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
 
     return {
-        prompt: promptOnly ? prompt : upstreamText ? `${basePrompt}\n\n${upstreamText}` : basePrompt,
+        prompt: promptOnly ? prompt : [basePrompt, storyboardText, upstreamText].filter(Boolean).join("\n\n"),
         referenceImages,
         referenceVideos,
         referenceAudios,
@@ -459,9 +465,25 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
 }
 
 function readNodeTextInput(node: CanvasNodeData) {
+    if (node.type === CanvasNodeType.Script) return readScriptTextInput(node);
     if (node.type === CanvasNodeType.Text) return node.metadata?.content || node.metadata?.prompt || "";
     if (node.type === CanvasNodeType.Skill) return readSkillInput(node);
     return node.metadata?.prompt || "";
+}
+
+function readScriptTextInput(node: CanvasNodeData) {
+    const rows = node.metadata?.storyboard?.rows || [];
+    if (rows.length) {
+        return rows.map((row) => [
+            `【分镜 ${row.shotNumber}】`,
+            `时长：${row.durationSeconds} 秒`,
+            row.plotDescription && `画面描述：${row.plotDescription}`,
+            row.dialogue && `台词/旁白：${row.dialogue}`,
+            row.imageGenerationPrompt && `图片提示词：${row.imageGenerationPrompt}`,
+            row.videoMotionPrompt && `视频提示词：${row.videoMotionPrompt}`,
+        ].filter(Boolean).join("\n")).join("\n\n");
+    }
+    return node.metadata?.composerContent || node.metadata?.content || node.metadata?.prompt || "";
 }
 
 function readCharacterReference(node: CanvasNodeData): CharacterGenerationReference | null {

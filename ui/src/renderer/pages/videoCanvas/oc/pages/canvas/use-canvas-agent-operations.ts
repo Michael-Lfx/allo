@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 
 import type { CanvasNodeGenerationMode } from "@oc/components/canvas/canvas-node-prompt-panel";
-import { applyCanvasAgentOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { applyCanvasAgentOps, partitionCanvasGenerationOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { waitCanvasAgentGeneration } from "@oc/lib/canvas/canvas-agent-wait";
 import { getNodeGenerationMode } from "@oc/lib/canvas/node-registry";
 import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@oc/types/canvas";
 
@@ -91,11 +92,18 @@ export function useCanvasAgentOperations({
         const focusNodeIds = next.nodes.filter((node) => addedNodeIdSet.has(node.id) && (!node.parentId || !addedNodeIdSet.has(node.parentId))).map((node) => node.id);
         const affectedNodeIds = focusNodeIds.length ? focusNodeIds : agentAffectedNodeIds(safeOps, next.nodes);
         const nextSelectedNodeIds = focusNodeIds.length ? focusNodeIds : next.selectedNodeIds;
-        nodesRef.current = next.nodes;
+        const generationTargetIds = new Set(generationOps.map((op) => op.nodeId));
+        const canStartGeneration = generationOps.length > 0 && Boolean(generateNodeRef.current);
+        const appliedNodes = canStartGeneration
+            ? next.nodes.map((node) => generationTargetIds.has(node.id) && node.metadata?.status !== "success"
+                ? { ...node, metadata: { ...node.metadata, status: "pending", taskStage: "正在提交生成任务" } }
+                : node)
+            : next.nodes;
+        nodesRef.current = appliedNodes;
         connectionsRef.current = next.connections;
         selectedNodeIdsRef.current = new Set(nextSelectedNodeIds);
         viewportRef.current = next.viewport;
-        setNodes(next.nodes);
+        setNodes(appliedNodes);
         setConnections(next.connections);
         setSelectedNodeIds(new Set(nextSelectedNodeIds));
         setSelectedConnectionId(null);
@@ -103,20 +111,39 @@ export function useCanvasAgentOperations({
         setContextMenu(null);
         if (safeOps.length) {
             const change = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, summary: summarizeCanvasAgentOps(safeOps) || "画布操作已完成", nodeIds: affectedNodeIds };
-            undoStackRef.current = [...undoStackRef.current, { snapshot: before, afterNodes: next.nodes, afterConnections: next.connections, change }].slice(-10);
+            undoStackRef.current = [...undoStackRef.current, { snapshot: before, afterNodes: appliedNodes, afterConnections: next.connections, change }].slice(-10);
             const nextUndoCount = undoStackRef.current.length;
             setUndoOpsCount(nextUndoCount);
             setLastAgentChange({ ...change, undoCount: nextUndoCount });
         }
         if (focusNodeIds.length) queueMicrotask(() => focusSelection());
-        if (generationOps.length) {
-            queueMicrotask(() => generationOps.forEach((op) => {
-                const target = nodesRef.current.find((node) => node.id === op.nodeId);
-                const prompt = op.prompt?.trim() ? op.prompt : target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "";
-                void generateNodeRef.current?.(op.nodeId, op.mode || (target && getNodeGenerationMode(target)) || target?.metadata?.generationMode || "image", prompt);
-            }));
+        if (canStartGeneration) {
+            queueMicrotask(() => {
+                void (async () => {
+                    const waves = partitionCanvasGenerationOps(generationOps, connectionsRef.current);
+                    for (const wave of waves) {
+                        await Promise.all(wave.map((op) => {
+                            const target = nodesRef.current.find((node) => node.id === op.nodeId);
+                            const prompt = op.prompt?.trim() ? op.prompt : target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "";
+                            return generateNodeRef.current?.(op.nodeId, op.mode || (target && getNodeGenerationMode(target)) || target?.metadata?.generationMode || "image", prompt);
+                        }));
+                        await waitCanvasAgentGeneration(
+                            () => ({
+                                projectId,
+                                domainProjectId,
+                                title: projectTitle,
+                                nodes: nodesRef.current,
+                                connections: connectionsRef.current,
+                                selectedNodeIds: Array.from(selectedNodeIdsRef.current),
+                                viewport: viewportRef.current,
+                            }),
+                            { nodeIds: wave.map((op) => op.nodeId) },
+                        );
+                    }
+                })();
+            });
         }
-        return { ...next, projectId, title: projectTitle, selectedNodeIds: nextSelectedNodeIds };
+        return { ...next, nodes: appliedNodes, projectId, title: projectTitle, selectedNodeIds: nextSelectedNodeIds };
     }, [connectionsRef, domainProjectId, focusSelection, generateNodeRef, nodesRef, projectId, projectTitle, selectedNodeIdsRef, setConnections, setContextMenu, setNodes, setSelectedConnectionId, setSelectedNodeIds, setViewport, viewportRef]);
 
     const undoOps = useCallback(() => {

@@ -11,7 +11,7 @@ import { createClientId } from "@oc/lib/client-id";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { useCanvasAgentStore, type AgentChatItem, type AgentPendingToolCall, type AgentThreadSummary } from "@oc/stores/canvas/use-canvas-agent-store";
-import { canvasAgentPostconditionMessage, summarizeCanvasAgentOps, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { canvasAgentPostconditionMessage, canvasAgentStateHashBlocksWrite, summarizeCanvasAgentOps, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
 import { buildCanvasAgentPlan } from "@oc/lib/canvas/canvas-agent-plan";
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@oc/lib/canvas/canvas-agent-context";
 import { collectCanvasSkills } from "@oc/lib/canvas/canvas-skill-mentions";
@@ -257,7 +257,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                 const currentSnapshot = snapshotRef.current;
                 if (typeof input.expectedRevision === "number" && input.expectedRevision !== (currentSnapshot.revision ?? 0)) throw new Error(`画布 revision 已从 ${input.expectedRevision} 变为 ${currentSnapshot.revision ?? 0}，请重新读取 canvas_get_context 后再执行写操作`);
                 const expectedStateHash = typeof input.expectedStateHash === "string" ? input.expectedStateHash : "";
-                if (expectedStateHash && expectedStateHash !== buildCanvasAgentContext(currentSnapshot).stateHash) throw new Error("画布状态已变化，请重新读取 canvas_get_context 后再执行写操作。");
+                if (canvasAgentStateHashBlocksWrite(expectedStateHash, buildCanvasAgentContext(currentSnapshot).stateHash, payload.name, input)) throw new Error("画布状态已变化，请重新读取 canvas_get_context 后再执行写操作。");
                 const validation = validateCanvasAgentOps(currentSnapshot, (input.ops || []) as CanvasAgentOp[]);
                 if (!validation.ok) throw new Error(`画布操作校验失败：${validation.issues.filter((item) => item.severity === "error").map((item) => item.message).join("；")}`);
             }

@@ -7,6 +7,29 @@
  */
 
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
+import { encodeToolArguments } from '@oc/lib/canvas/canvas-tool-arguments';
+
+export function canvasLlmNetworkErrorMessage() {
+  return "规划模型请求失败（网络中断或代理不可达）。请确认画布文本模型可用后重试。";
+}
+
+export function isCanvasLlmTransportFailure(error: unknown) {
+  if (axiosIsNetworkError(error)) return true;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /failed to fetch|network ?error|load failed|fetch failed|networkerror|err_network|econnrefused|econnreset/i.test(message);
+}
+
+function axiosIsNetworkError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const record = error as { isAxiosError?: boolean; response?: unknown; code?: string; message?: string };
+  return Boolean(record.isAxiosError && !record.response && (record.code === "ERR_NETWORK" || /network ?error/i.test(record.message || "")));
+}
+
+export function toCanvasLlmTransportError(error: unknown): Error {
+  if (error instanceof DOMException && error.name === "AbortError") return new Error("请求已取消");
+  if (isCanvasLlmTransportFailure(error)) return new Error(canvasLlmNetworkErrorMessage());
+  return error instanceof Error ? error : new Error(String(error ?? "规划模型请求失败"));
+}
 
 export const CANVAS_LLM_CHAT_PATH = '/api/video-canvas/llm/v1/chat/completions';
 
@@ -47,18 +70,23 @@ export async function streamCanvasChatCompletions(
   body: Record<string, unknown>,
   handlers: CanvasChatStreamHandlers = {}
 ): Promise<CanvasChatStreamResult> {
-  const response = await fetch(canvasLlmChatUrl(), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      ...buildBackendAuthHeaders('POST'),
-    },
-    body: JSON.stringify({ ...body, stream: true }),
-    signal: handlers.signal,
-    credentials: 'omit',
-    cache: 'no-store',
-  });
+  let response: Response;
+  try {
+    response = await fetch(canvasLlmChatUrl(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        ...buildBackendAuthHeaders('POST'),
+      },
+      body: JSON.stringify({ ...body, stream: true }),
+      signal: handlers.signal,
+      credentials: 'omit',
+      cache: 'no-store',
+    });
+  } catch (error) {
+    throw toCanvasLlmTransportError(error);
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');
@@ -84,7 +112,7 @@ export async function streamCanvasChatCompletions(
       .map((call) => ({
         id: call.id || '',
         type: 'function' as const,
-        function: { name: call.function?.name || '', arguments: call.function?.arguments || '{}' },
+        function: { name: call.function?.name || '', arguments: encodeToolArguments(call.function?.arguments) },
       }))
       .filter((call) => call.id && call.function.name);
     return { content: message?.content || '', toolCalls };
@@ -165,7 +193,13 @@ function consumeBlock(block: string, state: StreamState, onDelta?: (text: string
     state.toolCalls.set(callIndex, {
       id: (typeof item.id === 'string' && item.id) || current.id,
       name: (typeof fn?.name === 'string' && fn.name) || current.name,
-      arguments: current.arguments + (typeof fn?.arguments === 'string' ? fn.arguments : ''),
+      arguments: current.arguments + encodeToolArgumentDelta(fn?.arguments, current.arguments),
     });
   });
+}
+
+function encodeToolArgumentDelta(value: unknown, current: string) {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') return current ? '' : encodeToolArguments(value);
+  return '';
 }

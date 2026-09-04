@@ -72,6 +72,28 @@ describe("collectMediaIds / alloBodyFromCreateInput", () => {
         expect(body.reference_media_ids).toEqual([]);
     });
 
+    test("three video keyframes stay in reference_media_ids instead of first/last frames", () => {
+        const refC = { id: "c", name: "c.png", type: "image/png", dataUrl: "", storageKey: "resource:media-c" };
+        const body = alloBodyFromCreateInput({
+            type: "canvas_video",
+            operation: "image_to_video",
+            prompt: "animate",
+            input: {
+                mode: "video",
+                prompt: "animate",
+                referenceImages: [refA, refB, refC],
+                metadata: {
+                    videoEditOperation: "image_to_video",
+                    videoStartFrameNodeId: "a",
+                    videoEndFrameNodeId: "c",
+                },
+            },
+        });
+        expect(body.first_frame_media_id).toBeUndefined();
+        expect(body.last_frame_media_id).toBeUndefined();
+        expect(body.reference_media_ids).toEqual(["media-a", "media-b", "media-c"]);
+    });
+
     test("explicit first-frame metadata is honored and excluded from references", () => {
         const collected = collectMediaIds(
             {
@@ -82,5 +104,25 @@ describe("collectMediaIds / alloBodyFromCreateInput", () => {
         );
         expect(collected.firstFrameId).toBe("media-b");
         expect(collected.referenceIds).toEqual(["media-a"]);
+    });
+
+    test("canvas node jobs stamp project_id onto the generation body", () => {
+        const body = alloBodyFromCreateInput({
+            projectId: "canvas-proj-1",
+            type: "canvas_video",
+            operation: "text_to_video",
+            prompt: "a cat walks",
+            input: { mode: "video", prompt: "a cat walks" },
+        });
+        expect(body.project_id).toBe("canvas-proj-1");
+    });
+
+    test("home clip jobs omit project_id", () => {
+        const body = alloBodyFromCreateInput({
+            type: "canvas_video",
+            prompt: "a cat walks",
+            input: { mode: "video", prompt: "a cat walks" },
+        });
+        expect(body.project_id).toBeUndefined();
     });
 });

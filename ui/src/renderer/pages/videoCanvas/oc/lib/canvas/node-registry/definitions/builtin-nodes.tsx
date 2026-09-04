@@ -56,6 +56,7 @@ const BUILTIN_NODE_TRAITS = {
         showInCreateMenu: true,
         generationMode: () => "text",
         inputKind: "text",
+        resourceKind: (node: CanvasNodeData) => (node.metadata?.storyboard?.rows?.length || node.metadata?.composerContent || node.metadata?.content || node.metadata?.prompt ? "text" : null),
     },
     [CanvasNodeType.Skill]: {
         label: "技能",
