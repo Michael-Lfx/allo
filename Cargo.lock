@@ -10095,6 +10095,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
+ "h2",
  "h3",
  "h3-quinn",
  "http 1.5.0",

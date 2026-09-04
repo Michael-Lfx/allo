@@ -2,9 +2,20 @@
 //!
 //! Measures cold-connect handshake latency, warm-connection TTFB, total response time,
 //! and transport protocol behavior against Flowy servers or any HTTP endpoint.
+//!
+//! When the local DNS is hijacked by a TUN/VPN fake-IP (e.g. Clash Metal 198.18.0.5),
+//! pass `--ip <real server ip>` so the client connects straight to the real IP and
+//! bypasses the fake-IP endpoint that has no QUIC listener:
+//!
+//! ```powershell
+//! $env:RUSTFLAGS="--cfg reqwest_unstable"
+//! cargo run -p nomifun-cloud --example http_protocol_probe --features http3-experimental -- `
+//!   --target https://server.flowyaipc.com/claw/health --protocol both --rounds 10 --ip 47.251.95.78
+//! ```
 
 use std::error::Error;
 use std::time::{Duration, Instant};
+
 use clap::{Parser, ValueEnum};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Client, Version};
@@ -34,6 +45,12 @@ struct Args {
     /// Request timeout in seconds
     #[arg(long, default_value_t = 10)]
     timeout: u64,
+
+    /// Override DNS for the target host: connect straight to this IP.
+    /// Use it to bypass a local TUN/VPN fake-IP (e.g. Clash Metal fake-IP 198.18.0.5)
+    /// whose midpoint has no QUIC listener.
+    #[arg(long)]
+    ip: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -93,32 +110,59 @@ impl ProbeMetrics {
     }
 }
 
-fn build_h2_client(timeout: Duration) -> Result<Client, Box<dyn Error>> {
+/// Pin the target hostname to a fixed IP so the connection bypasses the
+/// local fake-IP TUN/VPN midpoint (which often has no QUIC/UDP listener).
+fn build_resolve_addr(target: &str, ip: &str) -> Result<(String, std::net::SocketAddr), Box<dyn Error>> {
+    let url = url::Url::parse(target)?;
+    let host = url
+        .host_str()
+        .ok_or("target URL has no host")?
+        .to_string();
+    let port = url.port_or_known_default().unwrap_or(443);
+
+    // Remove the proxy env-var family that predates the process, so the
+    // pinned-IP connection is never routed through a stale proxy config.
+    for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+        // Safety: this example is single-threaded at startup; no other thread
+        // reads the env concurrently before the clients are built.
+        unsafe { std::env::remove_var(key) };
+    }
+
+    let addr: std::net::SocketAddr = format!("{ip}:{port}").parse()?;
+    Ok((host, addr))
+}
+
+fn build_h2_client(timeout: Duration, resolve: Option<(String, std::net::SocketAddr)>) -> Result<Client, Box<dyn Error>> {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static("flowy-protocol-probe/h2"));
 
-    let client = Client::builder()
+    let mut builder = Client::builder()
         .timeout(timeout)
-        .default_headers(headers)
-        .build()?;
+        .default_headers(headers);
+    if let Some((host, addr)) = resolve {
+        builder = builder.resolve(&host, addr);
+    }
+    let client = builder.build()?;
     Ok(client)
 }
 
 #[cfg(feature = "http3-experimental")]
-fn build_h3_client(timeout: Duration) -> Result<Client, Box<dyn Error>> {
+fn build_h3_client(timeout: Duration, resolve: Option<(String, std::net::SocketAddr)>) -> Result<Client, Box<dyn Error>> {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static("flowy-protocol-probe/h3"));
 
-    let client = Client::builder()
+    let mut builder = Client::builder()
         .timeout(timeout)
-        .default_headers(headers)
-        .http3_prior_knowledge()
-        .build()?;
+        .default_headers(headers);
+    if let Some((host, addr)) = resolve {
+        builder = builder.resolve(&host, addr);
+    }
+    let client = builder.http3_prior_knowledge().build()?;
     Ok(client)
 }
 
 #[cfg(not(feature = "http3-experimental"))]
-fn build_h3_client(_timeout: Duration) -> Result<Client, Box<dyn Error>> {
+fn build_h3_client(_timeout: Duration, _resolve: Option<(String, std::net::SocketAddr)>) -> Result<Client, Box<dyn Error>> {
     Err("http3-experimental feature is not enabled. Re-run with --features http3-experimental and RUSTFLAGS='--cfg reqwest_unstable'".into())
 }
 
@@ -214,13 +258,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!(" Target:   {}", args.target);
     println!(" Protocol: {:?}", args.protocol);
     println!(" Rounds:   {}", args.rounds);
+    if let Some(ip) = &args.ip {
+        println!(" DNS Pin:  {} (straight to real IP, bypass fake-IP TUN)", ip);
+    }
     println!("============================================================");
+
+    let resolve = match &args.ip {
+        Some(ip) => Some(build_resolve_addr(&args.target, ip)?),
+        None => None,
+    };
 
     let mut h2_metrics: Option<ProbeMetrics> = None;
     let mut h3_metrics: Option<ProbeMetrics> = None;
 
     if args.protocol == ProtocolTarget::H2 || args.protocol == ProtocolTarget::Both {
-        match build_h2_client(timeout) {
+        match build_h2_client(timeout, resolve.clone()) {
             Ok(client) => {
                 let m = run_protocol_test("HTTP/2 (TCP)", client, &args.target, args.rounds).await;
                 m.print_report();
@@ -233,7 +285,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if args.protocol == ProtocolTarget::H3 || args.protocol == ProtocolTarget::Both {
-        match build_h3_client(timeout) {
+        match build_h3_client(timeout, resolve.clone()) {
             Ok(client) => {
                 let m = run_protocol_test("HTTP/3 (QUIC/UDP)", client, &args.target, args.rounds).await;
                 m.print_report();
