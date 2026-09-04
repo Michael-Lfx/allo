@@ -42,7 +42,25 @@ pub trait MarketPackagePresetInstaller: Send + Sync {
         preset_id: Option<String>,
         package: SkillMarketPackageResponse,
         skill_ids: Vec<String>,
-    ) -> Result<String, AppError>;
+    ) -> Result<String, MarketPackagePresetInstallFailure>;
+}
+
+/// Failure returned by the preset bridge. When an idempotent install found an
+/// existing preset, newly downloaded Skills must be preserved even if the
+/// state refresh fails; removing them would break that existing preset.
+#[derive(Debug)]
+pub struct MarketPackagePresetInstallFailure {
+    pub error: AppError,
+    pub preserve_committed_skills: bool,
+}
+
+impl MarketPackagePresetInstallFailure {
+    pub fn new(error: AppError, preserve_committed_skills: bool) -> Self {
+        Self {
+            error,
+            preserve_committed_skills,
+        }
+    }
 }
 
 struct MarketPackageStaging {
@@ -63,9 +81,22 @@ fn market_package_commit_lock() -> &'static tokio::sync::Mutex<()> {
 impl Drop for MarketPackageStaging {
     fn drop(&mut self) {
         // Drop is the final cancellation/unwind guard. The extracted archive
-        // is untrusted input and must not survive an interrupted install.
-        let _ = std::fs::remove_dir_all(&self.root);
-        let _ = std::fs::remove_dir(&self.parent);
+        // is untrusted input and must not survive an interrupted install. Do
+        // not recurse synchronously on a Tokio worker: package archives are
+        // bounded but can still make cancellation block the runtime.
+        let root = self.root.clone();
+        let parent = self.parent.clone();
+        let cleanup = move || {
+            let _ = std::fs::remove_dir_all(root);
+            let _ = std::fs::remove_dir(parent);
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(cleanup);
+        } else {
+            let _ = std::thread::Builder::new()
+                .name("market-package-cleanup".into())
+                .spawn(cleanup);
+        }
     }
 }
 
@@ -100,12 +131,15 @@ pub async fn install_market_package(
 ) -> Result<SkillMarketPackageInstallResponse, AppError> {
     let requested_preset_id = req.preset_id.clone();
     let slug = resolve_skillhub_package_slug(&req)?;
-    if super::is_skillhub_package_blacklisted(&slug) {
+    if super::is_skillhub_package_blacklisted(&slug)? {
         return Err(AppError::NotFound(format!(
             "SkillHub expert package '{slug}' is unavailable"
         )));
     }
-    let package = resolve_market_package(req).await?;
+    let package = match resolve_market_package(req).await {
+        Ok(package) => package,
+        Err(error) => return resolve_package_failure_response(&slug, error),
+    };
     let install_result = install_skillhub_package_skills(paths, &package.skill_slugs).await?;
     if !install_result.errors.is_empty() {
         let (failure_class, failure_code) = classify_package_failures(&install_result.errors);
@@ -140,6 +174,7 @@ pub async fn install_market_package(
                         error.to_string(),
                         "local",
                         "SKILL_COMMIT_FAILED",
+                        None,
                     ));
                 }
             }
@@ -164,14 +199,17 @@ pub async fn install_market_package(
             failure_class: None,
             failure_code: None,
         }),
-        Err(error) => {
-            rollback_committed_skills(paths, &committed).await;
+        Err(failure) => {
+            if !failure.preserve_committed_skills {
+                rollback_committed_skills(paths, &committed).await;
+            }
             Ok(package_install_failure_response(
                 package,
                 "<preset>".into(),
-                error.to_string(),
+                failure.error.to_string(),
                 "local",
                 "PRESET_COMMIT_FAILED",
+                None,
             ))
         }
     }
@@ -191,6 +229,7 @@ fn package_install_failure_response(
     error: String,
     failure_class: &str,
     failure_code: &str,
+    http_status: Option<u16>,
 ) -> SkillMarketPackageInstallResponse {
     SkillMarketPackageInstallResponse {
         package,
@@ -200,10 +239,61 @@ fn package_install_failure_response(
         errors: vec![SkillMarketPackageInstallError {
             skill_slug,
             error,
-            http_status: None,
+            http_status,
         }],
         failure_class: Some(failure_class.to_owned()),
         failure_code: Some(failure_code.to_owned()),
+    }
+}
+
+fn resolve_package_failure_response(
+    slug: &str,
+    error: AppError,
+) -> Result<SkillMarketPackageInstallResponse, AppError> {
+    let (failure_class, failure_code) = classify_package_resolution_error(&error);
+    let http_status = Some(error.status_code().as_u16());
+    match error {
+        AppError::NotFound(message) | AppError::BadGateway(message) | AppError::Timeout(message) => {
+            Ok(package_install_failure_response(
+                unresolved_package_response(slug),
+                "<package>".into(),
+                message,
+                failure_class,
+                failure_code,
+                http_status,
+            ))
+        }
+        other => Err(other),
+    }
+}
+
+fn unresolved_package_response(slug: &str) -> SkillMarketPackageResponse {
+    SkillMarketPackageResponse {
+        name: title_from_slug(slug),
+        description: String::new(),
+        instructions: String::new(),
+        skill_slugs: Vec::new(),
+        avatar: None,
+    }
+}
+
+fn classify_package_resolution_error(error: &AppError) -> (&'static str, &'static str) {
+    match error {
+        AppError::NotFound(_) => ("deterministic", "PACKAGE_NOT_FOUND"),
+        AppError::Timeout(_) => ("transient", "PACKAGE_DETAIL_NETWORK"),
+        AppError::BadGateway(message) => {
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("json parse")
+                || lower.contains("missing")
+                || lower.contains("mismatch")
+                || lower.contains("content")
+            {
+                ("deterministic", "PACKAGE_DETAIL_INVALID")
+            } else {
+                ("transient", "PACKAGE_DETAIL_NETWORK")
+            }
+        }
+        _ => ("local", "PACKAGE_DETAIL_LOCAL")
     }
 }
 
@@ -793,6 +883,34 @@ mod tests {
 
         let missing_content = serde_json::json!({ "slug": "tech-test-automation" }).to_string();
         assert!(parse_skillhub_package_detail(&missing_content, "tech-test-automation").is_err());
+    }
+
+    #[test]
+    fn package_detail_failures_are_classified_for_legacy_clients() {
+        let missing = resolve_package_failure_response(
+            "removed-package",
+            AppError::NotFound("SkillHub package not found".into()),
+        )
+        .unwrap();
+        assert_eq!(missing.failure_class.as_deref(), Some("deterministic"));
+        assert_eq!(missing.failure_code.as_deref(), Some("PACKAGE_NOT_FOUND"));
+        assert_eq!(missing.errors[0].http_status, Some(404));
+
+        let network = resolve_package_failure_response(
+            "slow-package",
+            AppError::Timeout("skill market fetch timed out".into()),
+        )
+        .unwrap();
+        assert_eq!(network.failure_class.as_deref(), Some("transient"));
+        assert_eq!(network.failure_code.as_deref(), Some("PACKAGE_DETAIL_NETWORK"));
+
+        let invalid = resolve_package_failure_response(
+            "invalid-package",
+            AppError::BadGateway("SkillHub package JSON parse failed".into()),
+        )
+        .unwrap();
+        assert_eq!(invalid.failure_class.as_deref(), Some("deterministic"));
+        assert_eq!(invalid.failure_code.as_deref(), Some("PACKAGE_DETAIL_INVALID"));
     }
 
     #[test]

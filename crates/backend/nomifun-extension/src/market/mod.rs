@@ -15,7 +15,9 @@ mod package;
 mod parse;
 
 pub use mcp::resolve_market_mcp_config;
-pub use package::{MarketPackagePresetInstaller, install_market_package};
+pub use package::{
+    MarketPackagePresetInstallFailure, MarketPackagePresetInstaller, install_market_package,
+};
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -28,7 +30,7 @@ use nomifun_common::AppError;
 use client::{build_market_client, read_market_body, read_market_body_with_timeout, read_market_json_post};
 use parse::{
     parse_clawhub_plugins, parse_clawhub_rankings, parse_loophub_rankings, parse_mcpworld_rankings,
-    parse_skillhub_mcp_rankings, parse_skillhub_packages, parse_skillhub_rankings,
+    is_market_slug, parse_skillhub_mcp_rankings, parse_skillhub_packages, parse_skillhub_rankings,
 };
 
 // ---------------------------------------------------------------------------
@@ -45,44 +47,73 @@ const SKILLHUB_PACKAGES_SOURCE: &str = "skillhub_packages";
 
 #[derive(serde::Deserialize)]
 struct SkillHubPackageBlacklistFile {
-    #[serde(default)]
+    version: u32,
+    source: String,
+    verified_at: String,
+    checked_package_count: usize,
+    failed_package_count: usize,
+    verified_healthy_package_count: usize,
     packages: std::collections::HashMap<String, serde_json::Value>,
 }
 
 static SKILLHUB_PACKAGE_BLACKLIST: OnceLock<Result<HashSet<String>, String>> = OnceLock::new();
 
+fn parse_skillhub_package_blacklist(body: &str) -> Result<HashSet<String>, String> {
+    let file = serde_json::from_str::<SkillHubPackageBlacklistFile>(body)
+        .map_err(|error| format!("invalid SkillHub package blacklist: {error}"))?;
+    if file.version != 1
+        || file.source != SKILLHUB_PACKAGES_BASE_URL
+        || file.verified_at.trim().is_empty()
+        || file.failed_package_count != file.packages.len()
+        || file.checked_package_count
+            != file.failed_package_count + file.verified_healthy_package_count
+        || file.checked_package_count < file.packages.len()
+        || file.packages.keys().any(|slug| !is_market_slug(slug))
+    {
+        return Err("invalid SkillHub package blacklist metadata".into());
+    }
+    Ok(file
+        .packages
+        .into_keys()
+        .map(|slug| slug.to_ascii_lowercase())
+        .collect())
+}
+
 fn skillhub_package_blacklist() -> &'static Result<HashSet<String>, String> {
     SKILLHUB_PACKAGE_BLACKLIST.get_or_init(|| {
-        let file = serde_json::from_str::<SkillHubPackageBlacklistFile>(include_str!(
+        parse_skillhub_package_blacklist(include_str!(
             "../../assets/skillhub-package-blacklist.json"
         ))
-        .map_err(|error| format!("invalid SkillHub package blacklist: {error}"))?;
-        Ok(file
-            .packages
-            .into_keys()
-            .map(|slug| slug.to_ascii_lowercase())
-            .collect())
     })
 }
 
-pub(crate) fn is_skillhub_package_blacklisted(slug: &str) -> bool {
+pub(crate) fn is_skillhub_package_blacklisted(slug: &str) -> Result<bool, AppError> {
     match skillhub_package_blacklist() {
-        Ok(packages) => packages.contains(&slug.to_ascii_lowercase()),
+        Ok(packages) => Ok(packages.contains(&slug.to_ascii_lowercase())),
         Err(error) => {
             tracing::error!(%error, "SkillHub package blacklist could not be loaded");
-            false
+            Err(AppError::Internal(
+                "SkillHub package blacklist is unavailable; package operations are disabled".into(),
+            ))
         }
     }
 }
 
-fn filter_blacklisted_skillhub_packages(items: Vec<SkillMarketItemResponse>) -> Vec<SkillMarketItemResponse> {
+fn filter_blacklisted_skillhub_packages(
+    items: Vec<SkillMarketItemResponse>,
+) -> Result<Vec<SkillMarketItemResponse>, AppError> {
     items
         .into_iter()
-        .filter(|item| {
-            let slug = item.id.strip_prefix("skillhub_packages:");
-            !slug.is_some_and(is_skillhub_package_blacklisted)
+        .try_fold(Vec::new(), |mut filtered, item| {
+            if let Some(slug) = item.id.strip_prefix("skillhub_packages:") {
+                if !is_skillhub_package_blacklisted(slug)? {
+                    filtered.push(item);
+                }
+            } else {
+                filtered.push(item);
+            }
+            Ok(filtered)
         })
-        .collect()
 }
 
 const CLAWHUB_RANKING_URL: &str = "https://clawhub.ai/skills?tab=new";
@@ -98,6 +129,7 @@ const MCPWORLD_RANKING_URL: &str =
 const CLAWHUB_PLUGINS_API_URL: &str = "https://clawhub.ai/api/v1/plugins?limit=100&sort=recommended";
 const CLAWHUB_PLUGINS_URL: &str = "https://clawhub.ai/plugins";
 const SKILLHUB_PACKAGES_URL: &str = "https://api.skillhub.cn/api/v1/skillsets?page=1&pageSize=200";
+const SKILLHUB_PACKAGES_BASE_URL: &str = "https://api.skillhub.cn/api/v1/skillsets";
 
 /// The expert-package ranking is a much larger JSON document than the other
 /// market feeds (currently hundreds of KiB). Give only this request enough
@@ -209,14 +241,14 @@ async fn fetch_market_source(
             &read_market_body(client, SKILLHUB_MCP_RANKING_URL).await?,
         )),
         MCPWORLD_SOURCE => Ok(parse_mcpworld_rankings(&read_market_body(client, MCPWORLD_RANKING_URL).await?)),
-        SKILLHUB_PACKAGES_SOURCE => Ok(filter_blacklisted_skillhub_packages(parse_skillhub_packages(
+        SKILLHUB_PACKAGES_SOURCE => filter_blacklisted_skillhub_packages(parse_skillhub_packages(
             &read_market_body_with_timeout(
                 client,
                 SKILLHUB_PACKAGES_URL,
                 SKILLHUB_PACKAGES_REQUEST_TIMEOUT,
             )
             .await?,
-        ))),
+        )),
         other => Err(AppError::BadRequest(format!("unsupported skill market source: {other}"))),
     }
 }
@@ -349,10 +381,16 @@ mod tests {
         let mut healthy = broken.clone();
         healthy.id = "skillhub_packages:healthy-package".into();
 
-        assert!(is_skillhub_package_blacklisted("tech-test-automation"));
-        let filtered = filter_blacklisted_skillhub_packages(vec![broken, healthy]);
+        assert!(is_skillhub_package_blacklisted("tech-test-automation").unwrap());
+        let filtered = filter_blacklisted_skillhub_packages(vec![broken, healthy]).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "skillhub_packages:healthy-package");
+    }
+
+    #[test]
+    fn malformed_blacklist_fails_closed() {
+        assert!(parse_skillhub_package_blacklist("{").is_err());
+        assert!(parse_skillhub_package_blacklist("{}").is_err());
     }
 
     #[test]

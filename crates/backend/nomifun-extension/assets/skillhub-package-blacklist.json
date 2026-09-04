@@ -3,6 +3,8 @@
   "source": "https://api.skillhub.cn/api/v1/skillsets",
   "verified_at": "2026-09-03",
   "checked_package_count": 59,
+  "failed_package_count": 3,
+  "verified_healthy_package_count": 56,
   "packages": {
     "tech-test-automation": {
       "declared_skill_count": 6,

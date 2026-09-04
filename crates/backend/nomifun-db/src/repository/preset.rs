@@ -15,6 +15,12 @@ pub trait IPresetRepository: Send + Sync {
     /// already-issued business ID while replacing the current catalog data.
     async fn upsert_catalog(&self, params: &PresetWriteParams) -> Result<PresetRecord, DbError>;
     async fn create(&self, params: &PresetWriteParams) -> Result<PresetRecord, DbError>;
+    /// Create a preset and its user state in one SQLite transaction.
+    async fn create_with_state(
+        &self,
+        params: &PresetWriteParams,
+        state: &UpsertPresetStateParams,
+    ) -> Result<PresetRecord, DbError>;
     /// Replaces all authored fields and bindings and increments revision.
     async fn update(&self, preset_id: &str, params: &PresetWriteParams) -> Result<Option<PresetRecord>, DbError>;
     async fn delete(&self, preset_id: &str) -> Result<bool, DbError>;
