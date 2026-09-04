@@ -57,6 +57,17 @@ pub struct AgentRunEvent {
     pub payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRunSteerRequest {
+    pub text: String,
+    pub expected_version: i64,
+    #[serde(default)]
+    pub command_id: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunStatus {
@@ -254,6 +265,71 @@ impl AgentRuntimeAdapter {
                 )
                 .await?,
         ))
+    }
+
+    /// Steer a running App Server run: resolve the currently active agent
+    /// step (opaque to the protocol) and forward text via the engine's
+    /// durable conversation-effect path. `expected_version` maps to the
+    /// execution-level CAS; the step CAS is taken from the freshly read
+    /// detail so concurrent client steers serialize on the server view.
+    ///
+    /// The steerable window follows the attempt lifecycle, not the step
+    /// lifecycle: a single-step run sits in `planning` while its attempt
+    /// conversation is already running, which is exactly when steering
+    /// matters most. Steps with a `Running` attempt steer; when none does,
+    /// the step fallback (below) covers steps whose status is Running but
+    /// whose attempt list has not been observed yet.
+    pub async fn steer_run(
+        &self,
+        owner_id: &str,
+        run_id: &str,
+        text: &str,
+        expected_version: i64,
+    ) -> Result<AgentRunView, RuntimeAdapterError> {
+        let detail = self.engine.get(owner_id, run_id).await?;
+        if detail.execution.version != expected_version {
+            return Err(RuntimeAdapterError::Runtime(nomifun_common::AppError::Conflict(
+                "run changed before the steer command".to_owned(),
+            )));
+        }
+        let active_attempt_step = detail.attempts.iter().find(|attempt| {
+            attempt.status == nomifun_common::ExecutionAttemptStatus::Running
+        });
+        let active_step = match active_attempt_step {
+            Some(attempt) => detail
+                .steps
+                .iter()
+                .find(|step| step.step_id == attempt.step_id)
+                .ok_or_else(|| {
+                    RuntimeAdapterError::Runtime(nomifun_common::AppError::Internal(
+                        "running attempt references an unknown step".to_owned(),
+                    ))
+                })?,
+            None => detail
+                .steps
+                .iter()
+                .find(|step| step.status == nomifun_common::ExecutionStepStatus::Running)
+                .ok_or_else(|| {
+                    RuntimeAdapterError::Runtime(nomifun_common::AppError::Conflict(
+                        "run has no running agent step to steer".to_owned(),
+                    ))
+                })?,
+        };
+        self.engine
+            .steer_step(
+                owner_id,
+                &AgentExecutionActor::user(owner_id),
+                run_id,
+                &active_step.step_id,
+                nomifun_api_types::SteerExecutionStepRequest {
+                    text: text.to_owned(),
+                    expected_execution_version: expected_version,
+                    expected_step_version: active_step.version,
+                },
+            )
+            .await
+            .map_err(RuntimeAdapterError::Runtime)?;
+        Ok(self.get_run(owner_id, run_id).await?)
     }
 }
 

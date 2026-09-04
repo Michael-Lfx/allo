@@ -24,7 +24,14 @@ anyhow.workspace = true
 # `nomifun_app::bootstrap` boots environment/data/services and `create_router`
 # mounts the full API surface (App Server WS + HTTP helpers, conversations,
 # workspaces, imports, marketplaces, OAuth, etc.).
-nomifun-app.workspace = true
+#
+# Size-trimmed feature set for the headless store host:
+# - `default-features = false` drops the chat-channel plugins (telegram/
+#   lark/.../nostr) and the Bedrock/Silero-VAD native stacks — none of them
+#   serve the store's browse/install/run surface (no voice pipeline, no
+#   channel inboxes, no AWS catalog fetch). Cuts ~90 MB off the binary.
+# - Only the channel the store actually uses is re-enabled below.
+nomifun-app = { workspace = true, default-features = false, features = ["qqbot"] }
 nomifun-app-server.workspace = true
 nomifun-common.workspace = true
 nomifun-runtime.workspace = true

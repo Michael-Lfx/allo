@@ -42,7 +42,9 @@ use axum::{
     routing::{delete, get, post},
 };
 pub use nomifun_agent_execution::AgentRuntimeAdapter;
-use nomifun_agent_execution::{AgentRunReceipt, AgentRunResult, AgentRunView};
+use nomifun_agent_execution::{
+    AgentRunReceipt, AgentRunResult, AgentRunSteerRequest, AgentRunView,
+};
 use nomifun_auth::CurrentUser;
 use nomifun_common::{MessagePosition, MessageType, ProviderWithModel, UserId, generate_id};
 use nomifun_api_types::{
@@ -862,6 +864,7 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route("/api/app-server/run/{run_id}/result", get(run_result))
         .route("/api/app-server/run/{run_id}/events", get(run_events))
         .route("/api/app-server/run/{run_id}/cancel", post(run_cancel))
+        .route("/api/app-server/run/{run_id}/steer", post(run_steer))
         // Agent Store Skill catalog
         .route("/api/app-server/skills", get(list_skills_route))
         .route("/api/app-server/skills/{skill_id}", get(get_skill_route))
@@ -1460,6 +1463,11 @@ fn marketplace_provider(
 /// so it is safe to run before every store/market listing. Failures are
 /// non-fatal: a broken default source is reported as a warning and the rest
 /// keeps working. Network reach is bounded by `tokio::time::timeout`.
+///
+/// When the config file is absent (fresh install), the builtin public mirror
+/// is registered instead, so a new user can browse the store before touching
+/// any config. A config file that exists but declares no `default_marketplaces`
+/// also falls back. Explicit user markets always win over builtin ones.
 async fn ensure_default_marketplaces(state: &AppServerRouterState) {
     let provider = match marketplace_provider(state) {
         Ok(provider) => provider,
@@ -1471,9 +1479,21 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) {
     let Some(path) = state.agent_store_config_path.clone() else {
         return;
     };
-    let Ok(config) = AgentStoreConfig::load(&path) else { return };
-    for (marketplace_id, entry) in &config.default_marketplaces {
-        let Some((source_kind, source)) = entry.resolved() else { continue };
+    // Load the user config; a missing/unreadable file falls back to the
+    // builtin public mirror, an existing file drives the source list.
+    let sources: Vec<(String, String, String)> = match AgentStoreConfig::load(&path) {
+        Ok(config) if !config.default_marketplaces.is_empty() => config
+            .default_marketplaces
+            .iter()
+            .filter_map(|(id, entry)| {
+                let (kind, source) = entry.resolved()?;
+                Some((id.clone(), kind, source))
+            })
+            .collect(),
+        Ok(_) => AgentStoreConfig::builtin_default_marketplaces(),
+        Err(_) => AgentStoreConfig::builtin_default_marketplaces(),
+    };
+    for (marketplace_id, source_kind, source) in sources {
         let request = AppServerMarketplaceAddRequest {
             name: Some(marketplace_id.clone()),
             source_kind: match source_kind.as_str() {
@@ -3386,6 +3406,19 @@ async fn run_cancel(
     Ok(Json(view))
 }
 
+async fn run_steer(
+    State(state): State<AppServerRouterState>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<AgentRunSteerRequest>, JsonRejection>,
+) -> Result<Json<AgentRunView>, AppServerError> {
+    let _connection_id = connection_id(&headers)?;
+    let Json(request) = body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    let view = execute_steer_run(&state, &user, &run_id, request).await?;
+    Ok(Json(view))
+}
+
 async fn execute_cancel_run(
     state: &AppServerRouterState,
     user: &CurrentUser,
@@ -3444,6 +3477,30 @@ async fn execute_cancel_run(
         }
         return Ok(state.registry.remember_idempotent_cancel(&scope_key(&scope), fingerprint, view)?);
     }
+    Ok(view)
+}
+
+async fn execute_steer_run(
+    state: &AppServerRouterState,
+    user: &CurrentUser,
+    run_id: &str,
+    request: AgentRunSteerRequest,
+) -> Result<AgentRunView, AppServerError> {
+    let runtime = state.runtime.as_ref().ok_or_else(|| {
+        AppServerError::new(
+            "runtime_unavailable",
+            "App Server runtime is unavailable",
+            StatusCode::SERVICE_UNAVAILABLE,
+            true,
+        )
+    })?;
+    let internal_run_id = resolve_internal_run_id(state, user.id.as_str(), run_id).await?;
+    let mut view = runtime
+        .steer_run(user.id.as_str(), &internal_run_id, &request.text, request.expected_version)
+        .await
+        .map_err(AgentRuntimeAdapter::map_error)
+        .map_err(AppServerError::from)?;
+    view.run_id = run_id.to_owned();
     Ok(view)
 }
 
@@ -4364,6 +4421,25 @@ async fn dispatch_connection_request(
                 )
             })?))
         }
+        "run/steer" => {
+            let params = parse_ws_params::<WsSteerRun>(params)?;
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let view = execute_steer_run(state, user, &params.run_id, AgentRunSteerRequest {
+                text: params.text,
+                expected_version: params.expected_version,
+                command_id: params.command_id,
+                idempotency_key: params.idempotency_key,
+            })
+            .await?;
+            Ok(ws_response(request_id, serde_json::to_value(view).map_err(|error| {
+                AppServerError::new(
+                    "internal_error",
+                    format!("failed to encode steered run: {error}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    true,
+                )
+            })?))
+        }
         "run/subscribe" => {
             let params = parse_ws_params::<WsRunSubscription>(params)?;
             let _ = ws_get_run(state, connection, user, &params.run_id).await?;
@@ -4768,6 +4844,18 @@ struct WsRunEvents {
 #[serde(deny_unknown_fields)]
 struct WsCancelRun {
     run_id: String,
+    expected_version: i64,
+    #[serde(default)]
+    command_id: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsSteerRun {
+    run_id: String,
+    text: String,
     expected_version: i64,
     #[serde(default)]
     command_id: Option<String>,

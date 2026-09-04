@@ -18,7 +18,17 @@ serde_json.workspace = true
 # computer-use: the desktop host is the one place screen/input control is sane.
 # browser-use: likewise, the desktop host is where a managed/connected Chromium
 # is sane (the in-process self-hosted CDP engine).
-nomifun-app = { workspace = true, features = ["computer-use", "browser-use", "managed-search"] }
+# The workspace root declares nomifun-app with default-features=false (the
+# agent-store host opts in per-feature, skipping channel/bedrock/silero).
+# Feature inheritance cannot re-enable defaults, so hosts list them fully:
+# the 12 chat channels + bedrock + silero-vad = nomifun-app's default set,
+# plus this host's extras.
+nomifun-app = { workspace = true, features = [
+    "telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix",
+    "mattermost", "slack", "twitch", "nostr", "qqbot",
+    "bedrock", "silero-vad",
+    "computer-use", "browser-use", "managed-search",
+] }
 nomifun-common.workspace = true
 nomifun-runtime.workspace = true
 clap.workspace = true

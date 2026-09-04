@@ -39,7 +39,10 @@ use axum::extract::Request;
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+
+/// `agent-store init` — first-run configuration wizard.
+mod init;
 #[cfg(feature = "static-webui")]
 use rust_embed::RustEmbed;
 use tower_http::trace::TraceLayer;
@@ -65,6 +68,9 @@ struct WebUi;
     about = "Agent Store stand-alone host: embedded Web UI + full backend on one port"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Host/IP address to bind on. Defaults to loopback; use `0.0.0.0` to
     /// accept connections from other machines (see `--auth`).
     #[arg(long, env = "AGENT_STORE_HOST", default_value = "127.0.0.1")]
@@ -103,6 +109,14 @@ struct Args {
     /// If omitted, the first WebUI visitor creates the admin via first-run setup.
     #[arg(long, env = "NOMIFUN_ADMIN_PASSWORD")]
     admin_password: Option<String>,
+}
+
+/// Subcommands beyond the default serve mode.
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// First-run setup: write `~/.agent-store/config.toml` with the builtin
+    /// marketplace sources (and optionally collect one provider).
+    Init(init::InitArgs),
 }
 
 /// Parse a truthy env value (`1`/`true`/`yes`/`on`, case-insensitive).
@@ -223,6 +237,18 @@ fn main() -> Result<ExitCode> {
 
     let args = Args::parse();
 
+    // Subcommand dispatch (before any backend/server init).
+    if let Some(Command::Init(init_args)) = &args.command {
+        match init::run_init(init_args.clone()) {
+            Ok(Some(_)) => return Ok(ExitCode::SUCCESS),
+            Ok(None) => return Ok(ExitCode::SUCCESS),
+            Err(error) => {
+                eprintln!("agent-store init: {error}");
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
+
     // Authentication is OFF by default (local trusted mode); `--auth` (or the
     // env var) opts into login-required mode.
     let auth = args.auth || env_flag(ENV_AUTH);
@@ -235,6 +261,13 @@ fn main() -> Result<ExitCode> {
     cli.data_dir =
         nomifun_app::bootstrap::resolve_startup_data_root(args.data_dir.clone());
     cli.local = !auth;
+    // The agent-store config file enables default marketplace auto-registration
+    // (with builtin fallback when the file is missing) — always point at the
+    // `~/.agent-store/config.toml` convention like the web host does.
+    if cli.agent_store_config.is_none() {
+        cli.agent_store_config =
+            nomifun_app_server::agent_store::AgentStoreConfig::default_path();
+    }
 
     // Same ordering as every other host: runtime init + PATH enhancement
     // BEFORE any worker thread / tokio runtime exists.

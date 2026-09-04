@@ -17,7 +17,9 @@ nomifun-api-types = { path = "crates/backend/nomifun-api-types" }
 nomifun-realtime = { path = "crates/backend/nomifun-realtime" }
 nomifun-runtime = { path = "crates/backend/nomifun-runtime" }
 nomifun-auth = { path = "crates/backend/nomifun-auth" }
-nomifun-system = { path = "crates/backend/nomifun-system" }
+# default-features=false: the bedrock feature is opt-in (host-specific) —
+# headless hosts (agent-store) skip the AWS SDK entirely.
+nomifun-system = { path = "crates/backend/nomifun-system", default-features = false }
 nomifun-file = { path = "crates/backend/nomifun-file" }
 nomifun-office = { path = "crates/backend/nomifun-office" }
 nomifun-shell = { path = "crates/backend/nomifun-shell" }
@@ -45,7 +47,7 @@ nomifun-secret = { path = "crates/backend/nomifun-secret" }
 nomifun-customer-service = { path = "crates/backend/nomifun-customer-service" }
 nomifun-workshop = { path = "crates/backend/nomifun-workshop" }
 nomifun-creation = { path = "crates/backend/nomifun-creation" }
-nomifun-app = { path = "crates/backend/nomifun-app" }
+nomifun-app = { path = "crates/backend/nomifun-app", default-features = false }
 nomifun-app-server = { path = "crates/backend/nomifun-app-server" }
 nomifun-cloud = { path = "crates/backend/nomifun-cloud" }
 nomifun-insights = { path = "crates/backend/nomifun-insights" }
@@ -53,7 +55,9 @@ nomifun-media = { path = "crates/backend/nomifun-media" }
 nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
 nomifun-canvas = { path = "crates/backend/nomifun-canvas" }
 nomifun-browser-platform = { path = "crates/backend/nomifun-browser-platform" }
-nomifun-robot = { path = "crates/backend/nomifun-robot" }
+# default-features=false: silero-vad is opt-in (host-specific) — headless
+# hosts (agent-store) run the energy VAD only and skip ONNX Runtime.
+nomifun-robot = { path = "crates/backend/nomifun-robot", default-features = false }
 nomifun-audio = { path = "crates/backend/nomifun-audio" }
 sherpa-onnx = { path = "crates/vendor/sherpa-onnx", default-features = false, features = ["static"] }
 sherpa-onnx-sys = { path = "crates/vendor/sherpa-onnx-sys", default-features = false, features = ["static"] }
