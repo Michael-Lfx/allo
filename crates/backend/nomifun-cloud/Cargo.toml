@@ -36,7 +36,7 @@ rqrr = "0.9"
 
 [features]
 default = []
-http3-experimental = ["reqwest/http3", "reqwest/http2"]
+http3-experimental = ["reqwest/http3"]
 
 [dev-dependencies]
 clap = { workspace = true }
