@@ -1,40 +1,37 @@
 /**
- * Typed App Server client.
- *
- * Connection lifecycle: transport connect → `initialize` → protocol version
- * check → `initialized` notification → ready. Business methods require a
- * ready client; the server rejects them with `not_initialized` otherwise.
+ * Web host's `AppServerClient`: the transport-agnostic base from
+ * `@agent-store/client` plus the three Web-only helpers that don't belong
+ * in the published package — asset `<img>` URL derivation, `/api/fs/browse`
+ * (independent file service), and the one-shot HTTP workspace registration
+ * used by the smoke/dev script.
  */
 
-import { AppServerError, ProtocolError, TransportError } from "./errors";
+import {
+  AppServerClient as BaseClient,
+  WebSocketTransport,
+  type AppServerClientOptions as BaseOptions,
+  type Transport,
+} from "@agent-store/client";
+import { TransportError } from "@agent-store/protocol";
+import { AppServerError } from "@agent-store/protocol";
 import {
   APP_SERVER_PROTOCOL_VERSION,
-  type ClientCapabilities,
-  type ClientInfo,
-  type ImportDetail,
-  type ImportRequest,
-  type ImportResult,
-  type ImportSummary,
-  type InitializeRequest,
-  type InitializeResult,
+  type BrowseDirectoryResult,
   type WorkspaceRegistration,
-} from "./protocol";
-import { AgentClient } from "./agents";
-import { ConversationClient } from "./conversations";
-import { ConnectorClient } from "./connectors";
-import { RunClient } from "./runs";
-import { SkillClient } from "./skills";
-import { TeamClient } from "./teams";
-import { WorkspaceClient } from "./workspaces";
-import { WebSocketTransport, type NotificationListener } from "./transport";
+} from "@agent-store/protocol";
 
-export interface AppServerClientOptions {
-  /** `ws://host/api/app-server/ws` */
-  wsUrl: string;
-  /** `http://host/api/app-server` — used for helper HTTP endpoints. */
+export * from "@agent-store/client";
+
+export interface AppServerClientOptions extends Omit<BaseOptions, "transport"> {
+  /** Ready-made transport; defaults to a `WebSocketTransport` over `wsUrl`. */
+  transport?: Transport;
+  /**
+   * `ws://host/api/app-server/ws` — required unless `transport` is provided.
+   * Only used for URL derivation and the default transport; never sent.
+   */
+  wsUrl?: string;
+  /** `http://host/api/app-server` — one-shot HTTP helpers + URL derivation. */
   httpBaseUrl?: string;
-  client: ClientInfo;
-  capabilities?: ClientCapabilities;
   token?: string;
   requestTimeoutMs?: number;
 }
@@ -53,108 +50,40 @@ function deriveHttpBaseUrl(wsUrl: string): string | undefined {
   }
 }
 
-export class AppServerClient {
-  readonly transport: WebSocketTransport;
-  /** Legacy preset/execution workflow client. */
-  readonly runs: RunClient;
-  /** Persistent presetless Nomi chat client. */
-  readonly conversations: ConversationClient;
-  /** Owner-scoped workspace registry client (user-chosen paths). */
-  readonly workspaces: WorkspaceClient;
-  /** Agent Store Skill catalog client (`skill/list`, `skill/get`). */
-  readonly skills: SkillClient;
-  /** Agent Store Connector catalog/status/probe/OAuth client. */
-  readonly connectors: ConnectorClient;
-  /** Agent Store AgentDefinition catalog client (`agent/list`, `agent/get`). */
-  readonly agents: AgentClient;
-  /** Agent Store Team catalog client (`team/list`, `team/get`). */
-  readonly teams: TeamClient;
+export class AppServerClient extends BaseClient {
   readonly httpBaseUrl?: string;
   readonly token?: string;
-  readonly clientInfo: ClientInfo;
-  readonly capabilities?: ClientCapabilities;
-
-  private initializeResult: InitializeResult | null = null;
-  private notificationListeners = new Set<NotificationListener>();
+  /** WS endpoint for URL derivation (asset URLs, fs/browse). */
+  private readonly wsEndpoint?: string;
 
   constructor(options: AppServerClientOptions) {
-    this.clientInfo = options.client;
-    this.capabilities = options.capabilities;
-    // HTTP helpers (workspaces, imports) share the App Server base URL with
-    // the WebSocket. When the caller only configured `wsUrl`, derive the HTTP
-    // base (`ws://host/api/app-server/ws` → `http://host/api/app-server`).
-    this.httpBaseUrl = options.httpBaseUrl ?? deriveHttpBaseUrl(options.wsUrl);
-    this.token = options.token;
-    this.transport = new WebSocketTransport(options.wsUrl, {
-      requestTimeoutMs: options.requestTimeoutMs,
-      token: options.token,
-    });
-    this.runs = new RunClient(this.transport);
-    this.conversations = new ConversationClient(this.transport);
-    this.workspaces = new WorkspaceClient(this.transport);
-    this.skills = new SkillClient(this.transport);
-    this.connectors = new ConnectorClient(this.transport);
-    this.agents = new AgentClient(this.transport);
-    this.teams = new TeamClient(this.transport);
-    this.transport.onNotification((notification) => {
-      for (const listener of [...this.notificationListeners]) {
-        try {
-          listener(notification);
-        } catch {
-          // listener isolation
-        }
-      }
-    });
-  }
-
-  get ready(): boolean {
-    return this.initializeResult !== null;
-  }
-
-  get initializeInfo(): InitializeResult | null {
-    return this.initializeResult;
-  }
-
-  /** Connect and perform the initialize/initialized handshake. */
-  async connect(): Promise<InitializeResult> {
-    await this.transport.connect();
-    const request: InitializeRequest = {
-      protocol_version: APP_SERVER_PROTOCOL_VERSION,
-      client: this.clientInfo,
-      capabilities: this.capabilities,
-    };
-    const result = await this.transport.request<InitializeResult>("initialize", request);
-    if (result.protocol_version !== APP_SERVER_PROTOCOL_VERSION) {
-      throw new ProtocolError(
-        "version_mismatch",
-        `server protocol version ${result.protocol_version} is not supported (client ${APP_SERVER_PROTOCOL_VERSION})`,
-      );
+    const { wsUrl, httpBaseUrl, token, requestTimeoutMs, ...rest } = options;
+    if (!options.transport && !wsUrl) {
+      throw new TransportError("connect", "either transport or wsUrl is required");
     }
-    this.transport.notify("initialized", {});
-    this.initializeResult = result;
-    return result;
-  }
-
-  onNotification(listener: NotificationListener): () => void {
-    this.notificationListeners.add(listener);
-    return () => {
-      this.notificationListeners.delete(listener);
-    };
-  }
-
-  /** Close the transport; the server revokes the connection immediately. */
-  close(): void {
-    this.transport.close();
-    this.initializeResult = null;
-    this.notificationListeners.clear();
+    super({
+      ...rest,
+      transport:
+        options.transport ??
+        new WebSocketTransport(wsUrl as string, {
+          requestTimeoutMs,
+          token,
+        }),
+    });
+    // HTTP helpers (workspace registration helper, fs/browse) share the App
+    // Server base URL with the WebSocket. When the caller only configured
+    // `wsUrl`, derive the HTTP base
+    // (`ws://host/api/app-server/ws` → `http://host/api/app-server`).
+    this.httpBaseUrl = httpBaseUrl ?? (wsUrl ? deriveHttpBaseUrl(wsUrl) : undefined);
+    this.token = token;
+    this.wsEndpoint = wsUrl;
   }
 
   /**
-   * Register an owner-scoped workspace through the HTTP helper endpoint.
-   *
-   * Each call performs its own short-lived HTTP handshake so the returned
-   * `connection_id` belongs to the workspace registration call, not to the
-   * long-lived WebSocket connection.
+   * Register a server-created workspace directory (no local path involved).
+   * Kept on the one-shot HTTP binding: only the smoke/dev script uses it;
+   * the UI registers user-chosen paths via `workspaces.create`
+   * (`workspace/create` over the transport).
    */
   async registerWorkspace(): Promise<WorkspaceRegistration> {
     if (!this.httpBaseUrl) {
@@ -164,31 +93,40 @@ export class AppServerClient {
     return this.httpPost<WorkspaceRegistration>("/workspaces", undefined, connectionId);
   }
 
-  /** Import a local CodeBuddy/WorkBuddy source directory (roadmap Phase 1). */
-  async runImport(input: ImportRequest): Promise<ImportResult> {
-    if (!this.httpBaseUrl) {
-      throw new TransportError("send", "httpBaseUrl is required for imports");
+  /** Absolute server root (without `/api/app-server`), derived from the
+   *  websocket URL — used for root-level routes and asset URLs. */
+  get serverRootUrl(): string | undefined {
+    if (!this.httpBaseUrl) return undefined;
+    try {
+      if (!this.wsEndpoint) throw new Error("no ws endpoint");
+      const url = new URL(this.wsEndpoint);
+      return `${url.protocol === "wss:" ? "https:" : "http:"}//${url.host}`;
+    } catch {
+      return this.httpBaseUrl.replace(/\/api\/app-server(\/)?$/, "");
     }
-    const { connectionId } = await this.httpHandshake();
-    return this.httpPost<ImportResult>("/imports", input, connectionId);
   }
 
-  /** Import history (most recent first). */
-  async listImports(): Promise<ImportSummary[]> {
+  async browseDirectory(path?: string, showFiles?: boolean): Promise<BrowseDirectoryResult> {
     if (!this.httpBaseUrl) {
-      throw new TransportError("send", "httpBaseUrl is required for imports");
+      throw new TransportError("send", "httpBaseUrl is required for file browsing");
     }
+    const wsUrl = this.wsEndpoint;
+    const rootBase = (() => {
+      try {
+        if (!wsUrl) return undefined;
+        const url = new URL(wsUrl);
+        return `${url.protocol === "wss:" ? "https:" : "http:"}//${url.host}`;
+      } catch {
+        return undefined;
+      }
+    })() || this.httpBaseUrl.replace(/\/api\/app-server(\/)?$/, "");
+    const params = new URLSearchParams();
+    if (path) params.set("path", path);
+    if (showFiles) params.set("showFiles", "true");
+    const query = params.size > 0 ? `?${params.toString()}` : "";
     const { connectionId } = await this.httpHandshake();
-    return this.httpGet<ImportSummary[]>("/imports", connectionId);
-  }
-
-  /** One immutable snapshot with its standardized components. */
-  async getImport(snapshotId: string): Promise<ImportDetail> {
-    if (!this.httpBaseUrl) {
-      throw new TransportError("send", "httpBaseUrl is required for imports");
-    }
-    const { connectionId } = await this.httpHandshake();
-    return this.httpGet<ImportDetail>(`/imports/${encodeURIComponent(snapshotId)}`, connectionId);
+    const payload = await this.httpGet<{ success?: boolean; data?: BrowseDirectoryResult } & BrowseDirectoryResult>(`${rootBase}/api/fs/browse${query}`, connectionId);
+    return payload.data ?? payload;
   }
 
   private async httpHandshake(): Promise<{ connectionId: string }> {
@@ -230,7 +168,8 @@ export class AppServerClient {
   }
 
   private async httpGet<T>(path: string, connectionId: string): Promise<T> {
-    const response = await fetch(`${this.httpBaseUrl}${path}`, {
+    const url = path.startsWith("http://") || path.startsWith("https://") ? path : `${this.httpBaseUrl}${path}`;
+    const response = await fetch(url, {
       method: "GET",
       headers: this.httpHeaders(connectionId),
     });

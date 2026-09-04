@@ -315,7 +315,32 @@ async function runCatalogPath(client: AppServerClient, real: boolean): Promise<v
 
   if (real) {
     // The real catalog reflects the current data dir; only the protocol
-    // surface is asserted here.
+    // surface is asserted here (covers the WS import/install/market/store
+    // arms added by the protocol-unification pass).
+    if (capabilities?.store) {
+      const store = await client.listStore();
+      if (Array.isArray(store.items)) {
+        ok(`store/list returns ${store.items.length} item(s)`);
+      } else {
+        fail("store/list", "expected { items: [] }");
+      }
+    }
+    if (capabilities?.imports) {
+      const imports = await client.listImports();
+      if (Array.isArray(imports)) {
+        ok(`import/list returns ${imports.length} snapshot(s)`);
+      } else {
+        fail("import/list", "expected an array");
+      }
+    }
+    if (capabilities?.marketplaces) {
+      const markets = await client.listMarketplaces();
+      if (Array.isArray(markets)) {
+        ok(`market/list returns ${markets.length} marketplace(s)`);
+      } else {
+        fail("market/list", "expected an array");
+      }
+    }
     return;
   }
 

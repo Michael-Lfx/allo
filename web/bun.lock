@@ -5,11 +5,15 @@
     "": {
       "name": "allo-app-server-web",
       "dependencies": {
+        "@agent-store/client": "workspace:*",
+        "@agent-store/protocol": "workspace:*",
         "@fontsource-variable/geist-mono": "^5.3.0",
         "@fontsource-variable/inter": "^5.3.0",
+        "@fontsource-variable/noto-sans-sc": "^5.3.0",
         "@tanstack/react-virtual": "^3.14.10",
         "ahooks": "^3.9.7",
         "es-toolkit": "^1.52.0",
+        "highlight.js": "^11.12.0",
         "i18next": "^26.4.1",
         "lucide-react": "^1.39.0",
         "react": "^19.2.8",
@@ -30,13 +34,40 @@
         "vitest": "^4.1.11",
       },
     },
+    "packages/client": {
+      "name": "@agent-store/client",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agent-store/protocol": "workspace:*",
+      },
+    },
+    "packages/node": {
+      "name": "@agent-store/node",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agent-store/client": "workspace:*",
+        "@agent-store/protocol": "workspace:*",
+      },
+    },
+    "packages/protocol": {
+      "name": "@agent-store/protocol",
+      "version": "0.1.0",
+    },
   },
   "packages": {
+    "@agent-store/client": ["@agent-store/client@workspace:packages/client"],
+
+    "@agent-store/node": ["@agent-store/node@workspace:packages/node"],
+
+    "@agent-store/protocol": ["@agent-store/protocol@workspace:packages/protocol"],
+
     "@babel/runtime": ["@babel/runtime@7.29.7", "https://registry.npmmirror.com/@babel/runtime/-/runtime-7.29.7.tgz", {}, "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="],
 
     "@fontsource-variable/geist-mono": ["@fontsource-variable/geist-mono@5.3.0", "https://registry.npmmirror.com/@fontsource-variable/geist-mono/-/geist-mono-5.3.0.tgz", {}, "sha512-vBbuwDEo9AkrqADMXOrlAR3DFcJi4/JxeuU43FoiQERnNwsfXNnvxvReZG02cQKmyk4DZkZdBZX3oTDvy2zBAw=="],
 
     "@fontsource-variable/inter": ["@fontsource-variable/inter@5.3.0", "https://registry.npmmirror.com/@fontsource-variable/inter/-/inter-5.3.0.tgz", {}, "sha512-OupL48va4JNofb97w6NYeF9S7W/kHNKM0Er8Dem5nqi4jeOLrVJDoE8tZEpnMJmtkvNbB1EIPPwHcdkF6b1oUA=="],
+
+    "@fontsource-variable/noto-sans-sc": ["@fontsource-variable/noto-sans-sc@5.3.0", "https://registry.npmmirror.com/@fontsource-variable/noto-sans-sc/-/noto-sans-sc-5.3.0.tgz", {}, "sha512-lNar1dF7Ik/lHNPo/7JWG0TolXY29LtsqYgMvEysooZ5bsO9uH4shJmRrwyJ3PjyTPljhpMJEK0jDuLSU4vJ1w=="],
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.6.0", "https://registry.npmmirror.com/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.6.0.tgz", {}, "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw=="],
 
@@ -230,7 +261,7 @@
 
     "hast-util-whitespace": ["hast-util-whitespace@3.0.0", "https://registry.npmmirror.com/hast-util-whitespace/-/hast-util-whitespace-3.0.0.tgz", { "dependencies": { "@types/hast": "^3.0.0" } }, "sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw=="],
 
-    "highlight.js": ["highlight.js@11.11.2", "https://registry.npmmirror.com/highlight.js/-/highlight.js-11.11.2.tgz", {}, "sha512-oaXMACAU0kzOMXBjWpNcX+vlwSBCIAiZ9BHa7gA15NOTtT2L/l8OSZDuqS2XppOhZBPJ7hm4o8ep2kyuip2uEQ=="],
+    "highlight.js": ["highlight.js@11.12.0", "https://registry.npmmirror.com/highlight.js/-/highlight.js-11.12.0.tgz", {}, "sha512-nbfWpyRMcMrPMmDwJB+dhX/eiaPKtc2RB+0QZskqJ3WjRA/FDS0e9hZrx8EC/lbEv8gXy98FcDbNa/dspAaJMg=="],
 
     "html-parse-stringify": ["html-parse-stringify@4.0.1", "https://registry.npmmirror.com/html-parse-stringify/-/html-parse-stringify-4.0.1.tgz", {}, "sha512-0zHsZJrK7S3K2aucXWL6ycoYJ/iNtIcFHC/nYQgFklPtrv5LpJctIiSCroWZWeuoXvuyFdzp6KzjJQ+OT5MfFw=="],
 
@@ -485,6 +516,8 @@
     "zustand": ["zustand@5.0.15", "https://registry.npmmirror.com/zustand/-/zustand-5.0.15.tgz", { "peerDependencies": { "@types/react": ">=18.0.0", "immer": ">=9.0.6", "react": ">=18.0.0", "use-sync-external-store": ">=1.2.0" }, "optionalPeers": ["@types/react", "immer", "react", "use-sync-external-store"] }, "sha512-MpSEjRiBkA9crSYeOUH32rJC7SVqAbm0Fqcqge/bUi2PPoLcBWKOsG+C8mevmpr8TwXHBVkChbbJiyvkE+i/3A=="],
 
     "zwitch": ["zwitch@2.0.4", "https://registry.npmmirror.com/zwitch/-/zwitch-2.0.4.tgz", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
+
+    "lowlight/highlight.js": ["highlight.js@11.11.2", "https://registry.npmmirror.com/highlight.js/-/highlight.js-11.11.2.tgz", {}, "sha512-oaXMACAU0kzOMXBjWpNcX+vlwSBCIAiZ9BHa7gA15NOTtT2L/l8OSZDuqS2XppOhZBPJ7hm4o8ep2kyuip2uEQ=="],
 
     "parse-entities/@types/unist": ["@types/unist@2.0.11", "https://registry.npmmirror.com/@types/unist/-/unist-2.0.11.tgz", {}, "sha512-CmBKiL6NNo/OqgmMn95Fk9Whlp2mtvIv+KNpQKN2F4SjvrEesubTRWGYSg+BnWZOnlCaSTU1sMpsBOzgbYhnsA=="],
   }

@@ -1,0 +1,18 @@
+{
+  "name": "@agent-store/node",
+  "version": "0.1.0",
+  "description": "Node.js host for the Agent Store App Server: spawn the runtime binary and connect over loopback (docs/agent-store/12 P1-3)",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@agent-store/client": "workspace:*",
+    "@agent-store/protocol": "workspace:*"
+  }
+}
