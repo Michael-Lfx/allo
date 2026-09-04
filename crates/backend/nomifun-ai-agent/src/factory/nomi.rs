@@ -1062,7 +1062,25 @@ fn catalog_model_base(model: &str) -> &str {
 }
 
 fn is_preferred_image_analysis_model(model: &str) -> bool {
-    catalog_model_base(model).eq_ignore_ascii_case("MiniMax-M3")
+    image_analysis_model_priority(model) == 3
+}
+
+/// Image analysis model priority ranking:
+/// 3: DeepSeek Vision (deepseek-v4-flash-vision, deepseek-vl, etc.) - top priority (fast, low-cost)
+/// 2: MiniMax Vision (MiniMax-M3, etc.) - secondary priority
+/// 1: Kimi / Moonshot Vision - fallback
+/// 0: Others
+fn image_analysis_model_priority(model: &str) -> u8 {
+    let lower = catalog_model_base(model).to_lowercase();
+    if lower.contains("deepseek") && (lower.contains("vision") || lower.contains("vl") || lower.contains("flash")) {
+        3
+    } else if lower.contains("minimax-m3") || lower.contains("minimax") {
+        2
+    } else if lower.contains("kimi") || lower.contains("moonshot") {
+        1
+    } else {
+        0
+    }
 }
 
 fn is_image_analysis_eligible_provider(platform: &str) -> bool {
@@ -1114,7 +1132,7 @@ fn config_for_image_analysis(
         api_key: Some(fields.api_key),
         base_url: fields.base_url,
         model: Some(fields.model),
-        max_tokens: Some(1200),
+        max_tokens: Some(4096),
         max_turns: Some(1),
         system_prompt: None,
         profile: None,
@@ -1179,7 +1197,9 @@ async fn resolve_image_analysis_model(
         }
         Some((selection.provider_id, selection.model))
     } else {
-        let mut fallback = None;
+        let mut best_candidate = None;
+        let mut best_priority = 0u8;
+
         for provider in &providers {
             if !is_image_analysis_eligible_provider(&provider.platform) {
                 continue;
@@ -1193,21 +1213,23 @@ async fn resolve_image_analysis_model(
                 if !is_usable_image_analysis_model(provider.enabled, &model) {
                     continue;
                 }
+                let priority = image_analysis_model_priority(&model.model);
                 let candidate = (provider.provider_id.clone(), model.model.clone());
-                if is_preferred_image_analysis_model(&model.model) {
-                    fallback = Some(candidate);
-                    break;
+
+                if best_candidate.is_none() || priority > best_priority {
+                    best_priority = priority;
+                    best_candidate = Some(candidate);
+                    if priority == 3 {
+                        // Max priority (DeepSeek vision) found, stop scanning
+                        break;
+                    }
                 }
-                fallback.get_or_insert(candidate);
             }
-            if fallback
-                .as_ref()
-                .is_some_and(|(_, model)| is_preferred_image_analysis_model(model))
-            {
+            if best_priority == 3 {
                 break;
             }
         }
-        fallback
+        best_candidate
     };
 
     let Some((provider_id, model)) = candidate else {
