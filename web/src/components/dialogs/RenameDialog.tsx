@@ -1,7 +1,6 @@
-import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { IconButton } from "../IconButton";
 import { useAppStore } from "../../store/appStore";
+import { DialogShell } from "./DialogShell";
 
 export function RenameDialog() {
   const { t } = useTranslation();
@@ -15,39 +14,30 @@ export function RenameDialog() {
   if (!renameFor) return null;
   const conversation = conversations.find((item) => item.conversation_id === renameFor) ?? null;
   return (
-    <div className="settings-backdrop" role="presentation" onMouseDown={cancelRename}>
-      <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-title" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="dialog-header">
-          <div>
-            <span className="eyebrow">ALLO APP SERVER</span>
-            <h1 id="rename-title">{t("rename.title")}</h1>
-          </div>
-          <IconButton label={t("rename.close")} onClick={cancelRename}><X size={19} strokeWidth={1.7} /></IconButton>
-        </div>
-        <div className="settings-grid">
-          <label className="workspace-path-field">
-            {t("rename.nameLabel")}
-            <input
-              value={renameValue}
-              onChange={(event) => setRenameValue(event.target.value)}
-              placeholder={t("rename.namePlaceholder")}
-              autoFocus
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void submitRename();
-                }
-              }}
-            />
-          </label>
-        </div>
-        <div className="dialog-actions">
-          <button className="quiet-button" type="button" onClick={cancelRename}>{t("common.cancel")}</button>
-          <button className="primary-button" type="button" onClick={() => void submitRename()} disabled={renameBusy || !renameValue.trim()}>
-            {renameBusy ? t("rename.saving") : t("rename.save")}
-          </button>
-        </div>
-      </section>
-    </div>
+    <DialogShell onClose={cancelRename} labelledBy="rename-title" titleId="rename-title" title={t("rename.title")}>
+      <div className="settings-grid">
+        <label className="workspace-path-field">
+          {t("rename.nameLabel")}
+          <input
+            value={renameValue}
+            onChange={(event) => setRenameValue(event.target.value)}
+            placeholder={t("rename.namePlaceholder")}
+            autoFocus
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void submitRename();
+              }
+            }}
+          />
+        </label>
+      </div>
+      <div className="dialog-actions">
+        <button className="quiet-button" type="button" onClick={cancelRename}>{t("common.cancel")}</button>
+        <button className="primary-button" type="button" onClick={() => void submitRename()} disabled={renameBusy || !renameValue.trim()}>
+          {renameBusy ? t("rename.saving") : t("rename.save")}
+        </button>
+      </div>
+    </DialogShell>
   );
 }

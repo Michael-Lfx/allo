@@ -7,7 +7,7 @@ Flowy Agent Store packages a local-first agent runtime as a **single executable*
 Get the binary for your platform from [GitHub Releases](https://github.com/your-org/flowy-agent-store/releases) and run it:
 
 ```bash
-flowy-agent-store serve
+flowy-agent-store
 ```
 
 The process starts the local App Server (default `http://localhost:8787`) and opens the workbench in your browser.

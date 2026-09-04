@@ -489,6 +489,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run dev` | 启动桌面应用开发（tauri dev，热重载） |
 | `bun run dev:web` | 启动 Web 全栈开发（后端 API + 前端 vite） |
 | `bun run dev:ui` | 仅启动前端开发服务器（纯 vite，无后端） |
+| `bun run agent-store:dev` | Agent Store 单二进制开发：构建 web/dist + cargo run --features static-webui（debug 从磁盘读前端） |
 | **构建（出制品）** | |
 | `bun run build` | 为当前操作系统打桌面安装包 |
 | `bun run build:fast` | 快速构建可直接运行的 debug 桌面二进制（不打安装包） |
@@ -497,15 +498,21 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run build:linux` | 打 Linux 安装包（.deb/.AppImage/.rpm），汇总到 dist/desktop/ |
 | `bun run build:signed` | 打桌面包并签名+公证（仅 macOS） |
 | `bun run build:updater` | 打桌面包并产出自更新 .sig 制品 |
+| `bun run build:inspect` | 只读检查构建目录占用与活跃开发会话 |
+| `bun run build:gc` | 显式回收可证明不再使用的历史构建产物 |
+| `bun run build:clean` | 显式清理构建缓存并提示下一次会冷编译 |
 | `bun run make:latest` | 扫描本机更新产物，生成/合并自动更新清单 latest.json |
+| `bun run upload:modelscope` | 上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN） |
 | `bun run release:mac` | 一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
-| `bun run release:win` | One-click Windows release: auto APPEND/CREATE; Authenticode when thumbprint is set; `-Signed`/`-NoSigned`; `-DryRun` to preview |
+| `bun run release:win` | 一键 Windows 发版：自动判定追加/首发；指纹可用时自动 Authenticode；-Signed/-NoSigned；-DryRun 只预检 |
 | `bun run release:linux` | 一键 Linux 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检 |
 | `bun run build:ui` | 前端生产构建 → ui/dist |
 | `bun run docker:prebuilt` | 用已有 ui/dist + nomifun-web release 二进制快速构建 Docker 运行时镜像 |
+| `bun run agent-store:build` | 构建 agent-store release 单文件（内嵌 web/dist）并复制到 cli/agent-store.exe |
 | **运行（组装好的应用）** | |
 | `bun run serve:web` | 启动 Web 服务器，托管已构建的前端 |
 | **测试** | |
+| `bun run test:git-attribution` | Validate the repository-local human-only Git attribution policy. |
 | `bun run test` | 运行全部 Rust 测试（含 doctest） |
 | `bun run test:fast` | 用 nextest 快速跑 Rust 测试（日常） |
 | `bun run test:crate` | 运行单个 Rust crate：bun run test:crate <crate> [cargo 参数] |
@@ -517,16 +524,25 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run check:process-runtime-boundary` | Enforce the supervised process runtime boundary and exact hand-off allowlist. |
 | `bun run check:browser-platform-boundary` | Enforce the single BrowserSessionHub ownership boundary and reject private browser launch paths. |
 | `bun run check:agent-vocabulary` | Enforce AgentExecution as the only active collaboration aggregate and permit only exact migration fences. |
+| `bun run check:codemirror-runtime` | Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package. |
+| `bun run check:ux-baseline` | 校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线） |
+| `bun run check:button-layout` | 使用 Windows Edge 矩阵验证 Arco 与 Icon Park 按钮的横向布局和对齐契约 |
+| `bun run check:error-surface` | 使用 Windows Edge 矩阵验证错误诊断摘要、详情展开、复制入口和窄屏溢出 |
+| `bun run check:error-surface-contract` | 静态校验错误面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限 |
+| `bun run check:button-layout-contract` | 扫描所有 Arco 图标文字按钮并校验共享横向布局契约 |
 | `bun run check` | 聚合静态门禁：typecheck + i18n + 主题契约 + 图标导入 + 进程运行时边界 + Agent 词汇边界 + 脚本登记 |
 | `bun run typecheck` | 前端 TypeScript 类型检查（tsc --noEmit） |
 | `bun run check:i18n` | 校验 i18n 类型与 locale 键是否一致 |
 | `bun run check:theme` | 校验预设 CSS 主题契约 |
 | `bun run check:icons` | 校验 @icon-park/react 导入禁别名/禁命名空间（别名会被图标包装插件改写成非法代码，tsc 抓不到） |
+| `bun run check:dead-css` | 扫描 CSS 工具类死代码（check-dead-css-utilities.mjs） |
 | **代码生成** | |
 | `bun run gen:i18n` | 由 locale 重新生成 i18n 类型声明 |
 | **维护 / 工具** | |
+| `bun run setup:git-hooks` | Enable this repository's human-only Git attribution hooks without changing global Git config. |
 | `bun run clean` | 深度回收构建空间（debug 产物 + flycheck + 旧安装包） |
 | `bun run seed:dev` | 用生产数据目录播种 dev 数据目录 |
+| `bun run reset:dev` | 为 dev 数据目录写入显式 factory reset 请求（迁移校验失败无法启动时一键恢复，下次启动重建空数据集） |
 | `bun run bump` | 统一改版本号：根 Cargo.toml(真源) + package.json + ui + Cargo.lock，可选 --tag 提交并打 tag |
 | `bun run help` | 打印脚本目录（--check 校验登记 / --readme 生成 README 表） |
 

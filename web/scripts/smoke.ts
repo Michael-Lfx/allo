@@ -673,10 +673,21 @@ async function main() {
     } else {
       fail("initialize handshake", JSON.stringify(handshake.capabilities));
     }
-    if (handshake.capabilities.run_notifications && !handshake.capabilities.teams) {
-      ok("capabilities advertise run_notifications and keep teams off");
+    if (handshake.capabilities.run_notifications) {
+      ok("capabilities advertise run_notifications");
     } else {
       fail("capabilities", JSON.stringify(handshake.capabilities));
+    }
+    // teams follows the injected Team Catalog surface (ADR 05): the mock
+    // server ships no Team Catalog, while the real composition root wires
+    // one in — the assertion must track the actual composition, not a
+    // stale single-agent-Phase expectation.
+    if (handshake.capabilities.teams === !!options.real) {
+      ok(
+        `capabilities keep teams ${options.real ? "on (Team Catalog injected)" : "off (mock ships no Team Catalog)"}`,
+      );
+    } else {
+      fail("capabilities teams", JSON.stringify(handshake.capabilities));
     }
 
     // --- workspace ---------------------------------------------------------

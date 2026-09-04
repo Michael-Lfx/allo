@@ -40,8 +40,6 @@ export const MessageItem = memo(function MessageItem({ message }: { message: Con
     </article>;
   }
   return <article className="message-row assistant-message">
-    <div className="assistant-meta"><span>Allo</span>{message.status === "sending" && <span>{t("message.generating")}</span>}</div>
-    <div className="assistant-divider" />
     <div className="message-text markdown-body">{text ? <Markdown source={text} /> : (message.status === "sending" ? t("message.generatingReply") : "")}</div>
     <div className="message-actions" aria-label={t("message.moreActions")}>
       <IconButton label={t("message.copyReply")} className="message-action" onClick={() => void copyText(text)}><Copy size={15} strokeWidth={1.7} /></IconButton>

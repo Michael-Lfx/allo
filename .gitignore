@@ -25,6 +25,8 @@ node_modules/
 **/node_modules/
 ui/dist/
 web/dist/
+# Agent Store CLI 发布产物（由 scripts/copy-agent-store-cli.mjs 生成）
+cli/agent-store.exe
 # Site (Flowy Agent Store 官网, React Router v8 静态构建产物)
 site/build/
 site/.react-router/

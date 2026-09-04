@@ -15,9 +15,9 @@ const LOCALES = ["zh-CN", "en-US"] as const;
 
 export default {
   async prerender() {
-    const paths: string[] = ["/"];
+    const paths: string[] = ["/", "/market"];
     for (const lang of LOCALES) {
-      paths.push(`/${lang}`);
+      paths.push(`/${lang}`, `/${lang}/market`, `/${lang}/docs`);
       for (const slug of docSlugs(lang)) {
         paths.push(`/${lang}/docs/${slug}`);
       }

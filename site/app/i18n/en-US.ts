@@ -1,5 +1,6 @@
 const enUS = {
   nav: {
+    market: "Market",
     docs: "Docs",
     download: "Download",
     github: "GitHub",
@@ -10,6 +11,7 @@ const enUS = {
   footer: {
     tagline: "A local-first, single-file agent runtime.",
     docs: "Docs",
+    resources: "Resources",
     releases: "Releases",
     github: "GitHub",
     copyright:
@@ -22,6 +24,14 @@ const enUS = {
       "Flowy Agent Store packages the agent runtime as a single executable with a full Web UI embedded. Launch it from the command line and the workbench opens in your browser — no server required, your data stays local.",
     heroCtaDownload: "Download",
     heroCtaDocs: "Read the docs",
+    heroTerminalListening: "App Server is live at http://127.0.0.1:8787",
+    heroTerminalOpened: "Workbench opened in your browser",
+    stats: {
+      s1: { value: "1", label: "Single executable" },
+      s2: { value: "0", label: "Databases or services to install" },
+      s3: { value: "4", label: "Catalog kinds managed" },
+      s4: { value: "2", label: "UI and doc languages" },
+    },
     featureTitle: "Built for the local workbench",
     featureSubtitle:
       "Bring experts, teams, skills and connectors into one trusted local process.",
@@ -49,7 +59,7 @@ const enUS = {
       step1: {
         title: "Launch the runtime",
         desc: "Run the command in your terminal; the single executable starts the App Server locally.",
-        cmd: "flowy-agent-store serve",
+        cmd: "flowy-agent-store",
       },
       step2: {
         title: "Local App Server",
@@ -81,6 +91,20 @@ const enUS = {
       archAarch64: "Apple silicon",
       archX8664: "Intel / x64",
     },
+    marketStat: "resources in the market",
+  },
+  market: {
+    title: "Resource Market",
+    subtitle: "Experts, skills and connectors — browse and search in one place.",
+    updated: "Data updated {{date}}.",
+    searchPlaceholder: "Search names, descriptions or tags…",
+    tabs: {
+      experts: "Experts",
+      skills: "Skills",
+      connectors: "Connectors",
+    },
+    empty: "No matching resources.",
+    emptyHint: "Try another keyword, or switch tabs.",
   },
   docs: {
     title: "Docs",

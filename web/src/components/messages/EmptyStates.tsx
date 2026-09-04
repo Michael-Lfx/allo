@@ -1,6 +1,5 @@
-import { Sparkles } from "lucide-react";
+import { Bot, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { modelName } from "../../ui/format";
 import type { ProviderWithModel } from "../../lib/protocol";
 
 export function WelcomePanel({ onConnect }: { onConnect: () => void }) {
@@ -20,15 +19,13 @@ export function EmptyChatPanel({ model, isNew, onSettings }: { model: ProviderWi
     // chat in a re-added workspace): show a visible empty state instead of a
     // blank message area.
     return <div className="empty-state">
-      <div className="empty-symbol" aria-hidden="true"><Sparkles size={25} strokeWidth={1.45} /></div>
+      <div className="empty-symbol" aria-hidden="true"><Bot size={30} strokeWidth={1.5} /></div>
       <h1>{t("empty.noMessagesTitle")}</h1>
       <p>{t("empty.noMessagesBody")}</p>
     </div>;
   }
   return <div className="empty-state">
-    <div className="empty-symbol" aria-hidden="true"><Sparkles size={25} strokeWidth={1.45} /></div>
-    <h1>{t("empty.newQuestionTitle")}</h1>
-    <p>{model ? t("empty.modelBody", { model: modelName(model.model) }) : t("empty.defaultModelBody")}</p>
-    {!model && <button className="quiet-button" type="button" onClick={onSettings}>{t("empty.connectionSettings")}</button>}
+    <div className="empty-symbol product-logo" aria-hidden="true"><Bot size={44} strokeWidth={1.6} /></div>
+    <p>{t("empty.hint")}</p>
   </div>;
 }

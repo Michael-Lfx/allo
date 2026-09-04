@@ -25,6 +25,8 @@
     "build:ui": "bun run --filter=./ui build",
     "docker:prebuilt": "bun scripts/build-docker-prebuilt.mjs",
     "serve:web": "bun scripts/free-ports.mjs 8787 && bun run build:ui && cargo run -p nomifun-web --features static-webui -- --dist ui/dist",
+    "agent-store:dev": "bun run --cwd ./web build && cargo run -p agent-store --features static-webui",
+    "agent-store:build": "bun run --cwd ./web build && cargo build --release -p agent-store --features static-webui && bun scripts/copy-agent-store-cli.mjs",
     "test": "bun scripts/ensure-ui-dist.mjs && cargo test",
     "test:fast": "bun scripts/ensure-ui-dist.mjs && cargo nextest run",
     "test:crate": "bun scripts/test-rust.mjs crate",

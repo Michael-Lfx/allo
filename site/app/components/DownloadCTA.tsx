@@ -53,7 +53,10 @@ export default function DownloadCTA({
   return (
     <section className="download" id="download">
       <div className="download-inner">
-        <p className="eyebrow">{t("landing.eyebrow")}</p>
+        <p className="eyebrow eyebrow-center">
+          <span className="eyebrow-index">03</span>
+          {t("landing.eyebrow")}
+        </p>
         <h2>{t("landing.downloadTitle")}</h2>
         <p className="subtle">{t("landing.downloadSubtitle")}</p>
 

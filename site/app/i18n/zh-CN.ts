@@ -1,5 +1,6 @@
 const zhCN = {
   nav: {
+    market: "市场",
     docs: "文档",
     download: "下载",
     github: "GitHub",
@@ -10,6 +11,7 @@ const zhCN = {
   footer: {
     tagline: "本地优先的单文件 Agent 运行时。",
     docs: "文档",
+    resources: "资源",
     releases: "发布",
     github: "GitHub",
     copyright: "© Flowy Agent Store 贡献者。本站点与运行时以本地优先为原则。",
@@ -21,6 +23,14 @@ const zhCN = {
       "Flowy Agent Store 把 Agent 运行时打包成单个可执行文件，内嵌完整 Web UI。用命令行启动，浏览器即刻打开操作台——无需服务器，数据留在本地。",
     heroCtaDownload: "下载",
     heroCtaDocs: "阅读文档",
+    heroTerminalListening: "App Server 已在 http://127.0.0.1:8787 启动",
+    heroTerminalOpened: "工作台已在浏览器中打开",
+    stats: {
+      s1: { value: "1", label: "单个可执行文件" },
+      s2: { value: "0", label: "需安装的数据库与常驻服务" },
+      s3: { value: "4", label: "可管理的目录类型" },
+      s4: { value: "2", label: "界面与文档语言" },
+    },
     featureTitle: "为本地工作台而生",
     featureSubtitle: "把专家、团队、技能与连接器收敛进一个可信的本地进程。",
     features: {
@@ -47,7 +57,7 @@ const zhCN = {
       step1: {
         title: "启动运行时",
         desc: "在终端运行命令，单文件可执行程序在本地拉起 App Server。",
-        cmd: "flowy-agent-store serve",
+        cmd: "flowy-agent-store",
       },
       step2: {
         title: "本地 App Server",
@@ -79,6 +89,20 @@ const zhCN = {
       archAarch64: "Apple 芯片",
       archX8664: "Intel / x64",
     },
+    marketStat: "市场收录资源",
+  },
+  market: {
+    title: "资源市场",
+    subtitle: "专家、技能与连接器，一处浏览、搜索即得。",
+    updated: "数据更新于 {{date}}。",
+    searchPlaceholder: "搜索名称、描述或标签…",
+    tabs: {
+      experts: "专家",
+      skills: "技能",
+      connectors: "连接器",
+    },
+    empty: "没有匹配的资源。",
+    emptyHint: "换个关键词，或切换分类再试。",
   },
   docs: {
     title: "文档",

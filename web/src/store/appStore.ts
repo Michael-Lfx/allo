@@ -16,13 +16,40 @@ import type {
   ContextUsage,
   ConversationModelOptions,
   ConversationView,
+  MentionRef,
   ProviderWithModel,
   ReasoningEffort,
   WorkspaceView,
 } from "../lib/protocol";
 
-const DEFAULT_WS_URL = "ws://127.0.0.1:8787/api/app-server/ws";
+const FALLBACK_WS_URL = "ws://127.0.0.1:8787/api/app-server/ws";
+/** Pre-fix hardcoded default. Used only to migrate stale persisted values. */
+const LEGACY_DEFAULT_WS_URL = FALLBACK_WS_URL;
 const STORAGE_KEY = "allo-app-server-chat-settings-v1";
+
+/**
+ * Default WS URL for the App Server.
+ *
+ * The backend serves the embedded SPA + API on ONE port (`--port`), so when
+ * the page itself was served over http(s) from that backend, derive the WS
+ * URL from `window.location` (same-origin). This makes `--port`/`--host`
+ * (incl. LAN IP) work with zero manual config. Vite dev (`:5173`/`:5174`)
+ * is the exception: it has its own port, so fall back to the local backend.
+ */
+function defaultWsUrl(): string {
+  try {
+    if (typeof window !== "undefined" && window.location?.host) {
+      const { protocol, host, port } = window.location;
+      if ((protocol === "http:" || protocol === "https:") && port !== "5173" && port !== "5174") {
+        const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
+        return `${wsProtocol}//${host}/api/app-server/ws`;
+      }
+    }
+  } catch {
+    // Fall through to the local-backend fallback below.
+  }
+  return FALLBACK_WS_URL;
+}
 
 /** Messages fetched per history page (first screen + each scroll-up load). */
 const HISTORY_PAGE_SIZE = 60;
@@ -36,17 +63,23 @@ type StoredSettings = {
 };
 
 const savedSettings = (): StoredSettings => {
+  const fallback = defaultWsUrl();
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<StoredSettings>;
+    // Migrate stale installs: the old hardcoded `:8787` default was persisted
+    // to localStorage, which would pin the UI to the wrong port after
+    // `--port <other>`. Only auto-migrate the untouched legacy value; an
+    // explicit user edit is always honored.
+    const wsUrl = saved.wsUrl ?? fallback;
     return {
-      wsUrl: saved.wsUrl ?? DEFAULT_WS_URL,
+      wsUrl: wsUrl === LEGACY_DEFAULT_WS_URL ? fallback : wsUrl,
       providerId: saved.providerId ?? "",
       model: saved.model ?? "",
       modelKey: saved.modelKey ?? "",
       reasoningEffort: saved.reasoningEffort ?? "",
     };
   } catch {
-    return { wsUrl: DEFAULT_WS_URL, providerId: "", model: "", modelKey: "", reasoningEffort: "" };
+    return { wsUrl: fallback, providerId: "", model: "", modelKey: "", reasoningEffort: "" };
   }
 };
 
@@ -71,6 +104,8 @@ export type AppState = {
 
   // ── Composer ───────────────────────────────────────────────────────────
   draft: string;
+  /** Structured `@` mentions picked in the composer catalog submenu. */
+  composerMentions: MentionRef[] | null;
   isSending: boolean;
 
   // ── UI / view switches ────────────────────────────────────────────────
@@ -101,6 +136,11 @@ export type AppState = {
   newChatPath: string;
   workspaceCreating: boolean;
   workspaceError: string | null;
+
+  /** Local display-name overrides for workspaces (rename is UI-only; the
+   *  backend registry has no rename endpoint). */
+  workspaceLabels: Record<string, string>;
+  renameWorkspaceLabel: (workspaceId: string, label: string) => void;
 
   // ── Rename / delete flows ─────────────────────────────────────────────
   openMenu: OpenMenu;
@@ -154,10 +194,12 @@ export type AppState = {
   setProviderId: (value: string) => void;
   setModel: (value: string) => void;
   setDraft: (value: string) => void;
+  setComposerMentions: (value: MentionRef[] | null) => void;
   setSidebarOpen: (value: boolean) => void;
   toggleSidebarCompact: () => void;
   toggleProjectOpen: () => void;
   toggleComposerMenu: () => void;
+  closeComposerMenu: () => void;
   toggleModelPicker: () => void;
   closeModelPicker: () => void;
   toggleCatalog: () => void;
@@ -172,6 +214,7 @@ export type AppState = {
   selectNewChatWorkspace: (workspaceId: string) => void;
   setNewChatPath: (path: string) => void;
   closeNewChat: () => void;
+  openNewChatDialog: () => void;
 };
 
 function upsertWorkspace(items: WorkspaceView[], value: WorkspaceView): WorkspaceView[] {
@@ -196,6 +239,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   draft: "",
   isSending: false,
 
+  /** Structured `@` mentions picked in the composer catalog submenu
+   *  (docs/agent-store/05 §4.7). Cleared after send / draft reset. */
+  composerMentions: null,
+
   settingsOpen: false,
   sidebarOpen: false,
   sidebarCompact: false,
@@ -219,6 +266,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   newChatPath: "",
   workspaceCreating: false,
   workspaceError: null,
+  workspaceLabels: {},
+  renameWorkspaceLabel: (workspaceId, label) =>
+    set((s) => (label.trim() ? { workspaceLabels: { ...s.workspaceLabels, [workspaceId]: label.trim() } } : s)),
 
   openMenu: null,
   renameFor: null,
@@ -457,9 +507,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       await get().createConversationInWorkspace(workspaceId);
       return;
     }
-    // Open the create-chat dialog for an unbound workspace. Editing state
-    // (draft, model/effort) is preserved so cancelling never loses input.
-    set({ error: null, workspaceError: null, newChatPath: "", newChatWorkspaceId: null, newChatOpen: true });
+    // New-chat page: clear the selected conversation so the composer shows
+    // the empty-state page (workspace can still be picked in the composer
+    // workspace picker below the input). No dialog anymore.
+    get().dispatchStream({ type: "reset", messages: [] });
+    set({ selectedConversationId: null, error: null, workspaceError: null, mainView: "chat" });
   },
 
   requestRevoke: (workspaceId) => {
@@ -495,8 +547,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
+  /**
+   * Composer send. Plain chat goes through `conversations.send`; when the
+   * draft carries a resolved agent `@` mention the store starts an agent run
+   * through the same runtime seams (`agent/run` with structured `mentions`).
+   */
   send: async () => {
-    const { client, draft, isSending, model, providerId, selectedConversationId, stream } = get();
+    const { client, draft, isSending, model, providerId, selectedConversationId, stream, composerMentions } = get();
     const content = draft.trim();
     if (!client || !content || isSending || stream.isProcessing) return;
     const explicitProvider = providerId.trim();
@@ -509,11 +566,31 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ isSending: true, error: null, resyncNotice: null });
     const key = `chat-${crypto.randomUUID()}`;
 
+    // Structured `@` mentions: an agent mention flips the send into an agent
+    // run (docs/agent-store/05 §4.7). This path does not require a
+    // conversation — the run is its own surface; the receipt is surfaced
+    // through the store error/notice channel for now.
+    if (composerMentions && composerMentions.some((m) => m.kind === "agent")) {
+      try {
+        await client.runs.agent({
+          agentId: "",
+          goal: content,
+          mentions: composerMentions,
+        });
+        set({ composerMentions: null, draft: "" });
+      } catch (caught) {
+        set({ error: formatError(caught) });
+      } finally {
+        set({ isSending: false });
+        requestAnimationFrame(() => composerFocusRequest());
+      }
+      return;
+    }
+
     if (!selectedConversationId) {
-      // No chat yet: keep the draft and require the user to pick a workspace
-      // first (workspace registration is a deliberate step, never a silent
-      // side effect of sending). Nothing is optimistically appended here.
-      set({ workspaceError: null, newChatPath: "", newChatWorkspaceId: null, newChatOpen: true });
+      // No chat yet: stay on the new-chat page and let the composer
+      // workspace picker start a conversation (workspace registration is a
+      // deliberate step, never a silent side effect of sending).
       set({ isSending: false });
       return;
     }
@@ -690,10 +767,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setProviderId: (value) => set({ providerId: value }),
   setModel: (value) => set({ model: value }),
   setDraft: (value) => set({ draft: value }),
+  setComposerMentions: (value) => set({ composerMentions: value }),
   setSidebarOpen: (value) => set({ sidebarOpen: value }),
   toggleSidebarCompact: () => set((s) => ({ sidebarCompact: !s.sidebarCompact })),
   toggleProjectOpen: () => set((s) => ({ projectOpen: !s.projectOpen })),
   toggleComposerMenu: () => set((s) => ({ composerMenuOpen: !s.composerMenuOpen })),
+  closeComposerMenu: () => set({ composerMenuOpen: false }),
   toggleModelPicker: () => set((s) => ({ modelPickerOpen: !s.modelPickerOpen })),
   closeModelPicker: () => set({ modelPickerOpen: false }),
   toggleCatalog: () => set((s) => ({ mainView: s.mainView === "catalog" ? "chat" : "catalog" })),
@@ -708,6 +787,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   selectNewChatWorkspace: (workspaceId) => set({ newChatWorkspaceId: workspaceId, workspaceError: null }),
   setNewChatPath: (path) => set({ newChatPath: path, newChatWorkspaceId: null }),
   closeNewChat: () => set({ newChatOpen: false, workspaceError: null }),
+  openNewChatDialog: () => set({ newChatOpen: true, workspaceError: null, newChatPath: "", newChatWorkspaceId: null }),
 }));
 
 /**
