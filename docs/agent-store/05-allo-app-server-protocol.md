@@ -40,6 +40,24 @@ WebSocket：本地 Web/Flowy 实时集成
 
 后续可增加 HTTPS/远程部署，但不改变消息语义。
 
+### 2.1.1 传输绑定（方法语义唯一）
+
+方法语义只有一套（§4–§5 的方法名与参数/结果类型）；WebSocket 与 HTTP
+只是两种绑定：
+
+```text
+WebSocket 长连接：initialize → initialized → ready，一连接多调用，
+  订阅/实时通知只走这里
+HTTP 一次性握手：每次调用独立 POST /initialize 取连接头 →
+  POST /initialized → 业务调用 → 连接即失效
+```
+
+`import/*`、`install/*`、`market/*`、`store/*`、`workspace/*` 两侧方法名
+一一对应（`market/remove` 的 `cascade`、auto-update 的 `enabled` 缺省为
+`true`，与 HTTP 的 query 缺省一致），共用同一实现；任一侧新增方法必须
+同时在另一侧落地。公开资产 `GET`（快照/store 头像）与 `/api/fs/browse`
+不是协议方法：前者是 `<img>` 直链（带不上连接头），后者是独立文件服务。
+
 ### 2.2 消息类型
 
 ```text

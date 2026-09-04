@@ -1,0 +1,17 @@
+{
+  "name": "@agent-store/client",
+  "version": "0.1.0",
+  "description": "Transport-agnostic App Server client (docs/agent-store/07 §2.2)",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@agent-store/protocol": "workspace:*"
+  }
+}

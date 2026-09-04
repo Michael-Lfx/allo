@@ -68,7 +68,8 @@ use serde::de::DeserializeOwned;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-const PROTOCOL_VERSION: &str = "2026-08-26";
+/// App Server wire protocol version, negotiated by `initialize`.
+pub const PROTOCOL_VERSION: &str = "2026-08-26";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3768,7 +3769,7 @@ async fn handle_websocket(socket: WebSocket, state: AppServerRouterState, user: 
         // keeps a subscribe response ahead of an event observed immediately
         // after the subscription is installed.
         let _outbound_guard = outbound_gate.lock().await;
-        let response = dispatch_websocket_request(
+        let response = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -4095,7 +4096,7 @@ async fn forward_app_server_events(
     }
 }
 
-async fn dispatch_websocket_request(
+async fn dispatch_connection_request(
     state: &AppServerRouterState,
     connection: &ConnectionState,
     user: &CurrentUser,
@@ -4512,6 +4513,127 @@ async fn dispatch_websocket_request(
                 AppServerError::new("internal_error", format!("failed to encode store install: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // ---------------- Agent Store Importer (05 §4.4; same impls as the HTTP routes) ----------------
+        "import/run" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let request = parse_ws_params::<AppServerImportRequest>(params)?;
+            let result = run_import_impl(state, request).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode import: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "import/list" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let imports = list_imports_impl(state, IMPORT_HISTORY_LIMIT).await?;
+            Ok(ws_response(request_id, serde_json::to_value(imports).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode imports: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "import/get" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSnapshotQuery>(params)?;
+            let detail = get_import_impl(state, &params.snapshot_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(detail).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode import: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        // ---------------- Agent Store Installer (05 §4.5; same impls as the HTTP routes) ----------------
+        "install/run" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let request = parse_ws_params::<AppServerInstallRequest>(params)?;
+            let result = install_impl(state, request).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode install: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "install/status" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSnapshotQuery>(params)?;
+            let status = install_status_impl(state, &params.snapshot_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(status).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode install status: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "install/disable" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsInstallComponents>(params)?;
+            let status = install_disable_impl(state, &params.snapshot_id, &params.component_ids).await?;
+            Ok(ws_response(request_id, serde_json::to_value(status).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode install status: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "install/enable" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsInstallComponents>(params)?;
+            let status = install_enable_impl(state, &params.snapshot_id, &params.component_ids).await?;
+            Ok(ws_response(request_id, serde_json::to_value(status).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode install status: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "install/uninstall" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsInstallComponents>(params)?;
+            let status = install_uninstall_impl(state, &params.snapshot_id, &params.component_ids).await?;
+            Ok(ws_response(request_id, serde_json::to_value(status).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode install status: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        // ---------------- Agent Store Marketplaces (05 §4.6; same impls as the HTTP routes) ----------------
+        "market/add" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let request = parse_ws_params::<AppServerMarketplaceAddRequest>(params)?;
+            let market = market_add_impl(state, request).await?;
+            Ok(ws_response(request_id, serde_json::to_value(market).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode marketplace: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "market/list" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let markets = market_list_impl(state).await?;
+            Ok(ws_response(request_id, serde_json::to_value(markets).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode marketplaces: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "market/get" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsMarketplaceQuery>(params)?;
+            let market = market_get_impl(state, &params.marketplace_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(market).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode marketplace: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "market/remove" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsMarketRemove>(params)?;
+            let result = market_remove_impl(state, &params.marketplace_id, params.cascade.unwrap_or(true)).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode marketplace remove: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "market/auto-update" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsMarketAutoUpdate>(params)?;
+            let market = market_auto_update_impl(state, &params.marketplace_id, params.enabled.unwrap_or(true)).await?;
+            Ok(ws_response(request_id, serde_json::to_value(market).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode marketplace: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "market/refresh" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsMarketplaceQuery>(params)?;
+            let result = market_refresh_impl(state, &params.marketplace_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode marketplace refresh: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "market/entry-import" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsStoreEntry>(params)?;
+            let result = market_entry_import_impl(state, &params.marketplace_id, &params.entry_name).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode market entry import: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         _ => Err(AppServerError::from(ProtocolError::InvalidRequest(
             "unknown App Server method".into(),
         ))),
@@ -4562,6 +4684,42 @@ struct WsStoreEntry {
 #[serde(deny_unknown_fields)]
 struct WsConnectorQuery {
     connector_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsSnapshotQuery {
+    snapshot_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsInstallComponents {
+    snapshot_id: String,
+    #[serde(default)]
+    component_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsMarketplaceQuery {
+    marketplace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsMarketRemove {
+    marketplace_id: String,
+    #[serde(default)]
+    cascade: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsMarketAutoUpdate {
+    marketplace_id: String,
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -5087,7 +5245,7 @@ mod tests {
             false,
         );
         let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
-        let error = dispatch_websocket_request(
+        let error = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -5815,7 +5973,7 @@ display_name = "MiMo V2.5 Free"
                 serde_json::json!({ "conversation_id": "0190f5fe-7c00-7a00-8000-000000000099" }),
             ),
         ] {
-            let error = dispatch_websocket_request(
+            let error = dispatch_connection_request(
                 &state,
                 &connection,
                 &user,
@@ -5919,7 +6077,7 @@ display_name = "MiMo V2.5 Free"
         let (state, user, connection) = ready_catalog_state();
         let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
 
-        let skills = dispatch_websocket_request(
+        let skills = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -5932,7 +6090,7 @@ display_name = "MiMo V2.5 Free"
         .expect("skill/list");
         assert_eq!(skills["result"][0]["name"], "demo");
 
-        let skill = dispatch_websocket_request(
+        let skill = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -5946,7 +6104,7 @@ display_name = "MiMo V2.5 Free"
         // `summary` is flattened onto the detail wire object.
         assert_eq!(skill["result"]["id"], "demo");
 
-        let connectors = dispatch_websocket_request(
+        let connectors = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -5959,7 +6117,7 @@ display_name = "MiMo V2.5 Free"
         .expect("connector/list");
         assert_eq!(connectors["result"][0]["name"], "playwright");
 
-        let status = dispatch_websocket_request(
+        let status = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -6005,8 +6163,22 @@ display_name = "MiMo V2.5 Free"
                 "connector/auth/start",
                 serde_json::json!({ "connector_id": "playwright" }),
             ),
+            ("import/list", serde_json::json!({})),
+            ("import/get", serde_json::json!({ "snapshot_id": "snap_01" })),
+            ("install/status", serde_json::json!({ "snapshot_id": "snap_01" })),
+            (
+                "install/disable",
+                serde_json::json!({ "snapshot_id": "snap_01", "component_ids": [] }),
+            ),
+            ("market/list", serde_json::json!({})),
+            ("market/get", serde_json::json!({ "marketplace_id": "m1" })),
+            (
+                "market/remove",
+                serde_json::json!({ "marketplace_id": "m1", "cascade": true }),
+            ),
+            ("store/list", serde_json::json!({})),
         ] {
-            let error = dispatch_websocket_request(
+            let error = dispatch_connection_request(
                 &state,
                 &connection,
                 &user,
@@ -6025,7 +6197,7 @@ display_name = "MiMo V2.5 Free"
     async fn websocket_dispatch_runs_connector_auth_roundtrip() {
         let (state, user, connection) = ready_catalog_state();
         let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
-        let initial = dispatch_websocket_request(
+        let initial = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -6038,7 +6210,7 @@ display_name = "MiMo V2.5 Free"
         .expect("auth/status");
         assert_eq!(initial["result"]["state"], "not_authenticated");
 
-        let started = dispatch_websocket_request(
+        let started = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -6051,7 +6223,7 @@ display_name = "MiMo V2.5 Free"
         .expect("auth/start");
         assert_eq!(started["result"]["state"], "started");
 
-        let authenticated = dispatch_websocket_request(
+        let authenticated = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -6064,7 +6236,7 @@ display_name = "MiMo V2.5 Free"
         .expect("auth/status after start");
         assert_eq!(authenticated["result"]["state"], "authenticated");
 
-        let logout = dispatch_websocket_request(
+        let logout = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -6269,7 +6441,7 @@ display_name = "MiMo V2.5 Free"
             .expect("initialized");
         let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
 
-        let agents = dispatch_websocket_request(
+        let agents = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -6282,7 +6454,7 @@ display_name = "MiMo V2.5 Free"
         .expect("agent/list");
         assert_eq!(agents["result"][0]["id"], "wb-demo-software-team-lead");
 
-        let agent = dispatch_websocket_request(
+        let agent = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -6295,7 +6467,7 @@ display_name = "MiMo V2.5 Free"
         .expect("agent/get");
         assert_eq!(agent["result"]["name"], "software-team-lead");
 
-        let teams = dispatch_websocket_request(
+        let teams = dispatch_connection_request(
             &state,
             &connection,
             &user,
@@ -6308,7 +6480,7 @@ display_name = "MiMo V2.5 Free"
         .expect("team/list");
         assert_eq!(teams["result"][0]["lead_agent_id"], "wb-demo-software-team-lead");
 
-        let team = dispatch_websocket_request(
+        let team = dispatch_connection_request(
             &state,
             &connection,
             &user,
