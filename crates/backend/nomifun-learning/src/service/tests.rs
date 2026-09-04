@@ -1834,6 +1834,37 @@
         )
     }
 
+    /// 图课程的目录级删除（不勾“同时删除复习数据”）：前置边必须随课程
+    /// 消失（启动数据契约不容忍孤儿边），课时内容保留供复习体系继续引用。
+    #[tokio::test]
+    async fn graph_course_catalog_delete_clears_edges_but_keeps_lessons() {
+        let (service, _knowledge, owner_id) = job_test_service().await;
+        let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+        service
+            .delete_course(
+                &nomifun_common::LearningCourseId::parse(&course_id).unwrap(),
+                &owner_id,
+                false,
+            )
+            .await
+            .unwrap();
+        let pool = service.pool_for_tests();
+        let edges: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_graph_prerequisites")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(edges, 0, "graph edges must not outlive their course");
+        let lessons: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            lessons, 2,
+            "reviewable content must survive the catalog delete"
+        );
+    }
+
     /// 学习图节点的内容生成只走 agent 引擎：未配置引擎时明确 Conflict
     /// （traditional 节点在同样配置下走 fallback，图节点不行）；而幂等
     /// 检查先于类型分流——已生成节点无论课程类型都直接返回现有视图。

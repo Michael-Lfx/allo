@@ -84,7 +84,7 @@
   "deleteCourseHint": "确定要删除课程「{{title}}」吗？",
   "deleteCourseReviews": "同时删除该课程的复习问题与学习数据",
   "deleteCourseReviewsOn": "该课程的复习记录、掌握度、学习进度与课程内容将被彻底删除。",
-  "deleteCourseReviewsOff": "将保留课程内容与复习问题，该课程的概念仍会继续出现在复习队列中（显示为「已删除课程」）。",
+  "deleteCourseReviewsOff": "将保留课程内容、问题与复习记录，该课程的概念仍会继续出现在复习队列中（显示为「已删除课程」）；学习图的前置关系会随课程一起删除。",
   "deletedCourse": "已删除课程",
   "questionManagement": "问题管理",
   "questionCourse": "课程",

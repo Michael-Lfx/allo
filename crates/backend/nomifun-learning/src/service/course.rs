@@ -477,8 +477,9 @@ impl LearningService {
     }
 
     /// Deletes a course. With `delete_reviews` the learner's enrollment and
-    /// all derived data plus the course content are wiped. Otherwise only
-    /// the catalog row disappears, so orphaned concepts stay reviewable.
+    /// all derived data plus the course content are wiped. Otherwise the
+    /// catalog row and the course's graph edges disappear, while content,
+    /// questions and review data stay so orphaned concepts remain reviewable.
     pub async fn delete_course(
         &self,
         course_id: &LearningCourseId,
@@ -559,6 +560,13 @@ impl LearningService {
                     .map_err(internal)?;
             }
         }
+        // 学习图的前置边没有“保留复习数据”的留存语义：课程行一旦消失，图
+        // 关系必须随之清理，否则会留下启动契约审计判定为孤儿的前置边。
+        sqlx::query("DELETE FROM learning_graph_prerequisites WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
         sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
             .bind(course_id.as_str())
             .execute(&mut *transaction)
@@ -654,6 +662,7 @@ impl LearningService {
                     SELECT module_id FROM learning_modules WHERE course_id = ?)",
                 "DELETE FROM learning_concept_prerequisites WHERE concept_id IN (\
                     SELECT concept_id FROM learning_concepts WHERE course_id = ?)",
+                "DELETE FROM learning_graph_prerequisites WHERE course_id = ?",
                 "DELETE FROM learning_concepts WHERE course_id = ?",
                 "DELETE FROM learning_modules WHERE course_id = ?",
             ];

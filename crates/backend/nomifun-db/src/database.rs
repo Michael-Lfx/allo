@@ -412,6 +412,7 @@ async fn init_database_memory_inner(requested_owner_user_id: Option<String>) -> 
     // needed (and there is no on-disk path we could create one against).
     run_migrations(&pool).await?;
     crate::id_schema_contract::validate_id_schema_contract(&pool).await?;
+    crate::id_schema_contract::repair_logical_reference_orphans(&pool).await?;
     ensure_installation_owner(&pool, requested_owner_user_id.as_deref()).await?;
     crate::id_schema_contract::validate_id_data_contract(&pool).await?;
 
@@ -450,6 +451,7 @@ async fn try_init_file(path: &Path) -> Result<Database, DbError> {
     let setup = async {
         run_migrations(&pool).await?;
         crate::id_schema_contract::validate_id_schema_contract(&pool).await?;
+        crate::id_schema_contract::repair_logical_reference_orphans(&pool).await?;
         ensure_installation_owner(&pool, None).await?;
         crate::id_schema_contract::validate_id_data_contract(&pool).await
     }
