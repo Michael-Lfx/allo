@@ -84,7 +84,7 @@
   "deleteCourseHint": "Delete the course \"{{title}}\"?",
   "deleteCourseReviews": "Also delete its review questions and learning data",
   "deleteCourseReviewsOn": "Review history, mastery, lesson progress and all course content will be removed permanently.",
-  "deleteCourseReviewsOff": "Course content and questions are kept, so its concepts stay in the review queue (shown as \"Deleted course\").",
+  "deleteCourseReviewsOff": "Course content, questions and review history are kept, so its concepts stay in the review queue (shown as \"Deleted course\"); the learning-graph links are removed with the course.",
   "deletedCourse": "Deleted course",
   "questionManagement": "Questions",
   "questionCourse": "Course",
