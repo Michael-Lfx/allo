@@ -14,27 +14,28 @@ import { isActiveStatus, listSessions } from '@renderer/pages/videoGeneration/ap
 import VideoGenerationHoverCard from '@renderer/pages/videoGeneration/components/VideoGenerationHoverCard';
 import {
   RECENT_VIDEO_GENERATION_VISIBLE,
-  mergeRecentVideoGenerationProjects,
   readRecentVideoGenerationSessions,
   readRecentVideoGenerationTasks,
+  rememberVideoGenerationBriefing,
+  rememberVideoGenerationCanvas,
   rememberVideoGenerationSession,
+  rememberVideoGenerationTask,
   updateRecentVideoGenerationTitle,
-  type RecentVideoGenerationEntry,
 } from '@renderer/pages/videoGeneration/routeMemory';
-import { listGenerationTasks } from '@renderer/pages/videoCanvas/api';
+import {
+  fallbackNavItems,
+  mergeRecentNavItems,
+  navItemsEqual,
+  type RecentCreationKind,
+  type RecentNavItem,
+} from '@renderer/pages/videoGeneration/recentCreations';
+import { listBriefingSessions } from '@renderer/pages/videoGeneration/briefing/api';
+import { listCanvasProjects, listGenerationTasks } from '@renderer/pages/videoCanvas/api';
 import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch';
 
 const NAV_EXPANDED_KEY = 'flowy.videoGeneration.navExpanded';
 /** Refresh frequency while any recent project is actively planning/rendering. */
 const ACTIVE_POLL_MS = 4000;
-
-type RecentNavItem = {
-  id: string;
-  title: string;
-  status?: string | null;
-  /** Source kind: long-lived session or one-shot clip task. */
-  source: 'session' | 'task';
-};
 
 function readNavExpandedDefault(fallback: boolean): boolean {
   try {
@@ -62,156 +63,6 @@ function truncateTitle(title: string, maxChars = 18): string {
   return `${[...t].slice(0, maxChars - 1).join('')}…`;
 }
 
-/** Format a task's prompt into a short sider-friendly title. */
-function taskTitleFromPrompt(prompt: string | null | undefined): string {
-  return (prompt ?? '').trim().slice(0, 48);
-}
-
-function buildFallbackItems(
-  localSessions: RecentVideoGenerationEntry[],
-  localTasks: RecentVideoGenerationEntry[]
-): RecentNavItem[] {
-  const items: RecentNavItem[] = [];
-  for (const entry of localSessions.slice(0, RECENT_VIDEO_GENERATION_VISIBLE)) {
-    items.push({
-      id: entry.id,
-      title: entry.title?.trim() || '',
-      status: null,
-      source: 'session',
-    });
-  }
-  for (const entry of localTasks.slice(0, Math.max(0, RECENT_VIDEO_GENERATION_VISIBLE - items.length))) {
-    items.push({
-      id: entry.id,
-      title: entry.title?.trim() || '',
-      status: null,
-      source: 'task',
-    });
-  }
-  return items.slice(0, RECENT_VIDEO_GENERATION_VISIBLE);
-}
-
-function navItemsEqual(prev: RecentNavItem[], next: RecentNavItem[]): boolean {
-  if (prev.length !== next.length) return false;
-  return prev.every(
-    (row, i) =>
-      row.id === next[i]?.id &&
-      row.title === next[i]?.title &&
-      row.source === next[i]?.source &&
-      (row.status ?? null) === (next[i]?.status ?? null)
-  );
-}
-
-type SessionItem = { id: string; title?: string | null; status?: string | null; updated_at?: number | string | null };
-type TaskItem = { task_id: string; prompt?: string | null; status?: string | null; updated_at?: number };
-
-/**
- * Merge: local MRU (sessions + tasks) → server sessions → server tasks.
- * Stable insertion order keeps recently-opened items at the top while ensuring
- * historical items the user did not pin still surface up to the visible limit.
- */
-function mergeRecentNavItems(
-  localSessions: RecentVideoGenerationEntry[],
-  localTasks: RecentVideoGenerationEntry[],
-  sessions: SessionItem[],
-  tasks: TaskItem[],
-  limit: number
-): RecentNavItem[] {
-  const sessionById = new Map(
-    sessions.map((s) => [
-      s.id,
-      {
-        title: (s.title ?? '').trim() || '',
-        status: s.status ?? null,
-        source: 'session' as const,
-        updatedAt: typeof s.updated_at === 'number' ? s.updated_at : 0,
-      },
-    ])
-  );
-  const taskById = new Map(
-    tasks.map((t) => [
-      t.task_id,
-      {
-        title: taskTitleFromPrompt(t.prompt),
-        status: t.status ?? null,
-        source: 'task' as const,
-        updatedAt: t.updated_at ?? 0,
-      },
-    ])
-  );
-
-  const out: RecentNavItem[] = [];
-  const used = new Set<string>();
-
-  const pushIfKnown = (id: string, cachedTitle?: string) => {
-    if (out.length >= limit || used.has(id)) return;
-    const sessionHit = sessionById.get(id);
-    if (sessionHit) {
-      used.add(id);
-      out.push({
-        id,
-        title: sessionHit.title || cachedTitle || '',
-        status: sessionHit.status,
-        source: 'session',
-      });
-      return;
-    }
-    const taskHit = taskById.get(id);
-    if (taskHit) {
-      used.add(id);
-      out.push({
-        id,
-        title: taskHit.title || cachedTitle || '',
-        status: taskHit.status,
-        source: 'task',
-      });
-    }
-  };
-
-  for (const entry of localSessions) pushIfKnown(entry.id, entry.title);
-  for (const entry of localTasks) pushIfKnown(entry.id, entry.title);
-
-  // Fill with remaining server-side entries ordered by recency (the server
-  // returns them most-recent-first; fall back to a stable sort if missing).
-  const sessionRest = [...sessions]
-    .filter((s) => !used.has(s.id))
-    .sort((a, b) => {
-      const av = typeof a.updated_at === 'number' ? a.updated_at : 0;
-      const bv = typeof b.updated_at === 'number' ? b.updated_at : 0;
-      return bv - av;
-    });
-  for (const s of sessionRest) {
-    if (out.length >= limit) break;
-    used.add(s.id);
-    out.push({
-      id: s.id,
-      title: (s.title ?? '').trim(),
-      status: s.status ?? null,
-      source: 'session',
-    });
-  }
-
-  const taskRest = [...tasks]
-    .filter((t) => !used.has(t.task_id))
-    .sort((a, b) => {
-      const av = typeof a.updated_at === 'number' ? a.updated_at : 0;
-      const bv = typeof b.updated_at === 'number' ? b.updated_at : 0;
-      return bv - av;
-    });
-  for (const t of taskRest) {
-    if (out.length >= limit) break;
-    used.add(t.task_id);
-    out.push({
-      id: t.task_id,
-      title: taskTitleFromPrompt(t.prompt),
-      status: t.status ?? null,
-      source: 'task',
-    });
-  }
-
-  return out;
-}
-
 export interface SiderVideoGenerationGroupProps {
   isMobile: boolean;
   /** True when pathname is under `/video-generation`. */
@@ -220,14 +71,22 @@ export interface SiderVideoGenerationGroupProps {
   activeSessionId: string | null;
   /** Current clip task id, if any. */
   activeClipTaskId: string | null;
+  /** Current canvas project id, if any. */
+  activeCanvasProjectId: string | null;
+  /** Current briefing session id, if any. */
+  activeBriefingId: string | null;
   collapsed: boolean;
   siderTooltipProps: SiderTooltipProps;
   /** Open the video-generation home (list). */
   onEnterHome: () => void;
-  /** Open a recent project workspace. */
+  /** Open a recent agent/action workspace. */
   onOpenProject: (sessionId: string) => void;
   /** Open a recent clip task. */
   onOpenClipTask: (taskId: string) => void;
+  /** Open a recent infinite-canvas project. */
+  onOpenCanvasProject: (projectId: string) => void;
+  /** Open a recent briefing workspace. */
+  onOpenBriefing: (briefingId: string) => void;
 }
 
 const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
@@ -235,11 +94,15 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
   moduleActive,
   activeSessionId,
   activeClipTaskId,
+  activeCanvasProjectId,
+  activeBriefingId,
   collapsed,
   siderTooltipProps,
   onEnterHome,
   onOpenProject,
   onOpenClipTask,
+  onOpenCanvasProject,
+  onOpenBriefing,
 }) => {
   const { t } = useTranslation();
   const label = t('videoGeneration.nav.entry', { defaultValue: '视频生成' });
@@ -251,16 +114,30 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
     const localSessions = readRecentVideoGenerationSessions();
     const localTasks = readRecentVideoGenerationTasks();
     try {
-      const [sessions, taskList] = await Promise.all([
-        listSessions().catch(() => []),
-        listGenerationTasks(20, 0).then((r) => r.tasks).catch(() => []),
+      const [sessionsResult, taskResult, canvasResult, briefingResult] = await Promise.allSettled([
+        listSessions(),
+        listGenerationTasks(20, 0).then((r) => r.tasks),
+        listCanvasProjects(),
+        listBriefingSessions(),
       ]);
+      const sessions = sessionsResult.status === 'fulfilled' ? sessionsResult.value : [];
+      const taskList = taskResult.status === 'fulfilled' ? taskResult.value : [];
+      const canvases = canvasResult.status === 'fulfilled' ? canvasResult.value : [];
+      const briefings = briefingResult.status === 'fulfilled' ? briefingResult.value : [];
+      const loadedKinds = new Set<RecentCreationKind>();
+      if (sessionsResult.status === 'fulfilled') loadedKinds.add('session');
+      if (taskResult.status === 'fulfilled') loadedKinds.add('task');
+      if (canvasResult.status === 'fulfilled') loadedKinds.add('canvas');
+      if (briefingResult.status === 'fulfilled') loadedKinds.add('briefing');
       const merged = mergeRecentNavItems(
         localSessions,
         localTasks,
         sessions,
         taskList,
-        RECENT_VIDEO_GENERATION_VISIBLE
+        canvases,
+        briefings,
+        RECENT_VIDEO_GENERATION_VISIBLE,
+        loadedKinds
       );
       setItems((prev) => {
         if (navItemsEqual(prev, merged)) return prev;
@@ -270,7 +147,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
         if (row.title) updateRecentVideoGenerationTitle(row.id, row.title);
       }
     } catch {
-      setItems(buildFallbackItems(localSessions, localTasks));
+      setItems(fallbackNavItems(localSessions, localTasks, RECENT_VIDEO_GENERATION_VISIBLE));
     }
   }, []);
 
@@ -281,7 +158,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
 
   useEffect(() => {
     void refresh();
-  }, [refresh, activeSessionId]);
+  }, [refresh, activeSessionId, activeClipTaskId, activeCanvasProjectId, activeBriefingId]);
 
   useEffect(() => {
     const idleWindow = window as Window & {
@@ -317,7 +194,8 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
 
   // Mirror workpath: when a project route is active, force-expand once per route.
   useEffect(() => {
-    const routeKey = activeSessionId ?? activeClipTaskId;
+    const routeKey =
+      activeSessionId ?? activeClipTaskId ?? activeCanvasProjectId ?? activeBriefingId;
     if (!routeKey) {
       syncedActiveRouteRef.current = null;
       return;
@@ -326,7 +204,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
     syncedActiveRouteRef.current = routeKey;
     setExpanded(true);
     writeNavExpanded(true);
-  }, [activeSessionId, activeClipTaskId]);
+  }, [activeSessionId, activeClipTaskId, activeCanvasProjectId, activeBriefingId]);
 
   const handleParentClick = useCallback(() => {
     setExpanded((prev) => {
@@ -372,7 +250,13 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
         className={classNames(
           'flex items-center gap-8px pl-10px pr-8px h-34px cursor-pointer hover:bg-fill-2 rd-10px transition-colors min-w-0 text-t-primary',
           isMobile && 'sider-action-btn-mobile',
-          moduleActive && !activeSessionId ? '!bg-primary-1 !text-primary-6' : ''
+          moduleActive &&
+            !activeSessionId &&
+            !activeClipTaskId &&
+            !activeCanvasProjectId &&
+            !activeBriefingId
+            ? '!bg-primary-1 !text-primary-6'
+            : ''
         )}
         onClick={handleParentClick}
         onPointerEnter={() => prefetchVideoGenerationHome()}
@@ -423,7 +307,11 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
             const active =
               item.source === 'task'
                 ? activeClipTaskId === item.id
-                : activeSessionId === item.id;
+                : item.source === 'canvas'
+                  ? activeCanvasProjectId === item.id
+                  : item.source === 'briefing'
+                    ? activeBriefingId === item.id
+                    : activeSessionId === item.id;
             const busy = isActiveStatus(item.status);
             const busyHint =
               item.status === 'planning'
@@ -434,12 +322,22 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                     ? t('videoGeneration.clip.status.queued', { defaultValue: '排队中' })
                     : item.status === 'running'
                       ? t('videoGeneration.clip.status.running', { defaultValue: '生成中' })
-                      : '';
-            const isTask = item.source === 'task';
+                      : item.status === 'researching' ||
+                          item.status === 'scripting' ||
+                          item.status === 'aligning' ||
+                          item.status === 'composing'
+                        ? t('videoGeneration.briefing.runningTitle', { defaultValue: '生成中' })
+                        : '';
             const openItem = () => {
-              if (isTask) {
-                rememberVideoGenerationSession(item.id, fullTitle);
+              if (item.source === 'task') {
+                rememberVideoGenerationTask(item.id, fullTitle);
                 onOpenClipTask(item.id);
+              } else if (item.source === 'canvas') {
+                rememberVideoGenerationCanvas(item.id, fullTitle);
+                onOpenCanvasProject(item.id);
+              } else if (item.source === 'briefing') {
+                rememberVideoGenerationBriefing(item.id, fullTitle);
+                onOpenBriefing(item.id);
               } else {
                 rememberVideoGenerationSession(item.id, fullTitle);
                 onOpenProject(item.id);

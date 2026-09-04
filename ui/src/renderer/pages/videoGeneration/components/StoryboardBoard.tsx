@@ -258,7 +258,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     ).then((boards) => {
       if (cancelled) return;
       setStoryboardEntries((previous) =>
-        rendering ? mergeStoryboardsWithoutGrowth(previous, boards) : boards
+        mergeStoryboardsWithoutGrowth(previous, boards)
       );
     });
     return () => {

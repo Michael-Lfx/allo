@@ -344,8 +344,13 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
   };
 
   const handleOpenMedia = (item: StudioSessionMedia, gallery: StudioSessionMedia[]) => {
+    if (item.kind === 'file' || item.kind === 'document') {
+      onSelectArtifact?.(item.path);
+      return;
+    }
     if (item.sceneId) onFocusScene?.(item.sceneId);
     else onSelectArtifact?.(item.path);
+    if (item.kind === 'audio') return;
     const list = gallery.length > 0 ? gallery : [item];
     const index = Math.max(
       0,

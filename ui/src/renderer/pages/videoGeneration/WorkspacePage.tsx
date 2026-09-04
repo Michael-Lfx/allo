@@ -1561,34 +1561,6 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : null}
 
-        {!isAction && hasStoryboard ? (
-          <section className={`${styles.studioPanel} ${styles.storyboardPanel}`}>
-            <div className={styles.storyboardHeader}>
-              <div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.studio.storyboard.title', { defaultValue: '故事分镜' })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.storyboard.hint', {
-                    defaultValue: '逐镜头检查叙事和画面，满意后再生成成片。',
-                  })}
-                </p>
-              </div>
-              <Tag size='small' color='arcoblue'>
-                {t('videoGeneration.studio.storyboard.editable', { defaultValue: '可编辑' })}
-              </Tag>
-            </div>
-            <StoryboardBoard
-              sessionId={sessionId}
-              artifacts={artifacts}
-              disabled={busy}
-              revising={revising}
-              focusSceneId={focusSceneId}
-              onSaveSceneDescriptions={handleSaveSceneDescriptions}
-            />
-          </section>
-        ) : null}
-
         {finalBlobUrl ? (
           <section className={`${styles.studioPanel} overflow-hidden`}>
             <div className='flex flex-wrap items-center justify-between gap-10px px-16px py-13px'>
@@ -1639,6 +1611,34 @@ const WorkspacePage: React.FC = () => {
                 })
               }
               className='block w-full max-h-620px bg-black'
+            />
+          </section>
+        ) : null}
+
+        {!isAction && hasStoryboard ? (
+          <section className={`${styles.studioPanel} ${styles.storyboardPanel}`}>
+            <div className={styles.storyboardHeader}>
+              <div>
+                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                  {t('videoGeneration.studio.storyboard.title', { defaultValue: '故事分镜' })}
+                </h2>
+                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                  {t('videoGeneration.studio.storyboard.hint', {
+                    defaultValue: '逐镜头检查叙事和画面，满意后再生成成片。',
+                  })}
+                </p>
+              </div>
+              <Tag size='small' color='arcoblue'>
+                {t('videoGeneration.studio.storyboard.editable', { defaultValue: '可编辑' })}
+              </Tag>
+            </div>
+            <StoryboardBoard
+              sessionId={sessionId}
+              artifacts={artifacts}
+              disabled={busy}
+              revising={revising}
+              focusSceneId={focusSceneId}
+              onSaveSceneDescriptions={handleSaveSceneDescriptions}
             />
           </section>
         ) : null}

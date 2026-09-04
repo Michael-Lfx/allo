@@ -15,7 +15,9 @@ Given a script and a cast list (visual features already decided), invent or refi
 
 [Guidelines]
 - Match the script language for all natural-language values (Chinese input → 简体中文).
+- Gender/age in timbre MUST match static_features and the character's name (成年女性 ≠ 男中音). Never default an unnamed adult to male.
 - Each voice must be DISTINCT from the others (different timbre / pitch / pace) so listeners can tell speakers apart.
+- Do not set tts_voice — the pipeline assigns Flowy Cloud TTS ids.
 - Keep profiles SHORT and concrete — they will be pasted into Seedance audio captions every shot.
 - timbre: a FIXED acoustic fingerprint (age band + gender presentation + resonance + one texture). Example: "清亮偏柔的成年女中音，胸腹共鸣均衡，略带稳定气声，无鼻音". Avoid vague one-word labels like "女声" / "男声".
 - volume: quiet | normal | loud (baseline speaking loudness for this character, NOT scene SFX and NOT per-shot emotion).

@@ -1,8 +1,7 @@
 
 /**
  * Unified video creation home (`/video-generation`).
- * Agent and infinite-canvas creation share one composer while keeping their
- * skills, drafts, submissions, and project galleries independent.
+ * Agent, clip, canvas, and briefing share one composer and one 「最近创作」 list.
  */
 import React, {
   Suspense,
@@ -37,6 +36,7 @@ import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
 import { prefetchCanvasWorkspace } from './prefetch';
+import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 import { videoCanvasProjectPath } from '../videoCanvas/routes';
 import {
   briefingWorkspacePath,
@@ -46,6 +46,7 @@ import {
 } from './briefing/api';
 import type { BriefingSessionSummary } from './briefing/api';
 import { parseVideoHomeMode, type VideoCreateDraft, type VideoHomeMode } from './home/types';
+import { parseTvShowScope } from './campaign';
 import {
   CLIP_DURATION_DEFAULT_SECS,
   CLIP_DURATION_MAX_SECS,
@@ -55,11 +56,20 @@ import {
 } from './durationBounds';
 import {
   clearVideoGenerationSessionMemory,
+  rememberVideoGenerationBriefing,
+  rememberVideoGenerationCanvas,
   rememberVideoGenerationSession,
   rememberVideoGenerationTask,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
-import type { GenerationTaskView } from '../videoCanvas/api';
+import {
+  deleteCanvasProject,
+  listCanvasProjects,
+  listGenerationTasks,
+  type CanvasProjectMeta,
+  type GenerationTaskView,
+} from '../videoCanvas/api';
+import { toUpdatedAtMs } from './recentCreations';
 import styles from './index.module.css';
 
 /**
@@ -81,10 +91,12 @@ async function createServerBackedCanvasProject(
 
 type ListTab = 'recent' | 'tvShow';
 
-const CanvasProjectGallery = lazy(() => import('./home/CanvasProjectGallery'));
 const TvShowPanel = lazy(() => import('./components/TvShowPanel'));
 const SessionCard = lazy(() => import('./components/SessionCard'));
 const GenerationTaskCard = lazy(() => import('./components/GenerationTaskCard'));
+const CanvasProjectCard = lazy(() =>
+  import('./home/CanvasProjectGallery').then((mod) => ({ default: mod.CanvasProjectCard }))
+);
 
 function titleForDraft(draft: VideoCreateDraft): string {
   if (draft.workflow === 'action2video') {
@@ -109,13 +121,14 @@ const VideoGenerationListPage: React.FC = () => {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [briefingSessions, setBriefingSessions] = useState<BriefingSessionSummary[]>([]);
   const [generationTasks, setGenerationTasks] = useState<GenerationTaskView[]>([]);
+  const [canvasProjects, setCanvasProjects] = useState<CanvasProjectMeta[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingTasks, setLoadingTasks] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [openingCanvasId, setOpeningCanvasId] = useState<string | null>(null);
   const pageScrollRef = useRef<HTMLDivElement>(null);
   const savedPageScrollTopRef = useRef(0);
   const initialWorkModeRef = useRef(workMode);
@@ -152,72 +165,45 @@ const VideoGenerationListPage: React.FC = () => {
     [t]
   );
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      setSessions(await listSessions());
+  const refreshAll = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
+    const results = await Promise.allSettled([
+      listSessions(),
+      listBriefingSessions(),
+      listGenerationTasks(30, 0).then((result) => result.tasks),
+      listCanvasProjects(),
+    ]);
+    const sessionsResult = results[0];
+    const briefingsResult = results[1];
+    const tasksResult = results[2];
+    const canvasResult = results[3];
+    if (sessionsResult.status === 'fulfilled') setSessions(sessionsResult.value);
+    if (briefingsResult.status === 'fulfilled') setBriefingSessions(briefingsResult.value);
+    if (tasksResult.status === 'fulfilled') setGenerationTasks(tasksResult.value);
+    if (canvasResult.status === 'fulfilled') setCanvasProjects(canvasResult.value);
+    const allFailed = results.every((result) => result.status === 'rejected');
+    if (allFailed) {
+      const first = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      const reason = first?.reason;
+      setError(reason instanceof Error ? reason.message : String(reason ?? 'load failed'));
+    } else {
       setError(null);
-    } catch (e) {
-      console.error('[videoGeneration] failed to load sessions', e);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
     }
-  }, []);
-
-  const refreshBriefings = useCallback(async () => {
-    setLoading(true);
-    try {
-      setBriefingSessions(await listBriefingSessions());
-      setError(null);
-    } catch (e) {
-      console.error('[videoGeneration] failed to load briefing sessions', e);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const refreshTasks = useCallback(async () => {
-    setLoadingTasks(true);
-    try {
-      const { listGenerationTasks } = await import('../videoCanvas/api');
-      const result = await listGenerationTasks(30, 0);
-      setGenerationTasks(result.tasks);
-      setError(null);
-    } catch (e) {
-      console.error('[videoGeneration] failed to load generation tasks', e);
-      // Don't show error for tasks - it's optional
-      setGenerationTasks([]);
-    } finally {
-      setLoadingTasks(false);
-    }
+    setLoading(false);
   }, []);
 
   useEffect(() => {
-    if (workMode === 'briefing' && listTab === 'recent') {
-      void refreshBriefings();
-      return;
-    }
-    if (workMode !== 'creation' && listTab === 'recent') {
-      void refresh();
-    }
-    if (workMode === 'generate' && listTab === 'recent') {
-      void refreshTasks();
-    }
-  }, [listTab, refresh, refreshBriefings, refreshTasks, workMode]);
+    if (listTab !== 'recent') return;
+    void refreshAll();
+  }, [listTab, refreshAll]);
 
-  // Keep generation-task polling going while the home is visible — recent
-  // tasks need to keep ticking even when the user switches between
-  // TvShow / recent tabs, and when generation is in-flight.
   useEffect(() => {
-    if (workMode !== 'generate') return;
-    void refreshTasks();
+    if (listTab !== 'recent') return;
     const timer = window.setInterval(() => {
-      void refreshTasks();
+      void refreshAll({ silent: true });
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [refreshTasks, workMode]);
+  }, [listTab, refreshAll]);
 
   useEffect(() => {
     const prefetchGallery = () => {
@@ -241,37 +227,73 @@ const VideoGenerationListPage: React.FC = () => {
     prefetchCanvasWorkspace();
   }, []);
 
-  const displayed = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
-      (s) =>
-        (s.title ?? '').toLowerCase().includes(q) ||
-        s.workflow.toLowerCase().includes(q) ||
-        (s.stage ?? '').toLowerCase().includes(q)
-    );
-  }, [sessions, searchQuery]);
+  type RecentRow =
+    | { kind: 'session'; id: string; updatedAt: number; session: SessionSummary }
+    | { kind: 'task'; id: string; updatedAt: number; task: GenerationTaskView }
+    | { kind: 'canvas'; id: string; updatedAt: number; project: CanvasProjectMeta }
+    | { kind: 'briefing'; id: string; updatedAt: number; briefing: BriefingSessionSummary };
 
-  const displayedBriefings = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return briefingSessions;
-    return briefingSessions.filter(
-      (session) =>
-        session.title.toLowerCase().includes(q) ||
-        session.stage.toLowerCase().includes(q) ||
-        session.status.toLowerCase().includes(q)
-    );
-  }, [briefingSessions, searchQuery]);
+  const recentRows = useMemo((): RecentRow[] => {
+    const rows: RecentRow[] = [
+      ...sessions.map((session) => ({
+        kind: 'session' as const,
+        id: session.id,
+        updatedAt: toUpdatedAtMs(session.updated_at ?? session.created_at),
+        session,
+      })),
+      ...generationTasks.map((task) => ({
+        kind: 'task' as const,
+        id: task.task_id,
+        updatedAt: toUpdatedAtMs(task.updated_at || task.created_at),
+        task,
+      })),
+      ...canvasProjects.map((project) => ({
+        kind: 'canvas' as const,
+        id: project.project_id,
+        updatedAt: toUpdatedAtMs(project.updated_at || project.created_at),
+        project,
+      })),
+      ...briefingSessions.map((briefing) => ({
+        kind: 'briefing' as const,
+        id: briefing.id,
+        updatedAt: toUpdatedAtMs(briefing.updated_at || briefing.created_at),
+        briefing,
+      })),
+    ];
+    rows.sort((a, b) => b.updatedAt - a.updatedAt);
+    return rows;
+  }, [sessions, generationTasks, canvasProjects, briefingSessions]);
 
-  const displayedTasks = useMemo(() => {
+  const displayedRecent = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return generationTasks;
-    return generationTasks.filter(
-      (t) =>
-        (t.prompt ?? '').toLowerCase().includes(q) ||
-        t.task_id.toLowerCase().includes(q)
-    );
-  }, [generationTasks, searchQuery]);
+    if (!q) return recentRows;
+    return recentRows.filter((row) => {
+      if (row.kind === 'session') {
+        return (
+          (row.session.title ?? '').toLowerCase().includes(q) ||
+          row.session.workflow.toLowerCase().includes(q) ||
+          (row.session.stage ?? '').toLowerCase().includes(q)
+        );
+      }
+      if (row.kind === 'task') {
+        return (
+          (row.task.prompt ?? '').toLowerCase().includes(q) ||
+          row.task.task_id.toLowerCase().includes(q)
+        );
+      }
+      if (row.kind === 'canvas') {
+        return (
+          row.project.title.toLowerCase().includes(q) ||
+          row.project.project_id.toLowerCase().includes(q)
+        );
+      }
+      return (
+        row.briefing.title.toLowerCase().includes(q) ||
+        row.briefing.stage.toLowerCase().includes(q) ||
+        row.briefing.status.toLowerCase().includes(q)
+      );
+    });
+  }, [recentRows, searchQuery]);
 
   const handleCreate = useCallback(
     async (draft: VideoCreateDraft) => {
@@ -398,15 +420,20 @@ const VideoGenerationListPage: React.FC = () => {
 
   const handleModeChange = useCallback(
     (mode: VideoHomeMode) => {
-      const next = new URLSearchParams(searchParams);
-      if (mode === 'creation') next.set('mode', 'creation');
-      else if (mode === 'action') next.set('mode', 'action');
-      else if (mode === 'generate') next.set('mode', 'generate');
-      else if (mode === 'briefing') next.set('mode', 'briefing');
-      else next.delete('mode');
-      setSearchParams(next, { replace: true });
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (mode === 'creation') next.set('mode', 'creation');
+          else if (mode === 'action') next.set('mode', 'action');
+          else if (mode === 'generate') next.set('mode', 'generate');
+          else if (mode === 'briefing') next.set('mode', 'briefing');
+          else next.delete('mode');
+          return next;
+        },
+        { replace: true }
+      );
     },
-    [searchParams, setSearchParams]
+    [setSearchParams]
   );
 
   const handleCreateCanvas = useCallback(
@@ -473,6 +500,7 @@ const VideoGenerationListPage: React.FC = () => {
           references,
         });
         canvasCreated = true;
+        rememberVideoGenerationCanvas(id, title);
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
           mode: 'creation',
@@ -671,6 +699,7 @@ const VideoGenerationListPage: React.FC = () => {
           // Workspace idle auto-start retries if the first kickoff fails.
         }
         clearVideoHomeDraft();
+        rememberVideoGenerationBriefing(created.id, created.title);
         navigate(briefingWorkspacePath(created.id));
       } catch (e) {
         if (isInvalidCloudSessionError(e)) {
@@ -688,6 +717,43 @@ const VideoGenerationListPage: React.FC = () => {
       }
     },
     [creating, logout, message, navigate, t]
+  );
+
+  const openCanvasProject = useCallback(
+    (projectId: string) => {
+      const project = canvasProjects.find((item) => item.project_id === projectId);
+      rememberVideoGenerationCanvas(projectId, project?.title);
+      setOpeningCanvasId(projectId);
+      void loadVideoCanvasProjectPage().catch(() => undefined);
+      navigate(videoCanvasProjectPath(projectId));
+    },
+    [canvasProjects, navigate]
+  );
+
+  const handleDeleteCanvas = useCallback(
+    async (project: CanvasProjectMeta) => {
+      if (deletingId) return;
+      setDeletingId(project.project_id);
+      try {
+        await deleteCanvasProject(project.project_id);
+        clearVideoGenerationSessionMemory(project.project_id);
+        setCanvasProjects((prev) =>
+          prev.filter((item) => item.project_id !== project.project_id)
+        );
+        message.success(
+          t('videoGeneration.create.gallery.deleteOk', { defaultValue: '画布已删除' })
+        );
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.actions.deleteFailed', { defaultValue: '删除失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, message, t]
   );
 
   const openSession = useCallback(
@@ -843,6 +909,7 @@ const VideoGenerationListPage: React.FC = () => {
         source: 'project_import',
       });
       message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
+      rememberVideoGenerationCanvas(imported.project_id, imported.title);
       navigate(videoCanvasProjectPath(imported.project_id));
     } catch (e) {
       message.error(
@@ -890,69 +957,32 @@ const VideoGenerationListPage: React.FC = () => {
                 <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
                   {listTab === 'tvShow'
                     ? t('videoGeneration.tvShow.title', { defaultValue: 'Flowy TV' })
-                    : workMode === 'creation'
-                    ? t('videoGeneration.list.creationRecentTitle', {
-                        defaultValue: '最近创作',
-                      })
-                    : workMode === 'generate'
-                    ? t('videoGeneration.list.generateRecentTitle', {
-                        defaultValue: '最近视频',
-                      })
-                    : workMode === 'action'
-                    ? t('videoGeneration.list.actionRecentTitle', {
-                        defaultValue: '动作模仿',
-                      })
-                    : workMode === 'briefing'
-                    ? t('videoGeneration.list.briefingRecentTitle', {
-                        defaultValue: '最近资讯播报',
-                      })
                     : t('videoGeneration.list.recentTitle', {
                         defaultValue: '最近创作',
                       })}
                 </h2>
                 <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
                   {listTab === 'tvShow'
-                    ? searchParams.get('tvScope') === 'campaign'
+                    ? parseTvShowScope(searchParams.get('tvScope')) === 'campaign'
                       ? t('videoGeneration.campaign.subtitle', {
                           defaultValue: '参与官方活动，投稿成片，看看获奖作品。',
                         })
                       : t('videoGeneration.tvShow.subtitle', {
                           defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
                         })
-                    : workMode === 'creation'
-                    ? t('videoGeneration.list.creationRecentSubtitle', {
-                        defaultValue: '继续编辑画布，或导入一份分享来的画布工程。',
-                      })
-                    : workMode === 'generate'
-                    ? t('videoGeneration.list.generateRecentSubtitle', {
-                        defaultValue: '继续视频创作。',
-                      })
-                    : workMode === 'action'
-                    ? t('videoGeneration.list.actionRecentSubtitle', {
-                        defaultValue: '继续动作模仿项目。',
-                      })
-                    : workMode === 'briefing'
-                    ? t('videoGeneration.list.briefingRecentSubtitle', {
-                        defaultValue: '继续编辑拍脚本、核对引用或导出成片。',
-                      })
                     : t('videoGeneration.list.recentSubtitle', {
-                        defaultValue: '继续分镜、渲染或查看已经完成的影片。',
+                        defaultValue: '短剧、画布、视频和播报都在这里，按最近更新排列。',
                       })}
                 </p>
               </div>
               {listTab === 'recent' ? (
                 <div className='flex flex-wrap items-center gap-10px'>
-                  {workMode === 'briefing' ? null : (
                   <Button
                     type='outline'
                     size='small'
                     loading={importing}
                     disabled={creating || importing}
-                    onClick={() =>
-                      void (workMode === 'creation'
-                        ? handleImportCanvasProject()
-                        : handleImportProject())
-                    }
+                    onClick={() => void handleImportProject()}
                   >
                     <span className='inline-flex items-center gap-4px'>
                       <Upload theme='outline' size={14} fill='currentColor' />
@@ -961,10 +991,21 @@ const VideoGenerationListPage: React.FC = () => {
                       })}
                     </span>
                   </Button>
-                  )}
-                  {(workMode === 'briefing'
-                    ? briefingSessions.length > 0
-                    : workMode !== 'creation' && sessions.length > 0) && !error ? (
+                  <Button
+                    type='outline'
+                    size='small'
+                    loading={importing}
+                    disabled={creating || importing}
+                    onClick={() => void handleImportCanvasProject()}
+                  >
+                    <span className='inline-flex items-center gap-4px'>
+                      <Upload theme='outline' size={14} fill='currentColor' />
+                      {t('videoGeneration.list.importCanvas', {
+                        defaultValue: '导入画布',
+                      })}
+                    </span>
+                  </Button>
+                  {recentRows.length > 0 && !error ? (
                     <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
                       <Search
                         theme='outline'
@@ -996,223 +1037,129 @@ const VideoGenerationListPage: React.FC = () => {
                 >
                   <TvShowPanel enabled />
                 </Suspense>
-              ) : workMode === 'creation' ? (
-                <Suspense
-                  fallback={
-                    <div className='flex justify-center py-38px'>
-                      <Spin />
-                    </div>
+              ) : error ? (
+                <Result
+                  status='error'
+                  title={t('videoGeneration.list.loadError', {
+                    defaultValue: '加载失败',
+                  })}
+                  subTitle={error}
+                  extra={
+                    <Button onClick={() => void refreshAll()}>
+                      {t('videoGeneration.list.retry', { defaultValue: '重试' })}
+                    </Button>
                   }
-                >
-                  <CanvasProjectGallery embedded />
-                </Suspense>
-              ) : workMode === 'generate' ? (
-                // Video generation mode - show generation tasks
-                loadingTasks ? (
-                  <div className='flex justify-center py-38px'>
-                    <Spin />
-                  </div>
-                ) : generationTasks.length === 0 ? (
-                  <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-                    <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-primary-6'>
-                      <VideoOne theme='outline' size={19} fill='currentColor' />
-                    </span>
-                    <div>
-                      <div className='text-13px font-600 text-[var(--color-text-1)]'>
-                        {t('videoGeneration.list.generateEmpty.title', {
-                          defaultValue: '你的第一个视频从这里开始',
-                        })}
-                      </div>
-                      <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                        {t('videoGeneration.list.generateEmpty.desc', {
-                          defaultValue: '输入描述，上方开始生成视频。',
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <Suspense
-                      fallback={
-                        <div className='flex justify-center py-38px'>
-                          <Spin />
-                        </div>
-                      }
-                    >
-                      <div
-                        className='grid gap-12px'
-                        style={{
-                          gridTemplateColumns:
-                            'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-                        }}
-                      >
-                        {displayedTasks.map((task) => (
-                          <GenerationTaskCard
-                            key={task.task_id}
-                            task={task}
-                            onDelete={onDeleteTask}
-                            deleting={deletingId === task.task_id}
-                          />
-                        ))}
-                      </div>
-                    </Suspense>
-                    {displayedTasks.length === 0 && (
-                      <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
-                        {t('videoGeneration.list.filterEmpty', {
-                          defaultValue: '没有匹配的任务',
-                        })}
-                      </div>
-                    )}
-                  </>
-                )
-              ) : workMode === 'briefing' ? (
-                <div>
-                  {error ? (
-                    <Result
-                      status='error'
-                      title={t('videoGeneration.list.loadError', {
-                        defaultValue: '加载失败',
+                />
+              ) : loading && recentRows.length === 0 ? (
+                <div className='flex justify-center py-38px'>
+                  <Spin />
+                </div>
+              ) : recentRows.length === 0 ? (
+                <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
+                  <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-primary-6'>
+                    <VideoOne theme='outline' size={19} fill='currentColor' />
+                  </span>
+                  <div>
+                    <div className='text-13px font-600 text-[var(--color-text-1)]'>
+                      {t('videoGeneration.list.empty.title', {
+                        defaultValue: '你的第一支影片从上方开始',
                       })}
-                      subTitle={error}
-                      extra={
-                        <Button onClick={() => void refreshBriefings()}>
-                          {t('videoGeneration.list.retry', { defaultValue: '重试' })}
-                        </Button>
-                      }
-                    />
-                  ) : loading ? (
-                    <div className='flex justify-center py-38px'>
-                      <Spin />
                     </div>
-                  ) : briefingSessions.length === 0 ? (
-                    <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-                      <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-primary-6'>
-                        <VideoOne theme='outline' size={19} fill='currentColor' />
-                      </span>
-                      <div>
-                        <div className='text-13px font-600 text-[var(--color-text-1)]'>
-                          {t('videoGeneration.list.briefingEmpty.title', {
-                            defaultValue: '你的第一条资讯播报从上方开始',
-                          })}
-                        </div>
-                        <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                          {t('videoGeneration.list.briefingEmpty.desc', {
-                            defaultValue: '写下话题并贴上至少两个独立来源，才会进入调研与口播。',
-                          })}
-                        </div>
+                    <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                      {t('videoGeneration.list.empty.desc', {
+                        defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <Suspense
+                    fallback={
+                      <div className='flex justify-center py-38px'>
+                        <Spin />
                       </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div
-                        className='grid gap-12px'
-                        style={{
-                          gridTemplateColumns:
-                            'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-                        }}
-                      >
-                        {displayedBriefings.map((session) => (
+                    }
+                  >
+                    <div
+                      className='grid gap-12px'
+                      style={{
+                        gridTemplateColumns:
+                          'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
+                      }}
+                    >
+                      {displayedRecent.map((row) => {
+                        if (row.kind === 'session') {
+                          return (
+                            <SessionCard
+                              key={`session:${row.id}`}
+                              session={row.session}
+                              onOpen={openSession}
+                              onDelete={onDeleteSession}
+                              deleting={deletingId === row.id}
+                            />
+                          );
+                        }
+                        if (row.kind === 'task') {
+                          return (
+                            <GenerationTaskCard
+                              key={`task:${row.id}`}
+                              task={row.task}
+                              onDelete={onDeleteTask}
+                              deleting={deletingId === row.id}
+                            />
+                          );
+                        }
+                        if (row.kind === 'canvas') {
+                          return (
+                            <CanvasProjectCard
+                              key={`canvas:${row.id}`}
+                              project={row.project}
+                              untitled={t('videoGeneration.create.gallery.untitled', {
+                                defaultValue: '未命名画布',
+                              })}
+                              opening={openingCanvasId === row.id}
+                              disabled={Boolean(openingCanvasId) && openingCanvasId !== row.id}
+                              deleting={deletingId === row.id}
+                              onOpen={openCanvasProject}
+                              onDelete={(project) => void handleDeleteCanvas(project)}
+                            />
+                          );
+                        }
+                        return (
                           <button
-                            key={session.id}
+                            key={`briefing:${row.id}`}
                             type='button'
                             className='flex flex-col gap-8px rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-16px text-left'
-                            onClick={() => navigate(briefingWorkspacePath(session.id))}
+                            onClick={() => {
+                              rememberVideoGenerationBriefing(row.briefing.id, row.briefing.title);
+                              navigate(briefingWorkspacePath(row.briefing.id));
+                            }}
                           >
                             <strong className='text-14px text-[var(--color-text-1)]'>
-                              {session.title ||
+                              {row.briefing.title ||
                                 t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
                             </strong>
                             <span className='text-12px text-[var(--color-text-3)]'>
-                              {session.status} · {session.stage}
+                              {t('videoGeneration.list.briefingKind', {
+                                defaultValue: '资讯播报',
+                              })}
+                              {' · '}
+                              {row.briefing.status} · {row.briefing.stage}
                             </span>
                           </button>
-                        ))}
-                      </div>
-                      {displayedBriefings.length === 0 ? (
-                        <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
-                          {t('videoGeneration.list.filterEmpty', {
-                            defaultValue: '没有匹配的任务',
-                          })}
-                        </div>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-              ) : (
-                // Agent/Action modes - show sessions
-                <div>
-                  {error ? (
-                    <Result
-                      status='error'
-                      title={t('videoGeneration.list.loadError', {
-                        defaultValue: '加载失败',
+                        );
                       })}
-                      subTitle={error}
-                      extra={
-                        <Button onClick={() => void refresh()}>
-                          {t('videoGeneration.list.retry', { defaultValue: '重试' })}
-                        </Button>
-                      }
-                    />
-                  ) : loading ? (
-                    <div className='flex justify-center py-38px'>
-                      <Spin />
                     </div>
-                  ) : sessions.length === 0 ? (
-                    <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-                      <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-primary-6'>
-                        <VideoOne theme='outline' size={19} fill='currentColor' />
-                      </span>
-                      <div>
-                        <div className='text-13px font-600 text-[var(--color-text-1)]'>
-                          {t('videoGeneration.list.empty.title', {
-                            defaultValue: '你的第一支影片从上方开始',
-                          })}
-                        </div>
-                        <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                          {t('videoGeneration.list.empty.desc', {
-                            defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
-                          })}
-                        </div>
-                      </div>
+                  </Suspense>
+                  {displayedRecent.length === 0 ? (
+                    <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
+                      {t('videoGeneration.list.filterEmpty', {
+                        defaultValue: '没有匹配的任务',
+                      })}
                     </div>
-                  ) : (
-                    <>
-                      <Suspense
-                        fallback={
-                          <div className='flex justify-center py-38px'>
-                            <Spin />
-                          </div>
-                        }
-                      >
-                        <div
-                          className='grid gap-12px'
-                          style={{
-                            gridTemplateColumns:
-                              'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-                          }}
-                        >
-                          {displayed.map((session) => (
-                            <SessionCard
-                              key={session.id}
-                              session={session}
-                              onOpen={openSession}
-                              onDelete={onDeleteSession}
-                              deleting={deletingId === session.id}
-                            />
-                          ))}
-                        </div>
-                      </Suspense>
-                      {displayed.length === 0 && (
-                        <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
-                          {t('videoGeneration.list.filterEmpty', {
-                            defaultValue: '没有匹配的任务',
-                          })}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
+                  ) : null}
+                </>
               )}
             </div>
           </section>

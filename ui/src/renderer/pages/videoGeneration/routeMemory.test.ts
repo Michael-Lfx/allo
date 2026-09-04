@@ -4,6 +4,7 @@ import {
   mergeRecentVideoGenerationProjects,
   readRecentVideoGenerationSessions,
   readRememberedVideoGenerationSession,
+  rememberVideoGenerationCanvas,
   rememberVideoGenerationSession,
   updateRecentVideoGenerationTitle,
   videoGenerationEntryPath,
@@ -92,6 +93,13 @@ describe('videoGeneration routeMemory', () => {
     const recent = readRecentVideoGenerationSessions();
     expect(recent.map((e) => e.id)).toEqual(['b', 'a']);
     expect(recent.find((e) => e.id === 'a')?.title).toBe('A-new');
+  });
+
+  test('canvas MRU restores the canvas workspace path', () => {
+    rememberVideoGenerationCanvas('proj-42', '画布项目');
+    expect(readRememberedVideoGenerationSession()).toBe('proj-42');
+    expect(videoGenerationEntryPath()).toBe('/video-generation/canvas/proj-42');
+    expect(readRecentVideoGenerationSessions()[0]?.source).toBe('canvas');
   });
 
   test('merge prefers local MRU then fills from server', () => {

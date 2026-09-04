@@ -10,13 +10,15 @@ import ApprovalCard from '@renderer/components/beautifulUi/approvalCard/Approval
 import { kindFromConfirmationType } from '@renderer/components/beautifulUi/approvalCard/approvalCardModel';
 import { ToolChip } from '@renderer/components/beautifulUi/toolChips/ToolChips';
 import { resolveToolChipStatusFromToolGroup } from '@renderer/components/beautifulUi/toolChips/toolChipModel';
+import InlineDiff from '@renderer/components/beautifulUi/inlineDiff/InlineDiff';
+import {
+  countDiffStats,
+  hunksFromUnifiedDiff,
+} from '@renderer/components/beautifulUi/inlineDiff/inlineDiffModel';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import FeedbackButton from '@/renderer/components/base/FeedbackButton';
-import FileChangesPanel from '@/renderer/components/base/FileChangesPanel';
-import { useDiffPreviewHandlers } from '@/renderer/hooks/file/useDiffPreviewHandlers';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { parseDiff } from '@/renderer/utils/file/diffUtils';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import MessageFileChanges from '../MessageFileChanges';
 import { BriefingToolCard, isBriefingToolName } from './BriefingToolCard';
@@ -144,27 +146,22 @@ const useConfirmationButtons = (
   }, [confirmationDetails, t]);
 };
 
-const EditConfirmationDiff: React.FC<{ diff: string; file_name: string; title: string }> = ({
+const EditConfirmationDiff: React.FC<{ diff: string; file_name: string }> = ({
   diff,
   file_name,
-  title,
 }) => {
-  const fileInfo = useMemo(() => parseDiff(diff, file_name), [diff, file_name]);
+  const hunks = useMemo(() => hunksFromUnifiedDiff(diff), [diff]);
+  const { insertions, deletions } = countDiffStats(hunks);
   const display_name = file_name.split(/[/\\]/).pop() || file_name;
-  const { handleFileClick, handleDiffClick } = useDiffPreviewHandlers({
-    diffText: diff,
-    display_name,
-    file_path: file_name,
-    title,
-  });
+  if (!hunks.length) return null;
 
   return (
-    <FileChangesPanel
-      title={title}
-      files={[fileInfo]}
-      onFileClick={handleFileClick}
-      onDiffClick={handleDiffClick}
-      defaultExpanded={true}
+    <InlineDiff
+      filename={display_name}
+      hunks={hunks}
+      insertions={insertions}
+      deletions={deletions}
+      defaultExpanded
     />
   );
 };
@@ -207,13 +204,11 @@ const ConfirmationDetails: React.FC<{
 
   const [selected, setSelected] = useState<ToolConfirmationOutcome | null>(null);
 
-  const isConfirm = content.status === 'Confirming';
   const details =
     confirmationDetails.type === 'edit' ? (
       <EditConfirmationDiff
         diff={toDisplayText(confirmationDetails?.file_diff)}
         file_name={toDisplayText(confirmationDetails.file_name)}
-        title={isConfirm ? toDisplayText(confirmationDetails.title) : toDisplayText(content.description)}
       />
     ) : (
       node

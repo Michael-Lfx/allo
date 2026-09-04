@@ -12,6 +12,8 @@ import {
 } from '../../videoCanvas/api';
 import { loadVideoCanvasProjectPage } from '../../videoCanvas/loadProjectPage';
 import { videoCanvasProjectPath } from '../../videoCanvas/routes';
+import { rememberVideoGenerationCanvas } from '../routeMemory';
+import { toUpdatedAtMs } from '../recentCreations';
 import styles from './home.module.css';
 
 function formatUpdatedAt(ms: number, t: TFunction): string {
@@ -37,6 +39,100 @@ function formatUpdatedAt(ms: number, t: TFunction): string {
       defaultValue: '{{count}} 天前',
     });
   return t('videoGeneration.time.weeksAgo', { defaultValue: '上周' });
+}
+
+export type CanvasProjectCardProps = {
+  project: CanvasProjectMeta;
+  untitled: string;
+  opening?: boolean;
+  disabled?: boolean;
+  deleting?: boolean;
+  onOpen: (projectId: string) => void;
+  onDelete?: (project: CanvasProjectMeta) => void;
+};
+
+export function CanvasProjectCard({
+  project,
+  untitled,
+  opening = false,
+  disabled = false,
+  deleting = false,
+  onOpen,
+  onDelete,
+}: CanvasProjectCardProps) {
+  const { t } = useTranslation();
+  const title = project.title || untitled;
+  return (
+    <div
+      role='button'
+      tabIndex={disabled ? -1 : 0}
+      aria-disabled={disabled}
+      aria-busy={opening}
+      className={`${styles.canvasCard}${opening ? ` ${styles.canvasCardOpening}` : ''}`}
+      style={disabled ? { cursor: 'default', opacity: 0.72, transform: 'none' } : undefined}
+      onMouseEnter={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
+      onFocus={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
+      onClick={() => onOpen(project.project_id)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen(project.project_id);
+        }
+      }}
+    >
+      <span className={styles.canvasCardPreview}>
+        {opening ? (
+          <>
+            <Spin size={16} />
+            <small>
+              {t('videoGeneration.create.gallery.opening', {
+                defaultValue: '正在打开…',
+              })}
+            </small>
+          </>
+        ) : (
+          <>
+            <Platte size={26} />
+            <small>
+              {t('videoGeneration.create.gallery.kind', {
+                defaultValue: '无限画布',
+              })}
+              {' · '}
+              {t('videoGeneration.create.gallery.nodes', {
+                count: project.node_count,
+                defaultValue: '{{count}} 个节点',
+              })}
+            </small>
+          </>
+        )}
+      </span>
+      <span className={styles.canvasCardBody}>
+        <span>
+          <strong>{title}</strong>
+          <small>{formatUpdatedAt(toUpdatedAtMs(project.updated_at), t)}</small>
+        </span>
+        {onDelete ? (
+          <Button
+            type='text'
+            size='mini'
+            status='danger'
+            loading={deleting}
+            disabled={disabled && !deleting}
+            icon={<Delete size={14} />}
+            aria-label={t('videoGeneration.create.gallery.deleteAria', {
+              title,
+              defaultValue: '删除 {{title}}',
+            })}
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete(project);
+            }}
+          />
+        ) : null}
+      </span>
+    </div>
+  );
 }
 
 const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
@@ -88,6 +184,8 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
 
   const openProject = (projectId: string) => {
     if (openingId || creating || deletingId) return;
+    const project = projects.find((item) => item.project_id === projectId);
+    rememberVideoGenerationCanvas(projectId, project?.title ?? untitledCanvas);
     setOpeningId(projectId);
     void loadVideoCanvasProjectPage().catch(() => undefined);
     navigate(videoCanvasProjectPath(projectId));
@@ -101,6 +199,7 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
         '../../videoCanvas/lib/ocBridge'
       );
       const id = await createServerBackedCanvasProject(untitledCanvas);
+      rememberVideoGenerationCanvas(id, untitledCanvas);
       setOpeningId(id);
       navigate(videoCanvasProjectPath(id));
     } catch (cause) {
@@ -260,78 +359,16 @@ const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = fal
             const isOpening = openingId === project.project_id;
             const isDisabled = Boolean(openingId) && !isOpening;
             return (
-              // Card is a div[role=button] instead of <button> so the delete
-              // Button inside is not a nested interactive element. Disabled
-              // styles mirror .canvasCard:disabled inline (divs have no
-              // :disabled pseudo-class).
-              <div
+              <CanvasProjectCard
                 key={project.project_id}
-                role='button'
-                tabIndex={isDisabled ? -1 : 0}
-                aria-disabled={isDisabled}
-                aria-busy={isOpening}
-                className={`${styles.canvasCard}${isOpening ? ` ${styles.canvasCardOpening}` : ''}`}
-                style={
-                  isDisabled ? { cursor: 'default', opacity: 0.72, transform: 'none' } : undefined
-                }
-                onMouseEnter={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
-                onFocus={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
-                onClick={() => openProject(project.project_id)}
-                onKeyDown={(event) => {
-                  // Only activate when the card itself is focused, so Enter/
-                  // Space on the inner delete Button never opens the project.
-                  if (event.target !== event.currentTarget) return;
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    openProject(project.project_id);
-                  }
-                }}
-              >
-                <span className={styles.canvasCardPreview}>
-                  {isOpening ? (
-                    <>
-                      <Spin size={16} />
-                      <small>
-                        {t('videoGeneration.create.gallery.opening', {
-                          defaultValue: '正在打开…',
-                        })}
-                      </small>
-                    </>
-                  ) : (
-                    <>
-                      <Platte size={26} />
-                      <small>
-                        {t('videoGeneration.create.gallery.nodes', {
-                          count: project.node_count,
-                          defaultValue: '{{count}} 个节点',
-                        })}
-                      </small>
-                    </>
-                  )}
-                </span>
-                <span className={styles.canvasCardBody}>
-                  <span>
-                    <strong>{project.title || untitledCanvas}</strong>
-                    <small>{formatUpdatedAt(project.updated_at, t)}</small>
-                  </span>
-                  <Button
-                    type='text'
-                    size='mini'
-                    status='danger'
-                    loading={deletingId === project.project_id}
-                    disabled={Boolean(openingId)}
-                    icon={<Delete size={14} />}
-                    aria-label={t('videoGeneration.create.gallery.deleteAria', {
-                      title: project.title || untitledCanvas,
-                      defaultValue: '删除 {{title}}',
-                    })}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void removeProject(project);
-                    }}
-                  />
-                </span>
-              </div>
+                project={project}
+                untitled={untitledCanvas}
+                opening={isOpening}
+                disabled={isDisabled}
+                deleting={deletingId === project.project_id}
+                onOpen={openProject}
+                onDelete={(item) => void removeProject(item)}
+              />
             );
           })}
         </div>

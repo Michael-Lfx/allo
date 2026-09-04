@@ -1188,6 +1188,11 @@ body[arco-theme='dark'] .message-error-note {
   gap: 6px;
 }
 
+.turn-process-trace-tool [data-testid='beautiful-ui-inline-diff'] {
+  align-self: stretch;
+  width: 100%;
+}
+
 .turn-process-trace__row {
   box-sizing: border-box;
   display: flex;

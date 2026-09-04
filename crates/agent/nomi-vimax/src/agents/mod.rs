@@ -47,11 +47,11 @@ pub use world_assets::{
 pub mod formats {
     pub const CHARACTERS: &str = r#"Return a JSON object:
 {"characters":[{"idx":0,"identifier_in_scene":"string","is_visible":true,"static_features":"string","dynamic_features":"string|null","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":"string|null"}}]}
-Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (appearance/physique), dynamic_features (clothing/accessories, optional), voice_profile (REQUIRED film-stable speaking voice bible reused across every shot — timbre must be a concrete acoustic fingerprint with age/gender/resonance/texture; volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+emotional baseline only; caption_clause optional). Natural-language field values MUST match the user's input language (Chinese input → 简体中文 values)."#;
+Fields: idx (int from 0), identifier_in_scene, is_visible, static_features (MUST state sex/age band then appearance/physique, e.g. 成年女性、长发), dynamic_features (clothing/accessories, optional), voice_profile (REQUIRED film-stable speaking voice bible reused across every shot — timbre must be a concrete acoustic fingerprint with age/gender/resonance/texture; volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+emotional baseline only; caption_clause optional). Natural-language field values MUST match the user's input language (Chinese input → 简体中文 values)."#;
 
     pub const VOICE_PROFILES: &str = r#"Return a JSON object:
 {"voices":[{"idx":0,"identifier_in_scene":"string","voice_profile":{"timbre":"string","volume":"normal","pitch":"mid","speaking_style":"string","caption_clause":null}}]}
-One entry per input character (same idx / identifier_in_scene). voice_profile must be film-stable and distinctive: timbre = concrete acoustic fingerprint (not vague 女声/男声); volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+baseline only (no per-shot crying/shouting baked into timbre). caption_clause may be null (pipeline rebuilds FIXED SPEAKER VOICE inject). Prose MUST match the user's input language (Chinese input → 简体中文)."#;
+One entry per input character (same idx / identifier_in_scene). voice_profile must be film-stable and distinctive: timbre = concrete acoustic fingerprint matching the character's sex/age (not vague 女声/男声, never default everyone to 男中音); volume quiet|normal|loud; pitch low|mid-low|mid|mid-high|high; speaking_style = pace+diction+baseline only (no per-shot crying/shouting baked into timbre). caption_clause may be null (pipeline rebuilds FIXED SPEAKER VOICE inject). Do not emit tts_voice. Prose MUST match the user's input language (Chinese input → 简体中文)."#;
 
     use crate::clip_bounds::ClipBounds;
 
@@ -104,7 +104,7 @@ beats: 4-8 entries in play order; role MUST be one of hook|incite|escalate|turn|
 
     pub const SCRIPT_SCENES: &str = r#"Return a JSON object:
 {"scenes":["scene script string", "..."]}
-Each string is one scene's screenplay (heading, action, dialogue). Screenplay text MUST match the user's input language (Chinese input → 简体中文).
+Each string is one scene's screenplay (heading, action, AND named-character dialogue in 「」). A mute/action-only scene is invalid. Screenplay text MUST match the user's input language (Chinese input → 简体中文).
 CRITICAL JSON SAFETY: inside each scene string do NOT use raw ASCII double quotes ("). Use Chinese quotes 「」 for dialogue/SFX (e.g. 发出「咚」的一声). If you must use ", write it as \"."#;
 
     pub const EVENT: &str = r#"Return a JSON object matching one Event:

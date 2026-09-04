@@ -7,7 +7,9 @@ import {
   inAppNavigatePath,
   isHttpUrl,
   isInAppCampaignPath,
+  parseTvShowScope,
   sanitizeCampaignHtml,
+  writeTvShowScope,
 } from './campaign';
 
 describe('campaign carousel click rules', () => {
@@ -47,6 +49,28 @@ describe('campaign links', () => {
   test('preserves existing home search when pinning the campaign tab', () => {
     expect(campaignHomeSearch('?mode=creation')).toBe('?mode=creation&tvScope=campaign');
     expect(campaignHomeSearch('')).toBe('?tvScope=campaign');
+  });
+});
+
+describe('tv show scope query', () => {
+  test('reads campaign and mine, defaults everything else to plaza', () => {
+    expect(parseTvShowScope('campaign')).toBe('campaign');
+    expect(parseTvShowScope('mine')).toBe('mine');
+    expect(parseTvShowScope(null)).toBe('plaza');
+    expect(parseTvShowScope('plaza')).toBe('plaza');
+    expect(parseTvShowScope('other')).toBe('plaza');
+  });
+
+  test('leaving campaign clears the query so plaza/mine do not bounce back', () => {
+    const fromCampaign = new URLSearchParams('mode=creation&tvScope=campaign');
+    writeTvShowScope(fromCampaign, 'plaza');
+    expect(fromCampaign.get('tvScope')).toBeNull();
+    expect(fromCampaign.get('mode')).toBe('creation');
+    expect(parseTvShowScope(fromCampaign.get('tvScope'))).toBe('plaza');
+
+    writeTvShowScope(fromCampaign, 'mine');
+    expect(fromCampaign.get('tvScope')).toBe('mine');
+    expect(parseTvShowScope(fromCampaign.get('tvScope'))).toBe('mine');
   });
 });
 

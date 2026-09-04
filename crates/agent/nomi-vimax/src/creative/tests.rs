@@ -39,6 +39,7 @@ fn sample_film() -> CreativeFilm {
         pitch: Some("mid".into()),
         speaking_style: "语速平稳".into(),
         caption_clause: None,
+        tts_voice: None,
     };
     voice.normalize("Alice");
 
@@ -231,6 +232,7 @@ fn character_from_domain_keeps_voice() {
             pitch: Some("low".into()),
             speaking_style: "稳重".into(),
             caption_clause: None,
+            tts_voice: None,
         }),
     };
     let creative = CreativeCharacter::from_domain(&c);

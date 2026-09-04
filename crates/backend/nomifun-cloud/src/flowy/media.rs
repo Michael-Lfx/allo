@@ -321,6 +321,7 @@ impl FlowyApiClient {
         voice: Option<&str>,
         response_format: &str,
         language_type: &str,
+        instructions: Option<&str>,
     ) -> Result<(Vec<u8>, String), ServerClientError> {
         let voice = voice
             .map(str::trim)
@@ -336,13 +337,20 @@ impl FlowyApiClient {
             .is_empty()
             .then_some("Chinese")
             .unwrap_or(language_type);
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "input": input,
             "voice": voice,
             "response_format": format,
             "language_type": language_type,
         });
+        if let Some(instructions) = instructions
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["instructions"] = json!(instructions);
+            body["optimize_instructions"] = json!(true);
+        }
         let resp = self
             .llm_transport
             .post_json("/audio/speech", Some(session), body)
@@ -616,6 +624,7 @@ impl FlowyApiClient {
                 .collect(),
             reference_video_url: None,
             reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
         })
     }
 
@@ -999,6 +1008,7 @@ mod tests {
             ],
             reference_video_url: Some("https://example.com/ref.mp4".into()),
             reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
         });
         let content = body["content"].as_array().expect("content");
         assert!(content.len() >= 4);
@@ -1096,6 +1106,7 @@ mod tests {
             images: vec![],
             reference_video_url: None,
             reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
         });
         assert_eq!(body["model"], "flowy/MiniMax-H3");
         assert_eq!(body["resolution"], "768P");
@@ -1129,6 +1140,7 @@ mod tests {
             }],
             reference_video_url: None,
             reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
         });
         assert_eq!(body["ratio"], "adaptive");
         assert_eq!(body["resolution"], "2K");

@@ -42,6 +42,15 @@ import {
   buildToolReceiptDetailRows,
   type ToolReceiptDetailRow,
 } from './toolGroupSummaryModel';
+import { buildEditDiffPreview } from './buildEditDiff';
+import ToolEditDiff from './ToolEditDiff';
+import InlineDiff from '@renderer/components/beautifulUi/inlineDiff/InlineDiff';
+import {
+  INLINE_DIFF_COLLAPSE_LINE_THRESHOLD,
+  countDiffLines,
+  countDiffStats,
+  hunksFromUnifiedDiff,
+} from '@renderer/components/beautifulUi/inlineDiff/inlineDiffModel';
 
 type ToolProcessMessage = IMessageToolGroup | IMessageAcpToolCall | IMessageToolCall;
 
@@ -303,24 +312,36 @@ const ToolFileListDetail: React.FC<{
   showLabel = true,
 }) => {
   const { t } = useTranslation();
-  const targets = getToolFileListTargets(rows);
-  if (!targets.length) return null;
+  const editPreviews = rows.flatMap((row) => {
+    if (row.action !== 'edit_files') return [];
+    const preview = buildEditDiffPreview(row.input);
+    return preview ? [{ key: row.key, preview }] : [];
+  });
+  const listRows = editPreviews.length ? rows.filter((row) => row.action !== 'edit_files') : rows;
+  const targets = getToolFileListTargets(listRows);
+
+  if (!editPreviews.length && !targets.length) return null;
 
   const label = formatToolFileListLabel(rows, t, workspaceRoots);
 
   return (
     <div className='turn-process-trace-detail'>
       {showLabel && <div className='turn-process-trace-detail__label'>{label}</div>}
-      <ul className='turn-process-trace-file-list'>
-        {targets.map((target) => {
-          const display = formatWorkspaceFileTarget(target, { workspaceRoots });
-          return (
-            <li key={target} className='turn-process-trace-file-list__item' title={display.title}>
-              {display.label}
-            </li>
-          );
-        })}
-      </ul>
+      {editPreviews.map(({ key, preview }) => (
+        <ToolEditDiff key={key} preview={preview} />
+      ))}
+      {targets.length > 0 && (
+        <ul className='turn-process-trace-file-list'>
+          {targets.map((target) => {
+            const display = formatWorkspaceFileTarget(target, { workspaceRoots });
+            return (
+              <li key={target} className='turn-process-trace-file-list__item' title={display.title}>
+                {display.label}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 };
@@ -390,10 +411,17 @@ const ToolTraceDetail: React.FC<{ row: ToolReceiptDetailRow; workspaceRoots: str
                 defaultValue: 'Attempt {{number}}',
               })}
             </div>
-            <ToolTraceDetailSection
-              label={t('messages.toolDetailInput', { defaultValue: 'Input' })}
-              value={attempt.input}
-            />
+            {(() => {
+              const preview = buildEditDiffPreview(attempt.input);
+              return preview ? (
+                <ToolEditDiff preview={preview} />
+              ) : (
+                <ToolTraceDetailSection
+                  label={t('messages.toolDetailInput', { defaultValue: 'Input' })}
+                  value={attempt.input}
+                />
+              );
+            })()}
             {attempt.webEvidenceNotice && <ToolEvidenceNotice />}
             <ToolTraceDetailSection
               label={t('messages.toolDetailOutput', { defaultValue: 'Output' })}
@@ -408,6 +436,28 @@ const ToolTraceDetail: React.FC<{ row: ToolReceiptDetailRow; workspaceRoots: str
         ))}
       </div>
     );
+  }
+
+  if (row.action === 'edit_files') {
+    const preview = buildEditDiffPreview(row.input);
+    if (preview) {
+      return (
+        <div className='turn-process-trace-detail'>
+          <ToolEditDiff preview={preview} />
+          {(row.state === 'failed' || row.state === 'canceled') && (
+            <ToolTraceDetailSection
+              label={t('messages.toolDetailOutput', { defaultValue: 'Output' })}
+              value={row.output}
+            />
+          )}
+          {row.truncated && (
+            <div className='turn-process-trace-detail__label'>
+              {t('messages.toolDetailLoadFailed', { defaultValue: 'Full output was truncated' })}
+            </div>
+          )}
+        </div>
+      );
+    }
   }
 
   if (isFileReceiptRow(row) && row.state !== 'failed' && row.state !== 'canceled') {
@@ -452,6 +502,7 @@ const ToolTraceRow: React.FC<{
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const hasDetail = shouldShowToolRowDetail(row, { fileRowCount });
+  const editPreview = row.action === 'edit_files' ? buildEditDiffPreview(row.input) : undefined;
   const target = getToolReceiptDetailDisplayTarget(row, workspaceRoots);
   const retry = row.retryCount
     ? t('messages.toolRetryCount', {
@@ -482,7 +533,23 @@ const ToolTraceRow: React.FC<{
         expanded={expanded}
         onToggle={hasDetail ? () => setExpanded((value) => !value) : undefined}
       />
-      {hasDetail && expanded ? <ToolTraceDetail row={row} workspaceRoots={workspaceRoots} /> : null}
+      {editPreview ? <ToolEditDiff preview={editPreview} /> : null}
+      {hasDetail && expanded && !editPreview ? (
+        <ToolTraceDetail row={row} workspaceRoots={workspaceRoots} />
+      ) : null}
+      {hasDetail && expanded && editPreview ? (
+        <div className='turn-process-trace-detail'>
+          <ToolTraceDetailSection
+            label={t('messages.toolDetailOutput', { defaultValue: 'Output' })}
+            value={row.output}
+          />
+          {row.truncated && (
+            <div className='turn-process-trace-detail__label'>
+              {t('messages.toolDetailLoadFailed', { defaultValue: 'Full output was truncated' })}
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -539,14 +606,16 @@ const ToolProcessTraceRows: React.FC<{
     [stateOverride, t, tools, workspaceRoots]
   );
 
-  const fileRows = rows.filter(({ row }) => isFileReceiptRow(row)).map(({ row }) => row);
-  const nonFileRows = rows.filter(({ row }) => !isFileReceiptRow(row));
+  const fileRows = rows
+    .filter(({ row }) => isFileReceiptRow(row) && row.action !== 'edit_files')
+    .map(({ row }) => row);
+  const nonGroupedRows = rows.filter(({ row }) => !(isFileReceiptRow(row) && row.action !== 'edit_files'));
 
   if (shouldShowFileListDetail(fileRows)) {
     return (
       <div className='turn-process-trace'>
         <ToolFileGroupTraceRow rows={fileRows} workspaceRoots={workspaceRoots} />
-        {nonFileRows.map(({ row, label }) => (
+        {nonGroupedRows.map(({ row, label }) => (
           <ToolTraceRow key={row.key} row={row} label={label} workspaceRoots={workspaceRoots} />
         ))}
       </div>
@@ -568,6 +637,31 @@ const ToolProcessTraceRows: React.FC<{
           fileRowCount={fileRows.length}
         />
       ))}
+    </div>
+  );
+};
+
+const FileDiffTraceRow: React.FC<{ file: FileChangeInfo; workspaceRoots: string[] }> = ({
+  file,
+  workspaceRoots,
+}) => {
+  const hunks = useMemo(() => hunksFromUnifiedDiff(file.diff), [file.diff]);
+  const parsedStats = countDiffStats(hunks);
+  const insertions = hunks.length ? parsedStats.insertions : file.insertions;
+  const deletions = hunks.length ? parsedStats.deletions : file.deletions;
+  const target = formatWorkspaceFileTarget(file.fullPath, { workspaceRoots });
+
+  if (!hunks.length) return null;
+
+  return (
+    <div className='turn-process-trace-tool'>
+      <InlineDiff
+        filename={target.label}
+        hunks={hunks}
+        insertions={insertions}
+        deletions={deletions}
+        defaultExpanded={countDiffLines(hunks) <= INLINE_DIFF_COLLAPSE_LINE_THRESHOLD}
+      />
     </div>
   );
 };
@@ -596,30 +690,41 @@ const FileProcessTraceRows: React.FC<{ diffs: FileChangeInfo[]; workspaceRoots: 
     [launchPreview]
   );
 
-  const rows = useMemo<ProcessTraceRow[]>(
+  const fallbackRows = useMemo<ProcessTraceRow[]>(
     () =>
-      files.map((file) => {
-        const stats = formatFileChangeStats(file);
-        const target = formatWorkspaceFileTarget(file.fullPath, { workspaceRoots });
-        return {
-          key: file.fullPath,
-          state: 'completed',
-          title: file.fullPath,
-          label: compactReceiptText(
-            t('messages.processReceipt.fileChanged', {
-              target: target.label,
-              stats,
-              defaultValue: 'Edited {{target}} {{stats}}',
-            }),
-            target.label
-          ),
-          onClick: () => openFile(file),
-        };
-      }),
+      files
+        .filter((file) => hunksFromUnifiedDiff(file.diff).length === 0)
+        .map((file) => {
+          const stats = formatFileChangeStats(file);
+          const target = formatWorkspaceFileTarget(file.fullPath, { workspaceRoots });
+          return {
+            key: file.fullPath,
+            state: 'completed' as const,
+            title: file.fullPath,
+            label: compactReceiptText(
+              t('messages.processReceipt.fileChanged', {
+                target: target.label,
+                stats,
+                defaultValue: 'Edited {{target}} {{stats}}',
+              }),
+              target.label
+            ),
+            onClick: () => openFile(file),
+          };
+        }),
     [files, openFile, t, workspaceRoots]
   );
 
-  return <ProcessTraceRows rows={rows} />;
+  const diffFiles = files.filter((file) => hunksFromUnifiedDiff(file.diff).length > 0);
+
+  return (
+    <div className='turn-process-trace'>
+      {diffFiles.map((file) => (
+        <FileDiffTraceRow key={file.fullPath} file={file} workspaceRoots={workspaceRoots} />
+      ))}
+      <ProcessTraceRows rows={fallbackRows} />
+    </div>
+  );
 };
 
 const getUnhandledMessageType = (_message: never): string => 'unknown';

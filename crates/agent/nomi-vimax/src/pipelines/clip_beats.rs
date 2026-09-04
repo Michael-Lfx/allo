@@ -116,11 +116,17 @@ fn apply_clip_to_brief(
                 cam_idx: beat.cam_idx.unwrap_or(clip.cam_idx),
             })
             .collect();
-        row.visual_desc = join_visual_with_cuts(
+        let joined = join_visual_with_cuts(
             row.beats
                 .iter()
                 .map(|beat| (beat.cam_idx, beat.visual_desc.as_str())),
         );
+        // Overlay must not replace a vivid planning brief with short camera motion.
+        if row.visual_desc.trim().is_empty()
+            || joined.chars().count() > row.visual_desc.chars().count()
+        {
+            row.visual_desc = joined;
+        }
         row.audio_desc = clip.audio_desc.clone();
     }
     row
@@ -172,22 +178,50 @@ pub(crate) fn align_storyboard_and_clips(
     briefs: Vec<ShotBriefDescription>,
     clips: Vec<ShotDescription>,
 ) -> (Vec<ShotBriefDescription>, Vec<ShotDescription>) {
-    let briefs = visible_briefs(briefs);
+    let mut briefs = visible_briefs(briefs);
     if clips.is_empty() {
         return (briefs, clips);
     }
     let clips = drop_stale_extra_clips(&briefs, clips);
-    let briefs = if !clips.is_empty() && clips.len() < briefs.len() {
+    briefs = if !clips.is_empty() && clips.len() < briefs.len() {
         sync_storyboard_to_clips(&briefs, &clips)
     } else {
         overlay_clips_onto_briefs(&briefs, &clips)
     };
     let keep: HashSet<i32> = briefs.iter().map(|b| b.idx).collect();
-    let clips = clips
+    let mut clips: Vec<ShotDescription> = clips
         .into_iter()
         .filter(|c| keep.contains(&c.idx))
         .collect();
+    equalize_board_and_clips(&mut briefs, &mut clips);
     (briefs, clips)
+}
+
+/// One storyboard row = one video. Extra last-looking rows (leftover idxs that
+/// reused the final clip's prose) must not survive into render or the filmstrip.
+fn equalize_board_and_clips(
+    briefs: &mut Vec<ShotBriefDescription>,
+    clips: &mut Vec<ShotDescription>,
+) {
+    if briefs.len() == clips.len() {
+        return;
+    }
+    let clip_idxs: HashSet<i32> = clips.iter().map(|c| c.idx).collect();
+    briefs.retain(|b| clip_idxs.contains(&b.idx));
+    let brief_idxs: HashSet<i32> = briefs.iter().map(|b| b.idx).collect();
+    clips.retain(|c| brief_idxs.contains(&c.idx));
+    if briefs.len() > clips.len() {
+        tracing::warn!(
+            briefs = briefs.len(),
+            clips = clips.len(),
+            "dropping extra storyboard rows so one row = one video"
+        );
+        briefs.truncate(clips.len());
+    }
+    if clips.len() > briefs.len() {
+        clips.sort_by_key(|c| c.idx);
+        clips.truncate(briefs.len());
+    }
 }
 
 fn visible_briefs(briefs: Vec<ShotBriefDescription>) -> Vec<ShotBriefDescription> {
@@ -735,7 +769,7 @@ fn collapse(run: Vec<ShotDescription>) -> ShotDescription {
     let beats: Vec<ShotBeat> = run
         .iter()
         .map(|s| ShotBeat {
-            motion_desc: s.motion_desc.clone(),
+            motion_desc: beat_text_for_pack(&s.visual_desc, &s.motion_desc),
             audio_desc: s.audio_desc.clone(),
             cam_idx: Some(s.cam_idx),
         })
@@ -853,6 +887,22 @@ pub(crate) fn densify_aligned_indices(
     clips: &mut Vec<ShotDescription>,
 ) -> HashMap<i32, i32> {
     clips.sort_by_key(|clip| clip.idx);
+    let surviving: HashSet<i32> = clips.iter().map(|clip| clip.idx).collect();
+    briefs.retain(|brief| surviving.contains(&brief.idx));
+    briefs.sort_by_key(|brief| brief.idx);
+    let mut seen = HashSet::new();
+    briefs.retain(|brief| seen.insert(brief.idx));
+    if briefs.len() > clips.len() {
+        tracing::warn!(
+            briefs = briefs.len(),
+            clips = clips.len(),
+            "truncating extra storyboard rows during densify (one row = one video)"
+        );
+        briefs.truncate(clips.len());
+    }
+    if clips.len() > briefs.len() {
+        clips.truncate(briefs.len());
+    }
     let mut map = HashMap::new();
     let last_clip = clips.len().saturating_sub(1);
     for (i, clip) in clips.iter_mut().enumerate() {
@@ -861,7 +911,6 @@ pub(crate) fn densify_aligned_indices(
         clip.idx = new_idx;
         clip.is_last = i == last_clip;
     }
-    briefs.sort_by_key(|brief| brief.idx);
     let last_brief = briefs.len().saturating_sub(1);
     for (i, brief) in briefs.iter_mut().enumerate() {
         brief.idx = map.get(&brief.idx).copied().unwrap_or(i as i32);
@@ -891,6 +940,24 @@ fn join_visual_with_cuts<'a>(parts: impl IntoIterator<Item = (i32, &'a str)>) ->
         prev_cam = Some(cam);
     }
     out
+}
+
+/// Prefer the storyboard 画面描述 when it is a real brief; keep camera motion
+/// when `visual_desc` is a short stub (tests / empty decompose).
+fn beat_text_for_pack(visual: &str, motion: &str) -> String {
+    let v = visual.trim();
+    let m = motion.trim();
+    if v.is_empty() {
+        return m.to_string();
+    }
+    if m.is_empty() {
+        return v.to_string();
+    }
+    if v.chars().count() >= 12 && v.chars().count() >= m.chars().count() {
+        v.to_string()
+    } else {
+        m.to_string()
+    }
 }
 
 /// A merged clip shows every beat's change, so it inherits the busiest
@@ -1444,5 +1511,26 @@ mod tests {
         assert!(briefs[1].is_last);
         assert_eq!(map.get(&3), Some(&1));
         assert!(clip_indices_are_dense(&clips));
+    }
+
+    #[test]
+    fn densify_drops_extra_last_looking_briefs() {
+        let mut briefs = vec![
+            brief(0, 0, "开门", None),
+            brief(1, 0, "看见他", None),
+            brief(2, 0, "终章对峙", None),
+            brief(3, 0, "终章对峙", None),
+            brief(4, 0, "终章对峙", None),
+        ];
+        let mut clips = vec![
+            shot(0, 0, "开门", None),
+            shot(1, 0, "看见他", None),
+            shot(2, 0, "终章对峙", None),
+        ];
+        densify_aligned_indices(&mut briefs, &mut clips);
+        assert_eq!(briefs.len(), 3);
+        assert_eq!(clips.len(), 3);
+        assert!(clip_indices_are_dense(&clips));
+        assert_eq!(briefs.iter().map(|b| b.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
     }
 }

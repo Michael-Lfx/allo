@@ -26,6 +26,11 @@ pub struct VoiceProfile {
     /// Precomputed one-line clause for Seedance captions (preferred inject form).
     #[serde(default)]
     pub caption_clause: Option<String>,
+    /// Flowy Cloud / Qwen3-TTS voice id used to bake the local reference wav.
+    /// Distinct per cast member so Seedance `reference_audio` clips do not collapse
+    /// to the same timbre. Assigned by the pipeline, not the screenwriter.
+    #[serde(default)]
+    pub tts_voice: Option<String>,
 }
 
 impl VoiceProfile {
@@ -94,6 +99,25 @@ impl VoiceProfile {
             }
         }
         self.build_canonical_clause(character_name)
+    }
+
+    /// Short speaker lock for Seedance prompts — timbre fingerprint only.
+    ///
+    /// The canonical [`Self::seedance_clause`] is too long to paste into every
+    /// clip; Seedance follows `@AudioN` + this one-liner better than a full bible.
+    pub fn compact_lock(&self, character_name: &str) -> String {
+        let name = character_name.trim();
+        let timbre = self.timbre.trim();
+        let pitch = self
+            .pitch
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("mid");
+        if timbre.is_empty() {
+            return format!("{name}: stable speaker identity, pitch {pitch}");
+        }
+        format!("{name}: 「{timbre}」 pitch {pitch}")
     }
 
     fn build_canonical_clause(&self, character_name: &str) -> String {
@@ -243,6 +267,7 @@ mod tests {
             pitch: Some("mid-high".into()),
             speaking_style: "语速平稳".into(),
             caption_clause: Some("stale freeform".into()),
+            tts_voice: None,
         };
         vp.normalize("李薇");
         let clause = vp.seedance_clause("李薇");
@@ -252,6 +277,10 @@ mod tests {
         assert!(clause.contains("pitch mid-high"));
         assert!(clause.contains("volume normal"));
         assert_eq!(vp.caption_clause.as_deref(), Some(clause.as_str()));
+        assert_eq!(
+            vp.compact_lock("李薇"),
+            "李薇: 「清亮柔和的女中音，气息稳定」 pitch mid-high"
+        );
     }
 
     #[test]
@@ -262,6 +291,7 @@ mod tests {
             pitch: Some("mid".into()),
             speaking_style: "克制".into(),
             caption_clause: Some("老旧写法".into()),
+            tts_voice: None,
         };
         let clause = vp.seedance_clause("阿强");
         assert!(clause.contains("FIXED SPEAKER VOICE"));

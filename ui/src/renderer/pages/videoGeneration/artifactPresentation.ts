@@ -1,6 +1,22 @@
 
 import type { ArtifactNode } from './types';
 
+const IMAGE_ARTIFACT_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const VIDEO_ARTIFACT_RE = /\.(mp4|webm|mov|avi|mkv)$/i;
+const AUDIO_ARTIFACT_RE = /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
+
+export function isImageArtifactPath(path: string): boolean {
+  return IMAGE_ARTIFACT_RE.test(path);
+}
+
+export function isVideoArtifactPath(path: string): boolean {
+  return VIDEO_ARTIFACT_RE.test(path);
+}
+
+export function isAudioArtifactPath(path: string): boolean {
+  return AUDIO_ARTIFACT_RE.test(path);
+}
+
 export interface StoryboardShot {
   index: number;
   visualDescription: string;

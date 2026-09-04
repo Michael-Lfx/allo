@@ -7,13 +7,16 @@ export const resolveToolChipStatus = ({
   status,
   skipped,
   notExecutedReason,
+  nonFatalFailure,
 }: {
   status: ToolChipNormalizedStatus;
   skipped?: boolean;
   notExecutedReason?: 'invalid_arguments';
+  nonFatalFailure?: boolean;
 }): ToolChipStatus => {
   if (notExecutedReason === 'invalid_arguments') return 'invalid_arguments';
   if (skipped) return 'skipped';
+  if (nonFatalFailure) return 'completed';
   return status;
 };
 
@@ -44,13 +47,16 @@ export const resolveToolChipStatusFromProcessState = ({
   state,
   skipped,
   notExecutedReason,
+  nonFatalFailure,
 }: {
   state: ToolChipProcessState;
   skipped?: boolean;
   notExecutedReason?: 'invalid_arguments';
+  nonFatalFailure?: boolean;
 }): ToolChipStatus => {
   if (notExecutedReason === 'invalid_arguments') return 'invalid_arguments';
   if (skipped) return 'skipped';
+  if (nonFatalFailure) return 'completed';
   switch (state) {
     case 'running':
       return 'running';
@@ -69,7 +75,7 @@ export const resolveToolChipStatusFromProcessState = ({
   }
 };
 
-const COMMAND_TOOL_NAMES = new Set(['bash', 'shell', 'run_commands', 'command']);
+const COMMAND_TOOL_NAMES = new Set(['bash', 'shell', 'run_commands', 'command', 'exec_command']);
 
 export const isCommandToolName = (name: string): boolean => COMMAND_TOOL_NAMES.has(name.trim().toLowerCase());
 

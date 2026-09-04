@@ -72,14 +72,24 @@ impl ProtocolAdapter for FlowyAudioSpeechAdapter {
                     .filter(|value| !value.is_empty())
             })
             .unwrap_or(DEFAULT_LANGUAGE_TYPE);
+        let instructions = req
+            .extra
+            .get("instructions")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
 
-        let body = json!({
+        let mut body = json!({
             "model": call.model,
             "input": req.text,
             "voice": voice,
             "response_format": format,
             "language_type": language_type,
         });
+        if let Some(instructions) = instructions {
+            body["instructions"] = json!(instructions);
+            body["optimize_instructions"] = json!(true);
+        }
 
         let url = call.dispatch_target().url;
         let resp = post_json(http, &url, REQUEST_TIMEOUT, &call.connection.auth, &body).await?;

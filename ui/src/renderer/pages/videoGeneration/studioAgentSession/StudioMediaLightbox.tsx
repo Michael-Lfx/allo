@@ -27,7 +27,7 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!current || current.kind === 'file') {
+    if (!current || current.kind === 'file' || current.kind === 'document') {
       setUrl(null);
       return;
     }
@@ -54,7 +54,7 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
 
   useEffect(() => {
     const neighbor = items[index + 1] ?? items[index - 1];
-    if (!neighbor || neighbor.kind === 'file') return;
+    if (!neighbor || neighbor.kind === 'file' || neighbor.kind === 'document') return;
     void loadStudioMediaPreviewUrl(sessionId, neighbor).catch(() => undefined);
   }, [sessionId, items, index]);
 
@@ -144,6 +144,8 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
             autoPlay
             muted
           />
+        ) : url && current.kind === 'audio' ? (
+          <audio key={url} className={styles.lightboxAudio} src={url} controls autoPlay />
         ) : url ? (
           <img className={styles.lightboxImg} src={url} alt={label} />
         ) : (

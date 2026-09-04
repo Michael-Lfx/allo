@@ -4,3 +4,5 @@
 
 [LINT_FEEDBACK]
 {lint_feedback}
+
+Apply the matching repair only: rewrite flagged emotion-named ACTION lines into visible behavior; if a scene is flagged for missing dialogue, ADD named-speaker 「」 lines that make the want/obstacle/turn hearable. Keep scene count, headings, and unflagged lines identical.

@@ -137,7 +137,9 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const activeVideoGenerationSessionId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
     const id = m?.[1] ? safeDecodeUriComponent(m[1]) : null;
-    if (!id || id === 'campaigns' || id === 'clip' || id === 'canvas') return null;
+    if (!id || id === 'campaigns' || id === 'clip' || id === 'canvas' || id === 'briefing') {
+      return null;
+    }
     return id;
   }, [pathname]);
 
@@ -145,6 +147,16 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   // bare /video-generation or any videoGeneration workspace session routes.
   const activeClipTaskId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/clip\/([^/]+)\/?$/);
+    return m?.[1] ? safeDecodeUriComponent(m[1]) : null;
+  }, [pathname]);
+
+  const activeCanvasProjectId = useMemo(() => {
+    const m = pathname.match(/^\/video-generation\/canvas\/([^/]+)\/?$/);
+    return m?.[1] ? safeDecodeUriComponent(m[1]) : null;
+  }, [pathname]);
+
+  const activeBriefingId = useMemo(() => {
+    const m = pathname.match(/^\/video-generation\/briefing\/([^/]+)\/?$/);
     return m?.[1] ? safeDecodeUriComponent(m[1]) : null;
   }, [pathname]);
 
@@ -158,6 +170,20 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleOpenRecentClipTask = useCallback(
     (taskId: string) => {
       navTo(`/video-generation/clip/${encodeURIComponent(taskId)}`);
+    },
+    [navTo]
+  );
+
+  const handleOpenRecentCanvasProject = useCallback(
+    (projectId: string) => {
+      navTo(`/video-generation/canvas/${encodeURIComponent(projectId)}`);
+    },
+    [navTo]
+  );
+
+  const handleOpenRecentBriefing = useCallback(
+    (briefingId: string) => {
+      navTo(`/video-generation/briefing/${encodeURIComponent(briefingId)}`);
     },
     [navTo]
   );
@@ -291,11 +317,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               moduleActive={pathname.startsWith('/video-generation')}
               activeSessionId={activeVideoGenerationSessionId}
               activeClipTaskId={activeClipTaskId}
+              activeCanvasProjectId={activeCanvasProjectId}
+              activeBriefingId={activeBriefingId}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onEnterHome={handleVideoGenerationHome}
               onOpenProject={handleOpenRecentVideoGeneration}
               onOpenClipTask={handleOpenRecentClipTask}
+              onOpenCanvasProject={handleOpenRecentCanvasProject}
+              onOpenBriefing={handleOpenRecentBriefing}
             />
 
             <SiderSectionHeader label={t('common.titlebar.sections.resources')} collapsed={collapsed} />
