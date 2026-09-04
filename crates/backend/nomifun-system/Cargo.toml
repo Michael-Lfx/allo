@@ -3,6 +3,14 @@ name = "nomifun-system"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["bedrock"]
+# AWS Bedrock support (managed model catalog fetch + connection test). The
+# aws-sdk-bedrock crate is code-generated and huge (~60 MB of rlib), so
+# in-process hosts that don't serve Bedrock (agent-store) turn it off; the
+# desktop/web hosts keep the default on.
+bedrock = ["dep:aws-config", "dep:aws-sdk-bedrock"]
+
 [dependencies]
 nomifun-auth.workspace = true
 nomifun-common.workspace = true
@@ -19,8 +27,8 @@ reqwest.workspace = true
 tokio.workspace = true
 getrandom.workspace = true
 futures.workspace = true
-aws-config.workspace = true
-aws-sdk-bedrock.workspace = true
+aws-config = { workspace = true, optional = true }
+aws-sdk-bedrock = { workspace = true, optional = true }
 semver.workspace = true
 dirs.workspace = true
 zip.workspace = true

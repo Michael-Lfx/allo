@@ -24,7 +24,15 @@ pub(crate) async fn fetch_for_platform(
         "deepseek" => {
             fetch_openai_compatible(client, &config.base_url, &config.api_key).await
         }
+        // Bedrock support is compile-time gated (`bedrock` feature): hosts
+        // without the feature report it as unsupported instead of linking the
+        // AWS SDK.
+        #[cfg(feature = "bedrock")]
         "bedrock" => fetch_bedrock(config).await,
+        #[cfg(not(feature = "bedrock"))]
+        "bedrock" => Err(AppError::BadRequest(
+            "Bedrock is not supported in this build".into(),
+        )),
         "gemini-vertex-ai" | "vertex-ai" => Err(AppError::BadRequest(
             "The legacy Vertex preset mixed Gemini model IDs with the Anthropic publisher protocol; create a provider-specific Vertex connection instead"
                 .into(),
@@ -251,9 +259,10 @@ async fn fetch_gemini(
 }
 
 // ---------------------------------------------------------------------------
-// Bedrock (AWS SDK)
+// Bedrock (AWS SDK) — compiled only with the `bedrock` feature
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "bedrock")]
 async fn fetch_bedrock(config: &FetchConfig) -> Result<Vec<ModelInfo>, AppError> {
     let bedrock_cfg = config
         .bedrock_config

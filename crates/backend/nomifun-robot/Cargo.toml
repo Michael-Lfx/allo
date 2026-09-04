@@ -6,7 +6,14 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["silero-vad"]
+# Silero VAD (ONNX Runtime). Loading is fallible at runtime and every failure
+# path degrades to the energy VAD. Microsoft no longer ships ONNX Runtime
+# prebuilts for x86_64-apple-darwin (ort-sys 2.x), so Intel Mac builds omit
+# ort and always use the energy VAD. Hosts that never run the voice pipeline
+# (agent-store) turn the feature off to skip linking ONNX Runtime entirely.
+# Silero VAD (ONNX Runtime) — the feature must wire the optional dep:
+silero-vad = ["dep:ort"]
 # Exposes the mock service implementations to integration tests.
 test-support = []
 
@@ -49,12 +56,14 @@ uuid = { workspace = true, features = ["v4"] }
 opusic-sys = { workspace = true }
 symphonia = { workspace = true }
 
-# Silero VAD (ONNX Runtime). Loading is fallible at runtime and every failure
-# path degrades to the energy VAD. Microsoft no longer ships ONNX Runtime
-# prebuilts for x86_64-apple-darwin (ort-sys 2.x), so Intel Mac builds omit
-# ort and always use the energy VAD.
+# Silero VAD (ONNX Runtime). Gated behind the `silero-vad` feature so hosts
+# that never run the voice pipeline (agent-store) skip linking ONNX Runtime.
+# Loading is fallible at runtime and every failure path degrades to the
+# energy VAD. Microsoft no longer ships ONNX Runtime prebuilts for
+# x86_64-apple-darwin (ort-sys 2.x), so Intel Mac builds omit ort and always
+# use the energy VAD.
 [target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
-ort = { workspace = true }
+ort = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Self dev-dependency with `test-support` on: the integration tests need

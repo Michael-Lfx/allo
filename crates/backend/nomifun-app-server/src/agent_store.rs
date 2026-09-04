@@ -119,6 +119,35 @@ impl AgentStoreConfig {
         toml::from_str(&raw).map_err(|error| format!("{}: {error}", path.display()))
     }
 
+    /// Builtin marketplace sources used when `~/.agent-store/config.toml` is
+    /// missing (or has no `[default_marketplaces]`): the official public
+    /// mirror, so a fresh install can browse the store before touching any
+    /// config. `id -> (source_kind, source)`.
+    ///
+    /// NOTE: the public mirror host is expected to move to a domain-backed
+    /// HTTPS endpoint (`https://market.flowyaipc.cn/...`) once DNS/SSL are
+    /// wired up; the fallback short-circuits whenever the user declares their
+    /// own `[default_marketplaces]`.
+    pub fn builtin_default_marketplaces() -> Vec<(String, String, String)> {
+        vec![
+            (
+                "experts".to_owned(),
+                "url".to_owned(),
+                "http://111.170.173.22:10072/experts/.codebuddy-plugin/marketplace.json".to_owned(),
+            ),
+            (
+                "skills".to_owned(),
+                "url".to_owned(),
+                "http://111.170.173.22:10072/skills/.codebuddy-skill/marketplace.json".to_owned(),
+            ),
+            (
+                "connectors".to_owned(),
+                "url".to_owned(),
+                "http://111.170.173.22:10072/connectors/.codebuddy-connector/connectors.json".to_owned(),
+            ),
+        ]
+    }
+
     /// Default location: `~/.agent-store/config.toml` (Windows then POSIX).
     pub fn default_path() -> Option<PathBuf> {
         let home = std::env::var_os("USERPROFILE")
@@ -253,6 +282,18 @@ reasoning_key = "reasoning_content"
         assert_eq!(limits.get("laguna-s-2.1-free"), Some(&256_000));
         let names = config.display_names_for_provider("opencode");
         assert_eq!(names.get("mimo-v2.5-free").map(String::as_str), Some("MiMo V2.5 Free"));
+    }
+
+    #[test]
+    fn builtin_marketplaces_are_complete_and_resolvable() {
+        let builtin = AgentStoreConfig::builtin_default_marketplaces();
+        let ids: Vec<&str> = builtin.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert_eq!(ids, ["experts", "skills", "connectors"]);
+        for (id, kind, source) in &builtin {
+            assert_eq!(kind, "url");
+            assert!(source.ends_with("marketplace.json") || source.ends_with("connectors.json"));
+            assert!(source.starts_with("http"), "{id} source must be absolute: {source}");
+        }
     }
 
     #[test]

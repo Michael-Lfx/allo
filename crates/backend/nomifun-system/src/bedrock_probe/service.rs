@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use aws_sdk_bedrock::config::Credentials;
 use nomifun_api_types::{BedrockAuthMethod, BedrockConfig};
 use nomifun_common::AppError;
 use tracing::{info, warn};
@@ -28,6 +27,11 @@ impl ConnectionTestService {
     ///
     /// Constructs an isolated credential provider (no global env pollution)
     /// and calls `get_foundation_model` as a zero-cost validation.
+    ///
+    /// Without the `bedrock` feature the AWS SDK is not linked; the endpoint
+    /// stays mounted so the UI contract is stable, and reports the build as
+    /// not supporting Bedrock.
+    #[cfg(feature = "bedrock")]
     pub async fn test_bedrock_connection(&self, config: BedrockConfig) -> Result<(), AppError> {
         validate_bedrock_config(&config)?;
 
@@ -53,6 +57,17 @@ impl ConnectionTestService {
 
         info!("Bedrock connection test passed");
         Ok(())
+    }
+
+    /// Feature-gated stub: validates the request shape (shared logic) and
+    /// then reports that this build cannot reach Bedrock.
+    #[cfg(not(feature = "bedrock"))]
+    pub async fn test_bedrock_connection(&self, config: BedrockConfig) -> Result<(), AppError> {
+        validate_bedrock_config(&config)?;
+        warn!("bedrock feature disabled in this build; connection test unavailable");
+        Err(AppError::BadRequest(
+            "Bedrock is not supported in this build".into(),
+        ))
     }
 }
 
@@ -88,12 +103,13 @@ fn validate_bedrock_config(config: &BedrockConfig) -> Result<(), AppError> {
 }
 
 /// Build AWS SDK config from BedrockConfig without polluting global environment.
+#[cfg(feature = "bedrock")]
 async fn build_aws_config(config: &BedrockConfig) -> aws_config::SdkConfig {
     let region = aws_config::Region::new(config.region.clone());
 
     match config.auth_method {
         BedrockAuthMethod::AccessKey => {
-            let credentials = Credentials::new(
+            let credentials = aws_sdk_bedrock::config::Credentials::new(
                 config.access_key_id.as_deref().unwrap_or_default(),
                 config.secret_access_key.as_deref().unwrap_or_default(),
                 None,
@@ -120,6 +136,7 @@ async fn build_aws_config(config: &BedrockConfig) -> aws_config::SdkConfig {
 mod tests {
     use super::*;
     use nomifun_api_types::BedrockConfig;
+
 
     // -- validate_bedrock_config --
 

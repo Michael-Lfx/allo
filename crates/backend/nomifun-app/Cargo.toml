@@ -181,7 +181,7 @@ name = "importer_e2e"
 path = "tests/importer_e2e.rs"
 
 [features]
-default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot"]
+default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot", "bedrock", "silero-vad"]
 telegram = ["nomifun-channel/telegram"]
 lark = ["nomifun-channel/lark"]
 dingtalk = ["nomifun-channel/dingtalk"]
@@ -224,6 +224,12 @@ browser-use = [
     "dep:nomi-types",
 ]
 managed-search = ["nomifun-ai-agent/managed-search"]
+# AWS Bedrock support (model catalog fetch + connection test). Desktop keeps
+# it on; headless hosts (agent-store) turn it off to skip the AWS SDK.
+bedrock = ["nomifun-system/bedrock"]
+# Silero VAD (ONNX Runtime) for the voice pipeline. Desktop keeps it on;
+# headless hosts (agent-store) turn it off and fall back to the energy VAD.
+silero-vad = ["nomifun-robot/silero-vad"]
 
 [dependencies]
 nomifun-common.workspace = true
