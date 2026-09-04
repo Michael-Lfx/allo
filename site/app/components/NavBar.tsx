@@ -12,7 +12,7 @@ function GitHubMark() {
 
 import type { Language } from "../i18n";
 import { setLanguage } from "../i18n";
-import { githubUrl } from "../lib/platform";
+import { githubUrl, releaseAssetUrl } from "../lib/platform";
 import logoUrl from "../assets/logo.png";
 import ThemeToggle from "./ThemeToggle";
 
@@ -64,10 +64,10 @@ export default function NavBar({ lang }: { lang: Language }) {
             <GitHubMark />
             {t("nav.github")}
           </a>
-          <a className="btn btn-primary nav-download" href={githubUrl() + "/releases/latest"}>
-            <Download size={16} />
-            {t("nav.download")}
-          </a>
+          <a className="btn btn-primary nav-download" href={releaseAssetUrl("latest", { os: "windows", arch: "x86_64" })}>
+                      <Download size={16} />
+                      {t("nav.download")}
+                    </a>
           <button className="icon-btn" onClick={switchLang} aria-label={t("nav.lang")}>
             <Languages size={18} />
           </button>

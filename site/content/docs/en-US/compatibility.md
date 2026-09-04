@@ -2,7 +2,7 @@
 
 ## Platforms
 
-The single-file runtime covers the platforms below; binaries are distributed on [GitHub Releases](https://github.com/your-org/flowy-agent-store/releases) under per-target names.
+The single-file runtime covers the platforms below; binaries are distributed on the [download center](http://111.170.173.22:10014/downloads/) under per-target names.
 
 | OS | Architecture | Status |
 | --- | --- | --- |

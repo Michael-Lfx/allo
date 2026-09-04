@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
 
 import type { Language } from "../i18n";
+import { revealDelay } from "../lib/effects";
 import {
   ARCH_LABELS,
   detectPlatform,
@@ -14,13 +15,9 @@ import {
   releasesPageUrl,
 } from "../lib/platform";
 
-const PLATFORMS: { os: TargetOS; arch: TargetArch }[] = [
-  { os: "macos", arch: "aarch64" },
-  { os: "macos", arch: "x86_64" },
-  { os: "windows", arch: "x86_64" },
-  { os: "linux", arch: "x86_64" },
-  { os: "linux", arch: "aarch64" },
-];
+// Only the currently shipped target is downloadable; others return once
+// their builds are published (see the assets dir on the download host).
+const PLATFORMS: { os: TargetOS; arch: TargetArch }[] = [{ os: "windows", arch: "x86_64" }];
 
 export default function DownloadCTA({
   variant = "full",
@@ -53,22 +50,22 @@ export default function DownloadCTA({
   return (
     <section className="download" id="download">
       <div className="download-inner">
-        <p className="eyebrow eyebrow-center">
+        <p className="eyebrow eyebrow-center" data-reveal>
           <span className="eyebrow-index">03</span>
           {t("landing.eyebrow")}
         </p>
-        <h2>{t("landing.downloadTitle")}</h2>
-        <p className="subtle">{t("landing.downloadSubtitle")}</p>
+        <h2 data-reveal>{t("landing.downloadTitle")}</h2>
+        <p className="subtle subtle-center" data-reveal>{t("landing.downloadSubtitle")}</p>
 
-        <div className="download-actions">
-          <a className="btn btn-primary btn-lg" href={detectedUrl}>
+        <div className="download-actions" data-reveal style={revealDelay(120)}>
+          <a className="btn btn-primary btn-lg btn-glow" href={detectedUrl}>
             <Download size={18} />
             {t("landing.download.primaryCta", { os: detectedLabel })}
           </a>
           {detected && <span className="detect-note">{t("landing.download.detectNote")}</span>}
         </div>
 
-        <details className="platforms">
+        <details className="platforms" data-reveal style={revealDelay(200)}>
           <summary>{t("landing.download.manual")}</summary>
           <div className="platform-grid">
             {PLATFORMS.map((p) => (
@@ -80,7 +77,7 @@ export default function DownloadCTA({
           </div>
         </details>
 
-        <p className="release-note">
+        <p className="release-note" data-reveal style={revealDelay(260)}>
           <a href={releasesPageUrl()}>{t("landing.download.releaseNote")}</a>
         </p>
       </div>

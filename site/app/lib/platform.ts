@@ -8,10 +8,13 @@ export interface DetectedPlatform {
   arch: TargetArch;
 }
 
-/**
- * GitHub repository that hosts the prebuilt binaries. Replace the owner before
- * shipping — the download CTA points here for every platform asset.
+/** Download host: the VPS serves prebuilt binaries over HTTP
+ * (Caddy :8306 → http://111.170.173.22:10014/downloads/). Replace
+ * `DOWNLOAD_HOST` when the release server moves.
  */
+const DOWNLOAD_HOST = "http://111.170.173.22:10014";
+
+/** GitHub repository (source only — binaries ship from the VPS). */
 const GITHUB_REPO = "your-org/flowy-agent-store";
 
 /** Asset file name convention produced by the release build. */
@@ -53,18 +56,15 @@ export function detectPlatform(): DetectedPlatform {
   return { os, arch };
 }
 
-/** Direct download URL for a platform's asset on GitHub Releases. */
+/** Direct download URL for a platform's asset on the VPS download host. */
 export function releaseAssetUrl(version: string, p: DetectedPlatform): string {
   const file = assetName(version, p);
-  const base =
-    version === "latest"
-      ? `https://github.com/${GITHUB_REPO}/releases/latest/download`
-      : `https://github.com/${GITHUB_REPO}/releases/download/v${version}`;
-  return `${base}/${file}`;
+  return `${DOWNLOAD_HOST}/downloads/${file}`;
 }
 
+/** VPS download directory (file listing / all published assets). */
 export function releasesPageUrl(): string {
-  return `https://github.com/${GITHUB_REPO}/releases`;
+  return `${DOWNLOAD_HOST}/downloads/`;
 }
 
 export function githubUrl(): string {

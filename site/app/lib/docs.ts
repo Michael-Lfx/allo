@@ -50,6 +50,8 @@ export function loadDoc(locale: Language, slug: string): DocContent | null {
 export const DOC_ORDER: { slug: string; sectionKey: keyof DocSections }[] = [
   { slug: "quick-start", sectionKey: "quickStart" },
   { slug: "cli", sectionKey: "cli" },
+  { slug: "typescript-sdk", sectionKey: "typescriptSdk" },
+  { slug: "configuration", sectionKey: "configuration" },
   { slug: "architecture", sectionKey: "architecture" },
   { slug: "compatibility", sectionKey: "compatibility" },
 ];
@@ -57,6 +59,8 @@ export const DOC_ORDER: { slug: string; sectionKey: keyof DocSections }[] = [
 export interface DocSections {
   quickStart: string;
   cli: string;
+  typescriptSdk: string;
+  configuration: string;
   architecture: string;
   compatibility: string;
 }

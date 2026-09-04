@@ -18,6 +18,7 @@ export default function LangLayout() {
   const lang = useLang();
   return (
     <div className="site">
+      <div className="scroll-progress" aria-hidden="true" />
       <NavBar lang={lang} />
       <main className="site-main" id="main">
         <Outlet />

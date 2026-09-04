@@ -19,77 +19,114 @@ const enUS = {
   },
   landing: {
     eyebrow: "Local-first · Single-file runtime",
-    heroTitle: "One binary, your whole agent workbench",
+    heroTitle: "Your local-first agent workbench",
     heroSubtitle:
-      "Flowy Agent Store packages the agent runtime as a single executable with a full Web UI embedded. Launch it from the command line and the workbench opens in your browser — no server required, your data stays local.",
+      "A single executable that opens into a full workbench in your browser. Import experts, form teams, orchestrate runs — execution, credentials and run state never leave your machine; the cloud only syncs definitions and versions.",
     heroCtaDownload: "Download",
+    heroCtaMarket: "Browse the market",
     heroCtaDocs: "Read the docs",
     heroTerminalListening: "App Server is live at http://127.0.0.1:8787",
     heroTerminalOpened: "Workbench opened in your browser",
+    showcase: {
+      label: "Product preview",
+      runTitle: "Team Run · frontend-backend-experts",
+      status: "Running",
+      navCatalog: "Catalog",
+      navRuns: "Runs",
+      navArtifacts: "Artifacts",
+      tlPlan: "Plan ready · 4-step DAG",
+      tlTool: "Tool call · browser.open",
+      tlArt: "Artifact · todo-api.ts",
+    },
+    featureTitle: "Built for the local workbench",
+    featureSubtitle: "Import, run, observe — all inside one trusted local process.",
+    features: {
+      workbench: {
+        title: "Local agent catalog",
+        desc: "Import and search experts, skills and connectors in one place; immutable snapshots you can query and run right away.",
+      },
+      observability: {
+        title: "Full run observability",
+        desc: "Plan (DAG), event timeline and artifacts stream in live; both single-agent and team runs are replayable.",
+      },
+      localFirst: {
+        title: "Local-first execution",
+        desc: "Credentials and run state stay on your machine; the cloud only syncs the market catalog, versions and distribution.",
+      },
+      oneCmd: {
+        title: "One command to start",
+        desc: "No databases, no resident services; flowy-agent-store boots and the browser opens ready to work.",
+      },
+    },
+    workflowTitle: "Command line → workbench in three steps",
+    workflowSubtitle: "Download, import, run — all on your machine.",
+    workflow: {
+      step1: {
+        title: "Launch the runtime",
+        desc: "Run the command; the single executable starts the local App Server and opens the workbench.",
+        cmd: "flowy-agent-store",
+      },
+      step2: {
+        title: "Import experts",
+        desc: "Import CodeBuddy / WorkBuddy plugins from the workbench, or call installStoreEntry() via the SDK.",
+        cmd: "Import CodeBuddy / WorkBuddy plugins",
+      },
+      step3: {
+        title: "Run & observe",
+        desc: "Pick an agent or a team run and watch the DAG, event timeline and artifacts in real time.",
+        cmd: "Run → DAG · Timeline · Artifacts",
+      },
+    },
+    marketStrip: {
+      title: "Market resources, ready out of the box",
+      subtitle: "Experts, skills and connectors import into your local catalog in one click, continuously updated.",
+      cta: "Open the market",
+    },
+    dev: {
+      title: "Built for developers",
+      subtitle:
+        "A type-safe TypeScript SDK: types only, connect to a running App Server, or launch the whole runtime in one call.",
+      pkgProtocol: {
+        name: "@agent-store/protocol",
+        desc: "The single source of wire-protocol types: requests, responses, notifications and errors. Zero runtime.",
+      },
+      pkgClient: {
+        name: "@agent-store/client",
+        desc: "AppServerClient and 7 sub-clients with a Transport abstraction for WS / HTTP.",
+      },
+      pkgSdk: {
+        name: "@agent-store/sdk",
+        desc: "Spawns the binary → loopback WebSocket → readiness handshake, returning a ready client.",
+      },
+      codeTitle: "quick-start.ts",
+      cta: "Read the TypeScript SDK guide",
+    },
+    faq: {
+      title: "FAQ",
+      items: {
+        q1: {
+          q: "What exactly stays local?",
+          a: "Execution, credentials and run state live only on your machine; the cloud is used to sync the market catalog, versions and distribution. No cloud execution, no run data uploaded.",
+        },
+        q2: {
+          q: "Which platforms are supported?",
+          a: "The compatibility matrix covers macOS (Apple silicon / Intel), Windows x64 and Linux x64 / arm64. The current release channel ships Windows x64 builds first; other platforms follow as builds publish.",
+        },
+        q3: {
+          q: "Do I need an account?",
+          a: "Local runs need no login (trusted local mode). When exposing the server to your LAN (--host 0.0.0.0), enable --auth; the admin account is created on first start.",
+        },
+        q4: {
+          q: "What can I import?",
+          a: "CodeBuddy plugins and WorkBuddy skills / connectors become immutable snapshots through the importer; once imported they are queryable and runnable in the catalog. Resources with unconfirmed licenses never enter public distribution.",
+        },
+      },
+    },
     stats: {
       s1: { value: "1", label: "Single executable" },
       s2: { value: "0", label: "Databases or services to install" },
       s3: { value: "4", label: "Catalog kinds managed" },
       s4: { value: "2", label: "UI and doc languages" },
-    },
-    featureTitle: "Built for the local workbench",
-    featureSubtitle:
-      "Bring experts, teams, skills and connectors into one trusted local process.",
-    features: {
-      singleBinary: {
-        title: "Single-file runtime",
-        desc: "One executable carries everything — no install step, no containers, run it straight from the download.",
-      },
-      localFirst: {
-        title: "Local-first",
-        desc: "Execution, credentials and run state live on your machine; the cloud only handles definitions, versions and distribution.",
-      },
-      catalog: {
-        title: "Agent catalog",
-        desc: "Manage Agents, Teams, Skills and Connectors in one place — import and run them straight away.",
-      },
-      cliUi: {
-        title: "CLI-launched Web UI",
-        desc: "One command brings up the local App Server; open the browser to orchestrate and observe runs.",
-      },
-    },
-    workflowTitle: "Command line → browser in three steps",
-    workflowSubtitle: "Start, connect, operate — all on your machine.",
-    workflow: {
-      step1: {
-        title: "Launch the runtime",
-        desc: "Run the command in your terminal; the single executable starts the App Server locally.",
-        cmd: "flowy-agent-store",
-      },
-      step2: {
-        title: "Local App Server",
-        desc: "The process serves a versioned protocol on localhost; the UI only talks to it through the SDK.",
-        cmd: "http://localhost:8787",
-      },
-      step3: {
-        title: "Open the Web UI",
-        desc: "The browser opens the workbench; import an Agent and start a single or team run.",
-        cmd: "Operate in the browser",
-      },
-    },
-    downloadTitle: "Download Flowy Agent Store",
-    downloadSubtitle: "Pick your platform, or see every build on the releases page.",
-    download: {
-      primaryCta: "Download for {{os}}",
-      detectNote: "We detected your platform from your system",
-      allPlatforms: "All platforms",
-      manual: "Choose a platform",
-      releaseNote: "See GitHub Releases for past versions and checksums",
-      copy: "Copy command",
-      copied: "Copied",
-      fallbackCta: "Go to Releases",
-    },
-    platforms: {
-      macos: "macOS",
-      windows: "Windows",
-      linux: "Linux",
-      archAarch64: "Apple silicon",
-      archX8664: "Intel / x64",
     },
     marketStat: "resources in the market",
   },
@@ -116,6 +153,8 @@ const enUS = {
     sections: {
       quickStart: "Quick start",
       cli: "CLI usage",
+      typescriptSdk: "TypeScript SDK",
+      configuration: "Configuration",
       architecture: "Architecture",
       compatibility: "Compatibility matrix",
     },

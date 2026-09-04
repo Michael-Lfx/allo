@@ -14,6 +14,11 @@ import { docSlugs } from "./app/lib/docs";
 const LOCALES = ["zh-CN", "en-US"] as const;
 
 export default {
+  // Static hosting (Caddy/EdgeOne) has no runtime `__manifest` endpoint, so
+  // Lazy Route Discovery would fetch it and — finding only the SPA fallback
+  // HTML — throw "Unexpected token '<'". Load all routes with the initial
+  // document instead.
+  routeDiscovery: { mode: "initial" },
   async prerender() {
     const paths: string[] = ["/", "/market"];
     for (const lang of LOCALES) {

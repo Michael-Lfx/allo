@@ -22,6 +22,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href={faviconUrl} type="image/x-icon" />
+        {/* Adds .js-fx before first paint so the reveal-on-scroll styles only
+            hide content when JS is guaranteed to run (SSG/no-JS safe). */}
+        <script
+          dangerouslySetInnerHTML={{ __html: "document.documentElement.classList.add('js-fx');" }}
+        />
         <Meta />
         <Links />
       </head>
