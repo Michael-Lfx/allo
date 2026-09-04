@@ -15,7 +15,9 @@
 2. 服务端用 Go QUIC 客户端与支持 HTTP/3 的 curl 直连真实 IP `47.251.95.78` 验证：
    - 绕过本地 TUN：`HTTP/3 200`，`Alt-Svc: h3=":443"` ✅
    - 走 TUN 默认路由：`HTTP/3 200`，同样 ✅
-3. 服务端判断我方此前失败是**本地代理 / TUN 干扰 QUIC**，建议用 `--http3-only` 打真实 IP 或支持 HTTP/3 的浏览器复核。
+3. 服务端当时判断我方此前失败是**本地代理 / TUN 干扰 QUIC**，建议用
+   `--http3-only` 打真实 IP 或支持 HTTP/3 的浏览器复核。
+   （该判断已被 3.6 节交叉实验修正：直连环境下仍失败，根因在客户端 reqwest 栈。）
 
 ## 三、 客户端侧实测结果
 
@@ -23,8 +25,9 @@
 
 - 探针：`http_protocol_probe.rs`（支持 `--ip <真实IP>` 绑定 DNS，绕过本地域名劫持）。
 - 目标：`https://server.flowyaipc.com/claw/health`
-- 本机 DNS 解析：`server.flowyaipc.com -> 47.251.95.78`（真实 IP，未指向假 IP）
-- 本机网络：Wi-Fi + Tailscale 隧道在运行（该隧道会成为 QUIC/UDP 443 的干扰路径）。
+- 本机 DNS 解析：`server.flowyaipc.com -> 47.251.95.78`（真实 IP，未指向假 IP）。
+- 本机网络：Wi-Fi + 本地代理/隧道（Clash TUN、Tailscale）在场；3.6 节通过
+  代理开/关交叉验证证明两者均不会改变 H3 的失败表现。
 
 ### 3.2 HTTP/2 链路（TCP，绑定真实 IP）
 
@@ -43,8 +46,8 @@
 | 特征错误 | `client error (Connect) -> received fatal alert: NoApplicationProtocol` |
 
 **关键对照实验**：同一探针、同一时间点探测公认支持 HTTP/3 的 `www.google.com`，
-得到**一模一样的错误**。这证明在本机网络环境下，QUIC 握手被本地网络栈
-（TUN / 隧道路径）拦截并回送 TLS ALPN 错误，不是服务端问题，也不是探针问题。
+得到**一模一样的错误**。初判指向本地网络栈（TUN / 隧道路径）拦截；
+经 3.6 节直连环境与 Google 对照复核后，**修正为客户端栈 ALPN 缺陷**（最终根因）。
 
 ### 3.4 重要发现：当前客户端实际走的是 HTTP/1.1，不是 HTTP/2
 
@@ -65,7 +68,7 @@
 | 优雅降级（被动回退） | ✅ | `www.flowyaipc.com`（该主机 TLS 未支持 ALPN h2）→ 自动回退 HTTP/1.1，200 OK |
 | 连接复用 / Keep-Alive | ✅ | 串行 10 轮共享连接，P50 ~229 ms，无重复握手 |
 
-## 3.6 最终验证：代理关闭 / 直连环境（2026-09-04 复测）
+## 3.6 最终验证：代理开/关交叉 + 直连环境（2026-09-04 复测）
 
 在关闭本地代理后，于直连 WLAN 环境复测（DNS 干净、默认路由直连、Tailscale 无出口节点）：
 
@@ -97,7 +100,9 @@
 ## 四、 客户端结论与建议
 
 1. **服务端 HTTP/3 属实且可用**（跨客户端验证通过）。
-2. **我方客户端本机暂无法完成 QUIC 握手**，属于本地 TUN/隧道因素，并非代码问题。
+2. **我方客户端暂无法完成 QUIC 握手**：代理开/关交叉验证 + Google 对照实验
+   证明根因**不在服务端、不在网络、不在代理**，而是 **reqwest 客户端库的
+   HTTP/3 实验性 ALPN 缺陷**（见 3.6 节，上游 [PR #2929](https://github.com/seanmonstar/reqwest/pull/2929)）。
 3. **已落地并验证完备**：工作区已启用 `http2` feature（commit `d2351d62e`），
    客户端链路从 HTTP/1.1 升级到 HTTP/2（多路复用 + 头部压缩 + 连接复用）。
    完备性验证见 3.5 节：核心 API 协商 h2、20/50 并发多路复用生效、
