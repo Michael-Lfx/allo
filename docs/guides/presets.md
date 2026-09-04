@@ -5,7 +5,11 @@ execution step, companion, or scheduled task should start without turning
 that configuration into another identity or executor.
 
 Open the preset library at **`/presets`**. Skills remain an independent
-capability library at **`/skills`**.
+capability library at **`/skills`**. The current release provides the local
+preset library only; the SkillHub expert-package market is no longer exposed.
+Expert packages installed in an earlier release are treated as local user
+presets and remain selectable, editable, duplicable, enableable, disableable,
+and deletable.
 
 ## Presets versus other concepts
 
@@ -47,7 +51,7 @@ The catalog merges three sources:
 | Source | Origin | Editing behavior |
 | --- | --- | --- |
 | Builtin | Embedded catalog under `crates/backend/nomifun-app/assets/builtin-presets/`; the current release preinstalls none | Content is read-only. Duplicate it to customize; user state such as enabled/order/preferred agent is stored separately. |
-| User | Relational preset records in SQLite | Fully editable and deletable. |
+| User | Relational preset records in SQLite; historical expert-package installs are normalized here too | Fully editable and deletable; deleting a preset does not delete its Skill files. |
 | Extension | Installed extension `presets` contributions | Read-only in the preset library; manage the owning extension instead. |
 
 User instruction and avatar assets use `preset-instructions/` and

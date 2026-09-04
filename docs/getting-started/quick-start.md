@@ -34,7 +34,7 @@ You can choose:
 
 - an agent/runtime,
 - a model/provider when the runtime supports it,
-- a reusable preset,
+- a reusable preset from the local preset library,
 - skills or MCP tools,
 - a workspace path,
 - and the first prompt.
@@ -60,7 +60,7 @@ Back on `/guid`:
 
 1. Choose an agent.
 2. Choose a model if required.
-3. Optionally choose a preset.
+3. Optionally choose a preset, or open the Skills entry to select Skills for this conversation.
 4. Type a prompt.
 5. Send with the button or `Ctrl/Cmd+Enter`.
 
