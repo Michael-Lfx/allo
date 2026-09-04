@@ -44,6 +44,7 @@ const SEARCH_PLACEHOLDER_DEFAULTS: Record<CapabilityHubId, string> = {
 
 type CapabilityHubHeaderProps = {
   hub: CapabilityHubId;
+  marketEnabled?: boolean;
   view: CapabilityHubView;
   installedCount?: number;
   searchQuery: string;
@@ -55,6 +56,7 @@ type CapabilityHubHeaderProps = {
 
 const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
   hub,
+  marketEnabled = true,
   view,
   installedCount,
   searchQuery,
@@ -105,18 +107,20 @@ const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
           />
 
           <div className='capability-hub-segment' role='group' aria-label={t('settings.capabilityHub.navLabel')}>
-            <button
-              type='button'
-              className={classNames('capability-hub-segment-btn', {
-                'capability-hub-segment-btn--active': view === 'market',
-              })}
-              aria-pressed={view === 'market'}
-              onClick={() => {
-                if (view === 'installed') onToggleInstalled();
-              }}
-            >
-              {t('settings.capabilityHub.discover', { defaultValue: 'Discover' })}
-            </button>
+            {marketEnabled && (
+              <button
+                type='button'
+                className={classNames('capability-hub-segment-btn', {
+                  'capability-hub-segment-btn--active': view === 'market',
+                })}
+                aria-pressed={view === 'market'}
+                onClick={() => {
+                  if (view === 'installed') onToggleInstalled();
+                }}
+              >
+                {t('settings.capabilityHub.discover', { defaultValue: 'Discover' })}
+              </button>
+            )}
             <button
               type='button'
               className={classNames('capability-hub-segment-btn', {

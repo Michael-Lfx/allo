@@ -27,4 +27,12 @@ describe('PresetCard visual hierarchy', () => {
     expect(source.includes('WebkitLineClamp: 2')).toBe(true);
     expect(source.includes('min-h-[36px]')).toBe(false);
   });
+
+  test('does not render market lineage for user presets', () => {
+    expect(source.includes("preset.source === 'user'")).toBe(false);
+    expect(source.includes('presetSourceCustom')).toBe(false);
+    expect(source.includes('openSource')).toBe(false);
+    expect(source.includes('viewDetails')).toBe(false);
+    expect(source.includes('skillhub.cn')).toBe(false);
+  });
 });

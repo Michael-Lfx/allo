@@ -43,7 +43,8 @@ export type FunnelEventName =
   | 'stream_finished'
   | 'turn_idle'
   | 'retry_succeeded'
-  | 'abandoned_before_first_token';
+  | 'abandoned_before_first_token'
+  | 'expert_package_install_failed';
 
 export type FunnelEvent = {
   id: string;

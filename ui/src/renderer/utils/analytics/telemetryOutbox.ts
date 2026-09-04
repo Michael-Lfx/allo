@@ -48,6 +48,12 @@ const ALLOWED_PROPERTIES = new Set([
   'research_depth',
   'beat_count',
   'citation_count',
+  'market_source',
+  'package_slug',
+  'failure_class',
+  'failure_code',
+  'skill_slug',
+  'http_status',
 ]);
 
 let memoryQueue: FirstPartyTelemetryEvent[] = [];
@@ -109,7 +115,7 @@ function writeQueue(events: FirstPartyTelemetryEvent[]): void {
 }
 
 function firstPartyModule(event: FunnelEvent): FirstPartyTelemetryEvent['module'] | null {
-  if (event.name === 'app_opened') return 'platform';
+  if (event.name === 'app_opened' || event.name === 'expert_package_install_failed') return 'platform';
   if (event.props?.feature !== 'video_generation') return null;
   if (event.name === 'first_value_confirmed') return null;
   return 'video_generation';

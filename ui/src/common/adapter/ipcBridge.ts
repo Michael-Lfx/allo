@@ -1449,8 +1449,12 @@ export interface ISkillMarketPackageResponse {
 
 export interface ISkillMarketPackageInstallResponse {
   package: ISkillMarketPackageResponse;
-  installed_skill_names: string[];
-  errors?: Array<{ skill_slug: string; error: string }>;
+  preset_id?: string | null;
+  installed_skill_ids?: string[];
+  installed_skill_names?: string[];
+  errors?: Array<{ skill_slug: string; error: string; http_status?: number | null }>;
+  failure_class?: string | null;
+  failure_code?: string | null;
 }
 
 export const fs = {
@@ -1568,7 +1572,7 @@ export const fs = {
   >('/api/skills/market/mcp/config'),
   installSkillMarketPackage: httpPost<
     ISkillMarketPackageInstallResponse,
-    { source: SkillMarketSource; id: string; url: string }
+    { source: SkillMarketSource; id: string; url: string; preset_id?: string }
   >('/api/skills/market/package/install'),
 };
 

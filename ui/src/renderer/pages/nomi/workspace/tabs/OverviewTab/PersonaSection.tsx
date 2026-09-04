@@ -8,19 +8,15 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Modal } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { ipcBridge } from '@/common';
 import type { ICompanionProfile, ICustomPersona } from '@/common/adapter/ipcBridge';
 import { NomiSettingList, NomiSettingRow, NomiSettingSection } from '@/renderer/components/base/NomiSettingLayout';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
-import PresetApplyControl from '@/renderer/components/preset/PresetApplyControl';
-import type { CompanionHandle } from '../../types';
 import { useDebouncedText } from './useDebouncedText';
+import type { CompanionHandle } from '../../types';
 
 interface PersonaSectionProps {
   profile: ICompanionProfile;
   patchCompanion: CompanionHandle['patchCompanion'];
-  /** Re-read the profile after the backend applied a preset snapshot. */
-  refresh: CompanionHandle['refresh'];
 }
 
 const BUILTIN_PERSONAS = ['lively', 'calm', 'sassy'] as const;
@@ -30,14 +26,14 @@ const MAX_BODY_CHARS = 2000;
 
 /**
  * 伙伴设定 — how this companion talks: one selected persona (a built-in tone or one
- * of its own saved personas) plus the one-click reuse of a saved preset. Both rows
- * write the same idea ("who it is"), so they live in one list.
+ * of its own saved personas). Existing applied preset snapshots remain runtime
+ * data, but the overview no longer exposes a second preset-selection surface.
  *
  * The selection and the custom-persona library are a single `persona` patch: the
  * backend stores `{ selected, customs }` together, and splitting the write would
  * let a deletion land without its re-selection.
  */
-const PersonaSection: React.FC<PersonaSectionProps> = ({ profile, patchCompanion, refresh }) => {
+const PersonaSection: React.FC<PersonaSectionProps> = ({ profile, patchCompanion }) => {
   const { t } = useTranslation();
   const companionName = profile.name;
   const customs = profile.persona.customs ?? [];
@@ -180,26 +176,19 @@ const PersonaSection: React.FC<PersonaSectionProps> = ({ profile, patchCompanion
           }
         />
 
-        <NomiSettingRow
-          title={t('nomi.settings.preset', { defaultValue: '复用设定' })}
-          description={t('nomi.settings.presetHint', {
-            defaultValue: '一键应用已保存的 Agent、模型、Skill 与知识范围配置。',
-          })}
-          controls={
-            <PresetApplyControl
-              target='companion'
-              appliedPreset={profile.applied_preset}
-              onApply={async (presetId, locale) => {
-                await ipcBridge.companion.applyPreset.invoke({
-                  companion_id: profile.companion_id,
-                  preset_id: presetId,
-                  locale,
-                });
-                await refresh();
-              }}
-            />
-          }
-        />
+        {profile.applied_preset ? (
+          <NomiSettingRow
+            title={t('nomi.settings.appliedPreset', { defaultValue: '已应用设定' })}
+            description={t('nomi.settings.appliedPresetHint', {
+              defaultValue: '该伙伴继续沿用已保存的设定快照；新的对话可在首页选择设定。',
+            })}
+            controls={
+              <span className='max-w-240px truncate text-13px text-t-secondary' title={profile.applied_preset.preset_name}>
+                {profile.applied_preset.preset_name}
+              </span>
+            }
+          />
+        ) : null}
       </NomiSettingList>
 
       <Modal

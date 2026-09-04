@@ -116,6 +116,7 @@ const GuidPage: React.FC = () => {
 
   // --- Drawer state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerMode, setDrawerMode] = useState<'preset' | 'skills'>('preset');
   const delegationPolicy: TDelegationPolicy = 'automatic';
   const decisionPolicy: TDecisionPolicy = 'automatic';
   const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
@@ -236,6 +237,13 @@ const GuidPage: React.FC = () => {
     locationKey: location.key,
   });
 
+  const handleStalePreset = useCallback(() => {
+    const fallbackAgent = agentSelection.availableAgents?.find((agent) => !agent.is_preset);
+    const fallbackKey = fallbackAgent ? agentSelection.getAgentKey(fallbackAgent) : 'nomi';
+    agentSelection.setSelectedAgentKey(fallbackKey);
+    void swrMutate(PRESET_CATALOG_SWR_KEY);
+  }, [agentSelection.availableAgents, agentSelection.getAgentKey, agentSelection.setSelectedAgentKey]);
+
   // Only the Nomi provider-based agent owns the FlowY model catalog. ACP
   // agents keep their own model surface and must not inherit Auto controls.
   const effectiveAgentType = agentSelection.is_presetAgent
@@ -310,7 +318,25 @@ const GuidPage: React.FC = () => {
     agentSelection.currentEffectiveAgentInfo.agent_type,
   );
   const supportsHomeGoalCommand = agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
-  const { skills: catalogSkills } = useSkillCatalog(supportsHomeSkillLoading);
+  const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(supportsHomeSkillLoading);
+  const handleToggleHomeSkill = useCallback(
+    (skillId: string) => {
+      const skill = catalogSkills.find((candidate) => candidate.skillId === skillId);
+      if (!skill) return;
+      const chip: ComposerSkillChip = {
+        skillId: skill.skillId,
+        name: skill.name,
+        source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
+      };
+      setHomeSkillChips((current) => {
+        if (current.some((candidate) => candidate.skillId === skillId)) {
+          return current.filter((candidate) => candidate.skillId !== skillId);
+        }
+        return [...current, chip];
+      });
+    },
+    [catalogSkills, t],
+  );
   useEffect(() => {
     if (!supportsHomeGoalCommand) {
       setGoalMode(false);
@@ -596,6 +622,7 @@ const GuidPage: React.FC = () => {
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
     getEffectiveAgentType: agentSelection.getEffectiveAgentType,
+    onStalePreset: handleStalePreset,
     initialSkillIds: homeInitialSkillIds,
     onInitialSkillsSent: () => setHomeSkillChips([]),
     availableMcpServers,
@@ -824,6 +851,7 @@ const GuidPage: React.FC = () => {
     guidInput.setInput('');
     guidInput.setFiles([]);
     guidInput.setLoading(false);
+    setHomeSkillChips([]);
     if (!(location.state as { workspace?: string } | null)?.workspace) {
       guidInput.setDir('');
     }
@@ -833,6 +861,7 @@ const GuidPage: React.FC = () => {
     guidInput.setFiles,
     guidInput.setInput,
     guidInput.setLoading,
+    setHomeSkillChips,
     advancedConfig.reset,
     location.key,
     location.state,
@@ -1199,8 +1228,14 @@ const GuidPage: React.FC = () => {
                   presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
                   presetAvatar={selectedPresetAvatar ?? undefined}
                   onChoosePreset={() => {
+                    setDrawerMode('preset');
                     setDrawerOpen(true);
                   }}
+                  onAdjustSkills={supportsHomeSkillLoading ? () => {
+                    setDrawerMode('skills');
+                    setDrawerOpen(true);
+                  } : undefined}
+                  activeSkillCount={homeSkillChips.length}
                   onFree={() => {
                     agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
                   }}
@@ -1230,6 +1265,14 @@ const GuidPage: React.FC = () => {
           onClose={() => setDrawerOpen(false)}
           presets={agentSelection.presets}
           localeKey={localeKey}
+          mode={drawerMode}
+          onModeChange={setDrawerMode}
+          selectedPresetId={selectedPresetRecord?.preset_id}
+          skills={supportsHomeSkillLoading ? catalogSkills : []}
+          selectedSkillIds={homeSkillChips.map((skill) => skill.skillId)}
+          onToggleSkill={supportsHomeSkillLoading ? handleToggleHomeSkill : undefined}
+          skillsLoading={catalogSkillsLoading}
+          skillsError={catalogSkillsError}
           onSelectPreset={(id) => {
             handleSelectPresetKey(`preset:${id}`);
             setDrawerOpen(false);

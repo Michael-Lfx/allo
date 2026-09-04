@@ -36,7 +36,12 @@ describe('preset settings locale coverage', () => {
     expect(zhSettings.presetsHub.title).toBe('设定');
     expect(zhSettings.presetsHub.railTitle).toBe('设定');
     expect(zhSettings.skillsHub.railTitle).toBe('技能');
-    expect(zhSettings.capabilityHub.navLabel).toBe('设定·技能·MCP·插件');
+    expect(zhSettings.capabilityHub.navLabel).toBe('能力中心');
+    expect(zhSettings.capabilityHub.navLabel).not.toContain('插件');
+    expect(zhSettings.capabilityHub.tabPlugins).toBe('插件');
+    expect(enSettings.capabilityHub.navLabel).toBe('Capability Hub');
+    expect(enSettings.capabilityHub.navLabel).not.toContain('Plugins');
+    expect(enSettings.capabilityHub.tabPlugins).toBe('Plugins');
   });
 
   test('localizes the inline preset-tag Enter hint', () => {

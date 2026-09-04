@@ -24,6 +24,7 @@ import {
   uniqueCatalogUserSkillIdForName,
   type SelectedPresetSkill,
 } from '@/renderer/pages/settings/PresetSettings/presetSkillBindings';
+import { removePresetMarketIdsForPreset } from '@/renderer/pages/settings/PresetSettings/presetMarketStorage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -502,6 +503,7 @@ export const usePresetEditor = ({
       // Delete the backend-owned preset record. Conversation snapshots remain
       // immutable and continue to describe historical launches.
       await ipcBridge.presets.delete.invoke({ preset_id: activePreset.preset_id });
+      removePresetMarketIdsForPreset(activePreset.preset_id);
 
       // Reload preset list
       await loadPresets();

@@ -8,6 +8,14 @@ export const mergeMarketActionState = (
   activeActionItemId: string | null,
 ): MarketActionState => (activeActionItemId === itemId ? 'pending' : resolved);
 
+export const canRunMarketAction = (
+  resolved: Exclude<MarketActionState, 'pending'>,
+  runWhenCompleted = false,
+): boolean =>
+  resolved === 'ready' ||
+  resolved === 'error' ||
+  (resolved === 'completed' && runWhenCompleted);
+
 export const useMarketActionState = (primaryAction: MarketPrimaryActionConfig) => {
   const [activeActionItemId, setActiveActionItemId] = useState<string | null>(null);
   const activeActionItemIdRef = useRef<string | null>(null);
@@ -24,7 +32,7 @@ export const useMarketActionState = (primaryAction: MarketPrimaryActionConfig) =
     async (viewModel: MarketItemViewModel) => {
       if (activeActionItemIdRef.current) return;
       const resolved = primaryAction.resolveState?.(viewModel.raw) ?? 'ready';
-      if (resolved !== 'ready' && resolved !== 'error') return;
+      if (!canRunMarketAction(resolved, primaryAction.runWhenCompleted)) return;
       activeActionItemIdRef.current = viewModel.id;
       setActiveActionItemId(viewModel.id);
       try {
@@ -44,7 +52,9 @@ export const useMarketActionState = (primaryAction: MarketPrimaryActionConfig) =
     isBusy: (id: string) => activeActionItemId === id,
     isDisabled: (viewModel: MarketItemViewModel) => {
       const state = getState(viewModel);
-      return state === 'checking' || state === 'pending' || state === 'completed' || (activeActionItemId !== null && activeActionItemId !== viewModel.id);
+      return state === 'checking' || state === 'pending' ||
+        (state === 'completed' && !primaryAction.runWhenCompleted) ||
+        (activeActionItemId !== null && activeActionItemId !== viewModel.id);
     },
   };
 };

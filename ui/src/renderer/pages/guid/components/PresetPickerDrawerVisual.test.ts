@@ -21,7 +21,7 @@ const sectionBetween = (css: string, startMarker: string, endMarker: string) => 
 };
 
 describe('Guid preset picker visual system', () => {
-  test('uses a focused preset-panel shell instead of a mixed preset/Skill selector', () => {
+  test('uses a focused shared entry shell for presets and Skills', () => {
     const source = readSource(new URL('./PresetPickerDrawer.tsx', import.meta.url));
     const css = readSource(new URL('../index.module.css', import.meta.url));
 
@@ -35,7 +35,7 @@ describe('Guid preset picker visual system', () => {
     expect(source.includes('bg-color-fill-1 border border-color-border-2')).toBe(false);
   });
 
-  test('renders preset results without embedding a second Skill selection system', () => {
+  test('renders preset and Skill results through the shared selector', () => {
     const preset = readSource(new URL('./DrawerPresetCard.tsx', import.meta.url));
     const drawer = readSource(new URL('./PresetPickerDrawer.tsx', import.meta.url));
     const css = readSource(new URL('../index.module.css', import.meta.url));
@@ -45,7 +45,7 @@ describe('Guid preset picker visual system', () => {
     expect(preset.includes('styles.drawerIconTile')).toBe(true);
     expect(preset.includes('styles.drawerTagChip')).toBe(true);
     expect(preset.includes('rounded-xl cursor-pointer border transition-all')).toBe(false);
-    expect(drawer.includes('DrawerSkillCard')).toBe(false);
+    expect(drawer.includes('DrawerSkillCard')).toBe(true);
     expect(drawer.includes('filterSkillsByTags')).toBe(false);
 
     expect(css.includes('.drawerCard')).toBe(true);
@@ -61,6 +61,15 @@ describe('Guid preset picker visual system', () => {
     expect(preset.includes('styles.drawerCardStatus')).toBe(true);
     expect(preset.includes('styles.drawerCallAction')).toBe(false);
     expect(css.includes('.drawerCallAction')).toBe(false);
+  });
+
+  test('keeps historical user presets free of market lineage in the home selector', () => {
+    const preset = readSource(new URL('./DrawerPresetCard.tsx', import.meta.url));
+
+    expect(preset.includes("preset.source === 'user'")).toBe(false);
+    expect(preset.includes('skillhub.cn')).toBe(false);
+    expect(preset.includes('openSource')).toBe(false);
+    expect(preset.includes('viewDetails')).toBe(false);
   });
 
   test('lets the shared tag filter opt into the drawer skin', () => {
@@ -102,16 +111,13 @@ describe('Guid preset picker visual system', () => {
     expect(card.includes('flex: 0 0 auto')).toBe(true);
   });
 
-  test('keeps the retired Skill card out of the preset drawer', () => {
+  test('keeps the shared Skill card in the entry drawer', () => {
     const css = readSource(new URL('../index.module.css', import.meta.url));
 
-    // The drawer is a preset-only surface (see the shell test above), so the
-    // Skill card component and its styles must stay gone.
-    expect(existsSync(new URL('./DrawerSkillCard.tsx', import.meta.url))).toBe(false);
-    expect(css.includes('.drawerSkillCard')).toBe(false);
-    expect(css.includes('.drawerSkillTitleRow')).toBe(false);
-    expect(css.includes('.drawerSkillMetaRow')).toBe(false);
-    expect(css.includes('.drawerSkillDescription')).toBe(false);
+    expect(existsSync(new URL('./DrawerSkillCard.tsx', import.meta.url))).toBe(true);
+    expect(css.includes('.drawerSkillCard')).toBe(true);
+    expect(css.includes('.drawerSkillTitleRow')).toBe(true);
+    expect(css.includes('.drawerSkillDescription')).toBe(true);
   });
 
   test('keeps the drawer search field compact instead of a nested white box', () => {

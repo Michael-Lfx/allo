@@ -51,6 +51,8 @@ describe('capability hub routing', () => {
     expect(resolveLegacyCapabilityLocation('/skills', '?highlight=foo')).toBe(
       '/skills?view=installed&highlight=foo'
     );
+    expect(resolveLegacyCapabilityLocation('/presets', '?view=market')).toBe('/presets');
+    expect(resolveLegacyCapabilityLocation('/presets', '?view=installed')).toBe('/presets');
     expect(resolveLegacyCapabilityLocation('/skills', '')).toBeNull();
     expect(resolveLegacyCapabilityLocation('/skills', '?view=installed')).toBeNull();
   });

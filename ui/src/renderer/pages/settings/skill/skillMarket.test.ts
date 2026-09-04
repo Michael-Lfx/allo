@@ -25,6 +25,14 @@ const item = {
 };
 
 describe('skill market helpers', () => {
+  const packageItem = {
+    ...item,
+    id: 'skillhub_packages:tech-test-automation',
+    source: 'skillhub_packages' as const,
+    url: 'https://skillhub.cn/skillspackage/tech-test-automation',
+    install_command: 'skillhub package add tech-test-automation',
+  };
+
   test('filters by source, search, and shared tags', () => {
     const result = filterSkillMarketItems([item], 'clawhub', 'github', {
       audience: ['developer'],
@@ -79,14 +87,6 @@ describe('skill market helpers', () => {
       url: 'https://clawhub.ai/openclaw/plugins/whatsapp',
       install_command: 'openclaw plugins install clawhub:@openclaw/whatsapp',
     };
-    const packageItem = {
-      ...item,
-      id: 'skillhub_packages:tech-test-automation',
-      source: 'skillhub_packages' as const,
-      url: 'https://skillhub.cn/skillspackage/tech-test-automation',
-      install_command: 'skillhub package add tech-test-automation',
-    };
-
     expect(normalizeSkillMarketItems([loopHubItem, mcpItem, mcpWorldItem, pluginItem, packageItem])).toHaveLength(5);
     expect(normalizeSkillMarketItem({ ...pluginItem, install_command: 'openclaw plugins install @x; rm -rf ~' })).toBeNull();
     expect(normalizeSkillMarketItem({ ...mcpWorldItem, url: 'https://evil.example/zh/detail/demo' })).toBeNull();

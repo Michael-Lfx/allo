@@ -115,6 +115,28 @@ describe('product funnel', () => {
     expect('prompt' in (queued?.properties ?? {})).toBe(false);
   });
 
+  test('queues expert package failures as sanitized platform metadata', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    trackFunnelEvent('expert_package_install_failed', {
+      market_source: 'skillhub_packages',
+      package_slug: 'tech-test-automation',
+      skill_slug: 'afrexai-qa-test-plan',
+      failure_class: 'deterministic',
+      failure_code: 'INVALID_FRONTMATTER',
+      http_status: 200,
+      prompt: 'must not upload',
+    });
+    const [queued] = listQueuedTelemetryEventsForTests();
+    expect(queued?.name).toBe('expert_package_install_failed');
+    expect(queued?.module).toBe('platform');
+    expect(queued?.properties.package_slug).toBe('tech-test-automation');
+    expect(queued?.properties.failure_class).toBe('deterministic');
+    expect(queued?.properties.failure_code).toBe('INVALID_FRONTMATTER');
+    expect(queued?.properties.http_status).toBe(200);
+    expect('prompt' in (queued?.properties ?? {})).toBe(false);
+  });
+
   test('keeps briefing metadata and never maps briefing success to film_succeeded', () => {
     resetFunnelForTests();
     resetTelemetryOutboxForTests();

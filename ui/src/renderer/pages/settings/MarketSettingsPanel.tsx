@@ -1,6 +1,6 @@
 /**
  * MarketSettingsPanel — shared ranking-market surface for the skill, MCP,
- * plugin, and preset-package markets. Renders the source switcher, sync /
+ * and plugin markets. Renders the source switcher, sync /
  * search controls, the card grid, local item details, and (optionally) the
  * shared audience / scenario tag filter bar. Consumers own the primary action
  * meaning and security boundary via `primaryAction`.

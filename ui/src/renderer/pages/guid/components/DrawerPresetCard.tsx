@@ -1,7 +1,8 @@
 /**
  * DrawerPresetCard — Single-select preset card for PresetPickerDrawer.
- * Displays avatar, name, source badge, description, engine/model capsule, tag chips,
- * radio indicator (top-right).
+ * Displays avatar, name, description, engine/model capsule, and tag chips. Only
+ * catalog-owned builtin/extension presets receive a source badge; user presets,
+ * including historical expert-package installs, use the local preset shape.
  */
 import type { Preset, PresetReference, PresetTag } from '@/common/types/agent/presetTypes';
 import React from 'react';
@@ -31,12 +32,15 @@ const DrawerPresetCard: React.FC<DrawerPresetCardProps> = ({
   const name = preset.name_i18n?.[localeKey] || preset.name_i18n?.['en-US'] || preset.name;
   const description =
     preset.description_i18n?.[localeKey] || preset.description_i18n?.['en-US'] || preset.description || '';
+  // User presets include packages that were downloaded before the package
+  // market was retired. They are intentionally rendered as local presets:
+  // no market/source badge or remote detail affordance is exposed here.
   const sourceLabel =
-    preset.source === 'user'
-      ? t('guid.drawer.sourceCustom', { defaultValue: '自定义' })
-      : preset.source === 'extension'
-        ? t('guid.drawer.sourceExtension', { defaultValue: '扩展' })
-        : t('guid.drawer.sourceBuiltin', { defaultValue: '内置' });
+    preset.source === 'extension'
+      ? t('guid.drawer.sourceExtension', { defaultValue: '扩展' })
+      : preset.source === 'builtin'
+        ? t('guid.drawer.sourceBuiltin', { defaultValue: '内置' })
+        : null;
   const visibleTags = [...preset.audience_tag_ids, ...preset.scenario_tag_ids]
     .map((presetTagId) => tagById.get(presetTagId))
     .filter((tag): tag is PresetTag => Boolean(tag))
@@ -79,14 +83,9 @@ const DrawerPresetCard: React.FC<DrawerPresetCardProps> = ({
       <div className={styles.drawerCardBody}>
         <div className={styles.drawerCardTitleRow}>
           <h4 className={styles.drawerCardTitle}>{name}</h4>
-          <span
-            className={[
-              styles.drawerBadge,
-              preset.source === 'user' ? styles.drawerBadgePrimary : styles.drawerBadgeMuted,
-            ].filter(Boolean).join(' ')}
-          >
-            {sourceLabel}
-          </span>
+          {sourceLabel ? (
+            <span className={[styles.drawerBadge, styles.drawerBadgeMuted].join(' ')}>{sourceLabel}</span>
+          ) : null}
         </div>
 
         <p className={styles.drawerDescription}>{description}</p>

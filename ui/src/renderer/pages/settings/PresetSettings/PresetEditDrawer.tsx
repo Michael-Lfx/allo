@@ -356,7 +356,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
           <span>
             {isCreating
               ? t('settings.createPreset', { defaultValue: 'Create Preset' })
-              : t('settings.editPreset', { defaultValue: 'Preset Details' })}
+              : t('settings.editPreset', { defaultValue: 'Edit preset' })}
           </span>
           {!agentImportVisible && (
             <Button

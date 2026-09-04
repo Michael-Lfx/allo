@@ -7,6 +7,8 @@ export type MarketPrimaryActionConfig = {
   label: string;
   pendingLabel: string;
   completedLabel?: string;
+  /** Allow the primary action to be used again for an installed item. */
+  runWhenCompleted?: boolean;
   resolveState?: (item: ISkillMarketItem) => Exclude<MarketActionState, 'pending'>;
   run: (item: ISkillMarketItem) => void | Promise<void>;
 };

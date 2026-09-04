@@ -1230,8 +1230,8 @@ button.guidResourceCard:focus-visible {
 
 .drawerSegmentActive:hover,
 .drawerSegmentActive:focus-visible {
-  color: var(--skill-selection-fg);
-  background: var(--skill-selection-bg);
+  color: var(--drawer-selection-fg);
+  background: var(--drawer-selection-bg);
   box-shadow: none;
   outline: none;
 }
@@ -1401,9 +1401,9 @@ button.guidResourceCard:focus-visible {
 
 .drawerCardSelected:hover,
 .drawerCardSelected:focus-visible {
-  color: var(--skill-selection-fg);
-  border-color: var(--skill-selection-fg);
-  background: var(--skill-selection-bg);
+  color: var(--drawer-selection-fg);
+  border-color: var(--drawer-selection-fg);
+  background: var(--drawer-selection-bg);
   box-shadow: none;
   outline: none;
   transform: translateY(-1px);
@@ -1434,6 +1434,121 @@ button.guidResourceCard:focus-visible {
   border-color: var(--drawer-selection-fg);
   background: var(--drawer-selection-fg);
   box-shadow: none;
+}
+
+.drawerSkillCard {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 22px;
+  gap: 10px;
+  align-items: center;
+  min-height: 68px;
+  border: 1px solid var(--drawer-hairline);
+  border-radius: 12px;
+  padding: 12px;
+  color: var(--color-text-1);
+  background: var(--drawer-panel-bg);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.drawerSkillCard:hover,
+.drawerSkillCard:focus-visible {
+  border-color: var(--drawer-hairline-strong);
+  background: var(--drawer-panel-hover-bg);
+  box-shadow: 0 5px 16px var(--drawer-strong-shadow);
+  outline: none;
+}
+
+.drawerSkillCardSelected {
+  border-color: var(--drawer-selection-border);
+  background: var(--drawer-selection-bg);
+}
+
+.drawerSkillCardSelected:hover,
+.drawerSkillCardSelected:focus-visible {
+  border-color: var(--drawer-selection-fg);
+  background: var(--drawer-selection-bg);
+  transform: translateY(-1px);
+}
+
+.drawerSkillIcon {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: var(--drawer-selection-fg);
+  background: var(--drawer-accent-soft);
+}
+
+.drawerSkillBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.drawerSkillTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.drawerSkillTitle {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawerSkillSource {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--color-text-3);
+  background: var(--color-fill-2);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.drawerSkillDescription {
+  overflow: hidden;
+  color: var(--color-text-3);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawerSkillStatus {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--drawer-hairline-strong);
+  border-radius: 6px;
+  color: transparent;
+  background: var(--drawer-control-bg);
+}
+
+.drawerSkillStatusSelected {
+  color: #fff;
+  border-color: var(--drawer-selection-fg);
+  background: var(--drawer-selection-fg);
 }
 
 .drawerIconTile {

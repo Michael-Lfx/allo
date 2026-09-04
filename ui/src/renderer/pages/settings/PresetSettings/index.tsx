@@ -26,14 +26,12 @@ import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import coworkSvg from '@/renderer/assets/icons/cowork.svg';
 import { useDetectedAgents, usePresetEditor, usePresetList, usePresetTags } from '@/renderer/hooks/preset';
 import CapabilityHubShell, { useCapabilityHubSearch } from '../capabilityHub/CapabilityHubShell';
-import { useCapabilityHubRoute } from '../capabilityHub/useCapabilityHubRoute';
 import { resolveAvatarImageSrc } from './presetUtils';
 import PresetEditDrawer from './PresetEditDrawer';
 import PresetListPanel from './PresetListPanel';
 import DeletePresetModal from './DeletePresetModal';
 import SkillConfirmModals from './SkillConfirmModals';
 import TagManagementModal from './TagManagementModal';
-import PresetPackageMarketSettings from './PresetPackageMarketSettings';
 
 type PresetNavigationState = {
   openPresetId?: string;
@@ -53,7 +51,6 @@ type PresetHubBodyProps = {
   tags: ReturnType<typeof usePresetTags>;
   onManageTags: () => void;
   loadPresets: ReturnType<typeof usePresetList>['loadPresets'];
-  addedStateLoading: boolean;
   presetsLoading: boolean;
   presetsLoadError: boolean;
 };
@@ -70,49 +67,34 @@ const PresetHubBody: React.FC<PresetHubBodyProps> = ({
   tags,
   onManageTags,
   loadPresets,
-  addedStateLoading,
   presetsLoading,
   presetsLoadError,
 }) => {
-  const { view } = useCapabilityHubRoute('presets');
   const { searchQuery, setSearchQuery } = useCapabilityHubSearch();
 
-  if (view === 'installed') {
-    return (
-      <PresetListPanel
-        presets={presets}
-        localeKey={localeKey}
-        avatarImageMap={avatarImageMap}
-        isExtensionPreset={isExtensionPreset}
-        onEdit={(preset) => void editor.handleEdit(preset)}
-        onDuplicate={(preset) => void editor.handleDuplicate(preset)}
-        onCreate={() => void editor.handleCreate()}
-        onToggleEnabled={(preset, checked) => void editor.handleToggleEnabled(preset, checked)}
-        setActivePresetId={setActivePresetId}
-        highlightId={highlightId}
-        onHighlightConsumed={onHighlightConsumed}
-        audienceTags={tags.audienceTags}
-        scenarioTags={tags.scenarioTags}
-        tagById={tags.tagById}
-        onManageTags={onManageTags}
-        hideChrome
-        searchQuery={searchQuery}
-        onSearchQueryChange={setSearchQuery}
-        loading={presetsLoading}
-        error={presetsLoadError}
-        onRetry={loadPresets}
-      />
-    );
-  }
-
   return (
-    <PresetPackageMarketSettings
-      onImported={loadPresets}
+    <PresetListPanel
       presets={presets}
-      addedStateLoading={addedStateLoading}
-      hideSearch
+      localeKey={localeKey}
+      avatarImageMap={avatarImageMap}
+      isExtensionPreset={isExtensionPreset}
+      onEdit={(preset) => void editor.handleEdit(preset)}
+      onDuplicate={(preset) => void editor.handleDuplicate(preset)}
+      onCreate={() => void editor.handleCreate()}
+      onToggleEnabled={(preset, checked) => void editor.handleToggleEnabled(preset, checked)}
+      setActivePresetId={setActivePresetId}
+      highlightId={highlightId}
+      onHighlightConsumed={onHighlightConsumed}
+      audienceTags={tags.audienceTags}
+      scenarioTags={tags.scenarioTags}
+      tagById={tags.tagById}
+      onManageTags={onManageTags}
+      hideChrome
       searchQuery={searchQuery}
       onSearchQueryChange={setSearchQuery}
+      loading={presetsLoading}
+      error={presetsLoadError}
+      onRetry={loadPresets}
     />
   );
 };
@@ -206,12 +188,13 @@ const PresetSettings: React.FC = () => {
   return (
     <CapabilityHubShell
       hub='presets'
+      marketEnabled={false}
       installedCount={presets.length}
       extraActions={
         <Button
           size='small'
-          type='outline'
-          className='flowy-icon-text-btn capability-hub-action-btn'
+          type='primary'
+          className='flowy-icon-text-btn capability-hub-action-btn capability-hub-action-btn--primary'
           icon={<Plus size={14} fill='currentColor' />}
           onClick={() => void editor.handleCreate()}
           data-testid='btn-create-preset'
@@ -233,7 +216,6 @@ const PresetSettings: React.FC = () => {
         tags={tags}
         onManageTags={() => setTagModalVisible(true)}
         loadPresets={loadPresets}
-        addedStateLoading={presetsLoading || Boolean(presetsLoadError)}
         presetsLoading={presetsLoading}
         presetsLoadError={Boolean(presetsLoadError)}
       />

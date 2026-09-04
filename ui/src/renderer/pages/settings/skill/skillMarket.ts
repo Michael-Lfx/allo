@@ -4,7 +4,6 @@ import type { SkillTagFilterState } from './skillFilter';
 export const SKILL_MARKET_SOURCES: SkillMarketSource[] = ['clawhub', 'loophub', 'skillhub'];
 export const MCP_MARKET_SOURCES: SkillMarketSource[] = ['skillhub_mcp', 'mcpworld'];
 export const PLUGIN_MARKET_SOURCES: SkillMarketSource[] = ['clawhub_plugins'];
-export const PRESET_MARKET_SOURCES: SkillMarketSource[] = ['skillhub_packages'];
 
 const MARKET_SOURCE_LABELS: Record<SkillMarketSource, string> = {
   clawhub: 'ClawHub',

@@ -89,6 +89,8 @@ export type GuidSendDeps = {
   getEffectiveAgentType: (
     agentInfo: { agent_type: string; backend?: string } | undefined,
   ) => EffectiveAgentInfo;
+  /** Clears a preset selection that disappeared from the refreshed catalog. */
+  onStalePreset?: () => void;
   /** Source-qualified Skills selected from the draft slash launcher. */
   initialSkillIds: string[];
   /** Clears the draft-owned Skill selections only after their first turn is accepted. */
@@ -187,6 +189,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     taskProfile,
     findAgentByKey,
     getEffectiveAgentType,
+    onStalePreset,
     initialSkillIds,
     onInitialSkillsSent,
     availableMcpServers,
@@ -229,14 +232,28 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
 
     const preset_id = presetIdFromSelectionKey(selectedAgentKey);
     if (is_presetAgentPending && !selectedAgentInfo && !findAgentByKey(selectedAgentKey)) {
+      onStalePreset?.();
+      Message.warning(
+        t('conversation.presetUnavailable', {
+          defaultValue: '该设定已不可用，已切回普通 Agent；草稿仍保留。',
+        }),
+      );
       return false;
     }
     const agentInfo = selectedAgentInfo ?? findAgentByKey(selectedAgentKey);
     const is_preset = is_presetAgent || is_presetAgentPending || preset_id !== undefined;
     if (preset_id && (!agentInfo || agentInfo.preset_id !== preset_id)) {
-      throw new TypeError(
-        'The selected preset is no longer available. Refresh the preset catalog or choose another preset.',
+      // The preset list can change in another window after the selector has
+      // rendered. Treat the stale key as a recoverable selection error, not
+      // as a conversation-create failure: clear the selector, refresh the
+      // catalog, and leave the draft untouched so the user can retry.
+      onStalePreset?.();
+      Message.warning(
+        t('conversation.presetUnavailable', {
+          defaultValue: '该设定已不可用，已切回普通 Agent；草稿仍保留。',
+        }),
       );
+      return false;
     }
 
     const { agent_type: effectiveAgentType } = getEffectiveAgentType(agentInfo);
@@ -631,6 +648,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     taskProfile,
     findAgentByKey,
     getEffectiveAgentType,
+    onStalePreset,
     initialSkillIds,
     availableMcpServers,
     selectedMcpServerIds,
@@ -704,17 +722,17 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     });
     handleSend()
       .then((navigated) => {
-        trackFunnelEvent('task_accepted', { source: 'guid' });
-        trackFunnelEvent('first_task_started', { source: 'guid' });
-        setInput('');
-        setMentionOpen(false);
-        setMentionQuery(null);
-        setMentionSelectorOpen(false);
-        setMentionActiveIndex(0);
-        setFiles([]);
-        setDir('');
-        if (initialSkillIds.length > 0) onInitialSkillsSent?.();
         if (navigated) {
+          trackFunnelEvent('task_accepted', { source: 'guid' });
+          trackFunnelEvent('first_task_started', { source: 'guid' });
+          setInput('');
+          setMentionOpen(false);
+          setMentionQuery(null);
+          setMentionSelectorOpen(false);
+          setMentionActiveIndex(0);
+          setFiles([]);
+          setDir('');
+          if (initialSkillIds.length > 0) onInitialSkillsSent?.();
           // Navigation dispatched: arm the reveal handshake — the overlay stays
           // up until the destination commits the first bubble (or the timeout).
           endPending?.();

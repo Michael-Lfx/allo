@@ -78,7 +78,7 @@
     "tagsSaveFailed": "Failed to save tags"
   },
   "capabilityHub": {
-    "navLabel": "Presets · Skills · MCP · Plugins",
+    "navLabel": "Capability Hub",
     "tabPlugins": "Plugins",
     "myPresets": "My Presets",
     "myInstalled": "Installed",
@@ -143,23 +143,7 @@
     "noApi": "No API"
   },
   "presetsPage": {
-    "libraryTab": "Installed Presets",
-    "marketTab": "Preset Market"
-  },
-  "presetMarket": {
-    "title": "Preset Market",
-    "description": "Browse SkillHub expert packages and add them as reusable Flowy presets.",
-    "addSuccess": "Expert package and skills added.",
-    "addSkipped": "Expert package already exists.",
-    "addFailed": "Failed to add expert package.",
-    "timeout": "SkillHub took too long to respond. Please try again.",
-    "upstreamUnavailable": "SkillHub is temporarily unavailable. Please try again later.",
-    "notFound": "This expert package is no longer available. Refresh the market and try again.",
-    "skillInstallFailed": "Failed to install {{count}} expert package skill(s): {{skills}}.",
-    "partialSkillInstall": "Expert package added, but {{count}} skill(s) failed to install: {{skills}}.",
-    "stateUpdateFailed": "Expert package added, but automatic selection could not be enabled.",
-    "searchPlaceholder": "Search expert packages...",
-    "empty": "Refresh to load expert packages."
+    "libraryTab": "Installed Presets"
   },
   "mcpMarket": {
     "title": "MCP Market",
@@ -236,7 +220,7 @@
   "presetsEmpty": "No presets yet. Create one to save a reusable Agent, model, Skill, and knowledge launch configuration.",
   "game3dPresetName": "3D Game",
   "game3dPresetDesc": "Generate a complete 3D platform collection game in one HTML file.",
-  "editPreset": "Preset Details",
+  "editPreset": "Edit preset",
   "presetNameAvatar": "Name & Avatar",
   "presetSectionPreferences": "Run preferences",
   "presetSelectionSummary": "{{agents}} Agents selected, {{selectedSkills}} of {{totalSkills}} skills selected.",
@@ -253,7 +237,7 @@
   "presetPromptPlaceholder": "Enter prompt or rules...",
   "savePreset": "Save Settings",
   "createPreset": "Create Preset",
-  "presetsListDescription": "Save reusable Agent, model, Skill, and knowledge launch configurations. Reusable workflows and domain capabilities belong in Skills.",
+  "presetsListDescription": "Manage custom and installed local presets with reusable Agent, model, Skill, and knowledge launch configurations. Reusable workflows and domain capabilities belong in Skills.",
   "presetFilterAll": "All",
   "presetFilterBuiltin": "System",
   "presetFilterCustom": "Custom",
@@ -509,7 +493,7 @@
   "groupApp": "Application",
   "groupAbout": "Other",
   "groupIntelligenceContent": "Intelligence & Content",
-  "groupCapabilityExtensions": "Capabilities & Extensions",
+  "groupCapabilityExtensions": "Capabilities",
   "groupAccountOther": "Account & Other",
   "sectionGeneral": "General",
   "sectionNotifications": "Notifications",

@@ -23,7 +23,7 @@ export const useCapabilityHubRoute = (hub: CapabilityHubId) => {
     (nextView: CapabilityHubView) => {
       const next = new URLSearchParams(searchParams);
       next.delete('tab');
-      if (nextView === 'installed') next.set('view', 'installed');
+      if (hub !== 'presets' && nextView === 'installed') next.set('view', 'installed');
       else next.delete('view');
       setSearchParams(next, { replace: true });
     },

@@ -44,6 +44,9 @@ export const useConversationAgents = (): UseConversationAgentsResult => {
     isLoading: isLoadingPresets,
     mutate: mutatePresets,
   } = useSWR<Preset[]>(PRESET_CATALOG_SWR_KEY, fetchPresetCatalog);
+  // Installed market packages remain ordinary user presets after the package
+  // market is retired. Only the preset's own enabled state controls launch
+  // visibility here.
   const presets = (presetCatalog ?? []).filter((preset) => preset.enabled !== false);
 
   const refresh = async () => {

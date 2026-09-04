@@ -1,6 +1,7 @@
 /**
  * Capability hub routing — presets, skills, MCP, and plugins share one chrome.
- * Market is the default view; `?view=installed` shows the local library.
+ * Market is the default view for capability hubs that expose one;
+ * `?view=installed` shows the local library. Presets are library-only.
  */
 
 export const CAPABILITY_HUB_IDS = ['presets', 'skills', 'mcp', 'plugins'] as const;
@@ -58,7 +59,9 @@ export const buildCapabilityHubLocation = (options: {
   params.delete('tab');
   params.delete('view');
   params.delete('highlight');
-  if (options.view === 'installed') params.set('view', 'installed');
+  // Presets are always the local library, so keep their public URL stable and
+  // avoid exposing an implementation-only view query for the retired market.
+  if (options.hub !== 'presets' && options.view === 'installed') params.set('view', 'installed');
   if (options.highlight) params.set('highlight', options.highlight);
   return withSearch(hubPath(options.hub, options.inSettings), params);
 };
@@ -103,6 +106,14 @@ export const resolveLegacyCapabilityLocation = (pathname: string, search: string
 
   if (tab !== null) {
     params.delete('tab');
+    changed = true;
+  }
+
+  // Presets no longer expose a remote expert-package market. Keep old links
+  // navigable, but canonicalize every market view to the local library.
+  if (hub === 'presets' && params.has('view')) {
+    params.delete('view');
+    view = 'installed';
     changed = true;
   }
 

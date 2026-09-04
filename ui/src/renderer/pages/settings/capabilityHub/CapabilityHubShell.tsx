@@ -8,6 +8,8 @@ import { useSettingsNavigationTransition } from '@/renderer/components/layout/Se
 
 type CapabilityHubShellProps = {
   hub: CapabilityHubId;
+  /** Presets are a local library in the current product; their market is retired. */
+  marketEnabled?: boolean;
   installedCount?: number;
   extraActions?: React.ReactNode;
   children: React.ReactNode;
@@ -25,6 +27,7 @@ export const useCapabilityHubSearch = () => React.useContext(CapabilityHubSearch
 
 const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
   hub,
+  marketEnabled = true,
   installedCount,
   extraActions,
   children,
@@ -51,18 +54,25 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
         toolbar={
           <CapabilityHubHeader
             hub={activeHub}
-            view={view}
+            marketEnabled={marketEnabled}
+            view={marketEnabled ? view : 'installed'}
             installedCount={installedCount}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
             onHubChange={(nextHub) => {
               if (nextHub === hub) {
-                setView('market');
+                setView(marketEnabled ? 'market' : 'installed');
                 return;
               }
               goToHub(nextHub);
             }}
-            onToggleInstalled={() => setView(view === 'installed' ? 'market' : 'installed')}
+            onToggleInstalled={() => {
+              if (!marketEnabled) {
+                setView('installed');
+                return;
+              }
+              setView(view === 'installed' ? 'market' : 'installed');
+            }}
             extraActions={extraActions}
           />
         }

@@ -78,7 +78,7 @@
     "tagsSaveFailed": "保存标签失败"
   },
   "capabilityHub": {
-    "navLabel": "设定·技能·MCP·插件",
+    "navLabel": "能力中心",
     "tabPlugins": "插件",
     "myPresets": "我的设定",
     "myInstalled": "我安装的",
@@ -143,23 +143,7 @@
     "noApi": "免 API"
   },
   "presetsPage": {
-    "libraryTab": "已安装设定",
-    "marketTab": "设定市场"
-  },
-  "presetMarket": {
-    "title": "设定市场",
-    "description": "浏览 SkillHub 专家包，并一键添加为可复用的 Flowy 设定。",
-    "addSuccess": "专家包与技能已添加。",
-    "addSkipped": "专家包已存在。",
-    "addFailed": "添加专家包失败。",
-    "timeout": "SkillHub 响应超时，请稍后重试。",
-    "upstreamUnavailable": "SkillHub 暂时不可用，请稍后重试。",
-    "notFound": "该专家包已下架或不存在，请刷新市场后重试。",
-    "skillInstallFailed": "专家包的 {{count}} 个技能均安装失败：{{skills}}。",
-    "partialSkillInstall": "专家包已添加，但 {{count}} 个技能安装失败：{{skills}}。",
-    "stateUpdateFailed": "专家包已添加，但未能启用自动选择。",
-    "searchPlaceholder": "搜索专家包...",
-    "empty": "点击刷新获取专家包列表。"
+    "libraryTab": "已安装设定"
   },
   "mcpMarket": {
     "title": "MCP 市场",
@@ -236,7 +220,7 @@
   "presetsEmpty": "还没有设定。创建一个设定，保存可复用的 Agent、模型、Skill 与知识启动配置。",
   "game3dPresetName": "3D 游戏生成",
   "game3dPresetDesc": "用单个 HTML 文件生成完整的 3D 平台收集游戏。",
-  "editPreset": "设定详情",
+  "editPreset": "编辑设定",
   "presetNameAvatar": "名称及头像",
   "presetSectionPreferences": "运行偏好",
   "presetSelectionSummary": "已选择 {{agents}} 个 Agent，已选择 {{selectedSkills}}/{{totalSkills}} 个技能。",
@@ -253,7 +237,7 @@
   "presetPromptPlaceholder": "请输入提示词或规则",
   "savePreset": "保存设置",
   "createPreset": "创建设定",
-  "presetsListDescription": "保存可复用的 Agent、模型、Skill 与知识启动配置。可复用工作流和领域能力应放在 Skill 中。",
+  "presetsListDescription": "管理自定义和已安装的本地设定，保存可复用的 Agent、模型、Skill 与知识启动配置。可复用工作流和领域能力应放在 Skill 中。",
   "presetFilterAll": "全部",
   "presetFilterBuiltin": "系统",
   "presetFilterCustom": "自定义",

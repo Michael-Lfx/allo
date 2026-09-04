@@ -68,4 +68,16 @@ describe('useGuidSend pending preset guard', () => {
     const finallyBody = handler.slice(finallyStart, handler.indexOf('});', finallyStart));
     expect(finallyBody.includes('endPending')).toBe(false);
   });
+
+  test('keeps the draft intact when the send is refused before navigation', () => {
+    const source = readFileSync(new URL('./useGuidSend.ts', import.meta.url), 'utf8');
+    const handler = source.slice(source.indexOf('const sendMessageHandler'), source.indexOf('// Calculate button'));
+    const successBranch = handler.slice(handler.indexOf('if (navigated)'));
+
+    expect(successBranch.includes("setInput('')")).toBe(true);
+    expect(successBranch.includes('setFiles([])')).toBe(true);
+    expect(successBranch.includes('onInitialSkillsSent?.()')).toBe(true);
+    expect(handler.indexOf("setInput('')")).toBeGreaterThan(handler.indexOf('if (navigated)'));
+    expect(handler.indexOf('setFiles([])')).toBeGreaterThan(handler.indexOf('if (navigated)'));
+  });
 });

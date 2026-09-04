@@ -30,19 +30,23 @@ function mapCatalogEntry(entry: {
 export function useSkillCatalog(enabled = true) {
   const [skills, setSkills] = useState<SkillCatalogEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!enabled) {
       setSkills([]);
+      setError(false);
       return;
     }
     setLoading(true);
+    setError(false);
     try {
       const catalog = await ipcBridge.fs.listSkillCatalog.invoke();
       setSkills(catalog.skills.map(mapCatalogEntry));
     } catch (error) {
       console.warn('[skills] failed to refresh catalog', error);
       setSkills([]);
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -52,5 +56,5 @@ export function useSkillCatalog(enabled = true) {
     void refresh();
   }, [refresh]);
 
-  return { skills, loading, refresh };
+  return { skills, loading, error, refresh };
 }

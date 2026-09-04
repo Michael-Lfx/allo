@@ -4,14 +4,16 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('Guid Skill launcher integration', () => {
-  test('keeps explicit Skill selections in the input body rather than the preset entry strip', () => {
+  test('keeps explicit Skill selections in the input body and shared entry drawer', () => {
     const source = readSource(new URL('../GuidPage.tsx', import.meta.url));
 
     expect(source.includes('ComposerSkillTokenInput')).toBe(true);
     expect(source.includes('skillChips={')).toBe(true);
     expect(source.includes('tokenInputRef={homeTokenInputRef}')).toBe(true);
     expect(source.includes('activeSkills={')).toBe(false);
-    expect(source.includes('onAdjustSkills=')).toBe(false);
+    expect(source.includes('onAdjustSkills=')).toBe(true);
+    expect(source.includes("setDrawerMode('skills')")).toBe(true);
+    expect(source.includes('selectedSkillIds=')).toBe(true);
   });
 
   test('does not use a preset binding to pre-filter the slash catalog', () => {
