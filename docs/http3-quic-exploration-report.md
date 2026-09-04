@@ -1,0 +1,116 @@
+# HTTP/3 (QUIC) 客户端探索与评测报告
+
+> 分支：`feat/http3-quic-exploration`
+> 日期：2026-09-04
+> 探针工具：`crates/backend/nomifun-cloud/examples/http_protocol_probe.rs`
+
+## 一、 背景
+
+服务端 `server.flowyaipc.com` 已通告 HTTP/3 支持（`Alt-Svc: h3=":443"; ma=86400`）。
+本报告记录客户端侧对 HTTP/2 与 HTTP/3 链路的实测结论、环境干扰因素以及后续建议。
+
+## 二、 服务端反馈（已验证）
+
+1. 服务端已在 UDP 443 真实开启 HTTP/3（Nginx 实际在跑 QUIC，非仅响应头通告）；
+2. 服务端用 Go QUIC 客户端与支持 HTTP/3 的 curl 直连真实 IP `47.251.95.78` 验证：
+   - 绕过本地 TUN：`HTTP/3 200`，`Alt-Svc: h3=":443"` ✅
+   - 走 TUN 默认路由：`HTTP/3 200`，同样 ✅
+3. 服务端当时判断我方此前失败是**本地代理 / TUN 干扰 QUIC**，建议用
+   `--http3-only` 打真实 IP 或支持 HTTP/3 的浏览器复核。
+   （该判断已被 3.6 节交叉实验修正：直连环境下仍失败，根因在客户端 reqwest 栈。）
+
+## 三、 客户端侧实测结果
+
+### 3.1 探测方式与环境
+
+- 探针：`http_protocol_probe.rs`（支持 `--ip <真实IP>` 绑定 DNS，绕过本地域名劫持）。
+- 目标：`https://server.flowyaipc.com/claw/health`
+- 本机 DNS 解析：`server.flowyaipc.com -> 47.251.95.78`（真实 IP，未指向假 IP）。
+- 本机网络：Wi-Fi + 本地代理/隧道（Clash TUN、Tailscale）在场；3.6 节通过
+  代理开/关交叉验证证明两者均不会改变 H3 的失败表现。
+
+### 3.2 HTTP/2 链路（TCP，绑定真实 IP）
+
+| 指标 | 结果 |
+| --- | --- |
+| 冷启动首请求 | 672 ~ 717 ms |
+| 长连接平均时延 | ~231 ms |
+| 成功率 | 10/10 ✅ |
+
+### 3.3 HTTP/3 链路（QUIC/UDP，绑定真实 IP）
+
+| 指标 | 结果 |
+| --- | --- |
+| 冷启动首请求 | 失败 |
+| 成功率 | 0/10 ❌ |
+| 特征错误 | `client error (Connect) -> received fatal alert: NoApplicationProtocol` |
+
+**关键对照实验**：同一探针、同一时间点探测公认支持 HTTP/3 的 `www.google.com`，
+得到**一模一样的错误**。初判指向本地网络栈（TUN / 隧道路径）拦截；
+经 3.6 节直连环境与 Google 对照复核后，**修正为客户端栈 ALPN 缺陷**（最终根因）。
+
+### 3.4 重要发现：当前客户端实际走的是 HTTP/1.1，不是 HTTP/2
+
+- 主工作区 `Cargo.toml` 的 `reqwest` 依赖**未启用 `http2` feature**，导致客户端
+  ALPN 只协商出 `HTTP/1.1`（探测输出 `Negotiated Version: HTTP/1.1`）。
+- 在实验 feature 中加入 `reqwest/http2` 后，同一探针立即协商为 `HTTP/2`：
+  - 冷启动 ~672 ms，长效连接平均 ~232 ms，成功率 10/10。
+- 结论：**为客户端启用 `http2` 是真·零成本收益**——老客户端连 HTTP/2 都没用上。
+
+## 3.5 HTTP/2 完备性验证（工作区启用 `http2` feature 后）
+
+| 验证项 | 结果 | 证据 |
+| --- | --- | --- |
+| 全栈编译 | ✅ | `cargo check`（nomi-providers / nomifun-net / nomi-vimax / nomi-config / nomifun-cloud --examples）exit 0 |
+| ALPN 实协商（核心云 API） | ✅ | `server.flowyaipc.com/claw/health` → 200 OK，`Negotiated Version: HTTP/2` |
+| 多路复用（20 并发同连接） | ✅ | Wall **757 ms** ≈ 1~2 RTT（HTTP/1.1 串行需 ~4.6 s），20/20 成功 |
+| 多路复用（50 并发同连接） | ✅ | Wall **764 ms** ≈ 1~2 RTT（HTTP/1.1 串行需 ~11.5 s），50/50 成功 |
+| 优雅降级（被动回退） | ✅ | `www.flowyaipc.com`（该主机 TLS 未支持 ALPN h2）→ 自动回退 HTTP/1.1，200 OK |
+| 连接复用 / Keep-Alive | ✅ | 串行 10 轮共享连接，P50 ~229 ms，无重复握手 |
+
+## 3.6 最终验证：代理开/关交叉 + 直连环境（2026-09-04 复测）
+
+在关闭本地代理后，于直连 WLAN 环境复测（DNS 干净、默认路由直连、Tailscale 无出口节点）：
+
+| 指标 | HTTP/2 (TCP) | HTTP/3 (QUIC) |
+| --- | --- | --- |
+| 协商版本 | HTTP/2 | 失败 |
+| 成功率 | 10/10 | 0/10 |
+| 冷启动 | 739 ms | — |
+| Warm 均值 | **167 ms**（较代理关闭前 227 ms 提速 ~27%） | — |
+| 错误 | — | `received fatal alert: NoApplicationProtocol` |
+
+**交叉验证（代理开 / 关）**：同一探针在代理重新开启后复测 —— H2 仍 5/5
+成功（warm ~307 ms），H3 仍 0/5 失败于同一 `NoApplicationProtocol`。
+结合直连环境的同款失败，确认失败表现与代理开关无关，纯由客户端栈决定。
+
+**对照实验**：同一探针探测 `www.google.com`（公认支持 HTTP/3），**同样失败于
+`NoApplicationProtocol`**。结合路由表无异常、无假 IP、无出口节点，
+确认根因**不在服务端、不在网络**，而在 **reqwest HTTP/3 实验栈的 ALPN 缺陷**：
+
+- `http3_prior_knowledge()` 会把 rustls ALPN 强制成仅 `[h3]`；当请求实际走
+  hyper（TCP）路径时，带着仅含 `h3` 的 ALPN 去握手 → 服务器无法协商即回
+  `NoApplicationProtocol`（Google 亦是如此拒绝）。
+- 已知上游在修：reqwest [PR #2929 "Specify h3 alpn for http3 connector"](https://github.com/seanmonstar/reqwest/pull/2929)（尚未合入稳定版）。
+
+**结论更新**：服务端 HTTP/3 属实且可用（Go / curl / 浏览器原生栈均验证 200）；
+客户端暂不可用 H3 的原因已收敛为** reqwest 客户端库的实验性 ALPN 缺陷**。
+该缺陷不修复前，盲目在生产开启 h3 会复现同款失败。
+
+## 四、 客户端结论与建议
+
+1. **服务端 HTTP/3 属实且可用**（跨客户端验证通过）。
+2. **我方客户端暂无法完成 QUIC 握手**：代理开/关交叉验证 + Google 对照实验
+   证明根因**不在服务端、不在网络、不在代理**，而是 **reqwest 客户端库的
+   HTTP/3 实验性 ALPN 缺陷**（见 3.6 节，上游 [PR #2929](https://github.com/seanmonstar/reqwest/pull/2929)）。
+3. **已落地并验证完备**：工作区已启用 `http2` feature（commit `d2351d62e`），
+   客户端链路从 HTTP/1.1 升级到 HTTP/2（多路复用 + 头部压缩 + 连接复用）。
+   完备性验证见 3.5 节：核心 API 协商 h2、20/50 并发多路复用生效、
+   不支持 h2 的主机自动降级为 HTTP/1.1 且功能正常。
+4. **HTTP/3 暂不跟进（根因已定位）**：在关闭代理的直连环境中复测，
+   H3 仍失败于 `NoApplicationProtocol`；Google 对照同样失败 → 根因是
+   **reqwest HTTP/3 实验栈的 ALPN 缺陷**（`http3_prior_knowledge()` 把
+   ALPN 强制为 `[h3]` 却让请求落进 TCP 路径），上游修正在
+   [PR #2929](https://github.com/seanmonstar/reqwest/pull/2929)，尚未进入稳定版。
+   且 `h3 v0.0.8` / `h3-quinn v0.0.10` 仍为 0.x 实验版。
+   后续等待：PR #2929 合入、reqwest/http3 结构化稳定后再复测（探针已就绪）。
