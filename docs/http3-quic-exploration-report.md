@@ -77,6 +77,10 @@
 | Warm 均值 | **167 ms**（较代理关闭前 227 ms 提速 ~27%） | — |
 | 错误 | — | `received fatal alert: NoApplicationProtocol` |
 
+**交叉验证（代理开 / 关）**：同一探针在代理重新开启后复测 —— H2 仍 5/5
+成功（warm ~307 ms），H3 仍 0/5 失败于同一 `NoApplicationProtocol`。
+结合直连环境的同款失败，确认失败表现与代理开关无关，纯由客户端栈决定。
+
 **对照实验**：同一探针探测 `www.google.com`（公认支持 HTTP/3），**同样失败于
 `NoApplicationProtocol`**。结合路由表无异常、无假 IP、无出口节点，
 确认根因**不在服务端、不在网络**，而在 **reqwest HTTP/3 实验栈的 ALPN 缺陷**：
