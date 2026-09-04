@@ -3,7 +3,16 @@
 Flowy 1.0.0 is the first public release. This file records user-facing notes
 at a high level rather than a complete commit log.
 
-## Unreleased
+## v1.2.0 - 2026-09-04
+
+- SkillHub expert packs now validate package integrity during install and at runtime; expert pack settings live in the local capability center, and Nomi setup stays consistent with pack installs. Missing ACP skills no longer silently degrade mid-session.
+- Conversations gain a Skills picker card and improved setup-presentation coverage.
+- Image analysis prioritizes DeepSeek vision models with tightened matching, a larger token budget, and graceful fallback on failure.
+- Networking: the workspace HTTP client enables HTTP/2 multiplexing, with a new HTTP/2 vs HTTP/3 benchmark probe and documented findings on the current reqwest HTTP/3 ALPN limitation.
+- Canvas isolates node jobs from clip recents and hardens the home agent.
+- Video generation unifies recents, fixes TV tabs, and tightens the drama pipeline.
+- Learning fixes directory deletion graph cleanup and relaxes the startup orphan audit with automatic repair.
+- Meeting dock pill and notes-first surface match Granola; capability-center sidebar no longer overflows in English.
 
 ## v1.1.10 - 2026-09-03
 
