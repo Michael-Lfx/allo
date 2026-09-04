@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use nomifun_common::AppError;
 use nomifun_poi::PoiService;
 
 use crate::capability::prompt_pipeline::{PreSendHook, PromptCtx};
@@ -27,14 +28,14 @@ impl PoiPrefetchHook {
 
 #[async_trait::async_trait]
 impl PreSendHook for PoiPrefetchHook {
-    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> String {
+    async fn pre_send(&self, _ctx: &mut PromptCtx<'_>, prompt: String) -> Result<String, AppError> {
         match self.render_prefetch(&prompt) {
-            Some(block) if !block.trim().is_empty() => format!("{block}\n\n{prompt}"),
+            Some(block) if !block.trim().is_empty() => Ok(format!("{block}\n\n{prompt}")),
             _ if self.poi_service.interest_config().enabled && self.poi_service.store().lock().is_err() => {
                 tracing::warn!(hook = "poi_prefetch", "interest store lock poisoned");
-                prompt
+                Ok(prompt)
             }
-            _ => prompt,
+            _ => Ok(prompt),
         }
     }
 }

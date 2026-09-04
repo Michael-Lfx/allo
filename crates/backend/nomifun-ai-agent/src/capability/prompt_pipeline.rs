@@ -6,6 +6,7 @@
 use crate::capability::skill_manager::AcpSkillManager;
 use crate::factory::acp_assembler::AcpSessionParams;
 use crate::manager::acp::AcpSession;
+use nomifun_common::AppError;
 use std::sync::Arc;
 
 /// Read/write slice handed to each hook. `session` is a mutable borrow
@@ -18,7 +19,7 @@ pub struct PromptCtx<'a> {
 
 #[async_trait::async_trait]
 pub trait PreSendHook: Send + Sync {
-    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> String;
+    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> Result<String, AppError>;
 }
 
 pub struct PromptPipeline {
@@ -30,11 +31,11 @@ impl PromptPipeline {
         Self { hooks }
     }
 
-    pub async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> String {
+    pub async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> Result<String, AppError> {
         let mut current = prompt;
         for hook in &self.hooks {
-            current = hook.pre_send(ctx, current).await;
+            current = hook.pre_send(ctx, current).await?;
         }
-        current
+        Ok(current)
     }
 }

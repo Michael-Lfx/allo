@@ -10,15 +10,16 @@ pub use poi_prefetch::PoiPrefetchHook;
 use crate::capability::first_message_injector::{InjectionConfig, inject_first_message_prefix};
 use crate::capability::model_identity_reminder::render_model_identity_reminder;
 use crate::capability::prompt_pipeline::{PreSendHook, PromptCtx};
+use nomifun_common::AppError;
 
 #[derive(Default)]
 pub struct SessionNewPreludeHook;
 
 #[async_trait::async_trait]
 impl PreSendHook for SessionNewPreludeHook {
-    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> String {
+    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> Result<String, AppError> {
         if !ctx.session.take_pending_session_new_prelude() {
-            return prompt;
+            return Ok(prompt);
         }
 
         let metadata = &ctx.params.metadata;
@@ -49,15 +50,15 @@ pub struct KnowledgeContextHook;
 
 #[async_trait::async_trait]
 impl PreSendHook for KnowledgeContextHook {
-    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> String {
+    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> Result<String, AppError> {
         if !ctx.session.take_pending_knowledge_prelude() {
-            return prompt;
+            return Ok(prompt);
         }
         match ctx.params.knowledge_context.as_deref() {
             Some(section) if !section.is_empty() => {
-                format!("[Knowledge Bases]\n{section}\n[/Knowledge Bases]\n\n{prompt}")
+                Ok(format!("[Knowledge Bases]\n{section}\n[/Knowledge Bases]\n\n{prompt}"))
             }
-            _ => prompt,
+            _ => Ok(prompt),
         }
     }
 }
@@ -67,9 +68,9 @@ pub struct ModelIdentityReminderHook;
 
 #[async_trait::async_trait]
 impl PreSendHook for ModelIdentityReminderHook {
-    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> String {
+    async fn pre_send(&self, ctx: &mut PromptCtx<'_>, prompt: String) -> Result<String, AppError> {
         let Some(model) = ctx.session.take_pending_model_notice() else {
-            return prompt;
+            return Ok(prompt);
         };
 
         let label = ctx
@@ -84,6 +85,6 @@ impl PreSendHook for ModelIdentityReminderHook {
             .unwrap_or_else(|| model.as_str().to_owned());
 
         let reminder = render_model_identity_reminder(&label);
-        format!("{reminder}{prompt}")
+        Ok(format!("{reminder}{prompt}"))
     }
 }

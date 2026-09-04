@@ -54,9 +54,9 @@ impl AcpSkillManager {
     }
 
     /// Populate the cache with only the named skills (no filtering by
-    /// auto-inject/opt-in). Returns the resulting index. Used by the
+    /// auto-inject/opt-in). Returns an all-or-nothing index. Used by the
     /// snapshot-driven first-message injector.
-    pub async fn discover_by_names(&self, names: &[String]) -> Vec<SkillIndex> {
+    pub async fn discover_by_names(&self, names: &[String]) -> Result<Vec<SkillIndex>, AppError> {
         let mut legacy_names = Vec::new();
         let mut canonical_ids = Vec::new();
         for raw_name in names {
@@ -84,7 +84,9 @@ impl AcpSkillManager {
                         .any(|prefix| name.starts_with(prefix)) =>
                 {
                     warn!(skill_id = name, %error, "discover_by_names: malformed canonical Skill id");
-                    return Vec::new();
+                    return Err(AppError::BadRequest(format!(
+                        "invalid canonical Skill id '{name}': {error}"
+                    )));
                 }
                 Err(_) => {
                     let legacy_name = name.to_owned();
@@ -101,41 +103,18 @@ impl AcpSkillManager {
         // atomically instead of treating a mixed request as an error.
         if !canonical_ids.is_empty() {
             if !legacy_names.is_empty() {
-                return match self
+                return self
                     .discover_mixed_bindings_strict(names, &canonical_ids, &legacy_names)
-                    .await
-                {
-                    Ok(index) => index,
-                    Err(error) => {
-                        warn!(error = %error, "discover_by_names: mixed strict discovery failed");
-                        Vec::new()
-                    }
-                };
+                    .await;
             }
-            return match self.discover_by_skill_ids_strict(&canonical_ids).await {
-                Ok(index) => index,
-                Err(error) => {
-                    warn!(error = %error, "discover_by_names: strict canonical discovery failed");
-                    Vec::new()
-                }
-            };
+            return self.discover_by_skill_ids_strict(&canonical_ids).await;
         }
-        match self.discover_by_names_strict(&legacy_names).await {
-            Ok(index) => index,
-            Err(error) => {
-                // The historical prompt hook cannot return a Result without
-                // changing every ACP hook, so it fails closed: a mixed
-                // result is never cached or injected as if it were complete.
-                warn!(error = %error, "discover_by_names: strict discovery failed");
-                Vec::new()
-            }
-        }
+        self.discover_by_names_strict(&legacy_names).await
     }
 
     /// Resolve a runtime selection that combines legacy auto-inject names with
     /// canonical preset bindings. Both catalogs must resolve successfully
-    /// before an index is returned; otherwise the legacy Vec API fails closed
-    /// without exposing a partial result.
+    /// before an index is returned, without exposing a partial result.
     async fn discover_mixed_bindings_strict(
         &self,
         raw_names: &[String],
@@ -210,9 +189,8 @@ impl AcpSkillManager {
         Ok(result)
     }
 
-    /// Discover a name-based selection atomically. A caller that needs to
-    /// distinguish a missing Skill from a catalog/IO failure should use this
-    /// method instead of the legacy Vec-returning wrapper above.
+    /// Discover a name-based selection atomically while preserving the
+    /// distinction between a missing Skill and a catalog/IO failure.
     pub async fn discover_by_names_strict(&self, names: &[String]) -> Result<Vec<SkillIndex>, AppError> {
         let requested = names
             .iter()
@@ -333,7 +311,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let paths = std::sync::Arc::new(nomifun_extension::resolve_skill_paths(tmp.path(), tmp.path()));
         let mgr = AcpSkillManager::new(paths.clone());
-        assert!(mgr.discover_by_names(&[]).await.is_empty());
+        assert!(mgr.discover_by_names(&[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -354,7 +332,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("missing"));
-        assert!(mgr.discover_by_names(&["known".into(), "missing".into()]).await.is_empty());
+        assert!(mgr
+            .discover_by_names(&["known".into(), "missing".into()])
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -375,7 +356,8 @@ mod tests {
 
         let index = mgr
             .discover_by_names(&["legacy".into(), canonical_id.as_str().into()])
-            .await;
+            .await
+            .unwrap();
 
         assert_eq!(
             index,

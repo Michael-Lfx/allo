@@ -814,12 +814,19 @@ impl AcpAgentManager {
 
         let content = {
             let mut s = self.session.write().await;
+            let session_checkpoint = s.clone();
             let mut ctx = PromptCtx {
                 session: &mut s,
                 params: &self.params,
                 skill_manager: &self.skill_manager,
             };
-            let transformed = self.pipeline.pre_send(&mut ctx, data.content.clone()).await;
+            let transformed = match self.pipeline.pre_send(&mut ctx, data.content.clone()).await {
+                Ok(transformed) => transformed,
+                Err(error) => {
+                    *s = session_checkpoint;
+                    return Err(error);
+                }
+            };
             self.commit_session_changes(&mut s).await;
             transformed
         };
