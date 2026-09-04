@@ -54,12 +54,25 @@
   - 冷启动 ~672 ms，长效连接平均 ~232 ms，成功率 10/10。
 - 结论：**为客户端启用 `http2` 是真·零成本收益**——老客户端连 HTTP/2 都没用上。
 
+## 3.5 HTTP/2 完备性验证（工作区启用 `http2` feature 后）
+
+| 验证项 | 结果 | 证据 |
+| --- | --- | --- |
+| 全栈编译 | ✅ | `cargo check`（nomi-providers / nomifun-net / nomi-vimax / nomi-config / nomifun-cloud --examples）exit 0 |
+| ALPN 实协商（核心云 API） | ✅ | `server.flowyaipc.com/claw/health` → 200 OK，`Negotiated Version: HTTP/2` |
+| 多路复用（20 并发同连接） | ✅ | Wall **757 ms** ≈ 1~2 RTT（HTTP/1.1 串行需 ~4.6 s），20/20 成功 |
+| 多路复用（50 并发同连接） | ✅ | Wall **764 ms** ≈ 1~2 RTT（HTTP/1.1 串行需 ~11.5 s），50/50 成功 |
+| 优雅降级（被动回退） | ✅ | `www.flowyaipc.com`（该主机 TLS 未支持 ALPN h2）→ 自动回退 HTTP/1.1，200 OK |
+| 连接复用 / Keep-Alive | ✅ | 串行 10 轮共享连接，P50 ~229 ms，无重复握手 |
+
 ## 四、 客户端结论与建议
 
 1. **服务端 HTTP/3 属实且可用**（跨客户端验证通过）。
 2. **我方客户端本机暂无法完成 QUIC 握手**，属于本地 TUN/隧道因素，并非代码问题。
-3. **建议立即落地**：在主工作区 `reqwest` 依赖中开启 `http2` feature，客户端链路
-   从 HTTP/1.1 升级到 HTTP/2（复用单端口、多路复用、头部压缩），带来确定性收益。
+3. **已落地并验证完备**：工作区已启用 `http2` feature（commit `d2351d62e`），
+   客户端链路从 HTTP/1.1 升级到 HTTP/2（多路复用 + 头部压缩 + 连接复用）。
+   完备性验证见 3.5 节：核心 API 协商 h2、20/50 并发多路复用生效、
+   不支持 h2 的主机自动降级为 HTTP/1.1 且功能正常。
 4. **HTTP/3 不建议跟进**：本机实测（该环境）UT 失败，且 reqwest 的 h3 依赖版本
    （`h3 v0.0.8` / `h3-quinn v0.0.10`）仍为 0.x 实验版；此外服务端当前告警
    `NoApplicationProtocol` 表明部分中途网络无法正确透传 QUIC。

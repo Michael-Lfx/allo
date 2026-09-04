@@ -51,6 +51,11 @@ struct Args {
     /// whose midpoint has no QUIC listener.
     #[arg(long)]
     ip: Option<String>,
+
+    /// Fire this many requests in parallel (multiplexing check).
+    /// When > 1, the probe skips warm rounds and runs one parallel batch instead.
+    #[arg(long, default_value_t = 1)]
+    concurrency: usize,
 }
 
 #[derive(Debug, Default)]
@@ -176,6 +181,73 @@ fn extract_error_chain(err: &reqwest::Error) -> String {
     s
 }
 
+/// One parallel batch of `concurrency` requests on a single pooled client.
+/// If the negotiated protocol multiplexes (HTTP/2), wall time ≈ one RTT
+/// instead of concurrency × RTT, which is the visible multiplexing proof.
+async fn run_parallel_test(
+    label: &str,
+    client: Client,
+    target: &str,
+    concurrency: usize,
+) -> ProbeMetrics {
+    let mut metrics = ProbeMetrics {
+        protocol_label: label.to_string(),
+        ..Default::default()
+    };
+
+    println!("\n>>> Testing [{}] against: {} (parallel batch of {})", label, target, concurrency);
+
+    let wall_start = Instant::now();
+    let mut handles = Vec::with_capacity(concurrency);
+    for _ in 0..concurrency {
+        let client = client.clone();
+        let target = target.to_string();
+        handles.push(tokio::spawn(async move {
+            let t0 = Instant::now();
+            match client.get(&target).send().await {
+                Ok(resp) => {
+                    let version = format_version(resp.version());
+                    let _body = resp.bytes().await;
+                    (t0.elapsed().as_secs_f64() * 1000.0, version)
+                }
+                Err(e) => {
+                    (t0.elapsed().as_secs_f64() * 1000.0, extract_error_chain(&e))
+                }
+            }
+        }));
+    }
+
+    let mut per_request_ms = Vec::with_capacity(concurrency);
+    for handle in handles {
+        if let Ok((elapsed, info)) = handle.await {
+            metrics.warm_samples_ms.push(elapsed);
+            per_request_ms.push(elapsed);
+            if info.starts_with("HTTP/") {
+                metrics.negotiated_version = info;
+                metrics.success_count += 1;
+            } else {
+                metrics.failure_count += 1;
+                metrics.errors.push(info);
+            }
+        } else {
+            metrics.failure_count += 1;
+            metrics.errors.push("task join failure".into());
+        }
+    }
+    let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
+    metrics.cold_total_ms = wall_ms;
+
+    let min_ms = per_request_ms.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_ms = per_request_ms.iter().cloned().fold(0.0, f64::max);
+    println!(
+        "  [Parallel {}] Wall: {:.2} ms | per request min: {:.2} ms, max: {:.2} ms",
+        concurrency, wall_ms, min_ms, max_ms
+    );
+    println!("  [Parallel] Negotiated Version: {}", metrics.negotiated_version);
+
+    metrics
+}
+
 async fn run_protocol_test(
     label: &str,
     client: Client,
@@ -258,6 +330,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!(" Target:   {}", args.target);
     println!(" Protocol: {:?}", args.protocol);
     println!(" Rounds:   {}", args.rounds);
+    if args.concurrency > 1 {
+        println!(" Concurrency: {} (parallel multiplexing batch)", args.concurrency);
+    }
     if let Some(ip) = &args.ip {
         println!(" DNS Pin:  {} (straight to real IP, bypass fake-IP TUN)", ip);
     }
@@ -274,7 +349,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if args.protocol == ProtocolTarget::H2 || args.protocol == ProtocolTarget::Both {
         match build_h2_client(timeout, resolve.clone()) {
             Ok(client) => {
-                let m = run_protocol_test("HTTP/2 (TCP)", client, &args.target, args.rounds).await;
+                let m = if args.concurrency > 1 {
+                    run_parallel_test("HTTP/2 (TCP)", client, &args.target, args.concurrency).await
+                } else {
+                    run_protocol_test("HTTP/2 (TCP)", client, &args.target, args.rounds).await
+                };
                 m.print_report();
                 h2_metrics = Some(m);
             }
@@ -287,7 +366,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if args.protocol == ProtocolTarget::H3 || args.protocol == ProtocolTarget::Both {
         match build_h3_client(timeout, resolve.clone()) {
             Ok(client) => {
-                let m = run_protocol_test("HTTP/3 (QUIC/UDP)", client, &args.target, args.rounds).await;
+                let m = if args.concurrency > 1 {
+                    run_parallel_test("HTTP/3 (QUIC/UDP)", client, &args.target, args.concurrency).await
+                } else {
+                    run_protocol_test("HTTP/3 (QUIC/UDP)", client, &args.target, args.rounds).await
+                };
                 m.print_report();
                 h3_metrics = Some(m);
             }
