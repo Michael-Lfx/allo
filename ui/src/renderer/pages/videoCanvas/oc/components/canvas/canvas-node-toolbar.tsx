@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { App, Button, Dropdown, Input, Modal, Segmented, Tag } from "antd";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
+import { App, Button, Input, Modal, Segmented, Tag } from "antd";
 import { ChevronDown, Ellipsis, Lock, Plus, Settings2, Unlock } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -10,6 +11,7 @@ import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
 import { defaultToolbarPrefs, readToolbarPrefs, resolveToolbarTools, type ToolContext, type ToolbarHandlers } from "@oc/lib/canvas/tool-registry";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { canvasNodeAssetCategory } from "@oc/lib/canvas/canvas-node-asset";
+import { anchoredOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { getNodeLabel } from "@oc/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@oc/lib/image-utils";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
@@ -17,6 +19,7 @@ import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@oc/lib
 import { useCopyText } from "@oc/hooks/use-copy-text";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode, type ViewportTransform } from "@oc/types/canvas";
+import { CanvasMenuRow, overlayPanelStyle, useAnchoredOverlay } from "./canvas-overlay";
 import { ImageToolSettingsModal } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, isImageQuickToolId, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
 
@@ -114,16 +117,19 @@ export function CanvasNodeToolbar({
     useTranslation();
     const [quickImageToolIds, setQuickImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
     const [draftImageToolIds, setDraftImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
-    const [showDockLabels, setShowDockLabels] = useState(true);
-    const [draftShowDockLabels, setDraftShowDockLabels] = useState(true);
+    const [showDockLabels, setShowDockLabels] = useState(() => {
+        try {
+            return window.localStorage.getItem(NODE_DOCK_LABELS_STORAGE_KEY) === "1";
+        } catch {
+            return false;
+        }
+    });
+    const [draftShowDockLabels, setDraftShowDockLabels] = useState(false);
     const [imageToolSettingsOpen, setImageToolSettingsOpen] = useState(false);
-    const [imageToolMenuOpen, setImageToolMenuOpen] = useState(false);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
     const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
     const toolbarRef = useRef<HTMLDivElement>(null);
-    // Dropdown 关闭与菜单点击处于同一事件批次，ref 用来同步守住即将打开的 Modal，避免工具栏先被卸载。
     const imageToolSettingsOpenRef = useRef(false);
-    const imageToolMenuOpenRef = useRef(false);
     const { message } = App.useApp();
     const copyText = useCopyText();
     const themeName = useThemeStore((state) => state.theme);
@@ -141,14 +147,8 @@ export function CanvasNodeToolbar({
     }, []);
 
     useEffect(() => {
-        setShowDockLabels(window.localStorage.getItem(NODE_DOCK_LABELS_STORAGE_KEY) !== "0");
-    }, []);
-
-    useEffect(() => {
         imageToolSettingsOpenRef.current = false;
-        imageToolMenuOpenRef.current = false;
         setImageToolSettingsOpen(false);
-        setImageToolMenuOpen(false);
         setOpenMenuId(null);
     }, [node?.id]);
 
@@ -226,9 +226,7 @@ export function CanvasNodeToolbar({
 
     function openImageToolSettings() {
         imageToolSettingsOpenRef.current = true;
-        imageToolMenuOpenRef.current = false;
         onKeep(activeNode.id);
-        setImageToolMenuOpen(false);
         setDraftImageToolIds(quickImageToolIds);
         setDraftShowDockLabels(showDockLabels);
         setImageToolSettingsOpen(true);
@@ -319,7 +317,7 @@ export function CanvasNodeToolbar({
     const handleMenuOpenChange = (menuId: string, open: boolean) => {
         setOpenMenuId((current) => (open ? menuId : current === menuId ? null : current));
         if (open) onKeep(node.id);
-        else if (!imageToolSettingsOpenRef.current && !imageToolMenuOpenRef.current) onLeave();
+        else if (!imageToolSettingsOpenRef.current) onLeave();
     };
 
     const closeImageToolSettings = () => {
@@ -352,9 +350,7 @@ export function CanvasNodeToolbar({
     const dockShellStyle = canvasDockStyle(theme, theme.node.text);
     const labeledDockStyle = {
         ...dockShellStyle,
-        boxShadow: themeName === "dark"
-            ? `0 18px 52px ${theme.spatial.shadow}`
-            : "0 10px 30px rgba(15,23,42,.12), 0 1px 2px rgba(15,23,42,.05), inset 0 1px 0 rgba(255,255,255,.7)",
+        boxShadow: `0 8px 28px ${theme.spatial.shadow}`,
     };
     const moreLabel = canvasT("videoCanvas.nodeUi.more", "更多");
 
@@ -366,7 +362,7 @@ export function CanvasNodeToolbar({
                 style={{ left: anchor.left, top: anchor.top, width: "max-content", maxWidth: `min(calc(100% - 20px), ${showDockLabels ? 960 : 560}px)`, color: theme.node.text }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
-                    if (!imageToolSettingsOpenRef.current && !imageToolMenuOpenRef.current && !openMenuId) onLeave();
+                    if (!imageToolSettingsOpenRef.current && !openMenuId) onLeave();
                 }}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
@@ -374,7 +370,7 @@ export function CanvasNodeToolbar({
                 <div
                     role="toolbar"
                     aria-label={canvasT("videoCanvas.nodeUi.quickToolsAria", "节点快捷工具")}
-                    className="aceternity-floating-dock thin-scrollbar relative flex h-11 max-w-full items-center gap-0.5 overflow-x-auto overflow-y-hidden rounded-[var(--dock-radius)] border px-2 py-1 backdrop-blur-2xl"
+                    className="aceternity-floating-dock thin-scrollbar relative flex h-9 max-w-full items-center gap-0.5 overflow-x-auto overflow-y-hidden rounded-[var(--r-lg)] border px-1.5 py-0.5 backdrop-blur-2xl"
                     style={labeledDockStyle}
                 >
                     <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -421,7 +417,7 @@ function NodeDockToolButton({ tool, showLabel = true }: { tool: ToolbarTool; sho
     return (
         <button
             type="button"
-            className={`aceternity-dock-command pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${tool.active ? "is-active" : ""} ${tool.danger ? "is-danger" : ""}`}
+            className={`aceternity-dock-command is-quiet pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${tool.active ? "is-active" : ""} ${tool.danger ? "is-danger" : ""}`}
             aria-label={tool.title || tool.label}
             aria-pressed={tool.active || undefined}
             disabled={tool.disabled}
@@ -453,21 +449,30 @@ function NodeDockMenuButton({
     placement?: "top" | "topRight";
     showLabel?: boolean;
 }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
     const open = openMenuId === menuId;
+    const close = useCallback(() => onOpenChange(menuId, false), [menuId, onOpenChange]);
+    const rect = useAnchoredOverlay(open, triggerRef, panelRef, close);
+    const geometry = rect
+        ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, {
+            width: 220,
+            placement: placement === "topRight" ? "topRight" : "top",
+            estimatedHeight: 8 + tools.length * 28,
+        })
+        : null;
+
     return (
-        <Dropdown
-            open={open}
-            trigger={["click"]}
-            placement={placement}
-            onOpenChange={(next) => onOpenChange(menuId, next)}
-            menu={{ items: tools.map((tool) => ({ key: tool.id, icon: tool.icon, label: tool.label, disabled: tool.disabled, danger: tool.danger, onClick: tool.onClick })) }}
-        >
+        <>
             <button
+                ref={triggerRef}
                 type="button"
-                className={`aceternity-dock-command pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${open ? "is-active" : ""}`}
+                className={`aceternity-dock-command is-quiet pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${open ? "is-active" : ""}`}
                 aria-label={label}
                 aria-expanded={open}
                 title={label}
+                onClick={() => onOpenChange(menuId, !open)}
             >
                 <span className="grid size-3.5 shrink-0 place-items-center">{icon}</span>
                 {showLabel ? (
@@ -477,7 +482,33 @@ function NodeDockMenuButton({
                     </>
                 ) : null}
             </button>
-        </Dropdown>
+            {open && geometry
+                ? createPortal(
+                    <div
+                        ref={panelRef}
+                        className="canvas-overlay"
+                        style={{ ...overlayPanelStyle(theme, geometry), padding: 4 }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        {tools.map((tool) => (
+                            <CanvasMenuRow
+                                key={tool.id}
+                                icon={tool.icon}
+                                label={tool.label}
+                                disabled={tool.disabled}
+                                danger={tool.danger}
+                                onClick={() => {
+                                    tool.onClick();
+                                    close();
+                                }}
+                            />
+                        ))}
+                    </div>,
+                    document.body,
+                )
+                : null}
+        </>
     );
 }
 

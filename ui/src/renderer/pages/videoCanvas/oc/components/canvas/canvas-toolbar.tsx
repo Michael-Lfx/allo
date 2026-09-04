@@ -1,12 +1,12 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Switch } from "antd";
-import { Palette, Info } from "lucide-react";
+import { Info } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { CanvasCreateMenu, type CanvasCreateCommand } from "@oc/components/canvas/canvas-create-menu";
+import { CanvasOverlay } from "@oc/components/canvas/canvas-overlay";
 import { FloatingDock } from "@oc/components/ui/aceternity/floating-dock";
-import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
 import { CanvasAppearanceControls } from "@oc/components/canvas/canvas-appearance-controls";
 import { ToolbarSettingsModal } from "@oc/components/canvas/toolbars/toolbar-settings-modal";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
@@ -203,13 +203,13 @@ export function CanvasToolbar({
                 ) : null}
             </AnimatePresence>
 
-            <FloatingDock ref={dockRef} items={items} className="canvas-floating-dock pointer-events-auto max-w-full" style={canvasDockStyle(theme)} />
+            <FloatingDock ref={dockRef} items={items} magnify={false} className="canvas-floating-dock pointer-events-auto max-w-full" style={canvasDockStyle(theme)} />
 
             <AnimatePresence>
                 {appearanceOpen ? (
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: aceternityMotion.duration.instant }} className="pointer-events-auto absolute bottom-[var(--canvas-dock-popover-offset)] z-[var(--dock-z-popover)] w-[224px] max-w-[calc(100vw-24px)] -translate-x-1/2" style={{ left: panelX || "50%" }}>
-                        <SpotlightSurface spotlightColor={theme.toolbar.itemHover} initial={{ y: 6, scale: 0.97 }} animate={{ y: 0, scale: 1 }} exit={{ y: 4, scale: 0.98 }} transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }} className="aceternity-floating-panel overflow-hidden rounded-[var(--panel-radius)] border p-2.5 backdrop-blur-2xl" style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.toolbar.item, boxShadow: `0 24px 64px ${theme.spatial.shadow}` }} onWheel={(event) => event.stopPropagation()}>
-                            <PanelHeading icon={<Palette className="size-4" />} title={canvasT("videoCanvas.toolbar.appearance", "画布外观")} subtitle={canvasT("videoCanvas.toolbar.appearanceSubtitle", "调整整个创作空间")} theme={theme} />
+                        <CanvasOverlay theme={theme} className="overflow-hidden p-2.5" onWheel={(event) => event.stopPropagation()}>
+                            <PanelHeading title={canvasT("videoCanvas.toolbar.appearance", "画布外观")} subtitle={canvasT("videoCanvas.toolbar.appearanceSubtitle", "调整整个创作空间")} theme={theme} />
                             <CanvasAppearanceControls
                                 appearance={appearance}
                                 backgroundMode={backgroundMode}
@@ -219,11 +219,11 @@ export function CanvasToolbar({
                                 onSaveAppearanceDefault={onSaveAppearanceDefault}
                                 onBackgroundModeChange={onBackgroundModeChange}
                             />
-                            <div className="mt-2.5 flex items-center justify-between gap-2 rounded-[var(--dock-item-radius-labeled)] border px-2.5 py-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
-                                <span className="inline-flex min-w-0 items-center gap-1.5 text-[var(--fs-tiny)] font-semibold"><Info className="size-3" />{canvasT("videoCanvas.toolbar.imageInfo", "图片信息")}</span>
+                            <div className="mt-2.5 flex items-center justify-between gap-2 rounded-[var(--dock-item-radius-labeled)] px-2 py-1.5" style={{ background: theme.spatial.surface }}>
+                                <span className="inline-flex min-w-0 items-center gap-1.5 text-[var(--fs-tiny)] font-medium"><Info className="size-3" />{canvasT("videoCanvas.toolbar.imageInfo", "图片信息")}</span>
                                 <Switch size="small" checked={showImageInfo} onChange={onShowImageInfoChange} />
                             </div>
-                        </SpotlightSurface>
+                        </CanvasOverlay>
                     </motion.div>
                 ) : null}
             </AnimatePresence>
@@ -240,18 +240,18 @@ function AddNodeMenu({ x, theme, commands }: {
 }) {
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: aceternityMotion.duration.instant }} className="pointer-events-auto absolute bottom-[var(--canvas-dock-popover-offset)] z-[var(--dock-z-popover)] w-[260px] max-w-[calc(100vw-24px)] -translate-x-1/2" style={{ left: x || "50%" }}>
-            <SpotlightSurface spotlightColor={theme.toolbar.itemHover} initial={{ y: 6, scale: 0.97 }} animate={{ y: 0, scale: 1 }} exit={{ y: 4, scale: 0.98 }} transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }} className="aceternity-floating-panel overflow-hidden rounded-[var(--panel-radius)] border p-2 backdrop-blur-2xl" style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: `0 24px 64px ${theme.spatial.shadow}` }} onWheel={(event) => event.stopPropagation()}>
+            <CanvasOverlay theme={theme} className="overflow-hidden p-2" onWheel={(event) => event.stopPropagation()}>
                 <CanvasCreateMenu commands={commands} />
-            </SpotlightSurface>
+            </CanvasOverlay>
         </motion.div>
     );
 }
 
-function PanelHeading({ icon, title, subtitle, theme }: { icon: ReactNode; title: string; subtitle: string; theme: CanvasTheme }) {
+function PanelHeading({ title, subtitle, theme }: { title: string; subtitle: string; theme: CanvasTheme }) {
     return (
-        <div className="flex items-center gap-2">
-            <span className="grid size-8 shrink-0 place-items-center rounded-[var(--dock-item-radius)] border opacity-75 [&_svg]:size-3.5" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>{icon}</span>
-            <span className="min-w-0"><span className="block text-xs font-semibold">{title}</span><span className="mt-0.5 block text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>{subtitle}</span></span>
+        <div className="mb-2 px-0.5">
+            <span className="block text-[var(--fs-label)] font-medium">{title}</span>
+            <span className="mt-0.5 block text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>{subtitle}</span>
         </div>
     );
 }
