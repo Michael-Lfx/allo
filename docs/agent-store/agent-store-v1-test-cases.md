@@ -398,10 +398,12 @@ NOT_RUN
 - 等级：P0
 - 断言：响应不包含 allo 内部 session、数据库或 provider 私有 ID
 
-### TC-SDK-001：Node stdio
+### TC-SDK-001：Node spawn + 回环 WS
 
 - 等级：P1
+- 操作：Node SDK 拉起 `agent-store` 独立二进制（`--port 0` + 临时 `--data-dir`），连回环 WS 建连
 - 断言：Node SDK 可完成 initialize、Catalog、Run、Event、Artifact 调用
+- 说明：stdio 传输列为 V2/deferred（`12-sdk-packaging.md` §2 非目标）；本用例不断言 stdio
 
 ### TC-SDK-002：Browser WebSocket
 

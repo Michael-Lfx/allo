@@ -1,7 +1,7 @@
 {
-  "name": "@agent-store/protocol",
+  "name": "@agent-store/sdk",
   "version": "0.1.0",
-  "description": "Versioned App Server Protocol types and wire errors (no runtime, no DOM/Node deps)",
+  "description": "Node.js host for the Agent Store App Server: spawn the runtime binary and connect over loopback (docs/agent-store/12 P1-3)",
   "type": "module",
   "license": "Apache-2.0",
   "exports": {
@@ -15,6 +15,10 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "@agent-store/client": "0.1.0",
+    "@agent-store/protocol": "0.1.0"
+  },
   "scripts": {
     "build": "tsdown",
     "prepack": "tsdown"

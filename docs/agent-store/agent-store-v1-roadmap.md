@@ -8,7 +8,9 @@
 > Phase 1 的 Importer 已落地（TC-IMP-001~009 通过，`importer-runtime-evidence.zh.md`）；
 > 安装模式与市场（Phase 2 提前落地）已完成（install/*、market/* 四类源、
 > @mention 解析与 run 注入 TC-INS-001~007）；
-> 单 Agent Runtime 真实链路实测与 `software-company` 端到端运行尚未完成，排期仍待校准。
+> 2026-09-04：单 Agent 真实 Run 通过（TC-RT-001 planning→running→completed，mimo-v2.5 临时实例，
+> `single-run-runtime-evidence.zh.md`；附带修复 actor 落库 500）；
+> 其余 Runtime 门禁（TC-RT-002/005/006/009/010）与最小 TeamRun 尚未执行，排期仍待校准。
 
 ## 1. V1 目标
 

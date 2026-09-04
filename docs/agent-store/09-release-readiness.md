@@ -218,12 +218,16 @@ restrictions
 本文档本身不替代实际测试。以下为截至 2026-08 迭代（Importer/Phase 1 落地后）的如实快照；更新前必须重新执行测试主表：
 
 ```text
-release_status: not-assessed（Gate 4/部分 Gate 2 已有关键证据，其余门禁未执行）
-assessed_at: 2026-08-26（评估快照，非门禁结果）
+release_status: not-assessed（P0 未全过，仍等价 blocked；2026-09-04 增量快照）
+assessed_at: 2026-09-04（评估快照，非门禁结果）
 blocking_items:
+  - Gate 1（Runtime）：TC-RT-001 已通过（单 Agent 真实 Run，single-run-runtime-evidence.zh.md）；
+    TC-RT-002/005/006/009/010 未执行
   - Gate 4（Connector/OAuth：登录注入、401 刷新、重试、探针）：OAuth 运行证据已留存（mcp-oauth-runtime-evidence.zh.md），TC-CONN/TC-OAUTH 其余用例未全量执行
   - Gate 2（Importer）：TC-IMP-001~009 已通过（importer-runtime-evidence.zh.md）；GitHub/Git/HTTP 市场源未实现
-  - Gate 1/3/5（Runtime 真实链路、App Server 双传输 E2E、安全扫描与来源审核）：未执行
+  - Gate 3（App Server）：initialize/版本协商/store 与 run 查询一致已有真机实证（smoke --real + A1）；
+    TC-API-002（幂等重放）/TC-API-004（公共 ID 隔离）未执行；TC-SDK-001（Node stdio）与 12 非目标矛盾，待修订一边
+  - Gate 5（安全扫描与来源审核）：未执行
   - V1 默认不启用：Hook/LSP/bin/scripts 执行、跨市场依赖
 ```
 

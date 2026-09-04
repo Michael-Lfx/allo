@@ -7,12 +7,13 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "bun run build:packages && vite",
+    "build": "bun run build:packages && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "mock": "bun scripts/mock-server.ts"
+    "typecheck": "bun run build:packages && tsc --noEmit",
+    "test": "bun run build:packages && vitest run",
+    "mock": "bun scripts/mock-server.ts",
+    "build:packages": "bun --filter './packages/*' build"
   },
   "dependencies": {
     "@agent-store/client": "workspace:*",
@@ -39,6 +40,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.1",
+    "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^4.1.11"

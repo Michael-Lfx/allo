@@ -1,6 +1,7 @@
 # Agent Store SDK 封装技术方案（对标 Codex SDK）
 
-> 状态：P0 已实现并实测；P1/P2 未开始
+> 状态：P0 已实现并实测；P1-1/P1-2/P1-3 主体已落地（tsdown 编译 + npm dry-run 通过）；P1-4 已决策延后；P2 未开始
+> 更新：2026-09-04（P0 状态行此前写“P1/P2 未开始”，已过期更正）
 > 日期：2026-09-04
 > 前置：`00-architecture-decision.md`、`05-allo-app-server-protocol.md`（§2.1.1 传输绑定）、`07-typescript-sdk.md`、`10-public-contracts.md`
 > 目标：以 `agent-store` 独立二进制为 runtime，提供可发布的 TS/Python SDK；SDK 与 Web 同走一套协议方法
@@ -26,7 +27,7 @@ Codex SDK 的形态是“可被拉起的本地 runtime + typed client”：`code
 ```text
 @agent-store/protocol   纯类型（请求/响应/通知/错误），零运行时依赖
 @agent-store/client     AppServerClient + 子客户端 + Transport 接口
-@agent-store/node       spawn 二进制 + WS 建连 + 通知分发/重连/Approval 钩子
+@agent-store/sdk          spawn 二进制 + WS 建连 + 通知分发/重连/Approval 钩子
 @agent-store/browser    WS 绑定 + <img> 资产 URL 辅助（Web/Flowy 用）
 python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Codex client.py）
 ```
@@ -40,16 +41,16 @@ python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Code
 | P0-1 | 就绪协议 | ✅ 已实现：`--port 0` + bind 后 stdout 单行 `{"agent_store":"listening",host,port,url,protocol_version,version,auth}`（SDK 扫描该行；无秘密）。 |
 | P0-2 | 版本探测 | ✅ 已实现：`--version`（clap 自带）+ 就绪行同时带 `version` 与 `protocol_version`（`PROTOCOL_VERSION` 已 `pub`）；SDK 仍需按 `initialize` 返回做兼容检查。 |
 | P0-3 | 数据目录隔离 | ✅ 已实测：第二实例同 data_dir 被单实例锁干净拒绝（`already in use by another running Flowy backend (pid …)`），无损坏风险。结论：SDK 必须自带临时 `--data-dir`（文档写死独占）。 |
-| P0-4 | 回环强制 | 🔧 构件已落地：`web/src/lib/transport.ts:isLoopbackUrl`（`127/8`、`::1`、`localhost`）；拒绝逻辑随 SDK 包实现。 |
+| P0-4 | 回环强制 | ✅ 已落地：`web/src/lib/transport.ts:isLoopbackUrl`（`127/8`、`::1`、`localhost`）+ SDK `launchClient` 非回环拒绝（e2e 覆盖）。 |
 
 ## 5. P1：包拆分
 
 | # | 事项 | 来源与改动 |
 |---|---|---|
-| P1-1 | `@agent-store/protocol` | ✅ 已落地：`web/packages/protocol`（`protocol.ts`+`errors.ts`，`git mv` 保留历史），`web` 经 `workspaces` + `workspace:*` 引用；旧路径为单行 re-export 垫片。 |
-| P1-2 | `@agent-store/client` | ✅ 已落地：`web/packages/client`（`Transport`+基类+7 子客户端，`transport` 必填）；Web 3 方法（`serverRootUrl`/`browseDirectory`/`registerWorkspace`+HTTP 底座）由 `web/src/lib/client.ts` 子类承载，调用点零改动。 |
-| P1-3 | `@agent-store/node` | 🔧 主体已落地（Approval 钩子除外）：`web/packages/node`（spawn+就绪扫描+回环建连+版本检查+退出清理），e2e 实测通过；`MessageRouter`/重连复用基类订阅原语，`approval/request` 等解冻。 |
-| P1-4 | Python SDK | 结构对标 Codex `client.py:CodexClient`（`Popen` + reader 线程 + pending 表）；类型用 pydantic 与 `protocol` 对齐。 |
+| P1-1 | `@agent-store/protocol` | ✅ 已落地：`web/packages/protocol`（`protocol.ts`+`errors.ts`，`git mv` 保留历史），`web` 经 `workspaces` + 精确版本引用；旧路径为单行 re-export 垫片。tsdown 编译（esm+cjs+dts），裸 Node ESM/CJS 消费验证通过。 |
+| P1-2 | `@agent-store/client` | ✅ 已落地：`web/packages/client`（`Transport`+基类+7 子客户端，`transport` 必填）；Web 3 方法（`serverRootUrl`/`browseDirectory`/`registerWorkspace`+HTTP 底座）由 `web/src/lib/client.ts` 子类承载，调用点零改动。tsdown 编译，`dev/test/typecheck/build` 前置 `build:packages`（热构建约 8s，`dist/` 不入库）。 |
+| P1-3 | `@agent-store/sdk` | 🔧 主体已落地（Approval 钩子除外）：`web/packages/sdk`（spawn+就绪扫描+回环建连+版本检查+退出清理），e2e 实测通过（覆盖修订后的 TC-SDK-001：spawn + 回环 WS）；tsdown 编译；npm publish dry-run 通过。`MessageRouter`/重连复用基类订阅原语，`approval/request` 等解冻。 |
+| P1-4 | Python SDK | ⏸️ 已决策延后（2026-09-04）：优先完善已有 TS 功能。结构对标 Codex `client.py:CodexClient`（`Popen` + reader 线程 + pending 表）；类型用 pydantic 与 `protocol` 对齐。 |
 
 ## 6. P2：发行与文档
 
@@ -61,6 +62,10 @@ python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Code
 ## 7. 测试与验收
 
 - SDK 级 roundtrip（spawn 真实二进制 + 临时 data_dir）：`initialize → store/list → store/install-entry → agent/run → run/events → run/result` 全绿。
+  - 2026-09-04 进展：`agent/run → run/get → run/result → run/events` 子链已绿（TC-RT-001，见 `single-run-runtime-evidence.zh.md`）；
+    `store/install-entry` 产品路径未走（A1 用 import/install 直调），待补。
+- 与冻结文档 `07-typescript-sdk.md` 的差异：包名以本文为准（`@agent-store/sdk`，`07` 内仍写 `@agent-store/node`，冻结未改）；
+  `Transport` 必填、`exports` 直指 `dist` 等包边界结论同样以本文为准。
 - 双开冒烟：桌面端 + SDK 实例同机运行，无锁库、无跨 owner 数据串扰。
 - 远端 URL 被 SDK 明确拒绝；协议版本不匹配时报错信息包含两端版本号。
 - 全程 SDK 不直调 HTTP（公开资产 `<img>` 除外）；新增协议方法时 TS/Python 类型与 `dispatch` arms 同步更新（`10-public-contracts` 为准）。
