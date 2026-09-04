@@ -39,6 +39,8 @@ export type ModelChannel = {
         outputTokenPriceMicrocredits?: number;
         cachedTokenPriceMicrocredits?: number;
         capabilityConfig?: ModelCapabilityConfig;
+        /** Catalog `extra.input` includes `image` — Flowy multimodal chat. */
+        supportsVision?: boolean;
     }>;
 };
 

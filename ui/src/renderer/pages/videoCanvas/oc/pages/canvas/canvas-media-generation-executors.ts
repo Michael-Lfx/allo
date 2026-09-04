@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
+import { canGenerateMediaInPlace } from "@oc/lib/canvas/canvas-generation-layout";
 import { audioMetadata, videoMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { fitNodeSize, nodeSizeFromRatio, VIDEO_NODE_MAX_SIZE } from "@oc/lib/canvas/canvas-node-size";
 import { nextCanvasVersionLabel } from "@oc/lib/canvas/canvas-layout";
@@ -32,20 +33,20 @@ export async function executeVideoGeneration({
     registerPendingNodeIds,
 }: CanvasGenerationExecution) {
     const spec = nodeSizeFromRatio(generationConfig.size, NODE_DEFAULT_SIZE[CanvasNodeType.Video].width, NODE_DEFAULT_SIZE[CanvasNodeType.Video].height) || NODE_DEFAULT_SIZE[CanvasNodeType.Video];
-    const isEmptyVideoNode = sourceNode?.type === CanvasNodeType.Video && !sourceNode.metadata?.content;
-    const isExistingVideoNode = sourceNode?.type === CanvasNodeType.Video && Boolean(sourceNode.metadata?.content);
-    const videoId = isEmptyVideoNode ? nodeId : nanoid();
+    const reuseSourceNode = canGenerateMediaInPlace(sourceNode, CanvasNodeType.Video);
+    const isExistingVideoNode = sourceNode?.type === CanvasNodeType.Video && Boolean(sourceNode.metadata?.content) && !reuseSourceNode;
+    const videoId = reuseSourceNode ? nodeId : nanoid();
     const parent = sourceNode?.position || { x: 0, y: 0 };
     const videoGenerationMetadata = buildVideoGenerationMetadata(sourceNode, generationContext);
     const videoNode: CanvasNodeData = {
         id: videoId,
         type: CanvasNodeType.Video,
         title: effectivePrompt.slice(0, 32) || "Generated Video",
-        position: isEmptyVideoNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
-        width: isEmptyVideoNode ? sourceNode.width : spec.width,
-        height: isEmptyVideoNode ? sourceNode.height : spec.height,
+        position: reuseSourceNode && sourceNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
+        width: reuseSourceNode && sourceNode ? sourceNode.width : spec.width,
+        height: reuseSourceNode && sourceNode ? sourceNode.height : spec.height,
         metadata: {
-            ...(isEmptyVideoNode ? sourceNode.metadata || {} : {}),
+            ...(reuseSourceNode ? sourceNode?.metadata || {} : {}),
             prompt: effectivePrompt,
             status: NODE_STATUS_LOADING,
             errorDetails: undefined,
@@ -65,7 +66,7 @@ export async function executeVideoGeneration({
     };
     registerPendingNodeIds([videoId]);
     setNodes((current) => {
-        if (isEmptyVideoNode) return current.map((node) => (node.id === nodeId ? { ...node, ...videoNode } : node));
+        if (reuseSourceNode) return current.map((node) => (node.id === nodeId ? { ...node, ...videoNode } : node));
         if (!isExistingVideoNode || !sourceNode) return [...current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), videoNode];
         const rootId = sourceNode.metadata?.versionOfNodeId || sourceNode.id;
         const nextLabel = nextCanvasVersionLabel(rootId, current);
@@ -77,8 +78,7 @@ export async function executeVideoGeneration({
             { ...videoNode, metadata: { ...videoNode.metadata, versionOfNodeId: rootId, versionLabel: nextLabel, versionPrimary: true } },
         ];
     });
-    // 重新生成已有视频时，新节点继承源视频的上游连接，与源视频保持并行关系，而不是作为其下游子节点。
-    if (!isEmptyVideoNode) {
+    if (!reuseSourceNode) {
         setConnections((current) => {
             if (!isExistingVideoNode) return [...current, { id: nanoid(), fromNodeId: nodeId, toNodeId: videoId }];
             return [...current, ...canvasConnections.filter((connection) => connection.toNodeId === nodeId).map((connection) => ({ ...connection, id: nanoid(), toNodeId: videoId }))];

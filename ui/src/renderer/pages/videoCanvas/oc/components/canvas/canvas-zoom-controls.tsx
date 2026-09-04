@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Compass, Focus, HelpCircle, Minus, Plus } from "lucide-react";
+import { Compass, Focus, HelpCircle, LayoutTemplate, Minus, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { FloatingDock, type FloatingDockEntry } from "@oc/components/ui/aceternity/floating-dock";
@@ -15,6 +15,7 @@ type CanvasZoomControlsProps = {
     scale: number;
     onScaleChange: (scale: number) => void;
     onReset: () => void;
+    onAutoArrange?: () => void;
     isMiniMapOpen: boolean;
     onToggleMiniMap: () => void;
     onOpenShortcuts: () => void;
@@ -23,7 +24,7 @@ type CanvasZoomControlsProps = {
 
 const QUICK_ZOOM_LEVELS = [0.25, 0.5, 1, 2] as const;
 
-export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpen, onToggleMiniMap, onOpenShortcuts, containerRef }: CanvasZoomControlsProps) {
+export function CanvasZoomControls({ scale, onScaleChange, onReset, onAutoArrange, isMiniMapOpen, onToggleMiniMap, onOpenShortcuts, containerRef }: CanvasZoomControlsProps) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const rootRef = useRef<HTMLDivElement>(null);
@@ -80,6 +81,9 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
             onClick: onToggleMiniMap,
         },
         { id: "zoom-fit", label: canvasT("videoCanvas.zoom.fitAll", "适应全部内容"), icon: <Focus />, onClick: onReset },
+        ...(onAutoArrange
+            ? [{ id: "zoom-auto-arrange", label: canvasT("videoCanvas.zoom.autoArrange", "整理画布"), icon: <LayoutTemplate />, onClick: onAutoArrange }]
+            : []),
         { kind: "separator", id: "zoom-separator" },
         { id: "zoom-out", label: canvasT("videoCanvas.zoom.zoomOut", "缩小画布"), icon: <Minus />, onClick: () => commitScale(liveScaleRef.current - 0.1) },
         {

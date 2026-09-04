@@ -44,3 +44,19 @@ describe("canvas video-to-video connections", () => {
         expect(canvasConnectionError(videoConfig("default::grok-imagine-video"), nodes, [], candidate)).toBe("");
     });
 });
+
+describe("canvas art-critique connections", () => {
+    test("allows image and drawing into an art critique node", () => {
+        const image = node("img", CanvasNodeType.Image);
+        const drawing = node("draw", CanvasNodeType.Drawing);
+        const critique = node("critique", CanvasNodeType.ArtCritique);
+        expect(canvasConnectionError(defaultConfig, [image, critique], [], { fromNodeId: image.id, toNodeId: critique.id })).toBe("");
+        expect(canvasConnectionError(defaultConfig, [drawing, critique], [], { fromNodeId: drawing.id, toNodeId: critique.id })).toBe("");
+    });
+
+    test("rejects video into an art critique node", () => {
+        const video = node("vid", CanvasNodeType.Video);
+        const critique = node("critique", CanvasNodeType.ArtCritique);
+        expect(canvasConnectionError(defaultConfig, [video, critique], [], { fromNodeId: video.id, toNodeId: critique.id })).toBe("审美批改节点只接受图片输入");
+    });
+});

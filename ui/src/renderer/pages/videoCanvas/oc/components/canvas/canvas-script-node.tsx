@@ -8,7 +8,8 @@ import { ModelPicker } from "@oc/components/model-picker";
 import { buildGenerationConfig } from "@oc/lib/canvas/canvas-project-generation";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { pipelineStatusLabel, type CanvasStoryboardPipelineProgress, type StoryboardPipelineStage } from "@oc/lib/canvas/canvas-storyboard-progress";
-import { generationErrorMessage, isContentModerationError, localizeGenerationErrorText } from "@oc/lib/generation-error";
+import { isContentModerationError } from "@oc/lib/generation-error";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -95,7 +96,7 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
     const hasActiveBatchItems = Boolean(batch?.items.some((item) => item.status === "waiting" || item.status === "submitting" || item.status === "queued" || item.status === "running"));
     const taskFeedback = node.metadata?.status === "loading"
         ? `${node.metadata.taskStage || canvasT("videoCanvas.script.creatingTask", "正在创建任务")}${typeof node.metadata.taskProgress === "number" ? ` · ${node.metadata.taskProgress}%` : ""}`
-        : node.metadata?.status === "error" ? localizeGenerationErrorText(generationErrorMessage(node.metadata.errorDetails)) : "";
+        : node.metadata?.status === "error" ? formatCanvasUserError(node.metadata.errorDetails) : "";
     const submitPrompt = () => {
         const value = prompt.trim();
         if (value && node.metadata?.status !== "loading") onGenerateScript(value);
@@ -361,7 +362,7 @@ function GenerationBatchDetails({ batch, rows, onRetryItem, onCancelItem }: { ba
                 const requiresPromptChange = isContentModerationError(item.errorDetails);
                 return <div key={item.id} className="flex min-h-9 items-center gap-2 border-t border-foreground/10 py-1.5 first:border-t-0">
                     <span className="w-14 shrink-0 text-xs font-medium">{canvasT("videoCanvas.script.shotN", "镜头 {{n}}", { n: shotByRowId.get(item.rowId) || "--" })}</span>
-                    <span className="min-w-0 flex-1 truncate text-xs text-foreground/60" title={item.errorDetails ? localizeGenerationErrorText(generationErrorMessage(item.errorDetails)) : undefined}>{generationBatchItemLabel(item)}{item.retryCount ? canvasT("videoCanvas.script.retryN", " · 重试 {{n}}", { n: item.retryCount }) : ""}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-foreground/60" title={item.errorDetails ? formatCanvasUserError(item.errorDetails) : undefined}>{generationBatchItemLabel(item)}{item.retryCount ? canvasT("videoCanvas.script.retryN", " · 重试 {{n}}", { n: item.retryCount }) : ""}</span>
                     {item.status === "failed" ? <Tooltip title={requiresPromptChange ? canvasT("videoCanvas.script.retryNeedPrompt", "请先修改提示词，再重试这个镜头") : canvasT("videoCanvas.script.retryThisShot", "只重试这个镜头")}><button type="button" className="grid size-7 shrink-0 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" onClick={() => onRetryItem(item.id)} aria-label={canvasT("videoCanvas.script.retryShotAria", "重试镜头 {{n}}", { n: shotByRowId.get(item.rowId) || "" })}><RefreshCw className="size-3.5" /></button></Tooltip> : null}
                     {cancellable ? <Tooltip title={canvasT("videoCanvas.script.cancelItem", "取消这个后台任务")}><button type="button" className="grid size-7 shrink-0 place-items-center rounded outline-none transition hover:bg-red-500/10 focus-visible:ring-2" onClick={() => onCancelItem(item.id)} aria-label={canvasT("videoCanvas.script.cancelShotAria", "取消镜头 {{n}} 任务", { n: shotByRowId.get(item.rowId) || "" })}><X className="size-3.5" /></button></Tooltip> : null}
                 </div>;

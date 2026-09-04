@@ -25,6 +25,7 @@ type CanvasProjectContextMenuProps = {
     onPaste: (position: Position) => void;
     onCopyNode: (nodeId: string) => void;
     onDuplicate: (nodeId: string) => void;
+    onCreateGenerationCopy: (nodeId: string) => void;
     onDeleteNode: (nodeId: string) => void;
     onDeleteConnection: (connectionId: string) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
@@ -71,6 +72,9 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             }}
             onDuplicate={() => {
                 if (menu.type === "node") props.onDuplicate(menu.nodeId);
+            }}
+            onCreateGenerationCopy={() => {
+                if (menu.type === "node") props.onCreateGenerationCopy(menu.nodeId);
             }}
             onDelete={() => {
                 if (menu.type === "node") props.onDeleteNode(menu.nodeId);

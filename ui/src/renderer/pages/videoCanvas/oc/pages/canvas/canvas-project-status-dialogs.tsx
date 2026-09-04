@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Button, Image, Modal } from "antd";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { TaskDetailItem, taskStatusText } from "./canvas-project-feedback";
 import type { GenerationTask, TaskLog } from "@oc/services/api/task-center";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
@@ -53,13 +54,13 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
                 <div className="py-8 text-center text-base font-medium">{canvasT("videoCanvas.dialog.notImplemented", "暂未实现")}</div>
             </Modal>
 
-            <Modal title={canvasT("videoCanvas.dialog.videoPreview", "视频预览")} open={Boolean(previewNode?.metadata?.content && previewNode.type === CanvasNodeType.Video)} centered onCancel={onClosePreview} footer={null} width="min(1200px, calc(100vw - 32px))" styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "84vh", overflow: "hidden", background: "#090909" } }}>
-                {previewNode?.metadata?.content && previewNode.type === CanvasNodeType.Video ? <VideoPlayer src={previewNode.metadata.content} mimeType={previewNode.metadata.mimeType} title={previewNode.title || canvasT("videoCanvas.dialog.videoPreview", "视频预览")} className="max-h-[84vh] max-w-full bg-black" /> : null}
+            <Modal title={canvasT("videoCanvas.dialog.videoPreview", "视频预览")} open={Boolean(previewNode?.type === CanvasNodeType.Video && canvasNodeDisplayUrl(previewNode))} centered onCancel={onClosePreview} footer={null} width="min(1200px, calc(100vw - 32px))" styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "84vh", overflow: "hidden", background: "#090909" } }}>
+                {previewNode?.type === CanvasNodeType.Video && canvasNodeDisplayUrl(previewNode) ? <VideoPlayer src={canvasNodeDisplayUrl(previewNode)} mimeType={previewNode.metadata?.mimeType} title={previewNode.title || canvasT("videoCanvas.dialog.videoPreview", "视频预览")} className="max-h-[84vh] max-w-full bg-black" /> : null}
             </Modal>
 
-            {previewNode?.metadata?.content && previewNode.type === CanvasNodeType.Image ? (
+            {previewNode?.type === CanvasNodeType.Image && canvasNodeDisplayUrl(previewNode) ? (
                 <Image
-                    src={previewNode.metadata.content}
+                    src={canvasNodeDisplayUrl(previewNode)}
                     alt={previewNode.title || canvasT("videoCanvas.dialog.image", "图片")}
                     style={{ display: "none" }}
                     preview={{

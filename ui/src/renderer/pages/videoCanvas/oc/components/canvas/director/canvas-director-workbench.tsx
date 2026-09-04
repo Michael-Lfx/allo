@@ -11,6 +11,7 @@ import { DirectorViewport, type DirectorViewportHandle } from "@oc/components/ca
 import { DirectorViewportDock } from "@oc/components/canvas/director/director-viewport-dock";
 import { DirectorSequencer } from "@oc/components/canvas/director/director-sequencer";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { compileDirectorPrompt } from "@oc/lib/canvas/director/director-prompt-compiler";
 import { advanceDirectorPlayhead, resolveDirectorCameraAlignment, resolveDirectorCameraMoveKeyframes, resolveDirectorKeyframeRecord, resolveDirectorObjectTransformEdit, snapDirectorTime } from "@oc/lib/canvas/director/director-animation-semantics";
 import { createDirectorTransaction, installDirectorTerminalListeners, type DirectorTransaction } from "@oc/lib/canvas/director/director-gesture-transaction";
@@ -649,7 +650,7 @@ export function CanvasDirectorWorkbench({ open, scene, imageNodes, onboardingSco
             await onApply({ scene: next, shot: activeShot, prompt, beauty });
             message.success("导演台构图已回写画布");
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "导演台输出失败");
+            message.error(formatCanvasUserError(error, "导演台输出失败"));
         } finally {
             setSaving(false);
         }
@@ -676,7 +677,7 @@ export function CanvasDirectorWorkbench({ open, scene, imageNodes, onboardingSco
             await onApply({ scene: next, shot: activeShot, prompt: compileDirectorPrompt(next, activeShot), beauty, clayVideo, clayVideoMimeType: clayVideo.type });
             message.success("白膜视频已回写画布");
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "白膜视频导出失败");
+            message.error(formatCanvasUserError(error, "白膜视频导出失败"));
         } finally {
             setPlaying(wasPlaying);
             setPlayhead(previousPlayhead);

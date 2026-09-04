@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { toCanvasChatMessages } from "./canvas-agent-llm";
+import { isCanvasLlmCompatibilityError, toCanvasChatMessages } from "./canvas-agent-llm";
 
 describe("canvas agent LLM runtime", () => {
   test("packs function_call batches into one assistant tool_calls message", () => {
@@ -21,5 +21,12 @@ describe("canvas agent LLM runtime", () => {
       ],
     });
     expect(messages[3]).toEqual({ role: "tool", tool_call_id: "1", content: "{\"ok\":true}" });
+  });
+
+  test("treats tool_choice and strict-field rejections as compatibility errors", () => {
+    expect(isCanvasLlmCompatibilityError(new Error("HTTP 400: tool_choice is not supported"))).toBe(true);
+    expect(isCanvasLlmCompatibilityError(new Error("thinking mode does not allow tool_choice"))).toBe(true);
+    expect(isCanvasLlmCompatibilityError(new Error("unknown field: strict"))).toBe(true);
+    expect(isCanvasLlmCompatibilityError(new Error("网络异常"))).toBe(false);
   });
 });

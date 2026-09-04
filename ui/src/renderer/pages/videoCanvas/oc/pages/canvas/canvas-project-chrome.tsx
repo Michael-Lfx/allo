@@ -68,6 +68,7 @@ type CanvasProjectCanvasChromeProps = {
     handleViewportChange: (viewport: ViewportTransform) => void;
     setZoomScale: ReturnType<typeof useCanvasViewportController>["setZoomScale"];
     resetViewport: () => void;
+    autoArrangeCanvasNodes: ReturnType<typeof useCanvasNodeOperations>["autoArrangeCanvasNodes"];
     setIsMiniMapOpen: Dispatch<SetStateAction<boolean>>;
     setShortcutRequestNonce: Dispatch<SetStateAction<number>>;
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
@@ -147,6 +148,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         handleViewportChange,
         setZoomScale,
         resetViewport,
+        autoArrangeCanvasNodes,
         setIsMiniMapOpen,
         setShortcutRequestNonce,
         currentProject,
@@ -256,6 +258,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                                 containerRef={containerRef}
                                 onScaleChange={setZoomScale}
                                 onReset={resetViewport}
+                                onAutoArrange={autoArrangeCanvasNodes}
                                 isMiniMapOpen={isMiniMapOpen}
                                 onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)}
                                 onOpenShortcuts={() => setShortcutRequestNonce((value) => value + 1)}
@@ -293,6 +296,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onPaste={pasteAtPosition}
                         onCopyNode={(nodeId) => copyNodesToClipboard(new Set([nodeId]))}
                         onDuplicate={duplicateNode}
+                        onCreateGenerationCopy={(nodeId) => duplicateNode(nodeId, "copy")}
                         onDeleteNode={(nodeId) => deleteNodes(new Set([nodeId]))}
                         onDeleteConnection={deleteConnection}
                         onSaveAsset={(node) => {

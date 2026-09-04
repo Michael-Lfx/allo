@@ -2,6 +2,7 @@ import type { NodeGenerationContext } from "@oc/components/canvas/canvas-node-ge
 import type { CanvasNodeGenerationMode } from "@oc/components/canvas/canvas-node-prompt-panel";
 import { generationPromptFingerprint } from "@oc/lib/generation-error";
 import type { AiConfig } from "@oc/stores/use-config-store";
+import { resolveModelVideoBooleanOptions } from "@oc/lib/model-capabilities";
 
 type GenerationReference = NodeGenerationContext["referenceImages"][number] | NodeGenerationContext["referenceVideos"][number] | NodeGenerationContext["referenceAudios"][number];
 
@@ -39,8 +40,19 @@ export function canvasGenerationRequestOptions(config: AiConfig, mode: CanvasNod
     switch (mode) {
         case "image":
             return { size: config.size, quality: config.quality, transparentBackground: config.transparentBackground === "true", count: Number(config.count) };
-        case "video":
-            return { size: config.size, videoSeconds: Number(config.videoSeconds), vquality: config.vquality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" };
+        case "video": {
+            const videoBooleans = resolveModelVideoBooleanOptions(config, config.model, {
+                videoGenerateAudio: config.videoGenerateAudio,
+                videoWatermark: config.videoWatermark,
+            });
+            return {
+                size: config.size,
+                videoSeconds: Number(config.videoSeconds),
+                vquality: config.vquality,
+                videoGenerateAudio: videoBooleans.videoGenerateAudio === "true",
+                videoWatermark: videoBooleans.videoWatermark === "true",
+            };
+        }
         case "audio":
             return { audioVoice: config.audioVoice, audioFormat: config.audioFormat, audioSpeed: Number(config.audioSpeed) };
         default:

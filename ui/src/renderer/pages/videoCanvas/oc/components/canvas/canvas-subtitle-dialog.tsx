@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { App, Button, Input, Modal } from "antd";
-import { FileDown, FileUp, Plus, Trash2 } from "lucide-react";
+import { FileDown, FileUp, Plus, Trash2, WandSparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+import { canvasNodeMediaId } from "@oc/lib/canvas/canvas-media-id";
 import { parseSrt, serializeSrtEntries } from "@oc/lib/timeline/srt-parser";
+import { transcriptToSrtEntries } from "@oc/lib/timeline/transcript-to-srt";
+import { transcribeCanvasMedia } from "@renderer/pages/videoCanvas/api";
 import { createDefaultSubtitleStyle, type SrtEntry } from "@oc/types/timeline";
 import type { CanvasNodeData, CanvasNodeMetadata } from "@oc/types/canvas";
 
@@ -20,6 +24,7 @@ export function CanvasSubtitleDialog({ node, open, onClose, onSave }: CanvasSubt
     useTranslation();
     const { message } = App.useApp();
     const [entries, setEntries] = useState<SrtEntry[]>([]);
+    const [transcribing, setTranscribing] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -50,7 +55,7 @@ export function CanvasSubtitleDialog({ node, open, onClose, onSave }: CanvasSubt
             setEntries(parsed);
             message.success(canvasT("videoCanvas.subtitle.saved", "已保存 {{count}} 条字幕", { count: parsed.length }));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : canvasT("videoCanvas.subtitle.importFailed", "导入失败"));
+            message.error(formatCanvasUserError(error, canvasT("videoCanvas.subtitle.importFailed", "导入失败")));
         }
     };
 
@@ -62,6 +67,29 @@ export function CanvasSubtitleDialog({ node, open, onClose, onSave }: CanvasSubt
         anchor.download = `${node.title || "subtitles"}.srt`;
         anchor.click();
         URL.revokeObjectURL(url);
+    };
+
+    const transcribe = async () => {
+        const mediaId = canvasNodeMediaId(node);
+        if (!mediaId) {
+            message.warning(canvasT("videoCanvas.subtitle.transcribeNeedMedia", "当前节点没有可转写的本地媒体"));
+            return;
+        }
+        setTranscribing(true);
+        try {
+            const result = await transcribeCanvasMedia(mediaId);
+            const next = transcriptToSrtEntries(result.text, result.duration_ms ?? node.metadata?.durationMs);
+            if (!next.length) {
+                message.warning(canvasT("videoCanvas.subtitle.parseEmpty", "未解析到有效字幕条目"));
+                return;
+            }
+            setEntries(next);
+            message.success(canvasT("videoCanvas.subtitle.transcribed", "已转写 {{count}} 条字幕", { count: next.length }));
+        } catch (error) {
+            message.error(formatCanvasUserError(error, canvasT("videoCanvas.subtitle.transcribeFailed", "转写失败")));
+        } finally {
+            setTranscribing(false);
+        }
     };
 
     return (
@@ -79,6 +107,7 @@ export function CanvasSubtitleDialog({ node, open, onClose, onSave }: CanvasSubt
             <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Button icon={<FileUp className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>{canvasT("videoCanvas.subtitle.import", "导入 SRT")}</Button>
                 <Button icon={<FileDown className="size-3.5" />} disabled={!entries.length} onClick={exportSrt}>{canvasT("videoCanvas.subtitle.export", "导出 SRT")}</Button>
+                <Button icon={<WandSparkles className="size-3.5" />} loading={transcribing} onClick={() => void transcribe()}>{canvasT("videoCanvas.subtitle.transcribe", "转写自动字幕")}</Button>
                 <Button
                     icon={<Plus className="size-3.5" />}
                     onClick={() => setEntries((current) => [...current, { index: current.length + 1, startMs: current.at(-1)?.endMs || 0, endMs: (current.at(-1)?.endMs || 0) + 2000, text: "" }])}

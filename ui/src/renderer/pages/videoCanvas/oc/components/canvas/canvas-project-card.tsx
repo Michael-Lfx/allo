@@ -7,9 +7,8 @@ import { useCanvasStore, type CanvasProject } from "@oc/stores/canvas/use-canvas
 import { useCanvasUiStore } from "@oc/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@oc/lib/canvas/canvas-export";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
-import { resourceFileUrl, resourceIdFromStorageKey } from "@oc/services/api/resources";
-import { resolveBackendApiUrl } from "@oc/stores/use-config-store";
 import { cn } from "@oc/lib/utils";
 import { videoCanvasProjectPath } from "@renderer/pages/videoCanvas/routes";
 
@@ -142,9 +141,7 @@ function ProjectPreview({ project }: { project: CanvasProject }) {
 }
 
 function getNodeMediaUrl(node: CanvasNodeData) {
-    const resourceId = resourceIdFromStorageKey(node.metadata?.storageKey);
-    if (resourceId) return resourceFileUrl(resourceId);
-    return resolveBackendApiUrl(node.metadata?.content || "");
+    return canvasNodeDisplayUrl(node);
 }
 
 function buildNodePreviewLayout(nodes: CanvasNodeData[]) {

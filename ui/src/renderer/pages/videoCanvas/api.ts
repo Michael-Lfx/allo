@@ -199,6 +199,39 @@ export async function concatCanvasMedia(
   });
 }
 
+export type CanvasTranscription = {
+  text: string;
+  language?: string | null;
+  duration_ms?: number | null;
+};
+
+export async function transcribeCanvasMedia(
+  mediaId: string,
+  language?: string
+): Promise<CanvasTranscription> {
+  return httpRequest<CanvasTranscription>(
+    'POST',
+    `/api/video-canvas/media/${encodeURIComponent(mediaId)}/transcribe`,
+    language ? { language } : {}
+  );
+}
+
+export type CanvasTimelineExportClip = {
+  media_id: string;
+  source_start_ms?: number;
+  duration_ms: number;
+  gap_before_ms?: number;
+};
+
+export async function exportCanvasTimeline(body: {
+  clips: CanvasTimelineExportClip[];
+  srt?: string;
+  burn_subtitles?: boolean;
+  title?: string;
+}): Promise<CanvasMediaMeta> {
+  return httpRequest<CanvasMediaMeta>('POST', '/api/video-canvas/media/export-timeline', body);
+}
+
 export async function uploadCanvasMedia(
   file: File,
   title?: string,

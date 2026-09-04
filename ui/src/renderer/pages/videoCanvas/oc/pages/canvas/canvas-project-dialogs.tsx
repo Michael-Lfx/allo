@@ -12,8 +12,12 @@ import { CanvasProjectStatusDialogs } from "./canvas-project-status-dialogs";
 import { AssetPickerModal } from "@oc/components/canvas/asset-picker-modal";
 import { CanvasProjectAssetModal } from "@oc/components/canvas/canvas-project-asset-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
+import { resourceStorageKey } from "@oc/services/api/resources";
+import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { flushCanvasStorePersistence } from "@oc/stores/canvas/use-canvas-store";
-import { CanvasNodeType, type CanvasNodeData, type Position, type StoryboardColumn } from "@oc/types/canvas";
+import { AiArtCritiqueModal } from "@oc/components/canvas/art-critique/ai-art-critique-modal";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position, type StoryboardColumn } from "@oc/types/canvas";
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
 import type { ProjectDetail } from "@oc/services/api/projects";
 import type { useCanvasUpload } from "./use-canvas-upload";
@@ -56,6 +60,9 @@ type CanvasProjectDialogsProps = {
     setSubtitleNodeId: SetNodeId;
     timelineNodeId: string | null;
     nodes: CanvasNodeData[];
+    connections: CanvasConnection[];
+    artCritiqueNodeId: string | null;
+    setArtCritiqueNodeId: SetNodeId;
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
     updateProject: ReturnType<typeof useCanvasProjectLifecycle>["updateProject"];
     setTimelineNodeId: SetNodeId;
@@ -133,6 +140,9 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
         setSubtitleNodeId,
         timelineNodeId,
         nodes,
+        connections,
+        artCritiqueNodeId,
+        setArtCritiqueNodeId,
         currentProject,
         updateProject,
         setTimelineNodeId,
@@ -229,7 +239,54 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
                             if (!currentProject) return;
                             updateProject(currentProject.id, { timeline });
                         }}
+                        onExportMedia={(meta) => {
+                            const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
+                            const seed = timelineNodeId ? nodeById.get(timelineNodeId) : null;
+                            const created = createCanvasNode(
+                                CanvasNodeType.Video,
+                                {
+                                    x: (seed?.position.x || 160) + (seed?.width || 0) + 96 + spec.width / 2,
+                                    y: (seed?.position.y || 160) + spec.height / 2,
+                                },
+                                {
+                                    content: meta.url,
+                                    storageKey: resourceStorageKey(meta.media_id),
+                                    mediaId: meta.media_id,
+                                    mimeType: meta.mime,
+                                    bytes: meta.bytes,
+                                    durationMs: meta.duration_ms ?? undefined,
+                                    naturalWidth: meta.width ?? undefined,
+                                    naturalHeight: meta.height ?? undefined,
+                                    status: "success",
+                                    workflowKind: "final",
+                                    workflowTitle: "时间线成片",
+                                    videoEditOperation: "concat",
+                                },
+                            );
+                            created.title = meta.title || canvasT("videoCanvas.timeline.export", "导出成片");
+                            setNodes((current) => [...current, created]);
+                        }}
                     />
+
+                    {(() => {
+                        const artCritiqueNode = artCritiqueNodeId ? nodeById.get(artCritiqueNodeId) || null : null;
+                        const artCritiqueInputs = artCritiqueNode
+                            ? connections
+                                  .filter((connection) => connection.toNodeId === artCritiqueNode.id)
+                                  .sort((left, right) => left.id.localeCompare(right.id))
+                                  .map((connection) => nodeById.get(connection.fromNodeId))
+                                  .filter((node): node is CanvasNodeData => Boolean(node))
+                            : [];
+                        return (
+                            <AiArtCritiqueModal
+                                node={artCritiqueNode}
+                                upstreamNodes={artCritiqueInputs}
+                                open={Boolean(artCritiqueNode)}
+                                onClose={() => setArtCritiqueNodeId(null)}
+                                onUpdateState={(nodeId, state) => handleConfigNodeChange(nodeId, { artCritique: state })}
+                            />
+                        );
+                    })()}
 
                     <CanvasCharacterReferenceModal node={characterReferenceNode} open={Boolean(characterReferenceNode)} onClose={() => setCharacterReferenceNodeId(null)} />
 

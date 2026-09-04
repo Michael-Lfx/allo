@@ -34,6 +34,10 @@ describe("canvas interaction store", () => {
         state.setDragPreview((current) => (current ? { ...current, x: 20, y: current.y } : current));
         expect(useCanvasInteractionStore.getState().dragPreview?.x).toBe(20);
         expect(useCanvasInteractionStore.getState().dragPreview?.nodeIds).toEqual(["a", "b"]);
+
+        const current = useCanvasInteractionStore.getState().dragPreview;
+        useCanvasInteractionStore.getState().setDragPreview({ x: 20, y: -4, nodeIds: ["a", "b"] });
+        expect(useCanvasInteractionStore.getState().dragPreview).toBe(current);
     });
 
     test("stores pointer-follow selection box and connection draft without sharing page state", () => {

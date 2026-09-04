@@ -1,5 +1,6 @@
 import type { ModelProtocol } from "@oc/lib/model-protocols";
 import { MINIMAX_H3_DURATION_DEFAULT, MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN } from "@oc/lib/minimax-h3-video";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import {
     DEFAULT_MINIMAX_H3_RESOLUTION,
     DEFAULT_VIDEO_RESOLUTION,
@@ -258,4 +259,44 @@ export function videoDurationAllowed(profile: VideoCapabilityConfig, value: numb
     const max = profile.duration.max || min;
     const step = profile.duration.step || 1;
     return value >= min && value <= max && (value - min) % step === 0;
+}
+
+type CapabilityLookupConfig = {
+    channels: Array<{
+        id: string;
+        models: string[];
+        modelCosts?: Array<{ model: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol }>;
+    }>;
+};
+
+export type ModelVideoBooleanOptions = {
+    videoGenerateAudio: string;
+    videoWatermark: string;
+};
+
+export function resolveModelVideoBooleanOptions(
+    config: CapabilityLookupConfig,
+    model: string,
+    explicit: Partial<ModelVideoBooleanOptions> = {},
+    fallback: Partial<ModelVideoBooleanOptions> = {},
+): ModelVideoBooleanOptions {
+    const profile = modelCapabilityConfigFor(config, model).video!;
+    const pick = (key: keyof ModelVideoBooleanOptions) => explicit[key] || fallback[key];
+    return {
+        videoGenerateAudio: profile.generateAudio.supported ? pick("videoGenerateAudio") ?? String(profile.generateAudio.default) : "false",
+        videoWatermark: profile.watermark.supported ? pick("videoWatermark") ?? String(profile.watermark.default) : "false",
+    };
+}
+
+export function modelPromptLengthError(config: CapabilityLookupConfig, model: string, capability: "text" | "image" | "video", prompt: string) {
+    if (capability !== "video") return "";
+    const maxChars = modelCapabilityConfigFor(config, model).video?.references.promptMaxChars;
+    if (!maxChars || maxChars <= 0) return "";
+    const actualChars = Array.from(prompt).length;
+    if (actualChars <= maxChars) return "";
+    return canvasT(
+        "videoCanvas.generation.promptTooLong",
+        "当前视频模型提示词最多 {{max}} 个字符，完整提示词为 {{actual}} 个字符。系统不会自动截断，请精简当前输入、连线内容或技能上下文后重试",
+        { max: maxChars, actual: actualChars },
+    );
 }

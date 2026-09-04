@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { CloseSmall, Left, Right } from '@icon-park/react';
 import { loadStudioMediaPreviewUrl } from './collectStudioMedia';
+import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
+import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import type { StudioSessionMedia } from './types';
 import styles from './index.module.css';
 
@@ -24,33 +26,40 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
   const { t } = useTranslation();
   const total = items.length;
   const current = items[Math.max(0, Math.min(index, Math.max(0, total - 1)))];
-  const [url, setUrl] = useState<string | null>(null);
+  const artifactPath =
+    !current || current.origin === 'cameo' || current.kind === 'file' || current.kind === 'document'
+      ? null
+      : current.path;
+  const { url: artifactUrl, reload } = useArtifactMediaUrl(sessionId, artifactPath);
+  const [cameoUrl, setCameoUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!current || current.kind === 'file' || current.kind === 'document') {
-      setUrl(null);
+    if (!current || current.origin !== 'cameo' || current.kind === 'file' || current.kind === 'document') {
+      setCameoUrl(null);
       return;
     }
     let cancelled = false;
     let blobUrl: string | null = null;
-    setUrl(null);
+    setCameoUrl(null);
     void loadStudioMediaPreviewUrl(sessionId, current)
       .then((next) => {
         if (cancelled) {
-          if (current.origin === 'cameo') URL.revokeObjectURL(next);
+          URL.revokeObjectURL(next);
           return;
         }
-        if (current.origin === 'cameo') blobUrl = next;
-        setUrl(next);
+        blobUrl = next;
+        setCameoUrl(next);
       })
       .catch(() => {
-        if (!cancelled) setUrl(null);
+        if (!cancelled) setCameoUrl(null);
       });
     return () => {
       cancelled = true;
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [sessionId, current?.path, current?.kind, current?.origin]);
+
+  const url = current?.origin === 'cameo' ? cameoUrl : artifactUrl;
 
   useEffect(() => {
     const neighbor = items[index + 1] ?? items[index - 1];
@@ -143,11 +152,13 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
             playsInline
             autoPlay
             muted
+            onError={() => reload()}
+            onLoadedMetadata={(event) => seekMediaElementToFirstFrame(event.currentTarget)}
           />
         ) : url && current.kind === 'audio' ? (
-          <audio key={url} className={styles.lightboxAudio} src={url} controls autoPlay />
+          <audio key={url} className={styles.lightboxAudio} src={url} controls autoPlay onError={() => reload()} />
         ) : url ? (
-          <img className={styles.lightboxImg} src={url} alt={label} />
+          <img className={styles.lightboxImg} src={url} alt={label} onError={() => reload()} />
         ) : (
           <div className={styles.lightboxPending} />
         )}

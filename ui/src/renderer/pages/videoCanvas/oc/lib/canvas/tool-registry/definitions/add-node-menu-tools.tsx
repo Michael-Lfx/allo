@@ -47,6 +47,7 @@ export const addNodeMenuCommands: AddNodeMenuCommand[] = [
     extensionCommand(CanvasNodeType.Compare, 50),
     extensionCommand(CanvasNodeType.Chart, 60),
     extensionCommand(CanvasNodeType.ColorGrade, 70),
+    extensionCommand(CanvasNodeType.ArtCritique, 80),
     // 导入资源
     { id: "upload", label: () => canvasT("videoCanvas.toolbar.upload", "上传文件"), icon: <UploadCloud />, section: "resource", defaultOrder: 10, run: (ctx) => ctx.handlers.onUpload() },
     { id: "project-character", label: () => canvasT("videoCanvas.toolbar.addCharacter", "添加角色卡"), icon: <UserRound />, section: "resource", defaultOrder: 20, applicable: (ctx) => ctx.isProjectLinked, run: (ctx) => ctx.handlers.onOpenProjectCharacters() },

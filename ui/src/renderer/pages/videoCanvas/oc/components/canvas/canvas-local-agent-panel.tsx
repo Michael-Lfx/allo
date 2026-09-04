@@ -6,6 +6,7 @@ import { History, MessageSquareText, PlugZap, RotateCcw, Terminal } from "lucide
 import { motion } from "motion/react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { createClientId } from "@oc/lib/client-id";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -191,7 +192,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
             setAgentState({ prompt: "", attachments: [] });
         } catch (error) {
             setAgentState({ activity: canvasT(`${LA}.activitySendFailed`, "发送失败"), waiting: false });
-            addMessage({ role: "error", title: canvasT(`${LA}.errorSendFailed`, "发送失败"), text: error instanceof Error ? error.message : canvasT(`${LA}.errorSendFailed`, "发送失败") });
+            addMessage({ role: "error", title: canvasT(`${LA}.errorSendFailed`, "发送失败"), text: formatCanvasUserError(error, canvasT(`${LA}.errorSendFailed`, "发送失败")) });
             addEventLog(canvasT(`${LA}.errorSendFailed`, "发送失败"), error);
         } finally {
             setAgentState({ sending: false });
@@ -220,7 +221,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
             }
             if (next.length) setAgentState({ attachments: merged });
         } catch (error) {
-            addMessage({ role: "error", title: canvasT(`${LA}.errorImageRead`, "图片读取失败"), text: error instanceof Error ? error.message : canvasT(`${LA}.errorImageRead`, "图片读取失败") });
+            addMessage({ role: "error", title: canvasT(`${LA}.errorImageRead`, "图片读取失败"), text: formatCanvasUserError(error, canvasT(`${LA}.errorImageRead`, "图片读取失败")) });
         }
     };
 
@@ -311,7 +312,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
             addEventLog(canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), loggedResult, loggedResult);
             addMessage({ role: "tool", title: canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), text: payload.name === "canvas_apply_ops" ? (applyResult?.message || summarizeCanvasAgentOps((input.ops || []) as CanvasAgentOp[]) || canvasT(`${LA}.canvasOp`, "画布操作")) : canvasT(`${LA}.completed`, "已完成"), detail: { requestId: payload.requestId, name: payload.name, input, result: loggedResult } });
         } catch (error) {
-            const message = error instanceof Error ? error.message : canvasT(`${LA}.errorCanvasOpFailed`, "画布操作失败");
+            const message = formatCanvasUserError(error, canvasT(`${LA}.errorCanvasOpFailed`, "画布操作失败"));
             setAgentState({ activity: canvasT(`${LA}.activityToolFailed`, "工具失败"), waiting: false });
             addMessage({ role: "tool", title: canvasT(`${LA}.errorToolFailed`, "工具失败"), text: message, detail: payload });
             await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: message });
@@ -413,7 +414,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
             await loadThreads();
         } catch (error) {
             addEventLog(canvasT(`${LA}.newThreadFailed`, "新建对话失败"), error);
-            message.error(error instanceof Error ? error.message : canvasT(`${LA}.newThreadFailed`, "新建对话失败"));
+            message.error(formatCanvasUserError(error, canvasT(`${LA}.newThreadFailed`, "新建对话失败")));
         } finally {
             setAgentState({ loadingThreads: false });
         }
@@ -429,7 +430,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
             await loadThreads();
         } catch (error) {
             addEventLog(canvasT(`${LA}.resumeFailed`, "恢复对话失败"), error);
-            message.error(error instanceof Error ? error.message : canvasT(`${LA}.resumeFailed`, "恢复对话失败"));
+            message.error(formatCanvasUserError(error, canvasT(`${LA}.resumeFailed`, "恢复对话失败")));
         } finally {
             setAgentState({ loadingThreads: false });
         }
@@ -450,7 +451,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
             message.success(canvasT(`${LA}.deletedToast`, "记录已删除"));
         } catch (error) {
             addEventLog(canvasT(`${LA}.deleteFailed`, "删除对话失败"), error);
-            message.error(error instanceof Error ? error.message : canvasT(`${LA}.deleteFailed`, "删除对话失败"));
+            message.error(formatCanvasUserError(error, canvasT(`${LA}.deleteFailed`, "删除对话失败")));
         } finally {
             setAgentState({ loadingThreads: false });
         }

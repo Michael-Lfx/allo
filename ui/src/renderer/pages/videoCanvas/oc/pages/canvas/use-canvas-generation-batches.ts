@@ -3,6 +3,7 @@ import { App } from "antd";
 import { nanoid } from "nanoid";
 
 import { generationBatchStatus, isGenerationCostUncertainError } from "@oc/lib/canvas/canvas-generation-batch";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { buildGenerationConfig, generationTaskMetadata, resetGenerationTaskMetadata } from "@oc/lib/canvas/canvas-project-generation";
 import { unchangedModeratedPrompt } from "@oc/lib/generation-error";
 import { cancelGenerationTask, listGenerationTasks } from "@oc/services/api/task-center";
@@ -312,7 +313,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, modelCata
                         return { ...currentNode, metadata: { ...currentNode.metadata, generationBatches: batches } };
                     }));
                 } catch (error) {
-                    message.error(error instanceof Error ? error.message : "任务取消失败");
+                    message.error(formatCanvasUserError(error, "任务取消失败"));
                 }
             },
         });

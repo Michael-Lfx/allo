@@ -18,7 +18,9 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 | PUT | `/projects/{id}/doc` | 持久化画布文档 |
 | GET | `/media` | 媒体列表 |
 | POST | `/media/upload` | 上传素材 |
-| POST | `/media/concat` | **本机 ffmpeg 拼接**多段视频 |
+| POST | `/media/concat` | **本机 ffmpeg 拼接**多段视频（≥2 段） |
+| POST | `/media/export-timeline` | **本机 ffmpeg** 时间线导出：裁剪 / 空隙黑场 / concat / 可选烧录 SRT |
+| POST | `/media/{id}/transcribe` | ffmpeg 抽 16kHz WAV + Flowy **category=7 ASR**（纯文本，无词级时间戳） |
 | GET | `/media/{id}` | 二进制 serve（auth-exempt） |
 | DELETE | `/media/{id}` | 删除媒体 |
 | POST | `/tasks` | 创建图/视频生成（Flowy） |
@@ -46,6 +48,7 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 
 - **业务逻辑（工具、画布 ops、会话 UI）在前端** `oc/components/canvas/canvas-assistant-panel.tsx`
 - 服务端只做 Flowy `/chat/completions` 透传；文本模型来自 `modelProfile.resolve({ task: 'chat' })`，写入 OC `allo-chat` 渠道
+- **多模态**：catalog `params.extra.input` 含 `image`（或 trait `vision_input`）的 chat 模型可带图走 LLM 代理；UI 记在 `modelCosts.supportsVision`
 - 桌面开发：LLM / 媒体请求必须打到 `http://127.0.0.1:{backendPort}/api/...`，不能相对打到 Vite `5173`
 - 媒体 `fetch` 使用 `credentials: omit` + local-trust 头（后端 CORS 为 `*`，不能与 credentialed 请求共用）
 - 图/视频参考媒体用本地 `resource:` / `/api/video-canvas/media` 即可，不必经过影策 OSS 用户缓存门禁
@@ -60,6 +63,9 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 | 图生视频 | 上游图作 `first_frame` / 参考图 → Seedance i2v |
 | 运镜 | 提示词预设 + 同上视频 API |
 | 拼接成片 | **本机** `concat_videos`（不调云） |
+| 时间线导出 | `POST /media/export-timeline`（结构化 clips，禁止前端任意 ffmpeg argv） |
+| 字幕转写 | `POST /media/{id}/transcribe` → 前端按时长比例切 SRT |
+| AI 审美批改 | 内置节点 `ai-art-critique`；带图走多模态 chat，不走影策插件/OSS |
 
 ---
 
@@ -76,15 +82,17 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 
 ## 文件夹 / 时间线 / 字幕（client-doc-first）
 
-**不新建后端路由**。全部落在现有不透明 `PUT /api/video-canvas/projects/{id}/doc` JSON 内（schema 仍为 `1`）。
+文件夹 / 时间线 / 字幕的**编辑状态**仍是 client-doc-first：不新建 CRUD 路由，全部落在现有不透明 `PUT /api/video-canvas/projects/{id}/doc` JSON 内（schema 仍为 `1`）。转写与时间线导出是媒体处理 API，不保存时间线文档。
 
 | 能力 | Doc 契约 | 前端入口 |
 |------|-----------|----------|
 | 文件夹 | `nodes[]` 中 `type: frame` + `metadata.folder: { style, theme?, createdAt, themeCover? }`；子节点靠 `parentId`。**勿写** `assetFolderId`（不接影策 `/asset-folders`） | 添加节点菜单「文件夹」→ `createFolder` |
 | 时间线 | 项目级 `doc.timeline?: TimelineProject`（`version: 2`, `tracks`, `clips`, `durationMs`） | 视频/音频悬停工具「时间线」 |
-| 字幕 | 视频节点 `metadata.subtitleEntries / subtitleHighlights? / subtitleStyle? / subtitleUpdatedAt?`；SRT 客户端解析 | 视频悬停工具「字幕」 |
+| 字幕 | 视频节点 `metadata.subtitleEntries / subtitleHighlights? / subtitleStyle? / subtitleUpdatedAt?`；SRT 客户端解析；**转写**走 `POST /media/{id}/transcribe` 后写回同一 metadata | 视频悬停工具「字幕」 |
 
-成片拼接仍走现有 `POST /media/concat`；时间线导出 wasm / 烧录字幕为后续增强，不要求新 API。
+时间线 **导出成片** 走 `POST /media/export-timeline`（trim / gap / concat / 可选烧录）；单段且无空隙时不必走 `concat`（concat 仍要求 ≥2 段）。文件夹与时间线/字幕编辑本身仍是 client-doc-first。
+
+左下角缩放坞「整理画布」是纯前端 `layoutCanvasAuto`，无新 API。
 
 ---
 

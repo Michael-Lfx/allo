@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { FRAME_COLLAPSED_HEIGHT, FRAME_COLLAPSED_WIDTH, getFrameChildIds, isFrameNode } from "@oc/lib/canvas/canvas-frame";
 import { downloadCanvasNodeMedia } from "@oc/lib/canvas/canvas-node-download";
 import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@oc/lib/canvas/canvas-project-domain";
@@ -167,7 +168,7 @@ export function useCanvasNodeEditor({
                 if (domainProjectId) await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
                 message.success("资产分类已更新");
             })
-            .catch((error) => message.error(error instanceof Error ? error.message : "资产分类更新失败"));
+            .catch((error) => message.error(formatCanvasUserError(error, "资产分类更新失败")));
     }, [canvasId, domainProjectId, message, nodesRef, queryClient, setNodes]);
 
     const downloadNodeImage = useCallback(async (node: CanvasNodeData) => {
@@ -183,7 +184,7 @@ export function useCanvasNodeEditor({
             else message.success("已开始下载，请在浏览器下载栏查看");
         } catch (error) {
             if (error instanceof DOMException && error.name === "AbortError") return;
-            message.error(error instanceof Error ? error.message : "下载失败");
+            message.error(formatCanvasUserError(error, "下载失败"));
         } finally {
             hide();
         }
@@ -199,7 +200,7 @@ export function useCanvasNodeEditor({
             message.success(result.linkedToProject ? "已加入项目资产" : "已加入我的素材");
             onAssetSaved?.();
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "素材保存失败");
+            message.error(formatCanvasUserError(error, "素材保存失败"));
         }
     }, [canvasId, domainProjectId, message, onAssetSaved, queryClient, setNodes]);
 

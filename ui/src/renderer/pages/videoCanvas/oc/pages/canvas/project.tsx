@@ -401,6 +401,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const {
         alignSelectedNodes,
         arrangeSelectedNodes,
+        autoArrangeCanvasNodes,
         copyNodesToClipboard,
         copySelectedNodes,
         createFolder,
@@ -1050,6 +1051,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         nodes={nodes}
                         size={size}
                         setIsMiniMapOpen={setIsMiniMapOpen}
+                        autoArrangeCanvasNodes={autoArrangeCanvasNodes}
                         currentProject={currentProject}
                         selectedNodeIds={selectedNodeIds}
                         createMediaAssetNode={createMediaAssetNode}
@@ -1087,6 +1089,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         handleImageInputChange={handleImageInputChange}
                         nodeById={nodeById}
                         nodes={nodes}
+                        connections={connections}
                         currentProject={currentProject}
                         updateProject={updateProject}
                         characterReferenceNode={characterReferenceNode}

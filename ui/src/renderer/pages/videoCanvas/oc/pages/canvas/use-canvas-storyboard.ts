@@ -20,6 +20,7 @@ import {
 import { buildNodeMentionReferences } from "@oc/lib/canvas/canvas-resource-references";
 import { resolveStoryboardGenerationContext } from "@oc/lib/canvas/canvas-storyboard-context";
 import { generationErrorMessage } from "@oc/lib/generation-error";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { createGenerationTask, waitForGenerationTask } from "@oc/services/api/task-center";
 import { modelDisplayName, useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
@@ -117,7 +118,7 @@ export function useCanvasStoryboard({
         try {
             storyboardContext = resolveStoryboardGenerationContext(nodesRef.current);
         } catch (error) {
-            message.warning(error instanceof Error ? error.message : "分镜上下文不完整");
+            message.warning(formatCanvasUserError(error, "分镜上下文不完整"));
             return;
         }
         const shotDuration = scriptNode.metadata?.storyboardShotDuration || "auto";
@@ -175,7 +176,7 @@ export function useCanvasStoryboard({
         } catch (error) {
             const details = generationErrorMessage(error);
             setNodes((current) => current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : node));
-            message.error(details);
+            message.error(formatCanvasUserError(error, details));
             return false;
         }
     }, [connectionsRef, effectiveConfig, isAiConfigReady, message, nodesRef, projectId, setNodes]);

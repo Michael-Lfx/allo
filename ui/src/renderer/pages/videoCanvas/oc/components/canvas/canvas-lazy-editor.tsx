@@ -1,5 +1,7 @@
 import { Component, lazy, Suspense, useMemo, useState, type ComponentType, type ReactNode } from "react";
 
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
+
 export async function retryDynamicImport<T>(load: () => Promise<T>, attempts = 3): Promise<T> {
     let last: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -50,7 +52,7 @@ class CanvasChunkBoundary extends Component<{ title: string; onRetry: () => void
             <div className="fixed inset-0 z-[var(--z-toast)] grid place-items-center bg-black/45 p-6" role="alert">
                 <div className="max-w-md rounded-xl bg-[var(--flowy-panel,Canvas)] p-4 text-sm text-[var(--flowy-text-primary,CanvasText)] shadow-xl">
                     <div className="font-semibold">{this.props.title}加载失败</div>
-                    <div className="mt-2 opacity-70">{this.state.error.message}</div>
+                    <div className="mt-2 opacity-70">{formatCanvasUserError(this.state.error, "加载失败，请重试")}</div>
                     <button
                         type="button"
                         className="mt-3 rounded-md border px-3 py-1"

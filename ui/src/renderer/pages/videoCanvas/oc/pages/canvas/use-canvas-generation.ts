@@ -9,6 +9,7 @@ import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 import { cinematicStoryboardColumns, storyboardRowsFromTask } from "@oc/lib/canvas/canvas-project-domain";
 import { generationTaskMetadata } from "@oc/lib/canvas/canvas-project-generation";
 import { generationFailureMetadata } from "@oc/lib/generation-error";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 
 type CanvasGenerationRequest = {
     targetNodeId: string;
@@ -121,7 +122,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             setTaskDetail(task);
             setTaskDetailLogs(logs);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "任务详情加载失败");
+            message.error(formatCanvasUserError(error, "任务详情加载失败"));
         } finally {
             setTaskDetailLoading(false);
         }
@@ -177,7 +178,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             if (!generationTaskCanReloadResource(task)) throw new Error("原生成任务尚未成功，无法重新加载资源");
             await applyGenerationTaskResult(node.id, task);
         } catch (error) {
-            setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: error instanceof Error ? error.message : "资源重新加载失败", resourceReloadAvailable: true } } : item)));
+            setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: formatCanvasUserError(error, "资源重新加载失败"), resourceReloadAvailable: true } } : item)));
         }
     }, [applyGenerationTaskResult, setNodes]);
 
@@ -285,7 +286,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             autoSavedTaskIdsRef.current.add(saveKey);
             void saveGeneratedAsset(node, taskId).catch((error) => {
                 autoSavedTaskIdsRef.current.delete(saveKey);
-                message.warning(error instanceof Error ? `生成结果已保留，但项目资产同步失败：${error.message}` : "生成结果已保留，但项目资产同步失败");
+                message.warning(error instanceof Error ? `生成结果已保留，但项目资产同步失败：${formatCanvasUserError(error, "同步失败")}` : "生成结果已保留，但项目资产同步失败");
             });
         });
     }, [domainProjectId, message, nodes, projectLoaded, saveGeneratedAsset]);

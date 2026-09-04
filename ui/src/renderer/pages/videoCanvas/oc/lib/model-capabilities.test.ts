@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
     defaultModelCapabilityConfig,
     modelCapabilityConfigFor,
+    modelPromptLengthError,
+    resolveModelVideoBooleanOptions,
     VIDEO_REFERENCE_OPERATIONS,
 } from "./model-capabilities";
 
@@ -73,5 +75,32 @@ describe("video model reference capabilities", () => {
         );
         expect(profile.video?.references.maxVideos).toBeGreaterThan(0);
         expect(profile.video?.operations).toContain("extend");
+    });
+});
+
+describe("video prompt length and capability-gated booleans", () => {
+    test("rejects video prompts over the Seedance character limit", () => {
+        const model = "flowy::doubao-seedance-2-0";
+        const error = modelPromptLengthError(configFor(model), model, "video", "画".repeat(1001));
+        expect(error).toContain("1000");
+        expect(error).toContain("1001");
+        expect(modelPromptLengthError(configFor(model), model, "video", "画".repeat(1000))).toBe("");
+    });
+
+    test("forces audio and watermark off when the model does not support them", () => {
+        const model = "flowy::MiniMax-H3";
+        expect(resolveModelVideoBooleanOptions(configFor(model), model, { videoGenerateAudio: "true", videoWatermark: "true" })).toEqual({
+            videoGenerateAudio: "false",
+            videoWatermark: "false",
+        });
+    });
+
+    test("keeps Seedance audio on by default and watermark off unless requested", () => {
+        const model = "flowy::doubao-seedance-2-0";
+        expect(resolveModelVideoBooleanOptions(configFor(model), model)).toEqual({
+            videoGenerateAudio: "true",
+            videoWatermark: "false",
+        });
+        expect(resolveModelVideoBooleanOptions(configFor(model), model, { videoWatermark: "true" }).videoWatermark).toBe("true");
     });
 });

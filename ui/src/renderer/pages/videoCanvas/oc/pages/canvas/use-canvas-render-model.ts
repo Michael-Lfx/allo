@@ -1,18 +1,19 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@oc/components/canvas/canvas-node-generation";
-import { canvasCullViewRect, filterDisplayConnections } from "@oc/lib/canvas/canvas-connection-draw-list";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
-import { shouldReduceCanvasMediaEffects } from "@oc/lib/canvas/canvas-performance-mode";
+import { CANVAS_MAX_RENDERED_CONNECTIONS, canvasNodeRenderBudget, canvasNodeRenderPadding, shouldReduceCanvasMediaEffects } from "@oc/lib/canvas/canvas-performance-mode";
 import { sameNodeSemanticData } from "@oc/lib/canvas/canvas-project-domain";
 import { buildCanvasResourceReferences, buildNodeMentionReferences, canvasResourceReferencesSignature, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { buildSkillMentionReferences, collectCanvasSkills, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
+import { buildCanvasSpatialIndex, canvasNodeBounds, type CanvasSpatialIndex, type CanvasSpatialIndexEntry } from "@oc/lib/canvas/canvas-spatial-index";
 import type { Skill } from "@oc/services/api/skills";
 import type { Asset, AudioAsset, ImageAsset, VideoAsset } from "@oc/stores/use-asset-store";
+import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
+import type { DirectorScene } from "@oc/types/director";
+import { CanvasNodeType, type CanvasConnection, type CanvasDisplayConnection, type CanvasMediaPerformanceMode, type CanvasNodeData, type ContextMenuState, type ViewportTransform } from "@oc/types/canvas";
 
 export type CanvasTrayMediaAsset = ImageAsset | VideoAsset | AudioAsset;
-import type { DirectorScene } from "@oc/types/director";
-import { CanvasNodeType, type CanvasConnection, type CanvasMediaPerformanceMode, type CanvasNodeData, type ContextMenuState, type ViewportTransform } from "@oc/types/canvas";
 
 type UseCanvasRenderModelOptions = {
     nodes: CanvasNodeData[];
@@ -69,79 +70,140 @@ export function useCanvasRenderModel({
     scriptEditorNodeId,
     dialogNodeId,
 }: UseCanvasRenderModelOptions) {
+    const dragNodeIds = useCanvasInteractionStore((state) => state.dragPreview?.nodeIds);
     const reduceMediaEffects = useMemo(() => shouldReduceCanvasMediaEffects(mediaPerformanceMode, nodes), [mediaPerformanceMode, nodes]);
     const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
-    const collapsedBatchChildIds = useMemo(() => {
-        const hidden = new Set<string>();
-        nodes.forEach((node) => {
+    const nodeDerivedData = useMemo(() => {
+        const collapsedBatchChildIds = new Set<string>();
+        const renderHiddenNodeIds = new Set<string>();
+        const frameChildrenById = new Map<string, CanvasNodeData[]>();
+        const canvasImageNodes: CanvasNodeData[] = [];
+        const canvasMediaNodes: CanvasNodeData[] = [];
+        const batchRoots: CanvasNodeData[] = [];
+        const batchMotionById = new Map<string, { x: number; y: number; index: number }>();
+        const batchChildIndexByRootId = new Map<string, Map<string, number>>();
+
+        for (const node of nodes) {
             const rootId = node.metadata?.batchRootId;
-            if (!rootId) return;
+            const root = rootId ? nodeById.get(rootId) : undefined;
+            if (root && !root.metadata?.imageBatchExpanded) {
+                collapsedBatchChildIds.add(node.id);
+                if (!collapsingBatchIds.has(root.id)) renderHiddenNodeIds.add(node.id);
+            }
+
+            if (rootId && collapsingBatchIds.has(rootId)) renderHiddenNodeIds.delete(node.id);
+            const parent = node.parentId ? nodeById.get(node.parentId) : undefined;
+            if (parent && isFrameNode(parent)) {
+                const children = frameChildrenById.get(parent.id);
+                if (children) children.push(node);
+                else frameChildrenById.set(parent.id, [node]);
+                if (parent.metadata?.frame?.collapsed) renderHiddenNodeIds.add(node.id);
+            }
+
+            if (node.metadata?.isBatchRoot) batchRoots.push(node);
+            const parentCollapsed = Boolean(parent && isFrameNode(parent) && parent.metadata?.frame?.collapsed);
+            const isVisibleMedia = Boolean(node.metadata?.content) && !collapsedBatchChildIds.has(node.id) && !parentCollapsed;
+            if (node.type === CanvasNodeType.Image && isVisibleMedia) canvasImageNodes.push(node);
+            if ((node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && isVisibleMedia) {
+                canvasMediaNodes.push(node);
+            }
+        }
+
+        for (const root of batchRoots) {
+            const childIndex = new Map((root.metadata?.batchChildIds || []).map((childId, index) => [childId, index]));
+            batchChildIndexByRootId.set(root.id, childIndex);
+        }
+        for (const node of nodes) {
+            const rootId = node.metadata?.batchRootId;
+            if (!rootId) continue;
             const root = nodeById.get(rootId);
-            if (root && !root.metadata?.imageBatchExpanded) hidden.add(node.id);
-        });
-        return hidden;
-    }, [nodeById, nodes]);
-    const renderHiddenNodeIds = useMemo(() => {
-        const hidden = new Set(collapsedBatchChildIds);
-        nodes.forEach((node) => {
-            const rootId = node.metadata?.batchRootId;
-            if (rootId && collapsingBatchIds.has(rootId)) hidden.delete(node.id);
-            const parent = node.parentId ? nodeById.get(node.parentId) : null;
-            if (parent && isFrameNode(parent) && parent.metadata?.frame?.collapsed) hidden.add(node.id);
-        });
-        return hidden;
-    }, [collapsedBatchChildIds, collapsingBatchIds, nodeById, nodes]);
+            const index = batchChildIndexByRootId.get(rootId)?.get(node.id) ?? 0;
+            const stackX = root ? root.position.x + 34 + index * 14 : node.position.x;
+            const stackY = root ? root.position.y + 14 + index * 8 : node.position.y;
+            batchMotionById.set(node.id, { x: stackX - node.position.x, y: stackY - node.position.y, index: Math.max(index, 0) });
+        }
+
+        const batchChildCountById = new Map<string, number>();
+        for (const root of batchRoots) {
+            const childIndex = batchChildIndexByRootId.get(root.id);
+            const liveChildCount = [...(childIndex?.keys() || [])].filter((childId) => nodeById.get(childId)?.metadata?.batchRootId === root.id).length;
+            batchChildCountById.set(root.id, liveChildCount);
+        }
+
+        return { batchChildCountById, batchMotionById, canvasImageNodes, canvasMediaNodes, collapsedBatchChildIds, frameChildrenById, renderHiddenNodeIds };
+    }, [collapsingBatchIds, nodeById, nodes]);
+    const { batchChildCountById, batchMotionById, canvasImageNodes, canvasMediaNodes, collapsedBatchChildIds, frameChildrenById, renderHiddenNodeIds } = nodeDerivedData;
     const connectionLayerBounds = useMemo(() => {
-        if (!nodes.length) return { left: -1, top: -1, width: 2, height: 2 };
-        const padding = 320;
-        let left = Number.POSITIVE_INFINITY;
-        let top = Number.POSITIVE_INFINITY;
-        let right = Number.NEGATIVE_INFINITY;
-        let bottom = Number.NEGATIVE_INFINITY;
-        nodes.forEach((node) => {
-            left = Math.min(left, node.position.x - padding);
-            top = Math.min(top, node.position.y - padding);
-            right = Math.max(right, node.position.x + node.width + padding);
-            bottom = Math.max(bottom, node.position.y + node.height + padding);
-        });
-        return { left, top, width: Math.max(2, right - left), height: Math.max(2, bottom - top) };
+        const padding = (reduceMediaEffects ? 96 : 144) / Math.max(viewport.k, 0.05);
+        const left = -viewport.x / viewport.k - padding;
+        const top = -viewport.y / viewport.k - padding;
+        const width = viewportSize.width / viewport.k + padding * 2;
+        const height = viewportSize.height / viewport.k + padding * 2;
+        return { left, top, width: Math.max(2, width), height: Math.max(2, height) };
+    }, [reduceMediaEffects, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width]);
+    const renderBounds = useMemo(() => {
+        const enterPadding = canvasNodeRenderPadding(reduceMediaEffects, false) / viewport.k;
+        const retainPadding = canvasNodeRenderPadding(reduceMediaEffects, true) / viewport.k;
+        const viewLeft = -viewport.x / viewport.k;
+        const viewTop = -viewport.y / viewport.k;
+        const viewWidth = viewportSize.width / viewport.k;
+        const viewHeight = viewportSize.height / viewport.k;
+        return {
+            enter: { left: viewLeft - enterPadding, top: viewTop - enterPadding, right: viewLeft + viewWidth + enterPadding, bottom: viewTop + viewHeight + enterPadding },
+            retain: { left: viewLeft - retainPadding, top: viewTop - retainPadding, right: viewLeft + viewWidth + retainPadding, bottom: viewTop + viewHeight + retainPadding },
+        };
+    }, [reduceMediaEffects, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width]);
+    const nodeSpatialIndexRef = useRef<{ source: CanvasNodeData[]; index: CanvasSpatialIndex<string> } | null>(null);
+    const nodeSpatialIndex = useMemo(() => {
+        const previous = nodeSpatialIndexRef.current;
+        const geometryUnchanged =
+            previous &&
+            previous.source.length === nodes.length &&
+            nodes.every((node, index) => {
+                const old = previous.source[index];
+                return old.id === node.id && old.position.x === node.position.x && old.position.y === node.position.y && old.width === node.width && old.height === node.height;
+            });
+        if (geometryUnchanged) return previous.index;
+        const index = buildCanvasSpatialIndex(nodes.map((node) => ({ id: node.id, bounds: canvasNodeBounds(node), value: node.id })));
+        nodeSpatialIndexRef.current = { source: nodes, index };
+        return index;
     }, [nodes]);
-    const cullView = useMemo(
-        () => canvasCullViewRect(viewport, viewportSize, reduceMediaEffects),
-        [reduceMediaEffects, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width],
-    );
+    const renderedNodeIdsRef = useRef<Set<string>>(new Set());
     const visibleNodes = useMemo(() => {
         const frames: CanvasNodeData[] = [];
         const regular: CanvasNodeData[] = [];
-        nodes.forEach((node) => {
-            if (
-                renderHiddenNodeIds.has(node.id)
-                || node.position.x + node.width <= cullView.left
-                || node.position.x >= cullView.right
-                || node.position.y + node.height <= cullView.top
-                || node.position.y >= cullView.bottom
-            ) return;
+        const renderedNodeIds = renderedNodeIdsRef.current;
+        const renderBudget = canvasNodeRenderBudget(viewport.k);
+        const forcedNodeIds = new Set([...selectedNodeIds, ...(dragNodeIds || [])].slice(0, renderBudget));
+        const candidates = nodeSpatialIndex
+            .query(renderBounds.retain, renderBudget + forcedNodeIds.size)
+            .map((nodeId) => nodeById.get(nodeId))
+            .filter((node): node is CanvasNodeData => Boolean(node));
+        const candidateIds = new Set(candidates.map((node) => node.id));
+        for (const nodeId of forcedNodeIds) {
+            if (candidateIds.has(nodeId)) continue;
+            const node = nodeById.get(nodeId);
+            if (node) candidates.push(node);
+        }
+        const prioritized = candidates.filter((node) => forcedNodeIds.has(node.id));
+        const remaining = candidates.filter((node) => !forcedNodeIds.has(node.id)).slice(0, Math.max(0, renderBudget - prioritized.length));
+        [...prioritized, ...remaining].forEach((node) => {
+            if (renderHiddenNodeIds.has(node.id)) return;
+            const retained = forcedNodeIds.has(node.id) || renderedNodeIds.has(node.id);
+            const insideEnterBounds = node.position.x + node.width > renderBounds.enter.left && node.position.x < renderBounds.enter.right && node.position.y + node.height > renderBounds.enter.top && node.position.y < renderBounds.enter.bottom;
+            if (!retained && !insideEnterBounds) return;
             (isFrameNode(node) ? frames : regular).push(node);
         });
         return [...frames, ...regular];
-    }, [cullView, nodes, renderHiddenNodeIds]);
+    }, [dragNodeIds, nodeById, nodeSpatialIndex, renderBounds, renderHiddenNodeIds, selectedNodeIds, viewport.k]);
+    useEffect(() => {
+        renderedNodeIdsRef.current = new Set(visibleNodes.map((node) => node.id));
+    }, [visibleNodes]);
 
-    const imageAssets = useMemo(() => assets.filter((asset): asset is ImageAsset => asset.kind === "image"), [assets]);
+    const imageAssets = useMemo(() => assets.filter((asset): asset is ImageAsset => asset.kind === "image" && asset.status !== "archived"), [assets]);
     const mediaAssets = useMemo(
-        () => assets.filter((asset): asset is CanvasTrayMediaAsset => asset.kind === "image" || asset.kind === "video" || asset.kind === "audio"),
+        () => assets.filter((asset): asset is CanvasTrayMediaAsset => (asset.kind === "image" || asset.kind === "video" || asset.kind === "audio") && asset.status !== "archived"),
         [assets],
-    );
-    const canvasImageNodes = useMemo(() => nodes.filter((node) => node.type === CanvasNodeType.Image && Boolean(node.metadata?.content) && !collapsedBatchChildIds.has(node.id) && !(node.parentId && nodeById.get(node.parentId)?.metadata?.frame?.collapsed)), [collapsedBatchChildIds, nodeById, nodes]);
-    const canvasMediaNodes = useMemo(
-        () =>
-            nodes.filter(
-                (node) =>
-                    (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) &&
-                    Boolean(node.metadata?.content) &&
-                    !collapsedBatchChildIds.has(node.id) &&
-                    !(node.parentId && nodeById.get(node.parentId)?.metadata?.frame?.collapsed),
-            ),
-        [collapsedBatchChildIds, nodeById, nodes],
     );
     const semanticNodesRef = useRef(nodes);
     const semanticNodes = useMemo(() => {
@@ -173,76 +235,86 @@ export function useCanvasRenderModel({
 
     const selectedNodeBounds = useMemo(() => {
         if (selectedNodeIds.size < 2) return null;
-        const selectedNodes = nodes.filter((node) => selectedNodeIds.has(node.id) && !renderHiddenNodeIds.has(node.id));
+        const selectedNodes = [...selectedNodeIds].map((nodeId) => nodeById.get(nodeId)).filter((node): node is CanvasNodeData => Boolean(node && !renderHiddenNodeIds.has(node.id)));
         if (selectedNodes.length < 2) return null;
         const left = Math.min(...selectedNodes.map((node) => node.position.x));
         const top = Math.min(...selectedNodes.map((node) => node.position.y));
         const right = Math.max(...selectedNodes.map((node) => node.position.x + node.width));
         const bottom = Math.max(...selectedNodes.map((node) => node.position.y + node.height));
         return { left, top, width: right - left, height: bottom - top, count: selectedNodes.length };
-    }, [nodes, renderHiddenNodeIds, selectedNodeIds]);
-    const selectedVideoNodes = useMemo(() => nodes
-        .filter((node) => selectedNodeIds.has(node.id) && node.type === CanvasNodeType.Video && Boolean(node.metadata?.content) && !renderHiddenNodeIds.has(node.id))
-        .sort((a, b) => {
-            const shotA = a.metadata?.shotIndex ?? Number.MAX_SAFE_INTEGER;
-            const shotB = b.metadata?.shotIndex ?? Number.MAX_SAFE_INTEGER;
-            return shotA - shotB || a.position.y - b.position.y || a.position.x - b.position.x;
-        }), [nodes, renderHiddenNodeIds, selectedNodeIds]);
-    const batchChildCountById = useMemo(() => {
-        const map = new Map<string, number>();
-        nodes.forEach((node) => {
-            if (!node.metadata?.isBatchRoot) return;
-            const liveChildCount = (node.metadata.batchChildIds || []).filter((childId) => nodeById.get(childId)?.metadata?.batchRootId === node.id).length;
-            map.set(node.id, liveChildCount);
-        });
-        return map;
-    }, [nodeById, nodes]);
-    const frameChildrenById = useMemo(() => {
-        const map = new Map<string, CanvasNodeData[]>();
-        nodes.forEach((node) => {
-            if (!node.parentId) return;
-            const children = map.get(node.parentId) || [];
-            children.push(node);
-            map.set(node.parentId, children);
-        });
-        return map;
-    }, [nodes]);
-    const batchMotionById = useMemo(() => {
-        const map = new Map<string, { x: number; y: number; index: number }>();
-        nodes.forEach((node) => {
-            const rootId = node.metadata?.batchRootId;
-            if (!rootId) return;
-            const root = nodeById.get(rootId);
-            const index = root?.metadata?.batchChildIds?.indexOf(node.id) ?? 0;
-            const stackX = root ? root.position.x + 34 + index * 14 : node.position.x;
-            const stackY = root ? root.position.y + 14 + index * 8 : node.position.y;
-            map.set(node.id, { x: stackX - node.position.x, y: stackY - node.position.y, index: Math.max(index, 0) });
-        });
-        return map;
-    }, [nodeById, nodes]);
-    const displayConnections = useMemo(() => {
-        const items = connections.flatMap((connection) => {
-            if (collapsedBatchChildIds.has(connection.fromNodeId) || collapsedBatchChildIds.has(connection.toNodeId)) return [];
+    }, [nodeById, renderHiddenNodeIds, selectedNodeIds]);
+    const selectedVideoNodes = useMemo(
+        () =>
+            [...selectedNodeIds]
+                .map((nodeId) => nodeById.get(nodeId))
+                .filter((node): node is CanvasNodeData => Boolean(node && node.type === CanvasNodeType.Video && node.metadata?.content && !renderHiddenNodeIds.has(node.id)))
+                .sort((a, b) => {
+                    const shotA = a.metadata?.shotIndex ?? Number.MAX_SAFE_INTEGER;
+                    const shotB = b.metadata?.shotIndex ?? Number.MAX_SAFE_INTEGER;
+                    return shotA - shotB || a.position.y - b.position.y || a.position.x - b.position.x;
+                }),
+        [nodeById, renderHiddenNodeIds, selectedNodeIds],
+    );
+    const connectionSpatialIndex = useMemo(() => {
+        const entries: CanvasSpatialIndexEntry<CanvasDisplayConnection>[] = [];
+        const connectionIdsByNodeId = new Map<string, Set<string>>();
+        connections.forEach((connection) => {
+            if (collapsedBatchChildIds.has(connection.fromNodeId) || collapsedBatchChildIds.has(connection.toNodeId)) return;
             const fromNode = nodeById.get(connection.fromNodeId);
             const toNode = nodeById.get(connection.toNodeId);
-            if (!fromNode || !toNode) return [];
+            if (!fromNode || !toNode) return;
             const fromParent = fromNode.parentId ? nodeById.get(fromNode.parentId) : null;
             const toParent = toNode.parentId ? nodeById.get(toNode.parentId) : null;
             const displayFrom = fromParent && isFrameNode(fromParent) && fromParent.metadata?.frame?.collapsed ? fromParent : fromNode;
             const displayTo = toParent && isFrameNode(toParent) && toParent.metadata?.frame?.collapsed ? toParent : toNode;
-            if (displayFrom.id === displayTo.id) return [];
-            return [{ connection, from: displayFrom, to: displayTo }];
+            if (displayFrom.id === displayTo.id) return;
+            const left = Math.min(displayFrom.position.x, displayTo.position.x);
+            const top = Math.min(displayFrom.position.y, displayTo.position.y);
+            const right = Math.max(displayFrom.position.x + displayFrom.width, displayTo.position.x + displayTo.width);
+            const bottom = Math.max(displayFrom.position.y + displayFrom.height, displayTo.position.y + displayTo.height);
+            const value = { connection, from: displayFrom, to: displayTo };
+            entries.push({ id: connection.id, bounds: { left, top, right, bottom }, value });
+            for (const nodeId of new Set([connection.fromNodeId, connection.toNodeId, displayFrom.id, displayTo.id])) {
+                const ids = connectionIdsByNodeId.get(nodeId) || new Set<string>();
+                ids.add(connection.id);
+                connectionIdsByNodeId.set(nodeId, ids);
+            }
         });
-        return filterDisplayConnections(items, cullView);
-    }, [collapsedBatchChildIds, connections, cullView, nodeById]);
+        return { index: buildCanvasSpatialIndex(entries), connectionIdsByNodeId, entriesById: new Map(entries.map((entry) => [entry.id, entry.value])) };
+    }, [collapsedBatchChildIds, connections, nodeById]);
+    const displayConnections = useMemo(() => {
+        const candidateById = new Map<string, CanvasDisplayConnection>();
+        connectionSpatialIndex.index.query(renderBounds.retain, CANVAS_MAX_RENDERED_CONNECTIONS).forEach((display) => candidateById.set(display.connection.id, display));
+        dragNodeIds?.forEach((nodeId) => {
+            connectionSpatialIndex.connectionIdsByNodeId.get(nodeId)?.forEach((connectionId) => {
+                const display = connectionSpatialIndex.entriesById.get(connectionId);
+                if (display) candidateById.set(connectionId, display);
+            });
+        });
+        return [...candidateById.values()].flatMap(({ connection, from, to }) => {
+            const connectionLeft = Math.min(from.position.x, to.position.x);
+            const connectionTop = Math.min(from.position.y, to.position.y);
+            const connectionRight = Math.max(from.position.x + from.width, to.position.x + to.width);
+            const connectionBottom = Math.max(from.position.y + from.height, to.position.y + to.height);
+            const dragged = Boolean(dragNodeIds?.includes(from.id) || dragNodeIds?.includes(to.id));
+            if (!dragged && (connectionRight <= renderBounds.retain.left || connectionLeft >= renderBounds.retain.right || connectionBottom <= renderBounds.retain.top || connectionTop >= renderBounds.retain.bottom)) return [];
+            return [{ connection, from, to }];
+        });
+    }, [connectionSpatialIndex, dragNodeIds, renderBounds]);
 
     const configInputsById = useMemo(() => {
         const map = new Map<string, NodeGenerationInput[]>();
-        semanticNodes.forEach((node) => {
-            if (node.type === CanvasNodeType.Config) map.set(node.id, buildNodeGenerationInputs(node.id, semanticNodes, connections));
+        const configNodeIds = new Set<string>();
+        visibleNodes.forEach((node) => {
+            if (node.type === CanvasNodeType.Config) configNodeIds.add(node.id);
         });
+        selectedNodeIds.forEach((nodeId) => {
+            if (nodeById.get(nodeId)?.type === CanvasNodeType.Config) configNodeIds.add(nodeId);
+        });
+        if (dialogNodeId && nodeById.get(dialogNodeId)?.type === CanvasNodeType.Config) configNodeIds.add(dialogNodeId);
+        configNodeIds.forEach((nodeId) => map.set(nodeId, buildNodeGenerationInputs(nodeId, semanticNodes, connections)));
         return map;
-    }, [connections, semanticNodes]);
+    }, [connections, dialogNodeId, nodeById, selectedNodeIds, semanticNodes, visibleNodes]);
     const activeDirectorNode = useMemo(() => semanticNodes.find((node) => node.id === directorNodeId) || null, [directorNodeId, semanticNodes]);
     const activeStylePresetId = useMemo(() => semanticNodes.find((node) => node.metadata?.workflowKind === "styleboard")?.metadata?.stylePresetId, [semanticNodes]);
     const activeScriptNode = useMemo(() => semanticNodes.find((node) => node.id === scriptEditorNodeId && node.type === CanvasNodeType.Script) || null, [scriptEditorNodeId, semanticNodes]);

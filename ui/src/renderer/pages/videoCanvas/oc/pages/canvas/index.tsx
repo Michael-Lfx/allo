@@ -9,6 +9,7 @@ import { CollectionGrid, ListToolbar, PageHeader, PaginationBar, WorkspacePage }
 import { WorkspaceLoadingState, WorkspaceState } from "@oc/components/layout/workspace-state";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { readZip } from "@oc/lib/zip";
 import { setMediaBlob } from "@oc/services/file-storage";
 import { setImageBlob } from "@oc/services/image-storage";
@@ -83,7 +84,7 @@ export default function CanvasPage() {
             setAssociationOpen(false);
         } catch (error) {
             message.error(error instanceof Error
-                ? canvasT("videoCanvas.library.relationSaveFailedWithError", "画布关系保存失败：{{message}}", { message: error.message })
+                ? canvasT("videoCanvas.library.relationSaveFailedWithError", "画布关系保存失败：{{message}}", { message: formatCanvasUserError(error, canvasT("videoCanvas.library.relationSaveFailed", "画布关系保存失败")) })
                 : canvasT("videoCanvas.library.relationSaveFailed", "画布关系保存失败"));
         }
     };

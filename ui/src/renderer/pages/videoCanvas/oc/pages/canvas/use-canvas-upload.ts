@@ -6,6 +6,7 @@ import { CANVAS_IMAGE_ASSET_DND_TYPE, CANVAS_MEDIA_ASSET_DND_TYPE, type CanvasTr
 import type { InsertAssetPayload } from "@oc/components/canvas/asset-picker-modal";
 import { CANVAS_PROJECT_CHAPTER_DND_TYPE, type CanvasProjectChapterPayload } from "@oc/components/canvas/canvas-project-sidebar";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
+import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { getDataUrlByteSize, readImageMeta } from "@oc/lib/image-utils";
 import { audioMetadata, imageMetadata, videoMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
@@ -106,7 +107,7 @@ export function useCanvasUpload({
             if (domainProjectId) await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
             return true;
         } catch (error) {
-            message.warning(error instanceof Error ? `媒体已添加到画布，但素材同步失败：${error.message}` : "媒体已添加到画布，但素材同步失败");
+            message.warning(error instanceof Error ? `媒体已添加到画布，但素材同步失败：${formatCanvasUserError(error, "素材同步失败")}` : "媒体已添加到画布，但素材同步失败");
             return false;
         }
     }, [canvasId, domainProjectId, message, queryClient, setNodes]);
@@ -135,7 +136,7 @@ export function useCanvasUpload({
             progress.done(persisted ? "图片已添加到画布" : "图片已添加，项目资产待重试");
             return true;
         } catch (error) {
-            const details = error instanceof Error ? error.message : "图片上传失败";
+            const details = formatCanvasUserError(error, "图片上传失败");
             progress.fail(details);
             message.error(details);
             return false;
@@ -175,7 +176,7 @@ export function useCanvasUpload({
             setNodes((current) => [...current, node]);
             selectInsertedNode(id, "close");
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "素材图片读取失败");
+            message.error(formatCanvasUserError(error, "素材图片读取失败"));
         }
     }, [getCanvasCenter, message, selectInsertedNode, setNodes]);
 
@@ -246,7 +247,7 @@ export function useCanvasUpload({
             setNodes((current) => [...current, node]);
             selectInsertedNode(id, "preserve");
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "素材读取失败");
+            message.error(formatCanvasUserError(error, "素材读取失败"));
         }
     }, [createImageAssetNode, getCanvasCenter, message, selectInsertedNode, setNodes]);
 
@@ -265,7 +266,7 @@ export function useCanvasUpload({
             const persisted = await persistMediaNode(node);
             progress.done(persisted ? "视频已添加到画布" : "视频已添加，项目资产待重试");
         } catch (error) {
-            const details = error instanceof Error ? error.message : "视频上传失败";
+            const details = formatCanvasUserError(error, "视频上传失败");
             progress.fail(details);
             message.error(details);
         }
@@ -286,7 +287,7 @@ export function useCanvasUpload({
             const persisted = await persistMediaNode(node);
             progress.done(persisted ? "音频已添加到画布" : "音频已添加，项目资产待重试");
         } catch (error) {
-            const details = error instanceof Error ? error.message : "音频上传失败";
+            const details = formatCanvasUserError(error, "音频上传失败");
             progress.fail(details);
             message.error(details);
         }
@@ -311,7 +312,7 @@ export function useCanvasUpload({
             try {
                 sourceText = (await getProjectUnit(chapter.projectId, chapter.id)).unit.sourceText;
             } catch (error) {
-                message.error(error instanceof Error ? `章节正文读取失败：${error.message}` : "章节正文读取失败");
+                message.error(error instanceof Error ? `章节正文读取失败：${formatCanvasUserError(error, "读取失败")}` : "章节正文读取失败");
                 return;
             }
         }
@@ -367,7 +368,7 @@ export function useCanvasUpload({
                 progress.done(persisted ? "音频已替换，可撤销恢复" : "音频已替换，项目资产待重试");
                 return true;
             } catch (error) {
-                const details = error instanceof Error ? error.message : "音频替换失败";
+                const details = formatCanvasUserError(error, "音频替换失败");
                 progress.fail(details);
                 message.error(details);
                 return false;
@@ -386,7 +387,7 @@ export function useCanvasUpload({
                 progress.done(persisted ? "视频已替换，可撤销恢复" : "视频已替换，项目资产待重试");
                 return true;
             } catch (error) {
-                const details = error instanceof Error ? error.message : "视频替换失败";
+                const details = formatCanvasUserError(error, "视频替换失败");
                 progress.fail(details);
                 message.error(details);
                 return false;
@@ -429,7 +430,7 @@ export function useCanvasUpload({
             progress.done(persisted ? "图片已替换，可撤销恢复" : "图片已替换，项目资产待重试");
             return true;
         } catch (error) {
-            const details = error instanceof Error ? error.message : "图片替换失败";
+            const details = formatCanvasUserError(error, "图片替换失败");
             progress.fail(details);
             message.error(details);
             return false;
@@ -660,7 +661,7 @@ export function useCanvasUpload({
             setNodes((current) => [...current, node]);
             selectInsertedNode(node.id, payload.kind === "image" || payload.kind === "video" ? "open" : "preserve");
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "素材插入失败");
+            message.error(formatCanvasUserError(error, "素材插入失败"));
             return;
         }
         closeAssetPicker();
@@ -679,7 +680,7 @@ export function useCanvasUpload({
             setDialogNodeId(null);
             message.success(`已引入 ${created.length} 项项目资产`);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "项目资产引入失败");
+            message.error(formatCanvasUserError(error, "项目资产引入失败"));
             throw error;
         }
     }, [createAssetPayloadNode, getCanvasCenter, message, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
