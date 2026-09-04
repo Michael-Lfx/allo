@@ -13,6 +13,7 @@ function GitHubMark() {
 import type { Language } from "../i18n";
 import { setLanguage } from "../i18n";
 import { githubUrl } from "../lib/platform";
+import logoUrl from "../assets/logo.png";
 import ThemeToggle from "./ThemeToggle";
 
 function otherLang(l: Language): Language {
@@ -43,14 +44,23 @@ export default function NavBar({ lang }: { lang: Language }) {
     <header className="navbar">
       <div className="navbar-inner">
         <Link to={withLang("/")} className="brand" aria-label="Flowy Agent Store">
-          <span className="brand-mark" aria-hidden="true" />
+          <img className="brand-mark" src={logoUrl} alt="" width={24} height={24} />
           <span className="brand-name">Flowy Agent Store</span>
         </Link>
         <nav className="navbar-links" aria-label="Primary">
-          <Link to={withLang("/docs")} className="nav-link">
+          <Link
+            to={withLang("/market")}
+            className={location.pathname.includes("/market") ? "nav-link is-active" : "nav-link"}
+          >
+            {t("nav.market")}
+          </Link>
+          <Link
+            to={withLang("/docs")}
+            className={location.pathname.includes("/docs") ? "nav-link is-active" : "nav-link"}
+          >
             {t("nav.docs")}
           </Link>
-          <a className="nav-link" href={githubUrl()} target="_blank" rel="noreferrer">
+          <a className="nav-link nav-github" href={githubUrl()} target="_blank" rel="noreferrer">
             <GitHubMark />
             {t("nav.github")}
           </a>

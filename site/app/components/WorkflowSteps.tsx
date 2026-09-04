@@ -1,29 +1,12 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, Check, Copy } from "lucide-react";
+import { ArrowRight } from "lucide-react";
+
+import CopyButton from "./CopyButton";
 
 interface Step {
   title: string;
   desc: string;
   cmd: string;
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      console.error("clipboard copy failed");
-    }
-  };
-  return (
-    <button className="copy-btn" onClick={copy} aria-label="Copy command">
-      {copied ? <Check size={14} /> : <Copy size={14} />}
-    </button>
-  );
 }
 
 export default function WorkflowSteps() {
@@ -33,7 +16,10 @@ export default function WorkflowSteps() {
   return (
     <section className="workflow" id="workflow">
       <div className="section-inner">
-        <p className="eyebrow">{t("landing.eyebrow")}</p>
+        <p className="eyebrow">
+          <span className="eyebrow-index">02</span>
+          {t("landing.eyebrow")}
+        </p>
         <h2>{t("landing.workflowTitle")}</h2>
         <p className="subtle">{t("landing.workflowSubtitle")}</p>
 
@@ -51,7 +37,7 @@ export default function WorkflowSteps() {
               </div>
               <div className="step-cmd">
                 <code>{step.cmd}</code>
-                <CopyButton text={step.cmd} />
+                <CopyButton text={step.cmd} label={t("landing.download.copy")} tone="dark" />
               </div>
               {i < Object.values(steps).length - 1 && (
                 <ArrowRight className="step-arrow" size={18} aria-hidden="true" />

@@ -167,6 +167,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-store"
+version = "1.0.11"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "mime_guess",
+ "nomifun-app",
+ "nomifun-app-server",
+ "nomifun-common",
+ "nomifun-runtime",
+ "open",
+ "rust-embed",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

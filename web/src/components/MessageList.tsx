@@ -110,7 +110,7 @@ export function MessageList() {
   const virtualItems = virtualizer.getVirtualItems();
   const hasTranscript = messages.length > 0;
 
-  return <div className="chat-content">
+  return <div className={`chat-content ${selectedConversationId === null ? "is-empty" : ""}`}>
     <div ref={scrollerRef} className="message-scroller" role="log" aria-live="polite" aria-label={t("messageList.ariaLabel")} tabIndex={0}>
       {!connected ? (
         <WelcomePanel onConnect={openSettings} />

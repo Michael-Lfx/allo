@@ -23,13 +23,18 @@
  *   single HTTP origin while each keeps its marketplace.json/connectors.json
  *   at the expected relative suffix.
  *
+ *   # Pre-generate static `_files.txt` listings (for static hosting such as
+ *   # EdgeOne Pages, where no dynamic listing endpoint exists):
+ *   node scripts/serve-agent-store-market.mjs --markets experts=... skills=... \
+ *     connectors=... --emit-listings
+ *
  * Defaults:
  *   root = C:\Users\15165\.workbuddy\plugins\marketplaces\experts
  *   port = 8300
  */
 
 import { createServer } from "node:http";
-import { readFile, stat, readdir } from "node:fs/promises";
+import { readFile, stat, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,6 +53,8 @@ function parseArgs(argv) {
   const markets = new Map();
   let root = DEFAULT_ROOT;
   let port = 8300;
+  let host = "127.0.0.1";
+  let serveIndex = false;
   let positional = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -60,6 +67,10 @@ function parseArgs(argv) {
       }
     } else if (arg === "--port") {
       port = Number(args[++i] ?? 8300);
+    } else if (arg === "--host") {
+      host = args[++i] ?? "127.0.0.1";
+    } else if (arg === "--serve-index") {
+      serveIndex = true;
     } else if (arg.startsWith("--")) {
       // unknown flag, ignore
     } else {
@@ -67,14 +78,27 @@ function parseArgs(argv) {
     }
   }
   if (markets.size > 0) {
-    return { markets, root: null, port };
+    return { markets, root: null, port, host, serveIndex };
   }
   if (positional[0]) root = path.resolve(positional[0]);
   if (positional[1]) port = Number(positional[1]);
-  return { markets, root, port };
+  return { markets, root, port, host, serveIndex };
 }
 
-const { markets, root, port } = parseArgs(process.argv.slice(2));
+const { markets, root, port, host, serveIndex } = parseArgs(process.argv.slice(2));
+
+// `--emit-listings`: pre-generate `_files.txt` inside each market dir (for
+// static hosting like EdgeOne Pages, where no dynamic listing exists).
+if (process.argv.slice(2).includes("--emit-listings")) {
+  const targets = markets.size > 0 ? [...markets] : [[".", root]];
+  for (const [name, dir] of targets) {
+    const files = await listFiles(dir);
+    const body = files.length ? files.join("\n") + "\n" : "";
+    await writeFile(path.join(dir, "_files.txt"), body);
+    console.log(`[agent-store-market] wrote ${path.join(dir, "_files.txt")} (${files.length} files)`);
+  }
+  process.exit(0);
+}
 
 /** Resolve a URL path to a filesystem path, honoring the market prefixes. */
 function resolvePath(urlPath) {
@@ -198,7 +222,7 @@ createServer(async (req, res) => {
     res.writeHead(404, { "content-type": "text/plain" });
     res.end(`not found: ${req.url}\n${error?.message ?? error}`);
   }
-}).listen(port, "127.0.0.1", () => {
+}).listen(port, host, () => {
   console.log(`[agent-store-market] serving ${root}`);
   console.log(`[agent-store-market] http://127.0.0.1:${port}/marketplace.json`);
   console.log(`[agent-store-market] http://127.0.0.1:${port}/_files.txt`);

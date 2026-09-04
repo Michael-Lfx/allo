@@ -6,9 +6,10 @@ import {
   ScrollRestoration,
 } from "react-router";
 
-import "@fontsource-variable/inter";
+import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import "./styles/style.css";
+import faviconUrl from "./assets/favicon.ico";
 
 /**
  * Root document for React Router v8 framework mode (SSG).
@@ -20,6 +21,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="icon" href={faviconUrl} type="image/x-icon" />
         <Meta />
         <Links />
       </head>

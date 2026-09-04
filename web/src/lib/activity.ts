@@ -35,7 +35,6 @@ export type ToolCallData = { name: string | null; args?: unknown; output?: unkno
 export const NOISE_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
   "start",
   "finish",
-  "agent_status",
   "error",
   "turn_started",
   "turn_completed",

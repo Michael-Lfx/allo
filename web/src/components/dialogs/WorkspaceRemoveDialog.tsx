@@ -1,7 +1,6 @@
-import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { IconButton } from "../IconButton";
 import { useAppStore } from "../../store/appStore";
+import { DialogShell } from "./DialogShell";
 
 export function WorkspaceRemoveDialog() {
   const { t } = useTranslation();
@@ -14,26 +13,17 @@ export function WorkspaceRemoveDialog() {
   const workspace = workspaces.find((item) => item.workspace_id === revokeFor) ?? null;
   const name = workspace?.name || t("common.untitled");
   return (
-    <div className="settings-backdrop" role="presentation" onMouseDown={cancelRevoke}>
-      <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-remove-title" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="dialog-header">
-          <div>
-            <span className="eyebrow">ALLO APP SERVER</span>
-            <h1 id="workspace-remove-title">{t("workspaceRemove.title")}</h1>
-          </div>
-          <IconButton label={t("workspaceRemove.close")} onClick={cancelRevoke}><X size={19} strokeWidth={1.7} /></IconButton>
-        </div>
-        <p className="dialog-intro">
-          {t("workspaceRemove.text", { name })}
-        </p>
-        {revokeBusy && <p className="dialog-intro">{t("workspaceRemove.removing")}</p>}
-        <div className="dialog-actions">
-          <button className="quiet-button" type="button" onClick={cancelRevoke}>{t("common.cancel")}</button>
-          <button className="danger-button" type="button" onClick={() => void confirmRevoke()} disabled={revokeBusy}>
-            {revokeBusy ? t("workspaceRemove.removing") : t("workspaceRemove.confirm")}
-          </button>
-        </div>
-      </section>
-    </div>
+    <DialogShell onClose={cancelRevoke} labelledBy="workspace-remove-title" titleId="workspace-remove-title" title={t("workspaceRemove.title")}>
+      <p className="dialog-intro">
+        {t("workspaceRemove.text", { name })}
+      </p>
+      {revokeBusy && <p className="dialog-intro">{t("workspaceRemove.removing")}</p>}
+      <div className="dialog-actions">
+        <button className="quiet-button" type="button" onClick={cancelRevoke}>{t("common.cancel")}</button>
+        <button className="danger-button" type="button" onClick={() => void confirmRevoke()} disabled={revokeBusy}>
+          {revokeBusy ? t("workspaceRemove.removing") : t("workspaceRemove.confirm")}
+        </button>
+      </div>
+    </DialogShell>
   );
 }

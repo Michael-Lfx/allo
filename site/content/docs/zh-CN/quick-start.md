@@ -7,7 +7,7 @@ Flowy Agent Store 把一个本地优先的 Agent 运行时打包成**单个可�
 从 [GitHub Releases](https://github.com/your-org/flowy-agent-store/releases) 获取对应平台的二进制，直接运行：
 
 ```bash
-flowy-agent-store serve
+flowy-agent-store
 ```
 
 进程会在本机启动 App Server（默认 `http://localhost:8787`），并自动打开浏览器中的工作台。

@@ -3,6 +3,7 @@ import { useAppStore } from "./store/appStore";
 import { CatalogView } from "./components/CatalogView";
 import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
+import { LoadingOverlay } from "./components/LoadingOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { DeleteDialog } from "./components/dialogs/DeleteDialog";
@@ -18,6 +19,7 @@ export default function App() {
   const sidebarCompact = useAppStore((s) => s.sidebarCompact);
   const mainView = useAppStore((s) => s.mainView);
   const selectedConversationId = useAppStore((s) => s.selectedConversationId);
+  const connecting = useAppStore((s) => s.phase === "connecting");
   const openMenu = useAppStore((s) => s.openMenu);
   const contextUsage = useAppStore((s) => s.stream.contextUsage);
   const connect = useAppStore((s) => s.connect);
@@ -48,6 +50,8 @@ export default function App() {
       const hit = (selector: string) => !!target?.closest(selector);
       if (openMenu.where === "sidebar") {
         if (hit(".conversation-menu") || hit(".conversation-more")) return;
+      } else if (openMenu.where === "workspace") {
+        if (hit(".workspace-menu") || hit(".workspace-more")) return;
       } else if (hit(".thread-menu") || hit(".thread-more")) {
         return;
       }
@@ -90,8 +94,8 @@ export default function App() {
       {mainView === "catalog" ? (
         <CatalogView />
       ) : (
-        <section className="chat-main">
-          <Topbar />
+        <section className={`chat-main ${selectedConversationId === null ? "is-new" : ""}`}>
+          {selectedConversationId !== null && <Topbar />}
           <MessageList />
           <Composer composerRef={composerRef} />
         </section>
@@ -102,6 +106,7 @@ export default function App() {
       <RenameDialog />
       <DeleteDialog />
       <WorkspaceRemoveDialog />
+      {connecting && <LoadingOverlay />}
     </main>
   );
 }

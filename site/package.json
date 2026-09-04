@@ -6,22 +6,24 @@
   "scripts": {
     "dev": "react-router dev",
     "build": "react-router build",
+    "sync:market": "node scripts/sync-market-data.mjs",
     "preview": "react-router preview",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@fontsource-variable/inter": "^5.3.0",
     "i18next": "^26.4.1",
+    "isbot": "^5",
     "lucide-react": "^1.39.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-i18next": "^17.0.13",
     "react-markdown": "^10.1.0",
-    "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1",
     "react-router": "^8.3.1",
-    "isbot": "^5"
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@react-router/dev": "^8.3.1",

@@ -10,4 +10,5 @@
 export type OpenMenu =
   | { where: "sidebar"; id: string; anchor: { x: number; y: number } }
   | { where: "topbar" }
+  | { where: "workspace"; id: string; anchor: { x: number; y: number } }
   | null;

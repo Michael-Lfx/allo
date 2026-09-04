@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/web", "apps/desktop"]
+members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/desktop", "apps/web"]
 
 [workspace.package]
 version = "1.0.11"
@@ -200,6 +200,8 @@ xz2 = "0.1"
 git2 = { version = "0.20", default-features = false }
 mime_guess = "2"
 rust-embed = "8"
+# URL percent-encoding used by the standalone agent-store binary.
+percent-encoding = "2"
 fs2 = "0.4"
 anydoc = "=0.1.8"
 zstd = "0.13"

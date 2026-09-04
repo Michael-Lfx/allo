@@ -41,20 +41,36 @@ export function modelKeyToSelection(key: string): ProviderWithModel {
   return { provider_id: key.slice(0, index), model: key.slice(index + 1) };
 }
 
+/** Compact relative timestamp (e.g. `7d`, `3h`, `刚刚`): sidebar conversation rows. */
+export function formatRelativeTime(value: number, now = Date.now()): string {
+  const diff = Math.max(0, now - value);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < minute) return "刚刚";
+  if (diff < hour) return `${Math.floor(diff / minute)}m`;
+  if (diff < day) return `${Math.floor(diff / hour)}h`;
+  if (diff < 30 * day) return `${Math.floor(diff / day)}d`;
+  if (diff < 365 * day) return `${Math.floor(diff / (30 * day))}mo`;
+  return `${Math.floor(diff / (365 * day))}y`;
+}
+
 export function modelChipLabel(
   current: ProviderWithModel | null,
   selectedKey: string | null,
   options: ConversationModelOptions | null,
   fallbackLabel = "默认模型",
+  effortLabel?: string,
 ): string {
-  if (selectedKey) {
-    const [, name] = selectedKey.split("/");
-    const display = options?.providers
-      .flatMap((entry) => entry.models)
-      .find((entry) => entry.name === name)
-      ?.display_name;
-    return display ?? name ?? selectedKey;
-  }
-  if (current) return modelName(current.model);
-  return fallbackLabel;
+  const base = selectedKey
+    ? (() => {
+        const [, name] = selectedKey.split("/");
+        const display = options?.providers
+          .flatMap((entry) => entry.models)
+          .find((entry) => entry.name === name)
+          ?.display_name;
+        return display ?? name ?? selectedKey;
+      })()
+    : current ? modelName(current.model) : fallbackLabel;
+  return effortLabel ? `${base} · ${effortLabel}` : base;
 }
