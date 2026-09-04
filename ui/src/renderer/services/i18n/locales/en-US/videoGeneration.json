@@ -395,6 +395,9 @@
     "character_portraits_start": "Generating character portraits",
     "character_portraits_done": "Character portraits ready",
     "character_portrait_start": "Generating character portrait",
+    "voice_profiles": "Designing character voices",
+    "voice_references_start": "Generating character voice references",
+    "voice_references_done": "Character voice references ready",
     "world_assets_start": "Generating environment & prop plates",
     "world_assets_done": "Environment & prop plates ready",
     "film_cover_start": "Generating film cover",
@@ -804,6 +807,13 @@
       "prev": "Previous",
       "next": "Next",
       "counter": "{{current}} / {{total}}"
+    },
+    "document": {
+      "story": "Story",
+      "script": "Script",
+      "scriptScene": "Scene {{n}}",
+      "cast": "Cast",
+      "voiceLabel": "Voice reference"
     },
     "issue": {
       "detail": "Details",

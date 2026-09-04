@@ -281,6 +281,100 @@
   margin-top: 8px;
 }
 
+.characterPack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.characterPackLabel {
+  color: var(--color-text-3);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.audioClip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.audioClipLabel {
+  color: var(--color-text-3);
+  font-size: 11px;
+}
+
+.audioPlayer {
+  display: block;
+  width: 100%;
+  height: 32px;
+}
+
+.documentCard {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-fill-2) 70%, transparent);
+}
+
+.documentTitle {
+  display: block;
+  margin: 0 0 6px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.documentBody {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.scriptScenes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scriptSceneHeading {
+  margin: 0 0 4px;
+  color: var(--color-text-3);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.castList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.castName {
+  display: block;
+  color: var(--color-text-1);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.castFeatures {
+  display: block;
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .fileChip {
   display: inline-flex;
   max-width: 100%;
@@ -483,13 +577,21 @@
 }
 
 .lightboxImg,
-.lightboxVideo {
+.lightboxVideo,
+.lightboxAudio {
   display: block;
   max-width: min(1120px, 92vw);
   max-height: calc(86vh - 48px);
   border-radius: 14px;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
   background: #000;
+}
+
+.lightboxAudio {
+  width: min(520px, 90vw);
+  height: 40px;
+  background: transparent;
+  box-shadow: none;
 }
 
 .lightboxPending {

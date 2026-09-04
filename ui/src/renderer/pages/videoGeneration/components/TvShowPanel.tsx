@@ -19,12 +19,11 @@ import {
 } from '../api';
 import { importCanvasTvShow } from '../../videoCanvas/api';
 import type { TvShowVideo } from '../types';
+import { parseTvShowScope, writeTvShowScope, type TvShowScope } from '../campaign';
 import { isCanvasTvShow, tvShowWorkflowLabel } from './SessionCard';
 import TvShowCard from './TvShowCard';
 
 const CampaignPanel = lazy(() => import('./CampaignPanel'));
-
-type TvShowScope = 'plaza' | 'campaign' | 'mine';
 
 const TV_SHOW_INITIAL_PAGE_SIZE = 16;
 
@@ -39,9 +38,8 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const { status: cloudStatus, logout } = useCloudAuth();
   const [message, messageHolder] = useArcoMessage();
 
-  const [scope, setScope] = useState<TvShowScope>(() =>
-    searchParams.get('tvScope') === 'campaign' ? 'campaign' : 'plaza'
-  );
+  const urlScope = parseTvShowScope(searchParams.get('tvScope'));
+  const [scope, setScope] = useState<TvShowScope>(urlScope);
   const [videos, setVideos] = useState<TvShowVideo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,25 +115,25 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const handleScopeChange = useCallback(
     (key: string) => {
       const next = key as TvShowScope;
+      if (next === scope) return;
       setScope(next);
       setSearchParams(
         (prev) => {
           const nextParams = new URLSearchParams(prev);
-          if (next === 'campaign') nextParams.set('tvScope', 'campaign');
-          else nextParams.delete('tvScope');
+          writeTvShowScope(nextParams, next);
           return nextParams;
         },
         { replace: true }
       );
     },
-    [setSearchParams]
+    [scope, setSearchParams]
   );
 
+  // Follow external URL changes (back, campaign home). Do not depend on
+  // `scope` — that would snap back to `campaign` while the query is still stale.
   useEffect(() => {
-    if (searchParams.get('tvScope') === 'campaign' && scope !== 'campaign') {
-      setScope('campaign');
-    }
-  }, [searchParams, scope]);
+    setScope(urlScope);
+  }, [urlScope]);
 
   useEffect(() => {
     if (!enabled) return;

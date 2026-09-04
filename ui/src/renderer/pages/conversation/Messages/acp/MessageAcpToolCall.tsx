@@ -3,12 +3,15 @@
 import type { IMessageAcpToolCall } from '@/common/chat/chatLib';
 import { toDisplayText } from '@/common/chat/displayText';
 import { normalizeAcpToolCall } from '@/common/chat/normalizeToolCall';
-import FileChangesPanel from '@/renderer/components/base/FileChangesPanel';
+import InlineDiff from '@renderer/components/beautifulUi/inlineDiff/InlineDiff';
+import {
+  INLINE_DIFF_COLLAPSE_LINE_THRESHOLD,
+  countDiffLines,
+  countDiffStats,
+  hunksFromOldNew,
+} from '@renderer/components/beautifulUi/inlineDiff/inlineDiffModel';
 import { ToolChip } from '@renderer/components/beautifulUi/toolChips/ToolChips';
 import { chipDetailOmittingCommand, resolveToolChipStatus } from '@renderer/components/beautifulUi/toolChips/toolChipModel';
-import { useDiffPreviewHandlers } from '@/renderer/hooks/file/useDiffPreviewHandlers';
-import { parseDiff } from '@/renderer/utils/file/diffUtils';
-import { createTwoFilesPatch } from 'diff';
 import React, { useMemo } from 'react';
 import MarkdownView from '@renderer/components/Markdown';
 import LocalImageView from '@/renderer/components/media/LocalImageView';
@@ -20,24 +23,18 @@ const DiffContentView: React.FC<{ old_text: string; new_text: string; path: stri
   path,
 }) => {
   const display_name = path.split(/[/\\]/).pop() || path || 'Unknown file';
-  const formattedDiff = useMemo(
-    () => createTwoFilesPatch(display_name, display_name, old_text, new_text, '', '', { context: 3 }),
-    [display_name, old_text, new_text]
-  );
-  const fileInfo = useMemo(() => parseDiff(formattedDiff, display_name), [formattedDiff, display_name]);
-  const { handleFileClick, handleDiffClick } = useDiffPreviewHandlers({
-    diffText: formattedDiff,
-    display_name,
-    file_path: path || display_name,
-  });
+  const hunks = useMemo(() => hunksFromOldNew(old_text, new_text), [old_text, new_text]);
+  const { insertions, deletions } = countDiffStats(hunks);
+
+  if (!hunks.length) return null;
 
   return (
-    <FileChangesPanel
-      title={display_name}
-      files={[fileInfo]}
-      onFileClick={handleFileClick}
-      onDiffClick={handleDiffClick}
-      defaultExpanded={true}
+    <InlineDiff
+      filename={display_name}
+      hunks={hunks}
+      insertions={insertions}
+      deletions={deletions}
+      defaultExpanded={countDiffLines(hunks) <= INLINE_DIFF_COLLAPSE_LINE_THRESHOLD}
     />
   );
 };
@@ -47,7 +44,6 @@ const ContentView: React.FC<{
   terminalSuccess: boolean;
 }> = ({ content, terminalSuccess }) => {
   if (content.type === 'diff') {
-    if (!terminalSuccess) return null;
     return (
       <DiffContentView
         old_text={toDisplayText(content.old_text)}
@@ -139,6 +135,7 @@ const MessageAcpToolCall: React.FC<{ message: IMessageAcpToolCall }> = ({ messag
           status: normalized.status,
           skipped: normalized.skipped,
           notExecutedReason: normalized.notExecutedReason,
+          nonFatalFailure: normalized.nonFatalFailure,
         })}
       />
       {rawInput && (

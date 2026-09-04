@@ -335,16 +335,19 @@ export async function getArtifact(sessionId: string, artifactPath: string): Prom
     contentType.startsWith('video/') ||
     contentType.startsWith('audio/') ||
     contentType.includes('octet-stream') ||
-    /\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|mkv|mp3|wav)$/i.test(lowerPath)
+    /\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|mkv|mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(lowerPath)
   ) {
     const blob = await response.blob();
     const objectUrl = URL.createObjectURL(blob);
     const isVideo =
       contentType.startsWith('video/') || /\.(mp4|webm|mov|avi|mkv)$/i.test(lowerPath);
+    const isAudio =
+      contentType.startsWith('audio/') ||
+      /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(lowerPath);
     return {
       kind: 'url',
       url: objectUrl,
-      mime: contentType || (isVideo ? 'video/mp4' : undefined),
+      mime: contentType || (isVideo ? 'video/mp4' : isAudio ? 'audio/wav' : undefined),
     };
   }
 
@@ -468,7 +471,11 @@ export function isActiveStatus(status: string | null | undefined): boolean {
     status === 'planning' ||
     status === 'rendering' ||
     status === 'queued' ||
-    status === 'running'
+    status === 'running' ||
+    status === 'researching' ||
+    status === 'scripting' ||
+    status === 'aligning' ||
+    status === 'composing'
   );
 }
 

@@ -34,9 +34,22 @@ export function inAppNavigatePath(value: string): string {
   return trimmed;
 }
 
+export type TvShowScope = 'plaza' | 'campaign' | 'mine';
+
+/** Plaza is the default (no `tvScope`); campaign/mine are explicit. */
+export function parseTvShowScope(raw: string | null | undefined): TvShowScope {
+  if (raw === 'campaign' || raw === 'mine') return raw;
+  return 'plaza';
+}
+
+export function writeTvShowScope(params: URLSearchParams, scope: TvShowScope): void {
+  if (scope === 'plaza') params.delete('tvScope');
+  else params.set('tvScope', scope);
+}
+
 export function campaignHomeSearch(search: string): string {
   const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
-  params.set('tvScope', 'campaign');
+  writeTvShowScope(params, 'campaign');
   const s = params.toString();
   return s ? `?${s}` : '?tvScope=campaign';
 }

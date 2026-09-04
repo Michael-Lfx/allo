@@ -67,6 +67,10 @@ describe('ProcessTraceItem Codex-style execution rows', () => {
     expect(source.includes('turn-process-trace-file-list')).toBe(true);
     expect(source.includes('messages.processReceipt.readTargets')).toBe(true);
     expect(source.includes('messages.processReceipt.fileEditTargets')).toBe(true);
+    expect(source.includes('<ToolEditDiff')).toBe(true);
+    expect(source.includes('buildEditDiffPreview')).toBe(true);
+    expect(source.includes('<InlineDiff')).toBe(true);
+    expect(source.includes('hunksFromUnifiedDiff')).toBe(true);
   });
 
   test('renders system process rows with Task Rows and paragraph text without a leading info icon', () => {

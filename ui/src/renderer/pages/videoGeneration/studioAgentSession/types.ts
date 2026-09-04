@@ -24,7 +24,9 @@ export type StudioNarrativeBeat =
   | 'action_assets'
   | 'action_generate';
 
-export type StudioMediaKind = 'image' | 'video' | 'file';
+export type StudioMediaKind = 'image' | 'video' | 'audio' | 'file' | 'document';
+
+export type StudioDocumentRole = 'story' | 'script' | 'cast';
 
 export interface StudioSessionMedia {
   id: string;
@@ -35,6 +37,10 @@ export interface StudioSessionMedia {
   sceneId?: string;
   /** Cameo previews load via the Cameo file API, not the artifact tree. */
   origin?: 'artifact' | 'cameo';
+  /** Narrative document shown on the planning beat. */
+  role?: StudioDocumentRole;
+  /** Extra files to merge into this document (e.g. per-scene scripts). */
+  paths?: string[];
 }
 
 export interface StudioSessionMessage {

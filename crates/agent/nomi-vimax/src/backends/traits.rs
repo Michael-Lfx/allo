@@ -59,7 +59,7 @@ pub trait VimaxVideo: Send + Sync {
     /// - `last_frame_out`: when set, request `return_last_frame`, persist `last_frame_url`
     ///   beside the still, and save the still here (caller may still ffmpeg-extract).
     /// - `ref_video`: MiniMax-H3 `reference_video` (mutually exclusive with first/last_frame).
-    /// - `ref_audio`: Seedance `reference_audio` for speaker timbre lock.
+    /// - `ref_audios`: Seedance `reference_audio` clips (up to 3) for speaker timbre lock.
     async fn generate(
         &self,
         prompt: &str,
@@ -70,7 +70,7 @@ pub trait VimaxVideo: Send + Sync {
         out_path: &Path,
         last_frame_out: Option<&Path>,
         ref_video: Option<&Path>,
-        ref_audio: Option<&Path>,
+        ref_audios: &[&Path],
     ) -> VimaxResult<()>;
 
     /// Character still + motion video (MiniMax-H3 multimodal reference).
@@ -91,7 +91,7 @@ pub trait VimaxVideo: Send + Sync {
             out_path,
             None,
             Some(reference_video),
-            None,
+            &[],
         )
         .await
     }

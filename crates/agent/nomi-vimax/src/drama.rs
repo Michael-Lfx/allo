@@ -280,8 +280,103 @@ pub fn lint_scenes(scenes: &[String]) -> Vec<String> {
         for issue in lint_scene_action_lines(scene) {
             issues.push(format!("场景{}: {issue}", i + 1));
         }
+        for issue in lint_scene_spoken_plot(scene) {
+            issues.push(format!("场景{}: {issue}", i + 1));
+        }
     }
     issues
+}
+
+/// Short-drama viewers hear the plot; a mute pantomime scene is a defect.
+///
+/// A scene passes when it has at least one named-speaker line whose quoted
+/// payload is long enough to carry information (not a grunt or a sound effect).
+pub fn lint_scene_spoken_plot(scene: &str) -> Vec<String> {
+    if scene_has_audible_plot(scene) {
+        return Vec::new();
+    }
+    vec!["缺少能听懂剧情的角色对白——至少加一句带说话人姓名和「」的对白，把本场的欲望/阻碍/新信息说出来，不要只写动作默片".into()]
+}
+
+fn scene_has_audible_plot(scene: &str) -> bool {
+    scene.lines().any(is_plot_dialogue_line)
+}
+
+fn is_plot_dialogue_line(line: &str) -> bool {
+    is_character_dialogue_line(line) && spoken_payload_weight(&dialogue_quoted_payload(line)) >= 3
+}
+
+fn is_character_dialogue_line(line: &str) -> bool {
+    let line = line.trim().trim_start_matches('△').trim();
+    if line.is_empty() || is_scene_heading_line(line) {
+        return false;
+    }
+    let Some(pos) = line.find(['：', ':']) else {
+        return false;
+    };
+    let speaker = line[..pos].trim();
+    let len = speaker.chars().count();
+    if !(1..=12).contains(&len) || speaker.chars().any(char::is_whitespace) {
+        return false;
+    }
+    !dialogue_quoted_payload(line).trim().is_empty()
+}
+
+fn is_scene_heading_line(line: &str) -> bool {
+    let upper = line.to_uppercase();
+    line.starts_with("场景")
+        || line.starts_with("内景")
+        || line.starts_with("外景")
+        || upper.starts_with("INT.")
+        || upper.starts_with("EXT.")
+        || upper.starts_with("SCENE")
+}
+
+fn dialogue_quoted_payload(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    let mut chunks = String::new();
+    while i < chars.len() {
+        let close = match chars[i] {
+            '「' => Some('」'),
+            '“' => Some('”'),
+            '"' => Some('"'),
+            _ => None,
+        };
+        if let Some(close) = close {
+            i += 1;
+            while i < chars.len() && chars[i] != close {
+                chunks.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() {
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    chunks
+}
+
+fn spoken_payload_weight(text: &str) -> u32 {
+    let mut cjk = 0u32;
+    let mut words = 0u32;
+    let mut in_word = false;
+    for ch in text.chars() {
+        if ('\u{4e00}'..='\u{9fff}').contains(&ch) {
+            cjk += 1;
+            in_word = false;
+        } else if ch.is_ascii_alphabetic() {
+            if !in_word {
+                words += 1;
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+        }
+    }
+    cjk + words
 }
 
 /// Performance lint on a designed storyboard.
@@ -393,14 +488,7 @@ fn is_dialogue_or_heading(line: &str) -> bool {
         return true;
     }
     // Scene headings / sluglines.
-    let upper = line.to_uppercase();
-    if line.starts_with("场景")
-        || line.starts_with("内景")
-        || line.starts_with("外景")
-        || upper.starts_with("INT.")
-        || upper.starts_with("EXT.")
-        || upper.starts_with("SCENE")
-    {
+    if is_scene_heading_line(line) {
         return true;
     }
     // Speaker-prefixed dialogue: 李薇：…… / Alice: …
@@ -523,6 +611,16 @@ mod tests {
     }
 
     #[test]
+    fn mute_scene_fails_spoken_plot_lint() {
+        let mute = "场景一：雨巷\n△ 两人沉默对视，雨落在石板上。";
+        let issues = lint_scene_spoken_plot(mute);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("对白"));
+
+        let spoken = "场景一：雨巷\n林晚：「今晚别等我。」\n△ 她把伞递过去。";
+        assert!(lint_scene_spoken_plot(spoken).is_empty());
+    }
+
     fn scene_lint_skips_dialogue_and_parentheticals() {
         let scene = "场景一：县城车站\n\
                      林晚：「我真的很难过。」\n\

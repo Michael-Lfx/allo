@@ -367,6 +367,8 @@ pub struct VideoCreateParams {
     pub images: Vec<VideoContentImage>,
     pub reference_video_url: Option<String>,
     pub reference_audio_url: Option<String>,
+    /// Extra Seedance `reference_audio` slots (max 3 including [`Self::reference_audio_url`]).
+    pub reference_audio_urls: Vec<String>,
 }
 
 /// True when `model` is MiniMax-H3 (Flowy id forms: `flowy/MiniMax-H3`, `AIPC-…`, bare name).
@@ -455,11 +457,7 @@ impl VideoCreateParams {
                 "role": "reference_video",
             }));
         }
-        if let Some(url) = self
-            .reference_audio_url
-            .as_deref()
-            .filter(|u| !u.trim().is_empty())
-        {
+        for url in self.reference_audio_urls_merged() {
             content.push(json!({
                 "type": "audio_url",
                 "audio_url": {"url": url},
@@ -469,16 +467,34 @@ impl VideoCreateParams {
         content
     }
 
+    /// Seedance allows up to 3 `reference_audio` inputs (`@Audio1`…`@Audio3`).
+    pub fn reference_audio_urls_merged(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let push = |out: &mut Vec<String>, raw: &str| {
+            let url = raw.trim();
+            if url.is_empty() || out.iter().any(|existing| existing == url) {
+                return;
+            }
+            if out.len() < 3 {
+                out.push(url.to_string());
+            }
+        };
+        if let Some(url) = self.reference_audio_url.as_deref() {
+            push(&mut out, url);
+        }
+        for url in &self.reference_audio_urls {
+            push(&mut out, url);
+        }
+        out
+    }
+
     fn has_media_content(&self) -> bool {
         !self.images.is_empty()
             || self
                 .reference_video_url
                 .as_deref()
                 .is_some_and(|u| !u.trim().is_empty())
-            || self
-                .reference_audio_url
-                .as_deref()
-                .is_some_and(|u| !u.trim().is_empty())
+            || !self.reference_audio_urls_merged().is_empty()
     }
 
     /// MiniMax V2 `/v2/video_generation` shape (gateway rewrites `model` upstream).

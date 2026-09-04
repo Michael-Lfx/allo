@@ -15,17 +15,10 @@ import {
   updateArtifactImagePrompt,
   writeArtifactText,
 } from '../api';
+import { isAudioArtifactPath, isImageArtifactPath, isVideoArtifactPath } from '../artifactPresentation';
 import type { ArtifactContent } from '../types';
 
 const TextArea = Input.TextArea;
-
-function isVideoPath(path: string): boolean {
-  return /\.(mp4|webm|mov|avi|mkv)$/i.test(path);
-}
-
-function isImagePath(path: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp)$/i.test(path);
-}
 
 function isEditableTextPath(path: string): boolean {
   return /\.(txt|md|json|csv|prompt)$/i.test(path) || path.toLowerCase().endsWith('.json');
@@ -68,7 +61,7 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
     isEditableTextPath(path) &&
     (preview?.kind === 'text' || preview?.kind === 'json') &&
     preview.text != null;
-  const canEditImage = Boolean(path) && isImagePath(path) && preview?.kind === 'url';
+  const canEditImage = Boolean(path) && isImageArtifactPath(path) && preview?.kind === 'url';
 
   useEffect(() => {
     setEditing(false);
@@ -310,8 +303,10 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
             </div>
           )
         ) : preview?.kind === 'url' && preview.url && selectedPath ? (
-          isVideoPath(selectedPath) || preview.mime?.startsWith('video/') ? (
+          isVideoArtifactPath(selectedPath) || preview.mime?.startsWith('video/') ? (
             <video src={preview.url} controls className='max-h-360px max-w-full rd-8px' />
+          ) : isAudioArtifactPath(selectedPath) || preview.mime?.startsWith('audio/') ? (
+            <audio src={preview.url} controls className='w-full' />
           ) : (
             <img
               src={preview.url}

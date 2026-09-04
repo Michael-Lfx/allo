@@ -4,6 +4,7 @@
  */
 
 const LAST_SESSION_KEY = 'flowy.videoGeneration.lastSessionId';
+const LAST_SOURCE_KEY = 'flowy.videoGeneration.lastSource';
 /** Survives app restarts — used for the sider "recent 3" strip. */
 const RECENT_SESSIONS_KEY = 'flowy.videoGeneration.recentSessions';
 /** Survives app restarts — direct-video generation tasks (clips). */
@@ -14,14 +15,16 @@ export const RECENT_VIDEO_GENERATION_VISIBLE = 3;
 /** Cap stored MRU entries (localStorage). */
 const RECENT_VIDEO_GENERATION_STORE_LIMIT = 12;
 
+export type RecentVideoGenerationSource = 'session' | 'task' | 'canvas' | 'briefing';
+
 export interface RecentVideoGenerationEntry {
   id: string;
   /** Cached title for instant sider paint before listSessions resolves. */
   title?: string;
   /** Epoch ms when last opened / remembered. */
   at: number;
-  /** Source kind: long-lived session or one-shot clip task. */
-  source?: 'session' | 'task';
+  /** Kind of workspace this id opens. */
+  source?: RecentVideoGenerationSource;
 }
 
 function readStorage(key: string): string | null {
@@ -77,6 +80,18 @@ function normalizeTitle(title: string | null | undefined): string | undefined {
   return t || undefined;
 }
 
+function parseRecentSource(raw: unknown): RecentVideoGenerationSource {
+  if (raw === 'task' || raw === 'canvas' || raw === 'briefing' || raw === 'session') {
+    return raw;
+  }
+  return 'session';
+}
+
+function writeLastOpened(id: string, source: RecentVideoGenerationSource): void {
+  writeSessionStorage(LAST_SESSION_KEY, id);
+  writeSessionStorage(LAST_SOURCE_KEY, source);
+}
+
 export function readRecentVideoGenerationSessions(): RecentVideoGenerationEntry[] {
   return readRecentEntries(RECENT_SESSIONS_KEY);
 }
@@ -102,7 +117,7 @@ function readRecentEntries(storageKey: string): RecentVideoGenerationEntry[] {
         Number.isFinite((item as { at: number }).at)
           ? (item as { at: number }).at
           : Date.now();
-      const source = (item as { source?: unknown }).source === 'task' ? 'task' as const : 'session' as const;
+      const source = parseRecentSource((item as { source?: unknown }).source);
       out.push(title ? { id, title, at, source } : { id, at, source });
     }
     return out;
@@ -124,11 +139,12 @@ function writeRecentVideoGenerationSessions(entries: RecentVideoGenerationEntry[
  */
 export function rememberVideoGenerationSession(
   sessionId: string | null | undefined,
-  title?: string | null
+  title?: string | null,
+  source: RecentVideoGenerationSource = 'session'
 ): void {
   const id = (sessionId ?? '').trim();
   if (!id) return;
-  writeSessionStorage(LAST_SESSION_KEY, id);
+  writeLastOpened(id, source);
 
   const cachedTitle = normalizeTitle(title);
   const now = Date.now();
@@ -143,6 +159,7 @@ export function rememberVideoGenerationSession(
         ...entry,
         at: now,
         title: cachedTitle ?? entry.title,
+        source,
       };
     });
     writeRecentVideoGenerationSessions(next);
@@ -152,7 +169,7 @@ export function rememberVideoGenerationSession(
   // New project (or was beyond the visible window) — insert at front.
   const rest = prevAll.filter((e) => e.id !== id);
   const previous = existingIdx >= 0 ? prevAll[existingIdx] : undefined;
-  const next: RecentVideoGenerationEntry = { id, at: now };
+  const next: RecentVideoGenerationEntry = { id, at: now, source };
   if (cachedTitle) {
     next.title = cachedTitle;
   } else if (previous?.title) {
@@ -161,12 +178,27 @@ export function rememberVideoGenerationSession(
   writeRecentVideoGenerationSessions([next, ...rest]);
 }
 
+export function rememberVideoGenerationCanvas(
+  projectId: string | null | undefined,
+  title?: string | null
+): void {
+  rememberVideoGenerationSession(projectId, title, 'canvas');
+}
+
+export function rememberVideoGenerationBriefing(
+  briefingId: string | null | undefined,
+  title?: string | null
+): void {
+  rememberVideoGenerationSession(briefingId, title, 'briefing');
+}
+
 export function clearVideoGenerationSessionMemory(sessionId?: string | null): void {
   const id = (sessionId ?? '').trim();
   if (id) {
     const current = readSessionStorage(LAST_SESSION_KEY);
-    if (!current || current === id) {
+    if (current === id) {
       removeSessionStorage(LAST_SESSION_KEY);
+      removeSessionStorage(LAST_SOURCE_KEY);
     }
     writeRecentVideoGenerationSessions(
       readRecentVideoGenerationSessions().filter((e) => e.id !== id)
@@ -177,6 +209,7 @@ export function clearVideoGenerationSessionMemory(sessionId?: string | null): vo
     return;
   }
   removeSessionStorage(LAST_SESSION_KEY);
+  removeSessionStorage(LAST_SOURCE_KEY);
   removeStorage(RECENT_SESSIONS_KEY);
   removeStorage(RECENT_TASKS_KEY);
 }
@@ -202,9 +235,7 @@ export function rememberVideoGenerationTask(
 ): void {
   const id = (taskId ?? '').trim();
   if (!id) return;
-  // Tasks are also tracked by `rememberVideoGenerationSession` so the LAST_SESSION
-  // restore path keeps working — keep its dedupe semantics intact.
-  rememberVideoGenerationSession(id, title);
+  rememberVideoGenerationSession(id, title, 'task');
 
   const cachedTitle = normalizeTitle(title);
   const now = Date.now();
@@ -259,7 +290,18 @@ export function readRememberedVideoGenerationSession(): string | null {
 /** Path for sider / deep-link restore: last workspace, else list home. */
 export function videoGenerationEntryPath(): string {
   const id = readRememberedVideoGenerationSession();
-  return id ? `/video-generation/${id}` : '/video-generation';
+  if (!id) return '/video-generation';
+  const source = parseRecentSource(readSessionStorage(LAST_SOURCE_KEY));
+  if (source === 'canvas') {
+    return `/video-generation/canvas/${encodeURIComponent(id)}`;
+  }
+  if (source === 'task') {
+    return `/video-generation/clip/${encodeURIComponent(id)}`;
+  }
+  if (source === 'briefing') {
+    return `/video-generation/briefing/${encodeURIComponent(id)}`;
+  }
+  return `/video-generation/${encodeURIComponent(id)}`;
 }
 
 /**

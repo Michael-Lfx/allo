@@ -1,13 +1,43 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Attention, PlayOne, Robot, User } from '@icon-park/react';
-import { loadArtifactMediaUrlCached } from '../api';
-import { loadStudioMediaPreviewUrl } from './collectStudioMedia';
+import { getArtifact, loadArtifactMediaUrlCached } from '../api';
+import {
+  groupPortraitMedia,
+  loadStudioMediaPreviewUrl,
+  parseCastEntries,
+  parseScriptScenes,
+} from './collectStudioMedia';
 import type { FailureKind } from '../classifyFailure';
 import type { StudioSessionMedia, StudioSessionMessage } from './types';
 import styles from './index.module.css';
 
 const BRIEF_LIMIT = 280;
+const DOCUMENT_LIMIT = 420;
+
+function isPortraitPath(path: string): boolean {
+  return /character_portraits/i.test(path.replace(/\\/g, '/'));
+}
+
+function partitionSessionMedia(media: StudioSessionMedia[]): {
+  files: StudioSessionMedia[];
+  docs: StudioSessionMedia[];
+  portraits: StudioSessionMedia[];
+  rest: StudioSessionMedia[];
+} {
+  const files: StudioSessionMedia[] = [];
+  const docs: StudioSessionMedia[] = [];
+  const portraits: StudioSessionMedia[] = [];
+  const rest: StudioSessionMedia[] = [];
+  for (const item of media) {
+    if (item.kind === 'file') files.push(item);
+    else if (item.kind === 'document') docs.push(item);
+    else if (item.kind === 'audio' || (item.kind === 'image' && isPortraitPath(item.path))) {
+      portraits.push(item);
+    } else rest.push(item);
+  }
+  return { files, docs, portraits, rest };
+}
 
 const FilmPreview: React.FC<{
   sessionId: string;
@@ -75,6 +105,146 @@ const FilmPreview: React.FC<{
   );
 };
 
+const AudioClip: React.FC<{ sessionId: string; item: StudioSessionMedia }> = ({
+  sessionId,
+  item,
+}) => {
+  const { t } = useTranslation();
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadStudioMediaPreviewUrl(sessionId, item)
+      .then((next) => {
+        if (!cancelled) setUrl(next);
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, item.path, item.kind, item.origin]);
+
+  const label = t('videoGeneration.agentSession.document.voiceLabel', {
+    defaultValue: '参考音频',
+  });
+
+  return (
+    <div className={styles.audioClip}>
+      <span className={styles.audioClipLabel}>{label}</span>
+      {url ? (
+        <audio className={styles.audioPlayer} src={url} controls preload='metadata' />
+      ) : (
+        <span className={styles.mediaPending} />
+      )}
+    </div>
+  );
+};
+
+const DocumentExcerpt: React.FC<{
+  sessionId: string;
+  item: StudioSessionMedia;
+  onSelect?: (item: StudioSessionMedia) => void;
+}> = ({ sessionId, item, onSelect }) => {
+  const { t } = useTranslation();
+  const [text, setText] = useState<string | null>(null);
+  const [scriptScenes, setScriptScenes] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState(false);
+  const role = item.role ?? 'story';
+  const title = t(`videoGeneration.agentSession.document.${role}`, {
+    defaultValue: item.label ?? role,
+  });
+  const filesKey = (item.paths && item.paths.length > 0 ? item.paths : [item.path]).join('\0');
+
+  useEffect(() => {
+    let cancelled = false;
+    const files = filesKey.split('\0').filter(Boolean);
+    setText(null);
+    setScriptScenes([]);
+    setExpanded(false);
+    void Promise.all(files.map((path) => getArtifact(sessionId, path)))
+      .then((contents) => {
+        if (cancelled) return;
+        const bodies = contents.map((content) => content.text ?? '');
+        setText(bodies.join('\n\n').trim());
+        setScriptScenes(role === 'script' ? bodies.flatMap((body) => parseScriptScenes(body)) : []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setText('');
+        setScriptScenes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, filesKey, role]);
+
+  const cast = role === 'cast' && text ? parseCastEntries(text) : [];
+  const scenes = role === 'script' ? scriptScenes : [];
+  const sceneLong = scenes.some((scene) => scene.length > DOCUMENT_LIMIT);
+  const body = text ?? '';
+  const long = scenes.length > 0 ? sceneLong : body.length > DOCUMENT_LIMIT;
+  const shown = long && !expanded ? `${body.slice(0, DOCUMENT_LIMIT).trimEnd()}…` : body;
+
+  return (
+    <div className={styles.documentCard}>
+      <button
+        type='button'
+        className={styles.documentTitle}
+        onClick={() => onSelect?.(item)}
+        title={item.path}
+      >
+        {title}
+      </button>
+      {text == null ? (
+        <span className={styles.mediaPending} />
+      ) : cast.length > 0 ? (
+        <ul className={styles.castList}>
+          {cast.map((entry) => (
+            <li key={entry.name}>
+              <span className={styles.castName}>{entry.name}</span>
+              {entry.features ? (
+                <span className={styles.castFeatures}>{entry.features}</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : scenes.length > 0 ? (
+        <div className={styles.scriptScenes}>
+          {scenes.map((scene, index) => {
+            const clipped = sceneLong && !expanded && scene.length > DOCUMENT_LIMIT;
+            return (
+              <section key={`${index}:${scene.slice(0, 24)}`} className={styles.scriptScene}>
+                {scenes.length > 1 ? (
+                  <h4 className={styles.scriptSceneHeading}>
+                    {t('videoGeneration.agentSession.document.scriptScene', {
+                      n: index + 1,
+                      defaultValue: `第 ${index + 1} 场`,
+                    })}
+                  </h4>
+                ) : null}
+                <p className={styles.documentBody}>
+                  {clipped ? `${scene.slice(0, DOCUMENT_LIMIT).trimEnd()}…` : scene}
+                </p>
+              </section>
+            );
+          })}
+        </div>
+      ) : shown ? (
+        <p className={styles.documentBody}>{shown}</p>
+      ) : null}
+      {cast.length === 0 && long ? (
+        <button type='button' className={styles.bubbleMeta} onClick={() => setExpanded((v) => !v)}>
+          {expanded
+            ? t('videoGeneration.agentSession.briefCollapse', { defaultValue: '收起' })
+            : t('videoGeneration.agentSession.briefExpand', { defaultValue: '展开全文' })}
+        </button>
+      ) : null}
+    </div>
+  );
+};
+
 const MediaThumb: React.FC<{
   sessionId: string;
   item: StudioSessionMedia;
@@ -85,7 +255,7 @@ const MediaThumb: React.FC<{
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (item.kind === 'file') {
+    if (item.kind === 'file' || item.kind === 'document' || item.kind === 'audio') {
       setUrl(null);
       return;
     }
@@ -117,7 +287,9 @@ const MediaThumb: React.FC<{
     );
   }
 
-  const previewable = gallery.filter((card) => card.kind !== 'file');
+  const previewable = gallery.filter(
+    (card) => card.kind === 'image' || card.kind === 'video'
+  );
 
   return (
     <button
@@ -139,6 +311,70 @@ const MediaThumb: React.FC<{
         </span>
       ) : null}
     </button>
+  );
+};
+
+const SessionMedia: React.FC<{
+  sessionId: string;
+  media: StudioSessionMedia[];
+  onOpenMedia?: (item: StudioSessionMedia, gallery: StudioSessionMedia[]) => void;
+}> = ({ sessionId, media, onOpenMedia }) => {
+  const { files, docs, portraits, rest } = partitionSessionMedia(media);
+  const portraitGroups = groupPortraitMedia(portraits);
+  return (
+    <>
+      {files.map((card) => (
+        <MediaThumb
+          key={card.id}
+          sessionId={sessionId}
+          item={card}
+          gallery={media}
+          onOpen={onOpenMedia}
+        />
+      ))}
+      {docs.map((card) => (
+        <DocumentExcerpt
+          key={card.id}
+          sessionId={sessionId}
+          item={card}
+          onSelect={(item) => onOpenMedia?.(item, [item])}
+        />
+      ))}
+      {portraitGroups.map((group) => (
+        <div key={group.dir} className={styles.characterPack}>
+          {group.label ? <div className={styles.characterPackLabel}>{group.label}</div> : null}
+          {group.images.length > 0 ? (
+            <div className={styles.mediaGrid}>
+              {group.images.map((card) => (
+                <MediaThumb
+                  key={card.id}
+                  sessionId={sessionId}
+                  item={card}
+                  gallery={group.images}
+                  onOpen={onOpenMedia}
+                />
+              ))}
+            </div>
+          ) : null}
+          {group.audios.map((card) => (
+            <AudioClip key={card.id} sessionId={sessionId} item={card} />
+          ))}
+        </div>
+      ))}
+      {rest.length > 0 ? (
+        <div className={styles.mediaGrid}>
+          {rest.map((card) => (
+            <MediaThumb
+              key={card.id}
+              sessionId={sessionId}
+              item={card}
+              gallery={rest}
+              onOpen={onOpenMedia}
+            />
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 };
 
@@ -253,34 +489,11 @@ const StudioSessionMessageView: React.FC<StudioSessionMessageViewProps> = ({
         {item.kind === 'film_ready' && media.length > 0 ? (
           <FilmPreview sessionId={sessionId} items={media} onOpen={onOpenMedia} />
         ) : media.length > 0 ? (
-          <>
-            {media
-              .filter((card) => card.kind === 'file')
-              .map((card) => (
-                <MediaThumb
-                  key={card.id}
-                  sessionId={sessionId}
-                  item={card}
-                  gallery={media}
-                  onOpen={onOpenMedia}
-                />
-              ))}
-            {media.some((card) => card.kind !== 'file') ? (
-              <div className={styles.mediaGrid}>
-                {media
-                  .filter((card) => card.kind !== 'file')
-                  .map((card) => (
-                    <MediaThumb
-                      key={card.id}
-                      sessionId={sessionId}
-                      item={card}
-                      gallery={media}
-                      onOpen={onOpenMedia}
-                    />
-                  ))}
-              </div>
-            ) : null}
-          </>
+          <SessionMedia
+            sessionId={sessionId}
+            media={media}
+            onOpenMedia={onOpenMedia}
+          />
         ) : null}
         {meta || item.live ? (
           <div className={styles.bubbleMeta}>

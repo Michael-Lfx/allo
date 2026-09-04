@@ -125,6 +125,7 @@ impl FlowyVideoGenBackend {
             } else {
                 request.reference_audio_url.clone()
             },
+            reference_audio_urls: Vec::new(),
         };
 
         let body = FlowyApiClient::build_video_create_params(params);

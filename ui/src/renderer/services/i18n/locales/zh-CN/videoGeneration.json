@@ -395,6 +395,9 @@
     "character_portraits_start": "生成角色定妆图",
     "character_portraits_done": "角色定妆图已就绪",
     "character_portrait_start": "生成角色定妆图",
+    "voice_profiles": "设计角色声线",
+    "voice_references_start": "生成角色参考音频",
+    "voice_references_done": "角色参考音频已就绪",
     "world_assets_start": "生成环境与道具参考图",
     "world_assets_done": "环境与道具参考图已就绪",
     "film_cover_start": "生成影片封面",
@@ -804,6 +807,13 @@
       "prev": "上一张",
       "next": "下一张",
       "counter": "{{current}} / {{total}}"
+    },
+    "document": {
+      "story": "故事梗概",
+      "script": "剧本",
+      "scriptScene": "第 {{n}} 场",
+      "cast": "角色设定",
+      "voiceLabel": "参考音频"
     },
     "issue": {
       "detail": "问题详情",

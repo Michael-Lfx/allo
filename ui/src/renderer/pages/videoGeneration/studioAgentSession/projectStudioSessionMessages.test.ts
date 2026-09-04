@@ -370,10 +370,85 @@ describe('projectStudioSessionMessages', () => {
       'render_clips',
       'film',
     ]);
+    expect(messages[0]?.kind).toBe('user_brief');
+    expect(messages.at(-1)?.kind).toBe('film_ready');
     const world = messages.find((m) => m.beat === 'world');
     expect(world?.media?.map((m) => m.path)).toEqual([
       'environments/alley_environment_plate.png',
     ]);
     expect(messages.some((m) => m.kind === 'user_brief')).toBe(true);
+  });
+
+  test('places film_ready last so the session reads chronologically', () => {
+    const messages = projectStudioSessionMessages({
+      sourceText: 'A rainy alley fight.',
+      artifacts: [],
+      status: {
+        stage: 'render_done',
+        message: '',
+        progress: 100,
+        status: 'succeeded',
+        events: [
+          { stage: 'planned', message: '', at: 'a' },
+          { stage: 'frames_done', message: '', at: 'b' },
+          { stage: 'render_done', message: '', at: 'c' },
+        ],
+      },
+      hasStoryboard: true,
+      hasFinalVideo: true,
+      finalVideoPath: 'idea2video/final_video.mp4',
+      isAction: false,
+    });
+    expect(messages[0]?.kind).toBe('user_brief');
+    expect(messages.at(-1)?.kind).toBe('film_ready');
+    const storyboardAt = messages.findIndex((m) => m.beat === 'storyboard');
+    const filmAt = messages.findIndex((m) => m.kind === 'film_ready');
+    expect(storyboardAt).toBeGreaterThan(0);
+    expect(storyboardAt).toBeLessThan(filmAt);
+  });
+
+  test('keeps canonical order when resume recaps land after render events', () => {
+    const artifacts: ArtifactNode[] = [
+      ...portraitTree,
+      { name: 'story.txt', path: 'idea2video/story.txt', is_dir: false },
+    ];
+    const status: SessionStatus = {
+      stage: 'video_poll',
+      message: '',
+      progress: 70,
+      status: 'rendering',
+      events: [
+        { stage: 'frames_done', message: '', at: 'a' },
+        { stage: 'video_poll', message: '', at: 'b', metadata: { elapsed_secs: 4 } },
+        { stage: 'reuse_plan', message: '', at: 'c' },
+        { stage: 'extract_characters', message: '', at: 'd' },
+        { stage: 'planned', message: '', at: 'e' },
+        { stage: 'character_portraits_start', message: '', at: 'f' },
+      ],
+    };
+    const messages = projectStudioSessionMessages({
+      sourceText: 'idea',
+      artifacts,
+      status,
+      hasStoryboard: true,
+      hasFinalVideo: false,
+      isAction: false,
+    });
+    const milestones = messages.filter((m) => m.kind === 'milestone');
+    expect(milestones.map((m) => m.beat)).toEqual([
+      'plan',
+      'portraits',
+      'storyboard',
+      'render_frames',
+      'render_clips',
+    ]);
+    expect(milestones.find((m) => m.beat === 'plan')?.media?.some((item) => item.role === 'story')).toBe(
+      true
+    );
+    expect(milestones.find((m) => m.beat === 'portraits')?.stage).toBe('character_portraits_done');
+    expect(milestones.find((m) => m.beat === 'portraits')?.live).toBe(false);
+    const live = milestones.filter((m) => m.live);
+    expect(live).toHaveLength(1);
+    expect(live[0]?.beat).toBe('render_clips');
   });
 });

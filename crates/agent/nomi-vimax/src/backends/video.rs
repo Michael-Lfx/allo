@@ -188,7 +188,7 @@ impl VimaxVideo for FlowyVideo {
         out_path: &Path,
         last_frame_out: Option<&Path>,
         ref_video: Option<&Path>,
-        ref_audio: Option<&Path>,
+        ref_audios: &[&Path],
     ) -> VimaxResult<()> {
         if self.is_cancelled() {
             return Err(VimaxError::Cancelled);
@@ -323,26 +323,33 @@ impl VimaxVideo for FlowyVideo {
             );
         }
 
-        let mut reference_audio_url = None;
+        let mut reference_audio_urls = Vec::new();
         // Seedance: reference_audio cannot be the only reference input — need ≥1
         // image or reference_video. Pure T2V must omit voice refs.
         let has_visual_ref = !images.is_empty() || reference_video_url.is_some();
-        if let Some(path) = ref_audio.filter(|p| crate::media_local::is_usable_audio_file(p)) {
+        let usable_audios: Vec<&Path> = ref_audios
+            .iter()
+            .copied()
+            .filter(|path| crate::media_local::is_usable_audio_file(path))
+            .take(3)
+            .collect();
+        if !usable_audios.is_empty() {
             if has_visual_ref {
-                local_frame_notes.push(format!(
-                    "reference_audio←{}",
-                    path.file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("?")
-                ));
-                reference_audio_url = Some(
-                    self.services
-                        .upload_audio_public_url(path, "reference_audio")
-                        .await?,
-                );
+                for path in usable_audios {
+                    local_frame_notes.push(format!(
+                        "reference_audio←{}",
+                        path.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("?")
+                    ));
+                    reference_audio_urls.push(
+                        self.services
+                            .upload_audio_public_url(path, "reference_audio")
+                            .await?,
+                    );
+                }
             } else {
                 tracing::info!(
-                    path = %path.display(),
                     "omitting reference_audio: Seedance forbids audio as the only reference input"
                 );
                 local_frame_notes.push("reference_audio_omitted_no_visual_ref".into());
@@ -383,7 +390,8 @@ impl VimaxVideo for FlowyVideo {
             return_last_frame: if is_h3 { None } else { Some(want_last_frame) },
             images,
             reference_video_url,
-            reference_audio_url,
+            reference_audio_url: None,
+            reference_audio_urls,
         };
 
         log_video_create_params(&params, &local_frame_notes, out_path);
@@ -477,7 +485,7 @@ impl VimaxVideo for FlowyVideo {
             Err(e)
                 if !is_h3
                     && is_seedance_audio_only_ref_err(&e)
-                    && params.reference_audio_url.is_some() =>
+                    && !params.reference_audio_urls_merged().is_empty() =>
             {
                 // Upstream sometimes strips rejected images then complains that audio
                 // is the only remaining reference — drop voice ref and retry once.
@@ -488,6 +496,7 @@ impl VimaxVideo for FlowyVideo {
                 );
                 let mut no_audio = params.clone();
                 no_audio.reference_audio_url = None;
+                no_audio.reference_audio_urls.clear();
                 let mut notes = local_frame_notes.clone();
                 notes.push("reference_audio_dropped_after_audio_only_reject".into());
                 log_video_create_params(&no_audio, &notes, out_path);

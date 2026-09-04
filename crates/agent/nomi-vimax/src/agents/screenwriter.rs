@@ -146,11 +146,10 @@ like「场景一」「场景二」/「Scene 1」. Prefer 「」 quotes inside di
         )))
     }
 
-    /// Best-effort show-don't-tell polish: action lines that only NAME an
-    /// emotion get one rewrite round into visible behavior. Infallible by
-    /// design — a scene script with a residual mood word is worth rendering,
-    /// so lint failures here downgrade to warnings, never errors. The scene
-    /// count is guarded: a repair that changes it is discarded.
+    /// Best-effort scene polish: action lines that only NAME an emotion, and
+    /// scenes with no audible plot (no named 「」 dialogue). One rewrite round.
+    /// Infallible by design — residual lint downgrades to warnings, never
+    /// errors. A repair that changes the scene count is discarded.
     pub async fn polish_scenes_show_dont_tell(&self, scenes: Vec<String>) -> Vec<String> {
         let issues = crate::drama::lint_scenes(&scenes);
         if issues.is_empty() {
@@ -158,7 +157,7 @@ like「场景一」「场景二」/「Scene 1」. Prefer 「」 quotes inside di
         }
         tracing::info!(
             issues = issues.len(),
-            "scene scripts failed show-don't-tell lint; running one polish round"
+            "scene scripts failed spoken-plot/show-don't-tell lint; running one polish round"
         );
         let scenes_json = match serde_json::to_string_pretty(&scenes) {
             Ok(s) => s,
