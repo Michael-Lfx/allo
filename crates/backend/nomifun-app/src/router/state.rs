@@ -31,7 +31,7 @@ use nomifun_db::{
     MAX_UNSETTLED_TURN_ADMISSION_PAGE_SIZE,
 };
 use nomifun_extension::{
-    PresetRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
+    MarketPackagePresetInstaller, PresetRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
     HubIndexManager, HubInstaller, HubRouterState, SkillRouterState, resolve_install_target_dir_for_data_dir,
     resolve_scan_paths_for_data_dir, resolve_state_file_path,
 };
@@ -566,6 +566,8 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
 
     let dispatcher: Arc<dyn PresetRuleDispatcher> = preset.service.clone();
     skill_state.preset_dispatcher = Some(dispatcher);
+    let package_installer: Arc<dyn MarketPackagePresetInstaller> = preset.service.clone();
+    skill_state.market_package_preset_installer = Some(package_installer);
 
     let (channel_state, channel_components) = build_channel_state(services, ext_state.registry.clone()).await;
     tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: channel state built");
@@ -2412,6 +2414,7 @@ pub async fn build_extension_states(
         skill_paths,
         external_paths_manager: ext_paths_mgr,
         preset_dispatcher: None,
+        market_package_preset_installer: None,
         skill_tag_repo,
         builtin_skill_tags,
     };

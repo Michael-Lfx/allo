@@ -25,6 +25,7 @@ use nomifun_db::ISkillTagRepository;
 use crate::classifier::PresetRuleDispatcher;
 use crate::external_paths::ExternalPathsManager;
 use crate::skill_service::{self, SkillPaths, SkillSource};
+use crate::market::MarketPackagePresetInstaller;
 
 fn to_source_response(source: SkillSource) -> SkillSourceResponse {
     match source {
@@ -56,6 +57,9 @@ pub struct SkillRouterState {
     /// is absent (test-only construction).
     #[allow(clippy::type_complexity)]
     pub preset_dispatcher: Option<Arc<dyn PresetRuleDispatcher>>,
+    /// Production bridge that creates the user preset only after an expert
+    /// package's complete Skill set has been committed.
+    pub market_package_preset_installer: Option<Arc<dyn MarketPackagePresetInstaller>>,
     /// Per-skill tag assignment repo (user assignments/overrides).
     pub skill_tag_repo: Arc<dyn ISkillTagRepository>,
     /// Built-in skill tag seed: skill name → (audience_tags, scenario_tags).
@@ -613,7 +617,12 @@ async fn install_skill_market_package(
     body: Result<Json<SkillMarketPackageRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<SkillMarketPackageInstallResponse>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let resp = crate::market::install_market_package(&state.skill_paths, req).await?;
+    let resp = crate::market::install_market_package(
+        &state.skill_paths,
+        req,
+        state.market_package_preset_installer.as_deref(),
+    )
+    .await?;
     Ok(Json(ApiResponse::ok(resp)))
 }
 
@@ -684,6 +693,7 @@ mod tests {
             skill_paths: paths,
             external_paths_manager: ext_mgr,
             preset_dispatcher: None,
+            market_package_preset_installer: None,
             skill_tag_repo: std::sync::Arc::new(InMemorySkillTagRepo::default()),
             builtin_skill_tags: std::sync::Arc::new(std::collections::HashMap::new()),
         }

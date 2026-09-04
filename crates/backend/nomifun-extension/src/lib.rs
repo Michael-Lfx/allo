@@ -57,3 +57,4 @@ pub use skill_service::{
     read_builtin_skill, read_skill_info, resolve_skill_paths, scan_for_skills,
 };
 pub use skill_service::{builtin_skills_corpus_fingerprint, builtin_skills_materialize_version};
+pub use market::MarketPackagePresetInstaller;

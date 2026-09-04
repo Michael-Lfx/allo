@@ -12,7 +12,7 @@ use nomifun_db::{
     IPresetTagRepository, IProviderRepository, PresetRecord, PresetWriteParams,
     UpdatePresetTagParams, UpsertPresetStateParams,
 };
-use nomifun_extension::{ExtensionRegistry, ResolvedPreset};
+use nomifun_extension::{ExtensionRegistry, MarketPackagePresetInstaller, ResolvedPreset};
 
 use crate::builtin::{AvatarAsset, BuiltinPreset, BuiltinPresetRegistry};
 use nomifun_extension::{PresetClassifier, PresetRuleDispatcher};
@@ -632,6 +632,100 @@ impl PresetService {
             "user" => find_asset(&self.user_data_dir.join("preset-avatars"), id),
             _ => None,
         }
+    }
+}
+
+/// Complete the second half of a market package transaction. The extension
+/// crate owns archive validation and Skill commits; this implementation only
+/// creates the user preset after it receives the complete canonical Skill set.
+#[async_trait::async_trait]
+impl MarketPackagePresetInstaller for PresetService {
+    async fn install_market_package_preset(
+        &self,
+        requested_id: Option<String>,
+        package: SkillMarketPackageResponse,
+        skill_ids: Vec<String>,
+    ) -> Result<String, AppError> {
+        let preset_id = requested_id.unwrap_or_else(|| PresetId::new().into_string());
+        let included_skills = skill_ids
+            .iter()
+            .cloned()
+            .map(|skill_id| SkillBinding { skill_id, required: true })
+            .collect::<Vec<_>>();
+        let request = CreatePresetRequest {
+            preset_id: Some(preset_id.clone()),
+            name: package.name.clone(),
+            description: Some(package.description.clone()),
+            routing_description: Some(package.description.clone()),
+            instructions: package.instructions.clone(),
+            avatar: package.avatar.clone(),
+            fallback_allowed: false,
+            targets: vec![PresetTarget::Conversation, PresetTarget::ExecutionStep],
+            agent_preferences: Vec::new(),
+            model_preferences: Vec::new(),
+            included_skills,
+            excluded_auto_skills: Vec::new(),
+            knowledge_policy: PresetKnowledgePolicy::default(),
+            knowledge_bases: Vec::new(),
+            mcp_server_ids: Vec::new(),
+            examples: Vec::new(),
+            examples_i18n: HashMap::new(),
+            audience_tag_ids: Vec::new(),
+            scenario_tag_ids: Vec::new(),
+            name_i18n: HashMap::new(),
+            description_i18n: HashMap::new(),
+            instructions_i18n: HashMap::new(),
+        };
+
+        let (preset, newly_created) = match self.create(request).await {
+            Ok(preset) => (preset, true),
+            Err(AppError::Conflict(_)) => {
+                let existing = self.get(&preset_id).await?;
+                let existing_skill_ids = existing
+                    .included_skills
+                    .iter()
+                    .map(|skill| skill.skill_id.clone())
+                    .collect::<Vec<_>>();
+                if existing.source != PresetSource::User
+                    || existing.name != package.name
+                    || existing.description.as_deref() != Some(package.description.as_str())
+                    || existing.instructions != package.instructions
+                    || existing.targets != [PresetTarget::Conversation, PresetTarget::ExecutionStep]
+                    || existing_skill_ids != skill_ids
+                {
+                    return Err(AppError::Conflict(format!(
+                        "preset id '{preset_id}' is already used by a different preset"
+                    )));
+                }
+                (existing, false)
+            }
+            Err(error) => return Err(error),
+        };
+
+        if let Err(error) = self
+            .set_state(
+                &preset.preset_id,
+                SetPresetStateRequest {
+                    enabled: Some(true),
+                    auto_selectable: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            if newly_created {
+                if let Err(cleanup_error) = self.delete(&preset.preset_id).await {
+                    tracing::error!(
+                        preset_id = %preset.preset_id,
+                        %cleanup_error,
+                        "failed to roll back market preset after state update failure"
+                    );
+                }
+            }
+            return Err(error);
+        }
+
+        Ok(preset.preset_id)
     }
 }
 

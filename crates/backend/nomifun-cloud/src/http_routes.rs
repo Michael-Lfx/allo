@@ -42,7 +42,7 @@ const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const MAX_GROWTH_EVENTS_PER_BATCH: usize = 50;
 const MAX_GROWTH_PROPERTIES: usize = 24;
-const TELEMETRY_EVENT_NAMES: [&str; 18] = [
+const TELEMETRY_EVENT_NAMES: [&str; 19] = [
     "app_opened",
     "home_viewed",
     "task_drafted",
@@ -61,6 +61,7 @@ const TELEMETRY_EVENT_NAMES: [&str; 18] = [
     "tv_published",
     "resume_started",
     "resume_succeeded",
+    "expert_package_install_failed",
 ];
 
 #[derive(Clone)]
@@ -186,7 +187,7 @@ fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError>
     }
     if let Some(module) = event.module.as_deref() {
         let expected = match event.name.as_str() {
-            "app_opened" => "platform",
+            "app_opened" | "expert_package_install_failed" => "platform",
             _ => "video_generation",
         };
         if module != expected {
@@ -274,6 +275,22 @@ mod growth_tests {
         assert!(validate_video_growth_event(&event("briefing_cancelled")).is_ok());
         assert!(TELEMETRY_EVENT_NAMES.contains(&"briefing_succeeded"));
         assert!(TELEMETRY_EVENT_NAMES.contains(&"film_succeeded"));
+    }
+
+    #[test]
+    fn accepts_expert_package_failure_as_a_platform_event() {
+        let mut event = event("expert_package_install_failed");
+        event.module = Some("platform".into());
+        event
+            .properties
+            .insert("package_slug".into(), serde_json::json!("tech-test-automation"));
+        event
+            .properties
+            .insert("failure_class".into(), serde_json::json!("deterministic"));
+        assert!(validate_video_growth_event(&event).is_ok());
+
+        event.module = Some("video_generation".into());
+        assert!(validate_video_growth_event(&event).is_err());
     }
 
     #[test]

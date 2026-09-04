@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "source": "https://api.skillhub.cn/api/v1/skillsets",
+  "verified_at": "2026-09-03",
+  "checked_package_count": 59,
+  "packages": {
+    "tech-test-automation": {
+      "declared_skill_count": 6,
+      "failed_skills": [
+        {
+          "slug": "afrexai-qa-test-plan",
+          "http_status": 200,
+          "failure_class": "deterministic",
+          "failure_code": "INVALID_FRONTMATTER",
+          "reason": "download returned HTTP 200 with a ZIP, but SKILL.md has no valid frontmatter"
+        }
+      ]
+    },
+    "marketing-social-media-operation": {
+      "failed_skills": [
+        {
+          "slug": "content-writer",
+          "failure_class": "deterministic",
+          "failure_code": "NOT_FOUND",
+          "reason": "SkillHub download returned HTTP 404"
+        }
+      ]
+    },
+    "academic-literature-review": {
+      "failed_skills": [
+        {
+          "slug": "academic-researcher",
+          "failure_class": "deterministic",
+          "failure_code": "NOT_FOUND",
+          "reason": "SkillHub download returned HTTP 404"
+        }
+      ]
+    }
+  }
+}

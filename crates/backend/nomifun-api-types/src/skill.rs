@@ -522,6 +522,10 @@ pub struct SkillMarketPackageRequest {
     pub source: String,
     pub id: String,
     pub url: String,
+    /// Client-reserved stable user preset id. The backend uses it to make
+    /// repeated clicks and multiple windows idempotent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
 }
 
 /// Response for a resolved expert package that can be imported as a user preset.
@@ -541,16 +545,35 @@ pub struct SkillMarketPackageResponse {
 pub struct SkillMarketPackageInstallError {
     pub skill_slug: String,
     pub error: String,
+    /// Upstream/local HTTP-equivalent status when one is available. The
+    /// client may use this for sanitized telemetry without receiving a full
+    /// request URL or Skill body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
 }
 
 /// Response for installing the skills behind a SkillHub expert package.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SkillMarketPackageInstallResponse {
     pub package: SkillMarketPackageResponse,
+    /// The user preset created by the atomic package install. It is absent on
+    /// every failed install so clients cannot mistake a partial result for a
+    /// usable package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+    /// Source-qualified ids saved in the new preset (`user:<encoded-name>`).
+    #[serde(default)]
+    pub installed_skill_ids: Vec<String>,
     #[serde(default)]
     pub installed_skill_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<SkillMarketPackageInstallError>,
+    /// Stable classification for UI/telemetry. Deterministic failures may be
+    /// hidden for a long TTL; network failures must not be treated that way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
 }
 
 #[cfg(test)]
@@ -1065,11 +1088,16 @@ mod tests {
                 skill_slugs: vec!["superpowers-tdd".into()],
                 avatar: None,
             },
+            preset_id: Some("0190f5fe-7c00-7a00-8000-000000000232".into()),
+            installed_skill_ids: vec!["user:superpowers-tdd".into(), "user:test-case-generator".into()],
             installed_skill_names: vec!["superpowers-tdd".into(), "test-case-generator".into()],
             errors: vec![SkillMarketPackageInstallError {
                 skill_slug: "missing-skill".into(),
                 error: "download failed".into(),
+                http_status: Some(404),
             }],
+            failure_class: None,
+            failure_code: None,
         };
 
         let json = serde_json::to_value(&resp).unwrap();
@@ -1079,5 +1107,8 @@ mod tests {
         );
         assert!(json.get("installedSkillNames").is_none());
         assert_eq!(json["errors"][0]["skill_slug"], "missing-skill");
+        assert_eq!(json["errors"][0]["http_status"], 404);
+        assert_eq!(json["preset_id"], "0190f5fe-7c00-7a00-8000-000000000232");
+        assert_eq!(json["installed_skill_ids"][0], "user:superpowers-tdd");
     }
 }

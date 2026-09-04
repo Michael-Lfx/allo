@@ -45,7 +45,7 @@ use nomifun_common::{
     generate_id, now_ms, validate_uuidv7, workspace_path_has_edge_whitespace_segment,
 };
 use nomifun_db::models::{
-    AgentMetadataRow, ConversationRow, MessageRow, NewConversationSkillLoad,
+    AgentMetadataRow, ConversationRow, ConversationSkillLoad, MessageRow, NewConversationSkillLoad,
 };
 use nomifun_db::{
     AgentExecutionTurnAuthority, ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
@@ -313,6 +313,12 @@ fn dedupe_skill_ids(skill_ids: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn has_known_skill_catalog_prefix(value: &str) -> bool {
+    ["builtin:", "user:", "project:", "extension:", "mcp:", "legacy:"]
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+}
+
 /// Select the entries that still use the historical name-based skill lookup.
 ///
 /// Persisted bare names predate catalog identities, and `legacy:` is the
@@ -371,10 +377,131 @@ fn catalog_skill_ids_from_conversation_extra(extra: &str) -> Vec<String> {
     skills
         .iter()
         .filter_map(serde_json::Value::as_str)
-        .filter_map(|value| SkillId::parse(value).ok())
-        .filter(|skill_id| skill_id.source() != SkillCatalogSource::Legacy)
-        .map(|skill_id| skill_id.as_str().to_owned())
+        // Keep malformed values that claim a catalog namespace. The first
+        // send gate will turn them into a deterministic preset-integrity
+        // error instead of silently dropping a missing Skill from the
+        // conversation's requested capability set.
+        .filter(|value| has_known_skill_catalog_prefix(value))
+        .filter(|value| !value.starts_with("legacy:"))
+        .map(ToOwned::to_owned)
         .collect()
+}
+
+/// Prepared Skill context for one send. `loaded` is the complete immutable
+/// context sent to the runtime; `persist` contains only snapshots that were
+/// newly selected for this turn. Historical snapshots are intentionally not
+/// appended to the ledger again on every follow-up message.
+struct PreparedSkillSnapshots {
+    loaded: Vec<ResolvedSkillSnapshot>,
+    persist: Vec<ResolvedSkillSnapshot>,
+}
+
+fn canonical_skill_ids_from_request(skill_ids: &[String]) -> Result<Vec<String>, AppError> {
+    let mut requested = Vec::new();
+    for skill_id in dedupe_skill_ids(skill_ids) {
+        match SkillId::parse(&skill_id) {
+            Ok(skill_id) if skill_id.source() != SkillCatalogSource::Legacy => {
+                requested.push(skill_id.as_str().to_owned());
+            }
+            Ok(_) => {}
+            Err(error) if has_known_skill_catalog_prefix(&skill_id) => {
+                return Err(AppError::BadRequest(format!(
+                    "PRESET_SKILLS_UNAVAILABLE: invalid canonical Skill id '{skill_id}': {error}"
+                )));
+            }
+            // Bare names are retained for legacy callers. They are not part
+            // of the immutable catalog snapshot protocol.
+            Err(_) => {}
+        }
+    }
+    Ok(requested)
+}
+
+fn validate_skill_snapshot_values(
+    skill_ids: &[String],
+    snapshots: &[ResolvedSkillSnapshot],
+) -> Result<(), AppError> {
+    if snapshots.len() != skill_ids.len()
+        || snapshots
+            .iter()
+            .zip(skill_ids)
+            .any(|(snapshot, skill_id)| snapshot.skill_id != *skill_id)
+    {
+        return Err(AppError::BadRequest(
+            "Selected Skills changed while their instructions were loading".to_owned(),
+        ));
+    }
+    for snapshot in snapshots {
+        if snapshot.name.trim().is_empty()
+            || snapshot.source.trim().is_empty()
+            || snapshot.content.trim().is_empty()
+            || snapshot.version_hash.len() != 64
+            || snapshot.version_hash != snapshot.version_hash.to_ascii_lowercase()
+            || !snapshot.version_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(AppError::BadRequest(
+                "Selected Skill has invalid immutable instructions".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reconstruct the exact Skill bodies recorded by an earlier successful turn.
+/// This is deliberately independent of the live catalog: uninstalling a
+/// preset, or rebuilding a stale ACP session, must not silently replace the
+/// historical instructions with a newer or same-named Skill.
+fn historical_skill_snapshots_from_loads(
+    skill_ids: &[String],
+    loads: &[ConversationSkillLoad],
+) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+    let wanted = skill_ids.iter().collect::<HashSet<_>>();
+    let mut by_catalog_key = HashMap::new();
+    for load in loads {
+        if !wanted.contains(&load.catalog_key) {
+            continue;
+        }
+        // Ledger rows are ordered oldest-first. The first row is the original
+        // immutable snapshot for this conversation/preset Skill.
+        by_catalog_key.entry(load.catalog_key.clone()).or_insert_with(|| {
+            ResolvedSkillSnapshot {
+                skill_id: load.catalog_key.clone(),
+                name: load.skill_name.clone(),
+                source: load.source.clone(),
+                version_hash: load.version_hash.clone(),
+                content: load.content.clone(),
+            }
+        });
+    }
+
+    let missing = skill_ids
+        .iter()
+        .filter(|skill_id| !by_catalog_key.contains_key(*skill_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "PRESET_SKILLS_UNAVAILABLE: historical Skill snapshots unavailable: {}",
+            missing.join(", ")
+        )));
+    }
+
+    let snapshots = skill_ids
+        .iter()
+        .filter_map(|skill_id| by_catalog_key.remove(skill_id))
+        .collect::<Vec<_>>();
+    validate_skill_snapshot_values(skill_ids, &snapshots)?;
+    Ok(snapshots)
+}
+
+fn classify_preset_resolution_error(error: AppError) -> AppError {
+    match error {
+        AppError::NotFound(message) => AppError::NotFound(format!("PRESET_NOT_FOUND: {message}")),
+        AppError::BadRequest(message) if message.contains(" is disabled") => {
+            AppError::BadRequest(format!("PRESET_DISABLED: {message}"))
+        }
+        other => other,
+    }
 }
 
 tokio::task_local! {
@@ -1484,31 +1611,44 @@ impl ConversationService {
         &self,
         skill_ids: &[String],
     ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
-        let snapshots = self.skill_resolver.load_catalog_skills(skill_ids).await?;
-        if snapshots.len() != skill_ids.len()
-            || snapshots
-                .iter()
-                .zip(skill_ids)
-                .any(|(snapshot, skill_id)| snapshot.skill_id != *skill_id)
-        {
-            return Err(AppError::BadRequest(
-                "Selected Skills changed while their instructions were loading".to_owned(),
-            ));
-        }
-        for snapshot in &snapshots {
-            if snapshot.name.trim().is_empty()
-                || snapshot.source.trim().is_empty()
-                || snapshot.content.trim().is_empty()
-                || snapshot.version_hash.len() != 64
-                || snapshot.version_hash != snapshot.version_hash.to_ascii_lowercase()
-                || !snapshot.version_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-            {
-                return Err(AppError::BadRequest(
-                    "Selected Skill has invalid immutable instructions".to_owned(),
-                ));
-            }
-        }
+        let snapshots = self
+            .skill_resolver
+            .load_catalog_skills(skill_ids)
+            .await
+            .map_err(|error| match AppError::from(error) {
+                AppError::NotFound(message) => {
+                    AppError::NotFound(format!("PRESET_SKILLS_UNAVAILABLE: {message}"))
+                }
+                AppError::Internal(message) => {
+                    AppError::Internal(format!("SKILL_CATALOG_UNAVAILABLE: {message}"))
+                }
+                AppError::BadRequest(message) => {
+                    AppError::BadRequest(format!("PRESET_SKILLS_UNAVAILABLE: {message}"))
+                }
+                other => other,
+            })?;
+        validate_skill_snapshot_values(skill_ids, &snapshots)?;
         Ok(snapshots)
+    }
+
+    async fn resolve_historical_preset_skill_snapshots(
+        &self,
+        conversation_id: &str,
+        skill_ids: &[String],
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        if skill_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let loads = self
+            .conversation_repo
+            .get_skill_loads(conversation_id)
+            .await
+            .map_err(|error| {
+                AppError::Internal(format!(
+                    "SKILL_CATALOG_UNAVAILABLE: read historical Skill snapshots: {error}"
+                ))
+            })?;
+        historical_skill_snapshots_from_loads(skill_ids, &loads)
     }
 
     async fn resolve_requested_skill_snapshots(
@@ -1519,12 +1659,7 @@ impl ConversationService {
         // `legacy:` bindings likewise retain their name-based compatibility
         // path because they deliberately do not guess a source. Only canonical
         // catalog identities participate in the explicit snapshot protocol.
-        let requested_skill_ids = dedupe_skill_ids(&request.inject_skills)
-            .into_iter()
-            .filter_map(|skill_id| SkillId::parse(&skill_id).ok())
-            .filter(|skill_id| skill_id.source() != SkillCatalogSource::Legacy)
-            .map(|skill_id| skill_id.as_str().to_owned())
-            .collect::<Vec<_>>();
+        let requested_skill_ids = canonical_skill_ids_from_request(&request.inject_skills)?;
         let snapshots = self
             .resolve_explicit_skill_snapshots(&requested_skill_ids)
             .await?;
@@ -1532,6 +1667,18 @@ impl ConversationService {
             return Err(AppError::BadRequest("Message content must not be empty".into()));
         }
         Ok(snapshots)
+    }
+
+    async fn resolve_requested_skill_snapshots_excluding(
+        &self,
+        request: &SendMessageRequest,
+        excluded: &HashSet<String>,
+    ) -> Result<Vec<ResolvedSkillSnapshot>, AppError> {
+        let requested_skill_ids = canonical_skill_ids_from_request(&request.inject_skills)?
+            .into_iter()
+            .filter(|skill_id| !excluded.contains(skill_id))
+            .collect::<Vec<_>>();
+        self.resolve_explicit_skill_snapshots(&requested_skill_ids).await
     }
 
     fn build_skill_load_commits(
@@ -5035,14 +5182,17 @@ impl ConversationService {
                 .ok()
                 .and_then(|guard| guard.as_ref().cloned())
                 .ok_or_else(|| AppError::Internal("preset service is not wired".into()))?;
-            resolved_preset_snapshot = Some(service
-                .resolve(
-                    &preset_id,
-                    nomifun_api_types::PresetTarget::Conversation,
-                    None,
-                    preset_overrides,
-                )
-                .await?);
+            resolved_preset_snapshot = Some(
+                service
+                    .resolve(
+                        &preset_id,
+                        nomifun_api_types::PresetTarget::Conversation,
+                        None,
+                        preset_overrides,
+                    )
+                    .await
+                    .map_err(classify_preset_resolution_error)?,
+            );
         }
 
         if let Some(snapshot) = resolved_preset_snapshot.as_ref() {
@@ -8918,10 +9068,10 @@ impl ConversationService {
         // capability, independent from the `/` launcher. Merge them into the
         // first real turn so both paths capture one immutable snapshot and the
         // user-selected chips still retain precedence in the prompt order.
+        let preset_skill_ids = catalog_skill_ids_from_conversation_extra(&row.extra);
         if row.status.as_deref() == Some("pending") {
-            let preset_skill_ids = catalog_skill_ids_from_conversation_extra(&row.extra);
             if !preset_skill_ids.is_empty() {
-                let mut effective_skill_ids = preset_skill_ids;
+                let mut effective_skill_ids = preset_skill_ids.clone();
                 effective_skill_ids.extend(req.inject_skills);
                 req.inject_skills = dedupe_skill_ids(&effective_skill_ids);
             }
@@ -8931,7 +9081,47 @@ impl ConversationService {
         // claim a durable receipt or transition the Conversation to Running.
         // Replays above remain resolvable even if a Skill was later removed
         // from the live catalog because their historical outcome is immutable.
-        let explicit_skill_snapshots = self.resolve_requested_skill_snapshots(&req).await?;
+        // Once a Conversation has crossed its first turn, use the immutable
+        // Skill bodies recorded in its ledger for the preset bindings. This
+        // keeps stale ACP/Nomi sessions and post-uninstall follow-ups from
+        // silently switching to a newer or incomplete live catalog entry.
+        let historical_skill_snapshots = if row.status.as_deref() != Some("pending")
+            && !preset_skill_ids.is_empty()
+        {
+            self.resolve_historical_preset_skill_snapshots(
+                &conversation_key,
+                &preset_skill_ids,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+        let historical_skill_ids = historical_skill_snapshots
+            .iter()
+            .map(|snapshot| snapshot.skill_id.clone())
+            .collect::<HashSet<_>>();
+        let explicit_skill_snapshots = if historical_skill_ids.is_empty() {
+            self.resolve_requested_skill_snapshots(&req).await?
+        } else {
+            self.resolve_requested_skill_snapshots_excluding(&req, &historical_skill_ids)
+                .await?
+        };
+        let mut loaded_skill_snapshots = historical_skill_snapshots;
+        for snapshot in &explicit_skill_snapshots {
+            if !loaded_skill_snapshots
+                .iter()
+                .any(|loaded| loaded.skill_id == snapshot.skill_id)
+            {
+                loaded_skill_snapshots.push(snapshot.clone());
+            }
+        }
+        let prepared_skill_snapshots = PreparedSkillSnapshots {
+            loaded: loaded_skill_snapshots,
+            // Only newly resolved Skills are appended to the immutable ledger;
+            // historical snapshots are injected into the runtime but are not
+            // duplicated on every follow-up message.
+            persist: explicit_skill_snapshots,
+        };
         let _ = owned_row;
         runtime_build_lease.ensure_active()?;
 
@@ -9206,7 +9396,7 @@ impl ConversationService {
                 Some(preparation_guard),
                 runtime_preparation,
                 runtime_observer,
-                Some(explicit_skill_snapshots),
+                Some(prepared_skill_snapshots),
             )
             .await
         {
@@ -9457,7 +9647,7 @@ impl ConversationService {
         runtime_observer: Option<
             oneshot::Sender<(AgentRuntimeHandle, broadcast::Receiver<AgentStreamEvent>)>,
         >,
-        preloaded_skill_snapshots: Option<Vec<ResolvedSkillSnapshot>>,
+        preloaded_skill_snapshots: Option<PreparedSkillSnapshots>,
     ) -> Result<(String, Option<String>), AppError> {
         let public_cancellable = send_authority.public_cancellable();
         // Snapshot before the first await. A stop racing this request advances
@@ -9523,9 +9713,18 @@ impl ConversationService {
             }
         }
 
-        let loaded_skill_snapshots = match preloaded_skill_snapshots {
-            Some(snapshots) => snapshots,
-            None => self.resolve_requested_skill_snapshots(&req).await?,
+        let PreparedSkillSnapshots {
+            loaded: loaded_skill_snapshots,
+            persist: persisted_skill_snapshots,
+        } = match preloaded_skill_snapshots {
+            Some(prepared) => prepared,
+            None => {
+                let snapshots = self.resolve_requested_skill_snapshots(&req).await?;
+                PreparedSkillSnapshots {
+                    loaded: snapshots.clone(),
+                    persist: snapshots,
+                }
+            }
         };
         let load_only = req.content.trim().is_empty();
         if load_only {
@@ -10016,7 +10215,7 @@ impl ConversationService {
         let turn_token = turn_handle.cancellation_token();
 
         let skill_load_commits =
-            Self::build_skill_load_commits(conversation_id, &loaded_skill_snapshots);
+            Self::build_skill_load_commits(conversation_id, &persisted_skill_snapshots);
         // A load-only request owns a durable turn ID but deliberately has no
         // blank user-message projection. The snapshot events still become
         // immutable history in the same SQLite transaction.
@@ -14103,6 +14302,14 @@ fn project_preset_runtime_context(
 }
 
 impl ConversationService {
+    /// Validate a set of source-qualified Skills without creating a message,
+    /// receipt, or runtime. Automatic participant resolution uses this same
+    /// authority so an invalid preset cannot enter the participant pool.
+    pub async fn validate_canonical_skill_ids(&self, skill_ids: &[String]) -> Result<(), AppError> {
+        let requested = canonical_skill_ids_from_request(skill_ids)?;
+        self.resolve_explicit_skill_snapshots(&requested).await.map(|_| ())
+    }
+
     /// Resolve the authoritative factory options and attach the exact physical
     /// workspace binding required for one execution build.
     ///
@@ -16233,6 +16440,64 @@ mod tests {
                 "extension:owner:review".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn catalog_skill_ids_from_extra_keeps_malformed_canonical_bindings_for_the_send_gate() {
+        let extra = json!({ "skills": ["user:broken%ZZ", "legacy:old-pdf", "plain-name"] });
+
+        assert_eq!(
+            catalog_skill_ids_from_conversation_extra(&extra.to_string()),
+            vec!["user:broken%ZZ".to_owned()]
+        );
+        assert!(has_known_skill_catalog_prefix("user:broken%ZZ"));
+    }
+
+    #[test]
+    fn historical_skill_snapshot_uses_the_original_immutable_load() {
+        let skill_id = "user:qa-plan".to_owned();
+        let version_hash = "a".repeat(64);
+        let loads = vec![
+            ConversationSkillLoad {
+                conversation_id: "conversation".to_owned(),
+                message_id: "message-1".to_owned(),
+                catalog_key: skill_id.clone(),
+                skill_name: "qa-plan".to_owned(),
+                source: "user".to_owned(),
+                version_hash: version_hash.clone(),
+                content: "original instructions".to_owned(),
+                created_at: 1,
+            },
+            ConversationSkillLoad {
+                conversation_id: "conversation".to_owned(),
+                message_id: "message-2".to_owned(),
+                catalog_key: skill_id.clone(),
+                skill_name: "qa-plan".to_owned(),
+                source: "user".to_owned(),
+                version_hash,
+                content: "new live instructions".to_owned(),
+                created_at: 2,
+            },
+        ];
+
+        let snapshots = historical_skill_snapshots_from_loads(&[skill_id], &loads).unwrap();
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].content, "original instructions");
+    }
+
+    #[test]
+    fn missing_historical_skill_snapshot_fails_closed() {
+        let skill_id = "user:missing-skill".to_owned();
+        let error = historical_skill_snapshots_from_loads(&[skill_id.clone()], &[]).unwrap_err();
+
+        match error {
+            AppError::NotFound(message) => {
+                assert!(message.contains("PRESET_SKILLS_UNAVAILABLE"));
+                assert!(message.contains(&skill_id));
+            }
+            other => panic!("expected a closed missing-Skill failure, got {other:?}"),
+        }
     }
 
     #[test]

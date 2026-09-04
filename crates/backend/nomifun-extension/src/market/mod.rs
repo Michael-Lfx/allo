@@ -15,10 +15,11 @@ mod package;
 mod parse;
 
 pub use mcp::resolve_market_mcp_config;
-pub use package::install_market_package;
+pub use package::{MarketPackagePresetInstaller, install_market_package};
 
 use std::collections::HashSet;
 use std::future::Future;
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nomifun_api_types::{SkillMarketItemResponse, SkillMarketSyncResponse};
@@ -41,6 +42,48 @@ const SKILLHUB_MCP_SOURCE: &str = "skillhub_mcp";
 const MCPWORLD_SOURCE: &str = "mcpworld";
 const CLAWHUB_PLUGINS_SOURCE: &str = "clawhub_plugins";
 const SKILLHUB_PACKAGES_SOURCE: &str = "skillhub_packages";
+
+#[derive(serde::Deserialize)]
+struct SkillHubPackageBlacklistFile {
+    #[serde(default)]
+    packages: std::collections::HashMap<String, serde_json::Value>,
+}
+
+static SKILLHUB_PACKAGE_BLACKLIST: OnceLock<Result<HashSet<String>, String>> = OnceLock::new();
+
+fn skillhub_package_blacklist() -> &'static Result<HashSet<String>, String> {
+    SKILLHUB_PACKAGE_BLACKLIST.get_or_init(|| {
+        let file = serde_json::from_str::<SkillHubPackageBlacklistFile>(include_str!(
+            "../../assets/skillhub-package-blacklist.json"
+        ))
+        .map_err(|error| format!("invalid SkillHub package blacklist: {error}"))?;
+        Ok(file
+            .packages
+            .into_keys()
+            .map(|slug| slug.to_ascii_lowercase())
+            .collect())
+    })
+}
+
+pub(crate) fn is_skillhub_package_blacklisted(slug: &str) -> bool {
+    match skillhub_package_blacklist() {
+        Ok(packages) => packages.contains(&slug.to_ascii_lowercase()),
+        Err(error) => {
+            tracing::error!(%error, "SkillHub package blacklist could not be loaded");
+            false
+        }
+    }
+}
+
+fn filter_blacklisted_skillhub_packages(items: Vec<SkillMarketItemResponse>) -> Vec<SkillMarketItemResponse> {
+    items
+        .into_iter()
+        .filter(|item| {
+            let slug = item.id.strip_prefix("skillhub_packages:");
+            !slug.is_some_and(is_skillhub_package_blacklisted)
+        })
+        .collect()
+}
 
 const CLAWHUB_RANKING_URL: &str = "https://clawhub.ai/skills?tab=new";
 const CLAWHUB_CONVEX_QUERY_URL: &str = "https://wry-manatee-359.convex.cloud/api/query";
@@ -166,14 +209,14 @@ async fn fetch_market_source(
             &read_market_body(client, SKILLHUB_MCP_RANKING_URL).await?,
         )),
         MCPWORLD_SOURCE => Ok(parse_mcpworld_rankings(&read_market_body(client, MCPWORLD_RANKING_URL).await?)),
-        SKILLHUB_PACKAGES_SOURCE => Ok(parse_skillhub_packages(
+        SKILLHUB_PACKAGES_SOURCE => Ok(filter_blacklisted_skillhub_packages(parse_skillhub_packages(
             &read_market_body_with_timeout(
                 client,
                 SKILLHUB_PACKAGES_URL,
                 SKILLHUB_PACKAGES_REQUEST_TIMEOUT,
             )
             .await?,
-        )),
+        ))),
         other => Err(AppError::BadRequest(format!("unsupported skill market source: {other}"))),
     }
 }
@@ -296,6 +339,20 @@ mod tests {
                 SKILLHUB_PACKAGES_SOURCE,
             ]
         );
+    }
+
+    #[test]
+    fn blacklist_filters_known_incomplete_expert_packages() {
+        let mut broken = item("tech-test-automation");
+        broken.id = "skillhub_packages:tech-test-automation".into();
+        broken.source = SKILLHUB_PACKAGES_SOURCE.into();
+        let mut healthy = broken.clone();
+        healthy.id = "skillhub_packages:healthy-package".into();
+
+        assert!(is_skillhub_package_blacklisted("tech-test-automation"));
+        let filtered = filter_blacklisted_skillhub_packages(vec![broken, healthy]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "skillhub_packages:healthy-package");
     }
 
     #[test]
