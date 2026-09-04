@@ -26,6 +26,7 @@ type FloatingDockProps = {
     items: FloatingDockEntry[];
     size?: "default" | "compact";
     embedded?: boolean;
+    magnify?: boolean;
     className?: string;
     style?: CSSProperties;
     ariaLabel?: string;
@@ -50,7 +51,7 @@ const TOUCH_DOCK_METRICS: Record<NonNullable<FloatingDockProps["size"]>, DockMet
     compact: { base: 36, magnified: 36, icon: 16, iconMagnified: 16, distance: 0 },
 };
 
-export const FloatingDock = forwardRef<HTMLDivElement, FloatingDockProps>(function FloatingDock({ items, size = "default", embedded = false, className, style, ariaLabel = "画布工具", showLabels = false }, forwardedRef) {
+export const FloatingDock = forwardRef<HTMLDivElement, FloatingDockProps>(function FloatingDock({ items, size = "default", embedded = false, magnify = false, className, style, ariaLabel = "画布工具", showLabels = false }, forwardedRef) {
     const mouseX = useMotionValue(Number.POSITIVE_INFINITY);
     const reducedMotion = useReducedMotion();
     const [coarsePointer, setCoarsePointer] = useState(() => typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches);
@@ -73,7 +74,7 @@ export const FloatingDock = forwardRef<HTMLDivElement, FloatingDockProps>(functi
 
     // scrollable 场景（触屏或窄屏）禁用放大并允许横向滚动，保证按钮始终可达
     const scrollable = coarsePointer || narrow;
-    const motionEnabled = !reducedMotion && !scrollable;
+    const motionEnabled = !reducedMotion && !scrollable && magnify;
     const metrics = coarsePointer ? TOUCH_DOCK_METRICS[size] : DOCK_METRICS[size];
 
     return (

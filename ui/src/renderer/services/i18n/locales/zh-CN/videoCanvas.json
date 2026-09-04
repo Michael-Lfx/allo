@@ -422,6 +422,7 @@
     "textGenerateLong": "调用文本模型生成内容",
     "expandEdit": "放大编辑",
     "expandEditLong": "放大编辑文本",
+    "collapseEdit": "收起",
     "genImage": "生图",
     "genImageLong": "用文本生图",
     "genConfig": "生成配置",

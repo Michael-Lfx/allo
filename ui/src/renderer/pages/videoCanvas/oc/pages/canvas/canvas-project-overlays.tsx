@@ -99,7 +99,7 @@ export function CanvasProjectOverlays(props: CanvasProjectOverlaysProps) {
 
                     {dialogNode && dialogNode.type !== CanvasNodeType.Script && dialogNode.type !== CanvasNodeType.Drawing ? (
                         <HideWhileSelectionBox>
-                            <CanvasNodePanelOverlay node={dialogNode} viewport={viewport} containerRef={containerRef} panelWidth={624}>
+                            <CanvasNodePanelOverlay node={dialogNode} viewport={viewport} containerRef={containerRef} panelWidth={520}>
                                 {renderCanvasNodePanel(dialogNode)}
                             </CanvasNodePanelOverlay>
                         </HideWhileSelectionBox>

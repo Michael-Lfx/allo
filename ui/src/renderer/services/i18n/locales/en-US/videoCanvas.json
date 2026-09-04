@@ -422,6 +422,7 @@
     "textGenerateLong": "Generate with text model",
     "expandEdit": "Expand edit",
     "expandEditLong": "Expand text editor",
+    "collapseEdit": "Collapse",
     "genImage": "Image",
     "genImageLong": "Generate image from text",
     "genConfig": "Generator",
