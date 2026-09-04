@@ -65,6 +65,31 @@
 | 优雅降级（被动回退） | ✅ | `www.flowyaipc.com`（该主机 TLS 未支持 ALPN h2）→ 自动回退 HTTP/1.1，200 OK |
 | 连接复用 / Keep-Alive | ✅ | 串行 10 轮共享连接，P50 ~229 ms，无重复握手 |
 
+## 3.6 最终验证：代理关闭 / 直连环境（2026-09-04 复测）
+
+在关闭本地代理后，于直连 WLAN 环境复测（DNS 干净、默认路由直连、Tailscale 无出口节点）：
+
+| 指标 | HTTP/2 (TCP) | HTTP/3 (QUIC) |
+| --- | --- | --- |
+| 协商版本 | HTTP/2 | 失败 |
+| 成功率 | 10/10 | 0/10 |
+| 冷启动 | 739 ms | — |
+| Warm 均值 | **167 ms**（较代理关闭前 227 ms 提速 ~27%） | — |
+| 错误 | — | `received fatal alert: NoApplicationProtocol` |
+
+**对照实验**：同一探针探测 `www.google.com`（公认支持 HTTP/3），**同样失败于
+`NoApplicationProtocol`**。结合路由表无异常、无假 IP、无出口节点，
+确认根因**不在服务端、不在网络**，而在 **reqwest HTTP/3 实验栈的 ALPN 缺陷**：
+
+- `http3_prior_knowledge()` 会把 rustls ALPN 强制成仅 `[h3]`；当请求实际走
+  hyper（TCP）路径时，带着仅含 `h3` 的 ALPN 去握手 → 服务器无法协商即回
+  `NoApplicationProtocol`（Google 亦是如此拒绝）。
+- 已知上游在修：reqwest [PR #2929 "Specify h3 alpn for http3 connector"](https://github.com/seanmonstar/reqwest/pull/2929)（尚未合入稳定版）。
+
+**结论更新**：服务端 HTTP/3 属实且可用（Go / curl / 浏览器原生栈均验证 200）；
+客户端暂不可用 H3 的原因已收敛为** reqwest 客户端库的实验性 ALPN 缺陷**。
+该缺陷不修复前，盲目在生产开启 h3 会复现同款失败。
+
 ## 四、 客户端结论与建议
 
 1. **服务端 HTTP/3 属实且可用**（跨客户端验证通过）。
@@ -73,7 +98,10 @@
    客户端链路从 HTTP/1.1 升级到 HTTP/2（多路复用 + 头部压缩 + 连接复用）。
    完备性验证见 3.5 节：核心 API 协商 h2、20/50 并发多路复用生效、
    不支持 h2 的主机自动降级为 HTTP/1.1 且功能正常。
-4. **HTTP/3 不建议跟进**：本机实测（该环境）UT 失败，且 reqwest 的 h3 依赖版本
-   （`h3 v0.0.8` / `h3-quinn v0.0.10`）仍为 0.x 实验版；此外服务端当前告警
-   `NoApplicationProtocol` 表明部分中途网络无法正确透传 QUIC。
-   后续等待：1) 生产环境网络直连验证窗口；2) reqwest/h3 结构化稳定版本后再评估。
+4. **HTTP/3 暂不跟进（根因已定位）**：在关闭代理的直连环境中复测，
+   H3 仍失败于 `NoApplicationProtocol`；Google 对照同样失败 → 根因是
+   **reqwest HTTP/3 实验栈的 ALPN 缺陷**（`http3_prior_knowledge()` 把
+   ALPN 强制为 `[h3]` 却让请求落进 TCP 路径），上游修正在
+   [PR #2929](https://github.com/seanmonstar/reqwest/pull/2929)，尚未进入稳定版。
+   且 `h3 v0.0.8` / `h3-quinn v0.0.10` 仍为 0.x 实验版。
+   后续等待：PR #2929 合入、reqwest/http3 结构化稳定后再复测（探针已就绪）。
