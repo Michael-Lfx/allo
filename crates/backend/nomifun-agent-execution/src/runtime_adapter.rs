@@ -152,7 +152,11 @@ impl AgentRuntimeAdapter {
             .map_err(|error| RuntimeAdapterError::Serialization(error.to_string()))?;
         let content_digest = digest(&snapshot_json);
         let preset_revision = snapshot.preset_revision;
-        let actor = AgentExecutionActor::external_agent("app-server");
+        // App Server runs are started by the authenticated connection user,
+        // same as the UI create paths (`AgentExecutionActor::user`). A free
+        // string such as "app-server" violates the executions.actor_id UUIDv7
+        // CHECK constraint; `owner_id` here is exactly that user id.
+        let actor = AgentExecutionActor::user(owner_id);
         let execution = self
             .engine
             .create_for_app_server(
@@ -244,7 +248,7 @@ impl AgentRuntimeAdapter {
             self.engine
                 .cancel(
                     owner_id,
-                    &AgentExecutionActor::external_agent("app-server"),
+                    &AgentExecutionActor::user(owner_id),
                     run_id,
                     nomifun_api_types::VersionedAgentExecutionCommand { expected_version },
                 )
