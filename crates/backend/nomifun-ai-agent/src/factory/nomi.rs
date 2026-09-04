@@ -1072,7 +1072,7 @@ fn is_preferred_image_analysis_model(model: &str) -> bool {
 /// 0: Others
 fn image_analysis_model_priority(model: &str) -> u8 {
     let lower = catalog_model_base(model).to_lowercase();
-    if lower.contains("deepseek") && (lower.contains("vision") || lower.contains("vl") || lower.contains("flash")) {
+    if lower.contains("deepseek") && (lower.contains("vision") || lower.contains("vl") || lower.contains("flash-vision")) {
         3
     } else if lower.contains("minimax-m3") || lower.contains("minimax") {
         2

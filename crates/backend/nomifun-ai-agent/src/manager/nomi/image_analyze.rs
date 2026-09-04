@@ -249,6 +249,7 @@ pub(super) async fn analyze_image_blocks(
             sink.emit_tool_result(&tool_use_id, "image_analyze", true, &error.to_string());
             // Graceful self-healing fallback: do not crash the conversation turn with BadGateway.
             // Return a safe placeholder so the main text model can still answer the user's text question.
+            // Note: intentionally do NOT call cache_analysis here so transient errors are not persisted.
             let fallback_analysis = format!(
                 "[Visual observation note: Visual analysis model encountered an issue ({error}). Please answer based on the user's textual input and inform the user to re-attach the image if necessary.]"
             );
