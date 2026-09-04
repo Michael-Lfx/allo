@@ -4,7 +4,7 @@ Flowy Agent Store 把一个本地优先的 Agent 运行时打包成**单个可�
 
 ## 1. 下载并启动
 
-从 [GitHub Releases](https://github.com/your-org/flowy-agent-store/releases) 获取对应平台的二进制，直接运行：
+从[下载中心](http://111.170.173.22:10014/downloads/)获取对应平台的二进制，直接运行：
 
 ```bash
 flowy-agent-store

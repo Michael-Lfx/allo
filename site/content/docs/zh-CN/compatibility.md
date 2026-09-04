@@ -2,7 +2,7 @@
 
 ## 平台
 
-单文件运行时覆盖以下平台；二进制在 [GitHub Releases](https://github.com/your-org/flowy-agent-store/releases) 按目标命名分发。
+单文件运行时覆盖以下平台；二进制在[下载中心](http://111.170.173.22:10014/downloads/)按目标命名分发。
 
 | 操作系统 | 架构 | 状态 |
 | --- | --- | --- |
