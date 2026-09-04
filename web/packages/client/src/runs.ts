@@ -8,6 +8,7 @@ import {
   type AgentRunInput,
   type AgentRunRequestWire,
   type CancelRunInput,
+  type SteerRunInput,
   type RunEventsQuery,
   type RunEvent,
   type RunReceipt,
@@ -56,14 +57,55 @@ export class RunClient {
     });
   }
 
+  /**
+   * Inject steering text into the currently active step of a running Agent
+   * (runtime durable conversation effect; server resolves the opaque step).
+   */
+  steer(input: SteerRunInput): Promise<RunView> {
+    return this.transport.request<RunView>("run/steer", {
+      run_id: input.runId,
+      text: input.text,
+      expected_version: input.expectedVersion,
+      command_id: input.commandId,
+      idempotency_key: input.idempotencyKey,
+    });
+  }
+
   /** Subscribe to best-effort realtime events for one run. */
-  async follow(runId: string): Promise<EventSubscription> {
+  async follow(runId: string, options?: FollowOptions): Promise<EventSubscription> {
     const params: RunSubscriptionParams = { run_id: runId };
     // The subscribe response is serialized ahead of any event observed after
     // the subscription was installed by the server.
     await this.transport.request<{ subscribed: boolean }>("run/subscribe", params);
-    return new EventSubscription(this.transport, runId);
+    const subscription = new EventSubscription(
+      this.transport,
+      runId,
+      (afterSequence) => this.events({ runId, afterSequence }),
+      options,
+    );
+    // Establish the cursor silently: events already persisted before the
+    // subscribe must not replay as "new" on the first resync. Best effort —
+    // a failed catch-up still leaves the live path intact (cursor 0 means
+    // later resyncs replay more, never less; the seen-set dedupes).
+    if (options?.catchUp !== false) {
+      await subscription.catchUp().catch(() => undefined);
+    }
+    return subscription;
   }
+}
+
+/** Upper bound for the silent catch-up page (cursor baseline, not delivery). */
+const CATCH_UP_LIMIT = 500;
+
+/** Prune the dedup set past this size (sequences are per-run monotonic). */
+const SEEN_SET_PRUNE_AT = 2000;
+const SEEN_SET_KEEP_BELOW_MAX = 500;
+
+export interface FollowOptions {
+  /** Silent cursor catch-up after subscribe (default true). */
+  catchUp?: boolean;
+  /** Automatic `run/events`追平 on `run/resync-required` (default true). */
+  autoResync?: boolean;
 }
 
 export type RunEventListener = (event: RunEvent) => void;
@@ -77,11 +119,17 @@ export class EventSubscription {
   private closed = false;
   private unsubscribeNotification: (() => void) | null = null;
   private lastSeenSequence = 0;
+  private seenSequences = new Set<number>();
+  private resyncInFlight: Promise<RunEvent[]> | null = null;
+  private readonly autoResync: boolean;
 
   constructor(
     private readonly transport: Transport,
     readonly runId: string,
+    private readonly fetchAfter?: (afterSequence: number) => Promise<RunEvent[]>,
+    options?: FollowOptions,
   ) {
+    this.autoResync = options?.autoResync !== false;
     this.unsubscribeNotification = transport.onNotification((notification) => {
       this.dispatch(notification);
     });
@@ -133,19 +181,21 @@ export class EventSubscription {
   }
 
   private dispatch(notification: ServerNotification): void {
+    if (this.closed) {
+      return;
+    }
     if (notification.method === "event") {
       const event = (notification as JsonRpcEventNotification).params;
       if (event.run_id !== this.runId) {
         return;
       }
-      this.lastSeenSequence = Math.max(this.lastSeenSequence, event.sequence);
-      for (const listener of [...this.eventListeners]) {
-        try {
-          listener(event);
-        } catch {
-          // listener isolation
-        }
+      // Best-effort delivery may duplicate or reorder: dedupe by sequence,
+      // deliver live in arrival order (resync batches arrive sorted).
+      if (!Number.isFinite(event.sequence) || this.seenSequences.has(event.sequence)) {
+        return;
       }
+      this.markSeen(event.sequence);
+      this.emitEvent(event);
       return;
     }
     if (notification.method === "run/resync-required") {
@@ -160,7 +210,107 @@ export class EventSubscription {
           // listener isolation
         }
       }
+      // The notice alone leaves a hole;追平 it automatically unless opted out.
+      if (this.autoResync && this.fetchAfter) {
+        void this.resync().catch((error) => this.emitError(error));
+      }
       return;
+    }
+  }
+
+  /**
+   * Silent cursor baseline: mark already-persisted events seen WITHOUT
+   * dispatching, so the first resync never replays history as "new".
+   * For explicit history use `RunClient.events({ afterSequence: 0 })`.
+   */
+  async catchUp(): Promise<void> {
+    if (this.closed || !this.fetchAfter) {
+      return;
+    }
+    const history = await this.fetchAfter(0);
+    const page = Array.isArray(history) ? history.slice(0, CATCH_UP_LIMIT) : [];
+    for (const event of page) {
+      if (event.run_id === this.runId && Number.isFinite(event.sequence)) {
+        this.markSeen(event.sequence);
+      }
+    }
+  }
+
+  /**
+   *追平 missed events via `run/events` after the cursor. Returned (and
+   * dispatched) in sequence order, deduplicated against live delivery.
+   * Concurrent calls share one flight.
+   */
+  async resync(): Promise<RunEvent[]> {
+    if (this.closed) {
+      return [];
+    }
+    if (this.resyncInFlight) {
+      return this.resyncInFlight;
+    }
+    if (!this.fetchAfter) {
+      return [];
+    }
+    const fetchAfter = this.fetchAfter;
+    const task: Promise<RunEvent[]> = (async () => {
+      const missed = await fetchAfter(this.lastSeenSequence);
+      const fresh = (Array.isArray(missed) ? [...missed] : [])
+        .filter((event) => event.run_id === this.runId && Number.isFinite(event.sequence))
+        .sort((left, right) => left.sequence - right.sequence)
+        .filter((event) => {
+          if (this.seenSequences.has(event.sequence)) {
+            return false;
+          }
+          this.markSeen(event.sequence);
+          return true;
+        });
+      for (const event of fresh) {
+        this.emitEvent(event);
+      }
+      return fresh;
+    })();
+    this.resyncInFlight = task;
+    try {
+      return await task;
+    } finally {
+      if (this.resyncInFlight === task) {
+        this.resyncInFlight = null;
+      }
+    }
+  }
+
+  private markSeen(sequence: number): void {
+    this.seenSequences.add(sequence);
+    if (sequence > this.lastSeenSequence) {
+      this.lastSeenSequence = sequence;
+    }
+    if (this.seenSequences.size > SEEN_SET_PRUNE_AT) {
+      const floor = this.lastSeenSequence - SEEN_SET_KEEP_BELOW_MAX;
+      for (const seen of this.seenSequences) {
+        if (seen < floor) {
+          this.seenSequences.delete(seen);
+        }
+      }
+    }
+  }
+
+  private emitEvent(event: RunEvent): void {
+    for (const listener of [...this.eventListeners]) {
+      try {
+        listener(event);
+      } catch {
+        // listener isolation
+      }
+    }
+  }
+
+  private emitError(error: unknown): void {
+    for (const listener of [...this.errorListeners]) {
+      try {
+        listener(error);
+      } catch {
+        // listener isolation
+      }
     }
   }
 
