@@ -46,6 +46,11 @@ export function isClipDurationMode(mode: VideoHomeMode): boolean {
 export function usesCanvasReferences(mode: VideoHomeMode): boolean {
   return mode === 'generate' || mode === 'creation';
 }
+
+/** Agent / clip / canvas share one Look picker. Briefing and action do not. */
+export function usesLookPicker(mode: VideoHomeMode): boolean {
+  return mode === 'generate' || mode === 'agent' || mode === 'creation';
+}
 export type GenerationMediaKind = 'image' | 'video';
 export type CreationSkillId = 'cinematic' | 'anime' | 'cyberpunk' | 'inkWash';
 
@@ -119,10 +124,3 @@ export interface AgentModeDefinition {
 
 /** @deprecated Use AgentModeDefinition — kept for transitional imports. */
 export type AgentSkillDefinition = AgentModeDefinition;
-
-export interface CreationSkillDefinition {
-  id: CreationSkillId;
-  label: string;
-  description: string;
-  stylePrompt: string;
-}

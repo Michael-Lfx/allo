@@ -48,6 +48,8 @@ import {
 } from './briefing/api';
 import type { BriefingSessionSummary } from './briefing/api';
 import { parseVideoHomeMode, type VideoCreateDraft, type VideoHomeMode } from './home/types';
+import { resolveLookIdentity } from './styleCatalog/lookIdentity';
+import { composeClipPrompt, lookById } from './styleCatalog/looks';
 import { parseTvShowScope } from './campaign';
 import {
   CLIP_DURATION_DEFAULT_SECS,
@@ -447,24 +449,21 @@ const VideoGenerationListPage: React.FC = () => {
             await uploadCanvasMedia(reference.file, reference.file.name)
           );
         }
-        const skillId = draft.creationSkillId;
-        const skillDefaults = {
-          cinematic: { label: '电影写实', desc: '纪实光影 · 叙事镜头' },
-          anime: { label: '二次元', desc: '鲜明线稿 · 动漫质感' },
-          cyberpunk: { label: '赛博霓虹', desc: '未来都市 · 高对比' },
-          inkWash: { label: '水墨意境', desc: '留白构图 · 东方美学' },
-        } as const;
-        const defaults = skillDefaults[skillId];
-        const skillLabel = t(`videoGeneration.create.skills.${skillId}.label`, {
-          defaultValue: defaults.label,
+        const identity = resolveLookIdentity({
+          stylePrompt: draft.style,
+          creationSkillId: draft.style.trim() ? undefined : draft.creationSkillId,
         });
-        const skillDescription = t(`videoGeneration.create.skills.${skillId}.desc`, {
-          defaultValue: defaults.desc,
-        });
+        const look =
+          (identity?.vimaxKey && lookById.get(identity.vimaxKey)) ||
+          (identity ? lookById.get(identity.canvasPresetId) : undefined);
+        const lookLabel = look
+          ? t(look.labelKey, { defaultValue: look.defaultLabel })
+          : identity?.canvasTitle ||
+            t('videoGeneration.looks.mountButton', { defaultValue: '画风' });
         const title =
           draft.creationPrompt.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
           t('videoGeneration.create.canvasTitleFromSkill', {
-            skill: skillLabel,
+            skill: lookLabel,
             defaultValue: '{{skill}}创作',
           });
         const id = await createServerBackedCanvasProject(title, {
@@ -474,10 +473,11 @@ const VideoGenerationListPage: React.FC = () => {
           intent: 'creation',
           autoAgent: true,
           skill: {
-            id: draft.creationSkillId,
-            label: skillLabel,
-            description: skillDescription,
-            stylePrompt: draft.style,
+            id: identity?.vimaxKey ?? identity?.canvasPresetId ?? draft.creationSkillId,
+            label: lookLabel,
+            description: look?.defaultDescription || lookLabel,
+            stylePrompt: identity?.modelPrompt ?? draft.style,
+            stylePresetId: identity?.canvasPresetId,
           },
           preferences: {
             automatic: draft.preferences.automatic,
@@ -501,7 +501,7 @@ const VideoGenerationListPage: React.FC = () => {
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
           mode: 'creation',
-          skill: draft.creationSkillId,
+          skill: identity?.vimaxKey ?? identity?.canvasPresetId ?? draft.creationSkillId,
           project_id: id,
         });
         clearVideoHomeDraft();
@@ -580,9 +580,11 @@ const VideoGenerationListPage: React.FC = () => {
             CLIP_DURATION_STEP_SECS
           ) || CLIP_DURATION_DEFAULT_SECS;
 
+        const prompt = composeClipPrompt(draft.creationPrompt, draft.style);
+
         const task = await createGenerationTask({
           mode: 'video',
-          prompt: draft.creationPrompt,
+          prompt,
           model: draft.preferences.models.video_model || undefined,
           resolution: draft.preferences.resolution,
           duration_secs: durationSecs,
@@ -616,7 +618,7 @@ const VideoGenerationListPage: React.FC = () => {
           {
             state: {
               title,
-              prompt: draft.creationPrompt,
+              prompt,
               taskId: task.task_id,
             },
           }

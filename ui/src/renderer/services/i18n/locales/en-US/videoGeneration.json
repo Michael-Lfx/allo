@@ -264,7 +264,7 @@
       "ideaPlaceholder": "Describe the story, mood, or product visuals you want to see…",
       "scriptPlaceholder": "Paste a script and Flowy will turn it into editable shots…",
       "novelPlaceholder": "Paste a novel excerpt and Flowy will shape the story into shots…",
-      "creationPlaceholder": "Describe the frame, camera, or mood you want — type / for style skills…",
+      "creationPlaceholder": "Describe the frame, camera, or mood you want…",
       "generatePlaceholder": "Describe the scene and motion you want — you can upload a reference image…",
       "briefingPlaceholder": "Enter a briefing topic, e.g. today's chip export controls. Source URLs are optional — the engine will research.",
       "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / to switch Mode…"
@@ -857,6 +857,10 @@
     "clearSearch": "Clear search",
     "empty": "No matching looks",
     "hint": "Look locks cast, sets, and the film to one medium. It stacks with Skill. Optional.",
+    "hintRequired": "Look locks the whole film to one medium. Creation and canvas require a look.",
+    "featured": "Featured",
+    "featuredAria": "Featured looks",
+    "previewAlt": "{{title}} look preview",
     "none": "No look",
     "allCategories": "All",
     "categoriesAria": "Look categories"

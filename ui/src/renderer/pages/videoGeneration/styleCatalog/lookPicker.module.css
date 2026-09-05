@@ -16,15 +16,6 @@
   padding: 0 2px;
 }
 
-.title {
-  min-width: 0;
-  flex: 1 1 auto;
-  color: var(--color-text-1);
-  font-size: 13px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-}
-
 .noneChip {
   flex: none;
   border: 1px solid var(--color-border-2);
@@ -198,8 +189,65 @@
   letter-spacing: 0.06em;
 }
 
-.groupLabel:first-child {
-  margin-top: 0;
+.featured {
+  display: flex;
+  flex-direction: column;
+}
+
+.featured .groupLabel {
+  position: static;
+}
+
+.featuredRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 2px 8px;
+}
+
+.featuredChip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 999px;
+  padding: 4px 10px 4px 4px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.featuredChip:hover {
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+}
+
+.featuredChipActive {
+  border-color: rgba(var(--primary-6), 0.35);
+  background: rgba(var(--primary-6), 0.1);
+  color: rgb(var(--primary-6));
+}
+
+.featuredCover,
+.cover {
+  display: block;
+  flex: none;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.featuredCover {
+  width: 22px;
+  height: 16px;
+}
+
+.cover {
+  width: 36px;
+  height: 22px;
 }
 
 .item {
@@ -211,7 +259,7 @@
   box-sizing: border-box;
   border: 0;
   border-radius: 10px;
-  padding: 8px 8px;
+  padding: 7px 8px;
   background: transparent;
   color: var(--color-text-2);
   font: inherit;
@@ -239,6 +287,7 @@
   flex: none;
   width: 16px;
   height: 16px;
+  margin-left: auto;
   align-items: center;
   justify-content: center;
 }
@@ -261,11 +310,64 @@
   place-items: center;
 }
 
+.shell[aria-disabled='true'] {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.fieldTrigger {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-2);
+  border-radius: 8px;
+  padding: 4px 10px;
+  background: var(--color-bg-2);
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fieldTrigger:hover:not(:disabled) {
+  border-color: var(--color-border-3);
+}
+
+.fieldTrigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.fieldCover {
+  width: 22px;
+  height: 16px;
+  flex: none;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.fieldLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fieldPlaceholder {
+  color: var(--color-text-4);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .noneChip,
   .search,
   .chip,
-  .item {
+  .item,
+  .featuredChip,
+  .fieldTrigger {
     transition: none;
   }
 }

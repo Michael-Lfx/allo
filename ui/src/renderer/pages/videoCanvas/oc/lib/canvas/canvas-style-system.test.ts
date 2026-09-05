@@ -6,6 +6,7 @@ import {
     compileCanvasStylePreset,
     lookbookCanvasStylePresets,
     parseCanvasStyleSelection,
+    recommendedCanvasStylePresets,
     resolveCanvasStylePreset,
     styleCoverFromSelection,
 } from "./canvas-style-system";
@@ -40,7 +41,11 @@ describe("canvas style system", () => {
         const dream = resolveCanvasStylePreset("surreal-dream");
         expect(noir?.selection?.tone).toBe("monochrome");
         expect(dream?.selection?.tone).toBe("oneiric");
-        expect(noir?.cover).toEqual({ from: "#141414", via: "#7a7a7a", to: "#e8e8e8" });
+        expect(noir?.cover.from).toBe("#141414");
+        expect(noir?.cover.via).toBe("#7a7a7a");
+        expect(noir?.cover.to).toBe("#e8e8e8");
+        expect(noir?.cover.image).toMatch(/looks\/noir\.webp$/);
+        expect(dream?.cover.image).toMatch(/looks\/dreamlike\.webp$/);
     });
 
     test("lookbook copy stays original craft language", () => {
@@ -57,6 +62,18 @@ describe("canvas style system", () => {
         expect(preset.id).toBe(id);
         expect(preset.cover).toEqual(styleCoverFromSelection(preset.selection!));
         expect(resolveCanvasStylePreset(id)?.id).toBe(id);
+        expect(preset.cover.image).toMatch(/looks\/postApocalyptic\.webp$/);
+    });
+
+    test("project look presets stamp original stills onto lookbook, combos, and custom mixes", () => {
+        const looksDir = join(process.cwd(), "public", "looks");
+        for (const preset of [...lookbookCanvasStylePresets, ...recommendedCanvasStylePresets]) {
+            expect(preset.cover.image).toMatch(/looks\/[\w-]+\.webp$/);
+            const file = preset.cover.image!.slice(preset.cover.image!.lastIndexOf("/") + 1);
+            expect(existsSync(join(looksDir, file))).toBe(true);
+        }
+        expect(resolveCanvasStylePreset("urban-live-action")?.cover.image).toMatch(/looks\/cinematic\.webp$/);
+        expect(resolveCanvasStylePreset("ink-narrative")?.cover.image).toMatch(/looks\/inkWash\.webp$/);
     });
 
     test("preview photo pack is gone from public assets", () => {

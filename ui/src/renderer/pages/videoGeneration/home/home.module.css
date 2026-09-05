@@ -832,6 +832,24 @@
   opacity: 0.42;
 }
 
+.lookChipCover {
+  width: 18px;
+  height: 12px;
+  flex: none;
+  overflow: hidden;
+  border-radius: 3px;
+}
+
+.lookChipLabel {
+  max-width: 5.5em;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .submitButton {
   position: relative;
   z-index: 2;

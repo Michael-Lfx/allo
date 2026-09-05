@@ -1,3 +1,5 @@
+import { lookCoverImage, lookCoverImageForAxes } from "@renderer/pages/videoGeneration/styleCatalog/lookCovers";
+
 export type ProjectStyleWorldId = "xianxia" | "urban" | "historical" | "suspense" | "science-fiction" | "pastoral" | "cyberpunk" | "republic" | "campus" | "court" | "wasteland" | "space";
 export type ProjectStyleToneId = "epic" | "dark" | "light-comedy" | "romantic" | "healing" | "melancholic" | "glamour" | "documentary" | "monochrome" | "oneiric";
 export type ProjectStyleMediumId = "live-action" | "3d-anime" | "3d-cartoon" | "2d-guoman" | "ink" | "stop-motion" | "comic" | "storybook";
@@ -14,6 +16,8 @@ export type CanvasStyleCover = {
     from: string;
     via: string;
     to: string;
+    /** Optional still that reads the medium at thumbnail size. Gradient remains the fallback. */
+    image?: string;
 };
 
 export type CanvasStylePreset = {
@@ -416,11 +420,12 @@ const TONE_ACCENT: Record<ProjectStyleToneId, string> = {
 };
 
 export function styleCoverFromSelection(selection: ProjectStyleSelection): CanvasStyleCover {
+    const image = lookCoverImageForAxes(selection);
     if (selection.tone === "monochrome") {
-        return { from: "#141414", via: "#7a7a7a", to: "#e8e8e8" };
+        return { from: "#141414", via: "#7a7a7a", to: "#e8e8e8", image };
     }
     const [from, to] = WORLD_COVER[selection.world];
-    return { from, via: TONE_ACCENT[selection.tone], to };
+    return { from, via: TONE_ACCENT[selection.tone], to, image };
 }
 
 export function compileCanvasStylePreset(selection: ProjectStyleSelection): CanvasStylePreset {
@@ -544,6 +549,7 @@ export const lookbookCanvasStylePresets = lookbookStyleMeta.map((meta) => {
         category: meta.category,
         description: meta.description,
         tags: meta.tags,
+        cover: { ...compiled.cover, image: lookCoverImage(meta.id) },
     };
 });
 
