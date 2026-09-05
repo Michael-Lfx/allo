@@ -19,7 +19,7 @@ export function prefetchVerticalSkillMenu(): void {
 }
 
 export function prefetchLookStyleMenu(): void {
-  void import('./home/LookStyleMenu').catch(() => undefined);
+  void import('./styleCatalog/LookPicker').catch(() => undefined);
 }
 
 export function prefetchCanvasAssistantPanel(): void {

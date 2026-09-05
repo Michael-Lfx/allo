@@ -19,6 +19,8 @@ export type CanvasHomeLaunchSkill = {
   label: string;
   description: string;
   stylePrompt: string;
+  /** Lookbook / v2 id when this skill is a visual look. Falls back to `id`. */
+  stylePresetId?: string;
 };
 
 export type CanvasHomeLaunchPreferences = {

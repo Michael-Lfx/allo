@@ -23,6 +23,8 @@ import { createCanvasNode } from '@oc/lib/canvas/canvas-project-domain';
 import { encodeChannelModel } from '@oc/stores/use-config-store';
 import { parsePersistedChatSessions, projectToCanvasDocument } from './canvasChatPersist';
 import { isCanvasHomeAgentLaunch, storedVqualityFromHomeLaunch } from './home-agent-launch';
+import { resolveLookIdentity } from '@renderer/pages/videoGeneration/styleCatalog/lookIdentity';
+import { resolveCanvasStylePreset } from '@oc/lib/canvas/canvas-style-system';
 
 export type CanvasHomeLaunch = {
   prompt: string;
@@ -42,6 +44,7 @@ export type CanvasHomeLaunch = {
     label: string;
     description: string;
     stylePrompt: string;
+    stylePresetId?: string;
   };
   preferences: {
     automatic: boolean;
@@ -118,16 +121,23 @@ function seedHomeAgentConstraintGraph(
   skill: CanvasHomeLaunch['skill'],
   referenceNodes: CanvasNodeData[],
 ) {
-  const { promptNode, skillNode, configNode } = buildHomeInputNodes(launch, false, skill, 'agent');
+  const { promptNode, skillNode, styleNode, configNode } = buildHomeInputNodes(
+    launch,
+    false,
+    skill,
+    'agent',
+  );
   return {
     nodes: [
       promptNode,
+      ...(styleNode ? [styleNode] : []),
       ...(skillNode ? [skillNode] : []),
       ...referenceNodes,
       configNode,
     ],
     connections: [
       connection(promptNode.id, configNode.id),
+      ...(styleNode ? [connection(styleNode.id, configNode.id)] : []),
       ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
     ],
   };
@@ -139,20 +149,38 @@ function seedLegacyHomeGraph(
   skill: CanvasHomeLaunch['skill'],
   referenceNodes: CanvasNodeData[],
 ) {
-  const { promptNode, skillNode, configNode } = buildHomeInputNodes(launch, isGenerate, skill, 'generate');
+  const { promptNode, skillNode, styleNode, configNode } = buildHomeInputNodes(
+    launch,
+    isGenerate,
+    skill,
+    'generate',
+  );
   return {
     nodes: [
       promptNode,
+      ...(styleNode ? [styleNode] : []),
       ...(skillNode ? [skillNode] : []),
       ...referenceNodes,
       configNode,
     ],
     connections: [
       connection(promptNode.id, configNode.id),
+      ...(styleNode ? [connection(styleNode.id, configNode.id)] : []),
       ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
       ...referenceNodes.map((node) => connection(node.id, configNode.id)),
     ],
   };
+}
+
+function resolveHomeLaunchLook(skill: CanvasHomeLaunch['skill']) {
+  if (!skill) return null;
+  const prompt = skill.stylePrompt?.trim();
+  return resolveLookIdentity({
+    canvasPresetId: skill.stylePresetId,
+    stylePrompt: prompt,
+    vimaxKey: prompt ? undefined : skill.id,
+    creationSkillId: prompt ? undefined : skill.id,
+  });
 }
 
 function buildHomeInputNodes(
@@ -161,6 +189,14 @@ function buildHomeInputNodes(
   skill: CanvasHomeLaunch['skill'],
   mode: 'generate' | 'agent',
 ) {
+  const look = !isGenerate ? resolveHomeLaunchLook(skill) : null;
+  const canvasPreset =
+    look && !look.canvasPresetId.startsWith('look:')
+      ? resolveCanvasStylePreset(look.canvasPresetId)
+      : undefined;
+  const canvasPresetId = canvasPreset?.id ?? look?.canvasPresetId;
+  const canvasStylePrompt = canvasPreset?.prompt ?? look?.canvasPrompt ?? skill?.stylePrompt;
+  const canvasStyleTitle = canvasPreset?.title ?? look?.canvasTitle ?? skill?.label;
   const promptNode = {
     ...createCanvasNode(CanvasNodeType.Text, { x: 220, y: 190 }, {
       content: launch.prompt,
@@ -172,22 +208,40 @@ function buildHomeInputNodes(
     }),
     title: isGenerate ? '生成提示' : '创作提示',
   };
+  const styleNode =
+    !isGenerate && canvasStylePrompt
+      ? {
+          ...createCanvasNode(CanvasNodeType.Text, { x: 220, y: 500 }, {
+            content: canvasStylePrompt,
+            prompt: canvasStylePrompt,
+            status: 'success',
+            workflowKind: 'styleboard',
+            workflowTitle: '项目画风',
+            workflowDescription: canvasPreset?.description || skill?.description,
+            stylePresetId: canvasPresetId,
+            fontSize: 14,
+          }),
+          title: `项目画风 · ${canvasStyleTitle}`,
+          width: 420,
+          height: 280,
+        }
+      : null;
   const skillNode =
     !isGenerate && skill
       ? {
-          ...createCanvasNode(CanvasNodeType.Skill, { x: 220, y: 500 }, {
-            content: skill.stylePrompt,
-            prompt: skill.stylePrompt,
+          ...createCanvasNode(CanvasNodeType.Skill, { x: 220, y: styleNode ? 820 : 500 }, {
+            content: look?.modelPrompt || skill.stylePrompt,
+            prompt: look?.modelPrompt || skill.stylePrompt,
             status: 'success',
             skillId: skill.id,
             skillVersion: 1,
-            stylePresetId: skill.id,
+            stylePresetId: canvasPresetId || skill.stylePresetId || skill.id,
             skillSnapshot: {
               id: skill.id,
               name: skill.label,
               description: skill.description,
               category: launch.mediaKind,
-              template: skill.stylePrompt,
+              template: look?.modelPrompt || skill.stylePrompt,
               outputMode: launch.mediaKind === 'image' ? 'image_prompt' : 'workflow',
               outputContract: 'Apply the selected visual style to the connected generation node.',
               version: 1,
@@ -203,7 +257,7 @@ function buildHomeInputNodes(
       : launch.preferences.videoModel;
   const composedPrompt = [
     launch.prompt,
-    !isGenerate ? skill?.stylePrompt : undefined,
+    !isGenerate ? look?.modelPrompt || skill?.stylePrompt : undefined,
     launch.requirement,
   ]
     .filter(Boolean)
@@ -224,7 +278,7 @@ function buildHomeInputNodes(
       size: launch.preferences.aspectRatio,
       seconds: String(launch.preferences.targetDurationSecs),
       vquality: storedVqualityFromHomeLaunch(launch.preferences),
-      workflowKind: isGenerate ? 'shot' : 'styleboard',
+      workflowKind: isGenerate ? 'shot' : undefined,
       workflowTitle: mode === 'agent'
         ? '首页约束'
         : isGenerate
@@ -232,14 +286,14 @@ function buildHomeInputNodes(
           : `${skill?.label ?? '创作'}创作`,
       workflowDescription: launch.requirement,
       ...(skill && !isGenerate
-        ? { stylePresetId: skill.id, skillId: skill.id }
+        ? { stylePresetId: canvasPresetId || skill.stylePresetId || skill.id, skillId: skill.id }
         : {}),
     }),
     title: mode === 'agent'
       ? '首页约束'
       : launch.mediaKind === 'image' ? '图片生成配置' : '视频生成配置',
   };
-  return { promptNode, skillNode, configNode };
+  return { promptNode, skillNode, styleNode, configNode };
 }
 
 function docToProject(projectId: string, title: string, doc: CanvasDocument, existing?: CanvasProject): CanvasProject {

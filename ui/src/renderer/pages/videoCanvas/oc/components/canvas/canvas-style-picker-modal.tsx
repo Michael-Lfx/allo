@@ -21,17 +21,19 @@ import {
     type ProjectStyleSelection,
 } from "@oc/lib/canvas/canvas-style-system";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { CANVAS_LOOKS, lookToCanvasPreset } from "@renderer/pages/videoGeneration/styleCatalog/looks";
+import { VISUAL_STYLE_CATEGORIES, type VisualStyleCategory } from "@renderer/pages/videoGeneration/visualStylePresets";
 import { CanvasStyleCoverSwatch } from "./canvas-style-cover";
 
 export type { CanvasStylePreset } from "@oc/lib/canvas/canvas-style-system";
 export { canvasStylePresets, lookbookCanvasStylePresets, resolveCanvasStylePreset } from "@oc/lib/canvas/canvas-style-system";
 
 export function CanvasStylePickerModal({ open, value, onClose, onSelect }: { open: boolean; value?: string; onClose: () => void; onSelect: (preset: CanvasStylePreset) => void }) {
-    useTranslation();
+    const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [detailPreset, setDetailPreset] = useState<CanvasStylePreset | null>(null);
     const [mode, setMode] = useState<"recommended" | "custom">("recommended");
-    const [lookFilter, setLookFilter] = useState("all");
+    const [lookFilter, setLookFilter] = useState<"all" | VisualStyleCategory>("all");
     const [selection, setSelection] = useState<ProjectStyleSelection>(defaultProjectStyleSelection);
     useEffect(() => {
         if (!open) return;
@@ -48,19 +50,11 @@ export function CanvasStylePickerModal({ open, value, onClose, onSelect }: { ope
         }
         setLookFilter("all");
     }, [open, value]);
-    const lookCategories = useMemo(() => {
-        const seen = new Set<string>();
-        return lookbookCanvasStylePresets.flatMap((preset) => {
-            const category = localizedStylePresetDisplay(preset).category;
-            if (seen.has(category)) return [];
-            seen.add(category);
-            return [category];
-        });
-    }, []);
     const uniqueComboPresets = useMemo(() => uniqueRecommendedCombos(lookbookCanvasStylePresets, recommendedCanvasStylePresets), []);
-    const lookbookPresets = lookFilter === "all"
-        ? lookbookCanvasStylePresets
-        : lookbookCanvasStylePresets.filter((preset) => localizedStylePresetDisplay(preset).category === lookFilter);
+    const lookbookPresets = useMemo(() => {
+        const looks = lookFilter === "all" ? CANVAS_LOOKS : CANVAS_LOOKS.filter((look) => look.category === lookFilter);
+        return looks.map(lookToCanvasPreset);
+    }, [lookFilter]);
     const comboPresets = lookFilter === "all" ? uniqueComboPresets : [];
     return (
         <>
@@ -79,9 +73,15 @@ export function CanvasStylePickerModal({ open, value, onClose, onSelect }: { ope
                     {mode === "recommended" ? (
                         <div className="thin-scrollbar max-h-[76vh] overflow-y-auto px-5 py-4">
                             <div className="mb-3 flex flex-wrap items-center gap-1.5">
-                                <LookFilterChip label={canvasT("videoCanvas.stylePicker.allLooks", "全部气质")} active={lookFilter === "all"} theme={theme} onClick={() => setLookFilter("all")} />
-                                {lookCategories.map((category) => (
-                                    <LookFilterChip key={category} label={category} active={lookFilter === category} theme={theme} onClick={() => setLookFilter(category)} />
+                                <LookFilterChip label={t("videoGeneration.looks.allCategories", { defaultValue: "全部" })} active={lookFilter === "all"} theme={theme} onClick={() => setLookFilter("all")} />
+                                {VISUAL_STYLE_CATEGORIES.map((category) => (
+                                    <LookFilterChip
+                                        key={category.id}
+                                        label={t(category.labelKey, { defaultValue: category.defaultLabel })}
+                                        active={lookFilter === category.id}
+                                        theme={theme}
+                                        onClick={() => setLookFilter(category.id)}
+                                    />
                                 ))}
                             </div>
                             <p className="mb-3 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.stylePicker.lookbookHint", "按真人、动画、插画、手工等制作媒介组织的项目基线，点选即可锁定全片画风。需要更细的交叉组合，可切换到自定义组合。")}</p>

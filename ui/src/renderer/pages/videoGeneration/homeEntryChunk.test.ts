@@ -28,6 +28,8 @@ describe('video generation home entry chunk', () => {
     expect(composer.includes("from './BriefingModelFields'")).toBe(false);
     expect(composer.includes("import VerticalSkillMenu from")).toBe(false);
     expect(composer.includes("import LookStyleMenu from")).toBe(false);
+    expect(composer.includes("import LookPicker from")).toBe(false);
+    expect(composer.includes("lazy(() => import('../styleCatalog/LookPicker'))")).toBe(true);
 
     const popover = source('./home/GenerationPreferencesPopover.tsx');
     expect(popover.includes("from '../components/ModelSelectors'")).toBe(false);
@@ -53,7 +55,7 @@ describe('video generation home entry chunk', () => {
     expect(prefetch.includes('./home/GenerationPreferencesPopover')).toBe(true);
     expect(prefetch.includes('@/renderer/hooks/agent/useMediaModels')).toBe(true);
     expect(prefetch.includes('./home/VerticalSkillMenu')).toBe(true);
-    expect(prefetch.includes('./home/LookStyleMenu')).toBe(true);
+    expect(prefetch.includes('./styleCatalog/LookPicker')).toBe(true);
     expect(composer.includes("import VerticalSkillCreateModal from")).toBe(false);
     expect(composer.includes("import CameoCastEditor from")).toBe(false);
     expect(composer.includes('onPasteCapture')).toBe(true);

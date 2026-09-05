@@ -264,7 +264,7 @@
       "ideaPlaceholder": "描述你想看到的故事、情绪或产品画面…",
       "scriptPlaceholder": "粘贴剧本，Flowy 会自动拆成可编辑镜头…",
       "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…",
-      "creationPlaceholder": "描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…",
+      "creationPlaceholder": "描述你想创作的画面、镜头或氛围…",
       "generatePlaceholder": "描述你想生成的画面与运动，可上传参考图…",
       "briefingPlaceholder": "输入早报话题，例如「今日芯片出口管制」。来源链接可选，引擎会自行检索。",
       "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 切换 Mode…"
@@ -857,6 +857,10 @@
     "clearSearch": "清除搜索",
     "empty": "没有匹配的画风",
     "hint": "画风锁定人物、场景与成片的统一媒介，可与 Skill 同时使用。可不选。",
+    "hintRequired": "画风锁定整片媒介。创作与画布需要选定一项。",
+    "featured": "常用",
+    "featuredAria": "常用画风",
+    "previewAlt": "{{title}}画风示意",
     "none": "不使用画风",
     "allCategories": "全部",
     "categoriesAria": "画风分类"

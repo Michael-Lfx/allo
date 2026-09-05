@@ -14,7 +14,6 @@ import {
   ColorFilter,
   FileText,
   People,
-  Pic,
   Platte,
   RobotOne,
   SettingTwo,
@@ -39,23 +38,22 @@ import {
   filesFromClipboardData,
   VIDEO_HOME_UPLOAD_ACCEPT,
 } from './documentUpload';
-import { agentModesFor, creationSkillsFor } from './modeCatalog';
+import { agentModesFor } from './modeCatalog';
 import { useHomeDraft } from './useHomeDraft';
 import { useHomeUpload } from './useHomeUpload';
 import { useVerticalSkillHub } from './useVerticalSkillHub';
 import type { VimaxWorkflow } from '../types';
-import type {
-  CreationSkillId,
-  VideoCreateDraft,
-  VideoHomeMode,
-} from './types';
-import { usesCanvasReferences } from './types';
+import type { VideoCreateDraft, VideoHomeMode } from './types';
+import { usesCanvasReferences, usesLookPicker } from './types';
 import { generationPreferencesSummary } from '../preferenceSummary';
 import {
-  VISUAL_STYLE_PRESETS,
   hasSelectedVisualStyle,
+  promptForVisualStyleKey,
   visualStyleSelectValue,
 } from '../visualStylePresets';
+import { CanvasStyleCoverSwatch } from '@oc/components/canvas/canvas-style-cover';
+import { isCreationSkillId } from '../styleCatalog/lookIdentity';
+import { lookByPrompt } from '../styleCatalog/looks';
 import {
   BRIEFING_DURATION_MAX_SECS,
   BRIEFING_DURATION_MIN_SECS,
@@ -78,7 +76,7 @@ const CameoCastEditor = lazy(() => import('../components/CameoCastEditor'));
 const loadGenerationPreferencesPopover = () => import('./GenerationPreferencesPopover');
 const GenerationPreferencesPopover = lazy(loadGenerationPreferencesPopover);
 const VerticalSkillMenu = lazy(() => import('./VerticalSkillMenu'));
-const LookStyleMenu = lazy(() => import('./LookStyleMenu'));
+const LookPicker = lazy(() => import('../styleCatalog/LookPicker'));
 const VerticalSkillCreateModal = lazy(() => import('./VerticalSkillCreateModal'));
 const CampaignCarousel = lazy(() => import('../components/CampaignCarousel'));
 
@@ -163,7 +161,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   } = useVerticalSkillHub(mode, draft.verticalSkillIds);
 
   const agentModes = useMemo(() => agentModesFor(t), [t]);
-  const creationSkills = useMemo(() => creationSkillsFor(t), [t]);
+  const showLookPicker = usesLookPicker(mode);
 
   const generateModeLabel = t('videoGeneration.mode.generateLabel', {
     defaultValue: '视频生成',
@@ -242,9 +240,22 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     });
     setSlashMenuOpen(false);
     setSkillHubOpen(false);
+    setLookMenuOpen(false);
     setPreferencesOpen(false);
     setUploadError(null);
   }, [mode]);
+
+  useEffect(() => {
+    if (mode !== 'creation') return;
+    setDraft((current) => {
+      if (current.style.trim()) return current;
+      return {
+        ...current,
+        style: promptForVisualStyleKey('cinematic'),
+        creationSkillId: 'cinematic',
+      };
+    });
+  }, [mode, setDraft]);
 
   useEffect(() => {
     if (isBriefing) {
@@ -302,27 +313,20 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     mode,
   ]);
 
-  const activeCreationSkill =
-    creationSkills.find((skill) => skill.id === draft.creationSkillId) ??
-    creationSkills[0];
   const selectedModeLabel =
-    mode === 'creation'
-      ? activeCreationSkill.label
-      : agentModes.find((item) => item.id === draft.workflow)?.label ?? agentModes[0]?.label;
+    agentModes.find((item) => item.id === draft.workflow)?.label ?? agentModes[0]?.label;
   const verticalSkillLabel = t('videoGeneration.skills.mountButton', {
     defaultValue: 'Skill',
   });
   const lookButtonFallback = t('videoGeneration.looks.mountButton', {
     defaultValue: '画风',
   });
-  const selectedLookKey = visualStyleSelectValue(draft.style);
-  const selectedLookPreset =
-    selectedLookKey === '__custom__'
-      ? undefined
-      : VISUAL_STYLE_PRESETS.find((preset) => preset.key === selectedLookKey);
-  const lookButtonLabel = selectedLookPreset
-    ? t(selectedLookPreset.labelKey, { defaultValue: selectedLookPreset.defaultLabel })
-    : selectedLookKey === '__custom__'
+  const selectedLook = lookByPrompt.get(draft.style.trim());
+  const lookCustom = visualStyleSelectValue(draft.style) === '__custom__';
+  const lookSelected = Boolean(selectedLook) || lookCustom;
+  const lookButtonLabel = selectedLook
+    ? t(selectedLook.labelKey, { defaultValue: selectedLook.defaultLabel })
+    : lookCustom
       ? t('videoGeneration.workspace.source.stylePresets.custom', {
           defaultValue: '自定义风格',
         })
@@ -395,7 +399,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         })
       : mode === 'creation'
         ? t('videoGeneration.create.composer.creationPlaceholder', {
-            defaultValue: '描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…',
+            defaultValue: '描述你想创作的画面、镜头或氛围…',
           })
         : draft.workflow === 'script2video'
           ? t('videoGeneration.create.composer.scriptPlaceholder', {
@@ -416,8 +420,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         ? { ...current, creationPrompt: value }
         : { ...current, sourceText: value }
     );
-    // Slash skill menu is Agent / Creation only.
-    if (mode === 'agent' || mode === 'creation') {
+    // Slash Mode menu is Agent-only.
+    if (mode === 'agent') {
       setSlashMenuOpen(/(?:^|\s)\/$/.test(value));
     }
   };
@@ -437,14 +441,16 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setUploadError(null);
   };
 
-  const selectCreationSkill = (creationSkillId: CreationSkillId) => {
-    const skill = creationSkills.find((item) => item.id === creationSkillId);
+  const selectLook = (stylePrompt: string) => {
+    const look = lookByPrompt.get(stylePrompt.trim());
+    const featuredId =
+      look?.vimaxKey && isCreationSkillId(look.vimaxKey) ? look.vimaxKey : undefined;
     setDraft((current) => ({
       ...current,
-      creationSkillId,
-      style: skill?.stylePrompt ?? current.style,
+      style: stylePrompt,
+      creationSkillId: featuredId ?? current.creationSkillId,
     }));
-    setSlashMenuOpen(false);
+    setLookMenuOpen(false);
   };
 
   const removeTrailingSlash = () => {
@@ -463,10 +469,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     const warm = () => {
       setPrefsModuleReady(true);
       prefetchGenerationPreferencesPanel();
-      if (mode === 'agent') {
-        prefetchVerticalSkillMenu();
-        prefetchLookStyleMenu();
-      }
+      if (mode === 'agent') prefetchVerticalSkillMenu();
+      if (showLookPicker) prefetchLookStyleMenu();
       if (mode === 'creation') prefetchCanvasAssistantPanel();
     };
     // Briefing first-open waits on this chunk + /api/media/models; do not idle-defer.
@@ -548,8 +552,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       sourceText: draft.sourceText.trim(),
       creationPrompt: draft.creationPrompt.trim(),
       style:
-        mode === 'creation'
-          ? activeCreationSkill.stylePrompt
+        mode === 'creation' && !draft.style.trim()
+          ? promptForVisualStyleKey('cinematic')
           : draft.style,
       preferences: isGenerate
         ? {
@@ -586,22 +590,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const skillMenu =
     mode === 'agent' ? (
       <SlashSkillMenu
-        mode='agent'
         items={agentModes}
         selectedId={draft.workflow}
         onSelect={(id) => {
           removeTrailingSlash();
           selectAgentMode(id as VimaxWorkflow);
-        }}
-      />
-    ) : mode === 'creation' ? (
-      <SlashSkillMenu
-        mode='creation'
-        items={creationSkills}
-        selectedId={draft.creationSkillId}
-        onSelect={(id) => {
-          removeTrailingSlash();
-          selectCreationSkill(id as CreationSkillId);
         }}
       />
     ) : null;
@@ -663,15 +656,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       <People size={14} />
     );
   const skillTriggerIcon =
-    mode === 'creation'
-      ? draft.creationSkillId === 'cinematic'
-        ? <Pic size={14} />
-        : <Platte size={14} />
-      : draft.workflow === 'script2video'
-        ? <FileText size={14} />
-        : draft.workflow === 'novel2video'
-          ? <BookOpen size={14} />
-          : <VideoOne size={14} />;
+    draft.workflow === 'script2video'
+      ? <FileText size={14} />
+      : draft.workflow === 'novel2video'
+        ? <BookOpen size={14} />
+        : <VideoOne size={14} />;
   const submitDisabled =
     loading ||
     (isAction
@@ -907,13 +896,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   title={selectedModeLabel}
                   aria-label={
                     selectedModeLabel ??
-                    (mode === 'agent'
-                      ? t('videoGeneration.create.modesMenuAria', {
-                          defaultValue: '选择 Mode',
-                        })
-                      : t('videoGeneration.create.skillsMenuAria', {
-                          defaultValue: '选择技能',
-                        }))
+                    t('videoGeneration.create.modesMenuAria', {
+                      defaultValue: '选择 Mode',
+                    })
                   }
                   onClick={() => {
                     setPreferencesOpen(false);
@@ -985,7 +970,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 </Suspense>
               </ComposerAnchoredOverlay>
             ) : null}
-            {mode === 'agent' ? (
+            {showLookPicker ? (
               <ComposerAnchoredOverlay
                 open={lookMenuOpen}
                 onOpenChange={(open) => {
@@ -1002,7 +987,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 padded={false}
                 trigger={
                   <CanvasChromeButton
-                    className='is-icon'
+                    className={lookSelected ? undefined : 'is-icon'}
                     expanded={lookMenuOpen}
                     aria-pressed={hasSelectedVisualStyle(draft.style)}
                     title={lookButtonLabel}
@@ -1019,17 +1004,26 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                       setLookMenuOpen((value) => !value);
                     }}
                   >
-                    <ColorFilter size={14} />
+                    {selectedLook ? (
+                      <CanvasStyleCoverSwatch
+                        cover={selectedLook.cover}
+                        className={styles.lookChipCover}
+                        alt=''
+                      />
+                    ) : (
+                      <ColorFilter size={14} />
+                    )}
+                    {lookSelected ? (
+                      <span className={styles.lookChipLabel}>{lookButtonLabel}</span>
+                    ) : null}
                   </CanvasChromeButton>
                 }
               >
                 <Suspense fallback={null}>
-                  <LookStyleMenu
+                  <LookPicker
                     stylePrompt={draft.style}
-                    onSelect={(style) => {
-                      setDraft((current) => ({ ...current, style }));
-                      setLookMenuOpen(false);
-                    }}
+                    allowEmpty={mode !== 'creation'}
+                    onSelect={selectLook}
                   />
                 </Suspense>
               </ComposerAnchoredOverlay>
