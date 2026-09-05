@@ -3,6 +3,13 @@
 Flowy 1.0.0 is the first public release. This file records user-facing notes
 at a high level rather than a complete commit log.
 
+## Unreleased
+
+## v1.2.1 - 2026-09-05
+
+- Canvas unifies the asset space with short-drama stills, quiets overlay chrome, and collapses the node composer.
+- Historical canvas media displays again, and art-critique errors surface instead of failing silently.
+
 ## v1.2.0 - 2026-09-04
 
 - SkillHub expert packs now validate package integrity during install and at runtime; expert pack settings live in the local capability center, and Nomi setup stays consistent with pack installs. Missing ACP skills no longer silently degrade mid-session.
