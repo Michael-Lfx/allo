@@ -8,7 +8,6 @@ mod film_cover;
 mod global_information_planner;
 mod novel_compressor;
 mod reference_image_classifier;
-mod reference_image_selector;
 mod scene_extractor;
 mod screenwriter;
 mod storyboard_artist;
@@ -31,7 +30,6 @@ pub use reference_image_classifier::{
     ReferenceImageCategory, ReferenceImageClassification, ReferenceImageClassifier,
     CLASSIFICATION_CACHE_REL,
 };
-pub use reference_image_selector::{ReferenceImageSelector, SelectorOutput};
 pub use scene_extractor::{SceneExtractor, rank_chunks_by_keyword_overlap};
 pub use screenwriter::Screenwriter;
 pub use storyboard_artist::StoryboardArtist;
@@ -91,12 +89,6 @@ ref_image_indices: 0-based indices into the provided image list (max 8). text_pr
     pub const REF_IMAGE_CLASSIFY: &str = r#"Return a JSON object:
 {"classifications":[{"photo_id":"string","category":"character|environment|prop|style","summary":"string","suggested_label":"string"}]}
 One entry per input image. category MUST be exactly one of: character, environment, prop, style. photo_id MUST match the provided id. summary = one short visual description. suggested_label may be empty. Prose MUST match the user's label language when Chinese."#;
-
-    /// Same-camera performance beats inside an already-packed storyboard row.
-    /// Row count / cam_idx are fixed; this is density, not coverage.
-    pub const IN_CLIP_BEATS: &str = r#"Return a JSON object:
-{"storyboard":[{"idx":0,"cam_idx":0,"is_last":false,"visual_desc":"string","beats":[{"visual_desc":"string","cam_idx":0}]}]}
-Return EVERY input row, same idx/cam_idx/is_last/visual_desc. For rows that still need densify, beats MUST have 2 or 3 entries and EVERY beat.cam_idx MUST equal that row's cam_idx (same camera — these are performance beats inside one take, NEVER a new cut or a new storyboard row). Each beat.visual_desc is ONE filmable body/face/blocking/prop action, never a bare mood word. Rows that already have ≥2 beats: copy them unchanged. Values MUST match the user's input language (Chinese input → 简体中文)."#;
 
     pub const DRAMA_ENGINE: &str = r#"Return a JSON object:
 {"protagonist":"string","want":"string","obstacle":"string","stakes":"string","status_start":"string","status_end":"string","reversal":"string","visual_motif":"string","beats":[{"role":"hook","action":"string","advance":"string"}]}

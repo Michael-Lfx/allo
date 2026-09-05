@@ -270,14 +270,16 @@ export function updateRecentVideoGenerationTitle(
   title: string | null | undefined
 ): void {
   const id = (sessionId ?? '').trim();
+  if (!id) return;
   const nextTitle = normalizeTitle(title);
-  if (!id || !nextTitle) return;
   const list = readRecentVideoGenerationSessions();
   let changed = false;
   const next = list.map((entry) => {
-    if (entry.id !== id || entry.title === nextTitle) return entry;
+    if (entry.id !== id) return entry;
+    if ((entry.title || undefined) === nextTitle) return entry;
     changed = true;
-    return { ...entry, title: nextTitle };
+    if (nextTitle) return { ...entry, title: nextTitle };
+    return { id: entry.id, at: entry.at, source: entry.source };
   });
   if (changed) writeRecentVideoGenerationSessions(next);
 }

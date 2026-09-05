@@ -46,6 +46,7 @@ import {
   writeArtifactText,
   listCameos,
   uploadCameo,
+  updateSessionTitle,
 } from './api';
 import type { ArtifactContent, ArtifactNode, VimaxSession, VimaxWorkflow } from './types';
 import ArtifactTree from './components/ArtifactTree';
@@ -62,7 +63,6 @@ import type { StoryboardScene, StoryboardSceneSave } from './artifactPresentatio
 import {
   findStoryboardPath,
   patchShotDescriptionsInArtifact,
-  patchShotGenerationSpecInArtifact,
 } from './artifactPresentation';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
@@ -78,6 +78,7 @@ import {
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
+  updateRecentVideoGenerationTitle,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
 import { filmTelemetryError } from './providerError';
@@ -101,6 +102,7 @@ import {
 import { clampDuration } from './durationBounds';
 import styles from './index.module.css';
 import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
+import WorkspaceTitleField from './components/WorkspaceTitleField';
 import '@oc/styles/quiet-chrome.css';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 import { videoCanvasProjectPath } from '../videoCanvas/routes';
@@ -804,22 +806,12 @@ const WorkspacePage: React.FC = () => {
   const handleSaveSceneDescriptions = useCallback(
     async (scene: StoryboardScene, descriptions: StoryboardSceneSave) => {
       if (!sessionId) return;
-      const specPath = (scene.generationSpecPath || scene.revisionPath || '').replace(
-        /\\/g,
-        '/'
-      );
-      const savingSpec =
-        Boolean(
-          descriptions.firstFrameDescription != null ||
-            descriptions.motionDescription != null
-        ) && /\/shot_description\.json$/i.test(specPath);
-      const targetPath = savingSpec
-        ? specPath
-        : scene.storyboardPath ||
-          (scene.sceneRoot
-            ? `${scene.sceneRoot.replace(/\\/g, '/')}/storyboard.json`
-            : '') ||
-          scene.revisionPath;
+      const targetPath =
+        scene.storyboardPath ||
+        (scene.sceneRoot
+          ? `${scene.sceneRoot.replace(/\\/g, '/')}/storyboard.json`
+          : '') ||
+        scene.revisionPath;
       if (!targetPath) {
         message.warning(
           t('videoGeneration.studio.storyboard.visualSaveMissing', {
@@ -831,12 +823,10 @@ const WorkspacePage: React.FC = () => {
       setRevising(true);
       try {
         const current = await getArtifact(sessionId, targetPath);
-        const patched = savingSpec
-          ? patchShotGenerationSpecInArtifact(current.text, descriptions)
-          : patchShotDescriptionsInArtifact(current.text, scene, {
-              visualDescription: descriptions.visualDescription ?? '',
-              audioDescription: descriptions.audioDescription,
-            });
+        const patched = patchShotDescriptionsInArtifact(current.text, scene, {
+          visualDescription: descriptions.visualDescription ?? '',
+          audioDescription: descriptions.audioDescription,
+        });
         await writeArtifactText(sessionId, targetPath, patched);
         message.success(
           t('videoGeneration.studio.storyboard.visualSaveOk', {
@@ -967,6 +957,24 @@ const WorkspacePage: React.FC = () => {
       setDeleting(false);
     }
   }, [sessionId, deleting, message, t, navigate]);
+
+  const handleRename = useCallback(
+    async (next: string) => {
+      if (!sessionId) return;
+      try {
+        const updated = await updateSessionTitle(sessionId, next);
+        setSession((prev) => (prev ? { ...prev, title: updated.title } : updated));
+        updateRecentVideoGenerationTitle(sessionId, updated.title);
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.workspace.renameFailed', { defaultValue: '标题保存失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      }
+    },
+    [sessionId, message, t]
+  );
 
   // Subscribe to the full snapshot only while a terminal failure is showing —
   // resume-vs-replan is the sole page-level consumer of raw events.
@@ -1339,9 +1347,7 @@ const WorkspacePage: React.FC = () => {
               <ArrowLeft theme='outline' size={16} fill='currentColor' />
             </CanvasChromeButton>
             <div className='min-w-0'>
-              <h1 className='m-0 text-16px font-600 text-[var(--color-text-1)] truncate'>
-                {session.title || t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
-              </h1>
+              <WorkspaceTitleField title={session.title} onSave={handleRename} />
               <p className='m-0 mt-2px text-11px text-[var(--color-text-3)] truncate'>
                 {workflowLabel(session.workflow, t)} · {statusLabel(currentStatus, t)}
               </p>

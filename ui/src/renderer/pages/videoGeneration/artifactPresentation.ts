@@ -17,34 +17,23 @@ export function isAudioArtifactPath(path: string): boolean {
   return AUDIO_ARTIFACT_RE.test(path);
 }
 
+export interface StoryboardBeat {
+  visualDescription: string;
+  camIdx?: number;
+}
+
 export interface StoryboardShot {
   index: number;
   visualDescription: string;
   audioDescription?: string;
   /** Packed adjacent beats in this row; omitted when the row is a single beat. */
   beatCount?: number;
-}
-
-/** Per-shot generation spec from `shots/N/shot_description.json` (drives I2V). */
-export interface ShotGenerationSpec {
-  path: string;
-  sceneRoot: string;
-  shotIndex: number;
-  firstFrameDescription?: string;
-  lastFrameDescription?: string;
-  motionDescription?: string;
-  audioDescription?: string;
-  /** Copy of the planning brief stored on the spec file. */
-  planningBrief?: string;
-  beatCount?: number;
+  beats?: StoryboardBeat[];
 }
 
 export interface StoryboardSceneSave {
   visualDescription?: string;
   audioDescription?: string;
-  firstFrameDescription?: string;
-  motionDescription?: string;
-  lastFrameDescription?: string;
 }
 
 export interface StoryboardScene {
@@ -61,15 +50,13 @@ export interface StoryboardScene {
   storyboardPath?: string;
   /** `shots/N/shot_description.json` when present. */
   generationSpecPath?: string;
-  firstFrameDescription?: string;
-  lastFrameDescription?: string;
-  motionDescription?: string;
   /** Pipeline scene root (e.g. `idea2video/scene_1`); empty for single-scene runs. */
   sceneRoot?: string;
   /** Shot index within its pipeline scene. */
   shotIndex?: number;
   /** Packed beats in this clip (`>= 2`); one card still renders as one video. */
   beatCount?: number;
+  beats?: StoryboardBeat[];
 }
 
 /** Location of a shot under a pipeline scene workspace. */
@@ -134,19 +121,22 @@ export function parseStoryboard(text: string | undefined): StoryboardShot[] {
     return rows.flatMap((row, fallbackIndex) => {
       if (!row || typeof row !== 'object') return [];
       const value = row as Record<string, unknown>;
-      const visual = visualFromStoryboardRow(value);
-      if (!visual) return [];
       const rawIndex = value.idx ?? value.index ?? value.shot_index;
-      const beatCount = beatCountFromStoryboardRow(value);
+      const hasIdx = typeof rawIndex === 'number';
+      const visual = visualFromStoryboardRow(value) ?? '';
+      const beats = beatsFromStoryboardRow(value);
+      if (!hasIdx && !visual && beats.length === 0) return [];
+      const beatCount = beats.length >= 2 ? beats.length : undefined;
       return [
         {
-          index: typeof rawIndex === 'number' ? rawIndex : fallbackIndex,
+          index: hasIdx ? rawIndex : fallbackIndex,
           visualDescription: visual,
           audioDescription:
             stringValue(value.audio_desc) ??
             stringValue(value.audioDescription) ??
             stringValue(value.audio),
           ...(beatCount != null ? { beatCount } : {}),
+          ...(beats.length >= 2 ? { beats } : {}),
         },
       ];
     });
@@ -199,7 +189,7 @@ export function buildStoryboardScenesFromStoryboards(
         index: scenes.length,
         visualDescription: shot.visualDescription,
         audioDescription: shot.audioDescription,
-        imagePath: bestShotFile(imageFiles, sceneRoot, shot.index, 'first_frame'),
+        imagePath: bestShotFile(imageFiles, sceneRoot, shot.index, 'video_last_frame'),
         videoPath: bestShotFile(videoFiles, sceneRoot, shot.index),
         revisionPath:
           bestShotFile(revisionFiles, sceneRoot, shot.index) ?? board.path,
@@ -208,6 +198,7 @@ export function buildStoryboardScenesFromStoryboards(
         sceneRoot,
         shotIndex: shot.index,
         ...(shot.beatCount != null ? { beatCount: shot.beatCount } : {}),
+        ...(shot.beats?.length ? { beats: shot.beats } : {}),
       });
     }
   }
@@ -243,7 +234,7 @@ export function buildStoryboardScenesFromStoryboards(
         id: shotKey(loc.sceneRoot, loc.shotIndex),
         index: scenes.length,
         visualDescription: '',
-        imagePath: bestShotFile(imageFiles, loc.sceneRoot, loc.shotIndex, 'first_frame'),
+        imagePath: bestShotFile(imageFiles, loc.sceneRoot, loc.shotIndex, 'video_last_frame'),
         videoPath: bestShotFile(videoFiles, loc.sceneRoot, loc.shotIndex),
         revisionPath:
           bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex) ?? fallbackBoard,
@@ -305,122 +296,6 @@ export function findShotVideoPaths(nodes: ArtifactNode[]): string[] {
     .map((file) => file.path.replace(/\\/g, '/'))
     .filter((path) => /\/shots\/\d+\/video\.(mp4|webm|mov)$/i.test(path));
   return [...new Set(paths)].sort(compareSceneAwarePaths);
-}
-
-export function parseShotGenerationSpec(
-  text: string | undefined,
-  path: string
-): ShotGenerationSpec | null {
-  if (!text) return null;
-  const location = shotLocationFromPath(path.replace(/\\/g, '/'));
-  if (!location) return null;
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    const value = parsed as Record<string, unknown>;
-    const rawIndex = value.idx ?? value.index ?? value.shot_index;
-    return {
-      path: path.replace(/\\/g, '/'),
-      sceneRoot: location.sceneRoot,
-      shotIndex: typeof rawIndex === 'number' ? rawIndex : location.shotIndex,
-      firstFrameDescription: stringValue(value.ff_desc) ?? stringValue(value.firstFrame),
-      lastFrameDescription: stringValue(value.lf_desc) ?? stringValue(value.lastFrame),
-      motionDescription: stringValue(value.motion_desc) ?? stringValue(value.motion),
-      audioDescription:
-        stringValue(value.audio_desc) ??
-        stringValue(value.audioDescription) ??
-        stringValue(value.audio),
-      planningBrief:
-        stringValue(value.visual_desc) ?? stringValue(value.visualDescription),
-      ...(Array.isArray(value.beats) && value.beats.length >= 2
-        ? { beatCount: value.beats.length }
-        : {}),
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** Overlay I2V spec fields onto filmstrip scenes keyed by scene root + shot index. */
-export function applyShotGenerationSpecs(
-  scenes: StoryboardScene[],
-  specs: ShotGenerationSpec[]
-): StoryboardScene[] {
-  if (specs.length === 0) return scenes;
-  const byKey = new Map(
-    specs.map((spec) => [shotKey(spec.sceneRoot, spec.shotIndex), spec])
-  );
-  return scenes.map((scene) => {
-    const key = shotKey(scene.sceneRoot ?? '', scene.shotIndex ?? -1);
-    const spec = byKey.get(key);
-    if (!spec) return scene;
-    const planningBrief = scene.visualDescription || spec.planningBrief || '';
-    return {
-      ...scene,
-      visualDescription: planningBrief,
-      audioDescription: spec.audioDescription || scene.audioDescription,
-      firstFrameDescription: spec.firstFrameDescription,
-      lastFrameDescription: spec.lastFrameDescription,
-      motionDescription: spec.motionDescription,
-      generationSpecPath: spec.path,
-      revisionPath: spec.path,
-      beatCount: spec.beatCount ?? scene.beatCount,
-    };
-  });
-}
-
-export function sceneHasGenerationSpec(
-  scene: Pick<
-    StoryboardScene,
-    'firstFrameDescription' | 'motionDescription' | 'lastFrameDescription'
-  >
-): boolean {
-  return Boolean(
-    scene.firstFrameDescription?.trim() ||
-      scene.motionDescription?.trim() ||
-      scene.lastFrameDescription?.trim()
-  );
-}
-
-/**
- * Patch `ff_desc` / `motion_desc` / `lf_desc` / `audio_desc` on a per-shot spec.
- * Does not overwrite `visual_desc` (planning brief).
- */
-export function patchShotGenerationSpecInArtifact(
-  rawText: string | undefined,
-  descriptions: Pick<
-    StoryboardSceneSave,
-    | 'firstFrameDescription'
-    | 'motionDescription'
-    | 'lastFrameDescription'
-    | 'audioDescription'
-  >
-): string {
-  const parsed = rawText?.trim() ? (JSON.parse(rawText) as unknown) : null;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('shot_description.json must be a JSON object');
-  }
-  const obj = parsed as Record<string, unknown>;
-  if (descriptions.firstFrameDescription !== undefined) {
-    obj.ff_desc = descriptions.firstFrameDescription.trim();
-  }
-  if (descriptions.motionDescription !== undefined) {
-    obj.motion_desc = descriptions.motionDescription.trim();
-  }
-  if (descriptions.lastFrameDescription !== undefined) {
-    obj.lf_desc = descriptions.lastFrameDescription.trim();
-  }
-  if (descriptions.audioDescription !== undefined) {
-    const audio = descriptions.audioDescription.trim();
-    if ('audioDescription' in obj) {
-      obj.audioDescription = audio;
-    }
-    if ('audio' in obj && typeof obj.audio === 'string') {
-      obj.audio = audio;
-    }
-    obj.audio_desc = audio;
-  }
-  return JSON.stringify(obj, null, 2);
 }
 
 /**
@@ -545,9 +420,19 @@ function patchShotRowInList(
   setDescriptionFields(target, visual, audio);
 }
 
-function beatCountFromStoryboardRow(value: Record<string, unknown>): number | undefined {
-  if (!Array.isArray(value.beats) || value.beats.length < 2) return undefined;
-  return value.beats.length;
+function beatsFromStoryboardRow(value: Record<string, unknown>): StoryboardBeat[] {
+  if (!Array.isArray(value.beats)) return [];
+  return value.beats.flatMap((beat) => {
+    if (!beat || typeof beat !== 'object') return [];
+    const row = beat as Record<string, unknown>;
+    const visualDescription =
+      stringValue(row.visual_desc) ??
+      stringValue(row.visualDescription) ??
+      stringValue(row.motion_desc);
+    if (!visualDescription) return [];
+    const camIdx = typeof row.cam_idx === 'number' ? row.cam_idx : undefined;
+    return [{ visualDescription, ...(camIdx != null ? { camIdx } : {}) }];
+  });
 }
 
 function visualFromStoryboardRow(value: Record<string, unknown>): string | undefined {
@@ -619,10 +504,12 @@ function bestShotFile(
       location.sceneRoot === sceneRoot
     );
   });
-  return (
-    matches.find((file) => preferredName && file.path.includes(preferredName))?.path ??
-    matches[0]?.path
-  );
+  if (preferredName) {
+    return matches.find((file) =>
+      file.path.replace(/\\/g, '/').includes(preferredName)
+    )?.path;
+  }
+  return matches[0]?.path;
 }
 
 /** Sort paths so `scene_2` follows `scene_10` numerically when possible. */

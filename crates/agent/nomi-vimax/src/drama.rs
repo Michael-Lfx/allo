@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{ShotBriefBeat, ShotBriefDescription};
+use crate::domain::ShotBriefDescription;
 
 /// Dramatic skeleton of the whole film, generated from the idea before the
 /// story is written and persisted as `drama_engine.json`.
@@ -437,52 +437,6 @@ pub fn storyboard_structure_matches(
         })
 }
 
-/// Performance beats that live *inside* an already-packed clip.
-///
-/// 2–3 same-camera actions so `clip_timeline` can compile a Seedance beat
-/// script at render time. Never more than 3: stuffing a clip is how "镜太多"
-/// sneaks back in as in-file CUT TO. Camera must stay the row's `cam_idx`.
-pub const MIN_IN_CLIP_BEATS: usize = 2;
-pub const MAX_IN_CLIP_BEATS: usize = 3;
-
-pub fn needs_in_clip_beats(row: &ShotBriefDescription) -> bool {
-    row.beats.len() < MIN_IN_CLIP_BEATS
-}
-
-/// Merge LLM-proposed same-camera performance beats onto rows that still
-/// have fewer than [`MIN_IN_CLIP_BEATS`]. Packed / already-dense rows are
-/// left untouched. Returns `None` when the proposal changes row identity
-/// or count — callers must keep the original board.
-pub fn apply_in_clip_performance_beats(
-    original: &[ShotBriefDescription],
-    proposed: &[ShotBriefDescription],
-) -> Option<Vec<ShotBriefDescription>> {
-    if original.len() != proposed.len() {
-        return None;
-    }
-    let mut out = original.to_vec();
-    for (dst, src) in out.iter_mut().zip(proposed) {
-        if dst.idx != src.idx || dst.cam_idx != src.cam_idx || dst.is_last != src.is_last {
-            return None;
-        }
-        if !needs_in_clip_beats(dst) {
-            continue;
-        }
-        if !in_clip_beats_acceptable(dst.cam_idx, &src.beats) {
-            continue;
-        }
-        dst.beats = src.beats.clone();
-    }
-    Some(out)
-}
-
-fn in_clip_beats_acceptable(row_cam: i32, beats: &[ShotBriefBeat]) -> bool {
-    (MIN_IN_CLIP_BEATS..=MAX_IN_CLIP_BEATS).contains(&beats.len())
-        && beats.iter().all(|beat| {
-            beat.cam_idx == row_cam && !beat.visual_desc.trim().is_empty()
-        })
-}
-
 fn is_dialogue_or_heading(line: &str) -> bool {
     if line.contains('「') || line.contains('“') || line.contains('"') {
         return true;
@@ -692,80 +646,6 @@ mod tests {
         // Re-camera'd beat → rejected.
         let recut = vec![row(0, vec![0, 2]), row(1, vec![])];
         assert!(!storyboard_structure_matches(&original, &recut));
-    }
-
-    #[test]
-    fn in_clip_beats_fill_thin_rows_without_recutting() {
-        use crate::domain::ShotBriefBeat;
-        let thin = ShotBriefDescription {
-            idx: 0,
-            is_last: true,
-            cam_idx: 3,
-            visual_desc: "<林晚>攥着碎纸".into(),
-            audio_desc: None,
-            beats: vec![],
-        };
-        let packed = ShotBriefDescription {
-            idx: 1,
-            is_last: false,
-            cam_idx: 0,
-            visual_desc: "packed".into(),
-            audio_desc: None,
-            beats: vec![
-                ShotBriefBeat {
-                    visual_desc: "a".into(),
-                    audio_desc: None,
-                    cam_idx: 0,
-                },
-                ShotBriefBeat {
-                    visual_desc: "b".into(),
-                    audio_desc: None,
-                    cam_idx: 1,
-                },
-            ],
-        };
-        let original = vec![thin.clone(), packed.clone()];
-        let mut proposed = original.clone();
-        proposed[0].beats = vec![
-            ShotBriefBeat {
-                visual_desc: "攥紧碎纸".into(),
-                audio_desc: None,
-                cam_idx: 3,
-            },
-            ShotBriefBeat {
-                visual_desc: "塞进袖口".into(),
-                audio_desc: None,
-                cam_idx: 3,
-            },
-        ];
-        let merged = apply_in_clip_performance_beats(&original, &proposed).expect("merge");
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].beats.len(), 2);
-        assert!(merged[0].beats.iter().all(|b| b.cam_idx == 3));
-        // Packed reverse-angle beats stay exactly as packing left them.
-        assert_eq!(merged[1].beats.len(), 2);
-        assert_eq!(merged[1].beats[1].cam_idx, 1);
-
-        // Extra row → reject the whole proposal.
-        proposed.push(thin);
-        assert!(apply_in_clip_performance_beats(&original, &proposed).is_none());
-
-        // Recut beats on a thin row are skipped, not applied.
-        let mut recut = original.clone();
-        recut[0].beats = vec![
-            ShotBriefBeat {
-                visual_desc: "a".into(),
-                audio_desc: None,
-                cam_idx: 3,
-            },
-            ShotBriefBeat {
-                visual_desc: "b".into(),
-                audio_desc: None,
-                cam_idx: 9,
-            },
-        ];
-        let kept = apply_in_clip_performance_beats(&original, &recut).expect("skip recut");
-        assert!(kept[0].beats.is_empty());
     }
 
     #[test]

@@ -323,6 +323,10 @@ impl VimaxService {
         self.index.get(id)
     }
 
+    pub fn rename_session(&self, id: &str, title: &str) -> VimaxResult<SessionRecord> {
+        self.index.rename(id, title)
+    }
+
     pub fn list_vertical_skills(
         &self,
         mode: Option<WorkflowKind>,

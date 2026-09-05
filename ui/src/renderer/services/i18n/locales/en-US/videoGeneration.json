@@ -462,6 +462,10 @@
     "back": "Back to list",
     "loadError": "Failed to load",
     "refresh": "Refresh",
+    "rename": "Rename",
+    "renameHint": "Click to edit the title",
+    "renameFailed": "Could not save the title",
+    "titlePlaceholder": "Name this task",
     "workflowLocked": "Workflow is locked after creation.",
     "cameo": {
       "title": "Reference images",

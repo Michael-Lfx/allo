@@ -1628,32 +1628,6 @@ pub fn estimate_shot_need_secs(
     }
 }
 
-/// Short duration line for Seedance. Speech-pacing lecture only when the shot has dialogue.
-///
-/// `beats` is how many beats the clip has to fit: 1 for an ordinary shot, more
-/// for a clip that absorbed a same-camera run. A merged clip must not be told it
-/// is "one continuous visual event" — it has several, and telling it otherwise
-/// invites the model to stretch the first beat over the whole take.
-pub fn i2v_duration_pacing_clause(duration_secs: u32, has_dialogue: bool, beats: u32) -> String {
-    if has_dialogue {
-        return format!(
-            "About {duration_secs}s. Speak at a natural conversational pace — do not rush or \
-time-compress lines. Finish the last syllable, then a brief visible reaction."
-        );
-    }
-    let events = match beats {
-        // Without an explicit timeline the clip may still carry two ordered
-        // events in prose, so this cannot claim there is exactly one — it only
-        // rules out padding.
-        0 | 1 => "One continuous take".to_string(),
-        n => format!("{n} visual events back to back in one take"),
-    };
-    format!(
-        "About {duration_secs}s. {events} at natural speed — no slow-motion padding, \
-no empty holds."
-    )
-}
-
 /// True when text carries spoken lines (quotes / dialogue verbs) rather than
 /// pure camera direction like "hold/pan".
 pub fn text_looks_like_dialogue(text: &str) -> bool {
@@ -2266,28 +2240,6 @@ eleven twelve thirteen fourteen";
             "small",
         );
         assert_eq!(en_need, 5);
-    }
-
-    /// A clip that absorbed a same-camera neighbour has several visual events;
-    /// calling it "one continuous visual event" invites the model to stretch the
-    /// first beat over the whole take.
-    #[test]
-    fn pacing_clause_counts_the_beats_it_must_fit() {
-        let single = i2v_duration_pacing_clause(8, /*has_dialogue*/ false, /*beats*/ 1);
-        assert!(single.contains("About 8s."), "{single}");
-        assert!(single.contains("One continuous take"), "{single}");
-        // No timeline means no claim about how many events the prose carries.
-        assert!(!single.contains("visual event"), "{single}");
-
-        let merged = i2v_duration_pacing_clause(13, /*has_dialogue*/ false, /*beats*/ 3);
-        assert!(merged.contains("3 visual events back to back"), "{merged}");
-        assert!(!merged.contains("One continuous"), "{merged}");
-        assert!(merged.contains("no empty holds"), "{merged}");
-
-        // Dialogue pacing is about speech, not event count.
-        let spoken = i2v_duration_pacing_clause(13, /*has_dialogue*/ true, /*beats*/ 3);
-        assert!(spoken.contains("natural conversational pace"), "{spoken}");
-        assert!(!spoken.contains("visual event"), "{spoken}");
     }
 
     #[test]
