@@ -1,170 +1,87 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Crosshair, FolderOpen, ImageIcon, Images, Music2, PanelLeftClose, Plus, Search, Video, X } from "lucide-react";
+import { Box, Clapperboard, Crosshair, FolderOpen, ImageIcon, Images, MapPinned, Megaphone, Music2, Plus, Search, Sparkles, UserRound, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { FloatingDock, type FloatingDockEntry } from "@oc/components/ui/aceternity/floating-dock";
+import { CanvasChromeButton, CanvasOverlay } from "@oc/components/canvas/canvas-overlay";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
-import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
+import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { ASSET_SPACE_DRAMA_CATEGORIES, ASSET_SPACE_SOURCES, type AssetSpaceDramaCategory, type AssetSpaceItem, type AssetSpaceKind, type AssetSpaceSource } from "@oc/lib/canvas/canvas-asset-space";
+import { useBriefingAssetPreview, useVimaxAssetPreview } from "@oc/lib/canvas/canvas-asset-space-media";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@oc/lib/canvas/resource-storage-status";
-import { cn } from "@oc/lib/utils";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { AudioAsset, ImageAsset, VideoAsset } from "@oc/stores/use-asset-store";
-import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
+import type { CanvasNodeData } from "@oc/types/canvas";
+import { useAssetSpaceDramaCategoryCounts, useAssetSpaceKindCounts, useCanvasAssetSpace, useFilteredAssetSpace } from "@oc/pages/canvas/use-canvas-asset-space";
 
 export const CANVAS_IMAGE_ASSET_DND_TYPE = "application/x-infinite-canvas-image-asset";
 export const CANVAS_MEDIA_ASSET_DND_TYPE = "application/x-infinite-canvas-media-asset";
 
-
 export type CanvasTrayMediaAsset = ImageAsset | VideoAsset | AudioAsset;
 
-type TrayRow =
-    | { kind: "asset"; key: string; asset: CanvasTrayMediaAsset }
-    | { kind: "node"; key: string; node: CanvasNodeData };
-
-type TrayTab = "library" | "canvas";
-
-const TRAY_DEFAULT_HEIGHT = 520;
-const TRAY_MIN_HEIGHT = 400;
-const TRAY_BOTTOM_SAFE_SPACE = 82;
-
-function getMaxTrayHeight() {
-    if (typeof window === "undefined") return 520;
-    return Math.max(360, window.innerHeight - TRAY_BOTTOM_SAFE_SPACE);
-}
-
-function clampTrayHeight(height: number) {
-    const maxHeight = getMaxTrayHeight();
-    const minHeight = Math.min(TRAY_MIN_HEIGHT, maxHeight);
-    return Math.min(Math.max(height, minHeight), maxHeight);
-}
+const GRID_COLUMNS = 2;
+const GRID_ROW_ESTIMATE = 168;
 
 type CanvasAssetTrayProps = {
-    assetImages?: ImageAsset[];
-    mediaAssets?: CanvasTrayMediaAsset[];
-    canvasImages?: CanvasNodeData[];
-    canvasMediaNodes?: CanvasNodeData[];
-    showLibrary?: boolean;
+    nodes: CanvasNodeData[];
     activeNodeId?: string | null;
-    onInsertAssetImage?: (asset: ImageAsset) => void;
-    onInsertMediaAsset: (asset: CanvasTrayMediaAsset) => void;
-    onFocusCanvasImage?: (nodeId: string) => void;
+    openRequestNonce?: number;
+    onInsertAssetSpaceItem: (item: AssetSpaceItem) => void | Promise<void>;
     onFocusCanvasMedia: (nodeId: string) => void;
 };
 
+type SourceFilter = AssetSpaceSource | "all";
+type KindFilter = AssetSpaceKind | "all";
+type DramaCategoryFilter = AssetSpaceDramaCategory | "all";
+
 export function CanvasAssetTray({
-    assetImages,
-    mediaAssets,
-    canvasImages,
-    canvasMediaNodes,
-    showLibrary = true,
+    nodes,
     activeNodeId,
-    onInsertAssetImage,
-    onInsertMediaAsset,
-    onFocusCanvasImage,
+    openRequestNonce = 0,
+    onInsertAssetSpaceItem,
     onFocusCanvasMedia,
 }: CanvasAssetTrayProps) {
     useTranslation();
-    const libraryAssets = mediaAssets ?? assetImages ?? [];
-    const canvasNodes = canvasMediaNodes ?? canvasImages ?? [];
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const reducedMotion = useReducedMotion();
     const rootRef = useRef<HTMLDivElement>(null);
+    const listRef = useRef<HTMLDivElement>(null);
+    const ignoreOutsideUntilRef = useRef(0);
     const [open, setOpen] = useState(false);
-    const [tab, setTab] = useState<TrayTab>(() => (showLibrary ? "library" : "canvas"));
+    const [source, setSource] = useState<SourceFilter>("all");
+    const [kind, setKind] = useState<KindFilter>("all");
+    const [dramaCategory, setDramaCategory] = useState<DramaCategoryFilter>("all");
     const [keyword, setKeyword] = useState("");
-    const [trayHeight, setTrayHeight] = useState(() => clampTrayHeight(TRAY_DEFAULT_HEIGHT));
-    const resizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
-    const query = keyword.trim().toLowerCase();
-    const filteredAssets = useMemo(
-        () => libraryAssets.filter((asset) => !query || [asset.title, ...(asset.tags || [])].join(" ").toLowerCase().includes(query)),
-        [libraryAssets, query],
-    );
-    const filteredNodes = useMemo(
-        () => canvasNodes.filter((node) => !query || canvasMediaTitle(node).toLowerCase().includes(query)),
-        [canvasNodes, query],
-    );
-    // 统一行模型 + 窗口化：素材库过百时不再一次性解码全部原图（行高 48 + 间距 6）。
-    const isLibraryTab = showLibrary && tab === "library";
-    const trayRows = useMemo<TrayRow[]>(
-        () =>
-            isLibraryTab
-                ? filteredAssets.map((asset) => ({ kind: "asset" as const, key: asset.id, asset }))
-                : filteredNodes.map((node) => ({ kind: "node" as const, key: node.id, node })),
-        [filteredAssets, filteredNodes, isLibraryTab],
-    );
-    const trayListRef = useRef<HTMLDivElement>(null);
-    const trayRowVirtualizer = useVirtualizer({
-        count: trayRows.length,
-        getScrollElement: () => trayListRef.current,
-        estimateSize: () => 54,
-        overscan: 8,
+    const [insertingId, setInsertingId] = useState<string | null>(null);
+    const { items, counts, loading, loadingDramaPlates } = useCanvasAssetSpace(nodes, open);
+    const kindCounts = useAssetSpaceKindCounts(items, source, source === "drama" ? dramaCategory : "all");
+    const dramaCategoryCounts = useAssetSpaceDramaCategoryCounts(items);
+    const filtered = useFilteredAssetSpace(items, source, kind, keyword, source === "drama" ? dramaCategory : "all");
+    const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+    const rowCount = Math.ceil(filtered.length / GRID_COLUMNS);
+    const virtualizer = useVirtualizer({
+        count: rowCount,
+        getScrollElement: () => listRef.current,
+        estimateSize: () => GRID_ROW_ESTIMATE,
+        overscan: 6,
     });
     const motionEnabled = !reducedMotion;
-    const safeTrayHeight = clampTrayHeight(trayHeight);
-
-    const insertAsset = (asset: CanvasTrayMediaAsset) => {
-        if (asset.kind === "image" && onInsertAssetImage) {
-            onInsertAssetImage(asset);
-            return;
-        }
-        onInsertMediaAsset(asset);
-    };
-
-    const focusNode = (nodeId: string) => {
-        onFocusCanvasMedia(nodeId);
-        onFocusCanvasImage?.(nodeId);
-    };
-
-    const startAssetDrag = (event: DragEvent<HTMLElement>, asset: CanvasTrayMediaAsset) => {
-        event.dataTransfer.effectAllowed = "copy";
-        event.dataTransfer.setData(CANVAS_MEDIA_ASSET_DND_TYPE, asset.id);
-        if (asset.kind === "image") event.dataTransfer.setData(CANVAS_IMAGE_ASSET_DND_TYPE, asset.id);
-        event.dataTransfer.setData("text/plain", asset.title);
-    };
-
-    const startResize = useCallback(
-        (event: ReactPointerEvent<HTMLButtonElement>) => {
-            event.preventDefault();
-            event.stopPropagation();
-            resizeRef.current = { startY: event.clientY, startHeight: safeTrayHeight };
-
-            const updateHeight = (moveEvent: PointerEvent) => {
-                if (!resizeRef.current) return;
-                setTrayHeight(clampTrayHeight(resizeRef.current.startHeight + resizeRef.current.startY - moveEvent.clientY));
-            };
-            const stopResize = () => {
-                resizeRef.current = null;
-                window.removeEventListener("pointermove", updateHeight);
-                window.removeEventListener("pointerup", stopResize);
-                window.removeEventListener("pointercancel", stopResize);
-            };
-
-            window.addEventListener("pointermove", updateHeight);
-            window.addEventListener("pointerup", stopResize, { once: true });
-            window.addEventListener("pointercancel", stopResize, { once: true });
-        },
-        [safeTrayHeight],
-    );
+    const totalCount = items.length;
 
     useEffect(() => {
-        const syncHeight = () => setTrayHeight((height) => clampTrayHeight(height));
-        window.addEventListener("resize", syncHeight);
-        return () => window.removeEventListener("resize", syncHeight);
-    }, []);
-
-    useEffect(() => {
-        if (!showLibrary && tab === "library") setTab("canvas");
-    }, [showLibrary, tab]);
+        if (!openRequestNonce) return;
+        ignoreOutsideUntilRef.current = Date.now() + 400;
+        setOpen(true);
+    }, [openRequestNonce]);
 
     useEffect(() => {
         if (!open) return;
         const closeTray = (event: PointerEvent) => {
-            const target = event.target instanceof Node ? event.target : null;
-            if (target && rootRef.current?.contains(target)) return;
+            if (Date.now() < ignoreOutsideUntilRef.current) return;
+            const target = event.target instanceof Element ? event.target : null;
+            if (target && (rootRef.current?.contains(target) || target.closest("[data-canvas-no-zoom]"))) return;
             setOpen(false);
         };
         const closeOnEscape = (event: KeyboardEvent) => {
@@ -178,239 +95,308 @@ export function CanvasAssetTray({
         };
     }, [open]);
 
-    const dockItems: FloatingDockEntry[] = [
-        {
-            id: "asset-tray-toggle",
-            label: open ? canvasT("videoCanvas.asset.collapseTray", "收起素材空间") : canvasT("videoCanvas.asset.openTray", "打开素材空间，共 {{count}} 项", { count: (showLibrary ? libraryAssets.length : 0) + canvasNodes.length }),
-            icon: (
-                <span className="relative">
-                    <Images />
-                    <span className="absolute -right-1.5 -top-1.5 min-w-3 rounded-full px-0.5 text-center text-[var(--fs-nano)] font-bold leading-3" style={{ background: theme.accent.primary, color: "#ffffff" }}>
-                        {(showLibrary ? libraryAssets.length : 0) + canvasNodes.length}
-                    </span>
-                </span>
-            ),
-            active: open,
-            onClick: () => setOpen((value) => !value),
-        },
-    ];
+    const handleSelect = async (item: AssetSpaceItem) => {
+        if (item.action.type === "focus") {
+            onFocusCanvasMedia(item.action.nodeId);
+            return;
+        }
+        if (insertingId) return;
+        setInsertingId(item.id);
+        try {
+            await onInsertAssetSpaceItem(item);
+        } finally {
+            setInsertingId(null);
+        }
+    };
 
     return (
-        <div ref={rootRef} data-canvas-no-zoom className="relative z-[var(--z-panel)]" onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
-            <AnimatePresence>
-                {open ? (
-                    <motion.aside
-                        initial={{ opacity: 0, y: 20, scale: 0.92, rotateX: 5 }}
-                        animate={{ opacity: 1, y: 0, scale: 1, rotateX: 0 }}
-                        exit={{ opacity: 0, y: 14, scale: 0.95, rotateX: 3 }}
+        <AnimatePresence>
+            {open ? (
+                <div
+                    ref={rootRef}
+                    data-canvas-no-zoom
+                    className="pointer-events-none absolute inset-0 z-[var(--z-panel)]"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onWheel={(event) => event.stopPropagation()}
+                >
+                    <motion.div
+                        initial={motionEnabled ? { opacity: 0, x: -18 } : { opacity: 1 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={motionEnabled ? { opacity: 0, x: -12 } : { opacity: 0 }}
                         transition={aceternityMotion.spring.panel}
-                        className="aceternity-floating-panel absolute bottom-[var(--canvas-dock-popover-offset)] left-0 flex w-[min(88vw,320px)] origin-bottom-left flex-col overflow-hidden rounded-[var(--r-2xl)] border p-2.5 backdrop-blur-2xl"
-                        style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text, height: safeTrayHeight, minHeight: Math.min(TRAY_MIN_HEIGHT, getMaxTrayHeight()), maxHeight: "calc(100vh - 6rem)", boxShadow: `0 32px 100px ${theme.spatial.shadow}` }}
+                        className="pointer-events-auto absolute bottom-[calc(var(--canvas-inset-y)+72px)] left-[var(--canvas-inset-x)] top-[var(--canvas-topbar-offset)] w-[min(92vw,372px)] origin-top-left"
                     >
-                        <div className="absolute inset-x-10 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${theme.spatial.glowStrong}, transparent)` }} />
-                        <button type="button" className="absolute left-1/2 top-1 z-10 flex h-5 w-28 -translate-x-1/2 cursor-ns-resize items-center justify-center rounded-full opacity-35 transition-opacity hover:opacity-75" onPointerDown={startResize} aria-label={canvasT("videoCanvas.asset.resizeTray", "从顶部调整素材托盘高度")} title={canvasT("videoCanvas.asset.dragResize", "拖动调整高度")}>
-                            <span className="h-1 w-12 rounded-full bg-current" />
-                        </button>
-
-                        <div className="flex items-center justify-between gap-2 px-1 pb-2.5 pt-1.5">
-                            <div className="flex min-w-0 items-center gap-2">
-                                <span className="grid size-8 shrink-0 place-items-center rounded-[var(--dock-item-radius)] border" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.accent.primary }}>
-                                    <FolderOpen className="size-3.5" />
-                                </span>
-                                <span className="min-w-0">
-                                    <span className="block text-xs font-semibold">{canvasT("videoCanvas.asset.trayTitle", "素材空间")}</span>
-                                    <span className="mt-0.5 block truncate text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>
-                                        {canvasT("videoCanvas.asset.trayHint", "拖入画布，或定位已使用的媒体")}
+                        <CanvasOverlay theme={theme} className="flex h-full min-h-0 flex-col overflow-hidden p-3" role="dialog" aria-label={canvasT("videoCanvas.asset.trayTitle", "素材空间")}>
+                            <div className="flex items-start justify-between gap-2 pb-3">
+                                <div className="flex min-w-0 items-center gap-2.5">
+                                    <span className="grid size-9 shrink-0 place-items-center rounded-[10px] border" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.accent.primary }}>
+                                        <FolderOpen className="size-4" />
                                     </span>
+                                    <span className="min-w-0">
+                                        <span className="block text-[13px] font-semibold tracking-tight">{canvasT("videoCanvas.asset.trayTitle", "素材空间")}</span>
+                                        <span className="mt-0.5 block truncate text-[11px] leading-4" style={{ color: theme.node.muted }}>
+                                            {canvasT("videoCanvas.asset.trayHint", "当前画布、短剧、视频生成与资讯播报的媒体")}
+                                        </span>
+                                    </span>
+                                </div>
+                                <CanvasChromeButton className="is-icon shrink-0" onClick={() => setOpen(false)} aria-label={canvasT("videoCanvas.asset.collapseTray", "收起素材空间")}>
+                                    <X className="size-3.5" />
+                                </CanvasChromeButton>
+                            </div>
+
+                            <div className="hover-scrollbar flex gap-1 overflow-x-auto pb-1" role="tablist" aria-label={canvasT("videoCanvas.asset.sourceAria", "按来源筛选")}>
+                                <FilterChip pressed={source === "all"} onClick={() => setSource("all")} icon={<Images className="size-3" />} label={canvasT("videoCanvas.asset.sourceAll", "全部")} count={totalCount} />
+                                {ASSET_SPACE_SOURCES.map((value) => (
+                                    <FilterChip
+                                        key={value}
+                                        pressed={source === value}
+                                        onClick={() => setSource(value)}
+                                        icon={sourceIcon(value)}
+                                        label={sourceLabel(value)}
+                                        count={counts[value]}
+                                    />
+                                ))}
+                            </div>
+
+                            {source === "drama" ? (
+                                <div className="mt-2 flex gap-1 overflow-x-auto" role="group" aria-label={canvasT("videoCanvas.asset.dramaCategoryAria", "短剧资产分类")}>
+                                    <FilterChip pressed={dramaCategory === "all"} onClick={() => setDramaCategory("all")} icon={<Images className="size-3" />} label={canvasT("videoCanvas.asset.kindAll", "全部")} count={counts.drama} />
+                                    {ASSET_SPACE_DRAMA_CATEGORIES.map((value) => (
+                                        <FilterChip
+                                            key={value}
+                                            pressed={dramaCategory === value}
+                                            onClick={() => setDramaCategory(value)}
+                                            icon={dramaCategoryIcon(value)}
+                                            label={dramaCategoryLabel(value)}
+                                            count={dramaCategoryCounts[value]}
+                                        />
+                                    ))}
+                                </div>
+                            ) : null}
+
+                            <div className="mt-2 flex gap-1" role="group" aria-label={canvasT("videoCanvas.asset.kindAria", "按类型筛选")}>
+                                {(["all", "image", "video", "audio"] as const).map((value) => (
+                                    <FilterChip
+                                        key={value}
+                                        pressed={kind === value}
+                                        onClick={() => setKind(value)}
+                                        icon={kindIcon(value)}
+                                        label={kindLabel(value)}
+                                        count={kindCounts[value]}
+                                    />
+                                ))}
+                            </div>
+
+                            <label className="mt-2 flex h-8 items-center gap-1.5 rounded-[10px] border px-2.5 focus-within:ring-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
+                                <Search className="size-3.5 shrink-0" style={{ color: theme.node.muted }} />
+                                <input type="search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={canvasT("videoCanvas.asset.searchPlaceholder", "搜索图片 / 视频 / 音频…")} className="min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:opacity-55" aria-label={canvasT("videoCanvas.asset.searchAria", "搜索素材")} />
+                                {keyword ? (
+                                    <button type="button" className="grid size-6 shrink-0 place-items-center rounded-full opacity-55 hover:opacity-100" onClick={() => setKeyword("")} aria-label={canvasT("videoCanvas.asset.clearSearch", "清空搜索")}>
+                                        <X className="size-3" />
+                                    </button>
+                                ) : null}
+                            </label>
+
+                            <div ref={listRef} className="hover-scrollbar mt-2.5 min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+                                {filtered.length ? (
+                                    <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+                                        {virtualizer.getVirtualItems().map((virtualRow) => {
+                                            const start = virtualRow.index * GRID_COLUMNS;
+                                            const rowItems = filtered.slice(start, start + GRID_COLUMNS);
+                                            return (
+                                                <div key={virtualRow.key} className="absolute inset-x-0 grid grid-cols-2 gap-2" style={{ top: virtualRow.start, height: virtualRow.size }}>
+                                                    {rowItems.map((item) => (
+                                                        <AssetSpaceCard
+                                                            key={item.id}
+                                                            item={item}
+                                                            node={item.preview.type === "node" ? nodeById.get(item.preview.nodeId) : undefined}
+                                                            active={item.action.type === "focus" && item.action.nodeId === activeNodeId}
+                                                            inserting={insertingId === item.id}
+                                                            onSelect={() => void handleSelect(item)}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    <TrayEmpty loading={loading || loadingDramaPlates} source={source} category={dramaCategory} query={keyword} theme={theme} />
+                                )}
+                            </div>
+
+                            <div className="flex items-center justify-between gap-2 px-0.5 pt-2.5 text-[11px]" style={{ color: theme.node.muted }}>
+                                <span className="min-w-0 truncate">
+                                    {loading || loadingDramaPlates
+                                        ? canvasT("videoCanvas.asset.loadingDramaPlates", "正在同步人物、环境与道具")
+                                        : source === "canvas"
+                                            ? canvasT("videoCanvas.asset.hintLocate", "点击回到节点")
+                                            : canvasT("videoCanvas.asset.hintInsertRemote", "画布素材定位，其余点击插入")}
+                                </span>
+                                <span className="shrink-0 rounded-full border px-2 py-0.5 tabular-nums" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
+                                    {canvasT("videoCanvas.asset.itemCount", "{{count}} 项", { count: filtered.length })}
                                 </span>
                             </div>
-                            <motion.button type="button" whileHover={motionEnabled ? { rotate: -5, scale: 1.05 } : undefined} whileTap={motionEnabled ? { scale: 0.92 } : undefined} className="grid size-7 shrink-0 place-items-center rounded-full border outline-none focus-visible:ring-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.node.muted }} onClick={() => setOpen(false)} aria-label={canvasT("videoCanvas.asset.collapseTray", "收起素材空间")}>
-                                <PanelLeftClose className="size-3" />
-                            </motion.button>
-                        </div>
-
-                        <div className={cn("relative grid gap-1 rounded-[var(--r-lg)] border p-0.5", showLibrary ? "grid-cols-2" : "grid-cols-1")} style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
-                            {showLibrary ? <TrayTabButton active={tab === "library"} label={canvasT("videoCanvas.asset.tabLibrary", "素材库 {{count}}", { count: libraryAssets.length })} theme={theme} onClick={() => setTab("library")} /> : null}
-                            <TrayTabButton active={tab === "canvas"} label={canvasT("videoCanvas.asset.tabCanvas", "当前画布 {{count}}", { count: canvasNodes.length })} theme={theme} onClick={() => setTab("canvas")} />
-                        </div>
-
-                        <label className="mt-2 flex h-8 items-center gap-1.5 rounded-[11px] border px-2.5 focus-within:ring-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
-                            <Search className="size-3.5 shrink-0" style={{ color: theme.node.muted }} />
-                            <input type="search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={canvasT("videoCanvas.asset.searchPlaceholder", "搜索图片 / 视频 / 音频…")} className="min-w-0 flex-1 bg-transparent text-[var(--fs-tiny)] outline-none placeholder:opacity-55" aria-label={canvasT("videoCanvas.asset.searchAria", "搜索素材")} />
-                            {keyword ? (
-                                <button type="button" className="grid size-6 shrink-0 place-items-center rounded-full opacity-55 hover:opacity-100" onClick={() => setKeyword("")} aria-label={canvasT("videoCanvas.asset.clearSearch", "清空搜索")}>
-                                    <X className="size-3" />
-                                </button>
-                            ) : null}
-                        </label>
-
-                        <div ref={trayListRef} className="hover-scrollbar mt-2.5 min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-                            {trayRows.length ? (
-                                <div className="relative w-full" style={{ height: trayRowVirtualizer.getTotalSize() }}>
-                                    {trayRowVirtualizer.getVirtualItems().map((virtualItem) => {
-                                        const row = trayRows[virtualItem.index];
-                                        if (!row) return null;
-                                        return (
-                                            <div key={row.key} className="absolute inset-x-0" style={{ top: virtualItem.start }}>
-                                                {row.kind === "asset" ? (
-                                                    <AssetTrayRow
-                                                        title={row.asset.title}
-                                                        kind={row.asset.kind}
-                                                        previewUrl={mediaAssetPreviewUrl(row.asset)}
-                                                        storageKey={mediaAssetStorageKey(row.asset)}
-                                                        draggable
-                                                        motionEnabled={motionEnabled}
-                                                        onDragStart={(event) => startAssetDrag(event, row.asset)}
-                                                        onClick={() => insertAsset(row.asset)}
-                                                        icon={<Plus className="size-3.5" />}
-                                                    />
-                                                ) : (
-                                                    <AssetTrayRow
-                                                        title={canvasMediaTitle(row.node)}
-                                                        kind={row.node.type === CanvasNodeType.Video ? "video" : row.node.type === CanvasNodeType.Audio ? "audio" : "image"}
-                                                        previewUrl={row.node.metadata?.content || ""}
-                                                        storageKey={row.node.metadata?.storageKey}
-                                                        active={activeNodeId === row.node.id}
-                                                        motionEnabled={motionEnabled}
-                                                        onClick={() => focusNode(row.node.id)}
-                                                        icon={<Crosshair className="size-3.5" />}
-                                                    />
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            ) : (
-                                <TrayEmpty text={isLibraryTab ? canvasT("videoCanvas.asset.noMatch", "没有匹配的素材") : canvasT("videoCanvas.asset.noCanvasMatch", "当前画布没有匹配媒体")} theme={theme} />
-                            )}
-                        </div>
-
-                        <div className="flex items-center justify-between gap-2 px-1 pt-2.5 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>
-                            <span className="min-w-0 truncate">{showLibrary && tab === "library" ? canvasT("videoCanvas.asset.hintInsert", "点击插入 · 拖拽定位") : canvasT("videoCanvas.asset.hintLocate", "点击回到节点")}</span>
-                            <span className="shrink-0 rounded-full border px-2 py-0.5 tabular-nums" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
-                                {canvasT("videoCanvas.asset.itemCount", "{{count}} 项", { count: trayRows.length })}
-                            </span>
-                        </div>
-                    </motion.aside>
-                ) : null}
-            </AnimatePresence>
-
-            <FloatingDock items={dockItems} className="canvas-floating-dock" style={canvasDockStyle(theme)} ariaLabel={canvasT("videoCanvas.asset.trayTitle", "素材空间")} />
-        </div>
+                        </CanvasOverlay>
+                    </motion.div>
+                </div>
+            ) : null}
+        </AnimatePresence>
     );
 }
 
-type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
-
-function TrayTabButton({ active, label, theme, onClick }: { active: boolean; label: string; theme: CanvasTheme; onClick: () => void }) {
+function FilterChip({ pressed, onClick, icon, label, count }: { pressed: boolean; onClick: () => void; icon: ReactNode; label: string; count: number }) {
     return (
-        <button type="button" className={cn("relative z-10 h-7 rounded-[var(--dock-item-radius)] px-2 text-[var(--fs-tiny)] font-semibold outline-none transition-colors focus-visible:ring-2", active ? "" : "opacity-55 hover:opacity-90")} style={{ color: active ? theme.node.text : theme.node.muted }} onClick={onClick}>
-            {active ? <motion.span layoutId="canvas-asset-tray-active-tab" className="absolute inset-0 -z-10 rounded-[var(--dock-item-radius)] border" style={{ background: theme.node.panel, borderColor: theme.toolbar.border, boxShadow: `0 6px 16px ${theme.spatial.shadow}` }} transition={aceternityMotion.spring.dock} /> : null}
-            {label}
+        <CanvasChromeButton
+            className="h-7 shrink-0 gap-1 px-2 text-[11px] font-medium"
+            aria-pressed={pressed}
+            onClick={onClick}
+        >
+            {icon}
+            <span>{label}</span>
+            <span className="tabular-nums opacity-55">{count}</span>
+        </CanvasChromeButton>
+    );
+}
+
+function AssetSpaceCard({
+    item,
+    node,
+    active,
+    inserting,
+    onSelect,
+}: {
+    item: AssetSpaceItem;
+    node?: CanvasNodeData;
+    active: boolean;
+    inserting: boolean;
+    onSelect: () => void;
+}) {
+    useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const vimax = useVimaxAssetPreview(item.preview.type === "vimax" ? item.preview.sessionId : undefined, item.preview.type === "vimax" ? item.preview.path : undefined);
+    const briefing = useBriefingAssetPreview(item.preview.type === "briefing" ? item.preview.sessionId : undefined, item.preview.type === "briefing" ? item.preview.path : undefined);
+    const previewUrl = item.kind === "audio"
+        ? ""
+        : item.preview.type === "http"
+            ? item.preview.url
+            : item.preview.type === "node" && node
+                ? canvasNodeDisplayUrl(node)
+                : vimax.url || briefing || "";
+    const [previewFailed, setPreviewFailed] = useState(false);
+    useEffect(() => {
+        setPreviewFailed(false);
+    }, [previewUrl]);
+    const KindIcon = item.kind === "video" ? Video : item.kind === "audio" ? Music2 : ImageIcon;
+    const showPreview = Boolean(previewUrl) && !previewFailed && item.kind !== "audio";
+    const locate = item.action.type === "focus";
+
+    return (
+        <button
+            type="button"
+            disabled={inserting}
+            className="group flex h-[156px] flex-col overflow-hidden rounded-[12px] border text-left outline-none transition-opacity focus-visible:ring-2 disabled:opacity-60"
+            style={{ background: active ? theme.accent.primarySoft : theme.spatial.surface, borderColor: active ? theme.spatial.glowStrong : theme.toolbar.border, color: theme.node.text }}
+            onClick={onSelect}
+            title={locate ? canvasT("videoCanvas.asset.clickLocate", "点击定位") : canvasT("videoCanvas.asset.clickInsert", "点击插入")}
+        >
+            <span className="relative block aspect-[16/10] w-full overflow-hidden" style={{ background: theme.node.fill }}>
+                {showPreview && item.kind === "video" ? (
+                    <video key={previewUrl} src={previewUrl} muted playsInline preload="metadata" className="size-full object-cover" draggable={false} onError={() => setPreviewFailed(true)} />
+                ) : showPreview && item.kind === "image" ? (
+                    <img key={previewUrl} src={previewUrl} alt="" width={168} height={105} loading="lazy" decoding="async" className="size-full object-cover" draggable={false} onError={() => setPreviewFailed(true)} />
+                ) : (
+                    <span className="grid size-full place-items-center opacity-45">
+                        <KindIcon className="size-6" />
+                    </span>
+                )}
+                <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium backdrop-blur-md" style={{ background: "color-mix(in srgb, black 42%, transparent)", color: "#fff" }}>
+                    <KindIcon className="size-2.5" />
+                    {item.category ? dramaCategoryLabel(item.category) : kindLabel(item.kind)}
+                </span>
+                <span className="absolute bottom-1.5 right-1.5 grid size-6 place-items-center rounded-full opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "color-mix(in srgb, black 48%, transparent)", color: "#fff" }}>
+                    {locate ? <Crosshair className="size-3" /> : <Plus className="size-3" />}
+                </span>
+            </span>
+            <span className="min-w-0 flex-1 px-2 py-1.5">
+                <span className="block truncate text-[12px] font-semibold leading-4">{item.title}</span>
+                <span className="mt-0.5 block truncate text-[10px] leading-4 opacity-50">
+                    {item.subtitle || sourceLabel(item.source)}
+                    {inserting ? ` · ${canvasT("videoCanvas.asset.inserting", "加入中")}` : ""}
+                </span>
+            </span>
         </button>
     );
 }
 
-function AssetTrayRow({
-    title,
-    kind,
-    previewUrl,
-    storageKey,
-    icon,
-    active = false,
-    draggable = false,
-    motionEnabled,
-    onClick,
-    onDragStart,
-}: {
-    title: string;
-    kind: "image" | "video" | "audio";
-    previewUrl: string;
-    storageKey?: string;
-    icon: ReactNode;
-    active?: boolean;
-    draggable?: boolean;
-    motionEnabled: boolean;
-    onClick: () => void;
-    onDragStart?: (event: DragEvent<HTMLElement>) => void;
-}) {
-    useTranslation();
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const location = resourceStorageLocation(storageKey);
-    const KindIcon = kind === "video" ? Video : kind === "audio" ? Music2 : ImageIcon;
-    const [previewFailed, setPreviewFailed] = useState(false);
-    const showPreview = Boolean(previewUrl) && !previewFailed && kind !== "audio";
+function TrayEmpty({ loading, source, category, query, theme }: { loading: boolean; source: SourceFilter; category: DramaCategoryFilter; query: string; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    const text = loading
+        ? source === "drama"
+            ? canvasT("videoCanvas.asset.loadingDramaPlates", "正在同步人物、环境与道具")
+            : canvasT("videoCanvas.asset.loadingRemote", "正在同步短剧、成片与播报")
+        : query.trim()
+            ? canvasT("videoCanvas.asset.noMatch", "没有匹配的素材")
+            : emptyCopy(source, category);
     return (
-        <motion.button
-            type="button"
-            draggable={draggable}
-            whileHover={motionEnabled ? { x: 2, scale: 1.006 } : undefined}
-            whileTap={motionEnabled ? { scale: 0.985 } : undefined}
-            transition={aceternityMotion.spring.dock}
-            className="group grid h-12 w-full min-w-0 grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-1.5 overflow-hidden rounded-[var(--r-lg)] border px-1.5 text-left outline-none focus-visible:ring-2"
-            style={{ background: active ? theme.accent.primarySoft : theme.spatial.surface, borderColor: active ? theme.spatial.glowStrong : theme.toolbar.border, color: active ? theme.accent.primary : theme.node.text }}
-            onClick={onClick}
-            onDragStartCapture={onDragStart}
-            title={resourceStorageTitle(storageKey)}
-        >
-            <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-[var(--dock-item-radius)] border" style={{ background: theme.node.fill, borderColor: theme.toolbar.border }}>
-                {showPreview && kind === "video" ? (
-                    <video src={previewUrl} muted playsInline preload="metadata" className="size-full object-cover" draggable={false} onError={() => setPreviewFailed(true)} />
-                ) : showPreview && kind === "image" ? (
-                    <img src={previewUrl} alt="" width={36} height={36} loading="lazy" decoding="async" className="size-full object-cover" draggable={false} onError={() => setPreviewFailed(true)} />
-                ) : (
-                    <KindIcon className="size-3.5 opacity-55" />
-                )}
-            </span>
-            <span className="min-w-0 overflow-hidden">
-                <span className="block truncate text-[var(--fs-tiny)] font-semibold">{title}</span>
-                <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[var(--fs-micro)] opacity-45">
-                    <span className="shrink-0">{kind === "video" ? canvasT("videoCanvas.asset.kindVideo", "视频") : kind === "audio" ? canvasT("videoCanvas.asset.kindAudio", "音频") : canvasT("videoCanvas.asset.kindImage", "图片")}</span>
-                    <span className="shrink-0">·</span>
-                    <span className="truncate">{active ? canvasT("videoCanvas.asset.selected", "当前已选择") : draggable ? canvasT("videoCanvas.asset.clickInsert", "点击插入") : canvasT("videoCanvas.asset.clickLocate", "点击定位")}</span>
-                    {location === "oss" || location === "local" ? (
-                        <span
-                            className={cn(
-                                "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[var(--fs-micro)] font-semibold opacity-100",
-                                location === "oss" ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-amber-500/12 text-amber-700 dark:text-amber-300",
-                            )}
-                        >
-                            {resourceStorageLabel(storageKey)}
-                        </span>
-                    ) : null}
-                </span>
-            </span>
-            <span className="grid size-6 shrink-0 place-items-center rounded-full border opacity-45 transition-opacity group-hover:opacity-90" style={{ background: theme.node.panel, borderColor: theme.toolbar.border }}>
-                {icon}
-            </span>
-        </motion.button>
-    );
-}
-
-function TrayEmpty({ text, theme }: { text: string; theme: CanvasTheme }) {
-    return (
-        <div className="grid h-full min-h-[200px] place-items-center rounded-[var(--dock-radius)] border border-dashed text-center" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.node.muted }}>
+        <div className="grid h-full min-h-[220px] place-items-center rounded-[12px] border border-dashed px-6 text-center" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.node.muted }}>
             <span>
-                <Images className="mx-auto size-5 opacity-35" />
-                <span className="mt-2 block text-xs opacity-55">{text}</span>
+                <Images className="mx-auto size-6 opacity-30" />
+                <span className="mt-2.5 block text-[12px] leading-5 opacity-70">{text}</span>
             </span>
         </div>
     );
 }
 
-function mediaAssetPreviewUrl(asset: CanvasTrayMediaAsset) {
-    if (asset.kind === "image") return asset.coverUrl || asset.data.dataUrl || "";
-    if (asset.kind === "video") return asset.coverUrl || asset.data.url || "";
-    return asset.coverUrl || "";
+function sourceLabel(source: AssetSpaceSource) {
+    if (source === "canvas") return canvasT("videoCanvas.asset.sourceCanvas", "当前画布");
+    if (source === "drama") return canvasT("videoCanvas.asset.sourceDrama", "短剧");
+    if (source === "generate") return canvasT("videoCanvas.asset.sourceGenerate", "视频生成");
+    return canvasT("videoCanvas.asset.sourceBriefing", "资讯播报");
 }
 
-function mediaAssetStorageKey(asset: CanvasTrayMediaAsset) {
-    return asset.data.storageKey;
+function sourceIcon(source: AssetSpaceSource) {
+    if (source === "canvas") return <FolderOpen className="size-3" />;
+    if (source === "drama") return <Clapperboard className="size-3" />;
+    if (source === "generate") return <Sparkles className="size-3" />;
+    return <Megaphone className="size-3" />;
 }
 
-function canvasMediaTitle(node: CanvasNodeData) {
-    if (node.type === CanvasNodeType.Image) return node.title || node.metadata?.prompt || canvasT("videoCanvas.asset.imageNode", "图片节点");
-    if (node.type === CanvasNodeType.Video) return node.title || node.metadata?.prompt || canvasT("videoCanvas.asset.videoNode", "视频节点");
-    if (node.type === CanvasNodeType.Audio) return node.title || canvasT("videoCanvas.asset.audioNode", "音频节点");
-    return node.title;
+function kindLabel(kind: KindFilter) {
+    if (kind === "video") return canvasT("videoCanvas.asset.kindVideo", "视频");
+    if (kind === "audio") return canvasT("videoCanvas.asset.kindAudio", "音频");
+    if (kind === "image") return canvasT("videoCanvas.asset.kindImage", "图片");
+    return canvasT("videoCanvas.asset.kindAll", "全部");
+}
+
+function kindIcon(kind: KindFilter) {
+    if (kind === "video") return <Video className="size-3" />;
+    if (kind === "audio") return <Music2 className="size-3" />;
+    if (kind === "image") return <ImageIcon className="size-3" />;
+    return <Images className="size-3" />;
+}
+
+function dramaCategoryLabel(category: AssetSpaceDramaCategory) {
+    if (category === "character") return canvasT("videoCanvas.asset.categoryCharacter", "人物");
+    if (category === "environment") return canvasT("videoCanvas.asset.categoryEnvironment", "环境");
+    if (category === "prop") return canvasT("videoCanvas.asset.categoryProp", "道具");
+    return canvasT("videoCanvas.asset.categoryFilm", "成片");
+}
+
+function dramaCategoryIcon(category: AssetSpaceDramaCategory) {
+    if (category === "character") return <UserRound className="size-3" />;
+    if (category === "environment") return <MapPinned className="size-3" />;
+    if (category === "prop") return <Box className="size-3" />;
+    return <Clapperboard className="size-3" />;
+}
+
+function emptyCopy(source: SourceFilter, category: DramaCategoryFilter) {
+    if (source === "canvas") return canvasT("videoCanvas.asset.emptyCanvas", "这张画布还没有图片、视频或音频");
+    if (source === "drama" && category === "character") return canvasT("videoCanvas.asset.emptyDramaCharacter", "还没有人物图片");
+    if (source === "drama" && category === "environment") return canvasT("videoCanvas.asset.emptyDramaEnvironment", "还没有环境图片");
+    if (source === "drama" && category === "prop") return canvasT("videoCanvas.asset.emptyDramaProp", "还没有道具图片");
+    if (source === "drama" && category === "film") return canvasT("videoCanvas.asset.emptyDramaFilm", "还没有封面或成片");
+    if (source === "drama") return canvasT("videoCanvas.asset.emptyDrama", "还没有短剧素材");
+    if (source === "generate") return canvasT("videoCanvas.asset.emptyGenerate", "还没有独立成片");
+    if (source === "briefing") return canvasT("videoCanvas.asset.emptyBriefing", "还没有播报成片");
+    return canvasT("videoCanvas.asset.emptyAll", "还没有可展示的素材");
 }

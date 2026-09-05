@@ -75,11 +75,10 @@ export const mainToolbarTools: ToolDefinition[] = [
         id: "tool-assets",
         toolbar: "main",
         category: "resource",
-        label: () => canvasT("videoCanvas.toolbar.assets", "素材库"),
+        label: () => canvasT("videoCanvas.toolbar.assets", "素材空间"),
         icon: <FolderOpen />,
         defaultVisible: true,
         defaultOrder: 60,
-        applicable: (ctx) => !ctx.isProjectLinked,
         run: (ctx) => ctx.handlers.onOpenMyAssets(),
     },
     {

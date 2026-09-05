@@ -6,8 +6,8 @@ import { LoaderCircle, ScanFace, SquareDashedMousePointer, X } from "lucide-reac
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 
 import { CanvasNodeEmotionPanel, type CanvasEmotionCharacter, type CanvasImageEmotionPayload } from "@oc/components/canvas/canvas-node-emotion-panel";
-import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { buildEmotionImageArtifacts, buildEmotionPrompt, neutralEmotionPreset, type CanvasEmotionPreset, type CanvasFaceBox } from "@oc/lib/canvas/canvas-emotion";
 import { detectCanvasFaces } from "@oc/lib/canvas/canvas-face-detection";
@@ -358,15 +358,14 @@ function SelectionToolbar({
     if (status === "editing" || status === "generating") return null;
     const label = status === "detecting" ? canvasT("videoCanvas.emotion.statusDetecting", "正在识别人脸") : status === "manual" ? canvasT("videoCanvas.emotion.statusManual", "拖动鼠标框选需要调节的人脸") : status === "selecting" ? canvasT("videoCanvas.emotion.statusSelecting", "识别到 {{count}} 张人脸，请选择人物", { count: faceCount }) : error || canvasT("videoCanvas.emotion.statusFallback", "请选择人物");
     return (
-        <SpotlightSurface
+        <motion.div
             ref={toolbarRef}
             data-canvas-no-zoom
-            spotlightColor={theme.toolbar.itemHover}
-            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -5, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
+            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: 0 }}
             transition={reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel}
-            className="aceternity-floating-panel absolute z-[var(--z-modal-overlay)] flex h-12 w-[420px] max-w-[calc(100%_-_24px)] items-center rounded-[var(--dock-radius-tight)] border px-2 backdrop-blur-2xl"
-            style={{ left: 12, top: 76, background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: `0 22px 60px ${theme.spatial.shadow}` }}
+            className="canvas-overlay absolute z-[var(--z-modal-overlay)] flex h-12 w-[420px] max-w-[calc(100%_-_24px)] items-center px-2"
+            style={{ ...canvasOverlayStyle(theme), left: 12, top: 76 }}
             onPointerDown={(event) => event.stopPropagation()}
         >
             <div className="flex size-full items-center">
@@ -389,7 +388,7 @@ function SelectionToolbar({
                     </button>
                 ) : null}
             </div>
-        </SpotlightSurface>
+        </motion.div>
     );
 }
 

@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import { resolveCanvasStylePreset } from "@oc/components/canvas/canvas-style-picker-modal";
+import { CanvasStyleCoverSwatch } from "@oc/components/canvas/canvas-style-cover";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { getProject, getProjectUnit, type ProjectDetail, type ProjectUnit } from "@oc/services/api/projects";
 import { VIDEO_CANVAS_LIBRARY_PATH } from "@renderer/pages/videoCanvas/routes";
@@ -148,7 +149,7 @@ export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocate
                     title={style ? canvasT("videoCanvas.sidebar.locateStyle", "定位画布中的项目画风节点") : canvasT("videoCanvas.sidebar.styleUnset", "项目尚未设置画风")}
                 >
                     {style ? (
-                        <img src={style.imageUrl} alt="" width={48} height={32} className="h-8 w-12 shrink-0 rounded object-cover" />
+                        <CanvasStyleCoverSwatch cover={style.cover} className="h-8 w-12 shrink-0 rounded" />
                     ) : (
                         <span className="grid h-8 w-12 shrink-0 place-items-center rounded border border-dashed border-border text-foreground/30">
                             <Palette className="size-3.5" />

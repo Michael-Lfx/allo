@@ -1,8 +1,11 @@
 import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, ConfigProvider, Select, Switch } from '@arco-design/web-react';
-import { Down, SettingTwo } from '@icon-park/react';
+import { SettingTwo } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
+import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
+import { canvasOverlayStyle } from '@oc/lib/canvas/canvas-overlay';
+import { useQuietChromeTheme } from '../quietChrome';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { fetchMediaModels, useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatios';
@@ -177,6 +180,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   onBriefingChange,
 }) => {
   const { t } = useTranslation();
+  const theme = useQuietChromeTheme();
   const isAction = mode === 'action' || workflow === 'action2video';
   const isGenerate = mode === 'generate';
   const isBriefing = mode === 'briefing';
@@ -485,8 +489,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
         <ConfigProvider zIndex={SELECT_POPUP_Z_INDEX}>
           <div
             ref={panelRef}
-            className={styles.preferencesFloating}
+            className={`canvas-overlay ${styles.preferencesFloating}`}
             style={{
+              ...canvasOverlayStyle(theme),
               left: panelPos.left,
               width: panelPos.width,
               maxHeight: panelPos.maxHeight,
@@ -500,13 +505,8 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             })}
           >
             <div className={styles.preferencesPanel}>
+              {videoOnlyMode || isBriefing ? null : (
               <div className={styles.preferencesHeader}>
-                <div className={styles.preferencesTitle}>
-                  {t('videoGeneration.create.preferences.title', {
-                    defaultValue: '生成偏好',
-                  })}
-                </div>
-                {videoOnlyMode || isBriefing ? null : (
                 <label className={styles.autoToggle}>
                   <span>{automaticLabel}</span>
                   <Switch
@@ -516,8 +516,8 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     onChange={(automatic) => onChange({ ...value, automatic })}
                   />
                 </label>
-                )}
               </div>
+              )}
 
             {isBriefing && briefing && onBriefingChange ? (
               <BriefingPreferenceFields
@@ -927,30 +927,19 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
   return (
     <div className={styles.prefsAnchor} ref={anchorRef}>
-      <button
-        type='button'
-        className={`${styles.toolbarButton} ${styles.prefsButton} ${
-          open ? styles.toolbarButtonActive : ''
-        }`}
+      <CanvasChromeButton
         disabled={disabled}
-        aria-expanded={open}
+        expanded={open}
         aria-haspopup='dialog'
-        onClick={() => onOpenChange(!open)}
+        title={summaryTitle}
         aria-label={t('videoGeneration.create.customize', {
           defaultValue: '自定义生成偏好',
         })}
+        onClick={() => onOpenChange(!open)}
       >
-        <SettingTwo theme='outline' size={15} />
-        <span className={styles.toolbarLabel}>
-          {t('videoGeneration.create.preferences.customize', {
-            defaultValue: '自定义',
-          })}
-        </span>
-        <span className={styles.toolbarSummary} title={summaryTitle}>
-          {summary}
-        </span>
-        <Down theme='outline' size={12} />
-      </button>
+        <SettingTwo theme='outline' size={13} />
+        <span className={styles.toolbarSummary}>{summary}</span>
+      </CanvasChromeButton>
       {panel}
     </div>
   );

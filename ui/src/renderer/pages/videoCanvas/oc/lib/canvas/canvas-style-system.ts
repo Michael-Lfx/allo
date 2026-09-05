@@ -1,5 +1,5 @@
 export type ProjectStyleWorldId = "xianxia" | "urban" | "historical" | "suspense" | "science-fiction" | "pastoral" | "cyberpunk" | "republic" | "campus" | "court" | "wasteland" | "space";
-export type ProjectStyleToneId = "epic" | "dark" | "light-comedy" | "romantic" | "healing" | "melancholic" | "glamour" | "documentary";
+export type ProjectStyleToneId = "epic" | "dark" | "light-comedy" | "romantic" | "healing" | "melancholic" | "glamour" | "documentary" | "monochrome" | "oneiric";
 export type ProjectStyleMediumId = "live-action" | "3d-anime" | "3d-cartoon" | "2d-guoman" | "ink" | "stop-motion" | "comic" | "storybook";
 export type ProjectStyleCharacterId = "realistic" | "semi-real" | "anime" | "stylized";
 
@@ -10,6 +10,12 @@ export type ProjectStyleSelection = {
     character: ProjectStyleCharacterId;
 };
 
+export type CanvasStyleCover = {
+    from: string;
+    via: string;
+    to: string;
+};
+
 export type CanvasStylePreset = {
     id: string;
     title: string;
@@ -17,7 +23,7 @@ export type CanvasStylePreset = {
     description: string;
     tags: string[];
     prompt: string;
-    imageUrl: string;
+    cover: CanvasStyleCover;
     selection?: ProjectStyleSelection;
 };
 
@@ -241,6 +247,24 @@ export const projectStyleTones: Array<StyleOption<ProjectStyleToneId>> = [
         motion: "跟拍、等待、轻微手持，避免广告式编排走位",
         forbidden: "棚拍光、摆拍笑容、过饱和旅拍滤镜和把纪实做成监控模糊",
     },
+    {
+        id: "monochrome",
+        label: "黑白戏剧",
+        description: "灰阶层次、硬朗布光和轮廓表演构成无彩色戏剧，信息仍然可读。",
+        prompt: "叙事气质依靠明暗、轮廓、停顿和肢体，而不是色彩情绪；灰阶保留五级层次，高光与暗部都必须让人物、道具和空间关系可读。",
+        palette: "黑、白与五级中性灰，允许极少量单色只承担线索职责",
+        motion: "硬光、侧光或背光塑造轮廓，运动克制，表演通过视线、走位和停顿传达",
+        forbidden: "棕色复古滤镜、全黑不可读、彩色屏幕抢戏、过量烟雾和无意义变形",
+    },
+    {
+        id: "oneiric",
+        label: "梦境逻辑",
+        description: "现实材质进入有规则的不可能空间，变形必须能追踪、能返回。",
+        prompt: "叙事气质介于清醒与梦境：现实段落保持可信物理，梦境段落用镜像、尺度错位、雾化光线和空间倒置表达心理；每一种不可能变化绑定明确规则，并能回到现实身份。",
+        palette: "现实用自然中性色，梦境用雾白、浅金、冷青与固定象征点色，同一象征色不换义",
+        motion: "现实镜头稳定，梦境允许缓慢漂浮、镜面与非连续转场，特效节制",
+        forbidden: "无规则随机变形、五官融化、全屏烟雾、梦境与现实无法区分和符号含义漂移",
+    },
 ];
 
 export const projectStyleMedia: Array<StyleOption<ProjectStyleMediumId> & { characters: ProjectStyleCharacterId[] }> = [
@@ -363,6 +387,42 @@ export function compatibleProjectStyleCharacters(mediumId: ProjectStyleMediumId)
     return projectStyleCharacters.filter((item) => allowed.includes(item.id));
 }
 
+const WORLD_COVER: Record<ProjectStyleWorldId, [string, string]> = {
+    xianxia: ["#243848", "#d6c6a8"],
+    urban: ["#c5ced6", "#3f4d5a"],
+    historical: ["#e4d4b8", "#6a4e34"],
+    suspense: ["#161e26", "#3c4d5a"],
+    "science-fiction": ["#0d141c", "#7aa3b8"],
+    pastoral: ["#5f8454", "#efe4c4"],
+    cyberpunk: ["#121018", "#c43b7a"],
+    republic: ["#263836", "#d4a45c"],
+    campus: ["#6f9a62", "#f0d7a0"],
+    court: ["#7a1f24", "#d4b46a"],
+    wasteland: ["#6a4a32", "#c8b89a"],
+    space: ["#070b14", "#8ec4e0"],
+};
+
+const TONE_ACCENT: Record<ProjectStyleToneId, string> = {
+    epic: "#d4af5a",
+    dark: "#8b2434",
+    "light-comedy": "#efc46a",
+    romantic: "#d48aa8",
+    healing: "#8fbf88",
+    melancholic: "#7a93a8",
+    glamour: "#c9a66b",
+    documentary: "#9a9084",
+    monochrome: "#b8b8b8",
+    oneiric: "#a898d0",
+};
+
+export function styleCoverFromSelection(selection: ProjectStyleSelection): CanvasStyleCover {
+    if (selection.tone === "monochrome") {
+        return { from: "#141414", via: "#7a7a7a", to: "#e8e8e8" };
+    }
+    const [from, to] = WORLD_COVER[selection.world];
+    return { from, via: TONE_ACCENT[selection.tone], to };
+}
+
 export function compileCanvasStylePreset(selection: ProjectStyleSelection): CanvasStylePreset {
     const world = requiredOption(projectStyleWorlds, selection.world);
     const tone = requiredOption(projectStyleTones, selection.tone);
@@ -377,7 +437,7 @@ export function compileCanvasStylePreset(selection: ProjectStyleSelection): Canv
         category: `${world.label} / ${medium.label}`,
         description: `${world.description}${tone.description}${medium.description}`,
         tags: [world.label, tone.label, medium.label, character.label],
-        imageUrl: stylePreviewImage(resolvedSelection),
+        cover: styleCoverFromSelection(resolvedSelection),
         selection: resolvedSelection,
         prompt: [
             `【风格组合】题材世界：${world.label}；叙事气质：${tone.label}；视觉媒介：${medium.label}；角色造型：${character.label}。以下四项必须同时成立，后续角色、场景、分镜和视频不得擅自替换其中任一维度。`,
@@ -436,43 +496,65 @@ const recommendedSelections: ProjectStyleSelection[] = [
     { world: "pastoral", tone: "healing", medium: "storybook", character: "stylized" },
     { world: "urban", tone: "light-comedy", medium: "comic", character: "stylized" },
     { world: "urban", tone: "light-comedy", medium: "stop-motion", character: "stylized" },
+    { world: "urban", tone: "monochrome", medium: "live-action", character: "realistic" },
+    { world: "urban", tone: "oneiric", medium: "live-action", character: "realistic" },
 ];
 
 export const recommendedCanvasStylePresets = recommendedSelections.map(compileCanvasStylePreset);
 
+type LookbookStyleMeta = {
+    id: string;
+    title: string;
+    category: string;
+    description: string;
+    tags: string[];
+    selection: ProjectStyleSelection;
+};
+
+/** Public craft buckets internalized as original lookbook cards. Stable ids keep existing canvas docs resolving. */
+const lookbookStyleMeta: LookbookStyleMeta[] = [
+    { id: "urban-live-action", title: "都市实拍", category: "真人实拍", description: "当代中国城市里的职场与情感戏。自然肤色、可信空间、克制表演。", tags: ["都市", "职场", "情感"], selection: { world: "urban", tone: "romantic", medium: "live-action", character: "realistic" } },
+    { id: "period-live-action", title: "古装实拍", category: "真人实拍", description: "锁定一个历史时代后，服化道、礼制与建筑全部服从同一考据。", tags: ["古装", "历史", "考据"], selection: { world: "historical", tone: "epic", medium: "live-action", character: "realistic" } },
+    { id: "suspense-noir", title: "悬疑夜景", category: "真人实拍", description: "可读的夜景与线索系统，压迫来自空间和信息，不靠满屏霓虹。", tags: ["悬疑", "犯罪", "夜景"], selection: { world: "suspense", tone: "dark", medium: "live-action", character: "realistic" } },
+    { id: "campus-youth", title: "校园青春", category: "真人实拍", description: "学期、班级与放学路径组织青春关系，校园像被使用过而不是布景。", tags: ["校园", "青春", "情感"], selection: { world: "campus", tone: "romantic", medium: "live-action", character: "realistic" } },
+    { id: "court-pageant", title: "宫廷权谋", category: "真人实拍", description: "单一王朝礼制下的仪仗、差序与权力距离，华丽来自织物与仪式。", tags: ["宫廷", "礼制", "权谋"], selection: { world: "court", tone: "epic", medium: "live-action", character: "realistic" } },
+    { id: "nature-healing", title: "乡野疗愈", category: "真人实拍", description: "地域、季节与劳动痕迹里的关系修复，自然参与叙事而不是旅拍空镜。", tags: ["乡野", "季节", "生活"], selection: { world: "pastoral", tone: "healing", medium: "live-action", character: "realistic" } },
+    { id: "real-life-documentary", title: "生活纪实", category: "真人实拍", description: "观察式机位与在地生活证据，家庭与社会议题靠可信而不是精致摆拍。", tags: ["家庭", "观察", "在地"], selection: { world: "urban", tone: "documentary", medium: "live-action", character: "realistic" } },
+    { id: "retro-hong-kong", title: "年代胶片", category: "年代影像", description: "二十世纪后期华语都市的胶片色温、街区密度与生活器物。", tags: ["胶片", "年代", "都市"], selection: { world: "republic", tone: "melancholic", medium: "live-action", character: "realistic" } },
+    { id: "black-white-noir", title: "黑白戏剧", category: "风格化实拍", description: "灰阶层次与硬朗布光，轮廓和表演承担叙事，不靠复古滤镜。", tags: ["黑白", "戏剧", "轮廓"], selection: { world: "urban", tone: "monochrome", medium: "live-action", character: "realistic" } },
+    { id: "surreal-dream", title: "梦境逻辑", category: "风格化实拍", description: "现实材质进入有规则的不可能空间，变形必须能追踪、能返回。", tags: ["梦境", "心理", "规则"], selection: { world: "urban", tone: "oneiric", medium: "live-action", character: "realistic" } },
+    { id: "future-tech", title: "近未来科技", category: "科幻影像", description: "功能可解释的近未来设备与空间，科技来自结构而不是悬浮界面。", tags: ["近未来", "功能", "工业"], selection: { world: "science-fiction", tone: "epic", medium: "live-action", character: "realistic" } },
+    { id: "cyberpunk-neon", title: "夜城机能", category: "科幻影像", description: "高密度夜城、阶层装备与受控招牌光，霓虹服务身份不是装饰灯海。", tags: ["夜城", "阶层", "机能"], selection: { world: "cyberpunk", tone: "dark", medium: "live-action", character: "realistic" } },
+    { id: "space-opera", title: "星际远征", category: "科幻影像", description: "舰船结构、阵营徽记与真空尺度，宏大来自对照而不是星云堆砌。", tags: ["星际", "阵营", "尺度"], selection: { world: "space", tone: "epic", medium: "3d-anime", character: "semi-real" } },
+    { id: "chinese-2d", title: "国漫二维", category: "二维动画", description: "稳定线稿与赛璐璐角色，东方绘景，二维语言不混三维塑料。", tags: ["国漫", "线稿", "绘景"], selection: { world: "xianxia", tone: "epic", medium: "2d-guoman", character: "semi-real" } },
+    { id: "ink-narrative", title: "水墨叙事", category: "风格化动画", description: "宣纸留白、墨阶与笔势构成可识别人物，不是随机滤镜。", tags: ["水墨", "留白", "笔势"], selection: { world: "xianxia", tone: "healing", medium: "ink", character: "semi-real" } },
+    { id: "comic-pop", title: "漫画分镜", category: "风格化动画", description: "墨线、网点与高对比块面，夸张服务动作与喜剧，角色剪影连续。", tags: ["漫画", "网点", "动作"], selection: { world: "urban", tone: "light-comedy", medium: "comic", character: "stylized" } },
+    { id: "three-d-cartoon", title: "三维卡通", category: "三维动画", description: "风格化三维比例、清晰剪影和喜剧节奏，适合轻松与亲子向。", tags: ["卡通", "剪影", "喜剧"], selection: { world: "urban", tone: "light-comedy", medium: "3d-cartoon", character: "stylized" } },
+    { id: "fantasy-3d", title: "东方三维", category: "三维动画", description: "东方三维体积与中式结构上的奇观，阵营色约束法术，不做西式魔幻套壳。", tags: ["东方", "体积", "阵营"], selection: { world: "xianxia", tone: "epic", medium: "3d-anime", character: "semi-real" } },
+    { id: "clay-stop-motion", title: "黏土定格", category: "手工媒介", description: "手塑黏土、微缩布景和逐帧顿挫，保留可触的手工尺度。", tags: ["黏土", "定格", "微缩"], selection: { world: "urban", tone: "light-comedy", medium: "stop-motion", character: "stylized" } },
+    { id: "storybook-fantasy", title: "绘本童话", category: "插画媒介", description: "纸纹、色块与手绘边缘的绘本世界，表情清楚，不做全屏柔焦。", tags: ["绘本", "纸纹", "童话"], selection: { world: "pastoral", tone: "healing", medium: "storybook", character: "stylized" } },
+];
+
+export const lookbookCanvasStylePresets = lookbookStyleMeta.map((meta) => {
+    const compiled = compileCanvasStylePreset(meta.selection);
+    return {
+        ...compiled,
+        id: meta.id,
+        title: meta.title,
+        category: meta.category,
+        description: meta.description,
+        tags: meta.tags,
+    };
+});
+
+export const canvasStylePresets: CanvasStylePreset[] = [...recommendedCanvasStylePresets, ...lookbookCanvasStylePresets];
+
+export function resolveCanvasStylePreset(id?: string) {
+    return canvasStylePresets.find((preset) => preset.id === id) || customCanvasStylePreset(id);
+}
+
 function styleSelectionId(selection: ProjectStyleSelection) {
     return `v2-${selection.world}--${selection.tone}--${selection.medium}--${selection.character}`;
-}
-
-/** Resolve style preview assets under Vite `public/short-drama-styles`. */
-export function canvasStyleAssetUrl(fileName: string) {
-    const base = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
-    const name = fileName.replace(/^\/?(?:short-drama-styles\/)?/, "");
-    return `${base}short-drama-styles/${name}`;
-}
-
-function stylePreviewImage(selection: ProjectStyleSelection) {
-    if (selection.medium === "stop-motion") return canvasStyleAssetUrl("clay-stop-motion.jpg");
-    if (selection.medium === "comic") return canvasStyleAssetUrl("comic-pop.jpg");
-    if (selection.medium === "storybook") return canvasStyleAssetUrl("storybook-fantasy.jpg");
-    if (selection.world === "cyberpunk") return canvasStyleAssetUrl("cyberpunk-neon.jpg");
-    if (selection.world === "republic") return canvasStyleAssetUrl("retro-hong-kong.jpg");
-    if (selection.world === "campus") return canvasStyleAssetUrl("urban-live-action.jpg");
-    if (selection.world === "court") return canvasStyleAssetUrl("period-live-action.jpg");
-    if (selection.world === "wasteland") return canvasStyleAssetUrl("suspense-noir.jpg");
-    if (selection.world === "space") return canvasStyleAssetUrl("space-opera.jpg");
-    if (selection.world === "xianxia") {
-        if (selection.medium === "live-action") return canvasStyleAssetUrl("period-live-action.jpg");
-        if (selection.medium === "3d-cartoon") return canvasStyleAssetUrl("three-d-cartoon.jpg");
-        if (selection.medium === "2d-guoman") return canvasStyleAssetUrl("chinese-2d.jpg");
-        if (selection.medium === "ink") return canvasStyleAssetUrl("ink-narrative.jpg");
-        return canvasStyleAssetUrl("fantasy-3d.jpg");
-    }
-    if (selection.world === "suspense") return canvasStyleAssetUrl("suspense-noir.jpg");
-    if (selection.world === "science-fiction") return canvasStyleAssetUrl("future-tech.jpg");
-    if (selection.world === "pastoral") return canvasStyleAssetUrl("nature-healing.jpg");
-    if (selection.world === "historical") return selection.medium === "2d-guoman" ? canvasStyleAssetUrl("chinese-2d.jpg") : canvasStyleAssetUrl("period-live-action.jpg");
-    return selection.medium === "3d-cartoon" ? canvasStyleAssetUrl("three-d-cartoon.jpg") : canvasStyleAssetUrl("urban-live-action.jpg");
 }
 
 function requiredOption<T extends string>(options: Array<StyleOption<T>>, id: T) {

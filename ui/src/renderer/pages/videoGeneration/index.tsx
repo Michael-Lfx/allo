@@ -17,6 +17,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Result, Spin } from '@arco-design/web-react';
 import { Search, Upload, VideoOne } from '@icon-park/react';
+import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
+import '@oc/styles/quiet-chrome.css';
 import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
@@ -62,13 +64,7 @@ import {
   rememberVideoGenerationTask,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
-import {
-  deleteCanvasProject,
-  listCanvasProjects,
-  listGenerationTasks,
-  type CanvasProjectMeta,
-  type GenerationTaskView,
-} from '../videoCanvas/api';
+import type { CanvasProjectMeta, GenerationTaskView } from '../videoCanvas/api';
 import { isStandaloneClipTask, toUpdatedAtMs } from './recentCreations';
 import styles from './index.module.css';
 
@@ -167,11 +163,12 @@ const VideoGenerationListPage: React.FC = () => {
 
   const refreshAll = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
+    const canvasApi = import('../videoCanvas/api');
     const results = await Promise.allSettled([
       listSessions(),
       listBriefingSessions(),
-      listGenerationTasks(30, 0, { standalone: true }).then((result) => result.tasks),
-      listCanvasProjects(),
+      canvasApi.then((api) => api.listGenerationTasks(30, 0, { standalone: true }).then((result) => result.tasks)),
+      canvasApi.then((api) => api.listCanvasProjects()),
     ]);
     const sessionsResult = results[0];
     const briefingsResult = results[1];
@@ -735,6 +732,7 @@ const VideoGenerationListPage: React.FC = () => {
       if (deletingId) return;
       setDeletingId(project.project_id);
       try {
+        const { deleteCanvasProject } = await import('../videoCanvas/api');
         await deleteCanvasProject(project.project_id);
         clearVideoGenerationSessionMemory(project.project_id);
         setCanvasProjects((prev) =>
@@ -946,22 +944,13 @@ const VideoGenerationListPage: React.FC = () => {
         <section className='flex flex-col gap-12px'>
             <div className='flex flex-wrap items-center justify-between gap-12px'>
               <div>
-                <div className='mb-8px'>
-                  <SegmentedTabs
-                    size='sm'
-                    items={listTabItems}
-                    activeKey={listTab}
-                    onChange={handleListTabChange}
-                  />
-                </div>
-                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                  {listTab === 'tvShow'
-                    ? t('videoGeneration.tvShow.title', { defaultValue: 'Flowy TV' })
-                    : t('videoGeneration.list.recentTitle', {
-                        defaultValue: '最近创作',
-                      })}
-                </h2>
-                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                <SegmentedTabs
+                  size='sm'
+                  items={listTabItems}
+                  activeKey={listTab}
+                  onChange={handleListTabChange}
+                />
+                <p className='m-0 mt-8px text-12px text-[var(--color-text-3)]'>
                   {listTab === 'tvShow'
                     ? parseTvShowScope(searchParams.get('tvScope')) === 'campaign'
                       ? t('videoGeneration.campaign.subtitle', {
@@ -976,35 +965,33 @@ const VideoGenerationListPage: React.FC = () => {
                 </p>
               </div>
               {listTab === 'recent' ? (
-                <div className='flex flex-wrap items-center gap-10px'>
-                  <Button
-                    type='outline'
-                    size='small'
-                    loading={importing}
+                <div className='flex flex-wrap items-center gap-6px'>
+                  <CanvasChromeButton
+                    className='is-icon'
                     disabled={creating || importing}
+                    title={t('videoGeneration.list.importProject', {
+                      defaultValue: '导入工程',
+                    })}
+                    aria-label={t('videoGeneration.list.importProject', {
+                      defaultValue: '导入工程',
+                    })}
                     onClick={() => void handleImportProject()}
                   >
-                    <span className='inline-flex items-center gap-4px'>
-                      <Upload theme='outline' size={14} fill='currentColor' />
-                      {t('videoGeneration.list.importProject', {
-                        defaultValue: '导入工程',
-                      })}
-                    </span>
-                  </Button>
-                  <Button
-                    type='outline'
-                    size='small'
-                    loading={importing}
+                    <Upload theme='outline' size={14} />
+                  </CanvasChromeButton>
+                  <CanvasChromeButton
+                    className='is-icon'
                     disabled={creating || importing}
+                    title={t('videoGeneration.list.importCanvas', {
+                      defaultValue: '导入画布',
+                    })}
+                    aria-label={t('videoGeneration.list.importCanvas', {
+                      defaultValue: '导入画布',
+                    })}
                     onClick={() => void handleImportCanvasProject()}
                   >
-                    <span className='inline-flex items-center gap-4px'>
-                      <Upload theme='outline' size={14} fill='currentColor' />
-                      {t('videoGeneration.list.importCanvas', {
-                        defaultValue: '导入画布',
-                      })}
-                    </span>
-                  </Button>
+                    <VideoOne theme='outline' size={14} />
+                  </CanvasChromeButton>
                   {recentRows.length > 0 && !error ? (
                     <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
                       <Search

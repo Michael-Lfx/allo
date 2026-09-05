@@ -190,7 +190,7 @@ export function PromptComposer({
             ) : (
               <button
                 type='button'
-                className={`${styles.attachPlusCard} ${styles.attachPlusCardSolo}`}
+                className={styles.attachPlusCard}
                 disabled={loading}
                 onClick={onRequestUpload}
                 aria-label={t('videoGeneration.create.upload.addReference', {

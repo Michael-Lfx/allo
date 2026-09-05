@@ -1,9 +1,10 @@
-import { Fragment, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, type CSSProperties, type ReactNode } from "react";
 import { Dropdown } from "antd";
 import { AlignLeft, ArrowRight, Bot, Check, ChevronDown, ChevronUp, Clapperboard, FolderKanban, Images, MoreHorizontal, Palette, Pencil, Plus, Sparkles, Type, Upload, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { resolveCanvasStylePreset } from "@oc/components/canvas/canvas-style-picker-modal";
+import { CanvasStyleCoverSwatch } from "@oc/components/canvas/canvas-style-cover";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import type { CanvasShortDramaProgress, CanvasShortDramaStepId } from "@oc/lib/canvas/canvas-short-drama";
@@ -229,7 +230,7 @@ export function CanvasStyleNodeContent({ node, onChoose }: { node?: CanvasNodeDa
 
     return (
         <div className="flex h-full w-full flex-col overflow-hidden" style={{ color: theme.node.text }}>
-            <CanvasStyleCover imageUrl={preset?.imageUrl} accent={theme.accent.primary} muted={theme.node.muted} stroke={theme.node.stroke} panel={theme.canvas.background} />
+            <CanvasStyleCoverSwatch cover={preset?.cover} className="h-28 shrink-0 border-b" style={{ borderColor: theme.node.stroke }} />
             <div className="flex min-h-0 flex-1 flex-col px-4 py-3">
                 <div className="truncate text-sm font-semibold" title={title}>{title}</div>
                 <p className="mt-1 line-clamp-3 text-[var(--fs-label)] leading-5" style={{ color: theme.node.muted }}>{description}</p>
@@ -247,29 +248,6 @@ export function CanvasStyleNodeContent({ node, onChoose }: { node?: CanvasNodeDa
         </div>
     );
 }
-
-function CanvasStyleCover({ imageUrl, accent, muted, stroke, panel }: { imageUrl?: string; accent: string; muted: string; stroke: string; panel: string }) {
-    const [failed, setFailed] = useState(false);
-    const showImage = Boolean(imageUrl) && !failed;
-    return (
-        <div className="relative h-28 shrink-0 overflow-hidden border-b" style={{ borderColor: stroke, background: `linear-gradient(135deg, ${accent}22, ${panel})` }}>
-            {showImage ? (
-                <img
-                    src={imageUrl}
-                    alt=""
-                    className="absolute inset-0 h-full w-full object-cover"
-                    draggable={false}
-                    onError={() => setFailed(true)}
-                />
-            ) : (
-                <div className="flex h-full w-full items-center justify-center" style={{ color: muted }}>
-                    <Palette className="size-7 opacity-70" />
-                </div>
-            )}
-        </div>
-    );
-}
-
 
 export function CanvasStoryInputNodeContent({ node, onEdit }: { node: CanvasNodeData; onEdit: () => void }) {
     useTranslation();

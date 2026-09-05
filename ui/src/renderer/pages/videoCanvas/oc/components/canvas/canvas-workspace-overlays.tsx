@@ -4,6 +4,7 @@ import { Clapperboard, Image as ImageIcon, List, Music2, Pencil, Video, X } from
 import { useTranslation } from "react-i18next";
 
 import { CanvasChromeButton, CanvasMenuRow, CanvasOverlay } from "@oc/components/canvas/canvas-overlay";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
@@ -82,7 +83,7 @@ export function CanvasSelectionToolbar({ anchorRef, containerRef, count, childre
             onPointerDown={(event) => event.stopPropagation()}
         >
             <motion.div initial={reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.9, y: anchor.placement === "above" ? 8 : -8 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={aceternityMotion.spring.panel} className="flex items-center gap-2">
-                <span className="aceternity-floating-panel shrink-0 rounded-full border px-2.5 py-1.5 text-[var(--fs-tiny)] font-semibold tabular-nums backdrop-blur-2xl" style={{ background: theme.spatial.elevated, borderColor: theme.spatial.glowStrong, color: theme.accent.primary, boxShadow: `0 14px 36px ${theme.spatial.shadow}` }}>{canvasT("videoCanvas.selection.count", "已选 {{count}}", { count })}</span>
+                <span className="canvas-overlay shrink-0 rounded-full px-2.5 py-1.5 text-[var(--fs-tiny)] font-semibold tabular-nums" style={canvasOverlayStyle(theme, { borderColor: theme.spatial.glowStrong, color: theme.accent.primary })}>{canvasT("videoCanvas.selection.count", "已选 {{count}}", { count })}</span>
                 <div className="max-w-[min(560px,calc(100vw-90px))]">{children}</div>
             </motion.div>
         </div>

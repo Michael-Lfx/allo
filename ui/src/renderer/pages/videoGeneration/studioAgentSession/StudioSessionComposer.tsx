@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { ArrowUp } from 'lucide-react';
 import type { StudioComposerAction } from './types';
 import styles from './index.module.css';
 
@@ -25,8 +26,6 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
   const { t } = useTranslation();
   const busy = action === 'stop';
   const showSpinner = Boolean(sending || stopping || busy);
-  // Never disable the stop control while a run is in flight. Arco `loading`
-  // swallows clicks; this native button stays the cancel target.
   const disabled = Boolean(assetsBlocked || stopping);
 
   const stopHint = t('videoGeneration.agentSession.action.stopHint', { defaultValue: '点击可终止' });
@@ -63,13 +62,16 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
         </p>
       ) : busy ? (
         <p className={styles.composerHint}>{stopHint}</p>
-      ) : null}
+      ) : (
+        <p className={styles.composerHint}>{label}</p>
+      )}
       <button
         type='button'
-        className={busy ? styles.actionButtonBusy : styles.actionButton}
+        className={`canvas-send-token ${busy ? styles.sendBusy : styles.sendIdle}`}
         disabled={disabled}
         aria-busy={showSpinner}
         aria-label={busy ? `${label}，${stopHint}` : label}
+        title={busy ? `${label}，${stopHint}` : label}
         data-testid={busy ? 'studio-session-stop' : 'studio-session-send'}
         onClick={() => {
           if (disabled) return;
@@ -77,8 +79,7 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
           else onSend();
         }}
       >
-        {showSpinner ? <span className={styles.actionSpinner} aria-hidden /> : null}
-        <span>{label}</span>
+        {showSpinner ? <span className={styles.actionSpinner} aria-hidden /> : <ArrowUp className={styles.sendIcon} />}
       </button>
     </div>
   );

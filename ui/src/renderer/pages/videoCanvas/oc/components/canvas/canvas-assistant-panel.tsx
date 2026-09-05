@@ -5,6 +5,7 @@ import { Button, Modal, Tooltip } from "antd";
 import { motion } from "motion/react";
 
 import { useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { nanoid } from "nanoid";
@@ -388,17 +389,12 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
 
     return (
         <motion.aside
-            className="pointer-events-auto relative flex h-full w-full flex-col overflow-hidden rounded-[var(--panel-radius)] border"
+            className="canvas-overlay pointer-events-auto relative flex h-full w-full flex-col overflow-hidden"
             initial={appearImmediately ? false : { x: 48, opacity: 0 }}
             animate={{ x: closing ? 28 : 0, opacity: closing ? 0 : 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
-            style={{
-                borderColor: theme.toolbar.border,
-                background: theme.spatial.elevated,
-                color: theme.node.text,
-                boxShadow: `0 24px 72px ${theme.spatial.shadow}`,
-            }}
+            style={canvasOverlayStyle(theme)}
         >
                 <AgentPanelChrome
                     theme={theme}

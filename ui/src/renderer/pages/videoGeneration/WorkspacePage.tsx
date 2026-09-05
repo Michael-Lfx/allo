@@ -53,7 +53,7 @@ import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import VideoQualityPickers from './components/VideoQualityPickers';
-import { normalizeWorkflow, isActionImitationWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
+import { normalizeWorkflow, isActionImitationWorkflow, statusLabel, workflowLabel } from './components/SessionCard';
 import StoryboardBoard from './components/StoryboardBoard';
 import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceActionAssets from './components/WorkspaceActionAssets';
@@ -100,6 +100,8 @@ import {
 } from './studioAgentSession/sessionPanelStorage';
 import { clampDuration } from './durationBounds';
 import styles from './index.module.css';
+import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
+import '@oc/styles/quiet-chrome.css';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 import { videoCanvasProjectPath } from '../videoCanvas/routes';
 
@@ -1326,101 +1328,81 @@ const WorkspacePage: React.FC = () => {
     >
       {messageHolder}
       <header className={styles.studioHeader}>
-        <div className='flex items-start justify-between gap-12px flex-wrap'>
-          <div className='flex items-start gap-10px min-w-0'>
-            <Button
-              type='text'
-              className='!px-6px shrink-0'
+        <div className='flex items-center justify-between gap-12px flex-wrap'>
+          <div className='flex items-center gap-8px min-w-0'>
+            <CanvasChromeButton
+              className='is-icon shrink-0'
               onClick={() => navigate('/video-generation')}
+              title={t('videoGeneration.workspace.back', { defaultValue: '返回列表' })}
               aria-label={t('videoGeneration.workspace.back', { defaultValue: '返回列表' })}
             >
-              <ArrowLeft theme='outline' size={18} fill='currentColor' />
-            </Button>
+              <ArrowLeft theme='outline' size={16} fill='currentColor' />
+            </CanvasChromeButton>
             <div className='min-w-0'>
-              <div className='flex items-center gap-8px flex-wrap'>
-                <h1 className='m-0 text-18px font-700 text-[var(--color-text-1)] truncate'>
-                  {session.title || t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
-                </h1>
-                <Tag size='small' color='arcoblue'>
-                  {workflowLabel(session.workflow, t)}
-                </Tag>
-                <Tag size='small' color={statusTagColor(currentStatus)}>
-                  {statusLabel(currentStatus, t)}
-                </Tag>
-              </div>
+              <h1 className='m-0 text-16px font-600 text-[var(--color-text-1)] truncate'>
+                {session.title || t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
+              </h1>
+              <p className='m-0 mt-2px text-11px text-[var(--color-text-3)] truncate'>
+                {workflowLabel(session.workflow, t)} · {statusLabel(currentStatus, t)}
+              </p>
             </div>
           </div>
-          <div className='flex items-center gap-8px shrink-0'>
+          <div className='flex items-center gap-4px shrink-0'>
             {sessionCollapsed && !isMobile ? (
-              <Button
-                type='outline'
-                size='small'
+              <CanvasChromeButton
+                className='is-icon'
                 onClick={() => handleSessionCollapsedChange(false)}
+                title={t('videoGeneration.agentSession.expand', { defaultValue: '展开会话' })}
+                aria-label={t('videoGeneration.agentSession.expand', { defaultValue: '展开会话' })}
               >
-                <span className='inline-flex items-center gap-4px'>
-                  <Robot theme='outline' size={14} fill='currentColor' />
-                  {t('videoGeneration.agentSession.expand', { defaultValue: '展开会话' })}
-                </span>
-              </Button>
+                <Robot theme='outline' size={14} fill='currentColor' />
+              </CanvasChromeButton>
             ) : null}
-            <Button
-              type='outline'
-              size='small'
+            <CanvasChromeButton
+              className='is-icon'
               onClick={() => {
-                // Pull latest run data only — never reset in-progress form edits.
                 void refreshRun();
                 void refreshArtifacts();
               }}
+              title={t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
+              aria-label={t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
             >
-              <span className='inline-flex items-center gap-4px'>
-                <Refresh theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
-              </span>
-            </Button>
-            <Button
-              type='outline'
-              size='small'
-              loading={materializing}
-              disabled={!canOpenInCanvas}
+              <Refresh theme='outline' size={14} fill='currentColor' />
+            </CanvasChromeButton>
+            <CanvasChromeButton
+              className='is-icon'
+              disabled={materializing || !canOpenInCanvas}
               title={
                 isAction
                   ? t('videoGeneration.actions.openInCanvasUnsupported', {
                       defaultValue: '动作模仿没有分镜，无法打开到 Canvas',
                     })
-                  : undefined
+                  : t('videoGeneration.actions.openInCanvas', { defaultValue: '打开到 Canvas' })
               }
+              aria-label={t('videoGeneration.actions.openInCanvas', { defaultValue: '打开到 Canvas' })}
               onPointerEnter={() => void loadVideoCanvasProjectPage().catch(() => undefined)}
               onClick={() => void handleOpenInCanvas()}
             >
-              <span className='inline-flex items-center gap-4px'>
-                <Cube theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.actions.openInCanvas', { defaultValue: '打开到 Canvas' })}
-              </span>
-            </Button>
-            <Button
-              type='outline'
-              size='small'
-              loading={exporting}
+              <Cube theme='outline' size={14} fill='currentColor' />
+            </CanvasChromeButton>
+            <CanvasChromeButton
+              className='is-icon'
               disabled={busy || exporting}
+              title={t('videoGeneration.actions.exportProject', { defaultValue: '导出工程' })}
+              aria-label={t('videoGeneration.actions.exportProject', { defaultValue: '导出工程' })}
               onClick={() => void handleExportProject()}
             >
-              <span className='inline-flex items-center gap-4px'>
-                <Export theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.actions.exportProject', { defaultValue: '导出工程' })}
-              </span>
-            </Button>
-            <Button
-              type='outline'
-              size='small'
-              loading={publishing}
-              disabled={!canPublishTvShow}
+              <Export theme='outline' size={14} fill='currentColor' />
+            </CanvasChromeButton>
+            <CanvasChromeButton
+              className='is-icon'
+              disabled={!canPublishTvShow || publishing}
+              title={t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
+              aria-label={t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
               onClick={() => void handlePublishToTvShow()}
             >
-              <span className='inline-flex items-center gap-4px'>
-                <Share theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
-              </span>
-            </Button>
+              <Share theme='outline' size={14} fill='currentColor' />
+            </CanvasChromeButton>
             <Popconfirm
               title={t('videoGeneration.actions.deleteConfirm', {
                 defaultValue: '确定删除该任务？产物将一并清除。',
@@ -1428,12 +1410,14 @@ const WorkspacePage: React.FC = () => {
               disabled={deleting}
               onOk={() => void handleDelete()}
             >
-              <Button status='danger' type='outline' size='small' loading={deleting}>
-                <span className='inline-flex items-center gap-4px'>
-                  <Delete theme='outline' size={14} fill='currentColor' />
-                  {t('videoGeneration.actions.delete', { defaultValue: '删除' })}
-                </span>
-              </Button>
+              <CanvasChromeButton
+                className='is-icon'
+                disabled={deleting}
+                title={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+                aria-label={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+              >
+                <Delete theme='outline' size={14} fill='currentColor' />
+              </CanvasChromeButton>
             </Popconfirm>
           </div>
         </div>

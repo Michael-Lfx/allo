@@ -1,118 +1,72 @@
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Broadcast, Platte, RobotOne, VideoOne } from '@icon-park/react';
+import { CanvasMenuRow } from '@oc/components/canvas/canvas-overlay';
 import type { VideoHomeMode } from './types';
-import styles from './home.module.css';
 
 export interface ModeMenuProps {
   mode: VideoHomeMode;
   onSelect: (mode: VideoHomeMode) => void;
 }
 
+const MODES: Array<{
+  id: Exclude<VideoHomeMode, 'action'>;
+  icon: ReactNode;
+  labelKey: string;
+  labelFallback: string;
+  descKey: string;
+  descFallback: string;
+}> = [
+  {
+    id: 'generate',
+    icon: <VideoOne theme='outline' size={14} />,
+    labelKey: 'videoGeneration.mode.generateLabel',
+    labelFallback: '视频生成',
+    descKey: 'videoGeneration.mode.generateMenuDesc',
+    descFallback: '参考图 + 提示词，直接生成视频片段',
+  },
+  {
+    id: 'agent',
+    icon: <RobotOne theme='outline' size={14} />,
+    labelKey: 'videoGeneration.mode.agentLabel',
+    labelFallback: '短剧模式',
+    descKey: 'videoGeneration.mode.agentMenuDesc',
+    descFallback: '自动规划分镜并渲染成片',
+  },
+  {
+    id: 'creation',
+    icon: <Platte theme='outline' size={14} />,
+    labelKey: 'videoGeneration.mode.creationLabel',
+    labelFallback: '创作模式',
+    descKey: 'videoGeneration.mode.creationMenuDesc',
+    descFallback: '把需求发给画布 Agent，自动搭建并生成',
+  },
+  {
+    id: 'briefing',
+    icon: <Broadcast theme='outline' size={14} />,
+    labelKey: 'videoGeneration.mode.briefingLabel',
+    labelFallback: '资讯播报',
+    descKey: 'videoGeneration.mode.briefingMenuDesc',
+    descFallback: '可溯源调研 + 口播成片，不发明今日新闻',
+  },
+];
+
 /** Mode-switch menu shown from the composer toolbar (视频生成 / 短剧 / 创作). */
 export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   const { t } = useTranslation();
-  const generateModeLabel = t('videoGeneration.mode.generateLabel', {
-    defaultValue: '视频生成',
-  });
-  const agentModeLabel = t('videoGeneration.mode.agentLabel', {
-    defaultValue: '短剧模式',
-  });
-  const creationModeLabel = t('videoGeneration.mode.creationLabel', {
-    defaultValue: '创作模式',
-  });
-  const briefingModeLabel = t('videoGeneration.mode.briefingLabel', {
-    defaultValue: '资讯播报',
-  });
 
   return (
-    <div className={styles.modeMenu}>
-      <button
-        type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'generate' ? styles.modeMenuItemActive : ''
-        }`}
-        onClick={() => onSelect('generate')}
-      >
-        <VideoOne theme='outline' size={18} />
-        <span>
-          <strong>{generateModeLabel}</strong>
-          <small>
-            {t('videoGeneration.mode.generateMenuDesc', {
-              defaultValue: '参考图 + 提示词，直接生成视频片段',
-            })}
-          </small>
-        </span>
-      </button>
-      <button
-        type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'agent' ? styles.modeMenuItemActive : ''
-        }`}
-        onClick={() => onSelect('agent')}
-      >
-        <RobotOne theme='outline' size={18} />
-        <span>
-          <strong>{agentModeLabel}</strong>
-          <small>
-            {t('videoGeneration.mode.agentMenuDesc', {
-              defaultValue: '自动规划分镜并渲染成片',
-            })}
-          </small>
-        </span>
-      </button>
-      {/* TODO: Re-enable action mode when feature is ready
-      <button
-        type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'action' ? styles.modeMenuItemActive : ''
-        }`}
-        onClick={() => onSelect('action')}
-      >
-        <People theme='outline' size={18} />
-        <span>
-          <strong>{actionModeLabel}</strong>
-          <small>
-            {t('videoGeneration.mode.actionMenuDesc', {
-              defaultValue: '角色图 + 参考视频，模仿动作成片',
-            })}
-          </small>
-        </span>
-      </button>
-      */}
-      <button
-        type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'creation' ? styles.modeMenuItemActive : ''
-        }`}
-        onClick={() => onSelect('creation')}
-      >
-        <Platte theme='outline' size={18} />
-        <span>
-          <strong>{creationModeLabel}</strong>
-          <small>
-            {t('videoGeneration.mode.creationMenuDesc', {
-              defaultValue: '把需求发给画布 Agent，自动搭建并生成',
-            })}
-          </small>
-        </span>
-      </button>
-      <button
-        type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'briefing' ? styles.modeMenuItemActive : ''
-        }`}
-        onClick={() => onSelect('briefing')}
-      >
-        <Broadcast theme='outline' size={18} />
-        <span>
-          <strong>{briefingModeLabel}</strong>
-          <small>
-            {t('videoGeneration.mode.briefingMenuDesc', {
-              defaultValue: '可溯源调研 + 口播成片，不发明今日新闻',
-            })}
-          </small>
-        </span>
-      </button>
+    <div role='listbox' aria-label={t('videoGeneration.create.modesMenuAria', { defaultValue: '选择 Mode' })}>
+      {MODES.map((item) => (
+        <CanvasMenuRow
+          key={item.id}
+          icon={item.icon}
+          label={t(item.labelKey, { defaultValue: item.labelFallback })}
+          detail={t(item.descKey, { defaultValue: item.descFallback })}
+          active={mode === item.id}
+          onClick={() => onSelect(item.id)}
+        />
+      ))}
     </div>
   );
 }

@@ -83,7 +83,7 @@ export function CanvasChromeButton({
         <button
             ref={ref}
             type="button"
-            className={cn("canvas-chrome-token", className)}
+            className={cn("canvas-chrome-token inline-flex", className)}
             aria-expanded={expanded}
             style={style}
             {...props}

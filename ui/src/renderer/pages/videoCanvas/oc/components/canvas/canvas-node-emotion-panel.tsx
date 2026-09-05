@@ -7,9 +7,9 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 
-import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import {
     canvasEmotionPresets,
     emotionBlendshapes,
@@ -58,15 +58,14 @@ export function CanvasNodeEmotionPanel({ dataUrl, imageWidth, imageHeight, chara
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const reducedMotion = useReducedMotion();
     return (
-        <SpotlightSurface
+        <motion.div
             data-canvas-no-zoom
-            spotlightColor={theme.toolbar.itemHover}
-            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 5, scale: 0.98 }}
+            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 5 }}
             transition={reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel}
-            className="aceternity-floating-panel w-[580px] max-w-full overflow-hidden rounded-[var(--r-2xl)] border backdrop-blur-2xl"
-            style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: `0 28px 80px ${theme.spatial.shadow}` }}
+            className="canvas-overlay w-[580px] max-w-full overflow-hidden"
+            style={canvasOverlayStyle(theme)}
         >
             <div className="flex h-11 items-center gap-1.5 border-b px-2.5" style={{ borderColor: theme.toolbar.border }}>
                 <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -115,7 +114,7 @@ export function CanvasNodeEmotionPanel({ dataUrl, imageWidth, imageHeight, chara
                     <Sparkles className={`size-3.5 ${generating ? "animate-pulse" : ""}`} />{generating ? "准备生成" : "生成"}
                 </motion.button>
             </div>
-        </SpotlightSurface>
+        </motion.div>
     );
 }
 

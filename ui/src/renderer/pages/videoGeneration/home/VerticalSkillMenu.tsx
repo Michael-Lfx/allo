@@ -533,12 +533,6 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
           defaultValue: '选择 Skill',
         })}
       >
-        <div className={homeStyles.slashMenuTitle}>
-          {t('videoGeneration.skills.menuTitle', {
-            defaultValue: '选择 Skill',
-          })}
-        </div>
-
         <div className={styles.tabs}>
           {(
             [

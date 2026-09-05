@@ -4,8 +4,8 @@ import { motion, useReducedMotion } from "motion/react";
 import { Camera, RotateCcw, Send, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -56,14 +56,13 @@ export function CanvasNodeAnglePanel({ dataUrl, onClose, onConfirm }: { dataUrl:
     const customLabel = canvasT("videoCanvas.dialog.angleCustom", "自定义");
 
     return (
-        <SpotlightSurface
+        <motion.div
             data-canvas-no-zoom
-            spotlightColor={theme.toolbar.itemHover}
-            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
+            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
             transition={reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel}
-            className="aceternity-floating-panel w-[580px] max-w-full overflow-hidden rounded-[var(--r-2xl)] border backdrop-blur-2xl"
-            style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: `0 28px 80px ${theme.spatial.shadow}` }}
+            className="canvas-overlay w-[580px] max-w-full overflow-hidden"
+            style={canvasOverlayStyle(theme)}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
@@ -102,7 +101,7 @@ export function CanvasNodeAnglePanel({ dataUrl, onClose, onConfirm }: { dataUrl:
                 <button type="button" className="flex h-8 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-2 text-[var(--fs-label)] font-medium transition hover:bg-black/5 dark:hover:bg-white/10" onClick={() => setParams(defaultParams)}><RotateCcw className="size-3.5" />{canvasT("videoCanvas.dialog.angleReset", "重置")}</button>
                 <motion.button type="button" whileHover={reducedMotion ? undefined : { y: -1 }} whileTap={reducedMotion ? undefined : { scale: 0.97 }} className="flex h-8 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-3 text-[var(--fs-label)] font-semibold" style={{ background: theme.node.activeStroke, color: theme.node.panel }} onClick={() => onConfirm(params)}><Send className="size-3.5" />{canvasT("videoCanvas.dialog.angleGenerate", "生成新角度")}</motion.button>
             </div>
-        </SpotlightSurface>
+        </motion.div>
     );
 }
 

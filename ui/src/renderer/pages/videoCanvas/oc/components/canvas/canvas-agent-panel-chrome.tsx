@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { Button, Switch, Tooltip } from "antd";
 import { BookOpenText, Bot, Clapperboard, Focus, Globe2, LayoutTemplate, Laptop, PanelRightClose, PanelsTopLeft, RotateCcw, Workflow } from "lucide-react";
+
+import { CanvasChromeButton } from "@oc/components/canvas/canvas-overlay";
 
 import type { CanvasContextSummary } from "@oc/lib/canvas/canvas-context-summary";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
@@ -45,9 +46,15 @@ export function AgentPanelChrome({
                     <div className="truncate text-[var(--fs-label)] leading-4" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.agent.collab", "画布协作")}</div>
                 </div>
                 <AgentModeSwitch value={mode} theme={theme} onChange={onModeChange} />
-                <Tooltip title={canvasT("videoCanvas.agent.collapse", "收起 Agent")}>
-                    <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} icon={<PanelRightClose className="size-4" />} onClick={onCollapse} />
-                </Tooltip>
+                <CanvasChromeButton
+                    className="is-icon"
+                    style={{ color: theme.node.muted }}
+                    title={canvasT("videoCanvas.agent.collapse", "收起 Agent")}
+                    aria-label={canvasT("videoCanvas.agent.collapse", "收起 Agent")}
+                    onClick={onCollapse}
+                >
+                    <PanelRightClose className="size-4" />
+                </CanvasChromeButton>
             </div>
 
             <div className="mt-2 flex min-h-8 flex-wrap items-center gap-x-2.5 gap-y-1 px-0.5 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>
@@ -56,13 +63,23 @@ export function AgentPanelChrome({
                 {context.chapterLabel ? <span className="inline-flex min-w-0 items-center gap-1"><BookOpenText className="size-3 shrink-0" /><span className="max-w-32 truncate">{context.chapterLabel}{context.shotLabel ? ` · ${context.shotLabel}` : ""}</span></span> : null}
                 {referenceCount ? <span>{canvasT("videoCanvas.agent.refCount", "{{count}} 个参考", { count: referenceCount })}</span> : null}
                 <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <Tooltip title={undoCount ? canvasT("videoCanvas.agent.undoBatch", "撤销最近一批 Agent 写回，可撤销 {{count}} 批", { count: undoCount }) : canvasT("videoCanvas.agent.undoEmpty", "没有可撤销的 Agent 写回")}>
-                        <Button type="text" shape="circle" className="!h-7 !w-7 !min-w-7" disabled={!canUndo} style={{ color: theme.node.muted }} icon={<RotateCcw className="size-3.5" />} onClick={onUndo} aria-label={canvasT("videoCanvas.agent.undoAria", "撤销最近一批 Agent 写回")} />
-                    </Tooltip>
-                    <label className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-1.5" style={{ color: theme.node.muted }}>
-                        <Switch size="small" checked={confirmTools} onChange={onConfirmToolsChange} />
-                        <span className="whitespace-nowrap">{canvasT("videoCanvas.agent.confirmBefore", "Assist")}</span>
-                    </label>
+                    <CanvasChromeButton
+                        className="is-icon"
+                        disabled={!canUndo}
+                        style={{ color: theme.node.muted }}
+                        title={undoCount ? canvasT("videoCanvas.agent.undoBatch", "撤销最近一批 Agent 写回，可撤销 {{count}} 批", { count: undoCount }) : canvasT("videoCanvas.agent.undoEmpty", "没有可撤销的 Agent 写回")}
+                        aria-label={canvasT("videoCanvas.agent.undoAria", "撤销最近一批 Agent 写回")}
+                        onClick={onUndo}
+                    >
+                        <RotateCcw className="size-3.5" />
+                    </CanvasChromeButton>
+                    <CanvasChromeButton
+                        aria-pressed={confirmTools}
+                        style={{ color: theme.node.muted }}
+                        onClick={() => onConfirmToolsChange(!confirmTools)}
+                    >
+                        {canvasT("videoCanvas.agent.confirmBefore", "Assist")}
+                    </CanvasChromeButton>
                 </div>
             </div>
         </header>
