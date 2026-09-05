@@ -462,6 +462,10 @@
     "back": "返回列表",
     "loadError": "加载失败",
     "refresh": "刷新",
+    "rename": "修改标题",
+    "renameHint": "点击修改任务标题",
+    "renameFailed": "标题保存失败",
+    "titlePlaceholder": "给这次任务起个名字",
     "workflowLocked": "工作流在创建后已锁定，不可更改。",
     "cameo": {
       "title": "参考图",

@@ -9,11 +9,13 @@
 //!
 //! Packing belongs to **planning**, not render: the storyboard the user sees
 //! must be the same list the renderer submits. [`pack_scene_briefs`] collapses
-//! leftover micro-shots before decompose; [`pack_scene_clips`] is the same
-//! rule on already-decomposed shots (resume / stale plans). The LLM draft
+//! leftover micro-shots before publish. [`shots_from_packed_briefs`] maps that
+//! list 1:1 onto clips — persist/load must not pack again or align-shrink the
+//! board. [`pack_scene_clips`] / [`align_storyboard_and_clips`] stay as the
+//! pack-rule tests (and as a last-resort densify of idx holes). The LLM draft
 //! never becomes `storyboard.json` — only the packed list is published.
-//! After align, [`densify_aligned_indices`] renumbers surviving clips `0..n`
-//! so shot directories and the filmstrip do not keep absorbed holes.
+//! [`densify_aligned_indices`] renumbers surviving clips `0..n` so shot
+//! directories and the filmstrip do not keep absorbed holes.
 //!
 //! What is left after packing (a run too long for one clip) is handled by the
 //! seam machinery in [`crate::media_local`]: head trim plus de-click fade for a
@@ -40,7 +42,7 @@ use crate::domain::{ShotBeat, ShotBriefBeat, ShotBriefDescription, ShotDescripti
 
 /// Pack maximal runs of adjacent **storyboard rows** into single clips.
 ///
-/// Same join rule as [`pack_scene_clips`], applied before decompose so the
+/// Same join rule as [`pack_scene_clips`], applied before publish so the
 /// storyboard the user sees is already the render list: one row, one video.
 /// Packed rows are reindexed `0..n` — absorbed micro-shots must not keep a
 /// card in 「故事分镜」.
@@ -265,6 +267,21 @@ fn overlay_clips_onto_briefs(
         .collect()
 }
 
+/// True when every published board row has a clip with the same idx (1:1).
+pub(crate) fn clips_follow_board(
+    briefs: &[ShotBriefDescription],
+    clips: &[ShotDescription],
+) -> bool {
+    if briefs.len() != clips.len() {
+        return false;
+    }
+    let mut brief_idxs: Vec<i32> = briefs.iter().map(|b| b.idx).collect();
+    let mut clip_idxs: Vec<i32> = clips.iter().map(|c| c.idx).collect();
+    brief_idxs.sort_unstable();
+    clip_idxs.sort_unstable();
+    brief_idxs == clip_idxs
+}
+
 pub(crate) fn storyboard_differs(
     left: &[ShotBriefDescription],
     right: &[ShotBriefDescription],
@@ -281,13 +298,16 @@ pub(crate) fn storyboard_differs(
     })
 }
 
-/// Copy packed beats from the storyboard row onto the decomposed clip so the
-/// renderer (and a later packer) sees the same multi-shot the board advertised.
-pub(crate) fn stamp_beats_from_brief(desc: &mut ShotDescription, brief: &ShotBriefDescription) {
-    if !brief.is_merged() || desc.is_merged() {
-        return;
-    }
-    desc.beats = brief
+/// Storyboard row → clip description. The board already packed beats; no extra
+/// LLM pass is needed to invent first/last-frame prose.
+pub(crate) fn shots_from_packed_briefs(briefs: &[ShotBriefDescription]) -> Vec<ShotDescription> {
+    let mut briefs = briefs.to_vec();
+    briefs.sort_by_key(|b| b.idx);
+    briefs.iter().map(shot_from_brief).collect()
+}
+
+fn shot_from_brief(brief: &ShotBriefDescription) -> ShotDescription {
+    let beats: Vec<ShotBeat> = brief
         .beats
         .iter()
         .map(|beat| ShotBeat {
@@ -296,6 +316,29 @@ pub(crate) fn stamp_beats_from_brief(desc: &mut ShotDescription, brief: &ShotBri
             cam_idx: Some(beat.cam_idx),
         })
         .collect();
+    let motion = beats
+        .first()
+        .map(|b| b.motion_desc.clone())
+        .unwrap_or_else(|| brief.visual_desc.clone());
+    let lf = beats
+        .last()
+        .map(|b| b.motion_desc.clone())
+        .unwrap_or_else(|| brief.visual_desc.clone());
+    ShotDescription {
+        idx: brief.idx,
+        is_last: brief.is_last,
+        cam_idx: brief.cam_idx,
+        visual_desc: brief.visual_desc.clone(),
+        variation_type: "small".into(),
+        variation_reason: String::new(),
+        ff_desc: brief.visual_desc.clone(),
+        ff_vis_char_idxs: vec![],
+        lf_desc: lf,
+        lf_vis_char_idxs: vec![],
+        motion_desc: motion,
+        audio_desc: brief.audio_desc.clone(),
+        beats,
+    }
 }
 
 /// Pack maximal runs of adjacent shots into single multi-beat clips.
@@ -709,6 +752,68 @@ fn authored_beats(motion: &str) -> Vec<AuthoredBeat> {
     }
 }
 
+/// One visual beat the Seedance prompt should play, in order.
+///
+/// Seconds never belong in the prompt: this is prose plus optional per-beat
+/// audio, and a flag when the camera changes inside the generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromptLens {
+    pub visual: String,
+    pub audio: Option<String>,
+    pub cut: bool,
+}
+
+/// Packed `shot.beats` win; otherwise authored `0-4s:` segments in `motion_desc`.
+/// Empty means the compiler should use the clip's single `visual_desc` / `motion_desc`.
+pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
+    if shot.beats.len() >= 2 {
+        let mut prev_cam: Option<i32> = None;
+        let mut out = Vec::new();
+        for beat in &shot.beats {
+            let visual = strip_authored_timecodes(&beat.motion_desc);
+            if visual.is_empty() {
+                continue;
+            }
+            let cam = beat.cam_idx.or(Some(shot.cam_idx));
+            let cut = matches!((prev_cam, cam), (Some(a), Some(b)) if a != b);
+            if cam.is_some() {
+                prev_cam = cam;
+            }
+            out.push(PromptLens {
+                visual,
+                audio: beat.audio_desc.clone(),
+                cut,
+            });
+        }
+        if out
+            .iter()
+            .all(|lens| lens.audio.as_deref().unwrap_or("").trim().is_empty())
+        {
+            if let Some(audio) = shot.audio_desc.as_ref().filter(|s| !s.trim().is_empty()) {
+                if let Some(first) = out.first_mut() {
+                    first.audio = Some(audio.clone());
+                }
+            }
+        }
+        return out;
+    }
+    let mut authored: Vec<PromptLens> = authored_beats(&shot.motion_desc)
+        .into_iter()
+        .map(|beat| PromptLens {
+            visual: beat.text,
+            audio: None,
+            cut: false,
+        })
+        .collect();
+    if authored.len() < 2 {
+        return Vec::new();
+    }
+    if let Some(audio) = shot.audio_desc.as_ref().filter(|s| !s.trim().is_empty()) {
+        authored[0].audio = Some(audio.clone());
+    }
+    authored
+}
+
 /// Drop planner-authored timecodes from a motion line, keeping the prose.
 ///
 /// The renderer decides how long a clip is, so any absolute seconds surviving
@@ -1021,6 +1126,46 @@ mod tests {
             audio_desc: audio.map(str::to_string),
             beats: Vec::new(),
         }
+    }
+
+    #[test]
+    fn shots_from_briefs_copy_visual_audio_and_packed_beats() {
+        let mut packed = brief(2, 0, "她走近窗边", Some("雨声"));
+        packed.beats = vec![
+            ShotBriefBeat {
+                visual_desc: "她转身".into(),
+                audio_desc: Some("你走。".into()),
+                cam_idx: 0,
+            },
+            ShotBriefBeat {
+                visual_desc: "她走近窗边".into(),
+                audio_desc: None,
+                cam_idx: 1,
+            },
+        ];
+        let shots = shots_from_packed_briefs(&[packed.clone()]);
+        assert_eq!(shots.len(), 1);
+        assert_eq!(shots[0].idx, 2);
+        assert_eq!(shots[0].motion_desc, "她转身");
+        assert_eq!(shots[0].lf_desc, "她走近窗边");
+        assert_eq!(shots[0].audio_desc.as_deref(), Some("雨声"));
+        assert_eq!(shots[0].beats.len(), 2);
+        assert_eq!(shots[0].beats[1].cam_idx, Some(1));
+        assert!(clips_follow_board(&[packed], &shots));
+    }
+
+    #[test]
+    fn mapping_published_briefs_does_not_drop_rows() {
+        let draft = vec![
+            brief(0, 0, "她转身开门", None),
+            brief(1, 0, "她看见他", None),
+            brief(2, 1, "他抬头", None),
+            brief(3, 2, "窗外雨", None),
+        ];
+        let packed = pack_scene_briefs(SEEDANCE, draft);
+        let clips = shots_from_packed_briefs(&packed);
+        assert_eq!(clips.len(), packed.len());
+        assert!(clips_follow_board(&packed, &clips));
     }
 
     #[test]

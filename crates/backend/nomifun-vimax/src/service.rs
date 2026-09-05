@@ -169,6 +169,10 @@ impl VimaxApiService {
         self.inner.get_session(id).map_err(map_vimax_err)
     }
 
+    pub fn rename_session(&self, id: &str, title: String) -> Result<SessionRecord, AppError> {
+        self.inner.rename_session(id, &title).map_err(map_vimax_err)
+    }
+
     pub fn working_dir(&self, id: &str) -> Result<PathBuf, AppError> {
         self.inner.working_dir(id).map_err(map_vimax_err)
     }

@@ -25,6 +25,18 @@ pub use archive::{ARCHIVE_EXTENSION, ArchiveManifest};
 pub use cameo::{CameoManifest, CameoPhotoEntry, CameoUpdate};
 pub use path_remap::{remap_imported_working_paths, resolve_stored_asset_path};
 
+/// Display title cap shared with the task-details editor.
+const SESSION_TITLE_MAX_CHARS: usize = 80;
+
+fn normalize_session_title(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.chars().count() <= SESSION_TITLE_MAX_CHARS {
+        trimmed.to_string()
+    } else {
+        trimmed.chars().take(SESSION_TITLE_MAX_CHARS).collect()
+    }
+}
+
 const STALE_KEYS: &[&str] = &[
     "story",
     "characters",
@@ -324,7 +336,7 @@ impl SessionIndex {
         let record = SessionRecord {
             session_id: session_id.clone(),
             working_dir: working_rel,
-            title: title.unwrap_or_else(|| format!("{} session", workflow.as_str())),
+            title: normalize_session_title(&title.unwrap_or_default()),
             workflow,
             idea: String::new(),
             script: String::new(),
@@ -369,6 +381,14 @@ impl SessionIndex {
         }
         record.updated_at = chrono::Local::now().to_rfc3339();
         self.save(&data)
+    }
+
+    /// Set the display title. Empty after trim is allowed (UI shows 未命名任务).
+    pub fn rename(&self, session_id: &str, title: &str) -> VimaxResult<SessionRecord> {
+        let title = normalize_session_title(title);
+        self.update_fields(session_id, |record| {
+            record.title = title;
+        })
     }
 
     pub fn update_fields<F>(&self, session_id: &str, mutator: F) -> VimaxResult<SessionRecord>
@@ -998,6 +1018,30 @@ mod import_export_tests {
     use crate::domain::WorkflowKind;
     use crate::progress::{INTERRUPTED_SUMMARY, RunStatus};
     use tempfile::tempdir;
+
+    #[test]
+    fn create_without_title_stays_untitled_and_rename_persists() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let record = index.create(WorkflowKind::Idea2Video, None).unwrap();
+        assert!(record.title.is_empty());
+
+        let blank = index
+            .create(WorkflowKind::Idea2Video, Some("   ".into()))
+            .unwrap();
+        assert!(blank.title.is_empty());
+
+        let renamed = index.rename(&record.session_id, "  雨夜车站  ").unwrap();
+        assert_eq!(renamed.title, "雨夜车站");
+        assert_eq!(index.get(&record.session_id).unwrap().title, "雨夜车站");
+
+        let cleared = index.rename(&record.session_id, "   ").unwrap();
+        assert!(cleared.title.is_empty());
+
+        let long = "标".repeat(100);
+        let truncated = index.rename(&record.session_id, &long).unwrap();
+        assert_eq!(truncated.title.chars().count(), SESSION_TITLE_MAX_CHARS);
+    }
 
     #[test]
     fn reconcile_orphaned_active_runs_preserves_stage() {

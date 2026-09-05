@@ -317,6 +317,57 @@
   background: color-mix(in srgb, var(--color-bg-2) 92%, transparent);
 }
 
+.studioTitleRow {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.studioTitleButton {
+  max-width: min(420px, 52vw);
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  cursor: pointer;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studioTitleButton:hover:not(:disabled) {
+  opacity: 0.75;
+}
+
+.studioTitleButton:disabled {
+  cursor: default;
+}
+
+.studioTitleInput {
+  display: block;
+  box-sizing: border-box;
+  width: min(280px, 42vw);
+  min-width: 80px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  caret-color: rgb(var(--primary-6));
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  outline: none;
+}
+
 .studioBody {
   display: flex;
   flex: 1;

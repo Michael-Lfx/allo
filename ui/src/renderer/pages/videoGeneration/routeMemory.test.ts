@@ -95,6 +95,12 @@ describe('videoGeneration routeMemory', () => {
     expect(recent.find((e) => e.id === 'a')?.title).toBe('A-new');
   });
 
+  test('updateRecentVideoGenerationTitle can clear a title', () => {
+    rememberVideoGenerationSession('a', 'Named');
+    updateRecentVideoGenerationTitle('a', '   ');
+    expect(readRecentVideoGenerationSessions().find((e) => e.id === 'a')?.title).toBeUndefined();
+  });
+
   test('canvas MRU restores the canvas workspace path', () => {
     rememberVideoGenerationCanvas('proj-42', '画布项目');
     expect(readRememberedVideoGenerationSession()).toBe('proj-42');

@@ -60,7 +60,7 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route("/api/vimax/sessions/import", post(import_session))
         .route(
             "/api/vimax/sessions/{id}",
-            get(get_session).delete(delete_session),
+            get(get_session).patch(rename_session).delete(delete_session),
         )
         .route("/api/vimax/sessions/{id}/plan", post(plan_session))
         .route("/api/vimax/sessions/{id}/revise", post(revise_session))
@@ -197,6 +197,23 @@ async fn get_session(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<nomi_vimax::SessionRecord>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.get_session(&id)?)))
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    title: String,
+}
+
+async fn rename_session(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<RenameBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<nomi_vimax::SessionRecord>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::ok(
+        state.service.rename_session(&id, body.title)?,
+    )))
 }
 
 async fn delete_session(

@@ -132,6 +132,19 @@ export async function getSession(id: string): Promise<VimaxSession> {
   return httpRequest<VimaxSession>('GET', `${BASE}/sessions/${encodeURIComponent(id)}`);
 }
 
+/** Display title cap; empty string is allowed (UI shows 未命名任务). */
+export const SESSION_TITLE_MAX_CHARS = 80;
+
+export async function updateSessionTitle(id: string, title: string): Promise<VimaxSession> {
+  const session = await httpRequest<VimaxSession>(
+    'PATCH',
+    `${BASE}/sessions/${encodeURIComponent(id)}`,
+    { title }
+  );
+  invalidateSessionList();
+  return session;
+}
+
 export async function planSession(id: string, body: PlanBody): Promise<void> {
   await httpRequest<unknown>('POST', `${BASE}/sessions/${encodeURIComponent(id)}/plan`, body);
   invalidateSessionList();

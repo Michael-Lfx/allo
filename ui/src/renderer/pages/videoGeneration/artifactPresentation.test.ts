@@ -1,7 +1,6 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
-  applyShotGenerationSpecs,
   buildStoryboardScenes,
   buildStoryboardScenesFromStoryboards,
   findShotDescriptionPaths,
@@ -9,10 +8,8 @@ import {
   findStoryboardPath,
   findStoryboardPaths,
   mergeStoryboardsWithoutGrowth,
-  parseShotGenerationSpec,
   parseStoryboard,
   patchShotDescriptionsInArtifact,
-  patchShotGenerationSpecInArtifact,
   patchVisualDescriptionInArtifact,
   storyboardRefreshSignature,
 } from './artifactPresentation';
@@ -40,8 +37,8 @@ const tree: ArtifactNode[] = [
             is_dir: true,
             children: [
               {
-                name: 'first_frame.png',
-                path: 'script2video/shots/0/first_frame.png',
+                name: 'video_last_frame.png',
+                path: 'script2video/shots/0/video_last_frame.png',
                 is_dir: false,
               },
               {
@@ -179,7 +176,7 @@ describe('video artifact presentation', () => {
       index: 0,
       visualDescription: 'A train enters a rain-soaked station.',
       audioDescription: 'Rain and distant brakes.',
-      imagePath: 'script2video/shots/0/first_frame.png',
+      imagePath: 'script2video/shots/0/video_last_frame.png',
       videoPath: 'script2video/shots/0/video.mp4',
       revisionPath: 'script2video/shots/0/shot_description.json',
       generationSpecPath: 'script2video/shots/0/shot_description.json',
@@ -210,8 +207,21 @@ describe('video artifact presentation', () => {
     expect(shots).toHaveLength(1);
     expect(shots[0]?.index).toBe(0);
     expect(shots[0]?.beatCount).toBe(2);
+    expect(shots[0]?.beats).toEqual([
+      { visualDescription: '男生在画面左侧刹车', camIdx: 0 },
+      { visualDescription: '反打女生捡书', camIdx: 1 },
+    ]);
     expect(shots[0]?.visualDescription).toContain('男生在画面左侧刹车');
     expect(shots[0]?.visualDescription).toContain('反打女生捡书');
+  });
+
+  test('keeps a storyboard row that has idx even when visual is empty', () => {
+    const shots = parseStoryboard(
+      JSON.stringify([{ idx: 1, visual_desc: '', audio_desc: '' }])
+    );
+    expect(shots).toHaveLength(1);
+    expect(shots[0]?.index).toBe(1);
+    expect(shots[0]?.visualDescription).toBe('');
   });
 
   test('does not grow a loaded storyboard when a later fetch adds a last shot', () => {
@@ -386,7 +396,8 @@ describe('video artifact presentation', () => {
     const scenes = buildStoryboardScenes(mediaOnly, [], undefined);
     expect(scenes).toHaveLength(1);
     expect(scenes[0]?.visualDescription).toBe('');
-    expect(scenes[0]?.imagePath).toBe('script2video/shots/0/first_frame.png');
+    expect(scenes[0]?.imagePath).toBeUndefined();
+    expect(scenes[0]?.videoPath).toBe('script2video/shots/0/video.mp4');
   });
 
   test('aggregates shots across all idea2video scenes', () => {
@@ -499,113 +510,7 @@ describe('patchShotDescriptionsInArtifact', () => {
   });
 });
 
-describe('shot generation spec overlay', () => {
-  test('parseShotGenerationSpec reads ff/motion/lf from shot_description.json', () => {
-    const spec = parseShotGenerationSpec(
-      JSON.stringify({
-        idx: 0,
-        visual_desc: 'brief train arrival',
-        ff_desc: 'Wide of rain-soaked platform, train headlights.',
-        motion_desc: 'Dolly in as the train enters.',
-        lf_desc: 'Train filling the frame.',
-        audio_desc: 'Brakes and rain.',
-      }),
-      'script2video/shots/0/shot_description.json'
-    );
-    expect(spec).toMatchObject({
-      shotIndex: 0,
-      sceneRoot: 'script2video',
-      planningBrief: 'brief train arrival',
-      firstFrameDescription: 'Wide of rain-soaked platform, train headlights.',
-      motionDescription: 'Dolly in as the train enters.',
-      lastFrameDescription: 'Train filling the frame.',
-      audioDescription: 'Brakes and rain.',
-    });
-  });
-
-  test('applyShotGenerationSpecs keeps planning brief and attaches I2V fields', () => {
-    const scenes = applyShotGenerationSpecs(
-      [
-        {
-          id: 'script2video/shot-0',
-          index: 0,
-          visualDescription: 'A train enters a rain-soaked station.',
-          audioDescription: 'Rain.',
-          sceneRoot: 'script2video',
-          shotIndex: 0,
-        },
-      ],
-      [
-        {
-          path: 'script2video/shots/0/shot_description.json',
-          sceneRoot: 'script2video',
-          shotIndex: 0,
-          firstFrameDescription: 'Wide platform.',
-          motionDescription: 'Dolly in.',
-          lastFrameDescription: 'Train fills frame.',
-        },
-      ]
-    );
-    expect(scenes[0]?.visualDescription).toBe('A train enters a rain-soaked station.');
-    expect(scenes[0]?.firstFrameDescription).toBe('Wide platform.');
-    expect(scenes[0]?.motionDescription).toBe('Dolly in.');
-    expect(scenes[0]?.lastFrameDescription).toBe('Train fills frame.');
-    expect(scenes[0]?.generationSpecPath).toBe(
-      'script2video/shots/0/shot_description.json'
-    );
-    expect(scenes[0]?.audioDescription).toBe('Rain.');
-  });
-
-  test('applyShotGenerationSpecs prefers spec audio when present', () => {
-    const scenes = applyShotGenerationSpecs(
-      [
-        {
-          id: 'script2video/shot-0',
-          index: 0,
-          visualDescription: 'brief',
-          audioDescription: 'planning rain',
-          sceneRoot: 'script2video',
-          shotIndex: 0,
-        },
-      ],
-      [
-        {
-          path: 'script2video/shots/0/shot_description.json',
-          sceneRoot: 'script2video',
-          shotIndex: 0,
-          firstFrameDescription: 'Wide platform.',
-          motionDescription: 'Dolly in.',
-          audioDescription: 'brakes and rain from spec',
-        },
-      ]
-    );
-    expect(scenes[0]?.audioDescription).toBe('brakes and rain from spec');
-  });
-
-  test('patchShotGenerationSpecInArtifact updates ff/motion without touching visual_desc', () => {
-    const patched = patchShotGenerationSpecInArtifact(
-      JSON.stringify({
-        visual_desc: 'keep brief',
-        ff_desc: 'old first',
-        motion_desc: 'old motion',
-        lf_desc: 'old last',
-        audio_desc: 'old audio',
-      }),
-      {
-        firstFrameDescription: 'new first',
-        motionDescription: 'new motion',
-        lastFrameDescription: 'new last',
-        audioDescription: 'new audio',
-      }
-    );
-    const obj = JSON.parse(patched) as Record<string, unknown>;
-    expect(obj.visual_desc).toBe('keep brief');
-    expect(obj.ff_desc).toBe('new first');
-    expect(obj.motion_desc).toBe('new motion');
-    expect(obj.lf_desc).toBe('new last');
-    expect(obj.audio_desc).toBe('new audio');
-  });
-
+describe('storyboard refresh signature', () => {
   test('storyboardRefreshSignature changes when packed shot dirs disappear', () => {
     const packed = storyboardRefreshSignature(tree);
     const gapped: ArtifactNode[] = [

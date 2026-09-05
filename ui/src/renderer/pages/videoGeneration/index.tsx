@@ -96,12 +96,17 @@ const CanvasProjectCard = lazy(() =>
   import('./home/CanvasProjectGallery').then((mod) => ({ default: mod.CanvasProjectCard }))
 );
 
+function firstLineTitle(text: string): string {
+  return text.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
+}
+
 function titleForDraft(draft: VideoCreateDraft): string {
   if (draft.workflow === 'action2video') {
     const fromCharacter = draft.actionCharacter?.file.name.replace(/\.[^.]+$/, '').trim();
     return fromCharacter?.slice(0, 48) || '';
   }
-  return draft.sourceText.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
+  // Short-drama titles are set on the task details page, not from the prompt.
+  return '';
 }
 
 const VideoGenerationListPage: React.FC = () => {
@@ -389,10 +394,10 @@ const VideoGenerationListPage: React.FC = () => {
           navigate(`/video-generation/${created.id}`, {
             state: { launchDraft: draft, launchError: true },
           });
-          rememberVideoGenerationSession(created.id, titleForDraft(draft));
+          rememberVideoGenerationSession(created.id, created.title);
           return;
         }
-        rememberVideoGenerationSession(created.id, titleForDraft(draft));
+        rememberVideoGenerationSession(created.id, created.title);
         navigate(`/video-generation/${created.id}`, {
           state:
             draft.workflow === 'action2video'
@@ -660,7 +665,7 @@ const VideoGenerationListPage: React.FC = () => {
       try {
         const created = await createBriefing({
           intent: draft.sourceText.trim(),
-          title: titleForDraft(draft) || undefined,
+          title: firstLineTitle(draft.sourceText) || undefined,
           format_secs: draft.briefingFormatSecs,
           research_depth: draft.researchDepth,
           time_window_hours: draft.timeWindowHours,

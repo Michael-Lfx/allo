@@ -1,15 +1,13 @@
 //! Idea2Video — develop story → multi-scene scripts → per-scene Script2Video.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, VoiceProfileGenerator,
-    VoiceReferenceGenerator, WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
+    CharacterExtractor, Screenwriter, VoiceProfileGenerator, WorldAssetsPlanner, ensure_film_cover,
 };
 use crate::drama::{DramaEngine, with_drama_engine};
-use crate::error::VimaxResult;
+use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
 use crate::planning::{
     allocate_scene_budgets, enrich_requirement_for_scene,
@@ -28,7 +26,7 @@ use super::scene_reel::SceneReel;
 use super::script2video::Script2VideoPipeline;
 use super::{
     artifact_cache::{artifact_fingerprint, load_or_write_json_cached, load_or_write_text_cached},
-    PipelineBackends, emit_pct, emit_pct_meta, safe_component,
+    PipelineBackends, emit_pct, emit_pct_meta,
 };
 
 pub struct Idea2VideoPipeline {
@@ -36,7 +34,6 @@ pub struct Idea2VideoPipeline {
     working_dir: PathBuf,
     screenwriter: Screenwriter,
     character_extractor: CharacterExtractor,
-    portraits: CharacterPortraitsGenerator,
 }
 
 impl Idea2VideoPipeline {
@@ -44,7 +41,6 @@ impl Idea2VideoPipeline {
         Self {
             screenwriter: Screenwriter::new(Arc::clone(&backends.chat), backends.clip),
             character_extractor: CharacterExtractor::new(Arc::clone(&backends.chat)),
-            portraits: CharacterPortraitsGenerator::new(Arc::clone(&backends.image)),
             backends,
             working_dir,
         }
@@ -242,97 +238,44 @@ impl Idea2VideoPipeline {
         )
         .await?;
 
-        // Global cast bible during planning — text-to-image only (style via prompt).
         emit_pct(
             &progress,
-            "character_portraits_start",
-            "正在生成全局角色定妆图",
+            "plan_assets_parallel",
+            "正在并行生成定妆图、世界参考与分场剧本",
             35.0,
         );
-        {
-            let registry_path = self.working_dir.join("character_portraits_registry.json");
-            let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
-                if registry_path.exists() {
-                    read_json_artifact(&registry_path).await.unwrap_or_default()
-                } else {
-                    HashMap::new()
-                };
-            for character in &characters {
-                if !character.is_visible {
-                    continue;
-                }
-                if has_usable_portrait(&registry, &character.identifier_in_scene) {
-                    continue;
-                }
-                registry.remove(&character.identifier_in_scene);
-                let dir = self.working_dir.join("character_portraits").join(format!(
-                    "{}_{}",
-                    character.idx,
-                    safe_component(&character.identifier_in_scene)
-                ));
-                let entry = self
-                    .portraits
-                    .generate_all_views(character, &style, &story, &dir)
-                    .await?;
-                registry.extend(entry);
-                write_json_artifact(&registry_path, &registry).await?;
-            }
-            write_json_artifact(&registry_path, &registry).await?;
+        let film = Script2VideoPipeline::new(self.backends.clone(), self.working_dir.clone());
+        let portraits_voices = async {
             emit_pct(
                 &progress,
-                "character_portraits_done",
-                "全局角色定妆图已就绪",
-                42.0,
+                "character_portraits_start",
+                "正在生成全局角色定妆图",
+                35.0,
             );
-        }
-
-        emit_pct(
-            &progress,
-            "voice_references_start",
-            "正在生成角色音色参考音频",
-            43.0,
-        );
-        if let Some(flowy) = self.backends.flowy.clone() {
-            let registry_path = self.working_dir.join("character_portraits_registry.json");
-            let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
-                if registry_path.exists() {
-                    read_json_artifact(&registry_path).await.unwrap_or_default()
-                } else {
-                    HashMap::new()
-                };
-            let portraits_dir = self.working_dir.join("character_portraits");
-            let voice_gen = VoiceReferenceGenerator::new(flowy);
-            if let Ok(n) = voice_gen
-                .ensure_voice_references(&characters, &portraits_dir, &mut registry)
+            film.generate_character_portraits(&characters, &style, &story, &progress)
+                .await?;
+            emit_pct(
+                &progress,
+                "voice_references_start",
+                "正在生成角色音色参考音频",
+                43.0,
+            );
+            film.ensure_character_voice_references(&characters, &progress)
                 .await
-            {
-                let _ = write_json_artifact(&registry_path, &registry).await;
-                if n > 0 {
-                    emit_pct(
-                        &progress,
-                        "voice_references_done",
-                        &format!("已生成 {n} 条音色参考"),
-                        44.0,
-                    );
-                }
-            }
-        }
-
-        emit_pct(
-            &progress,
-            "world_assets_start",
-            "正在生成全局环境与道具参考图",
-            45.0,
-        );
-        {
+        };
+        let world = async {
+            emit_pct(
+                &progress,
+                "world_assets_start",
+                "正在生成全局环境与道具参考图",
+                45.0,
+            );
             let world_planner = WorldAssetsPlanner::new(
                 Arc::clone(&self.backends.chat),
                 Arc::clone(&self.backends.image),
             );
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-            // Prefer full story for location/prop coverage across scenes.
-            // When Cameo photos exist, plates are style-locked to those uploads.
-            let _ = world_planner
+            world_planner
                 .ensure(
                     &self.working_dir,
                     &story,
@@ -342,30 +285,21 @@ impl Idea2VideoPipeline {
                     &lock_token,
                 )
                 .await?;
-            emit_pct(
-                &progress,
-                "world_assets_done",
-                "全局环境与道具参考图已就绪",
-                48.0,
-            );
-        }
-
-        emit_pct(&progress, "write_script", "正在撰写分场剧本", 52.0);
+            Ok::<_, VimaxError>(())
+        };
         let script_fp = artifact_fingerprint(&[&story, drama_requirement]);
-        let mut scenes: Vec<String> = load_or_write_json_cached(
-            &self.working_dir.join("script.json"),
-            &script_fp,
-            || async {
+        let script = async {
+            emit_pct(&progress, "write_script", "正在撰写分场剧本", 52.0);
+            load_or_write_json_cached(&self.working_dir.join("script.json"), &script_fp, || async {
                 let scenes = self
                     .screenwriter
                     .write_script_based_on_story(&story, drama_requirement)
                     .await?;
-                // Show-don't-tell polish before caching, so resumed sessions
-                // reuse the already-polished script without extra LLM calls.
                 Ok(self.screenwriter.polish_scenes_show_dont_tell(scenes).await)
-            },
-        )
-        .await?;
+            })
+            .await
+        };
+        let ((), (), mut scenes) = tokio::try_join!(portraits_voices, world, script)?;
 
         let clip = self.backends.clip;
         if let Some(film_total) = film_total {
@@ -513,56 +447,16 @@ impl Idea2VideoPipeline {
         )
         .await?;
 
-        // Global portraits at idea root — text-to-image only (style via prompt).
-        let registry_path = self.working_dir.join("character_portraits_registry.json");
-        {
-            let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
-                if registry_path.exists() {
-                    read_json_artifact(&registry_path).await.unwrap_or_default()
-                } else {
-                    HashMap::new()
-                };
-            let mut missing = false;
-            for character in &characters {
-                if !character.is_visible {
-                    continue;
-                }
-                if has_usable_portrait(&registry, &character.identifier_in_scene) {
-                    continue;
-                }
-                missing = true;
-                break;
-            }
-            if missing {
-                emit_pct(
-                    &progress,
-                    "character_portraits_start",
-                    "正在生成角色定妆图（图片模型）",
-                    12.0,
-                );
-                for character in &characters {
-                    if !character.is_visible {
-                        continue;
-                    }
-                    if has_usable_portrait(&registry, &character.identifier_in_scene) {
-                        continue;
-                    }
-                    registry.remove(&character.identifier_in_scene);
-                    let dir = self.working_dir.join("character_portraits").join(format!(
-                        "{}_{}",
-                        character.idx,
-                        safe_component(&character.identifier_in_scene)
-                    ));
-                    let entry = self
-                        .portraits
-                        .generate_all_views(character, &style, &story, &dir)
-                        .await?;
-                    registry.extend(entry);
-                    write_json_artifact(&registry_path, &registry).await?;
-                }
-                write_json_artifact(&registry_path, &registry).await?;
-            }
-        }
+        emit_pct(
+            &progress,
+            "character_portraits_start",
+            "正在生成角色定妆图（图片模型）",
+            12.0,
+        );
+        let film = Script2VideoPipeline::new(self.backends.clone(), self.working_dir.clone());
+        let _ = film
+            .generate_character_portraits(&characters, &style, &story, &progress)
+            .await?;
 
         let scenes: Vec<String> =
             serde_json::from_str(&tokio::fs::read_to_string(&script_path).await?)?;
