@@ -9,7 +9,6 @@ import { CanvasVersionCompareModal } from "@oc/components/canvas/canvas-version-
 import { CanvasLazyEditor } from "@oc/components/canvas/canvas-lazy-editor";
 import { CanvasProjectMediaDialogs } from "./canvas-project-media-dialogs";
 import { CanvasProjectStatusDialogs } from "./canvas-project-status-dialogs";
-import { AssetPickerModal } from "@oc/components/canvas/asset-picker-modal";
 import { CanvasProjectAssetModal } from "@oc/components/canvas/canvas-project-asset-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
@@ -113,9 +112,6 @@ type CanvasProjectDialogsProps = {
     clearConfirmOpen: boolean;
     setClearConfirmOpen: Dispatch<SetStateAction<boolean>>;
     clearCanvas: () => void;
-    assetPickerOpen: boolean;
-    handleAssetInsert: ReturnType<typeof useCanvasUpload>["handleAssetInsert"];
-    closeAssetPicker: () => void;
     projectAssetOpen: boolean;
     linkedProjectQuery: { data?: ProjectDetail | undefined };
     projectAssetInitialCategory: string;
@@ -193,9 +189,6 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
         clearConfirmOpen,
         setClearConfirmOpen,
         clearCanvas,
-        assetPickerOpen,
-        handleAssetInsert,
-        closeAssetPicker,
         projectAssetOpen,
         linkedProjectQuery,
         projectAssetInitialCategory,
@@ -435,7 +428,6 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
                         onConfirmClear={clearCanvas}
                     />
 
-                    <AssetPickerModal open={assetPickerOpen} onInsert={handleAssetInsert} onClose={closeAssetPicker} />
                     <CanvasProjectAssetModal
                         open={projectAssetOpen}
                         detail={linkedProjectQuery.data}

@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
 import { Bot, LoaderCircle } from "lucide-react";
 
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -40,13 +41,8 @@ function CanvasAssistantPanelFallback({ busy }: { busy?: boolean }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <aside
-            className="pointer-events-auto relative flex h-full w-full flex-col overflow-hidden rounded-[var(--panel-radius)] border"
-            style={{
-                borderColor: theme.toolbar.border,
-                background: theme.spatial.elevated,
-                color: theme.node.text,
-                boxShadow: `0 24px 72px ${theme.spatial.shadow}`,
-            }}
+            className="canvas-overlay pointer-events-auto relative flex h-full w-full flex-col overflow-hidden"
+            style={canvasOverlayStyle(theme)}
             aria-busy={busy || undefined}
             aria-live="polite"
         >

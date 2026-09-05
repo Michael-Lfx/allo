@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { canvasAssetDisplayUrl, usableCanvasSessionUrl } from "@oc/lib/canvas/canvas-media-id";
+import { canvasVideoAssetPreviewUrl } from "@oc/lib/canvas/canvas-media-preview";
 import type { Asset } from "@oc/stores/use-asset-store";
 
 type AssetMediaPreviewProps = {
@@ -12,12 +14,14 @@ type AssetMediaPreviewProps = {
 export function AssetMediaPreview({ asset, alt, className = "", fallback = null }: AssetMediaPreviewProps) {
     if (!asset) return fallback;
 
-    if (asset.kind === "video" && asset.data.url) {
-        const poster = asset.coverUrl && asset.coverUrl !== asset.data.url ? asset.coverUrl : undefined;
+    if (asset.kind === "video") {
+        const src = canvasAssetDisplayUrl(asset);
+        if (!src) return fallback;
+        const poster = canvasVideoAssetPreviewUrl(src, asset.coverUrl);
         return (
             <video
-                src={asset.data.url}
-                poster={poster}
+                src={src}
+                poster={poster || undefined}
                 aria-label={alt}
                 muted
                 playsInline
@@ -32,7 +36,7 @@ export function AssetMediaPreview({ asset, alt, className = "", fallback = null 
         );
     }
 
-    const imageUrl = asset.coverUrl || (asset.kind === "image" ? asset.data.dataUrl : "");
+    const imageUrl = asset.kind === "audio" ? usableCanvasSessionUrl(asset.coverUrl) : canvasAssetDisplayUrl(asset);
     if (!imageUrl) return fallback;
     return <img src={imageUrl} alt={alt} loading="lazy" decoding="async" className={className} />;
 }

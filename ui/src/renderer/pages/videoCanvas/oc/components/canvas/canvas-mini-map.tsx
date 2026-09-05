@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { isFrameNode, isNodeHiddenByCollapsedFrame } from "@oc/lib/canvas/canvas-frame";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
@@ -125,7 +126,7 @@ export function Minimap({ nodes, viewport, viewportSize, canvasContainerRef, onV
     };
 
     return (
-        <div className="absolute bottom-[calc(var(--canvas-inset-y)+var(--space-16)+var(--space-10))] left-6 z-[var(--z-panel)] overflow-hidden rounded-lg shadow-2xl backdrop-blur-sm lg:bottom-[calc(var(--canvas-inset-y)+var(--space-12))]" style={{ width, height, background: theme.toolbar.panel }}>
+        <div className="canvas-overlay absolute bottom-[calc(var(--canvas-inset-y)+var(--space-16)+var(--space-10))] left-6 z-[var(--z-panel)] overflow-hidden lg:bottom-[calc(var(--canvas-inset-y)+var(--space-12))]" style={{ width, height, ...canvasOverlayStyle(theme) }}>
             <div
                 ref={containerRef}
                 className="relative h-full w-full cursor-crosshair"

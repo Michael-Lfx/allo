@@ -349,7 +349,7 @@
     "undo": "Undo",
     "redo": "Redo",
     "addNode": "Add node",
-    "assets": "Assets",
+    "assets": "Asset space",
     "appearance": "Appearance",
     "settings": "Toolbar settings",
     "deleteSelected": "Delete selected",
@@ -589,7 +589,7 @@
     "canvasCommands": "Canvas commands",
     "addNode": "Add node",
     "uploadHere": "Upload here",
-    "insertFromAssets": "Insert from assets",
+    "insertFromAssets": "Insert from asset space",
     "historyClipboard": "History & clipboard",
     "undo": "Undo",
     "redo": "Redo",
@@ -1592,8 +1592,8 @@
     "resizeTray": "Resize asset tray from top",
     "dragResize": "Drag to resize height",
     "trayTitle": "Asset space",
-    "trayHint": "Drop onto canvas, or locate used media",
-    "tabLibrary": "Library {{count}}",
+    "trayHint": "Media from this canvas, short drama, video generation, and briefings",
+    "tabLibrary": "My assets {{count}}",
     "tabCanvas": "This canvas {{count}}",
     "searchPlaceholder": "Search images / videos / audio…",
     "searchAria": "Search assets",
@@ -1602,6 +1602,38 @@
     "noCanvasMatch": "No matching media on this canvas",
     "hintInsert": "Click to insert · drag to place",
     "hintLocate": "Click to focus node",
+    "hintInsertRemote": "Locate canvas media, or click to insert",
+    "loadingRemote": "Syncing short dramas, clips, and briefings",
+    "loadingDramaPlates": "Syncing characters, environments, and props",
+    "inserting": "Adding",
+    "sourceAria": "Filter by source",
+    "kindAria": "Filter by type",
+    "sourceAll": "All",
+    "sourceCanvas": "This canvas",
+    "sourceDrama": "Short drama",
+    "sourceGenerate": "Video generation",
+    "sourceBriefing": "News briefing",
+    "dramaCategoryAria": "Short-drama asset categories",
+    "categoryFilm": "Film",
+    "categoryCharacter": "Character",
+    "categoryEnvironment": "Environment",
+    "categoryProp": "Prop",
+    "emptyAll": "No assets to show yet",
+    "emptyCanvas": "This canvas has no images, video, or audio yet",
+    "emptyDrama": "No short-drama assets yet",
+    "emptyDramaCharacter": "No character images yet",
+    "emptyDramaEnvironment": "No environment images yet",
+    "emptyDramaProp": "No prop images yet",
+    "emptyDramaFilm": "No cover or film yet",
+    "emptyGenerate": "No standalone clips yet",
+    "emptyBriefing": "No briefing films yet",
+    "subtitleCover": "Cover",
+    "subtitleFinal": "Film",
+    "subtitleFirst": "First frame",
+    "subtitleLast": "Last frame",
+    "untitledDrama": "Untitled short drama",
+    "untitledGenerate": "Video generation",
+    "untitledBriefing": "News briefing",
     "itemCount": "{{count}} items",
     "kindVideo": "Video",
     "kindAudio": "Audio",
@@ -1771,7 +1803,7 @@
     "recommended": "Recommended",
     "custom": "Custom mix",
     "allLooks": "All looks",
-    "lookbookHint": "Cinematic looks curated against mainstream video platforms. Use Custom mix for finer world / tone / medium combinations.",
+    "lookbookHint": "Project baselines grouped by production medium — live action, animation, illustration, and craft. Pick one to lock the series look. Use Custom mix for finer world / tone / medium combinations.",
     "comboSection": "Genre mixes",
     "comboHint": "Exact duplicates of the looks above are removed. Remaining mixes share the same cards — use titles and tags to tell them apart.",
     "viewSpec": "View style guide",
@@ -1829,7 +1861,9 @@
       "healing": "Warm / healing",
       "melancholic": "Cool restraint",
       "glamour": "Glamour",
-      "documentary": "Observational"
+      "documentary": "Observational",
+      "monochrome": "Black-and-white drama",
+      "oneiric": "Dream logic"
     },
     "toneDescs": {
       "epic": "Scale, order, and fate create epic weight—not constant darkness or VFX piles.",
@@ -1839,7 +1873,9 @@
       "healing": "Warmth from concrete care, labor, and repair—not generic soft glow.",
       "melancholic": "Desaturated palettes, pauses, and restrained acting—still readable.",
       "glamour": "Costume, lighting, and pose build fashion-editorial presence.",
-      "documentary": "Observational camera, available light, and lived-in spaces."
+      "documentary": "Observational camera, available light, and lived-in spaces.",
+      "monochrome": "Grayscale layers, hard light, and silhouette performance—still readable.",
+      "oneiric": "Real materials enter rule-bound impossible space; every change must be trackable and reversible."
     },
     "media": {
       "live-action": "Live action",
@@ -1875,94 +1911,104 @@
     },
     "legacy": {
       "urban-live-action": {
-        "title": "Urban live-action short drama",
+        "title": "Urban live action",
         "category": "Live action",
-        "description": "Neutral city tones, East Asian actors, lived-in wardrobe; natural light and restrained performance for workplace and romance."
+        "description": "Workplace and relationship stories in contemporary Chinese cities. Natural skin, credible spaces, restrained performance."
       },
       "period-live-action": {
-        "title": "Period / historical live action",
+        "title": "Period live action",
         "category": "Live action",
-        "description": "Lock one historical era, then unify hair, costume systems, props, and architecture with low-saturation Eastern color."
+        "description": "Lock one historical era, then costume, etiquette, and architecture all follow the same research baseline."
       },
       "suspense-noir": {
-        "title": "Suspense crime night",
+        "title": "Suspense night",
         "category": "Live action",
-        "description": "Blue-black low-key base with sparse danger accents; unified night city materials, practical light, and psychological pressure for clues and twists."
+        "description": "Readable night cities and clue systems. Pressure from space and information, not wall-to-wall neon."
+      },
+      "campus-youth": {
+        "title": "Campus youth",
+        "category": "Live action",
+        "description": "Terms, classes, and after-school routes organize relationships. Campuses look used, not staged."
+      },
+      "court-pageant": {
+        "title": "Court intrigue",
+        "category": "Live action",
+        "description": "Procession, rank, and power distance under one dynasty's etiquette. Splendor from fabric and ritual."
       },
       "chinese-2d": {
         "title": "Guoman 2D",
         "category": "2D animation",
-        "description": "Semi-realistic guoman characters, mineral Eastern color, and meticulous scenes; stable line art and silhouettes for cross-episode consistency."
+        "description": "Stable line art and cel-shaded characters with Eastern painted scenes. Keep 2D language off plastic 3D."
       },
       "ink-narrative": {
         "title": "Ink narrative",
         "category": "Stylized animation",
-        "description": "Xuan-paper negative space with dark/light ink and sparse vermilion; identity via contour and brush—not unreadable ink blobs."
+        "description": "Xuan-paper negative space, ink stages, and brush energy for identifiable figures—not a random filter."
       },
       "three-d-cartoon": {
-        "title": "3D cartoon short drama",
+        "title": "3D cartoon",
         "category": "3D animation",
-        "description": "Clear stylized 3D characters, soft materials, bright color; readable expressions and stable assets for comedy, kids, and healing stories."
+        "description": "Stylized 3D proportions, clear silhouettes, and comedy timing for light and family stories."
       },
       "fantasy-3d": {
-        "title": "Guofeng 3D fantasy",
+        "title": "Eastern 3D",
         "category": "3D animation",
-        "description": "Semi-realistic Eastern figures, credible Chinese architecture, layered materials; spell colors by faction, VFX only for action and story beats."
+        "description": "Eastern volume and Chinese structure. Faction color constrains effects—no Western-fantasy shell."
       },
       "future-tech": {
-        "title": "Future tech",
-        "category": "Sci-fi live action",
-        "description": "Clean white-gray spaces, precise industrial structure, cool light; tech from function and material—not wall-to-wall neon HUDs."
+        "title": "Near-future tech",
+        "category": "Sci-fi image",
+        "description": "Explainable near-future devices and spaces. Tech from structure, not floating HUDs."
       },
       "cyberpunk-neon": {
-        "title": "Cyber neon",
-        "category": "Sci-fi live action",
-        "description": "Dense Asian night cities, wet aged materials, controlled neon; identity via cybernetics, class costume, and corporate color."
+        "title": "Night-city techwear",
+        "category": "Sci-fi image",
+        "description": "Dense night cities, classed gear, and controlled signage light. Neon serves identity, not decoration."
       },
       "retro-hong-kong": {
-        "title": "Retro Hong Kong",
-        "category": "Period live action",
-        "description": "80s–90s Chinese urban film color, dense streets, lived-in clothes; tungsten warmth, teal shadows, and era props."
+        "title": "Period film grain",
+        "category": "Period image",
+        "description": "Late-20th-century Chinese urban film color, street density, and lived-in objects."
       },
       "clay-stop-motion": {
         "title": "Clay stop-motion",
-        "category": "Stop motion",
-        "description": "Hand-sculpted clay, miniature sets, frame-by-frame motion; unified scale, grain, and light for a warm handmade world."
+        "category": "Handmade medium",
+        "description": "Hand-sculpted clay, miniature sets, and frame-step motion at a tactile handmade scale."
       },
       "black-white-noir": {
-        "title": "Black-and-white silent",
+        "title": "Black-and-white drama",
         "category": "Stylized live action",
-        "description": "B&W grayscale, hard light, restrained performance readable without dialogue; period feel from framing and craft—not vintage filters."
+        "description": "Grayscale layers and hard light. Silhouette and performance carry story—not vintage filters."
       },
       "space-opera": {
-        "title": "Space opera",
-        "category": "Sci-fi animation",
-        "description": "Grand interstellar scale with clear faction costume and credible spacecraft; color and emblems drive politics—not spectacle piles."
+        "title": "Interstellar voyage",
+        "category": "Sci-fi image",
+        "description": "Ship structure, faction marks, and vacuum scale. Grandeur from contrast, not nebula piles."
       },
       "comic-pop": {
         "title": "Comic panels",
         "category": "Stylized animation",
-        "description": "High-contrast blocks, halftone, comic rhythm for action comedy; exaggeration from framing and pose with continuous assets."
+        "description": "Ink line, halftone, and high-contrast blocks. Exaggeration serves action and comedy with continuous silhouettes."
       },
       "storybook-fantasy": {
-        "title": "Storybook fairy tale",
-        "category": "Illustrated animation",
-        "description": "Paper grain, soft color blocks, hand-drawn edges; clear expressions—avoid reducing storybook feel to soft-focus filters."
+        "title": "Storybook",
+        "category": "Illustration medium",
+        "description": "Paper grain, color blocks, and painted edges. Clear expressions—not full-frame soft focus."
       },
       "surreal-dream": {
-        "title": "Surreal dream",
+        "title": "Dream logic",
         "category": "Stylized live action",
-        "description": "Real materials meet impossible space via mirrors, scale shifts, and mist; every surreal change serves psychology and clues."
+        "description": "Real materials enter rule-bound impossible space. Every change must be trackable and reversible."
       },
       "nature-healing": {
-        "title": "Nature healing",
+        "title": "Pastoral healing",
         "category": "Live action",
-        "description": "Real daylight, plants, and handmade living; healing via season, sound, and small actions—not ad-style empty landscapes."
+        "description": "Repair through region, season, and labor traces. Nature participates in story, not travel-ad empty shots."
       },
       "real-life-documentary": {
         "title": "Everyday documentary",
         "category": "Live action",
-        "description": "Natural earth tones, ordinary East Asian people, local Chinese spaces; keep environmental traces and observational tone."
+        "description": "Observational camera and local life evidence. Family and social stories from credibility, not polished staging."
       }
     }
   },

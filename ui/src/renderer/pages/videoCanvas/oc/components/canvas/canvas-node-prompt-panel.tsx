@@ -144,7 +144,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         value={Math.max(1, Math.min(15, Math.floor(Math.abs(Number(node.metadata?.textCount) || 1))))}
                         onChange={(event) => onConfigChange(node.id, { textCount: Math.max(1, Math.min(15, Math.floor(Math.abs(Number(event.target.value) || 1)))) })}
                         aria-label={canvasT("videoCanvas.prompt.textCountHint", "文本生成份数（默认 1，可在生成配置中调整）")}
-                        className="canvas-chrome-token h-7 w-10 px-1 text-center tabular-nums"
+                        className="canvas-chrome-token inline-flex h-7 w-10 px-1 text-center tabular-nums"
                     />
                 ) : mode === "image" ? (
                     <CanvasImageSettingsPopover

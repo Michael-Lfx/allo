@@ -168,7 +168,7 @@ export function CanvasNodeContextMenu({
                         <>
                             <CanvasMenuRow icon={<Plus />} label={canvasT("videoCanvas.menu.addNode", "添加节点")} chevron active={addOpen} onClick={() => setAddOpen((value) => !value)} />
                             <CanvasMenuRow icon={<Upload />} label={canvasT("videoCanvas.menu.uploadHere", "上传到这里")} onClick={() => runAction(onUpload)} />
-                            {!isProjectLinked ? <CanvasMenuRow icon={<FolderOpen />} label={canvasT("videoCanvas.menu.insertFromAssets", "从素材库插入")} onClick={() => runAction(onOpenAssets)} /> : null}
+                            <CanvasMenuRow icon={<FolderOpen />} label={canvasT("videoCanvas.menu.insertFromAssets", "从素材空间插入")} onClick={() => runAction(onOpenAssets)} />
                             <CanvasMenuSeparator />
                             <CanvasMenuRow icon={<Undo2 />} label={canvasT("videoCanvas.menu.undo", "撤销")} shortcut="⌘Z" disabled={!canUndo} onClick={() => runAction(onUndo)} />
                             <CanvasMenuRow icon={<Redo2 />} label={canvasT("videoCanvas.menu.redo", "重做")} shortcut="⇧⌘Z" disabled={!canRedo} onClick={() => runAction(onRedo)} />

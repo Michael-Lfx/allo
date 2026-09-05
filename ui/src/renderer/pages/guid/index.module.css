@@ -416,8 +416,8 @@
   box-sizing: border-box;
   background: var(--flowy-panel);
   border: 1px solid var(--flowy-border-subtle);
-  border-radius: 22px;
-  box-shadow: var(--flowy-shadow-raised);
+  border-radius: 12px;
+  box-shadow: 0 10px 32px rgba(15, 23, 42, 0.14);
   transition:
     border-color var(--flowy-motion-fast) var(--flowy-ease-enter),
     box-shadow var(--flowy-motion-base) var(--flowy-ease-enter),
@@ -431,9 +431,9 @@
 }
 
 .guidInputInner {
-  background: var(--flowy-raised) !important;
-  border: 1px solid var(--flowy-border-subtle);
-  border-radius: 21px;
+  background: transparent !important;
+  border: 0;
+  border-radius: 12px;
   box-sizing: border-box;
 }
 

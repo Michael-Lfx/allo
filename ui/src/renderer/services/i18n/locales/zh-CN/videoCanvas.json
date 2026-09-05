@@ -349,7 +349,7 @@
     "undo": "撤销",
     "redo": "重做",
     "addNode": "添加节点",
-    "assets": "素材库",
+    "assets": "素材空间",
     "appearance": "画布外观",
     "settings": "工具栏设置",
     "deleteSelected": "删除选中节点",
@@ -589,7 +589,7 @@
     "canvasCommands": "画布命令",
     "addNode": "添加节点",
     "uploadHere": "上传到这里",
-    "insertFromAssets": "从素材库插入",
+    "insertFromAssets": "从素材空间插入",
     "historyClipboard": "历史与剪贴板",
     "undo": "撤销",
     "redo": "重做",
@@ -1592,8 +1592,8 @@
     "resizeTray": "从顶部调整素材托盘高度",
     "dragResize": "拖动调整高度",
     "trayTitle": "素材空间",
-    "trayHint": "拖入画布，或定位已使用的媒体",
-    "tabLibrary": "素材库 {{count}}",
+    "trayHint": "当前画布、短剧、视频生成与资讯播报的媒体",
+    "tabLibrary": "我的素材 {{count}}",
     "tabCanvas": "当前画布 {{count}}",
     "searchPlaceholder": "搜索图片 / 视频 / 音频…",
     "searchAria": "搜索素材",
@@ -1602,6 +1602,38 @@
     "noCanvasMatch": "当前画布没有匹配媒体",
     "hintInsert": "点击插入 · 拖拽定位",
     "hintLocate": "点击回到节点",
+    "hintInsertRemote": "画布素材定位，其余点击插入",
+    "loadingRemote": "正在同步短剧、成片与播报",
+    "loadingDramaPlates": "正在同步人物、环境与道具",
+    "inserting": "加入中",
+    "sourceAria": "按来源筛选",
+    "kindAria": "按类型筛选",
+    "sourceAll": "全部",
+    "sourceCanvas": "当前画布",
+    "sourceDrama": "短剧",
+    "sourceGenerate": "视频生成",
+    "sourceBriefing": "资讯播报",
+    "dramaCategoryAria": "短剧资产分类",
+    "categoryFilm": "成片",
+    "categoryCharacter": "人物",
+    "categoryEnvironment": "环境",
+    "categoryProp": "道具",
+    "emptyAll": "还没有可展示的素材",
+    "emptyCanvas": "这张画布还没有图片、视频或音频",
+    "emptyDrama": "还没有短剧素材",
+    "emptyDramaCharacter": "还没有人物图片",
+    "emptyDramaEnvironment": "还没有环境图片",
+    "emptyDramaProp": "还没有道具图片",
+    "emptyDramaFilm": "还没有封面或成片",
+    "emptyGenerate": "还没有独立成片",
+    "emptyBriefing": "还没有播报成片",
+    "subtitleCover": "封面",
+    "subtitleFinal": "成片",
+    "subtitleFirst": "首帧",
+    "subtitleLast": "尾帧",
+    "untitledDrama": "未命名短剧",
+    "untitledGenerate": "视频生成",
+    "untitledBriefing": "资讯播报",
     "itemCount": "{{count}} 项",
     "kindVideo": "视频",
     "kindAudio": "音频",
@@ -1771,7 +1803,7 @@
     "recommended": "推荐画风",
     "custom": "自定义组合",
     "allLooks": "全部气质",
-    "lookbookHint": "对照主流影像气质精选的项目基线，点选即可锁定全片画风。需要更细的交叉组合，可切换到自定义组合。",
+    "lookbookHint": "按真人、动画、插画、手工等制作媒介组织的项目基线，点选即可锁定全片画风。需要更细的交叉组合，可切换到自定义组合。",
     "comboSection": "题材组合",
     "comboHint": "与上方气质完全相同的条目已去掉。其余交叉组合沿用同一套大卡，请以标题和标签区分。",
     "viewSpec": "查看画风规范",
@@ -1829,7 +1861,9 @@
       "healing": "温暖治愈",
       "melancholic": "清冷克制",
       "glamour": "华丽时尚",
-      "documentary": "纪实观察"
+      "documentary": "纪实观察",
+      "monochrome": "黑白戏剧",
+      "oneiric": "梦境逻辑"
     },
     "toneDescs": {
       "epic": "用尺度、秩序与人物命运建立史诗感，不靠全程阴暗和特效堆积。",
@@ -1839,7 +1873,9 @@
       "healing": "通过生活行动、环境触感和关系修复形成温暖，而不是泛化柔光。",
       "melancholic": "低饱和、留白和克制表演形成文艺气质，信息仍然可读。",
       "glamour": "服化道、灯光造型和构图共同建立时尚大片气质。",
-      "documentary": "观察式机位、自然光和生活痕迹构成纪实基线。"
+      "documentary": "观察式机位、自然光和生活痕迹构成纪实基线。",
+      "monochrome": "灰阶层次、硬朗布光和轮廓表演构成无彩色戏剧，信息仍然可读。",
+      "oneiric": "现实材质进入有规则的不可能空间，变形必须能追踪、能返回。"
     },
     "media": {
       "live-action": "真人实拍",
@@ -1875,94 +1911,104 @@
     },
     "legacy": {
       "urban-live-action": {
-        "title": "都市真人短剧",
+        "title": "都市实拍",
         "category": "真人实拍",
-        "description": "中性城市色调、真实东亚演员与生活化服化道；统一自然光感、城市材质和克制表演，服务职场与情感题材。"
+        "description": "当代中国城市里的职场与情感戏。自然肤色、可信空间、克制表演。"
       },
       "period-live-action": {
-        "title": "古装 / 年代真人",
+        "title": "古装实拍",
         "category": "真人实拍",
-        "description": "先锁定单一历史时期，再统一人物妆发、服装制度、器物与建筑；用低饱和东方色和材质细节建立时代可信度。"
+        "description": "锁定一个历史时代后，服化道、礼制与建筑全部服从同一考据。"
       },
       "suspense-noir": {
-        "title": "悬疑犯罪夜景",
+        "title": "悬疑夜景",
         "category": "真人实拍",
-        "description": "蓝黑低照度基底配少量危险色，统一城市夜景材质、实景光感与心理压迫气质，服务线索和反转题材。"
+        "description": "可读的夜景与线索系统，压迫来自空间和信息，不靠满屏霓虹。"
+      },
+      "campus-youth": {
+        "title": "校园青春",
+        "category": "真人实拍",
+        "description": "学期、班级与放学路径组织青春关系，校园像被使用过而不是布景。"
+      },
+      "court-pageant": {
+        "title": "宫廷权谋",
+        "category": "真人实拍",
+        "description": "单一王朝礼制下的仪仗、差序与权力距离，华丽来自织物与仪式。"
       },
       "chinese-2d": {
-        "title": "国漫 2D",
+        "title": "国漫二维",
         "category": "二维动画",
-        "description": "半写实国漫人物、矿物东方色与工笔式场景体系；以稳定线稿、清晰剪影和统一二维资产保障跨集一致性。"
+        "description": "稳定线稿与赛璐璐角色，东方绘景，二维语言不混三维塑料。"
       },
       "ink-narrative": {
         "title": "水墨叙事",
         "category": "风格化动画",
-        "description": "宣纸留白占主导，以焦墨、淡墨和少量朱砂组织叙事；人物身份靠稳定轮廓、笔法与色点区分，而不是抽象成不可识别墨团。"
+        "description": "宣纸留白、墨阶与笔势构成可识别人物，不是随机滤镜。"
       },
       "three-d-cartoon": {
-        "title": "3D 卡通短剧",
+        "title": "三维卡通",
         "category": "三维动画",
-        "description": "轮廓鲜明的风格化三维人物、柔和材质与明快配色；用可读表情、夸张节奏和稳定资产支撑喜剧、亲子与治愈内容。"
+        "description": "风格化三维比例、清晰剪影和喜剧节奏，适合轻松与亲子向。"
       },
       "fantasy-3d": {
-        "title": "国风 3D 玄幻",
+        "title": "东方三维",
         "category": "三维动画",
-        "description": "半写实东方人物、可信中式建筑与分层材质构成玄幻世界；法术色受阵营约束，体积光和特效只强化动作与叙事重点。"
+        "description": "东方三维体积与中式结构上的奇观，阵营色约束法术，不做西式魔幻套壳。"
       },
       "future-tech": {
-        "title": "未来科技",
-        "category": "科幻实拍",
-        "description": "洁净白灰空间、精密工业结构与克制冷光构成可信近未来；科技来自功能与材质，不依赖满屏霓虹和悬浮界面。"
+        "title": "近未来科技",
+        "category": "科幻影像",
+        "description": "功能可解释的近未来设备与空间，科技来自结构而不是悬浮界面。"
       },
       "cyberpunk-neon": {
-        "title": "赛博霓虹",
-        "category": "科幻实拍",
-        "description": "高密度亚洲夜城、潮湿旧材质与受控霓虹形成技术失衡的近未来；人物身份由义体、阶层服装和企业色区分。"
+        "title": "夜城机能",
+        "category": "科幻影像",
+        "description": "高密度夜城、阶层装备与受控招牌光，霓虹服务身份不是装饰灯海。"
       },
       "retro-hong-kong": {
-        "title": "复古港风",
-        "category": "年代实拍",
-        "description": "八九十年代华语都市的胶片色、密集街区与生活化服饰；用钨丝暖光、青绿阴影和真实时代器物建立怀旧感。"
+        "title": "年代胶片",
+        "category": "年代影像",
+        "description": "二十世纪后期华语都市的胶片色温、街区密度与生活器物。"
       },
       "clay-stop-motion": {
         "title": "黏土定格",
-        "category": "定格动画",
-        "description": "保留手塑痕迹的黏土角色、微缩布景与逐帧动作；统一模型比例、材料颗粒和灯光尺度，形成温暖可触的手工世界。"
+        "category": "手工媒介",
+        "description": "手塑黏土、微缩布景和逐帧顿挫，保留可触的手工尺度。"
       },
       "black-white-noir": {
-        "title": "黑白默片",
+        "title": "黑白戏剧",
         "category": "风格化实拍",
-        "description": "以黑白灰阶、硬朗光影和克制表演建立无对白也可读的戏剧性；时代质感来自构图、材质与表演，不靠复古滤镜。"
+        "description": "灰阶层次与硬朗布光，轮廓和表演承担叙事，不靠复古滤镜。"
       },
       "space-opera": {
-        "title": "太空歌剧",
-        "category": "科幻动画",
-        "description": "宏大星际尺度与鲜明阵营服饰结合可信航天结构；用色彩、徽记和材质建立政治与冒险叙事，而不是堆砌宇宙奇观。"
+        "title": "星际远征",
+        "category": "科幻影像",
+        "description": "舰船结构、阵营徽记与真空尺度，宏大来自对照而不是星云堆砌。"
       },
       "comic-pop": {
         "title": "漫画分镜",
         "category": "风格化动画",
-        "description": "高对比块面、网点纹理与漫画格律构成可读的动作喜剧视觉；夸张来自构图、拟声和姿态，角色资产仍保持连续性。"
+        "description": "墨线、网点与高对比块面，夸张服务动作与喜剧，角色剪影连续。"
       },
       "storybook-fantasy": {
         "title": "绘本童话",
-        "category": "插画动画",
-        "description": "纸张颗粒、柔和色块和手绘边缘构成温暖童话世界；角色表情与轮廓清楚，避免把绘本感做成泛化的柔焦滤镜。"
+        "category": "插画媒介",
+        "description": "纸纹、色块与手绘边缘的绘本世界，表情清楚，不做全屏柔焦。"
       },
       "surreal-dream": {
-        "title": "超现实梦境",
+        "title": "梦境逻辑",
         "category": "风格化实拍",
-        "description": "现实材质与不可能空间并置，以镜像、尺度错位和雾化光线表达梦境；所有超现实变化服务角色心理和叙事线索。"
+        "description": "现实材质进入有规则的不可能空间，变形必须能追踪、能返回。"
       },
       "nature-healing": {
-        "title": "自然疗愈",
+        "title": "乡野疗愈",
         "category": "真人实拍",
-        "description": "真实自然光、植物与手作生活构成松弛的在地质感；以季节、声音和微小行动表达疗愈，不做广告式空镜。"
+        "description": "地域、季节与劳动痕迹里的关系修复，自然参与叙事而不是旅拍空镜。"
       },
       "real-life-documentary": {
-        "title": "现实生活纪实",
+        "title": "生活纪实",
         "category": "真人实拍",
-        "description": "自然灰土色、真实东亚普通人与中国在地生活空间；保留环境痕迹和观察式影像气质，让家庭与社会议题更可信。"
+        "description": "观察式机位与在地生活证据，家庭与社会议题靠可信而不是精致摆拍。"
       }
     }
   },

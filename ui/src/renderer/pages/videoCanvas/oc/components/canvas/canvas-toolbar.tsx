@@ -1,6 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { Switch } from "antd";
 import { Info } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -219,10 +218,15 @@ export function CanvasToolbar({
                                 onSaveAppearanceDefault={onSaveAppearanceDefault}
                                 onBackgroundModeChange={onBackgroundModeChange}
                             />
-                            <div className="mt-2.5 flex items-center justify-between gap-2 rounded-[var(--dock-item-radius-labeled)] px-2 py-1.5" style={{ background: theme.spatial.surface }}>
+                            <label className="mt-2.5 flex cursor-pointer items-center justify-between gap-2 rounded-[var(--dock-item-radius-labeled)] px-2 py-1.5" style={{ background: theme.spatial.surface }}>
                                 <span className="inline-flex min-w-0 items-center gap-1.5 text-[var(--fs-tiny)] font-medium"><Info className="size-3" />{canvasT("videoCanvas.toolbar.imageInfo", "图片信息")}</span>
-                                <Switch size="small" checked={showImageInfo} onChange={onShowImageInfoChange} />
-                            </div>
+                                <input
+                                    type="checkbox"
+                                    className="size-3.5 accent-current"
+                                    checked={showImageInfo}
+                                    onChange={(event) => onShowImageInfoChange(event.target.checked)}
+                                />
+                            </label>
                         </CanvasOverlay>
                     </motion.div>
                 ) : null}

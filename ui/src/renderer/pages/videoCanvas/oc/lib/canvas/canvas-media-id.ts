@@ -46,3 +46,55 @@ export function canvasNodeDisplayUrl(node: CanvasNodeData | undefined | null): s
     if (mediaId) return canvasMediaUrl(mediaId);
     return rewriteCanvasDisplayUrl(node.metadata?.content);
 }
+
+type CanvasAssetUrlSource = {
+    kind?: string;
+    coverUrl?: string;
+    data?: {
+        storageKey?: string;
+        dataUrl?: string;
+        url?: string;
+    };
+};
+
+/**
+ * Live object URLs from this session's hydrate (`resolveImageUrl`) still paint.
+ * Persisted `blob:` leftovers do not — callers should prefer `storageKey`.
+ */
+export function usableCanvasSessionUrl(path: string | null | undefined): string {
+    const trimmed = path?.trim() || "";
+    if (!trimmed) return "";
+    if (trimmed.startsWith("blob:")) return trimmed;
+    return rewriteCanvasDisplayUrl(trimmed);
+}
+
+export function canvasAssetMediaId(asset: CanvasAssetUrlSource | undefined | null): string | null {
+    if (!asset) return null;
+    const fromKey = resourceIdFromStorageKey(asset.data?.storageKey);
+    if (fromKey) return fromKey;
+    for (const candidate of [asset.data?.dataUrl, asset.data?.url, asset.coverUrl]) {
+        const trimmed = candidate?.trim() || "";
+        if (!trimmed) continue;
+        if (trimmed.startsWith("resource:")) {
+            const id = resourceIdFromStorageKey(trimmed);
+            if (id) return id;
+        }
+        const mediaId = extractMediaIdFromCanvasMediaUrl(trimmed);
+        if (mediaId) return mediaId;
+    }
+    return null;
+}
+
+/**
+ * Paint src for a library asset. Prefers the current `/api/video-canvas/media/{id}`
+ * over a stale `coverUrl` (dead blob / old desktop port / Vite-relative path).
+ */
+export function canvasAssetDisplayUrl(asset: CanvasAssetUrlSource | undefined | null): string {
+    if (!asset) return "";
+    const mediaId = canvasAssetMediaId(asset);
+    if (mediaId) return canvasMediaUrl(mediaId);
+    if (asset.kind === "image") {
+        return usableCanvasSessionUrl(asset.data?.dataUrl) || usableCanvasSessionUrl(asset.coverUrl);
+    }
+    return usableCanvasSessionUrl(asset.data?.url) || usableCanvasSessionUrl(asset.coverUrl);
+}

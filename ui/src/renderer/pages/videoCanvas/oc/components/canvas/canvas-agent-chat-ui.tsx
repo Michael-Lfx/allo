@@ -1,8 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Button, Tooltip } from "antd";
+import { Button } from "antd";
 import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound, Wrench, X, XCircle } from "lucide-react";
 
+import { CanvasChromeButton } from "@oc/components/canvas/canvas-overlay";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import type { CanvasAgentOperationImpact } from "@oc/lib/canvas/canvas-agent-ops";
@@ -247,7 +249,7 @@ export function AgentChatComposer({
                 event.stopPropagation();
             }}
         >
-            <div className="rounded-lg border px-3 pb-2.5 pt-3 transition-[border-color,box-shadow] duration-150 focus-within:border-current" style={{ background: theme.node.fill, borderColor: theme.toolbar.border, color: theme.accent.primary, boxShadow: `0 10px 30px ${theme.spatial.shadow}` }}>
+            <div className="canvas-overlay rounded-lg px-3 pb-2.5 pt-3" style={canvasOverlayStyle(theme, { color: theme.accent.primary })}>
                 {attachments.length ? (
                     <div className="thin-scrollbar mb-2 flex gap-2 overflow-x-auto pb-1">
                         {attachments.map((item) => (
@@ -309,14 +311,33 @@ export function AgentChatComposer({
                                     void onAddFiles(event.target.files);
                                     event.target.value = "";
                                 }} />
-                                <Tooltip title={canvasT("videoCanvas.agent.uploadImage", "上传图片")}>
-                                    <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" disabled={sending} style={{ color: theme.node.muted }} icon={<ImagePlus className="size-4" />} onClick={() => fileInputRef.current?.click()} />
-                                </Tooltip>
+                                <CanvasChromeButton
+                                    className="is-icon"
+                                    disabled={sending}
+                                    style={{ color: theme.node.muted }}
+                                    title={canvasT("videoCanvas.agent.uploadImage", "上传图片")}
+                                    aria-label={canvasT("videoCanvas.agent.uploadImage", "上传图片")}
+                                    onClick={() => fileInputRef.current?.click()}
+                                >
+                                    <ImagePlus className="size-3.5" />
+                                </CanvasChromeButton>
                             </>
                         ) : null}
                         {left}
                     </div>
-                    <Button type="primary" className="!h-8 !w-8 !min-w-8 !rounded-md !p-0" disabled={!canSubmit} icon={sending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />} onClick={() => void onSubmit()} aria-label={canvasT("videoCanvas.agent.send", "发送")} />
+                    <button
+                        type="button"
+                        className="canvas-send-token"
+                        disabled={!canSubmit}
+                        style={{
+                            background: canSubmit ? theme.node.activeStroke : theme.toolbar.itemHover,
+                            color: canSubmit ? theme.canvas.background : theme.node.faint,
+                        }}
+                        onClick={() => void onSubmit()}
+                        aria-label={canvasT("videoCanvas.agent.send", "发送")}
+                    >
+                        {sending ? <LoaderCircle className="size-3 animate-spin" /> : <ArrowUp className="size-3" />}
+                    </button>
                 </div>
             </div>
         </div>

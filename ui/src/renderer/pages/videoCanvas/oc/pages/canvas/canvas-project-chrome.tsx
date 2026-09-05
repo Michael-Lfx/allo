@@ -8,7 +8,6 @@ import { CanvasProjectContextMenu } from "./canvas-project-context-menu";
 import { HideWhileNodeDragging } from "./canvas-project-world-layers";
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ContextMenuState, type Position, type ViewportTransform } from "@oc/types/canvas";
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
-import type { CanvasTrayMediaAsset } from "./use-canvas-render-model";
 import type { useCanvasUpload } from "./use-canvas-upload";
 import type { useCanvasMediaTools } from "./use-canvas-media-tools";
 import type { useCanvasAgentOperations } from "./use-canvas-agent-operations";
@@ -73,7 +72,7 @@ type CanvasProjectCanvasChromeProps = {
     setShortcutRequestNonce: Dispatch<SetStateAction<number>>;
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
     selectedNodeIds: Set<string>;
-    createMediaAssetNode: ReturnType<typeof useCanvasUpload>["createMediaAssetNode"];
+    insertAssetSpaceItem: ReturnType<typeof useCanvasUpload>["insertAssetSpaceItem"];
     focusCanvasImageNode: ReturnType<typeof useCanvasViewportController>["focusCanvasImageNode"];
     contextMenu: ContextMenuState | null;
     shortDramaEnabled: boolean;
@@ -85,6 +84,7 @@ type CanvasProjectCanvasChromeProps = {
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
     setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
     openAssetsAtPosition: ReturnType<typeof useCanvasUpload>["openAssetsAtPosition"];
+    assetTrayOpenNonce: ReturnType<typeof useCanvasUpload>["assetTrayOpenNonce"];
     openProjectAssets: (initialCategory?: string, position?: Position) => void;
     pasteAtPosition: (position: Position) => void;
     copyNodesToClipboard: ReturnType<typeof useCanvasNodeOperations>["copyNodesToClipboard"];
@@ -153,7 +153,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         setShortcutRequestNonce,
         currentProject,
         selectedNodeIds,
-        createMediaAssetNode,
+        insertAssetSpaceItem,
         focusCanvasImageNode,
         contextMenu,
         shortDramaEnabled,
@@ -165,6 +165,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         setStylePickerOpen,
         setDirectorTemplateRequest,
         openAssetsAtPosition,
+        assetTrayOpenNonce,
         openProjectAssets,
         pasteAtPosition,
         copyNodesToClipboard,
@@ -181,7 +182,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { lastAgentChange, viewLastAgentChange, undoAgentOps, dismissLastAgentChange } = agentOps;
-    const { toolbarNode, mediaAssets, canvasMediaNodes, contextMenuNode } = renderModel;
+    const { toolbarNode, contextMenuNode } = renderModel;
     return (
         <>
                     {uploadStatus ? <CanvasUploadStatusToast status={uploadStatus} theme={theme} /> : null}
@@ -263,15 +264,17 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                                 onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)}
                                 onOpenShortcuts={() => setShortcutRequestNonce((value) => value + 1)}
                             />
-                            <CanvasAssetTray
-                                mediaAssets={mediaAssets}
-                                canvasMediaNodes={canvasMediaNodes}
-                                showLibrary={!currentProject?.projectId}
-                                activeNodeId={selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null}
-                                onInsertMediaAsset={(asset) => void createMediaAssetNode(asset)}
-                                onFocusCanvasMedia={focusCanvasImageNode}
-                            />
                         </div>
+                    ) : null}
+
+                    {!focusMode ? (
+                        <CanvasAssetTray
+                            nodes={nodes}
+                            activeNodeId={selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null}
+                            openRequestNonce={assetTrayOpenNonce}
+                            onInsertAssetSpaceItem={(item) => void insertAssetSpaceItem(item)}
+                            onFocusCanvasMedia={focusCanvasImageNode}
+                        />
                     ) : null}
 
                     <CanvasProjectContextMenu

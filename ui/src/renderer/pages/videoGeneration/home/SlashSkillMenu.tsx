@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { BookOpen, FileText, Pic, Platte, VideoOne } from '@icon-park/react';
-import styles from './home.module.css';
+import { CanvasMenuRow } from '@oc/components/canvas/canvas-overlay';
 
 export interface SlashSkillMenuProps {
   mode: 'agent' | 'creation';
@@ -15,15 +15,14 @@ export function SlashSkillMenu({ mode, items, selectedId, onSelect }: SlashSkill
   const icons =
     mode === 'agent'
       ? [
-          <VideoOne key='idea' size={15} />,
-          <FileText key='script' size={15} />,
-          <BookOpen key='novel' size={15} />,
+          <VideoOne key='idea' size={14} />,
+          <FileText key='script' size={14} />,
+          <BookOpen key='novel' size={14} />,
         ]
       : null;
 
   return (
     <div
-      className={styles.slashMenu}
       role='listbox'
       aria-label={
         mode === 'agent'
@@ -35,37 +34,19 @@ export function SlashSkillMenu({ mode, items, selectedId, onSelect }: SlashSkill
             })
       }
     >
-      <div className={styles.slashMenuTitle}>
-        {mode === 'agent'
-          ? t('videoGeneration.create.modesMenuTitle', {
-              defaultValue: '选择 Mode',
-            })
-          : t('videoGeneration.create.skillsMenuTitle', {
-              defaultValue: '选择风格技能',
-            })}
-      </div>
-      {items.map((skill, index) => {
-        const active = selectedId === skill.id;
-        return (
-          <button
-            key={skill.id}
-            type='button'
-            role='option'
-            aria-selected={active}
-            className={`${styles.slashMenuItem} ${
-              active ? styles.slashMenuItemActive : ''
-            }`}
-            onClick={() => onSelect(skill.id)}
-          >
-            {icons?.[index] ??
-              (skill.id === 'cinematic' ? <Pic size={15} /> : <Platte size={15} />)}
-            <span>
-              <strong>{skill.label}</strong>
-              <small>{skill.description}</small>
-            </span>
-          </button>
-        );
-      })}
+      {items.map((skill, index) => (
+        <CanvasMenuRow
+          key={skill.id}
+          icon={
+            icons?.[index] ??
+            (skill.id === 'cinematic' ? <Pic size={14} /> : <Platte size={14} />)
+          }
+          label={skill.label}
+          detail={skill.description}
+          active={selectedId === skill.id}
+          onClick={() => onSelect(skill.id)}
+        />
+      ))}
     </div>
   );
 }

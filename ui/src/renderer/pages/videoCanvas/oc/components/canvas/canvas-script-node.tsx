@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Button, Input, InputNumber, Popover, Segmented, Select, Tooltip } from "antd";
-import { Clapperboard, Expand, Grid3X3, ListTree, Merge, Minus, Plus, RefreshCw, Send, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, Clapperboard, Expand, Grid3X3, ListTree, LoaderCircle, Merge, Minus, Plus, RefreshCw, Square, Trash2, X } from "lucide-react";
 
 import { CanvasResourceMentionTextarea } from "@oc/components/canvas/canvas-resource-mention-textarea";
 import { ModelPicker } from "@oc/components/model-picker";
@@ -257,17 +257,21 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
                         popupMatchSelectWidth={false}
                         onChange={onShotDurationChange}
                     />
-                    <Button
-                        size="small"
-                        shape="circle"
-                        className="!h-7 !w-7 !min-w-7 shrink-0"
-                        icon={<Send className="size-3.5" />}
+                    <button
+                        type="button"
+                        className="canvas-send-token shrink-0"
                         disabled={!prompt.trim() || node.metadata?.status === "loading"}
-                        loading={node.metadata?.status === "loading"}
-                        style={{ background: theme.toolbar.itemHover, borderColor: theme.node.stroke, color: theme.node.text }}
+                        style={{
+                            background: !prompt.trim() || node.metadata?.status === "loading" ? theme.toolbar.itemHover : theme.node.activeStroke,
+                            color: !prompt.trim() || node.metadata?.status === "loading" ? theme.node.faint : theme.canvas.background,
+                        }}
                         onMouseDown={(event) => event.stopPropagation()}
                         onClick={submitPrompt}
-                    />
+                        aria-label={canvasT("videoCanvas.agent.send", "发送")}
+                        title={canvasT("videoCanvas.agent.send", "发送")}
+                    >
+                        {node.metadata?.status === "loading" ? <LoaderCircle className="size-3 animate-spin" /> : <ArrowUp className="size-3" />}
+                    </button>
                 </div>
                 <RowHandle side="left" top={composerHeight / 2} tone="idle" theme={theme} title={canvasT("videoCanvas.script.connectContext", "连接文本节点作为项目设定")} onPointerDown={(event) => onConnectStart(event, "context", "target")} />
             </div>

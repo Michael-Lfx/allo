@@ -311,11 +311,9 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     useCanvasStylePresetSync({ projectLoaded, linkedProjectQuery, nodesRef, setNodes, getCanvasCenter });
 
     const {
-        assetPickerOpen,
-        closeAssetPicker,
-        createMediaAssetNode,
+        assetTrayOpenNonce,
+        insertAssetSpaceItem,
         fileDropActive,
-        handleAssetInsert,
         handleDrop,
         handleFileDragEnter,
         handleFileDragLeave,
@@ -1054,7 +1052,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         autoArrangeCanvasNodes={autoArrangeCanvasNodes}
                         currentProject={currentProject}
                         selectedNodeIds={selectedNodeIds}
-                        createMediaAssetNode={createMediaAssetNode}
+                        insertAssetSpaceItem={insertAssetSpaceItem}
                         contextMenu={contextMenu}
                         shortDramaEnabled={shortDramaEnabled}
                         hasCopiedNodes={hasCopiedNodes}
@@ -1063,6 +1061,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         createFolder={createFolder}
                         setStylePickerOpen={setStylePickerOpen}
                         openAssetsAtPosition={openAssetsAtPosition}
+                        assetTrayOpenNonce={assetTrayOpenNonce}
                         openProjectAssets={openProjectAssets}
                         pasteAtPosition={pasteAtPosition}
                         copyNodesToClipboard={copyNodesToClipboard}
@@ -1105,9 +1104,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         taskDetailLoading={taskDetailLoading}
                         setTaskDetail={setTaskDetail}
                         clearCanvas={clearCanvas}
-                        assetPickerOpen={assetPickerOpen}
-                        handleAssetInsert={handleAssetInsert}
-                        closeAssetPicker={closeAssetPicker}
                         linkedProjectQuery={linkedProjectQuery}
                         handleProjectAssetsInsert={handleProjectAssetsInsert}
                         codexCompactAgent={codexCompactAgent}

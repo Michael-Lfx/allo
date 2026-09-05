@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "./quiet-chrome.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -2412,129 +2413,6 @@
     .aceternity-floating-panel {
         transform-origin: bottom center;
         box-shadow: 0 10px 32px rgba(15, 23, 42, 0.14);
-    }
-
-    .canvas-overlay {
-        border-radius: var(--r-lg);
-        border-width: 1px;
-        border-style: solid;
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        box-shadow: 0 10px 32px rgba(15, 23, 42, 0.14);
-    }
-
-    .canvas-menu-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        width: 100%;
-        min-height: 28px;
-        padding: 0 8px;
-        border: 0;
-        border-radius: 6px;
-        background: transparent;
-        color: inherit;
-        text-align: left;
-        font-size: 13px;
-        font-weight: 500;
-        line-height: 1.2;
-        outline: none;
-    }
-
-    .canvas-menu-row:hover:not(:disabled),
-    .canvas-menu-row:focus-visible:not(:disabled),
-    .canvas-menu-row[data-active] {
-        background: color-mix(in srgb, currentColor 8%, transparent);
-    }
-
-    .canvas-menu-row:disabled {
-        cursor: not-allowed;
-        opacity: 0.35;
-    }
-
-    .canvas-menu-row[data-danger] {
-        color: var(--dock-command-danger, #f87171);
-    }
-
-    .canvas-menu-row-icon {
-        display: grid;
-        width: 16px;
-        height: 16px;
-        flex: 0 0 16px;
-        place-items: center;
-        opacity: 0.72;
-    }
-
-    .canvas-menu-row-icon svg {
-        width: 14px;
-        height: 14px;
-    }
-
-    .canvas-menu-row-detail,
-    .canvas-menu-row-shortcut {
-        font-size: var(--fs-label);
-        font-weight: 400;
-        opacity: 0.42;
-    }
-
-    .canvas-menu-row-badge {
-        font-size: var(--fs-label);
-        font-weight: 600;
-        opacity: 0.55;
-    }
-
-    .canvas-menu-separator {
-        height: 1px;
-        margin: 4px 8px;
-        background: color-mix(in srgb, currentColor 12%, transparent);
-    }
-
-    .canvas-chrome-token {
-        display: inline-flex;
-        align-items: center;
-        min-width: 0;
-        height: 28px;
-        padding: 0 8px;
-        border: 0;
-        border-radius: 8px;
-        background: color-mix(in srgb, var(--workspace-surface-strong) 94%, var(--workspace-accent) 6%);
-        color: inherit;
-        font: inherit;
-        font-size: var(--fs-label);
-        line-height: 1;
-        cursor: pointer;
-        outline: none;
-    }
-
-    .canvas-chrome-token:hover,
-    .canvas-chrome-token:focus-visible,
-    .canvas-chrome-token[aria-expanded="true"] {
-        background: color-mix(in srgb, var(--workspace-surface-strong) 86%, var(--workspace-accent) 14%);
-    }
-
-    .canvas-composer-shell {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        padding: 8px;
-        border-radius: var(--r-lg);
-        border-width: 1px;
-        border-style: solid;
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-    }
-
-    .canvas-composer-field {
-        min-height: 56px;
-        border-radius: var(--r-md);
-        outline: none;
-    }
-
-    .canvas-composer-footer {
-        display: flex;
-        min-width: 0;
-        align-items: center;
-        gap: 4px;
     }
 
     .aceternity-zoom-range {

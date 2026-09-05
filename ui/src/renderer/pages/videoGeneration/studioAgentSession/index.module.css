@@ -480,7 +480,9 @@
 .composer {
   flex-shrink: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 10px 14px 16px;
   background: color-mix(in srgb, var(--color-bg-2) 92%, transparent);
@@ -489,54 +491,34 @@
 .composerHint,
 .composerDone {
   margin: 0;
+  flex: 1;
   color: var(--color-text-3);
   font-size: 11px;
   line-height: 1.45;
-  text-align: center;
+  text-align: left;
 }
 
 .composerDone {
   padding: 8px 0 4px;
 }
 
-.actionButton,
-.actionButtonBusy {
-  display: inline-flex;
-  width: 100%;
-  height: 40px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 0;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  pointer-events: auto;
+.sendIdle,
+.sendBusy {
+  color: var(--color-bg-1);
 }
 
-.actionButton {
-  background: rgb(var(--primary-6));
-  color: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 10px 24px rgba(var(--primary-6), 0.18);
+.sendIdle {
+  background: var(--color-text-1);
 }
 
-.actionButtonBusy {
+.sendBusy {
   background: var(--color-fill-3);
   color: var(--color-text-1);
-  box-shadow: none;
 }
 
-.actionButton:hover:not(:disabled),
-.actionButtonBusy:hover:not(:disabled) {
-  filter: brightness(1.04);
-}
-
-.actionButton:disabled,
-.actionButtonBusy:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.sendIcon {
+  width: 12px;
+  height: 12px;
 }
 
 .actionSpinner {
@@ -583,7 +565,7 @@
   max-width: min(1120px, 92vw);
   max-height: calc(86vh - 48px);
   border-radius: 14px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
   background: #000;
 }
 

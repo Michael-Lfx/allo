@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { canvasMediaUrl } from "@renderer/pages/videoCanvas/api";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
-import { canvasNodeDisplayUrl, canvasNodeMediaId, rewriteCanvasDisplayUrl } from "./canvas-media-id";
+import { canvasAssetDisplayUrl, canvasNodeDisplayUrl, canvasNodeMediaId, rewriteCanvasDisplayUrl } from "./canvas-media-id";
 
 const node = (type: CanvasNodeType, metadata: Record<string, unknown>): CanvasNodeData =>
     ({
@@ -67,5 +67,37 @@ describe("canvasNodeMediaId / canvasNodeDisplayUrl", () => {
         expect(
             canvasNodeDisplayUrl(node(CanvasNodeType.Image, { content: "blob:http://localhost/x" }))
         ).toBe("");
+    });
+});
+
+describe("canvasAssetDisplayUrl", () => {
+    test("prefers storageKey over a stale coverUrl blob", () => {
+        expect(
+            canvasAssetDisplayUrl({
+                kind: "image",
+                coverUrl: "blob:http://127.0.0.1:5173/dead-cover",
+                data: { storageKey: "resource:live-id", dataUrl: "blob:http://127.0.0.1:5173/dead-data" },
+            })
+        ).toBe(canvasMediaUrl("live-id"));
+    });
+
+    test("rewrites a relative media path onto the current origin", () => {
+        expect(
+            canvasAssetDisplayUrl({
+                kind: "video",
+                coverUrl: "/api/video-canvas/media/stale-cover",
+                data: { url: "/api/video-canvas/media/vid-1" },
+            })
+        ).toBe(canvasMediaUrl("vid-1"));
+    });
+
+    test("keeps a live session object URL when there is no media id", () => {
+        expect(
+            canvasAssetDisplayUrl({
+                kind: "image",
+                coverUrl: "blob:http://127.0.0.1:5173/dead-cover",
+                data: { dataUrl: "blob:http://127.0.0.1:5173/session" },
+            })
+        ).toBe("blob:http://127.0.0.1:5173/session");
     });
 });

@@ -3,6 +3,7 @@ import type { CSSProperties, ClipboardEvent, KeyboardEvent, MouseEvent, PointerE
 import { createPortal } from "react-dom";
 import { FileText, Image as ImageIcon, Music2, Pencil, Sparkles, UserRound, Video } from "lucide-react";
 
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { canvasResourceMentionToken, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
@@ -434,8 +435,8 @@ function MentionMenu({ anchor, references, activeIndex, theme, preferredWidth, o
     return createPortal(
         <div
             data-canvas-resource-mention-menu="true"
-            className="fixed z-[var(--z-tooltip)] max-h-56 overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
-            style={{ left, top, width: menuWidth, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            className="canvas-overlay fixed z-[var(--z-tooltip)] max-h-56 overflow-y-auto p-1"
+            style={{ ...canvasOverlayStyle(theme), left, top, width: menuWidth }}
             onPointerDown={stopCanvasInteraction}
             onMouseDown={stopCanvasInteraction}
             onClick={(event) => event.stopPropagation()}

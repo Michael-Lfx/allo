@@ -71,9 +71,6 @@ const LookStyleMenu: React.FC<LookStyleMenuProps> = ({ stylePrompt, onSelect }) 
       aria-label={t('videoGeneration.looks.menuAria', { defaultValue: '选择画风' })}
     >
       <div className={styles.header}>
-        <div className={styles.title}>
-          {t('videoGeneration.looks.menuTitle', { defaultValue: '选择画风' })}
-        </div>
         <button
           type='button'
           className={`${styles.noneChip} ${noneSelected ? styles.noneChipActive : ''}`}

@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { formatCredits } from "@oc/constant/credits";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { formatTaskKind, statusLabel } from "@oc/lib/generation-task-display";
+import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import type { GenerationTask } from "@oc/services/api/task-center";
@@ -49,8 +50,8 @@ export function CanvasActiveTaskPanel({ tasks, align = "right" }: { tasks: Gener
                 <LayoutGroup id="canvas-active-tasks">
                     <motion.section
                         layout
-                        className="pointer-events-auto overflow-hidden rounded-[var(--panel-radius)] border backdrop-blur-2xl"
-                        style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: `0 24px 72px ${theme.spatial.shadow}` }}
+                        className="canvas-overlay pointer-events-auto overflow-hidden"
+                        style={canvasOverlayStyle(theme)}
                         aria-label={canvasT("videoCanvas.tasks.panelAria", "当前画布生成任务")}
                     >
                         <motion.button
