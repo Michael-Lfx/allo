@@ -5,6 +5,11 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.2.2 - 2026-09-05
+
+- Video Look catalog and original still covers share one surface.
+- R2V storyboard display stays frozen during generation, and users can name tasks.
+
 ## v1.2.1 - 2026-09-05
 
 - Canvas unifies the asset space with short-drama stills, quiets overlay chrome, and collapses the node composer.
