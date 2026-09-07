@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use include_dir::{Dir, include_dir};
@@ -43,6 +43,75 @@ static SKILL_MUTATION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 pub(crate) fn skill_mutation_lock() -> &'static tokio::sync::Mutex<()> {
     SKILL_MUTATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+#[derive(Default)]
+struct StagingCleanupState {
+    extraction_in_flight: bool,
+    cleanup_requested: bool,
+}
+
+/// Coordinates staging cleanup with the synchronous ZIP worker. Dropping an
+/// async `JoinHandle` does not stop `spawn_blocking`, so cleanup must wait for
+/// the worker instead of racing it on request cancellation.
+#[derive(Clone)]
+pub(crate) struct StagingCleanupHandle {
+    root: PathBuf,
+    parent: PathBuf,
+    state: Arc<Mutex<StagingCleanupState>>,
+}
+
+impl StagingCleanupHandle {
+    pub(crate) fn new(root: PathBuf, parent: PathBuf) -> Self {
+        Self {
+            root,
+            parent,
+            state: Arc::new(Mutex::new(StagingCleanupState::default())),
+        }
+    }
+
+    fn begin_extraction(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.cleanup_requested {
+            return false;
+        }
+        state.extraction_in_flight = true;
+        true
+    }
+
+    fn finish_extraction(&self) {
+        let should_cleanup = {
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.extraction_in_flight = false;
+            state.cleanup_requested
+        };
+        if should_cleanup {
+            remove_staging_directory_sync(&self.root);
+            remove_empty_staging_parent_sync(&self.parent);
+        }
+    }
+
+    pub(crate) fn request_cleanup(&self) {
+        let should_cleanup = {
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.cleanup_requested = true;
+            !state.extraction_in_flight
+        };
+        if should_cleanup {
+            remove_staging_directory_sync(&self.root);
+            remove_empty_staging_parent_sync(&self.parent);
+        }
+    }
+}
+
+struct ExtractionWorkerGuard {
+    cleanup: StagingCleanupHandle,
+}
+
+impl Drop for ExtractionWorkerGuard {
+    fn drop(&mut self) {
+        self.cleanup.finish_extraction();
+    }
 }
 
 /// Acquire the process-wide Skill mutation lock for callers that need to
@@ -971,11 +1040,25 @@ pub(crate) const MARKET_IMPORT_SCAN_DEPTH: usize = 6;
 pub(crate) async fn extract_skill_archive_to_staging(
     archive_path: &Path,
     destination: &Path,
+    cleanup: StagingCleanupHandle,
 ) -> Result<(), ExtensionError> {
     ensure_regular_skill_directory(destination).await?;
     let archive = archive_path.to_path_buf();
     let destination = destination.to_path_buf();
-    tokio::task::spawn_blocking(move || crate::zip_safe::extract_zip_archive(&archive, &destination))
+    if !cleanup.begin_extraction() {
+        return Err(ExtensionError::InvalidSkillPath(
+            "Skill archive extraction was cancelled before it started".into(),
+        ));
+    }
+    let extraction_cleanup = cleanup.clone();
+    tokio::task::spawn_blocking(move || {
+        let _worker_guard = ExtractionWorkerGuard {
+            cleanup: extraction_cleanup,
+        };
+        #[cfg(test)]
+        test_overrides::wait_for_archive_extraction();
+        crate::zip_safe::extract_zip_archive(&archive, &destination)
+    })
         .await
         .map_err(|error| ExtensionError::InvalidSkillPath(format!("Zip extraction task failed: {error}")))??;
     Ok(())
@@ -1117,8 +1200,9 @@ pub(crate) async fn commit_market_skill_directory(
     }
 }
 
-/// Remove only a user Skill name that the market transaction recorded as newly
-/// created. Reused Skills are never passed here by the package installer.
+/// Remove a newly committed Skill during expert-package rollback. Single
+/// Skill installation commits provenance before its directory, so it does not
+/// use this best-effort package rollback path.
 pub(crate) async fn rollback_market_skill(paths: &SkillPaths, name: &str) -> Result<(), ExtensionError> {
     validate_filename(name)?;
     let _ = remove_path_entry(&paths.user_skills_dir.join(name)).await?;
@@ -1269,14 +1353,12 @@ async fn import_skills_from_zip(
     let staging = SkillImportStaging::create(paths).await?;
     let extract_dir = staging.root.clone();
 
-    let archive = archive_path.to_path_buf();
-    let destination = extract_dir.clone();
-    let extraction =
-        tokio::task::spawn_blocking(move || crate::zip_safe::extract_zip_archive(&archive, &destination))
-            .await
-            .map_err(|e| {
-                ExtensionError::InvalidSkillPath(format!("Zip extraction task failed: {e}"))
-            })?;
+    let extraction = extract_skill_archive_to_staging(
+        archive_path,
+        &extract_dir,
+        staging.cleanup_handle.clone(),
+    )
+    .await;
 
     if let Err(err) = extraction {
         staging.cleanup().await;
@@ -1313,6 +1395,7 @@ async fn import_skills_from_zip(
 struct SkillImportStaging {
     root: PathBuf,
     parent: PathBuf,
+    cleanup_handle: StagingCleanupHandle,
     armed: bool,
 }
 
@@ -1330,8 +1413,9 @@ impl SkillImportStaging {
             return Err(ExtensionError::Io(error));
         }
         Ok(Self {
-            root,
-            parent,
+            root: root.clone(),
+            parent: parent.clone(),
+            cleanup_handle: StagingCleanupHandle::new(root, parent),
             armed: true,
         })
     }
@@ -1358,16 +1442,7 @@ impl Drop for SkillImportStaging {
         if !self.armed {
             return;
         }
-        let root = self.root.clone();
-        let parent = self.parent.clone();
-        let cleanup = move || {
-            remove_staging_directory_sync(&root);
-            remove_empty_staging_parent_sync(&parent);
-        };
-        // A dropped future cannot await cleanup. The archive extractor has a
-        // bounded expansion budget, so a synchronous, link-safe retry gives
-        // cancellation the same cleanup guarantee as the normal path.
-        cleanup();
+        self.cleanup_handle.request_cleanup();
     }
 }
 
@@ -3071,10 +3146,14 @@ async fn create_symlink_for_link(src: &Path, dst: &Path) -> Result<(), Extension
 /// the [`copy_dir_recursive`] fallback branch on platforms where
 /// symlinking would otherwise succeed (Linux/macOS CI).
 #[cfg(test)]
-mod test_overrides {
+pub(crate) mod test_overrides {
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier, Mutex};
 
     static FORCE_SYMLINK_FAILURE: AtomicBool = AtomicBool::new(false);
+    static FAIL_NEXT_PROJECTION_MARKER_WRITE: AtomicBool = AtomicBool::new(false);
+    static FAIL_NEXT_PROJECTION_BACKUP_DELETE: AtomicBool = AtomicBool::new(false);
+    static EXTRACTION_BARRIERS: Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>> = Mutex::new(None);
 
     pub fn should_force_symlink_failure() -> bool {
         FORCE_SYMLINK_FAILURE.load(Ordering::SeqCst)
@@ -3097,6 +3176,50 @@ mod test_overrides {
     impl Drop for ForceFailureGuard {
         fn drop(&mut self) {
             FORCE_SYMLINK_FAILURE.store(false, Ordering::SeqCst);
+        }
+    }
+
+    pub fn fail_next_projection_marker_write() {
+        FAIL_NEXT_PROJECTION_MARKER_WRITE.store(true, Ordering::SeqCst);
+    }
+
+    pub fn should_fail_next_projection_marker_write() -> bool {
+        FAIL_NEXT_PROJECTION_MARKER_WRITE.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn fail_next_projection_backup_delete() {
+        FAIL_NEXT_PROJECTION_BACKUP_DELETE.store(true, Ordering::SeqCst);
+    }
+
+    pub fn should_fail_projection_backup_delete(path: &std::path::Path) -> bool {
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains(".projection-backup-"))
+        {
+            return false;
+        }
+        FAIL_NEXT_PROJECTION_BACKUP_DELETE.swap(false, Ordering::SeqCst)
+    }
+
+    pub struct ExtractionBarrierGuard;
+
+    pub fn pause_archive_extraction(started: Arc<Barrier>, release: Arc<Barrier>) -> ExtractionBarrierGuard {
+        *EXTRACTION_BARRIERS.lock().unwrap() = Some((started, release));
+        ExtractionBarrierGuard
+    }
+
+    pub fn wait_for_archive_extraction() {
+        let barriers = EXTRACTION_BARRIERS.lock().unwrap().clone();
+        if let Some((started, release)) = barriers {
+            started.wait();
+            release.wait();
+        }
+    }
+
+    impl Drop for ExtractionBarrierGuard {
+        fn drop(&mut self) {
+            *EXTRACTION_BARRIERS.lock().unwrap() = None;
         }
     }
 }

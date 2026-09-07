@@ -64,20 +64,14 @@ impl MarketPackagePresetInstallFailure {
 
 struct MarketPackageStaging {
     root: PathBuf,
-    parent: PathBuf,
+    cleanup_handle: skill_service::StagingCleanupHandle,
 }
 
 impl Drop for MarketPackageStaging {
     fn drop(&mut self) {
         // Drop is the final cancellation/unwind guard. The extracted archive
         // is untrusted input and must not survive an interrupted install.
-        let root = self.root.clone();
-        let parent = self.parent.clone();
-        let cleanup = move || {
-            skill_service::remove_staging_directory_sync(&root);
-            skill_service::remove_empty_staging_parent_sync(&parent);
-        };
-        cleanup();
+        self.cleanup_handle.request_cleanup();
     }
 }
 
@@ -98,7 +92,10 @@ async fn create_market_package_staging(paths: &SkillPaths) -> Result<MarketPacka
         let _ = tokio::fs::remove_dir(&parent).await;
         return Err(AppError::Internal(format!("create market staging root: {error}")));
     }
-    Ok(MarketPackageStaging { root, parent })
+    Ok(MarketPackageStaging {
+        root: root.clone(),
+        cleanup_handle: skill_service::StagingCleanupHandle::new(root, parent),
+    })
 }
 
 /// Resolve a SkillHub expert package and install its child skills. This is
@@ -497,7 +494,11 @@ async fn install_skillhub_package_skills(
             tokio::fs::write(&archive_path, archive)
                 .await
                 .map_err(map_market_local_error)?;
-            skill_service::extract_skill_archive_to_staging(&archive_path, &extract_dir)
+            skill_service::extract_skill_archive_to_staging(
+                &archive_path,
+                &extract_dir,
+                staging.cleanup_handle.clone(),
+            )
                 .await
                 .map_err(map_market_extension_error)?;
             tokio::fs::remove_file(&archive_path)

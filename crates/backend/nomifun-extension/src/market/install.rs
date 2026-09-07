@@ -266,7 +266,11 @@ impl ManagedSkillInstaller {
             let extract_dir = staging.root.join("extract");
             let artifact_sha256 = source.download_skill(&remote, &archive_path).await?;
 
-            skill_service::extract_skill_archive_to_staging(&archive_path, &extract_dir)
+            skill_service::extract_skill_archive_to_staging(
+                &archive_path,
+                &extract_dir,
+                staging.cleanup_handle.clone(),
+            )
                 .await
                 .map_err(map_archive_error)?;
             let skill_dir = find_single_skill_directory(&extract_dir)?;
@@ -769,6 +773,7 @@ fn collect_skill_manifests(
 struct MarketSkillStaging {
     root: PathBuf,
     parent: PathBuf,
+    cleanup_handle: skill_service::StagingCleanupHandle,
     armed: bool,
 }
 
@@ -781,9 +786,11 @@ impl MarketSkillStaging {
             let _ = tokio::fs::remove_dir(&parent).await;
             return Err(MarketSkillInstallError::LocalIo);
         }
+        let cleanup_handle = skill_service::StagingCleanupHandle::new(root.clone(), parent.clone());
         Ok(Self {
             root,
             parent,
+            cleanup_handle,
             armed: true,
         })
     }
@@ -818,17 +825,7 @@ impl Drop for MarketSkillStaging {
         if !self.armed {
             return;
         }
-        let root = self.root.clone();
-        let parent = self.parent.clone();
-        let cleanup = move || {
-            // Cancellation cannot await an async Drop. The archive is capped
-            // at 32 MiB and the root name is operation-owned, so a bounded
-            // synchronous retry is the only way to avoid leaving fresh
-            // staging behind after the future is dropped.
-            skill_service::remove_staging_directory_sync(&root);
-            skill_service::remove_empty_staging_parent_sync(&parent);
-        };
-        cleanup();
+        self.cleanup_handle.request_cleanup();
     }
 }
 
@@ -948,6 +945,8 @@ mod tests {
     use super::*;
     use nomifun_api_types::{SkillMarketInstallRequest, SkillMarketInstallStatus};
     use std::io::Write;
+    use std::sync::{Arc, Barrier};
+    use serial_test::serial;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1272,6 +1271,61 @@ mod tests {
         .await;
 
         assert!(result.is_err(), "the slow download should be cancelled");
+        assert!(!paths.user_skills_dir.join(MARKET_STAGING_DIR).exists());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn managed_install_cleans_staging_when_cancelled_during_extraction() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(tmp.path());
+        let installer = ManagedSkillInstaller::new(paths.clone());
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let _gate = crate::skill_service::test_overrides::pause_archive_extraction(
+            started.clone(),
+            release.clone(),
+        );
+        let task = tokio::spawn({
+            let installer = installer.clone();
+            async move {
+                installer
+                    .install_with_source(
+                        SkillMarketInstallRequest {
+                            source: SKILLHUB_SOURCE.into(),
+                            id: "skillhub:owner/skills/cancelled-during-extraction".into(),
+                        },
+                        Arc::new(FakeSkillHub {
+                            archive: archive_for(
+                                "cancelled-during-extraction",
+                                "cancelled-during-extraction",
+                            ),
+                            owner: "owner".into(),
+                            slug: "cancelled-during-extraction".into(),
+                            revision: None,
+                        }),
+                    )
+                    .await
+            }
+        });
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || started.wait()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        task.abort();
+        tokio::task::spawn_blocking(move || release.wait()).await.unwrap();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        for _ in 0..50 {
+            if !paths.user_skills_dir.join(MARKET_STAGING_DIR).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(!paths.user_skills_dir.join(MARKET_STAGING_DIR).exists());
     }
 
