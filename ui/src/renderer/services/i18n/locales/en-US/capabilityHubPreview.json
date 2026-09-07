@@ -1,6 +1,6 @@
 {
   "title": "Capability hub preview",
-  "subtitle": "A mock of Presets, Skills, MCP, and Plugins. Switch Now and Proposed. Nothing here is wired to real data.",
+  "subtitle": "A mock of Presets, Skills, and MCP. Switch Now and Proposed. Nothing here is wired to real data.",
   "now": "Now",
   "proposed": "Proposed",
   "light": "Light",
@@ -15,8 +15,7 @@
   "tabs": {
     "presets": "Presets",
     "skills": "Skills",
-    "mcp": "MCP",
-    "plugins": "Plugins"
+    "mcp": "MCP"
   },
   "cards": {
     "1": {

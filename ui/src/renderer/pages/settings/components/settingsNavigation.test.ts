@@ -28,7 +28,7 @@ const builtinItems: SettingsNavItem[] = [
     label: 'Capabilities',
     icon: 'presets',
     groupId: 'capabilities',
-    activePaths: ['presets', 'skills', 'mcp', 'plugins'],
+    activePaths: ['presets', 'skills', 'mcp'],
   },
   { id: 'about', path: 'about', label: 'About', icon: 'about', groupId: 'account' },
 ];
@@ -72,16 +72,16 @@ describe('settings navigation', () => {
     expect(LEGACY_ANCHOR_REMAP.skills).toBe('capability-hub');
   });
 
-  test('capability hub nav item stays active across presets, skills, MCP, and plugins', () => {
+  test('capability hub nav item stays active across presets, skills, and MCP', () => {
     const item = {
       path: 'presets',
-      activePaths: ['presets', 'skills', 'mcp', 'plugins'],
+      activePaths: ['presets', 'skills', 'mcp'],
     };
 
     expect(isSettingsNavItemActive('/settings/presets', item)).toBe(true);
     expect(isSettingsNavItemActive('/settings/skills', item)).toBe(true);
     expect(isSettingsNavItemActive('/settings/mcp', item)).toBe(true);
-    expect(isSettingsNavItemActive('/settings/plugins', item)).toBe(true);
+    expect(isSettingsNavItemActive('/settings/plugins', item)).toBe(false);
     expect(isSettingsNavItemActive('/settings/system', item)).toBe(false);
   });
 

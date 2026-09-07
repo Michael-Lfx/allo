@@ -18,8 +18,8 @@ describe('capability hub preview', () => {
     expect(previewIndex).toBeLessThan(protectedIndex);
   });
 
-  test('mocks the four hubs and a now versus proposed switch', () => {
-    expect(HUB_IDS).toEqual(['presets', 'skills', 'mcp', 'plugins']);
+  test('mocks the supported hubs and a now versus proposed switch', () => {
+    expect(HUB_IDS).toEqual(['presets', 'skills', 'mcp']);
     expect(pageSource.includes("useState<HubPreviewVariant>('proposed')")).toBe(true);
     expect(mockSource.includes('data-variant={variant}')).toBe(true);
     expect(mockSource.includes("capabilityHubPreview.discover")).toBe(true);

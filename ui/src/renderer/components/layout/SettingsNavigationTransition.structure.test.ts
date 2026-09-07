@@ -27,7 +27,7 @@ describe('settings navigation loading contract', () => {
   });
 
   test('uses the shared settings fallback for route chunks and marks committed routes ready', () => {
-    expect(routerSource).toContain("const SETTINGS_CAPABILITY_PATHS = ['/presets', '/skills', '/mcp', '/plugins']");
+    expect(routerSource).toContain("const SETTINGS_CAPABILITY_PATHS = ['/presets', '/skills', '/mcp']");
     expect(routerSource).toContain("pathname.startsWith('/settings/')");
     expect(routerSource).toContain('<SettingsContentLoading />');
     expect(routerSource).toContain('markSettingsNavigationReady();');

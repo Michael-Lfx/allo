@@ -43,7 +43,7 @@ describe('settings route prefetch', () => {
     expect(prefetchSource.includes("void import('./PresetSettings')")).toBe(true);
     expect(prefetchSource.includes("void import('./SkillsSettingsPage')")).toBe(true);
     expect(prefetchSource.includes("void import('@/renderer/pages/mcp')")).toBe(true);
-    expect(prefetchSource.includes("void import('@/renderer/pages/mcp/PluginSettingsPage')")).toBe(true);
+    expect(prefetchSource.includes("void import('@/renderer/pages/mcp/PluginSettingsPage')")).toBe(false);
   });
 
   test('the sider settings button prefetches on hover and idle', () => {
