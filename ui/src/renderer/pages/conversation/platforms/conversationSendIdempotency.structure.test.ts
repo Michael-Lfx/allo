@@ -200,6 +200,14 @@ describe('conversation send idempotency wiring', () => {
       "if (conversation.status === 'running') {",
       quarantine
     );
+    const explicitRemount = openClawSource.indexOf(
+      'if (pending.initial_only === false)',
+      remountRead
+    );
+    const explicitReplay = openClawSource.indexOf(
+      'void deliverStarOfficeRequest(pending, storageKey);',
+      explicitRemount
+    );
     const runningReplay = openClawSource.indexOf(
       'void deliverStarOfficeRequest(pending, storageKey, true);',
       runningBranch
@@ -232,17 +240,15 @@ describe('conversation send idempotency wiring', () => {
         .includes('deliverStarOfficeRequest(delivery, storageKey, true)')
     ).toBe(false);
     expect(remountRead > explicitDispatch).toBe(true);
+    expect(explicitRemount > remountRead).toBe(true);
+    expect(explicitReplay > explicitRemount).toBe(true);
     expect(terminalFence > remountRead).toBe(true);
     expect(quarantine > terminalFence).toBe(true);
     expect(runningBranch > quarantine).toBe(true);
     expect(runningReplay > runningBranch).toBe(true);
     expect(pendingAuthority > runningReplay).toBe(true);
     expect(pendingInitialOnly > pendingAuthority).toBe(true);
-    expect(
-      openClawSource
-        .slice(remountRead, pendingInitialOnly)
-        .includes('deliverStarOfficeRequest(pending, storageKey);')
-    ).toBe(false);
+    expect(explicitReplay < runningBranch).toBe(true);
   });
 
   test('keeps persisted initial deliveries closed until a fresh accepted response', () => {

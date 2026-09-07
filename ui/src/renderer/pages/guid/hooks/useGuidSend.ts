@@ -335,6 +335,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
           initial_admission_epoch: 0,
           input,
           files: files.length > 0 ? files : undefined,
+          workspace_path: finalWorkspace,
           idempotency_key: uuidv7(),
         };
         if (entryPlan.sendInitialMessage) {
@@ -405,6 +406,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
           initial_admission_epoch: 0,
           input,
           files: files.length > 0 ? files : undefined,
+          workspace_path: finalWorkspace,
           idempotency_key: uuidv7(),
         };
         if (entryPlan.sendInitialMessage) {
@@ -514,6 +516,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
             conversationId: conversation.id,
             input,
             files,
+            workspacePath: finalWorkspace,
             initialSkillIds,
             idempotencyKey: uuidv7(),
           });
@@ -617,6 +620,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
             conversationId: conversation.id,
             input,
             files,
+            workspacePath: finalWorkspace,
             initialSkillIds,
             idempotencyKey: uuidv7(),
           });

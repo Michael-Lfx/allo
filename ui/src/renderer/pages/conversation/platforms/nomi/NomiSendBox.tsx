@@ -603,10 +603,11 @@ const NomiSendBox: React.FC<{
         id = uuidv7(),
         input,
         files,
+        workspace_path: queuedWorkspacePath,
         initialOnly = false,
         injectSkills = [],
       }: Pick<ConversationCommandQueueItem, 'input' | 'files'> &
-        Partial<Pick<ConversationCommandQueueItem, 'id'>> & {
+        Partial<Pick<ConversationCommandQueueItem, 'id' | 'workspace_path'>> & {
           initialOnly?: boolean;
           /** Source-qualified catalog Skill IDs selected for this exact turn. */
           injectSkills?: string[];
@@ -632,7 +633,7 @@ const NomiSendBox: React.FC<{
         notifyLocalSubmit(id);
       }
 
-      const displayMessage = buildDisplayMessage(input, files, workspacePath);
+      const displayMessage = buildDisplayMessage(input, files, queuedWorkspacePath ?? workspacePath);
 
       try {
         const res = await ipcBridge.conversation.sendMessage.invoke({
@@ -796,6 +797,7 @@ const NomiSendBox: React.FC<{
       guidTransitionMark('destinationMounted');
 
       let attemptedIdempotencyKey: string | null = null;
+      let initialRequestStarted = false;
       try {
         sessionStorage.removeItem(processedKey);
         const initialMessage = await readAuthorizedInitialMessageDelivery(
@@ -808,18 +810,26 @@ const NomiSendBox: React.FC<{
           releaseInitialMessageDelivery(storageKey);
           return;
         }
-        const { input, files, idempotency_key, inject_skills } = initialMessage;
+        const { input, files, workspace_path, idempotency_key, inject_skills } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
         // Invariant: the guid page's background config (knowledge/IDMM/goal)
         // must settle before the first turn reaches the runtime. Navigation no
         // longer blocks on it, so the ordering is enforced here instead.
         await awaitConversationConfig(conversation_id);
+        initialRequestStarted = true;
         // Use the canonical-first send path. The request lifecycle can show
         // the waiting state immediately, while the visible user bubble is
         // admitted only after the server assigns its durable msg_id.
         const deferInitialTurnUntilFresh = false;
         const delivery = executeCommand(
-          { id: idempotency_key, input, files, injectSkills: inject_skills, initialOnly: true },
+          {
+            id: idempotency_key,
+            input,
+            files,
+            workspace_path,
+            injectSkills: inject_skills,
+            initialOnly: true,
+          },
           undefined,
           deferInitialTurnUntilFresh
         );
@@ -841,6 +851,11 @@ const NomiSendBox: React.FC<{
         );
         console.error('[NomiSendBox] Failed to send initial message:', error);
         sessionStorage.removeItem(processedKey);
+        // executeCommand owns errors after the POST starts. Authority/config
+        // failures happen before that point and otherwise would be silent.
+        if (!initialRequestStarted) {
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        }
       }
     };
 
@@ -852,6 +867,7 @@ const NomiSendBox: React.FC<{
     modelSelection.isModelCatalogLoading,
     selectedChatModelOption,
     setContent,
+    t,
   ]);
 
   const onSendHandler = async (message: string) => {
@@ -864,7 +880,7 @@ const NomiSendBox: React.FC<{
       throw new Error('Auto models do not support image attachments');
     }
 
-    const queued = enqueue({ input: message, files: filesToSend });
+    const queued = enqueue({ input: message, files: filesToSend, workspace_path: workspacePath });
     if (!queued) {
       // Queue validation/storage failure must reject the composer send so the
       // SendBox restores the text while the attachment draft stays intact.

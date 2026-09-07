@@ -633,14 +633,14 @@ const BasicRuntimeSendBox: React.FC<{
           releaseInitialMessageDelivery(storageKey);
           return;
         }
-        const { input, files, idempotency_key } = initialMessage;
+        const { input, files, workspace_path: queuedWorkspacePath, idempotency_key } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
         // Invariant: the guid page's background config (knowledge/IDMM/AutoWork)
         // must settle before the first turn reaches the runtime. Navigation no
         // longer blocks on it, so the ordering is enforced here instead.
         await awaitConversationConfig(conversation_id);
-        let resolvedWorkspace = workspacePath;
-        if (config.workspaceResolution === 'at-initial-message') {
+        let resolvedWorkspace = queuedWorkspacePath ?? workspacePath;
+        if (queuedWorkspacePath === undefined && config.workspaceResolution === 'at-initial-message') {
           const res = await getConversationOrNull(conversation_id);
           resolvedWorkspace = res?.extra?.workspace ?? '';
           setWorkspacePath(resolvedWorkspace);

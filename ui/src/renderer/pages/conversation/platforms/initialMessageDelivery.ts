@@ -5,6 +5,7 @@ import {
   type ConversationId,
 } from '@/common/types/ids';
 import { uuidv7 } from '@/common/utils/uuidv7';
+import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { isConversationTurnAdmissionConflict } from './conversationSendRecovery';
 
 export type PersistedInitialMessage = {
@@ -14,12 +15,16 @@ export type PersistedInitialMessage = {
   initial_admission_epoch: 0;
   input: string;
   files: string[];
+  /** Workspace used to render attachment paths for the original request. */
+  workspace_path?: string;
   /**
    * Canonical source-qualified catalog Skill IDs selected before the
    * Conversation existed. `skill_ids` is accepted as a storage alias when
    * reading, then normalized into this field before delivery.
    */
   inject_skills?: string[];
+  /** Explicit special deliveries must not be replayed as initial-only. */
+  initial_only?: boolean;
   idempotency_key: string;
 };
 
@@ -77,6 +82,8 @@ export const readInitialMessageDelivery = (
       (candidate.files !== undefined &&
         (!Array.isArray(candidate.files) ||
           !candidate.files.every((file) => typeof file === 'string'))) ||
+      (candidate.workspace_path !== undefined && typeof candidate.workspace_path !== 'string') ||
+      (candidate.initial_only !== undefined && typeof candidate.initial_only !== 'boolean') ||
       !isUsableIdempotencyKey(candidate.idempotency_key) ||
       injectSkills === null ||
       skillIdsAlias === null ||
@@ -94,9 +101,11 @@ export const readInitialMessageDelivery = (
       initial_admission_epoch: 0,
       input: candidate.input,
       files: candidate.files === undefined ? [] : [...candidate.files],
+      ...(typeof candidate.workspace_path === 'string' ? { workspace_path: candidate.workspace_path } : {}),
       ...((injectSkills ?? skillIdsAlias)?.length
         ? { inject_skills: injectSkills ?? skillIdsAlias }
         : {}),
+      ...(typeof candidate.initial_only === 'boolean' ? { initial_only: candidate.initial_only } : {}),
       idempotency_key: candidate.idempotency_key,
     };
   } catch {
@@ -113,13 +122,9 @@ type InitialMessageAuthorityDeps = {
 };
 
 const defaultAuthorityDeps: InitialMessageAuthorityDeps = {
-  getConversation: async (conversationId) => {
-    try {
-      return await ipcBridge.conversation.get.invoke({ conversation_id: conversationId });
-    } catch {
-      return null;
-    }
-  },
+  // Preserve the distinction between a definitive 404 and an unavailable
+  // authority read. The latter must not consume a one-shot handoff.
+  getConversation: getConversationOrNull,
   getTranscriptSummary: async (conversationId) =>
     ipcBridge.database.getConversationMessages.invoke({
       conversation_id: conversationId,
@@ -144,9 +149,10 @@ export const quarantineInitialMessageDelivery = (
  * Recover a Guid/QuickStart handoff only while durable backend state still
  * proves that this is an untouched, newly-created Conversation.
  *
- * Status, transcript, or transport uncertainty is terminal for automatic
- * delivery. The record is cleared so returning to an old/Finished
- * Conversation can never manufacture another turn.
+ * Status or transcript evidence that proves the handoff is no longer valid is
+ * terminal for automatic delivery. Transport/authority uncertainty is
+ * fail-closed but recoverable: retain the exact payload and idempotency key so
+ * a later explicit retry cannot manufacture a new turn.
  */
 export const readAuthorizedInitialMessageDelivery = async (
   storage: InitialMessageStorage,
@@ -203,13 +209,10 @@ export const readAuthorizedInitialMessageDelivery = async (
     return current?.idempotency_key === delivery.idempotency_key
       ? current
       : null;
-  } catch {
-    quarantineInitialMessageDelivery(
-      storage,
-      storageKey,
-      delivery.idempotency_key
-    );
-    return null;
+  } catch (error) {
+    // An unavailable authority is not proof that this handoff is invalid.
+    // Keep it intact and let the caller surface one retryable notification.
+    throw error;
   }
 };
 
@@ -225,7 +228,8 @@ export const persistInitialMessageDelivery = (
   storageKey: string,
   conversationId: ConversationId,
   input: string,
-  files: string[]
+  files: string[],
+  initialOnly = true
 ): PersistedInitialMessage => {
   const pending = readInitialMessageDelivery(storage, storageKey);
   if (pending?.conversation_id === conversationId) return pending;
@@ -236,6 +240,7 @@ export const persistInitialMessageDelivery = (
     initial_admission_epoch: 0,
     input,
     files: [...files],
+    ...(initialOnly === false ? { initial_only: false } : {}),
     idempotency_key: uuidv7(),
   };
   storage.setItem(storageKey, JSON.stringify(delivery));
@@ -255,9 +260,9 @@ export const releaseInitialMessageDelivery = (storageKey: string): void => {
 
 /**
  * A structured lifecycle admission conflict from the initial-only endpoint is
- * terminal proof that this automatic handoff no longer owns the creation
- * generation. Quarantine that exact key; transport failures retain it for a
- * same-key retry. Other 409 responses are unrelated and must not be consumed.
+ * terminal for automatic delivery, but the original handoff remains the only
+ * safe recoverable draft. Retain that exact key and let the caller show one
+ * explicit retry prompt. Other failures also retain the handoff.
  */
 export const handleInitialMessageDeliveryFailure = (
   storage: InitialMessageStorage,
@@ -266,11 +271,6 @@ export const handleInitialMessageDeliveryFailure = (
   error: unknown
 ): void => {
   if (attemptedIdempotencyKey && isConversationTurnAdmissionConflict(error)) {
-    quarantineInitialMessageDelivery(
-      storage,
-      storageKey,
-      attemptedIdempotencyKey
-    );
     releaseInitialMessageDelivery(storageKey);
     return;
   }
