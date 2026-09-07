@@ -219,7 +219,10 @@ const createNormalSubmitClaim = (
   JSON.stringify({
     input,
     skillIds,
-    domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html.length]),
+    // The synchronous claim is only a same-task mutex. Keep the complete
+    // snippet content in its signature so two distinct drafts with equal
+    // HTML lengths are still allowed to queue independently.
+    domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html]),
     replyMsgId: replyQuote?.messageId ?? null,
   });
 

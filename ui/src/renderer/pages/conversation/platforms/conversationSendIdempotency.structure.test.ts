@@ -27,6 +27,19 @@ describe('conversation send idempotency wiring', () => {
     }
   });
 
+  test('uses complete DOM content for the same-task duplicate claim', () => {
+    const claim = readSource('../../../components/chat/SendBox/index.tsx');
+    expect(claim).toContain('domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html])');
+    expect(claim).not.toContain('domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html.length])');
+  });
+
+  test('captures a workspace snapshot when ordinary messages enter the queue', () => {
+    for (const source of platformSources) {
+      expect(source).toContain('workspace_path: workspacePath');
+    }
+    expect(queueSource).toContain('workspace_path: workspace_path ?? \'\'');
+  });
+
   test('uses UUIDv7 for every default direct-send id before forwarding it as the header key', () => {
     for (const source of platformSources) {
       expect(source.includes("import { uuid, uuidv7 } from '@/common/utils';")).toBe(true);

@@ -39,10 +39,12 @@ describe('conversation command queue durable delivery metadata', () => {
     const original = item({
       recovery: { admission_attempts: 1, transport_attempts: 3 },
       delivery_state: 'paused',
+      workspace_path: 'C:/original-workspace',
     });
     const [updated] = updateQueuedCommand([original], original.id, { input: 'edited' });
     expect(updated.input).toBe('edited');
     expect(updated.id).not.toBe(original.id);
+    expect(updated.workspace_path).toBe('C:/original-workspace');
     expect(updated.created_at).toBeGreaterThanOrEqual(original.created_at);
     expect(getQueueItemRecovery(updated)).toEqual({
       admission_attempts: 0,
@@ -52,13 +54,28 @@ describe('conversation command queue durable delivery metadata', () => {
   });
 
   test('new queue items use an idempotency key and start in the queued phase', () => {
-    const created = createQueuedCommandItem({ input: 'new message', files: ['a', 'a'] });
+    const created = createQueuedCommandItem({
+      input: 'new message',
+      files: ['a', 'a'],
+      workspace_path: 'C:/workspace',
+    });
     expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(created.files).toEqual(['a']);
+    expect(created.workspace_path).toBe('C:/workspace');
     expect(getQueueItemDeliveryState(created)).toBe('queued');
     expect(getQueueItemRecovery(created)).toEqual({
       admission_attempts: 0,
       transport_attempts: 0,
     });
+  });
+
+  test('keeps legacy queue entries valid while preserving new workspace snapshots', () => {
+    const legacy = normalizeQueueState({ items: [item()] });
+    expect(legacy.items[0].workspace_path).toBeUndefined();
+
+    const current = normalizeQueueState({
+      items: [item({ workspace_path: 'D:/project' })],
+    });
+    expect(current.items[0].workspace_path).toBe('D:/project');
   });
 });

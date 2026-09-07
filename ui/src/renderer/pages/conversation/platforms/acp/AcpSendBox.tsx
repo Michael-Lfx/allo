@@ -283,16 +283,17 @@ const AcpSendBox: React.FC<{
         id = uuidv7(),
         input,
         files,
+        workspace_path: queuedWorkspacePath,
         injectSkills = [],
       }: Pick<ConversationCommandQueueItem, 'input' | 'files'> &
-        Partial<Pick<ConversationCommandQueueItem, 'id'>> & {
+        Partial<Pick<ConversationCommandQueueItem, 'id' | 'workspace_path'>> & {
           /** Source-qualified catalog Skill IDs selected for this exact turn. */
           injectSkills?: string[];
         },
       execution?: ConversationCommandQueueExecution,
       deferLocalTurnUntilFresh = execution !== undefined
     ) => {
-      const displayMessage = buildDisplayMessage(input, files, workspacePath || '');
+      const displayMessage = buildDisplayMessage(input, files, (queuedWorkspacePath ?? workspacePath) || '');
 
       // A persisted queue delivery may be a completed replay. Keep the local
       // lifecycle closed until the backend proves this caller won admission.
@@ -440,7 +441,7 @@ Please check your local CLI tool authentication status`,
   const onSendHandler = async (message: string) => {
     const atPathFiles = atPath.map((item) => (typeof item === 'string' ? item : item.path));
     const allFiles = [...uploadFile, ...atPathFiles];
-    const queued = enqueue({ input: message, files: allFiles });
+    const queued = enqueue({ input: message, files: allFiles, workspace_path: workspacePath || '' });
     if (!queued) {
       // Keep the draft and attachments when queue validation/storage fails;
       // SendBox restores the submitted text through its revision guard.

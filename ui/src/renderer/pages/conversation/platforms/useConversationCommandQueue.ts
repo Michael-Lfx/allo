@@ -35,6 +35,8 @@ export type ConversationCommandQueueItem = {
   id: string;
   input: string;
   files: string[];
+  /** Workspace snapshot used to build the immutable wire message on retries. */
+  workspace_path?: string;
   created_at: number;
   /** Persisted recovery metadata; omitted by pre-recovery queue entries. */
   recovery?: ConversationCommandQueueRecovery;
@@ -226,6 +228,7 @@ const normalizeQueueItem = (item: unknown): ConversationCommandQueueItem | null 
     id: candidate.id,
     input: candidate.input,
     files: uniqueFiles(candidate.files),
+    ...(typeof candidate.workspace_path === 'string' ? { workspace_path: candidate.workspace_path } : {}),
     created_at: candidate.created_at,
     recovery: normalizeRecovery(candidate.recovery),
     delivery_state: getQueueItemDeliveryState(candidate as ConversationCommandQueueItem),
@@ -276,12 +279,14 @@ export const normalizeQueueState = (state: unknown): ConversationCommandQueueSta
 export const createQueuedCommandItem = ({
   input,
   files,
-}: Pick<ConversationCommandQueueItem, 'input' | 'files'>): ConversationCommandQueueItem => ({
+  workspace_path,
+}: Pick<ConversationCommandQueueItem, 'input' | 'files' | 'workspace_path'>): ConversationCommandQueueItem => ({
   // This identifier is also the durable HTTP idempotency key. It must survive
   // dequeue restoration, remounts, and accepted-response loss unchanged.
   id: uuidv7(),
   input,
   files: uniqueFiles(files),
+  workspace_path: workspace_path ?? '',
   created_at: Date.now(),
   recovery: { ...DEFAULT_QUEUE_RECOVERY },
   delivery_state: 'queued',
@@ -405,7 +410,7 @@ export const restoreQueuedCommand = (
 export const updateQueuedCommand = (
   items: ConversationCommandQueueItem[],
   commandId: string,
-  updates: Partial<Pick<ConversationCommandQueueItem, 'input' | 'files'>>
+  updates: Partial<Pick<ConversationCommandQueueItem, 'input' | 'files' | 'workspace_path'>>
 ): ConversationCommandQueueItem[] =>
   items.map((item) =>
     item.id === commandId
@@ -448,7 +453,7 @@ export type ConversationCommandQueueExecution = {
   isCurrent: () => boolean;
 };
 
-type EnqueueCommandInput = Pick<ConversationCommandQueueItem, 'input' | 'files'>;
+type EnqueueCommandInput = Pick<ConversationCommandQueueItem, 'input' | 'files' | 'workspace_path'>;
 type UpdateCommandInput = Pick<ConversationCommandQueueItem, 'input'>;
 
 const getQueueValidationMessage = (
@@ -498,6 +503,7 @@ export const useConversationCommandQueue = ({
   const executionGateRef = useRef<CommandQueueExecutionGate>(IDLE_EXECUTION_GATE);
   const executionGenerationRef = useRef(0);
   const executionConversationKeyRef = useRef(conversationKey);
+  const reconciliationPromiseRef = useRef<Promise<boolean> | null>(null);
   const mountedRef = useRef(true);
   const interactionLockedRef = useRef(false);
   const [isInteractionLocked, setIsInteractionLocked] = useState(false);
@@ -544,6 +550,7 @@ export const useConversationCommandQueue = ({
   useEffect(() => {
     executionGenerationRef.current += 1;
     executionGateRef.current = IDLE_EXECUTION_GATE;
+    reconciliationPromiseRef.current = null;
     pausedRef.current = false;
     interactionLockedRef.current = false;
     setIsInteractionLocked(false);
@@ -555,40 +562,68 @@ export const useConversationCommandQueue = ({
   }, [conversationKey]);
 
   const reconcileActiveExecution = useCallback(async (): Promise<boolean> => {
-    const gate = executionGateRef.current;
-    if (gate.phase === 'idle') return true;
+    if (reconciliationPromiseRef.current) return reconciliationPromiseRef.current;
 
+    const reconciliation = (async (): Promise<boolean> => {
+      const gate = executionGateRef.current;
+      if (gate.phase === 'idle') return true;
+
+      try {
+        const conversation = await getConversationForCommandQueue(conversationKey);
+        if (executionGateRef.current !== gate) return false;
+        if (!conversation) {
+          // `getConversationOrNull` reserves null for a definitive 404. It is
+          // not the same as an authoritative idle runtime. Invalidate any late
+          // POST and clear the queue exactly as the deletion event does, so a
+          // stale item can never be sent to a deleted conversation.
+          executionGenerationRef.current += 1;
+          executionGateRef.current = IDLE_EXECUTION_GATE;
+          const deletedState = createDefaultQueueState();
+          stateRef.current = deletedState;
+          pausedRef.current = false;
+          void mutate(deletedState, { revalidate: false });
+          removePersistedQueueState(conversationKey);
+          logCommandQueue(conversationKey, 'reconciled-deleted-conversation');
+          setExecutionGateVersion((version) => version + 1);
+          return true;
+        }
+        const runtimeAuthority = getConversationRuntimeAuthority(conversation);
+        if (runtimeAuthority === 'unknown') return false;
+        const isProcessing = runtimeAuthority === 'processing';
+        // If turn.started was lost, the accepted-send gate remains in
+        // waiting_start. A later authoritative idle read must reconcile that
+        // phase as a start acknowledgement; treating it as completion would
+        // intentionally leave the gate closed forever.
+        const purpose = gate.phase === 'waiting_start' ? 'start' : 'completion';
+        const nextGate = reduceCommandQueueExecutionGate(gate, {
+          type: 'runtimeReconciled',
+          purpose,
+          runtimeIsProcessing: isProcessing,
+        });
+        if (nextGate === gate) return false;
+        executionGateRef.current = nextGate;
+        logCommandQueue(conversationKey, 'execution-reconciled', {
+          purpose,
+          runtimeIsProcessing: isProcessing,
+          nextPhase: nextGate.phase,
+          pendingItemCount: stateRef.current.items.length,
+        });
+        setExecutionGateVersion((version) => version + 1);
+        return true;
+      } catch (error) {
+        console.warn('[conversation-command-queue] Failed to reconcile active execution:', error);
+        return false;
+      }
+    })();
+    reconciliationPromiseRef.current = reconciliation;
     try {
-      const conversation = await getConversationForCommandQueue(conversationKey);
-      if (executionGateRef.current !== gate) return false;
-      const runtimeAuthority = getConversationRuntimeAuthority(conversation);
-      if (runtimeAuthority === 'unknown') return false;
-      const isProcessing = runtimeAuthority === 'processing';
-      // If turn.started was lost, the accepted-send gate remains in
-      // waiting_start. A later authoritative idle read must reconcile that
-      // phase as a start acknowledgement; treating it as completion would
-      // intentionally leave the gate closed forever.
-      const purpose = gate.phase === 'waiting_start' ? 'start' : 'completion';
-      const nextGate = reduceCommandQueueExecutionGate(gate, {
-        type: 'runtimeReconciled',
-        purpose,
-        runtimeIsProcessing: isProcessing,
-      });
-      if (nextGate === gate) return false;
-      executionGateRef.current = nextGate;
-      logCommandQueue(conversationKey, 'execution-reconciled', {
-        purpose,
-        runtimeIsProcessing: isProcessing,
-        nextPhase: nextGate.phase,
-        pendingItemCount: stateRef.current.items.length,
-      });
-      setExecutionGateVersion((version) => version + 1);
-      return true;
-    } catch (error) {
-      console.warn('[conversation-command-queue] Failed to reconcile active execution:', error);
-      return false;
+      return await reconciliation;
+    } finally {
+      if (reconciliationPromiseRef.current === reconciliation) {
+        reconciliationPromiseRef.current = null;
+      }
     }
-  }, [conversationKey]);
+  }, [conversationKey, mutate]);
 
   useEffect(() => {
     stateRef.current = data;
@@ -781,7 +816,6 @@ export const useConversationCommandQueue = ({
       return false;
     }
 
-    pausedRef.current = false;
     logCommandQueue(conversationKey, 'cleared');
     void updateState(() => createDefaultQueueState());
     return true;
@@ -805,13 +839,13 @@ export const useConversationCommandQueue = ({
   );
 
   const enqueue = useCallback(
-    ({ input, files }: EnqueueCommandInput) => {
+    ({ input, files, workspace_path }: EnqueueCommandInput) => {
       if (!enabled) {
         return null;
       }
 
       const currentState = normalizeQueueState(stateRef.current);
-      const item = createQueuedCommandItem({ input, files });
+      const item = createQueuedCommandItem({ input, files, workspace_path });
       const validation = validateQueuedCommandItem(item, currentState);
 
       if (isQueueValidationFailure(validation)) {
@@ -1056,13 +1090,11 @@ export const useConversationCommandQueue = ({
       return;
     }
 
-    pausedRef.current = true;
     logCommandQueue(conversationKey, 'paused', {
-      itemCount: data.items.length,
+      itemCount: stateRef.current.items.length,
     });
     void updateState((state) => {
       if (state.items.length === 0) {
-        pausedRef.current = false;
         return createDefaultQueueState();
       }
       return {
@@ -1070,16 +1102,15 @@ export const useConversationCommandQueue = ({
         isPaused: true,
       };
     });
-  }, [conversation_id, data.items.length, enabled, updateState]);
+  }, [conversation_id, enabled, updateState]);
 
   const resume = useCallback(() => {
     if (!enabled) {
       return;
     }
 
-    pausedRef.current = false;
     logCommandQueue(conversationKey, 'resumed', {
-      itemCount: data.items.length,
+      itemCount: stateRef.current.items.length,
     });
     void updateState((state) => ({
       ...state,
@@ -1090,7 +1121,7 @@ export const useConversationCommandQueue = ({
       ),
       isPaused: state.items.length > 0 ? false : state.isPaused,
     }));
-  }, [conversation_id, data.items.length, enabled, updateState]);
+  }, [conversation_id, enabled, updateState]);
 
   const lockInteraction = useCallback(() => {
     if (!enabled) {
@@ -1158,13 +1189,13 @@ export const useConversationCommandQueue = ({
         isBusy,
         gate: executionGateRef.current,
         isInteractionLocked: interactionLockedRef.current,
-        itemCount: data.items.length,
+        itemCount: stateRef.current.items.length,
       })
     ) {
       return;
     }
 
-    const [nextCommand] = data.items;
+    const [nextCommand] = stateRef.current.items;
     const executionGeneration = executionGenerationRef.current + 1;
     executionGenerationRef.current = executionGeneration;
     const isExecutionCurrent = (): boolean =>
@@ -1201,6 +1232,10 @@ export const useConversationCommandQueue = ({
       executionGateRef.current = IDLE_EXECUTION_GATE;
       pausedRef.current = true;
       stateRef.current = pausedState;
+      // Keep the same-tab in-memory source aligned with the exact paused
+      // snapshot. Otherwise a remount can read the pre-failure queued state
+      // from queueStore and dispatch despite the persistence warning.
+      queueStore.set(conversationKey, pausedState);
       void mutate(pausedState, { revalidate: false });
       logCommandQueue(conversationKey, 'dispatch-paused', {
         reason: 'persistence-failed',
@@ -1220,7 +1255,7 @@ export const useConversationCommandQueue = ({
 
     logCommandQueue(conversationKey, 'dispatching', {
       item: summarizeQueuedCommand(nextCommand),
-      remainingItemCount: data.items.length - 1,
+      remainingItemCount: stateRef.current.items.length - 1,
     });
     // Keep the item durably queued while the request is in flight. If this hook
     // unmounts after the backend accepts the POST but before the response is
@@ -1309,6 +1344,7 @@ export const useConversationCommandQueue = ({
             executionGateRef.current = IDLE_EXECUTION_GATE;
             pausedRef.current = true;
             stateRef.current = pausedState;
+            queueStore.set(conversationKey, pausedState);
             void publishState(pausedState);
             Message.warning(
               t('conversation.commandQueue.persistenceFailed', {
@@ -1345,6 +1381,9 @@ export const useConversationCommandQueue = ({
         executionGateRef.current = IDLE_EXECUTION_GATE;
         pausedRef.current = true;
         stateRef.current = pausedState;
+        // The persistence attempt may have failed before updating queueStore;
+        // keep the same-tab recovery source paused as well.
+        queueStore.set(conversationKey, pausedState);
         void publishState(pausedState);
         if (!persisted) {
           Message.warning(

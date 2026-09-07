@@ -454,12 +454,13 @@ const BasicRuntimeSendBox: React.FC<{
         id = uuidv7(),
         input,
         files,
+        workspace_path: queuedWorkspacePath,
       }: Pick<ConversationCommandQueueItem, 'input' | 'files'> &
-        Partial<Pick<ConversationCommandQueueItem, 'id'>>,
+        Partial<Pick<ConversationCommandQueueItem, 'id' | 'workspace_path'>>,
       execution?: ConversationCommandQueueExecution,
       deferLocalTurnUntilFresh = execution !== undefined
     ) => {
-      const displayMessage = buildDisplayMessage(input, files, workspacePath);
+      const displayMessage = buildDisplayMessage(input, files, queuedWorkspacePath ?? workspacePath);
 
       if (!deferLocalTurnUntilFresh) {
         beginLocalTurn();
@@ -566,7 +567,7 @@ const BasicRuntimeSendBox: React.FC<{
 
   const onSendHandler = async (message: string) => {
     const file_paths = [...uploadFile, ...atPath.map((item) => (typeof item === 'string' ? item : item.path))];
-    const queued = enqueue({ input: message, files: file_paths });
+    const queued = enqueue({ input: message, files: file_paths, workspace_path: workspacePath });
     if (!queued) {
       // Keep the composer draft and attachment selection when queue
       // validation/storage rejects the send.
