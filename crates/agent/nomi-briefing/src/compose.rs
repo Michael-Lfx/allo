@@ -72,6 +72,8 @@ pub fn compose_working_dir_with_progress(
         serde_json::to_vec_pretty(&plan)?,
     )?;
 
+    let encode = prepare_shared_encode_plan(working_dir);
+
     if let Some(video) = spawn_compositor(working_dir, &mut on_progress) {
         return Ok(ComposeResult {
             video_path: Some(video),
@@ -88,7 +90,7 @@ pub fn compose_working_dir_with_progress(
             "message": "encode fallback stills",
         })),
     );
-    if let Some(video) = ffmpeg_stills(working_dir, script) {
+    if let Some(video) = ffmpeg_stills(working_dir, script, encode.as_ref()) {
         return Ok(ComposeResult {
             video_path: Some(video),
             mode: "ffmpeg_stills".into(),
@@ -100,6 +102,27 @@ pub fn compose_working_dir_with_progress(
         mode: "stills_audio".into(),
         qa,
     })
+}
+
+fn prepare_shared_encode_plan(
+    working_dir: &Path,
+) -> Option<nomi_config::ffmpeg_hw::EncodePlanSidecar> {
+    let ffmpeg = nomi_config::resolve_ffmpeg_executable()?;
+    match nomi_config::ffmpeg_hw::write_encode_plan_sidecar_blocking(&ffmpeg, working_dir) {
+        Ok(sidecar) => {
+            tracing::info!(
+                encoder = %sidecar.primary.codec,
+                encode_desc = %sidecar.primary.description,
+                ffmpeg = %sidecar.ffmpeg,
+                "briefing encode plan ready"
+            );
+            Some(sidecar)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to write briefing encode-plan.json");
+            None
+        }
+    }
 }
 
 fn spawn_compositor(
@@ -195,18 +218,71 @@ fn locate_compositor() -> Option<PathBuf> {
     None
 }
 
-fn ffmpeg_stills(working_dir: &Path, script: &BeatScript) -> Option<String> {
+fn ffmpeg_stills(
+    working_dir: &Path,
+    script: &BeatScript,
+    encode: Option<&nomi_config::ffmpeg_hw::EncodePlanSidecar>,
+) -> Option<String> {
     let video_only = working_dir.join("clips").join("ffmpeg-stills.mp4");
     let _ = std::fs::create_dir_all(working_dir.join("clips"));
     let duration = stills_duration_secs(working_dir, script);
     let color = format!("color=c=0x101418:s=1920x1080:d={duration:.3}:r=30");
+    let ffmpeg_bin = encode
+        .map(|e| e.ffmpeg.as_str())
+        .unwrap_or("ffmpeg");
+    let plans: Vec<&nomi_config::ffmpeg_hw::VideoEncodePlanSpec> = match encode {
+        Some(e) => {
+            if e.primary.uses_hw && e.fallback.codec != e.primary.codec {
+                vec![&e.primary, &e.fallback]
+            } else {
+                vec![&e.primary]
+            }
+        }
+        None => return ffmpeg_stills_soft(working_dir, &video_only, &color),
+    };
+
+    let mut encoded = false;
+    for plan in plans {
+        let mut args: Vec<String> = vec!["-y".into()];
+        args.extend(plan.input_args.iter().cloned());
+        args.extend([
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            color.clone(),
+        ]);
+        if let Some(vf) = &plan.hwupload_vf {
+            args.extend(["-vf".into(), vf.clone()]);
+        }
+        args.extend(plan.encode_args().into_iter().map(str::to_string));
+        args.extend([
+            "-movflags".into(),
+            "+faststart".into(),
+            video_only.to_string_lossy().into_owned(),
+        ]);
+        let status = silent_command(ffmpeg_bin).args(&args).status().ok()?;
+        if status.success() && video_only.is_file() {
+            encoded = true;
+            tracing::info!(encoder = %plan.codec, "briefing ffmpeg_stills encoded");
+            break;
+        }
+        let _ = std::fs::remove_file(&video_only);
+    }
+    if !encoded {
+        return None;
+    }
+
+    mux_or_copy_stills(working_dir, ffmpeg_bin, &video_only)
+}
+
+fn ffmpeg_stills_soft(working_dir: &Path, video_only: &Path, color: &str) -> Option<String> {
     let status = silent_command("ffmpeg")
         .args([
             "-y",
             "-f",
             "lavfi",
             "-i",
-            &color,
+            color,
             "-pix_fmt",
             "yuv420p",
             "-c:v",
@@ -224,11 +300,15 @@ fn ffmpeg_stills(working_dir: &Path, script: &BeatScript) -> Option<String> {
     if !status.success() || !video_only.is_file() {
         return None;
     }
+    mux_or_copy_stills(working_dir, "ffmpeg", video_only)
+}
+
+fn mux_or_copy_stills(working_dir: &Path, ffmpeg_bin: &str, video_only: &Path) -> Option<String> {
     let out = working_dir.join("briefing.mp4");
     if let Some(narration) = find_narration(working_dir) {
-        let mux = silent_command("ffmpeg")
+        let mux = silent_command(ffmpeg_bin)
             .args(["-y", "-i"])
-            .arg(&video_only)
+            .arg(video_only)
             .arg("-i")
             .arg(&narration)
             .args([
@@ -247,7 +327,7 @@ fn ffmpeg_stills(working_dir: &Path, script: &BeatScript) -> Option<String> {
             return Some(out.to_string_lossy().into_owned());
         }
     }
-    if std::fs::copy(&video_only, &out).is_ok() && out.is_file() {
+    if std::fs::copy(video_only, &out).is_ok() && out.is_file() {
         Some(out.to_string_lossy().into_owned())
     } else {
         None
@@ -330,6 +410,7 @@ mod tests {
         assert!(!source.contains("@remotion"));
         assert!(!source.contains("zoompan"));
         assert!(source.contains("compose-progress.json"));
-        assert!(source.contains("ultrafast"));
+        assert!(source.contains("encode-plan.json"));
+        assert!(source.contains("hwupload_vf"));
     }
 }

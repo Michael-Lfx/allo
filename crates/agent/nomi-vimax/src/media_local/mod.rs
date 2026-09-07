@@ -498,46 +498,61 @@ pub async fn extract_av_segment(
     }
     let start = start_secs.max(0.0);
     let dur = duration_secs.max(0.05);
-    let args = vec![
-        "-y".into(),
-        "-ss".into(),
-        format!("{start:.3}"),
-        "-i".into(),
-        input.to_string_lossy().into_owned(),
-        "-t".into(),
-        format!("{dur:.3}"),
-        "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "veryfast".into(),
-        "-pix_fmt".into(),
-        "yuv420p".into(),
-        "-c:a".into(),
-        "aac".into(),
-        "-ac".into(),
-        "2".into(),
-        "-ar".into(),
-        "48000".into(),
-        "-movflags".into(),
-        "+faststart".into(),
-        out_path.to_string_lossy().into_owned(),
-    ];
-    let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
-    if !ok {
-        return Err(VimaxError::Media(format!(
-            "ffmpeg extract segment failed for {}{}",
-            input.display(),
-            ffmpeg_stderr_hint(&err)
-                .map(|d| format!(" — ffmpeg: {d}"))
-                .unwrap_or_default()
-        )));
+    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+    let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
+    let out_s = out_path.to_string_lossy().into_owned();
+    let input_s = input.to_string_lossy().into_owned();
+
+    let build = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
+        let mut args = vec!["-y".into()];
+        args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-ss".into(),
+            format!("{start:.3}"),
+            "-i".into(),
+            input_s.clone(),
+            "-t".into(),
+            format!("{dur:.3}"),
+        ]);
+        if let Some(vf) = p.hwupload_vf {
+            args.extend(["-vf".into(), vf.to_string()]);
+        }
+        args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-ac".into(),
+            "2".into(),
+            "-ar".into(),
+            "48000".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            out_s.clone(),
+        ]);
+        args
+    };
+
+    let mut last_err = String::new();
+    for (label, p) in [("hw", &plan), ("sw", &fallback)] {
+        let args = build(p);
+        let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+        if ok && out_path.is_file() {
+            tracing::info!(encoder = p.codec, label, "vimax extract_av_segment");
+            return Ok(());
+        }
+        last_err = err;
+        let _ = tokio::fs::remove_file(out_path).await;
+        if !p.uses_hw {
+            break;
+        }
     }
-    if !out_path.is_file() {
-        return Err(VimaxError::Media(
-            "ffmpeg extract segment produced no file".into(),
-        ));
-    }
-    Ok(())
+    Err(VimaxError::Media(format!(
+        "ffmpeg extract segment failed for {}{}",
+        input.display(),
+        ffmpeg_stderr_hint(&last_err)
+            .map(|d| format!(" — ffmpeg: {d}"))
+            .unwrap_or_default()
+    )))
 }
 
 /// Black video + silence used to fill timeline gaps.
@@ -554,37 +569,58 @@ pub async fn write_black_gap(
     let dur = duration_secs.max(0.05);
     let w = (width.max(2) & !1).max(2);
     let h = (height.max(2) & !1).max(2);
-    let args = vec![
-        "-y".into(),
-        "-f".into(),
-        "lavfi".into(),
-        "-i".into(),
-        format!("color=c=black:s={w}x{h}:d={dur:.3}:r=30"),
-        "-f".into(),
-        "lavfi".into(),
-        "-i".into(),
-        format!("anullsrc=r=48000:cl=stereo:d={dur:.3}"),
-        "-shortest".into(),
-        "-c:v".into(),
-        "libx264".into(),
-        "-pix_fmt".into(),
-        "yuv420p".into(),
-        "-c:a".into(),
-        "aac".into(),
-        "-movflags".into(),
-        "+faststart".into(),
-        out_path.to_string_lossy().into_owned(),
-    ];
-    let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
-    if !ok {
-        return Err(VimaxError::Media(format!(
-            "ffmpeg black gap failed{}",
-            ffmpeg_stderr_hint(&err)
-                .map(|d| format!(" — ffmpeg: {d}"))
-                .unwrap_or_default()
-        )));
+    let plan = nomi_config::ffmpeg_hw::select_video_encode_plan(&ffmpeg).await;
+    let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
+    let out_s = out_path.to_string_lossy().into_owned();
+
+    let build = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
+        let mut args = vec!["-y".into()];
+        args.extend(p.input_args.iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            format!("color=c=black:s={w}x{h}:d={dur:.3}:r=30"),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            format!("anullsrc=r=48000:cl=stereo:d={dur:.3}"),
+            "-shortest".into(),
+        ]);
+        if let Some(vf) = p.hwupload_vf {
+            args.extend(["-vf".into(), vf.to_string()]);
+        }
+        args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
+        args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            out_s.clone(),
+        ]);
+        args
+    };
+
+    let mut last_err = String::new();
+    for (label, p) in [("hw", &plan), ("sw", &fallback)] {
+        let args = build(p);
+        let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+        if ok && out_path.is_file() {
+            tracing::info!(encoder = p.codec, label, "vimax write_black_gap");
+            return Ok(());
+        }
+        last_err = err;
+        let _ = tokio::fs::remove_file(out_path).await;
+        if !p.uses_hw {
+            break;
+        }
     }
-    Ok(())
+    Err(VimaxError::Media(format!(
+        "ffmpeg black gap failed{}",
+        ffmpeg_stderr_hint(&last_err)
+            .map(|d| format!(" — ffmpeg: {d}"))
+            .unwrap_or_default()
+    )))
 }
 
 /// Burn an SRT onto a video. Fails if the local ffmpeg has no libass/`subtitles` filter.

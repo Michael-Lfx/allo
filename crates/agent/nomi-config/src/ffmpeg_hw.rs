@@ -12,6 +12,8 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
+use serde::{Deserialize, Serialize};
+
 /// H.264 encoders / hwaccels reported by `ffmpeg -encoders` / `ffmpeg -hwaccels`.
 #[derive(Debug, Clone, Default)]
 pub struct FfmpegHwCapabilities {
@@ -48,7 +50,52 @@ impl VideoEncodePlan {
         out.extend_from_slice(&self.args);
         out
     }
+
+    /// Owned/serializable form for cross-language callers (e.g. Node compositor).
+    pub fn to_spec(&self) -> VideoEncodePlanSpec {
+        VideoEncodePlanSpec {
+            codec: self.codec.to_string(),
+            args: self.args.iter().map(|s| (*s).to_string()).collect(),
+            input_args: self.input_args.iter().map(|s| (*s).to_string()).collect(),
+            hwupload_vf: self.hwupload_vf.map(str::to_string),
+            description: self.description.to_string(),
+            uses_hw: self.uses_hw,
+        }
+    }
 }
+
+/// Owned encode recipe shared with non-Rust compose tooling via JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VideoEncodePlanSpec {
+    pub codec: String,
+    pub args: Vec<String>,
+    pub input_args: Vec<String>,
+    pub hwupload_vf: Option<String>,
+    pub description: String,
+    pub uses_hw: bool,
+}
+
+impl VideoEncodePlanSpec {
+    /// Flattened `["-c:v", codec, ...args]`.
+    pub fn encode_args(&self) -> Vec<&str> {
+        let mut out = vec!["-c:v", self.codec.as_str()];
+        out.extend(self.args.iter().map(String::as_str));
+        out
+    }
+}
+
+/// Sidecar written next to briefing/working dirs so Node (or other hosts) reuse
+/// the same probed hardware plan as Rust media paths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EncodePlanSidecar {
+    pub ffmpeg: String,
+    pub parallelism: usize,
+    pub primary: VideoEncodePlanSpec,
+    pub fallback: VideoEncodePlanSpec,
+}
+
+/// Filename written by [`write_encode_plan_sidecar`].
+pub const ENCODE_PLAN_FILENAME: &str = "encode-plan.json";
 
 /// Per-encoder concurrency cap for parallel clip normalization. Consumer NVENC
 /// GPUs allow only ~3-5 concurrent sessions, so keep headroom for the encode.
@@ -67,6 +114,37 @@ pub fn software_fallback_plan(plan: &VideoEncodePlan) -> VideoEncodePlan {
     } else {
         plan.clone()
     }
+}
+
+/// Probe once and write [`ENCODE_PLAN_FILENAME`] under `dir` for shared tooling.
+pub async fn write_encode_plan_sidecar(
+    ffmpeg: &Path,
+    dir: &Path,
+) -> std::io::Result<EncodePlanSidecar> {
+    let plan = select_video_encode_plan(ffmpeg).await;
+    let sidecar = EncodePlanSidecar {
+        ffmpeg: ffmpeg.to_string_lossy().into_owned(),
+        parallelism: recommended_parallelism(&plan),
+        primary: plan.to_spec(),
+        fallback: software_fallback_plan(&plan).to_spec(),
+    };
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(ENCODE_PLAN_FILENAME);
+    let body = serde_json::to_vec_pretty(&sidecar)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, body)?;
+    Ok(sidecar)
+}
+
+/// Sync wrapper for callers outside an async runtime (e.g. briefing compose).
+pub fn write_encode_plan_sidecar_blocking(
+    ffmpeg: &Path,
+    dir: &Path,
+) -> std::io::Result<EncodePlanSidecar> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(write_encode_plan_sidecar(ffmpeg, dir))
 }
 
 // Quality targets mirror the existing `libx264 -crf 18` look; hardware `cq` /
@@ -831,6 +909,17 @@ mod tests {
         );
         assert_eq!(decide_decode_hwaccel(&caps(&[], &["qsv"])), Some("qsv"));
         assert_eq!(decide_decode_hwaccel(&caps(&[], &[])), None);
+    }
+
+    #[test]
+    fn encode_plan_spec_roundtrips_json() {
+        let plan = nvenc_plan();
+        let spec = plan.to_spec();
+        let raw = serde_json::to_string(&spec).unwrap();
+        let back: VideoEncodePlanSpec = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.codec, "h264_nvenc");
+        assert!(back.uses_hw);
+        assert_eq!(back.encode_args()[1], "h264_nvenc");
     }
 
     #[test]

@@ -34,9 +34,49 @@ function argValue(flag) {
   return idx >= 0 ? process.argv[idx + 1] : null;
 }
 
-function ffmpeg(args) {
+function loadEncodePlan(inputDir) {
+  const path = join(inputDir, 'encode-plan.json');
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function softEncodePlanSpec() {
+  return {
+    codec: 'libx264',
+    args: ['-crf', '18', '-preset', 'fast', '-pix_fmt', 'yuv420p'],
+    input_args: [],
+    hwupload_vf: null,
+    description: 'libx264 crf18/fast',
+    uses_hw: false,
+  };
+}
+
+function planSpecs(encodePlan) {
+  if (!encodePlan?.primary) {
+    return [softEncodePlanSpec()];
+  }
+  const specs = [encodePlan.primary];
+  if (
+    encodePlan.fallback &&
+    encodePlan.fallback.codec &&
+    encodePlan.fallback.codec !== encodePlan.primary.codec
+  ) {
+    specs.push(encodePlan.fallback);
+  }
+  return specs;
+}
+
+function ffmpegBin(encodePlan) {
+  return encodePlan?.ffmpeg || 'ffmpeg';
+}
+
+function ffmpeg(bin, args) {
   return new Promise((resolvePromise) => {
-    const child = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args], {
+    const child = spawn(bin, ['-hide_banner', '-loglevel', 'error', ...args], {
       windowsHide: true,
       stdio: ['ignore', 'ignore', 'pipe'],
     });
@@ -52,6 +92,16 @@ function ffmpeg(args) {
 
 function ffmpegOk(result) {
   return result.status === 0;
+}
+
+function mergeVf(baseVf, hwuploadVf) {
+  if (!hwuploadVf) return baseVf || null;
+  if (!baseVf) return hwuploadVf;
+  return `${baseVf},${hwuploadVf}`;
+}
+
+function encodeArgList(spec) {
+  return ['-c:v', spec.codec, ...(spec.args || [])];
 }
 
 function writeProgress(inputDir, payload) {
@@ -320,31 +370,25 @@ function motionFilter(card, duration, textFilter) {
   return textFilter;
 }
 
-async function encodeClip(still, duration, vf, clip) {
-  const common = [
-    '-y',
-    '-loop',
-    '1',
-    '-framerate',
-    '30',
-    '-i',
-    still,
-    '-t',
-    String(duration),
-    '-an',
-    '-pix_fmt',
-    'yuv420p',
-    '-c:v',
-    'libx264',
-    '-preset',
-    'ultrafast',
-    '-tune',
-    'stillimage',
-  ];
-  const attempts = vf ? [[...common, '-vf', vf, clip], [...common, clip]] : [[...common, clip]];
-  for (const args of attempts) {
-    const result = await ffmpeg(args);
-    if (ffmpegOk(result) && existsSync(clip)) return { ok: true, stderr: '' };
+async function encodeClip(bin, encodePlan, still, duration, vf, clip) {
+  for (const spec of planSpecs(encodePlan)) {
+    const inputArgs = [...(spec.input_args || [])];
+    const withText = mergeVf(vf, spec.hwupload_vf || null);
+    const withoutText = mergeVf(null, spec.hwupload_vf || null);
+    const bases = withText
+      ? [
+          [...inputArgs, '-y', '-loop', '1', '-framerate', '30', '-i', still, '-t', String(duration), '-an', '-vf', withText, ...encodeArgList(spec), clip],
+          [...inputArgs, '-y', '-loop', '1', '-framerate', '30', '-i', still, '-t', String(duration), '-an', ...(withoutText ? ['-vf', withoutText] : []), ...encodeArgList(spec), clip],
+        ]
+      : [
+          [...inputArgs, '-y', '-loop', '1', '-framerate', '30', '-i', still, '-t', String(duration), '-an', ...(withoutText ? ['-vf', withoutText] : []), ...encodeArgList(spec), clip],
+        ];
+    for (const args of bases) {
+      const result = await ffmpeg(bin, args);
+      if (ffmpegOk(result) && existsSync(clip)) {
+        return { ok: true, stderr: '', codec: spec.codec };
+      }
+    }
   }
   return { ok: false, stderr: 'encode failed' };
 }
@@ -369,6 +413,9 @@ async function compose(inputDir) {
   const timing = payload.timing ?? (existsSync(join(inputDir, 'timing.json'))
     ? JSON.parse(readFileSync(join(inputDir, 'timing.json'), 'utf8'))
     : { chunks: [] });
+  const encodePlan = loadEncodePlan(inputDir);
+  const bin = ffmpegBin(encodePlan);
+  const parallelism = Math.max(1, Number(encodePlan?.parallelism) || 2);
   const errors = [];
   for (const beat of beats) {
     if (!catalog.includes(beat.card)) {
@@ -410,7 +457,7 @@ async function compose(inputDir) {
   }
 
   let completed = 0;
-  await runPool(beats.length, 2, async (i) => {
+  await runPool(beats.length, parallelism, async (i) => {
     const beat = beats[i];
     const ppm = join(stillsDir, `${String(i).padStart(3, '0')}-${beat.card}.ppm`);
     const clip = clips[i];
@@ -427,7 +474,7 @@ async function compose(inputDir) {
     const duration = beatDuration(beat, timing).toFixed(3);
     const textFilter = font ? drawtextFilters(font, beat) : null;
     const vf = motionFilter(beat.card, duration, textFilter);
-    const encoded = await encodeClip(still, duration, vf, clip);
+    const encoded = await encodeClip(bin, encodePlan, still, duration, vf, clip);
     if (!encoded.ok) {
       logs.push(`clip failed ${beat.card}`);
       writeFileSync(join(inputDir, 'compose.log'), logs.join('\n'));
@@ -455,7 +502,7 @@ async function compose(inputDir) {
   writeFileSync(listPath, `${clips.map((clip) => concatFileEntry(clip)).join('\n')}\n`);
   const videoOnly = join(clipsDir, 'video-only.mp4');
   const out = join(inputDir, 'briefing.mp4');
-  let concat = await ffmpeg([
+  let concat = await ffmpeg(bin, [
     '-y',
     '-f',
     'concat',
@@ -470,24 +517,25 @@ async function compose(inputDir) {
     videoOnly,
   ]);
   if (!ffmpegOk(concat)) {
-    concat = await ffmpeg([
-      '-y',
-      '-f',
-      'concat',
-      '-safe',
-      '0',
-      '-i',
-      listPath,
-      '-c:v',
-      'libx264',
-      '-preset',
-      'ultrafast',
-      '-pix_fmt',
-      'yuv420p',
-      '-movflags',
-      '+faststart',
-      videoOnly,
-    ]);
+    for (const spec of planSpecs(encodePlan)) {
+      const args = [
+        ...(spec.input_args || []),
+        '-y',
+        '-f',
+        'concat',
+        '-safe',
+        '0',
+        '-i',
+        listPath,
+        ...(spec.hwupload_vf ? ['-vf', spec.hwupload_vf] : []),
+        ...encodeArgList(spec),
+        '-movflags',
+        '+faststart',
+        videoOnly,
+      ];
+      concat = await ffmpeg(bin, args);
+      if (ffmpegOk(concat) && existsSync(videoOnly)) break;
+    }
   }
   if (!ffmpegOk(concat)) {
     logs.push(`concat failed: ${(concat.stderr || '').slice(-1200)}`);
@@ -503,7 +551,7 @@ async function compose(inputDir) {
       total: beats.length,
       message: 'mux narration',
     });
-    const mux = await ffmpeg([
+    const mux = await ffmpeg(bin, [
       '-y',
       '-i',
       videoOnly,
@@ -531,6 +579,7 @@ async function compose(inputDir) {
     step: beats.length,
     total: beats.length,
     message: 'briefing ready',
+    encoder: encodePlan?.primary?.codec || 'libx264',
   });
   writeFileSync(
     join(inputDir, 'qa.json'),
