@@ -18,6 +18,10 @@ describe('SkillsSettingsPage hub chrome', () => {
     const marketSource = readSource(new URL('./SkillMarketSettings.tsx', import.meta.url));
 
     expect(marketSource).toContain("<div className='w-full pb-16px'>");
+    expect(marketSource).toContain('installSkillMarketSkill.invoke');
+    expect(marketSource).toContain('installRefresh');
+    expect(marketSource).not.toContain('useNomiQuickStart');
+    expect(marketSource).not.toContain('buildSkillMarketInstallPrompt');
     expect(marketSource).not.toContain("<div className='flex flex-col h-full w-full'>");
   });
 });

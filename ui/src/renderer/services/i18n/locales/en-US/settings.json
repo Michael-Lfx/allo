@@ -111,6 +111,7 @@
     "install": "Install",
     "installing": "Installing",
     "installSuccess": "Skill installed",
+    "installRefresh": "Skill installed, but the list could not be refreshed. Please refresh later.",
     "installError": "Skill installation failed. Please try again.",
     "installUnsupported": "Managed installation is not available for this source.",
     "installInvalidId": "The market Skill identifier is invalid.",

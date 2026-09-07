@@ -91,6 +91,7 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
   const { mutate } = useSWRConfig();
   const [message, messageContext] = useArcoMessage({ maxCount: 10 });
   const [installationErrorIds, setInstallationErrorIds] = useState<Set<string>>(() => new Set());
+  const [locallyInstalledMarketIds, setLocallyInstalledMarketIds] = useState<Set<string>>(() => new Set());
   const {
     data: installations,
     error: installationsError,
@@ -101,8 +102,12 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
   );
 
   const installedMarketIds = useMemo(
-    () => new Set((installations ?? []).map((installation) => `${installation.source}\u0000${installation.market_id}`)),
-    [installations]
+    () =>
+      new Set([
+        ...(installations ?? []).map((installation) => `${installation.source}\u0000${installation.market_id}`),
+        ...locallyInstalledMarketIds,
+      ]),
+    [installations, locallyInstalledMarketIds]
   );
 
   const handleInstall = useCallback(
@@ -115,8 +120,21 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
       });
       try {
         await ipcBridge.fs.installSkillMarketSkill.invoke({ source: item.source, id: item.id });
-        await Promise.all([mutate(INSTALLATIONS_KEY), mutate(AVAILABLE_SKILLS_SWR_KEY)]);
+        setLocallyInstalledMarketIds((current) => new Set(current).add(key));
         message.success(t('settings.skillsMarket.installSuccess', { defaultValue: '技能已安装' }));
+
+        try {
+          await Promise.all([mutate(INSTALLATIONS_KEY), mutate(AVAILABLE_SKILLS_SWR_KEY)]);
+        } catch (refreshError) {
+          // The backend commit already succeeded. Keep the completed state and
+          // only report that the local catalog refresh needs another attempt.
+          console.warn('Skill installed but catalog refresh failed:', refreshError);
+          message.warning(
+            t('settings.skillsMarket.installRefresh', {
+              defaultValue: '技能已安装，但列表刷新失败，请稍后刷新。',
+            })
+          );
+        }
       } catch (error) {
         console.error('Failed to install SkillHub skill:', error);
         setInstallationErrorIds((current) => new Set(current).add(key));

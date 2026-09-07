@@ -248,6 +248,8 @@ export const filterSkillMarketItems = (
   });
 };
 
+// Plugin market still uses the reviewed conversation-draft flow. Keep these
+// helpers here for that consumer; the managed SkillHub page does not call them.
 export const buildSkillMarketConversationName = (item: ISkillMarketItem, localeKey = 'zh-CN'): string => {
   const name = cleanMarketText(item.name, 48);
   return localeKey.toLowerCase().startsWith('zh') ? `安装 ${name}` : `Install ${name}`;

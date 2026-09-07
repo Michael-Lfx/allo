@@ -6481,6 +6481,7 @@ export type I18nKey =
   | 'settings.skillsMarket.installManifestInvalid'
   | 'settings.skillsMarket.installNetwork'
   | 'settings.skillsMarket.installNotFound'
+  | 'settings.skillsMarket.installRefresh'
   | 'settings.skillsMarket.installSuccess'
   | 'settings.skillsMarket.installTimeout'
   | 'settings.skillsMarket.installUnsupported'

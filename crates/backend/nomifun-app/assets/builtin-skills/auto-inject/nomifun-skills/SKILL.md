@@ -1,13 +1,13 @@
 ---
 name: nomifun-skills
-description: 'Discover and install community AI agent skills. Use when the user asks whether a skill exists, wants marketplace skills (ClawHub / SkillHub), or needs to install a skill. This skill is fully bundled — do not curl a remote guide first.'
+description: 'Discover and install community AI agent skills through Flowy Skill Market. Use when the user asks whether a skill exists, wants a SkillHub marketplace skill, or needs to install a skill. This skill is fully bundled and does not require a remote guide or external installer.'
 version: 1.1.0
 ---
 
 # Nomi Skills Guide (bundled)
 
 This file is the **baseline** guide shipped with Flowy. You already have it.
-Do **not** treat fetching a remote `SKILL.md` as a prerequisite.
+Do **not** fetch a remote `SKILL.md` or invoke an external installer as part of this workflow.
 
 ## Critical: how this Skill tool works
 
@@ -23,49 +23,24 @@ Invoking `Skill` with `skill: "nomifun-skills"` only returns this guide.
 
 ## Built-in Skill Market (preferred)
 
-Flowy already syncs public rankings from:
+Flowy already syncs public SkillHub rankings from:
 
 | Source | Site |
 | --- | --- |
-| ClawHub | https://clawhub.ai/ |
-| SkillHub | https://www.skills.sh/ |
+| SkillHub | https://skillhub.cn/ |
 
-**For users:** Settings → Skills → Skill Market. Sync rankings, search/filter, then use **Add** to open an install draft conversation with a reviewed install command.
+**For users:** Settings → Skills → Skill Market. Sync rankings, search/filter, then use **Install**. Flowy downloads, validates, and installs the SkillHub archive into its managed Skill directory.
 
 **For you (agent) when asked to find/install a community skill:**
 
 1. Prefer skills already available in this session. If one fits, say so and use it.
-2. If the user needs a marketplace skill, tell them to open **Settings → Skills → Skill Market**, or follow an install draft they already started from that UI.
-3. Before running any install command, verify the source page and command, then ask the user to confirm.
-4. Typical install command shapes (examples only — prefer the command from Skill Market):
-   - ClawHub: `openclaw skills install @owner/slug`
-   - SkillHub: `npx skills add owner/slug` (exact form depends on the listing)
+2. If the user needs a marketplace skill, tell them to open **Settings → Skills → Skill Market**.
+3. For a SkillHub item, use the market card's **Install** action. The Flowy backend performs the network download and validation; do not invoke a shell, `npx`, Node, uv, or OpenClaw command for this flow.
+4. If the item is not shown or installation fails, report the market error and ask the user to refresh the market or resolve the named Skill conflict. Do not invent an alternative install command.
 
-Installing a skill is a shell/network action. This guide itself does not download packages.
+Installing a Skill through Skill Market is a Flowy-managed network action. This guide itself does not download packages.
 
-## Optional guide refresh (not required)
-
-A newer marketplace guide may be published later. Refresh is **optional**.
-
-```bash
-mkdir -p ~/.config/nomifun-skills
-curl -fsSL https://skills.nomifun.com/SKILL.md -o ~/.config/nomifun-skills/SKILL.md.tmp
-```
-
-Only keep the download when it looks like a real skill document:
-
-- starts with YAML frontmatter (`---`)
-- contains a `name:` field
-- is Markdown text, not an HTML parking / redirect page
-
-```bash
-# keep only if the download looks valid; otherwise discard and keep this bundled guide
-head -n 5 ~/.config/nomifun-skills/SKILL.md.tmp
-```
-
-If the remote is down, returns HTML, or fails validation, **keep using this bundled guide**. Never block the user's task on a remote fetch.
-
-Bundled baseline version: `1.1.0`.
+Bundled baseline version: `1.1.0`. If this guide changes, Flowy updates it with the application; do not fetch or overwrite it from a conversation.
 
 ## When to use this skill
 

@@ -143,9 +143,9 @@ fn nomifun_skills_guide_is_bundled_and_does_not_require_remote_fetch() {
         "bundled guide must declare a version for optional refresh"
     );
     assert!(
-        skill.contains("Do **not** treat fetching a remote")
-            || skill.to_lowercase().contains("do not treat fetching a remote"),
-        "must tell agents not to treat remote curl as a prerequisite"
+        skill.contains("Do **not** fetch a remote")
+            || skill.to_lowercase().contains("do not fetch a remote"),
+        "must tell agents not to fetch a remote guide or invoke an external installer"
     );
     assert!(
         skill.to_lowercase().contains("prerequisite"),
@@ -155,9 +155,14 @@ fn nomifun_skills_guide_is_bundled_and_does_not_require_remote_fetch() {
         !skill.contains("### Step 1 — Fetch the skill guide"),
         "must not require fetching a remote SKILL.md before use"
     );
+    assert!(skill.contains("SkillHub"), "must document the in-app Skill Market source");
     assert!(
-        skill.contains("ClawHub") && skill.contains("SkillHub"),
-        "must document the in-app Skill Market sources"
+        !skill.contains("ClawHub")
+            && !skill.contains("npx skills add")
+            && !skill.contains("openclaw skills install")
+            && !skill.contains("curl ")
+            && !skill.contains("head -n"),
+        "must not advertise removed shell-based Skill install flows"
     );
     assert!(
         skill.contains("no") && skill.contains("subcommand"),
