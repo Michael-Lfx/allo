@@ -65,6 +65,10 @@ type MarketSettingsPanelProps = {
   hideSearch?: boolean;
   searchQuery?: string;
   onSearchQueryChange?: (value: string) => void;
+  /** Hide external CLI copy actions for markets with native installation. */
+  showInstallCommand?: boolean;
+  /** Additional consumer-owned filter applied before source/search filtering. */
+  itemFilter?: (item: ISkillMarketItem) => boolean;
 };
 
 /**
@@ -89,6 +93,8 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   hideSearch = false,
   searchQuery: searchQueryProp,
   onSearchQueryChange,
+  showInstallCommand = true,
+  itemFilter,
 }) => {
   const { t, i18n } = useTranslation();
   const localeKey = resolveLocaleKey(i18n.language);
@@ -117,6 +123,7 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
     t,
     notify,
     text,
+    itemFilter,
   });
   const {
     activeSource,
@@ -270,6 +277,7 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
               onAdd={(marketItem) => void actionState.runPrimaryAction(marketItem)}
               onOpenSource={(marketItem) => void handleOpenItemSource(marketItem)}
               onCopyInstallCommand={(marketItem) => void handleCopyInstallCommand(marketItem)}
+              showInstallCommand={showInstallCommand}
               onViewDetails={(marketItem, trigger) => {
                 detailTriggerRef.current = trigger ?? null;
                 setDetailItem(marketItem);
@@ -331,6 +339,7 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
         disabled={detailItem ? actionState.isDisabled(detailItem) : false}
         onPrimaryAction={(item) => void actionState.runPrimaryAction(item)}
         onCopyInstallCommand={(item) => void handleCopyInstallCommand(item)}
+        showInstallCommand={showInstallCommand}
         onOpenSource={(item) => void handleOpenItemSource(item)}
         onClose={() => setDetailItem(null)}
         restoreFocusRef={detailTriggerRef}

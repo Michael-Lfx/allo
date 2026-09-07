@@ -4,8 +4,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use nomifun_api_types::{
     SkillCatalogSource, SkillId, SkillMarketPackageInstallError, SkillMarketPackageInstallResponse,
@@ -25,6 +23,7 @@ use super::parse::{
     dedup_strings, is_market_slug, json_text, json_text_preserve,
     last_url_segment, market_https_image_url, market_ref_suffix, title_from_slug,
 };
+use super::staging::{MarketStaging, create_market_staging};
 use super::SKILLHUB_PACKAGES_SOURCE;
 
 const SKILLHUB_SKILL_DOWNLOAD_URL: &str = "https://api.skillhub.cn/api/v1/download";
@@ -61,63 +60,6 @@ impl MarketPackagePresetInstallFailure {
             preserve_committed_skills,
         }
     }
-}
-
-struct MarketPackageStaging {
-    root: PathBuf,
-    parent: PathBuf,
-}
-
-// A package can stage its network payloads concurrently, but the commit and
-// preset handoff must be serialized. Without this small process-local fence,
-// two windows could both observe a missing target, and a failed first preset
-// handoff could roll back a Skill that the second window already reused.
-static MARKET_PACKAGE_COMMIT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-
-fn market_package_commit_lock() -> &'static tokio::sync::Mutex<()> {
-    MARKET_PACKAGE_COMMIT_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-impl Drop for MarketPackageStaging {
-    fn drop(&mut self) {
-        // Drop is the final cancellation/unwind guard. The extracted archive
-        // is untrusted input and must not survive an interrupted install. Do
-        // not recurse synchronously on a Tokio worker: package archives are
-        // bounded but can still make cancellation block the runtime.
-        let root = self.root.clone();
-        let parent = self.parent.clone();
-        let cleanup = move || {
-            let _ = std::fs::remove_dir_all(root);
-            let _ = std::fs::remove_dir(parent);
-        };
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn_blocking(cleanup);
-        } else {
-            let _ = std::thread::Builder::new()
-                .name("market-package-cleanup".into())
-                .spawn(cleanup);
-        }
-    }
-}
-
-async fn create_market_package_staging(paths: &SkillPaths) -> Result<MarketPackageStaging, AppError> {
-    let parent = paths.user_skills_dir.join(".market-import");
-    tokio::fs::create_dir_all(&parent)
-        .await
-        .map_err(|error| AppError::Internal(format!("create market staging directory: {error}")))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let root = parent.join(format!("package-{}-{nonce}", std::process::id()));
-    if let Err(error) = tokio::fs::create_dir(&root).await {
-        // No staging guard exists until the root is constructed. Remove only
-        // the empty parent we created for this attempt; a concurrent package
-        // install keeps it alive when its own child directory is present.
-        let _ = tokio::fs::remove_dir(&parent).await;
-        return Err(AppError::Internal(format!("create market staging root: {error}")));
-    }
-    Ok(MarketPackageStaging { root, parent })
 }
 
 /// Resolve a SkillHub expert package and install its child skills. This is
@@ -159,7 +101,9 @@ pub async fn install_market_package(
             "market package preset installer is not configured".into(),
         ));
     };
-    let _commit_guard = market_package_commit_lock().lock().await;
+    // Ordinary Skill installs use the same process-local fence so a package
+    // commit can never race a direct market Skill commit.
+    let _commit_guard = super::market_commit_lock().lock().await;
     let mut committed = Vec::new();
     for staged in &install_result.staged_skills {
         if let Some(staged_dir) = staged.staged_dir.as_deref() {
@@ -406,7 +350,7 @@ struct SkillMarketPackageSkillInstallOutcome {
     installed_skill_names: Vec<String>,
     staged_skills: Vec<StagedMarketSkill>,
     errors: Vec<SkillMarketPackageInstallError>,
-    _staging: Option<MarketPackageStaging>,
+    _staging: Option<MarketStaging>,
 }
 
 struct StagedMarketSkill {
@@ -465,7 +409,7 @@ async fn install_skillhub_package_skills(
     }
 
     let client = build_market_client()?;
-    let staging = create_market_package_staging(paths).await?;
+    let staging = create_market_staging(paths, "package").await?;
     let mut installed_skill_names = Vec::new();
     let mut staged_skills = Vec::new();
     let mut errors = Vec::new();
@@ -574,7 +518,7 @@ async fn install_skillhub_package_skills(
 /// Download a skill zip by slug, falling back to an exact-match search when
 /// the direct download 404s. The slug is validated BEFORE any URL or temp
 /// path is built from it.
-async fn download_skillhub_skill_zip(
+pub(crate) async fn download_skillhub_skill_zip(
     client: &reqwest::Client,
     skill_slug: &str,
 ) -> Result<(String, Vec<u8>), AppError> {

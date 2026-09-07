@@ -85,6 +85,10 @@ describe('capability hub load contracts', () => {
     const panel = read('./MarketSettingsPanel.tsx');
 
     expect(market).toContain('AVAILABLE_SKILLS_SWR_KEY');
+    expect(market).toContain('installSkillMarketSkill');
+    expect(market).toContain('showInstallCommand={false}');
+    expect(market).not.toContain('useNomiQuickStart');
+    expect(market).toContain('rankings.v5');
     expect(market).not.toContain('detectAndCountExternalSkills');
     expect(importMenu).toContain('openAgentImport');
     expect(importMenu).not.toContain('useEffect');

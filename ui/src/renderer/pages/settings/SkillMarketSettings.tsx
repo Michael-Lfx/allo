@@ -1,15 +1,14 @@
 /**
  * SkillMarketSettings — the skill market surface. A thin binding of the shared
- * MarketSettingsPanel to the skill ranking sources: "Add" hands a reviewed,
- * never auto-sent installation draft to Nomi via the quick-start flow.
+ * MarketSettingsPanel to the native ClawHub, LoopHub, and SkillHub install
+ * flow. The backend owns download validation and never invokes an external CLI.
  */
+import { ipcBridge } from '@/common';
 import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
-import { resolveLocaleKey } from '@/common/utils';
-import { useNomiQuickStart } from '@/renderer/hooks/agent/useNomiQuickStart';
+import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import MarketSettingsPanel from './MarketSettingsPanel';
 import {
-  buildSkillMarketConversationName,
-  buildSkillMarketInstallPrompt,
+  isNativeSkillMarketItem,
   isSkillMarketItemInstalled,
   SKILL_MARKET_SOURCES,
 } from './skill/skillMarket';
@@ -18,8 +17,8 @@ import React, { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
-const CACHE_KEY = 'nomifun.skillMarket.rankings.v4';
-const AUTO_SYNC_KEY = 'nomifun.skillMarket.autoSynced.v4';
+const CACHE_KEY = 'nomifun.skillMarket.rankings.v5';
+const AUTO_SYNC_KEY = 'nomifun.skillMarket.autoSynced.v5';
 
 type SkillMarketSettingsProps = {
   active?: boolean;
@@ -34,10 +33,9 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
   searchQuery,
   onSearchQueryChange,
 }) => {
-  const { t, i18n } = useTranslation();
-  const localeKey = resolveLocaleKey(i18n.language);
-  const { start } = useNomiQuickStart();
-  const { data: skills, error, isLoading } = useSWR(
+  const { t } = useTranslation();
+  const [message, messageContext] = useArcoMessage({ maxCount: 10 });
+  const { data: skills, error, isLoading, mutate } = useSWR(
     active ? AVAILABLE_SKILLS_SWR_KEY : null,
     fetchAvailableSkills
   );
@@ -55,22 +53,34 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
 
   const handleAdd = useCallback(
     async (item: ISkillMarketItem) => {
-      await start({
-        name: buildSkillMarketConversationName(item, localeKey),
-        prompt: buildSkillMarketInstallPrompt(item, localeKey),
-        send: false,
-      });
+      try {
+        const result = await ipcBridge.fs.installSkillMarketSkill.invoke({
+          source: item.source,
+          id: item.id,
+          artifact_url: item.artifact_url,
+        });
+        await mutate();
+        message.success(
+          result.status === 'reused'
+            ? t('settings.skillsMarket.installReused', { defaultValue: '技能已安装' })
+            : t('settings.skillsMarket.installSuccess', { defaultValue: '技能安装成功' })
+        );
+      } catch (error) {
+        console.error('Failed to install market skill:', error);
+        message.error(t('settings.skillsMarket.installFailed', { defaultValue: '技能安装失败，请稍后重试。' }));
+      }
     },
-    [localeKey, start]
+    [message, mutate, t]
   );
 
   return (
     <div className='w-full pb-16px'>
+      {messageContext}
       <div className='space-y-16px'>
         <MarketSettingsPanel
           title={t('settings.skillsMarket.title', { defaultValue: '技能市场' })}
           description={t('settings.skillsMarket.description', {
-            defaultValue: '同步 ClawHub、LoopHub 与 SkillHub 最新榜单，选择技能后交给 Nomi 生成安装确认草稿。',
+            defaultValue: '同步 ClawHub、LoopHub 与 SkillHub 最新榜单，直接下载并安装符合 Flowy 规范的技能。',
           })}
           sources={SKILL_MARKET_SOURCES}
           cacheKey={CACHE_KEY}
@@ -79,8 +89,8 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
           searchPlaceholder={t('settings.skillsMarket.searchPlaceholder', { defaultValue: '搜索当前市场技能...' })}
           emptyText={t('settings.skillsMarket.empty', { defaultValue: '正在准备榜单，点击刷新可重新采集。' })}
           primaryAction={{
-            label: t('settings.market.prepareInstall', { defaultValue: '准备安装' }),
-            pendingLabel: t('settings.market.preparingInstall', { defaultValue: '正在准备' }),
+            label: t('settings.market.install', { defaultValue: '安装' }),
+            pendingLabel: t('settings.market.installing', { defaultValue: '安装中' }),
             completedLabel: t('settings.market.installed', { defaultValue: '已安装' }),
             resolveState: (item) =>
               installedStateLoading
@@ -90,6 +100,8 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
                   : 'ready',
             run: handleAdd,
           }}
+          itemFilter={isNativeSkillMarketItem}
+          showInstallCommand={false}
           enableTagFilter
           testIdPrefix='skill-market'
           hideSearch={hideSearch}

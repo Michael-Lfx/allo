@@ -1414,6 +1414,9 @@ export type SkillMarketSource =
   | 'clawhub_plugins'
   | 'skillhub_packages';
 
+export type SkillMarketInstallMode = 'native' | 'external' | 'unsupported';
+export type SkillMarketInstallStatus = 'installed' | 'reused';
+
 export interface ISkillMarketItem {
   id: string;
   source: SkillMarketSource;
@@ -1421,7 +1424,9 @@ export interface ISkillMarketItem {
   name: string;
   description: string;
   url: string;
+  artifact_url?: string;
   install_command: string;
+  install_mode: SkillMarketInstallMode;
   tags?: string[];
   audience_tags?: string[];
   scenario_tags?: string[];
@@ -1437,6 +1442,13 @@ export interface ISkillMarketSyncResponse {
 
 export interface ISkillMarketMcpConfigResponse {
   config_json: unknown;
+}
+
+export interface ISkillMarketSkillInstallResponse {
+  source: string;
+  id: string;
+  skill_name: string;
+  status: SkillMarketInstallStatus;
 }
 
 export interface ISkillMarketPackageResponse {
@@ -1574,6 +1586,10 @@ export const fs = {
     ISkillMarketPackageInstallResponse,
     { source: SkillMarketSource; id: string; url: string; preset_id?: string }
   >('/api/skills/market/package/install'),
+  installSkillMarketSkill: httpPost<
+    ISkillMarketSkillInstallResponse,
+    { source: SkillMarketSource; id: string; artifact_url?: string }
+  >('/api/skills/market/skill/install'),
 };
 
 // ---------------------------------------------------------------------------

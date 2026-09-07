@@ -13,11 +13,14 @@ mod client;
 mod mcp;
 mod package;
 mod parse;
+mod skill;
+mod staging;
 
 pub use mcp::resolve_market_mcp_config;
 pub use package::{
     MarketPackagePresetInstallFailure, MarketPackagePresetInstaller, install_market_package,
 };
+pub use skill::install_market_skill;
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -57,6 +60,15 @@ struct SkillHubPackageBlacklistFile {
 }
 
 static SKILLHUB_PACKAGE_BLACKLIST: OnceLock<Result<HashSet<String>, String>> = OnceLock::new();
+
+// Package installs and ordinary Skill installs share the same commit fence.
+// Download and validation stay outside the lock; only the final user-directory
+// mutation is serialized.
+static MARKET_COMMIT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+pub(crate) fn market_commit_lock() -> &'static tokio::sync::Mutex<()> {
+    MARKET_COMMIT_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 fn parse_skillhub_package_blacklist(body: &str) -> Result<HashSet<String>, String> {
     let file = serde_json::from_str::<SkillHubPackageBlacklistFile>(body)
@@ -344,6 +356,7 @@ fn now_epoch_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomifun_api_types::SkillMarketInstallMode;
 
     #[test]
     fn normalize_market_sources_rejects_unknown_source() {
@@ -412,7 +425,9 @@ mod tests {
             name: name.into(),
             description: String::new(),
             url: format!("https://clawhub.ai/owner/skills/{name}"),
+            artifact_url: None,
             install_command: format!("openclaw skills install @owner/{name}"),
+            install_mode: SkillMarketInstallMode::Native,
             tags: vec![],
             audience_tags: vec![],
             scenario_tags: vec![],

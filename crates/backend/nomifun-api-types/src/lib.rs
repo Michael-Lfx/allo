@@ -313,10 +313,12 @@ pub use skill::{
     ReadBuiltinResourceRequest, ReadSkillInfoRequest, ReadSkillInfoResponse,
     RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse, ScannedSkillResponse,
     SetSkillTagsRequest, SkillCatalogItemResponse, SkillCatalogResponse, SkillCatalogSource, SkillId,
-    SkillListItemResponse, SkillMarketItemResponse, SkillMarketMcpConfigRequest,
+    SkillListItemResponse, SkillMarketInstallMode, SkillMarketInstallStatus, SkillMarketItemResponse,
+    SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallError, SkillMarketPackageInstallResponse,
-    SkillMarketPackageRequest, SkillMarketPackageResponse, SkillMarketSyncRequest,
-    SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse, WritePresetRuleRequest,
+    SkillMarketPackageRequest, SkillMarketPackageResponse, SkillMarketSkillInstallRequest,
+    SkillMarketSkillInstallResponse, SkillMarketSyncRequest, SkillMarketSyncResponse, SkillPathsResponse,
+    SkillSourceResponse, WritePresetRuleRequest,
 };
 pub use system::{
     ClientPreferencesResponse, SystemSettingsResponse, UpdateClientPreferencesRequest,

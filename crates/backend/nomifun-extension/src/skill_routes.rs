@@ -16,7 +16,8 @@ use nomifun_api_types::{
     SkillCatalogSource, SkillId,
     SkillListItemResponse, SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallResponse, SkillMarketPackageRequest,
-    SkillMarketSyncRequest, SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse,
+    SkillMarketSkillInstallRequest, SkillMarketSkillInstallResponse, SkillMarketSyncRequest,
+    SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse,
     WritePresetRuleRequest,
 };
 use nomifun_common::AppError;
@@ -125,6 +126,10 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
         .route(
             "/api/skills/market/package/install",
             post(install_skill_market_package),
+        )
+        .route(
+            "/api/skills/market/skill/install",
+            post(install_skill_market_skill),
         )
         .with_state(state)
 }
@@ -623,6 +628,17 @@ async fn install_skill_market_package(
         state.market_package_preset_installer.as_deref(),
     )
     .await?;
+    Ok(Json(ApiResponse::ok(resp)))
+}
+
+/// `POST /api/skills/market/skill/install` — download and install one native
+/// ordinary Skill without invoking an external CLI.
+async fn install_skill_market_skill(
+    State(state): State<SkillRouterState>,
+    body: Result<Json<SkillMarketSkillInstallRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<SkillMarketSkillInstallResponse>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let resp = crate::market::install_market_skill(&state.skill_paths, req).await?;
     Ok(Json(ApiResponse::ok(resp)))
 }
 

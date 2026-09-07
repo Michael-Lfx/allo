@@ -1,4 +1,8 @@
-import type { ISkillMarketItem, SkillMarketSource } from '@/common/adapter/ipcBridge';
+import type {
+  ISkillMarketItem,
+  SkillMarketInstallMode,
+  SkillMarketSource,
+} from '@/common/adapter/ipcBridge';
 import type { SkillTagFilterState } from './skillFilter';
 
 export const SKILL_MARKET_SOURCES: SkillMarketSource[] = ['clawhub', 'loophub', 'skillhub'];
@@ -36,8 +40,8 @@ const normalizeInstalledResourceName = (value: string): string =>
 
 /**
  * Market display names are not always the installed SKILL.md name. Use both
- * the display name and the canonical trailing slug so returning from the Nomi
- * install draft reliably turns the action into “Added”.
+ * the display name and the canonical trailing slug so a fresh market sync
+ * reliably turns an already-installed Skill into the completed state.
  */
 export const isSkillMarketItemInstalled = (
   item: Pick<ISkillMarketItem, 'id' | 'name'>,
@@ -55,6 +59,7 @@ export const isSkillMarketItemInstalled = (
 const MAX_NAME_LENGTH = 96;
 const MAX_DESCRIPTION_LENGTH = 220;
 const MAX_COMMAND_LENGTH = 320;
+const MAX_ARTIFACT_URL_LENGTH = 320;
 const MAX_AVATAR_URL_LENGTH = 260;
 const MARKET_AVATAR_HOSTS = new Set(['cloudcache.tencent-cloud.com', 'skillhub.cn', 'www.skillhub.cn']);
 const MARKET_AVATAR_EXTENSIONS = ['.avif', '.png', '.jpg', '.jpeg', '.webp', '.gif'];
@@ -67,6 +72,9 @@ export const isSkillMarketSource = (value: unknown): value is SkillMarketSource 
   value === 'mcpworld' ||
   value === 'clawhub_plugins' ||
   value === 'skillhub_packages';
+
+const isSkillMarketInstallMode = (value: unknown): value is SkillMarketInstallMode =>
+  value === 'native' || value === 'external' || value === 'unsupported';
 
 export const cleanMarketText = (value: unknown, maxLength = MAX_DESCRIPTION_LENGTH): string => {
   if (typeof value !== 'string') return '';
@@ -112,6 +120,22 @@ const cleanMarketAvatar = (value: unknown): string | undefined => {
   return isSafeMarketAvatarUrl(url) ? url : undefined;
 };
 
+const isSafeLoopHubArtifactUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === 'https:' &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.port &&
+      parsed.hostname.toLowerCase() === 'dl.cocoloop.cn' &&
+      parsed.pathname.startsWith('/bss/skills/')
+    );
+  } catch {
+    return false;
+  }
+};
+
 const isSafeInstallCommand = (source: SkillMarketSource, value: string): boolean => {
   if (!value || value.length > MAX_COMMAND_LENGTH) return false;
   if (/[\r\n;&|<>`$]/.test(value)) return false;
@@ -148,6 +172,11 @@ export const normalizeSkillMarketItem = (raw: unknown): ISkillMarketItem | null 
   const install_command = cleanMarketText(data.install_command, MAX_COMMAND_LENGTH);
   if (!isSafeMarketUrl(data.source, url) || !isSafeInstallCommand(data.source, install_command)) return null;
 
+  const install_mode = isSkillMarketInstallMode(data.install_mode) ? data.install_mode : 'unsupported';
+  const artifact_url = cleanMarketText(data.artifact_url, MAX_ARTIFACT_URL_LENGTH) || undefined;
+  if (artifact_url && (data.source !== 'loophub' || !isSafeLoopHubArtifactUrl(artifact_url))) return null;
+  if (install_mode === 'native' && data.source === 'loophub' && !artifact_url) return null;
+
   const name = cleanMarketText(data.name, MAX_NAME_LENGTH);
   if (!name) return null;
 
@@ -158,7 +187,9 @@ export const normalizeSkillMarketItem = (raw: unknown): ISkillMarketItem | null 
     name,
     description: cleanMarketText(data.description, MAX_DESCRIPTION_LENGTH),
     url,
+    artifact_url,
     install_command,
+    install_mode,
     tags: cleanTagList(data.tags),
     audience_tags: cleanTagList(data.audience_tags),
     scenario_tags: cleanTagList(data.scenario_tags),
@@ -166,6 +197,10 @@ export const normalizeSkillMarketItem = (raw: unknown): ISkillMarketItem | null 
     avatar: cleanMarketAvatar(data.avatar),
   };
 };
+
+export const isNativeSkillMarketItem = (
+  item: Pick<ISkillMarketItem, 'install_mode'>
+): boolean => item.install_mode === 'native';
 
 export const normalizeSkillMarketItems = (raw: unknown): ISkillMarketItem[] => {
   if (!Array.isArray(raw)) return [];

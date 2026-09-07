@@ -15,6 +15,7 @@ type SkillMarketCardProps = {
   actionState?: MarketActionState;
   busy?: boolean;
   disabled?: boolean;
+  showInstallCommand?: boolean;
   onAdd: (item: MarketItemViewModel) => void;
   onOpenSource: (item: MarketItemViewModel) => void;
   onCopyInstallCommand: (item: MarketItemViewModel) => void;
@@ -35,6 +36,7 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
   actionState = 'ready',
   busy = false,
   disabled = false,
+  showInstallCommand = true,
   onAdd,
   onOpenSource,
   onCopyInstallCommand,
@@ -109,9 +111,11 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
               <Menu.Item key='open-source' onClick={() => onOpenSource(item)}>
                 <LinkOne size={14} fill='currentColor' /> {t('settings.market.openSource', { defaultValue: '打开来源' })}
               </Menu.Item>
-              <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
-                {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
-              </Menu.Item>
+              {showInstallCommand && (
+                <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
+                  {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
+                </Menu.Item>
+              )}
             </Menu>
           }
         >
