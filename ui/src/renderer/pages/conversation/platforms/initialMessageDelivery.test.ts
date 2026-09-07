@@ -146,7 +146,7 @@ describe('initial message durable delivery identity', () => {
     expect(storage.getItem('initial')).toBeNull();
   });
 
-  test('quarantines Pending payloads with history and unknown authority', async () => {
+  test('quarantines invalid history but retains payload when authority is unknown', async () => {
     const storage = createStorage();
     const persisted = JSON.stringify({
       conversation_id: CONVERSATION_ID,
@@ -172,20 +172,22 @@ describe('initial message durable delivery identity', () => {
     expect(storage.getItem('history')).toBeNull();
 
     storage.setItem('unknown', persisted);
-    expect(
-      await readAuthorizedInitialMessageDelivery(
-        storage,
-        'unknown',
-        CONVERSATION_ID,
-        {
-          getConversation: async () => {
-            throw new Error('authority unavailable');
-          },
-          getTranscriptSummary: async () => ({ items: [], total: 0 }),
-        }
-      )
-    ).toBeNull();
-    expect(storage.getItem('unknown')).toBeNull();
+    const authorityFailure = await readAuthorizedInitialMessageDelivery(
+      storage,
+      'unknown',
+      CONVERSATION_ID,
+      {
+        getConversation: async () => {
+          throw new Error('authority unavailable');
+        },
+        getTranscriptSummary: async () => ({ items: [], total: 0 }),
+      }
+    ).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect((authorityFailure as Error).message).toBe('authority unavailable');
+    expect(storage.getItem('unknown')).toBe(persisted);
   });
 
   test('keeps the payload through failure and consumes it only after acceptance', () => {
@@ -233,7 +235,7 @@ describe('initial message durable delivery identity', () => {
     releaseInitialMessageDelivery('initial');
   });
 
-  test('quarantines an exact initial-only 409 but retains transport failures', () => {
+  test('retains a typed initial-only admission conflict and other failures', () => {
     const storage = createStorage();
     const first = persistInitialMessageDelivery(
       storage,
@@ -247,11 +249,37 @@ describe('initial message durable delivery identity', () => {
       storage,
       'conflict',
       first.idempotency_key,
-      { name: 'BackendHttpError', status: 409, code: 'CONFLICT' }
+      {
+        name: 'BackendHttpError',
+        status: 409,
+        code: 'CONFLICT',
+        details: {
+          kind: 'conversation_turn_admission',
+          retryable: true,
+          reconcile: 'conversation.get',
+        },
+      }
     );
-    expect(storage.getItem('conflict')).toBeNull();
+    expect(readInitialMessageDelivery(storage, 'conflict')).toEqual(first);
     expect(claimInitialMessageDelivery('conflict')).toBe(true);
     releaseInitialMessageDelivery('conflict');
+
+    const unrelatedConflict = persistInitialMessageDelivery(
+      storage,
+      'unrelated-conflict',
+      CONVERSATION_ID,
+      'keep me',
+      []
+    );
+    expect(claimInitialMessageDelivery('unrelated-conflict')).toBe(true);
+    handleInitialMessageDeliveryFailure(
+      storage,
+      'unrelated-conflict',
+      unrelatedConflict.idempotency_key,
+      { name: 'BackendHttpError', status: 409, code: 'CONFLICT' }
+    );
+    expect(readInitialMessageDelivery(storage, 'unrelated-conflict')).toEqual(unrelatedConflict);
+    releaseInitialMessageDelivery('unrelated-conflict');
 
     const retryable = persistInitialMessageDelivery(
       storage,
@@ -291,5 +319,37 @@ describe('initial message durable delivery identity', () => {
 
     expect(repeated).toEqual(first);
     expect(JSON.parse(storage.getItem('automatic') ?? '{}')).toEqual(first);
+  });
+
+  test('marks explicit special deliveries so remounts do not replay them as initial-only', () => {
+    const storage = createStorage();
+    const delivery = persistInitialMessageDelivery(
+      storage,
+      'special',
+      CONVERSATION_ID,
+      'install it',
+      [],
+      false
+    );
+
+    expect(delivery.initial_only).toBe(false);
+    expect(readInitialMessageDelivery(storage, 'special')).toEqual(delivery);
+  });
+
+  test('keeps the original workspace snapshot with an initial delivery', () => {
+    const storage = createStorage();
+    storage.setItem(
+      'workspace',
+      JSON.stringify({
+        conversation_id: CONVERSATION_ID,
+        initial_admission_epoch: 0,
+        input: 'with attachment',
+        files: ['C:/workspace/file.txt'],
+        workspace_path: 'C:/workspace',
+        idempotency_key: 'workspace-snapshot-key',
+      })
+    );
+
+    expect(readInitialMessageDelivery(storage, 'workspace')?.workspace_path).toBe('C:/workspace');
   });
 });

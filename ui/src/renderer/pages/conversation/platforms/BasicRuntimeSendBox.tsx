@@ -21,7 +21,6 @@ import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
 import { useLatestRef } from '@/renderer/hooks/ui/useLatestRef';
 import { useAddOrUpdateMessage, useRemoveMessageByMsgId } from '@/renderer/pages/conversation/Messages/hooks';
 import {
-  shouldEnqueueConversationCommand,
   useConversationCommandQueue,
   type ConversationCommandQueueExecution,
   type ConversationCommandQueueItem,
@@ -51,6 +50,7 @@ import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
 import { useBasicRuntimeTurnSurface } from '@/renderer/pages/conversation/platforms/BasicRuntimeTurnContext';
+import { isConversationTurnAdmissionConflict } from '@/renderer/pages/conversation/platforms/conversationSendRecovery';
 import { Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -454,12 +454,13 @@ const BasicRuntimeSendBox: React.FC<{
         id = uuidv7(),
         input,
         files,
+        workspace_path: queuedWorkspacePath,
       }: Pick<ConversationCommandQueueItem, 'input' | 'files'> &
-        Partial<Pick<ConversationCommandQueueItem, 'id'>>,
+        Partial<Pick<ConversationCommandQueueItem, 'id' | 'workspace_path'>>,
       execution?: ConversationCommandQueueExecution,
       deferLocalTurnUntilFresh = execution !== undefined
     ) => {
-      const displayMessage = buildDisplayMessage(input, files, workspacePath);
+      const displayMessage = buildDisplayMessage(input, files, queuedWorkspacePath ?? workspacePath);
 
       if (!deferLocalTurnUntilFresh) {
         beginLocalTurn();
@@ -505,10 +506,25 @@ const BasicRuntimeSendBox: React.FC<{
         return disposition;
       } catch (error) {
         if (execution && !execution.isCurrent()) return;
+        if (execution) {
+          // Queue recovery owns this failure. There is no optimistic local
+          // turn to cancel because deferred deliveries open one only after a
+          // fresh accepted response.
+          throw error;
+        }
         if (msg_id) removeMessageByMsgId(msg_id);
         cancelLocalTurn();
         setAiProcessing(false);
-        Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        if (isConversationTurnAdmissionConflict(error)) {
+          Message.warning(
+            t('conversation.commandQueue.specialDeliveryConflict', {
+              defaultValue:
+                'The conversation is still busy. This message and its Skill selection were kept; retry after the current turn finishes.',
+            })
+          );
+        } else {
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        }
         throw error;
       }
     },
@@ -531,7 +547,6 @@ const BasicRuntimeSendBox: React.FC<{
     items,
     isPaused: isQueuePaused,
     isInteractionLocked: isQueueInteractionLocked,
-    hasPendingCommands,
     enqueue,
     remove,
     clear,
@@ -551,28 +566,21 @@ const BasicRuntimeSendBox: React.FC<{
   });
 
   const onSendHandler = async (message: string) => {
-    emitter.emit(config.selectedFileEvents.clear);
     const file_paths = [...uploadFile, ...atPath.map((item) => (typeof item === 'string' ? item : item.path))];
+    const queued = enqueue({ input: message, files: file_paths, workspace_path: workspacePath });
+    if (!queued) {
+      // Keep the composer draft and attachment selection when queue
+      // validation/storage rejects the send.
+      throw new Error('conversation command was not queued');
+    }
     setAtPath([]);
     setUploadFile([]);
-
-    if (
-      shouldEnqueueConversationCommand({
-        enabled: true,
-        isBusy,
-        hasPendingCommands,
-      })
-    ) {
-      enqueue({ input: message, files: file_paths });
-      return;
-    }
-
-    await executeCommand({ input: message, files: file_paths });
+    emitter.emit(config.selectedFileEvents.clear);
   };
 
   const handleEditQueuedCommand = useCallback(
     (item: ConversationCommandQueueItem) => {
-      remove(item.id);
+      if (!remove(item.id)) return;
       setContent(item.input);
       setUploadFile(Array.from(new Set(item.files)));
       setAtPath([]);
@@ -625,14 +633,14 @@ const BasicRuntimeSendBox: React.FC<{
           releaseInitialMessageDelivery(storageKey);
           return;
         }
-        const { input, files, idempotency_key } = initialMessage;
+        const { input, files, workspace_path: queuedWorkspacePath, idempotency_key } = initialMessage;
         attemptedIdempotencyKey = idempotency_key;
         // Invariant: the guid page's background config (knowledge/IDMM/AutoWork)
         // must settle before the first turn reaches the runtime. Navigation no
         // longer blocks on it, so the ordering is enforced here instead.
         await awaitConversationConfig(conversation_id);
-        let resolvedWorkspace = workspacePath;
-        if (config.workspaceResolution === 'at-initial-message') {
+        let resolvedWorkspace = queuedWorkspacePath ?? workspacePath;
+        if (queuedWorkspacePath === undefined && config.workspaceResolution === 'at-initial-message') {
           const res = await getConversationOrNull(conversation_id);
           resolvedWorkspace = res?.extra?.workspace ?? '';
           setWorkspacePath(resolvedWorkspace);
@@ -687,7 +695,16 @@ const BasicRuntimeSendBox: React.FC<{
         sessionStorage.removeItem(processedKey);
         cancelLocalTurn();
         setAiProcessing(false);
-        Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        if (isConversationTurnAdmissionConflict(error)) {
+          Message.warning(
+            t('conversation.commandQueue.specialDeliveryConflict', {
+              defaultValue:
+                'The conversation is still busy. This message and its Skill selection were kept; retry after the current turn finishes.',
+            })
+          );
+        } else {
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        }
         // Reveal even on failure: the error toast lives on the destination
         // page; the overlay must not hide it behind the timeout.
         emitter.emit('conversation.transition.reveal', { conversation_id });
@@ -754,8 +771,14 @@ const BasicRuntimeSendBox: React.FC<{
 
   // Clear conversation context (release model context); keeps message records.
   const handleClearContext = async (): Promise<void> => {
+    // Context reset changes the backend lifecycle fence. Keep queued messages,
+    // invalidate any late local send result, and let the queue reopen only
+    // after its authoritative runtime reconciliation succeeds.
+    pause();
+    resetActiveExecution('external-reset');
     try {
       await ipcBridge.conversation.clearContext.invoke({ conversation_id });
+      resume();
       Message.success({
         content: t('conversation.clearContext.success', { defaultValue: 'Context cleared' }),
         duration: 2000,
@@ -763,6 +786,8 @@ const BasicRuntimeSendBox: React.FC<{
       });
     } catch (error) {
       console.warn(`${config.logTag} clear context failed`, error);
+      // Keep the queue paused on an unknown reset result. The user can resume
+      // it explicitly after the backend state is confirmed.
       Message.error({
         content: t('conversation.clearContext.failed', { defaultValue: 'Failed to clear context' }),
         closable: true,
@@ -827,6 +852,10 @@ const BasicRuntimeSendBox: React.FC<{
         value={content}
         onChange={handleContentChange}
         selectedWorkspaceItems={atPath}
+        submissionAttachmentPaths={[
+          ...uploadFile,
+          ...atPath.map((item) => (typeof item === 'string' ? item : item.path)),
+        ]}
         onSelectedWorkspaceItemsChange={(nextSelectedItems) => {
           if (config.emitSelectedFileOnChange) {
             emitter.emit(config.selectedFileEvents.set, nextSelectedItems);

@@ -55,8 +55,27 @@ describe('conversation command queue runtime recovery', () => {
     expect(conversationEffect > conversationScope).toBe(true);
   });
 
+  test('does not treat a deleted conversation as an idle dispatch target', () => {
+    const reconcile = source.indexOf('const reconcileActiveExecution = useCallback');
+    const missingConversation = source.indexOf('if (!conversation)', reconcile);
+    const invalidate = source.indexOf('executionGenerationRef.current += 1;', missingConversation);
+    const clearQueue = source.indexOf('const deletedState = createDefaultQueueState();', missingConversation);
+    const removeStorage = source.indexOf('removePersistedQueueState(conversationKey);', clearQueue);
+
+    expect(missingConversation > reconcile).toBe(true);
+    expect(invalidate > missingConversation).toBe(true);
+    expect(clearQueue > invalidate).toBe(true);
+    expect(removeStorage > clearQueue).toBe(true);
+  });
+
+  test('serializes runtime reconciliation and preserves a paused persistence snapshot', () => {
+    expect(source).toContain('if (reconciliationPromiseRef.current) return reconciliationPromiseRef.current;');
+    expect(source).toContain('reconciliationPromiseRef.current = reconciliation;');
+    expect(source).toContain('queueStore.set(conversationKey, pausedState);');
+  });
+
   test('keeps the item persisted through POST and removes it only after acceptance', () => {
-    const executionEffect = source.indexOf('const [nextCommand] = data.items;');
+    const executionEffect = source.indexOf('const [nextCommand] = stateRef.current.items;');
     const persistenceComment = source.indexOf('Keep the item durably queued while the request is in flight', executionEffect);
     const dispatch = source.indexOf('void Promise.resolve()', persistenceComment);
     const currentFence = source.indexOf('if (!isExecutionCurrent()) return;', dispatch);
@@ -110,10 +129,10 @@ describe('conversation command queue runtime recovery', () => {
     const reconcile = source.indexOf('void reconcileActiveExecution();', postRemovalFence);
     const reject = source.indexOf('.catch((error) => {', reconcile);
     const rejectFence = source.indexOf('if (!isExecutionCurrent()', reject);
-    const acceptedFence = source.indexOf("executionGateRef.current.phase !== 'waiting_start'", rejectFence);
-    const restoreUpdater = source.indexOf('void updateState((state) =>', acceptedFence);
-    const restoreUpdaterFence = source.indexOf('isExecutionCurrent()', restoreUpdater);
-    const restore = source.indexOf('restoreQueuedCommand(state.items, nextCommand)', restoreUpdaterFence);
+    const acceptedFence = source.indexOf("executionGateRef.current.phase === 'idle'", rejectFence);
+    const restoreUpdater = source.indexOf('const pausedItem = updateQueueItemDelivery', acceptedFence);
+    const restoreUpdaterFence = source.indexOf('const pausedState = normalizeQueueState', restoreUpdater);
+    const restore = source.indexOf('restoreQueuedCommand(currentState.items, pausedItem)', restoreUpdaterFence);
     const warning = source.indexOf('Message.warning(', restore);
 
     expect(execute >= 0).toBe(true);

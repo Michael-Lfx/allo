@@ -1,4 +1,8 @@
-import type { ConversationCommandQueueItem } from '@/renderer/pages/conversation/platforms/useConversationCommandQueue';
+import {
+  getQueueItemDeliveryState,
+  isQueueItemDeliveryInFlight,
+  type ConversationCommandQueueItem,
+} from '@/renderer/pages/conversation/platforms/useConversationCommandQueue';
 import {
   type Modifier,
   closestCenter,
@@ -104,11 +108,26 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
   dragHandleRef,
 }) => {
   const { onPointerDown: onSortableDragHandlePointerDown, ...restDragHandleButtonProps } = dragHandleButtonProps ?? {};
+  const deliveryState = getQueueItemDeliveryState(item);
+  const deliveryLocked = isQueueItemDeliveryInFlight(item);
+  const deliveryStatus =
+    deliveryState === 'dispatching'
+      ? t('conversation.commandQueue.dispatching', { defaultValue: 'Sending…' })
+      : deliveryState === 'waiting_for_turn'
+        ? t('conversation.commandQueue.admissionRecovering', {
+            defaultValue: 'Waiting for the current turn to finish. Sending automatically…',
+          })
+        : deliveryState === 'retrying'
+          ? t('conversation.commandQueue.transportRecovering', {
+              defaultValue: 'Confirming the send result and recovering with the same message…',
+            })
+          : null;
   return (
     <div
       className={isDragging ? `${styles.item} ${styles.itemDragging}` : styles.item}
       data-command-id={item.id}
       data-sortable={dragDisabled ? 'disabled' : 'enabled'}
+      data-delivery-state={deliveryState}
       aria-grabbed={isDragging}
       aria-label={preview}
     >
@@ -137,6 +156,11 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
             {preview}
           </span>
           {fileCountLabel ? <span className={styles.fileCount}>{fileCountLabel}</span> : null}
+          {deliveryStatus ? (
+            <span className={styles.deliveryStatus} role='status'>
+              {deliveryStatus}
+            </span>
+          ) : null}
         </div>
       </div>
       <div className={styles.actions}>
@@ -144,6 +168,7 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
           type='button'
           className={styles.sendNow}
           data-testid='command-queue-send-now'
+          disabled={deliveryLocked}
           onClick={() => onSendNow(item.id)}
         >
           <span>{t('conversation.commandQueue.sendNow', { defaultValue: 'Send now' })}</span>
@@ -154,6 +179,7 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
             type='button'
             className={styles.iconBtn}
             aria-label={t('conversation.commandQueue.edit', { defaultValue: 'Edit' })}
+            disabled={deliveryLocked}
             onClick={() => onEdit(item)}
           >
             <Edit theme='outline' size='12' strokeWidth={1.5} aria-hidden='true' />
@@ -163,6 +189,7 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
           type='button'
           className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
           aria-label={t('conversation.commandQueue.remove', { defaultValue: 'Remove' })}
+          disabled={deliveryLocked}
           onClick={() => onRemove(item.id)}
         >
           <Delete theme='outline' size='12' strokeWidth={1.5} aria-hidden='true' />
@@ -344,6 +371,7 @@ const CommandQueuePanel: React.FC<CommandQueuePanelProps> = ({
             >
               {items.map((item) => {
                 const preview = getCommandPreview(item.input);
+                const deliveryLocked = isQueueItemDeliveryInFlight(item);
                 const fileCountLabel =
                   item.files.length > 0
                     ? t('conversation.commandQueue.files', {
@@ -356,7 +384,7 @@ const CommandQueuePanel: React.FC<CommandQueuePanelProps> = ({
                   <SortableQueueItem
                     key={item.id}
                     item={item}
-                    dragDisabled={false}
+                    dragDisabled={interactionLocked || deliveryLocked}
                     dragHandleLabel={dragHandleLabel}
                     preview={preview}
                     fileCountLabel={fileCountLabel}

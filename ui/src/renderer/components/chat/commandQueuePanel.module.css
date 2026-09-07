@@ -197,6 +197,19 @@
   line-height: 14px;
 }
 
+.deliveryStatus {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--color-text-3, #86909c);
+  font-size: 10px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .actions {
   display: flex;
   align-items: center;
