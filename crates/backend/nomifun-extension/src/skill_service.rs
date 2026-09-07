@@ -970,10 +970,26 @@ pub(crate) async fn validate_market_skill_directory(
     expected_name: &str,
 ) -> Result<String, ExtensionError> {
     validate_filename(expected_name)?;
+    let declared_name = validate_market_skill_directory_name(skill_dir).await?;
+    if declared_name != expected_name {
+        return Err(ExtensionError::InvalidSkillPath(format!(
+            "market Skill name mismatch: expected '{expected_name}', got '{declared_name}'"
+        )));
+    }
+    Ok(declared_name)
+}
+
+/// Strictly validate one staged market Skill and return the manifest name.
+/// This variant is used when a source (for example LoopHub) does not provide
+/// a trusted canonical name outside the downloaded archive.
+pub(crate) async fn validate_market_skill_directory_name(
+    skill_dir: &Path,
+) -> Result<String, ExtensionError> {
     let metadata = tokio::fs::symlink_metadata(skill_dir).await?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(ExtensionError::InvalidSkillPath(format!(
-            "market Skill '{expected_name}' is not a regular directory"
+            "market Skill '{}' is not a regular directory",
+            skill_dir.display()
         )));
     }
     let skill_file = skill_dir.join(SKILL_MANIFEST_FILE);
@@ -986,19 +1002,17 @@ pub(crate) async fn validate_market_skill_directory(
     })?;
     let (declared_name, description) = parse_frontmatter_fields(&content).ok_or_else(|| {
         ExtensionError::InvalidSkillPath(format!(
-            "market Skill '{expected_name}' has invalid SKILL.md frontmatter"
+            "market Skill '{}' has invalid SKILL.md frontmatter",
+            skill_dir.display()
         ))
     })?;
     if declared_name.trim().is_empty() || description.trim().is_empty() {
         return Err(ExtensionError::InvalidSkillPath(format!(
-            "market Skill '{expected_name}' must declare a non-empty name and description"
+            "market Skill '{}' must declare a non-empty name and description",
+            skill_dir.display()
         )));
     }
-    if declared_name != expected_name {
-        return Err(ExtensionError::InvalidSkillPath(format!(
-            "market Skill name mismatch: expected '{expected_name}', got '{declared_name}'"
-        )));
-    }
+    validate_filename(&declared_name)?;
     Ok(declared_name)
 }
 

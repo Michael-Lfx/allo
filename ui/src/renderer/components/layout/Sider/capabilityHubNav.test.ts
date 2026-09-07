@@ -91,7 +91,9 @@ describe('capability hub navigation', () => {
     expect(routerSource.includes("path='/mcp'")).toBe(true);
     expect(routerSource.includes("path='/presets'")).toBe(true);
     expect(routerSource.includes("path='/skills'")).toBe(true);
-    expect(routerSource.includes("path='/plugins'")).toBe(true);
+    expect(routerSource.includes("path='/plugins/*' element={<DisabledPluginsRedirect />}")).toBe(true);
+    expect(routerSource.includes("path='/settings/plugins/*' element={<DisabledPluginsRedirect />}")).toBe(true);
+    expect(routerSource.includes('const PluginPage')).toBe(false);
     expect(routerSource.includes('LegacyExtensionsRedirect')).toBe(true);
     expect(routerSource.includes("path='/extensions'")).toBe(true);
   });

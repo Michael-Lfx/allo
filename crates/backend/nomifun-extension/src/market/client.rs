@@ -11,8 +11,10 @@ use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue};
 
 /// Ranking/readme/detail bodies larger than this are rejected.
 pub(crate) const MAX_MARKET_BODY_BYTES: u64 = 8 * 1024 * 1024;
-/// SkillHub skill zip archives larger than this are rejected.
-pub(crate) const MAX_SKILLHUB_SKILL_ZIP_BYTES: u64 = 32 * 1024 * 1024;
+/// Native Skill market archives larger than this are rejected.
+pub(crate) const MAX_MARKET_SKILL_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
+/// Compatibility name used by the existing SkillHub expert-package installer.
+pub(crate) const MAX_SKILLHUB_SKILL_ZIP_BYTES: u64 = MAX_MARKET_SKILL_ARCHIVE_BYTES;
 /// Per-request timeout. The outer per-source budget
 /// ([`super::MARKET_SOURCE_TIMEOUT`]) covers a primary + fallback pair.
 const MARKET_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
@@ -28,6 +30,7 @@ const MARKET_ALLOWED_HOSTS: &[&str] = &[
     "skillhub.cn",
     "www.skills.sh",
     "skills.sh",
+    "codeload.github.com",
     "api.cocoloop.cn",
     "hub.cocoloop.cn",
     "dl.cocoloop.cn",
@@ -81,10 +84,12 @@ pub(crate) fn build_market_client() -> Result<reqwest::Client, AppError> {
         if attempt.previous().len() > MAX_MARKET_REDIRECT_HOPS {
             return attempt.error("too many market redirects");
         }
-        if attempt.url().host_str().is_some_and(is_allowed_market_host) {
+        if attempt.url().scheme() == "https"
+            && attempt.url().host_str().is_some_and(is_allowed_market_host)
+        {
             attempt.follow()
         } else {
-            attempt.error("market redirect target host is not allowlisted")
+            attempt.error("market redirect target must use HTTPS and an allowlisted host")
         }
     });
 

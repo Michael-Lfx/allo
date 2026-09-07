@@ -79,15 +79,13 @@
   },
   "capabilityHub": {
     "navLabel": "能力中心",
-    "tabPlugins": "插件",
     "myPresets": "我的设定",
     "myInstalled": "我安装的",
     "discover": "发现",
     "installed": "已装",
     "searchPresets": "搜索设定",
     "searchSkills": "搜索技能",
-    "searchMcp": "搜索 MCP",
-    "searchPlugins": "搜索插件"
+    "searchMcp": "搜索 MCP"
   },
   "skillsPage": {
     "libraryTab": "已安装技能",
@@ -95,11 +93,14 @@
   },
   "skillsMarket": {
     "title": "技能市场",
-    "description": "浏览 ClawHub、LoopHub 与 SkillHub 当前榜单，并把经过检查的安装草稿交给 Flowy。",
+    "description": "浏览 ClawHub、LoopHub 与 SkillHub 当前榜单，直接下载并安装符合 Flowy 规范的技能。",
     "syncSuccess": "技能市场已更新",
     "syncKeptCache": "未获取到新榜单，已保留本地缓存。",
     "syncEmpty": "未采集到榜单数据。",
     "syncError": "更新技能市场失败",
+    "installSuccess": "技能安装成功",
+    "installReused": "技能已安装",
+    "installFailed": "技能安装失败，请稍后重试。",
     "openMarketFailed": "无法打开技能市场",
     "searchPlaceholder": "搜索当前市场技能...",
     "empty": "暂未获取到榜单数据，请点击刷新重试。",
@@ -130,6 +131,8 @@
     "installsCount": "{{count}} 次安装",
     "starsCount": "{{count}} 星标",
     "rank": "排名",
+    "install": "安装",
+    "installing": "安装中",
     "prepareInstall": "准备安装",
     "preparingInstall": "正在准备",
     "import": "导入",
@@ -165,20 +168,7 @@
   },
   "mcpPage": {
     "installedMcpTab": "已安装MCP",
-    "mcpMarketTab": "MCP市场",
-    "installedPluginsTab": "已安装插件",
-    "pluginMarketTab": "插件市场"
-  },
-  "plugins": {
-    "installedTitle": "已安装插件",
-    "installedDescription": "当前应用已加载的 Flowy 扩展与插件包。",
-    "emptyInstalled": "暂未发现已安装插件。",
-    "stateEnabled": "已启用",
-    "stateDisabled": "已停用",
-    "marketTitle": "插件市场",
-    "marketDescription": "浏览 ClawHub 插件，并生成安装草稿供确认。",
-    "searchPlaceholder": "搜索插件...",
-    "emptyMarket": "点击刷新获取插件市场列表。"
+    "mcpMarketTab": "MCP市场"
   },
   "agentSkillImport": {
     "title": "从 Agent 导入",
@@ -1513,7 +1503,7 @@
   },
   "mcpHub": {
     "title": "MCP",
-    "subtitle": "管理已安装 MCP、MCP 市场、已安装插件与插件市场。",
+    "subtitle": "管理已安装 MCP 与 MCP 市场。",
     "railTitle": "MCP"
   },
   "openCapabilities": {

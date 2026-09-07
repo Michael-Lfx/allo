@@ -20,7 +20,6 @@ const PresetSettings = React.lazy(() => import('@renderer/pages/settings/PresetS
 const SkillsSettingsPage = React.lazy(() => import('@renderer/pages/settings/SkillsSettingsPage'));
 const ModelHubPage = React.lazy(() => import('@renderer/pages/modelHub'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
-const PluginPage = React.lazy(() => import('@renderer/pages/mcp/PluginSettingsPage'));
 const BrowserPage = React.lazy(() => import('@renderer/pages/browser'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
 const SshHostSettings = React.lazy(() => import('@renderer/pages/settings/SshHostSettings'));
@@ -85,7 +84,7 @@ type RouteFallbackProps = {
   fullscreen?: boolean;
 };
 
-const SETTINGS_CAPABILITY_PATHS = ['/presets', '/skills', '/mcp', '/plugins'];
+const SETTINGS_CAPABILITY_PATHS = ['/presets', '/skills', '/mcp'];
 
 const isSettingsSurfacePath = (pathname: string): boolean =>
   pathname === '/settings' ||
@@ -166,6 +165,9 @@ const LegacyExtensionsRedirect: React.FC = () => {
 
   return <Navigate to={withSearch('/skills', searchParams)} replace />;
 };
+
+/** Plugin management is retired from the user-facing capability surface. */
+const DisabledPluginsRedirect: React.FC = () => <Navigate to='/settings/presets' replace />;
 
 // Legacy `/requirements/:id/edit` deep links → open the workspace with the
 // requirement pre-selected in edit mode (the new shell hosts editing in a
@@ -358,7 +360,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/models' element={withRouteFallback(ModelHubPage)} />
           <Route path='/extensions' element={<LegacyExtensionsRedirect />} />
           <Route path='/mcp' element={withRouteFallback(McpPage)} />
-          <Route path='/plugins' element={withRouteFallback(PluginPage)} />
+          <Route path='/plugins/*' element={<DisabledPluginsRedirect />} />
           <Route path='/open-capabilities' element={withRouteFallback(OpenCapabilitiesPage)} />
           <Route path='/browser' element={withRouteFallback(BrowserPage)} />
           <Route path='/presets' element={withRouteFallback(PresetSettings)} />
@@ -383,7 +385,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/presets' element={withRouteFallback(PresetSettings)} />
           <Route path='/settings/skills' element={withRouteFallback(SkillsSettingsPage)} />
           <Route path='/settings/mcp' element={withRouteFallback(McpPage)} />
-          <Route path='/settings/plugins' element={withRouteFallback(PluginPage)} />
+          <Route path='/settings/plugins/*' element={<DisabledPluginsRedirect />} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/ssh-hosts' element={withRouteFallback(SshHostSettings)} />
           <Route path='/settings/execution-engines' element={withRouteFallback(ExecutionEngineSettings)} />

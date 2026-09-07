@@ -92,7 +92,7 @@ const BUILTIN_NAVIGATION: SettingsNavBuiltin[] = [
     groupId: 'capabilities',
     icon: 'presets',
     labelKey: 'settings.capabilityHub.navLabel',
-    activePaths: ['presets', 'skills', 'mcp', 'plugins'],
+    activePaths: ['presets', 'skills', 'mcp'],
   },
   { id: 'cloud-login', path: 'cloud-login', groupId: 'account', icon: 'cloud-login', labelKey: 'settings.cloudLoginNav' },
   { id: 'telemetry', path: 'telemetry', groupId: 'account', icon: 'telemetry', labelKey: 'settings.telemetryNav' },

@@ -8,7 +8,7 @@ import { useSettingsNavigationTransition } from '@/renderer/components/layout/Se
 
 type CapabilityHubShellProps = {
   hub: CapabilityHubId;
-  /** Presets are a local library in the current product; their market is retired. */
+  /** Whether this hub exposes a remote market/discover view. */
   marketEnabled?: boolean;
   installedCount?: number;
   extraActions?: React.ReactNode;

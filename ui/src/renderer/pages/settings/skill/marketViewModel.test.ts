@@ -9,6 +9,7 @@ const item: ISkillMarketItem = {
   name: 'Example skill',
   description: 'A useful skill.',
   url: 'https://skillhub.cn/skills/example',
+  install_mode: 'native',
   install_command: 'npx skills add example',
   tags: ['requires_api_key', 'long-technical-tag', 'another-tag'],
   audience_tags: ['developer'],

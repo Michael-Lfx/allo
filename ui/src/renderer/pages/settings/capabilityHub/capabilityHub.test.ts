@@ -12,16 +12,17 @@ describe('capability hub routing', () => {
     expect(parseCapabilityHubFromPathname('/presets')).toBe('presets');
     expect(parseCapabilityHubFromPathname('/settings/skills')).toBe('skills');
     expect(parseCapabilityHubFromPathname('/mcp')).toBe('mcp');
-    expect(parseCapabilityHubFromPathname('/settings/plugins')).toBe('plugins');
+    expect(parseCapabilityHubFromPathname('/plugins')).toBeNull();
+    expect(parseCapabilityHubFromPathname('/settings/plugins')).toBeNull();
     expect(parseCapabilityHubFromPathname('/settings/system')).toBeNull();
   });
 
-  test('maps legacy inner tabs onto market / installed / plugin hubs', () => {
+  test('maps supported legacy inner tabs onto market / installed views', () => {
     expect(mapLegacyCapabilityTab('library')).toBe('installed');
     expect(mapLegacyCapabilityTab('servers')).toBe('installed');
     expect(mapLegacyCapabilityTab('market')).toBe('market');
-    expect(mapLegacyCapabilityTab('plugins')).toBe('plugins-installed');
-    expect(mapLegacyCapabilityTab('plugin-market')).toBe('plugins-market');
+    expect(mapLegacyCapabilityTab('plugins')).toBeNull();
+    expect(mapLegacyCapabilityTab('plugin-market')).toBeNull();
     expect(mapLegacyCapabilityTab(null)).toBeNull();
   });
 
@@ -44,10 +45,8 @@ describe('capability hub routing', () => {
     expect(resolveLegacyCapabilityLocation('/skills', '?tab=library')).toBe('/skills?view=installed');
     expect(resolveLegacyCapabilityLocation('/settings/presets', '?tab=market')).toBe('/settings/presets');
     expect(resolveLegacyCapabilityLocation('/mcp', '?tab=servers')).toBe('/mcp?view=installed');
-    expect(resolveLegacyCapabilityLocation('/settings/mcp', '?tab=plugins')).toBe(
-      '/settings/plugins?view=installed'
-    );
-    expect(resolveLegacyCapabilityLocation('/mcp', '?tab=plugin-market')).toBe('/plugins');
+    expect(resolveLegacyCapabilityLocation('/settings/mcp', '?tab=plugins')).toBe('/settings/mcp');
+    expect(resolveLegacyCapabilityLocation('/mcp', '?tab=plugin-market')).toBe('/mcp');
     expect(resolveLegacyCapabilityLocation('/skills', '?highlight=foo')).toBe(
       '/skills?view=installed&highlight=foo'
     );
