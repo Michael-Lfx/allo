@@ -109,9 +109,11 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
               <Menu.Item key='open-source' onClick={() => onOpenSource(item)}>
                 <LinkOne size={14} fill='currentColor' /> {t('settings.market.openSource', { defaultValue: '打开来源' })}
               </Menu.Item>
-              <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
-                {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
-              </Menu.Item>
+              {item.installCommand ? (
+                <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
+                  {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
+                </Menu.Item>
+              ) : null}
             </Menu>
           }
         >

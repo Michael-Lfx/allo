@@ -1,25 +1,78 @@
 /**
- * SkillMarketSettings — the skill market surface. A thin binding of the shared
- * MarketSettingsPanel to the skill ranking sources: "Add" hands a reviewed,
- * never auto-sent installation draft to Nomi via the quick-start flow.
+ * SkillMarketSettings — the managed SkillHub market surface. Installation is
+ * performed by the backend and never by a shell command or a conversation draft.
  */
+import { ipcBridge } from '@/common';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
-import { resolveLocaleKey } from '@/common/utils';
-import { useNomiQuickStart } from '@/renderer/hooks/agent/useNomiQuickStart';
+import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import MarketSettingsPanel from './MarketSettingsPanel';
-import {
-  buildSkillMarketConversationName,
-  buildSkillMarketInstallPrompt,
-  isSkillMarketItemInstalled,
-  SKILL_MARKET_SOURCES,
-} from './skill/skillMarket';
-import { AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills } from './skill/availableSkills';
-import React, { useCallback, useMemo } from 'react';
+import { SKILL_MARKET_SOURCES } from './skill/skillMarket';
+import { AVAILABLE_SKILLS_SWR_KEY } from './skill/availableSkills';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import useSWR from 'swr';
+import useSWR, { useSWRConfig } from 'swr';
 
-const CACHE_KEY = 'nomifun.skillMarket.rankings.v4';
-const AUTO_SYNC_KEY = 'nomifun.skillMarket.autoSynced.v4';
+const CACHE_KEY = 'nomifun.skillMarket.rankings.v5';
+const AUTO_SYNC_KEY = 'nomifun.skillMarket.autoSynced.v5';
+const INSTALLATIONS_KEY = '/api/skills/market/skill/installations';
+
+const managedInstallErrorMessage = (
+  code: string,
+): { key: string; fallback: string } => {
+  switch (code) {
+    case 'MARKET_SKILL_SOURCE_UNSUPPORTED':
+      return {
+        key: 'settings.skillsMarket.installUnsupported',
+        fallback: '当前来源暂不支持托管安装。',
+      };
+    case 'MARKET_SKILL_ID_INVALID':
+      return {
+        key: 'settings.skillsMarket.installInvalidId',
+        fallback: '技能市场条目标识无效。',
+      };
+    case 'MARKET_SKILL_NOT_FOUND':
+      return {
+        key: 'settings.skillsMarket.installNotFound',
+        fallback: '技能市场条目已不存在。',
+      };
+    case 'MARKET_SKILL_NAME_CONFLICT':
+      return {
+        key: 'settings.skillsMarket.installConflict',
+        fallback: '该技能名称已存在，请前往已安装 Skill 处理。',
+      };
+    case 'MARKET_SKILL_ARTIFACT_INVALID':
+      return {
+        key: 'settings.skillsMarket.installArtifactInvalid',
+        fallback: '下载的技能包无法通过安全校验。',
+      };
+    case 'MARKET_SKILL_MANIFEST_INVALID':
+      return {
+        key: 'settings.skillsMarket.installManifestInvalid',
+        fallback: '下载的技能清单无效。',
+      };
+    case 'MARKET_SKILL_NETWORK':
+      return {
+        key: 'settings.skillsMarket.installNetwork',
+        fallback: '网络暂时不可用，请重试。',
+      };
+    case 'MARKET_SKILL_TIMEOUT':
+      return {
+        key: 'settings.skillsMarket.installTimeout',
+        fallback: '下载超时，请重试。',
+      };
+    case 'MARKET_SKILL_LOCAL_IO':
+      return {
+        key: 'settings.skillsMarket.installLocalIo',
+        fallback: '本地技能目录暂时不可用，请重试。',
+      };
+    default:
+      return {
+        key: 'settings.skillsMarket.installError',
+        fallback: '技能安装失败，请重试。',
+      };
+  }
+};
 
 type SkillMarketSettingsProps = {
   active?: boolean;
@@ -34,61 +87,80 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
   searchQuery,
   onSearchQueryChange,
 }) => {
-  const { t, i18n } = useTranslation();
-  const localeKey = resolveLocaleKey(i18n.language);
-  const { start } = useNomiQuickStart();
-  const { data: skills, error, isLoading } = useSWR(
-    active ? AVAILABLE_SKILLS_SWR_KEY : null,
-    fetchAvailableSkills
-  );
-  const installedSkillNames = useMemo(
-    () => new Set((skills ?? []).map((skill) => skill.name)),
-    [skills]
-  );
-  const installedStateLoading = Boolean(active && isLoading && !skills);
-  const installedStateAvailable = Boolean(skills) && !error;
-
-  const isAdded = useCallback(
-    (item: ISkillMarketItem) => isSkillMarketItemInstalled(item, installedSkillNames),
-    [installedSkillNames]
+  const { t } = useTranslation();
+  const { mutate } = useSWRConfig();
+  const [message, messageContext] = useArcoMessage({ maxCount: 10 });
+  const [installationErrorIds, setInstallationErrorIds] = useState<Set<string>>(() => new Set());
+  const {
+    data: installations,
+    error: installationsError,
+    isLoading: installationsLoading,
+  } = useSWR(
+    active ? INSTALLATIONS_KEY : null,
+    () => ipcBridge.fs.listSkillMarketInstallations.invoke()
   );
 
-  const handleAdd = useCallback(
+  const installedMarketIds = useMemo(
+    () => new Set((installations ?? []).map((installation) => `${installation.source}\u0000${installation.market_id}`)),
+    [installations]
+  );
+
+  const handleInstall = useCallback(
     async (item: ISkillMarketItem) => {
-      await start({
-        name: buildSkillMarketConversationName(item, localeKey),
-        prompt: buildSkillMarketInstallPrompt(item, localeKey),
-        send: false,
+      const key = `${item.source}\u0000${item.id}`;
+      setInstallationErrorIds((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
       });
+      try {
+        await ipcBridge.fs.installSkillMarketSkill.invoke({ source: item.source, id: item.id });
+        await Promise.all([mutate(INSTALLATIONS_KEY), mutate(AVAILABLE_SKILLS_SWR_KEY)]);
+        message.success(t('settings.skillsMarket.installSuccess', { defaultValue: '技能已安装' }));
+      } catch (error) {
+        console.error('Failed to install SkillHub skill:', error);
+        setInstallationErrorIds((current) => new Set(current).add(key));
+        const code = isBackendHttpError(error) ? error.code : '';
+        const installMessage = managedInstallErrorMessage(code);
+        message.error(t(installMessage.key, { defaultValue: installMessage.fallback }));
+      }
     },
-    [localeKey, start]
+    [message, mutate, t]
+  );
+
+  const installationState = useCallback(
+    (item: ISkillMarketItem) => {
+      const key = `${item.source}\u0000${item.id}`;
+      if (installationsLoading && !installations) return 'checking' as const;
+      if (installedMarketIds.has(key)) return 'completed' as const;
+      if (installationsError && !installations) return 'error' as const;
+      if (installationErrorIds.has(key)) return 'error' as const;
+      return 'ready' as const;
+    },
+    [installationErrorIds, installedMarketIds, installations, installationsError, installationsLoading]
   );
 
   return (
     <div className='w-full pb-16px'>
+      {messageContext}
       <div className='space-y-16px'>
         <MarketSettingsPanel
           title={t('settings.skillsMarket.title', { defaultValue: '技能市场' })}
           description={t('settings.skillsMarket.description', {
-            defaultValue: '同步 ClawHub、LoopHub 与 SkillHub 最新榜单，选择技能后交给 Nomi 生成安装确认草稿。',
+            defaultValue: '同步 SkillHub 榜单，下载并安全安装技能到 Flowy 的 Skill 目录。',
           })}
           sources={SKILL_MARKET_SOURCES}
           cacheKey={CACHE_KEY}
           autoSyncKey={AUTO_SYNC_KEY}
-          defaultSource='clawhub'
+          defaultSource='skillhub'
           searchPlaceholder={t('settings.skillsMarket.searchPlaceholder', { defaultValue: '搜索当前市场技能...' })}
           emptyText={t('settings.skillsMarket.empty', { defaultValue: '正在准备榜单，点击刷新可重新采集。' })}
           primaryAction={{
-            label: t('settings.market.prepareInstall', { defaultValue: '准备安装' }),
-            pendingLabel: t('settings.market.preparingInstall', { defaultValue: '正在准备' }),
+            label: t('settings.skillsMarket.install', { defaultValue: '安装' }),
+            pendingLabel: t('settings.skillsMarket.installing', { defaultValue: '正在安装' }),
             completedLabel: t('settings.market.installed', { defaultValue: '已安装' }),
-            resolveState: (item) =>
-              installedStateLoading
-                ? 'checking'
-                : installedStateAvailable && isAdded(item)
-                  ? 'completed'
-                  : 'ready',
-            run: handleAdd,
+            resolveState: installationState,
+            run: handleInstall,
           }}
           enableTagFilter
           testIdPrefix='skill-market'

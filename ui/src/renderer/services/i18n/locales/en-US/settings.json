@@ -95,7 +95,7 @@
   },
   "skillsMarket": {
     "title": "Skill Market",
-    "description": "Browse current ClawHub, LoopHub and SkillHub rankings, then hand a reviewed installation draft to Flowy.",
+    "description": "Browse SkillHub rankings and safely install skills into Flowy's Skill directory.",
     "syncSuccess": "Skill Market updated",
     "syncKeptCache": "No new ranking data was fetched. Kept the cached list.",
     "syncEmpty": "No ranking data was found.",
@@ -107,7 +107,20 @@
     "noMatch": "No skills match the current filters.",
     "noDescription": "No description available.",
     "lastUpdated": "Last updated: {{time}}",
-    "openInBrowser": "Open market in browser"
+    "openInBrowser": "Open market in browser",
+    "install": "Install",
+    "installing": "Installing",
+    "installSuccess": "Skill installed",
+    "installError": "Skill installation failed. Please try again.",
+    "installUnsupported": "Managed installation is not available for this source.",
+    "installInvalidId": "The market Skill identifier is invalid.",
+    "installNotFound": "This market Skill is no longer available.",
+    "installConflict": "A Skill with this name already exists. Manage it from Installed Skills.",
+    "installArtifactInvalid": "The downloaded Skill package failed safety validation.",
+    "installManifestInvalid": "The downloaded Skill manifest is invalid.",
+    "installNetwork": "The network is temporarily unavailable. Please try again.",
+    "installTimeout": "The download timed out. Please try again.",
+    "installLocalIo": "The local Skill directory is temporarily unavailable. Please try again."
   },
   "market": {
     "syncSuccess": "Market updated",

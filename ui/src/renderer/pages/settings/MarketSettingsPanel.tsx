@@ -159,8 +159,10 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
 
   const handleCopyInstallCommand = useCallback(
     async (item: ISkillMarketItem | MarketItemViewModel) => {
+      const command = 'raw' in item ? item.installCommand : item.install_command;
+      if (!command) return;
       try {
-        await copyText('raw' in item ? item.installCommand : item.install_command);
+        await copyText(command);
         message.success(t('common.copySuccess', { defaultValue: '已复制' }));
       } catch (error) {
         console.error('Failed to copy market install command:', error);

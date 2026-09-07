@@ -77,9 +77,11 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
       footer={
         item ? (
           <div className='flex flex-wrap items-center justify-end gap-8px'>
-            <Button className='!h-36px !rounded-8px' onClick={() => onCopyInstallCommand(item)}>
-              {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
-            </Button>
+            {item.installCommand ? (
+              <Button className='!h-36px !rounded-8px' onClick={() => onCopyInstallCommand(item)}>
+                {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
+              </Button>
+            ) : null}
             <Button className='flowy-icon-text-btn !h-36px !rounded-8px' onClick={() => onOpenSource(item)} icon={<LinkOne size={14} fill='currentColor' />}>
               {t('settings.market.openSource', { defaultValue: '打开来源' })}
             </Button>
@@ -138,12 +140,14 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
               </div>
             </div>
           )}
-          <div>
-            <div className='mb-8px text-12px text-t-tertiary'>{t('settings.market.installCommand', { defaultValue: '安装命令' })}</div>
-            <code className='block break-all rounded-8px bg-fill-2 p-12px text-12px leading-18px text-t-primary'>
-              {item.installCommand}
-            </code>
-          </div>
+          {item.installCommand ? (
+            <div>
+              <div className='mb-8px text-12px text-t-tertiary'>{t('settings.market.installCommand', { defaultValue: '安装命令' })}</div>
+              <code className='block break-all rounded-8px bg-fill-2 p-12px text-12px leading-18px text-t-primary'>
+                {item.installCommand}
+              </code>
+            </div>
+          ) : null}
         </div>
       )}
     </Drawer>

@@ -21,7 +21,7 @@ export type MarketItemViewModel = {
   allTags: string[];
   overflowTagCount: number;
   fullStats?: string;
-  installCommand: string;
+  installCommand?: string;
   sourceUrl: string;
   requiresApi: boolean;
   noApi: boolean;

@@ -1,12 +1,11 @@
 import type { ISkillMarketItem, SkillMarketSource } from '@/common/adapter/ipcBridge';
 import type { SkillTagFilterState } from './skillFilter';
 
-export const SKILL_MARKET_SOURCES: SkillMarketSource[] = ['clawhub', 'loophub', 'skillhub'];
+export const SKILL_MARKET_SOURCES: SkillMarketSource[] = ['skillhub'];
 export const MCP_MARKET_SOURCES: SkillMarketSource[] = ['skillhub_mcp', 'mcpworld'];
 export const PLUGIN_MARKET_SOURCES: SkillMarketSource[] = ['clawhub_plugins'];
 
 const MARKET_SOURCE_LABELS: Record<SkillMarketSource, string> = {
-  clawhub: 'ClawHub',
   loophub: 'LoopHub',
   skillhub: 'SkillHub',
   skillhub_mcp: 'SkillHub MCP',
@@ -16,7 +15,6 @@ const MARKET_SOURCE_LABELS: Record<SkillMarketSource, string> = {
 };
 
 const MARKET_SOURCE_URLS: Record<SkillMarketSource, string> = {
-  clawhub: 'https://clawhub.ai/',
   loophub: 'https://hub.cocoloop.cn/popular',
   skillhub: 'https://skillhub.cn/skills?sortBy=score',
   skillhub_mcp: 'https://skillhub.cn/mcp',
@@ -28,30 +26,6 @@ const MARKET_SOURCE_URLS: Record<SkillMarketSource, string> = {
 export const marketSourceLabel = (source: SkillMarketSource): string => MARKET_SOURCE_LABELS[source];
 export const marketSourceUrl = (source: SkillMarketSource): string => MARKET_SOURCE_URLS[source];
 
-const normalizeInstalledResourceName = (value: string): string =>
-  value
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[\s_]+/g, '-');
-
-/**
- * Market display names are not always the installed SKILL.md name. Use both
- * the display name and the canonical trailing slug so returning from the Nomi
- * install draft reliably turns the action into “Added”.
- */
-export const isSkillMarketItemInstalled = (
-  item: Pick<ISkillMarketItem, 'id' | 'name'>,
-  installedSkillNames: Iterable<string>
-): boolean => {
-  const idSlug = item.id.split(':').slice(1).join(':').split('/').filter(Boolean).at(-1) ?? '';
-  const candidates = new Set(
-    [item.name, idSlug]
-      .map(normalizeInstalledResourceName)
-      .filter(Boolean)
-  );
-  return Array.from(installedSkillNames).some((name) => candidates.has(normalizeInstalledResourceName(name)));
-};
-
 const MAX_NAME_LENGTH = 96;
 const MAX_DESCRIPTION_LENGTH = 220;
 const MAX_COMMAND_LENGTH = 320;
@@ -60,7 +34,6 @@ const MARKET_AVATAR_HOSTS = new Set(['cloudcache.tencent-cloud.com', 'skillhub.c
 const MARKET_AVATAR_EXTENSIONS = ['.avif', '.png', '.jpg', '.jpeg', '.webp', '.gif'];
 
 export const isSkillMarketSource = (value: unknown): value is SkillMarketSource =>
-  value === 'clawhub' ||
   value === 'skillhub' ||
   value === 'loophub' ||
   value === 'skillhub_mcp' ||
@@ -81,9 +54,9 @@ const isSafeMarketUrl = (source: SkillMarketSource, url: string): boolean => {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return false;
-    if (source === 'clawhub' || source === 'clawhub_plugins') return parsed.hostname === 'clawhub.ai';
+    if (source === 'clawhub_plugins') return parsed.hostname === 'clawhub.ai';
     if (source === 'skillhub') {
-      return parsed.hostname === 'skillhub.cn' || parsed.hostname === 'www.skills.sh' || parsed.hostname === 'skills.sh';
+      return parsed.hostname === 'skillhub.cn' || parsed.hostname === 'www.skillhub.cn';
     }
     if (source === 'loophub') return parsed.hostname === 'hub.cocoloop.cn';
     if (source === 'skillhub_mcp' || source === 'skillhub_packages') return parsed.hostname === 'skillhub.cn';
@@ -115,8 +88,6 @@ const cleanMarketAvatar = (value: unknown): string | undefined => {
 const isSafeInstallCommand = (source: SkillMarketSource, value: string): boolean => {
   if (!value || value.length > MAX_COMMAND_LENGTH) return false;
   if (/[\r\n;&|<>`$]/.test(value)) return false;
-  if (source === 'clawhub') return value.startsWith('openclaw skills install @');
-  if (source === 'skillhub') return value.startsWith('npx skills add ');
   if (source === 'loophub') return value.startsWith('loophub skill download https://dl.cocoloop.cn/bss/skills/');
   if (source === 'skillhub_mcp') return /^mcp market add skillhub:[a-z0-9._-]+$/i.test(value);
   if (source === 'mcpworld') return /^mcp market add mcpworld:[a-z0-9._-]+$/i.test(value);
@@ -144,9 +115,19 @@ export const normalizeSkillMarketItem = (raw: unknown): ISkillMarketItem | null 
   const data = raw as Partial<ISkillMarketItem>;
   if (!isSkillMarketSource(data.source)) return null;
 
+  if (
+    data.resource_kind !== 'skill' &&
+    data.resource_kind !== 'skill_package' &&
+    data.resource_kind !== 'mcp' &&
+    data.resource_kind !== 'plugin'
+  ) return null;
+  if (data.install_mode !== 'managed' && data.install_mode !== 'manual' && data.install_mode !== 'unsupported') return null;
+
   const url = cleanMarketText(data.url, 260);
-  const install_command = cleanMarketText(data.install_command, MAX_COMMAND_LENGTH);
-  if (!isSafeMarketUrl(data.source, url) || !isSafeInstallCommand(data.source, install_command)) return null;
+  const install_command = cleanMarketText(data.install_command, MAX_COMMAND_LENGTH) || undefined;
+  if (!isSafeMarketUrl(data.source, url)) return null;
+  if (data.install_mode === 'manual' && (!install_command || !isSafeInstallCommand(data.source, install_command))) return null;
+  if (data.install_mode !== 'manual' && install_command) return null;
 
   const name = cleanMarketText(data.name, MAX_NAME_LENGTH);
   if (!name) return null;
@@ -154,6 +135,8 @@ export const normalizeSkillMarketItem = (raw: unknown): ISkillMarketItem | null 
   return {
     id: cleanMarketText(data.id, 160) || `${data.source}:${name}`,
     source: data.source,
+    resource_kind: data.resource_kind,
+    install_mode: data.install_mode,
     rank: Number.isFinite(data.rank) ? Number(data.rank) : 0,
     name,
     description: cleanMarketText(data.description, MAX_DESCRIPTION_LENGTH),
@@ -296,7 +279,7 @@ export const buildSkillMarketInstallPrompt = (item: ISkillMarketItem, localeKey 
         '',
         'Install command:',
       ];
-  return [...lines, '```bash', item.install_command, '```']
+  return [...lines, ...(item.install_command ? ['```bash', item.install_command, '```'] : [])]
     .filter(Boolean)
     .join('\n');
 };

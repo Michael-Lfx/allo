@@ -5,11 +5,12 @@ import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
 const item: ISkillMarketItem = {
   id: 'skill-1',
   source: 'skillhub',
+  resource_kind: 'skill',
+  install_mode: 'managed',
   rank: 4,
   name: 'Example skill',
   description: 'A useful skill.',
   url: 'https://skillhub.cn/skills/example',
-  install_command: 'npx skills add example',
   tags: ['requires_api_key', 'long-technical-tag', 'another-tag'],
   audience_tags: ['developer'],
   scenario_tags: ['coding'],

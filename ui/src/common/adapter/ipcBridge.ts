@@ -1406,7 +1406,6 @@ export const dialog = {
 // ---------------------------------------------------------------------------
 
 export type SkillMarketSource =
-  | 'clawhub'
   | 'skillhub'
   | 'loophub'
   | 'skillhub_mcp'
@@ -1414,14 +1413,19 @@ export type SkillMarketSource =
   | 'clawhub_plugins'
   | 'skillhub_packages';
 
+export type SkillMarketResourceKind = 'skill' | 'skill_package' | 'mcp' | 'plugin';
+export type SkillMarketInstallMode = 'managed' | 'manual' | 'unsupported';
+
 export interface ISkillMarketItem {
   id: string;
   source: SkillMarketSource;
+  resource_kind: SkillMarketResourceKind;
+  install_mode: SkillMarketInstallMode;
   rank: number;
   name: string;
   description: string;
   url: string;
-  install_command: string;
+  install_command?: string;
   tags?: string[];
   audience_tags?: string[];
   scenario_tags?: string[];
@@ -1434,6 +1438,26 @@ export interface ISkillMarketSyncResponse {
   items: ISkillMarketItem[];
   errors?: string[];
 }
+
+export interface ISkillMarketInstallRequest {
+  source: SkillMarketSource;
+  id: string;
+}
+
+export type SkillMarketInstallStatus = 'created' | 'reused';
+
+export interface ISkillMarketInstallResponse {
+  status: SkillMarketInstallStatus;
+  source: SkillMarketSource;
+  market_id: string;
+  skill_name: string;
+  revision?: string;
+  artifact_sha256: string;
+  content_sha256: string;
+  installed_at: number;
+}
+
+export type ISkillMarketInstallation = Omit<ISkillMarketInstallResponse, 'status'>;
 
 export interface ISkillMarketMcpConfigResponse {
   config_json: unknown;
@@ -1566,6 +1590,10 @@ export const fs = {
   syncSkillMarketRankings: httpPost<ISkillMarketSyncResponse, { sources?: SkillMarketSource[] }>(
     '/api/skills/market/rankings/sync'
   ),
+  installSkillMarketSkill: httpPost<ISkillMarketInstallResponse, ISkillMarketInstallRequest>(
+    '/api/skills/market/skill/install'
+  ),
+  listSkillMarketInstallations: httpGet<ISkillMarketInstallation[], void>('/api/skills/market/skill/installations'),
   resolveSkillMarketMcpConfig: httpPost<
     ISkillMarketMcpConfigResponse,
     { source: SkillMarketSource; id: string; url: string }
