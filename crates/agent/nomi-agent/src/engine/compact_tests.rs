@@ -643,6 +643,115 @@ async fn turn_end_does_not_microcompact_below_autocompact_watermark() {
     assert_eq!(cleared_count, 0);
 }
 
+#[tokio::test]
+async fn idle_cache_expired_microcompacts_below_watermark() {
+    let mut messages = Vec::new();
+    for i in 0..12 {
+        let id = format!("t{i}");
+        messages.push(tool_use_msg(&id, "Read"));
+        messages.push(tool_result_msg(&id, &format!("data-{i}")));
+    }
+    let config = CompactConfig {
+        micro_keep_recent: 3,
+        idle_compact_seconds: 900,
+        ..Default::default()
+    };
+    let mut engine = make_compact_engine(config, CompactState::new(), messages);
+    engine
+        .run_compaction(CompactReason::IdleCacheExpired)
+        .await
+        .unwrap();
+    let cleared_count = engine
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|b| {
+            matches!(b, ContentBlock::ToolResult { content, .. } if content == "[Tool result cleared]")
+        })
+        .count();
+    assert_eq!(cleared_count, 9);
+}
+
+#[test]
+fn idle_compact_requires_fifteen_minute_gap() {
+    let mut messages = Vec::new();
+    for i in 0..4 {
+        messages.push(Message::new(
+            if i % 2 == 0 { Role::User } else { Role::Assistant },
+            vec![ContentBlock::Text {
+                text: format!("msg-{i}"),
+            }],
+        ));
+    }
+    let mut engine = make_compact_engine(
+        CompactConfig::default(),
+        CompactState::new(),
+        messages,
+    );
+    engine.compact_state.last_turn_ended_at =
+        Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    assert!(!engine.should_idle_compact());
+    engine.compact_state.last_turn_ended_at =
+        Some(chrono::Utc::now() - chrono::Duration::minutes(16));
+    assert!(engine.should_idle_compact());
+}
+
+#[test]
+fn snip_archives_dropped_turns_when_session_cwd_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut messages = vec![Message::now(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "task".into(),
+        }],
+    )];
+    for i in 0..30 {
+        messages.push(Message::now(
+            if i % 2 == 0 {
+                Role::Assistant
+            } else {
+                Role::User
+            },
+            vec![ContentBlock::Text {
+                text: format!("plain-{i}"),
+            }],
+        ));
+    }
+    let now = chrono::Utc::now();
+    let session = crate::session::Session {
+        id: "snip-archive".into(),
+        created_at: now,
+        updated_at: now,
+        provider: "anthropic".into(),
+        model: "test".into(),
+        cwd: dir.path().to_string_lossy().into_owned(),
+        total_usage: Default::default(),
+        messages: Vec::new(),
+        owner_token: None,
+        activated_deferred_tools: Vec::new(),
+        editable_turn: None,
+        last_turn_ended_at: None,
+    };
+    let mut engine = make_compact_engine(CompactConfig::default(), CompactState::new(), messages);
+    engine.current_session = Some(session);
+    engine.run_snip_layer();
+    let notice = engine
+        .messages
+        .iter()
+        .rev()
+        .find_map(|m| m.content.iter().find_map(|b| match b {
+            ContentBlock::Text { text } if text.contains("[Context collapse]") => Some(text.clone()),
+            _ => None,
+        }))
+        .expect("collapse notice");
+    assert!(
+        notice.contains(".flowy/context-archive/"),
+        "notice should point at the archive, got: {notice}"
+    );
+    let archive_root = dir.path().join(".flowy").join("context-archive");
+    assert!(archive_root.exists());
+}
+
 // -- Disabled config skips micro and auto but not emergency --
 
 #[tokio::test]

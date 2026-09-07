@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use nomi_config::compact::CompactConfig;
 
 /// Fraction of the context window at which to emit a soft-compaction notice
@@ -38,6 +39,9 @@ pub struct CompactState {
     /// verbatim turn already exceeds the trigger, so re-firing every turn
     /// is the loop users hit. Cleared when tokens drop below the trigger.
     pub compact_stuck: bool,
+    /// When the previous user-facing turn finished. Used to decide idle
+    /// compact (provider prefix cache typically expires in 5–15 minutes).
+    pub last_turn_ended_at: Option<DateTime<Utc>>,
 }
 
 impl CompactState {
@@ -48,6 +52,7 @@ impl CompactState {
             soft_compact_noticed: false,
             consecutive_compacts: 0,
             compact_stuck: false,
+            last_turn_ended_at: None,
         }
     }
 
@@ -207,6 +212,7 @@ mod tests {
         assert_eq!(a.soft_compact_noticed, b.soft_compact_noticed);
         assert_eq!(a.consecutive_compacts, b.consecutive_compacts);
         assert_eq!(a.compact_stuck, b.compact_stuck);
+        assert_eq!(a.last_turn_ended_at, b.last_turn_ended_at);
     }
 
     // ── Soft compaction notice ──────────────────────────────────────────

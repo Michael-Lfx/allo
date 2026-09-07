@@ -18,13 +18,11 @@ fn is_plain_text_turn(message: &Message) -> bool {
     saw_text
 }
 
-/// Remove old plain user/assistant turns that sit before the tail window.
-/// Never drops the first message or any tool_use/tool_result carrier.
-///
-/// Returns the number of messages removed.
-pub fn snip_old_plain_turns(messages: &mut Vec<Message>, keep_tail: usize) -> usize {
+/// Indices of old plain user/assistant turns that sit before the tail window.
+/// Never includes the first message or any tool_use/tool_result carrier.
+pub fn snip_indices(messages: &[Message], keep_tail: usize) -> Vec<usize> {
     if messages.len() <= keep_tail.saturating_add(1) {
-        return 0;
+        return Vec::new();
     }
     let keep_tail = keep_tail.max(1);
     let tail_start = messages.len().saturating_sub(keep_tail);
@@ -37,6 +35,15 @@ pub fn snip_old_plain_turns(messages: &mut Vec<Message>, keep_tail: usize) -> us
             drop_idx.push(i);
         }
     }
+    drop_idx
+}
+
+/// Remove old plain user/assistant turns that sit before the tail window.
+/// Never drops the first message or any tool_use/tool_result carrier.
+///
+/// Returns the number of messages removed.
+pub fn snip_old_plain_turns(messages: &mut Vec<Message>, keep_tail: usize) -> usize {
+    let drop_idx = snip_indices(messages, keep_tail);
     let removed = drop_idx.len();
     for i in drop_idx.into_iter().rev() {
         messages.remove(i);
@@ -45,12 +52,17 @@ pub fn snip_old_plain_turns(messages: &mut Vec<Message>, keep_tail: usize) -> us
 }
 
 /// One-line handoff inserted after snip when older turns were dropped.
-pub fn collapse_notice(removed: usize) -> String {
-    format!(
+pub fn collapse_notice(removed: usize, archive_rel: Option<&str>) -> String {
+    let mut text = format!(
         "[Context collapse] Dropped {removed} older plain turns. \
          Keep Goal / Files / Decisions / Errors / Next from the remaining transcript \
          and WorkingSet. Do not restart a workspace tour."
-    )
+    );
+    if let Some(path) = archive_rel.filter(|p| !p.is_empty()) {
+        text.push(' ');
+        text.push_str(&crate::compact::archive::archive_notice(path));
+    }
+    text
 }
 
 #[cfg(test)]

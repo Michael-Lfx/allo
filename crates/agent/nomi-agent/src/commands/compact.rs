@@ -14,13 +14,14 @@ impl SlashCommand for CompactCommand {
     }
 
     fn description(&self) -> &str {
-        "Compress conversation context"
+        "Compress conversation context. Optional args become Compact Instructions \
+         for the summarizer (e.g. /compact keep the API contract)."
     }
 
     async fn execute(
         &self,
         ctx: &mut CommandContext<'_>,
-        _args: &str,
+        args: &str,
     ) -> anyhow::Result<CommandResult> {
         if ctx.messages.len() <= 2 {
             ctx.output.emit_info("Context is already compact");
@@ -32,13 +33,20 @@ impl SlashCommand for CompactCommand {
 
         let pre_tokens = ctx.compact_state.last_input_tokens;
 
-        match auto::autocompact_observed(
+        match auto::autocompact_with(
             ctx.provider.as_ref(),
             ctx.messages,
             ctx.model,
             ctx.compact_config,
             ctx.compact_state,
-            ctx.observation.clone(),
+            auto::AutocompactRequest {
+                force_mechanical: false,
+                observation: ctx.observation.clone(),
+                focus: Some(args.trim()).filter(|s| !s.is_empty()),
+                trigger: Some(CompactTrigger::Manual),
+                archive_cwd: ctx.workspace_cwd.as_deref(),
+                session_id: ctx.session_id.as_deref(),
+            },
         )
         .await
         {
@@ -137,6 +145,8 @@ mod tests {
             output: &output,
             registry: &registry,
             observation: None,
+            workspace_cwd: None,
+            session_id: None,
         };
 
         let cmd = CompactCommand;
@@ -178,11 +188,98 @@ mod tests {
             output: &output,
             registry: &registry,
             observation: None,
+            workspace_cwd: None,
+            session_id: None,
         };
 
         let cmd = CompactCommand;
         let _ = cmd.execute(&mut ctx, "").await;
         // Circuit breaker was reset to 0 before the call, then failure increments it
         assert!(ctx.compact_state.consecutive_failures <= 1);
+    }
+
+    struct RecordingProvider {
+        last_prompt: std::sync::Mutex<Option<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for RecordingProvider {
+        async fn stream(
+            &self,
+            request: &LlmRequest,
+        ) -> Result<tokio::sync::mpsc::Receiver<LlmEvent>, ProviderError> {
+            let prompt = request
+                .messages
+                .last()
+                .and_then(|m| {
+                    m.content.iter().find_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                })
+                .unwrap_or_default();
+            *self.last_prompt.lock().unwrap() = Some(prompt);
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let _ = tx
+                .try_send(LlmEvent::TextDelta(
+                    "<summary>Standing facts preserved</summary>".into(),
+                ));
+            let _ = tx.try_send(LlmEvent::Done {
+                stop_reason: nomi_types::message::StopReason::EndTurn,
+                usage: Default::default(),
+            });
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_args_reach_summarizer_prompt() {
+        let recorder = Arc::new(RecordingProvider {
+            last_prompt: std::sync::Mutex::new(None),
+        });
+        let provider: Arc<dyn LlmProvider> = recorder.clone();
+        let registry = CommandRegistry::new();
+        let output = NullSink;
+        let blob = "x".repeat(2_000);
+        let mut messages: Vec<Message> = (0..40)
+            .map(|i| {
+                let role = if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                };
+                Message::new(
+                    role,
+                    vec![ContentBlock::Text {
+                        text: format!("msg-{i} {blob}"),
+                    }],
+                )
+            })
+            .collect();
+        let mut state = CompactState::new();
+        state.last_input_tokens = 50_000;
+        let config = nomi_config::compact::CompactConfig::default();
+
+        let mut ctx = CommandContext {
+            messages: &mut messages,
+            compact_state: &mut state,
+            compact_config: &config,
+            provider,
+            model: "test-model",
+            output: &output,
+            registry: &registry,
+            observation: None,
+            workspace_cwd: None,
+            session_id: None,
+        };
+
+        let cmd = CompactCommand;
+        let _ = cmd.execute(&mut ctx, "keep the API contract").await;
+        let prompt = recorder.last_prompt.lock().unwrap().clone().unwrap_or_default();
+        assert!(
+            prompt.contains("Compact Instructions"),
+            "summarizer prompt should include Compact Instructions, got: {prompt}"
+        );
+        assert!(prompt.contains("keep the API contract"));
     }
 }

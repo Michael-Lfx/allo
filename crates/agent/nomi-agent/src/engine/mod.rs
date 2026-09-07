@@ -10,6 +10,7 @@ use nomi_config::hooks::HookEngine;
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_tools::registry::ToolRegistry;
 use nomi_types::context_usage::ContextUsageBreakdown;
+use nomi_types::compact::CompactTrigger;
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{
     ContentBlock, Message, Role, StopReason, TokenUsage, clear_provider_round_ids,
@@ -792,6 +793,10 @@ impl AgentEngine {
                     && checkpoint.start_len <= session.messages.len()
             });
         let sent_prefix_len = session.messages.len();
+        let mut compact_state = CompactState::new();
+        compact_state.last_turn_ended_at = session
+            .last_turn_ended_at
+            .or(Some(session.updated_at));
 
         Self {
             provider,
@@ -817,7 +822,7 @@ impl AgentEngine {
             compact_config_base: compact_config.clone(),
             file_cache: None,
             compact_config,
-            compact_state: CompactState::new(),
+            compact_state,
             plan_state: PlanState::default(),
             plan_active_flag: None,
             cache_detector: CacheBreakDetector::new(),
@@ -1449,6 +1454,8 @@ impl AgentEngine {
         // find() returns a cloned Arc, so the registry borrow ends here and
         // self can be mutably borrowed for CommandContext below.
         let cmd = self.commands.find(name)?;
+        let workspace_cwd = self.workspace_cwd();
+        let session_id = self.current_session.as_ref().map(|s| s.id.clone());
 
         let mut ctx = crate::commands::CommandContext {
             messages: &mut self.messages,
@@ -1459,6 +1466,8 @@ impl AgentEngine {
             output: self.output.as_ref(),
             registry: &self.commands,
             observation: self.observation.clone(),
+            workspace_cwd,
+            session_id,
         };
 
         let result = cmd.execute(&mut ctx, args).await;
@@ -1548,13 +1557,17 @@ impl AgentEngine {
         .instrument(span)
         .await;
 
+        if turn_started {
+            self.mark_turn_ended();
+        }
+
         // Provider/tool iterations in this turn keep live images on the wire.
         // Already-sent user images stay in history so the next request can
         // replay them as a prefix-cache hit; compact is the expected miss
         // that drops them. Failed turns roll the transcript back below.
         // If the host drops this future during non-cooperative cancellation,
         // `abort_current_turn` redacts only unsent images.
-        if result.is_err() && turn_started {
+            if result.is_err() && turn_started {
             self.messages = safe_messages;
             if matches!(
                 &result,
@@ -1564,6 +1577,8 @@ impl AgentEngine {
             ) {
                 self.strip_tool_images_after_provider_error();
             }
+            self.save_session();
+        } else if turn_started {
             self.save_session();
         }
         result
@@ -1852,6 +1867,12 @@ impl AgentEngine {
             let request_estimate = request_breakdown.total();
             self.compact_state.last_input_tokens =
                 self.compact_state.last_input_tokens.max(request_estimate);
+
+            if turn == 0 && !pre_turn_compacted && self.should_idle_compact() {
+                pre_turn_compacted = true;
+                self.run_compaction(CompactReason::IdleCacheExpired).await?;
+                continue 'provider_attempt;
+            }
 
             if turn == 0
                 && !pre_turn_compacted
@@ -3385,9 +3406,10 @@ impl AgentEngine {
     ///
     /// `TurnEnd` / `TurnStart` run microcompact only once the autocompact
     /// watermark is already crossed (rewriting old tool results busts the
-    /// prefix cache). `EmergencyRecovery` still folds (mechanically if
-    /// stuck) and only returns `ContextTooLong` when the watermark remains
-    /// at the emergency limit after that attempt.
+    /// prefix cache). `IdleCacheExpired` always snips and microcompacts
+    /// because the provider prefix cache is presumed cold. `EmergencyRecovery`
+    /// still folds (mechanically if stuck) and only returns `ContextTooLong`
+    /// when the watermark remains at the emergency limit after that attempt.
     async fn run_compaction(&mut self, reason: CompactReason) -> Result<(), AgentError> {
         match reason {
             CompactReason::TurnEnd | CompactReason::TurnStart => {
@@ -3402,7 +3424,25 @@ impl AgentEngine {
                     self.run_microcompact();
                 }
                 if !self.compact_state.is_compact_stuck() {
-                    self.run_autocompact(false).await?;
+                    self.run_autocompact(false, CompactTrigger::Auto).await?;
+                }
+                Ok(())
+            }
+            CompactReason::IdleCacheExpired => {
+                if self.compact_config.enabled {
+                    self.run_snip_layer();
+                    self.run_microcompact_forced();
+                    // Cheap rewrite is cache-free; refresh occupancy before
+                    // deciding whether the LLM summarizer is still worth it.
+                    self.apply_compact_watermark(0);
+                    if !self.compact_state.is_compact_stuck()
+                        && auto::should_idle_autocompact(
+                            self.compact_state.last_input_tokens,
+                            &self.compact_config,
+                        )
+                    {
+                        self.run_autocompact(false, CompactTrigger::Idle).await?;
+                    }
                 }
                 Ok(())
             }
@@ -3412,7 +3452,8 @@ impl AgentEngine {
                     self.run_microcompact();
                     let force_mechanical = self.compact_state.is_compact_stuck()
                         || self.compact_state.is_circuit_broken(&self.compact_config);
-                    self.run_autocompact(force_mechanical).await?;
+                    self.run_autocompact(force_mechanical, CompactTrigger::Auto)
+                        .await?;
                 }
                 if emergency::is_at_emergency_limit(
                     self.compact_state.last_input_tokens,
@@ -3506,6 +3547,17 @@ impl AgentEngine {
         if !micro::should_microcompact(&self.messages, &self.compact_config) {
             return;
         }
+        self.apply_microcompact();
+    }
+
+    fn run_microcompact_forced(&mut self) {
+        if !self.compact_config.enabled {
+            return;
+        }
+        self.apply_microcompact();
+    }
+
+    fn apply_microcompact(&mut self) {
         let result = micro::microcompact(&mut self.messages, &self.compact_config);
         if result.cleared_count > 0 {
             self.sent_prefix_len = self.messages.len();
@@ -3520,9 +3572,22 @@ impl AgentEngine {
         }
     }
 
-    async fn run_autocompact(&mut self, force_mechanical: bool) -> Result<(), AgentError> {
+    async fn run_autocompact(
+        &mut self,
+        force_mechanical: bool,
+        trigger: CompactTrigger,
+    ) -> Result<(), AgentError> {
         let should_compact = force_mechanical
-            || auto::should_autocompact(self.compact_state.last_input_tokens, &self.compact_config);
+            || match trigger {
+                CompactTrigger::Idle => auto::should_idle_autocompact(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ),
+                CompactTrigger::Auto | CompactTrigger::Manual => auto::should_autocompact(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ),
+            };
         if should_compact {
             tracing::info!(target: "nomi_agent", last_input_tokens = self.compact_state.last_input_tokens, "context compaction triggered");
             if let Some(pct) = self.compact_config.autocompact_threshold_pct {
@@ -3563,14 +3628,22 @@ impl AgentEngine {
         }
 
         let provider = Arc::clone(&self.provider);
+        let cwd = self.workspace_cwd();
+        let session_id = self.current_session.as_ref().map(|s| s.id.clone());
         match auto::autocompact_with(
             provider.as_ref(),
             &self.messages,
             &self.model,
             &self.compact_config,
             &mut self.compact_state,
-            force_mechanical,
-            self.observation.clone(),
+            auto::AutocompactRequest {
+                force_mechanical,
+                observation: self.observation.clone(),
+                focus: None,
+                trigger: Some(trigger),
+                archive_cwd: cwd.as_deref(),
+                session_id: session_id.as_deref(),
+            },
         )
         .await
         {
@@ -3676,6 +3749,42 @@ impl AgentEngine {
         self.persist_session(true);
     }
 
+    fn mark_turn_ended(&mut self) {
+        self.compact_state.last_turn_ended_at = Some(chrono::Utc::now());
+    }
+
+    fn workspace_cwd(&self) -> Option<PathBuf> {
+        if let Some(session) = &self.current_session {
+            let cwd = PathBuf::from(&session.cwd);
+            if !cwd.as_os_str().is_empty() {
+                return Some(cwd);
+            }
+        }
+        self.hooks.as_ref().map(|h| h.cwd().to_path_buf())
+    }
+
+    fn should_idle_compact(&self) -> bool {
+        if !self.compact_config.enabled {
+            return false;
+        }
+        let gap = self.compact_config.idle_compact_seconds;
+        if gap == 0 || self.messages.len() <= 2 {
+            return false;
+        }
+        let last = self.compact_state.last_turn_ended_at.or_else(|| {
+            self.current_session
+                .as_ref()
+                .and_then(|s| s.last_turn_ended_at.or(Some(s.updated_at)))
+        });
+        let Some(ts) = last else {
+            return false;
+        };
+        chrono::Utc::now()
+            .signed_duration_since(ts)
+            .num_seconds()
+            >= gap as i64
+    }
+
     fn persist_session(&mut self, durable: bool) {
         let started = Instant::now();
         let mut save_err: Option<String> = None;
@@ -3685,6 +3794,7 @@ impl AgentEngine {
             session.total_usage = self.total_usage.clone();
             session.activated_deferred_tools = self.tools.session_deferred_tool_identities();
             session.editable_turn = self.editable_turn.clone();
+            session.last_turn_ended_at = self.compact_state.last_turn_ended_at;
             session.updated_at = chrono::Utc::now();
             let save_result = if durable {
                 mgr.save(session)
@@ -3809,6 +3919,22 @@ impl AgentEngine {
     }
 
     fn run_snip_layer(&mut self) {
+        let drop_idx = snip::snip_indices(&self.messages, snip::DEFAULT_SNIP_KEEP_TAIL);
+        if drop_idx.is_empty() {
+            return;
+        }
+        let dropped: Vec<Message> = drop_idx
+            .iter()
+            .map(|&i| self.messages[i].clone())
+            .collect();
+        let cwd = self.workspace_cwd();
+        let session_id = self.current_session.as_ref().map(|s| s.id.clone());
+        let archive_rel = crate::compact::archive::write_archive(
+            cwd.as_deref(),
+            session_id.as_deref(),
+            "snip",
+            &dropped,
+        );
         let removed = snip::snip_old_plain_turns(&mut self.messages, snip::DEFAULT_SNIP_KEEP_TAIL);
         if removed == 0 {
             return;
@@ -3816,7 +3942,7 @@ impl AgentEngine {
         self.messages.push(Message::now(
             Role::User,
             vec![ContentBlock::Text {
-                text: snip::collapse_notice(removed),
+                text: snip::collapse_notice(removed, archive_rel.as_deref()),
             }],
         ));
         self.sent_prefix_len = self.messages.len();

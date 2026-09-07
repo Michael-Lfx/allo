@@ -8,6 +8,7 @@ use crate::profile::TaskProfile;
 /// controls (`exec_command` + `write_stdin`) for bounded polling workflows.
 const CODING_CORE_TOOLS: &[&str] = &[
     "Read",
+    "ReadContentRef",
     "Write",
     "Edit",
     "Bash",
@@ -70,6 +71,8 @@ mod tests {
         assert!(!advertise_tool(TaskProfile::Coding, "LaunchApp"));
         assert!(!advertise_tool(TaskProfile::Coding, "briefing_create"));
         assert!(!advertise_tool(TaskProfile::Coding, "mcp__server__tool"));
+        assert!(advertise_tool(TaskProfile::Coding, "Read"));
+        assert!(advertise_tool(TaskProfile::Coding, "ReadContentRef"));
         assert!(advertise_tool(TaskProfile::Coding, "exec_command"));
         assert!(advertise_tool(TaskProfile::Coding, "write_stdin"));
         assert!(advertise_tool(TaskProfile::Coding, "Edit"));

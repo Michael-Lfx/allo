@@ -32,6 +32,8 @@ pub struct CommandContext<'a> {
     pub output: &'a dyn OutputSink,
     pub registry: &'a CommandRegistry,
     pub observation: Option<std::sync::Arc<crate::observation::ObservationSession>>,
+    pub workspace_cwd: Option<std::path::PathBuf>,
+    pub session_id: Option<String>,
 }
 
 /// A slash command that can be executed in the REPL.

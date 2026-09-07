@@ -158,6 +158,7 @@ pub struct SummarizedConversationPropertiesData {
 pub enum CompactTriggerData {
     Auto,
     Manual,
+    Idle,
 }
 
 /// Cursor-style context occupancy categories for one provider request.
@@ -207,6 +208,7 @@ impl From<&nomi_types::context_usage::ContextUsageBreakdown> for ContextBreakdow
                 trigger: meta.trigger.map(|trigger| match trigger {
                     nomi_types::compact::CompactTrigger::Auto => CompactTriggerData::Auto,
                     nomi_types::compact::CompactTrigger::Manual => CompactTriggerData::Manual,
+                    nomi_types::compact::CompactTrigger::Idle => CompactTriggerData::Idle,
                 }),
                 pre_compact_tokens: meta.pre_compact_tokens,
                 messages_summarized: meta.messages_summarized,

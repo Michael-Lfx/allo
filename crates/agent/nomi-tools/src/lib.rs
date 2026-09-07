@@ -1,6 +1,7 @@
 pub mod apply_patch;
 pub mod anchors;
 pub mod bash;
+pub mod content_ref;
 pub mod dir_tree;
 pub mod edit;
 pub mod exec_command;

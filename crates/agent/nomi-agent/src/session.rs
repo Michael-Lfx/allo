@@ -51,6 +51,11 @@ pub struct Session {
     /// messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editable_turn: Option<EditableTurnCheckpoint>,
+    /// When the last user-facing engine turn finished. Used on resume and
+    /// the next send to decide idle compact after prefix-cache expiry.
+    /// Legacy sessions omit this field; resume falls back to `updated_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_ended_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +119,7 @@ impl SessionManager {
             owner_token: None,
             activated_deferred_tools: Vec::new(),
             editable_turn: None,
+            last_turn_ended_at: None,
         };
         self.save(&session)?;
         self.update_index(&session)?;
@@ -379,6 +385,24 @@ mod tests {
         assert_eq!(loaded.cwd, "/home");
         assert_eq!(loaded.activated_deferred_tools, session.activated_deferred_tools);
         assert_eq!(loaded.editable_turn, session.editable_turn);
+        assert_eq!(loaded.last_turn_ended_at, None);
+    }
+
+    #[test]
+    fn last_turn_ended_at_roundtrips() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let mut session = manager
+            .create("anthropic", "claude-3", "/home", None)
+            .unwrap();
+        let ended = Utc::now();
+        session.last_turn_ended_at = Some(ended);
+        manager.save(&session).unwrap();
+        let loaded = manager.load(&session.id).unwrap();
+        assert_eq!(
+            loaded.last_turn_ended_at.map(|t| t.timestamp()),
+            Some(ended.timestamp())
+        );
     }
 
     #[test]

@@ -95,7 +95,7 @@ interface IChatConversation<T, Extra> {
 }
 
 // Token 使用统计数据类型
-export type CompactTriggerData = 'auto' | 'manual';
+export type CompactTriggerData = 'auto' | 'manual' | 'idle';
 
 export type SummarizedConversationProperties = {
   trigger?: CompactTriggerData | null;

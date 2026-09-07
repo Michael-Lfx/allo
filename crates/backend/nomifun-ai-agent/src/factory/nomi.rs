@@ -2127,6 +2127,7 @@ mod tests {
             owner_token: None,
             activated_deferred_tools: Vec::new(),
             editable_turn: None,
+            last_turn_ended_at: None,
         };
 
         assert!(retarget_resumed_session(
@@ -2185,6 +2186,7 @@ mod tests {
                 source_message_id: "message-root".into(),
                 start_len: 2,
             }),
+            last_turn_ended_at: None,
         };
 
         let repair = sanitize_resumed_session(&mut session, false);

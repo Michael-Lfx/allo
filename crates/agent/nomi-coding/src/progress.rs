@@ -15,6 +15,7 @@ pub fn is_explore_tool(name: &str) -> bool {
     matches!(
         name,
         "Read"
+            | "ReadContentRef"
             | "Grep"
             | "Glob"
             | "DirTree"

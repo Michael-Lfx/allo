@@ -17,8 +17,18 @@ pub const COMPACT_SYSTEM_PROMPT: &str = "You are compacting the earlier part of 
 // ── Prompt construction ─────────────────────────────────────────────────────
 
 /// Build the 7-section compact prompt that asks the LLM for a next-turn briefing.
-pub fn build_compact_prompt() -> String {
-    format!("{PREAMBLE}\n\n{BODY}\n\n{FORMAT_INSTRUCTIONS}\n\n{REMINDER}")
+///
+/// `focus` is optional user-supplied Compact Instructions (e.g. `/compact keep
+/// the API contract`). When present it is prepended so the summarizer
+/// prioritizes those facts.
+pub fn build_compact_prompt(focus: Option<&str>) -> String {
+    let base = format!("{PREAMBLE}\n\n{BODY}\n\n{FORMAT_INSTRUCTIONS}\n\n{REMINDER}");
+    match focus.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(focus) => format!(
+            "Compact Instructions (user-specified focus — prioritize these in the briefing):\n{focus}\n\n{base}"
+        ),
+        None => base,
+    }
 }
 
 const PREAMBLE: &str = "\
@@ -93,11 +103,20 @@ pub fn format_compact_summary(raw: &str) -> String {
 ///
 /// For autocompact (`is_auto = true`), appends an instruction telling the
 /// model to continue seamlessly without acknowledging the compaction.
-pub fn build_summary_content(formatted_summary: &str, is_auto: bool) -> String {
+/// `archive_rel` is a workspace-relative path to the folded transcript.
+pub fn build_summary_content(
+    formatted_summary: &str,
+    is_auto: bool,
+    archive_rel: Option<&str>,
+) -> String {
     let mut content = String::from(
         "This session is being continued from a previous conversation that ran out of context. \
          The summary below covers the earlier portion of the conversation.\n\n",
     );
+    if let Some(path) = archive_rel.filter(|p| !p.is_empty()) {
+        content.push_str(&crate::compact::archive::archive_notice(path));
+        content.push_str("\n\n");
+    }
     content.push_str(formatted_summary);
 
     if is_auto {
@@ -183,7 +202,7 @@ mod tests {
 
     #[test]
     fn prompt_contains_all_seven_sections() {
-        let prompt = build_compact_prompt();
+        let prompt = build_compact_prompt(None);
         for i in 1..=7 {
             assert!(prompt.contains(&format!("{i}.")), "Missing section {i}");
         }
@@ -193,20 +212,28 @@ mod tests {
 
     #[test]
     fn prompt_forbids_tool_calls() {
-        let prompt = build_compact_prompt();
+        let prompt = build_compact_prompt(None);
         assert!(prompt.contains("Do NOT call any tools"));
         assert!(prompt.contains("CRITICAL"));
     }
 
     #[test]
     fn prompt_is_next_turn_briefing_without_analysis() {
-        let prompt = build_compact_prompt();
+        let prompt = build_compact_prompt(None);
         assert!(prompt.contains("<summary>"));
         assert!(!prompt.contains("<analysis>"));
         assert!(prompt.contains("next-turn briefing"));
         assert!(prompt.contains("Merge it"));
         assert!(!prompt.contains("thorough"));
         assert!(!prompt.contains("exhaustive"));
+    }
+
+    #[test]
+    fn prompt_prepends_compact_instructions() {
+        let prompt = build_compact_prompt(Some("keep the API contract"));
+        assert!(prompt.starts_with("Compact Instructions"));
+        assert!(prompt.contains("keep the API contract"));
+        assert!(prompt.contains("Do NOT call any tools"));
     }
 
     // ── format_compact_summary ──────────────────────────────────────────
@@ -252,20 +279,20 @@ mod tests {
 
     #[test]
     fn auto_summary_includes_continuation_instruction() {
-        let content = build_summary_content("Summary:\ntest", true);
+        let content = build_summary_content("Summary:\ntest", true, None);
         assert!(content.contains("Continue the conversation"));
         assert!(content.contains("as if the break never happened"));
     }
 
     #[test]
     fn manual_summary_no_continuation_instruction() {
-        let content = build_summary_content("Summary:\ntest", false);
+        let content = build_summary_content("Summary:\ntest", false, None);
         assert!(!content.contains("Continue the conversation"));
     }
 
     #[test]
     fn summary_content_includes_session_header() {
-        let content = build_summary_content("Summary:\ntest", false);
+        let content = build_summary_content("Summary:\ntest", false, None);
         assert!(content.contains("This session is being continued"));
     }
 

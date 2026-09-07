@@ -717,7 +717,7 @@ async fn execute_single_without_deadline(
             } else {
                 tool.context_modifier_for(input)
             };
-            let content = truncate_result(&r.content, max_size);
+            let content = truncate_result(&r.content, max_size, hooks.map(|h| h.cwd()));
             let content = nomi_compact::compact_output(&content, compaction_level);
             let content = if toon_enabled {
                 nomi_compact::compact_output_toon(&content)
@@ -1182,31 +1182,13 @@ fn block_is_error(block: &ContentBlock) -> bool {
     matches!(block, ContentBlock::ToolResult { is_error: true, .. })
 }
 
-fn truncate_result(content: &str, max_bytes: usize) -> String {
+fn truncate_result(content: &str, max_bytes: usize, cwd: Option<&std::path::Path>) -> String {
     if content.len() <= max_bytes {
         return content.to_string();
     }
-    let locator = persist_content_reference(content);
+    let locator = nomi_tools::content_ref::persist_content_reference(content, cwd);
     let clipped = truncate_middle(content, TruncationBudget::Bytes(max_bytes.saturating_sub(locator.len().saturating_add(16))));
     format!("{locator}\n{clipped}")
-}
-
-fn persist_content_reference(content: &str) -> String {
-    let dir = std::env::temp_dir().join("nomi-content-refs");
-    let _ = std::fs::create_dir_all(&dir);
-    let mut hash = 0u64;
-    for (i, b) in content.as_bytes().iter().take(4096).enumerate() {
-        hash = hash.wrapping_mul(131).wrapping_add(*b as u64).wrapping_add(i as u64);
-    }
-    hash = hash.wrapping_add(content.len() as u64);
-    let id = format!("{hash:016x}");
-    let path = dir.join(&id);
-    let _ = std::fs::write(&path, content);
-    format!(
-        "[content_ref id={id} bytes={} path={}]",
-        content.len(),
-        path.display()
-    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1424,28 +1406,29 @@ mod tests {
     #[test]
     fn truncate_result_short_unchanged() {
         let s = "short content";
-        assert_eq!(truncate_result(s, 1000), s);
+        assert_eq!(truncate_result(s, 1000, None), s);
     }
 
     #[test]
     fn truncate_result_cjk_does_not_panic() {
         let cjk: String = "这是一段较长的中文内容用于测试截断功能".repeat(50);
-        let result = truncate_result(&cjk, 100);
+        let result = truncate_result(&cjk, 100, None);
         assert!(result.contains("truncated"));
     }
 
     #[test]
     fn truncate_result_mixed_cjk_ascii_does_not_panic() {
         let mixed = "Hello你好World世界Test测试".repeat(100);
-        let result = truncate_result(&mixed, 200);
+        let result = truncate_result(&mixed, 200, None);
         assert!(result.contains("truncated"));
     }
 
     #[test]
     fn truncate_result_oversized_emits_content_ref() {
         let body = "x".repeat(4000);
-        let result = truncate_result(&body, 200);
+        let result = truncate_result(&body, 200, None);
         assert!(result.contains("[content_ref"));
+        assert!(result.contains("ReadContentRef"));
         assert!(result.contains("truncated"));
     }
 
