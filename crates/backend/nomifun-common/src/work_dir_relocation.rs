@@ -1381,11 +1381,32 @@ fn remove_managed_tree(path: &Path, label: &str) -> Result<(), AppError> {
         AppError::Internal(format!("inspect {label} {}: {error}", path.display()))
     })?;
     let result = if metadata.file_type().is_symlink() {
-        fs::remove_file(path)
+        remove_link_entry(path, &metadata)
     } else {
         fs::remove_dir_all(path)
     };
     result.map_err(|error| AppError::Internal(format!("remove {label} {}: {error}", path.display())))
+}
+
+/// Remove a symlink or Windows directory junction without following the target.
+fn remove_link_entry(path: &Path, metadata: &fs::Metadata) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+        // Directory symlinks and NTFS junctions must use RemoveDirectory
+        // (`remove_dir`); `remove_file` returns ERROR_ACCESS_DENIED on them.
+        if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            fs::remove_dir(path)
+        } else {
+            fs::remove_file(path)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = metadata;
+        fs::remove_file(path)
+    }
 }
 
 fn entry_exists(path: &Path, label: &str) -> Result<bool, AppError> {
@@ -1410,10 +1431,12 @@ fn compare_entry(left: &Path, right: &Path) -> Result<(), AppError> {
         return Err(AppError::Conflict("unsupported reparse point during relocation verification".into()));
     }
     if left_metadata.file_type().is_symlink() || right_metadata.file_type().is_symlink() {
-        if !(left_metadata.file_type().is_symlink() && right_metadata.file_type().is_symlink())
-            || fs::read_link(left).map_err(|error| AppError::Internal(error.to_string()))?
-                != fs::read_link(right).map_err(|error| AppError::Internal(error.to_string()))?
-        {
+        if !(left_metadata.file_type().is_symlink() && right_metadata.file_type().is_symlink()) {
+            return Err(AppError::Conflict("relocation link verification failed".into()));
+        }
+        let left_target = resolve_link_target_for_compare(left)?;
+        let right_target = resolve_link_target_for_compare(right)?;
+        if !paths_equivalent(&left_target, &right_target) {
             return Err(AppError::Conflict("relocation link verification failed".into()));
         }
         return Ok(());
@@ -2263,28 +2286,123 @@ fn unsupported_reparse(metadata: &fs::Metadata) -> bool {
 }
 
 fn create_link(source: &Path, destination: &Path) -> Result<(), AppError> {
-    let link_target = fs::read_link(source).map_err(|error| {
-        AppError::Internal(format!("read relocation symlink {}: {error}", source.display()))
-    })?;
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(&link_target, destination).map_err(|error| {
-            AppError::Internal(format!("create relocation symlink {}: {error}", destination.display()))
+        let link_target = fs::read_link(source).map_err(|error| {
+            AppError::Internal(format!(
+                "read relocation symlink {}: {error}",
+                source.display()
+            ))
         })?;
+        std::os::unix::fs::symlink(&link_target, destination).map_err(|error| {
+            AppError::Internal(format!(
+                "create relocation symlink {}: {error}",
+                destination.display()
+            ))
+        })?;
+        return Ok(());
     }
     #[cfg(windows)]
     {
-        let target_is_dir = fs::metadata(source).map(|metadata| metadata.is_dir()).unwrap_or(false);
-        let result = if target_is_dir {
-            std::os::windows::fs::symlink_dir(&link_target, destination)
-        } else {
-            std::os::windows::fs::symlink_file(&link_target, destination)
-        };
-        result.map_err(|error| {
-            AppError::Internal(format!("create relocation symlink {}: {error}", destination.display()))
-        })?;
+        create_link_windows(source, destination)
     }
-    Ok(())
+}
+
+/// Recreate a name-surrogate reparse point during work-dir copy.
+///
+/// Knowledge mounts under `{conversation}/.flowy/knowledge/` are NTFS
+/// junctions. Rust reports those as `is_symlink()`, but recreating them with
+/// `symlink_dir` requires `SeCreateSymbolicLinkPrivilege` (Developer Mode or
+/// Admin) and fails with os error 1314 on typical user machines. Junctions do
+/// not need that privilege — same approach as `nomifun-knowledge` mounts.
+#[cfg(windows)]
+fn create_link_windows(source: &Path, destination: &Path) -> Result<(), AppError> {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+
+    let metadata = fs::symlink_metadata(source).map_err(|error| {
+        AppError::Internal(format!(
+            "inspect relocation link {}: {error}",
+            source.display()
+        ))
+    })?;
+    let is_dir_link = metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0;
+
+    if is_dir_link {
+        let absolute_target = absolute_directory_link_target(source)?;
+        return junction::create(&absolute_target, destination).map_err(|error| {
+            AppError::Internal(format!(
+                "create relocation junction {}: {error}",
+                destination.display()
+            ))
+        });
+    }
+
+    let link_target = fs::read_link(source).map_err(|error| {
+        AppError::Internal(format!(
+            "read relocation symlink {}: {error}",
+            source.display()
+        ))
+    })?;
+    std::os::windows::fs::symlink_file(&link_target, destination).map_err(|error| {
+        let privilege_hint = if error.raw_os_error() == Some(1314) {
+            " (Windows requires Developer Mode or elevation to create file symlinks)"
+        } else {
+            ""
+        };
+        AppError::Internal(format!(
+            "create relocation symlink {}: {error}{privilege_hint}",
+            destination.display()
+        ))
+    })
+}
+
+#[cfg(windows)]
+fn absolute_directory_link_target(source: &Path) -> Result<PathBuf, AppError> {
+    let raw = read_raw_link_target(source)?;
+    if raw.is_absolute() {
+        return Ok(simplified(&raw));
+    }
+    let resolved = source
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(raw);
+    crate::paths::canonicalize_simplified(&resolved).or_else(|_| Ok(simplified(&resolved)))
+}
+
+fn read_raw_link_target(path: &Path) -> Result<PathBuf, AppError> {
+    #[cfg(windows)]
+    {
+        if junction::exists(path).unwrap_or(false) {
+            return junction::get_target(path).map_err(|error| {
+                AppError::Internal(format!(
+                    "read relocation junction {}: {error}",
+                    path.display()
+                ))
+            });
+        }
+    }
+    fs::read_link(path).map_err(|error| {
+        AppError::Internal(format!(
+            "read relocation symlink {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+/// Compare link identity across source/staging without requiring identical
+/// raw spellings (`\\?\`, junction vs symlink, relative vs absolute).
+fn resolve_link_target_for_compare(path: &Path) -> Result<PathBuf, AppError> {
+    let raw = read_raw_link_target(path)?;
+    if raw.is_absolute() {
+        return Ok(simplified(&raw));
+    }
+    let resolved = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(raw);
+    crate::paths::canonicalize_simplified(&resolved).or_else(|_| Ok(simplified(&resolved)))
 }
 
 fn is_cross_device(error: &std::io::Error) -> bool {
@@ -2651,5 +2769,52 @@ mod tests {
         assert!(read_last_status_best_effort(data.path()).is_none());
         assert!(!path.exists());
         assert!(target.exists());
+    }
+
+    /// Regression for os error 1314: conversation knowledge mounts are NTFS
+    /// junctions. Cross-volume relocation must recreate them as junctions
+    /// (no SeCreateSymbolicLink), not `symlink_dir`.
+    #[cfg(windows)]
+    #[test]
+    fn copy_tree_recreates_knowledge_mount_junctions_without_symlink_privilege() {
+        let kb_root = tempfile::tempdir().unwrap();
+        fs::write(kb_root.path().join("note.md"), b"# hi").unwrap();
+
+        let source = tempfile::tempdir().unwrap();
+        let conversation = source
+            .path()
+            .join("01a04772-e1ad-7b03-a0ad-d1cbef7c7ea3");
+        let mount = conversation.join(".flowy").join("knowledge").join("Untitled Knowledge");
+        fs::create_dir_all(mount.parent().unwrap()).unwrap();
+        junction::create(kb_root.path(), &mount).unwrap();
+        assert!(junction::exists(&mount).unwrap());
+
+        let destination = tempfile::tempdir().unwrap();
+        let dest_root = destination.path().join("staging");
+        copy_tree(source.path(), &dest_root).unwrap();
+        compare_tree(source.path(), &dest_root).unwrap();
+
+        let copied = dest_root
+            .join("01a04772-e1ad-7b03-a0ad-d1cbef7c7ea3")
+            .join(".flowy")
+            .join("knowledge")
+            .join("Untitled Knowledge");
+        assert!(junction::exists(&copied).unwrap());
+        let copied_target = simplified(&junction::get_target(&copied).unwrap());
+        let expected = simplified(kb_root.path());
+        assert!(
+            paths_equivalent(&copied_target, &expected),
+            "copied junction target {copied_target:?} != {expected:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(copied.join("note.md")).unwrap(),
+            "# hi"
+        );
+
+        // Incomplete-staging recovery deletes the operation-owned tree without
+        // following junction targets (must not delete the real knowledge root).
+        remove_managed_tree(&dest_root, "test staging tree").unwrap();
+        assert!(!dest_root.exists());
+        assert!(kb_root.path().join("note.md").is_file());
     }
 }

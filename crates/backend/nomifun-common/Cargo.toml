@@ -28,4 +28,8 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+# NTFS junctions recreate directory mounts during work-dir relocation without
+# SeCreateSymbolicLink (Developer Mode / Admin). Same rationale as
+# nomifun-knowledge / nomifun-extension.
+junction = "1"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
