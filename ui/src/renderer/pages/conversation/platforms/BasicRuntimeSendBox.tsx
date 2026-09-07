@@ -852,6 +852,10 @@ const BasicRuntimeSendBox: React.FC<{
         value={content}
         onChange={handleContentChange}
         selectedWorkspaceItems={atPath}
+        submissionAttachmentPaths={[
+          ...uploadFile,
+          ...atPath.map((item) => (typeof item === 'string' ? item : item.path)),
+        ]}
         onSelectedWorkspaceItemsChange={(nextSelectedItems) => {
           if (config.emitSelectedFileOnChange) {
             emitter.emit(config.selectedFileEvents.set, nextSelectedItems);

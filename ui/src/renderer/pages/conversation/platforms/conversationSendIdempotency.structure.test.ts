@@ -31,6 +31,8 @@ describe('conversation send idempotency wiring', () => {
     const claim = readSource('../../../components/chat/SendBox/index.tsx');
     expect(claim).toContain('domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html])');
     expect(claim).not.toContain('domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html.length])');
+    expect(claim).toContain('attachmentPaths');
+    expect(claim).toContain('submissionAttachmentPaths');
   });
 
   test('captures a workspace snapshot when ordinary messages enter the queue', () => {

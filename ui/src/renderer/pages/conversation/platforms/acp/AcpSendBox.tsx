@@ -790,6 +790,10 @@ Please check your local CLI tool authentication status`,
             )}
           </>
         }
+        submissionAttachmentPaths={[
+          ...uploadFile,
+          ...atPath.map((item) => (typeof item === 'string' ? item : item.path)),
+        ]}
         onSend={onSendHandler}
         onSendWithSkills={onSendWithSkillsHandler}
         skillChips={skillChips}

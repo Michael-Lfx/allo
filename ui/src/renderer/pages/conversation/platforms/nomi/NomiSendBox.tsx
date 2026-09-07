@@ -2141,6 +2141,10 @@ const NomiSendBox: React.FC<{
             )}
           </>
         }
+        submissionAttachmentPaths={[
+          ...uploadFile,
+          ...atPath.map((item) => (typeof item === 'string' ? item : item.path)),
+        ]}
         onSend={onSendHandler}
         onSendWithSkills={onSendWithSkillsHandler}
         skillChips={skillChips}

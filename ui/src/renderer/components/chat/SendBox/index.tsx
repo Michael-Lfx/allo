@@ -213,12 +213,14 @@ function getSkillSourceLabel(source: string, t: TFunction): string {
 const createNormalSubmitClaim = (
   input: string,
   skillIds: string[],
+  attachmentPaths: string[],
   domSnippets: Array<{ tag: string; html: string }>,
   replyQuote: ReplyQuote | null
 ): string =>
   JSON.stringify({
     input,
     skillIds,
+    attachmentPaths,
     // The synchronous claim is only a same-task mutex. Keep the complete
     // snippet content in its signature so two distinct drafts with equal
     // HTML lengths are still allowed to queue independently.
@@ -273,6 +275,8 @@ const SendBox: React.FC<{
   /** Conversation-only: the next regular message will become the goal objective. */
   goalModeArmed?: boolean;
   onGoalModeChange?: (enabled: boolean) => void;
+  /** Exact attachment snapshot used by the platform send handler. */
+  submissionAttachmentPaths?: readonly string[];
   hasPendingAttachments?: boolean;
   enableBtw?: boolean;
   allowSendWhileLoading?: boolean;
@@ -319,6 +323,7 @@ const SendBox: React.FC<{
   enableGoalMenu = false,
   goalModeArmed = false,
   onGoalModeChange,
+  submissionAttachmentPaths = [],
   hasPendingAttachments = false,
   enableBtw = false,
   allowSendWhileLoading = false,
@@ -2015,7 +2020,13 @@ const SendBox: React.FC<{
       domSnippetCount: domSnippets.length,
     });
     const submittedSkills = skillChips;
-    const submitClaim = createNormalSubmitClaim(input, submittedSkills.map((skill) => skill.skillId), domSnippets, replyQuote);
+    const submitClaim = createNormalSubmitClaim(
+      input,
+      submittedSkills.map((skill) => skill.skillId),
+      [...submissionAttachmentPaths],
+      domSnippets,
+      replyQuote
+    );
     if (normalSubmitClaimRef.current === submitClaim) {
       return;
     }
