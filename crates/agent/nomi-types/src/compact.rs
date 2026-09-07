@@ -8,6 +8,9 @@ pub enum CompactTrigger {
     Auto,
     /// Triggered manually by the user (e.g. `/compact` command).
     Manual,
+    /// Triggered because the previous turn ended long enough ago that the
+    /// provider prefix cache is presumed expired.
+    Idle,
 }
 
 /// Metadata stored in the compact boundary marker message.
@@ -45,8 +48,14 @@ mod tests {
     }
 
     #[test]
+    fn trigger_idle_serializes_to_snake_case() {
+        let json = serde_json::to_string(&CompactTrigger::Idle).unwrap();
+        assert_eq!(json, "\"idle\"");
+    }
+
+    #[test]
     fn trigger_roundtrip() {
-        for trigger in [CompactTrigger::Auto, CompactTrigger::Manual] {
+        for trigger in [CompactTrigger::Auto, CompactTrigger::Manual, CompactTrigger::Idle] {
             let json = serde_json::to_value(trigger).unwrap();
             let back: CompactTrigger = serde_json::from_value(json).unwrap();
             assert_eq!(back, trigger);

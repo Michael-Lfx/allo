@@ -22,8 +22,8 @@ pub struct CompactConfig {
     #[serde(default = "default_output_reserve")]
     pub output_reserve: usize,
 
-    /// Buffer below the effective window that triggers autocompact.
-    /// `threshold = context_window - output_reserve - autocompact_buffer`
+    /// Buffer below the effective window used when `autocompact_threshold_pct`
+    /// is `None`. Then `threshold = context_window - output_reserve - autocompact_buffer`.
     #[serde(default = "default_autocompact_buffer")]
     pub autocompact_buffer: usize,
 
@@ -49,11 +49,30 @@ pub struct CompactConfig {
     #[serde(default = "default_compactable_tools")]
     pub compactable_tools: Vec<String>,
 
-    /// Optional percentage override for the autocompact trigger threshold.
+    /// Autocompact trigger as a percentage of `context_window`.
     /// When set, threshold = context_window * pct / 100, ignoring
-    /// output_reserve and autocompact_buffer.
-    #[serde(default)]
+    /// output_reserve and autocompact_buffer. `None` restores the
+    /// headroom formula (`window - output_reserve - autocompact_buffer`).
+    /// Default: 60.
+    #[serde(default = "default_autocompact_threshold_pct")]
     pub autocompact_threshold_pct: Option<u8>,
+
+    /// Idle compact: if the previous user-facing turn ended at least this many
+    /// seconds ago, run cheap compaction (snip + microcompact) before the next
+    /// provider call. Prefix caches at LLM providers typically expire in
+    /// 5–15 minutes, so rewriting history after this gap is free.
+    /// `0` disables idle compact.
+    #[serde(default = "default_idle_compact_seconds")]
+    pub idle_compact_seconds: u64,
+
+    /// Occupancy percentage of `context_window` at which idle compact also
+    /// runs the LLM summarizer. Cheap layers always run on an expired cache;
+    /// the summarizer is skipped for a tiny transcript (e.g. a short chat
+    /// after a coffee break). Watermark autocompact still applies independently.
+    /// `0` means idle never LLM-summarizes unless already at the autocompact
+    /// watermark.
+    #[serde(default = "default_idle_autocompact_pct")]
+    pub idle_autocompact_pct: u8,
 
     /// Whether the compaction system is enabled.
     /// When false, microcompact and autocompact are skipped
@@ -85,7 +104,9 @@ impl Default for CompactConfig {
             micro_keep_recent: default_micro_keep_recent(),
             micro_gap_seconds: default_micro_gap_seconds(),
             compactable_tools: default_compactable_tools(),
-            autocompact_threshold_pct: None,
+            autocompact_threshold_pct: default_autocompact_threshold_pct(),
+            idle_compact_seconds: default_idle_compact_seconds(),
+            idle_autocompact_pct: default_idle_autocompact_pct(),
             enabled: default_true(),
             cache_diagnostics: false,
             compaction: nomi_compact::CompactionLevel::default(),
@@ -149,6 +170,20 @@ fn default_compactable_tools() -> Vec<String> {
 }
 fn default_true() -> bool {
     true
+}
+
+fn default_autocompact_threshold_pct() -> Option<u8> {
+    Some(60)
+}
+
+/// Provider prefix caches commonly live 5–15 minutes. Compact before the next
+/// turn once the previous turn has been idle this long.
+fn default_idle_compact_seconds() -> u64 {
+    900
+}
+
+fn default_idle_autocompact_pct() -> u8 {
+    25
 }
 
 /// Resolve the effective context window: an explicit per-provider limit when
@@ -228,7 +263,9 @@ mod tests {
         assert_eq!(cfg.micro_keep_recent, 5);
         assert_eq!(cfg.micro_gap_seconds, 3600);
         assert!(cfg.enabled);
-        assert_eq!(cfg.autocompact_threshold_pct, None);
+        assert_eq!(cfg.autocompact_threshold_pct, Some(60));
+        assert_eq!(cfg.idle_compact_seconds, 900);
+        assert_eq!(cfg.idle_autocompact_pct, 25);
         assert_eq!(
             cfg.compactable_tools,
             vec!["Read", "Bash", "Grep", "Glob", "Write", "Edit"]
@@ -275,6 +312,9 @@ context_window = 128000
         assert_eq!(cfg.micro_keep_recent, 5);
         assert_eq!(cfg.micro_gap_seconds, 3600);
         assert!(cfg.enabled);
+        assert_eq!(cfg.idle_compact_seconds, 900);
+        assert_eq!(cfg.idle_autocompact_pct, 25);
+        assert_eq!(cfg.autocompact_threshold_pct, Some(60));
     }
 
     #[test]
@@ -289,6 +329,12 @@ context_window = 128000
         assert_eq!(cfg.micro_keep_recent, default.micro_keep_recent);
         assert_eq!(cfg.micro_gap_seconds, default.micro_gap_seconds);
         assert_eq!(cfg.enabled, default.enabled);
+        assert_eq!(cfg.idle_compact_seconds, default.idle_compact_seconds);
+        assert_eq!(cfg.idle_autocompact_pct, default.idle_autocompact_pct);
+        assert_eq!(
+            cfg.autocompact_threshold_pct,
+            default.autocompact_threshold_pct
+        );
     }
 
     #[test]
@@ -361,10 +407,10 @@ cache_diagnostics = true
     }
 
     #[test]
-    fn toml_absent_threshold_pct_is_none() {
+    fn toml_absent_threshold_pct_defaults_to_sixty() {
         let toml_str = r#"context_window = 128000"#;
         let cfg: CompactConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.autocompact_threshold_pct, None);
+        assert_eq!(cfg.autocompact_threshold_pct, Some(60));
     }
 
     #[test]

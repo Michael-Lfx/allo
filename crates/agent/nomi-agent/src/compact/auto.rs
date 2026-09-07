@@ -5,24 +5,38 @@
 //! then replaces the full history with a compact boundary marker and the
 //! summary.  A circuit breaker prevents runaway retries.
 
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+
 use nomi_agent_trace::ObservationScope;
 use nomi_config::compact::{CompactConfig, window_output_unit};
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::compact::{CompactMetadata, CompactTrigger};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
 
 use crate::observation::ObservationSession;
 
+use super::archive;
 use super::estimate::estimate_tokens_from_messages;
 use super::prompt::{
     COMPACT_SYSTEM_PROMPT, build_compact_prompt, build_summary_content,
     format_compact_summary,
 };
 use super::state::CompactState;
+
+/// Options for one autocompact pass.
+#[derive(Clone, Default)]
+pub struct AutocompactRequest<'a> {
+    pub force_mechanical: bool,
+    pub observation: Option<Arc<ObservationSession>>,
+    pub focus: Option<&'a str>,
+    pub trigger: Option<CompactTrigger>,
+    pub archive_cwd: Option<&'a Path>,
+    pub session_id: Option<&'a str>,
+}
 
 /// Maximum number of prompt-too-long retries.
 const MAX_PTL_RETRIES: u32 = 2;
@@ -101,6 +115,28 @@ pub fn should_compact_before_turn(last_input_tokens: u64, config: &CompactConfig
     should_autocompact(last_input_tokens, config)
         || last_input_tokens as usize >= config.context_window
 }
+
+/// Whether idle compact should also run the LLM summarizer.
+///
+/// Cheap snip/microcompact always run when the prefix cache is presumed
+/// expired. The summarizer only runs when occupancy is at least
+/// `idle_autocompact_pct` of the window (or already at the autocompact
+/// watermark). `idle_autocompact_pct == 0` means "watermark only".
+pub fn should_idle_autocompact(last_input_tokens: u64, config: &CompactConfig) -> bool {
+    if !config.enabled {
+        return false;
+    }
+    if should_autocompact(last_input_tokens, config) {
+        return true;
+    }
+    let pct = config.idle_autocompact_pct;
+    if pct == 0 {
+        return false;
+    }
+    last_input_tokens as usize >= config.context_window.saturating_mul(pct as usize) / 100
+}
+
+// ── Tail-preservation compaction ──────────────────────────────────────────
 
 // ── Tail-preservation compaction ──────────────────────────────────────────
 //
@@ -326,7 +362,15 @@ pub async fn autocompact(
     config: &CompactConfig,
     state: &mut CompactState,
 ) -> Result<CompactResult, CompactError> {
-    autocompact_with(provider, messages, model, config, state, false, None).await
+    autocompact_with(
+        provider,
+        messages,
+        model,
+        config,
+        state,
+        AutocompactRequest::default(),
+    )
+    .await
 }
 
 /// Like [`autocompact`], with an optional observation session for the summarizer.
@@ -344,8 +388,10 @@ pub async fn autocompact_observed(
         model,
         config,
         state,
-        false,
-        observation,
+        AutocompactRequest {
+            observation,
+            ..AutocompactRequest::default()
+        },
     )
     .await
 }
@@ -360,10 +406,9 @@ pub async fn autocompact_with(
     model: &str,
     config: &CompactConfig,
     state: &mut CompactState,
-    force_mechanical: bool,
-    observation: Option<Arc<ObservationSession>>,
+    request: AutocompactRequest<'_>,
 ) -> Result<CompactResult, CompactError> {
-    if !force_mechanical && state.is_circuit_broken(config) {
+    if !request.force_mechanical && state.is_circuit_broken(config) {
         return Err(CompactError::CircuitBroken {
             failures: state.consecutive_failures,
         });
@@ -382,7 +427,7 @@ pub async fn autocompact_with(
     };
 
     let region = &messages[plan.head..plan.start];
-    let force = force_mechanical
+    let force = request.force_mechanical
         || pre_compact_tokens as f64 >= config.context_window as f64 * COMPACT_FORCE_RATIO
         || should_autocompact(pre_compact_tokens, config);
 
@@ -398,15 +443,30 @@ pub async fn autocompact_with(
     }
 
     let messages_summarized = fold.len();
+    let archive_rel = archive::write_archive(
+        request.archive_cwd,
+        request.session_id,
+        "autocompact",
+        &fold,
+    );
 
     // Attempt LLM summarization. On failure, fall back to a mechanical fold
     // digest — a deterministic stand-in that notes the gap. This ensures
     // compaction always frees context and auto-compaction can't loop on a
     // still-full window. Mirrors Reasonix's `mechanicalFoldDigest`.
-    let (summary_text, mechanical_fold) = if force_mechanical {
+    let (summary_text, mechanical_fold) = if request.force_mechanical {
         (mechanical_fold_digest(messages_summarized), true)
     } else {
-        match summarize_with_retry(provider, &fold, model, config, observation).await {
+        match summarize_with_retry(
+            provider,
+            &fold,
+            model,
+            config,
+            request.observation,
+            request.focus,
+        )
+        .await
+        {
             Ok(text) => (text, false),
             Err(e) => {
                 tracing::warn!(target: "nomi_agent", error = %e, "compaction summary unavailable; folding mechanically");
@@ -416,10 +476,10 @@ pub async fn autocompact_with(
     };
 
     let formatted = format_compact_summary(&summary_text);
-    let summary_content = build_summary_content(&formatted, true);
+    let summary_content = build_summary_content(&formatted, true, archive_rel.as_deref());
 
     let metadata = CompactMetadata {
-        trigger: CompactTrigger::Auto,
+        trigger: request.trigger.unwrap_or(CompactTrigger::Auto),
         pre_compact_tokens,
         messages_summarized,
     };
@@ -478,8 +538,9 @@ async fn summarize_with_retry(
     model: &str,
     config: &CompactConfig,
     observation: Option<Arc<ObservationSession>>,
+    focus: Option<&str>,
 ) -> Result<String, CompactError> {
-    let prompt = build_compact_prompt();
+    let prompt = build_compact_prompt(focus);
     let mut conv_messages = fold.to_vec();
     // Ensure the conversation starts with a User message for API compatibility
     if conv_messages.first().map(|m| m.role) == Some(Role::Assistant) {
@@ -560,7 +621,7 @@ async fn summarize_with_retry(
                         truncated.push(Message::new(
                             Role::User,
                             vec![ContentBlock::Text {
-                                text: build_compact_prompt(),
+                                text: build_compact_prompt(focus),
                             }],
                         ));
                         conv_messages = truncated;
@@ -781,7 +842,7 @@ mod tests {
 
     #[test]
     fn above_threshold_triggers() {
-        // threshold = 128k - 20k - 13k = 95k
+        // default window 128k; threshold = 128k * 60% = 76_800
         let config = default_config();
         assert!(should_autocompact(100_000, &config));
     }
@@ -789,13 +850,13 @@ mod tests {
     #[test]
     fn below_threshold_does_not_trigger() {
         let config = default_config();
-        assert!(!should_autocompact(90_000, &config));
+        assert!(!should_autocompact(76_799, &config));
     }
 
     #[test]
     fn at_exact_threshold_triggers() {
         let config = default_config();
-        assert!(should_autocompact(95_000, &config));
+        assert!(should_autocompact(76_800, &config));
     }
 
     #[test]
@@ -813,6 +874,7 @@ mod tests {
             context_window: 100_000,
             output_reserve: 10_000,
             autocompact_buffer: 5_000,
+            autocompact_threshold_pct: None,
             ..default_config()
         };
         // threshold = 100k - 10k - 5k = 85k
@@ -830,8 +892,8 @@ mod tests {
     #[test]
     fn should_compact_before_turn_follows_autocompact_threshold() {
         let config = default_config();
-        assert!(!should_compact_before_turn(90_000, &config));
-        assert!(should_compact_before_turn(95_000, &config));
+        assert!(!should_compact_before_turn(76_799, &config));
+        assert!(should_compact_before_turn(76_800, &config));
     }
 
     #[test]
@@ -852,6 +914,25 @@ mod tests {
             ..default_config()
         };
         assert!(!should_compact_before_turn(999_999, &config));
+    }
+
+    #[test]
+    fn idle_autocompact_uses_pct_below_watermark() {
+        let config = default_config();
+        // 25% of 128k = 32_000; watermark is 76_800 (60%)
+        assert!(!should_idle_autocompact(31_999, &config));
+        assert!(should_idle_autocompact(32_000, &config));
+        assert!(!should_autocompact(32_000, &config));
+    }
+
+    #[test]
+    fn idle_autocompact_pct_zero_is_watermark_only() {
+        let config = CompactConfig {
+            idle_autocompact_pct: 0,
+            ..default_config()
+        };
+        assert!(!should_idle_autocompact(50_000, &config));
+        assert!(should_idle_autocompact(76_800, &config));
     }
 
     #[test]
@@ -896,7 +977,7 @@ mod tests {
             autocompact_threshold_pct: None,
             ..default_config()
         };
-        // Same as default: threshold = 128k - 20k - 13k = 95k
+        // Opt out of the 60% default: threshold = 128k - 20k - 13k = 95k
         assert!(!should_autocompact(94_999, &config));
         assert!(should_autocompact(95_000, &config));
     }

@@ -3,4 +3,4 @@
 /**
  * How a compaction was triggered (wire mirror of nomi-types CompactTrigger).
  */
-export type CompactTriggerData = "auto" | "manual";
+export type CompactTriggerData = "auto" | "manual" | "idle";

@@ -19,7 +19,7 @@ use nomi_agent::compact::prompt::{
     build_compact_prompt, build_summary_content, format_compact_summary,
 };
 use nomi_agent::compact::state::CompactState;
-use nomi_config::compact::{CompactConfig, window_output_unit};
+use nomi_config::compact::CompactConfig;
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::compact::CompactTrigger;
 use nomi_types::llm::{LlmEvent, LlmRequest};
@@ -124,7 +124,7 @@ fn default_config() -> CompactConfig {
 
 #[test]
 fn tc_2_4_01_above_threshold_triggers() {
-    // default window 128k; threshold = 128k - 20k - 13k = 95k
+    // default window 128k; threshold = 128k * 60% = 76_800
     assert!(should_autocompact(100_000, &default_config()));
 }
 
@@ -132,14 +132,14 @@ fn tc_2_4_01_above_threshold_triggers() {
 
 #[test]
 fn tc_2_4_02_below_threshold_does_not_trigger() {
-    assert!(!should_autocompact(90_000, &default_config()));
+    assert!(!should_autocompact(76_799, &default_config()));
 }
 
 // ── TC-2.4-03: Exact threshold triggers ─────────────────────────────────────
 
 #[test]
 fn tc_2_4_03_at_exact_threshold_triggers() {
-    assert!(should_autocompact(95_000, &default_config()));
+    assert!(should_autocompact(76_800, &default_config()));
 }
 
 // ── TC-2.4-04: Circuit breaker initial state ────────────────────────────────
@@ -196,7 +196,7 @@ async fn tc_2_4_07_circuit_breaker_blocks_autocompact() {
 
 #[test]
 fn tc_2_4_08_prompt_contains_all_sections() {
-    let prompt = build_compact_prompt();
+    let prompt = build_compact_prompt(None);
     for i in 1..=7 {
         assert!(prompt.contains(&format!("{i}.")), "Missing section {i}");
     }
@@ -304,7 +304,7 @@ fn tc_2_4_14_disabled_config_skips() {
 
 #[test]
 fn tc_2_4_15_prompt_forbids_tool_calls() {
-    let prompt = build_compact_prompt();
+    let prompt = build_compact_prompt(None);
     assert!(prompt.contains("Do NOT call any tools"));
 }
 
@@ -557,14 +557,14 @@ async fn stream_error_mechanical_fold() {
 
 #[test]
 fn summary_content_auto_has_continuation() {
-    let content = build_summary_content("Summary:\ntest", true);
+    let content = build_summary_content("Summary:\ntest", true, None);
     assert!(content.contains("Continue the conversation"));
     assert!(content.contains("as if the break never happened"));
 }
 
 #[test]
 fn summary_content_manual_no_continuation() {
-    let content = build_summary_content("Summary:\ntest", false);
+    let content = build_summary_content("Summary:\ntest", false, None);
     assert!(!content.contains("Continue the conversation"));
 }
 
@@ -674,6 +674,7 @@ async fn no_force_ratio_skips_small_fold() {
         output_reserve: 50,
         autocompact_buffer: 50,
         emergency_buffer: 50,
+        autocompact_threshold_pct: None,
         ..default_config()
     };
     let mut state = CompactState::new();

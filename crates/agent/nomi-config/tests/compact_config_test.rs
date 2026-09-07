@@ -19,6 +19,9 @@ fn tc_2_2_01_compact_config_defaults() {
     assert_eq!(cfg.micro_keep_recent, 5);
     assert_eq!(cfg.micro_gap_seconds, 3600);
     assert!(cfg.enabled);
+    assert_eq!(cfg.autocompact_threshold_pct, Some(60));
+    assert_eq!(cfg.idle_compact_seconds, 900);
+    assert_eq!(cfg.idle_autocompact_pct, 25);
 }
 
 /// TC-2.2-02: CompactConfig full TOML parsing.
@@ -65,6 +68,9 @@ context_window = 128000
     assert_eq!(config.compact.micro_keep_recent, 5);
     assert_eq!(config.compact.micro_gap_seconds, 3600);
     assert!(config.compact.enabled);
+    assert_eq!(config.compact.idle_compact_seconds, 900);
+    assert_eq!(config.compact.idle_autocompact_pct, 25);
+    assert_eq!(config.compact.autocompact_threshold_pct, Some(60));
 }
 
 /// TC-2.2-07: Config TOML with [compact] section parses completely.

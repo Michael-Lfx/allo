@@ -657,10 +657,16 @@ impl AgentBootstrap {
             for tool in crate::ssh_tools::remote_tool_family(ssh) {
                 registry.register(tool);
             }
+            registry.register(Box::new(nomi_tools::content_ref::ReadContentRefTool::new(
+                cwd_path.to_path_buf(),
+            )));
         } else {
             registry.register(Box::new(nomi_tools::read::ReadTool::new(
                 file_cache.clone(),
                 Some(cwd_path.to_path_buf()),
+            )));
+            registry.register(Box::new(nomi_tools::content_ref::ReadContentRefTool::new(
+                cwd_path.to_path_buf(),
             )));
             registry.register(Box::new(
                 nomi_tools::write::WriteTool::new(file_cache.clone())

@@ -1367,6 +1367,7 @@ fn resumed_engine_restores_the_exact_editable_turn_checkpoint() {
             source_message_id: "message-root".into(),
             start_len: 0,
         }),
+        last_turn_ended_at: None,
     };
     let engine = AgentEngine::resume_with_provider(
         Arc::new(MockLlmProvider::with_text_response("unused")),
