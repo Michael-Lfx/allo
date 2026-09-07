@@ -102,7 +102,16 @@ pub(crate) fn build_market_client() -> Result<reqwest::Client, AppError> {
 /// feeds may use several public market hosts, but an installation payload is
 /// allowed to reach only SkillHub's API and its dedicated COS bucket.
 pub(crate) fn build_skillhub_install_client() -> Result<reqwest::Client, AppError> {
-    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+    reqwest::Client::builder()
+        .redirect(skillhub_install_redirect_policy())
+        .timeout(MARKET_REQUEST_TIMEOUT)
+        .user_agent("Flowy-SkillHub-Installer/1.0")
+        .build()
+        .map_err(|error| AppError::Internal(error.to_string()))
+}
+
+fn skillhub_install_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
         if attempt.previous().len() >= MAX_MARKET_REDIRECT_HOPS {
             return attempt.error("too many SkillHub redirects");
         }
@@ -114,14 +123,7 @@ pub(crate) fn build_skillhub_install_client() -> Result<reqwest::Client, AppErro
         } else {
             attempt.error("SkillHub redirect target is not allowlisted")
         }
-    });
-
-    reqwest::Client::builder()
-        .redirect(redirect_policy)
-        .timeout(MARKET_REQUEST_TIMEOUT)
-        .user_agent("Flowy-SkillHub-Installer/1.0")
-        .build()
-        .map_err(|error| AppError::Internal(error.to_string()))
+    })
 }
 
 fn is_skillhub_install_host(host: &str) -> bool {
@@ -356,6 +358,34 @@ mod tests {
             .unwrap();
         assert_eq!(body, "{}");
         override_server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn skillhub_install_client_rejects_internal_redirect_target() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/internal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                address.port()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(skillhub_install_redirect_policy())
+            .build()
+            .unwrap();
+        let error = client
+            .get(format!("http://{address}/start"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("redirect"), "{error}");
+        server.await.unwrap();
     }
 
     #[tokio::test]
