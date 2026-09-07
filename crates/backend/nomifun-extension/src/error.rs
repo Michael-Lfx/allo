@@ -79,6 +79,9 @@ pub enum ExtensionError {
     #[error("Invalid skill path: {0}")]
     InvalidSkillPath(String),
 
+    #[error("Skill projection conflict: {0}")]
+    SkillProjectionConflict(String),
+
     #[error("{0}")]
     Io(#[from] std::io::Error),
 
@@ -115,6 +118,7 @@ impl From<ExtensionError> for AppError {
             }
             ExtensionError::SkillNotFound(name) => AppError::NotFound(format!("Skill not found: {name}")),
             ExtensionError::InvalidSkillPath(path) => AppError::BadRequest(format!("Invalid skill path: {path}")),
+            ExtensionError::SkillProjectionConflict(reason) => AppError::SkillProjectionConflict(reason),
             ExtensionError::Io(e) => AppError::Internal(e.to_string()),
             ExtensionError::JsonParse(e) => AppError::BadRequest(e.to_string()),
         }

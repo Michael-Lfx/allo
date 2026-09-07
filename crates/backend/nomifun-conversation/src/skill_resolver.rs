@@ -29,11 +29,16 @@ pub trait SkillResolver: Send + Sync {
     /// same search order as `materialize_skills_for_agent`.
     async fn resolve_skills(&self, names: &[String]) -> Vec<ResolvedAgentSkill>;
 
-    /// Create symlinks pointing at each resolved skill inside the given
-    /// workspace's per-backend native skills directories. `rel_dirs` is
-    /// the list of relative paths (e.g. `.claude/skills`) to populate.
-    /// Returns the number of symlinks successfully created.
-    async fn link_workspace_skills(&self, workspace: &Path, rel_dirs: &[&str], skills: &[ResolvedAgentSkill]) -> usize;
+    /// Reconcile projections inside the workspace's per-backend native Skill
+    /// directories. The result is structured so callers can distinguish a
+    /// fresh projection, a safe repair, and reuse; protected user content is
+    /// returned as a stable `SKILL_PROJECTION_CONFLICT` error.
+    async fn link_workspace_skills(
+        &self,
+        workspace: &Path,
+        rel_dirs: &[&str],
+        skills: &[ResolvedAgentSkill],
+    ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, AppError>;
 
     /// Resolve explicit, source-qualified catalog IDs into immutable Markdown.
     /// The default keeps test-only resolvers source-compatible while making an
@@ -99,21 +104,18 @@ impl SkillResolver for ExtensionSkillResolver {
         }
     }
 
-    async fn link_workspace_skills(&self, workspace: &Path, rel_dirs: &[&str], skills: &[ResolvedAgentSkill]) -> usize {
+    async fn link_workspace_skills(
+        &self,
+        workspace: &Path,
+        rel_dirs: &[&str],
+        skills: &[ResolvedAgentSkill],
+    ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, AppError> {
         if rel_dirs.is_empty() || skills.is_empty() {
-            return 0;
+            return Ok(Default::default());
         }
-        match nomifun_extension::link_workspace_skills(workspace, rel_dirs, skills).await {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::warn!(
-                    workspace = %workspace.display(),
-                    error = %e,
-                    "link_workspace_skills failed"
-                );
-                0
-            }
-        }
+        nomifun_extension::link_workspace_skills(&self.paths, workspace, rel_dirs, skills)
+            .await
+            .map_err(AppError::from)
     }
 
     async fn load_catalog_skills(
@@ -159,7 +161,7 @@ impl SkillResolver for FixedSkillResolver {
         _workspace: &Path,
         _rel_dirs: &[&str],
         _skills: &[ResolvedAgentSkill],
-    ) -> usize {
-        0
+    ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, AppError> {
+        Ok(Default::default())
     }
 }

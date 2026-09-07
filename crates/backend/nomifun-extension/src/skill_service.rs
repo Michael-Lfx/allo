@@ -1127,6 +1127,7 @@ pub(crate) async fn rollback_market_skill(paths: &SkillPaths, name: &str) -> Res
 ///
 /// Returns the skill name.
 pub async fn import_skill(paths: &SkillPaths, skill_path: &Path) -> Result<String, ExtensionError> {
+    let _mutation_guard = skill_mutation_lock().lock().await;
     let (name, _) = read_skill_info(skill_path).await?;
     validate_filename(&name)?;
 
@@ -1138,6 +1139,7 @@ pub async fn import_skill(paths: &SkillPaths, skill_path: &Path) -> Result<Strin
     // junction (or a Unix symlink) into the external source directory.
     remove_path_entry(&target_dir).await?;
     copy_dir_recursive(skill_path, &target_dir).await?;
+    clear_market_installation_record(paths, &name).await?;
 
     debug!(skill = %name, target = %target_dir.display(), "skill imported (copy)");
     Ok(name)
@@ -1150,6 +1152,7 @@ pub async fn import_skill_with_symlink(
     paths: &SkillPaths,
     skill_path: &Path,
 ) -> Result<String, ExtensionError> {
+    let _mutation_guard = skill_mutation_lock().lock().await;
     let (name, _) = read_skill_info(skill_path).await?;
     validate_filename(&name)?;
 
@@ -1165,6 +1168,7 @@ pub async fn import_skill_with_symlink(
     // `link_workspace_skills`; without it these failures surfaced as an opaque
     // 500 "导入技能出错".
     link_skill_or_fallback_copy(skill_path, &target_link).await?;
+    clear_market_installation_record(paths, &name).await?;
 
     debug!(skill = %name, link = %target_link.display(), "skill imported (symlink)");
     Ok(name)
@@ -1247,15 +1251,8 @@ async fn import_skills_from_zip(
     paths: &SkillPaths,
     archive_path: &Path,
 ) -> Result<Vec<String>, ExtensionError> {
-    let temp_root = paths.user_skills_dir.join(".import-tmp");
-    tokio::fs::create_dir_all(&temp_root).await?;
-
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let extract_dir = temp_root.join(format!("skills-{}-{nonce}", std::process::id()));
-    tokio::fs::create_dir_all(&extract_dir).await?;
+    let staging = SkillImportStaging::create(paths).await?;
+    let extract_dir = staging.root.clone();
 
     let archive = archive_path.to_path_buf();
     let destination = extract_dir.clone();
@@ -1267,8 +1264,7 @@ async fn import_skills_from_zip(
             })?;
 
     if let Err(err) = extraction {
-        let _ = tokio::fs::remove_dir_all(&extract_dir).await;
-        let _ = tokio::fs::remove_dir(&temp_root).await;
+        staging.cleanup().await;
         return Err(err);
     }
 
@@ -1292,9 +1288,75 @@ async fn import_skills_from_zip(
     }
     .await;
 
-    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
-    let _ = tokio::fs::remove_dir(&temp_root).await;
+    staging.cleanup().await;
     result
+}
+
+/// Cancellation/unwind guard for the existing ZIP import path. Market
+/// installation has its own guard because it uses a different archive layout,
+/// but both guards share the same conservative staging-directory contract.
+struct SkillImportStaging {
+    root: PathBuf,
+    parent: PathBuf,
+    armed: bool,
+}
+
+impl SkillImportStaging {
+    async fn create(paths: &SkillPaths) -> Result<Self, ExtensionError> {
+        let parent = paths.user_skills_dir.join(".import-tmp");
+        ensure_regular_skill_directory(&parent).await?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = parent.join(format!("skills-{}-{nonce}", std::process::id()));
+        if let Err(error) = tokio::fs::create_dir(&root).await {
+            let _ = tokio::fs::remove_dir(&parent).await;
+            return Err(ExtensionError::Io(error));
+        }
+        Ok(Self {
+            root,
+            parent,
+            armed: true,
+        })
+    }
+
+    async fn cleanup(mut self) {
+        let root_removed = match tokio::fs::remove_dir_all(&self.root).await {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        };
+        let parent_removed = match tokio::fs::remove_dir(&self.parent).await {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        };
+        if root_removed && parent_removed {
+            self.armed = false;
+        }
+    }
+}
+
+impl Drop for SkillImportStaging {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let root = self.root.clone();
+        let parent = self.parent.clone();
+        let cleanup = move || {
+            let _ = fs::remove_dir_all(root);
+            let _ = fs::remove_dir(parent);
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(cleanup);
+        } else {
+            let _ = std::thread::Builder::new()
+                .name("skill-import-cleanup".into())
+                .spawn(cleanup);
+        }
+    }
 }
 
 fn is_zip_path(path: &Path) -> bool {
@@ -1359,6 +1421,7 @@ pub async fn delete_skill(paths: &SkillPaths, skill_name: &str) -> Result<(), Ex
     // replaced also let `""` and `"."` through, both of which resolve back to
     // `user_skills_dir` itself.
     validate_filename(skill_name)?;
+    let _mutation_guard = skill_mutation_lock().lock().await;
 
     let user_path = paths.user_skills_dir.join(skill_name);
 
@@ -1371,8 +1434,47 @@ pub async fn delete_skill(paths: &SkillPaths, skill_name: &str) -> Result<(), Ex
         return Err(ExtensionError::SkillNotFound(skill_name.to_string()));
     }
 
+    clear_market_installation_record(paths, skill_name).await?;
+
     debug!(skill = %skill_name, "skill deleted");
     Ok(())
+}
+
+/// Remove the optional managed-market provenance for a Skill that was replaced
+/// by a local import or deleted by the user. A missing record is intentionally
+/// a no-op: ordinary user Skills must never become dependent on this sidecar.
+pub(crate) async fn clear_market_installation_record(
+    paths: &SkillPaths,
+    skill_name: &str,
+) -> Result<(), ExtensionError> {
+    validate_filename(skill_name)?;
+    let market_root = paths.data_dir.join("skill-market");
+    let installations = market_root.join("installations");
+    let market_metadata = match tokio::fs::symlink_metadata(&market_root).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(ExtensionError::Io(error)),
+    };
+    if metadata_is_link_or_reparse(&market_metadata) || !market_metadata.is_dir() {
+        return Err(ExtensionError::InvalidSkillPath(
+            "market directory is not a regular directory".into(),
+        ));
+    }
+    let metadata = match tokio::fs::symlink_metadata(&installations).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(ExtensionError::Io(error)),
+    };
+    if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(ExtensionError::InvalidSkillPath(
+            "market installation records directory is not a regular directory".into(),
+        ));
+    }
+    match tokio::fs::remove_file(installations.join(format!("{skill_name}.json"))).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ExtensionError::Io(error)),
+    }
 }
 
 /// Remove an entry without following a link outside the managed skills tree.
@@ -1474,6 +1576,37 @@ pub struct ResolvedAgentSkill {
     pub source_path: PathBuf,
 }
 
+/// Summary of one workspace projection pass. The result is intentionally
+/// structured so conversation admission can fail closed on a protected user
+/// directory instead of treating a partial best-effort link pass as success.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkspaceSkillProjectionReport {
+    pub created: usize,
+    pub reused: usize,
+    pub repaired: usize,
+    pub migrated: usize,
+}
+
+const MAX_SKILL_PROJECTION_MARKER_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SkillProjectionMode {
+    Symlink,
+    Junction,
+    Copy,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillProjectionMarker {
+    schema_version: u32,
+    skill_name: String,
+    source_path: String,
+    content_sha256: String,
+    mode: SkillProjectionMode,
+}
+
 /// Resolve each requested skill name to its on-disk source directory.
 ///
 /// Search order per name (first match wins):
@@ -1533,59 +1666,556 @@ pub async fn materialize_skills_for_agent(
 /// 2. For each `{ name, source_path }` in `skills`, create a symlink
 ///    `{workspace}/{skills_rel_dir}/{name} -> {source_path}`.
 ///
-/// Existing symlinks/files at the target name are left untouched
-/// (first-write-wins, matches the frontend's lstat-then-skip behavior
-/// before symlink creation). Individual symlink failures are logged and
-/// skipped — skill discovery degrades gracefully, it is not fatal.
-///
-/// Returns the number of symlinks successfully created across all
-/// target dirs.
+/// Existing projections are reconciled only when a Flowy marker proves that
+/// the old entry is ours. Unmarked ordinary directories and untrusted links
+/// are protected and return [`ExtensionError::SkillProjectionConflict`].
+/// Every filesystem mutation in this function is serialized by the shared
+/// Skill mutation lock used by imports, deletes, and market installation.
 pub async fn link_workspace_skills(
+    paths: &SkillPaths,
     workspace: &Path,
     skills_rel_dirs: &[&str],
     skills: &[ResolvedAgentSkill],
-) -> Result<usize, ExtensionError> {
-    let mut created = 0usize;
+) -> Result<WorkspaceSkillProjectionReport, ExtensionError> {
+    if skills_rel_dirs.is_empty() || skills.is_empty() {
+        return Ok(WorkspaceSkillProjectionReport::default());
+    }
+
+    let _mutation_guard = skill_mutation_lock().lock().await;
+    let mut report = WorkspaceSkillProjectionReport::default();
     for rel in skills_rel_dirs {
         let target_skills_dir = workspace.join(rel);
-        tokio::fs::create_dir_all(&target_skills_dir).await?;
+        ensure_projection_directory(&target_skills_dir).await?;
 
         for skill in skills {
-            let target = target_skills_dir.join(&skill.name);
-            match tokio::fs::symlink_metadata(&target).await {
-                // Target already exists — leave it alone.
-                Ok(_) => continue,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    warn!(
-                        target = %target.display(),
-                        error = %e,
-                        "skipping skill link: failed to stat target"
-                    );
-                    continue;
-                }
-            }
-            match link_skill_or_fallback_copy(&skill.source_path, &target).await {
-                Ok(()) => {
-                    debug!(
-                        skill = %skill.name,
-                        target = %target.display(),
-                        "linked workspace skill"
-                    );
-                    created += 1;
-                }
-                Err(e) => {
-                    warn!(
-                        skill = %skill.name,
-                        target = %target.display(),
-                        error = %e,
-                        "failed to link workspace skill"
-                    );
-                }
+            match reconcile_workspace_skill_projection(paths, &target_skills_dir, skill).await? {
+                ProjectionOutcome::Created => report.created += 1,
+                ProjectionOutcome::Reused => report.reused += 1,
+                ProjectionOutcome::Repaired => report.repaired += 1,
+                ProjectionOutcome::Migrated => report.migrated += 1,
             }
         }
     }
-    Ok(created)
+    Ok(report)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionOutcome {
+    Created,
+    Reused,
+    Repaired,
+    Migrated,
+}
+
+async fn ensure_projection_directory(path: &Path) -> Result<(), ExtensionError> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => {
+            if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+                return Err(ExtensionError::SkillProjectionConflict(format!(
+                    "workspace Skill directory is not a regular directory: {}",
+                    path.display()
+                )));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path.parent().ok_or_else(|| {
+                ExtensionError::SkillProjectionConflict(format!(
+                    "workspace Skill directory has no regular parent: {}",
+                    path.display()
+                ))
+            })?;
+            if parent != path && !parent.as_os_str().is_empty() {
+                Box::pin(ensure_projection_directory(parent)).await?;
+            }
+            match tokio::fs::create_dir(path).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let metadata = tokio::fs::symlink_metadata(path).await?;
+                    if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+                        return Err(ExtensionError::SkillProjectionConflict(format!(
+                            "workspace Skill directory is not a regular directory: {}",
+                            path.display()
+                        )));
+                    }
+                    Ok(())
+                }
+                Err(error) => Err(ExtensionError::Io(error)),
+            }
+        }
+        Err(error) => Err(ExtensionError::Io(error)),
+    }
+}
+
+async fn reconcile_workspace_skill_projection(
+    paths: &SkillPaths,
+    target_skills_dir: &Path,
+    skill: &ResolvedAgentSkill,
+) -> Result<ProjectionOutcome, ExtensionError> {
+    validate_filename(&skill.name)
+        .map_err(|_| ExtensionError::SkillProjectionConflict(format!("invalid Skill name: {}", skill.name)))?;
+
+    let source_metadata = tokio::fs::metadata(&skill.source_path).await?;
+    if !source_metadata.is_dir() {
+        return Err(projection_conflict(&skill.name, "source is not a regular Skill directory"));
+    }
+    let source_canonical = tokio::fs::canonicalize(&skill.source_path)
+        .await
+        .map_err(|_| projection_conflict(&skill.name, "source Skill cannot be canonicalized"))?;
+    let source_canonical_metadata = tokio::fs::metadata(&source_canonical).await?;
+    if !source_canonical_metadata.is_dir() {
+        return Err(projection_conflict(&skill.name, "source is not a regular Skill directory"));
+    }
+    // Imported user Skills may intentionally be represented by a symlink or
+    // junction in the canonical user Skill root. Hash the resolved regular
+    // directory, but retain the logical Flowy path in the marker so the
+    // provenance check can recognize that import on the next materialize pass.
+    let source_hash = hash_skill_directory_for_projection(&source_canonical).await?;
+    let target = target_skills_dir.join(&skill.name);
+    let marker_path = target_skills_dir
+        .join(".nomifun-managed")
+        .join(format!("{}.json", skill.name));
+    let marker = read_projection_marker(&marker_path, &skill.name).await?;
+    let target_metadata = tokio::fs::symlink_metadata(&target).await;
+
+    match target_metadata {
+        Ok(metadata) if metadata_is_link_or_reparse(&metadata) => {
+            let Some(marker) = marker else {
+                let target_canonical = tokio::fs::canonicalize(&target)
+                    .await
+                    .map_err(|_| projection_conflict(&skill.name, "unmarked Skill link is dangling"))?;
+                if is_known_flowy_projection_link(paths, &target, &target_canonical, &skill.name).await {
+                    write_projection_marker(
+                        &marker_path,
+                        &SkillProjectionMarker {
+                            schema_version: 1,
+                            skill_name: skill.name.clone(),
+                            source_path: skill.source_path.to_string_lossy().into_owned(),
+                            content_sha256: source_hash,
+                            mode: existing_link_projection_mode(),
+                        },
+                    )
+                    .await?;
+                    return Ok(ProjectionOutcome::Migrated);
+                }
+                return Err(projection_conflict(&skill.name, "unmarked link is not Flowy-owned"));
+            };
+            if marker.mode == SkillProjectionMode::Copy {
+                return Err(projection_conflict(&skill.name, "copy marker points at a link"));
+            }
+            let marker_source = canonicalize_marker_source(paths, &marker, &skill.name).await?;
+            let target_canonical = tokio::fs::canonicalize(&target)
+                .await
+                .map_err(|_| projection_conflict(&skill.name, "managed Skill link is dangling"))?;
+            if !same_projection_path(&marker_source, &target_canonical) {
+                return Err(projection_conflict(&skill.name, "managed Skill link was redirected"));
+            }
+            if same_projection_path(&source_canonical, &marker_source) && marker.content_sha256 == source_hash {
+                return Ok(ProjectionOutcome::Reused);
+            }
+            replace_workspace_skill_projection(
+                &target,
+                &marker_path,
+                Some(marker),
+                &skill.source_path,
+                &skill.name,
+                &skill.source_path,
+                &source_hash,
+            )
+            .await?;
+            Ok(ProjectionOutcome::Repaired)
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            let Some(marker) = marker else {
+                return Err(projection_conflict(&skill.name, "unmarked ordinary directory is protected"));
+            };
+            if marker.mode != SkillProjectionMode::Copy {
+                return Err(projection_conflict(&skill.name, "link marker points at an ordinary directory"));
+            }
+            let marker_source = canonicalize_marker_source(paths, &marker, &skill.name).await?;
+            let target_hash = hash_skill_directory_for_projection(&target).await?;
+            if target_hash != marker.content_sha256 {
+                return Err(projection_conflict(&skill.name, "managed copy was modified"));
+            }
+            if same_projection_path(&source_canonical, &marker_source) && marker.content_sha256 == source_hash {
+                return Ok(ProjectionOutcome::Reused);
+            }
+            replace_workspace_skill_projection(
+                &target,
+                &marker_path,
+                Some(marker),
+                &skill.source_path,
+                &skill.name,
+                &skill.source_path,
+                &source_hash,
+            )
+            .await?;
+            Ok(ProjectionOutcome::Repaired)
+        }
+        Ok(_) => Err(projection_conflict(&skill.name, "Skill projection target is not a directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            replace_workspace_skill_projection(
+                &target,
+                &marker_path,
+                marker,
+                &skill.source_path,
+                &skill.name,
+                &skill.source_path,
+                &source_hash,
+            )
+            .await?;
+            Ok(ProjectionOutcome::Created)
+        }
+        Err(error) => Err(ExtensionError::Io(error)),
+    }
+}
+
+fn projection_conflict(skill_name: &str, reason: &str) -> ExtensionError {
+    ExtensionError::SkillProjectionConflict(format!("Skill '{skill_name}' projection conflict: {reason}"))
+}
+
+async fn canonicalize_marker_source(
+    paths: &SkillPaths,
+    marker: &SkillProjectionMarker,
+    skill_name: &str,
+) -> Result<PathBuf, ExtensionError> {
+    if marker.source_path.trim().is_empty() {
+        return Err(projection_conflict(skill_name, "marker has no source path"));
+    }
+    let source = PathBuf::from(&marker.source_path);
+    let metadata = tokio::fs::metadata(&source).await.map_err(|_| {
+        projection_conflict(skill_name, "marker source no longer exists")
+    })?;
+    if !metadata.is_dir() {
+        return Err(projection_conflict(skill_name, "marker source is not a regular directory"));
+    }
+    let canonical = tokio::fs::canonicalize(&source)
+        .await
+        .map_err(|_| projection_conflict(skill_name, "marker source cannot be canonicalized"))?;
+    if !is_known_flowy_skill_source_path(paths, &source, &canonical, skill_name).await {
+        return Err(projection_conflict(skill_name, "marker source is outside Flowy Skill roots"));
+    }
+    Ok(canonical)
+}
+
+async fn read_projection_marker(
+    path: &Path,
+    skill_name: &str,
+) -> Result<Option<SkillProjectionMarker>, ExtensionError> {
+    let Some(parent) = path.parent() else {
+        return Err(projection_conflict(skill_name, "marker path has no parent"));
+    };
+    match tokio::fs::symlink_metadata(parent).await {
+        Ok(metadata) if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() => {
+            return Err(projection_conflict(skill_name, "marker directory is not regular"));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(ExtensionError::Io(error)),
+        Ok(_) => {}
+    }
+    let metadata = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(ExtensionError::Io(error)),
+    };
+    if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
+        return Err(projection_conflict(skill_name, "marker is not a regular file"));
+    }
+    if metadata.len() > MAX_SKILL_PROJECTION_MARKER_BYTES as u64 {
+        return Err(projection_conflict(skill_name, "marker is too large"));
+    }
+    let bytes = tokio::fs::read(path).await?;
+    let marker = serde_json::from_slice::<SkillProjectionMarker>(&bytes)
+        .map_err(|_| projection_conflict(skill_name, "marker is invalid"))?;
+    if marker.schema_version != 1
+        || marker.skill_name != skill_name
+        || marker.source_path.trim().is_empty()
+        || !is_sha256(&marker.content_sha256)
+    {
+        return Err(projection_conflict(skill_name, "marker fields are invalid"));
+    }
+    Ok(Some(marker))
+}
+
+async fn replace_workspace_skill_projection(
+    target: &Path,
+    marker_path: &Path,
+    previous_marker: Option<SkillProjectionMarker>,
+    source: &Path,
+    skill_name: &str,
+    source_marker_path: &Path,
+    source_hash: &str,
+) -> Result<(), ExtensionError> {
+    let backup = match tokio::fs::symlink_metadata(target).await {
+        Ok(_) => {
+            let parent = target
+                .parent()
+                .ok_or_else(|| projection_conflict(skill_name, "projection target has no parent"))?;
+            let backup = parent.join(format!(".{}.projection-backup-{}", skill_name, projection_nonce()));
+            tokio::fs::rename(target, &backup).await?;
+            Some(backup)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(ExtensionError::Io(error)),
+    };
+
+    let mode = match link_skill_or_fallback_copy_with_mode(source, target).await {
+        Ok(mode) => mode,
+        Err(error) => {
+            restore_workspace_projection(target, backup.as_deref(), marker_path, previous_marker.as_ref()).await;
+            return Err(error);
+        }
+    };
+    let marker = SkillProjectionMarker {
+        schema_version: 1,
+        skill_name: skill_name.to_owned(),
+        source_path: source_marker_path.to_string_lossy().into_owned(),
+        content_sha256: source_hash.to_owned(),
+        mode,
+    };
+    if let Err(error) = write_projection_marker(marker_path, &marker).await {
+        let _ = remove_path_entry(target).await;
+        restore_workspace_projection(target, backup.as_deref(), marker_path, previous_marker.as_ref()).await;
+        return Err(error);
+    }
+    if let Some(backup) = backup {
+        remove_path_entry(&backup).await?;
+    }
+    Ok(())
+}
+
+async fn restore_workspace_projection(
+    target: &Path,
+    backup: Option<&Path>,
+    marker_path: &Path,
+    previous_marker: Option<&SkillProjectionMarker>,
+) {
+    if let Some(backup) = backup {
+        let _ = tokio::fs::rename(backup, target).await;
+    }
+    match previous_marker {
+        Some(marker) => {
+            let _ = write_projection_marker(marker_path, marker).await;
+        }
+        None => {
+            let _ = remove_projection_marker(marker_path).await;
+        }
+    }
+}
+
+async fn write_projection_marker(path: &Path, marker: &SkillProjectionMarker) -> Result<(), ExtensionError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| ExtensionError::SkillProjectionConflict("marker path has no parent".into()))?;
+    ensure_projection_directory(parent).await?;
+    let bytes = serde_json::to_vec_pretty(marker)
+        .map_err(|error| ExtensionError::Io(io::Error::other(error.to_string())))?;
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_atomic_replace(&path, &bytes))
+        .await
+        .map_err(|error| ExtensionError::Io(io::Error::other(error.to_string())))?
+        .map_err(ExtensionError::Io)
+}
+
+async fn remove_projection_marker(path: &Path) -> Result<(), ExtensionError> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() => {
+            Err(ExtensionError::SkillProjectionConflict("projection marker is not a regular file".into()))
+        }
+        Ok(_) => tokio::fs::remove_file(path).await.map_err(ExtensionError::Io),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ExtensionError::Io(error)),
+    }
+}
+
+fn projection_nonce() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+async fn hash_skill_directory_for_projection(path: &Path) -> Result<String, ExtensionError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || hash_skill_directory_for_projection_sync(&path))
+        .await
+        .map_err(|error| ExtensionError::Io(io::Error::other(error.to_string())))?
+        .map_err(ExtensionError::Io)
+}
+
+fn hash_skill_directory_for_projection_sync(path: &Path) -> io::Result<String> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(io::Error::other("Skill directory is not a regular directory"));
+    }
+    let mut files = Vec::new();
+    collect_projection_files(path, path, &mut files)?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    for (relative, file_path, length) in files {
+        let path_bytes = relative.as_bytes();
+        hasher.update((path_bytes.len() as u64).to_le_bytes());
+        hasher.update(path_bytes);
+        hasher.update(length.to_le_bytes());
+        let mut file = std::fs::File::open(file_path)?;
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn collect_projection_files(
+    root: &Path,
+    current: &Path,
+    files: &mut Vec<(String, PathBuf, u64)>,
+) -> io::Result<()> {
+    let mut entries = std::fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata_is_link_or_reparse(&metadata) {
+            return Err(io::Error::other("Skill directory contains a link or reparse point"));
+        }
+        if metadata.is_dir() {
+            collect_projection_files(root, &path, files)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| io::Error::other("Skill path escaped its root"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push((relative, path, metadata.len()));
+        } else {
+            return Err(io::Error::other("Skill directory contains an unsupported entry"));
+        }
+    }
+    Ok(())
+}
+
+async fn is_known_flowy_skill_source(paths: &SkillPaths, candidate: &Path, skill_name: &str) -> bool {
+    if candidate.file_name().and_then(|name| name.to_str()) != Some(skill_name) || !candidate.is_dir() {
+        return false;
+    }
+    let roots = [
+        paths.user_skills_dir.clone(),
+        paths.builtin_skills_dir.clone(),
+        paths.builtin_skills_dir.join(BUILTIN_AUTO_SKILLS_SUBDIR),
+        paths.cron_skills_dir.clone(),
+    ];
+    for root in roots {
+        let Ok(root) = tokio::fs::canonicalize(root).await else {
+            continue;
+        };
+        // Historical links are migratable only when their resolved target is
+        // the direct Skill child that Flowy itself would resolve. A nested
+        // descendant under a known root may be user data and must not gain a
+        // managed marker merely because it shares the root prefix.
+        if candidate
+            .parent()
+            .is_some_and(|parent| same_projection_path(parent, &root))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+async fn is_known_flowy_skill_source_path(
+    paths: &SkillPaths,
+    logical: &Path,
+    canonical: &Path,
+    skill_name: &str,
+) -> bool {
+    if logical.file_name().and_then(|name| name.to_str()) != Some(skill_name) {
+        return false;
+    }
+    let roots = [
+        paths.user_skills_dir.clone(),
+        paths.builtin_skills_dir.clone(),
+        paths.builtin_skills_dir.join(BUILTIN_AUTO_SKILLS_SUBDIR),
+        paths.cron_skills_dir.clone(),
+    ];
+    // A user import can be a link whose canonical target is intentionally
+    // outside Flowy's roots. Accept only the exact direct-child path that the
+    // resolver itself can return; parent-prefix checks would allow `..` shapes.
+    if roots.iter().any(|root| {
+        logical
+            .parent()
+            .is_some_and(|parent| same_projection_path(parent, root))
+    }) {
+        return tokio::fs::canonicalize(logical)
+            .await
+            .is_ok_and(|resolved| same_projection_path(&resolved, canonical));
+    }
+    is_known_flowy_skill_source(paths, canonical, skill_name).await
+}
+
+async fn is_known_flowy_projection_link(
+    paths: &SkillPaths,
+    target: &Path,
+    target_canonical: &Path,
+    skill_name: &str,
+) -> bool {
+    let Some(parent) = target.parent() else {
+        return false;
+    };
+    let Some(logical_target) = projection_link_logical_target(target, parent).await else {
+        return is_known_flowy_skill_source(paths, target_canonical, skill_name).await;
+    };
+    is_known_flowy_skill_source_path(paths, &logical_target, target_canonical, skill_name).await
+}
+
+async fn projection_link_logical_target(target: &Path, parent: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let target_path = target.to_path_buf();
+        if let Ok(Ok(link_target)) =
+            tokio::task::spawn_blocking(move || junction::get_target(target_path)).await
+        {
+            return Some(link_target);
+        }
+    }
+
+    let link_target = tokio::fs::read_link(target).await.ok()?;
+    Some(if link_target.is_absolute() {
+        link_target
+    } else {
+        parent.join(link_target)
+    })
+}
+
+fn same_projection_path(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn existing_link_projection_mode() -> SkillProjectionMode {
+    #[cfg(windows)]
+    {
+        SkillProjectionMode::Junction
+    }
+    #[cfg(not(windows))]
+    {
+        SkillProjectionMode::Symlink
+    }
 }
 
 /// Resolve a skill name to its on-disk source directory using the same
@@ -2043,8 +2673,15 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), ExtensionError
 /// (already considered safe to log elsewhere in this module) and the
 /// error code.
 async fn link_skill_or_fallback_copy(src: &Path, dst: &Path) -> Result<(), ExtensionError> {
+    link_skill_or_fallback_copy_with_mode(src, dst).await.map(|_| ())
+}
+
+async fn link_skill_or_fallback_copy_with_mode(
+    src: &Path,
+    dst: &Path,
+) -> Result<SkillProjectionMode, ExtensionError> {
     match create_symlink_for_link(src, dst).await {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(existing_link_projection_mode()),
         Err(e) => {
             // Surface the raw OS error so dashboards can keep counting 1314
             // (ERROR_PRIVILEGE_NOT_HELD) separately from other failure modes.
@@ -2059,8 +2696,25 @@ async fn link_skill_or_fallback_copy(src: &Path, dst: &Path) -> Result<(), Exten
                 raw_os_error = ?raw_os_error,
                 "create_symlink failed; falling back to copy_dir_recursive"
             );
-            copy_dir_recursive(src, dst).await
+            copy_dir_recursive(src, dst).await?;
+            Ok(SkillProjectionMode::Copy)
         }
+    }
+}
+
+fn metadata_is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -2662,6 +3316,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_import_and_delete_clear_market_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        let source_dir = tmp.path().join("source-skill");
+
+        let installations = paths.data_dir.join("skill-market/installations");
+        tokio::fs::create_dir_all(&installations).await.unwrap();
+        let record_path = installations.join("lifecycle.json");
+        let record = serde_json::json!({
+            "schema_version": 1,
+            "skill_name": "lifecycle",
+            "source": "skillhub",
+            "source_id": "skillhub:owner/skills/lifecycle",
+            "revision": "r1",
+            "artifact_sha256": "a".repeat(64),
+            "content_sha256": "b".repeat(64),
+            "installed_at": 1
+        });
+        tokio::fs::write(&record_path, serde_json::to_vec(&record).unwrap())
+            .await
+            .unwrap();
+
+        tokio::fs::create_dir_all(&source_dir).await.unwrap();
+        tokio::fs::write(
+            source_dir.join(SKILL_MANIFEST_FILE),
+            "---\nname: lifecycle\ndescription: Local override\n---\nBody",
+        )
+        .await
+        .unwrap();
+        assert_eq!(import_skill(&paths, &source_dir).await.unwrap(), "lifecycle");
+        assert!(!record_path.exists(), "local import must clear market provenance");
+
+        tokio::fs::create_dir_all(&installations).await.unwrap();
+        tokio::fs::write(&record_path, serde_json::to_vec(&record).unwrap())
+            .await
+            .unwrap();
+        delete_skill(&paths, "lifecycle").await.unwrap();
+        assert!(!paths.user_skills_dir.join("lifecycle").exists());
+        assert!(!record_path.exists(), "deleting a Skill must clear market provenance");
+    }
+
+    #[tokio::test]
     #[serial]
     async fn import_skill_with_symlink_creates_link() {
         let tmp = TempDir::new().unwrap();
@@ -2851,6 +3547,28 @@ mod tests {
                 .join(".import-tmp")
                 .join("skills.zip")
                 .exists()
+        );
+        assert!(!paths.user_skills_dir.join(".import-tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn zip_import_rejects_a_non_directory_staging_parent() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        tokio::fs::create_dir_all(&paths.user_skills_dir).await.unwrap();
+        tokio::fs::write(paths.user_skills_dir.join(".import-tmp"), b"user file")
+            .await
+            .unwrap();
+
+        let error = import_skills_with_symlink(&paths, &tmp.path().join("missing.zip"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ExtensionError::InvalidSkillPath(_)));
+        assert_eq!(
+            tokio::fs::read_to_string(paths.user_skills_dir.join(".import-tmp"))
+                .await
+                .unwrap(),
+            "user file"
         );
     }
 
@@ -3541,10 +4259,10 @@ mod tests {
         // test, exercising the copy fallback branch.
         let _guard = test_overrides::ForceFailureGuard::new();
 
-        let created = link_workspace_skills(&workspace, &[".claude/skills"], &resolved)
+        let created = link_workspace_skills(&test_paths(&tmp), &workspace, &[".claude/skills"], &resolved)
             .await
             .expect("link_workspace_skills should succeed via copy fallback");
-        assert_eq!(created, 1, "exactly one skill should be materialized");
+        assert_eq!(created.created, 1, "exactly one skill should be materialized");
 
         let target = workspace.join(".claude/skills").join("my-skill");
         assert!(target.exists(), "target directory must exist");
@@ -3561,6 +4279,228 @@ mod tests {
         assert!(manifest.contains("name: my-skill"));
         let nested = std::fs::read_to_string(target.join("nested").join("data.txt")).unwrap();
         assert_eq!(nested, "payload");
+    }
+
+    #[tokio::test]
+    async fn link_workspace_skills_records_marker_and_reuses_projection() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_skill_in_dir(&paths.user_skills_dir, "managed", "Managed source");
+        let resolved = materialize_skills_for_agent(&paths, "conv-managed", &["managed".into()])
+            .await
+            .unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        let first = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        assert_eq!(first.created, 1);
+        let marker_path = workspace.join(".claude/skills/.nomifun-managed/managed.json");
+        let marker: SkillProjectionMarker =
+            serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
+        assert_eq!(marker.schema_version, 1);
+        assert_eq!(marker.skill_name, "managed");
+        assert_eq!(marker.source_path, paths.user_skills_dir.join("managed").to_string_lossy());
+        assert!(is_sha256(&marker.content_sha256));
+
+        let second = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        assert_eq!(second.reused, 1);
+        assert_eq!(second.repaired, 0);
+        assert_eq!(second.migrated, 0);
+    }
+
+    #[tokio::test]
+    async fn link_workspace_skills_accepts_a_user_import_link_as_source() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        let external_root = tmp.path().join("external-root");
+        create_skill_in_dir(&external_root, "linked-source", "Imported source");
+        let external = external_root.join("linked-source");
+        import_skill_with_symlink(&paths, &external).await.unwrap();
+
+        let resolved = materialize_skills_for_agent(&paths, "conv-import-link", &["linked-source".into()])
+            .await
+            .unwrap();
+        let workspace = tmp.path().join("workspace");
+        let report = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+
+        assert_eq!(report.created, 1);
+        assert!(workspace.join(".claude/skills/linked-source/SKILL.md").is_file());
+        let marker_path = workspace.join(".claude/skills/.nomifun-managed/linked-source.json");
+        let marker: SkillProjectionMarker =
+            serde_json::from_slice(&std::fs::read(marker_path).unwrap()).unwrap();
+        assert_eq!(marker.source_path, paths.user_skills_dir.join("linked-source").to_string_lossy());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn modified_managed_copy_is_protected_from_replacement() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_skill_in_dir(&paths.user_skills_dir, "copied", "Copy source");
+        let resolved = materialize_skills_for_agent(&paths, "conv-copied", &["copied".into()])
+            .await
+            .unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        {
+            let _guard = test_overrides::ForceFailureGuard::new();
+            let report = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+                .await
+                .unwrap();
+            assert_eq!(report.created, 1);
+        }
+
+        let target = workspace.join(".claude/skills/copied");
+        std::fs::write(target.join("user-change.txt"), "keep me").unwrap();
+        let error = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ExtensionError::SkillProjectionConflict(_)));
+        assert_eq!(std::fs::read_to_string(target.join("user-change.txt")).unwrap(), "keep me");
+    }
+
+    #[tokio::test]
+    async fn managed_projection_repairs_unmodified_stale_source() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_skill_in_dir(&paths.user_skills_dir, "repairable", "Old source");
+        let resolved = materialize_skills_for_agent(&paths, "conv-repair", &["repairable".into()])
+            .await
+            .unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        std::fs::write(
+            paths.user_skills_dir.join("repairable/SKILL.md"),
+            "---\nname: repairable\ndescription: New source\n---\nBody content.",
+        )
+        .unwrap();
+
+        let report = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        assert_eq!(report.repaired, 1);
+        assert_eq!(report.reused, 0);
+        assert!(std::fs::read_to_string(workspace.join(".claude/skills/repairable/SKILL.md"))
+            .unwrap()
+            .contains("New source"));
+    }
+
+    #[tokio::test]
+    async fn unmarked_workspace_directory_is_left_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_skill_in_dir(&paths.user_skills_dir, "protected", "Managed source");
+        let resolved = materialize_skills_for_agent(&paths, "conv-protected", &["protected".into()])
+            .await
+            .unwrap();
+        let workspace = tmp.path().join("workspace");
+        let target = workspace.join(".claude/skills/protected");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("user-file.txt"), "do not overwrite").unwrap();
+
+        let error = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ExtensionError::SkillProjectionConflict(_)));
+        assert_eq!(
+            std::fs::read_to_string(target.join("user-file.txt")).unwrap(),
+            "do not overwrite"
+        );
+        assert!(!workspace.join(".claude/skills/.nomifun-managed/protected.json").exists());
+    }
+
+    #[tokio::test]
+    async fn unmarked_historical_flowy_link_is_migrated() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_skill_in_dir(&paths.user_skills_dir, "legacy", "Legacy source");
+        let source = paths.user_skills_dir.join("legacy");
+        let resolved = vec![ResolvedAgentSkill {
+            name: "legacy".into(),
+            source_path: source.clone(),
+        }];
+        let workspace = tmp.path().join("workspace");
+        let target_dir = workspace.join(".claude/skills");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        create_symlink(&source, &target_dir.join("legacy")).await.unwrap();
+
+        let report = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        assert_eq!(report.migrated, 1);
+        assert!(target_dir.join(".nomifun-managed/legacy.json").is_file());
+
+        let second = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        assert_eq!(second.reused, 1);
+    }
+
+    #[tokio::test]
+    async fn unmarked_historical_import_link_is_migrated() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        let external_root = tmp.path().join("external-root");
+        create_skill_in_dir(&external_root, "linked-source", "Imported source");
+        let external_source = external_root.join("linked-source");
+        import_skill_with_symlink(&paths, &external_source).await.unwrap();
+
+        let source = paths.user_skills_dir.join("linked-source");
+        let resolved = vec![ResolvedAgentSkill {
+            name: "linked-source".into(),
+            source_path: source.clone(),
+        }];
+        let workspace = tmp.path().join("workspace");
+        let target_dir = workspace.join(".claude/skills");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        create_symlink(&source, &target_dir.join("linked-source"))
+            .await
+            .unwrap();
+
+        let report = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        assert_eq!(report.migrated, 1);
+        assert!(target_dir
+            .join(".nomifun-managed/linked-source.json")
+            .is_file());
+    }
+
+    #[tokio::test]
+    async fn unmarked_nested_flowy_root_link_is_not_migrated() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        let nested_source = paths.user_skills_dir.join("nested").join("legacy");
+        std::fs::create_dir_all(&nested_source).unwrap();
+        std::fs::write(
+            nested_source.join(SKILL_MANIFEST_FILE),
+            "---\nname: legacy\ndescription: Nested source\n---\n",
+        )
+        .unwrap();
+        let resolved = vec![ResolvedAgentSkill {
+            name: "legacy".into(),
+            source_path: nested_source.clone(),
+        }];
+        let workspace = tmp.path().join("workspace");
+        let target_dir = workspace.join(".claude/skills");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        create_symlink(&nested_source, &target_dir.join("legacy"))
+            .await
+            .unwrap();
+
+        let error = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ExtensionError::SkillProjectionConflict(_)));
+        assert!(!target_dir.join(".nomifun-managed/legacy.json").exists());
     }
 
     /// Windows-only: directory linking must go through an NTFS junction
@@ -3593,10 +4533,10 @@ mod tests {
             source_path: skill_source.clone(),
         }];
 
-        let created = link_workspace_skills(&workspace, &[".claude/skills"], &resolved)
+        let created = link_workspace_skills(&test_paths(&tmp), &workspace, &[".claude/skills"], &resolved)
             .await
             .expect("link_workspace_skills should succeed via junction");
-        assert_eq!(created, 1, "exactly one skill should be materialized");
+        assert_eq!(created.created, 1, "exactly one skill should be materialized");
 
         let target = workspace.join(".claude/skills").join("my-skill");
         assert!(target.exists(), "target path must exist");

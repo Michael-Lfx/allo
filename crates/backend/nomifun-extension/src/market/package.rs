@@ -4,7 +4,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nomifun_api_types::{
@@ -68,16 +67,6 @@ struct MarketPackageStaging {
     parent: PathBuf,
 }
 
-// A package can stage its network payloads concurrently, but the commit and
-// preset handoff must be serialized. Without this small process-local fence,
-// two windows could both observe a missing target, and a failed first preset
-// handoff could roll back a Skill that the second window already reused.
-static MARKET_PACKAGE_COMMIT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-
-fn market_package_commit_lock() -> &'static tokio::sync::Mutex<()> {
-    MARKET_PACKAGE_COMMIT_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
 impl Drop for MarketPackageStaging {
     fn drop(&mut self) {
         // Drop is the final cancellation/unwind guard. The extracted archive
@@ -102,7 +91,7 @@ impl Drop for MarketPackageStaging {
 
 async fn create_market_package_staging(paths: &SkillPaths) -> Result<MarketPackageStaging, AppError> {
     let parent = paths.user_skills_dir.join(".market-import");
-    tokio::fs::create_dir_all(&parent)
+    skill_service::ensure_regular_skill_directory(&parent)
         .await
         .map_err(|error| AppError::Internal(format!("create market staging directory: {error}")))?;
     let nonce = SystemTime::now()
@@ -159,7 +148,7 @@ pub async fn install_market_package(
             "market package preset installer is not configured".into(),
         ));
     };
-    let _commit_guard = market_package_commit_lock().lock().await;
+    let _commit_guard = skill_service::skill_mutation_lock().lock().await;
     let mut committed = Vec::new();
     for staged in &install_result.staged_skills {
         if let Some(staged_dir) = staged.staged_dir.as_deref() {

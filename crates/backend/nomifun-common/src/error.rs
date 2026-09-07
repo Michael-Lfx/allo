@@ -79,6 +79,11 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    /// A managed Skill projection could not be reconciled without risking a
+    /// user-owned workspace directory.
+    #[error("Skill projection conflict: {0}")]
+    SkillProjectionConflict(String),
+
     /// A conversation deletion was rejected or moved to background work for
     /// a typed lifecycle reason.
     #[error("{0}")]
@@ -163,6 +168,7 @@ impl AppError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::SkillProjectionConflict(_) => StatusCode::CONFLICT,
             Self::ConversationDelete(kind) => kind.status_code(),
             Self::ProviderInUse(_) => StatusCode::CONFLICT,
             Self::ProviderUnavailable(_) => StatusCode::BAD_REQUEST,
@@ -192,6 +198,7 @@ impl AppError {
                 }
             }
             Self::Conflict(_) => "CONFLICT",
+            Self::SkillProjectionConflict(_) => "SKILL_PROJECTION_CONFLICT",
             Self::ConversationDelete(kind) => kind.code(),
             Self::ProviderInUse(_) => "PROVIDER_IN_USE",
             Self::ProviderUnavailable(_) => "PROVIDER_UNAVAILABLE",

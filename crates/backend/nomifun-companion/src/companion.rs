@@ -585,6 +585,7 @@ pub(crate) async fn sync_managed_workspace_skills(
         .cloned()
         .collect();
     if let Err(error) = nomifun_extension::link_workspace_skills(
+        skill_paths,
         workspace,
         &[".nomi/skills"],
         &to_link,

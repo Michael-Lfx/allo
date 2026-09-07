@@ -88,8 +88,8 @@ impl SkillResolver for EmptySkillResolver {
         _workspace: &std::path::Path,
         _rel_dirs: &[&str],
         _skills: &[nomifun_extension::ResolvedAgentSkill],
-    ) -> usize {
-        0
+    ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, AppError> {
+        Ok(Default::default())
     }
 }
 

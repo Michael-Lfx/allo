@@ -1068,7 +1068,11 @@ pub fn record_plan_relocation_failure(
 
 fn relocation_error_class(error: &AppError) -> RelocationErrorClass {
     match error {
-        AppError::BadRequest(_) | AppError::Conflict(_) | AppError::WorkspacePathEdgeWhitespace(_) => {
+        AppError::BadRequest(_)
+        | AppError::Conflict(_)
+        | AppError::SkillProjectionConflict(_)
+        | AppError::WorkspacePathEdgeWhitespace(_) =>
+        {
             RelocationErrorClass::Deterministic
         }
         AppError::Internal(_) | AppError::Timeout(_) | AppError::BadGateway(_) => {

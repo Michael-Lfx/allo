@@ -54,7 +54,7 @@ pub use skill_service::{
     detect_and_count_external_skills, detect_common_skill_paths, export_skill_with_symlink, get_skill_paths,
     import_skill, import_skill_with_symlink, link_workspace_skills, list_available_skills,
     list_builtin_auto_skills, list_catalog_skills, load_catalog_skills, materialize_skills_for_agent, read_builtin_rule,
-    read_builtin_skill, read_skill_info, resolve_skill_paths, scan_for_skills,
+    read_builtin_skill, read_skill_info, resolve_skill_paths, scan_for_skills, WorkspaceSkillProjectionReport,
 };
 pub use skill_service::{builtin_skills_corpus_fingerprint, builtin_skills_materialize_version};
 pub use market::{

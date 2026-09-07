@@ -51,8 +51,8 @@ impl SkillResolver for NoopSkillResolver {
         _workspace: &std::path::Path,
         _rel_dirs: &[&str],
         _skills: &[ResolvedAgentSkill],
-    ) -> usize {
-        0
+    ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, AppError> {
+        Ok(Default::default())
     }
 }
 

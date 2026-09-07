@@ -386,8 +386,8 @@ impl SkillResolver for CatalogSkillResolver {
         _workspace: &Path,
         _rel_dirs: &[&str],
         _skills: &[ResolvedAgentSkill],
-    ) -> usize {
-        0
+    ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, AppError> {
+        Ok(Default::default())
     }
 
     async fn load_catalog_skills(
@@ -434,7 +434,12 @@ impl SkillResolver for RecordingSkillResolver {
             .collect()
     }
 
-    async fn link_workspace_skills(&self, workspace: &Path, rel_dirs: &[&str], skills: &[ResolvedAgentSkill]) -> usize {
+    async fn link_workspace_skills(
+        &self,
+        workspace: &Path,
+        rel_dirs: &[&str],
+        skills: &[ResolvedAgentSkill],
+    ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, AppError> {
         self.links.lock().unwrap().push(SkillLinkCall {
             workspace: workspace.to_path_buf(),
             rel_dirs: rel_dirs.iter().map(|s| (*s).to_owned()).collect(),
@@ -453,7 +458,10 @@ impl SkillResolver for RecordingSkillResolver {
                 }
             }
         }
-        linked
+        Ok(nomifun_extension::WorkspaceSkillProjectionReport {
+            created: linked,
+            ..Default::default()
+        })
     }
 }
 

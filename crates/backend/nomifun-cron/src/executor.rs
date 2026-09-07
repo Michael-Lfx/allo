@@ -3757,8 +3757,8 @@ mod tests {
                 _workspace: &std::path::Path,
                 _rel_dirs: &[&str],
                 _skills: &[nomifun_conversation::skill_resolver::ResolvedAgentSkill],
-            ) -> usize {
-                0
+            ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, nomifun_common::AppError> {
+                Ok(Default::default())
             }
         }
 
@@ -5112,8 +5112,8 @@ mod tests {
                 _workspace: &std::path::Path,
                 _rel_dirs: &[&str],
                 _skills: &[nomifun_conversation::skill_resolver::ResolvedAgentSkill],
-            ) -> usize {
-                0
+            ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, nomifun_common::AppError> {
+                Ok(Default::default())
             }
         }
 

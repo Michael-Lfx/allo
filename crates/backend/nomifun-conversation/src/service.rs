@@ -5652,14 +5652,17 @@ impl ConversationService {
                     if !resolved.is_empty() {
                         let rel_dirs_refs: Vec<&str> =
                             rel_dirs.iter().map(String::as_str).collect();
-                        let n = self
+                        let report = self
                             .skill_resolver
                             .link_workspace_skills(ws_path, &rel_dirs_refs, &resolved)
-                            .await;
+                            .await?;
                         debug!(
                             conversation_id = new_id,
                             workspace = %ws_path.display(),
-                            links = n,
+                            links_created = report.created,
+                            links_reused = report.reused,
+                            links_repaired = report.repaired,
+                            links_migrated = report.migrated,
                             "wired skill symlinks into workspace"
                         );
                     }
@@ -14508,14 +14511,17 @@ impl ConversationService {
         }
 
         let rel_dirs_refs: Vec<&str> = rel_dirs.iter().map(String::as_str).collect();
-        let n = self
+        let report = self
             .skill_resolver
             .link_workspace_skills(&workspace, &rel_dirs_refs, &resolved)
-            .await;
+            .await?;
         debug!(
             conversation_id = %row.conversation_id,
             workspace = %workspace.display(),
-            links = n,
+            links_created = report.created,
+            links_reused = report.reused,
+            links_repaired = report.repaired,
+            links_migrated = report.migrated,
             "ensured skill symlinks in auto workspace"
         );
         Ok(())

@@ -912,8 +912,8 @@ async fn setup_with_conv_repo() -> (
             _workspace: &std::path::Path,
             _rel_dirs: &[&str],
             _skills: &[nomifun_conversation::skill_resolver::ResolvedAgentSkill],
-        ) -> usize {
-            0
+        ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, nomifun_common::AppError> {
+            Ok(Default::default())
         }
     }
 
@@ -3323,8 +3323,8 @@ async fn cd4_conversation_transaction_hands_captured_job_ids_to_post_commit_clea
             _workspace: &std::path::Path,
             _rel_dirs: &[&str],
             _skills: &[nomifun_conversation::skill_resolver::ResolvedAgentSkill],
-        ) -> usize {
-            0
+        ) -> Result<nomifun_extension::WorkspaceSkillProjectionReport, nomifun_common::AppError> {
+            Ok(Default::default())
         }
     }
 
