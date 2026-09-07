@@ -10,11 +10,15 @@
 //! - [`package`] — SkillHub expert package resolution + child skill install.
 
 mod client;
+mod install;
 mod mcp;
 mod package;
 mod parse;
 
 pub use mcp::resolve_market_mcp_config;
+pub use install::{
+    MarketSkillInstallError, MarketSkillInstaller, ManagedSkillInstaller, cleanup_stale_market_staging,
+};
 pub use package::{
     MarketPackagePresetInstallFailure, MarketPackagePresetInstaller, install_market_package,
 };

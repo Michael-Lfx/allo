@@ -5,6 +5,8 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path as AxumPath, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
 use nomifun_api_types::{
@@ -16,7 +18,9 @@ use nomifun_api_types::{
     SkillCatalogSource, SkillId,
     SkillListItemResponse, SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallResponse, SkillMarketPackageRequest,
+    SkillMarketInstallRequest, SkillMarketInstallResponse, SkillMarketInstallationResponse,
     SkillMarketSyncRequest, SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse,
+    ErrorResponse,
     WritePresetRuleRequest,
 };
 use nomifun_common::AppError;
@@ -25,7 +29,7 @@ use nomifun_db::ISkillTagRepository;
 use crate::classifier::PresetRuleDispatcher;
 use crate::external_paths::ExternalPathsManager;
 use crate::skill_service::{self, SkillPaths, SkillSource};
-use crate::market::MarketPackagePresetInstaller;
+use crate::market::{MarketPackagePresetInstaller, MarketSkillInstallError, MarketSkillInstaller};
 
 fn to_source_response(source: SkillSource) -> SkillSourceResponse {
     match source {
@@ -40,6 +44,53 @@ fn imported_user_skill_ids(names: &[String]) -> Vec<String> {
         .iter()
         .map(|name| SkillId::new(SkillCatalogSource::User, None, name).as_str().to_owned())
         .collect()
+}
+
+/// Endpoint-local mapper for the managed market install contract. The market
+/// failure set is intentionally not added to the shared `AppError` enum: these
+/// codes are meaningful only to the Skill market UI.
+#[derive(Debug)]
+enum MarketSkillRouteError {
+    Json(String),
+    Install(MarketSkillInstallError),
+}
+
+impl From<MarketSkillInstallError> for MarketSkillRouteError {
+    fn from(error: MarketSkillInstallError) -> Self {
+        Self::Install(error)
+    }
+}
+
+impl IntoResponse for MarketSkillRouteError {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match self {
+            Self::Json(message) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", message),
+            Self::Install(error) => {
+                let (status, code) = match error {
+                    MarketSkillInstallError::SourceUnsupported =>
+                        (StatusCode::BAD_REQUEST, "MARKET_SKILL_SOURCE_UNSUPPORTED"),
+                    MarketSkillInstallError::IdInvalid =>
+                        (StatusCode::BAD_REQUEST, "MARKET_SKILL_ID_INVALID"),
+                    MarketSkillInstallError::NotFound =>
+                        (StatusCode::NOT_FOUND, "MARKET_SKILL_NOT_FOUND"),
+                    MarketSkillInstallError::NameConflict =>
+                        (StatusCode::CONFLICT, "MARKET_SKILL_NAME_CONFLICT"),
+                    MarketSkillInstallError::ArtifactInvalid =>
+                        (StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_ARTIFACT_INVALID"),
+                    MarketSkillInstallError::ManifestInvalid =>
+                        (StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_MANIFEST_INVALID"),
+                    MarketSkillInstallError::Network =>
+                        (StatusCode::BAD_GATEWAY, "MARKET_SKILL_NETWORK"),
+                    MarketSkillInstallError::Timeout =>
+                        (StatusCode::GATEWAY_TIMEOUT, "MARKET_SKILL_TIMEOUT"),
+                    MarketSkillInstallError::LocalIo =>
+                        (StatusCode::INTERNAL_SERVER_ERROR, "MARKET_SKILL_LOCAL_IO"),
+                };
+                (status, code, error.to_string())
+            }
+        };
+        (status, Json(ErrorResponse::new(message, code))).into_response()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +111,9 @@ pub struct SkillRouterState {
     /// Production bridge that creates the user preset only after an expert
     /// package's complete Skill set has been committed.
     pub market_package_preset_installer: Option<Arc<dyn MarketPackagePresetInstaller>>,
+    /// Product-owned single-Skill market installer. Kept optional so focused
+    /// route tests can construct the state without networking.
+    pub market_skill_installer: Option<Arc<dyn MarketSkillInstaller>>,
     /// Per-skill tag assignment repo (user assignments/overrides).
     pub skill_tag_repo: Arc<dyn ISkillTagRepository>,
     /// Built-in skill tag seed: skill name → (audience_tags, scenario_tags).
@@ -121,6 +175,14 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
         .route(
             "/api/skills/market/mcp/config",
             post(resolve_skill_market_mcp_config),
+        )
+        .route(
+            "/api/skills/market/skill/install",
+            post(install_skill_market_skill),
+        )
+        .route(
+            "/api/skills/market/skill/installations",
+            get(list_skill_market_installations),
         )
         .route(
             "/api/skills/market/package/install",
@@ -610,6 +672,32 @@ async fn resolve_skill_market_mcp_config(
     Ok(Json(ApiResponse::ok(SkillMarketMcpConfigResponse { config_json })))
 }
 
+/// `POST /api/skills/market/skill/install` — install one SkillHub Skill via
+/// the product-owned managed installer.
+async fn install_skill_market_skill(
+    State(state): State<SkillRouterState>,
+    body: Result<Json<SkillMarketInstallRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<SkillMarketInstallResponse>>, MarketSkillRouteError> {
+    let Json(req) = body.map_err(|error| MarketSkillRouteError::Json(error.to_string()))?;
+    let installer = state
+        .market_skill_installer
+        .ok_or(MarketSkillInstallError::LocalIo)?;
+    let response = installer.install(req).await?;
+    Ok(Json(ApiResponse::ok(response)))
+}
+
+/// `GET /api/skills/market/skill/installations` — list only valid managed
+/// provenance records whose current Skill directory still matches its hash.
+async fn list_skill_market_installations(
+    State(state): State<SkillRouterState>,
+) -> Result<Json<ApiResponse<Vec<SkillMarketInstallationResponse>>>, MarketSkillRouteError> {
+    let installer = state
+        .market_skill_installer
+        .ok_or(MarketSkillInstallError::LocalIo)?;
+    let response = installer.list_installations().await?;
+    Ok(Json(ApiResponse::ok(response)))
+}
+
 /// `POST /api/skills/market/package/install` — resolve a SkillHub expert
 /// package and install its child skills.
 async fn install_skill_market_package(
@@ -633,6 +721,10 @@ async fn install_skill_market_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
 
     #[test]
     fn imported_user_skill_ids_are_source_qualified_and_escaped() {
@@ -694,6 +786,7 @@ mod tests {
             external_paths_manager: ext_mgr,
             preset_dispatcher: None,
             market_package_preset_installer: None,
+            market_skill_installer: None,
             skill_tag_repo: std::sync::Arc::new(InMemorySkillTagRepo::default()),
             builtin_skill_tags: std::sync::Arc::new(std::collections::HashMap::new()),
         }
@@ -703,5 +796,75 @@ mod tests {
     async fn skill_routes_builds_router() {
         let state = make_state().await;
         let _router = skill_routes(state);
+    }
+
+    struct FakeMarketInstaller {
+        result: Result<SkillMarketInstallResponse, MarketSkillInstallError>,
+    }
+
+    #[async_trait::async_trait]
+    impl MarketSkillInstaller for FakeMarketInstaller {
+        async fn install(
+            &self,
+            _request: SkillMarketInstallRequest,
+        ) -> Result<SkillMarketInstallResponse, MarketSkillInstallError> {
+            self.result.clone()
+        }
+
+        async fn list_installations(
+            &self,
+        ) -> Result<Vec<SkillMarketInstallationResponse>, MarketSkillInstallError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn install_request() -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/api/skills/market/skill/install")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"source":"skillhub","id":"skillhub:owner/skills/demo"}"#,
+            ))
+            .unwrap()
+    }
+
+    fn install_response() -> SkillMarketInstallResponse {
+        SkillMarketInstallResponse {
+            status: nomifun_api_types::SkillMarketInstallStatus::Created,
+            source: "skillhub".into(),
+            market_id: "skillhub:owner/skills/demo".into(),
+            skill_name: "demo".into(),
+            revision: None,
+            artifact_sha256: "a".repeat(64),
+            content_sha256: "b".repeat(64),
+            installed_at: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_skill_install_route_returns_typed_success() {
+        let mut state = make_state().await;
+        state.market_skill_installer = Some(Arc::new(FakeMarketInstaller {
+            result: Ok(install_response()),
+        }));
+
+        let response = skill_routes(state).oneshot(install_request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn managed_skill_install_route_maps_conflict_without_exposing_transport_details() {
+        let mut state = make_state().await;
+        state.market_skill_installer = Some(Arc::new(FakeMarketInstaller {
+            result: Err(MarketSkillInstallError::NameConflict),
+        }));
+
+        let response = skill_routes(state).oneshot(install_request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "MARKET_SKILL_NAME_CONFLICT");
+        assert!(!json["error"].as_str().unwrap_or_default().contains("http"));
     }
 }

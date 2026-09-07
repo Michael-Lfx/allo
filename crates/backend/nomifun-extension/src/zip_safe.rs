@@ -7,7 +7,7 @@
 //! [`nomifun_common::zip_safe`] hardening also used by the knowledge and
 //! companion importers.
 
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use nomifun_common::zip_safe::{self, ZipColonPolicy, ZipExtractionBudget};
@@ -54,16 +54,51 @@ fn extract_zip_archive_with_budget(
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut output = std::fs::File::create(&output_path)?;
-        // The budget tracks ACTUAL bytes written (io::copy's return), not the
-        // entry's self-declared size — bomb archives lie about their sizes.
-        let written = io::copy(&mut entry, &mut output)?;
-        budget
-            .record_written(written)
-            .map_err(|e| ExtensionError::InvalidSkillPath(e.to_string()))?;
+        let output = std::fs::File::create(&output_path)?;
+        // Bound the reader and the writer together. `io::copy` alone only
+        // reports the over-budget entry after it has already written it, which
+        // makes the advertised 256 MiB limit a post-facto check rather than a
+        // hard extraction boundary.
+        let remaining = budget.remaining_bytes();
+        let mut bounded_source = (&mut entry).take(remaining.saturating_add(1));
+        let mut bounded_output = BudgetedWriter { writer: output, budget: &mut budget };
+        match io::copy(&mut bounded_source, &mut bounded_output) {
+            Ok(_) => {}
+            Err(error) if error.to_string().contains("decompression bomb") => {
+                return Err(ExtensionError::InvalidSkillPath(error.to_string()));
+            }
+            Err(error) => return Err(ExtensionError::Io(error)),
+        }
     }
 
     Ok(())
+}
+
+/// A writer that refuses the first byte which would exceed the cumulative
+/// extraction budget. The output file may contain a valid prefix, but the
+/// caller-owned staging directory is removed on the returned error.
+struct BudgetedWriter<'a, W> {
+    writer: W,
+    budget: &'a mut ZipExtractionBudget,
+}
+
+impl<W: io::Write> io::Write for BudgetedWriter<'_, W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.len() as u64 > self.budget.remaining_bytes() {
+            return Err(io::Error::other(
+                "Zip archive expands beyond the extraction budget; refusing to extract a potential decompression bomb",
+            ));
+        }
+        let written = self.writer.write(buffer)?;
+        self.budget
+            .record_written(written as u64)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 /// Resolve a zip entry name to a safe relative path, or reject it. Rejects

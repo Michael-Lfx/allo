@@ -98,6 +98,36 @@ pub(crate) fn build_market_client() -> Result<reqwest::Client, AppError> {
         .map_err(|e| AppError::Internal(e.to_string()))
 }
 
+/// Build the narrower client used by the managed SkillHub installer. Ranking
+/// feeds may use several public market hosts, but an installation payload is
+/// allowed to reach only SkillHub's API and its dedicated COS bucket.
+pub(crate) fn build_skillhub_install_client() -> Result<reqwest::Client, AppError> {
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_MARKET_REDIRECT_HOPS {
+            return attempt.error("too many SkillHub redirects");
+        }
+        if attempt.url().scheme() == "https"
+            && attempt.url().port_or_known_default() == Some(443)
+            && attempt.url().host_str().is_some_and(is_skillhub_install_host)
+        {
+            attempt.follow()
+        } else {
+            attempt.error("SkillHub redirect target is not allowlisted")
+        }
+    });
+
+    reqwest::Client::builder()
+        .redirect(redirect_policy)
+        .timeout(MARKET_REQUEST_TIMEOUT)
+        .user_agent("Flowy-SkillHub-Installer/1.0")
+        .build()
+        .map_err(|error| AppError::Internal(error.to_string()))
+}
+
+fn is_skillhub_install_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("api.skillhub.cn") || is_skillhub_cos_download_host(host)
+}
+
 /// GET `url` and return its body as text, capped at [`MAX_MARKET_BODY_BYTES`].
 pub(crate) async fn read_market_body(client: &reqwest::Client, url: &str) -> Result<String, AppError> {
     let mut response = client.get(url).send().await.map_err(map_market_fetch_error)?;
@@ -240,6 +270,27 @@ mod tests {
             "SkillHub-1388575217.COS.accelerate.myqcloud.com",
         ] {
             assert!(is_allowed_market_host(host), "{host}");
+        }
+    }
+
+    #[test]
+    fn skillhub_install_host_allowlist_is_source_scoped() {
+        for host in [
+            "api.skillhub.cn",
+            "skillhub-1388575217.cos.accelerate.myqcloud.com",
+            "skillhub-1388575217.cos.ap-guangzhou.myqcloud.com",
+        ] {
+            assert!(is_skillhub_install_host(host), "{host}");
+        }
+        for host in [
+            "skillhub.cn",
+            "www.skillhub.cn",
+            "api.skillhub.cn.evil.example",
+            "www.mcpworld.com",
+            "evil.example.com",
+            "skillhub-1388575217.cos.accelerate.myqcloud.com.evil.example",
+        ] {
+            assert!(!is_skillhub_install_host(host), "{host} must be rejected");
         }
     }
 

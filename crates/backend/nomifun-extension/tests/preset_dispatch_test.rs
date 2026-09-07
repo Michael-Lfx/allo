@@ -149,6 +149,7 @@ async fn router_with_dispatcher(dispatcher: Arc<FakeDispatcher>) -> axum::Router
         external_paths_manager: ext_mgr,
         preset_dispatcher: Some(dispatcher),
         market_package_preset_installer: None,
+        market_skill_installer: None,
         skill_tag_repo: {
             let db = nomifun_db::init_database_memory().await.unwrap();
             Arc::new(nomifun_db::SqliteSkillTagRepository::new(db.pool().clone()))

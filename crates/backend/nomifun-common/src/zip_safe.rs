@@ -202,6 +202,13 @@ impl ZipExtractionBudget {
         }
         Ok(())
     }
+
+    /// Bytes that may still be written before the cumulative extraction cap is
+    /// reached. Callers should read at most `remaining + 1` bytes so an entry
+    /// that crosses the boundary is rejected while it is being copied.
+    pub fn remaining_bytes(&self) -> u64 {
+        self.max_total_uncompressed_bytes.saturating_sub(self.total_written)
+    }
 }
 
 #[cfg(test)]

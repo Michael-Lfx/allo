@@ -31,7 +31,8 @@ use nomifun_db::{
     MAX_UNSETTLED_TURN_ADMISSION_PAGE_SIZE,
 };
 use nomifun_extension::{
-    MarketPackagePresetInstaller, PresetRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
+    cleanup_stale_market_staging, MarketPackagePresetInstaller, MarketSkillInstaller, ManagedSkillInstaller,
+    PresetRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
     HubIndexManager, HubInstaller, HubRouterState, SkillRouterState, resolve_install_target_dir_for_data_dir,
     resolve_scan_paths_for_data_dir, resolve_state_file_path,
 };
@@ -2397,6 +2398,12 @@ pub async fn build_extension_states(
 
     let ext_paths_mgr = Arc::new(ExternalPathsManager::new(&skill_data_dir).await);
 
+    let market_skill_installer: Arc<dyn MarketSkillInstaller> =
+        Arc::new(ManagedSkillInstaller::new(skill_paths.clone()));
+    if let Err(error) = cleanup_stale_market_staging(&skill_paths).await {
+        tracing::warn!(%error, "stale Skill market staging cleanup failed");
+    }
+
     let skill_tag_repo: Arc<dyn nomifun_db::ISkillTagRepository> =
         Arc::new(nomifun_db::SqliteSkillTagRepository::new(services.database.pool().clone()));
     let builtin_skill_tags = Arc::new(nomifun_extension::skill_service::load_builtin_skill_tags());
@@ -2415,6 +2422,7 @@ pub async fn build_extension_states(
         external_paths_manager: ext_paths_mgr,
         preset_dispatcher: None,
         market_package_preset_installer: None,
+        market_skill_installer: Some(market_skill_installer),
         skill_tag_repo,
         builtin_skill_tags,
     };

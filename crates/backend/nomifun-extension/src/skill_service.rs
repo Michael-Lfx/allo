@@ -1,9 +1,13 @@
 use std::collections::HashMap;
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use include_dir::{Dir, include_dir};
 use nomifun_api_types::{SkillCatalogSource, SkillId};
+use nomifun_common::dir_config::write_atomic_replace;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
@@ -31,6 +35,15 @@ pub const BUILTIN_SKILLS_ENV_VAR: &str = "NOMIFUN_BUILTIN_SKILLS_PATH";
 const AGENT_SKILLS_DIR: &str = ".agents/skills";
 const GLOBAL_AGENT_SKILLS_SOURCE_KEY: &str = "agents";
 const PROJECT_AGENT_SKILLS_SOURCE_KEY: &str = "workspace";
+
+/// One process-local fence for every operation that mutates the user Skill
+/// tree. The app's data-dir `server.lock` serializes separate backend
+/// processes; this mutex closes the remaining same-process multi-window race.
+static SKILL_MUTATION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+pub(crate) fn skill_mutation_lock() -> &'static tokio::sync::Mutex<()> {
+    SKILL_MUTATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 /// Expose the embedded builtin skills corpus for startup
 /// materialization. Consumers outside this crate should not depend on
@@ -953,13 +966,55 @@ pub(crate) async fn extract_skill_archive_to_staging(
     archive_path: &Path,
     destination: &Path,
 ) -> Result<(), ExtensionError> {
-    tokio::fs::create_dir_all(destination).await?;
+    ensure_regular_skill_directory(destination).await?;
     let archive = archive_path.to_path_buf();
     let destination = destination.to_path_buf();
     tokio::task::spawn_blocking(move || crate::zip_safe::extract_zip_archive(&archive, &destination))
         .await
         .map_err(|error| ExtensionError::InvalidSkillPath(format!("Zip extraction task failed: {error}")))??;
     Ok(())
+}
+
+/// Create a staging directory without following an attacker-controlled link
+/// in any ancestor. Importers keep their roots inside the user Skill tree, so
+/// `create_dir_all` would otherwise silently redirect untrusted archive writes
+/// outside that tree.
+pub(crate) async fn ensure_regular_skill_directory(path: &Path) -> Result<(), ExtensionError> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => {
+            if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+                Err(ExtensionError::InvalidSkillPath(format!(
+                    "staging path is not a regular directory: {}",
+                    path.display()
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent()
+                && parent != path
+                && !parent.as_os_str().is_empty()
+            {
+                Box::pin(ensure_regular_skill_directory(parent)).await?;
+            }
+            match tokio::fs::create_dir(path).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    let metadata = tokio::fs::symlink_metadata(path).await?;
+                    if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+                        return Err(ExtensionError::InvalidSkillPath(format!(
+                            "staging path is not a regular directory: {}",
+                            path.display()
+                        )));
+                    }
+                    Ok(())
+                }
+                Err(error) => Err(ExtensionError::Io(error)),
+            }
+        }
+        Err(error) => Err(ExtensionError::Io(error)),
+    }
 }
 
 /// Strictly validate one staged market Skill. Unlike [`read_skill_info`], this

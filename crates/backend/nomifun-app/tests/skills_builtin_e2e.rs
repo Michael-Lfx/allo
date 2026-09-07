@@ -79,6 +79,7 @@ async fn fixture_embedded() -> Fixture {
         external_paths_manager: ext_paths_mgr,
         preset_dispatcher: states.skill.preset_dispatcher.clone(),
         market_package_preset_installer: states.skill.market_package_preset_installer.clone(),
+        market_skill_installer: states.skill.market_skill_installer.clone(),
         skill_tag_repo: std::sync::Arc::new(nomifun_db::SqliteSkillTagRepository::new(
             services.database.pool().clone(),
         )),
