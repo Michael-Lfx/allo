@@ -496,16 +496,6 @@ async fn commit_managed_skill(
             Err(MarketSkillInstallError::NameConflict)
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            tokio::fs::rename(staged_dir, &target)
-                .await
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::AlreadyExists {
-                        MarketSkillInstallError::NameConflict
-                    } else {
-                        MarketSkillInstallError::LocalIo
-                    }
-                })?;
-
             let installed_at = now_epoch_ms();
             let record = MarketSkillInstallationRecord {
                 schema_version: 1,
@@ -518,9 +508,36 @@ async fn commit_managed_skill(
                 installed_at,
             };
             if let Err(error) = write_installation_record(paths, &record).await {
-                let _ = skill_service::rollback_market_skill(paths, &market_skill.slug).await;
+                // The target has not been renamed yet, so a provenance write
+                // failure cannot expose a partially installed Skill. The
+                // atomic writer may have replaced the record before failing
+                // while syncing its parent; remove that uncertain result
+                // instead of leaving stale provenance behind.
+                if let Err(cleanup_error) = remove_installation_record(paths, &record.skill_name).await {
+                    tracing::error!(
+                        error = %cleanup_error,
+                        "failed to remove incomplete SkillHub installation record"
+                    );
+                }
                 return Err(error);
             }
+
+            if let Err(error) = tokio::fs::rename(staged_dir, &target).await {
+                let cleanup_result = remove_installation_record(paths, &record.skill_name).await;
+                if let Err(cleanup_error) = cleanup_result {
+                    tracing::error!(
+                        error = %cleanup_error,
+                        "failed to remove SkillHub installation record after directory commit failure"
+                    );
+                    return Err(MarketSkillInstallError::LocalIo);
+                }
+                return Err(if error.kind() == io::ErrorKind::AlreadyExists {
+                    MarketSkillInstallError::NameConflict
+                } else {
+                    MarketSkillInstallError::LocalIo
+                });
+            }
+
             Ok(SkillMarketInstallResponse {
                 status: SkillMarketInstallStatus::Created,
                 source: SKILLHUB_SOURCE.into(),
@@ -534,6 +551,24 @@ async fn commit_managed_skill(
         }
         Err(_) => Err(MarketSkillInstallError::LocalIo),
     }
+}
+
+async fn remove_installation_record(
+    paths: &SkillPaths,
+    skill_name: &str,
+) -> Result<(), MarketSkillInstallError> {
+    let path = installation_record_path(paths, skill_name)?;
+    let metadata = match tokio::fs::symlink_metadata(&path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(MarketSkillInstallError::LocalIo),
+    };
+    if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
+        return Err(MarketSkillInstallError::LocalIo);
+    }
+    tokio::fs::remove_file(path)
+        .await
+        .map_err(|_| MarketSkillInstallError::LocalIo)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
