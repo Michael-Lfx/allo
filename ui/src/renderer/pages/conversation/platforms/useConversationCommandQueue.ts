@@ -21,6 +21,7 @@ import {
 import { promoteQueuedCommand, reorderQueuedCommand } from './commandQueueItems';
 import { isAuthoritativeCompletionRuntimeIdle } from './authoritativeTurnLifecyclePolicy';
 import type { PublicMessageDeliveryDisposition } from './publicMessageDelivery';
+import { classifyConversationSendFailure } from './conversationSendRecovery';
 
 export { promoteQueuedCommand, reorderQueuedCommand };
 
@@ -35,7 +36,23 @@ export type ConversationCommandQueueItem = {
   input: string;
   files: string[];
   created_at: number;
+  /** Persisted recovery metadata; omitted by pre-recovery queue entries. */
+  recovery?: ConversationCommandQueueRecovery;
+  /** Persisted delivery phase used to fail closed around ambiguous POSTs. */
+  delivery_state?: ConversationCommandQueueDeliveryState;
 };
+
+export type ConversationCommandQueueRecovery = {
+  admission_attempts: number;
+  transport_attempts: number;
+};
+
+export type ConversationCommandQueueDeliveryState =
+  | 'queued'
+  | 'dispatching'
+  | 'waiting_for_turn'
+  | 'retrying'
+  | 'paused';
 
 export type ConversationCommandQueueState = {
   items: ConversationCommandQueueItem[];
@@ -47,6 +64,8 @@ export const MAX_QUEUED_COMMAND_INPUT_LENGTH = 20_000;
 export const MAX_QUEUED_COMMAND_FILES = 50;
 export const MAX_QUEUED_COMMAND_STATE_BYTES = 256 * 1024;
 export const COMMAND_QUEUE_RUNTIME_QUERY_TIMEOUT_MS = 3_000;
+export const MAX_ADMISSION_RECOVERY_ATTEMPTS = 1;
+export const MAX_TRANSPORT_RECOVERY_ATTEMPTS = 3;
 
 const getConversationForCommandQueue = async (conversationId: ConversationId) => {
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -89,6 +108,8 @@ const summarizeQueuedCommand = (item: ConversationCommandQueueItem): Record<stri
   created_at: item.created_at,
   inputLength: item.input.length,
   fileCount: item.files.length,
+  deliveryState: getQueueItemDeliveryState(item),
+  recovery: getQueueItemRecovery(item),
   preview: item.input.replace(/\s+/g, ' ').trim().slice(0, 120),
 });
 
@@ -115,6 +136,75 @@ const measureQueueStateBytes = (state: ConversationCommandQueueState): number =>
 const uniqueFiles = (files: string[]): string[] => Array.from(new Set(files.filter(Boolean)));
 const isInputEmpty = (input: string): boolean => input.trim().length === 0;
 
+const DEFAULT_QUEUE_RECOVERY: ConversationCommandQueueRecovery = {
+  admission_attempts: 0,
+  transport_attempts: 0,
+};
+
+const normalizeRecovery = (value: unknown): ConversationCommandQueueRecovery => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ...DEFAULT_QUEUE_RECOVERY };
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const normalizeAttempts = (attempts: unknown): number =>
+    typeof attempts === 'number' && Number.isFinite(attempts)
+      ? Math.min(100, Math.max(0, Math.floor(attempts)))
+      : 0;
+
+  return {
+    admission_attempts: normalizeAttempts(candidate.admission_attempts),
+    transport_attempts: normalizeAttempts(candidate.transport_attempts),
+  };
+};
+
+export const getQueueItemRecovery = (
+  item: ConversationCommandQueueItem
+): ConversationCommandQueueRecovery => normalizeRecovery(item.recovery);
+
+export const getQueueItemDeliveryState = (
+  item: ConversationCommandQueueItem
+): ConversationCommandQueueDeliveryState => {
+  switch (item.delivery_state) {
+    case 'dispatching':
+    case 'waiting_for_turn':
+    case 'retrying':
+    case 'paused':
+    case 'queued':
+      return item.delivery_state;
+    default:
+      return 'queued';
+  }
+};
+
+export const isQueueItemDeliveryInFlight = (item: ConversationCommandQueueItem): boolean =>
+  getQueueItemDeliveryState(item) === 'dispatching' || getQueueItemDeliveryState(item) === 'retrying';
+
+const resetQueueItemRecovery = (
+  item: ConversationCommandQueueItem,
+  delivery_state: ConversationCommandQueueDeliveryState = 'queued'
+): ConversationCommandQueueItem => ({
+  ...item,
+  recovery: { ...DEFAULT_QUEUE_RECOVERY },
+  delivery_state,
+});
+
+const updateQueueItemDelivery = (
+  item: ConversationCommandQueueItem,
+  delivery_state: ConversationCommandQueueDeliveryState,
+  recovery: Partial<ConversationCommandQueueRecovery> = {}
+): ConversationCommandQueueItem => {
+  const currentRecovery = getQueueItemRecovery(item);
+  return {
+    ...item,
+    recovery: {
+      ...currentRecovery,
+      ...recovery,
+    },
+    delivery_state,
+  };
+};
+
 const normalizeQueueItem = (item: unknown): ConversationCommandQueueItem | null => {
   if (!item || typeof item !== 'object') {
     return null;
@@ -137,6 +227,8 @@ const normalizeQueueItem = (item: unknown): ConversationCommandQueueItem | null 
     input: candidate.input,
     files: uniqueFiles(candidate.files),
     created_at: candidate.created_at,
+    recovery: normalizeRecovery(candidate.recovery),
+    delivery_state: getQueueItemDeliveryState(candidate as ConversationCommandQueueItem),
   };
 
   if (
@@ -191,6 +283,8 @@ export const createQueuedCommandItem = ({
   input,
   files: uniqueFiles(files),
   created_at: Date.now(),
+  recovery: { ...DEFAULT_QUEUE_RECOVERY },
+  delivery_state: 'queued',
 });
 
 const getQueueValidationFailureReason = (state: ConversationCommandQueueState): QueueValidationFailureReason | null => {
@@ -266,33 +360,36 @@ const readPersistedQueueState = (conversation_id: ConversationId): ConversationC
   }
 };
 
-const removePersistedQueueState = (conversation_id: ConversationId): void => {
+const removePersistedQueueState = (conversation_id: ConversationId): boolean => {
   queueStore.delete(conversation_id);
   if (typeof window !== 'undefined') {
     try {
       window.sessionStorage.removeItem(getStorageKey(conversation_id));
     } catch (error) {
       console.warn('[conversation-command-queue] Failed to remove persisted queue state:', error);
+      return false;
     }
   }
+  return true;
 };
 
-const persistQueueState = (conversation_id: ConversationId, state: ConversationCommandQueueState): void => {
+const persistQueueState = (conversation_id: ConversationId, state: ConversationCommandQueueState): boolean => {
   const normalized = normalizeQueueState(state);
 
   if (normalized.items.length === 0 && !normalized.isPaused) {
-    removePersistedQueueState(conversation_id);
-    return;
+    return removePersistedQueueState(conversation_id);
   }
 
-  queueStore.set(conversation_id, normalized);
   if (typeof window !== 'undefined') {
     try {
       window.sessionStorage.setItem(getStorageKey(conversation_id), JSON.stringify(normalized));
     } catch (error) {
       console.warn('[conversation-command-queue] Failed to persist queue state:', error);
+      return false;
     }
   }
+  queueStore.set(conversation_id, normalized);
+  return true;
 };
 
 export const removeQueuedCommand = (
@@ -313,9 +410,15 @@ export const updateQueuedCommand = (
   items.map((item) =>
     item.id === commandId
       ? {
+          // Editing is a new user submission. Never mutate the payload behind
+          // an id that may already have crossed the durable admission boundary.
           ...item,
+          id: uuidv7(),
+          created_at: Date.now(),
           ...updates,
           files: updates.files ? uniqueFiles(updates.files) : item.files,
+          recovery: { ...DEFAULT_QUEUE_RECOVERY },
+          delivery_state: 'queued',
         }
       : item
   );
@@ -399,6 +502,32 @@ export const useConversationCommandQueue = ({
   const interactionLockedRef = useRef(false);
   const [isInteractionLocked, setIsInteractionLocked] = useState(false);
   const [executionGateVersion, setExecutionGateVersion] = useState(0);
+
+  const publishState = useCallback(
+    (nextState: ConversationCommandQueueState): Promise<ConversationCommandQueueState | undefined> => {
+      const normalized = normalizeQueueState(nextState);
+      stateRef.current = normalized;
+      pausedRef.current = normalized.isPaused;
+      return mutate(normalized, { revalidate: false });
+    },
+    [mutate]
+  );
+
+  const persistStateOrWarn = useCallback(
+    (nextState: ConversationCommandQueueState): ConversationCommandQueueState | undefined => {
+      const normalized = normalizeQueueState(nextState);
+      if (persistQueueState(conversationKey, normalized)) {
+        return normalized;
+      }
+      Message.warning(
+        t('conversation.commandQueue.persistenceFailed', {
+          defaultValue: 'The message was kept in the composer because the queue could not be saved. Try again.',
+        })
+      );
+      return undefined;
+    },
+    [conversationKey, t]
+  );
 
   // Update during render so a promise owned by the previous conversation is
   // stale before passive effect cleanup has a chance to run.
@@ -554,6 +683,25 @@ export const useConversationCommandQueue = ({
     setExecutionGateVersion((version) => version + 1);
   }, [isBusy]);
 
+  // A persisted admission recovery has already observed a lifecycle conflict.
+  // On remount, restore its authoritative wait fence before dispatching; an
+  // old `waiting_for_turn` item must not immediately create another 409.
+  useEffect(() => {
+    if (
+      !enabled ||
+      isBusy ||
+      executionGateRef.current.phase !== 'idle' ||
+      !data.items.some((item) => getQueueItemDeliveryState(item) === 'waiting_for_turn')
+    ) {
+      return;
+    }
+    executionGateRef.current = { phase: 'waiting_completion' };
+    logCommandQueue(conversationKey, 'restored-admission-recovery-fence', {
+      pendingItemCount: data.items.length,
+    });
+    setExecutionGateVersion((version) => version + 1);
+  }, [conversationKey, data.items, enabled, isBusy]);
+
   // A missing turn.completed event must not strand the queue forever. The
   // visual busy down-edge only schedules reconciliation; the gate is released
   // after GET confirms the backend runtime is no longer processing. Failed or
@@ -610,25 +758,34 @@ export const useConversationCommandQueue = ({
         return Promise.resolve(nextState);
       }
 
-      return mutate(
-        (current) => {
-          const nextState = normalizeQueueState(updater(current ?? createDefaultQueueState()));
-          stateRef.current = nextState;
-          pausedRef.current = nextState.isPaused;
-          persistQueueState(conversationKey, nextState);
-          return nextState;
-        },
-        { revalidate: false }
-      );
+      const currentState = normalizeQueueState(stateRef.current);
+      const nextState = normalizeQueueState(updater(currentState));
+      const persistedState = persistStateOrWarn(nextState);
+      return persistedState ? publishState(persistedState) : Promise.resolve(undefined);
     },
-    [conversation_id, enabled, mutate]
+    [conversation_id, enabled, persistStateOrWarn, publishState]
   );
 
   const clear = useCallback(() => {
+    const currentState = normalizeQueueState(stateRef.current);
+    if (currentState.items.some(isQueueItemDeliveryInFlight)) {
+      logCommandQueue(conversationKey, 'clear-rejected', {
+        reason: 'delivery-in-progress',
+        itemCount: currentState.items.length,
+      });
+      Message.warning(
+        t('conversation.commandQueue.deliveryInProgress', {
+          defaultValue: 'This message is still being sent. Wait for the result before clearing the queue.',
+        })
+      );
+      return false;
+    }
+
     pausedRef.current = false;
     logCommandQueue(conversationKey, 'cleared');
     void updateState(() => createDefaultQueueState());
-  }, [conversation_id, updateState]);
+    return true;
+  }, [conversation_id, conversationKey, t, updateState]);
 
   useAddEventListener(
     'conversation.deleted',
@@ -638,10 +795,13 @@ export const useConversationCommandQueue = ({
       }
       executionGenerationRef.current += 1;
       executionGateRef.current = IDLE_EXECUTION_GATE;
-      clear();
+      const deletedState = createDefaultQueueState();
+      stateRef.current = deletedState;
+      pausedRef.current = false;
+      void mutate(deletedState, { revalidate: false });
       removePersistedQueueState(conversationKey);
     },
-    [clear, conversation_id]
+    [conversationKey, conversation_id, mutate]
   );
 
   const enqueue = useCallback(
@@ -669,15 +829,24 @@ export const useConversationCommandQueue = ({
         ...currentState,
         items: [...currentState.items, item],
       };
-      stateRef.current = nextState;
+      const persistedState = persistStateOrWarn(nextState);
+      if (!persistedState) {
+        logCommandQueue(conversationKey, 'enqueue-rejected', {
+          reason: 'persistence-failed',
+          item: summarizeQueuedCommand(item),
+          currentItemCount: currentState.items.length,
+        });
+        return null;
+      }
+
       logCommandQueue(conversationKey, 'enqueued', {
         item: summarizeQueuedCommand(item),
         currentItemCount: currentState.items.length,
       });
-      void updateState(() => nextState);
+      void publishState(persistedState);
       return item;
     },
-    [conversation_id, enabled, t, updateState]
+    [conversation_id, conversationKey, enabled, persistStateOrWarn, publishState, t]
   );
 
   const update = useCallback(
@@ -689,6 +858,19 @@ export const useConversationCommandQueue = ({
       const currentState = normalizeQueueState(stateRef.current);
       const currentItem = currentState.items.find((item) => item.id === commandId);
       if (!currentItem) {
+        return false;
+      }
+
+      if (isQueueItemDeliveryInFlight(currentItem)) {
+        logCommandQueue(conversationKey, 'update-rejected', {
+          reason: 'delivery-in-progress',
+          commandId,
+        });
+        Message.warning(
+          t('conversation.commandQueue.deliveryInProgress', {
+            defaultValue: 'This message is still being sent. Wait for the result before editing it.',
+          })
+        );
         return false;
       }
 
@@ -709,71 +891,164 @@ export const useConversationCommandQueue = ({
         return false;
       }
 
-      stateRef.current = nextState;
+      const persistedState = persistStateOrWarn(nextState);
+      if (!persistedState) {
+        logCommandQueue(conversationKey, 'update-rejected', {
+          reason: 'persistence-failed',
+          commandId,
+          inputLength: input.length,
+        });
+        return false;
+      }
+
       logCommandQueue(conversationKey, 'updated', {
         commandId,
         inputLength: input.length,
       });
-      void updateState(() => nextState);
+      void publishState(persistedState);
       return true;
     },
-    [conversation_id, enabled, t, updateState]
+    [conversation_id, conversationKey, enabled, persistStateOrWarn, publishState, t]
   );
 
   const remove = useCallback(
     (commandId: string) => {
       if (!enabled) {
-        return;
+        return false;
+      }
+
+      const currentState = normalizeQueueState(stateRef.current);
+      const currentItem = currentState.items.find((item) => item.id === commandId);
+      if (!currentItem) {
+        return false;
+      }
+
+      if (isQueueItemDeliveryInFlight(currentItem)) {
+        logCommandQueue(conversationKey, 'remove-rejected', {
+          reason: 'delivery-in-progress',
+          commandId,
+        });
+        Message.warning(
+          t('conversation.commandQueue.deliveryInProgress', {
+            defaultValue: 'This message is still being sent. Wait for the result before removing it.',
+          })
+        );
+        return false;
+      }
+
+      const nextState: ConversationCommandQueueState = {
+        items: removeQueuedCommand(currentState.items, commandId),
+        isPaused: false,
+      };
+      const persistedState = persistStateOrWarn(nextState);
+      if (!persistedState) {
+        logCommandQueue(conversationKey, 'remove-rejected', {
+          reason: 'persistence-failed',
+          commandId,
+        });
+        return false;
       }
 
       logCommandQueue(conversationKey, 'removed', {
         commandId,
       });
-      void updateState((state) => {
-        const nextItems = removeQueuedCommand(state.items, commandId);
-        return {
-          items: nextItems,
-          isPaused: false,
-        };
-      });
+      void publishState(persistedState);
+      return true;
     },
-    [conversation_id, enabled, updateState]
+    [conversation_id, conversationKey, enabled, persistStateOrWarn, publishState, t]
   );
 
   const reorder = useCallback(
     (activeCommandId: string, overCommandId: string) => {
       if (!enabled) {
-        return;
+        return false;
+      }
+
+      const currentState = normalizeQueueState(stateRef.current);
+      if (currentState.items.some(isQueueItemDeliveryInFlight)) {
+        logCommandQueue(conversationKey, 'reorder-rejected', {
+          reason: 'delivery-in-progress',
+          activeCommandId,
+          overCommandId,
+        });
+        Message.warning(
+          t('conversation.commandQueue.deliveryInProgress', {
+            defaultValue: 'A message is still being sent. Wait for the result before reordering the queue.',
+          })
+        );
+        return false;
+      }
+
+      const nextState: ConversationCommandQueueState = {
+        isPaused: false,
+        items: reorderQueuedCommand(currentState.items, activeCommandId, overCommandId),
+      };
+      const persistedState = persistStateOrWarn(nextState);
+      if (!persistedState) {
+        logCommandQueue(conversationKey, 'reorder-rejected', {
+          reason: 'persistence-failed',
+          activeCommandId,
+          overCommandId,
+        });
+        return false;
       }
 
       logCommandQueue(conversationKey, 'reordered', {
         activeCommandId,
         overCommandId,
       });
-      void updateState((state) => ({
-        isPaused: false,
-        items: reorderQueuedCommand(state.items, activeCommandId, overCommandId),
-      }));
+      void publishState(persistedState);
+      return true;
     },
-    [conversation_id, enabled, updateState]
+    [conversation_id, conversationKey, enabled, persistStateOrWarn, publishState, t]
   );
 
   const sendNow = useCallback(
     (commandId: string) => {
       if (!enabled) {
-        return;
+        return false;
+      }
+
+      const currentState = normalizeQueueState(stateRef.current);
+      const currentItem = currentState.items.find((item) => item.id === commandId);
+      if (!currentItem) {
+        return false;
+      }
+
+      if (isQueueItemDeliveryInFlight(currentItem)) {
+        logCommandQueue(conversationKey, 'send-now-rejected', {
+          reason: 'delivery-in-progress',
+          commandId,
+        });
+        Message.warning(
+          t('conversation.commandQueue.deliveryInProgress', {
+            defaultValue: 'This message is still being sent. Wait for the result before moving it.',
+          })
+        );
+        return false;
+      }
+
+      const nextState: ConversationCommandQueueState = {
+        isPaused: currentState.items.length > 0 ? false : currentState.isPaused,
+        items: promoteQueuedCommand(currentState.items, commandId),
+      };
+      const persistedState = persistStateOrWarn(nextState);
+      if (!persistedState) {
+        logCommandQueue(conversationKey, 'send-now-rejected', {
+          reason: 'persistence-failed',
+          commandId,
+        });
+        return false;
       }
 
       pausedRef.current = false;
       logCommandQueue(conversationKey, 'send-now', {
         commandId,
       });
-      void updateState((state) => ({
-        isPaused: state.items.length > 0 ? false : state.isPaused,
-        items: promoteQueuedCommand(state.items, commandId),
-      }));
+      void publishState(persistedState);
+      return true;
     },
-    [conversation_id, enabled, updateState]
+    [conversation_id, conversationKey, enabled, persistStateOrWarn, publishState, t]
   );
 
   const pause = useCallback(() => {
@@ -808,6 +1083,11 @@ export const useConversationCommandQueue = ({
     });
     void updateState((state) => ({
       ...state,
+      items: state.items.map((item) =>
+        isQueueItemDeliveryInFlight(item)
+          ? item
+          : resetQueueItemRecovery(item, 'queued')
+      ),
       isPaused: state.items.length > 0 ? false : state.isPaused,
     }));
   }, [conversation_id, data.items.length, enabled, updateState]);
@@ -853,14 +1133,15 @@ export const useConversationCommandQueue = ({
         return;
       }
 
-      executionGateRef.current = IDLE_EXECUTION_GATE;
-
-      if (!hadPendingTurn) {
-        return;
-      }
+      // Reset/clear-context has changed the backend lifecycle boundary, but a
+      // local success response alone does not prove that an old turn handle is
+      // gone. Keep queued work behind an authoritative GET even when no local
+      // gate was visible before the reset.
+      executionGateRef.current = { phase: 'waiting_completion' };
 
       logCommandQueue(conversationKey, 'execution-reset', {
         reason,
+        hadPendingTurn,
         pendingItemCount: stateRef.current.items.length,
       });
       setExecutionGateVersion((version) => version + 1);
@@ -895,6 +1176,48 @@ export const useConversationCommandQueue = ({
         expectedGeneration: executionGeneration,
       });
     executionGateRef.current = reduceCommandQueueExecutionGate(executionGateRef.current, { type: 'begin' });
+
+    // Mark the item before the POST. This phase is persisted with the same
+    // idempotency key so a remount or an ambiguous response can replay the
+    // exact immutable payload instead of minting a second message.
+    const currentQueueState = normalizeQueueState(stateRef.current);
+    const sourceItems = currentQueueState.items.some((item) => item.id === nextCommand.id)
+      ? currentQueueState.items
+      : [...currentQueueState.items, nextCommand];
+    const dispatchingState = normalizeQueueState({
+      ...currentQueueState,
+      items: sourceItems.map((item) =>
+        item.id === nextCommand.id ? updateQueueItemDelivery(item, 'dispatching') : item
+      ),
+    });
+    if (!persistQueueState(conversationKey, dispatchingState)) {
+      const pausedState = normalizeQueueState({
+        ...dispatchingState,
+        items: dispatchingState.items.map((item) =>
+          item.id === nextCommand.id ? updateQueueItemDelivery(item, 'paused') : item
+        ),
+        isPaused: true,
+      });
+      executionGateRef.current = IDLE_EXECUTION_GATE;
+      pausedRef.current = true;
+      stateRef.current = pausedState;
+      void mutate(pausedState, { revalidate: false });
+      logCommandQueue(conversationKey, 'dispatch-paused', {
+        reason: 'persistence-failed',
+        item: summarizeQueuedCommand(nextCommand),
+      });
+      Message.warning(
+        t('conversation.commandQueue.persistenceFailed', {
+          defaultValue: 'The message was kept in the composer because the queue could not be saved. Try again.',
+        })
+      );
+      setExecutionGateVersion((version) => version + 1);
+      return;
+    }
+    stateRef.current = dispatchingState;
+    pausedRef.current = dispatchingState.isPaused;
+    void publishState(dispatchingState);
+
     logCommandQueue(conversationKey, 'dispatching', {
       item: summarizeQueuedCommand(nextCommand),
       remainingItemCount: data.items.length - 1,
@@ -937,31 +1260,114 @@ export const useConversationCommandQueue = ({
         void reconcileActiveExecution();
       })
       .catch((error) => {
-        if (!isExecutionCurrent() || executionGateRef.current.phase !== 'waiting_start') {
+        if (!isExecutionCurrent() || executionGateRef.current.phase === 'idle') {
           return;
         }
-        console.error('[conversation-command-queue] Failed to execute queued command:', error);
+        const failureKind = classifyConversationSendFailure(error);
+        const currentState = normalizeQueueState(stateRef.current);
+        const currentItem = currentState.items.find((item) => item.id === nextCommand.id) ?? nextCommand;
+        const recovery = getQueueItemRecovery(currentItem);
+        const nextRecovery = { ...recovery };
+        let canRecover = false;
+        if (failureKind === 'turn_admission_conflict') {
+          canRecover = recovery.admission_attempts < MAX_ADMISSION_RECOVERY_ATTEMPTS;
+          if (canRecover) nextRecovery.admission_attempts += 1;
+        } else if (failureKind === 'ambiguous_transport') {
+          canRecover = recovery.transport_attempts < MAX_TRANSPORT_RECOVERY_ATTEMPTS;
+          if (canRecover) nextRecovery.transport_attempts += 1;
+        }
+
         logCommandQueue(conversationKey, 'execute-failed', {
           item: summarizeQueuedCommand(nextCommand),
+          failureKind,
+          recovery,
           error: error instanceof Error ? error.message : String(error),
         });
+
+        if (canRecover) {
+          const recoveryState = normalizeQueueState({
+            ...currentState,
+            items: currentState.items.map((item) =>
+              item.id === nextCommand.id
+                ? updateQueueItemDelivery(
+                    item,
+                    failureKind === 'turn_admission_conflict' ? 'waiting_for_turn' : 'retrying',
+                    nextRecovery
+                  )
+                : item
+            ),
+            isPaused: false,
+          });
+          if (!persistQueueState(conversationKey, recoveryState)) {
+            const pausedState = normalizeQueueState({
+              ...recoveryState,
+              items: recoveryState.items.map((item) =>
+                item.id === nextCommand.id ? updateQueueItemDelivery(item, 'paused', nextRecovery) : item
+              ),
+              isPaused: true,
+            });
+            executionGateRef.current = IDLE_EXECUTION_GATE;
+            pausedRef.current = true;
+            stateRef.current = pausedState;
+            void publishState(pausedState);
+            Message.warning(
+              t('conversation.commandQueue.persistenceFailed', {
+                defaultValue: 'The message was kept in the composer because the queue could not be saved. Try again.',
+              })
+            );
+            setExecutionGateVersion((version) => version + 1);
+            return;
+          }
+
+          executionGateRef.current = { phase: 'waiting_completion' };
+          stateRef.current = recoveryState;
+          pausedRef.current = false;
+          void publishState(recoveryState);
+          logCommandQueue(conversationKey, 'recovery-scheduled', {
+            commandId: nextCommand.id,
+            failureKind,
+            admissionAttempts: nextRecovery.admission_attempts,
+            transportAttempts: nextRecovery.transport_attempts,
+          });
+          setExecutionGateVersion((version) => version + 1);
+          return;
+        }
+
+        const pausedItem = updateQueueItemDelivery(currentItem, 'paused', nextRecovery);
+        const pausedState = normalizeQueueState({
+          ...currentState,
+          // The same item may already be present because it stays persisted
+          // during dispatch. De-duplicate by id when restoring it.
+          items: restoreQueuedCommand(currentState.items, pausedItem),
+          isPaused: true,
+        });
+        const persisted = persistQueueState(conversationKey, pausedState);
         executionGateRef.current = IDLE_EXECUTION_GATE;
         pausedRef.current = true;
-        void updateState((state) =>
-          isExecutionCurrent()
-            ? {
-                // The same item may already be present because it stays
-                // persisted during dispatch. De-duplicate by id.
-                items: restoreQueuedCommand(state.items, nextCommand),
-                isPaused: true,
-              }
-            : state
-        );
-        Message.warning(
-          t('conversation.commandQueue.pausedAfterFailure', {
-            defaultValue: 'The next queued command could not start. Edit, reorder, or remove it to continue.',
-          })
-        );
+        stateRef.current = pausedState;
+        void publishState(pausedState);
+        if (!persisted) {
+          Message.warning(
+            t('conversation.commandQueue.persistenceFailed', {
+              defaultValue: 'The message was kept in the composer because the queue could not be saved. Try again.',
+            })
+          );
+        } else {
+          const warningKey =
+            failureKind === 'turn_admission_conflict'
+              ? 'conversation.commandQueue.admissionRecoveryFailed'
+              : failureKind === 'ambiguous_transport'
+                ? 'conversation.commandQueue.transportRecoveryFailed'
+                : 'conversation.commandQueue.pausedAfterFailure';
+          const defaultValue =
+            failureKind === 'turn_admission_conflict'
+              ? 'The conversation is still busy. The message was kept in the queue; try again after the current turn finishes.'
+              : failureKind === 'ambiguous_transport'
+                ? 'The send result was unclear. The message was kept in the queue; retry it when the connection is stable.'
+                : 'The next queued command could not start. Edit, reorder, or remove it to continue.';
+          Message.warning(t(warningKey, { defaultValue }));
+        }
+        setExecutionGateVersion((version) => version + 1);
       });
   }, [
     conversation_id,
@@ -971,7 +1377,9 @@ export const useConversationCommandQueue = ({
     isBusy,
     isHydrated,
     isInteractionLocked,
+    mutate,
     onExecute,
+    publishState,
     reconcileActiveExecution,
     t,
     updateState,

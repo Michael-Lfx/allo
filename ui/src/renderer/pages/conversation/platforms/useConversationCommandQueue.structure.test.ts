@@ -110,10 +110,10 @@ describe('conversation command queue runtime recovery', () => {
     const reconcile = source.indexOf('void reconcileActiveExecution();', postRemovalFence);
     const reject = source.indexOf('.catch((error) => {', reconcile);
     const rejectFence = source.indexOf('if (!isExecutionCurrent()', reject);
-    const acceptedFence = source.indexOf("executionGateRef.current.phase !== 'waiting_start'", rejectFence);
-    const restoreUpdater = source.indexOf('void updateState((state) =>', acceptedFence);
-    const restoreUpdaterFence = source.indexOf('isExecutionCurrent()', restoreUpdater);
-    const restore = source.indexOf('restoreQueuedCommand(state.items, nextCommand)', restoreUpdaterFence);
+    const acceptedFence = source.indexOf("executionGateRef.current.phase === 'idle'", rejectFence);
+    const restoreUpdater = source.indexOf('const pausedItem = updateQueueItemDelivery', acceptedFence);
+    const restoreUpdaterFence = source.indexOf('const pausedState = normalizeQueueState', restoreUpdater);
+    const restore = source.indexOf('restoreQueuedCommand(currentState.items, pausedItem)', restoreUpdaterFence);
     const warning = source.indexOf('Message.warning(', restore);
 
     expect(execute >= 0).toBe(true);
