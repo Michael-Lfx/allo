@@ -2,13 +2,15 @@ import type { CameoDraftItem, VimaxWorkflow } from '../types';
 import type { SeedanceAspectRatio } from '../aspectRatios';
 import type { VideoResolution } from '@renderer/services/videoModelCapabilities';
 import type { VimaxModelSelection } from '../components/ModelSelectors';
+import type { CreationSubjectKind } from '@renderer/pages/videoCanvas/lib/creation-ir';
 
 /**
  * Top-level home modes (ModeMenu peers).
  * - `generate`: prompt + optional refs → single video clip (ordinary T2V / I2V)
  * - `agent`: ViMax multi-scene pipelines
  * - `action`: character still + reference video imitation
- * - `creation`: infinite canvas free composition
+ * - `creation`: send a brief + labeled subjects to the canvas Agent; storyboard is the spine
+
  * - `briefing`: sourced news briefing (not a ViMax film)
  */
 export type VideoHomeMode = 'generate' | 'agent' | 'creation' | 'action' | 'briefing';
@@ -58,6 +60,10 @@ export interface CanvasReferenceDraft {
   localId: string;
   file: File;
   previewUrl: string;
+  /** Creation mode: what this still is. Generate mode ignores it. */
+  subjectKind?: CreationSubjectKind;
+  /** Creation mode display name (character / scene / prop). */
+  subjectName?: string;
 }
 
 /** Home-composer action-imitation inputs. Files never persist to sessionStorage. */

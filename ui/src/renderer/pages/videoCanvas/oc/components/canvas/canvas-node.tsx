@@ -382,6 +382,11 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onToggleBatch?.(data.id);
                         return;
                     }
+                    if (!readOnly && data.metadata?.workflowKind === "character" && data.metadata.characterAssetId) {
+                        event.stopPropagation();
+                        onOpenTextEditor?.(data);
+                        return;
+                    }
                     if (data.type === CanvasNodeType.Image && hasImageContent) {
                         event.stopPropagation();
                         onViewImage?.(data);
@@ -395,11 +400,6 @@ export const CanvasNode = React.memo(function CanvasNode({
                     if (data.type === CanvasNodeType.Drawing) {
                         event.stopPropagation();
                         onOpenDrawing?.(data);
-                        return;
-                    }
-                    if (!readOnly && data.type === CanvasNodeType.Text && data.metadata?.workflowKind === "character" && data.metadata.characterAssetId) {
-                        event.stopPropagation();
-                        onOpenTextEditor?.(data);
                         return;
                     }
                     if (data.metadata?.workflowKind === "styleboard" || data.metadata?.workflowKind === "story_input") {

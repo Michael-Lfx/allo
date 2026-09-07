@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasAccel } from "@oc/lib/canvas/canvas-shortcuts";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { createCanvasRichTextExtensions, isSafeCanvasRichTextLink } from "@oc/lib/canvas/canvas-rich-text";
@@ -153,7 +154,7 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
 
                 <footer className="flex h-8 shrink-0 items-center gap-3 border-t px-3 text-[var(--fs-tiny)]" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
                     <span className="hidden sm:inline">{canvasT("videoCanvas.textEditor.formatHint", "支持标题、列表、引用、链接、代码和颜色格式")}</span>
-                    <span className="ml-auto">{canvasT("videoCanvas.textEditor.saveShortcut", "Ctrl/⌘S 保存")}</span>
+                    <span className="ml-auto">{canvasT("videoCanvas.textEditor.saveShortcut", "{{shortcut}} 保存", { shortcut: canvasAccel.save() })}</span>
                 </footer>
             </section>
         </Modal>

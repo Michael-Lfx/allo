@@ -48,7 +48,6 @@ import { usesCanvasReferences, usesLookPicker } from './types';
 import { generationPreferencesSummary } from '../preferenceSummary';
 import {
   hasSelectedVisualStyle,
-  promptForVisualStyleKey,
   visualStyleSelectValue,
 } from '../visualStylePresets';
 import { CanvasStyleCoverSwatch } from '@oc/components/canvas/canvas-style-cover';
@@ -128,6 +127,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setActionCharacter,
     setActionVideo,
     removeCanvasReference,
+    updateCanvasReference,
     removeCameo,
   } = useHomeUpload({
     draft,
@@ -234,18 +234,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setPreferencesOpen(false);
     setUploadError(null);
   }, [mode]);
-
-  useEffect(() => {
-    if (mode !== 'creation') return;
-    setDraft((current) => {
-      if (current.style.trim()) return current;
-      return {
-        ...current,
-        style: promptForVisualStyleKey('cinematic'),
-        creationSkillId: 'cinematic',
-      };
-    });
-  }, [mode, setDraft]);
 
   useEffect(() => {
     if (isBriefing) {
@@ -389,7 +377,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         })
       : mode === 'creation'
         ? t('videoGeneration.create.composer.creationPlaceholder', {
-            defaultValue: '描述你想创作的画面、镜头或氛围…',
+            defaultValue: '描述故事。可上传角色、场景或道具，再进入分镜…',
           })
         : draft.workflow === 'script2video'
           ? t('videoGeneration.create.composer.scriptPlaceholder', {
@@ -541,10 +529,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       cameos: cameosWithLabels,
       sourceText: draft.sourceText.trim(),
       creationPrompt: draft.creationPrompt.trim(),
-      style:
-        mode === 'creation' && !draft.style.trim()
-          ? promptForVisualStyleKey('cinematic')
-          : draft.style,
+      style: draft.style,
       preferences: isGenerate
         ? {
             ...draft.preferences,
@@ -755,6 +740,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             setDocumentName={setDocumentName}
             canvasReferences={draft.canvasReferences}
             removeCanvasReference={removeCanvasReference}
+            updateCanvasReference={updateCanvasReference}
             cameos={draft.cameos}
             removeCameo={removeCameo}
             selectedVerticalSkills={selectedVerticalSkills}

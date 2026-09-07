@@ -7,6 +7,8 @@ import { fitNodeSize } from "@oc/lib/canvas/canvas-node-size";
 import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { createDirectorSceneFromTemplate, type DirectorTemplateId } from "@oc/lib/canvas/director/director-templates";
+import { bindDirectorStillToStoryboard, attachDirectorGridToStoryboard, syncDirectorShotsToStoryboard } from "@oc/lib/canvas/director/director-storyboard-apply";
+import type { DirectorCameraGridOutput } from "@oc/lib/canvas/director/director-camera-grid";
 import { mergeDirectorOutputPreview, upsertDirectorSceneById } from "@oc/lib/canvas/director/director-session";
 import { uploadImage } from "@oc/services/image-storage";
 import { uploadMediaFile } from "@oc/services/file-storage";
@@ -88,14 +90,16 @@ export function useCanvasDirector({
         });
         node.title = canvasT("videoCanvas.director.shotTitle", "镜头 {{index}}", { index: shotIndex });
         node.height = 300;
-        const nextNodes = [...nodesRef.current, node];
-        nodesRef.current = nextNodes;
-        setNodes(nextNodes);
+        const synced = syncDirectorShotsToStoryboard({ nodes: [...nodesRef.current, node], connections: connectionsRef.current, scene });
+        scene = { ...scene, shots: synced.shots };
+        nodesRef.current = synced.nodes;
+        connectionsRef.current = synced.connections;
+        setNodes(synced.nodes);
         setSelectedNodeIds(new Set([node.id]));
         setSelectedConnectionId(null);
         updateProject(projectId, { directorScenes: upsertDirectorSceneById(currentDirectorScenes(projectId, directorScenes), scene) });
         message.success(canvasT("videoCanvas.director.created", "已创建导演台节点，点击缩略图进入编辑"));
-    }, [directorScenes, getCanvasCenter, message, nodesRef, projectId, setNodes, setSelectedConnectionId, setSelectedNodeIds, updateProject]);
+    }, [connectionsRef, directorScenes, getCanvasCenter, message, nodesRef, projectId, setNodes, setSelectedConnectionId, setSelectedNodeIds, updateProject]);
 
     const openDirectorWorkbench = useCallback((nodeId: string) => {
         const node = nodesRef.current.find((item) => item.id === nodeId);
@@ -117,8 +121,14 @@ export function useCanvasDirector({
 
     /** 每次保存都基于 store 中最新 directorScenes upsert，避免旧闭包数组覆盖并发保存。 */
     const saveDirectorScene = useCallback((scene: DirectorScene) => {
-        updateProject(projectId, { directorScenes: upsertDirectorSceneById(currentDirectorScenes(projectId, directorScenes), scene) });
-    }, [directorScenes, projectId, updateProject]);
+        const synced = syncDirectorShotsToStoryboard({ nodes: nodesRef.current, connections: connectionsRef.current, scene });
+        if (synced.nodes !== nodesRef.current) {
+            nodesRef.current = synced.nodes;
+            setNodes(synced.nodes);
+        }
+        const nextScene = synced.shots === scene.shots ? scene : { ...scene, shots: synced.shots };
+        updateProject(projectId, { directorScenes: upsertDirectorSceneById(currentDirectorScenes(projectId, directorScenes), nextScene) });
+    }, [connectionsRef, directorScenes, nodesRef, projectId, setNodes, updateProject]);
 
     const applyDirectorOutput = useCallback(async (output: DirectorSceneOutput) => {
         const outputProjectId = projectId;
@@ -135,8 +145,6 @@ export function useCanvasDirector({
         const latestScene = outputProject?.directorScenes.find((item) => item.id === output.scene.id);
         if (projectIdRef.current !== outputProjectId || !outputProject || !sourceNode || sourceNode.metadata?.directorSceneId !== output.scene.id || !latestScene || !latestScene.shots.some((shot) => shot.id === output.shot.id)) throw new Error(canvasT("videoCanvas.director.outputStale", "输出期间项目或镜头已切换、删除，请重试"));
         const previewId = sourceNode.metadata?.directorPreviewNodeId || `image-director-${Date.now()}`;
-        const mergedScene = mergeDirectorOutputPreview(latestScene, { sceneId: output.scene.id, shotId: output.shot.id, previewNodeId: previewId });
-        if (!mergedScene) throw new Error(canvasT("videoCanvas.director.outputStale", "输出期间项目或镜头已切换、删除，请重试"));
         const previewSize = fitNodeSize(image.width, image.height);
         const nextNodes = [...nodesRef.current];
         const previewIndex = nextNodes.findIndex((item) => item.id === previewId);
@@ -177,6 +185,9 @@ export function useCanvasDirector({
         [previewId, videoUpload ? clayVideoId : null].filter((id): id is string => Boolean(id)).forEach((id) => {
             if (!nextConnections.some((connection) => connection.fromNodeId === id && connection.toNodeId === sourceNode.id)) nextConnections.push({ id: nanoid(), fromNodeId: id, toNodeId: sourceNode.id });
         });
+        const bound = bindDirectorStillToStoryboard({ nodes: nextNodes, connections: nextConnections, previewNodeId: previewId, sceneId: output.scene.id, shot: output.shot });
+        const mergedScene = mergeDirectorOutputPreview(latestScene, { sceneId: output.scene.id, shotId: output.shot.id, previewNodeId: previewId, storyboardRowId: bound.storyboardRowId });
+        if (!mergedScene) throw new Error(canvasT("videoCanvas.director.outputStale", "输出期间项目或镜头已切换、删除，请重试"));
         const retiredReferenceIds = new Set([sourceNode.metadata?.directorDepthNodeId, sourceNode.metadata?.directorNormalNodeId].filter(Boolean));
         const referenceAssetNodeIds = Array.from(new Set([
             ...(sourceNode.metadata?.referenceAssetNodeIds || []).filter((id) => !retiredReferenceIds.has(id)),
@@ -196,13 +207,48 @@ export function useCanvasDirector({
             videoCameraMovePrompt: output.prompt,
             referenceAssetNodeIds,
         };
-        const finalizedNodes = nextNodes.map((item) => item.id === sourceNode.id ? { ...item, metadata: { ...item.metadata, ...directorMetadata } } : item);
+        const finalizedNodes = bound.nodes.map((item) => item.id === sourceNode.id ? { ...item, metadata: { ...item.metadata, ...directorMetadata } } : item);
         nodesRef.current = finalizedNodes;
-        connectionsRef.current = nextConnections;
+        connectionsRef.current = bound.connections;
         setNodes(finalizedNodes);
-        setConnections(nextConnections);
+        setConnections(bound.connections);
         saveDirectorScene(mergedScene);
     }, [connectionsRef, directorNodeId, nodesRef, projectId, saveDirectorScene, setConnections, setNodes]);
 
-    return { applyDirectorOutput, createDirectorShot, openDirectorWorkbench, saveDirectorScene };
+    const applyDirectorCameraGrid = useCallback(async (output: DirectorCameraGridOutput) => {
+        const outputProjectId = projectId;
+        if (projectIdRef.current !== outputProjectId) throw new Error(canvasT("videoCanvas.director.projectSwitched", "画布项目已切换，请重试"));
+        const sourceNodeAtStart = nodesRef.current.find((item) => item.id === directorNodeId);
+        if (!sourceNodeAtStart || sourceNodeAtStart.metadata?.directorSceneId !== output.scene.id) throw new Error(canvasT("videoCanvas.director.shotMissing", "镜头节点不存在或场景已切换"));
+        const image = await uploadImage(output.blob);
+        if (projectIdRef.current !== outputProjectId) throw new Error(canvasT("videoCanvas.director.projectSwitched", "画布项目已切换，请重试"));
+        const sourceNode = nodesRef.current.find((item) => item.id === sourceNodeAtStart.id);
+        if (!sourceNode || sourceNode.metadata?.directorSceneId !== output.scene.id) throw new Error(canvasT("videoCanvas.director.outputStale", "输出期间项目或镜头已切换、删除，请重试"));
+        const previewSize = fitNodeSize(image.width, image.height);
+        const gridId = `image-director-grid-${Date.now()}`;
+        const gridNode: CanvasNodeData = {
+            id: gridId,
+            type: CanvasNodeType.Image,
+            title: canvasT("videoCanvas.director.gridTitle", "{{title}} · 多机位宫格", { title: sourceNode.title }),
+            position: { x: sourceNode.position.x + sourceNode.width + 36, y: sourceNode.position.y },
+            width: previewSize.width,
+            height: previewSize.height,
+            metadata: {
+                ...imageMetadata(image),
+                workflowKind: "shot",
+                assetTags: [canvasT("videoCanvas.director.gridTag", "多机位宫格"), canvasT("videoCanvas.director.shotTag", "镜头:{{title}}", { title: sourceNode.title })],
+            },
+        };
+        const nextNodes = [...nodesRef.current, gridNode];
+        const nextConnections = connectionsRef.current.some((connection) => connection.fromNodeId === gridId && connection.toNodeId === sourceNode.id)
+            ? connectionsRef.current
+            : [...connectionsRef.current, { id: nanoid(), fromNodeId: gridId, toNodeId: sourceNode.id }];
+        const attached = attachDirectorGridToStoryboard({ nodes: nextNodes, connections: nextConnections, gridNodeId: gridId });
+        nodesRef.current = attached.nodes;
+        connectionsRef.current = attached.connections;
+        setNodes(attached.nodes);
+        setConnections(attached.connections);
+    }, [connectionsRef, directorNodeId, nodesRef, projectId, setConnections, setNodes]);
+
+    return { applyDirectorOutput, applyDirectorCameraGrid, createDirectorShot, openDirectorWorkbench, saveDirectorScene };
 }

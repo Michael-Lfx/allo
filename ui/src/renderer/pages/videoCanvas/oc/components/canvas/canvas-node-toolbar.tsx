@@ -203,14 +203,14 @@ export function CanvasNodeToolbar({
     const isImage = node.type === CanvasNodeType.Image;
     const isVideo = node.type === CanvasNodeType.Video;
     const isAudio = node.type === CanvasNodeType.Audio;
-    const hasImage = isImage && Boolean(node.metadata?.content);
+    const hasImage = isImage && Boolean(node.metadata?.content) && !(node.metadata?.workflowKind === "character" && Boolean(node.metadata.characterAssetId));
     const hasVideo = isVideo && Boolean(node.metadata?.content);
     const hasAudio = isAudio && Boolean(node.metadata?.content);
     const isText = node.type === CanvasNodeType.Text;
-    const isCharacterReference = isText && node.metadata?.workflowKind === "character" && Boolean(node.metadata.characterAssetId);
+    const isCharacterReference = node.metadata?.workflowKind === "character" && Boolean(node.metadata.characterAssetId);
     const isEditableText = isText && !isCharacterReference;
     const isConfig = node.type === CanvasNodeType.Config;
-    const canOpenDialog = isEditableText || isImage || isVideo;
+    const canOpenDialog = isEditableText || (isImage && !isCharacterReference) || isVideo;
     const requiresPromptChange = node.metadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(node.metadata?.errorDetails);
     const canRetry = node.metadata?.status === "error" && !requiresPromptChange;
     const quickImageToolIdSet = new Set(quickImageToolIds);
@@ -291,7 +291,7 @@ export function CanvasNodeToolbar({
     });
     const genericTools = takeTools(isAudio ? ["delete", "download", "timeline", "uploadAudio"] : isEditableText ? ["delete", "edit", "editText", "generateImage", "saveAsset"] : ["delete", "info", "config"]);
     const visibleToolIds = new Set([
-        ...(isImage ? [...imageBaseTools, ...imageEditTools, ...imagePortraitTools, ...(imageAngleTool ? [imageAngleTool] : [])] : isVideo ? videoTools : genericTools).map((tool) => tool.id),
+        ...(isCharacterReference ? takeTools(["delete", "info"]) : isImage ? [...imageBaseTools, ...imageEditTools, ...imagePortraitTools, ...(imageAngleTool ? [imageAngleTool] : [])] : isVideo ? videoTools : genericTools).map((tool) => tool.id),
     ]);
     const overflowTools = allTools
         .filter((tool) => !visibleToolIds.has(tool.id))

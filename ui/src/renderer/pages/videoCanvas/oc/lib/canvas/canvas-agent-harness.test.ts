@@ -16,6 +16,12 @@ describe("CanvasHarness", () => {
     expect([...CANVAS_AGENT_ADVERTISED_TOOLS]).toEqual([
       "canvas_list_skills",
       "canvas_get_skill",
+      "storyboard_inspect",
+      "storyboard_apply",
+      "subject_inspect",
+      "spec_inspect",
+      "spec_apply",
+      "timeline_inspect",
       "canvas_inspect",
       "canvas_propose",
       "canvas_apply",
@@ -24,10 +30,13 @@ describe("CanvasHarness", () => {
       "canvas_repair",
     ]);
     expect(harness.advertiseTool("canvas_apply")).toBe(true);
+    expect(harness.advertiseTool("storyboard_apply")).toBe(true);
     expect(harness.advertiseTool("canvas_apply_ops")).toBe(false);
     expect(harness.advertiseTool("Read")).toBe(false);
     expect(harness.isReadTool("canvas_inspect")).toBe(true);
+    expect(harness.isReadTool("storyboard_inspect")).toBe(true);
     expect(harness.isReadTool("canvas_apply")).toBe(false);
+    expect(harness.isReadTool("storyboard_apply")).toBe(false);
   });
 
   test("first turn requires a tool call; later turns are auto", () => {

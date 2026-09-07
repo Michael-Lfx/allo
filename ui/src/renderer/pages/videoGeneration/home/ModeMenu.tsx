@@ -39,7 +39,7 @@ const MODES: Array<{
     labelKey: 'videoGeneration.mode.creationLabel',
     labelFallback: '创作模式',
     descKey: 'videoGeneration.mode.creationMenuDesc',
-    descFallback: '把需求发给画布 Agent，自动搭建并生成',
+    descFallback: '描述故事，上传角色或场景，进入分镜与画布',
   },
   {
     id: 'briefing',

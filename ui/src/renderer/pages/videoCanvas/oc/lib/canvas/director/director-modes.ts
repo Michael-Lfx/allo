@@ -40,7 +40,19 @@ export const DIRECTOR_MODES: Array<{ mode: DirectorMode; label: string; hint: st
     { mode: "camera", label: "摄影机", hint: "机位、对齐视图与运镜" },
 ];
 
+/** 默认摆场路径：只摆人和机位。姿态/动画进「更多」，避免时间轴成为进导演台的第一眼。 */
+export const DIRECTOR_BLOCKING_MODES: readonly DirectorMode[] = ["layout", "camera"];
+export const DIRECTOR_ADVANCED_MODES: readonly DirectorMode[] = ["pose", "animate"];
+
 export const DIRECTOR_DEFAULT_MODE: DirectorMode = "layout";
+
+export function isDirectorBlockingMode(mode: DirectorMode): boolean {
+    return mode === "layout" || mode === "camera";
+}
+
+export function isDirectorAdvancedMode(mode: DirectorMode): boolean {
+    return mode === "pose" || mode === "animate";
+}
 
 export function directorModeCapabilities(mode: DirectorMode): DirectorModeCapabilities {
     return CAPABILITIES[mode] ?? CAPABILITIES[DIRECTOR_DEFAULT_MODE];

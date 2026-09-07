@@ -10,6 +10,7 @@ import { useWalletBalance } from "@oc/hooks/use-wallet-balance";
 import type { CanvasContextSummary } from "@oc/lib/canvas/canvas-context-summary";
 import type { CanvasShortDramaProgress } from "@oc/lib/canvas/canvas-short-drama";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasAccel } from "@oc/lib/canvas/canvas-shortcuts";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
@@ -208,7 +209,7 @@ export function CanvasTopBar({
                             <span>{availableMicrocredits === null ? "--" : (availableMicrocredits / 1_000_000).toLocaleString(i18n.language, { maximumFractionDigits: 3 })}</span>
                         </Link>
                     ) : null}
-                    <CanvasChromeButton className="is-icon" style={{ color: theme.node.text }} onClick={onEnterFocusMode} title={canvasT("videoCanvas.chrome.focusMode", "进入专注模式（⇧⌘F）")} aria-label={canvasT("videoCanvas.chrome.focusMode", "进入专注模式（⇧⌘F）")}>
+                    <CanvasChromeButton className="is-icon" style={{ color: theme.node.text }} onClick={onEnterFocusMode} title={canvasT("videoCanvas.chrome.focusMode", "进入专注模式（{{shortcut}}）", { shortcut: canvasAccel.focus() })} aria-label={canvasT("videoCanvas.chrome.focusMode", "进入专注模式（{{shortcut}}）", { shortcut: canvasAccel.focus() })}>
                         <Focus className="size-3.5" />
                     </CanvasChromeButton>
                     {shortDramaGuide ? (
@@ -311,14 +312,14 @@ function TopBarOverflowMenu({
                         <CanvasMenuRow icon={<Upload className="size-3.5" />} label={canvasT("videoCanvas.chrome.importMedia", "导入素材")} onClick={() => run(onImportImage)} />
                         <CanvasMenuRow icon={<Download className="size-3.5" />} label={canvasT("videoCanvas.chrome.exportProject", "导出工程")} disabled={exporting} onClick={() => run(onExportProject)} />
                         <CanvasMenuRow icon={<Share2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV")} disabled={publishing} onClick={() => run(onPublishTvShow)} />
-                        <CanvasMenuRow icon={<Search className="size-3.5" />} label={canvasT("videoCanvas.chrome.searchNodes", "搜索节点")} shortcut="⌘F" onClick={() => run(onOpenSearch)} />
+                        <CanvasMenuRow icon={<Search className="size-3.5" />} label={canvasT("videoCanvas.chrome.searchNodes", "搜索节点")} shortcut={canvasAccel.search()} onClick={() => run(onOpenSearch)} />
                         <CanvasMenuSeparator />
                         <CanvasMenuRow icon={<Gauge className="size-3.5" />} label={canvasT("videoCanvas.chrome.perfAuto", "自动性能")} active={mediaPerformanceMode === "auto"} onClick={() => run(() => onMediaPerformanceModeChange("auto"))} />
                         <CanvasMenuRow label={canvasT("videoCanvas.chrome.perfQuality", "画质优先")} active={mediaPerformanceMode === "quality"} onClick={() => run(() => onMediaPerformanceModeChange("quality"))} />
                         <CanvasMenuRow label={canvasT("videoCanvas.chrome.perfPerformance", "性能优先")} active={mediaPerformanceMode === "performance"} onClick={() => run(() => onMediaPerformanceModeChange("performance"))} />
                         <CanvasMenuSeparator />
-                        <CanvasMenuRow icon={<Undo2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.undo", "撤销")} shortcut="⌘Z" disabled={!canUndo} onClick={() => run(onUndo)} />
-                        <CanvasMenuRow icon={<Redo2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.redo", "重做")} shortcut="⌘⇧Z" disabled={!canRedo} onClick={() => run(onRedo)} />
+                        <CanvasMenuRow icon={<Undo2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.undo", "撤销")} shortcut={canvasAccel.undo()} disabled={!canUndo} onClick={() => run(onUndo)} />
+                        <CanvasMenuRow icon={<Redo2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.redo", "重做")} shortcut={canvasAccel.redo()} disabled={!canRedo} onClick={() => run(onRedo)} />
                     </div>,
                     document.body,
                 )

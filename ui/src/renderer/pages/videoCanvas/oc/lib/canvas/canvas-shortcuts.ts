@@ -1,4 +1,5 @@
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { formatShortcut, shortcutKeyParts, shortcutPartLabel } from "@renderer/utils/shortcut-label";
 
 export type CanvasShortcutCategoryId = "common" | "navigation" | "selection" | "editing";
 
@@ -17,7 +18,18 @@ export type CanvasShortcutItem = {
     keywords?: string[];
 };
 
-export const CANVAS_MODIFIER_KEY = "Ctrl / Cmd";
+export const canvasAccel = {
+    search: () => formatShortcut(["Mod", "F"]),
+    undo: () => formatShortcut(["Mod", "Z"]),
+    redo: () => formatShortcut(["Shift", "Mod", "Z"]),
+    copy: () => formatShortcut(["Mod", "C"]),
+    paste: () => formatShortcut(["Mod", "V"]),
+    duplicate: () => formatShortcut(["Mod", "D"]),
+    focus: () => formatShortcut(["Shift", "Mod", "F"]),
+    save: () => formatShortcut(["Mod", "S"]),
+};
+
+const MOD_KEYWORDS = ["cmd", "command", "ctrl", "control", "⌘"];
 
 export function canvasShortcutCategories(): CanvasShortcutCategory[] {
     return [
@@ -29,27 +41,29 @@ export function canvasShortcutCategories(): CanvasShortcutCategory[] {
 }
 
 export function canvasShortcuts(): CanvasShortcutItem[] {
+    const drag = canvasT("videoCanvas.shortcuts.keyDrag", "拖动");
+    const click = canvasT("videoCanvas.shortcuts.keyClick", "点击");
     return [
-        { id: "search", category: "common", title: canvasT("videoCanvas.shortcuts.search", "搜索并定位节点"), description: canvasT("videoCanvas.shortcuts.searchDesc", "按名称或内容搜索并定位节点"), keys: [[CANVAS_MODIFIER_KEY, "F"]], keywords: ["查找", "定位", "find", "search"] },
+        { id: "search", category: "common", title: canvasT("videoCanvas.shortcuts.search", "搜索并定位节点"), description: canvasT("videoCanvas.shortcuts.searchDesc", "按名称或内容搜索并定位节点"), keys: [shortcutKeyParts(["Mod", "F"])], keywords: ["查找", "定位", "find", "search", ...MOD_KEYWORDS] },
         { id: "shortcuts", category: "common", title: canvasT("videoCanvas.shortcuts.openShortcuts", "打开快捷键"), description: canvasT("videoCanvas.shortcuts.openShortcutsDesc", "查看画布中的键盘和鼠标操作"), keys: [["?"]], keywords: ["帮助", "说明", "help"] },
-        { id: "save", category: "common", title: canvasT("videoCanvas.shortcuts.save", "保存画布布局和位置"), description: canvasT("videoCanvas.shortcuts.saveDesc", "保存当前画布布局和节点位置"), keys: [[CANVAS_MODIFIER_KEY, "S"]], keywords: ["存储", "save"] },
-        { id: "focus", category: "common", title: canvasT("videoCanvas.shortcuts.focusToggle", "进入 / 退出专注模式"), description: canvasT("videoCanvas.shortcuts.focusDesc", "隐藏界面干扰，聚焦当前画布"), keys: [["Shift", CANVAS_MODIFIER_KEY, "F"]], keywords: ["沉浸", "全屏", "focus"] },
-        { id: "pan", category: "navigation", title: canvasT("videoCanvas.shortcuts.pan", "平移视图"), description: canvasT("videoCanvas.shortcuts.panDesc", "在画布空白处拖动，或使用空格键与中键拖动"), keys: [[canvasT("videoCanvas.shortcuts.keyPan", "空白处拖动")], ["Space", canvasT("videoCanvas.shortcuts.keyDrag", "拖动")], [canvasT("videoCanvas.shortcuts.keyMiddleDrag", "中键拖动")]], keywords: ["移动", "画布", "pan"] },
+        { id: "save", category: "common", title: canvasT("videoCanvas.shortcuts.save", "保存画布布局和位置"), description: canvasT("videoCanvas.shortcuts.saveDesc", "保存当前画布布局和节点位置"), keys: [shortcutKeyParts(["Mod", "S"])], keywords: ["存储", "save", ...MOD_KEYWORDS] },
+        { id: "focus", category: "common", title: canvasT("videoCanvas.shortcuts.focusToggle", "进入 / 退出专注模式"), description: canvasT("videoCanvas.shortcuts.focusDesc", "隐藏界面干扰，聚焦当前画布"), keys: [shortcutKeyParts(["Shift", "Mod", "F"])], keywords: ["沉浸", "全屏", "focus", ...MOD_KEYWORDS] },
+        { id: "pan", category: "navigation", title: canvasT("videoCanvas.shortcuts.pan", "平移视图"), description: canvasT("videoCanvas.shortcuts.panDesc", "在画布空白处拖动，或使用空格键与中键拖动"), keys: [[canvasT("videoCanvas.shortcuts.keyPan", "空白处拖动")], ["Space", drag], [canvasT("videoCanvas.shortcuts.keyMiddleDrag", "中键拖动")]], keywords: ["移动", "画布", "pan"] },
         { id: "zoom-wheel", category: "navigation", title: canvasT("videoCanvas.shortcuts.zoom", "缩放画布"), description: canvasT("videoCanvas.shortcuts.zoomDesc", "以鼠标所在位置为中心缩放"), keys: [[canvasT("videoCanvas.shortcuts.keyWheel", "滚轮")]], keywords: ["放大", "缩小", "zoom"] },
         { id: "zoom-controls", category: "navigation", title: canvasT("videoCanvas.shortcuts.zoomPrecise", "精确调整缩放"), description: canvasT("videoCanvas.shortcuts.zoomPreciseDesc", "使用画布缩放滑杆调整比例"), keys: [[canvasT("videoCanvas.shortcuts.keyZoomSlider", "缩放滑杆")]], keywords: ["比例", "zoom"] },
-        { id: "zoom-steps", category: "navigation", title: canvasT("videoCanvas.shortcuts.zoomSteps", "步进缩放画布"), description: canvasT("videoCanvas.shortcuts.zoomStepsDesc", "按固定步长放大或缩小画布"), keys: [[CANVAS_MODIFIER_KEY, "+"], [CANVAS_MODIFIER_KEY, "-"]], keywords: ["放大", "缩小", "zoom"] },
-        { id: "zoom-presets", category: "navigation", title: canvasT("videoCanvas.shortcuts.zoomPresets", "100% / 适应全部 / 适应选择"), description: canvasT("videoCanvas.shortcuts.zoomPresetsDesc", "0/1 恢复 100%，2 适应画布，3 适应选择"), keys: [[CANVAS_MODIFIER_KEY, "0"], [CANVAS_MODIFIER_KEY, "1"], [CANVAS_MODIFIER_KEY, "2"], [CANVAS_MODIFIER_KEY, "3"]], keywords: ["100%", "适应", "居中", "缩放", "fit"] },
-        { id: "box-select", category: "selection", title: canvasT("videoCanvas.shortcuts.boxSelect", "框选多个节点"), description: canvasT("videoCanvas.shortcuts.boxSelectDesc", "按住修饰键后拖动选区"), keys: [["Shift", canvasT("videoCanvas.shortcuts.keyDrag", "拖动")], [CANVAS_MODIFIER_KEY, canvasT("videoCanvas.shortcuts.keyDrag", "拖动")]], keywords: ["多选", "范围", "selection"] },
-        { id: "box-select-tool", category: "selection", title: canvasT("videoCanvas.shortcuts.boxSelectToolTitle", "使用框选工具"), description: canvasT("videoCanvas.shortcuts.boxSelectTool", "框选多个节点，完成后自动回到「移动与选择」"), keys: [[canvasT("videoCanvas.shortcuts.keyBoxTool", "框选工具"), canvasT("videoCanvas.shortcuts.keyDrag", "拖动")]], keywords: ["工具栏", "多选", "selection"] },
-        { id: "add-selection", category: "selection", title: canvasT("videoCanvas.shortcuts.addSelect", "追加选择节点"), description: canvasT("videoCanvas.shortcuts.addSelectDesc", "保留已有选择并加入更多节点"), keys: [["Shift", canvasT("videoCanvas.shortcuts.keyClick", "点击")], [CANVAS_MODIFIER_KEY, canvasT("videoCanvas.shortcuts.keyClick", "点击")]], keywords: ["多选", "添加", "selection"] },
-        { id: "remove-selection", category: "selection", title: canvasT("videoCanvas.shortcuts.removeSelect", "移除选择节点"), description: canvasT("videoCanvas.shortcuts.removeSelectDesc", "从当前选择中移除点击或框选的节点"), keys: [["Alt", canvasT("videoCanvas.shortcuts.keyClickBox", "点击 / 框选")]], keywords: ["取消", "排除", "selection"] },
-        { id: "select-all", category: "selection", title: canvasT("videoCanvas.shortcuts.selectAll", "全选节点"), description: canvasT("videoCanvas.shortcuts.selectAllDesc", "选择画布中的全部节点"), keys: [[CANVAS_MODIFIER_KEY, "A"]], keywords: ["全部", "select all"] },
-        { id: "batch-connect", category: "selection", title: canvasT("videoCanvas.shortcuts.batchConnect", "批量连接节点"), description: canvasT("videoCanvas.shortcuts.batchConnectDesc", "为两个或更多已选节点进入批量连接模式"), keys: [["Alt", "L"]], keywords: ["连线", "连接", "link"] },
-        { id: "copy", category: "editing", title: canvasT("videoCanvas.shortcuts.copy", "复制节点"), description: canvasT("videoCanvas.shortcuts.copyDesc", "复制当前选中的节点"), keys: [[CANVAS_MODIFIER_KEY, "C"]], keywords: ["copy"] },
-        { id: "paste", category: "editing", title: canvasT("videoCanvas.shortcuts.paste", "粘贴节点或剪贴板内容"), description: canvasT("videoCanvas.shortcuts.copyPaste", "复制 / 粘贴节点，或粘贴剪切板文本/图片"), keys: [[CANVAS_MODIFIER_KEY, "V"]], keywords: ["剪贴板", "paste"] },
+        { id: "zoom-steps", category: "navigation", title: canvasT("videoCanvas.shortcuts.zoomSteps", "步进缩放画布"), description: canvasT("videoCanvas.shortcuts.zoomStepsDesc", "按固定步长放大或缩小画布"), keys: [shortcutKeyParts(["Mod", "+"]), shortcutKeyParts(["Mod", "-"])], keywords: ["放大", "缩小", "zoom", ...MOD_KEYWORDS] },
+        { id: "zoom-presets", category: "navigation", title: canvasT("videoCanvas.shortcuts.zoomPresets", "100% / 适应全部 / 适应选择"), description: canvasT("videoCanvas.shortcuts.zoomPresetsDesc", "0/1 恢复 100%，2 适应画布，3 适应选择"), keys: [shortcutKeyParts(["Mod", "0"]), shortcutKeyParts(["Mod", "1"]), shortcutKeyParts(["Mod", "2"]), shortcutKeyParts(["Mod", "3"])], keywords: ["100%", "适应", "居中", "缩放", "fit", ...MOD_KEYWORDS] },
+        { id: "box-select", category: "selection", title: canvasT("videoCanvas.shortcuts.boxSelect", "框选多个节点"), description: canvasT("videoCanvas.shortcuts.boxSelectDesc", "按住修饰键后拖动选区"), keys: [["Shift", drag], [...shortcutKeyParts(["Mod"]), drag]], keywords: ["多选", "范围", "selection", ...MOD_KEYWORDS] },
+        { id: "box-select-tool", category: "selection", title: canvasT("videoCanvas.shortcuts.boxSelectToolTitle", "使用框选工具"), description: canvasT("videoCanvas.shortcuts.boxSelectTool", "框选多个节点，完成后自动回到「移动与选择」"), keys: [[canvasT("videoCanvas.shortcuts.keyBoxTool", "框选工具"), drag]], keywords: ["工具栏", "多选", "selection"] },
+        { id: "add-selection", category: "selection", title: canvasT("videoCanvas.shortcuts.addSelect", "追加选择节点"), description: canvasT("videoCanvas.shortcuts.addSelectDesc", "保留已有选择并加入更多节点"), keys: [["Shift", click], [...shortcutKeyParts(["Mod"]), click]], keywords: ["多选", "添加", "selection", ...MOD_KEYWORDS] },
+        { id: "remove-selection", category: "selection", title: canvasT("videoCanvas.shortcuts.removeSelect", "移除选择节点"), description: canvasT("videoCanvas.shortcuts.removeSelectDesc", "从当前选择中移除点击或框选的节点"), keys: [[shortcutPartLabel("Alt"), canvasT("videoCanvas.shortcuts.keyClickBox", "点击 / 框选")]], keywords: ["取消", "排除", "selection"] },
+        { id: "select-all", category: "selection", title: canvasT("videoCanvas.shortcuts.selectAll", "全选节点"), description: canvasT("videoCanvas.shortcuts.selectAllDesc", "选择画布中的全部节点"), keys: [shortcutKeyParts(["Mod", "A"])], keywords: ["全部", "select all", ...MOD_KEYWORDS] },
+        { id: "batch-connect", category: "selection", title: canvasT("videoCanvas.shortcuts.batchConnect", "批量连接节点"), description: canvasT("videoCanvas.shortcuts.batchConnectDesc", "为两个或更多已选节点进入批量连接模式"), keys: [[shortcutPartLabel("Alt"), "L"]], keywords: ["连线", "连接", "link"] },
+        { id: "copy", category: "editing", title: canvasT("videoCanvas.shortcuts.copy", "复制节点"), description: canvasT("videoCanvas.shortcuts.copyDesc", "复制当前选中的节点"), keys: [shortcutKeyParts(["Mod", "C"])], keywords: ["copy", ...MOD_KEYWORDS] },
+        { id: "paste", category: "editing", title: canvasT("videoCanvas.shortcuts.paste", "粘贴节点或剪贴板内容"), description: canvasT("videoCanvas.shortcuts.copyPaste", "复制 / 粘贴节点，或粘贴剪切板文本/图片"), keys: [shortcutKeyParts(["Mod", "V"])], keywords: ["剪贴板", "paste", ...MOD_KEYWORDS] },
         { id: "delete", category: "editing", title: canvasT("videoCanvas.shortcuts.delete", "删除选中"), description: canvasT("videoCanvas.shortcuts.deleteDesc", "删除选中的节点或连线"), keys: [["Delete"], ["Backspace"]], keywords: ["移除", "delete"] },
-        { id: "undo", category: "editing", title: canvasT("videoCanvas.shortcuts.undo", "撤销"), description: canvasT("videoCanvas.shortcuts.undoDesc", "撤销上一步画布编辑"), keys: [[CANVAS_MODIFIER_KEY, "Z"]], keywords: ["undo"] },
-        { id: "redo", category: "editing", title: canvasT("videoCanvas.shortcuts.redo", "重做"), description: canvasT("videoCanvas.shortcuts.redoDesc", "恢复刚刚撤销的画布编辑"), keys: [[CANVAS_MODIFIER_KEY, "Shift", "Z"], [CANVAS_MODIFIER_KEY, "Y"]], keywords: ["恢复", "redo"] },
+        { id: "undo", category: "editing", title: canvasT("videoCanvas.shortcuts.undo", "撤销"), description: canvasT("videoCanvas.shortcuts.undoDesc", "撤销上一步画布编辑"), keys: [shortcutKeyParts(["Mod", "Z"])], keywords: ["undo", ...MOD_KEYWORDS] },
+        { id: "redo", category: "editing", title: canvasT("videoCanvas.shortcuts.redo", "重做"), description: canvasT("videoCanvas.shortcuts.redoDesc", "恢复刚刚撤销的画布编辑"), keys: [shortcutKeyParts(["Shift", "Mod", "Z"]), shortcutKeyParts(["Mod", "Y"])], keywords: ["恢复", "redo", ...MOD_KEYWORDS] },
         { id: "escape", category: "editing", title: canvasT("videoCanvas.shortcuts.escape", "取消选择并关闭浮层"), description: canvasT("videoCanvas.shortcuts.escapeDesc", "取消选择、关闭浮层或退出专注模式"), keys: [["Esc"]], keywords: ["关闭", "退出", "cancel"] },
         { id: "import-media", category: "editing", title: canvasT("videoCanvas.shortcuts.dropMedia", "上传到画布"), description: canvasT("videoCanvas.shortcuts.dropMediaDesc", "将图片、视频或音频文件拖入画布"), keys: [[canvasT("videoCanvas.shortcuts.keyDrop", "拖入媒体")]], keywords: ["上传", "文件", "图片", "视频", "音频", "upload"] },
     ];

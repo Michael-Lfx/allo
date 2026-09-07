@@ -8,6 +8,7 @@ import { canvasThemes } from "@oc/lib/canvas-theme";
 import { ASSET_CATEGORY_OPTIONS } from "@oc/lib/asset-category";
 import { canvasNodeAssetCategory } from "@oc/lib/canvas/canvas-node-asset";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasAccel } from "@oc/lib/canvas/canvas-shortcuts";
 import { resolveAddNodeMenuCommands, type AddNodeMenuContext } from "@oc/lib/canvas/tool-registry";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ContextMenuState, type Position } from "@oc/types/canvas";
@@ -22,6 +23,7 @@ type CanvasNodeContextMenuProps = {
     menu: ContextMenuState;
     node?: CanvasNodeData | null;
     workspaceMode?: CanvasWorkspaceMode;
+    compactCreateMenu?: boolean;
     isProjectLinked?: boolean;
     canUndo: boolean;
     canRedo: boolean;
@@ -57,6 +59,7 @@ export function CanvasNodeContextMenu({
     menu,
     node,
     workspaceMode = "professional",
+    compactCreateMenu = false,
     isProjectLinked = false,
     canUndo,
     canRedo,
@@ -123,7 +126,7 @@ export function CanvasNodeContextMenu({
     const nodeContent = typeof node?.metadata?.content === "string" ? node.metadata.content : "";
     const isImage = node?.type === CanvasNodeType.Image;
     const isText = node?.type === CanvasNodeType.Text;
-    const isCharacterReference = Boolean(isText && node?.metadata?.workflowKind === "character" && node.metadata.characterAssetId);
+    const isCharacterReference = Boolean(node?.metadata?.workflowKind === "character" && node.metadata.characterAssetId);
     const isDrawing = node?.type === CanvasNodeType.Drawing;
     const isVideo = node?.type === CanvasNodeType.Video;
     const isMedia = isImage || isVideo;
@@ -131,7 +134,7 @@ export function CanvasNodeContextMenu({
     const isFrame = node?.type === CanvasNodeType.Frame;
     const hasNodeContent = isText ? Boolean(nodeContent.trim()) : Boolean(nodeContent);
     const canSaveAsset = Boolean(node && !isCharacterReference && (isText ? hasNodeContent : hasNodeContent && (isImage || isVideo || isAudio)));
-    const canOpenPreview = Boolean(isMedia && hasNodeContent);
+    const canOpenPreview = Boolean(isMedia && hasNodeContent && !isCharacterReference);
     const canGenerateFromText = Boolean(isText && !isCharacterReference && hasNodeContent);
     const canCopyMediaUrl = Boolean(isMedia && hasNodeContent);
     const isTvCover = Boolean(isImage && node?.metadata?.tvCover);
@@ -170,9 +173,9 @@ export function CanvasNodeContextMenu({
                             <CanvasMenuRow icon={<Upload />} label={canvasT("videoCanvas.menu.uploadHere", "上传到这里")} onClick={() => runAction(onUpload)} />
                             <CanvasMenuRow icon={<FolderOpen />} label={canvasT("videoCanvas.menu.insertFromAssets", "从素材空间插入")} onClick={() => runAction(onOpenAssets)} />
                             <CanvasMenuSeparator />
-                            <CanvasMenuRow icon={<Undo2 />} label={canvasT("videoCanvas.menu.undo", "撤销")} shortcut="⌘Z" disabled={!canUndo} onClick={() => runAction(onUndo)} />
-                            <CanvasMenuRow icon={<Redo2 />} label={canvasT("videoCanvas.menu.redo", "重做")} shortcut="⇧⌘Z" disabled={!canRedo} onClick={() => runAction(onRedo)} />
-                            <CanvasMenuRow icon={<Clipboard />} label={canvasT("videoCanvas.menu.paste", "粘贴")} shortcut="⌘V" disabled={!canPaste} onClick={() => runAction(onPaste)} />
+                            <CanvasMenuRow icon={<Undo2 />} label={canvasT("videoCanvas.menu.undo", "撤销")} shortcut={canvasAccel.undo()} disabled={!canUndo} onClick={() => runAction(onUndo)} />
+                            <CanvasMenuRow icon={<Redo2 />} label={canvasT("videoCanvas.menu.redo", "重做")} shortcut={canvasAccel.redo()} disabled={!canRedo} onClick={() => runAction(onRedo)} />
+                            <CanvasMenuRow icon={<Clipboard />} label={canvasT("videoCanvas.menu.paste", "粘贴")} shortcut={canvasAccel.paste()} disabled={!canPaste} onClick={() => runAction(onPaste)} />
                         </>
                     ) : menu.type === "node" ? (
                         <>
@@ -180,8 +183,8 @@ export function CanvasNodeContextMenu({
                                 <>
                                     <CanvasMenuRow icon={<UserRound />} label={canvasT("videoCanvas.menu.viewCharacter", "查看角色详情")} onClick={() => runAction(onEditText)} />
                                     <CanvasMenuSeparator />
-                                    <CanvasMenuRow icon={<Copy />} label={canvasT("videoCanvas.menu.copyCharacterRef", "复制角色引用")} shortcut="⌘C" onClick={() => runAction(onCopyNode)} />
-                                    <CanvasMenuRow icon={<Layers3 />} label={canvasT("videoCanvas.menu.createRefCopy", "创建引用副本")} shortcut="⌘D" onClick={() => runAction(onDuplicate)} />
+                                    <CanvasMenuRow icon={<Copy />} label={canvasT("videoCanvas.menu.copyCharacterRef", "复制角色引用")} shortcut={canvasAccel.copy()} onClick={() => runAction(onCopyNode)} />
+                                    <CanvasMenuRow icon={<Layers3 />} label={canvasT("videoCanvas.menu.createRefCopy", "创建引用副本")} shortcut={canvasAccel.duplicate()} onClick={() => runAction(onDuplicate)} />
                                     <CanvasMenuRow icon={<Trash2 />} label={canvasT("videoCanvas.menu.deleteNode", "删除节点")} danger onClick={() => runAction(onDelete)} />
                                 </>
                             ) : isMedia ? (
@@ -190,10 +193,10 @@ export function CanvasNodeContextMenu({
                                     <CanvasMenuRow icon={<Tags />} label={canvasT("videoCanvas.menu.setAssetCategory", "设置资产分类")} chevron onClick={() => setCategoryOpen(true)} />
                                     {isImage ? <CanvasMenuRow icon={isTvCover ? <Check /> : <Bookmark />} label={isTvCover ? canvasT("videoCanvas.menu.currentCover", "当前封面") : canvasT("videoCanvas.menu.setAsCover", "设为封面")} active={isTvCover} disabled={!canSetCover && !isTvCover} onClick={() => runAction(() => onSetTvCover(!isTvCover))} /> : null}
                                     <CanvasMenuSeparator />
-                                    <CanvasMenuRow icon={<Copy />} label={canvasT("videoCanvas.menu.copyNode", "复制节点")} shortcut="⌘C" onClick={() => runAction(onCopyNode)} />
+                                    <CanvasMenuRow icon={<Copy />} label={canvasT("videoCanvas.menu.copyNode", "复制节点")} shortcut={canvasAccel.copy()} onClick={() => runAction(onCopyNode)} />
                                     <CanvasMenuRow icon={<Link2 />} label={isImage ? canvasT("videoCanvas.menu.copyImageUrl", "复制图片地址") : canvasT("videoCanvas.menu.copyVideoUrl", "复制视频地址")} disabled={!canCopyMediaUrl} onClick={() => runAction(onCopyMediaUrl)} />
                                     <CanvasMenuRow icon={<Copy />} label={canvasT("videoCanvas.menu.createGenerationCopy", "创建生成副本")} onClick={() => runAction(onCreateGenerationCopy)} />
-                                    <CanvasMenuRow icon={<Layers3 />} label={canvasT("videoCanvas.menu.createVariant", "创建参数变体")} shortcut="⌘D" onClick={() => runAction(onDuplicate)} />
+                                    <CanvasMenuRow icon={<Layers3 />} label={canvasT("videoCanvas.menu.createVariant", "创建参数变体")} shortcut={canvasAccel.duplicate()} onClick={() => runAction(onDuplicate)} />
                                     <CanvasMenuRow icon={<Trash2 />} label={canvasT("videoCanvas.menu.deleteNode", "删除节点")} danger onClick={() => runAction(onDelete)} />
                                 </>
                             ) : (
@@ -203,10 +206,10 @@ export function CanvasNodeContextMenu({
                                     {isDrawing ? <CanvasMenuRow icon={<Pencil />} label={canvasT("videoCanvas.menu.openDrawing", "打开绘图")} onClick={() => runAction(onOpenDrawing)} /> : null}
                                     {isText ? <CanvasMenuRow icon={<ImageIcon />} label={canvasT("videoCanvas.menu.genImageFromText", "用文本生图")} disabled={!canGenerateFromText} onClick={() => runAction(onGenerateImage)} /> : null}
                                     <CanvasMenuSeparator />
-                                    <CanvasMenuRow icon={<Copy />} label={isFrame ? canvasT("videoCanvas.menu.copyFrameAndContent", "复制背板及内容") : canvasT("videoCanvas.menu.copyNode", "复制节点")} shortcut="⌘C" onClick={() => runAction(onCopyNode)} />
+                                    <CanvasMenuRow icon={<Copy />} label={isFrame ? canvasT("videoCanvas.menu.copyFrameAndContent", "复制背板及内容") : canvasT("videoCanvas.menu.copyNode", "复制节点")} shortcut={canvasAccel.copy()} onClick={() => runAction(onCopyNode)} />
                                     {isText ? <CanvasMenuRow icon={<Clipboard />} label={canvasT("videoCanvas.menu.copyText", "复制文本")} disabled={!hasNodeContent} onClick={() => runAction(onCopyContent)} /> : null}
-                                    <CanvasMenuRow icon={<Copy />} label={isFrame ? canvasT("videoCanvas.menu.createFrameCopy", "创建背板副本") : canvasT("videoCanvas.menu.createVariant", "创建参数变体")} shortcut="⌘D" onClick={() => runAction(onDuplicate)} />
-                                    <CanvasMenuRow icon={<Clipboard />} label={canvasT("videoCanvas.menu.paste", "粘贴")} shortcut="⌘V" disabled={!canPaste} onClick={() => runAction(onPaste)} />
+                                    <CanvasMenuRow icon={<Copy />} label={isFrame ? canvasT("videoCanvas.menu.createFrameCopy", "创建背板副本") : canvasT("videoCanvas.menu.createVariant", "创建参数变体")} shortcut={canvasAccel.duplicate()} onClick={() => runAction(onDuplicate)} />
+                                    <CanvasMenuRow icon={<Clipboard />} label={canvasT("videoCanvas.menu.paste", "粘贴")} shortcut={canvasAccel.paste()} disabled={!canPaste} onClick={() => runAction(onPaste)} />
                                     <CanvasMenuRow icon={<Trash2 />} label={isFrame ? canvasT("videoCanvas.menu.deleteFrame", "删除背板") : canvasT("videoCanvas.menu.deleteNode", "删除节点")} danger onClick={() => runAction(onDelete)} />
                                 </>
                             )}
@@ -221,6 +224,7 @@ export function CanvasNodeContextMenu({
                 <AddNodeContextMenu
                     parentPosition={position}
                     workspaceMode={workspaceMode}
+                    compactCreateMenu={compactCreateMenu}
                     isProjectLinked={isProjectLinked}
                     onAddNode={(type) => runAction(() => onAddNode(type))}
                     onAddFolder={() => runAction(onAddFolder)}
@@ -235,11 +239,12 @@ export function CanvasNodeContextMenu({
     );
 }
 
-function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, onAddNode, onAddFolder, onChooseStyle, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number }; workspaceMode: CanvasWorkspaceMode; isProjectLinked: boolean; onAddNode: (type: CanvasNodeType) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
+function AddNodeContextMenu({ parentPosition, workspaceMode, compactCreateMenu, isProjectLinked, onAddNode, onAddFolder, onChooseStyle, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number }; workspaceMode: CanvasWorkspaceMode; compactCreateMenu?: boolean; isProjectLinked: boolean; onAddNode: (type: CanvasNodeType) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const left = getSubmenuLeft(parentPosition.left);
     const createContext: AddNodeMenuContext = {
         workspaceMode,
+        compactCreateMenu,
         isProjectLinked,
         handlers: {
             onAddText: () => onAddNode(CanvasNodeType.Text),
@@ -275,7 +280,7 @@ function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, on
             onContextMenu={(event) => event.preventDefault()}
             onPointerDown={(event) => event.stopPropagation()}
         >
-            <CanvasCreateMenu commands={commands} />
+            <CanvasCreateMenu commands={commands} compactCreateMenu={compactCreateMenu} />
         </CanvasOverlay>
     );
 }

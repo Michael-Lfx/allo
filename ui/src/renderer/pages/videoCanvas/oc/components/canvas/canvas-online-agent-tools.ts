@@ -8,6 +8,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
 import { looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@oc/lib/canvas/canvas-agent-workflow";
 import { compileCanvasApplyOps, compileCanvasRepairOps } from "@oc/lib/canvas/canvas-agent-intent";
+import { compileSpecApplyOps, compileStoryboardApplyOps } from "@oc/lib/canvas/creation-agent-intent";
 import { normalizeModelOptionValue, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
 import { encodeToolArguments, parseToolArguments } from "@oc/lib/canvas/canvas-tool-arguments";
 import { type CanvasAgentFunctionTool as ResponseFunctionTool, type CanvasAgentInputMessage as ResponseInputMessage, type CanvasAgentToolCall as ResponseToolCall } from "@oc/lib/canvas/canvas-agent-llm";
@@ -72,6 +73,23 @@ const PIPELINE_PATCH_SCHEMA = {
     required: ["id"],
     additionalProperties: false,
 };
+
+const STORYBOARD_APPLY_SHOT_SCHEMA = {
+    type: "object",
+    properties: {
+        id: { type: "string" },
+        index: { type: "number" },
+        plot: { type: "string" },
+        plotDescription: { type: "string" },
+        durationSeconds: { type: "number" },
+        durationSecs: { type: "number" },
+        dialogue: { type: "string" },
+        imagePrompt: { type: "string" },
+        videoPrompt: { type: "string" },
+        stillRole: { type: "string", enum: ["first", "last", "reference"] },
+    },
+    additionalProperties: false,
+};
 const APPLY_PROPERTIES = {
     title: { type: "string" },
     description: { type: "string" },
@@ -92,11 +110,17 @@ function toolDefinition(name: string, description: string, properties: Record<st
 
 export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     toolDefinition("canvas_list_skills", "列出当前画布上可按需加载的技能节点；只返回元数据。", {}),
-    toolDefinition("canvas_get_skill", "按 skillId 或技能名称加载一条技能契约。不会自动注入每条用户消息。", { skillId: { type: "string" }, name: { type: "string" } }),
+    toolDefinition("canvas_get_skill", "按 skillId 或技能名称加载一条技能手册（流程、停等、模型、提示词）。Look 只是视觉槽。不会自动注入每条用户消息。", { skillId: { type: "string" }, name: { type: "string" } }),
+    toolDefinition("storyboard_inspect", "读取现有 Script 分镜：镜头、缺口、主体引用。不要另起空分镜。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
+    toolDefinition("storyboard_apply", "把镜头写进已有 Script 节点 rows。按 id 或 index 修补 plot/duration/prompts/stillRole；replace=true 时整表替换。禁止只为了分镜去 canvas_apply 新建 Script。", { shots: { type: "array", items: STORYBOARD_APPLY_SHOT_SCHEMA }, replace: { type: "boolean" } }, ["shots"]),
+    toolDefinition("subject_inspect", "读取已标注主体（角色/场景/道具）及缺口。保持面孔与场景，不要另造替换身份。", {}),
+    toolDefinition("spec_inspect", "读取有约束力的 Video Spec（画幅、时长、分辨率、模型）以及规格快照版本。", {}),
+    toolDefinition("spec_apply", "更新生成配置节点上的 Video Spec。只改给出的字段。", { aspectRatio: { type: "string" }, resolution: { type: "string" }, durationSecs: { type: "number" }, model: { type: "string" }, mediaKind: { type: "string", enum: ["image", "video"] } }),
+    toolDefinition("timeline_inspect", "读取镜头时序（每镜时长与视频节点）。成片导出走宿主时间线对话框，不要另造剪辑器。", {}),
     toolDefinition(
         "canvas_inspect",
-        "读取画布观察：图、选区、生成队列、相对上次的 NEW/MODIFIED。可按 query/ids/types 深查节点，或 focus=resources 看素材就绪状态。每轮消息已含观察摘要，仅在需要细节时调用。",
-        { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, types: { type: "array", items: { type: "string" } }, focus: { type: "string", enum: ["graph", "queue", "resources"] }, limit: { type: "number" } },
+        "读取画布观察：图、选区、生成队列、相对上次的 NEW/MODIFIED。可按 query/ids/types 深查节点，或 focus=resources|storyboard|subjects|spec|timeline。每轮消息已含观察摘要，仅在需要细节时调用。",
+        { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, types: { type: "array", items: { type: "string" } }, focus: { type: "string", enum: ["graph", "queue", "resources", "storyboard", "subjects", "spec", "timeline"] }, limit: { type: "number" } },
     ),
     toolDefinition(
         "canvas_propose",
@@ -132,6 +156,8 @@ export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
 
 export function onlineToolToOps(name: string, input: Record<string, unknown>, snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentOp[] {
     if (name === "canvas_apply_ops") return requireOps(input.ops);
+    if (name === "storyboard_apply") return compileStoryboardApplyOps(input, snapshot);
+    if (name === "spec_apply") return compileSpecApplyOps(input, snapshot);
     if (name === "canvas_apply" || name === "canvas_create_workflow") return compileCanvasApplyOps(input as unknown as CanvasWorkflowInput & { run?: boolean; patches?: never; deleteIds?: string[] }, snapshot, config);
     if (name === "canvas_repair") return compileCanvasRepairOps(input, snapshot);
     if (name === "canvas_create_node") {
@@ -328,6 +354,12 @@ export function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: Canv
 function toolCallLabel(name: string) {
     if (name === "canvas_list_skills") return canvasT("videoCanvas.agent.tlListSkills", "列出技能");
     if (name === "canvas_get_skill") return canvasT("videoCanvas.agent.tlGetSkill", "加载技能");
+    if (name === "storyboard_inspect") return canvasT("videoCanvas.agent.tlStoryboardInspect", "观察分镜");
+    if (name === "storyboard_apply") return canvasT("videoCanvas.agent.tlStoryboardApply", "更新分镜");
+    if (name === "subject_inspect") return canvasT("videoCanvas.agent.tlSubjectInspect", "观察主体");
+    if (name === "spec_inspect") return canvasT("videoCanvas.agent.tlSpecInspect", "观察规格");
+    if (name === "spec_apply") return canvasT("videoCanvas.agent.tlSpecApply", "更新规格");
+    if (name === "timeline_inspect") return canvasT("videoCanvas.agent.tlTimelineInspect", "观察时间线");
     if (name === "canvas_inspect") return canvasT("videoCanvas.agent.tlInspect", "观察画布");
     if (name === "canvas_propose") return canvasT("videoCanvas.agent.tlPropose", "提出计划");
     if (name === "canvas_apply") return canvasT("videoCanvas.agent.tlApply", "更新画布");

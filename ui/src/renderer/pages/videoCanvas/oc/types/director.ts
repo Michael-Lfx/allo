@@ -86,8 +86,12 @@ export type DirectorObject = {
     storageKey?: string;
     url?: string;
     mimeType?: string;
+    /** 人体素模预设。缺省表示旧数据/自定义导入，不参与 version bump。 */
+    actorPreset?: DirectorActorPresetId;
     keyframes: DirectorKeyframe[];
 };
+
+export type DirectorActorPresetId = "adult_male" | "adult_female" | "child" | "elder";
 
 export type DirectorCamera = {
     id: string;
@@ -127,6 +131,7 @@ export type DirectorShot = {
     previewNodeId?: string;
     depthNodeId?: string;
     normalNodeId?: string;
+    storyboardRowId?: string;
 };
 
 export type DirectorScene = {
@@ -136,6 +141,8 @@ export type DirectorScene = {
     background: string;
     environmentIntensity: number;
     gridVisible: boolean;
+    environmentMapUrl?: string;
+    environmentNodeId?: string;
     objects: DirectorObject[];
     cameras: DirectorCamera[];
     lights: DirectorLight[];

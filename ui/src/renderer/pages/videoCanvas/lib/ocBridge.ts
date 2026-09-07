@@ -19,10 +19,19 @@ import {
 } from '@oc/stores/canvas/use-canvas-store';
 import type { CanvasNodeData, CanvasConnection, ViewportTransform } from '@oc/types/canvas';
 import { CanvasNodeType } from '@oc/types/canvas';
-import { createCanvasNode } from '@oc/lib/canvas/canvas-project-domain';
+import { createCanvasNode, createStoryboardRow } from '@oc/lib/canvas/canvas-project-domain';
+import { storyboardNodeHeight } from '@oc/components/canvas/canvas-script-node';
 import { encodeChannelModel } from '@oc/stores/use-config-store';
 import { parsePersistedChatSessions, projectToCanvasDocument } from './canvasChatPersist';
 import { isCanvasHomeAgentLaunch, storedVqualityFromHomeLaunch } from './home-agent-launch';
+import {
+  buildCreationIrFromLaunch,
+  isCreationSubjectKind,
+  workflowKindForSubject,
+  writeCreationIr,
+  type CreationSubjectKind,
+} from './creation-ir';
+import { creationSkillHandbook } from './creation-skill-handbook';
 import { resolveLookIdentity } from '@renderer/pages/videoGeneration/styleCatalog/lookIdentity';
 import { resolveCanvasStylePreset } from '@oc/lib/canvas/canvas-style-system';
 
@@ -55,7 +64,10 @@ export type CanvasHomeLaunch = {
     imageModel?: string;
     videoModel?: string;
   };
-  references?: CanvasMediaMeta[];
+  references?: Array<CanvasMediaMeta & {
+    subjectKind?: CreationSubjectKind;
+    subjectName?: string;
+  }>;
 };
 
 function connection(fromNodeId: string, toNodeId: string): CanvasConnection {
@@ -71,49 +83,75 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
   const isGenerate = intent === 'generate';
   const autoAgent = isCanvasHomeAgentLaunch({ intent, autoAgent: launch.autoAgent });
   const skill = launch.skill;
-  const referenceNodes = (launch.references ?? []).map((reference, index) => ({
-    ...createCanvasNode(
-      CanvasNodeType.Image,
-      { x: 600, y: 150 + index * 210 },
-      {
-        content: canvasMediaUrl(reference.media_id),
-        status: 'success',
-        mimeType: reference.mime,
-        bytes: reference.bytes,
-        naturalWidth: reference.width ?? undefined,
-        naturalHeight: reference.height ?? undefined,
-        assetId: reference.media_id,
-        workflowKind: 'reference_set',
-      }
-    ),
-    title: reference.title || `参考图 ${index + 1}`,
-  }));
+  const referenceNodes = homeReferenceNodes(launch, autoAgent);
   const seeded = autoAgent
     ? seedHomeAgentConstraintGraph(launch, skill, referenceNodes)
     : seedLegacyHomeGraph(launch, isGenerate, skill, referenceNodes);
+  const homeLaunch = {
+    schema: 1 as const,
+    intent,
+    autoGenerate: Boolean(launch.autoGenerate),
+    autoAgent,
+    agentBriefSent: false,
+    prompt: launch.prompt,
+    requirement: launch.requirement,
+    mediaKind: launch.mediaKind,
+    skill,
+    preferences: launch.preferences,
+    referenceMediaIds: (launch.references ?? []).map((item) => item.media_id),
+    createdAt: new Date().toISOString(),
+  };
+  const creation = autoAgent
+    ? buildCreationIrFromLaunch({
+        prompt: launch.prompt,
+        mediaKind: launch.mediaKind,
+        preferences: launch.preferences,
+        skill: skill ? { id: skill.id, label: skill.label } : undefined,
+        subjects: (launch.references ?? []).map((reference, index) => ({
+          kind: isCreationSubjectKind(reference.subjectKind) ? reference.subjectKind : 'character',
+          name: reference.subjectName || reference.title || referenceNodes[index]?.title,
+          mediaId: reference.media_id,
+          nodeId: referenceNodes[index]?.id,
+        })),
+      })
+    : null;
   return {
     ...project,
     nodes: seeded.nodes,
     connections: seeded.connections,
     viewport: { x: 80, y: 60, k: referenceNodes.length > 2 ? 0.72 : 0.86 },
-    alloCreative: {
-      ...(project.alloCreative ?? {}),
-      homeLaunch: {
-        schema: 1,
-        intent,
-        autoGenerate: Boolean(launch.autoGenerate),
-        autoAgent,
-        agentBriefSent: false,
-        prompt: launch.prompt,
-        requirement: launch.requirement,
-        mediaKind: launch.mediaKind,
-        skill,
-        preferences: launch.preferences,
-        referenceMediaIds: (launch.references ?? []).map((item) => item.media_id),
-        createdAt: new Date().toISOString(),
-      },
-    },
+    alloCreative: creation
+      ? writeCreationIr({ ...(project.alloCreative ?? {}), homeLaunch }, creation)
+      : {
+          ...(project.alloCreative ?? {}),
+          homeLaunch,
+        },
   };
+}
+
+function homeReferenceNodes(launch: CanvasHomeLaunch, autoAgent: boolean): CanvasNodeData[] {
+  return (launch.references ?? []).map((reference, index) => {
+    const kind = autoAgent && isCreationSubjectKind(reference.subjectKind) ? reference.subjectKind : autoAgent ? 'character' : undefined;
+    const name = reference.subjectName?.trim() || reference.title?.trim() || `参考图 ${index + 1}`;
+    return {
+      ...createCanvasNode(
+        CanvasNodeType.Image,
+        { x: 600, y: 150 + index * 210 },
+        {
+          content: canvasMediaUrl(reference.media_id),
+          status: 'success',
+          mimeType: reference.mime,
+          bytes: reference.bytes,
+          naturalWidth: reference.width ?? undefined,
+          naturalHeight: reference.height ?? undefined,
+          assetId: reference.media_id,
+          workflowKind: kind ? workflowKindForSubject(kind) : 'reference_set',
+          ...(kind === 'character' ? { characterName: name } : {}),
+        },
+      ),
+      title: name,
+    };
+  });
 }
 
 function seedHomeAgentConstraintGraph(
@@ -127,18 +165,51 @@ function seedHomeAgentConstraintGraph(
     skill,
     'agent',
   );
+  const durationSecs = Math.max(1, Number(launch.preferences.targetDurationSecs) || 5);
+  const characterNodes = referenceNodes.filter((node) => node.metadata?.workflowKind === 'character');
+  const scriptRows = [createStoryboardRow(1, {
+    durationSeconds: durationSecs,
+    plotDescription: launch.prompt,
+    characters: characterNodes.map((node) => ({
+      characterName: node.metadata?.characterName || node.title,
+      characterImageNodeId: node.id,
+    })),
+    referenceNodeIds: referenceNodes.map((node) => node.id),
+  })];
+  const scriptHeight = storyboardNodeHeight(scriptRows.length);
+  const scriptNode = {
+    ...createCanvasNode(
+      CanvasNodeType.Script,
+      { x: 540, y: 150 + Math.max(referenceNodes.length, 1) * 210 + 40 },
+      {
+        status: 'idle',
+        workflowKind: 'script',
+        workflowTitle: '分镜',
+        composerContent: launch.prompt,
+        storyboard: {
+          rows: scriptRows,
+          visibleColumns: ['shotNumber', 'durationSeconds', 'plotDescription', 'dialogue'],
+          referenceNodeIds: referenceNodes.map((node) => node.id),
+        },
+      },
+    ),
+    title: '分镜脚本',
+    height: scriptHeight,
+  };
   return {
     nodes: [
       promptNode,
       ...(styleNode ? [styleNode] : []),
       ...(skillNode ? [skillNode] : []),
       ...referenceNodes,
+      scriptNode,
       configNode,
     ],
     connections: [
       connection(promptNode.id, configNode.id),
       ...(styleNode ? [connection(styleNode.id, configNode.id)] : []),
       ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
+      ...referenceNodes.map((node) => connection(node.id, scriptNode.id)),
     ],
   };
 }
@@ -241,11 +312,22 @@ function buildHomeInputNodes(
               name: skill.label,
               description: skill.description,
               category: launch.mediaKind,
-              template: look?.modelPrompt || skill.stylePrompt,
+              template: creationSkillHandbook({
+                lookLabel: skill.label,
+                stylePrompt: look?.modelPrompt || skill.stylePrompt,
+                spec: {
+                  aspectRatio: launch.preferences.aspectRatio || '16:9',
+                  resolution: launch.preferences.resolution || '1080p',
+                  durationSecs: launch.preferences.targetDurationSecs || 5,
+                  mediaKind: launch.mediaKind === 'image' ? 'image' : 'video',
+                  imageModel: launch.preferences.imageModel,
+                  videoModel: launch.preferences.videoModel,
+                },
+              }),
               outputMode: launch.mediaKind === 'image' ? 'image_prompt' : 'workflow',
-              outputContract: 'Apply the selected visual style to the connected generation node.',
+              outputContract: 'Look is a visual slot only. Follow the handbook: inspect/apply storyboard and spec, then run. Do not invent subjects.',
               version: 1,
-              tags: ['video-home', 'style'],
+              tags: ['video-home', 'style', 'handbook'],
             },
           }),
           title: skill.label,

@@ -66,6 +66,11 @@
   padding: 6px 2px 2px 6px;
 }
 
+.attachStageLabeled {
+  height: 102px;
+  align-items: flex-start;
+}
+
 .attachFan {
   --stack-step: 8px;
   --spread-step: 52px;
@@ -142,6 +147,65 @@
 .attachFanOpen .attachPhoto:hover {
   z-index: 20;
   transform: rotate(0deg) translateY(-4px) scale(1.04);
+}
+
+.attachFanLabeled {
+  --spread-step: 92px;
+  height: calc(var(--card-h) + 52px);
+  width: calc(80px + (var(--count) - 1) * var(--spread-step));
+}
+
+.attachSubjectMeta {
+  position: absolute;
+  top: calc(var(--card-h) + 4px);
+  left: 0;
+  z-index: 4;
+  display: none;
+  width: max-content;
+  min-width: var(--card-w);
+  flex-direction: column;
+  gap: 3px;
+}
+
+.attachFanLabeled .attachSubjectMeta {
+  display: flex;
+}
+
+.attachKindChip,
+.attachNameInput {
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-bg-popup) 92%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 10%, transparent);
+  color: var(--color-text-1);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 22px;
+}
+
+.attachKindChip {
+  cursor: pointer;
+  width: fit-content;
+  max-width: 80px;
+}
+
+.attachNameInput {
+  width: 80px;
+  font-weight: 500;
+  outline: none;
+}
+
+.attachNameInput::placeholder {
+  color: var(--color-text-3);
+}
+
+.attachKindChip:focus-visible,
+.attachNameInput:focus-visible {
+  outline: 2px solid color-mix(in srgb, rgb(var(--primary-6)) 45%, transparent);
+  outline-offset: 1px;
 }
 
 .attachRemove {

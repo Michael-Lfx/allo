@@ -11,7 +11,7 @@ import { getDataUrlByteSize, readImageMeta } from "@oc/lib/image-utils";
 import { audioMetadata, imageMetadata, videoMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import type { AssetSpaceItem, AssetSpaceKind } from "@oc/lib/canvas/canvas-asset-space";
 import { fileFromBriefingArtifact, fileFromVimaxArtifact } from "@oc/lib/canvas/canvas-asset-space-media";
-import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
+import { createCharacterSubjectNode, findCharacterSubjectNode } from "@oc/lib/canvas/canvas-character-subject";
 import { isAudioFile } from "@oc/lib/canvas/canvas-project-generation";
 import { fitNodeSize, VIDEO_NODE_MAX_SIZE } from "@oc/lib/canvas/canvas-node-size";
 import { canvasMediaUrl } from "@renderer/pages/videoCanvas/api";
@@ -698,35 +698,7 @@ export function useCanvasUpload({
 
     const createAssetPayloadNode = useCallback(async (payload: InsertAssetPayload, center: Position) => {
         if (payload.kind === "character") {
-            const width = 320;
-            const height = 260;
-            return {
-                id: `character-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                type: CanvasNodeType.Text,
-                title: payload.title,
-                position: { x: center.x - width / 2, y: center.y - height / 2 },
-                width,
-                height,
-                metadata: {
-                    workflowKind: "character",
-                    characterAssetId: payload.assetId,
-                    characterVersionId: payload.versionId,
-                    characterVersionPolicy: "current",
-                    characterName: payload.title,
-                    characterPrompt: payload.prompt,
-                    characterAliases: payload.aliases,
-                    characterDefinition: payload.definition,
-                    characterCoverUrl: payload.coverUrl,
-                    characterVisualStatus: payload.visualStatus,
-                    characterVoiceStatus: payload.voiceStatus,
-                    characterVoiceName: payload.voiceName,
-                    characterVoiceProfile: payload.voiceProfile,
-                    characterVoiceInstructions: payload.voiceInstructions,
-                    assetId: payload.assetId,
-                    status: NODE_STATUS_SUCCESS,
-                    fontSize: 14,
-                },
-            } satisfies CanvasNodeData;
+            return createCharacterSubjectNode(payload, center);
         }
         if (payload.kind === "text") {
             const node = { ...createCanvasNode(CanvasNodeType.Text, center, { content: payload.content, status: NODE_STATUS_SUCCESS, assetId: payload.assetId }), title: payload.content.slice(0, 32) || "Assistant Text" };
@@ -753,20 +725,38 @@ export function useCanvasUpload({
     const handleProjectAssetsInsert = useCallback(async (payloads: InsertAssetPayload[], position?: Position) => {
         const origin = position || getCanvasCenter();
         try {
-            const created = await Promise.all(payloads.map((payload, index) => createAssetPayloadNode(payload, {
-                x: origin.x + (index % 3) * 380,
-                y: origin.y + Math.floor(index / 3) * 300,
-            })));
-            setNodes((current) => [...current, ...created]);
-            setSelectedNodeIds(new Set(created.map((node) => node.id)));
+            const created: CanvasNodeData[] = [];
+            const selected = new Set<string>();
+            for (const [index, payload] of payloads.entries()) {
+                const center = {
+                    x: origin.x + (index % 3) * 380,
+                    y: origin.y + Math.floor(index / 3) * 300,
+                };
+                if (payload.kind === "character") {
+                    const existing = findCharacterSubjectNode([...nodesRef.current, ...created], payload.assetId);
+                    if (existing) {
+                        selected.add(existing.id);
+                        continue;
+                    }
+                    const node = createCharacterSubjectNode(payload, center);
+                    created.push(node);
+                    selected.add(node.id);
+                    continue;
+                }
+                const node = await createAssetPayloadNode(payload, center);
+                created.push(node);
+                selected.add(node.id);
+            }
+            if (created.length) setNodes((current) => [...current, ...created]);
+            setSelectedNodeIds(selected);
             setSelectedConnectionId(null);
             setDialogNodeId(null);
-            message.success(`已引入 ${created.length} 项项目资产`);
+            message.success(`已引入 ${selected.size} 项项目资产`);
         } catch (error) {
             message.error(formatCanvasUserError(error, "项目资产引入失败"));
             throw error;
         }
-    }, [createAssetPayloadNode, getCanvasCenter, message, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
+    }, [createAssetPayloadNode, getCanvasCenter, message, nodesRef, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
 
     return {
         assetTrayOpenNonce,

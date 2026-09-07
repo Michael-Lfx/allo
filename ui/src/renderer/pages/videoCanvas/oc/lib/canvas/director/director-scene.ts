@@ -3,6 +3,7 @@ import { Color, Euler, Quaternion } from "three";
 import type { DirectorBoneKeyframe, DirectorHumanoidBone, DirectorKeyframe, DirectorPose, DirectorQuat, DirectorTransform, DirectorVec3 } from "@oc/types/director";
 import { DIRECTOR_KEYFRAME_EPSILON, resolveDirectorKeyframeProgress } from "./director-scene-create";
 
+export { DIRECTOR_ACTOR_PRESETS, DIRECTOR_SOLDIER_ACTOR_URL, resolveDirectorActorPreset } from "./director-actor-presets";
 export {
     DIRECTOR_ACTOR_COLORS,
     DIRECTOR_DEFAULT_ACTOR_URL,

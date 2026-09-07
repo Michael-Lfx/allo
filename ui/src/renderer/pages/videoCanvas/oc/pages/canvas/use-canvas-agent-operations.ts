@@ -26,6 +26,7 @@ type UseCanvasAgentOperationsOptions = {
     setViewport: Dispatch<SetStateAction<ViewportTransform>>;
     setContextMenu: Dispatch<SetStateAction<ContextMenuState | null>>;
     focusSelection: () => boolean;
+    alloCreative?: Record<string, unknown>;
 };
 
 export type CanvasAgentChange = {
@@ -59,13 +60,14 @@ export function useCanvasAgentOperations({
     setViewport,
     setContextMenu,
     focusSelection,
+    alloCreative,
 }: UseCanvasAgentOperationsOptions) {
     const undoStackRef = useRef<CanvasAgentUndoBatch[]>([]);
     const [undoOpsCount, setUndoOpsCount] = useState(0);
     const [lastAgentChange, setLastAgentChange] = useState<CanvasAgentChange | null>(null);
     const snapshot = useMemo<CanvasAgentSnapshot>(
-        () => ({ projectId, domainProjectId, title: projectTitle, nodes, connections, selectedNodeIds: Array.from(selectedNodeIds), viewport }),
-        [connections, domainProjectId, nodes, projectId, projectTitle, selectedNodeIds, viewport],
+        () => ({ projectId, domainProjectId, title: projectTitle, nodes, connections, selectedNodeIds: Array.from(selectedNodeIds), viewport, alloCreative }),
+        [alloCreative, connections, domainProjectId, nodes, projectId, projectTitle, selectedNodeIds, viewport],
     );
 
     useEffect(() => {
@@ -85,7 +87,7 @@ export function useCanvasAgentOperations({
 
     const applyOps = useCallback((ops?: CanvasAgentOp[]) => {
         const safeOps = Array.isArray(ops) ? ops.filter((op) => op?.type) : [];
-        const before = { projectId, domainProjectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current };
+        const before = { projectId, domainProjectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current, alloCreative };
         const generationOps = safeOps.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation" && Boolean(op.nodeId));
         const next = applyCanvasAgentOps(before, safeOps.filter((op) => op.type !== "run_generation" && op.type !== "extract_frames"));
         const beforeNodeIds = new Set(before.nodes.map((node) => node.id));
@@ -138,6 +140,7 @@ export function useCanvasAgentOperations({
                                 connections: connectionsRef.current,
                                 selectedNodeIds: Array.from(selectedNodeIdsRef.current),
                                 viewport: viewportRef.current,
+                                alloCreative,
                             }),
                             { nodeIds: wave.map((op) => op.nodeId) },
                         );
@@ -145,8 +148,8 @@ export function useCanvasAgentOperations({
                 })();
             });
         }
-        return { ...next, nodes: appliedNodes, projectId, title: projectTitle, selectedNodeIds: nextSelectedNodeIds };
-    }, [connectionsRef, domainProjectId, focusSelection, generateNodeRef, nodesRef, projectId, projectTitle, selectedNodeIdsRef, setConnections, setContextMenu, setNodes, setSelectedConnectionId, setSelectedNodeIds, setViewport, viewportRef]);
+        return { ...next, nodes: appliedNodes, projectId, title: projectTitle, selectedNodeIds: nextSelectedNodeIds, alloCreative };
+    }, [alloCreative, connectionsRef, domainProjectId, focusSelection, generateNodeRef, nodesRef, projectId, projectTitle, selectedNodeIdsRef, setConnections, setContextMenu, setNodes, setSelectedConnectionId, setSelectedNodeIds, setViewport, viewportRef]);
 
     const undoOps = useCallback(() => {
         const batch = undoStackRef.current.at(-1);

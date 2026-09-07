@@ -8,6 +8,7 @@ import { canvasAgentPostconditionMessage, canvasAgentStateHashBlocksWrite, verif
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@oc/lib/canvas/canvas-agent-context";
 import { parseCanvasAgentMentionTokens, resolveCanvasAgentNodeIds } from "@oc/lib/canvas/canvas-agent-ids";
 import { compileCanvasRunOps, critiqueCanvasOutputs, inspectCanvasIntent, isCanvasApplyNeedsGraphError, proposeCanvasApply } from "@oc/lib/canvas/canvas-agent-intent";
+import { CREATION_INSPECT_TOOLS, inspectArgsForCreationTool } from "@oc/lib/canvas/creation-agent-intent";
 import { buildCanvasAgentObservation, CANVAS_AGENT_CODES, compactWriteToolData, observationPromptBlock } from "@oc/lib/canvas/canvas-agent-observation";
 import { waitCanvasAgentGeneration } from "@oc/lib/canvas/canvas-agent-wait";
 import { collectCanvasSkills } from "@oc/lib/canvas/canvas-skill-mentions";
@@ -285,9 +286,12 @@ export function useCanvasOnlineAgentLoop({
                     data: { skillId: skill.skill_id, name: skill.skill_name, description: skill.description, instruction: skill.instruction || skill.description, version: skill.update_time },
                 };
             }
-            if (name === "canvas_inspect" || name === "canvas_get_state" || name === "canvas_get_context" || name === "canvas_export_snapshot" || name === "canvas_get_selection") {
+            if (name === "canvas_inspect" || name === "canvas_get_state" || name === "canvas_get_context" || (CREATION_INSPECT_TOOLS as readonly string[]).includes(name)) {
                 rememberSnapshotNodes(current, inspectedNodeIdsRef.current);
-                const data = inspectCanvasIntent(current, name === "canvas_inspect" ? args : { focus: "graph" }, previousSnapshotRef.current);
+                const inspectArgs = name === "canvas_inspect" || (CREATION_INSPECT_TOOLS as readonly string[]).includes(name)
+                    ? inspectArgsForCreationTool(name, args)
+                    : { focus: "graph" };
+                const data = inspectCanvasIntent(current, inspectArgs, previousSnapshotRef.current);
                 previousSnapshotRef.current = current;
                 return { ok: true, message: describeCanvasSnapshot(current), data };
             }

@@ -44,7 +44,10 @@ describe("home agent launch", () => {
     expect(autoStart?.meta).toContain("16:9");
     expect(autoStart?.meta).toContain("demo-video");
     expect(autoStart?.modelContext).toContain("canvas_apply");
+    expect(autoStart?.modelContext).toContain("storyboard_apply");
+    expect(autoStart?.modelContext).toContain("canvas_get_skill");
     expect(autoStart?.modelContext).not.toContain("画布几乎为空");
+    expect(autoStart?.modelContext).toContain("分镜");
     expect(homeAgentAutoStartFromCreative({
       homeLaunch: { autoAgent: true, prompt: "噜噜跳舞", agentBriefSent: true, preferences },
     })).toBeNull();
@@ -75,12 +78,16 @@ describe("home agent launch", () => {
       requirement: "竖屏也可",
     });
     expect(context).toContain("canvas_apply");
+    expect(context).toContain("storyboard_apply");
+    expect(context).toContain("canvas_get_skill");
     expect(context).toContain("电影写实");
     expect(context).toContain("16:9");
     expect(context).toContain("demo-video");
     expect(context).toContain("竖屏也可");
     expect(context).toContain("canvas_run");
     expect(context).toContain("必须含 nodes");
+    expect(context).toContain("分镜");
+    expect(context).toContain("主体");
     expect(context).not.toContain("必须是：分镜脚本");
     expect(context).not.toContain("请先 canvas_get_context");
     expect(context).not.toContain("媒介路径参考");

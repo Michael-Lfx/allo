@@ -11,6 +11,7 @@ import { CanvasProjectMediaDialogs } from "./canvas-project-media-dialogs";
 import { CanvasProjectStatusDialogs } from "./canvas-project-status-dialogs";
 import { CanvasProjectAssetModal } from "@oc/components/canvas/canvas-project-asset-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { listDirectorEnvironmentSources } from "@oc/lib/canvas/director/director-environment";
 import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
 import { resourceStorageKey } from "@oc/services/api/resources";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
@@ -84,6 +85,7 @@ type CanvasProjectDialogsProps = {
     setDirectorNodeId: SetNodeId;
     saveDirectorScene: ReturnType<typeof useCanvasDirector>["saveDirectorScene"];
     applyDirectorOutput: ReturnType<typeof useCanvasDirector>["applyDirectorOutput"];
+    applyDirectorCameraGrid: ReturnType<typeof useCanvasDirector>["applyDirectorCameraGrid"];
     deleteNodes: ReturnType<typeof useCanvasNodeOperations>["deleteNodes"];
     directorOnboardingScope: string;
     versionCompareRootId: string | null;
@@ -161,6 +163,7 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
         setDirectorNodeId,
         saveDirectorScene,
         applyDirectorOutput,
+        applyDirectorCameraGrid,
         deleteNodes,
         directorOnboardingScope,
         versionCompareRootId,
@@ -372,9 +375,11 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
                             open
                             scene={activeDirectorScene}
                             imageNodes={nodes.filter((node) => node.type === CanvasNodeType.Image && Boolean(node.metadata?.content))}
+                            environmentSources={listDirectorEnvironmentSources(nodes, connections)}
                             onClose={() => setDirectorNodeId(null)}
                             onChange={saveDirectorScene}
                             onApply={applyDirectorOutput}
+                            onApplyGrid={applyDirectorCameraGrid}
                             onDeleteImageNode={(nodeId) => deleteNodes(new Set([nodeId]))}
                             onFlush={() => flushCanvasStorePersistence()}
                             onboardingScope={directorOnboardingScope}

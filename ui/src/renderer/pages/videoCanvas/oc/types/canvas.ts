@@ -92,6 +92,10 @@ export type StoryboardRow = {
     referenceNodeIds: string[];
     imageNodeId?: string;
     videoNodeId?: string;
+    /** How this shot's still is used when generating the shot video. */
+    stillRole?: "first" | "last" | "reference";
+    directorSceneId?: string;
+    directorShotId?: string;
     status?: CanvasNodeStatus;
     errorDetails?: string;
 };

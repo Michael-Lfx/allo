@@ -105,5 +105,44 @@ describe("canvas agent intent", () => {
         expect(data.observation.nodeCount).toBe(2);
         expect(data.observation.incomplete).toBe(false);
         expect("graph" in data).toBe(true);
+        expect("creation" in data).toBe(false);
+    });
+
+    test("inspect includes creation memory when sidecar exists", () => {
+        const data = inspectCanvasIntent({
+            ...snapshot(),
+            alloCreative: {
+                creation: {
+                    schema: 1,
+                    view: "storyboard",
+                    spec: { aspectRatio: "16:9", resolution: "1080p", durationSecs: 6, mediaKind: "video" },
+                    subjects: [{ id: "sub_1", kind: "character", name: "噜噜" }],
+                    shots: [{ id: "s1", title: "1", plot: "出门", durationSecs: 6, subjectIds: ["sub_1"], status: "idle" }],
+                },
+            },
+        }, {});
+        expect("creation" in data).toBe(true);
+        const creation = (data as { creation?: { subjects: Array<{ name: string }>; gaps: string[] } }).creation;
+        expect(creation?.subjects[0]?.name).toBe("噜噜");
+        expect(creation?.gaps.some((gap) => gap.includes("missing still"))).toBe(true);
+    });
+
+    test("inspect focus storyboard returns domain gaps without dumping the graph", () => {
+        const data = inspectCanvasIntent({
+            ...snapshot(),
+            alloCreative: {
+                creation: {
+                    schema: 1,
+                    view: "storyboard",
+                    spec: { aspectRatio: "16:9", resolution: "1080p", durationSecs: 6, mediaKind: "video" },
+                    subjects: [{ id: "sub_1", kind: "character", name: "噜噜" }],
+                    shots: [{ id: "s1", title: "1", plot: "出门", durationSecs: 6, subjectIds: ["sub_1"], status: "idle" }],
+                },
+            },
+        }, { focus: "storyboard" });
+        expect("graph" in data).toBe(false);
+        expect((data as { focus?: string }).focus).toBe("storyboard");
+        const domain = (data as { domain?: { gaps?: string[] } }).domain;
+        expect(domain?.gaps?.some((gap) => gap.includes("missing still"))).toBe(true);
     });
 });

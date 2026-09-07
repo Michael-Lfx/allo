@@ -13,7 +13,7 @@
     "agentMenuDesc": "自动规划分镜并渲染成片",
     "actionLabel": "动作模仿",
     "actionMenuDesc": "角色图 + 参考视频，模仿动作成片",
-    "creationMenuDesc": "把需求发给画布 Agent，自动搭建并生成",
+    "creationMenuDesc": "描述故事，上传角色或场景，进入分镜与画布",
     "briefingLabel": "资讯播报",
     "briefingMenuDesc": "可溯源调研 + 口播成片，不发明今日新闻"
   },
@@ -264,7 +264,7 @@
       "ideaPlaceholder": "描述你想看到的故事、情绪或产品画面…",
       "scriptPlaceholder": "粘贴剧本，Flowy 会自动拆成可编辑镜头…",
       "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…",
-      "creationPlaceholder": "描述你想创作的画面、镜头或氛围…",
+      "creationPlaceholder": "描述故事。可上传角色、场景或道具，再进入分镜…",
       "generatePlaceholder": "描述你想生成的画面与运动，可上传参考图…",
       "briefingPlaceholder": "输入早报话题，例如「今日芯片出口管制」。来源链接可选，引擎会自行检索。",
       "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 切换 Mode…"
@@ -282,7 +282,12 @@
       "docEmpty": "文档内容为空。",
       "docxCorrupt": "DOCX 文件已损坏或无法读取。",
       "docxNoBody": "DOCX 中未找到正文内容。",
-      "untitledAsset": "未命名素材"
+      "untitledAsset": "未命名素材",
+      "subjectKindCharacter": "角色",
+      "subjectKindScene": "场景",
+      "subjectKindProp": "道具",
+      "subjectKindAria": "切换主体类型",
+      "subjectNamePlaceholder": "名称"
     },
     "action": {
       "character": "角色图",

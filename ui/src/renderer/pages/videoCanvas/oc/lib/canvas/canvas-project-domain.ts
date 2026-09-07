@@ -11,11 +11,16 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Canvas
 
 const CANVAS_WORKSPACE_MODE_STORAGE_KEY = "canvas-workspace-mode-v1";
 
+/** 工作模式分流已停用：恒返回 professional。真实菜单分叉是 compactCreateMenu。 */
 export function readCanvasWorkspaceMode(): CanvasWorkspaceMode {
     migrateCanvasWorkspaceMode();
     return "professional";
 }
 
+/**
+ * 工作模式分流已停用：read 恒为 professional，菜单只看 compactCreateMenu。
+ * 仍清理旧 localStorage，避免残留 simple 值误导排查。
+ */
 export function persistCanvasWorkspaceMode(_mode?: CanvasWorkspaceMode) {
     migrateCanvasWorkspaceMode();
 }

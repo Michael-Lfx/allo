@@ -1,7 +1,7 @@
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Grid, Line, OrbitControls, TransformControls } from "@react-three/drei";
 import { Component, forwardRef, memo, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState, type ComponentRef, type ReactNode } from "react";
-import { AnimationClip, AnimationMixer, Box3, Bone, Camera, Color, Group, LoopOnce, LoopRepeat, Mesh, MeshBasicMaterial, MeshDepthMaterial, MeshNormalMaterial, MeshStandardMaterial, Object3D, OrthographicCamera, PerspectiveCamera, Plane, Quaternion, Raycaster, Scene, SkeletonHelper, Texture, TextureLoader, Vector2, Vector3, WebGLRenderer } from "three";
+import { AnimationClip, AnimationMixer, Box3, Bone, Camera, Color, EquirectangularReflectionMapping, Group, LoopOnce, LoopRepeat, Mesh, MeshBasicMaterial, MeshDepthMaterial, MeshNormalMaterial, MeshStandardMaterial, Object3D, OrthographicCamera, PerspectiveCamera, Plane, Quaternion, Raycaster, Scene, SkeletonHelper, SRGBColorSpace, Texture, TextureLoader, Vector2, Vector3, WebGLRenderer } from "three";
 import type { Material } from "three";
 import { GLTFLoader, SkeletonUtils } from "three-stdlib";
 
@@ -22,6 +22,8 @@ export type DirectorOrbitControls = ComponentRef<typeof OrbitControls>;
 
 export type DirectorViewportHandle = {
     capture: (mode: DirectorRenderMode) => Promise<Blob>;
+    /** 用独立透视相机按构图截帧，不改写自由视角或 CAM 相机。 */
+    captureFraming: (framing: DirectorViewFraming) => Promise<Blob>;
     recordVideo: (duration: number, fps: number) => Promise<Blob>;
     readCameraTransform: () => DirectorTransform | null;
     /** 只读放置意图。上下文不可用或从未产生合法点时返回空意图，绝不抛异常。 */
@@ -135,6 +137,7 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
     };
     useImperativeHandle(ref, () => ({
         capture: (mode) => captureFrame(usableContext(), mode),
+        captureFraming: (framing) => captureFraming(usableContext(), framing),
         recordVideo: (duration, fps) => recordCanvas(usableContext(), duration, fps),
         readCameraTransform: () => {
             const camera = usableContext()?.camera;
@@ -382,9 +385,39 @@ function DirectorSceneContent({ scene, selectedObjectId, selectedBone, transform
     }, [onOrbitControls]);
 
     useEffect(() => {
-        threeScene.background = new Color(scene.background);
-        invalidate();
-    }, [invalidate, scene.background, threeScene]);
+        const url = scene.environmentMapUrl;
+        if (!url) {
+            threeScene.background = new Color(scene.background);
+            threeScene.environment = null;
+            invalidate();
+            return;
+        }
+        let cancelled = false;
+        let owned: Texture | null = null;
+        new TextureLoader().load(url, (texture) => {
+            if (cancelled) {
+                texture.dispose();
+                return;
+            }
+            texture.mapping = EquirectangularReflectionMapping;
+            texture.colorSpace = SRGBColorSpace;
+            owned = texture;
+            threeScene.background = texture;
+            threeScene.environment = texture;
+            invalidate();
+        }, undefined, () => {
+            if (cancelled) return;
+            threeScene.background = new Color(scene.background);
+            threeScene.environment = null;
+            invalidate();
+        });
+        return () => {
+            cancelled = true;
+            if (threeScene.background === owned) threeScene.background = new Color(scene.background);
+            if (threeScene.environment === owned) threeScene.environment = null;
+            owned?.dispose();
+        };
+    }, [invalidate, scene.background, scene.environmentMapUrl, threeScene]);
 
     useEffect(() => {
         const material = renderMode === "depth" ? new MeshDepthMaterial() : renderMode === "normal" ? new MeshNormalMaterial() : renderMode === "pose" ? new MeshBasicMaterial({ color: "#ffffff", wireframe: true }) : null;
@@ -1102,6 +1135,25 @@ function DirectorLightView({ light }: { light: DirectorLight }) {
     if (light.type === "point") return <pointLight position={position} color={light.color} intensity={light.intensity} castShadow={light.castShadow} />;
     if (light.type === "spot") return <spotLight position={position} color={light.color} intensity={light.intensity} angle={light.angle} penumbra={light.penumbra} castShadow={light.castShadow} />;
     return <directionalLight position={position} color={light.color} intensity={light.intensity} castShadow={light.castShadow} shadow-mapSize-width={1024} shadow-mapSize-height={1024} />;
+}
+
+async function captureFraming(context: CaptureContext | null, framing: DirectorViewFraming) {
+    if (!context) throw new Error("3D 视口尚未就绪");
+    const { gl, scene, camera } = context;
+    const aspect = Math.max(1, gl.domElement.width) / Math.max(1, gl.domElement.height);
+    const shotCamera = new PerspectiveCamera(framing.fov, aspect, framing.near, framing.far);
+    const resumeDisplayMaterialOverride = context.suspendDisplayMaterialOverride();
+    try {
+        shotCamera.up.set(...framing.up);
+        shotCamera.position.set(...framing.position);
+        shotCamera.lookAt(...framing.target);
+        shotCamera.updateProjectionMatrix();
+        gl.render(scene, shotCamera);
+        return await canvasToBlob(gl.domElement);
+    } finally {
+        resumeDisplayMaterialOverride();
+        gl.render(scene, camera);
+    }
 }
 
 async function captureFrame(context: CaptureContext | null, mode: DirectorRenderMode) {
