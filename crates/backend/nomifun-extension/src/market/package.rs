@@ -70,22 +70,14 @@ struct MarketPackageStaging {
 impl Drop for MarketPackageStaging {
     fn drop(&mut self) {
         // Drop is the final cancellation/unwind guard. The extracted archive
-        // is untrusted input and must not survive an interrupted install. Do
-        // not recurse synchronously on a Tokio worker: package archives are
-        // bounded but can still make cancellation block the runtime.
+        // is untrusted input and must not survive an interrupted install.
         let root = self.root.clone();
         let parent = self.parent.clone();
         let cleanup = move || {
-            let _ = std::fs::remove_dir_all(root);
-            let _ = std::fs::remove_dir(parent);
+            skill_service::remove_staging_directory_sync(&root);
+            skill_service::remove_empty_staging_parent_sync(&parent);
         };
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn_blocking(cleanup);
-        } else {
-            let _ = std::thread::Builder::new()
-                .name("market-package-cleanup".into())
-                .spawn(cleanup);
-        }
+        cleanup();
     }
 }
 
