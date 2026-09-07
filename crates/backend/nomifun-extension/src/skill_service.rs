@@ -1712,6 +1712,13 @@ pub(crate) async fn clear_market_installation_record(
 ///
 /// Returns `false` only when no directory entry exists at `path`.
 async fn remove_path_entry(path: &Path) -> Result<bool, ExtensionError> {
+    #[cfg(test)]
+    if test_overrides::should_fail_projection_backup_delete(path) {
+        return Err(ExtensionError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "forced projection backup cleanup failure (test)",
+        )));
+    }
     let metadata = match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -2253,7 +2260,20 @@ async fn replace_workspace_skill_projection(
     let mode = match link_skill_or_fallback_copy_with_mode(source, target).await {
         Ok(mode) => mode,
         Err(error) => {
-            restore_workspace_projection(target, backup.as_deref(), marker_path, previous_marker.as_ref()).await;
+            if let Err(rollback_error) = restore_workspace_projection(
+                target,
+                backup.as_deref(),
+                marker_path,
+                skill_name,
+                previous_marker.as_ref(),
+            )
+            .await
+            {
+                return Err(projection_conflict(
+                    skill_name,
+                    &format!("projection creation failed and rollback failed: {error}; {rollback_error}"),
+                ));
+            }
             return Err(error);
         }
     };
@@ -2265,12 +2285,34 @@ async fn replace_workspace_skill_projection(
         mode,
     };
     if let Err(error) = write_projection_marker(marker_path, &marker).await {
-        let _ = remove_path_entry(target).await;
-        restore_workspace_projection(target, backup.as_deref(), marker_path, previous_marker.as_ref()).await;
+        if let Err(rollback_error) = restore_workspace_projection(
+            target,
+            backup.as_deref(),
+            marker_path,
+            skill_name,
+            previous_marker.as_ref(),
+        )
+        .await
+        {
+            return Err(projection_conflict(
+                skill_name,
+                &format!("projection marker write failed and rollback failed: {error}; {rollback_error}"),
+            ));
+        }
         return Err(error);
     }
     if let Some(backup) = backup {
-        remove_path_entry(&backup).await?;
+        // The projection and marker are already committed. A backup cleanup
+        // failure must not report an error that leaves callers believing the
+        // new projection was rolled back; retain this private recovery entry
+        // for a later cleanup pass instead.
+        if let Err(error) = remove_path_entry(&backup).await {
+            warn!(
+                backup = %backup.display(),
+                error = %error,
+                "committed Skill projection backup could not be removed"
+            );
+        }
     }
     Ok(())
 }
@@ -2279,22 +2321,53 @@ async fn restore_workspace_projection(
     target: &Path,
     backup: Option<&Path>,
     marker_path: &Path,
+    skill_name: &str,
     previous_marker: Option<&SkillProjectionMarker>,
-) {
-    if let Some(backup) = backup {
-        let _ = tokio::fs::rename(backup, target).await;
+) -> Result<(), ExtensionError> {
+    let mut failures = Vec::new();
+    let target_removed = match remove_path_entry(target).await {
+        Ok(_) => true,
+        Err(error) => {
+            failures.push(format!("remove new target: {error}"));
+            false
+        }
+    };
+    if target_removed
+        && let Some(backup) = backup
+        && let Err(error) = tokio::fs::rename(backup, target).await
+    {
+        failures.push(format!("restore previous target: {error}"));
     }
     match previous_marker {
         Some(marker) => {
-            let _ = write_projection_marker(marker_path, marker).await;
+            if let Err(error) = write_projection_marker(marker_path, marker).await {
+                failures.push(format!("restore previous marker: {error}"));
+            }
         }
         None => {
-            let _ = remove_projection_marker(marker_path).await;
+            if let Err(error) = remove_projection_marker(marker_path).await {
+                failures.push(format!("remove new marker: {error}"));
+            }
         }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(projection_conflict(
+            skill_name,
+            &format!("rollback incomplete: {}", failures.join("; ")),
+        ))
     }
 }
 
 async fn write_projection_marker(path: &Path, marker: &SkillProjectionMarker) -> Result<(), ExtensionError> {
+    #[cfg(test)]
+    if test_overrides::should_fail_next_projection_marker_write() {
+        return Err(ExtensionError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "forced projection marker write failure (test)",
+        )));
+    }
     let parent = path
         .parent()
         .ok_or_else(|| ExtensionError::SkillProjectionConflict("marker path has no parent".into()))?;
@@ -4931,6 +5004,100 @@ mod tests {
         assert!(std::fs::read_to_string(workspace.join(".claude/skills/repairable/SKILL.md"))
             .unwrap()
             .contains("New source"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn projection_marker_failure_restores_previous_projection_and_marker() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_skill_in_dir(&paths.user_skills_dir, "marker-failure", "Old source");
+        let resolved = materialize_skills_for_agent(
+            &paths,
+            "conv-marker-failure",
+            &["marker-failure".into()],
+        )
+        .await
+        .unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        {
+            let _guard = test_overrides::ForceFailureGuard::new();
+            link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+                .await
+                .unwrap();
+        }
+        let target = workspace.join(".claude/skills/marker-failure");
+        let marker_path = workspace.join(".claude/skills/.nomifun-managed/marker-failure.json");
+        let old_marker = std::fs::read(&marker_path).unwrap();
+        std::fs::write(
+            paths.user_skills_dir.join("marker-failure/SKILL.md"),
+            "---\nname: marker-failure\ndescription: New source\n---\nNew body",
+        )
+        .unwrap();
+
+        test_overrides::fail_next_projection_marker_write();
+        let error = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ExtensionError::Io(_) | ExtensionError::SkillProjectionConflict(_)));
+        assert!(std::fs::read_to_string(target.join(SKILL_MANIFEST_FILE))
+            .unwrap()
+            .contains("description: Old source"));
+        assert_eq!(std::fs::read(marker_path).unwrap(), old_marker);
+        assert!(!std::fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".marker-failure.projection-backup-")
+            }));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn projection_backup_cleanup_failure_keeps_committed_projection() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_skill_in_dir(&paths.user_skills_dir, "backup-failure", "Old source");
+        let resolved = materialize_skills_for_agent(
+            &paths,
+            "conv-backup-failure",
+            &["backup-failure".into()],
+        )
+        .await
+        .unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        {
+            let _guard = test_overrides::ForceFailureGuard::new();
+            link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+                .await
+                .unwrap();
+        }
+        std::fs::write(
+            paths.user_skills_dir.join("backup-failure/SKILL.md"),
+            "---\nname: backup-failure\ndescription: New source\n---\nNew body",
+        )
+        .unwrap();
+
+        test_overrides::fail_next_projection_backup_delete();
+        let report = link_workspace_skills(&paths, &workspace, &[".claude/skills"], &resolved)
+            .await
+            .unwrap();
+        assert_eq!(report.repaired, 1);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join(".claude/skills/backup-failure/SKILL.md"))
+                .unwrap(),
+            "---\nname: backup-failure\ndescription: New source\n---\nNew body"
+        );
+        let backup_prefix = ".backup-failure.projection-backup-";
+        assert!(std::fs::read_dir(workspace.join(".claude/skills"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(backup_prefix)));
     }
 
     #[cfg(unix)]
