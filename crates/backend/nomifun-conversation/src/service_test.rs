@@ -8403,7 +8403,7 @@ async fn delayed_initial_delivery_cannot_cross_a_completed_turn_generation() {
         )
         .await
         .expect_err("stale initial auto-delivery must fail closed");
-    assert!(matches!(error, AppError::Conflict(_)));
+    assert!(matches!(error, AppError::ConversationTurnAdmissionConflict));
     assert_eq!(
         registry.build_calls(),
         1,
@@ -9062,7 +9062,7 @@ async fn successor_pending_generation_cannot_impersonate_creation_for_initial_de
         )
         .await
         .expect_err("a successor generation cannot regain initial-only authority");
-    assert!(matches!(error, AppError::Conflict(_)));
+    assert!(matches!(error, AppError::ConversationTurnAdmissionConflict));
     assert_eq!(
         registry.build_calls(),
         0,
