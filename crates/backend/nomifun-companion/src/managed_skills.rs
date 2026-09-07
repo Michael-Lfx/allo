@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::fs::Metadata;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -73,8 +74,17 @@ fn read_copy_marker(target: &Path) -> Option<CopyMarker> {
 }
 
 fn managed_target_is_owned(target: &Path, record: &ManagedSkillRecord) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(target) else {
+        return false;
+    };
     if let Some(linked) = link_target_path(target) {
         return record.copy_token.is_none() && path_key(&linked) == path_key(&record.source);
+    }
+    if metadata_is_link_or_reparse(&metadata) {
+        // A reparse point whose target cannot be read is never proven to be
+        // ours. In particular, do not mistake a Windows junction for a copy
+        // and follow it while reading or deleting a marker.
+        return false;
     }
     match (&record.copy_token, read_copy_marker(target)) {
         (Some(expected), Some(marker)) => marker.token == *expected,
@@ -105,7 +115,7 @@ fn clear_readonly_tree(_path: &Path) -> io::Result<()> {
 
 fn remove_managed_target(target: &Path) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(target)?;
-    if std::fs::read_link(target).is_ok() {
+    if metadata_is_link_or_reparse(&metadata) {
         return if metadata.is_dir() {
             std::fs::remove_dir(target)
         } else {
@@ -120,6 +130,22 @@ fn remove_managed_target(target: &Path) -> io::Result<()> {
     }
 }
 
+fn metadata_is_link_or_reparse(metadata: &Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 /// Remove obsolete entries only when their current target still proves that
 /// this synchronizer owns it. Unverifiable targets are preserved and dropped
 /// from the returned manifest so they can never be deleted on a later pass.
@@ -128,6 +154,15 @@ pub(crate) fn remove_stale_managed_entries(
     manifest: &ManagedSkillManifest,
     desired_names: &HashSet<&str>,
 ) -> ManagedSkillManifest {
+    match std::fs::symlink_metadata(skills_dir) {
+        Ok(metadata) if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() => {
+            // Never walk through a replaced `.nomi/skills` root. Preserve the
+            // manifest so a later safe pass can reconcile it.
+            return manifest.clone();
+        }
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return manifest.clone(),
+        Ok(_) | Err(_) => {}
+    }
     let mut retained = ManagedSkillManifest::default();
     for (name, record) in &manifest.managed {
         if !valid_skill_name(name) {
@@ -164,11 +199,20 @@ pub(crate) fn write_copy_marker(target: &Path, token: &str) -> io::Result<()> {
 /// ownership evidence for a later safe cleanup.
 pub(crate) fn record_managed_entry(target: &Path, source: &Path) -> io::Result<Option<ManagedSkillRecord>> {
     let metadata = std::fs::symlink_metadata(target)?;
-    if link_target_path(target).is_some() {
+    if metadata_is_link_or_reparse(&metadata) {
+        let Some(linked) = link_target_path(target) else {
+            return Ok(None);
+        };
+        if path_key(&linked) != path_key(source) {
+            return Ok(None);
+        }
         return Ok(Some(ManagedSkillRecord {
             source: source.to_path_buf(),
             copy_token: None,
         }));
+    }
+    if link_target_path(target).is_some() {
+        return Ok(None);
     }
     if !metadata.is_dir() {
         return Ok(None);
@@ -227,5 +271,42 @@ mod tests {
 
         assert!(!target.exists());
         assert!(retained.managed.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_cleanup_does_not_follow_a_replaced_skills_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        let skills = temp.path().join(".nomi/skills");
+        let target = outside.join("mermaid");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("user.txt"), "must survive").unwrap();
+        std::fs::create_dir_all(skills.parent().unwrap()).unwrap();
+        symlink(&outside, &skills).unwrap();
+
+        let manifest = manifest_with_copy("mermaid", "C:/source/mermaid", "managed-token");
+        let retained = remove_stale_managed_entries(&skills, &manifest, &HashSet::new());
+
+        assert_eq!(retained.managed, manifest.managed);
+        assert!(target.join("user.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn record_managed_entry_rejects_a_link_to_a_different_source() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let other = temp.path().join("other");
+        let target = temp.path().join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        symlink(&other, &target).unwrap();
+
+        assert!(record_managed_entry(&target, &source).unwrap().is_none());
     }
 }

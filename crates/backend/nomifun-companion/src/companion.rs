@@ -567,6 +567,7 @@ pub(crate) async fn sync_managed_workspace_skills(
         }
     };
 
+    let _mutation_guard = nomifun_extension::acquire_skill_mutation_lock().await;
     let old_manifest = load_manifest(&nomi_dir);
     let desired: std::collections::HashSet<&str> = resolved
         .iter()
@@ -581,38 +582,63 @@ pub(crate) async fn sync_managed_workspace_skills(
     let mut manifest = remove_stale_managed_entries(&skills_dir, &old_manifest, &desired);
     let to_link: Vec<_> = resolved
         .iter()
-        .filter(|skill| !skills_dir.join(&skill.name).exists())
+        .filter(|skill| projection_needs_reconciliation(&skills_dir.join(&skill.name)))
         .cloned()
         .collect();
-    if let Err(error) = nomifun_extension::link_workspace_skills(
+    let link_result = nomifun_extension::link_workspace_skills_with_held_lock(
         skill_paths,
         workspace,
         &[".nomi/skills"],
         &to_link,
     )
-    .await
-    {
+    .await;
+    if let Err(error) = &link_result {
         tracing::warn!(error = %error, conversation_id, "link companion workspace skills failed");
     }
-    for skill in &to_link {
-        let target = skills_dir.join(&skill.name);
-        match record_managed_entry(&target, &skill.source_path) {
-            Ok(Some(record)) => {
-                manifest.managed.insert(skill.name.clone(), record);
+    if link_result.is_ok() {
+        for skill in &to_link {
+            let target = skills_dir.join(&skill.name);
+            match record_managed_entry(&target, &skill.source_path) {
+                Ok(Some(record)) => {
+                    manifest.managed.insert(skill.name.clone(), record);
+                }
+                Ok(None) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    target = %target.display(),
+                    "record managed companion skill failed"
+                ),
             }
-            Ok(None) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => tracing::warn!(
-                error = %error,
-                target = %target.display(),
-                "record managed companion skill failed"
-            ),
         }
     }
     if let Err(error) = save_manifest(&nomi_dir, &manifest) {
         tracing::warn!(error = %error, manifest = %nomi_dir.display(), "save companion skill manifest failed");
     }
     resolved.into_iter().map(|skill| skill.name).collect()
+}
+
+/// Return true for missing or link-like entries so the common projection
+/// reconciler can validate markers, repair dangling links, and reject links
+/// redirected away from their Flowy source. Ordinary user directories remain
+/// out of this list and are protected without noisy replacement attempts.
+fn projection_needs_reconciliation(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return true;
+    };
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 impl CompanionThreads {

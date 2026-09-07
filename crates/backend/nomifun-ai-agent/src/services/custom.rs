@@ -201,6 +201,11 @@ fn validate_upsert(req: &CustomAgentUpsertRequest) -> Result<(), AppError> {
     if req.command.trim().is_empty() {
         return Err(AppError::BadRequest("command must not be empty".into()));
     }
+    if let Some(native_skills_dirs) = req.advanced.as_ref().and_then(|advanced| advanced.native_skills_dirs.as_ref()) {
+        for native_skills_dir in native_skills_dirs {
+            nomifun_extension::validate_native_skills_relative_dir(native_skills_dir)?;
+        }
+    }
     Ok(())
 }
 
@@ -229,4 +234,35 @@ async fn probe_or_reject(req: &CustomAgentUpsertRequest, data_dir: &Path) -> Res
 
 fn first_token(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nomifun_api_types::CustomAgentAdvancedOverrides;
+
+    fn request_with_native_skills_dir(path: &str) -> CustomAgentUpsertRequest {
+        CustomAgentUpsertRequest {
+            name: "custom-agent".into(),
+            command: "agent-cli".into(),
+            icon: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            advanced: Some(CustomAgentAdvancedOverrides {
+                native_skills_dirs: Some(vec![path.into()]),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn validate_upsert_rejects_native_skill_path_escape_before_probe() {
+        let error = validate_upsert(&request_with_native_skills_dir(r"..\outside")).unwrap_err();
+        assert!(matches!(error, AppError::BadRequest(message) if message.contains("Invalid skill path")));
+    }
+
+    #[test]
+    fn validate_upsert_accepts_portable_native_skill_path() {
+        validate_upsert(&request_with_native_skills_dir(".claude/skills")).unwrap();
+    }
 }
