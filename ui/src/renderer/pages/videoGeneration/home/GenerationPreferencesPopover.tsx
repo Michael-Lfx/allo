@@ -12,11 +12,9 @@ import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatio
 import DurationTimelineBar from '../components/DurationTimelineBar';
 import {
   AGENT_TICKS,
-  CLIP_DURATION_MAX_SECS,
-  CLIP_DURATION_MIN_SECS,
-  CLIP_DURATION_STEP_SECS,
-  CLIP_TICKS,
+  clampClipDurationForModel,
   clampDuration,
+  clipDurationBoundsForModel,
   DURATION_MAX_SECS,
   DURATION_MIN_SECS,
   DURATION_STEP_SECS,
@@ -149,13 +147,14 @@ function isSelectPopupOpen(): boolean {
   );
 }
 
-function durationBounds(mode: VideoHomeMode) {
+function durationBounds(mode: VideoHomeMode, videoModel?: string) {
   if (isClipDurationMode(mode)) {
+    const clip = clipDurationBoundsForModel(videoModel ?? '');
     return {
-      min: CLIP_DURATION_MIN_SECS,
-      max: CLIP_DURATION_MAX_SECS,
-      step: CLIP_DURATION_STEP_SECS,
-      ticks: CLIP_TICKS,
+      min: clip.min,
+      max: clip.max,
+      step: clip.step,
+      ticks: clip.ticks,
     };
   }
   return {
@@ -204,7 +203,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     enabled: open,
   });
   const mediaKind = videoOnlyMode ? 'video' : value.mediaKind;
-  const duration = durationBounds(mode);
+  const duration = durationBounds(mode, value.models.video_model);
 
   const automaticLabel = t('videoGeneration.create.preferences.automatic', {
     defaultValue: '自动',
@@ -406,7 +405,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     };
   }, [open, onOpenChange]);
 
-  // Clamp resolution / fps whenever the video model allow-list changes.
+  // Clamp resolution / fps / clip duration whenever the video model allow-list changes.
   useEffect(() => {
     if (isBriefing) return;
     const current = valueRef.current;
@@ -416,10 +415,19 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
       current.resolution
     );
     const fps = normalizeVideoFps(current.models.video_model, current.fps);
-    if (resolution === current.resolution && fps === current.fps) return;
-    onChange({ ...current, resolution, fps });
+    const targetDurationSecs = isClipDurationMode(mode)
+      ? clampClipDurationForModel(current.models.video_model, current.targetDurationSecs)
+      : current.targetDurationSecs;
+    if (
+      resolution === current.resolution &&
+      fps === current.fps &&
+      targetDurationSecs === current.targetDurationSecs
+    ) {
+      return;
+    }
+    onChange({ ...current, resolution, fps, targetDurationSecs });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-clamp on model / allow-list
-  }, [value.models.video_model, resolutionOptions.join(',')]);
+  }, [value.models.video_model, resolutionOptions.join(','), mode]);
 
   // Seed missing / invalid models whenever options become available while open.
   useEffect(() => {
@@ -704,6 +712,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                             value.resolution
                           ),
                           fps: normalizeVideoFps(video_model, value.fps),
+                          targetDurationSecs: isClipDurationMode(mode)
+                            ? clampClipDurationForModel(video_model, value.targetDurationSecs)
+                            : value.targetDurationSecs,
                           automatic: false,
                         });
                       }}

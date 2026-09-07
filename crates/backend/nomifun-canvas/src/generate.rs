@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nomi_config::{GatewayConfig, config_yaml_path, load_user_config_file};
-use nomi_vimax::{FlowyImage, FlowyVideo, FlowyVimaxServices, VimaxImage, VimaxVideo};
+use nomi_vimax::{clip_bounds_for_model, FlowyImage, FlowyVideo, FlowyVimaxServices, VimaxImage, VimaxVideo};
 use nomifun_common::AppError;
 use tracing::{info, warn};
 
@@ -177,8 +177,8 @@ async fn run_video(
         resolve_media_paths(service, &task.reference_media_ids).await?
     };
     let ref_refs: Vec<&Path> = ref_images.iter().map(PathBuf::as_path).collect();
-    // Flowy video clips commonly accept 4–15s (Seedance / MiniMax-H3); default 5s.
-    let duration = task.duration_secs.unwrap_or(5).clamp(4, 15);
+    let duration = clip_bounds_for_model(task.model.as_deref().unwrap_or(""))
+        .clamp_secs(task.duration_secs.unwrap_or(5));
 
     let backend: FlowyVideo = flowy.video_with_session_quality(
         task.model.clone(),

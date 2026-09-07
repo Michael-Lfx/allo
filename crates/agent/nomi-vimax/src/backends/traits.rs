@@ -58,7 +58,7 @@ pub trait VimaxVideo: Send + Sync {
     /// - `ref_images`: `reference_image` roles (multi-ref R2V). Prefer this for Seedance 2.0.
     /// - `last_frame_out`: when set, request `return_last_frame`, persist `last_frame_url`
     ///   beside the still, and save the still here (caller may still ffmpeg-extract).
-    /// - `ref_video`: MiniMax-H3 `reference_video` (mutually exclusive with first/last_frame).
+    /// - `ref_video`: MiniMax-H3 / Wan 3.0 `reference_video` (mutually exclusive with first/last_frame).
     /// - `ref_audios`: Seedance `reference_audio` clips (up to 3) for speaker timbre lock.
     async fn generate(
         &self,

@@ -58,10 +58,7 @@ import {
   BRIEFING_DURATION_MAX_SECS,
   BRIEFING_DURATION_MIN_SECS,
   BRIEFING_DURATION_STEP_SECS,
-  CLIP_DURATION_DEFAULT_SECS,
-  CLIP_DURATION_MAX_SECS,
-  CLIP_DURATION_MIN_SECS,
-  CLIP_DURATION_STEP_SECS,
+  clampClipDurationForModel,
   clampDuration,
 } from '../durationBounds';
 import {
@@ -201,17 +198,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         };
       }
       if (mode === 'generate') {
-        const clipped = clampDuration(
-          current.preferences.targetDurationSecs,
-          CLIP_DURATION_MIN_SECS,
-          CLIP_DURATION_MAX_SECS,
-          CLIP_DURATION_STEP_SECS
+        const nextDuration = clampClipDurationForModel(
+          current.preferences.models.video_model,
+          current.preferences.targetDurationSecs
         );
-        const nextDuration =
-          current.preferences.targetDurationSecs > CLIP_DURATION_MAX_SECS ||
-          current.preferences.targetDurationSecs < CLIP_DURATION_MIN_SECS
-            ? CLIP_DURATION_DEFAULT_SECS
-            : clipped;
         if (
           current.preferences.mediaKind === 'video' &&
           !current.preferences.automatic &&
@@ -559,11 +549,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         ? {
             ...draft.preferences,
             mediaKind: 'video' as const,
-            targetDurationSecs: clampDuration(
-              draft.preferences.targetDurationSecs,
-              CLIP_DURATION_MIN_SECS,
-              CLIP_DURATION_MAX_SECS,
-              CLIP_DURATION_STEP_SECS
+            targetDurationSecs: clampClipDurationForModel(
+              draft.preferences.models.video_model,
+              draft.preferences.targetDurationSecs
             ),
           }
         : draft.preferences,

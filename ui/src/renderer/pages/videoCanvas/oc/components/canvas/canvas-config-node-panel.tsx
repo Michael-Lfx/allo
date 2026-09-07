@@ -12,7 +12,7 @@ import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
 import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationAllowed } from "@oc/lib/model-capabilities";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { useThemeStore } from "@oc/stores/use-theme-store";
-import { isMiniMaxH3VideoModel } from "@renderer/services/videoModelCapabilities";
+import { isMiniMaxH3VideoModel, isWan3VideoModel } from "@renderer/services/videoModelCapabilities";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover, type CanvasVideoSettingKey } from "./canvas-video-settings-popover";
@@ -250,7 +250,7 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
 /** Persist UI `vquality`: MiniMax keeps canonical tokens; Seedance/generic keep bare heights for legacy pills. */
 function storeVqualityForUi(model: string, value: string) {
     const canonical = canonicalizeVideoResolution(model, value);
-    if (isMiniMaxH3VideoModel(model) || isMiniMaxH3ResolutionToken(canonical)) return canonical;
+    if (isMiniMaxH3VideoModel(model) || isWan3VideoModel(model) || isMiniMaxH3ResolutionToken(canonical)) return canonical;
     return String(canonical).replace(/p$/i, "");
 }
 

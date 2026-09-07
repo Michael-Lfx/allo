@@ -349,7 +349,7 @@ pub struct VideoContentImage {
 
 /// High-level parameters for building a Flowy video create body.
 ///
-/// Serialization branches on [`is_minimax_h3_model`]: Seedance/Ark fields vs MiniMax V2.
+/// Serialization branches on model family: MiniMax-H3 V2, Wan 3.0 DashScope, or Seedance/Ark.
 #[derive(Debug, Clone, Default)]
 pub struct VideoCreateParams {
     pub model: String,
@@ -362,7 +362,7 @@ pub struct VideoCreateParams {
     pub watermark: bool,
     pub generate_audio: Option<bool>,
     /// When true, Seedance returns a still of the clip ending (`last_frame_url`).
-    /// Ignored for MiniMax-H3 (not part of MiniMax V2 create schema).
+    /// Ignored for MiniMax-H3 and Wan 3.0 (not part of those create schemas).
     pub return_last_frame: Option<bool>,
     pub images: Vec<VideoContentImage>,
     pub reference_video_url: Option<String>,
@@ -421,11 +421,57 @@ pub fn clamp_minimax_h3_duration(duration: u32) -> u32 {
     duration.clamp(MINIMAX_H3_DURATION_MIN, MINIMAX_H3_DURATION_MAX)
 }
 
+/// True when `model` is Wan 3.0 (`flowy/wan3.0-video`, `…-prime`, `AIPC-…`).
+pub fn is_wan3_model(model: &str) -> bool {
+    let blob = model
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '.', ' ', '/'], "-");
+    blob.contains("wan3") || blob.contains("wan-3-0")
+}
+
+/// Wan 3.0 DashScope `parameters.resolution` (`480P` | `720P` | `1080P`).
+pub const WAN3_RESOLUTIONS: &[&str] = &["480P", "720P", "1080P"];
+pub const DEFAULT_WAN3_RESOLUTION: &str = "720P";
+pub const WAN3_DURATION_MIN: u32 = 2;
+pub const WAN3_DURATION_MAX: u32 = 30;
+
+/// Map UI / Seedance-style tokens onto Wan 3.0 `parameters.resolution`.
+pub fn normalize_wan3_resolution(resolution: &str) -> String {
+    let lower = resolution
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', ' '], "");
+    match lower.as_str() {
+        "1080p" | "1080" | "2k" | "2160p" | "2160" | "4k" | "high" => "1080P".into(),
+        "480p" | "480" | "low" => "480P".into(),
+        "720p" | "720" | "medium" | "auto" => DEFAULT_WAN3_RESOLUTION.into(),
+        _ if WAN3_RESOLUTIONS
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(resolution.trim())) =>
+        {
+            WAN3_RESOLUTIONS
+                .iter()
+                .find(|r| r.eq_ignore_ascii_case(resolution.trim()))
+                .copied()
+                .unwrap_or(DEFAULT_WAN3_RESOLUTION)
+                .to_string()
+        }
+        _ => DEFAULT_WAN3_RESOLUTION.into(),
+    }
+}
+
+pub fn clamp_wan3_duration(duration: u32) -> u32 {
+    duration.clamp(WAN3_DURATION_MIN, WAN3_DURATION_MAX)
+}
+
 impl VideoCreateParams {
-    /// Build `POST /video/generations/tasks` JSON (Seedance Ark or MiniMax-H3 V2).
+    /// Build `POST /video/generations/tasks` JSON (Seedance Ark, MiniMax-H3 V2, or Wan 3.0).
     pub fn to_json(&self) -> Value {
         if is_minimax_h3_model(&self.model) {
             self.to_minimax_h3_json()
+        } else if is_wan3_model(&self.model) {
+            self.to_wan3_json()
         } else {
             self.to_seedance_json()
         }
@@ -536,6 +582,77 @@ impl VideoCreateParams {
         Value::Object(body)
     }
 
+    /// DashScope Wan 3.0 `input` / `parameters` shape (gateway rewrites `model` upstream).
+    fn to_wan3_json(&self) -> Value {
+        let mut input = serde_json::Map::new();
+        input.insert("prompt".into(), json!(self.prompt));
+
+        let mut media = Vec::new();
+        for img in &self.images {
+            let media_type = wan3_image_media_type(&img.role);
+            media.push(json!({
+                "type": media_type,
+                "url": img.url,
+            }));
+        }
+        if let Some(url) = self
+            .reference_video_url
+            .as_deref()
+            .filter(|u| !u.trim().is_empty())
+        {
+            media.push(json!({
+                "type": "reference_video",
+                "url": url,
+            }));
+        }
+        for url in self.reference_audio_urls_merged() {
+            media.push(json!({
+                "type": "reference_audio",
+                "url": url,
+            }));
+        }
+        let has_media = !media.is_empty();
+        if has_media {
+            input.insert("media".into(), Value::Array(media));
+        }
+
+        let resolution = self
+            .resolution
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(normalize_wan3_resolution)
+            .unwrap_or_else(|| DEFAULT_WAN3_RESOLUTION.to_string());
+        let duration = clamp_wan3_duration(self.duration.unwrap_or(5));
+        let ratio = if has_media {
+            "adaptive".to_string()
+        } else {
+            let r = self.aspect_ratio.trim();
+            if r.is_empty() || r.eq_ignore_ascii_case("adaptive") || r.eq_ignore_ascii_case("auto")
+            {
+                "16:9".to_string()
+            } else {
+                r.to_string()
+            }
+        };
+
+        let mut parameters = serde_json::Map::new();
+        parameters.insert("resolution".into(), json!(resolution));
+        parameters.insert("ratio".into(), json!(ratio));
+        parameters.insert("duration".into(), json!(duration));
+        parameters.insert("audio".into(), json!(self.generate_audio.unwrap_or(true)));
+        parameters.insert("watermark".into(), json!(self.watermark));
+        if let Some(seed) = self.seed {
+            parameters.insert("seed".into(), json!(seed));
+        }
+
+        json!({
+            "model": self.model,
+            "input": input,
+            "parameters": parameters,
+            "app": VIDEO_CREATE_APP,
+        })
+    }
+
     /// Ark / Seedance create-task shape.
     fn to_seedance_json(&self) -> Value {
         let content = self.build_content_array();
@@ -565,6 +682,14 @@ impl VideoCreateParams {
             body.insert("return_last_frame".into(), json!(rlf));
         }
         Value::Object(body)
+    }
+}
+
+fn wan3_image_media_type(role: &str) -> &'static str {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "last_frame" => "last_frame",
+        "reference_image" => "reference_image",
+        _ => "first_frame",
     }
 }
 

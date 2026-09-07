@@ -51,13 +51,7 @@ import { parseVideoHomeMode, type VideoCreateDraft, type VideoHomeMode } from '.
 import { resolveLookIdentity } from './styleCatalog/lookIdentity';
 import { composeClipPrompt, lookById } from './styleCatalog/looks';
 import { parseTvShowScope } from './campaign';
-import {
-  CLIP_DURATION_DEFAULT_SECS,
-  CLIP_DURATION_MAX_SECS,
-  CLIP_DURATION_MIN_SECS,
-  CLIP_DURATION_STEP_SECS,
-  clampDuration,
-} from './durationBounds';
+import { clampClipDurationForModel } from './durationBounds';
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationBriefing,
@@ -489,13 +483,11 @@ const VideoGenerationListPage: React.FC = () => {
             aspectRatio: draft.preferences.aspectRatio,
             resolution: draft.preferences.resolution,
             fps: draft.preferences.fps,
-            // Canvas nodes expect single-clip seconds (≈4–15), not Agent film length.
-            targetDurationSecs: clampDuration(
-              draft.preferences.targetDurationSecs,
-              CLIP_DURATION_MIN_SECS,
-              CLIP_DURATION_MAX_SECS,
-              CLIP_DURATION_STEP_SECS
-            ) || CLIP_DURATION_DEFAULT_SECS,
+            // Canvas nodes expect a single-clip duration for the selected video model.
+            targetDurationSecs: clampClipDurationForModel(
+              draft.preferences.models.video_model,
+              draft.preferences.targetDurationSecs
+            ),
             imageModel: draft.preferences.models.image_model || undefined,
             videoModel: draft.preferences.models.video_model || undefined,
           },
@@ -577,13 +569,10 @@ const VideoGenerationListPage: React.FC = () => {
 
         // 2. Create video generation task via Canvas API
         const { createGenerationTask } = await import('../videoCanvas/api');
-        const durationSecs =
-          clampDuration(
-            draft.preferences.targetDurationSecs,
-            CLIP_DURATION_MIN_SECS,
-            CLIP_DURATION_MAX_SECS,
-            CLIP_DURATION_STEP_SECS
-          ) || CLIP_DURATION_DEFAULT_SECS;
+        const durationSecs = clampClipDurationForModel(
+          draft.preferences.models.video_model,
+          draft.preferences.targetDurationSecs
+        );
 
         const prompt = composeClipPrompt(draft.creationPrompt, draft.style);
 

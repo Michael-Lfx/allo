@@ -7,10 +7,13 @@
 //!
 //! MiniMax-H3 (MiniMax V2): 768P / 2K — keep in sync with
 //! `nomifun_cloud::normalize_minimax_h3_resolution` and FE `videoModelCapabilities.ts`.
+//! Wan 3.0 (DashScope): 480P / 720P / 1080P, 2–30s.
 
 use nomifun_cloud::{
-    is_minimax_h3_model, normalize_minimax_h3_resolution, DEFAULT_MINIMAX_H3_RESOLUTION,
-    MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS,
+    is_minimax_h3_model, is_wan3_model, normalize_minimax_h3_resolution, normalize_wan3_resolution,
+    DEFAULT_MINIMAX_H3_RESOLUTION, DEFAULT_WAN3_RESOLUTION, MINIMAX_H3_DURATION_MAX,
+    MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS, WAN3_DURATION_MAX, WAN3_DURATION_MIN,
+    WAN3_RESOLUTIONS,
 };
 
 use crate::clip_bounds::ClipBounds;
@@ -27,6 +30,9 @@ const SEEDANCE_CLIP_BOUNDS: ClipBounds = ClipBounds::new(5, 15);
 /// MiniMax-H3 window, mirroring `nomifun_cloud::clamp_minimax_h3_duration`.
 const MINIMAX_H3_CLIP_BOUNDS: ClipBounds =
     ClipBounds::new(MINIMAX_H3_DURATION_MIN, MINIMAX_H3_DURATION_MAX);
+
+/// Wan 3.0 window, mirroring `nomifun_cloud::clamp_wan3_duration`.
+const WAN3_CLIP_BOUNDS: ClipBounds = ClipBounds::new(WAN3_DURATION_MIN, WAN3_DURATION_MAX);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoModelCapabilities {
@@ -58,6 +64,8 @@ fn is_seedance_fast_or_mini(model: &str) -> bool {
 pub fn clip_bounds_for_model(model: &str) -> ClipBounds {
     if is_minimax_h3_model(model) {
         MINIMAX_H3_CLIP_BOUNDS
+    } else if is_wan3_model(model) {
+        WAN3_CLIP_BOUNDS
     } else if is_seedance(model) {
         SEEDANCE_CLIP_BOUNDS
     } else {
@@ -71,6 +79,14 @@ pub fn video_model_capabilities(model: &str) -> VideoModelCapabilities {
     if is_minimax_h3_model(model) {
         return VideoModelCapabilities {
             resolutions: MINIMAX_H3_RESOLUTIONS.to_vec(),
+            fps_options: vec![DEFAULT_VIDEO_FPS],
+            fps_locked: true,
+            clip,
+        };
+    }
+    if is_wan3_model(model) {
+        return VideoModelCapabilities {
+            resolutions: WAN3_RESOLUTIONS.to_vec(),
             fps_options: vec![DEFAULT_VIDEO_FPS],
             fps_locked: true,
             clip,
@@ -123,6 +139,9 @@ pub fn normalize_resolution_for_model(model: &str, resolution: &str) -> String {
     if is_minimax_h3_model(model) {
         return normalize_minimax_h3_resolution(resolution);
     }
+    if is_wan3_model(model) {
+        return normalize_wan3_resolution(resolution);
+    }
     let raw = canonicalize_seedance_resolution_token(resolution);
     let caps = video_model_capabilities(model);
     if caps.resolutions.iter().any(|r| *r == raw) {
@@ -160,6 +179,8 @@ pub fn normalize_fps_for_model(model: &str, fps: u32) -> u32 {
 pub fn default_resolution_for_model(model: &str) -> &'static str {
     if is_minimax_h3_model(model) {
         DEFAULT_MINIMAX_H3_RESOLUTION
+    } else if is_wan3_model(model) {
+        DEFAULT_WAN3_RESOLUTION
     } else {
         DEFAULT_VIDEO_RESOLUTION
     }
@@ -223,6 +244,25 @@ mod tests {
     }
 
     #[test]
+    fn wan3_resolutions() {
+        let caps = video_model_capabilities("flowy/wan3.0-video");
+        assert_eq!(caps.resolutions, vec!["480P", "720P", "1080P"]);
+        assert_eq!(
+            normalize_resolution_for_model("flowy/wan3.0-video", "720p"),
+            "720P"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("AIPC-wan3.0-video-prime", "1080"),
+            "1080P"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("flowy/wan3.0-video", "480"),
+            "480P"
+        );
+        assert_eq!(default_resolution_for_model("flowy/wan3.0-video"), "720P");
+    }
+
+    #[test]
     fn clip_bounds_follow_the_selected_model() {
         let seedance = clip_bounds_for_model("AIPC-Doubao-Seedance-2.0");
         assert_eq!((seedance.min_secs(), seedance.max_secs()), (5, 15));
@@ -234,6 +274,10 @@ mod tests {
 
         let h3 = clip_bounds_for_model("flowy/MiniMax-H3");
         assert_eq!((h3.min_secs(), h3.max_secs()), (4, 15));
+
+        let wan3 = clip_bounds_for_model("flowy/wan3.0-video");
+        assert_eq!((wan3.min_secs(), wan3.max_secs()), (2, 30));
+        assert_eq!(clip_bounds_for_model("AIPC-wan3.0-video-prime"), wan3);
 
         assert_eq!(
             clip_bounds_for_model("some-unreleased-model"),

@@ -12,7 +12,7 @@ import { normalizeVideoDuration, isMiniMaxH3ResolutionToken } from "@oc/lib/vide
 import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { useThemeStore } from "@oc/stores/use-theme-store";
-import { isMiniMaxH3VideoModel } from "@renderer/services/videoModelCapabilities";
+import { isMiniMaxH3VideoModel, isWan3VideoModel } from "@renderer/services/videoModelCapabilities";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasChromeButton } from "./canvas-overlay";
@@ -203,7 +203,7 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
     const storedModel = node.metadata?.model;
     const model = storedModel && configuredModelMatchesCapability(globalConfig, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(globalConfig, defaultModel, mode) ? defaultModel : fallbackModel;
     const canonical = canonicalizeVideoResolution(model, node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality);
-    const vquality = isMiniMaxH3VideoModel(model) || isMiniMaxH3ResolutionToken(canonical)
+    const vquality = isMiniMaxH3VideoModel(model) || isWan3VideoModel(model) || isMiniMaxH3ResolutionToken(canonical)
         ? canonical
         : String(canonical).replace(/p$/i, "");
     const videoBooleans = resolveModelVideoBooleanOptions(

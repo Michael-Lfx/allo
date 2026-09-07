@@ -10,8 +10,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use nomifun_cloud::{
-    video_task_failure_message, is_minimax_h3_model, MODEL_CATEGORY_VIDEO, VideoContentImage,
-    VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord,
+    video_task_failure_message, is_minimax_h3_model, is_wan3_model, MODEL_CATEGORY_VIDEO,
+    VideoContentImage, VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord,
 };
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
@@ -203,9 +203,11 @@ impl VimaxVideo for FlowyVideo {
         let model = self.resolve_model().await?;
         let model_for_err = model.clone();
         let is_h3 = is_minimax_h3_model(&model);
-        if ref_video.is_some() && !is_h3 {
+        let is_wan3 = is_wan3_model(&model);
+        let is_seedance = !is_h3 && !is_wan3;
+        if ref_video.is_some() && !is_h3 && !is_wan3 {
             return Err(VimaxError::InvalidParams(
-                "action imitation (reference_video) requires MiniMax-H3".into(),
+                "action imitation (reference_video) requires MiniMax-H3 or Wan 3.0".into(),
             ));
         }
 
@@ -386,8 +388,9 @@ impl VimaxVideo for FlowyVideo {
             watermark: false,
             // Seedance 2.0 requires non-empty audio captions when true.
             // MiniMax-H3 does not use generate_audio / return_last_frame.
+            // Wan 3.0 maps generate_audio → parameters.audio; no return_last_frame.
             generate_audio: if is_h3 { None } else { Some(true) },
-            return_last_frame: if is_h3 { None } else { Some(want_last_frame) },
+            return_last_frame: if is_h3 || is_wan3 { None } else { Some(want_last_frame) },
             images,
             reference_video_url,
             reference_audio_url: None,
@@ -434,7 +437,7 @@ impl VimaxVideo for FlowyVideo {
 
         let first = match first {
             Err(e)
-                if !is_h3
+                if is_seedance
                     && !vendor_last_frame_slots.is_empty()
                     && is_stale_ref_image_url_err(&e) =>
             {
@@ -483,7 +486,7 @@ impl VimaxVideo for FlowyVideo {
         let record = match first {
             Ok(r) => r,
             Err(e)
-                if !is_h3
+                if is_seedance
                     && is_seedance_audio_only_ref_err(&e)
                     && !params.reference_audio_urls_merged().is_empty() =>
             {
@@ -529,7 +532,7 @@ impl VimaxVideo for FlowyVideo {
                         )
                     })?
             }
-            Err(e) if !is_h3 && is_seedance_caption_empty_err(&e) => {
+            Err(e) if is_seedance && is_seedance_caption_empty_err(&e) => {
                 // First reinforce captions (keep audio on); only then fall back to silent.
                 tracing::warn!(
                     model = %model_for_err,

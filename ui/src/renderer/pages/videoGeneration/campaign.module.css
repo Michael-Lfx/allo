@@ -1,5 +1,5 @@
 .carousel {
-  width: min(100%, 860px);
+  width: min(calc(100% - 48px), 680px);
   margin: 0 auto 18px;
 }
 
@@ -7,8 +7,8 @@
   position: relative;
   overflow: hidden;
   width: 100%;
-  height: clamp(108px, 16vw, 156px);
-  border-radius: 18px;
+  height: clamp(96px, 13vw, 132px);
+  border-radius: 16px;
   border: 1px solid rgba(15, 23, 42, 0.06);
   background: var(--color-fill-2);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);

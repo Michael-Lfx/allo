@@ -5,6 +5,8 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Wan 3.0 video create requests now send DashScope `input`/`parameters` (not Seedance `content[]`), with 2–30s clips and `480P`/`720P`/`1080P` resolution tokens.
+
 ## v1.2.2 - 2026-09-05
 
 - Video Look catalog and original still covers share one surface.
