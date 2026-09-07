@@ -26,8 +26,6 @@ const MARKET_ALLOWED_HOSTS: &[&str] = &[
     "clawhub.ai",
     "api.skillhub.cn",
     "skillhub.cn",
-    "www.skills.sh",
-    "skills.sh",
     "api.cocoloop.cn",
     "hub.cocoloop.cn",
     "dl.cocoloop.cn",
@@ -136,17 +134,6 @@ pub(crate) async fn read_market_detail_body(
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(AppError::NotFound(format!("{label} not found")));
     }
-    read_market_response(&mut response).await
-}
-
-/// POST a JSON `body` to `url` and return the response body as text, capped
-/// at [`MAX_MARKET_BODY_BYTES`].
-pub(crate) async fn read_market_json_post(
-    client: &reqwest::Client,
-    url: &str,
-    body: serde_json::Value,
-) -> Result<String, AppError> {
-    let mut response = client.post(url).json(&body).send().await.map_err(map_market_fetch_error)?;
     read_market_response(&mut response).await
 }
 

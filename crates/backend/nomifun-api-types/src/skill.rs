@@ -468,16 +468,23 @@ pub struct SkillMarketSyncRequest {
 /// Single entry scraped from a skill market ranking.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SkillMarketItemResponse {
-    /// Stable source-local id, e.g. `clawhub:owner/skill`.
+    /// Stable source-local id, e.g. `skillhub:owner/skills/skill`.
     pub id: String,
-    /// Source slug, e.g. `clawhub`, `loophub`, `skillhub_mcp`, or `mcpworld`.
+    /// Source slug, e.g. `skillhub`, `loophub`, `skillhub_mcp`, or `mcpworld`.
     pub source: String,
+    /// The kind of capability represented by this market entry.
+    pub resource_kind: SkillMarketResourceKind,
+    /// How the entry can be installed by the product.
+    pub install_mode: SkillMarketInstallMode,
     pub rank: usize,
     pub name: String,
     pub description: String,
     pub url: String,
-    /// Command shown to the user/Nomi. The backend only returns text; it never executes it.
-    pub install_command: String,
+    /// Optional command shown to the user for manual entries. Managed entries
+    /// are installed by a product-owned backend flow and do not expose a
+    /// command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_command: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -489,6 +496,68 @@ pub struct SkillMarketItemResponse {
     /// Optional https image URL for the ranking card (e.g. SkillHub `iconUrl`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
+}
+
+/// The capability represented by a market item.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillMarketResourceKind {
+    Skill,
+    SkillPackage,
+    Mcp,
+    Plugin,
+}
+
+/// The installation contract exposed by a market item.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillMarketInstallMode {
+    Managed,
+    Manual,
+    Unsupported,
+}
+
+/// Request body for `POST /api/skills/market/skill/install`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SkillMarketInstallRequest {
+    pub source: String,
+    pub id: String,
+}
+
+/// Outcome of one managed market Skill installation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillMarketInstallStatus {
+    Created,
+    Reused,
+}
+
+/// Response for a managed market Skill installation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SkillMarketInstallResponse {
+    pub status: SkillMarketInstallStatus,
+    pub source: String,
+    pub market_id: String,
+    pub skill_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub artifact_sha256: String,
+    pub content_sha256: String,
+    pub installed_at: i64,
+}
+
+/// One valid managed market installation returned to the UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SkillMarketInstallationResponse {
+    pub source: String,
+    pub market_id: String,
+    pub skill_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub artifact_sha256: String,
+    pub content_sha256: String,
+    pub installed_at: i64,
 }
 
 /// Response for `POST /api/skills/market/rankings/sync`.
@@ -1029,13 +1098,15 @@ mod tests {
         let resp = SkillMarketSyncResponse {
             fetched_at: 123,
             items: vec![SkillMarketItemResponse {
-                id: "clawhub:owner/demo".into(),
-                source: "clawhub".into(),
+                id: "loophub:123".into(),
+                source: "loophub".into(),
+                resource_kind: SkillMarketResourceKind::Skill,
+                install_mode: SkillMarketInstallMode::Manual,
                 rank: 1,
                 name: "demo".into(),
                 description: "Demo skill".into(),
-                url: "https://clawhub.ai/owner/skills/demo".into(),
-                install_command: "openclaw skills install @owner/demo".into(),
+                url: "https://hub.cocoloop.cn/skills/123".into(),
+                install_command: Some("loophub skill download https://dl.cocoloop.cn/bss/skills/demo.zip".into()),
                 tags: vec!["coding".into()],
                 audience_tags: vec!["developer".into()],
                 scenario_tags: vec!["coding".into()],
@@ -1047,9 +1118,63 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["fetched_at"], 123);
         assert!(json.get("fetchedAt").is_none());
-        assert_eq!(json["items"][0]["install_command"], "openclaw skills install @owner/demo");
+        assert_eq!(
+            json["items"][0]["install_command"],
+            "loophub skill download https://dl.cocoloop.cn/bss/skills/demo.zip"
+        );
+        assert_eq!(json["items"][0]["resource_kind"], "skill");
+        assert_eq!(json["items"][0]["install_mode"], "manual");
         assert!(json["items"][0].get("installCommand").is_none());
         assert!(json.get("errors").is_none());
+    }
+
+    #[test]
+    fn skill_market_install_contract_serializes_and_rejects_unknown_request_fields() {
+        let request: SkillMarketInstallRequest = serde_json::from_value(json!({
+            "source": "skillhub",
+            "id": "skillhub:owner/skills/demo"
+        }))
+        .unwrap();
+        assert_eq!(request.source, "skillhub");
+        assert!(serde_json::from_value::<SkillMarketInstallRequest>(json!({
+            "source": "skillhub",
+            "id": "skillhub:owner/skills/demo",
+            "url": "https://example.invalid/skill.zip"
+        }))
+        .is_err());
+
+        let response = SkillMarketInstallResponse {
+            status: SkillMarketInstallStatus::Created,
+            source: "skillhub".into(),
+            market_id: request.id.clone(),
+            skill_name: "demo".into(),
+            revision: None,
+            artifact_sha256: "a".repeat(64),
+            content_sha256: "b".repeat(64),
+            installed_at: 123,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["status"], "created");
+        assert_eq!(json["market_id"], request.id);
+        assert!(json.get("revision").is_none());
+    }
+
+    #[test]
+    fn skill_market_installation_response_uses_stable_wire_names() {
+        let response = SkillMarketInstallationResponse {
+            source: "skillhub".into(),
+            market_id: "skillhub:owner/skills/demo".into(),
+            skill_name: "demo".into(),
+            revision: Some("r1".into()),
+            artifact_sha256: "a".repeat(64),
+            content_sha256: "b".repeat(64),
+            installed_at: 456,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["source"], "skillhub");
+        assert_eq!(json["market_id"], "skillhub:owner/skills/demo");
+        assert_eq!(json["installed_at"], 456);
+        assert!(json.get("marketId").is_none());
     }
 
     #[test]

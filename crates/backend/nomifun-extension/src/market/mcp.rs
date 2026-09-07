@@ -125,8 +125,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_market_mcp_config_rejects_unsupported_source_and_bad_slug() {
         let err = resolve_market_mcp_config(SkillMarketMcpConfigRequest {
-            source: "clawhub".into(),
-            id: "clawhub:owner/skill".into(),
+            source: "unsupported".into(),
+            id: "unsupported:owner/skill".into(),
             url: "https://clawhub.ai/owner/skills/skill".into(),
         })
         .await

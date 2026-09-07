@@ -1,17 +1,19 @@
 //! Per-source ranking parsers and shared extraction helpers for the skill
 //! market. Each `parse_*` function takes a raw response body (JSON or HTML)
-//! and yields at most [`MAX_MARKET_ITEMS_PER_SOURCE`] ranked items; sources
-//! with both an API and an HTML shape try the API JSON first and fall back
-//! to anchor scraping on the same body.
+//! and yields at most [`MAX_MARKET_ITEMS_PER_SOURCE`] ranked items. Sources
+//! with both an API and an HTML shape may use the HTML page as their own
+//! fallback, while managed SkillHub Skills are API-only.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use nomifun_api_types::SkillMarketItemResponse;
+use nomifun_api_types::{
+    SkillMarketInstallMode, SkillMarketItemResponse, SkillMarketResourceKind,
+};
 use regex::Regex;
 
 use super::{
-    CLAWHUB_PLUGINS_SOURCE, CLAWHUB_SOURCE, LOOPHUB_SOURCE, MAX_MARKET_ITEMS_PER_SOURCE, MCPWORLD_SOURCE,
+    CLAWHUB_PLUGINS_SOURCE, LOOPHUB_SOURCE, MAX_MARKET_ITEMS_PER_SOURCE, MCPWORLD_SOURCE,
     SKILLHUB_MCP_SOURCE, SKILLHUB_PACKAGES_SOURCE, SKILLHUB_SOURCE,
 };
 
@@ -49,112 +51,7 @@ fn ranked(items: impl Iterator<Item = SkillMarketItemResponse>) -> Vec<SkillMark
 }
 
 // ---------------------------------------------------------------------------
-// ClawHub skills (API + HTML fallback)
-// ---------------------------------------------------------------------------
-
-pub(super) fn parse_clawhub_rankings(body: &str) -> Vec<SkillMarketItemResponse> {
-    if let Ok(root) = serde_json::from_str::<serde_json::Value>(body) {
-        let items = root
-            .pointer("/value/items")
-            .or_else(|| root.pointer("/value/page"))
-            .and_then(serde_json::Value::as_array);
-        if let Some(items) = items {
-            let parsed = ranked(items.iter().filter_map(parse_clawhub_api_item));
-            if !parsed.is_empty() {
-                return parsed;
-            }
-        }
-    }
-
-    parse_clawhub_html_rankings(body)
-}
-
-fn parse_clawhub_api_item(item: &serde_json::Value) -> Option<SkillMarketItemResponse> {
-    let skill = item.get("skill")?;
-    if skill
-        .get("isSuspicious")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-    let owner = json_text(item, "ownerHandle", 96)
-        .or_else(|| item.get("owner").and_then(|owner| json_text(owner, "handle", 96)))?;
-    let slug = json_text(skill, "slug", 96)?;
-    valid_owner_slug(&owner, &slug)?;
-    let name = json_text(skill, "displayName", 96).unwrap_or_else(|| title_from_slug(&slug));
-    let description = json_text(skill, "summary", 220).unwrap_or_default();
-    let mut tags = json_string_array(skill.get("topics"), 40);
-    tags.extend(json_string_array(skill.get("categories"), 40));
-    let (inferred_tags, audience_tags, scenario_tags) = infer_market_tags(&format!("{name} {description}"));
-    tags.extend(inferred_tags);
-    dedup_strings(&mut tags);
-    let stats = market_count_stats(
-        skill.get("stats"),
-        &[("downloads", "downloads"), ("installs", "installs"), ("stars", "stars")],
-    );
-
-    Some(SkillMarketItemResponse {
-        id: format!("{CLAWHUB_SOURCE}:{owner}/{slug}"),
-        source: CLAWHUB_SOURCE.into(),
-        rank: 0,
-        name,
-        description,
-        url: format!("https://clawhub.ai/{owner}/skills/{slug}"),
-        install_command: format!("openclaw skills install @{owner}/{slug}"),
-        tags,
-        audience_tags,
-        scenario_tags,
-        stats,
-        avatar: None,
-    })
-}
-
-fn parse_clawhub_html_rankings(html: &str) -> Vec<SkillMarketItemResponse> {
-    let mut seen = HashSet::new();
-    let mut parsed = Vec::new();
-
-    for (href, text) in market_anchors(html) {
-        let Some(url) = market_url(CLAWHUB_SOURCE, &href) else {
-            continue;
-        };
-        let Some((owner, slug)) = clawhub_owner_slug(&url) else {
-            continue;
-        };
-        let id = format!("{CLAWHUB_SOURCE}:{owner}/{slug}");
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-
-        let name = extract_clawhub_name(&text, &owner, &slug);
-        let description = extract_clawhub_description(&text, &owner, &name);
-        let stats = extract_stats(&text);
-        let (tags, audience_tags, scenario_tags) = infer_market_tags(&format!("{name} {description}"));
-        let rank = parsed.len() + 1;
-        parsed.push(SkillMarketItemResponse {
-            id,
-            source: CLAWHUB_SOURCE.into(),
-            rank,
-            name,
-            description,
-            url: format!("https://clawhub.ai/{owner}/skills/{slug}"),
-            install_command: format!("openclaw skills install @{owner}/{slug}"),
-            tags,
-            audience_tags,
-            scenario_tags,
-            stats,
-            avatar: None,
-        });
-        if parsed.len() >= MAX_MARKET_ITEMS_PER_SOURCE {
-            break;
-        }
-    }
-
-    parsed
-}
-
-// ---------------------------------------------------------------------------
-// SkillHub skills (API + HTML fallback)
+// SkillHub skills (API only)
 // ---------------------------------------------------------------------------
 
 pub(super) fn parse_skillhub_rankings(body: &str) -> Vec<SkillMarketItemResponse> {
@@ -167,8 +64,7 @@ pub(super) fn parse_skillhub_rankings(body: &str) -> Vec<SkillMarketItemResponse
             }
         }
     }
-
-    parse_skillhub_html_rankings(body)
+    Vec::new()
 }
 
 fn parse_skillhub_api_item(item: &serde_json::Value) -> Option<SkillMarketItemResponse> {
@@ -214,65 +110,19 @@ fn parse_skillhub_api_item(item: &serde_json::Value) -> Option<SkillMarketItemRe
     Some(SkillMarketItemResponse {
         id: format!("{SKILLHUB_SOURCE}:{owner}/skills/{slug}"),
         source: SKILLHUB_SOURCE.into(),
+        resource_kind: SkillMarketResourceKind::Skill,
+        install_mode: SkillMarketInstallMode::Managed,
         rank: 0,
         name,
         description,
         url: format!("https://skillhub.cn/skills/{owner}/{slug}"),
-        install_command: format!("npx skills add @{owner}/{slug}"),
+        install_command: None,
         tags,
         audience_tags,
         scenario_tags,
         stats,
         avatar: None,
     })
-}
-
-fn parse_skillhub_html_rankings(html: &str) -> Vec<SkillMarketItemResponse> {
-    let mut seen = HashSet::new();
-    let mut parsed = Vec::new();
-
-    for (href, text) in market_anchors(html) {
-        let Some(url) = market_url(SKILLHUB_SOURCE, &href) else {
-            continue;
-        };
-        let Some((owner, slug)) = skillhub_owner_slug(&url) else {
-            continue;
-        };
-        let id = format!("{SKILLHUB_SOURCE}:{owner}/skills/{slug}");
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-
-        let name = extract_skillhub_name(&text, &owner, &slug);
-        let stats = extract_stats(&text);
-        let description = extract_skillhub_description(&text, &owner, &name, stats.as_deref());
-        let (tags, audience_tags, scenario_tags) = infer_market_tags(&format!("{name} {description}"));
-        let install_command = if owner.contains('.') {
-            format!("npx skills add https://www.skills.sh/{owner}/skills/{slug}")
-        } else {
-            format!("npx skills add https://github.com/{owner}/skills --skill {slug}")
-        };
-        let rank = parsed.len() + 1;
-        parsed.push(SkillMarketItemResponse {
-            id,
-            source: SKILLHUB_SOURCE.into(),
-            rank,
-            name,
-            description,
-            url: format!("https://www.skills.sh/{owner}/skills/{slug}"),
-            install_command,
-            tags,
-            audience_tags,
-            scenario_tags,
-            stats,
-            avatar: None,
-        });
-        if parsed.len() >= MAX_MARKET_ITEMS_PER_SOURCE {
-            break;
-        }
-    }
-
-    parsed
 }
 
 // ---------------------------------------------------------------------------
@@ -309,11 +159,13 @@ fn parse_loophub_item(item: &serde_json::Value) -> Option<SkillMarketItemRespons
     Some(SkillMarketItemResponse {
         id: format!("{LOOPHUB_SOURCE}:{id}"),
         source: LOOPHUB_SOURCE.into(),
+        resource_kind: SkillMarketResourceKind::Skill,
+        install_mode: SkillMarketInstallMode::Manual,
         rank: 0,
         name,
         description,
         url: format!("https://hub.cocoloop.cn/skills/{id}"),
-        install_command: format!("loophub skill download {download_url}"),
+        install_command: Some(format!("loophub skill download {download_url}")),
         tags,
         audience_tags,
         scenario_tags,
@@ -361,11 +213,13 @@ fn parse_skillhub_mcp_item(item: &serde_json::Value) -> Option<SkillMarketItemRe
     Some(SkillMarketItemResponse {
         id: format!("{SKILLHUB_MCP_SOURCE}:{slug}"),
         source: SKILLHUB_MCP_SOURCE.into(),
+        resource_kind: SkillMarketResourceKind::Mcp,
+        install_mode: SkillMarketInstallMode::Manual,
         rank: 0,
         name,
         description,
         url: format!("https://skillhub.cn/mcp/{slug}"),
-        install_command: format!("mcp market add skillhub:{slug}"),
+        install_command: Some(format!("mcp market add skillhub:{slug}")),
         tags,
         audience_tags,
         scenario_tags,
@@ -409,11 +263,13 @@ fn parse_mcpworld_item(item: &serde_json::Value) -> Option<SkillMarketItemRespon
     Some(SkillMarketItemResponse {
         id: format!("{MCPWORLD_SOURCE}:{id}"),
         source: MCPWORLD_SOURCE.into(),
+        resource_kind: SkillMarketResourceKind::Mcp,
+        install_mode: SkillMarketInstallMode::Manual,
         rank: 0,
         name,
         description,
         url: format!("https://www.mcpworld.com/zh/detail/{id}"),
-        install_command: format!("mcp market add mcpworld:{id}"),
+        install_command: Some(format!("mcp market add mcpworld:{id}")),
         tags,
         audience_tags,
         scenario_tags,
@@ -463,11 +319,13 @@ fn parse_clawhub_plugin_api_item(item: &serde_json::Value) -> Option<SkillMarket
     Some(SkillMarketItemResponse {
         id: format!("{CLAWHUB_PLUGINS_SOURCE}:{owner}/{slug}"),
         source: CLAWHUB_PLUGINS_SOURCE.into(),
+        resource_kind: SkillMarketResourceKind::Plugin,
+        install_mode: SkillMarketInstallMode::Manual,
         rank: 0,
         name,
         description,
         url: format!("https://clawhub.ai/{owner}/plugins/{slug}"),
-        install_command: format!("openclaw plugins install clawhub:@{owner}/{slug}"),
+        install_command: Some(format!("openclaw plugins install clawhub:@{owner}/{slug}")),
         tags,
         audience_tags,
         scenario_tags,
@@ -500,11 +358,13 @@ fn parse_clawhub_plugins_html(html: &str) -> Vec<SkillMarketItemResponse> {
         parsed.push(SkillMarketItemResponse {
             id,
             source: CLAWHUB_PLUGINS_SOURCE.into(),
+            resource_kind: SkillMarketResourceKind::Plugin,
+            install_mode: SkillMarketInstallMode::Manual,
             rank,
             name,
             description,
             url: format!("https://clawhub.ai/{owner}/plugins/{slug}"),
-            install_command: format!("openclaw plugins install clawhub:@{owner}/{slug}"),
+            install_command: Some(format!("openclaw plugins install clawhub:@{owner}/{slug}")),
             tags,
             audience_tags,
             scenario_tags,
@@ -559,11 +419,13 @@ fn parse_skillhub_package_item(item: &serde_json::Value) -> Option<SkillMarketIt
     Some(SkillMarketItemResponse {
         id: format!("{SKILLHUB_PACKAGES_SOURCE}:{slug}"),
         source: SKILLHUB_PACKAGES_SOURCE.into(),
+        resource_kind: SkillMarketResourceKind::SkillPackage,
+        install_mode: SkillMarketInstallMode::Manual,
         rank: 0,
         name,
         description,
         url: format!("https://skillhub.cn/skillspackage/{slug}"),
-        install_command: format!("skillhub package add {slug}"),
+        install_command: Some(format!("skillhub package add {slug}")),
         tags,
         audience_tags,
         scenario_tags,
@@ -600,8 +462,7 @@ fn market_url(source: &str, href: &str) -> Option<String> {
         href.to_string()
     } else if href.starts_with('/') {
         match source {
-            CLAWHUB_SOURCE | CLAWHUB_PLUGINS_SOURCE => format!("https://clawhub.ai{href}"),
-            SKILLHUB_SOURCE => format!("https://www.skills.sh{href}"),
+            CLAWHUB_PLUGINS_SOURCE => format!("https://clawhub.ai{href}"),
             LOOPHUB_SOURCE => format!("https://hub.cocoloop.cn{href}"),
             SKILLHUB_MCP_SOURCE | SKILLHUB_PACKAGES_SOURCE => format!("https://skillhub.cn{href}"),
             MCPWORLD_SOURCE => format!("https://www.mcpworld.com{href}"),
@@ -612,36 +473,12 @@ fn market_url(source: &str, href: &str) -> Option<String> {
     };
 
     match source {
-        CLAWHUB_SOURCE if url.starts_with("https://clawhub.ai/") => Some(url),
         CLAWHUB_PLUGINS_SOURCE if url.starts_with("https://clawhub.ai/") => Some(url),
-        SKILLHUB_SOURCE if url.starts_with("https://www.skills.sh/") || url.starts_with("https://skills.sh/") => {
-            Some(url.replacen("https://skills.sh/", "https://www.skills.sh/", 1))
-        }
         LOOPHUB_SOURCE if url.starts_with("https://hub.cocoloop.cn/") => Some(url),
         SKILLHUB_MCP_SOURCE | SKILLHUB_PACKAGES_SOURCE if url.starts_with("https://skillhub.cn/") => Some(url),
         MCPWORLD_SOURCE if url.starts_with("https://www.mcpworld.com/") => Some(url),
         _ => None,
     }
-}
-
-fn clawhub_owner_slug(url: &str) -> Option<(String, String)> {
-    let segments = market_path_segments(url, "https://clawhub.ai")?;
-    let reserved = ["skills", "plugins", "docs", "about", "login", "sign-in", "search"];
-    if segments.len() >= 3 && segments.get(1).is_some_and(|s| s == "skills") {
-        return valid_owner_slug(&segments[0], &segments[2]);
-    }
-    if segments.len() == 2 && !reserved.contains(&segments[0].as_str()) && !reserved.contains(&segments[1].as_str()) {
-        return valid_owner_slug(&segments[0], &segments[1]);
-    }
-    None
-}
-
-fn skillhub_owner_slug(url: &str) -> Option<(String, String)> {
-    let segments = market_path_segments(url, "https://www.skills.sh")?;
-    if segments.len() >= 3 && segments.get(1).is_some_and(|s| s == "skills") {
-        return valid_owner_slug(&segments[0], &segments[2]);
-    }
-    None
 }
 
 fn clawhub_plugin_owner_slug(url: &str) -> Option<(String, String)> {
@@ -856,31 +693,6 @@ fn extract_clawhub_description(text: &str, owner: &str, name: &str) -> String {
     }
 }
 
-fn extract_skillhub_name(text: &str, owner: &str, slug: &str) -> String {
-    let repo_marker = format!("{owner}/skills");
-    let before_repo = text.split(&repo_marker).next().unwrap_or(text);
-    let candidate = clean_market_text(
-        before_repo.trim_matches(|c: char| c == '#' || c.is_ascii_digit() || c == '.'),
-        80,
-    );
-    if candidate.len() >= 2 && !candidate.eq_ignore_ascii_case("skill") {
-        candidate
-    } else {
-        title_from_slug(slug)
-    }
-}
-
-fn extract_skillhub_description(text: &str, owner: &str, name: &str, stats: Option<&str>) -> String {
-    let without_stats = stats.map_or_else(|| text.to_string(), |s| text.replace(s, ""));
-    let without_repo = without_stats.replace(&format!("{owner}/skills"), "");
-    let cleaned = clean_market_text(&without_repo.replace(name, ""), 180);
-    if cleaned.len() >= 18 {
-        cleaned
-    } else {
-        format!("Ranked SkillHub skill from {owner}/skills.")
-    }
-}
-
 fn extract_stats(text: &str) -> Option<String> {
     let mut matches = STATS_CAPTURE_RE
         .captures_iter(text)
@@ -1017,64 +829,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_clawhub_rankings_extracts_safe_install_command() {
-        let html = r#"
-          <a href="/pskoett/skills/self-improving-agent">
-            <span>self-improving agent</span>
-            <span>@<!-- -->pskoett</span>
-            <p>Captures discoveries from agent sessions into reusable skills.</p>
-            <span>468k installs</span>
-          </a>
-        "#;
-        let items = parse_clawhub_rankings(html);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].source, CLAWHUB_SOURCE);
-        assert_eq!(items[0].install_command, "openclaw skills install @pskoett/self-improving-agent");
-        assert!(items[0].url.starts_with("https://clawhub.ai/"));
-    }
-
-    #[test]
-    fn parse_clawhub_rankings_extracts_convex_api_items() {
+    fn parse_skillhub_rankings_requires_skillhub_api_items() {
         let body = r#"{
-          "status": "success",
-          "value": {
-            "page": [{
-              "ownerHandle": "steipete",
-              "skill": {
-                "displayName": "Github",
-                "slug": "github",
-                "summary": "Interact with GitHub using the gh CLI.",
-                "stats": { "downloads": 194199, "installs": 7620, "stars": 659 },
-                "topics": ["GitHub"],
-                "categories": ["integrations"]
+          "data": {
+            "skills": [{
+              "name": "find-skills",
+              "namespace": {
+                "canonicalName": "@vercel-labs/find-skills"
               }
             }]
           }
         }"#;
-        let items = parse_clawhub_rankings(body);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].source, CLAWHUB_SOURCE);
-        assert_eq!(items[0].url, "https://clawhub.ai/steipete/skills/github");
-        assert_eq!(items[0].install_command, "openclaw skills install @steipete/github");
-        assert_eq!(items[0].stats.as_deref(), Some("194199 downloads · 7620 installs · 659 stars"));
-    }
-
-    #[test]
-    fn parse_skillhub_rankings_extracts_skills_command() {
-        let html = r#"
-          <a href="/vercel-labs/skills/find-skills">
-            <span>find-skills</span>
-            <span>vercel-labs/skills</span>
-            <span>2.5M installs</span>
-          </a>
-        "#;
-        let items = parse_skillhub_rankings(html);
+        let items = parse_skillhub_rankings(body);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source, SKILLHUB_SOURCE);
-        assert_eq!(
-            items[0].install_command,
-            "npx skills add https://github.com/vercel-labs/skills --skill find-skills"
-        );
+        assert_eq!(items[0].install_command, None);
+        assert_eq!(items[0].install_mode, SkillMarketInstallMode::Managed);
+        assert!(parse_skillhub_rankings(r#"<a href="/owner/skills/demo">demo</a>"#).is_empty());
     }
 
     #[test]
@@ -1103,7 +874,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source, SKILLHUB_SOURCE);
         assert_eq!(items[0].url, "https://skillhub.cn/skills/user_ec205dbb/web-tools-guide");
-        assert_eq!(items[0].install_command, "npx skills add @user_ec205dbb/web-tools-guide");
+        assert_eq!(items[0].install_command, None);
         assert!(items[0].tags.contains(&"no_api_key".into()));
     }
 
@@ -1130,8 +901,8 @@ mod tests {
         assert_eq!(items[0].source, LOOPHUB_SOURCE);
         assert_eq!(items[0].id, "loophub:12277");
         assert_eq!(
-            items[0].install_command,
-            "loophub skill download https://dl.cocoloop.cn/bss/skills/pskoett-self-improving-agent.zip"
+            items[0].install_command.as_deref(),
+            Some("loophub skill download https://dl.cocoloop.cn/bss/skills/pskoett-self-improving-agent.zip")
         );
     }
 
@@ -1151,7 +922,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source, SKILLHUB_MCP_SOURCE);
         assert_eq!(items[0].url, "https://skillhub.cn/mcp/playwright");
-        assert_eq!(items[0].install_command, "mcp market add skillhub:playwright");
+        assert_eq!(items[0].install_command.as_deref(), Some("mcp market add skillhub:playwright"));
     }
 
     #[test]
@@ -1193,8 +964,8 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source, CLAWHUB_PLUGINS_SOURCE);
         assert_eq!(
-            items[0].install_command,
-            "openclaw plugins install clawhub:@openclaw/whatsapp"
+            items[0].install_command.as_deref(),
+            Some("openclaw plugins install clawhub:@openclaw/whatsapp")
         );
     }
 
@@ -1219,8 +990,8 @@ mod tests {
         assert_eq!(items[0].source, CLAWHUB_PLUGINS_SOURCE);
         assert_eq!(items[0].url, "https://clawhub.ai/openclaw/plugins/whatsapp");
         assert_eq!(
-            items[0].install_command,
-            "openclaw plugins install clawhub:@openclaw/whatsapp"
+            items[0].install_command.as_deref(),
+            Some("openclaw plugins install clawhub:@openclaw/whatsapp")
         );
         assert!(items[0].stats.as_deref().unwrap_or_default().contains("downloads"));
     }
@@ -1241,7 +1012,7 @@ mod tests {
         let items = parse_skillhub_packages(body);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source, SKILLHUB_PACKAGES_SOURCE);
-        assert_eq!(items[0].install_command, "skillhub package add tech-test-automation");
+        assert_eq!(items[0].install_command.as_deref(), Some("skillhub package add tech-test-automation"));
         assert!(items[0].stats.as_deref().unwrap_or_default().contains("6 skills"));
         assert_eq!(
             items[0].avatar.as_deref(),

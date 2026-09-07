@@ -1,4 +1,4 @@
-//! Skill market integration: live ranking sync across seven public
+//! Skill market integration: live ranking sync across six public
 //! marketplaces, MCP config resolution, and SkillHub expert-package install.
 //!
 //! Route handlers in [`crate::skill_routes`] stay thin and delegate here.
@@ -27,17 +27,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nomifun_api_types::{SkillMarketItemResponse, SkillMarketSyncResponse};
 use nomifun_common::AppError;
 
-use client::{build_market_client, read_market_body, read_market_body_with_timeout, read_market_json_post};
+use client::{build_market_client, read_market_body, read_market_body_with_timeout};
 use parse::{
-    parse_clawhub_plugins, parse_clawhub_rankings, parse_loophub_rankings, parse_mcpworld_rankings,
-    is_market_slug, parse_skillhub_mcp_rankings, parse_skillhub_packages, parse_skillhub_rankings,
+    is_market_slug, parse_clawhub_plugins, parse_loophub_rankings, parse_mcpworld_rankings,
+    parse_skillhub_mcp_rankings, parse_skillhub_packages, parse_skillhub_rankings,
 };
 
 // ---------------------------------------------------------------------------
 // Sources & ranking endpoints
 // ---------------------------------------------------------------------------
 
-const CLAWHUB_SOURCE: &str = "clawhub";
 const SKILLHUB_SOURCE: &str = "skillhub";
 const LOOPHUB_SOURCE: &str = "loophub";
 const SKILLHUB_MCP_SOURCE: &str = "skillhub_mcp";
@@ -116,10 +115,7 @@ fn filter_blacklisted_skillhub_packages(
         })
 }
 
-const CLAWHUB_RANKING_URL: &str = "https://clawhub.ai/skills?tab=new";
-const CLAWHUB_CONVEX_QUERY_URL: &str = "https://wry-manatee-359.convex.cloud/api/query";
 const SKILLHUB_RANKING_URL: &str = "https://api.skillhub.cn/api/skills?page=1&pageSize=100&sortBy=score&order=desc";
-const SKILLHUB_HTML_FALLBACK_URL: &str = "https://www.skills.sh/trending/";
 const LOOPHUB_RANKING_URL: &str =
     "https://api.cocoloop.cn/api/v1/store/skills?page=1&page_size=100&sort=downloads&tab=overall";
 const SKILLHUB_MCP_RANKING_URL: &str =
@@ -197,7 +193,6 @@ async fn fetch_market_source_with_timeout(
 fn normalize_market_sources(sources: Vec<String>) -> Result<Vec<&'static str>, AppError> {
     if sources.is_empty() {
         return Ok(vec![
-            CLAWHUB_SOURCE,
             LOOPHUB_SOURCE,
             SKILLHUB_SOURCE,
             SKILLHUB_MCP_SOURCE,
@@ -212,7 +207,6 @@ fn normalize_market_sources(sources: Vec<String>) -> Result<Vec<&'static str>, A
     for source in sources {
         let normalized = source.trim().to_ascii_lowercase();
         let source = match normalized.as_str() {
-            CLAWHUB_SOURCE => CLAWHUB_SOURCE,
             SKILLHUB_SOURCE => SKILLHUB_SOURCE,
             LOOPHUB_SOURCE => LOOPHUB_SOURCE,
             SKILLHUB_MCP_SOURCE => SKILLHUB_MCP_SOURCE,
@@ -233,7 +227,6 @@ async fn fetch_market_source(
     source: &'static str,
 ) -> Result<Vec<SkillMarketItemResponse>, AppError> {
     match source {
-        CLAWHUB_SOURCE => fetch_clawhub_rankings(client).await,
         SKILLHUB_SOURCE => fetch_skillhub_rankings(client).await,
         CLAWHUB_PLUGINS_SOURCE => fetch_clawhub_plugins(client).await,
         LOOPHUB_SOURCE => Ok(parse_loophub_rankings(&read_market_body(client, LOOPHUB_RANKING_URL).await?)),
@@ -286,40 +279,8 @@ async fn fetch_with_fallback(
     }
 }
 
-async fn fetch_clawhub_rankings(client: &reqwest::Client) -> Result<Vec<SkillMarketItemResponse>, AppError> {
-    fetch_with_fallback(
-        async {
-            let body = read_market_json_post(
-                client,
-                CLAWHUB_CONVEX_QUERY_URL,
-                serde_json::json!({
-                    "path": "skills:listPublicPageV4",
-                    "format": "convex_encoded_json",
-                    "args": [{
-                        "dir": "desc",
-                        "numItems": 100,
-                        "sort": "newest"
-                    }]
-                }),
-            )
-            .await?;
-            Ok(parse_clawhub_rankings(&body))
-        },
-        async { Ok(parse_clawhub_rankings(&read_market_body(client, CLAWHUB_RANKING_URL).await?)) },
-    )
-    .await
-}
-
 async fn fetch_skillhub_rankings(client: &reqwest::Client) -> Result<Vec<SkillMarketItemResponse>, AppError> {
-    fetch_with_fallback(
-        async { Ok(parse_skillhub_rankings(&read_market_body(client, SKILLHUB_RANKING_URL).await?)) },
-        async {
-            Ok(parse_skillhub_rankings(
-                &read_market_body(client, SKILLHUB_HTML_FALLBACK_URL).await?,
-            ))
-        },
-    )
-    .await
+    Ok(parse_skillhub_rankings(&read_market_body(client, SKILLHUB_RANKING_URL).await?))
 }
 
 async fn fetch_clawhub_plugins(client: &reqwest::Client) -> Result<Vec<SkillMarketItemResponse>, AppError> {
@@ -394,25 +355,25 @@ mod tests {
     }
 
     #[test]
-    fn normalize_market_sources_defaults_to_all_seven() {
+    fn normalize_market_sources_defaults_to_remaining_sources() {
         let sources = normalize_market_sources(Vec::new()).unwrap();
-        assert_eq!(sources.len(), 7);
-    }
-
-    #[test]
-    fn clawhub_market_uses_skills_ranking_page() {
-        assert!(CLAWHUB_RANKING_URL.ends_with("/skills?tab=new"));
+        assert_eq!(sources.len(), 6);
+        assert!(!sources.contains(&"clawhub"));
+        assert!(normalize_market_sources(vec!["clawhub".into()]).is_err());
+        assert_eq!(normalize_market_sources(vec!["skillhub".into()]).unwrap(), vec!["skillhub"]);
     }
 
     fn item(name: &str) -> SkillMarketItemResponse {
         SkillMarketItemResponse {
-            id: format!("clawhub:owner/{name}"),
-            source: CLAWHUB_SOURCE.into(),
+            id: format!("loophub:{name}"),
+            source: LOOPHUB_SOURCE.into(),
+            resource_kind: nomifun_api_types::SkillMarketResourceKind::Skill,
+            install_mode: nomifun_api_types::SkillMarketInstallMode::Manual,
             rank: 1,
             name: name.into(),
             description: String::new(),
-            url: format!("https://clawhub.ai/owner/skills/{name}"),
-            install_command: format!("openclaw skills install @owner/{name}"),
+            url: format!("https://hub.cocoloop.cn/skills/{name}"),
+            install_command: Some(format!("loophub skill download https://dl.cocoloop.cn/bss/skills/{name}.zip")),
             tags: vec![],
             audience_tags: vec![],
             scenario_tags: vec![],
@@ -484,26 +445,6 @@ mod tests {
             .await
             .unwrap();
         assert!(items.is_empty());
-    }
-
-    /// Manual contract smoke test for the two original third-party pages.
-    /// Kept ignored in normal CI because it requires public network access
-    /// and those sites are outside NomiFun's availability control.
-    #[tokio::test]
-    #[ignore = "requires public ClawHub and SkillHub access"]
-    async fn live_market_pages_still_match_the_ranking_contract() {
-        let response = fetch_skill_market_rankings(vec![CLAWHUB_SOURCE.into(), SKILLHUB_SOURCE.into()])
-            .await
-            .unwrap();
-
-        assert!(response.errors.is_empty(), "live fetch errors: {:?}", response.errors);
-        assert!(response.items.iter().any(|item| item.source == CLAWHUB_SOURCE));
-        assert!(response.items.iter().any(|item| item.source == SKILLHUB_SOURCE));
-        assert!(response.items.iter().all(|item| {
-            item.url.starts_with("https://")
-                && (item.install_command.starts_with("openclaw skills install @")
-                    || item.install_command.starts_with("npx skills add "))
-        }));
     }
 
     /// Manual contract smoke test for the five newer sources. Ignored for the
