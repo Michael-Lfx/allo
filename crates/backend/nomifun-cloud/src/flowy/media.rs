@@ -1149,6 +1149,77 @@ mod tests {
     }
 
     #[test]
+    fn build_wan3_text_only_body() {
+        use crate::flowy::media_types::is_wan3_model;
+        assert!(is_wan3_model("flowy/wan3.0-video"));
+        assert!(is_wan3_model("AIPC-wan3.0-video-prime"));
+        assert!(is_wan3_model("Wan 3.0"));
+        assert!(!is_wan3_model("flowy/MiniMax-H3"));
+        assert!(!is_wan3_model("flowy/doubao-seedance-1-0-pro"));
+
+        let body = FlowyApiClient::build_video_create_params(VideoCreateParams {
+            model: "flowy/wan3.0-video".into(),
+            prompt: "月光下的屋顶".into(),
+            duration: Some(5),
+            aspect_ratio: "16:9".into(),
+            resolution: Some("720p".into()),
+            negative_prompt: Some("blur".into()),
+            seed: Some(7),
+            watermark: true,
+            generate_audio: Some(true),
+            return_last_frame: Some(true),
+            images: vec![],
+            reference_video_url: None,
+            reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
+        });
+        assert_eq!(body["model"], "flowy/wan3.0-video");
+        assert_eq!(body["input"]["prompt"], "月光下的屋顶");
+        assert_eq!(body["parameters"]["duration"], 5);
+        assert_eq!(body["parameters"]["resolution"], "720P");
+        assert_eq!(body["parameters"]["ratio"], "16:9");
+        assert_eq!(body["parameters"]["audio"], true);
+        assert_eq!(body["parameters"]["watermark"], true);
+        assert_eq!(body["parameters"]["seed"], 7);
+        assert_eq!(body["app"], "flowymes");
+        assert!(body.get("content").is_none());
+        assert!(body.get("generate_audio").is_none());
+        assert!(body.get("return_last_frame").is_none());
+        assert!(body.get("negative_prompt").is_none());
+        assert!(body.get("input").unwrap().get("media").is_none());
+    }
+
+    #[test]
+    fn build_wan3_i2v_uses_adaptive_ratio() {
+        let body = FlowyApiClient::build_video_create_params(VideoCreateParams {
+            model: "AIPC-wan3.0-video-prime".into(),
+            prompt: "镜头推进".into(),
+            duration: Some(8),
+            aspect_ratio: "16:9".into(),
+            resolution: Some("1080p".into()),
+            negative_prompt: None,
+            seed: None,
+            watermark: false,
+            generate_audio: None,
+            return_last_frame: None,
+            images: vec![VideoContentImage {
+                url: "https://example.com/first.png".into(),
+                role: "first_frame".into(),
+            }],
+            reference_video_url: None,
+            reference_audio_url: None,
+            reference_audio_urls: Vec::new(),
+        });
+        assert_eq!(body["parameters"]["ratio"], "adaptive");
+        assert_eq!(body["parameters"]["resolution"], "1080P");
+        assert_eq!(body["parameters"]["duration"], 8);
+        assert_eq!(body["parameters"]["audio"], true);
+        assert_eq!(body["input"]["media"][0]["type"], "first_frame");
+        assert_eq!(body["input"]["media"][0]["url"], "https://example.com/first.png");
+        assert!(body.get("content").is_none());
+    }
+
+    #[test]
     fn video_task_record_falls_back_to_content_url() {
         let rec = VideoTaskRecord {
             id: 1,

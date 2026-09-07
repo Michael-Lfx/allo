@@ -62,6 +62,17 @@ describe("video model reference capabilities", () => {
         expect(profile.video?.operations).toContain("audio_to_video");
     });
 
+    test("Wan 3.0 uses DashScope duration and resolution tokens", () => {
+        const profile = modelCapabilityConfigFor(configFor("flowy::wan3.0-video"), "flowy::wan3.0-video");
+        expect(profile.video?.duration.min).toBe(2);
+        expect(profile.video?.duration.max).toBe(30);
+        expect(profile.video?.duration.default).toBe(5);
+        expect(profile.video?.resolutions).toEqual(["480P", "720P", "1080P"]);
+        expect(profile.video?.defaultResolution).toBe("720P");
+        expect(profile.video?.generateAudio.supported).toBe(true);
+        expect(profile.video?.operations).toContain("extend");
+    });
+
     test("generic video models default to reference-video capacity", () => {
         const profile = modelCapabilityConfigFor(configFor("default::grok-imagine-video"), "default::grok-imagine-video");
         expect(profile.video?.references.maxVideos).toBeGreaterThan(0);

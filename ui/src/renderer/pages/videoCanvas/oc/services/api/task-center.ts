@@ -7,7 +7,8 @@ import {
   normalizeMiniMaxH3Duration,
   normalizeMiniMaxH3Ratio,
 } from '@oc/lib/minimax-h3-video';
-import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
+import { normalizeWan3Duration, normalizeWan3Ratio } from '@oc/lib/wan3-video';
+import { isMiniMaxH3VideoModel, isWan3VideoModel } from '@renderer/services/videoModelCapabilities';
 import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
 import { hasExplicitVideoFrames, resolveVideoImageReferences, shouldSubmitVideoImagesAsReferences } from '@oc/services/api/video-reference-roles';
@@ -365,6 +366,11 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
       Boolean(firstFrameId || lastFrameId) || referenceIds.length > 0;
     duration_secs = normalizeMiniMaxH3Duration(duration_secs);
     aspect_ratio = normalizeMiniMaxH3Ratio(aspect_ratio, hasMedia);
+  } else if (model && isWan3VideoModel(model)) {
+    const hasMedia =
+      Boolean(firstFrameId || lastFrameId) || referenceIds.length > 0;
+    duration_secs = normalizeWan3Duration(duration_secs);
+    aspect_ratio = normalizeWan3Ratio(aspect_ratio, hasMedia);
   }
 
   return {

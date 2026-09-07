@@ -1,11 +1,15 @@
 import type { ModelProtocol } from "@oc/lib/model-protocols";
 import { MINIMAX_H3_DURATION_DEFAULT, MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN } from "@oc/lib/minimax-h3-video";
+import { WAN3_DURATION_DEFAULT, WAN3_DURATION_MAX, WAN3_DURATION_MIN } from "@oc/lib/wan3-video";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import {
     DEFAULT_MINIMAX_H3_RESOLUTION,
     DEFAULT_VIDEO_RESOLUTION,
+    DEFAULT_WAN3_RESOLUTION,
     isMiniMaxH3VideoModel,
+    isWan3VideoModel,
     MINIMAX_H3_RESOLUTIONS,
+    WAN3_RESOLUTIONS,
     videoModelCapabilities,
 } from "@renderer/services/videoModelCapabilities";
 import { DEFAULT_SEEDANCE_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS } from "@renderer/pages/videoGeneration/aspectRatios";
@@ -85,6 +89,37 @@ function minimaxH3VideoCapability(): VideoCapabilityConfig {
     };
 }
 
+function wan3VideoCapability(): VideoCapabilityConfig {
+    return {
+        references: {
+            promptMaxChars: 2000,
+            maxImages: 9,
+            maxImageBytes: 30 * 1024 * 1024,
+            maxVideos: 3,
+            maxVideoBytes: 50 * 1024 * 1024,
+            maxVideoDurationSeconds: 30,
+            maxAudios: 3,
+            maxAudioBytes: 15 * 1024 * 1024,
+            maxAudioDurationSeconds: 30,
+        },
+        duration: {
+            selection: "range",
+            min: WAN3_DURATION_MIN,
+            max: WAN3_DURATION_MAX,
+            step: 1,
+            default: WAN3_DURATION_DEFAULT,
+        },
+        ratios: [...SEEDANCE_ASPECT_RATIOS],
+        defaultRatio: DEFAULT_SEEDANCE_ASPECT_RATIO,
+        resolutions: [...WAN3_RESOLUTIONS],
+        defaultResolution: DEFAULT_WAN3_RESOLUTION,
+        generateAudio: { supported: true, default: true },
+        watermark: { supported: true, default: false },
+        operations: [...VIDEO_REFERENCE_OPERATIONS],
+        defaultOperation: "text_to_video",
+    };
+}
+
 function seedanceVideoCapability(): VideoCapabilityConfig {
     return {
         references: {
@@ -157,6 +192,9 @@ export function modelCapabilityConfigFor(config: { channels: Array<{ id: string;
     const modelName = separator >= 0 ? model.slice(separator + 2) : model;
     if (isMiniMaxH3VideoModel(modelName) || isMiniMaxH3VideoModel(model)) {
         return { version: 1, video: minimaxH3VideoCapability() };
+    }
+    if (isWan3VideoModel(modelName) || isWan3VideoModel(model)) {
+        return { version: 1, video: wan3VideoCapability() };
     }
     if (isSeedanceVideoModel(modelName) || isSeedanceFastModel(modelName) || isSeedanceVideoModel(model)) {
         const caps = videoModelCapabilities(modelName || model);

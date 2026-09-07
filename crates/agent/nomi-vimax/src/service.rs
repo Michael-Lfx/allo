@@ -764,7 +764,7 @@ impl VimaxService {
                     r.video_model = v.trim().to_string();
                 }
                 if let Some(v) = &resolution {
-                    // Keep model-canonical casing (MiniMax-H3 uses `768P` / `2K`).
+                    // Keep model-canonical casing (MiniMax-H3 `768P`/`2K`, Wan 3.0 `480P`/`720P`/`1080P`).
                     r.resolution = v.trim().to_string();
                 }
                 if let Some(v) = fps {
@@ -1152,7 +1152,7 @@ impl VimaxService {
                 r.aspect_ratio = crate::aspect::normalize_aspect_ratio(ar);
             }
             if let Some(res) = &resolution {
-                // Keep model-canonical casing (MiniMax-H3 uses `768P` / `2K`).
+                // Keep model-canonical casing (MiniMax-H3 `768P`/`2K`, Wan 3.0 `480P`/`720P`/`1080P`).
                 r.resolution = res.trim().to_string();
             }
             if let Some(v) = fps {

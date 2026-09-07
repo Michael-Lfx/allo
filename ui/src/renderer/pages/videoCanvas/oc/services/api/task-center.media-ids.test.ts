@@ -125,4 +125,20 @@ describe("collectMediaIds / alloBodyFromCreateInput", () => {
         });
         expect(body.project_id).toBeUndefined();
     });
+
+    test("Wan 3.0 clamps duration and keeps DashScope resolution casing", () => {
+        const body = alloBodyFromCreateInput({
+            type: "canvas_video",
+            operation: "text_to_video",
+            model: "flowy/wan3.0-video",
+            prompt: "a cat walks",
+            input: {
+                mode: "video",
+                prompt: "a cat walks",
+                config: { videoSeconds: "40", vquality: "720p", size: "16:9" },
+            },
+        });
+        expect(body.duration_secs).toBe(30);
+        expect(body.resolution).toBe("720P");
+    });
 });

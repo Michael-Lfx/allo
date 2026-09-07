@@ -17,10 +17,11 @@ use crate::progress::report_media_progress;
 
 /// Per-model maximum seconds for a single generation request.
 pub fn max_clip_duration_for_model(model: &str) -> u32 {
-    let lower = model.to_ascii_lowercase();
-    // MiniMax-H3 accepts 4–15s per task.
-    if lower.contains("minimax-h3") || lower.contains("minimaxh3") {
-        return 15;
+    if nomifun_cloud::is_wan3_model(model) {
+        return nomifun_cloud::WAN3_DURATION_MAX;
+    }
+    if nomifun_cloud::is_minimax_h3_model(model) {
+        return nomifun_cloud::MINIMAX_H3_DURATION_MAX;
     }
     // Seedance (Flowy default video backend) caps at ~10s per task today.
     10
@@ -985,6 +986,17 @@ mod tests {
             route_long_video_template("prompt_refine_txt2video", 8, "seedance"),
             "prompt_refine_txt2video"
         );
+    }
+
+    #[test]
+    fn wan3_single_clip_covers_20s() {
+        assert_eq!(max_clip_duration_for_model("flowy/wan3.0-video"), 30);
+        assert_eq!(
+            route_long_video_template("prompt_refine_txt2video", 20, "flowy/wan3.0-video"),
+            "prompt_refine_txt2video"
+        );
+        assert_eq!(max_clip_duration_for_model("flowy/MiniMax-H3"), 15);
+        assert_eq!(max_clip_duration_for_model("seedance"), 10);
     }
 
     #[test]

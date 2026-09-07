@@ -5,7 +5,7 @@ import { ImageSettingsTheme } from "@oc/components/image-settings-panel";
 import { AspectChoice, ChoiceChip, SettingsPanelHeader, SettingsSection } from "@oc/components/generation-settings-chrome";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@oc/lib/seedance-video";
 import { normalizeMiniMaxH3Duration } from "@oc/lib/minimax-h3-video";
-import { isMiniMaxH3VideoModel, normalizeMiniMaxH3Resolution } from "@renderer/services/videoModelCapabilities";
+import { isMiniMaxH3VideoModel, isWan3VideoModel, normalizeMiniMaxH3Resolution } from "@renderer/services/videoModelCapabilities";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { type CanvasTheme } from "@oc/lib/canvas-theme";
 import { normalizeVideoDuration, normalizeVideoResolution, isVideoResolutionMatch, formatVideoResolutionLabel, videoDimensionsForRatioAndResolution, VIDEO_DURATION_MIN } from "@oc/lib/video-generation-options";
@@ -41,7 +41,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     if (isMiniMaxH3VideoModel(modelOptionName(config.model || config.videoModel))) {
         return <MiniMaxH3VideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
-    if (isSeedanceVideoConfig(config)) {
+    if (isSeedanceVideoConfig(config) && !isWan3VideoModel(modelOptionName(config.model || config.videoModel))) {
         return <SeedanceVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 

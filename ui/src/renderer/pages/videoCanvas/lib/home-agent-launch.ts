@@ -1,7 +1,7 @@
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
 import { isMiniMaxH3ResolutionToken } from "@oc/lib/video-generation-options";
-import { isMiniMaxH3VideoModel } from "@renderer/services/videoModelCapabilities";
+import { isMiniMaxH3VideoModel, isWan3VideoModel } from "@renderer/services/videoModelCapabilities";
 import { encodeChannelModel, isChannelModelValue } from "@oc/stores/use-config-store";
 
 const ALLO_MEDIA_CHANNEL_ID = "allo-media";
@@ -162,7 +162,7 @@ function encodeHomeMediaModel(model: string) {
 export function storedVqualityFromHomeLaunch(preferences: CanvasHomeLaunchPreferences) {
   const videoModel = preferences.videoModel || "";
   const canonical = canonicalizeVideoResolution(videoModel, preferences.resolution);
-  return isMiniMaxH3VideoModel(videoModel) || isMiniMaxH3ResolutionToken(canonical)
+  return isMiniMaxH3VideoModel(videoModel) || isWan3VideoModel(videoModel) || isMiniMaxH3ResolutionToken(canonical)
     ? canonical
     : String(canonical).replace(/p$/i, "");
 }

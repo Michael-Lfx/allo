@@ -81,7 +81,8 @@ export interface GenerationPreferences {
   targetDurationSecs: number;
   /**
    * Agent-only: when false (default), omit duration budget so planning decides.
-   * Generate / creation modes always use `targetDurationSecs` as clip length (≈4–15s).
+   * Generate / creation modes always use `targetDurationSecs` as clip length
+   * (window follows the selected video model).
    */
   specifyTargetDuration: boolean;
   models: VimaxModelSelection;
