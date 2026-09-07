@@ -39,21 +39,25 @@ describe('conversation send idempotency wiring', () => {
     }
   });
 
-  test('keeps queued work persisted until acceptance and retains the same id on failure', () => {
+  test('keeps queued work persisted until acceptance and retries the same id after failure', () => {
     const dispatch = queueSource.indexOf('return onExecute(nextCommand, { isCurrent: isExecutionCurrent });');
     const acceptedRemoval = queueSource.indexOf(
       'items: removeQueuedCommand(state.items, nextCommand.id)',
       dispatch
     );
     const failure = queueSource.indexOf('.catch((error) => {', acceptedRemoval);
+    const failureKind = queueSource.indexOf('const failureKind = classifyConversationSendFailure(error);', failure);
+    const sameKeyRecovery = queueSource.indexOf('nextCommand.id', failureKind);
     const restoration = queueSource.indexOf(
-      'items: restoreQueuedCommand(state.items, nextCommand)',
+      'items: restoreQueuedCommand(currentState.items, pausedItem)',
       failure
     );
 
     expect(dispatch >= 0).toBe(true);
     expect(acceptedRemoval > dispatch).toBe(true);
     expect(failure > acceptedRemoval).toBe(true);
+    expect(failureKind > failure).toBe(true);
+    expect(sameKeyRecovery > failureKind).toBe(true);
     expect(restoration > failure).toBe(true);
   });
 

@@ -1,11 +1,11 @@
 import { ipcBridge } from '@/common';
-import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { TChatConversation } from '@/common/config/storage';
 import {
   parseConversationId,
   type ConversationId,
 } from '@/common/types/ids';
 import { uuidv7 } from '@/common/utils/uuidv7';
+import { isConversationTurnAdmissionConflict } from './conversationSendRecovery';
 
 export type PersistedInitialMessage = {
   /** Exact newly-created Conversation that owns this one-shot handoff. */
@@ -254,9 +254,10 @@ export const releaseInitialMessageDelivery = (storageKey: string): void => {
 };
 
 /**
- * A 409 from the initial-only endpoint is terminal proof that this automatic
- * handoff no longer owns the creation generation. Quarantine that exact key;
- * transport failures retain it for a same-key retry.
+ * A structured lifecycle admission conflict from the initial-only endpoint is
+ * terminal proof that this automatic handoff no longer owns the creation
+ * generation. Quarantine that exact key; transport failures retain it for a
+ * same-key retry. Other 409 responses are unrelated and must not be consumed.
  */
 export const handleInitialMessageDeliveryFailure = (
   storage: InitialMessageStorage,
@@ -264,12 +265,7 @@ export const handleInitialMessageDeliveryFailure = (
   attemptedIdempotencyKey: string | null,
   error: unknown
 ): void => {
-  if (
-    attemptedIdempotencyKey &&
-    isBackendHttpError(error) &&
-    error.status === 409 &&
-    error.code === 'CONFLICT'
-  ) {
+  if (attemptedIdempotencyKey && isConversationTurnAdmissionConflict(error)) {
     quarantineInitialMessageDelivery(
       storage,
       storageKey,

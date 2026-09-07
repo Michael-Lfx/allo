@@ -42,6 +42,7 @@ import {
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import { isConversationTurnAdmissionConflict } from '@/renderer/pages/conversation/platforms/conversationSendRecovery';
 import { isConversationModelSelectionDisabled } from '@/renderer/pages/conversation/utils/conversationModelSelection';
 import { CHAT_COMPOSER_WRAPPER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import {
@@ -346,6 +347,12 @@ const AcpSendBox: React.FC<{
       } catch (error: unknown) {
         if (execution && !execution.isCurrent()) return;
         markTurnIdle(conversation_id, 'failed');
+        if (execution) {
+          // The durable queue owns retry/reconciliation and the single final
+          // notification. Do not surface the raw lifecycle conflict here.
+          setAiProcessing(false);
+          throw error;
+        }
         const errorMsg =
           getConversationRuntimeWorkspaceErrorMessage(error, t) || parseError(error) || t('common.unknownError');
 
@@ -365,7 +372,14 @@ const AcpSendBox: React.FC<{
           errorMsg.includes('[ACP-AUTH-') ||
           errorMsg.includes('authentication failed') ||
           errorMsg.includes('认证失败');
-        if (isAuthError) {
+        if (isConversationTurnAdmissionConflict(error)) {
+          Message.warning(
+            t('conversation.commandQueue.specialDeliveryConflict', {
+              defaultValue:
+                'The conversation is still busy. This message and its Skill selection were kept; retry after the current turn finishes.',
+            })
+          );
+        } else if (isAuthError) {
           const content = t('acp.auth.failed', {
             backend,
             error: errorMsg,
@@ -426,22 +440,14 @@ Please check your local CLI tool authentication status`,
   const onSendHandler = async (message: string) => {
     const atPathFiles = atPath.map((item) => (typeof item === 'string' ? item : item.path));
     const allFiles = [...uploadFile, ...atPathFiles];
-
+    const queued = enqueue({ input: message, files: allFiles });
+    if (!queued) {
+      // Keep the draft and attachments when queue validation/storage fails;
+      // SendBox restores the submitted text through its revision guard.
+      throw new Error('conversation command was not queued');
+    }
     clearFiles();
     emitter.emit('acp.selected.file.clear');
-
-    if (
-      shouldEnqueueConversationCommand({
-        enabled: true,
-        isBusy,
-        hasPendingCommands,
-      })
-    ) {
-      enqueue({ input: message, files: allFiles });
-      return;
-    }
-
-    await executeCommand({ input: message, files: allFiles });
   };
 
   const onSendWithSkillsHandler = useCallback(
@@ -472,7 +478,7 @@ Please check your local CLI tool authentication status`,
 
   const handleEditQueuedCommand = useCallback(
     (item: ConversationCommandQueueItem) => {
-      remove(item.id);
+      if (!remove(item.id)) return;
       setContent(item.input);
       setUploadFile(Array.from(new Set(item.files)));
       setAtPath([]);
@@ -639,8 +645,13 @@ Please check your local CLI tool authentication status`,
 
   // Clear conversation context (release model context); keeps message records.
   const handleClearContext = async (): Promise<void> => {
+    // Keep queued work behind the post-reset authority read. A clear-context
+    // response must not race a late send and reopen the old turn locally.
+    pause();
+    resetActiveExecution('external-reset');
     try {
       await ipcBridge.conversation.clearContext.invoke({ conversation_id });
+      resume();
       Message.success({
         content: t('conversation.clearContext.success', { defaultValue: 'Context cleared' }),
         duration: 2000,
@@ -648,6 +659,8 @@ Please check your local CLI tool authentication status`,
       });
     } catch (error) {
       console.warn('[AcpSendBox] clear context failed', error);
+      // Preserve the messages and leave the queue paused until the user
+      // explicitly resumes after the reset outcome is known.
       Message.error({
         content: t('conversation.clearContext.failed', { defaultValue: 'Failed to clear context' }),
         closable: true,

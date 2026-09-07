@@ -210,6 +210,19 @@ function getSkillSourceLabel(source: string, t: TFunction): string {
   return t(`conversation.skills.sources.${source}`, { defaultValue: source });
 }
 
+const createNormalSubmitClaim = (
+  input: string,
+  skillIds: string[],
+  domSnippets: Array<{ tag: string; html: string }>,
+  replyQuote: ReplyQuote | null
+): string =>
+  JSON.stringify({
+    input,
+    skillIds,
+    domSnippets: domSnippets.map((snippet) => [snippet.tag, snippet.html.length]),
+    replyMsgId: replyQuote?.messageId ?? null,
+  });
+
 const SendBox: React.FC<{
   value?: string;
   onChange?: (value: string) => void;
@@ -341,6 +354,11 @@ const SendBox: React.FC<{
   const dropzoneRef = useRef<HTMLDivElement>(null);
   const tokenInputRef = useRef<ComposerSkillTokenInputHandle>(null);
   const lastSubmittedDraftRef = useRef<ComposerDraft | null>(null);
+  // React state is not yet updated when two pointer/keyboard submits arrive in
+  // one browser task. This synchronous claim prevents duplicate queue items,
+  // while the microtask release still allows a genuinely new draft to queue
+  // immediately afterwards (no cross-task content de-duplication).
+  const normalSubmitClaimRef = useRef<string | null>(null);
   const [tokenInputState, setTokenInputState] = useState<ComposerTokenInputState>({
     projection: input,
     selection: { start: input.length, end: input.length },
@@ -352,6 +370,7 @@ const SendBox: React.FC<{
   const warmedConversationRef = useRef<ConversationId | undefined>(undefined);
   const warmupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestInputRef = useLatestRef(input);
+  const latestSkillChipsRef = useLatestRef(skillChips);
   const setInputRef = useLatestRef(setInput);
   const messageList = useMessageList();
   const pinnedPlan = useMemo(() => (showPinnedPlan ? derivePinnedPlan(messageList) : null), [messageList, showPinnedPlan]);
@@ -1992,21 +2011,48 @@ const SendBox: React.FC<{
       inputLength: input.length,
       domSnippetCount: domSnippets.length,
     });
-    setIsLoading(true);
     const submittedSkills = skillChips;
+    const submitClaim = createNormalSubmitClaim(input, submittedSkills.map((skill) => skill.skillId), domSnippets, replyQuote);
+    if (normalSubmitClaimRef.current === submitClaim) {
+      return;
+    }
+    normalSubmitClaimRef.current = submitClaim;
+    void Promise.resolve().then(() => {
+      if (normalSubmitClaimRef.current === submitClaim) {
+        normalSubmitClaimRef.current = null;
+      }
+    });
+
     const finalMessage = composeAndClear(hasSkillLoadPlan);
-    if (finalMessage == null) return;
+    if (finalMessage == null) {
+      normalSubmitClaimRef.current = null;
+      return;
+    }
+    const submittedInputRevision = inputRevisionStateRef.current.current;
+    setIsLoading(true);
 
     const send = hasSkillLoadPlan && onSendWithSkills
       ? onSendWithSkills(finalMessage, submittedSkills.map((skill) => skill.skillId))
       : onSend(finalMessage);
     send
       .then(() => {
-        if (hasSkillLoadPlan) {
+        const skillsStillMatch =
+          latestSkillChipsRef.current.length === submittedSkills.length &&
+          latestSkillChipsRef.current.every(
+            (skill, index) => skill.skillId === submittedSkills[index]?.skillId
+          );
+        if (
+          hasSkillLoadPlan &&
+          inputRevisionStateRef.current.current === submittedInputRevision &&
+          skillsStillMatch
+        ) {
           onSkillChipsChange?.([]);
         }
       })
       .catch(() => {
+        if (inputRevisionStateRef.current.current !== submittedInputRevision) {
+          return;
+        }
         const submittedDraft = lastSubmittedDraftRef.current;
         if (submittedDraft) {
           tokenInputRef.current?.restoreDraft(submittedDraft);

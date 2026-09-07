@@ -233,7 +233,7 @@ describe('initial message durable delivery identity', () => {
     releaseInitialMessageDelivery('initial');
   });
 
-  test('quarantines an exact initial-only 409 but retains transport failures', () => {
+  test('quarantines a typed initial-only admission conflict but retains other failures', () => {
     const storage = createStorage();
     const first = persistInitialMessageDelivery(
       storage,
@@ -247,11 +247,37 @@ describe('initial message durable delivery identity', () => {
       storage,
       'conflict',
       first.idempotency_key,
-      { name: 'BackendHttpError', status: 409, code: 'CONFLICT' }
+      {
+        name: 'BackendHttpError',
+        status: 409,
+        code: 'CONFLICT',
+        details: {
+          kind: 'conversation_turn_admission',
+          retryable: true,
+          reconcile: 'conversation.get',
+        },
+      }
     );
     expect(storage.getItem('conflict')).toBeNull();
     expect(claimInitialMessageDelivery('conflict')).toBe(true);
     releaseInitialMessageDelivery('conflict');
+
+    const unrelatedConflict = persistInitialMessageDelivery(
+      storage,
+      'unrelated-conflict',
+      CONVERSATION_ID,
+      'keep me',
+      []
+    );
+    expect(claimInitialMessageDelivery('unrelated-conflict')).toBe(true);
+    handleInitialMessageDeliveryFailure(
+      storage,
+      'unrelated-conflict',
+      unrelatedConflict.idempotency_key,
+      { name: 'BackendHttpError', status: 409, code: 'CONFLICT' }
+    );
+    expect(readInitialMessageDelivery(storage, 'unrelated-conflict')).toEqual(unrelatedConflict);
+    releaseInitialMessageDelivery('unrelated-conflict');
 
     const retryable = persistInitialMessageDelivery(
       storage,

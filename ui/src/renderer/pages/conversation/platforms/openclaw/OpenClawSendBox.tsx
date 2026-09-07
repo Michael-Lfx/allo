@@ -3,7 +3,6 @@
 import { conversationTarget, type ConversationId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
-import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { uuid } from '@/common/utils';
 import { getSendBoxDraftHook } from '@/renderer/hooks/chat/useSendBoxDraft';
 import { useSlashCommands } from '@/renderer/hooks/chat/useSlashCommands';
@@ -18,6 +17,7 @@ import {
   type PersistedInitialMessage,
 } from '@/renderer/pages/conversation/platforms/initialMessageDelivery';
 import { classifyPublicMessageDelivery } from '@/renderer/pages/conversation/platforms/publicMessageDelivery';
+import { isConversationTurnAdmissionConflict } from '@/renderer/pages/conversation/platforms/conversationSendRecovery';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import BasicRuntimeSendBox, {
@@ -97,12 +97,7 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
         }
         emitter.emit('chat.history.refresh');
       } catch (error) {
-        if (
-          initialOnly &&
-          isBackendHttpError(error) &&
-          error.status === 409 &&
-          error.code === 'CONFLICT'
-        ) {
+        if (initialOnly && isConversationTurnAdmissionConflict(error)) {
           quarantineInitialMessageDelivery(
             sessionStorage,
             storageKey,

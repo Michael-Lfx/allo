@@ -20,6 +20,7 @@ import {
 import { classifyPublicMessageDelivery } from '../publicMessageDelivery';
 import { awaitConversationConfig } from '../../utils/conversationConfigGate';
 import { getConversationRuntimeWorkspaceErrorMessage } from '../../utils/conversationCreateError';
+import { isConversationTurnAdmissionConflict } from '../conversationSendRecovery';
 
 type UseAcpInitialMessageParams = {
   conversation_id: ConversationId;
@@ -151,7 +152,16 @@ export const useAcpInitialMessage = ({
         // identity. A POST failure that never produced a server message is
         // transient UI feedback, not a synthetic chat row that history
         // reconciliation could later duplicate or move into another turn.
-        Message.error({ content: errorMessageText, duration: 6000 });
+        if (isConversationTurnAdmissionConflict(error)) {
+          Message.warning(
+            t('conversation.commandQueue.specialDeliveryConflict', {
+              defaultValue:
+                'The conversation is still busy. This message and its Skill selection were kept; retry after the current turn finishes.',
+            })
+          );
+        } else {
+          Message.error({ content: errorMessageText, duration: 6000 });
+        }
         setAiProcessing(false); // Stop loading state on error
         // Reveal even on failure: the error toast lives on the destination
         // page; the overlay must not hide it behind the timeout.

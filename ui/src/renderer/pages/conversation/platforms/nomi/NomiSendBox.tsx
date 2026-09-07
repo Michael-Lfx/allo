@@ -82,6 +82,7 @@ import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conve
 import { CHAT_COMPOSER_WRAPPER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { awaitConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import { isConversationTurnAdmissionConflict } from '@/renderer/pages/conversation/platforms/conversationSendRecovery';
 import {
   warmupConversation,
   warmupConversationForPassiveMount,
@@ -562,26 +563,28 @@ const NomiSendBox: React.FC<{
   );
 
   const canSendImageAttachments = useCallback(
-    (files: string[]) => {
+    (files: string[], notify = true) => {
       if (!hasTooManyImageAttachments(files)) {
         imageLimitWarningKeyRef.current = null;
         return true;
       }
-      warnImageAttachmentLimit(files);
+      if (notify) warnImageAttachmentLimit(files);
       return false;
     },
     [warnImageAttachmentLimit]
   );
 
   const canSendModelFiles = useCallback(
-    (files: string[]) => {
+    (files: string[], notify = true) => {
       if (selectedChatModelOption?.family === 'auto' && files.some(isImageAttachment)) {
-        Message.warning(t('conversation.modelPicker.autoTextOnly', {
-          defaultValue: 'Auto models currently support text only',
-        }));
+        if (notify) {
+          Message.warning(t('conversation.modelPicker.autoTextOnly', {
+            defaultValue: 'Auto models currently support text only',
+          }));
+        }
         return false;
       }
-      return canSendImageAttachments(files);
+      return canSendImageAttachments(files, notify);
     },
     [canSendImageAttachments, selectedChatModelOption?.family, t]
   );
@@ -611,11 +614,11 @@ const NomiSendBox: React.FC<{
       execution?: ConversationCommandQueueExecution,
       deferLocalTurnUntilFresh = execution !== undefined
     ) => {
-      if (!canSendModelFiles(files)) {
+      if (!canSendModelFiles(files, execution === undefined)) {
         throw new Error('The selected model cannot accept these attachments');
       }
       if (!current_model?.use_model) {
-        Message.warning(t('conversation.chat.noModelSelected'));
+        if (!execution) Message.warning(t('conversation.chat.noModelSelected'));
         throw new Error('No model selected');
       }
 
@@ -676,10 +679,24 @@ const NomiSendBox: React.FC<{
         return disposition;
       } catch (error) {
         if (execution && !execution.isCurrent()) return;
+        if (execution) {
+          // The queue owns recovery and user-facing notifications. The item
+          // remains persisted with this exact idempotency key for a retry.
+          throw error;
+        }
         setActiveMsgId(null);
         setWaitingResponse(false);
         notifyFailed(getConversationRuntimeWorkspaceErrorMessage(error, t));
-        Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        if (isConversationTurnAdmissionConflict(error)) {
+          Message.warning(
+            t('conversation.commandQueue.specialDeliveryConflict', {
+              defaultValue:
+                'The conversation is still busy. This message and its Skill selection were kept; retry after the current turn finishes.',
+            })
+          );
+        } else {
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+        }
         throw error;
       }
     },
@@ -844,29 +861,17 @@ const NomiSendBox: React.FC<{
       Message.warning(t('conversation.modelPicker.autoTextOnly', {
         defaultValue: 'Auto models currently support text only',
       }));
-      return;
+      throw new Error('Auto models do not support image attachments');
     }
 
-    if (
-      shouldEnqueueConversationCommand({
-        enabled: true,
-        isBusy,
-        hasPendingCommands,
-      })
-    ) {
-      clearFiles();
-      emitter.emit('nomi.selected.file.clear');
-      enqueue({ input: message, files: filesToSend });
-      return;
+    const queued = enqueue({ input: message, files: filesToSend });
+    if (!queued) {
+      // Queue validation/storage failure must reject the composer send so the
+      // SendBox restores the text while the attachment draft stays intact.
+      throw new Error('conversation command was not queued');
     }
-
-    try {
-      await executeCommand({ input: message, files: filesToSend });
-      clearFiles();
-      emitter.emit('nomi.selected.file.clear');
-    } catch {
-      // Keep draft attachments; SendBox restores the text input on failure.
-    }
+    clearFiles();
+    emitter.emit('nomi.selected.file.clear');
   };
 
   const onSendWithSkillsHandler = useCallback(
@@ -1379,7 +1384,7 @@ const NomiSendBox: React.FC<{
 
   const handleEditQueuedCommand = useCallback(
     (item: ConversationCommandQueueItem) => {
-      remove(item.id);
+      if (!remove(item.id)) return;
       setContent(item.input);
       setUploadFile(Array.from(new Set(item.files)));
       setAtPath([]);
@@ -1788,8 +1793,13 @@ const NomiSendBox: React.FC<{
 
   // Clear conversation context (release model context); keeps message records.
   const handleClearContext = async (): Promise<void> => {
+    // Keep queued work behind the post-reset authority read. A clear-context
+    // response must not race a late send and reopen the old turn locally.
+    pause();
+    resetActiveExecution('external-reset');
     try {
       await ipcBridge.conversation.clearContext.invoke({ conversation_id });
+      resume();
       Message.success({
         content: t('conversation.clearContext.success', { defaultValue: 'Context cleared' }),
         duration: 2000,
@@ -1797,6 +1807,8 @@ const NomiSendBox: React.FC<{
       });
     } catch (error) {
       console.warn('[NomiSendBox] clear context failed', error);
+      // Preserve the messages and leave the queue paused until the user
+      // explicitly resumes after the reset outcome is known.
       Message.error({
         content: t('conversation.clearContext.failed', { defaultValue: 'Failed to clear context' }),
         closable: true,
