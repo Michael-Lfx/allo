@@ -5,8 +5,8 @@
 //! revalidation, streaming, archive extraction, deterministic hashing,
 //! provenance, staging cleanup, and the commit/rollback protocol stay here.
 
-use std::fs::{self, File, Metadata, read_dir, symlink_metadata};
-use std::io::{self, Read};
+use std::fs::{self, Metadata, symlink_metadata};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -87,13 +87,33 @@ struct RemoteSkill {
 
 struct HttpSkillHubArtifactSource {
     client: reqwest::Client,
+    search_url: String,
+    download_url: String,
 }
 
 impl HttpSkillHubArtifactSource {
     fn new() -> Result<Self, MarketSkillInstallError> {
         build_skillhub_install_client()
-            .map(|client| Self { client })
+            .map(|client| Self {
+                client,
+                search_url: SKILLHUB_SKILL_SEARCH_URL.into(),
+                download_url: SKILLHUB_SKILL_DOWNLOAD_URL.into(),
+            })
             .map_err(|_| MarketSkillInstallError::LocalIo)
+    }
+
+    #[cfg(test)]
+    fn for_test(base_url: &str) -> Self {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("test SkillHub client should build");
+        Self {
+            client,
+            search_url: format!("{base_url}/api/v1/search"),
+            download_url: format!("{base_url}/api/v1/download"),
+        }
     }
 }
 
@@ -102,7 +122,7 @@ impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
     async fn find_skill(&self, owner: &str, slug: &str) -> Result<RemoteSkill, MarketSkillInstallError> {
         let query = format!("{owner}/{slug}");
         let url = reqwest::Url::parse_with_params(
-            SKILLHUB_SKILL_SEARCH_URL,
+            &self.search_url,
             [("q", query.as_str()), ("limit", "20")],
         )
         .map_err(|_| MarketSkillInstallError::LocalIo)?;
@@ -119,11 +139,10 @@ impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
         skill: &RemoteSkill,
         archive_path: &Path,
     ) -> Result<String, MarketSkillInstallError> {
-        let url = reqwest::Url::parse_with_params(
-            SKILLHUB_SKILL_DOWNLOAD_URL,
-            [("slug", skill.slug.as_str())],
-        )
-        .map_err(|_| MarketSkillInstallError::LocalIo)?;
+        // Keep the owner bound all the way through the artifact request. The
+        // search response is not sufficient when two namespaces publish the
+        // same slug.
+        let url = skillhub_download_url(&self.download_url, skill)?;
         let mut response = self
             .client
             .get(url)
@@ -189,6 +208,20 @@ impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
     }
 }
 
+fn skillhub_download_url(
+    base_url: &str,
+    skill: &RemoteSkill,
+) -> Result<reqwest::Url, MarketSkillInstallError> {
+    reqwest::Url::parse_with_params(
+        base_url,
+        [
+            ("owner", skill.owner.as_str()),
+            ("slug", skill.slug.as_str()),
+        ],
+    )
+    .map_err(|_| MarketSkillInstallError::LocalIo)
+}
+
 /// Application-facing installation seam. Route and UI code only depend on
 /// this small contract, never on SkillHub transport or filesystem details.
 #[async_trait]
@@ -228,32 +261,43 @@ impl ManagedSkillInstaller {
         }
 
         let staging = MarketSkillStaging::create(&self.paths).await?;
-        let archive_path = staging.root.join("skill.zip");
-        let extract_dir = staging.root.join("extract");
-        let artifact_sha256 = source.download_skill(&remote, &archive_path).await?;
+        let result = async {
+            let archive_path = staging.root.join("skill.zip");
+            let extract_dir = staging.root.join("extract");
+            let artifact_sha256 = source.download_skill(&remote, &archive_path).await?;
 
-        skill_service::extract_skill_archive_to_staging(&archive_path, &extract_dir)
-            .await
-            .map_err(map_archive_error)?;
-        let skill_dir = find_single_skill_directory(&extract_dir)?;
-        skill_service::validate_market_skill_directory(&skill_dir, &market_skill.slug)
-            .await
-            .map_err(|_| MarketSkillInstallError::ManifestInvalid)?;
-        validate_managed_skill_name(&market_skill.slug)?;
-        let content_sha256 = hash_skill_directory(&skill_dir).await?;
+            skill_service::extract_skill_archive_to_staging(&archive_path, &extract_dir)
+                .await
+                .map_err(map_archive_error)?;
+            let skill_dir = find_single_skill_directory(&extract_dir)?;
+            skill_service::validate_market_skill_directory(&skill_dir, &market_skill.slug)
+                .await
+                .map_err(|_| MarketSkillInstallError::ManifestInvalid)?;
+            validate_managed_skill_name(&market_skill.slug)?;
+            let content_sha256 = hash_skill_directory(&skill_dir).await?;
 
-        let _mutation_guard = skill_service::skill_mutation_lock().lock().await;
-        let response = commit_managed_skill(
-            &self.paths,
-            &market_skill,
-            remote.revision,
-            &skill_dir,
-            artifact_sha256,
-            content_sha256,
-        )
-        .await?;
-        staging.cleanup().await;
-        Ok(response)
+            let _mutation_guard = skill_service::skill_mutation_lock().lock().await;
+            commit_managed_skill(
+                &self.paths,
+                &market_skill,
+                remote.revision,
+                &skill_dir,
+                artifact_sha256,
+                content_sha256,
+            )
+            .await
+        }
+        .await;
+        let cleanup = staging.cleanup().await;
+        match (result, cleanup) {
+            (Ok(response), Ok(())) => Ok(response),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(cleanup_error)) => {
+                tracing::warn!(error = %cleanup_error, "SkillHub staging cleanup failed after installation error");
+                Err(error)
+            }
+        }
     }
 }
 
@@ -669,63 +713,10 @@ async fn list_valid_installations(
 
 async fn hash_skill_directory(path: &Path) -> Result<String, MarketSkillInstallError> {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || hash_skill_directory_sync(&path))
+    tokio::task::spawn_blocking(move || skill_service::hash_skill_directory_content_sync(&path))
         .await
         .map_err(|_| MarketSkillInstallError::LocalIo)?
         .map_err(|_| MarketSkillInstallError::LocalIo)
-}
-
-fn hash_skill_directory_sync(path: &Path) -> io::Result<String> {
-    let metadata = symlink_metadata(path)?;
-    if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
-        return Err(io::Error::other("Skill directory is not a regular directory"));
-    }
-    let mut files = Vec::new();
-    collect_skill_files(path, path, &mut files)?;
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    for (relative, file_path, length) in files {
-        let path_bytes = relative.as_bytes();
-        hasher.update((path_bytes.len() as u64).to_le_bytes());
-        hasher.update(path_bytes);
-        hasher.update(length.to_le_bytes());
-        let mut file = File::open(file_path)?;
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn collect_skill_files(root: &Path, current: &Path, files: &mut Vec<(String, PathBuf, u64)>) -> io::Result<()> {
-    let mut entries = read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let path = entry.path();
-        let metadata = symlink_metadata(&path)?;
-        if metadata_is_link_or_reparse(&metadata) {
-            return Err(io::Error::other("Skill directory contains a link or reparse point"));
-        }
-        if metadata.is_dir() {
-            collect_skill_files(root, &path, files)?;
-        } else if metadata.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| io::Error::other("Skill path escaped its root"))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            files.push((relative, path, metadata.len()));
-        } else {
-            return Err(io::Error::other("Skill directory contains an unsupported entry"));
-        }
-    }
-    Ok(())
 }
 
 fn find_single_skill_directory(extract_dir: &Path) -> Result<PathBuf, MarketSkillInstallError> {
@@ -797,7 +788,7 @@ impl MarketSkillStaging {
         })
     }
 
-    async fn cleanup(mut self) {
+    async fn cleanup(mut self) -> Result<(), MarketSkillInstallError> {
         let root_removed = match tokio::fs::remove_dir_all(&self.root).await {
             Ok(()) => true,
             Err(error) if error.kind() == io::ErrorKind::NotFound => true,
@@ -805,11 +796,18 @@ impl MarketSkillStaging {
         };
         let parent_removed = match tokio::fs::remove_dir(&self.parent).await {
             Ok(()) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                ) => true,
             Err(_) => false,
         };
         if root_removed && parent_removed {
             self.armed = false;
+            Ok(())
+        } else {
+            Err(MarketSkillInstallError::LocalIo)
         }
     }
 
@@ -823,16 +821,14 @@ impl Drop for MarketSkillStaging {
         let root = self.root.clone();
         let parent = self.parent.clone();
         let cleanup = move || {
-            let _ = fs::remove_dir_all(root);
-            let _ = fs::remove_dir(parent);
+            // Cancellation cannot await an async Drop. The archive is capped
+            // at 32 MiB and the root name is operation-owned, so a bounded
+            // synchronous retry is the only way to avoid leaving fresh
+            // staging behind after the future is dropped.
+            skill_service::remove_staging_directory_sync(&root);
+            skill_service::remove_empty_staging_parent_sync(&parent);
         };
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn_blocking(cleanup);
-        } else {
-            let _ = std::thread::Builder::new()
-                .name("market-skill-cleanup".into())
-                .spawn(cleanup);
-        }
+        cleanup();
     }
 }
 
@@ -840,6 +836,7 @@ impl Drop for MarketSkillStaging {
 /// conservative: it never follows a link and never considers a final Skill
 /// directory a cleanup candidate.
 pub async fn cleanup_stale_market_staging(paths: &SkillPaths) -> Result<(), MarketSkillInstallError> {
+    let _mutation_guard = skill_service::skill_mutation_lock().lock().await;
     cleanup_staging_parent(&paths.user_skills_dir.join(MARKET_STAGING_DIR), &[SKILL_STAGING_PREFIX, PACKAGE_STAGING_PREFIX]).await?;
     cleanup_staging_parent(&paths.user_skills_dir.join(IMPORT_STAGING_DIR), &[IMPORT_STAGING_PREFIX]).await?;
     Ok(())
@@ -858,7 +855,7 @@ async fn cleanup_staging_parent(parent: &Path, prefixes: &[&str]) -> Result<(), 
     let mut entries = tokio::fs::read_dir(parent).await.map_err(|_| MarketSkillInstallError::LocalIo)?;
     while let Some(entry) = entries.next_entry().await.map_err(|_| MarketSkillInstallError::LocalIo)? {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+        if !prefixes.iter().any(|prefix| is_operation_staging_name(&name, prefix)) {
             continue;
         }
         let path = entry.path();
@@ -878,6 +875,20 @@ async fn cleanup_staging_parent(parent: &Path, prefixes: &[&str]) -> Result<(), 
     }
     let _ = tokio::fs::remove_dir(parent).await;
     Ok(())
+}
+
+fn is_operation_staging_name(name: &str, prefix: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    let mut parts = suffix.split('-');
+    let (Some(pid), Some(nonce), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !pid.is_empty()
+        && !nonce.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && nonce.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn map_app_market_error(error: AppError) -> MarketSkillInstallError {
@@ -938,6 +949,7 @@ mod tests {
     use nomifun_api_types::{SkillMarketInstallRequest, SkillMarketInstallStatus};
     use std::io::Write;
     use tempfile::TempDir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct FakeSkillHub {
         archive: Vec<u8>,
@@ -971,6 +983,27 @@ mod tests {
         }
     }
 
+    struct SlowSkillHub {
+        inner: FakeSkillHub,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl SkillHubArtifactSource for SlowSkillHub {
+        async fn find_skill(&self, owner: &str, slug: &str) -> Result<RemoteSkill, MarketSkillInstallError> {
+            self.inner.find_skill(owner, slug).await
+        }
+
+        async fn download_skill(
+            &self,
+            skill: &RemoteSkill,
+            archive_path: &Path,
+        ) -> Result<String, MarketSkillInstallError> {
+            tokio::time::sleep(self.delay).await;
+            self.inner.download_skill(skill, archive_path).await
+        }
+    }
+
     fn test_paths(root: &Path) -> SkillPaths {
         SkillPaths {
             data_dir: root.to_path_buf(),
@@ -997,6 +1030,54 @@ mod tests {
             writer.finish().unwrap();
         }
         output
+    }
+
+    async fn spawn_http_fixture(
+        responses: Vec<(&'static str, &'static str, Vec<u8>)>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for (status, content_type, body) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let _ = socket.read(&mut request).await;
+                let headers = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(headers.as_bytes()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            }
+        });
+        (format!("http://{address}"), server)
+    }
+
+    async fn spawn_chunked_http_fixture(
+        content_type: &'static str,
+        body: Vec<u8>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(headers.as_bytes()).await.unwrap();
+            for chunk in body.chunks(64 * 1024) {
+                socket
+                    .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                    .await
+                    .unwrap();
+                socket.write_all(chunk).await.unwrap();
+                socket.write_all(b"\r\n").await.unwrap();
+            }
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+        });
+        (format!("http://{address}"), server)
     }
 
     #[tokio::test]
@@ -1050,6 +1131,33 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, MarketSkillInstallError::NameConflict);
+    }
+
+    #[tokio::test]
+    async fn concurrent_managed_installs_create_once_and_reuse_the_winner() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(tmp.path());
+        let installer = Arc::new(ManagedSkillInstaller::new(paths.clone()));
+        let fake = Arc::new(FakeSkillHub {
+            archive: archive_for("parallel", "parallel"),
+            owner: "owner".into(),
+            slug: "parallel".into(),
+            revision: Some("r1".into()),
+        });
+        let request = SkillMarketInstallRequest {
+            source: SKILLHUB_SOURCE.into(),
+            id: "skillhub:owner/skills/parallel".into(),
+        };
+
+        let (left, right) = tokio::join!(
+            installer.install_with_source(request.clone(), fake.clone()),
+            installer.install_with_source(request, fake),
+        );
+        let statuses = [left.unwrap().status, right.unwrap().status];
+        assert!(statuses.contains(&SkillMarketInstallStatus::Created));
+        assert!(statuses.contains(&SkillMarketInstallStatus::Reused));
+        assert!(paths.user_skills_dir.join("parallel/SKILL.md").is_file());
+        assert_eq!(installer.list_installations().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1113,6 +1221,133 @@ mod tests {
         assert!(!paths.user_skills_dir.join("rollback").exists());
     }
 
+    #[tokio::test]
+    async fn managed_install_cleans_staging_after_archive_failure() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(tmp.path());
+        let installer = ManagedSkillInstaller::new(paths.clone());
+        let error = installer
+            .install_with_source(
+                SkillMarketInstallRequest {
+                    source: SKILLHUB_SOURCE.into(),
+                    id: "skillhub:owner/skills/invalid-archive".into(),
+                },
+                Arc::new(FakeSkillHub {
+                    archive: b"not a zip".to_vec(),
+                    owner: "owner".into(),
+                    slug: "invalid-archive".into(),
+                    revision: None,
+                }),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, MarketSkillInstallError::ArtifactInvalid);
+        assert!(!paths.user_skills_dir.join(MARKET_STAGING_DIR).exists());
+    }
+
+    #[tokio::test]
+    async fn managed_install_cleans_staging_when_request_is_cancelled() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(tmp.path());
+        let installer = ManagedSkillInstaller::new(paths.clone());
+        let result = tokio::time::timeout(
+            Duration::from_millis(20),
+            installer.install_with_source(
+                SkillMarketInstallRequest {
+                    source: SKILLHUB_SOURCE.into(),
+                    id: "skillhub:owner/skills/cancelled-skill".into(),
+                },
+                Arc::new(SlowSkillHub {
+                    inner: FakeSkillHub {
+                        archive: archive_for("cancelled-skill", "cancelled-skill"),
+                        owner: "owner".into(),
+                        slug: "cancelled-skill".into(),
+                        revision: None,
+                    },
+                    delay: Duration::from_secs(1),
+                }),
+            ),
+        )
+        .await;
+
+        assert!(result.is_err(), "the slow download should be cancelled");
+        assert!(!paths.user_skills_dir.join(MARKET_STAGING_DIR).exists());
+    }
+
+    #[tokio::test]
+    async fn http_source_binds_search_and_download_to_exact_skill() {
+        let archive = archive_for("demo", "demo");
+        let (base_url, server) = spawn_http_fixture(vec![
+            (
+                "200 OK",
+                "application/json",
+                br#"{"results":[{"namespace":{"canonicalName":"@owner/demo"},"revision":"r1"}]}"#.to_vec(),
+            ),
+            ("200 OK", "application/zip", archive.clone()),
+        ])
+        .await;
+        let source = HttpSkillHubArtifactSource::for_test(&base_url);
+        let remote = source.find_skill("owner", "demo").await.unwrap();
+        assert_eq!(remote.owner, "owner");
+        assert_eq!(remote.slug, "demo");
+
+        let tmp = TempDir::new().unwrap();
+        let archive_path = tmp.path().join("skill.zip");
+        let sha = source.download_skill(&remote, &archive_path).await.unwrap();
+        assert_eq!(sha, format!("{:x}", Sha256::digest(&archive)));
+        assert_eq!(tokio::fs::read(archive_path).await.unwrap(), archive);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_source_rejects_wrong_content_type_and_magic() {
+        for (content_type, body) in [("text/html", archive_for("demo", "demo")), ("application/zip", b"not zip".to_vec())] {
+            let (base_url, server) = spawn_http_fixture(vec![
+                (
+                    "200 OK",
+                    "application/json",
+                    br#"{"results":[{"namespace":{"canonicalName":"@owner/demo"}}]}"#.to_vec(),
+                ),
+                ("200 OK", content_type, body),
+            ])
+            .await;
+            let source = HttpSkillHubArtifactSource::for_test(&base_url);
+            let remote = source.find_skill("owner", "demo").await.unwrap();
+            let tmp = TempDir::new().unwrap();
+            let error = source
+                .download_skill(&remote, &tmp.path().join("skill.zip"))
+                .await
+                .unwrap_err();
+            assert_eq!(error, MarketSkillInstallError::ArtifactInvalid);
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn http_source_rejects_chunked_archive_over_limit() {
+        let mut body = vec![0_u8; MAX_SKILLHUB_SKILL_ZIP_BYTES as usize + 1];
+        body[0] = b'P';
+        body[1] = b'K';
+        let (base_url, server) = spawn_chunked_http_fixture("application/zip", body).await;
+        let source = HttpSkillHubArtifactSource::for_test(&base_url);
+        let tmp = TempDir::new().unwrap();
+        let error = source
+            .download_skill(
+                &RemoteSkill {
+                    owner: "owner".into(),
+                    slug: "demo".into(),
+                    revision: None,
+                },
+                &tmp.path().join("skill.zip"),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, MarketSkillInstallError::ArtifactInvalid);
+        server.await.unwrap();
+    }
+
     #[test]
     fn managed_name_rejects_portable_and_windows_reserved_names() {
         for name in ["", ".", "..", "CON", "nul.txt", "skill.", "skill ", "skill/name"] {
@@ -1135,5 +1370,37 @@ mod tests {
         assert_eq!(found.slug, "demo");
         assert_eq!(found.revision.as_deref(), Some("r2"));
         assert!(find_exact_search_result(&root, "other", "demo").is_none());
+    }
+
+    #[test]
+    fn download_url_keeps_owner_and_slug_bound() {
+        let url = skillhub_download_url(
+            SKILLHUB_SKILL_DOWNLOAD_URL,
+            &RemoteSkill {
+                owner: "owner-a".into(),
+                slug: "demo".into(),
+                revision: None,
+            },
+        )
+        .unwrap();
+        let pairs: Vec<_> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs, vec![("owner".into(), "owner-a".into()), ("slug".into(), "demo".into())]);
+    }
+
+    #[test]
+    fn staging_gc_only_accepts_operation_owned_names() {
+        assert!(is_operation_staging_name("skill-123-456", "skill-"));
+        assert!(is_operation_staging_name("package-123-456", "package-"));
+        assert!(is_operation_staging_name("skills-123-456", "skills-"));
+        for name in [
+            "skill-user",
+            "skill-123",
+            "skill-123-abc",
+            "skill-123-456-extra",
+            "skill--456",
+            "skills-123-456.tmp",
+        ] {
+            assert!(!is_operation_staging_name(name, "skill-"), "must reject {name:?}");
+        }
     }
 }
