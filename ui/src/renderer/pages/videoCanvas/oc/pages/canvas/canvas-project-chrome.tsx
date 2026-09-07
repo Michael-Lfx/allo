@@ -27,6 +27,7 @@ type CanvasProjectCanvasChromeProps = {
     nodeImageSettingsOpen: boolean;
     emotionNodeId: string | null;
     workspaceMode: CanvasWorkspaceMode;
+    compactCreateMenu?: boolean;
     viewport: ViewportTransform;
     containerRef: RefObject<HTMLDivElement | null>;
     keepNodeToolbar: (nodeId: string) => void;
@@ -108,6 +109,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         nodeImageSettingsOpen,
         emotionNodeId,
         workspaceMode,
+        compactCreateMenu,
         viewport,
         containerRef,
         keepNodeToolbar,
@@ -281,6 +283,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         menu={contextMenu}
                         node={contextMenuNode}
                         workspaceMode={workspaceMode}
+                        compactCreateMenu={compactCreateMenu}
                         isProjectLinked={Boolean(shortDramaEnabled && currentProject?.projectId)}
                         canUndo={historyState.canUndo}
                         canRedo={historyState.canRedo}

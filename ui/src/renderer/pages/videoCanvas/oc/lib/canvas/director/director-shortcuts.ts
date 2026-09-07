@@ -11,7 +11,7 @@
 
 /**
  * 语义动作。只保留导演台里已经存在真实执行路径的动作：
- * 变换模式（DirectorViewportDock 的 W/E/R）、删除选中对象或灯光、
+ * 变换模式（DirectorViewportDock 的 V/R/S，兼容 W/E）、删除选中对象或灯光、
  * 撤销/重做（顶栏按钮）、切换选中对象显隐（检查器「可见」开关）、
  * 取消选择、播放/暂停（时间轴 transport）。
  *
@@ -31,9 +31,11 @@ export type DirectorKeyEvent = {
 };
 
 const TRANSFORM_KEYS: Record<string, "translate" | "rotate" | "scale"> = {
+    v: "translate",
     w: "translate",
     e: "rotate",
-    r: "scale",
+    r: "rotate",
+    s: "scale",
 };
 
 /**
@@ -41,7 +43,7 @@ const TRANSFORM_KEYS: Record<string, "translate" | "rotate" | "scale"> = {
  *
  * 约定：
  * - 交互控件语境一律不解析，交还给控件本身；
- * - 带修饰键的组合优先（Undo/Redo），避免 Ctrl+R 被当作 scale；
+ * - 带修饰键的组合优先（Undo/Redo），避免 Ctrl+R 被当作 rotate；
  * - 单字母快捷键不区分大小写，Shift+W 仍是 translate；
  * - Redo 同时接受 Ctrl/Cmd+Shift+Z 与 Ctrl/Cmd+Y。
  */

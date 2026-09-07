@@ -51,6 +51,7 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     fileDropActive: boolean;
     emptyCanvasState: ReactNode;
     workspaceMode: CanvasWorkspaceMode;
+    compactCreateMenu?: boolean;
     setCanvasTool: Dispatch<SetStateAction<CanvasToolMode>>;
     shortDramaEnabled: boolean;
     currentProject: ReturnType<typeof useCanvasProjectLifecycle>["currentProject"];
@@ -141,6 +142,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         fileDropActive,
         emptyCanvasState,
         workspaceMode,
+        compactCreateMenu,
         setCanvasTool,
         shortDramaEnabled,
         currentProject,
@@ -306,6 +308,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                 <CanvasToolbar
                                     selectedCount={selectedNodeIds.size}
                                     workspaceMode={workspaceMode}
+                                    compactCreateMenu={compactCreateMenu}
                                     canvasTool={canvasTool}
                                     onToolChange={setCanvasTool}
                                     isProjectLinked={Boolean(shortDramaEnabled && currentProject?.projectId)}

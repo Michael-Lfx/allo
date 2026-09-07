@@ -162,7 +162,9 @@ describe("tool call helpers", () => {
         expect(isWritableToolCall({ id: "1", type: "function", function: { name: "canvas_inspect", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "1b", type: "function", function: { name: "canvas_propose", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "1c", type: "function", function: { name: "canvas_critique", arguments: "{}" } })).toBe(false);
+        expect(isWritableToolCall({ id: "1d", type: "function", function: { name: "storyboard_inspect", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "2", type: "function", function: { name: "canvas_apply", arguments: "{}" } })).toBe(true);
+        expect(isWritableToolCall({ id: "2b", type: "function", function: { name: "storyboard_apply", arguments: "{}" } })).toBe(true);
         expect(isWritableToolCall({ id: "3", type: "function", function: { name: "canvas_run", arguments: "{}" } })).toBe(true);
     });
 
@@ -216,6 +218,12 @@ describe("ONLINE_AGENT_TOOLS", () => {
         expect(names).toEqual([
             "canvas_list_skills",
             "canvas_get_skill",
+            "storyboard_inspect",
+            "storyboard_apply",
+            "subject_inspect",
+            "spec_inspect",
+            "spec_apply",
+            "timeline_inspect",
             "canvas_inspect",
             "canvas_propose",
             "canvas_apply",
@@ -235,6 +243,7 @@ describe("ONLINE_AGENT_PROMPT", () => {
     test("describes an observe-act loop without hardcoded pipelines", () => {
         expect(ONLINE_AGENT_PROMPT).toContain("感知—行动—观察");
         expect(ONLINE_AGENT_PROMPT).toContain("canvas_apply");
+        expect(ONLINE_AGENT_PROMPT).toContain("storyboard_apply");
         expect(ONLINE_AGENT_PROMPT).toContain("自己根据用户目标设计图");
         expect(ONLINE_AGENT_PROMPT).not.toContain("首轮必须调用 canvas_get_context");
         expect(ONLINE_AGENT_PROMPT).not.toContain("必须使用 canvas_create_workflow");

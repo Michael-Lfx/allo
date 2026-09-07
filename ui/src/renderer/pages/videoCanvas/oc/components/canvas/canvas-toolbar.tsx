@@ -20,6 +20,7 @@ import type { CanvasNodeType, CanvasToolMode, CanvasWorkspaceMode } from "@oc/ty
 export function CanvasToolbar({
     selectedCount,
     workspaceMode,
+    compactCreateMenu = false,
     canvasTool,
     onToolChange,
     isProjectLinked,
@@ -54,6 +55,7 @@ export function CanvasToolbar({
 }: {
     selectedCount: number;
     workspaceMode: CanvasWorkspaceMode;
+    compactCreateMenu?: boolean;
     canvasTool: CanvasToolMode;
     onToolChange: (tool: CanvasToolMode) => void;
     isProjectLinked: boolean;
@@ -179,7 +181,7 @@ export function CanvasToolbar({
     const items = resolveToolbarEntries("main", ctx, prefs ?? defaultToolbarPrefs("main"));
 
     // 解析添加节点菜单命令——onClick 绑定到 runAddAction 以在执行后关闭面板
-    const addNodeCommands = resolveAddNodeMenuCommands(ctx);
+    const addNodeCommands = resolveAddNodeMenuCommands({ ...ctx, compactCreateMenu });
     const toCommand = (cmd: ResolvedAddNodeMenuCommand): CanvasCreateCommand => ({
         id: cmd.id,
         label: cmd.label,
@@ -198,6 +200,7 @@ export function CanvasToolbar({
                         x={panelX}
                         theme={theme}
                         commands={createCommands}
+                        compactCreateMenu={compactCreateMenu}
                     />
                 ) : null}
             </AnimatePresence>
@@ -237,15 +240,16 @@ export function CanvasToolbar({
     );
 }
 
-function AddNodeMenu({ x, theme, commands }: {
+function AddNodeMenu({ x, theme, commands, compactCreateMenu }: {
     x: number;
     theme: CanvasTheme;
     commands: CanvasCreateCommand[];
+    compactCreateMenu: boolean;
 }) {
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: aceternityMotion.duration.instant }} className="pointer-events-auto absolute bottom-[var(--canvas-dock-popover-offset)] z-[var(--dock-z-popover)] w-[260px] max-w-[calc(100vw-24px)] -translate-x-1/2" style={{ left: x || "50%" }}>
             <CanvasOverlay theme={theme} className="overflow-hidden p-2" onWheel={(event) => event.stopPropagation()}>
-                <CanvasCreateMenu commands={commands} />
+                <CanvasCreateMenu commands={commands} compactCreateMenu={compactCreateMenu} />
             </CanvasOverlay>
         </motion.div>
     );

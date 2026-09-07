@@ -77,16 +77,21 @@ export function useCanvasNodeActions(input: CanvasNodeActionsInput) {
         setDialogNodeId(null);
     }, []);
     const openTextNodeEditor = useCallback((node: CanvasNodeData) => {
+        if (node.metadata?.workflowKind === "character" && node.metadata.characterAssetId) {
+            setSelectedNodeIds(new Set([node.id]));
+            setSelectedConnectionId(null);
+            setContextMenu(null);
+            setDialogNodeId(null);
+            setToolbarNodeId(null);
+            setCharacterReferenceNodeId(node.id);
+            return;
+        }
         if (node.type !== CanvasNodeType.Text) return;
         setSelectedNodeIds(new Set([node.id]));
         setSelectedConnectionId(null);
         setContextMenu(null);
         setDialogNodeId(null);
         setToolbarNodeId(null);
-        if (node.metadata?.workflowKind === "character" && node.metadata.characterAssetId) {
-            setCharacterReferenceNodeId(node.id);
-            return;
-        }
         setTextEditorNodeId(node.id);
     }, []);
     const openDrawingNode = useCallback((node: CanvasNodeData) => {

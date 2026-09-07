@@ -444,13 +444,15 @@ const VideoGenerationListPage: React.FC = () => {
       try {
         const { uploadCanvasMedia } = await import('../videoCanvas/api');
         for (const reference of draft.canvasReferences) {
-          references.push(
-            await uploadCanvasMedia(reference.file, reference.file.name)
-          );
+          references.push({
+            ...(await uploadCanvasMedia(reference.file, reference.file.name)),
+            ...(reference.subjectKind ? { subjectKind: reference.subjectKind } : {}),
+            ...(reference.subjectName?.trim() ? { subjectName: reference.subjectName.trim() } : {}),
+          });
         }
         const identity = resolveLookIdentity({
           stylePrompt: draft.style,
-          creationSkillId: draft.style.trim() ? undefined : draft.creationSkillId,
+          creationSkillId: draft.style.trim() ? draft.creationSkillId : undefined,
         });
         const look =
           (identity?.vimaxKey && lookById.get(identity.vimaxKey)) ||
@@ -471,13 +473,17 @@ const VideoGenerationListPage: React.FC = () => {
           mediaKind: draft.preferences.mediaKind,
           intent: 'creation',
           autoAgent: true,
-          skill: {
-            id: identity?.vimaxKey ?? identity?.canvasPresetId ?? draft.creationSkillId,
-            label: lookLabel,
-            description: look?.defaultDescription || lookLabel,
-            stylePrompt: identity?.modelPrompt ?? draft.style,
-            stylePresetId: identity?.canvasPresetId,
-          },
+          ...(identity
+            ? {
+                skill: {
+                  id: identity.vimaxKey ?? identity.canvasPresetId ?? draft.creationSkillId,
+                  label: lookLabel,
+                  description: look?.defaultDescription || lookLabel,
+                  stylePrompt: identity.modelPrompt ?? draft.style,
+                  stylePresetId: identity.canvasPresetId,
+                },
+              }
+            : {}),
           preferences: {
             automatic: draft.preferences.automatic,
             aspectRatio: draft.preferences.aspectRatio,

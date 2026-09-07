@@ -7,6 +7,10 @@
 
 import { getBaseUrl } from '@/common/adapter/httpBridge';
 
+export type HostOs = 'macos' | 'windows' | 'linux';
+
+const HOST_OS = new Set<HostOs>(['macos', 'windows', 'linux']);
+
 /**
  * Check if running inside the bundled desktop shell (Tauri) as opposed to the
  * remote WebUI browser. The Tauri shell injects `window.__backendPort` via the
@@ -28,8 +32,23 @@ export const isDesktopShell = (): boolean => {
  */
 const shellOs = (): string | undefined => {
   if (typeof window === 'undefined') return undefined;
-  const os = (window as { __os?: string }).__os;
+  const os = window.__os;
   return typeof os === 'string' ? os : undefined;
+};
+
+/**
+ * OS used for accelerator labels and shell chrome.
+ * Desktop: `window.__os` from the installed package. WebUI: the client UA.
+ */
+export const hostOs = (): HostOs => {
+  const os = shellOs();
+  if (os && HOST_OS.has(os as HostOs)) return os as HostOs;
+  if (typeof navigator !== 'undefined') {
+    const ua = navigator.userAgent;
+    if (/mac/i.test(ua)) return 'macos';
+    if (/win/i.test(ua)) return 'windows';
+  }
+  return 'linux';
 };
 
 /**
@@ -42,21 +61,18 @@ const shellOs = (): string | undefined => {
  *
  * 检测是否运行在 macOS
  */
-export const isMacOS = (): boolean => {
-  const os = shellOs();
-  if (os) return os === 'macos';
-  return typeof navigator !== 'undefined' && /mac/i.test(navigator.userAgent);
-};
+export const isMacOS = (): boolean => hostOs() === 'macos';
 
 /**
  * Check if running on Windows. See `isMacOS` for the detection contract.
  * 检测是否运行在 Windows
  */
-export const isWindows = (): boolean => {
-  const os = shellOs();
-  if (os) return os === 'windows';
-  return typeof navigator !== 'undefined' && /win/i.test(navigator.userAgent);
-};
+export const isWindows = (): boolean => hostOs() === 'windows';
+
+/**
+ * Check if running on Linux. See `isMacOS` for the detection contract.
+ */
+export const isLinux = (): boolean => hostOs() === 'linux';
 
 function isAbsoluteAssetUrl(url: string): boolean {
   return /^[a-z][a-z\d+.-]*:/i.test(url) || url.startsWith('//');

@@ -110,6 +110,12 @@ const TOOL_NAME_KEYS: Record<string, string> = {
     canvas_validate_ops: "canvas_validate_ops",
     canvas_list_skills: "canvas_list_skills",
     canvas_get_skill: "canvas_get_skill",
+    storyboard_inspect: "storyboard_inspect",
+    storyboard_apply: "storyboard_apply",
+    subject_inspect: "subject_inspect",
+    spec_inspect: "spec_inspect",
+    spec_apply: "spec_apply",
+    timeline_inspect: "timeline_inspect",
     canvas_get_selection: "canvas_get_selection",
     canvas_export_snapshot: "canvas_export_snapshot",
     canvas_create_workflow: "canvas_create_workflow",
@@ -161,6 +167,12 @@ const TOOL_NAME_DEFAULTS: Record<string, string> = {
     canvas_validate_ops: "校验操作",
     canvas_list_skills: "列出技能",
     canvas_get_skill: "加载技能",
+    storyboard_inspect: "观察分镜",
+    storyboard_apply: "更新分镜",
+    subject_inspect: "观察主体",
+    spec_inspect: "观察规格",
+    spec_apply: "更新规格",
+    timeline_inspect: "观察时间线",
     canvas_get_selection: "读取选区",
     canvas_export_snapshot: "导出快照",
     canvas_create_workflow: "创建工作流",
@@ -201,7 +213,7 @@ export function toolName(name: string) {
 }
 
 function isReadTool(name: string) {
-    return name === "canvas_inspect" || name === "canvas_propose" || name === "canvas_critique" || name === "canvas_get_state" || name === "canvas_get_context" || name === "canvas_find_nodes" || name === "canvas_get_node" || name === "canvas_get_connection" || name === "canvas_get_generation_tasks" || name === "canvas_get_resources" || name === "canvas_validate_ops" || name === "canvas_list_skills" || name === "canvas_get_skill" || name === "canvas_get_selection" || name === "canvas_export_snapshot" || isProjectAgentReadTool(name);
+    return name === "canvas_inspect" || name === "storyboard_inspect" || name === "subject_inspect" || name === "spec_inspect" || name === "timeline_inspect" || name === "canvas_propose" || name === "canvas_critique" || name === "canvas_get_state" || name === "canvas_get_context" || name === "canvas_find_nodes" || name === "canvas_get_node" || name === "canvas_get_connection" || name === "canvas_get_generation_tasks" || name === "canvas_get_resources" || name === "canvas_validate_ops" || name === "canvas_list_skills" || name === "canvas_get_skill" || name === "canvas_get_selection" || name === "canvas_export_snapshot" || isProjectAgentReadTool(name);
 }
 
 function isMcpToolItem(item?: AgentEventItem) {

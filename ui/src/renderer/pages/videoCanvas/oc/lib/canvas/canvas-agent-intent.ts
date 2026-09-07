@@ -12,6 +12,8 @@ import {
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "./canvas-agent-ops";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 import type { AiConfig } from "@oc/stores/use-config-store";
+import { resolveCreationIr, summarizeCreationForAgent } from "@renderer/pages/videoCanvas/lib/creation-ir";
+import { CREATION_INSPECT_FOCUS, summarizeCreationDomain } from "./creation-agent-intent";
 
 export type CanvasApplyPatch = {
     id: string;
@@ -157,18 +159,25 @@ export function inspectCanvasIntent(snapshot: CanvasAgentSnapshot, args: Record<
     const ids = Array.isArray(args.ids) ? args.ids.filter((id): id is string => typeof id === "string") : [];
     const query = typeof args.query === "string" ? args.query : "";
     const types = Array.isArray(args.types) ? args.types.filter((item): item is string => typeof item === "string") : undefined;
-    if (ids.length === 1 && !query) {
-        return { observation, node: getCanvasAgentNode(snapshot, { id: ids[0] }) };
-    }
-    if (query || ids.length || types?.length) {
-        return { observation, ...findCanvasAgentNodes(snapshot, { query, ids, types, limit: typeof args.limit === "number" ? args.limit : 30 }) };
-    }
-    if (args.focus === "resources") {
-        return { observation, ...getCanvasAgentResources(snapshot, { limit: 50 }) };
-    }
+    const ir = resolveCreationIr(snapshot.alloCreative, snapshot.nodes);
+    const creation = summarizeCreationForAgent(ir);
+    const focus = typeof args.focus === "string" ? args.focus : "";
+    const domain = CREATION_INSPECT_FOCUS.has(focus)
+        ? summarizeCreationDomain(ir, focus, snapshot.alloCreative)
+        : undefined;
+    const payload = ids.length === 1 && !query
+        ? { observation, node: getCanvasAgentNode(snapshot, { id: ids[0] }) }
+        : query || ids.length || types?.length
+            ? { observation, ...findCanvasAgentNodes(snapshot, { query, ids, types, limit: typeof args.limit === "number" ? args.limit : 30 }) }
+            : args.focus === "resources"
+                ? { observation, ...getCanvasAgentResources(snapshot, { limit: 50 }) }
+                : domain
+                    ? { observation }
+                    : { observation, graph: summarizeGraph(snapshot, observation) };
     return {
-        observation,
-        graph: summarizeGraph(snapshot, observation),
+        ...payload,
+        ...(creation ? { creation } : {}),
+        ...(domain ? { focus, domain } : {}),
     };
 }
 

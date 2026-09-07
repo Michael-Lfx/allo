@@ -45,6 +45,7 @@ export type CanvasAgentSnapshot = {
     viewport: ViewportTransform;
     revision?: number;
     stateHash?: string;
+    alloCreative?: Record<string, unknown>;
 };
 
 export type CanvasAgentOperationImpact = {

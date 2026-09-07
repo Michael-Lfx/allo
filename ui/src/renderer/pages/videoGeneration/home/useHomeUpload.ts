@@ -44,6 +44,7 @@ export interface HomeUploadApi {
   setActionCharacter: (file: File | null) => void;
   setActionVideo: (file: File | null) => void;
   removeCanvasReference: (localId: string) => void;
+  updateCanvasReference: (localId: string, patch: Partial<Pick<CanvasReferenceDraft, 'subjectKind' | 'subjectName'>>) => void;
   removeCameo: (localId: string) => void;
 }
 
@@ -102,10 +103,16 @@ export function useHomeUpload({
 
   const addCanvasImages = (files: File[]) => {
     const room = Math.max(0, MAX_REFERENCES - draft.canvasReferences.length);
-    const added: CanvasReferenceDraft[] = files.slice(0, room).map((file) => ({
+    const added: CanvasReferenceDraft[] = files.slice(0, room).map((file, index) => ({
       localId: makeLocalId('reference'),
       file,
       previewUrl: URL.createObjectURL(file),
+      ...(mode === 'creation'
+        ? {
+            subjectKind: 'character' as const,
+            subjectName: suggestCameoCharacterName(file.name, draft.canvasReferences.length + index),
+          }
+        : {}),
     }));
     setDraft((current) => ({
       ...current,
@@ -212,6 +219,18 @@ export function useHomeUpload({
     }));
   };
 
+  const updateCanvasReference = (
+    localId: string,
+    patch: Partial<Pick<CanvasReferenceDraft, 'subjectKind' | 'subjectName'>>,
+  ) => {
+    setDraft((current) => ({
+      ...current,
+      canvasReferences: current.canvasReferences.map((item) =>
+        item.localId === localId ? { ...item, ...patch } : item,
+      ),
+    }));
+  };
+
   const removeCameo = (localId: string) => {
     const target = draft.cameos.find((item) => item.localId === localId);
     if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
@@ -230,6 +249,7 @@ export function useHomeUpload({
     setActionCharacter,
     setActionVideo,
     removeCanvasReference,
+    updateCanvasReference,
     removeCameo,
   };
 }

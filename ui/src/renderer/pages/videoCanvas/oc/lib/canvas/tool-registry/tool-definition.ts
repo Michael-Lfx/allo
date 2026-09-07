@@ -122,8 +122,14 @@ export type ToolContext = {
 
 /** 添加节点菜单只依赖创建动作，避免右键菜单为工具栏状态补无意义字段。 */
 export type AddNodeMenuContext = {
-    workspaceMode: CanvasWorkspaceMode;
+    /**
+     * 已不再分流菜单。真实分叉是 compactCreateMenu（创作 IR 在场）。
+     * 字段保留以免二十余处调用方一起改；解析时忽略它。
+     */
+    workspaceMode?: CanvasWorkspaceMode;
     isProjectLinked: boolean;
+    /** 创作项目：主网格只留片原语，其余进「更多」。专业画布不传。 */
+    compactCreateMenu?: boolean;
     handlers: Pick<ToolbarHandlers,
         | "onAddText"
         | "onAddImage"

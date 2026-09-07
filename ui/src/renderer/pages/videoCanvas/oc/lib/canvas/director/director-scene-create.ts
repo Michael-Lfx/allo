@@ -1,8 +1,9 @@
 import { nanoid } from "nanoid";
 
-import type { DirectorBoneKeyframe, DirectorBoneTrack, DirectorCamera, DirectorHumanoidBone, DirectorKeyframe, DirectorKeyframeDeleteTarget, DirectorKeyframeEasing, DirectorLight, DirectorObject, DirectorQuat, DirectorScene, DirectorTransform, DirectorVec3 } from "@oc/types/director";
+import { DIRECTOR_DEFAULT_ACTOR_URL, resolveDirectorActorPreset } from "@oc/lib/canvas/director/director-actor-presets";
+import type { DirectorActorPresetId, DirectorBoneKeyframe, DirectorBoneTrack, DirectorCamera, DirectorHumanoidBone, DirectorKeyframe, DirectorKeyframeDeleteTarget, DirectorKeyframeEasing, DirectorLight, DirectorObject, DirectorQuat, DirectorScene, DirectorTransform, DirectorVec3 } from "@oc/types/director";
 
-export const DIRECTOR_DEFAULT_ACTOR_URL = "https://cdn.jsdelivr.net/gh/mrdoob/three.js@r185/examples/models/gltf/Xbot.glb";
+export { DIRECTOR_DEFAULT_ACTOR_URL } from "@oc/lib/canvas/director/director-actor-presets";
 export const DIRECTOR_ACTOR_COLORS = ["#f1f3f5", "#202329", "#2f7de1", "#d84949", "#dfae3f", "#34a276"] as const;
 
 export const directorIdentityTransform = (position: DirectorVec3 = [0, 0, 0]): DirectorTransform => ({ position, rotation: [0, 0, 0], scale: [1, 1, 1] });
@@ -44,14 +45,19 @@ export function createDirectorObject(primitive: DirectorObject["primitive"] = "b
     };
 }
 
-export function createDirectorActor(name = "演员", position: DirectorVec3 = [0, 0, 0], color: string = DIRECTOR_ACTOR_COLORS[0]): DirectorObject {
+export function createDirectorActor(name = "演员", position: DirectorVec3 = [0, 0, 0], color?: string, presetId?: DirectorActorPresetId): DirectorObject {
+    const preset = presetId ? resolveDirectorActorPreset(presetId) : undefined;
+    const tint = color ?? preset?.color ?? DIRECTOR_ACTOR_COLORS[0];
+    const actor = createDirectorObject("box", name, position, tint);
     return {
-        ...createDirectorObject("box", name, position, color),
+        ...actor,
         kind: "actor",
         primitive: undefined,
-        url: DIRECTOR_DEFAULT_ACTOR_URL,
+        url: preset?.url || DIRECTOR_DEFAULT_ACTOR_URL,
         mimeType: "model/gltf-binary",
-        pose: "stand",
+        pose: preset?.pose || "stand",
+        actorPreset: preset?.id,
+        transform: preset ? { ...actor.transform, scale: preset.scale } : actor.transform,
         rig: { status: "unmapped", boneMap: {}, animationNames: [] },
         motionClips: [],
         boneOverrides: {},

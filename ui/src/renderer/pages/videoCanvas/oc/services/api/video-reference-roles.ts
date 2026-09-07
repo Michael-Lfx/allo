@@ -22,10 +22,25 @@ type VideoReferenceContext = {
 
 /**
  * Seedance forbids mixing first/last_frame with extra reference_image slots.
- * Three or more stills must go as reference_to_video so the middle frames are not dropped.
+ * Unlabeled three-or-more stills still go as reference_to_video so middle frames are not dropped.
+ * Named first/last on one or two stills stay image_to_video — do not infer the fork from count alone when roles are labeled.
  */
 export function shouldSubmitVideoImagesAsReferences(options?: VideoReferenceOptions, imageCount = 0) {
-    return options?.videoEditOperation === "reference_to_video" || imageCount >= 3;
+    if (options?.videoEditOperation === "reference_to_video") return true;
+    const named = Boolean(options?.videoStartFrameNodeId?.trim() || options?.videoEndFrameNodeId?.trim());
+    if (named) return imageCount >= 3;
+    return imageCount >= 3;
+}
+
+export function videoFramePatchFromStillRole(imageNodeId: string | undefined, stillRole?: string) {
+    if (!imageNodeId) return {};
+    if (stillRole === "last") {
+        return { videoEditOperation: "image_to_video" as const, videoStartFrameNodeId: undefined, videoEndFrameNodeId: imageNodeId };
+    }
+    if (stillRole === "reference") {
+        return { videoEditOperation: "reference_to_video" as const, videoStartFrameNodeId: undefined, videoEndFrameNodeId: undefined };
+    }
+    return { videoEditOperation: "image_to_video" as const, videoStartFrameNodeId: imageNodeId, videoEndFrameNodeId: undefined };
 }
 
 export function videoEditOperationForKeyframeCount(count: number): "image_to_video" | "reference_to_video" | undefined {

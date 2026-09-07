@@ -14,6 +14,11 @@ declare global {
   interface Window {
     __backendPort?: number;
     /**
+     * Host OS of the packaged desktop shell (`std::env::consts::OS`):
+     * `"macos" | "windows" | "linux"`. Absent in WebUI browser mode.
+     */
+    __os?: string;
+    /**
      * Per-boot local-trust secret injected by the Tauri desktop shell
      * (`apps/desktop/src/main.rs`). The renderer presents it on every request so
      * the desktop's own webview is trusted with no login while remote LAN

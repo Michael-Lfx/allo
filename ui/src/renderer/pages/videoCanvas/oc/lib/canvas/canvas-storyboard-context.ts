@@ -14,31 +14,42 @@ export type StoryboardGenerationContext = {
     }>;
 };
 
-// 分镜的两条入口共用同一强校验，避免画风或角色版本在某条旁路里被遗漏。
+/**
+ * Shared context for storyboard row generation.
+ * Look / styleboard is optional (creation mode may have no look).
+ * Yingce character cards still require a synced version; labeled creation
+ * subjects (`workflowKind=character` without asset ids) are included by name.
+ */
 export function resolveStoryboardGenerationContext(nodes: CanvasNodeData[]): StoryboardGenerationContext {
     const styleNode = nodes.find((node) => node.metadata?.workflowKind === "styleboard");
     const stylePrompt = String(styleNode?.metadata?.content || styleNode?.metadata?.prompt || "").trim();
     const stylePresetId = String(styleNode?.metadata?.stylePresetId || "").trim();
-    if (!styleNode || !stylePrompt || !stylePresetId) throw new Error("请先设置项目画风，再生成分镜");
 
-    // `workflowKind=character` is also used by standalone character-design
-    // image workflows. Only nodes linked to a project character asset are
-    // storyboard character cards and therefore participate in this check.
-    const characterNodes = nodes.filter((node) => node.metadata?.workflowKind === "character" && node.metadata?.characterAssetId?.trim());
-    const invalidCharacter = characterNodes.find((node) => !node.metadata?.characterAssetId?.trim() || !node.metadata?.characterVersionId?.trim() || !(node.metadata?.characterName || node.title).trim());
+    const yingceCards = nodes.filter((node) => node.metadata?.workflowKind === "character" && node.metadata?.characterAssetId?.trim());
+    const invalidCharacter = yingceCards.find((node) => !node.metadata?.characterVersionId?.trim() || !(node.metadata?.characterName || node.title).trim());
     if (invalidCharacter) throw new Error(`角色卡“${invalidCharacter.metadata?.characterName || invalidCharacter.title || "未命名角色"}”版本未同步，请刷新角色资产后再生成分镜`);
+
+    const labeledSubjects = nodes.filter((node) => node.metadata?.workflowKind === "character" && !node.metadata?.characterAssetId?.trim() && (node.metadata?.characterName || "").trim());
+    const characterNodes = [...yingceCards, ...labeledSubjects];
+    const styleTitle = styleNode
+        ? styleNode.title.replace(/^(?:项目)?画风\s*[·：:]?\s*/, "").trim() || styleNode.title
+        : "";
 
     return {
         projectStyle: {
             presetId: stylePresetId,
-            title: styleNode.title.replace(/^(?:项目)?画风\s*[·：:]?\s*/, "").trim() || styleNode.title,
+            title: styleTitle,
             prompt: stylePrompt,
         },
         characters: characterNodes.map((node) => ({
-            assetId: node.metadata!.characterAssetId!.trim(),
-            versionId: node.metadata!.characterVersionId!.trim(),
+            assetId: node.metadata?.characterAssetId?.trim() || "",
+            versionId: node.metadata?.characterVersionId?.trim() || "",
             name: (node.metadata?.characterName || node.title).trim(),
-            definition: node.metadata?.characterDefinition || { prompt: node.metadata?.characterPrompt || "" },
+            definition: node.metadata?.characterDefinition || (
+                node.metadata?.characterAssetId?.trim()
+                    ? { prompt: node.metadata?.characterPrompt || "" }
+                    : { prompt: node.metadata?.characterPrompt || "", mediaNodeId: node.id }
+            ),
         })),
     };
 }

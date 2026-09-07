@@ -41,7 +41,7 @@ export function DirectorViewToolbar({ viewMode, onViewModeChange }: DirectorView
                             style={active ? { background: "var(--director-dock-active-surface)", color: "var(--director-dock-fg-strong)" } : undefined}
                             onClick={(event) => {
                                 onViewModeChange(item.mode);
-                                // 焦点留在按钮上会让交互控件守卫吃掉 W/E/R 变换快捷键。
+                                // 焦点留在按钮上会让交互控件守卫吃掉 V/R/S 变换快捷键。
                                 releaseDirectorFocusAfterPointer(event);
                             }}
                         >

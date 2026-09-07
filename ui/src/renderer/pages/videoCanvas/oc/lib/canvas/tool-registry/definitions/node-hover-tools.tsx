@@ -12,12 +12,12 @@ function isVideo(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Vi
 function isAudio(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Audio; }
 function isText(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Text; }
 function isConfig(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Config; }
-function hasImage(ctx: ToolContext) { return isImage(ctx) && Boolean(ctx.nodeMetadata?.content); }
+function hasImage(ctx: ToolContext) { return isImage(ctx) && Boolean(ctx.nodeMetadata?.content) && !isCharacterReference(ctx); }
 function hasVideo(ctx: ToolContext) { return isVideo(ctx) && Boolean(ctx.nodeMetadata?.content); }
 function hasAudio(ctx: ToolContext) { return isAudio(ctx) && Boolean(ctx.nodeMetadata?.content); }
-function isCharacterReference(ctx: ToolContext) { return isText(ctx) && ctx.nodeMetadata?.workflowKind === "character" && Boolean(ctx.nodeMetadata?.characterAssetId); }
+function isCharacterReference(ctx: ToolContext) { return ctx.nodeMetadata?.workflowKind === "character" && Boolean(ctx.nodeMetadata?.characterAssetId); }
 function isEditableText(ctx: ToolContext) { return isText(ctx) && !isCharacterReference(ctx); }
-function canOpenDialog(ctx: ToolContext) { return isEditableText(ctx) || isImage(ctx) || isVideo(ctx); }
+function canOpenDialog(ctx: ToolContext) { return isEditableText(ctx) || (isImage(ctx) && !isCharacterReference(ctx)) || isVideo(ctx); }
 function canRetry(ctx: ToolContext) {
     const requiresPromptChange = ctx.nodeMetadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(ctx.nodeMetadata?.errorDetails);
     return ctx.nodeMetadata?.status === "error" && !requiresPromptChange;
@@ -179,7 +179,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         icon: <Upload className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 130,
-        applicable: (ctx) => isImage(ctx) && !hasImage(ctx),
+        applicable: (ctx) => isImage(ctx) && !hasImage(ctx) && !isCharacterReference(ctx),
         run: (ctx) => ctx.handlers.onNodeUpload(ctx.node!),
     },
     {

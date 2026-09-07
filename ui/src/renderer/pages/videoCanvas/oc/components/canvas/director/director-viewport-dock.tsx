@@ -1,7 +1,8 @@
 import { Tooltip } from "antd";
-import { Bone, Box, Camera, Compass, Crosshair, Layers, Lightbulb, Move3D, Palette, Rotate3D, Scaling, UserRound } from "lucide-react";
+import { Aperture, Bone, Box, Camera, Compass, Crosshair, Layers, Lightbulb, Move3D, Palette, Rotate3D, Scaling, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { releaseDirectorFocusAfterPointer } from "@oc/lib/canvas/director/director-shortcuts";
 import type { DirectorRenderMode } from "@oc/types/director";
 
@@ -17,6 +18,7 @@ type DirectorViewportDockProps = {
     onAddLight: () => void;
     onAddCamera: () => void;
     onAlignCamera: () => void;
+    onSaveViewAsCamera?: () => void;
 };
 
 /** 渲染视图按钮的展示顺序与图标。实际可见项由 renderModes 过滤。 */
@@ -28,18 +30,19 @@ const RENDER_VIEW_BUTTONS: Array<{ mode: DirectorRenderMode; label: string; icon
     { mode: "normal", label: "法线视图", icon: <Compass /> },
 ];
 
-export function DirectorViewportDock({ transformMode, renderMode, renderModes, onTransformModeChange, onRenderModeChange, onAddActor, onAddBox, onAddLight, onAddCamera, onAlignCamera }: DirectorViewportDockProps) {
+export function DirectorViewportDock({ transformMode, renderMode, renderModes, onTransformModeChange, onRenderModeChange, onAddActor, onAddBox, onAddLight, onAddCamera, onAlignCamera, onSaveViewAsCamera }: DirectorViewportDockProps) {
     return (
         <nav className="director-viewport-dock" aria-label="导演台视口工具">
-            <DockButton label="移动对象" active={transformMode === "translate"} onClick={() => onTransformModeChange("translate")}><Move3D /></DockButton>
-            <DockButton label="旋转对象" active={transformMode === "rotate"} onClick={() => onTransformModeChange("rotate")}><Rotate3D /></DockButton>
-            <DockButton label="缩放对象" active={transformMode === "scale"} onClick={() => onTransformModeChange("scale")}><Scaling /></DockButton>
+            <DockButton label="移动对象 (V)" active={transformMode === "translate"} onClick={() => onTransformModeChange("translate")}><Move3D /></DockButton>
+            <DockButton label="旋转对象 (R)" active={transformMode === "rotate"} onClick={() => onTransformModeChange("rotate")}><Rotate3D /></DockButton>
+            <DockButton label="缩放对象 (S)" active={transformMode === "scale"} onClick={() => onTransformModeChange("scale")}><Scaling /></DockButton>
             <DockDivider />
             <DockButton label="添加演员" onClick={onAddActor}><UserRound /></DockButton>
             <DockButton label="添加立方体" onClick={onAddBox}><Box /></DockButton>
             <DockButton label="添加灯光" onClick={onAddLight}><Lightbulb /></DockButton>
             <DockButton label="添加摄影机" onClick={onAddCamera}><Camera /></DockButton>
             <DockButton label="摄影机对齐当前视图" onClick={onAlignCamera}><Crosshair /></DockButton>
+            {onSaveViewAsCamera ? <DockButton label={canvasT("videoCanvas.director.saveAsCamera", "当前视角另存为机位")} onClick={onSaveViewAsCamera}><Aperture /></DockButton> : null}
             <DockDivider />
             {RENDER_VIEW_BUTTONS.filter((item) => renderModes.includes(item.mode)).map((item) => (
                 <DockButton key={item.mode} label={item.label} active={renderMode === item.mode} onClick={() => onRenderModeChange(item.mode)}>{item.icon}</DockButton>
@@ -51,7 +54,7 @@ export function DirectorViewportDock({ transformMode, renderMode, renderModes, o
 /**
  * Dock 按钮。
  *
- * 鼠标点完后释放焦点：这个 dock 承载 W/E/R 变换工具，焦点留在按钮上会让
+ * 鼠标点完后释放焦点：这个 dock 承载 V/R/S 变换工具，焦点留在按钮上会让
  * 交互控件守卫吃掉这三个键。规则集中在 releaseDirectorFocusAfterPointer。
  */
 function DockButton({ label, active, children, onClick }: { label: string; active?: boolean; children: ReactNode; onClick: () => void }) {

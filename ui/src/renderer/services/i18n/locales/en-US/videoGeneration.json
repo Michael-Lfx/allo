@@ -13,7 +13,7 @@
     "agentMenuDesc": "Auto-plan storyboards and render a film",
     "actionLabel": "Action imitation",
     "actionMenuDesc": "Character still + reference video to imitate motion",
-    "creationMenuDesc": "Send the brief to the canvas Agent to build and generate",
+    "creationMenuDesc": "Describe the story, upload characters or scenes, then storyboard",
     "briefingLabel": "News briefing",
     "briefingMenuDesc": "Cited research plus a spoken briefing. Never invent today's news"
   },
@@ -264,7 +264,7 @@
       "ideaPlaceholder": "Describe the story, mood, or product visuals you want to see…",
       "scriptPlaceholder": "Paste a script and Flowy will turn it into editable shots…",
       "novelPlaceholder": "Paste a novel excerpt and Flowy will shape the story into shots…",
-      "creationPlaceholder": "Describe the frame, camera, or mood you want…",
+      "creationPlaceholder": "Describe the story. Upload a character, scene, or prop, then storyboard…",
       "generatePlaceholder": "Describe the scene and motion you want — you can upload a reference image…",
       "briefingPlaceholder": "Enter a briefing topic, e.g. today's chip export controls. Source URLs are optional — the engine will research.",
       "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / to switch Mode…"
@@ -282,7 +282,12 @@
       "docEmpty": "The document is empty.",
       "docxCorrupt": "The DOCX file is damaged or unreadable.",
       "docxNoBody": "No document body was found in the DOCX.",
-      "untitledAsset": "Untitled asset"
+      "untitledAsset": "Untitled asset",
+      "subjectKindCharacter": "Character",
+      "subjectKindScene": "Scene",
+      "subjectKindProp": "Prop",
+      "subjectKindAria": "Switch subject type",
+      "subjectNamePlaceholder": "Name"
     },
     "action": {
       "character": "Character",

@@ -203,7 +203,7 @@ export default function CanvasPage() {
                         <strong className="mr-auto font-medium">{canvasT("videoCanvas.library.selectedCount", "已选 {{count}} 个画布", { count: selectedIds.length })}</strong>
                         <Button size="small" disabled={!hydrated || projectQuery.isLoading} onClick={() => { setAssociationProjectId(selectedProjects[0]?.projectId || ""); setAssociationOpen(true); }}>{canvasT("videoCanvas.library.joinProject", "加入项目")}</Button>
                         {selectedProjects.some((project) => project.projectId) ? <Button size="small" disabled={!hydrated} onClick={() => { setAssociationProjectId(""); void associateSelected(""); }}>{canvasT("videoCanvas.library.leaveProject", "移出项目")}</Button> : null}
-                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportCanvasProjects(selectedProjects, canvasT("videoCanvas.library.exportName", "影策画布-{{count}}个画布", { count: selectedIds.length }))}>{canvasT("videoCanvas.library.export", "导出")}</Button>
+                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportCanvasProjects(selectedProjects, canvasT("videoCanvas.library.exportName", "画布-{{count}}个画布", { count: selectedIds.length }))}>{canvasT("videoCanvas.library.export", "导出")}</Button>
                         <Button size="small" danger disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>{canvasT("videoCanvas.dialog.delete", "删除")}</Button>
                     </div>
                 ) : null}

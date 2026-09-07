@@ -3,6 +3,7 @@ import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
 import { isMiniMaxH3ResolutionToken } from "@oc/lib/video-generation-options";
 import { isMiniMaxH3VideoModel, isWan3VideoModel } from "@renderer/services/videoModelCapabilities";
 import { encodeChannelModel, isChannelModelValue } from "@oc/stores/use-config-store";
+import { readCreationIr, type CreationIR } from "./creation-ir";
 
 const ALLO_MEDIA_CHANNEL_ID = "allo-media";
 
@@ -95,6 +96,7 @@ export type CanvasHomeAgentAutoStart = {
 export function homeAgentAutoStartFromCreative(creative: unknown): CanvasHomeAgentAutoStart | null {
   const launch = readHomeLaunchSidecar(creative);
   if (!shouldAutoStartHomeAgent(launch) || !launch) return null;
+  const ir = readCreationIr(creative);
   return {
     prompt: buildCanvasHomeUserBrief(launch),
     meta: buildCanvasHomeUserMeta(launch),
@@ -104,6 +106,7 @@ export function homeAgentAutoStartFromCreative(creative: unknown): CanvasHomeAge
       preferences: launch.preferences,
       requirement: launch.requirement,
       references: launch.referenceMediaIds,
+      ir,
     }),
   };
 }
@@ -173,16 +176,18 @@ export function buildCanvasHomeAgentContext(launch: {
   preferences: CanvasHomeLaunchPreferences;
   requirement?: string;
   references?: unknown[];
+  ir?: CreationIR | null;
 }) {
   const mediaKind = launch.mediaKind === "image" ? "image" : "video";
   const model = mediaKind === "image"
     ? launch.preferences.imageModel
     : launch.preferences.videoModel;
+  const subjects = launch.ir?.subjects ?? [];
+  const shots = launch.ir?.shots ?? [];
   const extras = [
     launch.skill?.label
-      ? canvasT("videoCanvas.agent.homeLaunchStyle", "视觉风格：{{label}}（{{description}}）", {
+      ? canvasT("videoCanvas.agent.homeLaunchLookSlot", "画风槽：{{label}}。只约束视觉，不代表角色身份。", {
           label: launch.skill.label,
-          description: launch.skill.description || "",
         })
       : "",
     launch.skill?.stylePrompt
@@ -200,14 +205,23 @@ export function buildCanvasHomeAgentContext(launch: {
     launch.requirement?.trim()
       ? canvasT("videoCanvas.agent.homeLaunchRequirement", "附加说明：{{text}}", { text: launch.requirement.trim() })
       : "",
-    launch.references?.length
-      ? canvasT("videoCanvas.agent.homeLaunchRefs", "参考图已作为画布图片节点，请接到你设计的画面或角色节点上。")
+    subjects.length
+      ? canvasT("videoCanvas.agent.homeLaunchSubjects", "已标注主体：{{list}}。保持面孔与场景，不要另造替换身份。", {
+          list: subjects.map((subject) => `${subject.name}（${subject.kind}${subject.nodeId ? `/${subject.nodeId}` : ""}）`).join("、"),
+        })
+      : launch.references?.length
+        ? canvasT("videoCanvas.agent.homeLaunchRefs", "参考图已作为画布图片节点。请接到分镜或画面上，不要丢弃。")
+        : "",
+    shots.length
+      ? canvasT("videoCanvas.agent.homeLaunchStoryboard", "分镜已写入 Script 节点（{{count}} 镜）。把镜头写进已有 rows，不要另起一份空分镜。", {
+          count: String(shots.length),
+        })
       : "",
   ].filter(Boolean);
   return [
     canvasT(
       "videoCanvas.agent.homeLaunchBrief",
-      "这是从视频生成首页「创作模式」发起的首轮任务。画布已放入用户提示、风格技能（如有）、首页尺寸/时长/模型配置卡，以及参考图（如有）。这些是输入约束，不是成品流水线：请你自己设计生成节点并连线，用一次 canvas_apply（必须含 nodes 和 edges，禁止只传 description）写入画布，再用 canvas_run 提交并等待。成片时长、画幅、风格必须遵守配置卡；视频需要可执行的分镜与画面，但镜头数、是否角色卡、如何复用参考图由你根据内容决定。节点要有真实提示词。不要只改配置卡就宣称完成。队列未空时不要说已完成。",
+      "这是从视频生成首页「创作模式」发起的首轮任务。画布已放入有约束力的 Video Spec、已标注主体（如有）和一份分镜脚本节点。请先 canvas_get_skill 读手册，再用 storyboard_inspect / storyboard_apply 写现有 Script rows，用 spec_inspect / spec_apply 守住规格；canvas_apply 只作图结构兜底（必须含 nodes 和 edges，禁止只传 description）。然后 canvas_run 提交并等待。Look 只是视觉槽。节点要有真实提示词。队列未空时不要说已完成。",
     ),
     ...extras,
   ].join("\n");

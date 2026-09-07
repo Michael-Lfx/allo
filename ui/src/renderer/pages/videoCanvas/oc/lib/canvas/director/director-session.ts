@@ -19,11 +19,11 @@ export function upsertDirectorSceneById(scenes: DirectorScene[], scene: Director
  * 输出上传可能跨越数秒。只把生成出的预览引用合并到最新场景，绝不拿输出开始时的
  * scene 快照覆盖期间发生的标题、对象、关键帧或镜头编辑。
  */
-export function mergeDirectorOutputPreview(scene: DirectorScene, input: { sceneId: string; shotId: string; previewNodeId: string }) {
+export function mergeDirectorOutputPreview(scene: DirectorScene, input: { sceneId: string; shotId: string; previewNodeId: string; storyboardRowId?: string }) {
     if (scene.id !== input.sceneId || !scene.shots.some((shot) => shot.id === input.shotId)) return null;
     return {
         ...scene,
-        shots: scene.shots.map((shot) => (shot.id === input.shotId ? { ...shot, previewNodeId: input.previewNodeId, depthNodeId: undefined, normalNodeId: undefined } : shot)),
+        shots: scene.shots.map((shot) => (shot.id === input.shotId ? { ...shot, previewNodeId: input.previewNodeId, storyboardRowId: input.storyboardRowId ?? shot.storyboardRowId, depthNodeId: undefined, normalNodeId: undefined } : shot)),
     };
 }
 

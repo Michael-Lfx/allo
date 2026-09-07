@@ -15,13 +15,16 @@ export type CanvasCreateCommand = {
     onClick: () => void;
 };
 
-export function CanvasCreateMenu({ commands }: { commands: CanvasCreateCommand[] }) {
+export function CanvasCreateMenu({ commands, compactCreateMenu = false }: { commands: CanvasCreateCommand[]; compactCreateMenu?: boolean }) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const projectCommands = commands.filter((command) => command.section === "project");
     const nodeCommands = commands.filter((command) => command.section === "node");
     const extensionCommands = commands.filter((command) => command.section === "extension");
     const resourceCommands = commands.filter((command) => command.section === "resource");
+    const extensionTitle = compactCreateMenu
+        ? canvasT("videoCanvas.menu.moreNodes", "更多")
+        : canvasT("videoCanvas.menu.extensionNodes", "展示与加工");
 
     return (
         <div>
@@ -49,7 +52,7 @@ export function CanvasCreateMenu({ commands }: { commands: CanvasCreateCommand[]
 
             {extensionCommands.length ? (
                 <>
-                    <MenuSection title={canvasT("videoCanvas.menu.extensionNodes", "展示与加工")} color={theme.node.muted} spaced />
+                    <MenuSection title={extensionTitle} color={theme.node.muted} spaced />
                     <CanvasCreateCommandGrid commands={extensionCommands} variant="node" />
                 </>
             ) : null}

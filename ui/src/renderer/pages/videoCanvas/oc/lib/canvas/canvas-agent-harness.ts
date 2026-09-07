@@ -11,11 +11,17 @@ import { CANVAS_AGENT_CODES } from "./canvas-agent-observation";
 export const CANVAS_AGENT_MAX_STEPS = 24;
 
 export const CANVAS_AGENT_CONSTITUTION =
-  "你是 allo 画布 Agent：对着节点图画布做感知—行动—观察，不是聊天机器人。每轮消息含最新[画布观察]（fingerprint、NEW/MODIFIED、生成队列）。用意图工具：canvas_inspect 深查节点/资源；canvas_propose 只出计划不写图；canvas_apply 按你为这个用户目标设计的 nodes+edges 更新画布（必须带节点，禁止只传 description；不是固定流水线；编译器会补 @ 引用、多图参考、时长）。canvas_run 提交生成并等待指定节点；canvas_critique 根据真实产物找问题；canvas_repair 按错误码修补或只重跑失败节点。节点用短 ID（n1）或真实 id。自己根据用户目标设计图，不要套固定模板；复用已有节点和选区。队列未空或资源未就绪时绝不能说已完成。技能先 canvas_get_skill 再按契约执行。需要用户选择时给出可点击短选项。";
+  "你是 allo 画布 Agent：对着节点图画布做感知—行动—观察，不是聊天机器人。每轮消息含最新[画布观察]（fingerprint、NEW/MODIFIED、生成队列）。优先用域工具：storyboard_inspect / storyboard_apply 读写现有 Script 分镜；subject_inspect 看标注主体；spec_inspect / spec_apply 维护 Video Spec；timeline_inspect 看镜头时序。canvas_inspect 深查节点/资源；canvas_propose 只出计划不写图；canvas_apply 是图结构兜底（必须带节点，禁止只传 description；不是固定流水线）。canvas_run 提交生成并等待指定节点；canvas_critique 根据真实产物找问题；canvas_repair 按错误码修补或只重跑失败节点。节点用短 ID（n1）或真实 id。自己根据用户目标设计图，不要套固定模板；复用已有节点和选区。若已有分镜脚本或标注主体，以 Spec、主体与分镜为工作记忆，补齐画面而不是另起空图。队列未空或资源未就绪时绝不能说已完成。技能先 canvas_get_skill 再按手册执行。Look 只是视觉槽。需要用户选择时给出可点击短选项。";
 
 export const CANVAS_AGENT_ADVERTISED_TOOLS = [
   "canvas_list_skills",
   "canvas_get_skill",
+  "storyboard_inspect",
+  "storyboard_apply",
+  "subject_inspect",
+  "spec_inspect",
+  "spec_apply",
+  "timeline_inspect",
   "canvas_inspect",
   "canvas_propose",
   "canvas_apply",
@@ -29,6 +35,10 @@ export type CanvasAgentAdvertisedTool = (typeof CANVAS_AGENT_ADVERTISED_TOOLS)[n
 export const CANVAS_AGENT_READ_TOOLS = new Set<string>([
   "canvas_list_skills",
   "canvas_get_skill",
+  "storyboard_inspect",
+  "subject_inspect",
+  "spec_inspect",
+  "timeline_inspect",
   "canvas_inspect",
   "canvas_propose",
   "canvas_critique",
