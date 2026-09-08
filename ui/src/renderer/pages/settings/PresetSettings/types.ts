@@ -29,6 +29,7 @@ export type PresetSkillCatalogItem = {
   description: string;
   source: PresetSkillCatalogSource;
   source_key?: string;
+  market_id?: string;
 };
 
 // Pending skill to import

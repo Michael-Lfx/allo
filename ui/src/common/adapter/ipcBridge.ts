@@ -1406,9 +1406,7 @@ export const dialog = {
 // ---------------------------------------------------------------------------
 
 export type SkillMarketSource =
-  | 'clawhub'
   | 'skillhub'
-  | 'loophub'
   | 'skillhub_mcp'
   | 'mcpworld'
   | 'clawhub_plugins'
@@ -1416,6 +1414,69 @@ export type SkillMarketSource =
 
 export type SkillMarketInstallMode = 'native' | 'external' | 'unsupported';
 export type SkillMarketInstallStatus = 'installed' | 'reused';
+
+export type SkillHubMarketSort = 'score' | 'downloads' | 'updated_at';
+export type SkillHubMarketSource = 'skillhub' | 'clawhub';
+export type SkillHubMarketContentSource = SkillHubMarketSource | 'unknown';
+
+export interface ISkillHubMarketQueryRequest {
+  source?: SkillHubMarketSource;
+  keyword?: string;
+  category?: string;
+  requires_api_key?: boolean;
+  sort_by?: SkillHubMarketSort;
+  page?: number;
+  page_size?: number;
+}
+
+export interface ISkillHubMarketSubCategory {
+  key: string;
+  name: string;
+}
+
+export interface ISkillHubMarketItem {
+  id: string;
+  owner: string;
+  slug: string;
+  market_source: SkillHubMarketContentSource;
+  upstream_source?: string | null;
+  rank: number;
+  name: string;
+  description: string;
+  version: string;
+  category?: string | null;
+  tags: string[];
+  sub_categories: ISkillHubMarketSubCategory[];
+  requires_api_key: boolean | null;
+  downloads: number;
+  installs: number;
+  stars: number;
+  score: number;
+  created_at?: number | null;
+  updated_at?: number | null;
+  url: string;
+  avatar?: string | null;
+}
+
+export interface ISkillHubMarketQueryResponse {
+  fetched_at: number;
+  total: number;
+  page: number;
+  page_size: number;
+  items: ISkillHubMarketItem[];
+}
+
+export interface ISkillHubMarketCategory {
+  key: string;
+  name: string;
+  name_en: string;
+  sort_order: number;
+}
+
+export interface ISkillHubMarketCategoriesResponse {
+  fetched_at: number;
+  items: ISkillHubMarketCategory[];
+}
 
 export interface ISkillMarketItem {
   id: string;
@@ -1432,6 +1493,8 @@ export interface ISkillMarketItem {
   scenario_tags?: string[];
   stats?: string;
   avatar?: string;
+  market_source?: SkillHubMarketContentSource;
+  upstream_source?: string | null;
 }
 
 export interface ISkillMarketSyncResponse {
@@ -1446,7 +1509,7 @@ export interface ISkillMarketMcpConfigResponse {
 
 export interface ISkillMarketSkillInstallResponse {
   source: string;
-  id: string;
+  skill_id: string;
   skill_name: string;
   status: SkillMarketInstallStatus;
 }
@@ -1515,6 +1578,7 @@ export const fs = {
       source: 'builtin' | 'custom' | 'extension';
       audience_tags?: string[];
       scenario_tags?: string[];
+      market_id?: string;
     }>,
     void
   >('/api/skills'),
@@ -1526,6 +1590,7 @@ export const fs = {
         description: string;
         source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
         source_key?: string;
+        market_id?: string;
       }>;
     },
     void
@@ -1578,6 +1643,12 @@ export const fs = {
   syncSkillMarketRankings: httpPost<ISkillMarketSyncResponse, { sources?: SkillMarketSource[] }>(
     '/api/skills/market/rankings/sync'
   ),
+  querySkillHubMarket: httpPost<ISkillHubMarketQueryResponse, ISkillHubMarketQueryRequest>(
+    '/api/skills/market/skillhub/query'
+  ),
+  listSkillHubMarketCategories: httpGet<ISkillHubMarketCategoriesResponse, void>(
+    '/api/skills/market/skillhub/categories'
+  ),
   resolveSkillMarketMcpConfig: httpPost<
     ISkillMarketMcpConfigResponse,
     { source: SkillMarketSource; id: string; url: string }
@@ -1588,7 +1659,7 @@ export const fs = {
   >('/api/skills/market/package/install'),
   installSkillMarketSkill: httpPost<
     ISkillMarketSkillInstallResponse,
-    { source: SkillMarketSource; id: string; artifact_url?: string }
+    { source: 'skillhub'; id: string; market_source?: SkillHubMarketContentSource }
   >('/api/skills/market/skill/install'),
 };
 
