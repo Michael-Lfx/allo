@@ -32,6 +32,9 @@ describe('market and preset-editor polish contracts', () => {
     expect(card).not.toContain('getAvatarColorClass');
     expect(card).not.toContain('hover:shadow');
     expect(card).not.toContain("key='view-details'");
+    expect(card).toContain('formatSkillHubMarketCount');
+    expect(drawer).toContain("settings.skillsMarket.scoreLabel");
+    expect(drawer).toContain('formatSkillHubMarketCount');
     expect(read('./skill/MarketCardGrid.tsx')).toContain('items-stretch');
     // content-visibility keeps offscreen market cards out of layout/paint; guard against silent removal.
     expect(read('./skill/MarketCardGrid.tsx')).toContain('[content-visibility:auto]');

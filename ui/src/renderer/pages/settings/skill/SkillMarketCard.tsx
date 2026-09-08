@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { normalizeTestId } from './skillPresentation';
 import MarketCardShell from './MarketCardShell';
 import type { MarketActionState } from './marketContracts';
+import { formatSkillHubMarketCount } from './marketViewModel';
 import type { MarketItemViewModel } from './marketViewModel';
 
 type SkillMarketCardProps = {
@@ -42,7 +43,7 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
   onCopyInstallCommand,
   onViewDetails,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const testId = normalizeTestId(item.id);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
@@ -94,12 +95,26 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
           >
             {item.title}
           </h3>
-          {(item.requiresApi || item.noApi) && (
+          {item.skillHub && (
+            <div className='mt-3px truncate text-11px text-t-tertiary'>v{item.skillHub.version}</div>
+          )}
+          <div className='mt-4px'>
+            <Tag size='small' bordered={false} className='!rounded-6px !bg-fill-2 !text-t-secondary !text-10px'>
+              {item.marketSource === 'clawhub'
+                ? 'ClawHub'
+                : item.marketSource === 'skillhub'
+                  ? 'SkillHub'
+                  : item.upstreamSource || t('settings.skillsMarket.sourceUnknown', { defaultValue: '来源未知' })}
+            </Tag>
+          </div>
+          {(item.requiresApi || item.noApi || item.apiKeyUnknown) && (
             <div className='mt-4px flex flex-wrap items-center gap-4px'>
               <Tag size='small' bordered={false} className='!rounded-6px !bg-fill-2 !text-t-secondary !text-10px'>
                 {item.requiresApi
-                  ? t('settings.market.requiresApi', { defaultValue: '需 API' })
-                  : t('settings.market.noApi', { defaultValue: '免 API' })}
+                  ? t('settings.skillsMarket.requiresApi', { defaultValue: '需要 API Key' })
+                  : item.noApi
+                    ? t('settings.skillsMarket.noApi', { defaultValue: '无需 API Key' })
+                    : t('settings.skillsMarket.apiKeyUnknown', { defaultValue: 'API Key 状态未知' })}
               </Tag>
             </div>
           )}
@@ -131,6 +146,32 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
       </header>
 
       {item.compactStats && <div className='mt-8px truncate text-12px text-t-tertiary'>{item.compactStats}</div>}
+
+      {item.skillHub && (
+        <div className='mt-8px flex min-w-0 flex-wrap gap-6px text-11px text-t-tertiary'>
+          {item.skillHub.category && <span className='truncate'>{item.skillHub.category}</span>}
+          {item.skillHub.subCategories.slice(0, 2).map((category) => (
+            <span key={category.key} className='truncate'>{category.name}</span>
+          ))}
+        </div>
+      )}
+
+      {item.skillHub && (
+        <div className='mt-8px flex flex-wrap gap-x-10px gap-y-4px text-11px text-t-tertiary'>
+          <span title={item.skillHub.downloads.toLocaleString(i18n.language)}>{formatSkillHubMarketCount(item.skillHub.downloads)} {t('settings.skillsMarket.downloadUnit', { defaultValue: '下载' })}</span>
+          <span>{t('settings.skillsMarket.installs', { count: item.skillHub.installs, defaultValue: '{{count}} 安装' })}</span>
+          <span>{t('settings.skillsMarket.stars', { count: item.skillHub.stars, defaultValue: '{{count}} 收藏' })}</span>
+          <span>{t('settings.skillsMarket.score', { score: item.skillHub.score.toFixed(1), defaultValue: '热度分 {{score}}' })}</span>
+          {item.skillHub.updatedAt && (
+            <span>
+              {t('settings.skillsMarket.updatedAt', {
+                time: new Date(item.skillHub.updatedAt).toLocaleDateString(i18n.language),
+                defaultValue: '更新 {{time}}',
+              })}
+            </span>
+          )}
+        </div>
+      )}
 
       <p
         className='mb-0 mt-10px overflow-hidden text-13px leading-20px text-t-secondary'
