@@ -5,10 +5,12 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path as AxumPath, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
 use nomifun_api_types::{
-    AddExternalPathRequest, ApiResponse, BuiltinAutoSkillResponse, ExportSkillRequest, ExternalSkillSourceResponse,
+    AddExternalPathRequest, ApiResponse, BuiltinAutoSkillResponse, ErrorResponse, ExportSkillRequest, ExternalSkillSourceResponse,
     ImportSkillRequest, ImportSkillResponse, MaterializeSkillsRequest, MaterializeSkillsResponse, MaterializedSkillRef,
     NamedPathResponse, ReadPresetRuleRequest, ReadBuiltinResourceRequest, ReadSkillInfoRequest,
     ReadSkillInfoResponse, RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse,
@@ -26,7 +28,7 @@ use nomifun_db::ISkillTagRepository;
 use crate::classifier::PresetRuleDispatcher;
 use crate::external_paths::ExternalPathsManager;
 use crate::skill_service::{self, SkillPaths, SkillSource};
-use crate::market::MarketPackagePresetInstaller;
+use crate::market::{MarketPackagePresetInstaller, MarketSkillInstallError};
 
 fn to_source_response(source: SkillSource) -> SkillSourceResponse {
     match source {
@@ -41,6 +43,55 @@ fn imported_user_skill_ids(names: &[String]) -> Vec<String> {
         .iter()
         .map(|name| SkillId::new(SkillCatalogSource::User, None, name).as_str().to_owned())
         .collect()
+}
+
+/// Endpoint-local mapper for the native market Skill install contract. The
+/// market failure set is intentionally not added to the shared `AppError`
+/// enum: these codes are meaningful only to the Skill market UI.
+#[derive(Debug)]
+enum MarketSkillRouteError {
+    Json(String),
+    Install(MarketSkillInstallError),
+}
+
+impl From<MarketSkillInstallError> for MarketSkillRouteError {
+    fn from(error: MarketSkillInstallError) -> Self {
+        Self::Install(error)
+    }
+}
+
+impl IntoResponse for MarketSkillRouteError {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match self {
+            Self::Json(message) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", message),
+            Self::Install(error) => {
+                let (status, code) = match error {
+                    MarketSkillInstallError::SourceUnsupported =>
+                        (StatusCode::BAD_REQUEST, "MARKET_SKILL_SOURCE_UNSUPPORTED"),
+                    MarketSkillInstallError::IdInvalid =>
+                        (StatusCode::BAD_REQUEST, "MARKET_SKILL_ID_INVALID"),
+                    MarketSkillInstallError::NotFound =>
+                        (StatusCode::NOT_FOUND, "MARKET_SKILL_NOT_FOUND"),
+                    MarketSkillInstallError::NameConflict =>
+                        (StatusCode::CONFLICT, "MARKET_SKILL_NAME_CONFLICT"),
+                    MarketSkillInstallError::ArtifactInvalid =>
+                        (StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_ARTIFACT_INVALID"),
+                    MarketSkillInstallError::ManifestInvalid =>
+                        (StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_MANIFEST_INVALID"),
+                    MarketSkillInstallError::BundleUnsupported =>
+                        (StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_BUNDLE_UNSUPPORTED"),
+                    MarketSkillInstallError::Network =>
+                        (StatusCode::BAD_GATEWAY, "MARKET_SKILL_NETWORK"),
+                    MarketSkillInstallError::Timeout =>
+                        (StatusCode::GATEWAY_TIMEOUT, "MARKET_SKILL_TIMEOUT"),
+                    MarketSkillInstallError::LocalIo =>
+                        (StatusCode::INTERNAL_SERVER_ERROR, "MARKET_SKILL_LOCAL_IO"),
+                };
+                (status, code, error.to_string())
+            }
+        };
+        (status, Json(ErrorResponse::new(message, code))).into_response()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -636,8 +687,8 @@ async fn install_skill_market_package(
 async fn install_skill_market_skill(
     State(state): State<SkillRouterState>,
     body: Result<Json<SkillMarketSkillInstallRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<SkillMarketSkillInstallResponse>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Json<ApiResponse<SkillMarketSkillInstallResponse>>, MarketSkillRouteError> {
+    let Json(req) = body.map_err(|e| MarketSkillRouteError::Json(e.to_string()))?;
     let resp = crate::market::install_market_skill(&state.skill_paths, req).await?;
     Ok(Json(ApiResponse::ok(resp)))
 }
@@ -656,6 +707,46 @@ mod tests {
             imported_user_skill_ids(&["review notes".to_owned(), "team/pdf".to_owned()]),
             vec!["user:review%20notes", "user:team%2Fpdf"],
         );
+    }
+
+    #[tokio::test]
+    async fn market_skill_route_error_maps_status_code_and_stable_code() {
+        for (error, status, code) in [
+            (MarketSkillInstallError::SourceUnsupported, StatusCode::BAD_REQUEST, "MARKET_SKILL_SOURCE_UNSUPPORTED"),
+            (MarketSkillInstallError::IdInvalid, StatusCode::BAD_REQUEST, "MARKET_SKILL_ID_INVALID"),
+            (MarketSkillInstallError::NotFound, StatusCode::NOT_FOUND, "MARKET_SKILL_NOT_FOUND"),
+            (MarketSkillInstallError::NameConflict, StatusCode::CONFLICT, "MARKET_SKILL_NAME_CONFLICT"),
+            (MarketSkillInstallError::ArtifactInvalid, StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_ARTIFACT_INVALID"),
+            (MarketSkillInstallError::ManifestInvalid, StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_MANIFEST_INVALID"),
+            (MarketSkillInstallError::BundleUnsupported, StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_BUNDLE_UNSUPPORTED"),
+            (MarketSkillInstallError::Network, StatusCode::BAD_GATEWAY, "MARKET_SKILL_NETWORK"),
+            (MarketSkillInstallError::Timeout, StatusCode::GATEWAY_TIMEOUT, "MARKET_SKILL_TIMEOUT"),
+            (MarketSkillInstallError::LocalIo, StatusCode::INTERNAL_SERVER_ERROR, "MARKET_SKILL_LOCAL_IO"),
+        ] {
+            let response = MarketSkillRouteError::from(error).into_response();
+            assert_eq!(response.status(), status, "{code}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["code"], code, "{code}");
+            assert_eq!(json["success"], serde_json::Value::Bool(false), "{code}");
+            // The public message is the stable category text, never a
+            // transport detail (URL, status line, socket error).
+            let message = json["error"].as_str().unwrap_or_default();
+            assert!(!message.contains("http"), "{code}: {message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn market_skill_route_error_maps_json_rejection_as_bad_request() {
+        let response = MarketSkillRouteError::Json("expected value".into()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "BAD_REQUEST");
     }
 
     #[derive(Default)]

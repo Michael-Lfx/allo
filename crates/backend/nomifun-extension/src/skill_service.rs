@@ -1721,7 +1721,7 @@ async fn read_file_or_empty(path: &Path) -> Result<String, ExtensionError> {
 ///
 /// A lone `"."` is rejected because `base.join(".")` resolves back to `base`,
 /// which would aim a per-skill delete or write at the whole skills tree.
-fn validate_filename(name: &str) -> Result<(), ExtensionError> {
+pub(crate) fn validate_filename(name: &str) -> Result<(), ExtensionError> {
     if name.is_empty()
         || name == "."
         || name.contains('/')

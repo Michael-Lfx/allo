@@ -20,7 +20,7 @@ pub use mcp::resolve_market_mcp_config;
 pub use package::{
     MarketPackagePresetInstallFailure, MarketPackagePresetInstaller, install_market_package,
 };
-pub use skill::install_market_skill;
+pub use skill::{MarketSkillInstallError, install_market_skill};
 
 use std::collections::HashSet;
 use std::future::Future;
