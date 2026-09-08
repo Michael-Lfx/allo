@@ -28,6 +28,10 @@ use super::*;
 pub(crate) const BLUEPRINT_MAX_TOKENS: u32 = 4096;
 /// Long-form lesson document (1000-1500 chars + optional figures).
 pub(crate) const LESSON_DOCUMENT_MAX_TOKENS: u32 = 8192;
+/// Section outline JSON: tier + manifest of ≤8 sections.
+pub(crate) const SECTION_OUTLINE_MAX_TOKENS: u32 = 2048;
+/// One section body (400-700 chars + optional figures).
+pub(crate) const SECTION_BODY_MAX_TOKENS: u32 = 4096;
 /// Per-lesson activities JSON (3-5 questions).
 pub(crate) const ACTIVITIES_MAX_TOKENS: u32 = 4096;
 /// Single additional activity.

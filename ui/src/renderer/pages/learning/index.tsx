@@ -445,6 +445,8 @@ const LearningPage: React.FC = () => {
             modelChoice={creation.modelChoice}
             creationTab={creation.creationTab}
             creationDescription={creation.creationDescription}
+            teachingStyle={creation.teachingStyle}
+            onTeachingStyleChange={creation.setTeachingStyle}
             generation={creation.generation}
             onClose={creation.closeGenerator}
             onOk={() => void creation.submitGeneration()}

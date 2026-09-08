@@ -179,6 +179,7 @@ export function ReviewCard({
       <ActivityInput
         kind={question.kind}
         options={question.options}
+        matches={question.matches}
         value={response}
         disabled={result !== null || locked}
         onChange={setResponse}
@@ -361,6 +362,7 @@ export function ReviewSessionModal({
         kind: entry.question_kind ?? target.question.kind,
         prompt: entry.prompt ?? target.question.prompt,
         options: entry.options,
+        matches: target.question.matches,
       },
       // 编辑已保存，待编辑标记随之清除（后端同步清除）
       edit_pending: false,

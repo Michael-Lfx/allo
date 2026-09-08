@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Modal, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
+import { Button, Input, Modal, Radio, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
+import type { TeachingStyle } from '../types';
 import type { CourseGenerationState } from '../hooks/useCourseCreation';
 import LearningModelSelector, {
   type LearningModelChoice,
@@ -22,6 +23,8 @@ export function CreateCourseDialog({
   modelChoice,
   creationTab,
   creationDescription,
+  teachingStyle,
+  onTeachingStyleChange,
   generation,
   onClose,
   onOk,
@@ -43,6 +46,8 @@ export function CreateCourseDialog({
   modelChoice: LearningModelChoice;
   creationTab: 'base' | 'description' | 'graph';
   creationDescription: string;
+  teachingStyle: TeachingStyle;
+  onTeachingStyleChange: (style: TeachingStyle) => void;
   generation: CourseGenerationState | null;
   onClose: () => void;
   onOk: () => void;
@@ -157,6 +162,18 @@ export function CreateCourseDialog({
             </Tabs.TabPane>
           </Tabs>
           <div className='mt-20px flex flex-col gap-16px'>
+            <div>
+              <div className='mb-8px font-500'>{t('learning.teachingStyle')}</div>
+              <Radio.Group
+                size='small'
+                value={teachingStyle}
+                onChange={(value) => onTeachingStyleChange(value as TeachingStyle)}
+              >
+                <Radio value='standard'>{t('learning.styleStandard')}</Radio>
+                <Radio value='socratic'>{t('learning.styleSocratic')}</Radio>
+                <Radio value='feynman'>{t('learning.styleFeynman')}</Radio>
+              </Radio.Group>
+            </div>
             <div>
               <div className='mb-8px font-500'>{t('learning.model')}</div>
               <LearningModelSelector

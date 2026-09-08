@@ -32,33 +32,30 @@ use crate::loop_core::{
 };
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
-/// Generation-loop system prompt. The document contract mirrors the legacy
-/// pipeline's `LESSON_DOCUMENT_STANDARD` / `LESSON_SYSTEM` rules; the
-/// deterministic audit enforces them either way.
-const GENERATE_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容设计代理：为给定的一个课时撰写学习文档并设计检索活动，通过工具逐步构建，最终通过确定性审计门禁发布。
+/// Generation-loop system prompt. The sectioned contract (ADR-0002) drives
+/// the rounds: plan the manifest once, then one tool call per section body
+/// (the model's attention stays on one learnable unit), then the activities
+/// bound to section keys. The deterministic audit enforces the same rules.
+const GENERATE_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容设计代理：把给定的一个课时规划为若干「节」，逐节撰写正文并设计检索题目，通过工具逐步构建，最终通过确定性审计门禁发布。
 
-【学习文档契约】
-- 文档是学员直接阅读的完整自学文本：纯 Markdown，不要 JSON、不要包裹代码围栏（文档内的 ```svg / ```jsxgraph 图形块属于文档本体）；直接以第一个 `## ` 标题行开头，以衔接下一课的收尾句结束。
-- 长度是硬约束：去除空白后至少 800 字符（目标 1000-1500 中文字符）；审计会把不足判为 danger 阻断发布。
-- 必需章节，顺序固定，各自以 `## ` 标题行开头：描述（完整精确地讲清本课教什么）→ 例子（1-3 个带真实步骤/数字/流程的具体示例）→ 验证（3-5 道自检题，至少 2 道客观题且与活动呼应）。可选章节（迁移/其他/关键词/推广等）按需自由添加，不要为凑数硬凑。
-- 图形：内容真正需要图示时才画，每个图必须自足完整（命名点、标注、坐标刻度、说明文字）；静态图用 ```svg 块，交互图用 ```jsxgraph 块；图形块不计入长度下限，也不要为凑长度画图。
-- 内容必须落在 grounding 上：引用摘录流忠于摘录，课程简报流忠于简报；不要发明资料之外的事实。用资料的主导语言书写。
-- 动笔前对照任务给出的范围参考（课程完整目录，或学习图节点的前置/后续节点段落）：只写本课时范围内的内容，不越界讲后续课时/节点的主题，也不重复相邻或前置内容已覆盖的部分。
+【分节契约（每节一次工具调用）】
+- 先 ls_set_section_manifest 规划节清单：每节带 section_key（s1、s2……）、kind（concept 概念 / example 例题 / demo 演示 / summary 小结 / practice 练习）、title（带类型前缀，如「概念：…」）、points（一句话要点）。节数按课时复杂度自定：低 1-3 节、中 3-5、高 4-6，硬上限 8；相邻节要有学习递进；至多 1 个练习节放最后。
+- 再逐节调用 ls_set_section_body 写正文：一次调用只写一节，body 直接以该节 `## ` 标题行开头（标题照抄清单），不要 JSON、不要包裹围栏、节内禁止 ### 子标题、不要自设练习环节（题目由题库承载）。
+- 篇幅按节型：concept/example 400-700 中文字符；demo 由可视化块（```svg / ```jsxgraph / ```mermaid / $$数学$$）承载主要信息、旁注 200-400 字；summary 是要点清单；practice 只写能力目标与作答引导（≤120 字，不写题）。
+- 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形块不计入篇幅。
+- 与前一节已写正文自然衔接：不重复它讲过的内容；只写本节任务命中的范围，不越界讲后续节/课时。
 
 【活动契约】
-- 3-5 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank）+ 反思题（宁少勿多，最多 3，通常恰好 1）。
-- single_choice：3-5 个互不相同的选项，answer 恰等于其中一个选项。
-- true_false：answer 是 JSON 布尔值。
-- fill_in_blank：prompt 恰含一个 "___"；answer 是 1-3 个等价答案的 JSON 数组；必须提供近义干扰项 distractors 以迫使精细辨析。
-- reflection：answer 必须是 null；各反思题合起来要覆盖本课全部概念。
-- 概念绑定：concepts 只能取课时给定的概念 key（留空 = 绑定整课全部概念）；绝不绑定其他课时的概念。
-- estimated_minutes：5-60 的小整数，反映文档长度（用 set_estimated_minutes 设置）。
-- 题目、答案与解析必须有文档与 grounding 支撑。
+- 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / matching）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
+- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。
+- 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
+- 概念绑定：concepts 只能取课时给定的概念 key（学习图节点留空数组）。
+- estimated_minutes：5-60 的小整数，反映整体课时长度。
 
 【工具使用纪律】
 1. 第一步必须调用 ls_start 创建草稿——它返回 draft_id 与课时上下文。
-2. ls_set_document 一次写入完整文档（不要分片）；随后 ls_patch_activities 分批提交活动（每批 1-5 个操作）；ls_inspect 随时掌握草稿状态。
-3. 全部构建完成后调用 ls_audit 自查；确认没有 danger 级问题才调用 ls_finish。
+2. ls_set_section_manifest 规划节清单 → 逐节 ls_set_section_body（每节一次调用，这是本轮循环的主要轮次）→ ls_patch_activities 分批提交题目（每批 1-5 个操作）。
+3. ls_inspect 随时掌握草稿状态；全部构建完成后 ls_audit 自查，确认没有 danger 级问题才调用 ls_finish。
 
 【结束条件】
 - 只有 ls_audit 报告无 danger 时才调用 ls_finish；被门禁拒绝时按报告继续修复。"#;
@@ -74,11 +71,13 @@ const REPAIR_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容修复代理
 4. 每批修复后用 ls_audit 复查对应 finding 是否消除；全部 danger 消除后调用 ls_finish 发布。
 
 【常见修复动作对照】
-- document_missing / document_invalid：ls_set_document 重写完整文档（≥800 字符、三必需章节按序）。
+- sections_missing / section_body_missing / section_invalid：ls_set_section_manifest 补规划，或 ls_set_section_body 按节重写正文（标题照抄清单、篇幅按节型、demo 节必须带可视化块）。
+- document_missing / document_invalid：ls_set_document 重写完整文档（旧单篇契约，≥800 字符、三必需章节按序）——新草稿请优先走分节。
 - activities_too_few / objective_activities_too_few：add_activity 补客观题。
 - reflections_too_many：remove_activity 删多余的反思题。
 - reflections_multiple（warning）：可保留——只有 danger 才阻断发布。
-- activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项）。
+- activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项/容差/顺序与对应关系）。
+- section_binding_unknown：update_activity 把该题的 section_key 改绑到清单里的节 key（跨节综合题用 "general"）。
 - concept_binding_unknown：update_activity 把 concepts 改绑到课时给定的概念 key。
 
 【结束条件】
@@ -576,11 +575,13 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
 /// — the repair loop must never re-scope the draft, and an unlisted tool
 /// name fails closed at the loop level).
 fn lesson_content_tools(ctx: Arc<LoopContext>, with_start: bool) -> Vec<OneShotTool> {
-    let mut tools = Vec::with_capacity(6);
+    let mut tools = Vec::with_capacity(8);
     if with_start {
         tools.push(ls_start(Arc::clone(&ctx)));
     }
     tools.push(ls_inspect(Arc::clone(&ctx)));
+    tools.push(ls_set_section_manifest(Arc::clone(&ctx)));
+    tools.push(ls_set_section_body(Arc::clone(&ctx)));
     tools.push(ls_set_document(Arc::clone(&ctx)));
     tools.push(ls_patch_activities(Arc::clone(&ctx)));
     tools.push(ls_audit(Arc::clone(&ctx)));
@@ -640,6 +641,96 @@ fn ls_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
+fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
+    OneShotTool {
+        name: "ls_set_section_manifest".into(),
+        description: "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）。节数低 1-3 / 中 3-5 / 高 4-6，硬上限 8；重规划时已写正文按 key 保留。".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "sections": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "description": "节清单（按学习顺序）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "section_key": { "type": "string" },
+                            "kind": { "type": "string", "enum": ["concept", "example", "demo", "summary", "practice"] },
+                            "title": { "type": "string" },
+                            "points": { "type": "string" }
+                        },
+                        "required": ["section_key", "kind", "title"]
+                    }
+                }
+            },
+            "required": ["sections"]
+        }),
+        handler: one_shot_handler(move |input| {
+            let ctx = Arc::clone(&ctx);
+            async move {
+                let draft_id = ctx.require_draft()?;
+                let sections = input
+                    .get("sections")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let sections: Vec<nomifun_learning::SectionPack> = serde_json::from_value(sections)
+                    .map_err(|error| format!("ls_set_section_manifest: sections 必须是节清单数组——{error}"))?;
+                let report = ctx
+                    .service
+                    .patch_lesson_draft(
+                        &draft_id,
+                        vec![nomifun_learning::LessonOp::SetSectionManifest { sections }],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(json_compact(&report))
+            }
+        }),
+    }
+}
+
+fn ls_set_section_body(ctx: Arc<LoopContext>) -> OneShotTool {
+    OneShotTool {
+        name: "ls_set_section_body".into(),
+        description: "写入一节正文：body 是该节的完整 Markdown，直接以 `## ` 标题行开头（照抄清单标题），不要 JSON、不要包裹围栏、节内禁止 ### 子标题。篇幅按节型（concept/example 400-700 字；demo 可视化为主；summary 要点清单；practice ≤120 字不写题）。每节调用一次；重复调用即整节重写。".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "section_key": { "type": "string", "description": "节 key（清单中的 s1、s2……）" },
+                "body": { "type": "string", "description": "该节正文（Markdown 全文，一次写入）" }
+            },
+            "required": ["section_key", "body"]
+        }),
+        handler: one_shot_handler(move |input| {
+            let ctx = Arc::clone(&ctx);
+            async move {
+                let draft_id = ctx.require_draft()?;
+                let section_key = input
+                    .get("section_key")
+                    .and_then(|value| value.as_str())
+                    .filter(|key| !key.trim().is_empty())
+                    .ok_or_else(|| "ls_set_section_body: section_key 必须是非空字符串".to_owned())?
+                    .to_owned();
+                let body = input
+                    .get("body")
+                    .and_then(|value| value.as_str())
+                    .filter(|body| !body.trim().is_empty())
+                    .ok_or_else(|| "ls_set_section_body: body 必须是非空 Markdown 文本".to_owned())?
+                    .to_owned();
+                let report = ctx
+                    .service
+                    .patch_lesson_draft(
+                        &draft_id,
+                        vec![nomifun_learning::LessonOp::SetSectionBody { section_key, body }],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(json_compact(&report))
+            }
+        }),
+    }
+}
+
 fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_set_document".into(),
@@ -678,7 +769,7 @@ fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
 fn ls_patch_activities(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_patch_activities".into(),
-        description: "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\", \"concepts\": [\"option_def\"]}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null；concepts 只能取本课概念 key（留空 = 绑定整课）。每批 ≤10 个操作；写文档请用 ls_set_document。".into(),
+        description: "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\", \"concepts\": [\"option_def\"]}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；matching 的 options 是左列、answer 是一一对应右列数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null；concepts 只能取本课概念 key（留空 = 绑定整课）。每批 ≤10 个操作；写正文请用 ls_set_section_body。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -1034,8 +1125,8 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "ls_start", "ls_inspect", "ls_set_document", "ls_patch_activities",
-                "ls_audit", "ls_finish"
+                "ls_start", "ls_inspect", "ls_set_section_manifest", "ls_set_section_body",
+                "ls_set_document", "ls_patch_activities", "ls_audit", "ls_finish"
             ]
         );
         // Repair loop: no ls_start.
@@ -1046,8 +1137,8 @@ mod tests {
         assert_eq!(
             repair_names,
             vec![
-                "ls_inspect", "ls_set_document", "ls_patch_activities", "ls_audit",
-                "ls_finish"
+                "ls_inspect", "ls_set_section_manifest", "ls_set_section_body",
+                "ls_set_document", "ls_patch_activities", "ls_audit", "ls_finish"
             ]
         );
 

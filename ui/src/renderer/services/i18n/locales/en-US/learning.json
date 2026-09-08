@@ -357,5 +357,20 @@
   "learningGraphNodePrerequisites": "{count} prerequisites",
   "learningGraphReadyEmpty": "No ready nodes right now",
   "learningGraphOpenGraph": "View learning graph",
-  "learningGraphContentEmpty": "Select a node from the sidebar to start learning"
+  "learningGraphContentEmpty": "Select a node from the sidebar to start learning",
+  "sectionGeneralStep": "Comprehensive practice",
+  "sectionPractice": "Section practice",
+  "sectionPrev": "Previous",
+  "sectionNext": "Next section",
+  "kindMultiChoice": "Multiple choice",
+  "kindNumeric": "Numeric",
+  "kindOrdering": "Ordering",
+  "kindMatching": "Matching",
+  "kindOpenQuestion": "Open question",
+  "matchingPickPlaceholder": "Pick a match",
+  "numericPlaceholder": "Enter a number",
+  "teachingStyle": "Teaching style",
+  "styleStandard": "Standard",
+  "styleSocratic": "Socratic",
+  "styleFeynman": "Feynman"
 }

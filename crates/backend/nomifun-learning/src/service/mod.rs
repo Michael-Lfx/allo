@@ -33,12 +33,13 @@ pub(super) use crate::generation::{
 };
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
-    CalendarLessonRef, CalendarStats, CheckinStatus, ConceptPack, ConceptRef, ConceptView,
-    CourseDetail, CourseKind, CoursePack, CourseSummary,
+    CalendarLessonRef, CalendarStats, CheckinStatus, ConceptPack, ConceptRef,
+    ConceptView, CourseDetail, CourseKind, CoursePack, CourseSummary,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem, DiagnosticPlan,
     DueReview, GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    GraphEdgeView, GraphNodeView, GeneratedLessonActivity, LearningGraphView, LessonStatus,
-    LessonView, ModuleView, QuestionEntry,
+    GraphEdgeView, GraphNodeView, GeneratedLessonActivity, LearningGraphView, SectionKind,
+    SectionView, LessonStatus,
+    LessonView, ModuleView, QuestionEntry, TeachingStyle,
     ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
     ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
 };
@@ -429,6 +430,7 @@ impl LearningService {
                     .map_err(AppError::Internal)?,
                 prompt: row.try_get("prompt").map_err(internal)?,
                 options: config.options,
+                matches: config.matches,
                 position: row.try_get("position").map_err(internal)?,
                 concepts: concept_ids
                     .into_iter()

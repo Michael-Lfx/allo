@@ -357,5 +357,20 @@
   "learningGraphNodePrerequisites": "前置 {{count}} 项",
   "learningGraphReadyEmpty": "暂无可学的节点",
   "learningGraphOpenGraph": "查看学习图",
-  "learningGraphContentEmpty": "从左侧选择一个节点开始学习"
+  "learningGraphContentEmpty": "从左侧选择一个节点开始学习",
+  "sectionGeneralStep": "综合练习",
+  "sectionPractice": "本节练习",
+  "sectionPrev": "上一节",
+  "sectionNext": "下一节",
+  "kindMultiChoice": "多选",
+  "kindNumeric": "数值题",
+  "kindOrdering": "排序题",
+  "kindMatching": "匹配题",
+  "kindOpenQuestion": "开放题",
+  "matchingPickPlaceholder": "选择匹配项",
+  "numericPlaceholder": "输入数值",
+  "teachingStyle": "讲解风格",
+  "styleStandard": "标准",
+  "styleSocratic": "苏格拉底",
+  "styleFeynman": "费曼"
 }

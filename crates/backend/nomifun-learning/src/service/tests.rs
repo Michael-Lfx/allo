@@ -69,6 +69,7 @@
             .unwrap();
         GenerateCourseRequest {
             course_kind: crate::models::CourseKind::Traditional,
+            teaching_style: None,
             knowledge_base_id: Some(base.base.knowledge_base_id.parse().unwrap()),
             description: None,
             domain: None,
@@ -114,6 +115,7 @@
     fn valid_pack() -> CoursePack {
         CoursePack {
             title: "Linear Algebra".into(),
+teaching_style: crate::models::TeachingStyle::Standard,
             description: "A small generic course".into(),
             domain: "mathematics".into(),
             source_kb_id: None,
@@ -142,7 +144,10 @@
                         explanation: "That is the geometric definition.".into(),
                         concepts: vec!["vector".into()],
                     distractors: Vec::new(),
+                    tol: None,
+                    section_key: None,
                     }],
+                    sections: Vec::new(),
                 }],
             }],
         }
@@ -168,6 +173,7 @@
                 summary: "## 描述\n占位\n## 例子\n占位\n## 验证\n占位\n".into(),
                 estimated_minutes: 10,
                 activities: Vec::new(),
+                sections: Vec::new(),
             })
         }
     }
@@ -197,9 +203,11 @@
             source,
             concepts: vec![concept.into()],
             activities: Vec::new(),
+            sections: Vec::new(),
         };
         let pack = CoursePack {
             title: "上下文课程".into(),
+teaching_style: crate::models::TeachingStyle::Standard,
             description: "两模块两课时".into(),
             domain: "math".into(),
             source_kb_id: None,
@@ -327,9 +335,11 @@
     fn builtin_evaluator_does_not_trust_client_scores() {
         let config = StoredActivityConfig {
             options: Vec::new(),
+            matches: Vec::new(),
             answer: Value::Bool(true),
             explanation: "source-backed explanation".into(),
             distractors: Vec::new(),
+            tol: None,
         };
         let (score, _) = evaluate(ActivityKind::TrueFalse, &config, &Value::Bool(false)).unwrap();
         assert_eq!(score, 0.0);
@@ -353,6 +363,7 @@
             status: LessonStatus::NotStarted,
             concepts: vec![concept],
             activities: Vec::new(),
+            sections: Vec::new(),
         };
         let modules = vec![ModuleView {
             id: LearningModuleId::new(),
@@ -497,9 +508,12 @@
             explanation: String::new(),
             concepts: vec!["shared".into()],
             distractors: Vec::new(),
+            tol: None,
+            section_key: None,
         };
         let pack = CoursePack {
             title: "Shared Concepts".into(),
+teaching_style: crate::models::TeachingStyle::Standard,
             description: String::new(),
             domain: "general".into(),
             source_kb_id: None,
@@ -525,6 +539,7 @@
                             prompt: "A1".into(),
                             ..shared.clone()
                         }],
+                        sections: Vec::new(),
                     },
                     LessonPack {
                         title: "Lesson B".into(),
@@ -537,6 +552,7 @@
                             prompt: "A2".into(),
                             ..shared
                         }],
+                        sections: Vec::new(),
                     },
                 ],
             }],
@@ -598,6 +614,7 @@
     fn reflection_pack() -> CoursePack {
         CoursePack {
             title: "Reflective Learning".into(),
+teaching_style: crate::models::TeachingStyle::Standard,
             description: String::new(),
             domain: "general".into(),
             source_kb_id: None,
@@ -634,7 +651,10 @@
                         explanation: "A vector has magnitude and direction.".into(),
                         concepts: vec!["vector".into()],
                     distractors: Vec::new(),
+                    tol: None,
+                    section_key: None,
                     }],
+                    sections: Vec::new(),
                 }],
             }],
         }
@@ -829,7 +849,7 @@
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("unparseable reflection grading reply"));
+        assert!(error.to_string().contains("unparseable answer grading reply"));
         assert_eq!(bad_reply.calls.load(AtomicOrdering::SeqCst), 1);
 
         // No completer configured at all: surfaced error, not a pass.
@@ -945,9 +965,13 @@
                         explanation: "That is the geometric definition.".into(),
                         concepts: vec!["vector".into()],
                         distractors: vec!["length".into()],
+                        tol: None,
+                        section_key: None,
                     }],
+                    sections: Vec::new(),
                 }],
             }],
+            teaching_style: crate::models::TeachingStyle::Standard,
         }
     }
 
@@ -1068,6 +1092,7 @@
         let service = LearningService::new(database.pool().clone());
         let pack = CoursePack {
             title: "Mixed".into(),
+teaching_style: crate::models::TeachingStyle::Standard,
             description: String::new(),
             domain: "general".into(),
             source_kb_id: None,
@@ -1101,6 +1126,8 @@
                             explanation: String::new(),
                             concepts: vec!["vector".into()],
                             distractors: Vec::new(),
+                            tol: None,
+                            section_key: None,
                         },
                         ActivityPack {
                             kind: ActivityKind::FillInBlank,
@@ -1110,8 +1137,11 @@
                             explanation: String::new(),
                             concepts: vec!["vector".into()],
                             distractors: vec!["length".into()],
+                            tol: None,
+                            section_key: None,
                         },
                     ],
+                    sections: Vec::new(),
                 }],
             }],
         };
@@ -1284,7 +1314,7 @@
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("only support"));
+        assert!(error.to_string().contains("AI-graded"));
     }
 
     async fn checkin_test_service() -> (LearningService, UserId) {
