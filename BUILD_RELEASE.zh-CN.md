@@ -171,7 +171,7 @@ bun run upload:modelscope -- --channel windows
 bump 1.0.6 → commit → tag v1.0.6 → push tag
   → 并行：
      windows → windows-x86_64 + windows-aarch64
-     macos   → darwin-aarch64 + darwin-x86_64（universal 包）
+     macos   → darwin-aarch64 + darwin-x86_64（分芯片原生构建后再 lipo universal）
      linux   → linux-x86_64
 ```
 
@@ -232,11 +232,13 @@ git push origin v1.0.6
 
 说明：
 
-- Windows：在 `windows-latest` 上依次打 `x64` + `arm64`（arm64 交叉编译）。
+- Windows：`windows-latest` 打 `x64`，`windows-11-arm` 打 `arm64`（原生，不再交叉）。
 - SPA：`build-ui` job 在 `ubuntu-24.04`（~16GB）上构建 `ui/dist` 并上传为
-  `ui-dist` artifact。macOS runner 只有 ~7GB，Vite 在那里会 JS heap OOM
-  （SIGABRT / exit 134），而 `ui/dist` 与平台无关，因此只构建一次。
-- macOS：在 `macos-14` 上打 `universal`（一份产物写入 `darwin-aarch64` 与
+  `ui-dist` artifact。Windows / macOS / Linux 构建都下载这份产物，并叠加
+  `tauri.ci-skip-ui.conf.json`，不再在各平台 runner 上重跑 Vite。macOS
+  runner 只有 ~7GB，Vite 在那里会 JS heap OOM（SIGABRT / exit 134）。
+- macOS：`macos-15` 打 Apple Silicon，`macos-15-intel` 打 Intel；两边结束后
+  在 `macos-15` 上 `lipo` 成 universal（一份产物写入 `darwin-aarch64` 与
   `darwin-x86_64`）。先下载 `ui-dist`，再叠加 `tauri.ci-skip-ui.conf.json`
   让 beforeBuildCommand 不再重跑 Vite。Intel 切片不链接 Silero/ort，
   robot VAD 回退 energy。

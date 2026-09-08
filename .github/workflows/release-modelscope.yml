@@ -29,6 +29,9 @@ env:
   PYTHON_VERSION: "3.12"
   UPLOAD_RETRIES: "5"
   UPLOAD_RETRY_BASE_SEC: "30"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "8"
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
 
 jobs:
   release-context:
@@ -90,7 +93,7 @@ jobs:
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  # ui/dist is platform-independent; build once on a 16GB runner for macOS.
+  # ui/dist is platform-independent; build once on a 16GB runner, reuse on Win/macOS/Linux.
   build-ui:
     name: Build SPA
     needs: release-context
@@ -124,17 +127,19 @@ jobs:
   # ── Windows: build x64 and arm64 in parallel (no shared output) ───────────
   build-windows:
     name: Build Windows (${{ matrix.arch }})
-    needs: release-context
-    runs-on: windows-latest
+    needs: [release-context, build-ui]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x64
+            runner: windows-latest
             rust_targets: x86_64-pc-windows-msvc
             artifact_name: windows-x64-dist
           - arch: arm64
+            runner: windows-11-arm
             rust_targets: aarch64-pc-windows-msvc
             artifact_name: windows-arm64-dist
     defaults:
@@ -154,12 +159,22 @@ jobs:
         with:
           targets: ${{ matrix.rust_targets }}
 
+      - name: Use crates.io from GitHub
+        run: bun scripts/ci-use-crates-io.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-${{ matrix.arch }}-updater
+          workspaces: ". -> build.noindex"
+          cache-on-failure: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ui-dist
+          path: ui/dist
 
       - name: Build Windows updater (${{ matrix.arch }})
         env:
@@ -172,7 +187,8 @@ jobs:
           }
           bun run build:win ${{ matrix.arch }} `
             --config apps/desktop/tauri.updater.conf.json `
-            --config apps/desktop/tauri.channel.windows.conf.json
+            --config apps/desktop/tauri.channel.windows.conf.json `
+            --config apps/desktop/tauri.ci-skip-ui.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun run make:latest --host modelscope --channel windows --collect
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -280,12 +296,26 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  # ── macOS ─────────────────────────────────────────────────────────────────
+  # Native slice per chip, then lipo on the job that waits for the slower slice.
   build-macos:
-    name: Build macOS
+    name: Build macOS (${{ matrix.arch }})
     needs: [release-context, build-ui]
-    runs-on: macos-14
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+            build_arch: arm
+            artifact_name: macos-arm64-app
+          - arch: intel
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            build_arch: intel
+            artifact_name: macos-intel-app
     steps:
       - uses: actions/checkout@v5
         with:
@@ -298,11 +328,16 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.rust_target }}
+
+      - name: Use crates.io from GitHub
+        run: bun scripts/ci-use-crates-io.mjs
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: macos-universal-updater
+          shared-key: macos-${{ matrix.arch }}-updater
+          workspaces: ". -> build.noindex"
+          cache-on-failure: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -312,7 +347,7 @@ jobs:
           name: ui-dist
           path: ui/dist
 
-      - name: Build macOS updater (universal)
+      - name: Build macOS ${{ matrix.arch }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -321,10 +356,68 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           }
-          bun run build:mac universal \
+          bun run build:mac ${{ matrix.build_arch }} \
             --config apps/desktop/tauri.updater.conf.json \
             --config apps/desktop/tauri.channel.macos.conf.json \
             --config apps/desktop/tauri.ci-skip-ui.conf.json
+          test -d "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app"
+          ditto -c -k --keepParent \
+            "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app" \
+            flowy-app.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: flowy-app.zip
+          retention-days: 3
+          if-no-files-found: error
+
+  merge-macos:
+    name: Merge macOS universal
+    needs: [release-context, build-macos]
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-context.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          cache: true
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: macos-arm64-app
+          path: staging/arm64
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: macos-intel-app
+          path: staging/intel
+
+      - name: Unpack slice apps
+        run: |
+          ditto -x -k staging/arm64/flowy-app.zip staging/arm64
+          ditto -x -k staging/intel/flowy-app.zip staging/intel
+
+      - name: Lipo universal app, DMG, and updater archive
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || {
+            echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
+            exit 1
+          }
+          bash scripts/merge-macos-universal.sh \
+            --arm64 staging/arm64 \
+            --intel staging/intel \
+            --version "${{ needs.release-context.outputs.version }}"
           bun run make:latest --host modelscope --channel macos --collect
 
       - uses: actions/upload-artifact@v7
@@ -336,7 +429,7 @@ jobs:
 
   publish-macos:
     name: Publish macOS channel
-    needs: [release-context, build-macos]
+    needs: [release-context, merge-macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: modelscope-alpha
@@ -416,7 +509,7 @@ jobs:
   # ── Linux ─────────────────────────────────────────────────────────────────
   build-linux:
     name: Build Linux
-    needs: release-context
+    needs: [release-context, build-ui]
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -431,9 +524,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Use crates.io from GitHub
+        run: bun scripts/ci-use-crates-io.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: linux-x64-updater
+          workspaces: ". -> build.noindex"
+          cache-on-failure: true
 
       - name: Install Linux build dependencies
         run: |
@@ -454,6 +552,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - uses: actions/download-artifact@v7
+        with:
+          name: ui-dist
+          path: ui/dist
+
       - name: Build Linux updater
         env:
           NODE_OPTIONS: --max-old-space-size=8192
@@ -464,7 +567,7 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           }
-          bun run build:linux --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.linux.conf.json
+          bun run build:linux --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.linux.conf.json --config apps/desktop/tauri.ci-skip-ui.conf.json
           bun run make:latest --host modelscope --channel linux --collect
 
       - uses: actions/upload-artifact@v7
