@@ -1146,6 +1146,10 @@ pub(crate) async fn validate_market_skill_directory(
     Ok(declared_name)
 }
 
+/// Byte cap for a market Skill's declared manifest name, aligned with the
+/// 96-byte `is_market_slug` discipline.
+const MAX_MARKET_SKILL_NAME_BYTES: usize = 96;
+
 /// Validate the manifest of one staged market Skill and return its declared
 /// name. Unlike [`validate_market_skill_directory`], the declared name is NOT
 /// required to equal the URL slug the market advertised: upstream SkillHub
@@ -1175,6 +1179,16 @@ pub(crate) async fn validate_market_skill_manifest(skill_dir: &Path) -> Result<S
     if declared_name.trim().is_empty() || description.trim().is_empty() {
         return Err(ExtensionError::InvalidSkillPath(
             "market Skill must declare a non-empty name and description".into(),
+        ));
+    }
+    // The declared name becomes the install directory and the provenance
+    // file stem. Keep it within the market slug's length discipline
+    // (is_market_slug caps at 96 bytes) so a pathological manifest fails as
+    // an invalid manifest instead of a misleading local-I/O error when the
+    // directory is created.
+    if declared_name.len() > MAX_MARKET_SKILL_NAME_BYTES {
+        return Err(ExtensionError::InvalidSkillPath(
+            "market Skill name exceeds the supported length".into(),
         ));
     }
     Ok(declared_name)
@@ -3902,6 +3916,16 @@ mod tests {
         std::fs::write(
             skill_dir.join(SKILL_MANIFEST_FILE),
             "---\ndescription: no name here\n---\nBody",
+        )
+        .unwrap();
+        assert!(validate_market_skill_manifest(&skill_dir).await.is_err());
+
+        // Over-long declared name (cap aligned with the 96-byte slug
+        // discipline) is rejected as an invalid manifest.
+        let long_name = "a".repeat(MAX_MARKET_SKILL_NAME_BYTES + 1);
+        std::fs::write(
+            skill_dir.join(SKILL_MANIFEST_FILE),
+            format!("---\nname: {long_name}\ndescription: d\n---\nBody"),
         )
         .unwrap();
         assert!(validate_market_skill_manifest(&skill_dir).await.is_err());

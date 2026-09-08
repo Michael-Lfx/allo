@@ -182,14 +182,14 @@ impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
             stream_attempt += 1;
             match self.download_attempt(&url, archive_path).await {
                 Ok(sha256) => return Ok(sha256),
-                Err(error) => {
+                Err(DownloadAttemptError::Final(error)) => return Err(error),
+                Err(DownloadAttemptError::StreamDied(error)) => {
                     // Only a mid-stream transport failure is retried here, with
                     // a fresh request and a truncated staging file per attempt.
-                    // Validation failures (content type, size, magic) and local
-                    // I/O are deterministic and returned immediately.
-                    if error != MarketSkillInstallError::Network
-                        || stream_attempt >= MAX_DOWNLOAD_STREAM_ATTEMPTS
-                    {
+                    // Status-gate failures (including an already-retried 429/5xx
+                    // exhausted inside the send helper), validation failures,
+                    // and local I/O are deterministic and returned immediately.
+                    if stream_attempt >= MAX_DOWNLOAD_STREAM_ATTEMPTS {
                         return Err(error);
                     }
                     tokio::time::sleep(download_retry_backoff(stream_attempt)).await;
@@ -199,6 +199,18 @@ impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
     }
 }
 
+/// Internal outcome of one download attempt. The outer stream-retry loop must
+/// only retry failures whose partial output can be safely discarded and whose
+/// cause is transient — i.e. the connection dying while the body streams.
+/// Send-phase failures were already retried inside
+/// [`send_skillhub_get_with_retry`], and status/validation/local-I/O failures
+/// are deterministic; both are `Final` so an exhausted 429 cannot be
+/// double-retried into a second full round.
+enum DownloadAttemptError {
+    Final(MarketSkillInstallError),
+    StreamDied(MarketSkillInstallError),
+}
+
 impl HttpSkillHubArtifactSource {
     /// One download attempt: send (with transient retry inside the helper),
     /// status/content-type gates, then stream to `archive_path` while hashing.
@@ -206,7 +218,7 @@ impl HttpSkillHubArtifactSource {
         &self,
         url: &reqwest::Url,
         archive_path: &Path,
-    ) -> Result<String, MarketSkillInstallError> {
+    ) -> Result<String, DownloadAttemptError> {
         let mut response = send_skillhub_get_with_retry(
             &self.client,
             url.clone(),
@@ -214,13 +226,13 @@ impl HttpSkillHubArtifactSource {
             SKILLHUB_DOWNLOAD_TIMEOUT,
         )
         .await
-        .map_err(map_app_market_error)?;
+        .map_err(|error| DownloadAttemptError::Final(map_app_market_error(error)))?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(MarketSkillInstallError::NotFound);
+            return Err(DownloadAttemptError::Final(MarketSkillInstallError::NotFound));
         }
         if !response.status().is_success() {
-            return Err(MarketSkillInstallError::Network);
+            return Err(DownloadAttemptError::Final(MarketSkillInstallError::Network));
         }
 
         let content_type = response
@@ -229,29 +241,33 @@ impl HttpSkillHubArtifactSource {
             .and_then(|value| value.to_str().ok())
             .map(|value| value.split(';').next().unwrap_or_default().trim().to_ascii_lowercase());
         if !matches!(content_type.as_deref(), Some("application/zip" | "application/octet-stream")) {
-            return Err(MarketSkillInstallError::ArtifactInvalid);
+            return Err(DownloadAttemptError::Final(MarketSkillInstallError::ArtifactInvalid));
         }
         if response
             .content_length()
             .is_some_and(|length| length > MAX_SKILLHUB_SKILL_ZIP_BYTES)
         {
-            return Err(MarketSkillInstallError::ArtifactInvalid);
+            return Err(DownloadAttemptError::Final(MarketSkillInstallError::ArtifactInvalid));
         }
 
         // File::create truncates, so a retried attempt never appends to a
         // partially streamed archive.
         let mut archive = tokio::fs::File::create(archive_path)
             .await
-            .map_err(|_| MarketSkillInstallError::LocalIo)?;
+            .map_err(|_| DownloadAttemptError::Final(MarketSkillInstallError::LocalIo))?;
         let mut hasher = Sha256::new();
         let mut total = 0_u64;
         let mut magic = [0_u8; 2];
         let mut magic_len = 0_usize;
 
-        while let Some(chunk) = response.chunk().await.map_err(|_| MarketSkillInstallError::Network)? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| DownloadAttemptError::StreamDied(MarketSkillInstallError::Network))?
+        {
             let chunk_len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
             if total.saturating_add(chunk_len) > MAX_SKILLHUB_SKILL_ZIP_BYTES {
-                return Err(MarketSkillInstallError::ArtifactInvalid);
+                return Err(DownloadAttemptError::Final(MarketSkillInstallError::ArtifactInvalid));
             }
             let copy_len = (magic.len() - magic_len).min(chunk.len());
             magic[magic_len..magic_len + copy_len].copy_from_slice(&chunk[..copy_len]);
@@ -260,16 +276,16 @@ impl HttpSkillHubArtifactSource {
             archive
                 .write_all(&chunk)
                 .await
-                .map_err(|_| MarketSkillInstallError::LocalIo)?;
+                .map_err(|_| DownloadAttemptError::Final(MarketSkillInstallError::LocalIo))?;
             total += chunk_len;
         }
         archive
             .flush()
             .await
-            .map_err(|_| MarketSkillInstallError::LocalIo)?;
+            .map_err(|_| DownloadAttemptError::Final(MarketSkillInstallError::LocalIo))?;
 
         if magic_len < magic.len() || magic != [b'P', b'K'] {
-            return Err(MarketSkillInstallError::ArtifactInvalid);
+            return Err(DownloadAttemptError::Final(MarketSkillInstallError::ArtifactInvalid));
         }
         Ok(format!("{:x}", hasher.finalize()))
     }
@@ -1754,6 +1770,64 @@ mod tests {
         assert_eq!(tokio::fs::read(archive_path).await.unwrap(), archive);
         assert_eq!(fixture.requests.lock().unwrap().len(), 3);
         fixture.server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_source_maps_download_404_to_not_found_without_retry() {
+        // A publish landing between the detail lookup and the download
+        // (version drift) surfaces as a download 404. It must map to NotFound
+        // and must not be retried: exactly one detail + one download request.
+        let fixture = spawn_recorded_fixture(vec![
+            stub("200 OK", "application/json", detail_json("owner", "demo", "1.2.3")),
+            stub(
+                "404 Not Found",
+                "application/json",
+                b"{\"error\":\"version no longer available\"}".to_vec(),
+            ),
+        ])
+        .await;
+        let source = HttpSkillHubArtifactSource::for_test(&fixture.base_url);
+        let detail = source.fetch_detail("owner", "demo").await.unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let error = source
+            .download_skill(&detail, &tmp.path().join("skill.zip"))
+            .await
+            .unwrap_err();
+        assert_eq!(error, MarketSkillInstallError::NotFound);
+        assert_eq!(fixture.requests.lock().unwrap().len(), 2);
+        fixture.server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_source_does_not_stream_retry_an_exhausted_429_download() {
+        // The send helper already retries a 429 download internally; once it
+        // returns the exhausted response, the status gate's Network mapping is
+        // Final and the stream loop must NOT start a second round. Extra
+        // scripted 429s make a regression observable as extra requests.
+        let mut responses = vec![stub(
+            "200 OK",
+            "application/json",
+            detail_json("owner", "demo", "1.2.3"),
+        )];
+        for _ in 0..6 {
+            responses.push(StubResponse {
+                extra_headers: vec![("Retry-After", "0")],
+                ..stub("429 Too Many Requests", "application/json", b"{\"error\":\"too many requests\"}".to_vec())
+            });
+        }
+        let fixture = spawn_recorded_fixture(responses).await;
+        let source = HttpSkillHubArtifactSource::for_test(&fixture.base_url);
+        let detail = source.fetch_detail("owner", "demo").await.unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let error = source
+            .download_skill(&detail, &tmp.path().join("skill.zip"))
+            .await
+            .unwrap_err();
+        assert_eq!(error, MarketSkillInstallError::Network);
+        // 1 detail + 3 download attempts (the send helper's attempt budget).
+        assert_eq!(fixture.requests.lock().unwrap().len(), 4);
     }
 
     #[tokio::test]

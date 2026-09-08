@@ -169,7 +169,7 @@ pub(crate) async fn read_market_detail_body(
     read_market_response(&mut response).await
 }
 
-/// Read a already-fetched market response body as text with the shared size
+/// Read an already-fetched market response body as text with the shared size
 /// cap. Non-success statuses map to [`AppError::BadGateway`]; callers that
 /// need to preserve 404 (detail lookups) must check the status first.
 pub(crate) async fn read_market_response(response: &mut reqwest::Response) -> Result<String, AppError> {
