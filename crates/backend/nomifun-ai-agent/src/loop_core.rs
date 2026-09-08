@@ -36,6 +36,14 @@ pub(crate) const TOTAL_TIMEOUT_SECS: u64 = 600;
 /// loop's `ROUND_TOKEN_BUDGET`) instead of raising this shared constant.
 pub(crate) const AGENT_MAX_TOKENS: u32 = 8192;
 
+/// 修复循环的推理档位（learnhub「修复轮升思考档」的等价物）：修复轮面对
+/// 的是带定位的审计报告，错误的代价是整个草稿报废——比生成轮更值得花推
+/// 理预算。生成轮保持 None（provider 默认档）。OpenAI 兼容层把该值原样
+/// 序列化为 `reasoning_effort`；不支持的网关要么忽略要么忽略该字段语义，
+/// 不改变请求形状。
+pub(crate) const GENERATE_REASONING_EFFORT: Option<&str> = None;
+pub(crate) const REPAIR_REASONING_EFFORT: Option<&str> = Some("high");
+
 /// Total same-round retries per loop for a corrupted tool-call arguments
 /// JSON (see [`is_round_retryable_stream_error`]). A long multi-round
 /// generation dies as a whole when ANY round hits it — one retry squares
@@ -180,6 +188,7 @@ pub(crate) async fn run_agent_loop(
     max_rounds: usize,
     max_tokens: u32,
     thinking: ThinkingConfig,
+    reasoning_effort: Option<&str>,
     loop_label: &str,
     sink: Option<&dyn LoopEventSink>,
 ) -> Result<String, AppError> {
@@ -220,7 +229,8 @@ pub(crate) async fn run_agent_loop(
             // `one_shot_completion` / `llm_chat.rs`). The value is per-loop
             // policy, cloned per round.
             thinking: Some(thinking.clone()),
-            reasoning_effort: None,
+            // 修复循环的推理档位升级（见 `REPAIR_REASONING_EFFORT`）。
+            reasoning_effort: reasoning_effort.map(str::to_owned),
             temperature: None,
             retain_provider_round: false,
         };

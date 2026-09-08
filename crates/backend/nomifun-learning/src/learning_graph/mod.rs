@@ -29,10 +29,12 @@ use crate::completer::LearningCompleter;
 
 mod audit;
 pub mod draft;
+mod review;
 
 pub(crate) use audit::{
     common_substring_len, derive_suggestions, BLOCK_MIN_SHARED, SEV_DANGER, SEV_INFO, SEV_WARNING,
 };
+pub(crate) use review::{ReviewFinding, needs_review, run_final_review};
 
 /// One node in the graph — a LEARNING UNIT: one human study session,
 /// usually within 30 minutes (soft cap), at most 60 for a genuinely hard

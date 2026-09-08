@@ -35,10 +35,21 @@
   时按需生成（`content_generated` 列支撑幂等），分节落
   `learning_lesson_sections`（ADR-0002）；
 - **learning_graph**（beta）—— 描述即学习目标：scope 分析产出大块概念
-  清单 → agent 循环用 `lg_*` 工具分批建图（每批 ≤15 操作）→
-  `lg_finish` 确定性审计门禁（覆盖/连通/DAG/容量，danger 拦发布）→
+  清单 → agent 循环用 `lg_*` 工具分批建图（每批 ≤15 操作，审计文本携带
+  从 findings 派生的「Suggestions」行动清单，下一批必须逐条处理或驳回）
+  → `lg_finish` 确定性审计门禁（覆盖/连通/DAG/容量，danger 拦发布）→
+  发布前一次独立的单次 LLM 终审（咨询级软门：首次 finish 被意见弹回一次，
+  再次 finish 直接发布，意见随 `graph_meta_json.final_review` 落库）→
   发布为图课程（单隐含模块 + 拓扑序课时 + 前置边表）。节点内容仍按需
   生成，上下文带前置已教节摘要与后代节点禁止清单。
+
+三条生成流的修复循环以更高的推理档位运行（`REPAIR_REASONING_EFFORT`，
+learnhub「修复轮升思考档」的等价物）；生成循环保持 provider 默认档。
+
+课时内容支持断点续跑（失败/超时后草稿在 TTL 内存活，重试经
+lesson_id→draft 映射定位草稿接续，迁移 049 的承诺；ADR-0003）与单节
+重写（`POST /lessons/{id}/sections/{key}/rewrite`，确定性单节管线按落库
+的 `visual` 承诺质检，迁移 050；ADR-0003）。
 
 两种生成的进行中状态/取消统一走 `generation_registry`（status/cancel
 端点的数据源）；学习图草稿在内存存活 1 小时（TTL），支持续建

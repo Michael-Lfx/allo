@@ -29,8 +29,9 @@ use crate::factory::provider_config::resolve_provider_config;
 use crate::knowledge_completer::resolve_default_model;
 use crate::learning_graph_loop::{CANCEL_MESSAGE, CancellableProvider};
 use crate::loop_core::{
-    AGENT_MAX_TOKENS, GENERATE_MAX_ROUNDS, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS,
-    TOTAL_TIMEOUT_SECS, json_compact, log_text, run_agent_loop,
+    AGENT_MAX_TOKENS, GENERATE_MAX_ROUNDS, GENERATE_REASONING_EFFORT, LoopEventSink,
+    REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS, REPAIR_REASONING_EFFORT, TOTAL_TIMEOUT_SECS,
+    json_compact, log_text, run_agent_loop,
 };
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
@@ -221,6 +222,7 @@ impl LiveCourseOutlineAgentEngine {
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
+            GENERATE_REASONING_EFFORT,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -303,6 +305,7 @@ impl LiveCourseOutlineAgentEngine {
                 REPAIR_MAX_ROUNDS,
                 AGENT_MAX_TOKENS,
                 ThinkingConfig::Disabled,
+                REPAIR_REASONING_EFFORT,
                 "repair",
                 Some(ctx.as_ref()),
             )
@@ -1030,6 +1033,7 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
+            GENERATE_REASONING_EFFORT,
             "generate",
             Some(ctx.as_ref()),
         )
