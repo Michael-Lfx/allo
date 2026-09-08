@@ -120,6 +120,7 @@ impl LearningService {
                         .map_err(|message| AppError::BadRequest(message))?,
                     prompt: row.try_get("prompt").map_err(internal)?,
                     options: config.options,
+                    matches: config.matches,
                 },
                 due_at: row.try_get("due_at").map_err(internal)?,
                 stability_days: row.try_get("stability_days").map_err(internal)?,
@@ -186,6 +187,7 @@ impl LearningService {
                             .map_err(|message| AppError::BadRequest(message))?,
                         prompt: row.try_get("prompt").map_err(internal)?,
                         options: config.options,
+                        matches: config.matches,
                     },
                     due_at: row.try_get("due_at").map_err(internal)?,
                     stability_days: row.try_get("stability_days").map_err(internal)?,
@@ -246,7 +248,7 @@ impl LearningService {
                       ON p.lesson_id = a.lesson_id AND p.enrollment_id = e.enrollment_id \
                     LEFT JOIN learning_review_items ri \
                       ON ri.enrollment_id = e.enrollment_id AND ri.activity_id = a.activity_id \
-                    WHERE a.kind IN ('single_choice', 'true_false', 'fill_in_blank')";
+                    WHERE a.kind IN ('single_choice', 'true_false', 'fill_in_blank', 'multi_choice', 'numeric', 'ordering', 'matching')";
         let rows = match course_id {
             Some(course_id) => sqlx::query(&format!("{base} AND e.course_id = ? LIMIT 1000"))
                 .bind(user_id.as_str())
@@ -818,11 +820,16 @@ impl LearningService {
     ) -> Result<String, AppError> {
         if !matches!(
             request.kind,
-            ActivityKind::SingleChoice | ActivityKind::TrueFalse | ActivityKind::FillInBlank
+            ActivityKind::SingleChoice
+            | ActivityKind::TrueFalse
+            | ActivityKind::FillInBlank
+            | ActivityKind::MultiChoice
+            | ActivityKind::Numeric
+            | ActivityKind::Ordering
+            | ActivityKind::Matching
         ) {
             return Err(AppError::BadRequest(
-                "custom questions only support single choice, true/false and fill in the blank"
-                    .into(),
+                "custom questions do not support AI-graded kinds".into(),
             ));
         }
         let (prompt, config) = validate_question_payload(

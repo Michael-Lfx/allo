@@ -274,6 +274,14 @@ mod tests {
                     );
                     // Answer formats: single choice picks an option, true/false
                     // is a boolean, reflection carries no answer.
+                    activity
+                        .validate_shape((2, 5), false)
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "lesson {} activity {:?} fails its kind shape: {error}",
+                                lesson.title, activity.prompt
+                            )
+                        });
                     match activity.kind {
                         ActivityKind::SingleChoice => {
                             let answer = activity
@@ -318,6 +326,14 @@ mod tests {
                                 "lesson {} fill_in_blank lacks distractor traps",
                                 lesson.title
                             );
+                        }
+                        ActivityKind::MultiChoice
+                        | ActivityKind::Numeric
+                        | ActivityKind::Ordering
+                        | ActivityKind::Matching
+                        | ActivityKind::OpenQuestion => {
+                            // covered by validate_shape above; the seeded
+                            // tutorial only uses the classic kinds today.
                         }
                     }
                 }

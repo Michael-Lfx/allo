@@ -43,8 +43,8 @@ pub use models::{
     ActivityKind, ActivityView, AttemptResult, ConceptPack, ConceptView, CourseDetail,
     CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
     DueReview, GenerateCourseRequest, GenerateLessonRequest, LessonStatus, LessonView, ModuleView,
-    RateReviewRequest, ReviewRating, ReviewResult, SourceSpan, SubmitAttemptRequest,
-    UpdateLessonProgressRequest,
+    RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack, SectionView,
+    SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
 };
 pub use routes::learning_routes;
 pub use service::LearningService;

@@ -5,7 +5,7 @@ import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
-import type { CourseDetail, GenerateCourseRequest } from '../types';
+import type { CourseDetail, GenerateCourseRequest, TeachingStyle } from '../types';
 import { errorMessage, type Translate } from '../utils';
 
 /** 对话框内生成视图的一次完整尝试：运行中 / 已完成（课程入库）/
@@ -38,6 +38,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState<string>();
   const [generationDomain, setGenerationDomain] = useState('');
+  // 讲解风格（ADR-0002，课程级）：创建时选择，随课程存储并驱动节写作变体
+  const [teachingStyle, setTeachingStyle] = useState<TeachingStyle>('standard');
   const [generation, setGeneration] = useState<CourseGenerationState | null>(null);
   // 用户取消标记：cancelGeneration 被服务端受理（cancelled=true）后置位，
   // 挂起的生成请求随后以任意错误形态返回——据此呈现中性的「已取消」终态
@@ -113,6 +115,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       await generateCourse({
         knowledge_base_id: selectedKnowledgeBaseId,
         domain: generationDomain.trim() || undefined,
+        teaching_style: teachingStyle,
         ...modelFields,
       });
       return;
@@ -125,10 +128,15 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     // 学习图（beta）：描述即学习目标，后端按 course_kind 分流到图生成；
     // 传统课程走描述流生成大纲。
     if (creationTab === 'graph') {
-      await generateCourse({ course_kind: 'learning_graph', description, ...modelFields });
+      await generateCourse({
+        course_kind: 'learning_graph',
+        description,
+        teaching_style: teachingStyle,
+        ...modelFields,
+      });
       return;
     }
-    await generateCourse({ description, ...modelFields });
+    await generateCourse({ description, teaching_style: teachingStyle, ...modelFields });
   }, [
     creationDescription,
     creationTab,
@@ -271,6 +279,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     setGenerateVisible,
     modelChoice,
     setModelChoice,
+    teachingStyle,
+    setTeachingStyle,
     creationTab,
     setCreationTab,
     creationDescription,

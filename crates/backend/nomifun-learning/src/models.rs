@@ -20,6 +20,9 @@ pub struct CoursePack {
     #[serde(default)]
     pub concepts: Vec<ConceptPack>,
     pub modules: Vec<ModulePack>,
+    /// 讲解风格（课程级，ADR-0002）：决定节写作提示词变体；缺省 standard。
+    #[serde(default)]
+    pub teaching_style: TeachingStyle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +48,9 @@ pub struct GenerateCourseRequest {
     /// 缺省为传统课程。
     #[serde(default)]
     pub course_kind: CourseKind,
+    /// 讲解风格（standard/socratic/feynman）；缺省 standard。
+    #[serde(default)]
+    pub teaching_style: Option<TeachingStyle>,
 }
 
 /// 续建学习图生成的请求体：全部字段可选——模型缺省走默认解析，草稿由
@@ -217,6 +223,285 @@ pub struct LessonPack {
     pub concepts: Vec<String>,
     #[serde(default)]
     pub activities: Vec<ActivityPack>,
+    /// 分节正文（ADR-0002）。缺省为空 = 旧导入课程无分节，读取端回退整篇
+    /// summary 渲染（双读）。
+    #[serde(default)]
+    pub sections: Vec<SectionPack>,
+}
+
+/// 课时内部节段类型（ADR-0002 首期 5 种；交互节暂缓，见 ADR 妥协清单）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SectionKind {
+    /// 概念：只讲一个知识点——动机融进行文，定义 → 最小示例。
+    Concept,
+    /// 例题：完整 worked example——题目 → 分步解答 → 参考答案。
+    Example,
+    /// 演示：可视化承载主要信息（svg/jsxgraph/mermaid/KaTeX），文字只作旁注。
+    Demo,
+    /// 小结：要点回顾与易错点清单。
+    Summary,
+    /// 练习：题组承载——正文只写能力目标与作答引导，不写题。
+    Practice,
+}
+
+impl SectionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Concept => "concept",
+            Self::Example => "example",
+            Self::Demo => "demo",
+            Self::Summary => "summary",
+            Self::Practice => "practice",
+        }
+    }
+
+    /// 提示词里的中文类型名（节标题前缀与类型菜单用）。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Concept => "概念",
+            Self::Example => "例题",
+            Self::Demo => "演示",
+            Self::Summary => "小结",
+            Self::Practice => "练习",
+        }
+    }
+
+    /// 该节型的正文非空白字符下限（生成质检门）。
+    pub const fn min_body_chars(self) -> usize {
+        match self {
+            Self::Concept | Self::Example | Self::Demo => 300,
+            Self::Summary => 120,
+            // 练习节只写能力目标与作答引导（≤120 字目标），下限从宽。
+            Self::Practice => 40,
+        }
+    }
+
+    /// 该节是否承载题组（出题时按内容节配题，练习节本身不配）。
+    pub const fn is_content(self) -> bool {
+        !matches!(self, Self::Practice)
+    }
+}
+
+impl TryFrom<&str> for SectionKind {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "concept" => Ok(Self::Concept),
+            "example" => Ok(Self::Example),
+            "demo" => Ok(Self::Demo),
+            "summary" => Ok(Self::Summary),
+            "practice" => Ok(Self::Practice),
+            other => Err(format!("unsupported section kind: {other}")),
+        }
+    }
+}
+
+/// 节清单条目：大纲阶段规划、逐节生成进度的持久事实源（对齐 learnhub
+/// SectionManifest；status/version 持久在节表，不进生成载荷）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectionPack {
+    /// 节内稳定键（s1、s2……题目经 section_key 绑定来源节）。
+    pub section_key: String,
+    pub kind: SectionKind,
+    pub title: String,
+    /// 大纲要点（一句话）；逐节生成时锚定内容，防跑偏。
+    #[serde(default)]
+    pub points: String,
+    /// 节正文（Markdown）。大纲阶段为空。
+    #[serde(default)]
+    pub body_md: String,
+}
+
+impl SectionPack {
+    /// 节级质检门：长度下限、节内禁 ### 子标题、演示节必须有可视化块、
+    /// 练习节不写题（超 250 字提示性拦截）。失败信息即修复轮的定位输入。
+    pub fn validate_body(&self) -> Result<(), String> {
+        let body = self.body_md.trim();
+        if body.is_empty() {
+            return Err(format!("section {} ({}) body is empty", self.section_key, self.title));
+        }
+        let chars = body.chars().filter(|c| !c.is_whitespace()).count();
+        let min = self.kind.min_body_chars();
+        if chars < min {
+            return Err(format!(
+                "section {} ({}) has {chars} non-whitespace characters, expected at least {min}",
+                self.section_key, self.title
+            ));
+        }
+        if body
+            .lines()
+            .any(|line| line.trim_start().starts_with("###"))
+        {
+            return Err(format!(
+                "section {} ({}) must not contain ### sub-headings — one section teaches one unit",
+                self.section_key, self.title
+            ));
+        }
+        if self.kind == SectionKind::Demo {
+            let visual = body.contains("```svg")
+                || body.contains("```jsxgraph")
+                || body.contains("```mermaid")
+                || body.contains("$$");
+            if !visual {
+                return Err(format!(
+                    "section {} ({}) is a demo: it must carry its message in a visualization \
+                     block (```svg / ```jsxgraph / ```mermaid / $$math$$), not prose",
+                    self.section_key, self.title
+                ));
+            }
+        }
+        if self.kind == SectionKind::Practice && chars > 250 {
+            return Err(format!(
+                "section {} ({}) is a practice section: write only the capability goal and \
+                 answering guidance (≤120 characters target); the questions come from the bank",
+                self.section_key, self.title
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 节清单的 JSON 形状：`{"tier": "...", "sections": [...]}`，大纲阶段
+/// 一次调用产出。tier 只在生成期使用，不落节表。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectionOutline {
+    /// 该课时自声明的复杂度档位（low/mid/high）。
+    #[serde(default)]
+    pub tier: Option<ComplexityTier>,
+    pub sections: Vec<SectionPack>,
+}
+
+/// 复杂度档位（对齐 learnhub：难度/bloom/前置规模折叠出的内容规模级别）。
+/// 锚点沿用 learnhub——低 [1,3] 节 / 中 [3,5] / 高 [4,6]，上限 8；
+/// 每内容节题量低 2 / 中 3 / 高 4。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComplexityTier {
+    Low,
+    Mid,
+    High,
+}
+
+impl ComplexityTier {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Mid => "mid",
+            Self::High => "high",
+        }
+    }
+
+    /// 节数区间（含端点）。
+    pub const fn section_range(self) -> (usize, usize) {
+        match self {
+            Self::Low => (1, 3),
+            Self::Mid => (3, 5),
+            Self::High => (4, 6),
+        }
+    }
+
+    /// 每内容节的出题数。
+    pub const fn questions_per_section(self) -> usize {
+        match self {
+            Self::Low => 2,
+            Self::Mid => 3,
+            Self::High => 4,
+        }
+    }
+}
+
+impl std::fmt::Display for ComplexityTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<&str> for ComplexityTier {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "low" => Ok(Self::Low),
+            "mid" => Ok(Self::Mid),
+            "high" => Ok(Self::High),
+            other => Err(format!("unsupported complexity tier: {other}")),
+        }
+    }
+}
+
+/// 节清单护栏：只拦方向性极端（learnhub checkOutlineBudget 的对齐）。
+/// 低档 >7 节、高档 ≤2 节、任意 >8 节都判定大纲跑偏，回灌反馈重跑一次。
+pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), String> {
+    const MAX_SECTIONS: usize = 8;
+    let count = outline.sections.len();
+    if count == 0 {
+        return Err("section outline is empty: plan at least one section".into());
+    }
+    if count > MAX_SECTIONS {
+        return Err(format!(
+            "section outline plans {count} sections, the hard cap is {MAX_SECTIONS}"
+        ));
+    }
+    if let Some(tier) = outline.tier {
+        // 对齐 learnhub checkOutlineBudget:只拦方向性极端,不掐精确区间。
+        let (min, max) = tier.section_range();
+        if tier == ComplexityTier::Low && count > 7 {
+            return Err(format!(
+                "tier {tier} anchors {min}-{max} sections but the outline plans {count} — \
+                 either raise the tier or split the lesson differently"
+            ));
+        }
+        if tier == ComplexityTier::High && count <= 2 {
+            return Err(format!(
+                "tier high anchors 4-6 sections but the outline plans only {count}"
+            ));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for section in &outline.sections {
+        if section.title.trim().is_empty() {
+            return Err(format!("section {} has an empty title", section.section_key));
+        }
+        if !seen.insert(section.section_key.as_str()) {
+            return Err(format!("duplicate section key {}", section.section_key));
+        }
+    }
+    Ok(())
+}
+
+/// 讲解风格（课程级选择，课时生成时决定节写作提示词变体）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TeachingStyle {
+    #[default]
+    Standard,
+    Socratic,
+    Feynman,
+}
+
+impl TeachingStyle {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Socratic => "socratic",
+            Self::Feynman => "feynman",
+        }
+    }
+}
+
+impl TryFrom<&str> for TeachingStyle {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "standard" => Ok(Self::Standard),
+            "socratic" => Ok(Self::Socratic),
+            "feynman" => Ok(Self::Feynman),
+            other => Err(format!("unsupported teaching style: {other}")),
+        }
+    }
 }
 
 const fn default_estimated_minutes() -> i64 {
@@ -276,6 +561,14 @@ pub struct ActivityPack {
     /// quantities), forcing fine discrimination. Only fill_in_blank uses it.
     #[serde(default, deserialize_with = "de_vec_string_or_empty")]
     pub distractors: Vec<String>,
+    /// Accepted deviation for numeric answers (|response − answer| ≤ tol).
+    /// Only numeric uses it; absent means exact match (floats compared with
+    /// a tiny epsilon).
+    #[serde(default)]
+    pub tol: Option<f64>,
+    /// 来源节的 section_key（如 s2）。None = 跨节综合题（通用）。
+    #[serde(default)]
+    pub section_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +578,16 @@ pub enum ActivityKind {
     TrueFalse,
     Reflection,
     FillInBlank,
+    /// 多选：answer 是选项字符串数组，顺序无关。
+    MultiChoice,
+    /// 数值题：answer 是 JSON number，`tol` 为可接受容差（缺省 0）。
+    Numeric,
+    /// 排序题：options 是打乱后的条目，answer 是正确顺序的条目数组。
+    Ordering,
+    /// 匹配题：options 是左列条目，answer 是与 options 一一对应的右列值数组。
+    Matching,
+    /// 开放题：answer 为 null，走 AI 批改（0-10 分制，≥6 及格）。
+    OpenQuestion,
 }
 
 impl ActivityKind {
@@ -294,7 +597,265 @@ impl ActivityKind {
             Self::TrueFalse => "true_false",
             Self::Reflection => "reflection",
             Self::FillInBlank => "fill_in_blank",
+            Self::MultiChoice => "multi_choice",
+            Self::Numeric => "numeric",
+            Self::Ordering => "ordering",
+            Self::Matching => "matching",
+            Self::OpenQuestion => "open_question",
         }
+    }
+
+    /// 规则判卷的客观题集合：作答即得分，可进复习队列。reflection 与
+    /// open_question 走 AI 批改，不在此列。
+    pub const fn is_objective(self) -> bool {
+        matches!(
+            self,
+            Self::SingleChoice
+                | Self::TrueFalse
+                | Self::FillInBlank
+                | Self::MultiChoice
+                | Self::Numeric
+                | Self::Ordering
+                | Self::Matching
+        )
+    }
+
+    /// AI 批改的题型（answer 为 null，空回答被拒绝）。
+    pub const fn is_ai_graded(self) -> bool {
+        matches!(self, Self::Reflection | Self::OpenQuestion)
+    }
+}
+
+impl ActivityPack {
+    /// Per-kind shape validation shared by every entry point (generation,
+    /// single-addition, draft audit, manual authoring, course import). The
+    /// only caller-specific rule is the options range for choice-like kinds:
+    /// generation demands 3-5 options while manual authoring accepts 2-5.
+    pub(crate) fn validate_shape(
+        &self,
+        options_bounds: (usize, usize),
+        require_distractors: bool,
+    ) -> Result<(), String> {
+        let (min_options, max_options) = options_bounds;
+        let distinct_options = {
+            let mut seen = std::collections::HashSet::new();
+            self.options.iter().all(|option| {
+                !option.trim().is_empty() && seen.insert(option.trim().to_lowercase())
+            })
+        };
+        match self.kind {
+            ActivityKind::SingleChoice => {
+                if !(min_options..=max_options).contains(&self.options.len()) || !distinct_options
+                {
+                    return Err(format!(
+                        "single_choice \"{}\" needs {min_options}-{max_options} distinct non-empty options, got {}",
+                        self.prompt,
+                        self.options.len()
+                    ));
+                }
+                let Some(answer) = self.answer.as_str() else {
+                    return Err(format!(
+                        "single_choice \"{}\" answer must be a string",
+                        self.prompt
+                    ));
+                };
+                if !self.options.iter().any(|option| option == answer) {
+                    return Err(format!(
+                        "single_choice \"{}\" answer does not match any option",
+                        self.prompt
+                    ));
+                }
+            }
+            ActivityKind::TrueFalse => {
+                if !self.answer.is_boolean() {
+                    return Err(format!(
+                        "true_false \"{}\" answer must be a boolean",
+                        self.prompt
+                    ));
+                }
+            }
+            ActivityKind::Reflection | ActivityKind::OpenQuestion => {
+                if !self.answer.is_null() {
+                    return Err(format!(
+                        "{} \"{}\" answer must be null",
+                        self.kind.as_str(),
+                        self.prompt
+                    ));
+                }
+            }
+            ActivityKind::FillInBlank => {
+                if !self.prompt.contains("___") {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" prompt must contain a ___ blank",
+                        self.prompt
+                    ));
+                }
+                let Some(answers) = self.answer.as_array() else {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" answer must be a JSON array of accepted answers",
+                        self.prompt
+                    ));
+                };
+                if answers.is_empty() || answers.len() > 3 {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" must have 1-3 accepted answers",
+                        self.prompt
+                    ));
+                }
+                if answers.iter().any(|accepted| {
+                    !accepted.as_str().is_some_and(|text| !text.trim().is_empty())
+                }) {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" accepted answers must be non-empty strings",
+                        self.prompt
+                    ));
+                }
+                if require_distractors
+                    && self
+                        .distractors
+                        .iter()
+                        .all(|distractor| distractor.trim().is_empty())
+                {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" must provide at least one near-synonym distractor",
+                        self.prompt
+                    ));
+                }
+            }
+            ActivityKind::MultiChoice => {
+                if self.options.len() < min_options
+                    || self.options.len() > max_options
+                    || !distinct_options
+                {
+                    return Err(format!(
+                        "multi_choice \"{}\" needs {min_options}-{max_options} distinct non-empty options, got {}",
+                        self.prompt,
+                        self.options.len()
+                    ));
+                }
+                let Some(answers) = self.answer.as_array() else {
+                    return Err(format!(
+                        "multi_choice \"{}\" answer must be a JSON array of option strings",
+                        self.prompt
+                    ));
+                };
+                if answers.is_empty() {
+                    return Err(format!(
+                        "multi_choice \"{}\" answer must select at least one option",
+                        self.prompt
+                    ));
+                }
+                let mut picked = std::collections::HashSet::new();
+                for answer in answers {
+                    let Some(text) = answer.as_str() else {
+                        return Err(format!(
+                            "multi_choice \"{}\" answer items must be strings",
+                            self.prompt
+                        ));
+                    };
+                    if !self.options.iter().any(|option| option == text) {
+                        return Err(format!(
+                            "multi_choice \"{}\" answer must reference only the given options",
+                            self.prompt
+                        ));
+                    }
+                    if !picked.insert(text.to_owned()) {
+                        return Err(format!(
+                            "multi_choice \"{}\" answer must not repeat an option",
+                            self.prompt
+                        ));
+                    }
+                }
+            }
+            ActivityKind::Numeric => {
+                if self.answer.as_f64().is_none() {
+                    return Err(format!(
+                        "numeric \"{}\" answer must be a JSON number",
+                        self.prompt
+                    ));
+                }
+                if let Some(tol) = self.tol {
+                    if !tol.is_finite() || tol < 0.0 {
+                        return Err(format!(
+                            "numeric \"{}\" tol must be a non-negative finite number",
+                            self.prompt
+                        ));
+                    }
+                }
+            }
+            ActivityKind::Ordering => {
+                if self.options.len() < 2 || !distinct_options {
+                    return Err(format!(
+                        "ordering \"{}\" needs at least 2 distinct non-empty items",
+                        self.prompt
+                    ));
+                }
+                let Some(correct_order) = self.answer.as_array() else {
+                    return Err(format!(
+                        "ordering \"{}\" answer must be a JSON array with the items in correct order",
+                        self.prompt
+                    ));
+                };
+                // The answer must be a permutation of the presented items.
+                let mut remaining: Vec<&str> = self.options.iter().map(String::as_str).collect();
+                for item in correct_order {
+                    let Some(text) = item.as_str() else {
+                        return Err(format!(
+                            "ordering \"{}\" answer items must be strings",
+                            self.prompt
+                        ));
+                    };
+                    let Some(at) = remaining.iter().position(|candidate| *candidate == text) else {
+                        return Err(format!(
+                            "ordering \"{}\" answer must contain exactly the presented items",
+                            self.prompt
+                        ));
+                    };
+                    remaining.remove(at);
+                }
+                if !remaining.is_empty() {
+                    return Err(format!(
+                        "ordering \"{}\" answer must contain exactly the presented items",
+                        self.prompt
+                    ));
+                }
+            }
+            ActivityKind::Matching => {
+                if self.options.len() < 2 || !distinct_options {
+                    return Err(format!(
+                        "matching \"{}\" needs at least 2 distinct non-empty left-column items",
+                        self.prompt
+                    ));
+                }
+                let Some(right) = self.answer.as_array() else {
+                    return Err(format!(
+                        "matching \"{}\" answer must be a JSON array aligned with the left column",
+                        self.prompt
+                    ));
+                };
+                if right.len() != self.options.len() {
+                    return Err(format!(
+                        "matching \"{}\" answer needs one right-column value per left item ({} != {})",
+                        self.prompt,
+                        right.len(),
+                        self.options.len()
+                    ));
+                }
+                if right
+                    .iter()
+                    .any(|value| !value.as_str().is_some_and(|text| !text.trim().is_empty()))
+                {
+                    return Err(format!(
+                        "matching \"{}\" right-column values must be non-empty strings",
+                        self.prompt
+                    ));
+                }
+            }
+        }
+        if self.prompt.trim().is_empty() {
+            return Err("activity prompt is empty".into());
+        }
+        Ok(())
     }
 }
 
@@ -307,6 +868,11 @@ impl TryFrom<&str> for ActivityKind {
             "true_false" => Ok(Self::TrueFalse),
             "reflection" => Ok(Self::Reflection),
             "fill_in_blank" => Ok(Self::FillInBlank),
+            "multi_choice" => Ok(Self::MultiChoice),
+            "numeric" => Ok(Self::Numeric),
+            "ordering" => Ok(Self::Ordering),
+            "matching" => Ok(Self::Matching),
+            "open_question" => Ok(Self::OpenQuestion),
             other => Err(format!("unsupported activity kind: {other}")),
         }
     }
@@ -483,6 +1049,22 @@ pub struct LessonView {
     pub status: LessonStatus,
     pub concepts: Vec<LearningConceptId>,
     pub activities: Vec<ActivityView>,
+    /// 分节正文（ADR-0002）。空 = 旧课时的单篇 summary（双读回退）。
+    pub sections: Vec<SectionView>,
+}
+
+/// API 视角的一个节段：清单字段 + 正文与生成状态。
+#[derive(Debug, Clone, Serialize)]
+pub struct SectionView {
+    pub section_key: String,
+    pub kind: SectionKind,
+    pub title: String,
+    pub points: String,
+    pub body_md: String,
+    /// pending | ready | failed。
+    pub status: String,
+    pub version: i64,
+    pub position: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -491,6 +1073,9 @@ pub struct ActivityView {
     pub kind: ActivityKind,
     pub prompt: String,
     pub options: Vec<String>,
+    /// Matching questions only: scrambled right-column candidates.
+    #[serde(default)]
+    pub matches: Vec<String>,
     pub position: i64,
     pub concepts: Vec<LearningConceptId>,
 }
@@ -599,6 +1184,9 @@ pub struct ReviewQuestion {
     pub kind: ActivityKind,
     pub prompt: String,
     pub options: Vec<String>,
+    /// Matching questions only: right-column candidates (order preserved).
+    #[serde(default)]
+    pub matches: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -865,4 +1453,14 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack the column, so it defaults on read.
     #[serde(default)]
     pub distractors: Vec<String>,
+    /// Accepted numeric deviation (|response − answer| ≤ tol); None = exact.
+    /// Old rows lack it, so it defaults on read.
+    #[serde(default)]
+    pub tol: Option<f64>,
+    /// Matching questions only: the right-column candidate values (the
+    /// answer's own values, order preserved) sent to the UI so the learner
+    /// can pick a match per left item without seeing the alignment.
+    /// Old rows lack it, so it defaults on read.
+    #[serde(default)]
+    pub matches: Vec<String>,
 }

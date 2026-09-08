@@ -57,7 +57,7 @@ impl LearningService {
     ) -> Result<LessonView, AppError> {
         let row = sqlx::query(
             "SELECT l.module_id, l.position, l.content_generated, m.course_id, \
-                    m.position AS module_position, c.course_kind \
+                    m.position AS module_position, c.course_kind, c.teaching_style \
              FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
              JOIN learning_courses c ON c.course_id = m.course_id \
@@ -70,6 +70,12 @@ impl LearningService {
         .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
 
         let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let teaching_style: TeachingStyle = TeachingStyle::try_from(
+            row.try_get::<String, _>("teaching_style")
+                .map_err(internal)?
+                .as_str(),
+        )
+        .map_err(AppError::Internal)?;
         let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
         if content_generated != 0 {
             let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
@@ -223,7 +229,6 @@ impl LearningService {
                     completer.as_ref(),
                     model_override,
                     &blueprint,
-                    &samples,
                     module,
                     lesson,
                     module_position as usize,
@@ -231,6 +236,7 @@ impl LearningService {
                     total_lessons,
                     next_lesson_title,
                     context.excerpt.as_ref().map(|e| e.text.as_str()).unwrap_or_default(),
+                    teaching_style,
                 )
                 .await
                 {
@@ -490,7 +496,36 @@ impl LearningService {
         concept_map: &HashMap<String, LearningConceptId>,
         default_keys: &[String],
     ) -> Result<(), AppError> {
+        let now = now_ms();
         let mut transaction = self.pool.begin().await.map_err(internal)?;
+        // 分节输出：节清单整体替换（幂等重生成语义），summary 存拼装文本
+        // （双读回退）。单篇文档输出（agent 旧契约）不动节表。
+        if !output.sections.is_empty() {
+            sqlx::query("DELETE FROM learning_lesson_sections WHERE lesson_id = ?")
+                .bind(lesson_id.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+            for (position, section) in output.sections.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO learning_lesson_sections \
+                     (section_key, lesson_id, kind, title, points, body_md, status, version, position, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, 'ready', 1, ?, ?, ?)",
+                )
+                .bind(section.section_key.trim())
+                .bind(lesson_id.as_str())
+                .bind(section.kind.as_str())
+                .bind(section.title.trim())
+                .bind(section.points.trim())
+                .bind(section.body_md.trim())
+                .bind(position as i64)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+            }
+        }
         sqlx::query(
             "UPDATE learning_lessons SET summary = ?, estimated_minutes = ?, content_generated = 1 WHERE lesson_id = ?",
         )
@@ -522,15 +557,24 @@ impl LearningService {
                 answer: activity.answer.clone(),
                 explanation: activity.explanation.clone(),
                 distractors: activity.distractors.clone(),
+                tol: activity.tol,
+                matches: matching_candidates(activity),
             };
+            // 「general」是提示词对跨节综合题的约定写法，落库归一为 NULL。
+            let section_key = activity
+                .section_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty() && !key.eq_ignore_ascii_case("general"));
             sqlx::query(
-                "INSERT INTO learning_activities (activity_id, lesson_id, kind, prompt, config_json, position) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO learning_activities (activity_id, lesson_id, kind, prompt, config_json, section_key, position) VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(activity_id.as_str())
             .bind(lesson_id.as_str())
             .bind(activity.kind.as_str())
             .bind(activity.prompt.trim())
             .bind(serde_json::to_string(&config).map_err(internal)?)
+            .bind(section_key)
             .bind(position as i64)
             .execute(&mut *transaction)
             .await
@@ -978,9 +1022,29 @@ fn render_upcoming_nodes(direct: &[(i64, &str, &str)], reachable: usize) -> Stri
     lines.join("\n")
 }
 
+/// Matching questions expose their right-column candidates to the UI (a
+/// scrambled copy is rendered per client); every other kind stores none.
+pub(super) fn matching_candidates(activity: &crate::models::ActivityPack) -> Vec<String> {
+    if activity.kind != ActivityKind::Matching {
+        return Vec::new();
+    }
+    activity
+        .answer
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Shared payload validation for course activities and custom questions so
 /// `evaluate` keeps working for both. Returns the trimmed prompt and the
-/// persisted config.
+/// persisted config. The per-kind shape rules live in
+/// [`crate::models::ActivityPack::validate_shape`]; this wrapper maps them to
+/// HTTP bad-requests and builds the stored config.
 pub(super) fn validate_question_payload(
     kind: ActivityKind,
     prompt: &str,
@@ -995,90 +1059,38 @@ pub(super) fn validate_question_payload(
             "question prompt must not be empty".into(),
         ));
     }
-    let config = match kind {
-        ActivityKind::SingleChoice => {
-            let options: Vec<String> = options
-                .iter()
-                .map(|option| option.trim().to_string())
-                .filter(|option| !option.is_empty())
-                .collect();
-            let unique = options.iter().collect::<std::collections::HashSet<_>>();
-            if unique.len() != options.len() || options.len() < 2 {
-                return Err(AppError::BadRequest(
-                    "single choice questions need at least two unique options".into(),
-                ));
-            }
-            let Some(answer_text) = answer.as_str() else {
-                return Err(AppError::BadRequest(
-                    "single choice answer must be a string".into(),
-                ));
-            };
-            if !options.iter().any(|option| option == answer_text) {
-                return Err(AppError::BadRequest(
-                    "single choice answer must be one of the options".into(),
-                ));
-            }
-            StoredActivityConfig {
-                options,
-                answer: answer.clone(),
-                explanation: explanation.to_string(),
-                distractors: Vec::new(),
-            }
-        }
-        ActivityKind::TrueFalse => {
-            let Some(answer_bool) = answer.as_bool() else {
-                return Err(AppError::BadRequest(
-                    "true/false answer must be a boolean".into(),
-                ));
-            };
-            StoredActivityConfig {
-                options: Vec::new(),
-                answer: Value::Bool(answer_bool),
-                explanation: explanation.to_string(),
-                distractors: Vec::new(),
-            }
-        }
-        ActivityKind::Reflection => StoredActivityConfig {
-            options: Vec::new(),
-            answer: Value::Null,
-            explanation: explanation.to_string(),
-            distractors: Vec::new(),
-        },
-        ActivityKind::FillInBlank => {
-            if !prompt.contains("___") {
-                return Err(AppError::BadRequest(
-                    "fill_in_blank prompt must contain a ___ blank".into(),
-                ));
-            }
-            let Some(answers) = answer.as_array() else {
-                return Err(AppError::BadRequest(
-                    "fill_in_blank answer must be a JSON array of accepted answers".into(),
-                ));
-            };
-            if answers.is_empty() || answers.len() > 3 {
-                return Err(AppError::BadRequest(
-                    "fill_in_blank must have 1-3 accepted answers".into(),
-                ));
-            }
-            if answers.iter().any(|accepted| {
-                !accepted.as_str().is_some_and(|text| !text.trim().is_empty())
-            }) {
-                return Err(AppError::BadRequest(
-                    "fill_in_blank accepted answers must be non-empty strings".into(),
-                ));
-            }
-            let distractors: Vec<String> = distractors
-                .iter()
-                .map(|distractor| distractor.trim().to_string())
-                .filter(|distractor| !distractor.is_empty())
-                .collect();
-            StoredActivityConfig {
-                options: Vec::new(),
-                answer: answer.clone(),
-                explanation: explanation.to_string(),
-                distractors,
-            }
-        }
+    let trim_all = |values: &[String]| -> Vec<String> {
+        values
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect()
+    };
+    let distractors = trim_all(distractors);
+    // Manual authoring accepts 2-5 options (generation demands 3-5).
+    let pack = crate::models::ActivityPack {
+        kind,
+        prompt: prompt.to_owned(),
+        options: trim_all(options),
+        answer: answer.clone(),
+        explanation: explanation.to_owned(),
+        concepts: Vec::new(),
+        distractors,
+        tol: None,
+        section_key: None,
+    };
+    pack.validate_shape((2, 5), false)
+        .map_err(AppError::BadRequest)?;
+    // fill_in_blank keeps its distractor rule through validate_shape; the
+    // numeric tol is learner-authored so it rides in the config as given.
+    let matches = matching_candidates(&pack);
+    let config = StoredActivityConfig {
+        options: pack.options,
+        answer: pack.answer,
+        explanation: pack.explanation,
+        distractors: pack.distractors,
+        tol: pack.tol,
+        matches,
     };
     Ok((prompt.to_string(), config))
 }

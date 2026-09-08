@@ -50,8 +50,8 @@ impl LearningService {
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_courses \
-             (course_id, title, description, domain, source_kb_id, version, blueprint_json, samples_json, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (course_id, title, description, domain, source_kb_id, version, blueprint_json, samples_json, teaching_style, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(course_id.as_str())
         .bind(pack.title.trim())
@@ -61,6 +61,7 @@ impl LearningService {
         .bind(pack.version)
         .bind(blueprint_json)
         .bind(samples_json)
+        .bind(pack.teaching_style.as_str())
         .bind(now)
         .bind(now)
         .execute(&mut *transaction)
@@ -167,6 +168,8 @@ impl LearningService {
                         answer: activity.answer.clone(),
                         explanation: activity.explanation.clone(),
                         distractors: activity.distractors.clone(),
+                        tol: activity.tol,
+                        matches: super::lesson::matching_candidates(activity),
                     };
                     sqlx::query(
                         "INSERT INTO learning_activities \
@@ -336,6 +339,9 @@ impl LearningService {
                     status,
                     concepts: self.lesson_concepts(&lesson_id).await?,
                     activities: self.lesson_activities(&lesson_id).await?,
+                    // 目录视图不加载节正文（体积大）；分节经课时详情接口
+                    // 获取，目录双读 summary。
+                    sections: Vec::new(),
                 });
             }
             modules.push(ModuleView {
@@ -461,6 +467,7 @@ impl LearningService {
         let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
         let concepts = self.lesson_concepts(&id).await?;
         let activities = self.lesson_activities(&id).await?;
+        let sections = self.lesson_sections(&id).await?;
         Ok(LessonView {
             id,
             title: row.try_get("title").map_err(internal)?,
@@ -473,7 +480,38 @@ impl LearningService {
             status,
             concepts,
             activities,
+            sections,
         })
+    }
+
+    /// The lesson's section rows in presentation order. Empty for legacy
+    /// single-document lessons (the dual-read fallback renders `summary`).
+    pub(super) async fn lesson_sections(
+        &self,
+        lesson_id: &LearningLessonId,
+    ) -> Result<Vec<SectionView>, AppError> {
+        let rows = sqlx::query(
+            "SELECT section_key, kind, title, points, body_md, status, version, position              FROM learning_lesson_sections WHERE lesson_id = ? ORDER BY position, section_key",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut sections = Vec::with_capacity(rows.len());
+        for row in rows {
+            let kind_text: String = row.try_get("kind").map_err(internal)?;
+            sections.push(SectionView {
+                section_key: row.try_get("section_key").map_err(internal)?,
+                kind: SectionKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?,
+                title: row.try_get("title").map_err(internal)?,
+                points: row.try_get("points").map_err(internal)?,
+                body_md: row.try_get("body_md").map_err(internal)?,
+                status: row.try_get("status").map_err(internal)?,
+                version: row.try_get("version").map_err(internal)?,
+                position: row.try_get("position").map_err(internal)?,
+            });
+        }
+        Ok(sections)
     }
 
     /// Deletes a course. With `delete_reviews` the learner's enrollment and
@@ -839,62 +877,10 @@ pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
                 for concept in &activity.concepts {
                     require_concept(&concept_keys, concept)?;
                 }
-                match activity.kind {
-                    ActivityKind::SingleChoice => {
-                        let Some(answer) = activity.answer.as_str() else {
-                            return Err(AppError::BadRequest(
-                                "single_choice answer must be a string".into(),
-                            ));
-                        };
-                        if activity.options.len() < 2
-                            || !activity.options.iter().any(|option| option == answer)
-                        {
-                            return Err(AppError::BadRequest(
-                                "single_choice needs at least two options and an answer in options"
-                                    .into(),
-                            ));
-                        }
-                    }
-                    ActivityKind::TrueFalse => {
-                        if !activity.answer.is_boolean() {
-                            return Err(AppError::BadRequest(
-                                "true_false answer must be boolean".into(),
-                            ));
-                        }
-                    }
-                    ActivityKind::Reflection => {}
-                    ActivityKind::FillInBlank => {
-                        if !activity.prompt.contains("___") {
-                            return Err(AppError::BadRequest(
-                                "fill_in_blank prompt must contain a ___ blank".into(),
-                            ));
-                        }
-                        let Some(answers) = activity.answer.as_array() else {
-                            return Err(AppError::BadRequest(
-                                "fill_in_blank answer must be a JSON array of accepted answers"
-                                    .into(),
-                            ));
-                        };
-                        if answers.is_empty() || answers.len() > 3 {
-                            return Err(AppError::BadRequest(
-                                "fill_in_blank must have 1-3 accepted answers".into(),
-                            ));
-                        }
-                        if answers.iter().any(|accepted| {
-                            !accepted
-                                .as_str()
-                                .is_some_and(|text| !text.trim().is_empty())
-                        }) {
-                            return Err(AppError::BadRequest(
-                                "fill_in_blank accepted answers must be non-empty strings".into(),
-                            ));
-                        }
-                        if activity.distractors.is_empty() {
-                            return Err(AppError::BadRequest(
-                                "fill_in_blank needs at least one distractor".into(),
-                            ));
-                        }
-                    }
+                // Shared per-kind shape rules (all nine kinds) with the
+                // manual-authoring bounds (2-5 options).
+                if let Err(error) = activity.validate_shape((2, 5), true) {
+                    return Err(AppError::BadRequest(error));
                 }
             }
         }

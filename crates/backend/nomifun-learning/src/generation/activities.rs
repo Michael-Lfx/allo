@@ -219,92 +219,10 @@ fn validate_generated_activity(
             ));
         }
     }
-    match kind {
-        ActivityKind::SingleChoice => {
-            if !(2..=4).contains(&activity.options.len()) {
-                return Err(format!(
-                    "single_choice \"{}\" has {} options, expected 2-4",
-                    activity.prompt,
-                    activity.options.len()
-                ));
-            }
-            let mut seen = HashSet::new();
-            for option in &activity.options {
-                if option.trim().is_empty() || !seen.insert(option.trim().to_lowercase()) {
-                    return Err(format!(
-                        "single_choice \"{}\" options must be distinct and non-empty",
-                        activity.prompt
-                    ));
-                }
-            }
-            let Some(answer) = activity.answer.as_str() else {
-                return Err(format!(
-                    "single_choice \"{}\" answer must be a string",
-                    activity.prompt
-                ));
-            };
-            if !activity.options.iter().any(|option| option == answer) {
-                return Err(format!(
-                    "single_choice \"{}\" answer does not match any option",
-                    activity.prompt
-                ));
-            }
-        }
-        ActivityKind::TrueFalse => {
-            if !activity.answer.is_boolean() {
-                return Err(format!(
-                    "true_false \"{}\" answer must be a boolean",
-                    activity.prompt
-                ));
-            }
-        }
-        ActivityKind::Reflection => {
-            if !activity.answer.is_null() {
-                return Err(format!(
-                    "reflection \"{}\" answer must be null",
-                    activity.prompt
-                ));
-            }
-        }
-        ActivityKind::FillInBlank => {
-            if !activity.prompt.contains("___") {
-                return Err(format!(
-                    "fill_in_blank \"{}\" prompt must contain a ___ blank",
-                    activity.prompt
-                ));
-            }
-            let Some(answers) = activity.answer.as_array() else {
-                return Err(format!(
-                    "fill_in_blank \"{}\" answer must be a JSON array of accepted answers",
-                    activity.prompt
-                ));
-            };
-            if answers.is_empty() || answers.len() > 3 {
-                return Err(format!(
-                    "fill_in_blank \"{}\" must have 1-3 accepted answers",
-                    activity.prompt
-                ));
-            }
-            if answers.iter().any(|accepted| {
-                !accepted.as_str().is_some_and(|text| !text.trim().is_empty())
-            }) {
-                return Err(format!(
-                    "fill_in_blank \"{}\" accepted answers must be non-empty strings",
-                    activity.prompt
-                ));
-            }
-            if activity
-                .distractors
-                .iter()
-                .all(|distractor| distractor.trim().is_empty())
-            {
-                return Err(format!(
-                    "fill_in_blank \"{}\" must provide at least one near-synonym distractor",
-                    activity.prompt
-                ));
-            }
-        }
-    }
+    // The single-addition flow accepts the learner-chosen kind with the
+    // manual-authoring option bounds (2-5) — narrower than the generation
+    // stage, wider than a hand-authored single choice.
+    activity.validate_shape((2, 5), true)?;
     let normalized = normalize_prompt(&activity.prompt);
     for existing in existing_questions {
         let existing_normalized = normalize_prompt(&existing.prompt);
@@ -321,53 +239,6 @@ fn validate_generated_activity(
         }
     }
     Ok(())
-}
-
-
-/// Stage 2 prompt: the finished lesson document is passed in full so the
-/// activities verify exactly what it teaches, never a parallel invention.
-pub(crate) fn build_activities_prompt(
-    blueprint: &Blueprint,
-    lesson: &BlueprintLesson,
-    summary: &str,
-    excerpt: &str,
-) -> String {
-    let mut prompt = format!(
-        "Course: {}\nLesson: {}\nLesson concepts (use these exact keys when binding activities; \
-         the reflection question(s) must cover ALL of them):\n",
-        blueprint.title,
-        lesson.title,
-    );
-    for concept_key in &lesson.concepts {
-        let concept = blueprint
-            .concepts
-            .iter()
-            .find(|concept| &concept.key == concept_key);
-        if let Some(concept) = concept {
-            prompt.push_str(&format!(
-                "- {} ({}) — {}\n",
-                concept.key,
-                concept.title,
-                concept.description.trim()
-            ));
-        } else {
-            prompt.push_str(&format!("- {concept_key}\n"));
-        }
-    }
-    prompt.push_str("Finished lesson document (design activities that verify exactly what it teaches):\n");
-    prompt.push_str("--- DOCUMENT START ---\n");
-    prompt.push_str(summary);
-    prompt.push_str("\n--- DOCUMENT END ---\n\n");
-    prompt.push_str(&format!(
-        "Cited file excerpt (questions must stay grounded in it):\n\
-         --- FILE: {} ---\n{excerpt}\n\nDesign the activity JSON now.",
-        lesson
-            .source
-            .as_ref()
-            .map(|source| source.path.as_str())
-            .unwrap_or_default()
-    ));
-    prompt
 }
 
 
@@ -389,17 +260,17 @@ pub(super) fn validate_lesson_activities(
     }
     let objective = activities
         .iter()
-        .filter(|activity| activity.kind != ActivityKind::Reflection)
+        .filter(|activity| activity.kind.is_objective())
         .count();
     if objective < LESSON_MIN_OBJECTIVE_ACTIVITIES {
         return Err(format!(
             "lesson has {objective} objective activities, expected at least {LESSON_MIN_OBJECTIVE_ACTIVITIES}"
         ));
     }
-    let reflections = activities.len() - objective;
-    if reflections > LESSON_MAX_REFLECTION_ACTIVITIES {
+    let ai_graded = activities.len() - objective;
+    if ai_graded > LESSON_MAX_REFLECTION_ACTIVITIES {
         return Err(format!(
-            "lesson has {reflections} reflection questions, expected at most {LESSON_MAX_REFLECTION_ACTIVITIES}"
+            "lesson has {ai_graded} AI-graded questions (reflection/open_question), expected at most {LESSON_MAX_REFLECTION_ACTIVITIES}"
         ));
     }
     let concept_keys: HashSet<&str> = blueprint
@@ -426,83 +297,7 @@ pub(super) fn validate_lesson_activities(
                 ));
             }
         }
-        match activity.kind {
-            ActivityKind::SingleChoice => {
-                if !(3..=5).contains(&activity.options.len()) {
-                    return Err(format!(
-                        "single_choice \"{}\" has {} options, expected 3-5",
-                        activity.prompt,
-                        activity.options.len()
-                    ));
-                }
-                let Some(answer) = activity.answer.as_str() else {
-                    return Err(format!(
-                        "single_choice \"{}\" answer must be a string",
-                        activity.prompt
-                    ));
-                };
-                if !activity.options.iter().any(|option| option == answer) {
-                    return Err(format!(
-                        "single_choice \"{}\" answer does not match any option",
-                        activity.prompt
-                    ));
-                }
-            }
-            ActivityKind::TrueFalse => {
-                if !activity.answer.is_boolean() {
-                    return Err(format!(
-                        "true_false \"{}\" answer must be a boolean",
-                        activity.prompt
-                    ));
-                }
-            }
-            ActivityKind::Reflection => {
-                if !activity.answer.is_null() {
-                    return Err(format!(
-                        "reflection \"{}\" answer must be null",
-                        activity.prompt
-                    ));
-                }
-            }
-            ActivityKind::FillInBlank => {
-                if !activity.prompt.contains("___") {
-                    return Err(format!(
-                        "fill_in_blank \"{}\" prompt must contain a ___ blank",
-                        activity.prompt
-                    ));
-                }
-                let Some(answers) = activity.answer.as_array() else {
-                    return Err(format!(
-                        "fill_in_blank \"{}\" answer must be a JSON array of accepted answers",
-                        activity.prompt
-                    ));
-                };
-                if answers.is_empty() || answers.len() > 3 {
-                    return Err(format!(
-                        "fill_in_blank \"{}\" must have 1-3 accepted answers",
-                        activity.prompt
-                    ));
-                }
-                if answers.iter().any(|accepted| {
-                    !accepted.as_str().is_some_and(|text| !text.trim().is_empty())
-                }) {
-                    return Err(format!(
-                        "fill_in_blank \"{}\" accepted answers must be non-empty strings",
-                        activity.prompt
-                    ));
-                }
-                if activity
-                    .distractors
-                    .iter()
-                    .all(|distractor| distractor.trim().is_empty())
-                {
-                    return Err(format!(
-                        "fill_in_blank \"{}\" must provide at least one near-synonym distractor",
-                        activity.prompt
-                    ));
-                }
-            }
-        }
+        activity.validate_shape((3, 5), true)?;
     }
     Ok(())
 }

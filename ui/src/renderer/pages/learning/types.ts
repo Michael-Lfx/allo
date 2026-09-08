@@ -1,4 +1,31 @@
-export type ActivityKind = 'single_choice' | 'true_false' | 'reflection' | 'fill_in_blank';
+export type ActivityKind =
+  | 'single_choice'
+  | 'true_false'
+  | 'reflection'
+  | 'fill_in_blank'
+  | 'multi_choice'
+  | 'numeric'
+  | 'ordering'
+  | 'matching'
+  | 'open_question';
+
+/** 课时内部的节段类型（ADR-0002 首期 5 种；交互节暂缓） */
+export type SectionKind = 'concept' | 'example' | 'demo' | 'summary' | 'practice';
+
+/** 分节正文：body_md 自带 `## ` 标题行，可直接渲染 */
+export interface Section {
+  section_key: string;
+  kind: SectionKind;
+  title: string;
+  points: string;
+  body_md: string;
+  status: 'pending' | 'ready' | 'failed';
+  version: number;
+  position: number;
+}
+
+/** 课程讲解风格（课程级选择，决定节写作提示词变体） */
+export type TeachingStyle = 'standard' | 'socratic' | 'feynman';
 export type LessonStatus = 'not_started' | 'in_progress' | 'completed' | 'skipped';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
@@ -15,6 +42,8 @@ export interface GenerateCourseRequest {
   domain?: string;
   provider_id?: string;
   model?: string;
+  /** 讲解风格（课程级）：standard 标准 / socratic 苏格拉底 / feynman 费曼 */
+  teaching_style?: TeachingStyle;
 }
 
 /** 学习图生成状态（后台指示条/取消入口的数据源）。生成在 HTTP 请求内同步
@@ -51,6 +80,10 @@ export interface Activity {
   kind: ActivityKind;
   prompt: string;
   options: string[];
+  /** matching 题的右列候选（按存储顺序；前端渲染时本地打乱） */
+  matches: string[];
+  /** 来源节 key；null = 跨节综合题（通用） */
+  section_key: string | null;
   position: number;
   concepts: string[];
 }
@@ -79,6 +112,8 @@ export interface Lesson {
   status: LessonStatus;
   concepts: string[];
   activities: Activity[];
+  /** 分节正文；空 = 旧课时的单篇 summary（双读回退） */
+  sections: Section[];
 }
 
 export interface LearningModule {
@@ -128,6 +163,7 @@ export interface ReviewQuestion {
   kind: ActivityKind;
   prompt: string;
   options: string[];
+  matches: string[];
 }
 
 export interface DueReview {

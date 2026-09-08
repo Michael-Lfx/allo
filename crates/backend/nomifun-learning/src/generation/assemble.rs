@@ -27,6 +27,7 @@ pub(crate) fn assemble_outline_pack(
                     source: lesson.source.clone(),
                     concepts: lesson.concepts.clone(),
                     activities: Vec::new(),
+                    sections: Vec::new(),
                 })
                 .collect(),
         })
@@ -53,6 +54,7 @@ pub(crate) fn assemble_outline_pack(
         version: blueprint.version.max(1),
         concepts: blueprint.concepts.clone(),
         modules,
+        teaching_style: request.teaching_style.unwrap_or_default(),
     }
 }
 

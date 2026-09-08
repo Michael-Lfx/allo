@@ -5,6 +5,7 @@ import {
   Modal,
   Progress,
   Spin,
+  Steps,
   Tag,
   Tooltip,
   Typography,
@@ -24,6 +25,7 @@ import type {
   DiagnosticPlan,
   Lesson,
   LessonStatus,
+  Section,
 } from '../types';
 import { sliceSourceContent, statusLabel } from '../utils';
 import { ActivityInput } from './ActivityInput';
@@ -48,13 +50,18 @@ function ActivityBlock({
   const { t } = useTranslation();
   const [response, setResponse] = useState<unknown>();
   const hasResponse =
-    typeof response === 'string' ? response.trim().length > 0 : response !== undefined;
+    typeof response === 'string'
+      ? response.trim().length > 0
+      : Array.isArray(response)
+        ? response.length > 0
+        : response !== undefined && response !== null;
   return (
     <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
       <div className='mb-10px font-500 text-t-primary'>{activity.prompt}</div>
       <ActivityInput
         kind={activity.kind}
         options={activity.options}
+        matches={activity.matches}
         value={response}
         disabled={disabled}
         onChange={setResponse}
@@ -240,8 +247,114 @@ function LessonSourcePanel({
   );
 }
 
+/** 分节交付的一步：节正文 + 该节绑定的练习题。综合题（无节绑定）收进
+ * 末尾的额外一步，不与单节内容混排。 */
+function SectionedLessonBody({
+  lesson,
+  busyId,
+  attemptResults,
+  onAttempt,
+}: {
+  lesson: Lesson;
+  busyId: string | null;
+  attemptResults: Record<string, AttemptResult>;
+  onAttempt: (activity: Activity, response: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  const sections = lesson.sections;
+  const generalActivities = lesson.activities.filter(
+    (activity) => activity.section_key === null
+  );
+  const steps = [
+    ...sections.map((section) => ({ section })),
+    ...(generalActivities.length > 0 ? [{ section: null }] : []),
+  ];
+  const [current, setCurrent] = useState(0);
+  // 课时切换时回到第一节
+  useEffect(() => setCurrent(0), [lesson.id]);
+  const stepIndex = Math.min(current, steps.length - 1);
+  const step = steps[stepIndex];
+  const sectionActivities = (section: Section | null) =>
+    section === null
+      ? generalActivities
+      : lesson.activities.filter((activity) => activity.section_key === section.section_key);
+  return (
+    <div className='flex flex-col gap-12px'>
+      <Steps size='small' current={stepIndex} onChange={(next) => setCurrent(next)}>
+        {steps.map((entry, index) => (
+          <Steps.Step
+            key={entry.section ? entry.section.section_key : 'general'}
+            title={
+              entry.section
+                ? entry.section.title
+                : t('learning.sectionGeneralStep')
+            }
+          />
+        ))}
+      </Steps>
+      {step.section ? (
+        <div className='flex flex-col gap-10px'>
+          <Markdown>{step.section.body_md}</Markdown>
+          {sectionActivities(step.section).length > 0 && (
+            <div className='flex flex-col gap-10px'>
+              <div className='text-13px font-600 text-t-secondary'>
+                {t('learning.sectionPractice')}
+              </div>
+              {sectionActivities(step.section).map((activity) => (
+                <ActivityBlock
+                  key={activity.id}
+                  activity={activity}
+                  disabled={busyId === activity.id}
+                  loading={busyId === activity.id}
+                  result={attemptResults[activity.id]}
+                  onSubmit={onAttempt}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className='flex flex-col gap-10px'>
+          <div className='text-13px font-600 text-t-secondary'>
+            {t('learning.sectionGeneralStep')}
+          </div>
+          {generalActivities.map((activity) => (
+            <ActivityBlock
+              key={activity.id}
+              activity={activity}
+              disabled={busyId === activity.id}
+              loading={busyId === activity.id}
+              result={attemptResults[activity.id]}
+              onSubmit={onAttempt}
+            />
+          ))}
+        </div>
+      )}
+      <div className='flex items-center justify-between'>
+        <Button
+          disabled={stepIndex === 0}
+          icon={<IconLeft />}
+          onClick={() => setCurrent(stepIndex - 1)}
+        >
+          {t('learning.sectionPrev')}
+        </Button>
+        <Text type='secondary'>
+          {stepIndex + 1} / {steps.length}
+        </Text>
+        <Button
+          disabled={stepIndex >= steps.length - 1}
+          onClick={() => setCurrent(stepIndex + 1)}
+        >
+          {t('learning.sectionNext')}
+          <IconRight />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** 普通课程与学习图课程共用的课时学习块：未生成时展示目的与生成入口，
- * 已生成时渲染 Markdown 正文、练习题、原文面板与追加练习题。 */
+ * 已生成时分节渲染（正文 + 本节练习按节推进），旧课时回退整页正文。 */
 export function LessonBlock({
   lesson,
   sourceKbId,
@@ -307,7 +420,6 @@ export function LessonBlock({
   }
   return (
     <div className='flex flex-col gap-14px'>
-      {lesson.summary && <Markdown>{lesson.summary}</Markdown>}
       <div className='flex flex-wrap items-center gap-8px'>
         <Tag color={statusColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
         <Text type='secondary'>
@@ -317,20 +429,34 @@ export function LessonBlock({
       {lesson.source && (
         <LessonSourcePanel knowledgeBaseId={sourceKbId} source={lesson.source} />
       )}
-      {lesson.activities.length > 0 && (
-        <div className='flex flex-col gap-10px'>
-          <div className='text-13px font-600 text-t-secondary'>{t('learning.activities')}</div>
-          {lesson.activities.map((activity) => (
-            <ActivityBlock
-              key={activity.id}
-              activity={activity}
-              disabled={busyId === activity.id}
-              loading={busyId === activity.id}
-              result={attemptResults[activity.id]}
-              onSubmit={onAttempt}
-            />
-          ))}
-        </div>
+      {lesson.sections.length > 0 ? (
+        <SectionedLessonBody
+          lesson={lesson}
+          busyId={busyId}
+          attemptResults={attemptResults}
+          onAttempt={onAttempt}
+        />
+      ) : (
+        <>
+          {lesson.summary && <Markdown>{lesson.summary}</Markdown>}
+          {lesson.activities.length > 0 && (
+            <div className='flex flex-col gap-10px'>
+              <div className='text-13px font-600 text-t-secondary'>
+                {t('learning.activities')}
+              </div>
+              {lesson.activities.map((activity) => (
+                <ActivityBlock
+                  key={activity.id}
+                  activity={activity}
+                  disabled={busyId === activity.id}
+                  loading={busyId === activity.id}
+                  result={attemptResults[activity.id]}
+                  onSubmit={onAttempt}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
       {/* 完成是学习循环的终点动作：放在练习题之后，做完再标记——学习图
           工作区完成即推进到下一推荐节点，提前放置会诱导用户在练习未做时

@@ -124,14 +124,15 @@ impl LearningService {
         // enrollment, so create it on demand instead of requiring a join step.
         let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
         let enrollment_id = self.ensure_enrollment(&course_id, user_id).await?;
-        // Reflection answers are LLM-graded: the activity's linked concepts
-        // ground the grading prompt. AI grading is authoritative — the
-        // empty-answer rejection is enforced here by the rule-based
-        // evaluator, and any grading failure (unconfigured completer, call
-        // error, unparseable reply) surfaces as an error to the learner.
-        // The old silent fallback passed every non-empty answer with a
-        // score of 1.0, hiding grading failures behind a fake success.
-        let (score, feedback) = if kind == ActivityKind::Reflection {
+        // AI-graded answers (reflection 0-1, open_question 0-10) are graded
+        // by the LLM: the activity's linked concepts ground the grading
+        // prompt. AI grading is authoritative — the empty-answer rejection
+        // is enforced here by the rule-based evaluator, and any grading
+        // failure (unconfigured completer, call error, unparseable reply)
+        // surfaces as an error to the learner. The old silent fallback
+        // passed every non-empty answer with a score of 1.0, hiding grading
+        // failures behind a fake success.
+        let (score, feedback) = if kind.is_ai_graded() {
             let answer = response.as_str().map(str::trim).unwrap_or_default();
             if answer.is_empty() {
                 // Always rejected: the evaluator errors on empty responses.
@@ -139,7 +140,8 @@ impl LearningService {
             } else {
                 let linked_concepts =
                     activity_concept_titles(&self.pool, activity_id).await?;
-                self.grade_reflection(
+                self.grade_open_answer(
+                    kind,
                     &activity_prompt,
                     answer,
                     &linked_concepts,
@@ -196,15 +198,17 @@ impl LearningService {
         })
     }
 
-    /// LLM-grades a reflection answer against the exercise's concepts. The
-    /// model sees the exercise prompt, the learner's answer and the linked
-    /// concepts; it must reply with strict JSON
-    /// `{ "score": f64, "feedback": string }`. Every failure (no completer,
-    /// call error, unparseable reply) returns `Err` and is surfaced to the
-    /// learner — AI grading is authoritative, so a broken grader must never
-    /// masquerade as a passing answer.
-    async fn grade_reflection(
+    /// LLM-grades an open answer (reflection 0-1, open_question 0-10) against
+    /// the exercise's concepts. The model sees the exercise prompt, the
+    /// learner's answer and the linked concepts; it must reply with strict
+    /// JSON `{ "score": f64, "feedback": string }`. open_question scores are
+    /// reported on a 0-10 scale and normalized to 0-1 here (≥6 passes).
+    /// Every failure (no completer, call error, unparseable reply) returns
+    /// `Err` and is surfaced to the learner — AI grading is authoritative,
+    /// so a broken grader must never masquerade as a passing answer.
+    async fn grade_open_answer(
         &self,
+        kind: ActivityKind,
         prompt: &str,
         answer: &str,
         linked_concepts: &[(String, String, String)],
@@ -217,18 +221,31 @@ impl LearningService {
             .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
             .clone()
             .ok_or_else(|| {
-                AppError::Conflict("AI reflection grading is not configured".into())
+                AppError::Conflict("AI answer grading is not configured".into())
             })?;
-        let user = build_reflection_grading_prompt(prompt, answer, linked_concepts);
+        let system = if kind == ActivityKind::OpenQuestion {
+            OPEN_QUESTION_GRADING_SYSTEM
+        } else {
+            REFLECTION_GRADING_SYSTEM
+        };
+        let user = build_open_grading_prompt(kind, prompt, answer, linked_concepts);
         let raw = completer
             .complete(
                 provider_id.zip(model).map(|(id, model)| (id.as_str(), model)),
-                REFLECTION_GRADING_SYSTEM,
+                system,
                 &user,
                 crate::generation::REFLECTION_GRADING_MAX_TOKENS,
             )
             .await?;
-        parse_reflection_grading(&raw)
+        let (score, feedback) = parse_open_grading(&raw)?;
+        // open_question arrives on a 0-10 scale; normalize to 0-1 so
+        // mastery/attempt storage stays on the shared scale (0.6 = pass).
+        let normalized = if kind == ActivityKind::OpenQuestion {
+            score / 10.0
+        } else {
+            score
+        };
+        Ok((normalized.clamp(0.0, 1.0), feedback))
     }
 
 }
@@ -253,10 +270,32 @@ Rules:
 - Write the feedback in the same language as the learner's answer.
 - Output JSON only, without Markdown fences or commentary."#;
 
-/// Builds the user message for AI reflection grading: the exercise prompt,
-/// the learner's answer and the concepts the exercise targets (its own
-/// lesson's concepts — reflections never bind concepts of other lessons).
-fn build_reflection_grading_prompt(
+/// System prompt for AI open-question grading: a comprehensive-application
+/// question scored on a 0-10 scale (≥6 passes), graded on full-lesson
+/// coverage rather than a single concept.
+const OPEN_QUESTION_GRADING_SYSTEM: &str = r#"You are a strict but encouraging learning coach grading a learner's open-ended answer to a comprehensive course question.
+
+Score the answer from 0.0 to 10.0 (6.0 is passing):
+- Correctness: are the claims aligned with the concepts this question targets?
+- Completeness: does the answer assemble the key points into a working whole?
+- Application: does it show the learner can use the ideas, not just recite them?
+
+Reply with ONLY one JSON object matching this shape:
+{
+  "score": 6.5,
+  "feedback": "markdown text"
+}
+Rules:
+- score must be a number between 0.0 and 10.0.
+- feedback must be Markdown with two parts: (1) 逐点批改 — point-by-point evaluation against the expected key points, (2) 改进建议 — concrete improvement suggestions.
+- Write the feedback in the same language as the learner's answer.
+- Output JSON only, without Markdown fences or commentary."#;
+
+/// Builds the user message for AI answer grading: the exercise prompt, the
+/// learner's answer and the concepts the exercise targets (its own lesson's
+/// concepts — open questions never bind concepts of other lessons).
+fn build_open_grading_prompt(
+    kind: ActivityKind,
     prompt: &str,
     answer: &str,
     linked_concepts: &[(String, String, String)],
@@ -266,8 +305,13 @@ fn build_reflection_grading_prompt(
         .map(|(_, title, description)| format!("- {title}: {description}"))
         .collect::<Vec<_>>()
         .join("\n");
+    let framing = if kind == ActivityKind::OpenQuestion {
+        "Comprehensive question covering the whole lesson (score on the 0-10 scale):"
+    } else {
+        "Exercise prompt:"
+    };
     format!(
-        "Exercise prompt:\n{prompt}\n\nLearner's answer:\n{answer}\n\nConcepts this exercise targets:\n{linked}"
+        "{framing}\n{prompt}\n\nLearner's answer:\n{answer}\n\nConcepts this exercise targets:\n{linked}"
     )
 }
 
@@ -276,16 +320,16 @@ fn build_reflection_grading_prompt(
 /// fences, prose around the object, escaping errors, trailing commas — do
 /// not silently drop the learner onto rule-based grading. Any shape
 /// deviation returns `Err` so the caller degrades to rule-based grading.
-fn parse_reflection_grading(raw: &str) -> Result<(f64, String), AppError> {
+fn parse_open_grading(raw: &str) -> Result<(f64, String), AppError> {
     #[derive(serde::Deserialize)]
     struct GradingReply {
         score: f64,
         feedback: String,
     }
     let reply: GradingReply = crate::generation::parse_json_object(raw).map_err(|error| {
-        AppError::Internal(format!("unparseable reflection grading reply: {error}"))
+        AppError::Internal(format!("unparseable answer grading reply: {error}"))
     })?;
-    Ok((reply.score.clamp(0.0, 1.0), reply.feedback))
+    Ok((reply.score, reply.feedback))
 }
 
 /// Concept rows (id, title, description) bound to an activity, used both for
@@ -313,12 +357,29 @@ pub(super) fn evaluate(
     config: &StoredActivityConfig,
     response: &Value,
 ) -> Result<(f64, String), AppError> {
+    // AI-graded kinds never enter this rule-based evaluator with a
+    // meaningful score: reflection is graded by `grade_reflection`, and the
+    // empty-response rejection for both AI-graded kinds is enforced here.
+    if kind.is_ai_graded() {
+        let correct = response
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty());
+        if !correct {
+            return Err(AppError::BadRequest(format!(
+                "{} response must not be empty",
+                kind.as_str()
+            )));
+        }
+        // Unreachable in production: callers route AI-graded kinds to the
+        // completer first and only fall back here for the empty check.
+        return Ok((1.0, config.explanation.clone()));
+    }
     let correct = match kind {
         ActivityKind::SingleChoice => response.as_str() == config.answer.as_str(),
         ActivityKind::TrueFalse => response.as_bool() == config.answer.as_bool(),
-        ActivityKind::Reflection => response
-            .as_str()
-            .is_some_and(|value| !value.trim().is_empty()),
+        ActivityKind::Reflection | ActivityKind::OpenQuestion => unreachable!(
+            "AI-graded kinds are handled above"
+        ),
         ActivityKind::FillInBlank => {
             let Some(answer) = response.as_str().map(str::trim) else {
                 return Err(AppError::BadRequest(
@@ -338,12 +399,81 @@ pub(super) fn evaluate(
                 })
             })
         }
+        // Order-insensitive selection: every picked option must be part of
+        // the stored answer and every stored answer picked (exact set match).
+        ActivityKind::MultiChoice => {
+            let Some(picked) = response.as_array() else {
+                return Err(AppError::BadRequest(
+                    "multi_choice response must be an array of options".into(),
+                ));
+            };
+            let Some(expected) = config.answer.as_array() else {
+                return Err(AppError::Internal(
+                    "multi_choice activity has a malformed stored answer".into(),
+                ));
+            };
+            let normalize = |values: &[Value]| -> std::collections::HashSet<String> {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(|text| text.trim().to_owned()))
+                    .collect()
+            };
+            normalize(picked) == normalize(expected)
+        }
+        // |response − answer| ≤ tol (tiny epsilon when tol is absent so
+        // decimal answers are not punished for float representation).
+        ActivityKind::Numeric => {
+            let Some(value) = response.as_f64() else {
+                return Err(AppError::BadRequest(
+                    "numeric response must be a number".into(),
+                ));
+            };
+            let Some(expected) = config.answer.as_f64() else {
+                return Err(AppError::Internal(
+                    "numeric activity has a malformed stored answer".into(),
+                ));
+            };
+            let tol = config.tol.unwrap_or(1e-9).max(1e-9);
+            (value - expected).abs() <= tol
+        }
+        // Sequence equality over the presented items (the UI shuffles
+        // `options` for display; the response is the learner's order).
+        ActivityKind::Ordering => {
+            let Some(sequence) = response.as_array() else {
+                return Err(AppError::BadRequest(
+                    "ordering response must be an array of items in order".into(),
+                ));
+            };
+            let Some(expected) = config.answer.as_array() else {
+                return Err(AppError::Internal(
+                    "ordering activity has a malformed stored answer".into(),
+                ));
+            };
+            sequence.len() == expected.len()
+                && sequence
+                    .iter()
+                    .zip(expected.iter())
+                    .all(|(got, want)| got.as_str() == want.as_str())
+        }
+        // Right-column values aligned with the left column (options).
+        ActivityKind::Matching => {
+            let Some(alignment) = response.as_array() else {
+                return Err(AppError::BadRequest(
+                    "matching response must be an array aligned with the left column".into(),
+                ));
+            };
+            let Some(expected) = config.answer.as_array() else {
+                return Err(AppError::Internal(
+                    "matching activity has a malformed stored answer".into(),
+                ));
+            };
+            alignment.len() == expected.len()
+                && alignment
+                    .iter()
+                    .zip(expected.iter())
+                    .all(|(got, want)| got.as_str() == want.as_str())
+        }
     };
-    if kind == ActivityKind::Reflection && !correct {
-        return Err(AppError::BadRequest(
-            "reflection response must not be empty".into(),
-        ));
-    }
     let score = if correct { 1.0 } else { 0.0 };
     let feedback = if correct {
         config.explanation.clone()
@@ -482,7 +612,8 @@ async fn seed_lesson_review_items(
 ) -> Result<(), AppError> {
     let activity_ids: Vec<String> = sqlx::query_scalar(
         "SELECT activity_id FROM learning_activities \
-         WHERE lesson_id = ? AND kind IN ('single_choice', 'true_false', 'fill_in_blank') \
+         WHERE lesson_id = ? AND kind IN ('single_choice', 'true_false', 'fill_in_blank', \
+           'multi_choice', 'numeric', 'ordering', 'matching') \
          ORDER BY position, activity_id",
     )
     .bind(lesson_id.as_str())

@@ -10,13 +10,13 @@
 //! count floors, reflection cap, concept binding, per-kind shape) — inlined
 //! with position-aware messages so one audit pass surfaces every finding.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::generation::{
     LESSON_MAX_REFLECTION_ACTIVITIES, LESSON_MIN_ACTIVITIES, LESSON_MIN_OBJECTIVE_ACTIVITIES,
     LessonOutput, validate_lesson_document,
 };
-use crate::models::{ActivityKind, ActivityPack, ConceptPack};
+use crate::models::{ActivityKind, ActivityPack, ConceptPack, SectionPack};
 
 use crate::learning_graph::{SEV_DANGER, SEV_WARNING};
 
@@ -96,11 +96,17 @@ pub struct LessonFinding {
 #[derive(Debug, Clone)]
 pub struct LessonDraft {
     pub context: LessonGenerationContext,
-    /// The study document (plain Markdown, no JSON wrapper) — `None` until
-    /// `set_document` runs.
+    /// The study document (plain Markdown, no JSON wrapper) — the legacy
+    /// single-document shape. `None` when the draft is sectioned.
     pub document: Option<String>,
     pub estimated_minutes: i64,
     pub activities: Vec<ActivityPack>,
+    /// 分节契约（ADR-0002）：大纲清单 + 已写节正文。`set_section_manifest`
+    /// 规划节型，`set_section_body` 逐节写入——agent loop 的「分职责轮次」，
+    /// 每节一次工具调用，注意力集中在单一学习单元上。
+    pub section_manifest: Option<Vec<SectionPack>>,
+    /// section_key → (正文, 计划)。正文经节级质检后才入表。
+    pub section_bodies: HashMap<String, (String, Option<SectionPack>)>,
     /// Bumps once per accepted op — the repair loop's "did the model touch
     /// anything" signal.
     pub revision: usize,
@@ -115,6 +121,15 @@ pub struct LessonDraft {
 pub enum LessonOp {
     SetDocument {
         document: String,
+    },
+    /// 规划分节清单（整组替换；重规划时已写正文按 section_key 保留）。
+    SetSectionManifest {
+        sections: Vec<SectionPack>,
+    },
+    /// 写入一节正文；该节已存在时整体替换。
+    SetSectionBody {
+        section_key: String,
+        body: String,
     },
     SetEstimatedMinutes {
         minutes: i64,
@@ -135,6 +150,8 @@ impl LessonOp {
     fn name(&self) -> &'static str {
         match self {
             Self::SetDocument { .. } => "set_document",
+            Self::SetSectionManifest { .. } => "set_section_manifest",
+            Self::SetSectionBody { .. } => "set_section_body",
             Self::SetEstimatedMinutes { .. } => "set_estimated_minutes",
             Self::AddActivity { .. } => "add_activity",
             Self::UpdateActivity { .. } => "update_activity",
@@ -207,6 +224,8 @@ impl LessonDraft {
             document: None,
             estimated_minutes: 10,
             activities: Vec::new(),
+            section_manifest: None,
+            section_bodies: HashMap::new(),
             revision: 0,
             findings: Vec::new(),
         };
@@ -268,6 +287,75 @@ impl LessonDraft {
                 self.document = Some(trimmed);
                 Ok(format!("document replaced ({chars} non-whitespace characters)"))
             }
+            LessonOp::SetSectionManifest { sections } => {
+                if sections.is_empty() {
+                    return Err("section manifest must not be empty".into());
+                }
+                let mut seen = HashSet::new();
+                for section in &sections {
+                    if section.title.trim().is_empty() {
+                        return Err(format!(
+                            "section {} has an empty title",
+                            section.section_key
+                        ));
+                    }
+                    if !seen.insert(section.section_key.as_str()) {
+                        return Err(format!(
+                            "duplicate section key {}",
+                            section.section_key
+                        ));
+                    }
+                    // Keep already-written bodies whose key survives the replan.
+                    if let Some((body, _)) = self.section_bodies.get(&section.section_key) {
+                        let body = body.clone();
+                        self.section_bodies.insert(
+                            section.section_key.clone(),
+                            (body, Some(section.clone())),
+                        );
+                    }
+                }
+                self.section_manifest = Some(sections);
+                Ok("section manifest planned (write each body with set_section_body)".into())
+            }
+            LessonOp::SetSectionBody { section_key, body } => {
+                let trimmed = body.trim().to_owned();
+                if trimmed.is_empty() {
+                    return Err("section body must not be empty".into());
+                }
+                // The manifest comes first: the kind's quality gate (length
+                // floor, demo visualization, practice brevity) needs it.
+                let planned = self
+                    .section_manifest
+                    .as_ref()
+                    .and_then(|manifest| {
+                        manifest
+                            .iter()
+                            .find(|section| section.section_key == section_key)
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "section {section_key} is not in the manifest — call set_section_manifest first"
+                        )
+                    })?;
+                let candidate = SectionPack {
+                    section_key: section_key.clone(),
+                    kind: planned.kind,
+                    title: planned.title.clone(),
+                    points: planned.points.clone(),
+                    body_md: trimmed.clone(),
+                };
+                candidate.validate_body()?;
+                let existed = self.section_bodies.contains_key(&section_key);
+                let report_key = section_key.clone();
+                self.section_bodies
+                    .insert(section_key, (trimmed, Some(planned)));
+                Ok(format!(
+                    "section {report_key} body {} ({chars} non-whitespace characters)",
+                    if existed { "replaced" } else { "written" },
+                    chars = candidate.body_md.chars().filter(|c| !c.is_whitespace()).count()
+                ))
+            }
             LessonOp::SetEstimatedMinutes { minutes } => {
                 if !(1..=240).contains(&minutes) {
                     return Err(format!(
@@ -317,11 +405,15 @@ impl LessonDraft {
         let document = self.document.clone();
         let estimated_minutes = self.estimated_minutes;
         let activities = self.activities.clone();
+        let section_manifest = self.section_manifest.clone();
+        let section_bodies = self.section_bodies.clone();
         self.findings = audit_findings(
             &self.context,
             document.as_deref(),
             estimated_minutes,
             &activities,
+            section_manifest.as_deref(),
+            &section_bodies,
         );
     }
 
@@ -338,19 +430,45 @@ impl LessonDraft {
             ));
         }
         report.push_str(
-            "\n存在 [danger] 时发布会被门禁拒绝：逐条修复（ls_set_document / ls_patch_activities）后重新 ls_audit。",
+            "\n存在 [danger] 时发布会被门禁拒绝：逐条修复（ls_set_document / ls_set_section_manifest / ls_set_section_body / ls_patch_activities）后重新 ls_audit。",
         );
         report
     }
 
     pub fn inspect(&self) -> LessonInspectView {
         let document = self.document.as_deref().unwrap_or_default();
-        let document_sections = document
-            .lines()
-            .map(str::trim)
-            .filter(|line| line.starts_with("## "))
-            .map(str::to_owned)
-            .collect();
+        let document_sections: Vec<String> = if self.section_manifest.is_some() {
+            // Sectioned drafts report the manifest with per-section status.
+            self.section_manifest
+                .as_ref()
+                .map(|manifest| {
+                    manifest
+                        .iter()
+                        .map(|section| {
+                            let state =
+                                if self.section_bodies.contains_key(&section.section_key) {
+                                    "ready"
+                                } else {
+                                    "pending"
+                                };
+                            format!(
+                                "{} [{}] {}（{state}）",
+                                section.section_key,
+                                section.kind.label(),
+                                section.title.trim()
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            document
+                .lines()
+                .map(str::trim)
+                .filter(|line| line.starts_with("## "))
+                .map(str::to_owned)
+                .collect()
+        };
         LessonInspectView {
             revision: self.revision,
             document_written: self.document.is_some(),
@@ -371,13 +489,56 @@ impl LessonDraft {
         }
     }
 
+    /// Ready sections as packs, ordered by the manifest. Legacy
+    /// single-document drafts yield an empty list — the dual-read fallback
+    /// renders the flat summary.
+    pub fn sections(&self) -> Vec<crate::models::SectionPack> {
+        let mut sections: Vec<crate::models::SectionPack> = self
+            .section_bodies
+            .iter()
+            .filter_map(|(key, (body, planned))| {
+                planned.as_ref().map(|planned| crate::models::SectionPack {
+                    section_key: key.clone(),
+                    kind: planned.kind,
+                    title: planned.title.clone(),
+                    points: planned.points.clone(),
+                    body_md: body.clone(),
+                })
+            })
+            .collect();
+        sections.sort_by_key(|section| {
+            self.section_manifest
+                .as_ref()
+                .and_then(|manifest| {
+                    manifest
+                        .iter()
+                        .position(|item| item.section_key == section.section_key)
+                })
+                .unwrap_or(usize::MAX)
+        });
+        sections
+    }
+
     /// Convert a gate-cleared draft into the generation stage's output.
-    /// Only called after the finish gate — the document is always present.
+    /// Only called after the finish gate. Sectioned drafts assemble the flat
+    /// summary from their sections; legacy single-document drafts pass the
+    /// document through (the dual-read fallback renders it).
     pub fn to_output(&self) -> LessonOutput {
+        let sections = self.sections();
+        let summary = if sections.is_empty() {
+            self.document.clone().unwrap_or_default()
+        } else {
+            sections
+                .iter()
+                .map(|section| section.body_md.trim())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
         LessonOutput {
-            summary: self.document.clone().unwrap_or_default(),
+            summary,
             estimated_minutes: self.estimated_minutes,
             activities: self.activities.clone(),
+            sections,
         }
     }
 }
@@ -390,6 +551,8 @@ fn audit_findings(
     document: Option<&str>,
     estimated_minutes: i64,
     activities: &[ActivityPack],
+    section_manifest: Option<&[SectionPack]>,
+    section_bodies: &HashMap<String, (String, Option<SectionPack>)>,
 ) -> Vec<LessonFinding> {
     let mut findings = Vec::new();
     let danger = |kind: &str, message: String| LessonFinding {
@@ -403,15 +566,54 @@ fn audit_findings(
         message,
     };
 
-    // ── Document contract (same validator as the fallback pipeline) ──
-    match document {
-        None => findings.push(danger(
-            "document_missing",
-            "学习文档尚未写入（ls_set_document）".into(),
-        )),
-        Some(document) => {
-            if let Err(error) = validate_lesson_document(document) {
-                findings.push(danger("document_invalid", error));
+    // ── Content contract: sectioned drafts are the ADR-0002 shape; a
+    // legacy single-document draft (set_document) stays valid so old
+    // sessions and tests keep publishing. Exactly one of the two must hold.
+    let sectioned = section_manifest.is_some() || !section_bodies.is_empty();
+    if sectioned {
+        match section_manifest {
+            None => findings.push(danger(
+                "sections_missing",
+                "分节正文已写入但节清单缺失（先调用 ls_set_section_manifest）".into(),
+            )),
+            Some(manifest) => {
+                for section in manifest {
+                    match section_bodies.get(&section.section_key) {
+                        None => findings.push(danger(
+                            "section_body_missing",
+                            format!(
+                                "节 {} [{}] 「{}」还没有正文（ls_set_section_body）",
+                                section.section_key,
+                                section.kind.label(),
+                                section.title.trim()
+                            ),
+                        )),
+                        Some((body, _planned)) => {
+                            let candidate = crate::models::SectionPack {
+                                section_key: section.section_key.clone(),
+                                kind: section.kind,
+                                title: section.title.clone(),
+                                points: section.points.clone(),
+                                body_md: body.clone(),
+                            };
+                            if let Err(error) = candidate.validate_body() {
+                                findings.push(danger("section_invalid", error));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        match document {
+            None => findings.push(danger(
+                "document_missing",
+                "学习内容尚未写入（先 ls_set_section_manifest 规划分节，或 ls_set_document 写单篇文档）".into(),
+            )),
+            Some(document) => {
+                if let Err(error) = validate_lesson_document(document) {
+                    findings.push(danger("document_invalid", error));
+                }
             }
         }
     }
@@ -496,102 +698,10 @@ fn audit_findings(
                 ));
             }
         }
-        match activity.kind {
-            ActivityKind::SingleChoice => {
-                if !(3..=5).contains(&activity.options.len()) {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!(
-                            "{at}: single_choice \"{}\" has {} options, expected 3-5",
-                            activity.prompt,
-                            activity.options.len()
-                        ),
-                    ));
-                }
-                let Some(answer) = activity.answer.as_str() else {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!("{at}: single_choice \"{}\" answer must be a string", activity.prompt),
-                    ));
-                    continue;
-                };
-                if !activity.options.iter().any(|option| option == answer) {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!(
-                            "{at}: single_choice \"{}\" answer does not match any option",
-                            activity.prompt
-                        ),
-                    ));
-                }
-            }
-            ActivityKind::TrueFalse => {
-                if !activity.answer.is_boolean() {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!("{at}: true_false \"{}\" answer must be a boolean", activity.prompt),
-                    ));
-                }
-            }
-            ActivityKind::Reflection => {
-                if !activity.answer.is_null() {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!("{at}: reflection \"{}\" answer must be null", activity.prompt),
-                    ));
-                }
-            }
-            ActivityKind::FillInBlank => {
-                if !activity.prompt.contains("___") {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!(
-                            "{at}: fill_in_blank \"{}\" prompt must contain a ___ blank",
-                            activity.prompt
-                        ),
-                    ));
-                }
-                let Some(answers) = activity.answer.as_array() else {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!(
-                            "{at}: fill_in_blank \"{}\" answer must be a JSON array of accepted answers",
-                            activity.prompt
-                        ),
-                    ));
-                    continue;
-                };
-                if answers.is_empty() || answers.len() > 3 {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!("{at}: fill_in_blank \"{}\" must have 1-3 accepted answers", activity.prompt),
-                    ));
-                }
-                if answers.iter().any(|accepted| {
-                    !accepted.as_str().is_some_and(|text| !text.trim().is_empty())
-                }) {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!(
-                            "{at}: fill_in_blank \"{}\" accepted answers must be non-empty strings",
-                            activity.prompt
-                        ),
-                    ));
-                }
-                if activity
-                    .distractors
-                    .iter()
-                    .all(|distractor| distractor.trim().is_empty())
-                {
-                    findings.push(danger(
-                        "activity_shape_invalid",
-                        format!(
-                            "{at}: fill_in_blank \"{}\" must provide at least one near-synonym distractor",
-                            activity.prompt
-                        ),
-                    ));
-                }
-            }
+        // Shared per-kind shape rules (all nine kinds); the generation
+        // bounds (3-5 options for choice-like kinds) apply.
+        if let Err(error) = activity.validate_shape((3, 5), true) {
+            findings.push(danger("activity_shape_invalid", format!("{at}: {error}")));
         }
         // Duplicate prompts (normalized) are redundant retrieval work.
         let normalized = activity.prompt.trim().to_lowercase();
