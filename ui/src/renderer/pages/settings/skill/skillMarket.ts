@@ -202,6 +202,72 @@ export const isNativeSkillMarketItem = (
   item: Pick<ISkillMarketItem, 'install_mode'>
 ): boolean => item.install_mode === 'native';
 
+/**
+ * Maps a native-install error code from the backend (`ErrorResponse.code`) to
+ * its i18n key plus a Chinese fallback. Kept here (not in the page component)
+ * so the mapping is unit-testable. Unknown/empty codes fall back to the
+ * generic `installFailed` message.
+ */
+export const marketSkillInstallErrorMessage = (code: string): { key: string; fallback: string } => {
+  switch (code) {
+    case 'MARKET_SKILL_SOURCE_UNSUPPORTED':
+      return {
+        key: 'settings.skillsMarket.installUnsupported',
+        fallback: '当前来源暂不支持托管安装。',
+      };
+    case 'MARKET_SKILL_ID_INVALID':
+      return {
+        key: 'settings.skillsMarket.installInvalidId',
+        fallback: '技能市场条目标识无效。',
+      };
+    case 'MARKET_SKILL_NOT_FOUND':
+      return {
+        key: 'settings.skillsMarket.installNotFound',
+        fallback: '技能市场条目已不存在。',
+      };
+    case 'MARKET_SKILL_NAME_CONFLICT':
+      return {
+        key: 'settings.skillsMarket.installConflict',
+        fallback: '该技能名称已存在，请前往已安装 Skill 处理。',
+      };
+    case 'MARKET_SKILL_ARTIFACT_INVALID':
+      return {
+        key: 'settings.skillsMarket.installArtifactInvalid',
+        fallback: '下载的技能包无法通过安全校验。',
+      };
+    case 'MARKET_SKILL_MANIFEST_INVALID':
+      return {
+        key: 'settings.skillsMarket.installManifestInvalid',
+        fallback: '下载的技能清单无效。',
+      };
+    case 'MARKET_SKILL_BUNDLE_UNSUPPORTED':
+      return {
+        key: 'settings.skillsMarket.installBundleUnsupported',
+        fallback: '该条目是技能合集，暂不支持单技能安装。',
+      };
+    case 'MARKET_SKILL_NETWORK':
+      return {
+        key: 'settings.skillsMarket.installNetwork',
+        fallback: '网络暂时不可用，请重试。',
+      };
+    case 'MARKET_SKILL_TIMEOUT':
+      return {
+        key: 'settings.skillsMarket.installTimeout',
+        fallback: '下载超时，请重试。',
+      };
+    case 'MARKET_SKILL_LOCAL_IO':
+      return {
+        key: 'settings.skillsMarket.installLocalIo',
+        fallback: '本地技能目录暂时不可用，请重试。',
+      };
+    default:
+      return {
+        key: 'settings.skillsMarket.installFailed',
+        fallback: '技能安装失败，请稍后重试。',
+      };
+  }
+};
+
 export const normalizeSkillMarketItems = (raw: unknown): ISkillMarketItem[] => {
   if (!Array.isArray(raw)) return [];
   return raw.map(normalizeSkillMarketItem).filter((item): item is ISkillMarketItem => Boolean(item));

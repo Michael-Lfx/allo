@@ -5,11 +5,13 @@
  */
 import { ipcBridge } from '@/common';
 import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import MarketSettingsPanel from './MarketSettingsPanel';
 import {
   isNativeSkillMarketItem,
   isSkillMarketItemInstalled,
+  marketSkillInstallErrorMessage,
   SKILL_MARKET_SOURCES,
 } from './skill/skillMarket';
 import { AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills } from './skill/availableSkills';
@@ -67,7 +69,8 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
         );
       } catch (error) {
         console.error('Failed to install market skill:', error);
-        message.error(t('settings.skillsMarket.installFailed', { defaultValue: '技能安装失败，请稍后重试。' }));
+        const mapped = marketSkillInstallErrorMessage(isBackendHttpError(error) ? error.code : '');
+        message.error(t(mapped.key, { defaultValue: mapped.fallback }));
       }
     },
     [message, mutate, t]

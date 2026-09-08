@@ -4,6 +4,7 @@ import {
   filterSkillMarketItems,
   isNativeSkillMarketItem,
   isSkillMarketItemInstalled,
+  marketSkillInstallErrorMessage,
   normalizeSkillMarketErrors,
   normalizeSkillMarketItem,
   normalizeSkillMarketItems,
@@ -176,5 +177,31 @@ describe('skill market helpers', () => {
       '来自 vercel-labs/skills 的 SkillHub 榜单技能。'
     );
     expect(translateMarketDescription('GitHub coding helper', item).includes('开发')).toBe(true);
+  });
+
+  test('maps native install error codes to dedicated i18n keys', () => {
+    const cases: Array<[string, string]> = [
+      ['MARKET_SKILL_SOURCE_UNSUPPORTED', 'settings.skillsMarket.installUnsupported'],
+      ['MARKET_SKILL_ID_INVALID', 'settings.skillsMarket.installInvalidId'],
+      ['MARKET_SKILL_NOT_FOUND', 'settings.skillsMarket.installNotFound'],
+      ['MARKET_SKILL_NAME_CONFLICT', 'settings.skillsMarket.installConflict'],
+      ['MARKET_SKILL_ARTIFACT_INVALID', 'settings.skillsMarket.installArtifactInvalid'],
+      ['MARKET_SKILL_MANIFEST_INVALID', 'settings.skillsMarket.installManifestInvalid'],
+      ['MARKET_SKILL_BUNDLE_UNSUPPORTED', 'settings.skillsMarket.installBundleUnsupported'],
+      ['MARKET_SKILL_NETWORK', 'settings.skillsMarket.installNetwork'],
+      ['MARKET_SKILL_TIMEOUT', 'settings.skillsMarket.installTimeout'],
+      ['MARKET_SKILL_LOCAL_IO', 'settings.skillsMarket.installLocalIo'],
+    ];
+    for (const [code, key] of cases) {
+      const mapped = marketSkillInstallErrorMessage(code);
+      expect(mapped.key).toBe(key);
+      expect(mapped.fallback.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('falls back to the generic install failure for unknown codes', () => {
+    for (const code of ['', 'SOMETHING_ELSE', 'market_skill_network']) {
+      expect(marketSkillInstallErrorMessage(code).key).toBe('settings.skillsMarket.installFailed');
+    }
   });
 });
