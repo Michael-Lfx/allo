@@ -46,6 +46,29 @@ impl LearningService {
         Ok(crate::models::RepairFigureResponse { code })
     }
 
+    /// 引擎生成课时内容：存在仍存活的草稿（上次会话失败/超时留下，TTL
+    /// 1 小时内）时续跑而非从零重建（兑现迁移 049 的断点续跑承诺），否则
+    /// 全新生成。传统与学习图两条课时路径共用。
+    async fn generate_or_resume_lesson(
+        &self,
+        user_id: &UserId,
+        engine: &Arc<dyn LessonContentAgentEngine>,
+        context: &LessonGenerationContext,
+        model_override: Option<(&str, &str)>,
+    ) -> Result<LessonOutput, AppError> {
+        match self.live_lesson_draft_for_lesson(context.lesson_id.as_str()) {
+            Some(draft_id) => {
+                self.emit_lesson_event(serde_json::json!({
+                    "phase": "resumed",
+                    "lesson_id": context.lesson_id,
+                    "draft_id": draft_id,
+                }));
+                engine.resume(user_id, &draft_id, context, model_override).await
+            }
+            None => engine.generate(user_id, context, model_override).await,
+        }
+    }
+
     /// Full lesson view for one lesson, including the sectioned body. The
     /// course-detail catalog deliberately omits section bodies (a 200-node
     /// graph course would carry hundreds of kilobytes), so the frontend
@@ -167,6 +190,7 @@ impl LearningService {
 
         let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
         let context = LessonGenerationContext {
+            lesson_id: lesson_id.as_str().to_owned(),
             course_title,
             course_description: blueprint.description.clone(),
             module_title: module.title.clone(),
@@ -209,10 +233,12 @@ impl LearningService {
             // Agent loop path: the injected two-loop engine owns the whole
             // lifecycle (draft + `ls_*` tools, audit-gated publish); its
             // LoopContext emits the round/audit progress frames itself.
+            // A live draft from a failed run resumes instead of restarting.
             Some(engine) => {
-                let result = engine
-                    .generate(
+                let result = self
+                    .generate_or_resume_lesson(
                         user_id,
+                        &engine,
                         &context,
                         model_override.map(|(provider, model)| (provider.as_str(), model)),
                     )
@@ -351,6 +377,90 @@ impl LearningService {
             .unwrap_or_default();
 
         // 一次载入全部节点与前置边（≤500 节点），内存算祖先闭包与后代。
+        let (prerequisite_path, upcoming_nodes, forbidden_concepts, total_nodes) =
+            self.graph_node_topology(course_id, lesson_id).await?;
+
+        let context = LessonGenerationContext {
+            lesson_id: lesson_id.as_str().to_owned(),
+            course_title,
+            // 图节点没有课程简报；目标/范围在 graph 段渲染。
+            course_description: String::new(),
+            module_title,
+            module_index: 0,
+            lesson_title,
+            lesson_index: lesson_position.max(0) as usize,
+            total_lessons: total_nodes,
+            // 衔接语义由 graph.upcoming_nodes 承担。
+            next_lesson_title: None,
+            purpose,
+            concepts: Vec::new(),
+            concept_keys: Vec::new(),
+            excerpt: None,
+            outline_tree: String::new(),
+            adjacent_context: String::new(),
+            graph: Some(GraphLessonContext {
+                goal,
+                scope,
+                prerequisite_path,
+                upcoming_nodes,
+            }),
+            // 防超纲黑名单：可及后代节点标题清单（graph_node_topology 推导）。
+            forbidden_concepts,
+        };
+
+        self.emit_lesson_event(serde_json::json!({
+            "phase": "started",
+            "lesson_id": lesson_id.as_str(),
+            "title": context.lesson_title,
+            "module": context.module_title,
+        }));
+        let engine = self.lesson_engine().ok_or_else(|| {
+            AppError::Conflict(
+                "learning-graph lesson content generation requires the agent engine".into(),
+            )
+        })?;
+        let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+        let result = self
+            .generate_or_resume_lesson(
+                user_id,
+                &engine,
+                &context,
+                model_override.map(|(provider, model)| (provider.as_str(), model)),
+            )
+            .await;
+        match &result {
+            Ok(output) => self.emit_lesson_event(serde_json::json!({
+                "phase": "completed",
+                "lesson_id": lesson_id.as_str(),
+                "title": context.lesson_title,
+                "activities": output.activities.len(),
+                "estimated_minutes": output.estimated_minutes,
+            })),
+            Err(error) => self.emit_lesson_event(serde_json::json!({
+                "phase": "failed",
+                "lesson_id": lesson_id.as_str(),
+                "title": context.lesson_title,
+                "error": error.to_string(),
+            })),
+        }
+        let output = result?;
+        // 学习图课程没有概念行：空 concept_map + 空 default_keys（audit
+        // 保证活动不携带概念绑定）。
+        self.persist_lesson_output(lesson_id, &output, &HashMap::new(), &[])
+            .await?;
+
+        let enrollment = self.enrollment_id_for(user_id, course_id).await?;
+        self.lesson_view(lesson_id, enrollment.as_ref()).await
+    }
+
+    /// 学习图节点的拓扑上下文（节点内容生成与单节重写共用）：一次载入全
+    /// 部节点与前置边（≤500 节点，不引入 SQL 递归 CTE），在 Rust 内计算
+    /// ——前置已教摘要路径、后续节点段、可及后代禁止清单，以及全图节点数。
+    async fn graph_node_topology(
+        &self,
+        course_id: &LearningCourseId,
+        lesson_id: &LearningLessonId,
+    ) -> Result<(String, String, String, usize), AppError> {
         let node_rows = sqlx::query(
             "SELECT l.lesson_id, l.title, l.position FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
@@ -470,75 +580,287 @@ impl LearningService {
         descendants.sort_unstable_by_key(|(position, _)| std::cmp::Reverse(*position));
         let forbidden_concepts = render_forbidden_descendants(&descendants);
 
-        let context = LessonGenerationContext {
-            course_title,
-            // 图节点没有课程简报；目标/范围在 graph 段渲染。
-            course_description: String::new(),
-            module_title,
-            module_index: 0,
-            lesson_title,
-            lesson_index: lesson_position.max(0) as usize,
-            total_lessons: nodes.len(),
-            // 衔接语义由 graph.upcoming_nodes 承担。
-            next_lesson_title: None,
-            purpose,
-            concepts: Vec::new(),
-            concept_keys: Vec::new(),
-            excerpt: None,
-            outline_tree: String::new(),
-            adjacent_context: String::new(),
-            graph: Some(GraphLessonContext {
-                goal,
-                scope,
-                prerequisite_path,
-                upcoming_nodes,
-            }),
-            // 防超纲黑名单：可及后代节点标题清单（见上方推导处）。
-            forbidden_concepts,
-        };
+        Ok((prerequisite_path, upcoming_nodes, forbidden_concepts, nodes.len()))
+    }
 
-        self.emit_lesson_event(serde_json::json!({
-            "phase": "started",
-            "lesson_id": lesson_id.as_str(),
-            "title": context.lesson_title,
-            "module": context.module_title,
-        }));
-        let engine = self.lesson_engine().ok_or_else(|| {
-            AppError::Conflict(
-                "learning-graph lesson content generation requires the agent engine".into(),
-            )
-        })?;
-        let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
-        let result = engine
-            .generate(
-                user_id,
-                &context,
-                model_override.map(|(provider, model)| (provider.as_str(), model)),
-            )
-            .await;
-        match &result {
-            Ok(output) => self.emit_lesson_event(serde_json::json!({
-                "phase": "completed",
-                "lesson_id": lesson_id.as_str(),
-                "title": context.lesson_title,
-                "activities": output.activities.len(),
-                "estimated_minutes": output.estimated_minutes,
-            })),
-            Err(error) => self.emit_lesson_event(serde_json::json!({
-                "phase": "failed",
-                "lesson_id": lesson_id.as_str(),
-                "title": context.lesson_title,
-                "error": error.to_string(),
-            })),
+    /// 单节重写（迁移 050/ADR-0002 的节级操作语义）：只重写一节正文并原
+    /// 地更新（version+1），其他节与题目不动，summary 由全部节重新拼装。
+    /// 走确定性单节管线（生成 + 定位修复 + 节级质检门 + visual 降级兜底）
+    /// ——单节没有规划需求，agent 循环的多步自主价值用不上，一次有界调用
+    /// 更省更稳。承诺事实源是节表里落库的 `visual` 声明（迁移 050）。
+    pub async fn rewrite_lesson_section(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        section_key: &str,
+        request: &GenerateLessonRequest,
+    ) -> Result<LessonView, AppError> {
+        let row = sqlx::query(
+            "SELECT l.position, l.content_generated, m.course_id, c.course_kind, c.teaching_style \
+             FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id \
+             WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let course_kind = row.try_get::<String, _>("course_kind").map_err(internal)?;
+        let teaching_style: TeachingStyle = TeachingStyle::try_from(
+            row.try_get::<String, _>("teaching_style")
+                .map_err(internal)?
+                .as_str(),
+        )
+        .map_err(AppError::Internal)?;
+        if row.try_get::<i64, _>("content_generated").map_err(internal)? == 0 {
+            return Err(AppError::Conflict(
+                "lesson content has not been generated yet".into(),
+            ));
         }
-        let output = result?;
-        // 学习图课程没有概念行：空 concept_map + 空 default_keys（audit
-        // 保证活动不携带概念绑定）。
-        self.persist_lesson_output(lesson_id, &output, &HashMap::new(), &[])
-            .await?;
 
-        let enrollment = self.enrollment_id_for(user_id, course_id).await?;
+        // 既有分节 = 单节重写的前提；按清单位置给出节任务与衔接参照。
+        let sections = self.lesson_sections(lesson_id).await?;
+        if sections.is_empty() {
+            return Err(AppError::Conflict(
+                "lesson has no sectioned content (legacy single-document lessons cannot be \
+                 rewritten per section)"
+                    .into(),
+            ));
+        }
+        let position = sections
+            .iter()
+            .position(|section| section.section_key == section_key)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("section {section_key} in lesson {lesson_id}"))
+            })?;
+        let current = &sections[position];
+        let planned = crate::models::SectionPack {
+            section_key: current.section_key.clone(),
+            kind: current.kind,
+            title: current.title.clone(),
+            points: current.points.clone(),
+            visual: current.visual.clone(),
+            body_md: String::new(),
+        };
+        let previous_body = if position > 0 {
+            Some(sections[position - 1].body_md.as_str())
+        } else {
+            None
+        };
+        let next_section_title = sections.get(position + 1).map(|s| s.title.as_str());
+
+        // 防超纲与 grounded 上下文按课程类型分流（与两条生成路径同口径）。
+        let (grounding, forbidden): (Option<(String, String)>, String) =
+            if course_kind == CourseKind::LearningGraph.as_str() {
+                let (prerequisite_path, _upcoming, forbidden, _total) =
+                    self.graph_node_topology(&course_id, lesson_id).await?;
+                let course = sqlx::query(
+                    "SELECT learning_goal, learning_scope FROM learning_courses WHERE course_id = ?",
+                )
+                .bind(course_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+                let goal: String = course
+                    .try_get::<Option<String>, _>("learning_goal")
+                    .map_err(internal)?
+                    .unwrap_or_default();
+                let scope: String = course
+                    .try_get::<Option<String>, _>("learning_scope")
+                    .map_err(internal)?
+                    .unwrap_or_default();
+                let mut context_text = format!("学习目标：{}\n学习范围：{}", goal.trim(), scope.trim());
+                if !prerequisite_path.trim().is_empty() {
+                    context_text.push_str(&format!(
+                        "\n\n前置路径（学习者已掌握，不要重复讲授）：\n{prerequisite_path}"
+                    ));
+                }
+                (Some(("学习图节点上下文".into(), context_text)), forbidden)
+            } else {
+                let (forbidden, excerpt) = self.traditional_lesson_grounding(&course_id, lesson_id).await?;
+                let grounding = (!excerpt.is_empty())
+                    .then(|| ("引用摘录（正文必须忠于它）".into(), excerpt));
+                (grounding, forbidden)
+            };
+
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict("knowledge-backed course generation is not configured".into())
+            })?;
+        let lesson_row: (String, String, String) = sqlx::query_as(
+            "SELECT l.title, l.purpose, c.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id \
+             WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let lesson_title = lesson_row.0;
+        let lesson_purpose = lesson_row.1;
+
+        let grounding_refs = grounding
+            .as_ref()
+            .map(|(label, text)| (label.as_str(), text.as_str()));
+        let manifest: Vec<crate::models::SectionPack> = sections
+            .iter()
+            .map(|section| crate::models::SectionPack {
+                section_key: section.section_key.clone(),
+                kind: section.kind,
+                title: section.title.clone(),
+                points: section.points.clone(),
+                visual: section.visual.clone(),
+                body_md: String::new(),
+            })
+            .collect();
+        let (body, degraded) = crate::generation::rewrite_section_body(
+            completer.as_ref(),
+            request.provider_id.as_ref().zip(request.model.as_deref()),
+            teaching_style,
+            &lesson_row.2,
+            &lesson_title,
+            &lesson_purpose,
+            &planned,
+            position,
+            &manifest,
+            previous_body,
+            next_section_title,
+            grounding_refs,
+            &forbidden,
+            crate::models::ComplexityTier::Mid,
+        )
+        .await
+        .map_err(|error| {
+            AppError::UnprocessableEntity(format!(
+                "section '{section_key}' failed to rewrite: {error}"
+            ))
+        })?;
+        if degraded {
+            // 降级兜底可见:该节以 visual=无 纯文字保底,便于事后重试。
+            self.emit_lesson_event(serde_json::json!({
+                "phase": "degraded",
+                "lesson_id": lesson_id.as_str(),
+                "sections": [section_key],
+            }));
+        }
+        self.persist_rewritten_section(lesson_id, section_key, &body).await?;
+
+        let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
+    }
+
+    /// 传统课时的 grounding 与防超纲黑名单（蓝图快照派生，与生成路径同
+    /// 源）；没有快照的课程（教程课）给空黑名单与空摘录。
+    async fn traditional_lesson_grounding(
+        &self,
+        course_id: &LearningCourseId,
+        lesson_id: &LearningLessonId,
+    ) -> Result<(String, String), AppError> {
+        let snapshot = sqlx::query(
+            "SELECT blueprint_json, samples_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let Some(snapshot) = snapshot else {
+            return Ok((String::new(), String::new()));
+        };
+        let blueprint_json: Option<String> = snapshot.try_get("blueprint_json").map_err(internal)?;
+        let samples_json: Option<String> = snapshot.try_get("samples_json").map_err(internal)?;
+        let (Some(blueprint_json), Some(samples_json)) = (blueprint_json, samples_json) else {
+            return Ok((String::new(), String::new()));
+        };
+        let blueprint: Blueprint = serde_json::from_str(&blueprint_json).map_err(internal)?;
+        let samples: Vec<(String, String)> = serde_json::from_str(&samples_json).map_err(internal)?;
+        let coordinates: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT m.position, l.position FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let Some((module_position, lesson_position)) = coordinates else {
+            return Ok((String::new(), String::new()));
+        };
+        let Some(module) = blueprint.modules.get(module_position as usize) else {
+            return Ok((String::new(), String::new()));
+        };
+        let Some(lesson) = module.lessons.get(lesson_position as usize) else {
+            return Ok((String::new(), String::new()));
+        };
+        let excerpt = lesson
+            .source
+            .as_ref()
+            .and_then(|source| {
+                samples
+                    .iter()
+                    .find(|(path, _)| path == &source.path)
+                    .map(|(_, text)| text.clone())
+            })
+            .unwrap_or_default();
+        Ok((crate::generation::forbidden_concepts_text(&blueprint, lesson), excerpt))
+    }
+
+    /// 单节落库：正文原地替换（version+1），summary 由全部节重新拼装
+    /// （双读回退的文本同步）。单事务——节更新与 summary 拼装同生共死。
+    async fn persist_rewritten_section(
+        &self,
+        lesson_id: &LearningLessonId,
+        section_key: &str,
+        body: &str,
+    ) -> Result<(), AppError> {
+        let now = now_ms();
+        let body = crate::generation::fix_mermaid_quotes(body.trim());
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let updated = sqlx::query(
+            "UPDATE learning_lesson_sections \
+             SET body_md = ?, status = 'ready', version = version + 1, updated_at = ? \
+             WHERE lesson_id = ? AND section_key = ?",
+        )
+        .bind(&body)
+        .bind(now)
+        .bind(lesson_id.as_str())
+        .bind(section_key)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if updated.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!(
+                "section {section_key} in lesson {lesson_id}"
+            )));
+        }
+        let bodies: Vec<String> = sqlx::query_scalar(
+            "SELECT body_md FROM learning_lesson_sections \
+             WHERE lesson_id = ? ORDER BY position, section_key",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        let summary = bodies
+            .iter()
+            .map(|body| body.trim())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        sqlx::query("UPDATE learning_lessons SET summary = ?, updated_at = ? WHERE lesson_id = ?")
+            .bind(&summary)
+            .bind(now)
+            .bind(lesson_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        transaction.commit().await.map_err(internal)?;
+        Ok(())
     }
 
     /// 批量取一组课时的已生成节摘要（`status='ready'` 节的标题+要点，按
@@ -595,14 +917,15 @@ impl LearningService {
             for (position, section) in output.sections.iter().enumerate() {
                 sqlx::query(
                     "INSERT INTO learning_lesson_sections \
-                     (section_key, lesson_id, kind, title, points, body_md, status, version, position, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, 'ready', 1, ?, ?, ?)",
+                     (section_key, lesson_id, kind, title, points, visual, body_md, status, version, position, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 1, ?, ?, ?)",
                 )
                 .bind(section.section_key.trim())
                 .bind(lesson_id.as_str())
                 .bind(section.kind.as_str())
                 .bind(section.title.trim())
                 .bind(section.points.trim())
+                .bind(section.visual.trim())
                 .bind(section.body_md.trim())
                 .bind(position as i64)
                 .bind(now)

@@ -59,6 +59,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             post(generate_lesson),
         )
         .route(
+            "/api/learning/lessons/{id}/sections/{section_key}/rewrite",
+            post(rewrite_lesson_section),
+        )
+        .route(
             "/api/learning/lessons/{id}/activities",
             post(create_lesson_activity),
         )
@@ -273,6 +277,21 @@ async fn generate_lesson(
         state
             .service
             .generate_lesson_content(&user.id, &id, &request)
+            .await?,
+    )))
+}
+
+async fn rewrite_lesson_section(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, section_key)): Path<(String, String)>,
+    Json(request): Json<GenerateLessonRequest>,
+) -> Result<Json<ApiResponse<crate::models::LessonView>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .rewrite_lesson_section(&user.id, &id, &section_key, &request)
             .await?,
     )))
 }

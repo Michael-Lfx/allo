@@ -298,7 +298,7 @@ pub(crate) use self::completer::{
 };
 pub(crate) use self::lesson::{
     build_adjacent_context, build_outline_tree, forbidden_concepts_text, generate_lesson,
-    validate_lesson_document,
+    rewrite_section_body, validate_lesson_document,
 };
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
 pub(crate) use self::sample::sample_base_files;

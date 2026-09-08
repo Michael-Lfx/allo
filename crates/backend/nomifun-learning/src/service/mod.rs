@@ -71,9 +71,16 @@ pub struct LearningService {
     /// otherwise the legacy one-shot pipeline runs.
     course_outline_engine: Arc<RwLock<Option<Arc<dyn CourseOutlineAgentEngine>>>>,
     /// In-memory draft store backing the agent tool set (`ls_start` ..
-    /// `ls_finish`). Same lifecycle as the outline drafts: short-lived,
-    /// `finish` is the single publish path.
-    lesson_drafts: Arc<RwLock<HashMap<String, LessonDraft>>>,
+    /// /// `ls_finish`). Entries carry their last-activity timestamp and are
+    /// evicted lazily (see `service::lesson_draft::LESSON_DRAFT_TTL`) so
+    /// abandoned drafts cannot leak memory; `finish` is the single publish
+    /// path.
+    lesson_drafts: Arc<RwLock<HashMap<String, (LessonDraft, std::time::Instant)>>>,
+    /// 课时内容草稿的断点续跑映射（lesson_id → draft_id）：生成失败后草
+    /// 稿仍在 TTL 内时，重试同一课时经 [`Self::live_lesson_draft_for_lesson`]
+    /// 定位草稿续跑而非从零重建。发布成功即清除；草稿过期后查找自然落空
+    /// （回退全新生成）。内存态，与草稿存储同生命周期（重启即失）。
+    lesson_draft_ids: Arc<Mutex<HashMap<String, String>>>,
     /// Two-loop lesson content agent engine; when present,
     /// `generate_lesson_content` routes through it (draft + `ls_*` tools,
     /// audit-gated publish), otherwise the legacy two-stage pipeline runs.
@@ -123,6 +130,7 @@ impl LearningService {
             course_outline_drafts: Arc::new(RwLock::new(HashMap::new())),
             course_outline_engine: Arc::new(RwLock::new(None)),
             lesson_drafts: Arc::new(RwLock::new(HashMap::new())),
+            lesson_draft_ids: Arc::new(Mutex::new(HashMap::new())),
             lesson_engine: Arc::new(RwLock::new(None)),
             event_sink: Arc::new(RwLock::new(None)),
             generation_slots: Arc::new(Mutex::new(HashSet::new())),

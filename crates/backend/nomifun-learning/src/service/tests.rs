@@ -178,6 +178,16 @@ teaching_style: crate::models::TeachingStyle::Standard,
                 degraded_keys: Vec::new(),
             })
         }
+
+        async fn resume(
+            &self,
+            _user_id: &UserId,
+            _draft_id: &str,
+            context: &LessonGenerationContext,
+            _model_override: Option<(&str, &str)>,
+        ) -> Result<LessonOutput, nomifun_common::AppError> {
+            self.generate(_user_id, context, _model_override).await
+        }
     }
 
     /// Engine-path contract: the service pre-renders the full outline tree

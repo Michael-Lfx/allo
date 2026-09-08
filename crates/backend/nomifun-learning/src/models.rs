@@ -1246,6 +1246,9 @@ pub struct SectionView {
     pub kind: SectionKind,
     pub title: String,
     pub points: String,
+    /// 大纲声明的本节讲解主体可视化（承诺事实源，迁移 050 起落库）；
+    /// 历史行为空串（未声明）。
+    pub visual: String,
     pub body_md: String,
     /// pending | ready | failed。
     pub status: String,

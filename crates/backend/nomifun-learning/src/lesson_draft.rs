@@ -56,6 +56,9 @@ pub struct GraphLessonContext {
 /// `generate_lesson_content` from the persisted course snapshot.
 #[derive(Debug, Clone)]
 pub struct LessonGenerationContext {
+    /// 课时行 id——草稿按它挂到课时（断点续跑的查找键：重试时定位到
+    /// 仍存活的草稿接着跑，而不是从零重建）。
+    pub lesson_id: String,
     pub course_title: String,
     /// Description-flow grounding (kb-flow lessons ground in `excerpt`).
     pub course_description: String,
@@ -764,6 +767,18 @@ pub trait LessonContentAgentEngine: Send + Sync {
         context: &LessonGenerationContext,
         model_override: Option<(&str, &str)>,
     ) -> Result<LessonOutput, nomifun_common::AppError>;
+
+    /// Resume a live draft from a previous interrupted run: the opening
+    /// user turn carries the draft's current state plus the archived round
+    /// logs, so the model continues where it stopped instead of rebuilding
+    /// from scratch (same mechanism as the learning-graph loop's resume).
+    async fn resume(
+        &self,
+        user_id: &nomifun_common::UserId,
+        draft_id: &str,
+        context: &LessonGenerationContext,
+        model_override: Option<(&str, &str)>,
+    ) -> Result<LessonOutput, nomifun_common::AppError>;
 }
 
 #[cfg(test)]
@@ -772,6 +787,7 @@ mod tests {
 
     fn context() -> LessonGenerationContext {
         LessonGenerationContext {
+            lesson_id: "lesson-1".into(),
             course_title: "测试课程".into(),
             course_description: "零基础期权入门".into(),
             module_title: "模块一".into(),

@@ -2558,6 +2558,7 @@ impl AppServices {
                     encryption_key,
                     workspace: data_dir.clone(),
                 },
+                round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             },
         ));
         // Best-effort WebSocket progress for course/lesson generation —

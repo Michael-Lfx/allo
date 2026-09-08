@@ -492,7 +492,8 @@ impl LearningService {
         lesson_id: &LearningLessonId,
     ) -> Result<Vec<SectionView>, AppError> {
         let rows = sqlx::query(
-            "SELECT section_key, kind, title, points, body_md, status, version, position              FROM learning_lesson_sections WHERE lesson_id = ? ORDER BY position, section_key",
+            "SELECT section_key, kind, title, points, visual, body_md, status, version, position \
+             FROM learning_lesson_sections WHERE lesson_id = ? ORDER BY position, section_key",
         )
         .bind(lesson_id.as_str())
         .fetch_all(&self.pool)
@@ -506,6 +507,7 @@ impl LearningService {
                 kind: SectionKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?,
                 title: row.try_get("title").map_err(internal)?,
                 points: row.try_get("points").map_err(internal)?,
+                visual: row.try_get("visual").map_err(internal)?,
                 body_md: row.try_get("body_md").map_err(internal)?,
                 status: row.try_get("status").map_err(internal)?,
                 version: row.try_get("version").map_err(internal)?,
