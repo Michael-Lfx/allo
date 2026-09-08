@@ -266,15 +266,14 @@ manual
 安装流程调整为：
 
 1. 解析并校验以公开 namespace owner 组成的 canonical market ID。
-2. 获取精确详情，校验 namespace/owner 的正确身份形态、slug 和版本。
-3. 在下载 ZIP 之前查询精确 mapping。
-4. mapping 有效且本地 Skill 存在时直接返回 `reused`，不再请求下载接口。
-5. mapping 不存在时，才下载并执行 ZIP 魔数、大小、路径穿越、软链接、布局和 `SKILL.md` 校验。
-6. 临时目录完成校验后原子提交 Skill 文件。
-7. 原子写入 mapping。
-8. 返回现有安装响应：`source`、`skill_id`、`skill_name`、`status`；不恢复旧 `id` 字段，也不新增不在 v3 契约中的响应字段。
+2. 查询精确 mapping；mapping 有效且本地 Skill 目录存在时直接返回 `reused`，不请求任何上游接口（本地复用不依赖上游可用性，评审修订）。
+3. 只有需要真正下载时，才获取精确详情，校验 namespace/owner 的正确身份形态、slug 和版本。
+4. 执行 ZIP 魔数、大小、路径穿越、软链接、布局和 `SKILL.md` 校验。
+5. 临时目录完成校验后原子提交 Skill 文件。
+6. 原子写入 mapping。
+7. 返回现有安装响应：`source`、`skill_id`、`skill_name`、`status`；不恢复旧 `id` 字段，也不新增不在 v3 契约中的响应字段。
 
-安装锁需要覆盖“详情校验 → 映射检查 → 下载 → 校验 → 提交 → 写入映射”，否则并发点击仍会重复下载。本轮采用严格切换：旧错误 market ID、v7 缓存和旧 mapping 不自动迁移，也不通过裸 slug 猜测来源；已有本地 Skill 文件不删除。
+安装锁需要覆盖“映射检查 → 详情校验 → 下载 → 校验 → 提交 → 写入映射”，否则并发点击仍会重复下载。评审修订说明：mapping 精确命中且本地有效时无需任何网络交互——上一次安装已校验过身份，且 canonical mapping key 本身就是身份凭证；若上游临时不可用或条目被下架，已安装的本地 Skill 仍可正常复用而不报错。本轮采用严格切换：旧错误 market ID、v7 缓存和旧 mapping 不自动迁移，也不通过裸 slug 猜测来源；已有本地 Skill 文件不删除。
 
 本地目录接口继续提供可选 market ID 元数据，前端优先按精确 ID 判断已安装；不新增 owner 账号字段到普通 UI。删除、升级和自动启用不纳入本期。
 

@@ -274,8 +274,8 @@ mapping 的 key 必须使用修正后的 canonical ID：
 实施：
 
 1. 新安装只写 canonical namespace ID。
-2. mapping 查询必须在下载前完成。
-3. 有效 canonical mapping 直接返回 `reused`，不重复下载。
+2. mapping 查询必须在详情与下载之前完成。
+3. 有效 canonical mapping 且本地 Skill 存在时直接返回 `reused`，不请求任何上游接口（评审修订：本地复用不依赖上游详情/下载可用性；precise mapping 仅在需要真正下载时执行）。
 4. 旧 owner alias 不自动迁移；只按新的 canonical ID 精确匹配 mapping。
 5. mapping 损坏、同 key 冲突或本地 Skill 缺失时 fail-closed 或走安全重装，不覆盖已有记录。
 6. 同 slug 不同 owner 不得共用 mapping。
