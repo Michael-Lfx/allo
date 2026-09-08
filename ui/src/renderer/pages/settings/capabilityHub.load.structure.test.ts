@@ -76,18 +76,32 @@ describe('capability hub load contracts', () => {
 
   test('skill market reuses the available-skills SWR key and does not scan home-dir agents', () => {
     const market = read('./SkillMarketSettings.tsx');
+    const skillHubPanel = read('./SkillHubMarketPanel.tsx');
+    const skillHubHook = read('./skill/useSkillHubMarket.ts');
     const importMenu = read('./skill/SkillImportMenu.tsx');
     const panel = read('./MarketSettingsPanel.tsx');
 
-    expect(market).toContain('AVAILABLE_SKILLS_SWR_KEY');
-    expect(market).toContain('installSkillMarketSkill');
-    expect(market).toContain('showInstallCommand={false}');
+    expect(market).toContain('SkillHubMarketPanel');
+    expect(skillHubPanel).toContain('AVAILABLE_SKILLS_SWR_KEY');
+    expect(skillHubPanel).toContain('installSkillMarketSkill');
+    expect(skillHubPanel).toContain('showInstallCommand={false}');
     expect(market).not.toContain('useNomiQuickStart');
-    expect(market).toContain('rankings.v5');
+    expect(skillHubHook).toContain('v7');
+    expect(market).not.toContain('rankings.v5');
+    expect(market).not.toContain('ClawHub');
+    expect(market).not.toContain('LoopHub');
     expect(market).not.toContain('detectAndCountExternalSkills');
     expect(importMenu).toContain('openAgentImport');
     expect(importMenu).not.toContain('useEffect');
     expect(panel).toContain('usePresetTags({ enabled: enableTagFilter })');
+  });
+
+  test('SkillHub list failures render one error state instead of duplicating the same message', () => {
+    const skillHubPanel = read('./SkillHubMarketPanel.tsx');
+
+    expect(skillHubPanel).toContain("market.status === 'stale' || market.status === 'partial-error'");
+    expect(skillHubPanel).toContain('{showMarketErrorBanner && (');
+    expect(skillHubPanel).not.toContain('{market.error && (');
   });
 
   test('retired plugin routes redirect and stay out of the capability model', () => {

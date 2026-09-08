@@ -4,6 +4,7 @@ import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { MarketActionState, MarketPrimaryActionConfig } from './marketContracts';
 import { marketSourceLabel } from './skillMarket';
+import { formatSkillHubMarketCount } from './marketViewModel';
 import type { MarketItemViewModel } from './marketViewModel';
 
 type MarketDetailDrawerProps = {
@@ -112,8 +113,20 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
           <div className='grid grid-cols-2 gap-16px text-12px'>
             <div>
               <div className='text-t-tertiary'>{t('settings.market.source', { defaultValue: '来源' })}</div>
-              <div className='mt-4px text-t-primary'>{marketSourceLabel(item.source)}</div>
+              <div className='mt-4px text-t-primary'>
+                {item.marketSource === 'clawhub'
+                  ? 'ClawHub'
+                  : item.marketSource === 'skillhub'
+                    ? 'SkillHub'
+                    : item.upstreamSource || marketSourceLabel(item.source)}
+              </div>
             </div>
+            {item.upstreamSource && (
+              <div>
+                <div className='text-t-tertiary'>{t('settings.skillsMarket.upstreamSource', { defaultValue: '上游来源' })}</div>
+                <div className='mt-4px break-all text-t-primary'>{item.upstreamSource}</div>
+              </div>
+            )}
             {item.fullStats && (
               <div>
                 <div className='text-t-tertiary'>{t('settings.market.statistics', { defaultValue: '统计' })}</div>
@@ -121,12 +134,64 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
               </div>
             )}
           </div>
-          {(item.requiresApi || item.noApi) && (
+          {item.skillHub && (
+            <div className='grid grid-cols-2 gap-16px text-12px'>
+              <div>
+                <div className='text-t-tertiary'>{t('settings.skillsMarket.version', { defaultValue: '版本' })}</div>
+                <div className='mt-4px text-t-primary'>{item.skillHub.version}</div>
+              </div>
+              <div>
+                <div className='text-t-tertiary'>{t('settings.skillsMarket.owner', { defaultValue: '作者' })}</div>
+                <div className='mt-4px break-all text-t-primary'>{item.skillHub.owner}</div>
+              </div>
+              <div>
+                <div className='text-t-tertiary'>{t('settings.skillsMarket.slug', { defaultValue: 'Slug' })}</div>
+                <div className='mt-4px break-all text-t-primary'>{item.skillHub.slug}</div>
+              </div>
+              {item.skillHub.category && (
+                <div>
+                  <div className='text-t-tertiary'>{t('settings.skillsMarket.category', { defaultValue: '分类' })}</div>
+                  <div className='mt-4px text-t-primary'>{item.skillHub.category}</div>
+                </div>
+              )}
+              <div>
+                <div className='text-t-tertiary'>{t('settings.skillsMarket.downloadsLabel', { defaultValue: '下载量' })}</div>
+                <div className='mt-4px text-t-primary' title={item.skillHub.downloads.toLocaleString()}>{formatSkillHubMarketCount(item.skillHub.downloads)}</div>
+              </div>
+              <div>
+                <div className='text-t-tertiary'>{t('settings.skillsMarket.installsLabel', { defaultValue: '安装量' })}</div>
+                <div className='mt-4px text-t-primary'>{item.skillHub.installs}</div>
+              </div>
+              <div>
+                <div className='text-t-tertiary'>{t('settings.skillsMarket.starsLabel', { defaultValue: '收藏量' })}</div>
+                <div className='mt-4px text-t-primary'>{item.skillHub.stars}</div>
+              </div>
+              <div>
+                <div className='text-t-tertiary'>{t('settings.skillsMarket.scoreLabel', { defaultValue: '热度分' })}</div>
+                <div className='mt-4px text-t-primary'>{item.skillHub.score.toFixed(1)}</div>
+              </div>
+              {item.skillHub.updatedAt && (
+                <div>
+                  <div className='text-t-tertiary'>{t('settings.skillsMarket.updatedAtLabel', { defaultValue: '更新时间' })}</div>
+                  <div className='mt-4px text-t-primary'>{new Date(item.skillHub.updatedAt).toLocaleString()}</div>
+                </div>
+              )}
+              {item.skillHub.createdAt && (
+                <div>
+                  <div className='text-t-tertiary'>{t('settings.skillsMarket.createdAtLabel', { defaultValue: '创建时间' })}</div>
+                  <div className='mt-4px text-t-primary'>{new Date(item.skillHub.createdAt).toLocaleString()}</div>
+                </div>
+              )}
+            </div>
+          )}
+          {(item.requiresApi || item.noApi || item.apiKeyUnknown) && (
             <div className='flex flex-wrap gap-6px'>
               <Tag bordered={false} className='!bg-fill-2 !text-t-secondary'>
                 {item.requiresApi
-                  ? t('settings.market.requiresApi', { defaultValue: '需 API' })
-                  : t('settings.market.noApi', { defaultValue: '免 API' })}
+                  ? t('settings.skillsMarket.requiresApi', { defaultValue: '需要 API Key' })
+                  : item.noApi
+                    ? t('settings.skillsMarket.noApi', { defaultValue: '无需 API Key' })
+                    : t('settings.skillsMarket.apiKeyUnknown', { defaultValue: 'API Key 状态未知' })}
               </Tag>
             </div>
           )}
@@ -137,6 +202,18 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
                 {item.allTags.map((tag) => (
                   <Tag key={tag} size='small' bordered={false} className='!bg-fill-2 !text-t-secondary'>
                     {tag}
+                  </Tag>
+                ))}
+              </div>
+            </div>
+          )}
+          {item.skillHub && item.skillHub.subCategories.length > 0 && (
+            <div>
+              <div className='mb-8px text-12px text-t-tertiary'>{t('settings.skillsMarket.subCategories', { defaultValue: '子分类' })}</div>
+              <div className='flex flex-wrap gap-6px'>
+                {item.skillHub.subCategories.map((category) => (
+                  <Tag key={category.key} size='small' bordered={false} className='!bg-fill-2 !text-t-secondary'>
+                    {category.name}
                   </Tag>
                 ))}
               </div>

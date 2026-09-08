@@ -5,13 +5,11 @@ import type {
 } from '@/common/adapter/ipcBridge';
 import type { SkillTagFilterState } from './skillFilter';
 
-export const SKILL_MARKET_SOURCES: SkillMarketSource[] = ['clawhub', 'loophub', 'skillhub'];
+export const SKILL_MARKET_SOURCES: SkillMarketSource[] = ['skillhub'];
 export const MCP_MARKET_SOURCES: SkillMarketSource[] = ['skillhub_mcp', 'mcpworld'];
 export const PLUGIN_MARKET_SOURCES: SkillMarketSource[] = ['clawhub_plugins'];
 
 const MARKET_SOURCE_LABELS: Record<SkillMarketSource, string> = {
-  clawhub: 'ClawHub',
-  loophub: 'LoopHub',
   skillhub: 'SkillHub',
   skillhub_mcp: 'SkillHub MCP',
   mcpworld: 'MCP World',
@@ -20,9 +18,7 @@ const MARKET_SOURCE_LABELS: Record<SkillMarketSource, string> = {
 };
 
 const MARKET_SOURCE_URLS: Record<SkillMarketSource, string> = {
-  clawhub: 'https://clawhub.ai/',
-  loophub: 'https://hub.cocoloop.cn/popular',
-  skillhub: 'https://skillhub.cn/skills?sortBy=score',
+  skillhub: 'https://skillhub.cn/skills',
   skillhub_mcp: 'https://skillhub.cn/mcp',
   mcpworld: 'https://www.mcpworld.com/?category=most_popular',
   clawhub_plugins: 'https://clawhub.ai/plugins',
@@ -65,9 +61,7 @@ const MARKET_AVATAR_HOSTS = new Set(['cloudcache.tencent-cloud.com', 'skillhub.c
 const MARKET_AVATAR_EXTENSIONS = ['.avif', '.png', '.jpg', '.jpeg', '.webp', '.gif'];
 
 export const isSkillMarketSource = (value: unknown): value is SkillMarketSource =>
-  value === 'clawhub' ||
   value === 'skillhub' ||
-  value === 'loophub' ||
   value === 'skillhub_mcp' ||
   value === 'mcpworld' ||
   value === 'clawhub_plugins' ||
@@ -89,11 +83,8 @@ const isSafeMarketUrl = (source: SkillMarketSource, url: string): boolean => {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return false;
-    if (source === 'clawhub' || source === 'clawhub_plugins') return parsed.hostname === 'clawhub.ai';
-    if (source === 'skillhub') {
-      return parsed.hostname === 'skillhub.cn' || parsed.hostname === 'www.skills.sh' || parsed.hostname === 'skills.sh';
-    }
-    if (source === 'loophub') return parsed.hostname === 'hub.cocoloop.cn';
+    if (source === 'skillhub') return parsed.hostname === 'skillhub.cn' || parsed.hostname === 'www.skillhub.cn';
+    if (source === 'clawhub_plugins') return parsed.hostname === 'clawhub.ai';
     if (source === 'skillhub_mcp' || source === 'skillhub_packages') return parsed.hostname === 'skillhub.cn';
     if (source === 'mcpworld') return parsed.hostname === 'www.mcpworld.com';
     return false;
@@ -102,7 +93,7 @@ const isSafeMarketUrl = (source: SkillMarketSource, url: string): boolean => {
   }
 };
 
-const isSafeMarketAvatarUrl = (url: string): boolean => {
+export const isSafeMarketAvatarUrl = (url: string): boolean => {
   if (!url || url.length > MAX_AVATAR_URL_LENGTH) return false;
   try {
     const parsed = new URL(url);
@@ -120,28 +111,10 @@ const cleanMarketAvatar = (value: unknown): string | undefined => {
   return isSafeMarketAvatarUrl(url) ? url : undefined;
 };
 
-const isSafeLoopHubArtifactUrl = (value: string): boolean => {
-  try {
-    const parsed = new URL(value);
-    return (
-      parsed.protocol === 'https:' &&
-      !parsed.username &&
-      !parsed.password &&
-      !parsed.port &&
-      parsed.hostname.toLowerCase() === 'dl.cocoloop.cn' &&
-      parsed.pathname.startsWith('/bss/skills/')
-    );
-  } catch {
-    return false;
-  }
-};
-
 const isSafeInstallCommand = (source: SkillMarketSource, value: string): boolean => {
   if (!value || value.length > MAX_COMMAND_LENGTH) return false;
   if (/[\r\n;&|<>`$]/.test(value)) return false;
-  if (source === 'clawhub') return value.startsWith('openclaw skills install @');
-  if (source === 'skillhub') return value.startsWith('npx skills add ');
-  if (source === 'loophub') return value.startsWith('loophub skill download https://dl.cocoloop.cn/bss/skills/');
+  if (source === 'skillhub') return false;
   if (source === 'skillhub_mcp') return /^mcp market add skillhub:[a-z0-9._-]+$/i.test(value);
   if (source === 'mcpworld') return /^mcp market add mcpworld:[a-z0-9._-]+$/i.test(value);
   if (source === 'clawhub_plugins') return value.startsWith('openclaw plugins install clawhub:@');
@@ -174,8 +147,7 @@ export const normalizeSkillMarketItem = (raw: unknown): ISkillMarketItem | null 
 
   const install_mode = isSkillMarketInstallMode(data.install_mode) ? data.install_mode : 'unsupported';
   const artifact_url = cleanMarketText(data.artifact_url, MAX_ARTIFACT_URL_LENGTH) || undefined;
-  if (artifact_url && (data.source !== 'loophub' || !isSafeLoopHubArtifactUrl(artifact_url))) return null;
-  if (install_mode === 'native' && data.source === 'loophub' && !artifact_url) return null;
+  if (artifact_url) return null;
 
   const name = cleanMarketText(data.name, MAX_NAME_LENGTH);
   if (!name) return null;
@@ -197,10 +169,6 @@ export const normalizeSkillMarketItem = (raw: unknown): ISkillMarketItem | null 
     avatar: cleanMarketAvatar(data.avatar),
   };
 };
-
-export const isNativeSkillMarketItem = (
-  item: Pick<ISkillMarketItem, 'install_mode'>
-): boolean => item.install_mode === 'native';
 
 /**
  * Maps a native-install error code from the backend (`ErrorResponse.code`) to
@@ -364,40 +332,4 @@ export const filterSkillMarketItems = (
     }
     return true;
   });
-};
-
-export const buildSkillMarketConversationName = (item: ISkillMarketItem, localeKey = 'zh-CN'): string => {
-  const name = cleanMarketText(item.name, 48);
-  return localeKey.toLowerCase().startsWith('zh') ? `安装 ${name}` : `Install ${name}`;
-};
-
-export const buildSkillMarketInstallPrompt = (item: ISkillMarketItem, localeKey = 'zh-CN'): string => {
-  const name = cleanMarketText(item.name, MAX_NAME_LENGTH);
-  const source = marketSourceLabel(item.source);
-  const isZh = localeKey.toLowerCase().startsWith('zh');
-  const description = translateMarketDescription(item.description, item, localeKey);
-  const lines = isZh
-    ? [
-        '请帮我安装这个技能。先检查来源页面和安装命令是否可信，执行前向我确认。',
-        '',
-        `来源：${source}`,
-        `技能：${name}`,
-        description ? `说明：${description}` : null,
-        `页面：${item.url}`,
-        '',
-        '安装命令：',
-      ]
-    : [
-        'Help me install this skill. Verify the source page and command first, then ask for confirmation before executing it.',
-        '',
-        `Source: ${source}`,
-        `Skill: ${name}`,
-        description ? `Description: ${description}` : null,
-        `Page: ${item.url}`,
-        '',
-        'Install command:',
-      ];
-  return [...lines, '```bash', item.install_command, '```']
-    .filter(Boolean)
-    .join('\n');
 };

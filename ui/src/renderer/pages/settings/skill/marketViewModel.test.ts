@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { createMarketItemViewModel } from './marketViewModel';
-import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
+import { createMarketItemViewModel, createSkillHubMarketItemViewModel, formatSkillHubMarketCount } from './marketViewModel';
+import type { ISkillHubMarketItem, ISkillMarketItem } from '@/common/adapter/ipcBridge';
 
 const item: ISkillMarketItem = {
   id: 'skill-1',
@@ -10,7 +10,7 @@ const item: ISkillMarketItem = {
   description: 'A useful skill.',
   url: 'https://skillhub.cn/skills/example',
   install_mode: 'native',
-  install_command: 'npx skills add example',
+  install_command: '',
   tags: ['requires_api_key', 'long-technical-tag', 'another-tag'],
   audience_tags: ['developer'],
   scenario_tags: ['coding'],
@@ -23,6 +23,13 @@ const t = (key: string, options?: Record<string, unknown>) => {
 };
 
 describe('market item view model', () => {
+  test('formats SkillHub counters with compact k units after one thousand', () => {
+    expect(formatSkillHubMarketCount(999)).toBe('999');
+    expect(formatSkillHubMarketCount(1000)).toBe('1k');
+    expect(formatSkillHubMarketCount(1250)).toBe('1.3k');
+    expect(formatSkillHubMarketCount(299518)).toBe('299.5k');
+  });
+
   test('keeps full metadata for details while bounding card metadata', () => {
     const model = createMarketItemViewModel(item, {
       localeKey: 'en-US',
@@ -61,5 +68,39 @@ describe('market item view model', () => {
       { localeKey: 'en-US', tagByKey: new Map([['developer', { label: 'Developer' }]]), t },
     );
     expect(model.allTags).toEqual(['Developer']);
+  });
+
+  test('preserves structured SkillHub metadata and API-key unknown state', () => {
+    const skillHubItem: ISkillHubMarketItem = {
+      id: 'skillhub:owner/skills/example',
+      owner: 'owner',
+      slug: 'example',
+      market_source: 'clawhub',
+      upstream_source: 'clawhub',
+      rank: 1,
+      name: 'Example skill',
+      description: 'A '.repeat(300),
+      version: '1.2.3',
+      category: 'development',
+      tags: ['coding'],
+      sub_categories: [{ key: 'testing', name: 'Testing' }],
+      requires_api_key: null,
+      downloads: 12,
+      installs: 8,
+      stars: 4,
+      score: 9.5,
+      created_at: 1_700_000_000_000,
+      updated_at: 1_700_000_100_000,
+      url: 'https://skillhub.cn/skills/owner/example',
+      avatar: null,
+    };
+    const model = createSkillHubMarketItemViewModel(skillHubItem, { localeKey: 'en-US', t });
+
+    expect(model.skillHub?.version).toBe('1.2.3');
+    expect(model.skillHub?.subCategories).toEqual([{ key: 'testing', name: 'Testing' }]);
+    expect(model.skillHub?.requiresApiKey).toBeNull();
+    expect(model.apiKeyUnknown).toBe(true);
+    expect(model.fullDescription.length).toBeGreaterThan(220);
+    expect(model.installCommand).toBe('');
   });
 });

@@ -1,5 +1,10 @@
-import type { ISkillMarketItem, SkillMarketSource } from '@/common/adapter/ipcBridge';
-import { translateMarketDescription } from './skillMarket';
+import type {
+  ISkillHubMarketItem,
+  ISkillMarketItem,
+  SkillHubMarketContentSource,
+  SkillMarketSource,
+} from '@/common/adapter/ipcBridge';
+import { cleanMarketText, translateMarketDescription } from './skillMarket';
 
 /**
  * The renderer-facing shape of an item in any of the capability markets.
@@ -14,6 +19,8 @@ export type MarketItemViewModel = {
   rank: number | null;
   title: string;
   source: SkillMarketSource;
+  marketSource: SkillHubMarketContentSource;
+  upstreamSource?: string | null;
   summary: string;
   compactStats?: string;
   fullDescription: string;
@@ -25,7 +32,23 @@ export type MarketItemViewModel = {
   sourceUrl: string;
   requiresApi: boolean;
   noApi: boolean;
+  apiKeyUnknown: boolean;
   avatar?: string;
+  skillHub?: {
+    owner: string;
+    slug: string;
+    version: string;
+    category?: string | null;
+    subCategories: Array<{ key: string; name: string }>;
+    tags: string[];
+    requiresApiKey: boolean | null;
+    downloads: number;
+    installs: number;
+    stars: number;
+    score: number;
+    createdAt?: number | null;
+    updatedAt?: number | null;
+  };
 };
 
 type MarketTag = {
@@ -36,6 +59,19 @@ type MarketTag = {
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 const MAX_VISIBLE_TAGS = 2;
+
+/**
+ * Keep large SkillHub counters scannable without hiding the exact value from
+ * the detail view. SkillHub's counters are integers, so rounding here also
+ * protects the UI from an unexpected fractional upstream value.
+ */
+export const formatSkillHubMarketCount = (value: number): string => {
+  const safe = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+  if (safe < 1000) return String(safe);
+
+  const compact = (safe / 1000).toFixed(1).replace(/\.0$/, '');
+  return `${compact}k`;
+};
 
 const resolveTagLabel = (key: string, localeKey: string, tagByKey: ReadonlyMap<string, MarketTag>): string => {
   const tag = tagByKey.get(key);
@@ -94,6 +130,8 @@ export const createMarketItemViewModel = (
     rank: item.rank > 0 ? item.rank : null,
     title: item.name,
     source: item.source,
+    marketSource: item.source === 'skillhub' ? 'skillhub' : 'unknown',
+    upstreamSource: null,
     summary: translateMarketDescription(item.description, item, options.localeKey),
     compactStats: stats.compact,
     fullDescription:
@@ -107,7 +145,64 @@ export const createMarketItemViewModel = (
     sourceUrl: item.url,
     requiresApi: item.tags?.includes('requires_api_key') ?? false,
     noApi: item.tags?.includes('no_api_key') ?? false,
+    apiKeyUnknown: false,
     avatar: item.avatar,
+  };
+};
+
+/**
+ * Adapt the structured SkillHub DTO to the shared card/action shell without
+ * flattening metadata or reintroducing a user-visible install command.
+ */
+export const createSkillHubMarketItemViewModel = (
+  item: ISkillHubMarketItem,
+  options: {
+    localeKey: string;
+    t: Translate;
+    categoryLabel?: (key: string) => string;
+  },
+): MarketItemViewModel => {
+  const raw: ISkillMarketItem = {
+    id: item.id,
+    source: 'skillhub',
+    rank: item.rank,
+    name: cleanMarketText(item.name, 96),
+    description: cleanMarketText(item.description, 8192),
+    url: item.url,
+    install_command: '',
+    install_mode: 'native',
+    tags: item.tags,
+    avatar: item.avatar ?? undefined,
+    market_source: item.market_source,
+    upstream_source: item.upstream_source,
+  };
+  const model = createMarketItemViewModel(raw, options);
+  const fullDescription = cleanMarketText(item.description, 8192);
+  return {
+    ...model,
+    marketSource: item.market_source,
+    upstreamSource: item.upstream_source,
+    summary: cleanMarketText(item.description),
+    fullDescription:
+      fullDescription || options.t('settings.skillsMarket.noDescription', { defaultValue: '暂无描述。' }),
+    requiresApi: item.requires_api_key === true,
+    noApi: item.requires_api_key === false,
+    apiKeyUnknown: item.requires_api_key === null,
+    skillHub: {
+      owner: item.owner,
+      slug: item.slug,
+      version: item.version,
+      category: item.category ? options.categoryLabel?.(item.category) ?? item.category : item.category,
+      subCategories: item.sub_categories,
+      tags: item.tags,
+      requiresApiKey: item.requires_api_key,
+      downloads: item.downloads,
+      installs: item.installs,
+      stars: item.stars,
+      score: item.score,
+      createdAt: item.created_at,
+      updatedAt: item.updated_at,
+    },
   };
 };
 
