@@ -40,6 +40,8 @@ const GENERATE_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容设计代�
 
 【分节契约（每节一次工具调用）】
 - 先 ls_set_section_manifest 规划节清单：每节带 section_key（s1、s2……）、kind（concept 概念 / example 例题 / demo 演示 / summary 小结 / practice 练习）、title（带类型前缀，如「概念：…」）、points（一句话要点）。节数按课时复杂度自定：低 1-3 节、中 3-5、高 4-6，硬上限 8；相邻节要有学习递进；最后一节必须是练习节（恰好 1 个）——学习者读完即进入统一练习轮。
+- 每节带 visual 字段（该节承载核心讲解的可视化形态：公式/函数图/示意图/流程图/图表/表格 之一，内容确实非视觉才可用 文字）。
+- 可视化为主、文字为辅是硬规则：概念/例题节的正文必须以至少一个可视化块（$$公式$$、```svg、```jsxgraph、```mermaid、对比表格）承载核心讲解，文字只作旁注；短段落、枚举用列表/表格、不写过渡废话。纯文字的概念/例题节会被质检门拒绝。
 - 再逐节调用 ls_set_section_body 写正文：一次调用只写一节，body 直接以该节 `## ` 标题行开头（标题照抄清单），不要 JSON、不要包裹围栏、节内禁止 ### 子标题、不要自设练习环节（题目由题库承载）。
 - 篇幅按节型：concept/example 400-700 中文字符；demo 由可视化块（```svg / ```jsxgraph / ```mermaid / $$数学$$）承载主要信息、旁注 200-400 字；summary 是要点清单；practice 只写能力目标与作答引导（≤120 字，不写题）。
 - 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形块不计入篇幅。
@@ -78,6 +80,7 @@ const REPAIR_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容修复代理
 - reflections_multiple（warning）：可保留——只有 danger 才阻断发布。
 - activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项/容差/顺序与对应关系）。
 - section_binding_unknown：update_activity 把该题的 section_key 改绑到清单里的节 key（跨节综合题用 "general"）。
+- section_invalid（缺可视化）：按清单里该节的 visual 重写正文——用 $$公式$$ / ```svg / ```jsxgraph / ```mermaid / 表格承载核心讲解，文字作旁注。
 - concept_binding_unknown：update_activity 把 concepts 改绑到课时给定的概念 key。
 
 【结束条件】
@@ -644,7 +647,7 @@ fn ls_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
 fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_set_section_manifest".into(),
-        description: "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）。节数低 1-3 / 中 3-5 / 高 4-6，硬上限 8；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。".into(),
+        description: "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）、visual（可视化形态：公式/函数图/示意图/流程图/图表/表格/文字）。节数低 1-3 / 中 3-5 / 高 4-6，硬上限 8；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -659,9 +662,10 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
                             "section_key": { "type": "string" },
                             "kind": { "type": "string", "enum": ["concept", "example", "demo", "summary", "practice"] },
                             "title": { "type": "string" },
-                            "points": { "type": "string" }
+                            "points": { "type": "string" },
+                            "visual": { "type": "string", "enum": ["公式", "函数图", "示意图", "流程图", "图表", "表格", "文字"] }
                         },
-                        "required": ["section_key", "kind", "title"]
+                        "required": ["section_key", "kind", "title", "visual"]
                     }
                 }
             },
