@@ -468,6 +468,21 @@ pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), S
             return Err(format!("duplicate section key {}", section.section_key));
         }
     }
+    // 收尾练习是硬性结构:恰好一个练习节,且必须是最后一节——学习者读完
+    // 即进入统一的练习轮(题目全部挂在这一轮作答)。
+    let practice_count = outline
+        .sections
+        .iter()
+        .filter(|section| section.kind == SectionKind::Practice)
+        .count();
+    if practice_count != 1 {
+        return Err(format!(
+            "the outline must close with exactly one practice section, found {practice_count}"
+        ));
+    }
+    if outline.sections.last().is_some_and(|last| last.kind != SectionKind::Practice) {
+        return Err("the last section must be the practice section".into());
+    }
     Ok(())
 }
 

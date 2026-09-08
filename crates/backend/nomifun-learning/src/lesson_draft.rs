@@ -16,7 +16,7 @@ use crate::generation::{
     LESSON_MAX_REFLECTION_ACTIVITIES, LESSON_MIN_ACTIVITIES, LESSON_MIN_OBJECTIVE_ACTIVITIES,
     LessonOutput, validate_lesson_document,
 };
-use crate::models::{ActivityKind, ActivityPack, ConceptPack, SectionPack};
+use crate::models::{ActivityKind, ActivityPack, ConceptPack, SectionKind, SectionPack};
 
 use crate::learning_graph::{SEV_DANGER, SEV_WARNING};
 
@@ -292,7 +292,7 @@ impl LessonDraft {
                     return Err("section manifest must not be empty".into());
                 }
                 let mut seen = HashSet::new();
-                for section in &sections {
+                for (index, section) in sections.iter().enumerate() {
                     if section.title.trim().is_empty() {
                         return Err(format!(
                             "section {} has an empty title",
@@ -305,6 +305,11 @@ impl LessonDraft {
                             section.section_key
                         ));
                     }
+                    if section.kind == SectionKind::Practice && index != sections.len() - 1 {
+                        return Err(
+                            "the practice section must be the last section (exactly one)".into()
+                        );
+                    }
                     // Keep already-written bodies whose key survives the replan.
                     if let Some((body, _)) = self.section_bodies.get(&section.section_key) {
                         let body = body.clone();
@@ -313,6 +318,12 @@ impl LessonDraft {
                             (body, Some(section.clone())),
                         );
                     }
+                }
+                if !sections.last().is_some_and(|section| section.kind == SectionKind::Practice) {
+                    return Err(
+                        "the manifest must close with exactly one practice section as its last section"
+                            .into(),
+                    );
                 }
                 self.section_manifest = Some(sections);
                 Ok("section manifest planned (write each body with set_section_body)".into())

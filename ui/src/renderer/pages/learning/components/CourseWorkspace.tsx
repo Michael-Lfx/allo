@@ -263,12 +263,15 @@ function SectionedLessonBody({
 }) {
   const { t } = useTranslation();
   const sections = lesson.sections;
+  // 新规范（清单以练习节收尾）：练习节 = 统一练习轮，内容节只读；
+  // 旧清单没有练习节：题目挂各自来源节的步骤下，无绑定的进综合步。
+  const hasPractice = sections.some((section) => section.kind === 'practice');
   const generalActivities = lesson.activities.filter(
     (activity) => activity.section_key === null
   );
   const steps = [
     ...sections.map((section) => ({ section })),
-    ...(generalActivities.length > 0 ? [{ section: null }] : []),
+    ...(hasPractice || generalActivities.length === 0 ? [] : [{ section: null }]),
   ];
   const [current, setCurrent] = useState(0);
   // 课时切换时回到第一节
@@ -281,7 +284,13 @@ function SectionedLessonBody({
       : lesson.activities.filter((activity) => activity.section_key === section.section_key);
   return (
     <div className='flex flex-col gap-12px'>
-      <Steps size='small' current={stepIndex} onChange={(next) => setCurrent(next)}>
+      {/* arco Steps 的 current 是 1 基序号(index 从 1 起):传 0 基值会让
+          高亮恒定落后一步;onChange 回调同样是 1 基,换算回 0 基 state */}
+      <Steps
+        size='small'
+        current={stepIndex + 1}
+        onChange={(next) => setCurrent(next - 1)}
+      >
         {steps.map((entry, index) => (
           <Steps.Step
             key={entry.section ? entry.section.section_key : 'general'}
@@ -294,14 +303,16 @@ function SectionedLessonBody({
         ))}
       </Steps>
       {step.section ? (
-        <div className='flex flex-col gap-10px'>
-          <Markdown>{step.section.body_md}</Markdown>
-          {sectionActivities(step.section).length > 0 && (
+        step.section.kind === 'practice' ? (
+          // 新规范：练习节 = 统一练习轮,出题是课时级一次产出,全部题目
+          // 收进这一轮作答(learnhub 的「练习节=一等练习轮」);内容节只读。
+          <div className='flex flex-col gap-10px'>
+            <Markdown>{step.section.body_md}</Markdown>
             <div className='flex flex-col gap-10px'>
               <div className='text-13px font-600 text-t-secondary'>
                 {t('learning.sectionPractice')}
               </div>
-              {sectionActivities(step.section).map((activity) => (
+              {lesson.activities.map((activity) => (
                 <ActivityBlock
                   key={activity.id}
                   activity={activity}
@@ -312,8 +323,29 @@ function SectionedLessonBody({
                 />
               ))}
             </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className='flex flex-col gap-10px'>
+            <Markdown>{step.section.body_md}</Markdown>
+            {!hasPractice && sectionActivities(step.section).length > 0 && (
+              <div className='flex flex-col gap-10px'>
+                <div className='text-13px font-600 text-t-secondary'>
+                  {t('learning.sectionPractice')}
+                </div>
+                {sectionActivities(step.section).map((activity) => (
+                  <ActivityBlock
+                    key={activity.id}
+                    activity={activity}
+                    disabled={busyId === activity.id}
+                    loading={busyId === activity.id}
+                    result={attemptResults[activity.id]}
+                    onSubmit={onAttempt}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )
       ) : (
         <div className='flex flex-col gap-10px'>
           <div className='text-13px font-600 text-t-secondary'>
