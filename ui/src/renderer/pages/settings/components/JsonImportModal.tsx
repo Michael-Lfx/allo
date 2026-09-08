@@ -9,6 +9,7 @@ import NomiModal from '@/renderer/components/base/NomiModal';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { parseMcpJsonImport } from '../ToolsSettings/mcpJsonImport';
 import { toImportableMcpServer } from '../ToolsSettings/mcpImportUtils';
+import { getSafeMcpEndpoint } from '../ToolsSettings/McpServerDetails';
 import { getMcpApiKeyUrl } from '@/renderer/hooks/mcp/mcpAuthConfig';
 import { openExternalUrl } from '@/renderer/utils/platform';
 
@@ -51,10 +52,8 @@ const validateEditServerNames = (
 
 const McpConfigSummary: React.FC<{ server: IMcpServer }> = ({ server }) => {
   const { t } = useTranslation();
-  const endpoint =
-    server.transport.type === 'stdio'
-      ? [server.transport.command, ...(server.transport.args ?? [])].join(' ')
-      : server.transport.url;
+  // Masked like the installed card: args/headers carrying tokens render as bullets.
+  const endpoint = getSafeMcpEndpoint(server);
   const sensitiveKeys =
     server.transport.type === 'stdio'
       ? Object.keys(server.transport.env ?? {})

@@ -51,8 +51,13 @@ impl McpActivationService {
     /// failure) is persisted before returning. This never fails the request
     /// because of a test outcome — failures are data.
     pub async fn test_server_by_id(&self, mcp_server_id: &McpServerId) -> Result<McpTestByIdResponse, McpError> {
-        let server = self.load_server(mcp_server_id).await?;
+        // Snapshot the revision BEFORE loading the transport. An edit that
+        // lands after this point advances the revision, so the conditional
+        // commit below refuses to persist a result for a configuration the
+        // test never ran against. The reverse order would commit a
+        // `connected` status observed on a pre-edit transport.
         let revision = self.config.config_revision(mcp_server_id).await?;
+        let server = self.load_server(mcp_server_id).await?;
         let result = self
             .tester
             .test_connection(&server.name, &server.transport)
@@ -77,9 +82,12 @@ impl McpActivationService {
     /// never flip the enabled flag. Results from a drifted run are not
     /// persisted: they describe a configuration that no longer exists.
     pub async fn test_and_enable(&self, mcp_server_id: &McpServerId) -> Result<McpActivationResponse, McpError> {
+        // Same ordering as `test_server_by_id`: revision first, transport
+        // second, so any concurrent edit after the snapshot invalidates the
+        // commit instead of silently matching it.
+        let expected_revision = self.config.config_revision(mcp_server_id).await?;
         let tested = self.load_server(mcp_server_id).await?;
         let config_snapshot = transport_snapshot(&tested.transport);
-        let expected_revision = self.config.config_revision(mcp_server_id).await?;
 
         let result = self
             .tester

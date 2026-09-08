@@ -90,7 +90,32 @@ export const useMcpActivationFlow = ({
 
   const runOperation = useCallback(async () => {
     if (!operation || startedOperationRef.current === operation.operationId) return;
-    if (isServersLoading || serversLoadFailed) return;
+    if (isServersLoading) return;
+
+    if (serversLoadFailed) {
+      // Terminal state: the catalog will never arrive, so fail every target
+      // instead of leaving the progress notice stuck at "0/N" forever.
+      startedOperationRef.current = operation.operationId;
+      consumedOperationRef.current = operation.operationId;
+      onConsumed?.();
+      setItemStates((current) => {
+        const next = { ...current };
+        operation.serverIds.forEach((serverId) => {
+          next[serverId] = 'failed';
+        });
+        return next;
+      });
+      setItemErrors((current) => ({
+        ...current,
+        ...Object.fromEntries(operation.serverIds.map((serverId) => [serverId, t('settings.mcpSyncError')])),
+      }));
+      setProgress({
+        operationId: operation.operationId,
+        total: operation.serverIds.length,
+        completed: operation.serverIds.length,
+      });
+      return;
+    }
 
     const serversById = new Map(servers.map((server) => [server.mcp_server_id, server]));
     const targets = operation.serverIds

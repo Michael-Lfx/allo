@@ -22,7 +22,10 @@ describe('MCP activation flow contracts', () => {
 
   test('one-shot auto activation consumes navigation state exactly once', () => {
     expect(hook).toContain('startedOperationRef.current === operation.operationId');
-    expect(hook).toContain('isServersLoading || serversLoadFailed');
+    // Waiting for the catalog only delays the start; a load failure is a
+    // terminal state that fails every target instead of stalling at "0/N".
+    expect(hook).toContain('if (isServersLoading) return;');
+    expect(hook).toContain("t('settings.mcpSyncError')");
     expect(hook).toContain('missingIds');
     expect(hook).toContain('await activateServer(server.mcp_server_id, { notify: false })');
     expect(panel).toContain('onPendingConsumed?.()');

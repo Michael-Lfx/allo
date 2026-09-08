@@ -299,3 +299,156 @@ async fn activation_of_missing_server_is_not_found() {
     let error = svc.test_and_enable(&missing).await.unwrap_err();
     assert!(matches!(error, McpError::NotFound(_)));
 }
+
+/// Repo wrapper whose first `config_revision` call performs a concurrent edit
+/// before returning the post-edit revision. This reproduces the ordering race
+/// where the transport used to be loaded BEFORE the revision snapshot: the old
+/// ordering tested the pre-edit transport but committed the result against the
+/// post-edit row as `connected` + enabled.
+struct EditDuringRevisionRepo {
+    inner: Arc<SqliteMcpServerRepository>,
+    editor: McpConfigService,
+    edited: Mutex<bool>,
+}
+
+#[async_trait::async_trait]
+impl nomifun_db::IMcpServerRepository for EditDuringRevisionRepo {
+    async fn list(&self) -> Result<Vec<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        self.inner.list().await
+    }
+
+    async fn find_by_id(&self, mcp_server_id: &str) -> Result<Option<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        self.inner.find_by_id(mcp_server_id).await
+    }
+
+    async fn find_by_name(&self, name: &str) -> Result<Option<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        self.inner.find_by_name(name).await
+    }
+
+    async fn create(
+        &self,
+        params: nomifun_db::CreateMcpServerParams<'_>,
+    ) -> Result<nomifun_db::models::McpServerRow, nomifun_db::DbError> {
+        self.inner.create(params).await
+    }
+
+    async fn update(
+        &self,
+        mcp_server_id: &str,
+        params: nomifun_db::UpdateMcpServerParams<'_>,
+    ) -> Result<nomifun_db::models::McpServerRow, nomifun_db::DbError> {
+        self.inner.update(mcp_server_id, params).await
+    }
+
+    async fn delete(&self, mcp_server_id: &str) -> Result<(), nomifun_db::DbError> {
+        self.inner.delete(mcp_server_id).await
+    }
+
+    async fn batch_upsert(
+        &self,
+        servers: &[nomifun_db::CreateMcpServerParams<'_>],
+    ) -> Result<Vec<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        self.inner.batch_upsert(servers).await
+    }
+
+    async fn update_status(
+        &self,
+        mcp_server_id: &str,
+        status: &str,
+        last_connected: Option<nomifun_common::TimestampMs>,
+    ) -> Result<(), nomifun_db::DbError> {
+        self.inner.update_status(mcp_server_id, status, last_connected).await
+    }
+
+    async fn update_tools(&self, mcp_server_id: &str, tools: Option<&str>) -> Result<(), nomifun_db::DbError> {
+        self.inner.update_tools(mcp_server_id, tools).await
+    }
+
+    async fn config_revision(&self, mcp_server_id: &str) -> Result<i64, nomifun_db::DbError> {
+        let first_call = {
+            let mut edited = self.edited.lock().unwrap();
+            let first = !*edited;
+            *edited = true;
+            first
+        };
+        if first_call {
+            // Simulate an edit landing between the revision snapshot and
+            // the transport load.
+            let id = McpServerId::parse(mcp_server_id).expect("valid id");
+            self.editor
+                .edit_server(
+                    &id,
+                    nomifun_api_types::UpdateMcpServerRequest {
+                        name: None,
+                        description: None,
+                        transport: Some(nomifun_api_types::McpTransport::Http {
+                            url: "https://example.com/mcp-edited".into(),
+                            headers: HashMap::new(),
+                        }),
+                        original_json: None,
+                        builtin: None,
+                    },
+                )
+                .await
+                .expect("concurrent edit succeeds");
+        }
+        self.inner.config_revision(mcp_server_id).await
+    }
+}
+
+/// Tester that records the transport URL it was invoked with.
+struct RecordingTester {
+    observed_url: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl McpConnectionTester for RecordingTester {
+    async fn test_connection(&self, _name: &str, transport: &McpServerTransport) -> McpConnectionTestResult {
+        if let McpServerTransport::Http { url, .. } = transport {
+            *self.observed_url.lock().unwrap() = Some(url.clone());
+        }
+        ok_result(vec![McpToolResponse {
+            name: "echo".into(),
+            description: None,
+            input_schema: None,
+        }])
+    }
+}
+
+#[tokio::test]
+async fn revision_is_snapshotted_before_the_transport_load() {
+    let db = nomifun_db::init_database_memory().await.unwrap();
+    let inner = Arc::new(SqliteMcpServerRepository::new(db.pool().clone()));
+    let editor = McpConfigService::new(inner.clone());
+    let repo = Arc::new(EditDuringRevisionRepo {
+        inner,
+        editor,
+        edited: Mutex::new(false),
+    });
+    let config = McpConfigService::new(repo);
+    let id = seed_http_server(&config, "race-order").await;
+
+    let observed_url = Arc::new(Mutex::new(None::<String>));
+    let svc = activation_service(
+        config.clone(),
+        Arc::new(RecordingTester {
+            observed_url: observed_url.clone(),
+        }),
+    );
+
+    let response = svc.test_and_enable(&id).await.unwrap();
+
+    // The test must have run against the configuration that is current as of
+    // the revision snapshot (the concurrent edit), never a stale pre-edit
+    // transport, and the committed row must reflect exactly that test.
+    let seen = observed_url.lock().unwrap().clone().expect("tester observed a url");
+    assert_eq!(seen, "https://example.com/mcp-edited");
+    assert!(response.enabled, "test succeeded against the current config");
+    let persisted = config.get_server(&id).await.unwrap();
+    assert!(persisted.enabled);
+    assert_eq!(persisted.last_test_status, nomifun_common::McpServerStatus::Connected);
+    assert!(matches!(
+        persisted.transport,
+        nomifun_api_types::McpTransport::Http { ref url, .. } if url == "https://example.com/mcp-edited"
+    ));
+}

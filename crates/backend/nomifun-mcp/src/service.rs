@@ -69,8 +69,17 @@ impl McpConfigService {
 
     /// Read the persisted configuration revision used to guard an external
     /// connection test from writing results for an older configuration.
+    ///
+    /// A missing row surfaces as [`McpError::NotFound`] so callers keep the
+    /// same contract as `get_server_model`.
     pub async fn config_revision(&self, mcp_server_id: &McpServerId) -> Result<i64, McpError> {
-        Ok(self.repo.config_revision(mcp_server_id.as_str()).await?)
+        self.repo
+            .config_revision(mcp_server_id.as_str())
+            .await
+            .map_err(|error| match error {
+                nomifun_db::DbError::NotFound(_) => McpError::NotFound(mcp_server_id.to_string()),
+                other => other.into(),
+            })
     }
 
     /// Enable an MCP server, enforcing the connection-test gate.
@@ -279,8 +288,11 @@ impl McpConfigService {
         mcp_server_id: &McpServerId,
         result: &McpConnectionTestResult,
     ) -> Result<(), McpError> {
-        let server = self.get_server_model(mcp_server_id).await?;
+        // Revision before enabled-state read, matching the ordering contract
+        // in `activation.rs`: an edit after the revision snapshot must
+        // invalidate the conditional commit.
         let revision = self.repo.config_revision(mcp_server_id.as_str()).await?;
+        let server = self.get_server_model(mcp_server_id).await?;
         self.persist_test_result_at_revision(mcp_server_id, revision, result, server.enabled)
             .await?;
         Ok(())

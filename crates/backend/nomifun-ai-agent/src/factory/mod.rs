@@ -41,8 +41,9 @@ use crate::types::AgentRuntimeBuildOptions;
 /// Apply the global MCP gate to session snapshots before either agent factory
 /// turns them into runtime configuration. Unknown IDs remain valid for
 /// session-only/extension contributions; IDs owned by the MCP repository must
-/// be enabled. If the repository cannot be read, fail closed for the snapshot
-/// so a stale disabled server cannot bypass the gate.
+/// be enabled and not soft-deleted (`list_by_ids_any` includes deleted rows,
+/// so they are re-filtered here). If the repository cannot be read, fail
+/// closed for the snapshot so a stale disabled server cannot bypass the gate.
 pub(crate) async fn filter_enabled_session_mcp_servers(
     repo: Option<&dyn IMcpServerRepository>,
     session_mcp_servers: &[SessionMcpServer],
@@ -63,7 +64,7 @@ pub(crate) async fn filter_enabled_session_mcp_servers(
     let disabled_ids = match repo.list_by_ids_any(&ids).await {
         Ok(rows) => rows
             .into_iter()
-            .filter(|row| !row.enabled)
+            .filter(|row| !row.enabled || row.deleted_at.is_some())
             .map(|row| row.mcp_server_id)
             .collect::<HashSet<_>>(),
         Err(error) => {
@@ -369,6 +370,8 @@ async fn build_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomifun_api_types::SessionMcpTransport;
+    use nomifun_db::models::McpServerRow;
 
     const TEST_OWNER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000001";
 
@@ -404,5 +407,116 @@ mod tests {
         assert!(validate_runtime_user_id(" 0190f5fe-7c00-7a00-8000-000000000001").is_err());
         assert!(validate_runtime_user_id("0190f5fe-7c00-7a00-8000-000000000001 ").is_err());
         assert!(validate_runtime_user_id("user-1").is_err());
+    }
+
+    struct GateMockRepo {
+        rows: Vec<McpServerRow>,
+    }
+
+    #[async_trait::async_trait]
+    impl IMcpServerRepository for GateMockRepo {
+        async fn list(&self) -> Result<Vec<McpServerRow>, nomifun_db::DbError> {
+            Ok(self.rows.clone())
+        }
+
+        async fn find_by_id(&self, mcp_server_id: &str) -> Result<Option<McpServerRow>, nomifun_db::DbError> {
+            Ok(self.rows.iter().find(|row| row.mcp_server_id == mcp_server_id).cloned())
+        }
+
+        async fn find_by_name(&self, _name: &str) -> Result<Option<McpServerRow>, nomifun_db::DbError> {
+            Ok(None)
+        }
+
+        async fn create(
+            &self,
+            _params: nomifun_db::CreateMcpServerParams<'_>,
+        ) -> Result<McpServerRow, nomifun_db::DbError> {
+            unimplemented!("gate fixture")
+        }
+
+        async fn update(
+            &self,
+            _mcp_server_id: &str,
+            _params: nomifun_db::UpdateMcpServerParams<'_>,
+        ) -> Result<McpServerRow, nomifun_db::DbError> {
+            unimplemented!("gate fixture")
+        }
+
+        async fn delete(&self, _mcp_server_id: &str) -> Result<(), nomifun_db::DbError> {
+            unimplemented!("gate fixture")
+        }
+
+        async fn batch_upsert(
+            &self,
+            _servers: &[nomifun_db::CreateMcpServerParams<'_>],
+        ) -> Result<Vec<McpServerRow>, nomifun_db::DbError> {
+            unimplemented!("gate fixture")
+        }
+
+        async fn update_status(
+            &self,
+            _mcp_server_id: &str,
+            _status: &str,
+            _last_connected: Option<nomifun_common::TimestampMs>,
+        ) -> Result<(), nomifun_db::DbError> {
+            unimplemented!("gate fixture")
+        }
+
+        async fn update_tools(&self, _mcp_server_id: &str, _tools: Option<&str>) -> Result<(), nomifun_db::DbError> {
+            unimplemented!("gate fixture")
+        }
+    }
+
+    fn gate_row(id: &str, enabled: bool, deleted: bool) -> McpServerRow {
+        McpServerRow {
+            mcp_server_id: id.to_owned(),
+            name: id.to_owned(),
+            description: None,
+            enabled,
+            transport_type: "stdio".to_owned(),
+            transport_config: r#"{"command":"npx"}"#.to_owned(),
+            tools: None,
+            last_test_status: "connected".to_owned(),
+            last_connected: Some(1),
+            original_json: None,
+            builtin: false,
+            deleted_at: deleted.then_some(1),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn session_gate_excludes_disabled_and_soft_deleted_rows() {
+        let enabled_id = "0190f5fe-7c00-7a00-8000-000000000101";
+        let disabled_id = "0190f5fe-7c00-7a00-8000-000000000102";
+        let deleted_id = "0190f5fe-7c00-7a00-8000-000000000103";
+        let repo = GateMockRepo {
+            rows: vec![
+                gate_row(enabled_id, true, false),
+                gate_row(disabled_id, false, false),
+                gate_row(deleted_id, true, true),
+            ],
+        };
+        let session_servers = [enabled_id, disabled_id, deleted_id]
+            .into_iter()
+            .map(|id| SessionMcpServer {
+                mcp_server_id: nomifun_api_types::McpServerId::parse(id).unwrap(),
+                name: id.to_owned(),
+                transport: SessionMcpTransport::Stdio {
+                    command: "npx".to_owned(),
+                    args: Vec::new(),
+                    env: Default::default(),
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let kept = filter_enabled_session_mcp_servers(Some(&repo), &session_servers, "conv").await;
+
+        let kept_ids = kept
+            .iter()
+            .map(|server| server.mcp_server_id.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(kept_ids, vec![enabled_id.to_owned()]);
     }
 }
