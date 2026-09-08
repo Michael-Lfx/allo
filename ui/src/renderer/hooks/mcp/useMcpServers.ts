@@ -101,6 +101,13 @@ export const useMcpServers = (options?: { enabled?: boolean }) => {
     mcpServers,
     isMcpServersLoading: isMcpServersLoading || isExtensionMcpServersLoading,
     mcpServersLoadFailed: mcpServersLoadFailed || extensionMcpServersLoadFailed,
+    // Keep the user-owned catalog lifecycle separate from extension
+    // contributions. Market activation targets only persisted user servers
+    // and must not wait for an unrelated extension failure.
+    isUserMcpServersLoading: isMcpServersLoading,
+    userMcpServersLoadFailed: mcpServersLoadFailed,
+    isExtensionMcpServersLoading,
+    extensionMcpServersLoadFailed,
     reloadMcpServers: loadMcpServers,
     allMcpServers: [...mcpServers, ...extensionMcpServers],
     extensionMcpServers,

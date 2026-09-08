@@ -8,11 +8,16 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 
 const actionRowSource = readFileSync(new URL('./GuidActionRow.tsx', import.meta.url), 'utf8');
+const guidPageSource = readFileSync(new URL('../GuidPage.tsx', import.meta.url), 'utf8');
 const modelSelectorSource = readFileSync(new URL('./GuidModelSelector.tsx', import.meta.url), 'utf8');
 const guidCss = readFileSync(new URL('../index.module.css', import.meta.url), 'utf8');
 const controlCss = readFileSync(new URL('../../../styles/theme-control-contract.css', import.meta.url), 'utf8');
 
 describe('GuidActionRow MCP checkbox selection treatment', () => {
+  test('only offers globally enabled MCP servers for new sessions', () => {
+    expect(guidPageSource.includes('allServers.filter(isMcpServerSelectable)')).toBe(true);
+  });
+
   test('applies the enhanced theme-aware checkbox treatment to MCP server choices', () => {
     expect(actionRowSource.includes("className='guid-mcp-selection-checkbox'")).toBe(true);
     expect(controlCss.includes('.arco-checkbox-checked .arco-checkbox-mask')).toBe(true);

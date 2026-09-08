@@ -1,5 +1,5 @@
 import type { IMcpServer } from '@/common/config/storage';
-import { Alert, Button } from '@arco-design/web-react';
+import { Alert, Button, Tag } from '@arco-design/web-react';
 import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import CodeMirror from '@renderer/components/editors/CodeMirrorEditor';
@@ -49,6 +49,39 @@ const validateEditServerNames = (
   return { isValid: true };
 };
 
+const McpConfigSummary: React.FC<{ server: IMcpServer }> = ({ server }) => {
+  const { t } = useTranslation();
+  const endpoint =
+    server.transport.type === 'stdio'
+      ? [server.transport.command, ...(server.transport.args ?? [])].join(' ')
+      : server.transport.url;
+  const sensitiveKeys =
+    server.transport.type === 'stdio'
+      ? Object.keys(server.transport.env ?? {})
+      : Object.keys(server.transport.headers ?? {});
+
+  return (
+    <div className='border-y border-solid border-arco-2 py-10px'>
+      <div className='mb-8px flex items-center justify-between gap-8px'>
+        <span className='text-12px font-medium text-t-primary'>{t('settings.mcpConfigSummary')}</span>
+        <Tag size='small' bordered={false} color={server.enabled ? 'green' : 'gray'}>
+          {t(server.enabled ? 'settings.mcpEnabled' : 'settings.mcpDisabled')}
+        </Tag>
+      </div>
+      <div className='grid grid-cols-[80px_minmax(0,1fr)] gap-x-10px gap-y-6px text-12px leading-18px'>
+        <span className='text-t-tertiary'>{t('settings.mcpTransport')}</span>
+        <span className='text-t-primary'>{server.transport.type}</span>
+        <span className='text-t-tertiary'>{t('settings.mcpEndpoint')}</span>
+        <code className='break-all font-mono text-t-primary'>{endpoint}</code>
+        <span className='text-t-tertiary'>{t('settings.mcpSensitiveFields')}</span>
+        <span className='break-all text-t-secondary'>
+          {sensitiveKeys.length > 0 ? sensitiveKeys.join(', ') : t('settings.mcpNone')}
+        </span>
+      </div>
+    </div>
+  );
+};
+
 const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCancel, onSubmit, onBatchImport }) => {
   const { t } = useTranslation();
   const { theme } = useThemeContext();
@@ -56,6 +89,7 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
   const [copyStatus, setCopyStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<ValidationResult>({ isValid: true });
+  const [initialJson, setInitialJson] = useState('');
   const apiKeyUrl = server ? getMcpApiKeyUrl(server.transport) : null;
   const handleOpenApiKeyUrl = useCallback(() => {
     if (!apiKeyUrl) return;
@@ -97,6 +131,7 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
       // 优先使用存储的original_json，如果没有则生成JSON配置
       if (server.original_json) {
         setJsonInput(server.original_json);
+        setInitialJson(server.original_json);
       } else {
         // 兼容没有original_json的旧数据，生成JSON配置
         const serverConfig = {
@@ -117,13 +152,18 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
             },
           },
         };
-        setJsonInput(JSON.stringify(serverConfig, null, 2));
+        const generatedJson = JSON.stringify(serverConfig, null, 2);
+        setJsonInput(generatedJson);
+        setInitialJson(generatedJson);
       }
     } else if (visible && !server) {
       // 新建模式下清空JSON输入
       setJsonInput('');
+      setInitialJson('');
     }
   }, [visible, server]);
+
+  const configurationChanged = Boolean(server && jsonInput.trim() !== initialJson.trim());
 
   const handleSubmit = async () => {
     if (submitting) {
@@ -197,7 +237,7 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
       onOk={handleSubmit}
       confirmLoading={submitting}
       okButtonProps={{ disabled: !validation.isValid || submitting, loading: submitting }}
-      header={{ title: server ? t('settings.mcpEditServer') : t('settings.mcpImportFromJSON'), showClose: true }}
+      header={{ title: server ? t('settings.mcpViewConfig') : t('settings.mcpImportFromJSON'), showClose: true }}
       style={{ width: 600, maxHeight: '90vh' }}
       contentStyle={{
         borderRadius: 16,
@@ -207,6 +247,14 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
       }}
     >
       <div className='flex min-h-0 flex-col gap-12px pt-8px'>
+        {server ? <McpConfigSummary server={server} /> : null}
+        {server && configurationChanged ? (
+          <Alert
+            type='warning'
+            showIcon
+            content={t('settings.mcpConfigChangeWarning')}
+          />
+        ) : null}
         <div>
           <div className='mb-2 flex items-center justify-between gap-2'>
             <div className='text-sm text-t-secondary'>{t('settings.mcpImportPlaceholder')}</div>
@@ -231,6 +279,10 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
               content={validation.errorMessage || t('settings.mcpJsonFormatError') || 'JSON format error'}
             />
           )}
+          <div className='mb-6px text-12px font-medium text-t-primary'>{t('settings.mcpRawJson')}</div>
+          {server ? (
+            <div className='mb-8px text-12px leading-18px text-t-tertiary'>{t('settings.mcpSensitiveConfigHint')}</div>
+          ) : null}
           <div className='relative'>
             <CodeMirror
               value={jsonInput}

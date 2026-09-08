@@ -266,7 +266,12 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   const selectedModelValues = editModels.map((item) => `${item.provider_id ?? ANY_PROVIDER_TOKEN}::${item.model}`);
   const { bases: knowledgeBases } = useKnowledgeBases({ enabled: editVisible });
   const { mcpServers } = useMcpServers({ enabled: editVisible });
-  const userMcpServers = mcpServers.filter((server) => server.builtin !== true);
+  const userMcpServers = mcpServers.filter(
+    (server) => server.builtin !== true && (server.enabled || mcpServerIds.includes(server.mcp_server_id))
+  );
+  const hasDisabledMcpSelection = userMcpServers.some(
+    (server) => !server.enabled && mcpServerIds.includes(server.mcp_server_id)
+  );
 
   const targetOptions: Array<{ value: PresetTarget; label: string }> = [
     { value: 'conversation', label: t('settings.presetTargetConversation', { defaultValue: 'Agent conversation' }) },
@@ -745,11 +750,21 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 placeholder={t('settings.presetMcpPlaceholder', { defaultValue: 'Choose MCP servers' })}
               >
                 {userMcpServers.map((server) => (
-                  <NomiSelect.Option key={server.mcp_server_id} value={server.mcp_server_id}>
+                  <NomiSelect.Option
+                    key={server.mcp_server_id}
+                    value={server.mcp_server_id}
+                    disabled={!server.enabled && !mcpServerIds.includes(server.mcp_server_id)}
+                  >
                     {server.name}
+                    {!server.enabled ? ` · ${t('settings.mcpDisabled')}` : ''}
                   </NomiSelect.Option>
                 ))}
               </NomiSelect>
+              {hasDisabledMcpSelection ? (
+                <div className='mt-6px text-12px leading-18px text-warning-7'>
+                  {t('settings.presetMcpDisabledSelectionHint')}
+                </div>
+              ) : null}
             </div>
           </div>
 

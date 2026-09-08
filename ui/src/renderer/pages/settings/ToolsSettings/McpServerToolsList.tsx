@@ -2,34 +2,53 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import type { IMcpServer } from '@/common/config/storage';
+import type { McpActivationItemState } from '@/renderer/hooks/mcp/useMcpActivationFlow';
+import McpLoadingIndicator from './McpLoadingIndicator';
 
 interface McpServerToolsListProps {
   server: IMcpServer;
+  activationState?: McpActivationItemState;
+  loading?: boolean;
+  hasChecked?: boolean;
 }
 
-const McpServerToolsList: React.FC<McpServerToolsListProps> = ({ server }) => {
+const McpServerToolsList: React.FC<McpServerToolsListProps> = ({ server, activationState, loading = false, hasChecked = false }) => {
   const { t } = useTranslation();
+  const isFailed =
+    activationState === 'failed' || activationState === 'config-changed' || activationState === 'needs-auth' || server.last_test_status === 'error';
+  const hasSuccessfulCheck = hasChecked || activationState === 'enabled' || server.last_test_status === 'connected';
 
   if (!server.tools || server.tools.length === 0) {
-    return null;
+    if (loading) {
+      return (
+        <div className='text-12px leading-18px text-t-secondary' role='status' aria-live='polite'>
+          <McpLoadingIndicator label={t('settings.mcpToolsLoading')} />
+        </div>
+      );
+    }
+
+    const emptyMessage = isFailed
+      ? t('settings.mcpToolsUnavailable')
+      : hasSuccessfulCheck
+        ? t('settings.mcpToolsEmpty')
+        : t('settings.mcpToolsBeforeCheck');
+
+    return <div className='text-12px leading-18px text-t-tertiary'>{emptyMessage}</div>;
   }
 
   return (
     <div className='space-y-3'>
       <div>
-        <div className='space-y-2'>
+        <div>
           {server.tools.map((tool, index) => (
-            // border-2 是颜色类（--bg-2），和这张卡片自己的 bg-2 同色，等于没有边框；
-            // 卡片描边统一用 Arco 的 border-arco-2（--color-border-2）。
-            // `border-2` is a colour (--bg-2) identical to this card's own bg-2.
-            <div key={index} className='rounded-lg border border-solid border-arco-2 bg-2 px-4 py-3'>
-              <div className='flex gap-4'>
+            <div key={index} className='border-b border-b-solid border-arco-2 py-8px last:border-b-0'>
+              <div className='flex gap-12px'>
                 <div className='flex-shrink-0 min-w-0 w-1/3'>
-                  <div className='break-words text-sm font-semibold text-t-primary'>{tool.name}</div>
+                  <div className='break-words text-12px font-medium text-t-primary'>{tool.name}</div>
                 </div>
                 <div className='flex-1 min-w-0'>
                   <Tooltip content={tool.description || t('settings.mcpNoDescription')}>
-                    <div className='line-clamp-1 cursor-pointer text-xs leading-5 text-t-secondary'>
+                    <div className='line-clamp-2 cursor-pointer text-12px leading-18px text-t-secondary'>
                       {tool.description || t('settings.mcpNoDescription')}
                     </div>
                   </Tooltip>
