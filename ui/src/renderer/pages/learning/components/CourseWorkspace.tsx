@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
+import { learningApi } from '../api';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
 import Markdown from '@renderer/components/Markdown';
 import { statusColors } from '../constants';
@@ -376,6 +377,26 @@ export function LessonBlock({
 }) {
   const { t } = useTranslation();
   const [addQuestionOpen, setAddQuestionOpen] = useState(false);
+  // 目录视图不带节正文（体积）：打开已生成课时时按需拉详情，拿到
+  // sections 才走节 stepper；旧课时无节则双读回退整页 summary。
+  const [detailLesson, setDetailLesson] = useState<Lesson | null>(null);
+  const effectiveLesson = useMemo(() => detailLesson ?? lesson, [detailLesson, lesson]);
+  useEffect(() => {
+    setDetailLesson(null);
+    if (!lesson.generated) return;
+    let cancelled = false;
+    learningApi
+      .getLesson(lesson.id)
+      .then((fetched) => {
+        if (!cancelled) setDetailLesson(fetched);
+      })
+      .catch(() => {
+        // 拉取失败回退目录数据：目录的 summary 仍可读（双读）
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lesson.id, lesson.generated]);
   // 按需生成课时的行内迷你进度：按 lesson 过滤 round/audit 事件，
   // 一行文本轻量更新（不展开完整 timeline）；终态事件清空文本
   const [progressText, setProgressText] = useState<string | null>(null);
@@ -418,33 +439,35 @@ export function LessonBlock({
       </div>
     );
   }
+  const current = effectiveLesson;
+  // 生成内容用详情数据渲染(含节正文);追加练习/完成也基于它
   return (
     <div className='flex flex-col gap-14px'>
       <div className='flex flex-wrap items-center gap-8px'>
-        <Tag color={statusColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
+        <Tag color={statusColors[current.status]}>{statusLabel(current.status, t)}</Tag>
         <Text type='secondary'>
-          {lesson.estimated_minutes} {t('learning.minutes')}
+          {current.estimated_minutes} {t('learning.minutes')}
         </Text>
       </div>
-      {lesson.source && (
-        <LessonSourcePanel knowledgeBaseId={sourceKbId} source={lesson.source} />
+      {current.source && (
+        <LessonSourcePanel knowledgeBaseId={sourceKbId} source={current.source} />
       )}
-      {lesson.sections.length > 0 ? (
+      {current.sections.length > 0 ? (
         <SectionedLessonBody
-          lesson={lesson}
+          lesson={current}
           busyId={busyId}
           attemptResults={attemptResults}
           onAttempt={onAttempt}
         />
       ) : (
         <>
-          {lesson.summary && <Markdown>{lesson.summary}</Markdown>}
-          {lesson.activities.length > 0 && (
+          {current.summary && <Markdown>{current.summary}</Markdown>}
+          {current.activities.length > 0 && (
             <div className='flex flex-col gap-10px'>
               <div className='text-13px font-600 text-t-secondary'>
                 {t('learning.activities')}
               </div>
-              {lesson.activities.map((activity) => (
+              {current.activities.map((activity) => (
                 <ActivityBlock
                   key={activity.id}
                   activity={activity}
@@ -461,12 +484,12 @@ export function LessonBlock({
       {/* 完成是学习循环的终点动作：放在练习题之后，做完再标记——学习图
           工作区完成即推进到下一推荐节点，提前放置会诱导用户在练习未做时
           点完成而被跳走（普通课程完成后同样跳 next_lesson，一并受益） */}
-      {lesson.status !== 'completed' && (
+      {current.status !== 'completed' && (
         <Button
           type='primary'
           className='self-start'
-          loading={busyId === lesson.id}
-          onClick={() => onProgress(lesson, 'completed')}
+          loading={busyId === current.id}
+          onClick={() => onProgress(current, 'completed')}
         >
           {t('learning.complete')}
         </Button>
@@ -484,7 +507,7 @@ export function LessonBlock({
       </div>
       {addQuestionOpen && (
         <LessonQuestionDialog
-          lesson={lesson}
+          lesson={current}
           onClose={() => setAddQuestionOpen(false)}
           onSaved={() => {
             setAddQuestionOpen(false);

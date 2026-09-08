@@ -68,6 +68,8 @@ export const learningApi = {
       'GET',
       `${BASE}/courses/${encodeURIComponent(id)}/diagnostic?limit=${limit}`
     ),
+  getLesson: (id: string) =>
+    httpRequest<Lesson>('GET', `${BASE}/lessons/${encodeURIComponent(id)}`),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
   generateLesson: (id: string, request: GenerateLessonRequest = {}) =>

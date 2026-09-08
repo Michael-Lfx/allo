@@ -46,6 +46,30 @@ impl LearningService {
         Ok(crate::models::RepairFigureResponse { code })
     }
 
+    /// Full lesson view for one lesson, including the sectioned body. The
+    /// course-detail catalog deliberately omits section bodies (a 200-node
+    /// graph course would carry hundreds of kilobytes), so the frontend
+    /// fetches them here when the learner actually opens a lesson.
+    pub async fn lesson_detail(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+    ) -> Result<LessonView, AppError> {
+        let course_id: String = sqlx::query_scalar(
+            "SELECT m.course_id FROM learning_modules m \
+             JOIN learning_lessons l ON l.module_id = m.module_id \
+             WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+        let course_id = parse_id::<LearningCourseId>(course_id)?;
+        let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
+        self.lesson_view(lesson_id, enrollment.as_ref()).await
+    }
+
     /// Generate the study document and activities for one on-demand lesson and
     /// persist them, returning the updated lesson view. Idempotent: a lesson
     /// that already has content returns its current view unchanged.
