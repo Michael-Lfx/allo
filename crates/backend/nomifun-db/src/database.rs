@@ -43,6 +43,8 @@ pub struct Database {
     /// Per-run snapshot-copy cleanup. `Some` only for memory databases
     /// restored from the shared snapshot template; dropped together with the
     /// last clone of this handle so the run file outlives the pool.
+    /// Never read: the value matters only through its `Drop`.
+    #[allow(dead_code)]
     snapshot_run: Option<Arc<SnapshotRunFile>>,
 }
 

@@ -61,6 +61,9 @@ impl LearningCourseSink for LiveLearningCourseSink {
             provider_id,
             model: req.model,
             mode,
+            // The agent tool does not (yet) take a style argument; courses
+            // generated through it use the standard section writer.
+            teaching_style: None,
         };
         let job_id = self
             .service
