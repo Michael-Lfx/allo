@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 
 import type { CanvasNodeGenerationMode } from "@oc/components/canvas/canvas-node-prompt-panel";
 import { applyCanvasAgentOps, partitionCanvasGenerationOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { ingestCanvasNodeMedia } from "@oc/lib/canvas/canvas-project-generation";
 import { waitCanvasAgentGeneration } from "@oc/lib/canvas/canvas-agent-wait";
 import { getNodeGenerationMode } from "@oc/lib/canvas/node-registry";
-import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@oc/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ContextMenuState, type ViewportTransform } from "@oc/types/canvas";
 
 type UseCanvasAgentOperationsOptions = {
     projectId: string;
@@ -121,6 +122,26 @@ export function useCanvasAgentOperations({
             setLastAgentChange({ ...change, undoCount: nextUndoCount });
         }
         if (focusNodeIds.length) queueMicrotask(() => focusSelection());
+        const ingestTargets = appliedNodes.filter((node) => {
+            if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return false;
+            if (addedNodeIdSet.has(node.id)) return true;
+            const previous = before.nodes.find((item) => item.id === node.id);
+            return node.metadata?.content !== previous?.metadata?.content || node.metadata?.storageKey !== previous?.metadata?.storageKey;
+        });
+        if (ingestTargets.length) {
+            const expectedContent = new Map(ingestTargets.map((node) => [node.id, node.metadata?.content]));
+            queueMicrotask(() => {
+                void Promise.all(ingestTargets.map((node) => ingestCanvasNodeMedia(node))).then((ingested) => {
+                    const byId = new Map(ingested.map((node) => [node.id, node]));
+                    setNodes((current) => current.map((node) => {
+                        const next = byId.get(node.id);
+                        if (!next || next === node) return node;
+                        if (node.metadata?.content !== expectedContent.get(node.id) && node.metadata?.content !== next.metadata?.content) return node;
+                        return { ...node, metadata: { ...node.metadata, ...next.metadata } };
+                    }));
+                });
+            });
+        }
         if (canStartGeneration) {
             queueMicrotask(() => {
                 void (async () => {

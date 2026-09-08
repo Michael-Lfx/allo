@@ -12,7 +12,7 @@ import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
 import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
 import { modelPromptLengthError } from "@oc/lib/model-capabilities";
-import { generationErrorMessage, generationFailureMetadata } from "@oc/lib/generation-error";
+import { generationFailureMetadata, logCanvasGenerationFailure } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import type { Skill } from "@oc/services/api/skills";
 import type { GenerationTask } from "@oc/services/api/task-center";
@@ -148,7 +148,7 @@ export function useCanvasGenerationExecutor({
                     mode === "video" && supportsVideoReferenceAudio(generationConfig),
                 );
             } catch (error) {
-                const errorDetails = generationErrorMessage(error);
+                logCanvasGenerationFailure("generate hydrate failed", error);
                 message.error(formatCanvasUserError(error));
                 return;
             }
@@ -274,6 +274,7 @@ export function useCanvasGenerationExecutor({
                 else await executeTextGeneration(execution);
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
+                logCanvasGenerationFailure("generate failed", error);
                 const failure = generationFailureMetadata(error, prompt);
                 if (options?.waitForTaskCapacity && isGenerationTaskCapacityError(error)) {
                     setNodes((current) => current.map((node) => {

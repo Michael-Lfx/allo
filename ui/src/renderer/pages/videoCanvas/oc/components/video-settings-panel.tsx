@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CanvasToggle } from "@oc/components/canvas/canvas-overlay";
 import { ImageSettingsTheme } from "@oc/components/image-settings-panel";
 import { AspectChoice, ChoiceChip, SettingsPanelHeader, SettingsSection } from "@oc/components/generation-settings-chrome";
-import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@oc/lib/seedance-video";
+import { boolConfig, isSeedanceVideoModel, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@oc/lib/seedance-video";
 import { normalizeMiniMaxH3Duration } from "@oc/lib/minimax-h3-video";
 import { isMiniMaxH3VideoModel, isWan3VideoModel, normalizeMiniMaxH3Resolution } from "@renderer/services/videoModelCapabilities";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
@@ -41,29 +41,29 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     if (isMiniMaxH3VideoModel(modelOptionName(config.model || config.videoModel))) {
         return <MiniMaxH3VideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
-    if (isSeedanceVideoConfig(config) && !isWan3VideoModel(modelOptionName(config.model || config.videoModel))) {
+    if (isSeedanceVideoModel(modelOptionName(config.model || config.videoModel)) && !isWan3VideoModel(modelOptionName(config.model || config.videoModel))) {
         return <SeedanceVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 
-    const seconds = normalizeVideoDuration(config.videoSeconds);
+    const seconds = Number(config.videoSeconds) || profile.duration.default;
     const secondOptions = videoDurationOptions(profile);
     const resolution = resolveVideoResolutionValue(profile, config.vquality);
     const ratio = resolveVideoRatioValue(profile, config.size);
     const dimensions = videoDimensionsForRatioAndResolution(ratio, resolution);
     const sizeSupported = profile.ratios.length > 0;
-    const configuredResolutions = profile.resolutions.map((value) => ({ value: value.replace(/p$/i, ""), label: value.toUpperCase() }));
     const generateAudio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
     const watermark = boolConfig(config.videoWatermark, profile.watermark.default);
+    const enumDuration = profile.duration.selection === "enum";
 
     return (
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <SettingsPanelHeader title={canvasT("videoCanvas.settings.videoTitle", "视频设置")} subtitle={canvasT("videoCanvas.settings.videoSubtitle", "分辨率、画幅与时长会写入这次生成。")} theme={theme} /> : null}
-                {configuredResolutions.length ? <SettingsSection title={canvasT("videoCanvas.settings.resolution", "分辨率")} theme={theme}>
+                {profile.resolutions.length ? <SettingsSection title={canvasT("videoCanvas.settings.resolution", "分辨率")} theme={theme}>
                     <div className="grid grid-cols-3 gap-1.5">
-                        {configuredResolutions.map((item) => (
-                            <ChoiceChip key={item.value} selected={isVideoResolutionMatch(resolution, item.value)} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
-                                {item.label}
+                        {profile.resolutions.map((value) => (
+                            <ChoiceChip key={value} selected={isVideoResolutionMatch(resolution, value)} theme={theme} onClick={() => onConfigChange("vquality", value)}>
+                                {formatVideoResolutionLabel(value) || value.toUpperCase()}
                             </ChoiceChip>
                         ))}
                     </div>
@@ -88,15 +88,25 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </SettingsSection> : null}
                 <SettingsSection title={canvasT("videoCanvas.settings.seconds", "秒数")} theme={theme}>
-                    <CanvasVideoDurationBar
-                        value={Number(seconds)}
-                        min={profile.duration.min || VIDEO_DURATION_MIN}
-                        max={profile.duration.max || Math.max(...secondOptions, profile.duration.min || VIDEO_DURATION_MIN)}
-                        step={profile.duration.step || 1}
-                        ticks={secondOptions}
-                        theme={theme}
-                        onChange={(value) => onConfigChange("videoSeconds", String(value))}
-                    />
+                    {enumDuration ? (
+                        <div className="grid grid-cols-3 gap-1.5">
+                            {secondOptions.map((value) => (
+                                <ChoiceChip key={value} selected={Number(config.videoSeconds) === value} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
+                                    {`${value}s`}
+                                </ChoiceChip>
+                            ))}
+                        </div>
+                    ) : (
+                        <CanvasVideoDurationBar
+                            value={Number(seconds)}
+                            min={profile.duration.min || VIDEO_DURATION_MIN}
+                            max={profile.duration.max || Math.max(...secondOptions, profile.duration.min || VIDEO_DURATION_MIN)}
+                            step={profile.duration.step || 1}
+                            ticks={secondOptions}
+                            theme={theme}
+                            onChange={(value) => onConfigChange("videoSeconds", String(value))}
+                        />
+                    )}
                 </SettingsSection>
                 {profile.generateAudio.supported || profile.watermark.supported ? <SettingsSection title={canvasT("videoCanvas.settings.output", "输出")} theme={theme}><div className="grid grid-cols-2 gap-3">{profile.generateAudio.supported ? <SwitchRow label={canvasT("videoCanvas.settings.genAudio", "生成声音")} checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}{profile.watermark.supported ? <SwitchRow label={canvasT("videoCanvas.settings.watermark", "添加水印")} checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} /> : null}</div></SettingsSection> : null}
             </div>

@@ -46,6 +46,14 @@ describe("generation-error", () => {
         expect(generationErrorMessage("Request failed with status code 502 Bad Gateway")).toBe("网络异常。");
     });
 
+    test("does not collapse a provider 500 with a remaining reason into a network error", () => {
+        const raw = "Internal error: video generation failed: API error 500: Model call failed. Please try again later: invalid last_frame";
+        const message = generationErrorMessage(raw);
+        expect(message).not.toContain("网络异常");
+        expect(message.toLowerCase()).toContain("invalid last_frame");
+        expect(generationFailureMetadata(new Error(raw), "prompt").errorDetails.toLowerCase()).toContain("invalid last_frame");
+    });
+
     test("recognizes already-localized moderation messages for retry gating", () => {
         expect(isContentModerationError(COPYRIGHT_RESTRICTION_MESSAGE)).toBe(true);
         expect(isContentModerationError(CONTENT_MODERATION_MESSAGE)).toBe(true);

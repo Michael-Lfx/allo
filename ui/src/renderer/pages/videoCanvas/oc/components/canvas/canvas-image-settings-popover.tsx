@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { CanvasChromeButton, overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
 import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@oc/components/image-settings-panel";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { imageCapabilityConfigFor } from "@oc/lib/model-capabilities";
 import { anchoredOverlayStyle, type OverlayPlacement } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -30,7 +31,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
     const quality = config.quality || "auto";
     const count = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count) || 1))));
     const activeSize = config.size || "auto";
-    const summary = compactImageToken(quality, activeSize, showCount ? count : 1);
+    const summary = compactImageToken(config, quality, activeSize, showCount ? count : 1);
     const close = useCallback(() => {
         setOpen(false);
         onOpenChange?.(false);
@@ -72,8 +73,10 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
     );
 }
 
-function compactImageToken(quality: string, size: string, count: number) {
-    const parts = [imageSizeLabel(size), imageQualityLabel(quality)];
+function compactImageToken(config: AiConfig, quality: string, size: string, count: number) {
+    const profile = imageCapabilityConfigFor(config, config.model);
+    const parts = [imageSizeLabel(size, profile)];
+    if (profile.qualities.length) parts.push(imageQualityLabel(quality));
     if (count > 1) parts.push(`×${count}`);
     return parts.join(" · ");
 }

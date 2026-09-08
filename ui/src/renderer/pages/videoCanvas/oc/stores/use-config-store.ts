@@ -183,7 +183,8 @@ function isImageModelName(model: string) {
             value.includes("ideogram") ||
             value.includes("recraft") ||
             value.includes("playground") ||
-            value.includes("leonardo"))
+            value.includes("leonardo") ||
+            (value.includes("grok") && value.includes("imagine") && !value.includes("video")))
     );
 }
 

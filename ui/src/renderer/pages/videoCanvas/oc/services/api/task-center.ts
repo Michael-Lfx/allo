@@ -10,6 +10,7 @@ import {
 import { normalizeWan3Duration, normalizeWan3Ratio } from '@oc/lib/wan3-video';
 import { isMiniMaxH3VideoModel, isWan3VideoModel } from '@renderer/services/videoModelCapabilities';
 import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
+import { imageSizeToAspectRatio, modelCapabilityConfigFor, normalizeVideoValue } from '@oc/lib/model-capabilities';
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
 import { hasExplicitVideoFrames, resolveVideoImageReferences, shouldSubmitVideoImagesAsReferences } from '@oc/services/api/video-reference-roles';
 import { modelOptionName } from '@oc/stores/use-config-store';
@@ -361,7 +362,9 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     ? canonicalizeVideoResolution(model, rawResolution)
     : canonicalizeVideoResolution('', rawResolution);
   let aspect_ratio = String(config.size || metadata.aspectRatio || '16:9');
-  if (model && isMiniMaxH3VideoModel(model)) {
+  if (!isVideo) {
+    aspect_ratio = imageSizeToAspectRatio(aspect_ratio);
+  } else if (model && isMiniMaxH3VideoModel(model)) {
     const hasMedia =
       Boolean(firstFrameId || lastFrameId) || referenceIds.length > 0;
     duration_secs = normalizeMiniMaxH3Duration(duration_secs);
@@ -371,6 +374,18 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
       Boolean(firstFrameId || lastFrameId) || referenceIds.length > 0;
     duration_secs = normalizeWan3Duration(duration_secs);
     aspect_ratio = normalizeWan3Ratio(aspect_ratio, hasMedia);
+  } else if (model) {
+    const profile = modelCapabilityConfigFor({ channels: [] }, model).video;
+    if (profile) {
+      const normalized = normalizeVideoValue(profile, {
+        seconds: String(duration_secs),
+        ratio: aspect_ratio,
+        resolution: rawResolution,
+      });
+      duration_secs = Number(normalized.seconds);
+      aspect_ratio = normalized.ratio;
+      resolution = canonicalizeVideoResolution(model, normalized.resolution);
+    }
   }
 
   return {
@@ -540,9 +555,7 @@ export async function waitForGenerationTask(
       if (task.status === 'succeeded') return task;
       if (task.status === 'failed' || task.status === 'cancelled') {
         throw new Error(
-          task.error
-            ? generationErrorMessage(task.error)
-            : `Task ${task.status === 'cancelled' ? 'cancelled' : 'failed'}`
+          task.error || `Task ${task.status === 'cancelled' ? 'cancelled' : 'failed'}`
         );
       }
       await delay(intervalMs, options?.signal);
