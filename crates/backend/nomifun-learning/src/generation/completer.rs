@@ -9,7 +9,6 @@ use super::*;
 // | stage                     | budget | why                                            |
 // |---------------------------|--------|------------------------------------------------|
 // | blueprint                 |  4096  | structure-only JSON (title/concepts/modules)   |
-// | lesson document           |  8192  | longest call: 1000-1500 chars + figures        |
 // | activities                |  4096  | 3-5 small questions as JSON                    |
 // | single activity           |  4096  | exactly one question                           |
 // | figure repair             |  4096  | corrected figure code                          |
@@ -26,8 +25,6 @@ use super::*;
 
 /// Course blueprint: structure-only JSON, medium-sized.
 pub(crate) const BLUEPRINT_MAX_TOKENS: u32 = 4096;
-/// Long-form lesson document (1000-1500 chars + optional figures).
-pub(crate) const LESSON_DOCUMENT_MAX_TOKENS: u32 = 8192;
 /// Section outline JSON: tier + manifest of ≤8 sections.
 pub(crate) const SECTION_OUTLINE_MAX_TOKENS: u32 = 2048;
 /// One section body (400-700 chars + optional figures).
