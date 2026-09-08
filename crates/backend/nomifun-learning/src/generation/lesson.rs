@@ -408,10 +408,174 @@ async fn generate_section_body(
 }
 
 
+/// 单节重写（ADR-0002 迁移 050 的单节操作语义）：只重写一节正文，不触
+/// 其他节与题目。同一节级质检门（`validate_body`），同样的降级兜底——
+/// 可视化承诺兑现失败且修复预算耗尽时，以 visual=无 纯文字保底重写一轮；
+/// 返回 (正文, 是否降级)。独立于管线版 `generate_section_body`：不需要
+/// Blueprint（学习图节点没有蓝图快照），上下文由调用方以纯字符串给出。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn rewrite_section_body(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    teaching_style: TeachingStyle,
+    course_title: &str,
+    lesson_title: &str,
+    lesson_purpose: &str,
+    planned: &SectionPack,
+    position: usize,
+    manifest: &[SectionPack],
+    previous_body: Option<&str>,
+    next_section_title: Option<&str>,
+    grounding: Option<(&str, &str)>,
+    forbidden: &str,
+    tier: ComplexityTier,
+) -> Result<(String, bool), String> {
+    let build = |degraded: bool| {
+        let mut prompt = build_section_rewrite_prompt(
+            course_title,
+            lesson_title,
+            lesson_purpose,
+            planned,
+            position,
+            manifest,
+            previous_body,
+            next_section_title,
+            grounding,
+            forbidden,
+            tier,
+        );
+        if degraded {
+            prompt.push_str(
+                "\n\n## 降级重写\n\n上一轮的可视化未能通过质检。本轮以「无」为准:用紧凑、\
+                 具体的纯文字完成本节(短段落、枚举用列表),不输出任何可视化块。\n",
+            );
+        }
+        prompt
+    };
+    let system = section_body_system(teaching_style);
+    let mut last_error = String::new();
+    for degraded in [false, true] {
+        // 每种形态初跑 + 2 次带定位的修复;降级轮是独立的兜底,不共享预算。
+        let prompt = build(degraded);
+        for attempt in 0..3usize {
+            let user = if attempt == 0 {
+                prompt.clone()
+            } else {
+                format!(
+                    "{prompt}\n\nThe previous body for this section was rejected: {last_error}\n\
+                     Return a corrected body now: start directly with the `## ` heading line \
+                     copied exactly from the section task, keep the length target."
+                )
+            };
+            let raw = complete(
+                completer,
+                model_override,
+                &system,
+                &user,
+                SECTION_BODY_MAX_TOKENS,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            let body = strip_markdown_fences(&raw);
+            let candidate = SectionPack {
+                section_key: planned.section_key.clone(),
+                kind: planned.kind,
+                title: planned.title.clone(),
+                points: planned.points.clone(),
+                visual: if degraded { "无".into() } else { planned.visual.clone() },
+                body_md: body,
+            };
+            match candidate.validate_body() {
+                Ok(()) => return Ok((candidate.body_md, degraded)),
+                Err(error) => last_error = error,
+            }
+        }
+    }
+    Err(last_error)
+}
+
+/// 单节重写提示词：管线版 `build_section_body_prompt` 的无蓝图变体——
+/// 课程/课时坐标与 grounded 上下文由调用方以纯字符串传入（传统课时传
+/// 引用摘录与概念黑名单，学习图节点传前置/后续段落与下游禁止清单）。
+#[allow(clippy::too_many_arguments)]
+fn build_section_rewrite_prompt(
+    course_title: &str,
+    lesson_title: &str,
+    lesson_purpose: &str,
+    planned: &SectionPack,
+    position: usize,
+    manifest: &[SectionPack],
+    previous_body: Option<&str>,
+    next_section_title: Option<&str>,
+    grounding: Option<(&str, &str)>,
+    forbidden: &str,
+    tier: ComplexityTier,
+) -> String {
+    let mut prompt = format!(
+        "Course: {}\nLesson: {} — {}\n\n## 本节任务（重写这一节）\n\n- 节 id：{}\n- 节标题：{}\n- 节类型：{}\n- 本节要点：{}\n- 本节计划的可视化：{}（承诺兑现制：质检门按此声明逐项检查交付）\n- 本节文字预算（仅正文，公式/图表/可视化块不占）：约 {} 字\n- 位置：第 {}/{} 节\n",
+        course_title,
+        lesson_title.trim(),
+        lesson_purpose.trim(),
+        planned.section_key,
+        planned.title.trim(),
+        planned.kind.label(),
+        planned.points.trim(),
+        if planned.visual.trim().is_empty() {
+            "公式/函数图/示意图/流程图/图表 之一（内容确实非视觉才可用 无）"
+        } else {
+            planned.visual.trim()
+        },
+        tier.prose_budget(),
+        position + 1,
+        manifest.len(),
+    );
+    prompt.push_str("Section manifest (your section is marked — do not teach the others):\n");
+    for (index, section) in manifest.iter().enumerate() {
+        let mark = if index == position { "（本节）" } else { "" };
+        prompt.push_str(&format!(
+            "- {} [{}] {} — {}{}\n",
+            section.section_key,
+            section.kind.label(),
+            section.title.trim(),
+            section.points.trim(),
+            mark
+        ));
+    }
+    if let Some(previous) = previous_body {
+        let previous = previous.trim();
+        let previous: String = previous.chars().take(2000).collect();
+        prompt.push_str(&format!(
+            "## 前一节已生成正文（自然衔接，不要重复它讲过的内容）\n\n{previous}\n"
+        ));
+    } else {
+        prompt.push_str("This is the lesson's first section — open the lesson (motivate the topic in one or two sentences before the first definition).\n");
+    }
+    match next_section_title {
+        Some(next) => prompt.push_str(&format!(
+            "The next section is \"{next}\" — do not teach its content; end where it begins.\n"
+        )),
+        None => prompt.push_str(
+            "This is the lesson's last section — close with a one-sentence wrap-up.\n",
+        ),
+    }
+    if !forbidden.trim().is_empty() {
+        prompt.push_str(&format!("\n{forbidden}\n"));
+    }
+    if let Some((label, text)) = grounding {
+        if !text.trim().is_empty() {
+            prompt.push_str(&format!(
+                "Grounding reference (the body must stay grounded in it) — {label}:\n---\n{}\n---\n",
+                text.trim()
+            ));
+        }
+    }
+    prompt.push_str("\nWrite this section's body now.");
+    prompt
+}
+
 /// 防超纲黑名单(learnhub contextPack「禁止使用的概念」):本课时之外的
 /// 课程概念按名称列出(封顶 200),正文不得出现也不得引用其结论。
-pub(crate) fn forbidden_concepts_text(
-    blueprint: &Blueprint,
+pub(crate) fn forbidden_concepts_text(    blueprint: &Blueprint,
     lesson: &BlueprintLesson,
 ) -> String {
     let lesson_keys: std::collections::HashSet<&str> =

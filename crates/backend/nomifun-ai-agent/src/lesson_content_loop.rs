@@ -15,6 +15,7 @@
 //! contracts (enforced deterministically by the lesson draft audit), so the
 //! agent path and the legacy two-stage path produce interchangeable output.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
@@ -92,6 +93,10 @@ const REPAIR_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容修复代理
 pub struct LiveLessonContentAgentEngine {
     pub service: Arc<LearningService>,
     pub deps: OneShotDeps,
+    /// 中断会话的轮次日志（draft_id → 每轮意图行）。resume 时取出注入开
+    /// 场消息恢复认知；发布成功后清除。内存态，与草稿同生命周期（重启即
+    /// 失）。与学习图循环的同名字段同构（断点续跑的另一半）。
+    pub round_logs: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 #[async_trait::async_trait]
@@ -103,6 +108,33 @@ impl LessonContentAgentEngine for LiveLessonContentAgentEngine {
         _user_id: &UserId,
         context: &LessonGenerationContext,
         model_override: Option<(&str, &str)>,
+    ) -> Result<LessonOutput, AppError> {
+        self.run_generation(context, model_override, None).await
+    }
+
+    async fn resume(
+        &self,
+        _user_id: &UserId,
+        draft_id: &str,
+        context: &LessonGenerationContext,
+        model_override: Option<(&str, &str)>,
+    ) -> Result<LessonOutput, AppError> {
+        self.run_generation(context, model_override, Some(draft_id.to_owned()))
+            .await
+    }
+}
+
+impl LiveLessonContentAgentEngine {
+    /// Shared generation body: fresh runs start with an empty draft slot
+    /// (`ls_start` creates the draft); resumes preset the slot with the
+    /// surviving draft and inject its state plus the archived round logs
+    /// into the opening user turn. Everything else — the timeout shell and
+    /// the failure diagnostics — is identical for both entry points.
+    async fn run_generation(
+        &self,
+        context: &LessonGenerationContext,
+        model_override: Option<(&str, &str)>,
+        resume_draft: Option<String>,
     ) -> Result<LessonOutput, AppError> {
         let (provider_id, model) = match model_override {
             Some((provider_id, model)) => (provider_id.to_owned(), model.to_owned()),
@@ -132,26 +164,53 @@ impl LessonContentAgentEngine for LiveLessonContentAgentEngine {
             lesson = %context.lesson_title,
             provider = provider_id.as_str(),
             model = %model,
+            resumed = resume_draft.is_some(),
             "lesson content generation start"
         );
 
         // The two slots are shared with the tool handlers: the draft the
         // model opened and the lesson output `ls_finish` published. On
-        // timeout the draft slot also carries the diagnostics.
+        // resume the draft slot presets with the surviving draft — the
+        // model never spends a round re-bootstrapping.
+        let (user_text, draft_slot) = match resume_draft.as_ref() {
+            Some(draft_id) => {
+                let view = self.service.inspect_lesson_draft(draft_id)?;
+                let previous_rounds = self
+                    .round_logs
+                    .lock()
+                    .ok()
+                    .and_then(|mut logs| logs.remove(draft_id))
+                    .unwrap_or_default();
+                (
+                    compose_resume_user_text(context, &json_compact(&view), &previous_rounds),
+                    Some(draft_id.clone()),
+                )
+            }
+            None => (lesson_user_text(context), None),
+        };
         let ctx = Arc::new(LoopContext {
             service: Arc::clone(&self.service),
             context: context.clone(),
-            draft_slot: Arc::new(Mutex::new(None)),
+            draft_slot: Arc::new(Mutex::new(draft_slot)),
             published_slot: Arc::new(Mutex::new(None)),
+            round_log: Mutex::new(Vec::new()),
         });
 
         match tokio::time::timeout(
             std::time::Duration::from_secs(TOTAL_TIMEOUT_SECS),
-            self.run_loops(provider, &model, Arc::clone(&ctx)),
+            self.run_loops(provider, &model, &user_text, Arc::clone(&ctx)),
         )
         .await
         {
             Ok(Ok(output)) => {
+                // 发布成功：会话结束，清掉可能残留的轮次日志（run_loops 的
+                // 发布点已清过，这里是幂等兜底；草稿与续跑映射由
+                // finish_lesson_draft / 落库路径负责清理）。
+                if let Some(draft_id) = ctx.draft_slot.lock().ok().and_then(|slot| slot.clone()) {
+                    if let Ok(mut logs) = self.round_logs.lock() {
+                        logs.remove(&draft_id);
+                    }
+                }
                 ctx.log("session_end", serde_json::json!({
                     "ok": true,
                     "activities": output.activities.len(),
@@ -160,6 +219,14 @@ impl LessonContentAgentEngine for LiveLessonContentAgentEngine {
                 Ok(output)
             }
             Ok(Err(error)) => {
+                // 失败保留轮次日志：草稿仍在 TTL 内时重试即续跑。
+                if let Some(draft_id) = ctx.draft_slot.lock().ok().and_then(|slot| slot.clone()) {
+                    if let (Ok(mut logs), Ok(round_log)) =
+                        (self.round_logs.lock(), ctx.round_log.lock())
+                    {
+                        logs.insert(draft_id, round_log.clone());
+                    }
+                }
                 ctx.log("session_end", serde_json::json!({
                     "ok": false,
                     "error": error.to_string(),
@@ -171,15 +238,20 @@ impl LessonContentAgentEngine for LiveLessonContentAgentEngine {
                 if let Some(draft_id) =
                     ctx.draft_slot.lock().ok().and_then(|slot| slot.clone())
                 {
+                    if let (Ok(mut logs), Ok(round_log)) =
+                        (self.round_logs.lock(), ctx.round_log.lock())
+                    {
+                        logs.insert(draft_id.clone(), round_log.clone());
+                    }
                     match self.service.audit_lesson_draft(&draft_id) {
                         Ok(audit) => {
                             message.push_str(&format!(
-                                "\ndraft {draft_id} survives; its audit state:\n{audit}"
+                                "\ndraft {draft_id} survives（可续跑，重试即接续本进度）; its audit state:\n{audit}"
                             ));
                         }
                         Err(_) => {
                             message.push_str(&format!(
-                                "\ndraft {draft_id} survives; audit unavailable"
+                                "\ndraft {draft_id} survives（可续跑，重试即接续本进度）; audit unavailable"
                             ));
                         }
                     }
@@ -195,13 +267,25 @@ impl LessonContentAgentEngine for LiveLessonContentAgentEngine {
 }
 
 impl LiveLessonContentAgentEngine {
+    /// 发布成功后的会话收尾：清掉该草稿可能残留的轮次日志（发布后草稿
+    /// 已被 finish 门移除，续跑映射也随之清除——日志没有存在意义）。
+    fn clear_round_logs(&self, ctx: &LoopContext) {
+        if let Some(draft_id) = ctx.draft_slot.lock().ok().and_then(|slot| slot.clone()) {
+            if let Ok(mut logs) = self.round_logs.lock() {
+                logs.remove(&draft_id);
+            }
+        }
+    }
+
     /// Generation loop, then audit-gated repair loops. `provider` is
     /// injected so tests stub the LLM here (same seam as the outline
-    /// engine).
+    /// engine); `user_text` is the opening user turn (fresh-run context or
+    /// the resume payload — the caller decides).
     async fn run_loops(
         &self,
         provider: Arc<dyn LlmProvider>,
         model: &str,
+        user_text: &str,
         ctx: Arc<LoopContext>,
     ) -> Result<LessonOutput, AppError> {
         // ── Generation loop: full tool set, the lesson context as the user turn ──
@@ -214,7 +298,7 @@ impl LiveLessonContentAgentEngine {
             provider.clone(),
             model,
             GENERATE_LESSON_AGENT_SYSTEM,
-            &lesson_user_text(&ctx.context),
+            user_text,
             &generate_tools,
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
@@ -228,6 +312,7 @@ impl LiveLessonContentAgentEngine {
                 "phase": "generate",
                 "activities": output.activities.len(),
             }));
+            self.clear_round_logs(&ctx);
             return Ok(output);
         }
         let draft_id = ctx
@@ -271,6 +356,7 @@ impl LiveLessonContentAgentEngine {
                         "round": round + 1,
                         "activities": output.activities.len(),
                     }));
+                    self.clear_round_logs(&ctx);
                     return Ok(output);
                 }
                 Err(AppError::UnprocessableEntity(_)) => {
@@ -310,6 +396,7 @@ impl LiveLessonContentAgentEngine {
                     "round": round + 1,
                     "activities": output.activities.len(),
                 }));
+                self.clear_round_logs(&ctx);
                 return Ok(output);
             }
             let revision_after = ctx
@@ -361,6 +448,10 @@ struct LoopContext {
     context: LessonGenerationContext,
     draft_slot: Arc<Mutex<Option<String>>>,
     published_slot: Arc<Mutex<Option<LessonOutput>>>,
+    /// 轮次日志：每轮的意图文本与工具摘要（`emit_progress` 的 agent_round
+    /// 分支追加）。对话历史无法跨会话保留，这些计划轨迹在续跑时注入开场
+    /// 消息，恢复模型对「做到哪了、接下来干什么」的认知。
+    round_log: Mutex<Vec<String>>,
 }
 
 impl LoopContext {
@@ -381,6 +472,53 @@ impl LoopContext {
             "agent_round" => {
                 let repair =
                     fields.get("loop").and_then(serde_json::Value::as_str) != Some("generate");
+                // 轮次日志：记录每轮意图（工具摘要 + 计划文本），续跑时注
+                // 入开场消息恢复认知（见 `round_log` 字段注释）。
+                let tools_text = fields
+                    .get("tool_calls")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .map(|call| {
+                                let name =
+                                    call.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                let failed = call
+                                    .get("is_error")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                format!("{name}{}", if failed { "✗" } else { "✓" })
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    })
+                    .unwrap_or_default();
+                let text = fields
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                let mut line = format!(
+                    "第{}轮({}): {}",
+                    fields
+                        .get("round")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                    if repair { "修复" } else { "生成" },
+                    tools_text,
+                );
+                if !text.is_empty() {
+                    let char_count = text.chars().count();
+                    let mut brief: String = text.chars().take(120).collect();
+                    if char_count > 120 {
+                        brief.push('…');
+                    }
+                    line.push(' ');
+                    line.push_str(&brief);
+                }
+                if let Ok(mut log) = self.round_log.lock() {
+                    log.push(line);
+                }
                 serde_json::json!({
                     "phase": "round",
                     "loop": fields.get("loop"),
@@ -575,6 +713,33 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
             }
         }
     }
+    text
+}
+
+/// The resume opening: the fresh-run user turn (lesson coordinates and
+/// grounding) plus the surviving draft's live state and the previous
+/// session's round logs — the model continues where it stopped instead of
+/// rebuilding from scratch (learnhub「断点续跑跳过已 ready 节」的循环形
+/// 式等价物：草稿状态注入开场，已写的节就在草稿里，重写即浪费)。
+fn compose_resume_user_text(
+    context: &LessonGenerationContext,
+    draft_state_json: &str,
+    previous_rounds: &[String],
+) -> String {
+    let mut text = lesson_user_text(context);
+    text.push_str(&format!(
+        "\n【上次会话进度（{} 轮后中断；接着此进度继续，不要重复已写好的节与题目）】\n当前草稿状态：{}\n",
+        previous_rounds.len(),
+        draft_state_json
+    ));
+    for line in previous_rounds {
+        text.push_str("\n- ");
+        text.push_str(line);
+    }
+    text.push_str(
+        "\n\n建议：先 ls_inspect 通读当前草稿核对进度，再继续未完成的节（每节一次 \
+         ls_set_section_body），最后 ls_audit 自查、ls_finish 发布。",
+    );
     text
 }
 
@@ -959,6 +1124,7 @@ mod tests {
 
     fn lesson_context() -> LessonGenerationContext {
         LessonGenerationContext {
+            lesson_id: "lesson-1".into(),
             course_title: "测试课程".into(),
             course_description: "零基础期权入门：从权利义务讲到期权策略".into(),
             module_title: "模块一".into(),
@@ -1117,6 +1283,7 @@ mod tests {
                 encryption_key: [0u8; 32],
                 workspace: std::env::temp_dir(),
             },
+            round_logs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1134,6 +1301,7 @@ mod tests {
             context: lesson_context(),
             draft_slot: Arc::clone(&draft_slot),
             published_slot: Arc::clone(&published_slot),
+            round_log: Mutex::new(Vec::new()),
         });
         (ctx, draft_slot, published_slot)
     }
@@ -1239,7 +1407,7 @@ mod tests {
             vec![LlmEvent::TextDelta("已补齐活动".into()), done(StopReason::EndTurn)],
         ]);
         let output = engine(Arc::clone(&service))
-            .run_loops(provider.clone(), "test-model", ctx)
+            .run_loops(provider.clone(), "test-model", &lesson_user_text(&ctx.context), ctx)
             .await
             .unwrap();
         assert!(output.summary.contains("## 描述"));
@@ -1288,7 +1456,7 @@ mod tests {
         ]);
 
         let output = engine(Arc::clone(&service))
-            .run_loops(provider.clone(), "test-model", ctx)
+            .run_loops(provider.clone(), "test-model", &lesson_user_text(&ctx.context), ctx)
             .await
             .unwrap();
         assert!(output.summary.contains("## 验证"));
@@ -1314,7 +1482,7 @@ mod tests {
             done(StopReason::EndTurn),
         ]]);
         let error = engine(service)
-            .run_loops(provider, "test-model", ctx)
+            .run_loops(provider, "test-model", &lesson_user_text(&ctx.context), ctx)
             .await
             .unwrap_err();
         assert!(matches!(&error, AppError::Internal(message) if message.contains("without creating a draft")));
@@ -1343,12 +1511,106 @@ mod tests {
             vec![LlmEvent::TextDelta("cannot fix".into()), done(StopReason::EndTurn)],
         ]);
         let error = engine(Arc::clone(&service))
-            .run_loops(provider.clone(), "test-model", ctx)
+            .run_loops(provider.clone(), "test-model", &lesson_user_text(&ctx.context), ctx)
             .await
             .unwrap_err();
         assert!(matches!(&error, AppError::UnprocessableEntity(message) if message.contains("exhausted 3 repair loops")));
         assert!(error.to_string().contains("activities_too_few"), "the blocking report names the finding");
         let seen = provider.seen_tool_names.lock().unwrap();
         assert_eq!(seen.len(), 6, "2 generation rounds + 1 idle round + 3 repair rounds");
+    }
+
+    /// 续跑：预置存活草稿（manifest 已规划、部分节已写）后重入生成循环
+    /// ——开场注入草稿状态与上次轮次日志，模型接着写完剩余节并发布；
+    /// 发布后轮次日志清除（会话干净收尾）。
+    #[tokio::test]
+    async fn resume_continues_from_surviving_draft() {
+        let (service, _dir) = test_service().await;
+        let engine = engine(Arc::clone(&service));
+
+        // 预置中断点：草稿由 ls_set_section_manifest + 一节正文构成。
+        let view = service.create_lesson_draft(lesson_context()).unwrap();
+        let draft_id = view.draft_id.clone();
+        service
+            .patch_lesson_draft(
+                &draft_id,
+                vec![
+                    LessonOp::SetSectionManifest {
+                        sections: serde_json::from_value(serde_json::json!([
+                            { "section_key": "s1", "kind": "concept", "title": "概念：期权的定义", "points": "权利义务不对称", "visual": "表格" },
+                            { "section_key": "s2", "kind": "practice", "title": "练习：期权判断", "points": "判断题自测", "visual": "无" }
+                        ]))
+                        .unwrap(),
+                    },
+                    LessonOp::SetSectionBody {
+                        section_key: "s1".into(),
+                        body: format!(
+                            "## 概念：期权的定义\n\n| 头寸 | 权利 |\n| --- | --- |\n| 买方 | 有 |\n\n{}\n",
+                            "这是一个足够长的正文段落，用于通过节级质检门的长度下限要求。".repeat(12)
+                        ),
+                    },
+                ],
+            )
+            .unwrap();
+        // 归档上次会话的轮次日志（中断前的进度轨迹）。
+        engine
+            .round_logs
+            .lock()
+            .unwrap()
+            .insert(draft_id.clone(), vec!["第3轮(生成): ls_set_section_body ✓ 写完s1".into()]);
+
+        let ctx = Arc::new(LoopContext {
+            service: Arc::clone(&service),
+            context: lesson_context(),
+            draft_slot: Arc::new(Mutex::new(Some(draft_id.clone()))),
+            published_slot: Arc::new(Mutex::new(None)),
+            round_log: Mutex::new(Vec::new()),
+        });
+
+        let provider = ScriptedProvider::new(vec![
+            // 生成轮：直接写剩余的练习节并发布
+            vec![
+                tool_use("ls_set_section_body", serde_json::json!({
+                    "section_key": "s2",
+                    "body": "## 练习：期权判断\n\n完成以下判断题，检验你对权利义务不对称与四类基本头寸的理解；作答后阅读解析，回顾买方权利与卖方义务的关键区别。"
+                })),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use("ls_patch_activities", valid_activity_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]);
+
+        let output = engine
+            .run_loops(provider, "test-model", &lesson_user_text(&ctx.context), ctx)
+            .await
+            .expect("the resumed draft publishes");
+        assert_eq!(output.sections.len(), 2, "the pre-written section survives");
+        assert!(
+            engine.round_logs.lock().unwrap().get(&draft_id).is_none(),
+            "round logs are cleared after a successful publish"
+        );
+    }
+
+    /// 续跑开场：草稿状态与轮次日志注入「上次会话进度」段，并引导先通读
+    /// 草稿；新会话（generate）不出现该段。
+    #[test]
+    fn resume_opening_carries_draft_state_and_round_logs() {
+        let mut context = lesson_context();
+        context.excerpt = None;
+        let resume_text = compose_resume_user_text(
+            &context,
+            r#"{"revision":3}"#,
+            &["第3轮(生成): ls_set_section_body ✓ 写完s1".into()],
+        );
+        assert!(resume_text.contains("上次会话进度（1 轮后中断"), "{resume_text}");
+        assert!(resume_text.contains("revision"), "{resume_text}");
+        assert!(resume_text.contains("ls_inspect"), "{resume_text}");
+        // 新会话（无日志）不出现该段。
+        let fresh = lesson_user_text(&context);
+        assert!(!fresh.contains("上次会话进度"), "{fresh}");
     }
 }
