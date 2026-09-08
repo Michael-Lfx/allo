@@ -22,8 +22,9 @@
 }
 
 .heroHeading h1 em {
-  color: inherit;
+  color: rgb(var(--primary-6));
   font-style: normal;
+  font-weight: 650;
 }
 
 .heroHint {

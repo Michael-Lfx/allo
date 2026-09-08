@@ -22,6 +22,8 @@ describe('video generation home entry chunk', () => {
     expect(composer.includes('prefetchCanvasAssistantPanel')).toBe(true);
     expect(composer.includes("import CampaignCarousel from")).toBe(false);
     expect(composer.includes("lazy(() => import('../components/CampaignCarousel'))")).toBe(true);
+    const tvPanel = source('./components/TvShowPanel.tsx');
+    expect(tvPanel.includes('CampaignCarousel')).toBe(false);
     expect(composer.includes("from '../components/ModelSelectors'")).toBe(false);
     expect(composer.includes("from './BriefingControls'")).toBe(false);
     expect(composer.includes("from './BriefingPreferenceFields'")).toBe(false);

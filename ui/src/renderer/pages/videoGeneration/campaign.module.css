@@ -1,5 +1,5 @@
 .carousel {
-  width: min(calc(100% - 48px), 680px);
+  width: min(100%, 860px);
   margin: 0 auto 18px;
 }
 

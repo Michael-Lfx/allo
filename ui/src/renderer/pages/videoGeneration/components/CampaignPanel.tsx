@@ -3,11 +3,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Result, Spin } from '@arco-design/web-react';
-import { Trophy } from '@icon-park/react';
-import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
 import { listCampaigns } from '../api';
 import type { CampaignSummary } from '../types';
+import { writeTvShowTab } from '../campaign';
 import CampaignCard from './CampaignCard';
+import FilterPills from './FilterPills';
+import TvShowEmptyState from './TvShowEmptyState';
 
 const PAGE_SIZE = 20;
 
@@ -26,13 +27,13 @@ const CampaignPanel: React.FC = () => {
   const campaignsRef = useRef(campaigns);
   campaignsRef.current = campaigns;
 
-  const rangeItems: SegmentedTabItem[] = [
+  const rangeItems = [
     {
-      key: 'current',
+      key: 'current' as const,
       label: t('videoGeneration.campaign.range.current', { defaultValue: '进行中' }),
     },
     {
-      key: 'ended',
+      key: 'ended' as const,
       label: t('videoGeneration.campaign.range.ended', { defaultValue: '往期' }),
     },
   ];
@@ -91,13 +92,12 @@ const CampaignPanel: React.FC = () => {
 
   return (
     <div className='flex flex-col gap-12px'>
-      <SegmentedTabs
-        size='sm'
+      <FilterPills
         items={rangeItems}
-        activeKey={range}
+        active={range}
         onChange={(key) => {
           setCampaigns([]);
-          setRange(key as CampaignRange);
+          setRange(key);
         }}
       />
 
@@ -117,25 +117,35 @@ const CampaignPanel: React.FC = () => {
           <Spin />
         </div>
       ) : campaigns.length === 0 ? (
-        <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-          <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-primary-6'>
-            <Trophy theme='outline' size={19} fill='currentColor' />
-          </span>
-          <div>
-            <div className='text-13px font-600 text-[var(--color-text-1)]'>
-              {t('videoGeneration.campaign.empty.title', { defaultValue: '暂无活动' })}
-            </div>
-            <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-              {range === 'ended'
-                ? t('videoGeneration.campaign.empty.endedDesc', {
-                    defaultValue: '还没有往期活动。',
-                  })
-                : t('videoGeneration.campaign.empty.desc', {
-                    defaultValue: '新活动上架后会出现在这里。',
-                  })}
-            </div>
-          </div>
-        </div>
+        <TvShowEmptyState
+          title={t('videoGeneration.campaign.empty.title', { defaultValue: '暂无活动' })}
+          desc={
+            range === 'ended'
+              ? t('videoGeneration.campaign.empty.endedDesc', {
+                  defaultValue: '还没有往期活动。',
+                })
+              : t('videoGeneration.campaign.empty.desc', {
+                  defaultValue: '新活动上架后会出现在这里。',
+                })
+          }
+          action={
+            <Button
+              type='primary'
+              size='small'
+              onClick={() => {
+                const params = new URLSearchParams(location.search);
+                writeTvShowTab(params, 'all');
+                const search = params.toString();
+                navigate({
+                  pathname: '/video-generation',
+                  search: search ? `?${search}` : '',
+                });
+              }}
+            >
+              {t('videoGeneration.tvShow.empty.create', { defaultValue: '去创作' })}
+            </Button>
+          }
+        />
       ) : (
         <>
           <div

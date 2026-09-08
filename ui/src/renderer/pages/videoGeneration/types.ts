@@ -79,6 +79,7 @@ export interface TvShowVideo {
   id: number;
   title: string;
   coverUrl: string;
+  previewUrl?: string | null;
   workflow: VimaxWorkflow | string;
   style?: string | null;
   targetDurationSecs?: number | null;

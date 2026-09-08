@@ -21,7 +21,7 @@ const MODES: Array<{
     id: 'generate',
     icon: <VideoOne theme='outline' size={14} />,
     labelKey: 'videoGeneration.mode.generateLabel',
-    labelFallback: '视频生成',
+    labelFallback: '即刻出片',
     descKey: 'videoGeneration.mode.generateMenuDesc',
     descFallback: '参考图 + 提示词，直接生成视频片段',
   },
@@ -29,7 +29,7 @@ const MODES: Array<{
     id: 'agent',
     icon: <RobotOne theme='outline' size={14} />,
     labelKey: 'videoGeneration.mode.agentLabel',
-    labelFallback: '短剧模式',
+    labelFallback: '短剧工坊',
     descKey: 'videoGeneration.mode.agentMenuDesc',
     descFallback: '自动规划分镜并渲染成片',
   },
@@ -37,7 +37,7 @@ const MODES: Array<{
     id: 'creation',
     icon: <Platte theme='outline' size={14} />,
     labelKey: 'videoGeneration.mode.creationLabel',
-    labelFallback: '创作模式',
+    labelFallback: '无限画布',
     descKey: 'videoGeneration.mode.creationMenuDesc',
     descFallback: '描述故事，上传角色或场景，进入分镜与画布',
   },
@@ -45,13 +45,13 @@ const MODES: Array<{
     id: 'briefing',
     icon: <Broadcast theme='outline' size={14} />,
     labelKey: 'videoGeneration.mode.briefingLabel',
-    labelFallback: '资讯播报',
+    labelFallback: '资讯口播',
     descKey: 'videoGeneration.mode.briefingMenuDesc',
     descFallback: '可溯源调研 + 口播成片，不发明今日新闻',
   },
 ];
 
-/** Mode-switch menu shown from the composer toolbar (视频生成 / 短剧 / 创作). */
+/** Mode-switch menu shown from the composer toolbar. */
 export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   const { t } = useTranslation();
 

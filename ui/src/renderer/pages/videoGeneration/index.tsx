@@ -50,7 +50,7 @@ import type { BriefingSessionSummary } from './briefing/api';
 import { parseVideoHomeMode, type VideoCreateDraft, type VideoHomeMode } from './home/types';
 import { resolveLookIdentity } from './styleCatalog/lookIdentity';
 import { composeClipPrompt, lookById } from './styleCatalog/looks';
-import { parseTvShowScope } from './campaign';
+import { parseTvShowTab } from './campaign';
 import { clampClipDurationForModel } from './durationBounds';
 import {
   clearVideoGenerationSessionMemory,
@@ -954,13 +954,29 @@ const VideoGenerationListPage: React.FC = () => {
                 />
                 <p className='m-0 mt-8px text-12px text-[var(--color-text-3)]'>
                   {listTab === 'tvShow'
-                    ? parseTvShowScope(searchParams.get('tvScope')) === 'campaign'
-                      ? t('videoGeneration.campaign.subtitle', {
-                          defaultValue: '参与官方活动，投稿成片，看看获奖作品。',
-                        })
-                      : t('videoGeneration.tvShow.subtitle', {
-                          defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
-                        })
+                    ? (() => {
+                        const tvTab = parseTvShowTab(
+                          searchParams.get('tvScope'),
+                          searchParams.get('tvChannel')
+                        );
+                        if (tvTab === 'campaign') {
+                          return t('videoGeneration.campaign.subtitle', {
+                            defaultValue: '参与官方活动，投稿成片，看看获奖作品。',
+                          });
+                        }
+                        if (tvTab === 'mine') {
+                          return t('videoGeneration.tvShow.subtitleMine', {
+                            defaultValue: '查看审核进度，管理你发布到 Flowy TV 的作品。',
+                          });
+                        }
+                        return tvTab === 'all'
+                          ? t('videoGeneration.tvShow.subtitle', {
+                              defaultValue: '浏览社区成片，点开就能用同一套工程做一支。',
+                            })
+                          : t('videoGeneration.tvShow.subtitleChannel', {
+                              defaultValue: '按创作方式筛选广场成片。',
+                            });
+                      })()
                     : t('videoGeneration.list.recentSubtitle', {
                         defaultValue: '短剧、画布、视频和播报都在这里，按最近更新排列。',
                       })}

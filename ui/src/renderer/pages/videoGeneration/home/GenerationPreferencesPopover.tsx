@@ -876,7 +876,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 ) : (
                   <div className={styles.autoHint}>
                     {t('videoGeneration.create.preferences.specifyDurationOffHint', {
-                      defaultValue: '关闭时由短剧模式根据故事内容自主决定成片时长。',
+                      defaultValue: '关闭时由短剧工坊根据故事内容自主决定成片时长。',
                     })}
                   </div>
                 )}

@@ -4,17 +4,17 @@
   "mode": {
     "agent": "短剧",
     "canvas": "Canvas",
-    "generateLabel": "视频生成",
-    "agentLabel": "短剧模式",
-    "creationLabel": "创作模式",
-    "agentHint": "短剧模式：一句话规划分镜并渲染成片。",
+    "generateLabel": "即刻出片",
+    "agentLabel": "短剧工坊",
+    "creationLabel": "无限画布",
+    "agentHint": "短剧工坊：一句话规划分镜并渲染成片。",
     "canvasHint": "Canvas 模式（dev）：节点画布精准控制生成参数与链路。",
     "generateMenuDesc": "参考图 + 提示词，直接生成视频片段",
     "agentMenuDesc": "自动规划分镜并渲染成片",
-    "actionLabel": "动作模仿",
+    "actionLabel": "动作仿拍",
     "actionMenuDesc": "角色图 + 参考视频，模仿动作成片",
     "creationMenuDesc": "描述故事，上传角色或场景，进入分镜与画布",
-    "briefingLabel": "资讯播报",
+    "briefingLabel": "资讯口播",
     "briefingMenuDesc": "可溯源调研 + 口播成片，不发明今日新闻"
   },
   "nav": {
@@ -70,8 +70,26 @@
   },
   "tvShow": {
     "title": "Flowy TV",
-    "subtitle": "浏览社区已上架的作品，或查看你的发布审核状态。",
+    "subtitle": "浏览社区成片，点开就能用同一套工程做一支。",
+    "subtitleMine": "查看审核进度，管理你发布到 Flowy TV 的作品。",
+    "subtitleChannel": "按创作方式筛选广场成片。",
     "searchPlaceholder": "搜索作品...",
+    "featuredTitle": "精选",
+    "loadMore": "加载更多",
+    "sort": {
+      "latest": "最新",
+      "likes": "最多赞"
+    },
+    "channel": {
+      "all": "全部",
+      "idea2video": "一句话",
+      "script2video": "剧本",
+      "novel2video": "小说",
+      "canvas": "画布",
+      "action2video": "动作",
+      "campaign": "活动",
+      "mine": "我的"
+    },
     "scope": {
       "plaza": "广场",
       "campaign": "活动",
@@ -87,14 +105,19 @@
       "publishedAt": "{{time}}"
     },
     "empty": {
-      "plazaTitle": "广场暂无作品",
-      "plazaDesc": "审核通过的作品会出现在这里。",
+      "plazaTitle": "广场还没有成片",
+      "plazaDesc": "审核通过后会出现在这里。",
+      "channelTitle": "这个频道还没有作品",
+      "channelDesc": "换个频道看看，或者自己发一支。",
       "mineTitle": "还没有发布作品",
-      "mineDesc": "在短剧工作区或创作画布里点击「发布到 Flowy TV」。"
+      "mineDesc": "完成成片后，在工作区点击「发布到 Flowy TV」。",
+      "create": "去创作"
     },
     "authRequired": {
       "title": "登录后观看 Flowy TV",
-      "desc": "Flowy TV 广场与发布需要云端账号。",
+      "desc": "点赞、导入和「我的」需要云端账号。",
+      "mineTitle": "登录后查看我的发布",
+      "mineDesc": "点赞、投稿和导入需要云端账号。",
       "login": "去登录",
       "publish": "发布到 Flowy TV 需要先登录云端账号。"
     },
@@ -109,6 +132,7 @@
       "deleteOk": "已删除发布",
       "deleteFailed": "删除失败",
       "import": "导入到本地",
+      "remix": "用这个做一支",
       "importOk": "工程已导入到本地",
       "importFailed": "导入失败"
     },
@@ -144,8 +168,8 @@
       "endedDesc": "还没有往期活动。"
     },
     "authRequired": {
-      "title": "登录后查看活动",
-      "desc": "活动浏览与投稿需要云端账号。"
+      "title": "登录后投稿",
+      "desc": "浏览活动不需要登录；投稿和点赞需要云端账号。"
     },
     "cta": {
       "submit": "立即参与",
@@ -156,7 +180,8 @@
     },
     "winnersTitle": "获奖作品",
     "submissionsTitle": "活动作品",
-    "submissionsEmpty": "还没有上架作品，通过审核后会出现在这里。",
+    "submissionsEmptyTitle": "还没有上架作品",
+    "submissionsEmpty": "通过审核后会出现在这里。",
     "mineTitle": "我的投稿",
     "award": {
       "first": "一等奖",
@@ -184,8 +209,11 @@
     "eyebrow": "AI 叙事导演",
     "heroTitle": "一个想法，变成一支完整影片",
     "heroSubtitle": "先生成可编辑分镜，确认故事与画面后再渲染成片。",
-    "homeHeroPrefix": "开启你的",
-    "homeHeroSuffix": "，即刻造梦！",
+    "homeHeadlineGenerate": "一张参考图，<em>直接出片</em>",
+    "homeHeadlineAgent": "一句话，拍成<em>短剧</em>",
+    "homeHeadlineCreation": "在无限画布里<em>排镜头</em>",
+    "homeHeadlineAction": "让角色跟着视频<em>动起来</em>",
+    "homeHeadlineBriefing": "把话题做成<em>可溯源口播</em>",
     "homeHintAgent": "写下故事或想法，Flowy 帮你变成成片。",
     "homeHintAction": "上传角色图和参考视频，让角色模仿动作生成成片。",
     "homeHintCreation": "描述画面与镜头，在无限画布里自由编排生成。",
@@ -255,7 +283,7 @@
       "targetDuration": "目标时长",
       "clipDuration": "单段时长",
       "specifyDuration": "指定时长",
-      "specifyDurationOffHint": "关闭时由短剧模式根据故事内容自主决定成片时长。",
+      "specifyDurationOffHint": "关闭时由短剧工坊根据故事内容自主决定成片时长。",
       "planningModel": "规划模型",
       "loading": "加载中…",
       "noModelSelected": "未选模型"

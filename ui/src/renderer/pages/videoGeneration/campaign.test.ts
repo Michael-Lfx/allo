@@ -7,10 +7,16 @@ import {
   inAppNavigatePath,
   isHttpUrl,
   isInAppCampaignPath,
+  parseTvShowChannel,
   parseTvShowScope,
+  parseTvShowTab,
+  tvShowSortParam,
   sanitizeCampaignHtml,
+  uniqueVideosById,
   writeTvShowScope,
+  writeTvShowTab,
 } from './campaign';
+import type { TvShowVideo } from './types';
 
 describe('campaign carousel click rules', () => {
   test('list campaigns open the detail page first', () => {
@@ -49,6 +55,7 @@ describe('campaign links', () => {
   test('preserves existing home search when pinning the campaign tab', () => {
     expect(campaignHomeSearch('?mode=creation')).toBe('?mode=creation&tvScope=campaign');
     expect(campaignHomeSearch('')).toBe('?tvScope=campaign');
+    expect(campaignHomeSearch('?tvChannel=canvas')).toBe('?tvScope=campaign');
   });
 });
 
@@ -71,6 +78,34 @@ describe('tv show scope query', () => {
     writeTvShowScope(fromCampaign, 'mine');
     expect(fromCampaign.get('tvScope')).toBe('mine');
     expect(parseTvShowScope(fromCampaign.get('tvScope'))).toBe('mine');
+  });
+
+  test('tvChannel selects plaza workflows and is dropped on campaign/mine', () => {
+    expect(parseTvShowChannel('action2video')).toBe('action2video');
+    expect(parseTvShowChannel('nope')).toBe('all');
+    expect(parseTvShowTab(null, 'canvas')).toBe('canvas');
+    expect(parseTvShowTab('campaign', 'canvas')).toBe('campaign');
+
+    const params = new URLSearchParams('mode=creation');
+    writeTvShowTab(params, 'action2video');
+    expect(params.get('tvChannel')).toBe('action2video');
+    expect(params.get('tvScope')).toBeNull();
+    writeTvShowTab(params, 'mine');
+    expect(params.get('tvScope')).toBe('mine');
+    expect(params.get('tvChannel')).toBeNull();
+  });
+
+  test('uniqueVideosById keeps first occurrence order', () => {
+    const a = { id: 1 } as TvShowVideo;
+    const b = { id: 2 } as TvShowVideo;
+    const again = { id: 1 } as TvShowVideo;
+    const c = { id: 3 } as TvShowVideo;
+    expect(uniqueVideosById([a, b], [again, c]).map((v) => v.id)).toEqual([1, 2, 3]);
+  });
+
+  test('tvShowSortParam maps UI sort to API sort', () => {
+    expect(tvShowSortParam('latest')).toBe('publishedAtDesc');
+    expect(tvShowSortParam('likes')).toBe('likeCountDesc');
   });
 });
 
