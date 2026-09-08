@@ -4,10 +4,10 @@
 //! a redirect to anything else (cloud metadata endpoints, loopback, RFC1918
 //! hosts, arbitrary third parties) is rejected outright.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nomifun_common::AppError;
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue};
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, RETRY_AFTER};
 
 /// Ranking/readme/detail bodies larger than this are rejected.
 pub(crate) const MAX_MARKET_BODY_BYTES: u64 = 8 * 1024 * 1024;
@@ -17,7 +17,7 @@ pub(crate) const MAX_MARKET_SKILL_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MAX_SKILLHUB_SKILL_ZIP_BYTES: u64 = MAX_MARKET_SKILL_ARCHIVE_BYTES;
 /// Per-request timeout. The outer per-source budget
 /// ([`super::MARKET_SOURCE_TIMEOUT`]) covers a primary + fallback pair.
-const MARKET_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
+pub(crate) const MARKET_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
 /// Redirect hop cap enforced by the custom policy.
 const MAX_MARKET_REDIRECT_HOPS: usize = 5;
 
@@ -155,7 +155,7 @@ pub(crate) async fn read_market_json_post(
     read_market_response(&mut response).await
 }
 
-async fn read_market_response(response: &mut reqwest::Response) -> Result<String, AppError> {
+pub(crate) async fn read_market_response(response: &mut reqwest::Response) -> Result<String, AppError> {
     if !response.status().is_success() {
         return Err(AppError::BadGateway(format!("market page returned {}", response.status())));
     }
@@ -201,6 +201,86 @@ pub(crate) async fn read_market_bytes(
     }
 
     Ok(bytes)
+}
+
+/// Per-attempt timeout for SkillHub archive downloads. The shared client
+/// timeout (12s) covers the whole body stream, which is too tight for a
+/// 32 MiB zip on a slow link; detail/metadata calls keep the client default.
+pub(crate) const SKILLHUB_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Maximum attempts for one SkillHub request (first try plus retries).
+const SKILLHUB_MAX_ATTEMPTS: u32 = 3;
+/// Cap applied to a server-provided `Retry-After` hint.
+const SKILLHUB_MAX_RETRY_AFTER: Duration = Duration::from_secs(5);
+
+/// GET `url` with limited retry for transient upstream conditions: HTTP 429,
+/// 5xx, connection errors, and timeouts. Deterministic answers (404 and other
+/// 4xx) are returned to the caller immediately — retrying them only adds
+/// latency. Every attempt builds a fresh request; a caller that streams the
+/// response body must restart its own consumption per attempt.
+///
+/// When attempts are exhausted, the last result is returned as-is: an
+/// exhausted 429/5xx reaches the caller as a non-success `Response`, and an
+/// exhausted transport error as the mapped [`AppError`]. The caller owns the
+/// non-success mapping — this helper never converts an exhausted status into
+/// an error itself, so a persistent 429 costs exactly [`SKILLHUB_MAX_ATTEMPTS`]
+/// requests and no more.
+pub(crate) async fn send_skillhub_get_with_retry(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    accept: &str,
+    per_attempt_timeout: Duration,
+) -> Result<reqwest::Response, AppError> {
+    let mut attempt = 0_u32;
+    loop {
+        attempt += 1;
+        let result = client
+            .get(url.clone())
+            .header(ACCEPT, accept)
+            .timeout(per_attempt_timeout)
+            .send()
+            .await;
+        let retryable = match &result {
+            Ok(response) => is_retryable_market_status(response.status()),
+            Err(error) => is_retryable_reqwest_error(error),
+        };
+        if !retryable || attempt >= SKILLHUB_MAX_ATTEMPTS {
+            return result.map_err(map_market_fetch_error);
+        }
+        let delay = match &result {
+            Ok(response) => retry_after_hint(response).unwrap_or_else(|| retry_backoff(attempt)),
+            Err(_) => retry_backoff(attempt),
+        };
+        tokio::time::sleep(delay).await;
+    }
+}
+
+fn is_retryable_market_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// Transport-level failures worth one more attempt. Redirect-policy
+/// rejections (`is_redirect`) and request-construction errors are
+/// configuration/contract problems, so they are deliberately excluded.
+fn is_retryable_reqwest_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect()
+}
+
+/// Parse a `Retry-After: <seconds>` hint, capped at [`SKILLHUB_MAX_RETRY_AFTER`].
+fn retry_after_hint(response: &reqwest::Response) -> Option<Duration> {
+    let seconds: u64 = response.headers().get(RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()?;
+    Some(Duration::from_secs(seconds).min(SKILLHUB_MAX_RETRY_AFTER))
+}
+
+/// Exponential backoff with a small time-derived jitter: ~0.5s, ~1s, ~2s.
+fn retry_backoff(attempt: u32) -> Duration {
+    let base_ms = 500_u64 << attempt.saturating_sub(1).min(3);
+    let jitter_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
+        % 250;
+    Duration::from_millis(base_ms + jitter_ms)
 }
 
 pub(crate) fn map_market_fetch_error(error: reqwest::Error) -> AppError {
@@ -344,5 +424,187 @@ mod tests {
             .unwrap_err();
         assert!(matches!(&error, AppError::BadGateway(_)), "{error}");
         server_error.await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // send_skillhub_get_with_retry
+    // -----------------------------------------------------------------------
+
+    struct ScriptedResponse {
+        status: &'static str,
+        extra_headers: Vec<(&'static str, &'static str)>,
+        body: &'static str,
+    }
+
+    /// Serve one scripted response per accepted connection and count requests.
+    async fn spawn_scripted_server(
+        responses: Vec<ScriptedResponse>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let server = tokio::spawn(async move {
+            for response in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0_u8; 4096];
+                let _ = socket.read(&mut request).await;
+                let mut headers = format!("HTTP/1.1 {}\r\n", response.status);
+                for (name, value) in response.extra_headers {
+                    headers.push_str(&format!("{name}: {value}\r\n"));
+                }
+                headers.push_str(&format!(
+                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.body.len()
+                ));
+                socket.write_all(headers.as_bytes()).await.unwrap();
+                socket.write_all(response.body.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{address}"), hits, server)
+    }
+
+    fn scripted_url(base: &str) -> reqwest::Url {
+        reqwest::Url::parse(&format!("{base}/resource")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn skillhub_retry_recovers_from_429_and_honors_retry_after() {
+        use std::sync::atomic::Ordering;
+
+        let (base, hits, server) = spawn_scripted_server(vec![
+            ScriptedResponse {
+                status: "429 Too Many Requests",
+                extra_headers: vec![("Retry-After", "0")],
+                body: "{\"error\":\"too many requests\"}",
+            },
+            ScriptedResponse {
+                status: "200 OK",
+                extra_headers: vec![],
+                body: "{\"ok\":true}",
+            },
+        ])
+        .await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let response = send_skillhub_get_with_retry(
+            &client,
+            scripted_url(&base),
+            "application/json",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn skillhub_retry_does_not_retry_404() {
+        use std::sync::atomic::Ordering;
+
+        // Extra identical responses so a buggy retry would be observable.
+        let (base, hits, _server) = spawn_scripted_server(vec![
+            ScriptedResponse {
+                status: "404 Not Found",
+                extra_headers: vec![],
+                body: "{\"error\":\"Skill not found\"}",
+            },
+            ScriptedResponse {
+                status: "404 Not Found",
+                extra_headers: vec![],
+                body: "{\"error\":\"Skill not found\"}",
+            },
+        ])
+        .await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let response = send_skillhub_get_with_retry(
+            &client,
+            scripted_url(&base),
+            "application/json",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn skillhub_retry_exhausts_attempts_on_persistent_429() {
+        use std::sync::atomic::Ordering;
+
+        let responses = (0..SKILLHUB_MAX_ATTEMPTS)
+            .map(|_| ScriptedResponse {
+                status: "429 Too Many Requests",
+                extra_headers: vec![("Retry-After", "0")],
+                body: "{\"error\":\"too many requests\"}",
+            })
+            .collect();
+        let (base, hits, server) = spawn_scripted_server(responses).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let response = send_skillhub_get_with_retry(
+            &client,
+            scripted_url(&base),
+            "application/json",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        // The exhausted last response is handed to the caller, which owns the
+        // non-success mapping.
+        assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(hits.load(Ordering::SeqCst), SKILLHUB_MAX_ATTEMPTS as usize);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn skillhub_retry_retries_timeout_then_fails_as_timeout() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..SKILLHUB_MAX_ATTEMPTS {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0_u8; 1024];
+                let _ = socket.read(&mut request).await;
+                // Never respond: force every attempt into a timeout.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                drop(socket);
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let error = send_skillhub_get_with_retry(
+            &client,
+            scripted_url(&format!("http://{address}")),
+            "application/json",
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(&error, AppError::Timeout(_)), "{error}");
+        assert_eq!(hits.load(Ordering::SeqCst), SKILLHUB_MAX_ATTEMPTS as usize);
+        server.await.unwrap();
     }
 }
