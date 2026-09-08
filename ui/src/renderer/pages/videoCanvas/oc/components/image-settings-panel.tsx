@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react";
 import { CanvasToggle } from "@oc/components/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { type CanvasTheme } from "@oc/lib/canvas-theme";
+import { imageCapabilityConfigFor, persistImageAspectValue, type ImageAspectOption, type ImageCapabilityConfig } from "@oc/lib/model-capabilities";
 import { type AiConfig } from "@oc/stores/use-config-store";
 import { AspectChoice, ChoiceChip, SettingsPanelHeader, SettingsSection } from "./generation-settings-chrome";
 
@@ -16,23 +17,6 @@ function qualityOptions() {
     ];
 }
 const DIMENSION_STEP = 16;
-
-const aspectOptions = [
-    { value: "1:1", label: "1:1", width: 1024, height: 1024, icon: "square" },
-    { value: "3:2", label: "3:2", width: 1536, height: 1024, icon: "landscape" },
-    { value: "2:3", label: "2:3", width: 1024, height: 1536, icon: "portrait" },
-    { value: "4:3", label: "4:3", width: 1360, height: 1024, icon: "landscape" },
-    { value: "3:4", label: "3:4", width: 1024, height: 1360, icon: "portrait" },
-    { value: "16:9", label: "16:9", width: 1824, height: 1024, icon: "landscape" },
-    { value: "21:9", label: "21:9", size: "2352x1008", width: 2352, height: 1008, icon: "landscape" },
-    { value: "9:16", label: "9:16", width: 1024, height: 1824, icon: "portrait" },
-    { value: "1:1-2k", label: "1:1(2k)", size: "2048x2048", width: 2048, height: 2048, icon: "square" },
-    { value: "16:9-2k", label: "16:9(2k)", size: "2048x1152", width: 2048, height: 1152, icon: "landscape" },
-    { value: "9:16-2k", label: "9:16(2k)", size: "1152x2048", width: 1152, height: 2048, icon: "portrait" },
-    { value: "16:9-4k", label: "16:9(4k)", size: "3840x2160", width: 3840, height: 2160, icon: "landscape" },
-    { value: "9:16-4k", label: "9:16(4k)", size: "2160x3840", width: 2160, height: 3840, icon: "portrait" },
-    { value: "auto", label: "auto", width: 0, height: 0, icon: "auto" },
-];
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
@@ -48,15 +32,18 @@ type ImageSettingsPanelProps = {
 export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, showCount = true, className = "w-[304px] space-y-2.5 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 3 }: ImageSettingsPanelProps) {
     useTranslation();
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
-    const quality = config.quality || "auto";
-    const transparentBackground = config.transparentBackground === "true";
-    const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
-    const activeSize = config.size || "auto";
-    const selectedAspect = aspectOptions.find((item) => (item.size || item.value) === activeSize || item.value === activeSize);
+    const profile = imageCapabilityConfigFor(config, config.model);
+    const aspectOptions = profile.aspects;
+    const quality = profile.qualities.includes(config.quality || "") ? config.quality : profile.defaultQuality;
+    const transparentBackground = profile.transparentBackground && config.transparentBackground === "true";
+    const countLimit = Math.min(maxCount, profile.maxCount);
+    const count = Math.max(1, Math.min(countLimit, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const activeSize = config.size || profile.defaultSize;
+    const selectedAspect = findSelectedAspect(aspectOptions, activeSize);
     const dimensions = readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
     const selectAspect = (value: string) => {
         const option = aspectOptions.find((item) => item.value === value);
-        onConfigChange("size", option?.size || option?.value || "auto");
+        onConfigChange("size", option ? persistImageAspectValue(option) : profile.defaultSize);
     };
     const updateDimension = (key: "width" | "height", value: number | null) => {
         const next = Math.max(1, Math.floor(value || dimensions[key] || 1024));
@@ -77,45 +64,51 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 }}
             >
                 {showTitle ? <SettingsPanelHeader title={canvasT("videoCanvas.settings.imageTitle", "图像设置")} subtitle={canvasT("videoCanvas.settings.imageSubtitle", "画质、画幅与张数会写入这次生成。")} theme={theme} /> : null}
-                <SettingsSection title={canvasT("videoCanvas.settings.quality", "质量")} theme={theme}>
-                    <div className="grid grid-cols-4 gap-1.5">
-                        {qualityOptions().map((item) => (
-                            <ChoiceChip key={item.value} selected={quality === item.value} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
-                                {item.label}
-                            </ChoiceChip>
-                        ))}
-                    </div>
-                </SettingsSection>
-                <SettingsSection title={canvasT("videoCanvas.settings.transparentBg", "透明背景")} hint={canvasT("videoCanvas.settings.transparentHint", "请求模型输出保留 Alpha 通道的 PNG")} extra={(
-                    <span title={canvasT("videoCanvas.settings.transparentSupportHint", "是否支持透明背景由当前模型接口决定")} onMouseDown={(event) => event.stopPropagation()}>
-                        <CanvasToggle
-                            theme={theme}
-                            checked={transparentBackground}
-                            ariaLabel={canvasT("videoCanvas.settings.transparentBg", "透明背景")}
-                            onChange={(checked) => onConfigChange("transparentBackground", checked ? "true" : "false")}
-                        />
-                    </span>
-                )} theme={theme} />
-                <SettingsSection
-                    title={canvasT("videoCanvas.settings.size", "尺寸")}
-                    extra={(
-                        <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-medium" style={{ color: theme.node.muted }}>
-                                {canvasT("videoCanvas.settings.size16Hint", "16倍数对齐")}
-                            </span>
-                            <span title={canvasT("videoCanvas.settings.size16AutoHint", "输入完成后自动向上补成 16 的倍数")} onMouseDown={(event) => event.stopPropagation()}>
-                                <CanvasToggle theme={theme} checked={snapDimensionToStep} onChange={setSnapDimensionToStep} ariaLabel={canvasT("videoCanvas.settings.size16Hint", "16倍数对齐")} />
-                            </span>
+                {profile.qualities.length ? (
+                    <SettingsSection title={canvasT("videoCanvas.settings.quality", "质量")} theme={theme}>
+                        <div className="grid grid-cols-4 gap-1.5">
+                            {qualityOptions().filter((item) => profile.qualities.includes(item.value)).map((item) => (
+                                <ChoiceChip key={item.value} selected={quality === item.value} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
+                                    {item.label}
+                                </ChoiceChip>
+                            ))}
                         </div>
-                    )}
-                    theme={theme}
-                >
-                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
-                        <DimensionInput prefix="W" value={dimensions.width} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("width", value)} />
-                        <span className="text-sm opacity-45">×</span>
-                        <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("height", value)} />
-                    </div>
-                </SettingsSection>
+                    </SettingsSection>
+                ) : null}
+                {profile.transparentBackground ? (
+                    <SettingsSection title={canvasT("videoCanvas.settings.transparentBg", "透明背景")} hint={canvasT("videoCanvas.settings.transparentHint", "请求模型输出保留 Alpha 通道的 PNG")} extra={(
+                        <span title={canvasT("videoCanvas.settings.transparentSupportHint", "是否支持透明背景由当前模型接口决定")} onMouseDown={(event) => event.stopPropagation()}>
+                            <CanvasToggle
+                                theme={theme}
+                                checked={transparentBackground}
+                                ariaLabel={canvasT("videoCanvas.settings.transparentBg", "透明背景")}
+                                onChange={(checked) => onConfigChange("transparentBackground", checked ? "true" : "false")}
+                            />
+                        </span>
+                    )} theme={theme} />
+                ) : null}
+                {profile.customPixels ? (
+                    <SettingsSection
+                        title={canvasT("videoCanvas.settings.size", "尺寸")}
+                        extra={(
+                            <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-medium" style={{ color: theme.node.muted }}>
+                                    {canvasT("videoCanvas.settings.size16Hint", "16倍数对齐")}
+                                </span>
+                                <span title={canvasT("videoCanvas.settings.size16AutoHint", "输入完成后自动向上补成 16 的倍数")} onMouseDown={(event) => event.stopPropagation()}>
+                                    <CanvasToggle theme={theme} checked={snapDimensionToStep} onChange={setSnapDimensionToStep} ariaLabel={canvasT("videoCanvas.settings.size16Hint", "16倍数对齐")} />
+                                </span>
+                            </div>
+                        )}
+                        theme={theme}
+                    >
+                        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
+                            <DimensionInput prefix="W" value={dimensions.width} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("width", value)} />
+                            <span className="text-sm opacity-45">×</span>
+                            <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("height", value)} />
+                        </div>
+                    </SettingsSection>
+                ) : null}
                 <SettingsSection title={canvasT("videoCanvas.settings.aspect", "宽高比")} theme={theme}>
                     <div className="grid grid-cols-4 gap-1.5 min-[380px]:grid-cols-5">
                         {aspectOptions.map((item) => (
@@ -133,12 +126,12 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 {showCount ? (
                     <SettingsSection title={canvasT("videoCanvas.settings.genCount", "生成张数")} theme={theme}>
                         <div className="grid grid-cols-4 gap-1.5">
-                            {Array.from({ length: quickCount }, (_, index) => index + 1).map((value) => (
+                            {Array.from({ length: Math.min(quickCount, countLimit) }, (_, index) => index + 1).map((value) => (
                                 <ChoiceChip key={value} selected={count === value} theme={theme} onClick={() => onConfigChange("count", String(value))}>
                                     {value}
                                 </ChoiceChip>
                             ))}
-                            <CountInput value={count} quickCount={quickCount} max={maxCount} theme={theme} onChange={(value) => onConfigChange("count", String(value || 1))} />
+                            {countLimit > quickCount ? <CountInput value={count} quickCount={quickCount} max={countLimit} theme={theme} onChange={(value) => onConfigChange("count", String(value || 1))} /> : null}
                         </div>
                     </SettingsSection>
                 ) : null}
@@ -155,8 +148,13 @@ export function imageQualityLabel(value: string) {
     return ({ auto: canvasT("videoCanvas.settings.qualityAuto", "自动"), high: canvasT("videoCanvas.settings.qualityHigh", "高"), medium: canvasT("videoCanvas.settings.qualityMedium", "中"), low: canvasT("videoCanvas.settings.qualityLow", "低") } as Record<string, string>)[value] || canvasT("videoCanvas.settings.qualityDefault", "默认");
 }
 
-export function imageSizeLabel(size: string) {
-    return aspectOptions.find((item) => (item.size || item.value) === size || item.value === size)?.label || size;
+export function imageSizeLabel(size: string, profile?: ImageCapabilityConfig) {
+    const aspects = profile?.aspects || [];
+    return aspects.find((item) => persistImageAspectValue(item) === size || item.value === size)?.label || size;
+}
+
+function findSelectedAspect(aspects: ImageAspectOption[], size: string) {
+    return aspects.find((item) => persistImageAspectValue(item) === size || item.value === size);
 }
 
 function DimensionInput({ prefix, value, disabled, theme, alignToStep, onChange }: { prefix: string; value: number; disabled: boolean; theme: CanvasTheme; alignToStep: boolean; onChange: (value: number | null) => void }) {

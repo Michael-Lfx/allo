@@ -141,4 +141,37 @@ describe("collectMediaIds / alloBodyFromCreateInput", () => {
         expect(body.duration_secs).toBe(30);
         expect(body.resolution).toBe("720P");
     });
+
+    test("Kling clamps unsupported duration and ultrawide ratio", () => {
+        const body = alloBodyFromCreateInput({
+            type: "canvas_video",
+            operation: "text_to_video",
+            model: "flowy/kling-v2.1",
+            prompt: "a cat walks",
+            input: {
+                mode: "video",
+                prompt: "a cat walks",
+                config: { videoSeconds: "3", vquality: "2160p", size: "21:9" },
+            },
+        });
+        expect(body.duration_secs).toBe(5);
+        expect(body.aspect_ratio).toBe("16:9");
+        expect(body.resolution).toBe("1080p");
+    });
+
+    test("image pixel sizes map onto Flowy aspect_ratio", () => {
+        const body = alloBodyFromCreateInput({
+            type: "canvas_image",
+            operation: "image",
+            model: "flowy/doubao-seedream-5-0",
+            prompt: "a still",
+            input: {
+                mode: "image",
+                prompt: "a still",
+                config: { size: "1024x1024" },
+            },
+        });
+        expect(body.mode).toBe("image");
+        expect(body.aspect_ratio).toBe("1:1");
+    });
 });

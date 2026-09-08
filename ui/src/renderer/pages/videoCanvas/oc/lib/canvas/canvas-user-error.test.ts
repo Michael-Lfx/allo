@@ -26,4 +26,9 @@ describe("formatCanvasUserError", () => {
   test("keeps already friendly Chinese text", () => {
     expect(formatCanvasUserError(new Error("当前节点没有可转写的本地媒体"))).toBe("当前节点没有可转写的本地媒体");
   });
+
+  test("shows the peeled provider reason instead of a generic dump", () => {
+    expect(formatCanvasUserError("Internal error: video generation failed: API error 500: Model call failed. Please try again later: invalid last_frame")).toContain("invalid last_frame");
+    expect(formatCanvasUserError("Internal error: video generation failed: API error 500: Model call failed. Please try again later: invalid last_frame")).not.toContain("网络异常");
+  });
 });

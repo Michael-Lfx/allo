@@ -3,16 +3,15 @@ import { ArrowUp, Maximize2, Minimize2, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@oc/components/model-picker";
-import { configuredModelMatchesCapability, defaultConfig, useEffectiveConfig, type AiConfig } from "@oc/stores/use-config-store";
+import { useEffectiveConfig } from "@oc/stores/use-config-store";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { getNodeGenerationMode } from "@oc/lib/canvas/node-registry";
-import { normalizeVideoDuration, isMiniMaxH3ResolutionToken } from "@oc/lib/video-generation-options";
-import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
+import { canvasModelSpecPatch } from "@oc/lib/model-capabilities";
+import { buildGenerationConfig } from "@oc/lib/canvas/canvas-project-generation";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { useThemeStore } from "@oc/stores/use-theme-store";
-import { isMiniMaxH3VideoModel, isWan3VideoModel } from "@renderer/services/videoModelCapabilities";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasChromeButton } from "./canvas-overlay";
@@ -23,7 +22,6 @@ import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-pic
 import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
-import { resolveModelVideoBooleanOptions } from "@oc/lib/model-capabilities";
 import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
@@ -45,7 +43,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const globalConfig = useEffectiveConfig();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = getNodeGenerationMode(node) ?? "image";
-    const config = buildNodeConfig(globalConfig, node, mode);
+    const config = buildGenerationConfig(globalConfig, node, mode);
     const hasTextContent = node.type === CanvasNodeType.Text && Boolean(node.metadata?.content?.trim());
     const hasImageContent = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content);
     const [prompt, setPrompt] = useState(node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
@@ -132,7 +130,15 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         fullWidth
                         config={config}
                         value={config.model}
-                        onChange={(model) => onConfigChange(node.id, { model })}
+                        onChange={(model) => onConfigChange(node.id, { model, ...canvasModelSpecPatch(globalConfig, model, mode, {
+                            size: node.metadata?.size,
+                            quality: node.metadata?.quality,
+                            seconds: node.metadata?.seconds,
+                            vquality: node.metadata?.vquality,
+                            generateAudio: node.metadata?.generateAudio,
+                            watermark: node.metadata?.watermark,
+                            transparentBackground: node.metadata?.transparentBackground,
+                        }) })}
                         capability={mode}
                         onMissingConfig={() => navigateToSettings({ continueCreation: true })}
                         showSelectedPrice={false}
@@ -194,39 +200,6 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
             </div>
         </div>
     );
-}
-
-function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: CanvasNodeGenerationMode): AiConfig {
-    const defaultModel = mode === "image" ? globalConfig.imageModel : mode === "video" ? globalConfig.videoModel : mode === "audio" ? globalConfig.audioModel : globalConfig.textModel;
-    const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
-    const storedModel = node.metadata?.model;
-    const model = storedModel && configuredModelMatchesCapability(globalConfig, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(globalConfig, defaultModel, mode) ? defaultModel : fallbackModel;
-    const canonical = canonicalizeVideoResolution(model, node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality);
-    const vquality = isMiniMaxH3VideoModel(model) || isWan3VideoModel(model) || isMiniMaxH3ResolutionToken(canonical)
-        ? canonical
-        : String(canonical).replace(/p$/i, "");
-    const videoBooleans = resolveModelVideoBooleanOptions(
-        globalConfig,
-        model,
-        { videoGenerateAudio: node.metadata?.generateAudio, videoWatermark: node.metadata?.watermark },
-        { videoGenerateAudio: globalConfig.videoGenerateAudio, videoWatermark: globalConfig.videoWatermark },
-    );
-    return {
-        ...globalConfig,
-        model,
-        quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
-        size: node.metadata?.size || globalConfig.size || defaultConfig.size,
-        transparentBackground: (node.metadata?.transparentBackground || globalConfig.transparentBackground) === "true" ? "true" : "false",
-        videoSeconds: normalizeVideoDuration(node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds),
-        vquality,
-        videoGenerateAudio: videoBooleans.videoGenerateAudio,
-        videoWatermark: videoBooleans.videoWatermark,
-        audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice || defaultConfig.audioVoice,
-        audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat || defaultConfig.audioFormat,
-        audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed || defaultConfig.audioSpeed,
-        audioInstructions: node.metadata?.audioInstructions || globalConfig.audioInstructions || defaultConfig.audioInstructions,
-        count: String(node.metadata?.count || (mode === "image" ? globalConfig.canvasImageCount || globalConfig.count : globalConfig.count) || defaultConfig.count),
-    };
 }
 
 function promptPlaceholder(mode: CanvasNodeGenerationMode, hasImageContent: boolean, hasTextContent: boolean) {
