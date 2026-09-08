@@ -28,8 +28,9 @@ use nomifun_learning::{
 use crate::factory::provider_config::resolve_provider_config;
 use crate::knowledge_completer::resolve_default_model;
 use crate::loop_core::{
-    AGENT_MAX_TOKENS, GENERATE_MAX_ROUNDS, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS,
-    TOTAL_TIMEOUT_SECS, json_compact, log_text, run_agent_loop,
+    AGENT_MAX_TOKENS, GENERATE_MAX_ROUNDS, GENERATE_REASONING_EFFORT, LoopEventSink,
+    REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS, REPAIR_REASONING_EFFORT, TOTAL_TIMEOUT_SECS,
+    json_compact, log_text, run_agent_loop,
 };
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
@@ -303,6 +304,7 @@ impl LiveLessonContentAgentEngine {
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
+            GENERATE_REASONING_EFFORT,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -386,6 +388,7 @@ impl LiveLessonContentAgentEngine {
                 REPAIR_MAX_ROUNDS,
                 AGENT_MAX_TOKENS,
                 ThinkingConfig::Disabled,
+                REPAIR_REASONING_EFFORT,
                 "repair",
                 Some(ctx.as_ref()),
             )
@@ -1354,6 +1357,7 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
+            GENERATE_REASONING_EFFORT,
             "generate",
             Some(ctx.as_ref()),
         )

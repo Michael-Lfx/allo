@@ -671,8 +671,12 @@ impl LearningService {
 
     /// Publish a draft: the deterministic audit gate has the last word.
     /// Danger-grade findings block publishing (the draft survives, so the
-    /// agent can keep repairing); a clean graph lands in the database as a
-    /// learning-graph course and the draft is removed.
+    /// agent can keep repairing). A graph that clears the audit then meets
+    /// the ONE-SHOT LLM final review (advisory soft gate, 2026-09 decision):
+    /// its findings bounce the first finish once — the model fixes them or
+    /// re-finishes — and ride along in `graph_meta_json` at publish. The
+    /// review never blocks publishing by itself; a clean graph lands in the
+    /// database as a learning-graph course and the draft is removed.
     pub async fn finish_learning_graph_draft(
         &self,
         user_id: &UserId,
@@ -697,12 +701,58 @@ impl LearningService {
                 draft.audit_report()
             )));
         }
+
+        // ── 发布前独立 LLM 终审（软门，只弹一轮）── 确定性门禁通过后，
+        // 首次 finish 运行一次隔离上下文的对抗审查；有意见则弹回（意见即
+        // 修复输入），再次 finish 不重跑、直接发布。审查不可用/解析失败
+        // 一律视为无意见，绝不阻断发布。
+        if crate::learning_graph::needs_review(&draft) {
+            // 锁守卫不得跨 await（edition 2024 的 if-let 临时会活到整条
+            // 语句结束）——先把 Arc 克隆出来再放锁。
+            let completer = {
+                let guard = self
+                    .course_completer
+                    .read()
+                    .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?;
+                guard.clone()
+            };
+            if let Some(completer) = completer {
+                let findings = crate::learning_graph::run_final_review(completer.as_ref(), &draft)
+                    .await;
+                draft.reviewed = true;
+                draft.review_findings = findings;
+                let bounced = !draft.review_findings.is_empty();
+                self.learning_graph_drafts
+                    .write()
+                    .map_err(|_| AppError::Internal("learning graph draft lock poisoned".into()))?
+                    .insert(draft_id.to_owned(), (draft.clone(), std::time::Instant::now()));
+                if bounced {
+                    let report = draft
+                        .review_findings
+                        .iter()
+                        .enumerate()
+                        .map(|(index, finding)| {
+                            format!("{}. [{}] {}", index + 1, finding.severity, finding.message)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    return Err(AppError::UnprocessableEntity(format!(
+                        "学习图终审提出 {} 条咨询级意见（软门：修复或再次 lg_finish 即发布，终审不会再次运行）：\n{report}",
+                        draft.review_findings.len()
+                    )));
+                }
+            }
+        }
+
         let order = topological_order(&draft.graph)?;
         let course_id = LearningCourseId::new();
         let module_id = LearningModuleId::new();
         let now = now_ms();
         let scope_text = draft.scope_reference().unwrap_or_default();
-        let meta = serde_json::json!({ "audit": draft.graph.audit });
+        let meta = serde_json::json!({
+            "audit": draft.graph.audit,
+            "final_review": draft.review_findings,
+        });
         let mut transaction = self.pool.begin().await.map_err(internal)?;
 
         sqlx::query(

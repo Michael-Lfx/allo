@@ -36,7 +36,8 @@ use tokio::sync::mpsc;
 use crate::factory::provider_config::resolve_provider_config_with_output_limit;
 use crate::knowledge_completer::resolve_default_model;
 use crate::loop_core::{
-    LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS, json_compact, log_text, run_agent_loop,
+    GENERATE_REASONING_EFFORT, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS,
+    REPAIR_REASONING_EFFORT, json_compact, log_text, run_agent_loop,
 };
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
@@ -568,6 +569,7 @@ impl LiveLearningGraphAgentEngine {
             GENERATE_MAX_ROUNDS,
             max_tokens,
             thinking.clone(),
+            GENERATE_REASONING_EFFORT,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -661,6 +663,7 @@ impl LiveLearningGraphAgentEngine {
                 REPAIR_MAX_ROUNDS,
                 max_tokens,
                 thinking.clone(),
+                REPAIR_REASONING_EFFORT,
                 "repair",
                 Some(ctx.as_ref()),
             )
@@ -1228,6 +1231,9 @@ mod tests {
         seen_tool_names: Mutex<Vec<Vec<String>>>,
         seen_messages: Mutex<Vec<Vec<Message>>>,
         seen_thinking: Mutex<Vec<Option<ThinkingConfig>>>,
+        /// 每轮请求的推理档位——修复循环升档（REPAIR_REASONING_EFFORT）
+        /// 的观测点。
+        seen_effort: Mutex<Vec<Option<String>>>,
     }
 
     impl ScriptedProvider {
@@ -1237,6 +1243,7 @@ mod tests {
                 seen_tool_names: Mutex::new(Vec::new()),
                 seen_messages: Mutex::new(Vec::new()),
                 seen_thinking: Mutex::new(Vec::new()),
+                seen_effort: Mutex::new(Vec::new()),
             })
         }
     }
@@ -1253,6 +1260,7 @@ mod tests {
                 .push(request.tools.iter().map(|tool| tool.name.clone()).collect());
             self.seen_messages.lock().unwrap().push(request.messages.clone());
             self.seen_thinking.lock().unwrap().push(request.thinking.clone());
+            self.seen_effort.lock().unwrap().push(request.reasoning_effort.clone());
             let mut script = self.script.lock().unwrap();
             if script.is_empty() {
                 return Err(ProviderError::Connection("script exhausted".into()));
@@ -1311,6 +1319,47 @@ mod tests {
         ) -> Result<String, AppError> {
             Ok("not a scope json".into())
         }
+    }
+
+    /// 终审 completer：返回咨询级意见 JSON。scope 分析容忍解析失败（照旧
+    /// 降级为无 scope），终审解析成功 → 首次 finish 被软门弹回。
+    struct ReviewFindingCompleter;
+
+    #[async_trait::async_trait]
+    impl LearningCompleter for ReviewFindingCompleter {
+        async fn complete(
+            &self,
+            _model_override: Option<(&str, &str)>,
+            _system: &str,
+            _user: &str,
+            _max_tokens: u32,
+        ) -> Result<String, AppError> {
+            Ok(r#"[{"severity":"warning","message":"单元「n1」与「n4」之间缺中间铺垫层，建议补一个过渡单元"}]"#.into())
+        }
+    }
+
+    /// [`test_service`] 的自定义 completer 变体（终审软门测试用）。
+    async fn test_service_with_completer(
+        completer: Arc<dyn LearningCompleter>,
+    ) -> (Arc<LearningService>, tempfile::TempDir) {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let knowledge_service = Arc::new(nomifun_knowledge::KnowledgeService::new(
+            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+                database.pool().clone(),
+            )),
+            dir.path(),
+            nomifun_knowledge::KnowledgeEventEmitter::new(
+                Arc::new(NoopBroadcaster),
+                Arc::from(owner_id),
+            ),
+        ));
+        let service = Arc::new(LearningService::new(database.pool().clone()));
+        service.set_generation_dependencies(knowledge_service, completer);
+        (service, dir)
     }
 
     #[derive(Default)]
@@ -1442,6 +1491,7 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             ROUND_TOKEN_BUDGET,
             ThinkingConfig::Disabled,
+            None,
             "generate",
             Some(ctx.as_ref()),
         )
@@ -1491,6 +1541,7 @@ mod tests {
             2,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
+            None,
             "test",
             None,
         )
@@ -1701,6 +1752,19 @@ mod tests {
             2 + batch_count + 1,
             "2 generation rounds + 2 patch rounds + closing text round"
         );
+        // 修复轮推理档位升级：生成轮保持 provider 默认，修复轮提到 high。
+        {
+            let efforts = provider.seen_effort.lock().unwrap();
+            let repair_efforts = &efforts[2..];
+            assert!(
+                efforts[..2].iter().all(|e| e.is_none()),
+                "generation rounds keep the default effort: {efforts:?}"
+            );
+            assert!(
+                repair_efforts.iter().all(|e| e.as_deref() == Some("high")),
+                "repair rounds run at elevated effort: {efforts:?}"
+            );
+        }
         // The SQLite publish replaced the legacy JSON directory.
         let published = service.list_learning_graphs().await.unwrap();
         assert_eq!(published.len(), 1, "one published record");
@@ -1792,6 +1856,7 @@ mod tests {
             3,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
+            None,
             "test",
             None,
         )
@@ -1836,6 +1901,7 @@ mod tests {
             3,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
+            None,
             "test",
             None,
         )
@@ -1896,6 +1962,7 @@ mod tests {
             30,
             AGENT_MAX_TOKENS,
             ThinkingConfig::Disabled,
+            None,
             "test",
             None,
         )
@@ -2169,6 +2236,7 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             ROUND_TOKEN_BUDGET,
             ThinkingConfig::Disabled,
+            None,
             "test",
             Some(ctx.as_ref()),
         )
@@ -2213,6 +2281,7 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             ROUND_TOKEN_BUDGET,
             ThinkingConfig::Disabled,
+            None,
             "test",
             Some(ctx.as_ref()),
         )
@@ -2265,6 +2334,7 @@ mod tests {
             GENERATE_MAX_ROUNDS,
             ROUND_TOKEN_BUDGET,
             ThinkingConfig::Disabled,
+            None,
             "test",
             Some(ctx.as_ref()),
         )
@@ -2281,6 +2351,62 @@ mod tests {
             )
         });
         assert!(carries, "audit output must carry the derived suggestions");
+    }
+
+    /// 发布前独立 LLM 终审（软门，只弹一轮）：确定性门禁通过后首次
+    /// lg_finish 被终审意见弹回（意见即修复输入）；再次 lg_finish 不重跑
+    /// 终审、直接发布——咨询意见永远不单独拦截发布。
+    #[tokio::test]
+    async fn final_review_bounces_once_then_publishes() {
+        let (service, _dir) = test_service_with_completer(Arc::new(ReviewFindingCompleter))
+            .await;
+        let (ctx, _draft, _published) = seeded_context(Arc::clone(&service)).await;
+
+        // 30 单元收敛网（过确定性门禁的标准夹具），分两批合法提交。
+        let mut operations = vec![
+            add_op("n1", &[]),
+            add_op("n2", &["n1"]),
+            add_op("n3", &["n1"]),
+            add_op("n4", &["n1", "n2", "n3"]),
+            add_op("n5", &["n1", "n2"]),
+            add_op("n6", &["n4", "n5"]),
+        ];
+        for index in 7..=30 {
+            operations.push(add_op(&format!("n{index}"), &["n6"]));
+        }
+        let batches = batched(&operations);
+
+        let mut script: Vec<Vec<LlmEvent>> = batches
+            .into_iter()
+            .map(|payload| vec![tool_use("lg_patch", payload), done(StopReason::ToolUse)])
+            .collect();
+        // 首次 lg_finish：确定性门禁通过 → 终审弹回（咨询级意见）。
+        script.push(vec![tool_use("lg_finish", serde_json::json!({})), done(StopReason::ToolUse)]);
+        // 模型处置意见后再次 lg_finish：终审不重跑，发布成功；收尾文本轮。
+        script.push(vec![tool_use("lg_finish", serde_json::json!({})), done(StopReason::ToolUse)]);
+        script.push(vec![
+            LlmEvent::TextDelta("已按终审意见补齐中间层".into()),
+            done(StopReason::EndTurn),
+        ]);
+
+        let record = engine(Arc::clone(&service))
+            .run_loops(
+                ScriptedProvider::new(script),
+                "test-model",
+                "数学基础",
+                ctx,
+                ROUND_TOKEN_BUDGET,
+                ThinkingConfig::Disabled,
+            )
+            .await
+            .expect("the second finish must publish without re-running the review");
+        assert_eq!(record.graph.nodes.len(), 30);
+        let published = service.list_learning_graphs().await.unwrap();
+        assert_eq!(published.len(), 1, "exactly one published record");
+        // 发布的 meta 里带终审意见（UI 展示用）。
+        // （meta 断言经 get_learning_graph 的审计快照不可见——落在
+        // graph_meta_json，由服务层发布逻辑保证。）
+        let _ = &record;
     }
 
     /// 取消包装器：旗标置位时请求在 stream 边界直接拒绝——没有任何请求

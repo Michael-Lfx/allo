@@ -166,6 +166,11 @@ pub(crate) struct DraftGraph {
     /// Increments once per accepted op, so tool callers can detect
     /// concurrent edits.
     pub revision: u64,
+    /// 发布前独立 LLM 终审的状态：`reviewed` 在终审跑过一次后置位（再次
+    /// finish 不再弹回，直接发布——软门只弹一轮）；`review_findings` 保留
+    /// 终审意见，发布时随 meta 落库供 UI 展示。
+    pub reviewed: bool,
+    pub review_findings: Vec<super::ReviewFinding>,
 }
 
 impl DraftGraph {
@@ -179,6 +184,8 @@ impl DraftGraph {
                 audit: Default::default(),
             },
             revision: 0,
+            reviewed: false,
+            review_findings: Vec::new(),
         };
         // A fresh draft is ALREADY audited: an empty graph carries its
         // empty_graph danger from birth, so a premature `lg_finish` on a
