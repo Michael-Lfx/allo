@@ -410,12 +410,22 @@ impl LearningService {
                 stack.extend(parents.iter().copied());
             }
         }
-        let mut path: Vec<(i64, &str)> = ancestors
+        let mut path: Vec<(i64, &str, &str)> = ancestors
             .iter()
-            .filter_map(|id| nodes.get(*id).map(|(position, title)| (*position, title.as_str())))
+            .filter_map(|id| {
+                nodes
+                    .get(*id)
+                    .map(|(position, title)| (*position, title.as_str(), *id))
+            })
             .collect();
-        path.sort_unstable_by_key(|(position, _)| *position);
-        let prerequisite_path = render_prerequisite_path(&path);
+        path.sort_unstable_by_key(|(position, _, _)| *position);
+        // 前置已教内容摘要（learnhub contextPack §2「前置摘要」）：闭包里
+        // 已生成的课时附上其实际教过的节标题+要点。只有名字时模型不知道前
+        // 置具体教了什么，重讲一遍是最高频的失败模式——摘要是防重复讲授的
+        // 实质机制（未生成的前置仍只给标题）。
+        let ancestor_ids: Vec<String> = ancestors.iter().map(|id| (*id).to_owned()).collect();
+        let taught = self.taught_sections_for_lessons(&ancestor_ids).await?;
+        let prerequisite_path = render_prerequisite_path(&path, &taught);
 
         // 后续节点：直接后继按拓扑序列出（带 reason），可及后代总数沿后继
         // 正向遍历计数（含直接后继）。
@@ -449,6 +459,17 @@ impl LearningService {
         }
         let upcoming_nodes = render_upcoming_nodes(&direct, reachable.len());
 
+        // 防超纲黑名单（learnhub「禁止使用的概念」的学习图变体）：可及后
+        // 代节点全集按拓扑位置降序（越靠下游越先列）截前 200。学习图课程
+        // 没有概念表，黑名单的原料就是后代节点标题；前置/后续段落只是软引
+        // 导，明确的「不得出现」清单才是防超纲的实质机制。
+        let mut descendants: Vec<(i64, &str)> = reachable
+            .iter()
+            .filter_map(|id| nodes.get(*id).map(|(position, title)| (*position, title.as_str())))
+            .collect();
+        descendants.sort_unstable_by_key(|(position, _)| std::cmp::Reverse(*position));
+        let forbidden_concepts = render_forbidden_descendants(&descendants);
+
         let context = LessonGenerationContext {
             course_title,
             // 图节点没有课程简报；目标/范围在 graph 段渲染。
@@ -472,8 +493,8 @@ impl LearningService {
                 prerequisite_path,
                 upcoming_nodes,
             }),
-            // 学习图节点的范围由前置/后续节点段落约束,无需黑名单。
-            forbidden_concepts: String::new(),
+            // 防超纲黑名单：可及后代节点标题清单（见上方推导处）。
+            forbidden_concepts,
         };
 
         self.emit_lesson_event(serde_json::json!({
@@ -518,6 +539,36 @@ impl LearningService {
 
         let enrollment = self.enrollment_id_for(user_id, course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
+    }
+
+    /// 批量取一组课时的已生成节摘要（`status='ready'` 节的标题+要点，按
+    /// 节位置排序），按 `lesson_id` 分组——学习图节点生成的前置摘要原料。
+    /// 未生成或生成中的课时不会出现在返回值里（调用方据此只给标题）。
+    async fn taught_sections_for_lessons(
+        &self,
+        lesson_ids: &[String],
+    ) -> Result<HashMap<String, Vec<(String, String)>>, AppError> {
+        if lesson_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut query = sqlx::QueryBuilder::new(
+            "SELECT lesson_id, title, points FROM learning_lesson_sections \
+             WHERE status = 'ready' AND lesson_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for id in lesson_ids {
+            separated.push_bind(id);
+        }
+        query.push(") ORDER BY lesson_id, position");
+        let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
+        let mut taught: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for row in rows {
+            let lesson_id: String = row.try_get("lesson_id").map_err(internal)?;
+            let title: String = row.try_get("title").map_err(internal)?;
+            let points: String = row.try_get("points").map_err(internal)?;
+            taught.entry(lesson_id).or_default().push((title, points));
+        }
+        Ok(taught)
     }
 
     /// 生成事务落库尾（传统与学习图两条路径共用）：更新课时行（文档/时长/
@@ -1010,12 +1061,23 @@ impl LearningService {
 /// （500 节点级图的祖先闭包可能极长）。
 const GRAPH_PATH_RENDER_LIMIT: usize = 20;
 
+/// 单个前置课时在摘要里最多列出的已教节数（节清单硬上限 8，取齐即可）。
+const GRAPH_TAUGHT_SECTION_LIMIT: usize = 8;
+
 /// 直接后继的渲染上限：超过时列前 10 个并注明总数。
 const GRAPH_SUCCESSOR_RENDER_LIMIT: usize = 10;
 
+/// 下游节点禁止清单的条目上限（learnhub 黑名单同款截断）。
+const GRAPH_FORBIDDEN_LIMIT: usize = 200;
+
 /// 前置路径渲染：按拓扑序全局编号；超出上限时只渲染离节点最近的一段，
-/// 更早的合并成概括行。节点内容是共享资产，不标注任何用户进度。
-fn render_prerequisite_path(path: &[(i64, &str)]) -> String {
+/// 更早的合并成概括行。已生成的前置课时在其条目下附「实际教过的节标题+
+/// 要点」摘要（learnhub contextPack §2）——这是防重复讲授的实质机制；
+/// 未生成的前置只给标题。节点内容是共享资产，不标注任何用户进度。
+fn render_prerequisite_path(
+    path: &[(i64, &str, &str)],
+    taught: &HashMap<String, Vec<(String, String)>>,
+) -> String {
     if path.is_empty() {
         return String::new();
     }
@@ -1026,8 +1088,19 @@ fn render_prerequisite_path(path: &[(i64, &str)]) -> String {
             "……（更早还有 {start} 个前置节点，均已掌握，此处省略）"
         ));
     }
-    for (offset, (_, title)) in path[start..].iter().enumerate() {
+    for (offset, (_, title, id)) in path[start..].iter().enumerate() {
         lines.push(format!("{}. {}", start + offset + 1, title.trim()));
+        if let Some(sections) = taught.get(*id) {
+            for (section_title, points) in sections.iter().take(GRAPH_TAUGHT_SECTION_LIMIT) {
+                let points = points.trim();
+                let summary = if points.is_empty() {
+                    section_title.trim().to_owned()
+                } else {
+                    format!("{}：{points}", section_title.trim())
+                };
+                lines.push(format!("   · {summary}"));
+            }
+        }
     }
     lines.join("\n")
 }
@@ -1056,6 +1129,26 @@ fn render_upcoming_nodes(direct: &[(i64, &str, &str)], reachable: usize) -> Stri
         ));
     }
     lines.join("\n")
+}
+
+/// 下游节点禁止清单渲染（learnhub「禁止使用的概念」的学习图变体）：正文
+/// 不得出现这些名称、不得引用其结论。按拓扑位置降序排列（越靠下游越先
+/// 列），超出上限截断并注明总数；空集返回空串（该节点是图的终点）。
+fn render_forbidden_descendants(descendants: &[(i64, &str)]) -> String {
+    if descendants.is_empty() {
+        return String::new();
+    }
+    let total = descendants.len();
+    let mut text = format!(
+        "禁止提前讲授的下游节点（尚未到达——正文不得出现这些名称，不得引用其结论，不得为它们做铺垫；共 {total} 个）：\n"
+    );
+    let listed: Vec<String> = descendants
+        .iter()
+        .take(GRAPH_FORBIDDEN_LIMIT)
+        .map(|(_, title)| format!("- {}", title.trim()))
+        .collect();
+    text.push_str(&listed.join("\n"));
+    text
 }
 
 /// Matching questions expose their right-column candidates to the UI (a
@@ -1131,4 +1224,56 @@ pub(super) fn validate_question_payload(
         difficulty: pack.difficulty,
     };
     Ok((prompt.to_string(), config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 前置路径渲染：已生成的前置附「实际教过的节标题+要点」摘要，未生
+    /// 成的前置只有标题行（learnhub contextPack §2 的前置摘要语义）。
+    #[test]
+    fn prerequisite_path_carries_taught_section_summaries() {
+        let path = vec![
+            (0i64, "什么是衍生品", "lesson-a"),
+            (1i64, "期权的定义与分类", "lesson-b"),
+        ];
+        let mut taught = HashMap::new();
+        taught.insert(
+            "lesson-b".to_owned(),
+            vec![
+                (
+                    "概念：期权定义".to_owned(),
+                    "买方持有权利、卖方承担义务".to_owned(),
+                ),
+                ("例题：认购与认沽".to_owned(), "四类基本头寸".to_owned()),
+            ],
+        );
+        let text = render_prerequisite_path(&path, &taught);
+        assert!(text.contains("1. 什么是衍生品"), "{text}");
+        assert!(text.contains("2. 期权的定义与分类"), "{text}");
+        assert!(text.contains("· 概念：期权定义：买方持有权利、卖方承担义务"), "{text}");
+        assert!(text.contains("· 例题：认购与认沽：四类基本头寸"), "{text}");
+        // 未生成的前置（lesson-a）不产生摘要行：标题行 + 前置的 3 行摘要。
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4, "{text}");
+    }
+
+    /// 下游禁止清单：非空时附「不得出现/不得引用」约束与总数；空集（终
+    /// 点节点）返回空串，提示词不渲染该段。
+    #[test]
+    fn forbidden_descendants_render_the_blacklist_contract() {
+        assert_eq!(render_forbidden_descendants(&[]), "");
+        let titles: Vec<String> = (0..(GRAPH_FORBIDDEN_LIMIT + 5))
+            .map(|i| format!("下游单元{i}"))
+            .collect();
+        let descendants: Vec<(i64, &str)> =
+            titles.iter().enumerate().map(|(i, title)| (i as i64, title.as_str())).collect();
+        let text = render_forbidden_descendants(&descendants);
+        assert!(text.contains(&format!("共 {} 个", descendants.len())), "{text}");
+        assert!(text.contains("- 下游单元0"));
+        // 超限截断：只列前 200 条。
+        assert!(!text.contains("- 下游单元200"), "{text}");
+        assert!(text.contains(format!("- 下游单元{}", GRAPH_FORBIDDEN_LIMIT - 1).as_str()));
+    }
 }

@@ -25,7 +25,7 @@ use super::audit::{
 };
 use super::{
     AuditFinding, LearningGraphData, LearningGraphEdge, LearningGraphNode, RawConcept, ScopeAnalysis,
-    format_audit_report, fuzzy_resolve_reference, merge_batch, normalize_batch,
+    derive_suggestions, format_audit_report, fuzzy_resolve_reference, merge_batch, normalize_batch,
     remove_cycle_edges,
 };
 
@@ -1049,8 +1049,9 @@ impl DraftGraph {
     }
 
     /// Full findings text (same renderer the legacy gate uses) prefixed with
-    /// the scope block checklist and its live coverage state — the repair
-    /// loop's primary input.
+    /// the scope block checklist and its live coverage state, and suffixed
+    /// with the derived next-batch suggestions — the repair loop's primary
+    /// input and the generation loop's build guidance.
     pub(crate) fn audit_report(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
         if let Some(scope) = &self.scope {
@@ -1088,6 +1089,29 @@ impl DraftGraph {
         }
         lines.push("==== Audit report ====".into());
         lines.push(format_audit_report(&self.graph));
+        // 「Suggestions」段（learnhub analyze 建议回路的机制化）：从当前
+        // findings 派生的下一批行动清单。生成与修复两个循环的每份审计文本
+        // 都带着它——下一批 lg_patch 必须逐条处理或显式驳回。
+        let suggestions = derive_suggestions(
+            &self.graph.audit.findings,
+            &self.graph,
+            self.scope.as_ref().map(|scope| scope.blocks.as_slice()),
+        );
+        lines.push(String::new());
+        lines.push("==== Suggestions ====".into());
+        if suggestions.is_empty() {
+            lines.push(
+                "无建议——当前图通过全部确定性检查；确认覆盖完整、自查通过后即可 lg_finish。".into(),
+            );
+        } else {
+            lines.push(
+                "下一批 lg_patch 必须逐条落实以下建议；若某条不成立，在回复中显式驳回并说明理由："
+                    .into(),
+            );
+            for (index, suggestion) in suggestions.iter().enumerate() {
+                lines.push(format!("{}. {suggestion}", index + 1));
+            }
+        }
         lines.join("\n")
     }
 
@@ -1913,6 +1937,7 @@ mod tests {
         assert!(report.contains("==== Scope reference ===="));
         assert!(report.contains("已覆盖"), "{report}");
         assert!(report.contains("==== Audit report ===="));
+        assert!(report.contains("==== Suggestions ===="));
         assert!(report.contains("1 concepts, 0 edges"), "{report}");
     }
 

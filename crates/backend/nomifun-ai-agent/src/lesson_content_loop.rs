@@ -498,7 +498,7 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
                 text.push_str("本节点没有前置——它是学习图的起点，从零讲起。\n");
             } else {
                 text.push_str(&format!(
-                    "前置路径（学习者到达本节点前应已掌握，按学习顺序，不要重复讲授）：\n{}\n",
+                    "前置路径（学习者到达本节点前应已掌握，按学习顺序；条目下的要点是各前置实际教过的内容——不要重复讲授）：\n{}\n",
                     graph.prerequisite_path
                 ));
             }
@@ -544,6 +544,12 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
                 text.push_str(&format!("- {key}\n"));
             }
         }
+    }
+    if !context.forbidden_concepts.trim().is_empty() {
+        // 防超纲黑名单（learnhub「禁止使用的概念」）：传统课时 = 本课之外
+        // 的概念；学习图节点 = 可及后代节点标题。此前引擎路径从未渲染过
+        // 这个字段——黑名单只在 fallback 管线生效，这里是补上的注入点。
+        text.push_str(&format!("\n{}\n", context.forbidden_concepts.trim()));
     }
     if !context.adjacent_context.is_empty() {
         text.push_str(&format!("\n{}\n", context.adjacent_context));
@@ -1035,6 +1041,21 @@ mod tests {
         let plain = lesson_user_text(&lesson_context());
         assert!(!plain.contains("课程完整目录"));
         assert!(!plain.contains("相邻课时参考"));
+    }
+
+    /// 防超纲黑名单注入：`forbidden_concepts` 非空时渲染为独立段（传统课
+    /// 时与学习图节点共用该注入点）；空串不产生任何文本。
+    #[test]
+    fn lesson_user_text_embeds_the_forbidden_blacklist_when_present() {
+        let mut context = lesson_context();
+        context.forbidden_concepts =
+            "禁止使用的概念（尚未讲授——正文不得出现这些名称，也不得引用其结论）：\n- 希腊字母（期权 sensitivities）".into();
+        let text = lesson_user_text(&context);
+        assert!(text.contains("禁止使用的概念"), "{text}");
+        assert!(text.contains("希腊字母"), "{text}");
+
+        let plain = lesson_user_text(&lesson_context());
+        assert!(!plain.contains("禁止使用的概念"), "{plain}");
     }
 
     #[derive(Default)]
