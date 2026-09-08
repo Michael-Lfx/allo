@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { Switch } from "antd";
 
+import { CanvasToggle } from "@oc/components/canvas/canvas-overlay";
 import { ImageSettingsTheme } from "@oc/components/image-settings-panel";
 import { AspectChoice, ChoiceChip, SettingsPanelHeader, SettingsSection } from "@oc/components/generation-settings-chrome";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@oc/lib/seedance-video";
@@ -310,7 +310,7 @@ function SwitchRow({ label, checked, theme, onChange }: { label: string; checked
                 {label}
             </span>
             <span className="shrink-0" onMouseDown={(event) => event.stopPropagation()}>
-                <Switch size="small" checked={checked} onChange={onChange} />
+                <CanvasToggle theme={theme} checked={checked} onChange={onChange} ariaLabel={label} />
             </span>
         </div>
     );

@@ -3,6 +3,9 @@
     "tag": "dev",
     "navTooltip": "Video canvas (dev)"
   },
+  "sheet": {
+    "close": "Close"
+  },
   "list": {
     "title": "Canvas projects",
     "subtitle": "Node-based infinite canvas for manual image/video generation pipelines.",
@@ -545,7 +548,12 @@
     "opStyle": "Style transfer",
     "opAudioToVideo": "Audio to video",
     "opCompare": "Compare",
-    "editContent": "Edit generation content"
+    "editContent": "Edit generation content",
+    "opReferenceToVideo": "Multi-image reference video",
+    "durationUnsupported": "This model does not support that video duration",
+    "promptTooLong": "Prompt exceeds the model limit ({{count}} characters max)",
+    "refsExceeded": "Too many references for this model",
+    "operationUnsupported": "This model does not support that generation mode"
   },
   "prompt": {
     "creation": "{{mode}} creation",
@@ -561,7 +569,11 @@
     "modeVideo": "Video",
     "modeAudio": "Audio",
     "modeText": "Text",
-    "textCountHint": "Text generation copies (default 1; also adjustable in generator)"
+    "textCountHint": "Text generation copies (default 1; also adjustable in generator)",
+    "connectFramesHint": "Connect image nodes to assign a start or end frame",
+    "startFrame": "Start frame",
+    "endFrame": "End frame",
+    "unspecified": "None"
   },
   "connection": {
     "createNext": "Create next",
@@ -607,7 +619,11 @@
     "exportNeedClips": "Add at least one video clip first",
     "exportNeedMedia": "A clip is missing local media and cannot be exported",
     "exportFailed": "Timeline export failed",
-    "exported": "Exported film added to the canvas"
+    "exported": "Exported film added to the canvas",
+    "addHint": "Add video / audio nodes from the canvas",
+    "trackVideo": "Video",
+    "trackAudio": "Audio",
+    "trackSubtitle": "Subtitles"
   },
   "subtitle": {
     "title": "Subtitles · {{name}}",
@@ -627,7 +643,18 @@
     "transcribing": "Transcribing…",
     "transcribeNeedMedia": "This node has no local media to transcribe",
     "transcribeFailed": "Transcription failed",
-    "transcribed": "Transcribed {{count}} captions"
+    "transcribed": "Transcribed {{count}} captions",
+    "style": "Caption style",
+    "position": "Position",
+    "positionTop": "Top",
+    "positionCenter": "Center",
+    "positionBottom": "Bottom",
+    "fontSize": "Size",
+    "color": "Color",
+    "startAria": "Start time",
+    "endAria": "End time",
+    "remove": "Remove entry",
+    "noPreview": "This node has no video to preview"
   },
   "zoom": {
     "openMinimap": "Open minimap",
@@ -831,6 +858,12 @@
     "manageQuickTools": "Manage quick tools",
     "moreImageTools": "More image tools",
     "more": "More",
+    "moreTitle": "More node actions",
+    "editGroup": "Edit",
+    "editGroupTitle": "Inpaint, crop, split, and upscale",
+    "portraitGroup": "Portrait",
+    "portraitGroupTitle": "Adjust expression and surface texture",
+    "emotionShort": "Expression",
     "infoTitle": "Node info",
     "infoTab": "Info",
     "infoType": "Type",
@@ -851,6 +884,7 @@
     "tagsReadOnly": "Shared canvas is read-only; tags cannot be edited.",
     "tagPlaceholder": "e.g. Character: Alex",
     "tagAdd": "Add",
+    "tagRemoveAria": "Remove tag {{tag}}",
     "noTags": "No tags",
     "noTagsHint": "No tags yet — type one and click Add or press Enter."
   },
@@ -969,6 +1003,7 @@
     "opAgentSession": "Agent session: film workflow",
     "opTextToVideo": "Text to video",
     "opImageToVideo": "Image to video",
+    "opReferenceToVideo": "Multi-image reference video",
     "opExtend": "Extend video",
     "opInpaint": "Video inpaint",
     "opReplace": "Replace element",
@@ -2125,6 +2160,7 @@
     "detectFailed": "No clear face detected. Select one manually.",
     "detectFailedReason": "{{reason}}. Select a face manually.",
     "detectFailedGeneric": "Face detection failed. Select a face manually.",
+    "detectNetwork": "Could not read the source image",
     "preprocessFailed": "Pre-generation processing failed.",
     "faceSelectNamedAria": "Select {{name}}",
     "faceSelectAria": "Select this face",
@@ -2133,7 +2169,76 @@
     "statusSelecting": "Found {{count}} faces. Pick a character",
     "statusFallback": "Pick a character",
     "closeAria": "Close emotion controls",
-    "manualButton": "Manual select"
+    "manualButton": "Manual select",
+    "generating": "Preparing…",
+    "generate": "Generate",
+    "locate": "Emotion",
+    "aroused": "Aroused",
+    "calm": "Calm",
+    "close": "Close",
+    "distant": "Distant",
+    "livePreview": "Live preview",
+    "characterN": "Character {{n}}",
+    "closePanelAria": "Close emotion controls",
+    "emotionPadAria": "Emotion intensity"
+  },
+  "mask": {
+    "title": "Inpaint mask",
+    "reading": "Loading",
+    "brush": "Brush",
+    "erase": "Erase",
+    "brushSize": "Brush size",
+    "prompt": "Edit prompt",
+    "promptPlaceholder": "e.g. turn the selected area into metal while keeping the original lighting",
+    "promptRequired": "Enter an edit prompt",
+    "maskRequired": "Paint the area to edit first",
+    "reset": "Reset",
+    "cancel": "Cancel",
+    "apply": "AI edit"
+  },
+  "mention": {
+    "character": "Character {{n}}",
+    "skill": "Skill {{n}}",
+    "text": "Text {{n}}",
+    "drawing": "Drawing {{n}}"
+  },
+  "portrait": {
+    "title": "Portrait texture",
+    "openAria": "Open portrait texture panel",
+    "groups": {
+      "personSceneFusion": "Subject / scene",
+      "lightingFusion": "Lighting",
+      "skin": "Skin",
+      "texture": "Texture",
+      "sharpness": "Sharpness"
+    },
+    "options": {
+      "personSceneFusion": {
+        "light": "Light blend",
+        "natural": "Natural blend",
+        "deep": "Deep blend"
+      },
+      "lightingFusion": {
+        "soft": "Soft fill",
+        "natural": "Match scene",
+        "atmosphere": "Atmosphere"
+      },
+      "skin": {
+        "clear": "Clear",
+        "natural": "Natural",
+        "real": "Real texture"
+      },
+      "texture": {
+        "soft": "Soft",
+        "natural": "Natural",
+        "grain": "Grain"
+      },
+      "sharpness": {
+        "soft": "Soft focus",
+        "standard": "Standard",
+        "high": "Crisp"
+      }
+    }
   },
   "worldLayers": {
     "batchConnectTitle": "Batch-connect {{count}} nodes",

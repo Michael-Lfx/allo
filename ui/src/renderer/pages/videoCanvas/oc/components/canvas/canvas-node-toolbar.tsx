@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { App, Button, Input, Modal, Segmented, Tag } from "antd";
-import { ChevronDown, Ellipsis, Lock, Plus, Settings2, Unlock } from "lucide-react";
+import { App } from "antd";
+import { ChevronDown, Ellipsis, Lock, Plus, Settings2, Unlock, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ASSET_CATEGORY_OPTIONS } from "@oc/lib/asset-category";
@@ -19,9 +19,10 @@ import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@oc/lib
 import { useCopyText } from "@oc/hooks/use-copy-text";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode, type ViewportTransform } from "@oc/types/canvas";
-import { CanvasMenuRow, overlayPanelStyle, useAnchoredOverlay } from "./canvas-overlay";
+import { CanvasHoverHint, CanvasMenuRow, CanvasSheet, CanvasSheetButton, overlayPanelStyle, useAnchoredOverlay } from "./canvas-overlay";
+import { ChoiceChip } from "@oc/components/generation-settings-chrome";
 import { ImageToolSettingsModal } from "./canvas-image-toolbar-settings-modal";
-import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, isImageQuickToolId, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
+import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, isImageQuickToolId, readImageQuickToolsConfig, resolveImageDockLayout, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
 
 type CanvasNodeToolbarProps = {
     node: CanvasNodeData | null;
@@ -45,7 +46,6 @@ type CanvasNodeToolbarProps = {
     onCrop: (node: CanvasNodeData) => void;
     onSplit: (node: CanvasNodeData) => void;
     onUpscale: (node: CanvasNodeData) => void;
-    onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
     onExtractVideoFrames: (node: CanvasNodeData) => void;
@@ -100,7 +100,6 @@ export function CanvasNodeToolbar({
     onCrop,
     onSplit,
     onUpscale,
-    onSuperResolve,
     onAngle,
     onViewImage,
     onExtractVideoFrames,
@@ -213,7 +212,6 @@ export function CanvasNodeToolbar({
     const canOpenDialog = isEditableText || (isImage && !isCharacterReference) || isVideo;
     const requiresPromptChange = node.metadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(node.metadata?.errorDetails);
     const canRetry = node.metadata?.status === "error" && !requiresPromptChange;
-    const quickImageToolIdSet = new Set(quickImageToolIds);
     const copyImagePrompt = (target: CanvasNodeData) => {
         const prompt = target.metadata?.prompt?.trim();
         if (!prompt) {
@@ -222,7 +220,7 @@ export function CanvasNodeToolbar({
         }
         copyText(prompt, canvasT("videoCanvas.nodeUi.promptCopied", "提示词已复制"));
     };
-    const imageTools = buildImageToolbarTools(node, { onUpload, onToggleFreeResize, onAnnotate, onMaskEdit, onEmotion, onPortraitTexture, onCrop, onSplit, onUpscale, onSuperResolve, onAngle, onViewImage, onCopyPrompt: copyImagePrompt, onReversePrompt });
+    const imageTools = buildImageToolbarTools(node, { onUpload, onToggleFreeResize, onAnnotate, onMaskEdit, onEmotion, onPortraitTexture, onCrop, onSplit, onUpscale, onAngle, onViewImage, onCopyPrompt: copyImagePrompt, onReversePrompt });
 
     function openImageToolSettings() {
         imageToolSettingsOpenRef.current = true;
@@ -237,7 +235,7 @@ export function CanvasNodeToolbar({
         onNodeInfo: onInfo, onNodeDelete: onDelete, onNodeRetry: onRetry, onNodeEditText: onEditText, onNodeDecreaseFont: onDecreaseFont, onNodeIncreaseFont: onIncreaseFont,
         onNodeToggleDialog: onToggleDialog, onNodeAnnotate: onAnnotate, onNodeGenerateImage: onGenerateImage, onNodeUpload: onUpload, onNodeDownload: onDownload,
         onNodeSaveAsset: onSaveAsset, onNodeMaskEdit: onMaskEdit, onNodeEmotion: onEmotion, onNodePortraitTexture: onPortraitTexture, onNodeCrop: onCrop,
-        onNodeSplit: onSplit, onNodeUpscale: onUpscale, onNodeSuperResolve: onSuperResolve, onNodeAngle: onAngle, onNodeViewImage: onViewImage,
+        onNodeSplit: onSplit, onNodeUpscale: onUpscale, onNodeSuperResolve: () => {}, onNodeAngle: onAngle, onNodeViewImage: onViewImage,
         onNodeExtractVideoFrames: onExtractVideoFrames, onNodeReversePrompt: onReversePrompt, onNodeToggleFreeResize: onToggleFreeResize,
         onNodeToggleLocked: onToggleLocked, onNodeCopyPrompt: copyImagePrompt,
         onNodeSubtitles: onSubtitles, onNodeTimeline: onTimeline,
@@ -281,17 +279,19 @@ export function CanvasNodeToolbar({
     const selectableImageToolbarTools = allTools.filter((tool): tool is ToolbarTool & { id: ImageQuickToolId } => isImageQuickToolId(tool.id));
     const toolById = new Map(allTools.map((tool) => [tool.id, tool] as const));
     const takeTools = (ids: string[]) => ids.map((id) => toolById.get(id)).filter((tool): tool is ToolbarTool => Boolean(tool));
-    const imageBaseTools = takeTools(hasImage ? ["delete", "download"] : ["delete", "uploadImage"]);
-    const imageEditTools = takeTools(["maskEdit", "crop", "split"]);
-    const imagePortraitTools = takeTools(["emotion", "portraitTexture"]).map((tool) => (tool.id === "emotion" ? { ...tool, label: canvasT("videoCanvas.nodeUi.emotionShort", "人物情绪") } : tool));
-    const imageAngleTool = toolById.get("angle");
+    const imageDock = resolveImageDockLayout(quickImageToolIds);
+    const imagePinTools = takeTools(imageDock.pin);
+    const imageSingleTools = takeTools(imageDock.singles);
+    const imageEditTools = takeTools(imageDock.editGroup);
+    const imagePortraitTools = takeTools(imageDock.portraitGroup).map((tool) => (tool.id === "emotion" ? { ...tool, label: canvasT("videoCanvas.nodeUi.emotionShort", "人物情绪") } : tool));
+    const imageAngleTool = imageDock.angle ? toolById.get("angle") : undefined;
     const videoTools = takeTools(["delete", "download", "subtitles", "timeline", "extractFrames", "uploadVideo"]).map((tool) => {
         if (tool.id === "extractFrames") return { ...tool, label: canvasT("videoCanvas.toolbar.extractFrame", "画面") };
         return tool;
     });
     const genericTools = takeTools(isAudio ? ["delete", "download", "timeline", "uploadAudio"] : isEditableText ? ["delete", "edit", "editText", "generateImage", "saveAsset"] : ["delete", "info", "config"]);
     const visibleToolIds = new Set([
-        ...(isCharacterReference ? takeTools(["delete", "info"]) : isImage ? [...imageBaseTools, ...imageEditTools, ...imagePortraitTools, ...(imageAngleTool ? [imageAngleTool] : [])] : isVideo ? videoTools : genericTools).map((tool) => tool.id),
+        ...(isCharacterReference ? takeTools(["delete", "info"]) : isImage ? [...imagePinTools, ...imageSingleTools, ...imageEditTools, ...imagePortraitTools, ...(imageAngleTool ? [imageAngleTool] : [])] : isVideo ? videoTools : genericTools).map((tool) => tool.id),
     ]);
     const overflowTools = allTools
         .filter((tool) => !visibleToolIds.has(tool.id))
@@ -376,9 +376,10 @@ export function CanvasNodeToolbar({
                     <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                         {isImage ? (
                             <>
-                                {imageBaseTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)}
-                                {imageEditTools.length ? <NodeDockMenuButton menuId="image-edit" label={canvasT("videoCanvas.nodeUi.editGroup", "编辑")} icon={imageEditTools[0].icon} tools={imageEditTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} /> : null}
-                                {imagePortraitTools.length ? <NodeDockMenuButton menuId="image-portrait" label={canvasT("videoCanvas.nodeUi.portraitGroup", "人物调整")} icon={imagePortraitTools[0].icon} tools={imagePortraitTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} /> : null}
+                                {imagePinTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)}
+                                {imageSingleTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} showLabel={showDockLabels} />)}
+                                {imageEditTools.length ? <NodeDockMenuButton menuId="image-edit" label={canvasT("videoCanvas.nodeUi.editGroup", "编辑")} title={canvasT("videoCanvas.nodeUi.editGroupTitle", "局部编辑、剪裁、切图与放大")} icon={imageEditTools[0].icon} tools={imageEditTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} /> : null}
+                                {imagePortraitTools.length ? <NodeDockMenuButton menuId="image-portrait" label={canvasT("videoCanvas.nodeUi.portraitGroup", "人物调整")} title={canvasT("videoCanvas.nodeUi.portraitGroupTitle", "调整人物情绪与人物质感")} icon={imagePortraitTools[0].icon} tools={imagePortraitTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} /> : null}
                                 {imageAngleTool ? <NodeDockToolButton tool={imageAngleTool} showLabel={showDockLabels} /> : null}
                             </>
                         ) : isVideo ? (
@@ -391,7 +392,7 @@ export function CanvasNodeToolbar({
                     <div className="flex shrink-0 items-center gap-0.5">
                         <NodeDockToolButton tool={lockTool} showLabel={showDockLabels} />
                         {overflowTools.length ? (
-                            <NodeDockMenuButton menuId="more" label={moreLabel} icon={<Ellipsis className="size-3.5" />} tools={overflowTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} placement="topRight" />
+                            <NodeDockMenuButton menuId="more" label={moreLabel} title={canvasT("videoCanvas.nodeUi.moreTitle", "更多节点操作")} icon={<Ellipsis className="size-3.5" />} tools={overflowTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} showLabel={showDockLabels} placement="topRight" />
                         ) : null}
                     </div>
                 </div>
@@ -414,25 +415,28 @@ export function CanvasNodeToolbar({
 
 
 function NodeDockToolButton({ tool, showLabel = true }: { tool: ToolbarTool; showLabel?: boolean }) {
+    const hint = !showLabel ? (tool.title || tool.label) : (tool.title && tool.title !== tool.label ? tool.title : "");
     return (
-        <button
-            type="button"
-            className={`aceternity-dock-command is-quiet pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${tool.active ? "is-active" : ""} ${tool.danger ? "is-danger" : ""}`}
-            aria-label={tool.title || tool.label}
-            aria-pressed={tool.active || undefined}
-            disabled={tool.disabled}
-            title={tool.title || tool.label}
-            onClick={tool.onClick}
-        >
-            <span className="grid size-3.5 shrink-0 place-items-center">{tool.icon}</span>
-            {showLabel ? <span className="inline-flex h-4 items-center whitespace-nowrap text-[var(--fs-label)] font-medium leading-none">{tool.label}</span> : null}
-        </button>
+        <CanvasHoverHint label={hint} disabled={tool.disabled}>
+            <button
+                type="button"
+                className={`aceternity-dock-command is-quiet pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${tool.active ? "is-active" : ""} ${tool.danger ? "is-danger" : ""}`}
+                aria-label={tool.title || tool.label}
+                aria-pressed={tool.active || undefined}
+                disabled={tool.disabled}
+                onClick={tool.onClick}
+            >
+                <span className="grid size-3.5 shrink-0 place-items-center">{tool.icon}</span>
+                {showLabel ? <span className="inline-flex h-4 items-center whitespace-nowrap text-[var(--fs-label)] font-medium leading-none">{tool.label}</span> : null}
+            </button>
+        </CanvasHoverHint>
     );
 }
 
 function NodeDockMenuButton({
     menuId,
     label,
+    title,
     icon,
     tools,
     openMenuId,
@@ -442,6 +446,7 @@ function NodeDockMenuButton({
 }: {
     menuId: string;
     label: string;
+    title?: string;
     icon: ReactNode;
     tools: ToolbarTool[];
     openMenuId: string | null;
@@ -459,29 +464,31 @@ function NodeDockMenuButton({
         ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, {
             width: 220,
             placement: placement === "topRight" ? "topRight" : "top",
-            estimatedHeight: 8 + tools.length * 28,
+            estimatedHeight: 8 + tools.length * 36,
         })
         : null;
+    const hint = !showLabel ? (title || label) : (title && title !== label ? title : "");
 
     return (
         <>
-            <button
-                ref={triggerRef}
-                type="button"
-                className={`aceternity-dock-command is-quiet pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${open ? "is-active" : ""}`}
-                aria-label={label}
-                aria-expanded={open}
-                title={label}
-                onClick={() => onOpenChange(menuId, !open)}
-            >
-                <span className="grid size-3.5 shrink-0 place-items-center">{icon}</span>
-                {showLabel ? (
-                    <>
-                        <span className="inline-flex h-4 items-center whitespace-nowrap text-[var(--fs-label)] font-medium leading-none">{label}</span>
-                        <ChevronDown className="size-3 shrink-0 opacity-55" />
-                    </>
-                ) : null}
-            </button>
+            <CanvasHoverHint label={open ? "" : hint}>
+                <button
+                    ref={triggerRef}
+                    type="button"
+                    className={`aceternity-dock-command is-quiet pointer-events-auto inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] outline-none ${showLabel ? "is-labeled px-2.5" : "size-8"} ${open ? "is-active" : ""}`}
+                    aria-label={title || label}
+                    aria-expanded={open}
+                    onClick={() => onOpenChange(menuId, !open)}
+                >
+                    <span className="grid size-3.5 shrink-0 place-items-center">{icon}</span>
+                    {showLabel ? (
+                        <>
+                            <span className="inline-flex h-4 items-center whitespace-nowrap text-[var(--fs-label)] font-medium leading-none">{label}</span>
+                            <ChevronDown className="size-3 shrink-0 opacity-55" />
+                        </>
+                    ) : null}
+                </button>
+            </CanvasHoverHint>
             {open && geometry
                 ? createPortal(
                     <div
@@ -496,6 +503,7 @@ function NodeDockMenuButton({
                                 key={tool.id}
                                 icon={tool.icon}
                                 label={tool.label}
+                                detail={tool.title && tool.title !== tool.label ? tool.title : undefined}
                                 disabled={tool.disabled}
                                 danger={tool.danger}
                                 onClick={() => {
@@ -512,7 +520,7 @@ function NodeDockMenuButton({
     );
 }
 
-export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, readOnly = false, onUnauthorized }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onMetadataChange?: (nodeId: string, metadata: Partial<CanvasNodeMetadata>) => void; readOnly?: boolean; onUnauthorized?: () => void }) {
+export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, readOnly = false }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onMetadataChange?: (nodeId: string, metadata: Partial<CanvasNodeMetadata>) => void; readOnly?: boolean; onUnauthorized?: () => void }) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [view, setView] = useState<"info" | "json">("info");
@@ -574,39 +582,26 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
         saveAssetTags(assetTags.filter((item) => item !== tag));
     };
 
-    const title = (
-        <div className="flex items-center justify-between gap-4 pr-10">
-            <div className="min-w-0">
-                <div className="text-[var(--fs-heading-lg)] font-semibold tracking-[-0.02em]">{canvasT("videoCanvas.nodeUi.infoTitle", "节点信息")}</div>
-                {node ? <div className="mt-0.5 truncate text-xs opacity-45">{node.id}</div> : null}
-            </div>
-            <Segmented
-                size="small"
-                value={view}
-                onChange={(value) => setView(value as "info" | "json")}
-                options={[
-                    { label: canvasT("videoCanvas.nodeUi.infoTab", "信息"), value: "info" },
-                    { label: "JSON", value: "json" },
-                ]}
-            />
-        </div>
-    );
+    const title = canvasT("videoCanvas.nodeUi.infoTitle", "节点信息");
 
     return (
-        <Modal
+        <CanvasSheet
             className="canvas-node-info-modal"
-            title={title}
             open={open && Boolean(node)}
-            centered
-            footer={null}
+            theme={theme}
             width={720}
-            onCancel={onClose}
-            styles={{ body: { paddingTop: 8 } }}
+            title={title}
+            subtitle={node?.id}
+            onClose={onClose}
         >
             {node ? (
                 <div className="h-[min(68vh,640px)] min-h-[420px] text-sm" style={{ color: theme.node.text }}>
+                    <div className="mb-3 flex flex-wrap gap-1.5">
+                        <ChoiceChip selected={view === "info"} theme={theme} onClick={() => setView("info")}>{canvasT("videoCanvas.nodeUi.infoTab", "信息")}</ChoiceChip>
+                        <ChoiceChip selected={view === "json"} theme={theme} onClick={() => setView("json")}>JSON</ChoiceChip>
+                    </div>
                     {view === "info" ? (
-                        <div className="thin-scrollbar h-full space-y-4 overflow-auto pr-1">
+                        <div className="thin-scrollbar h-[calc(100%-40px)] space-y-4 overflow-auto pr-1">
                             <div className="grid gap-2 rounded-2xl border p-3" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
                                 <div className="grid grid-cols-2 gap-2 max-sm:grid-cols-1">
                                     <InfoRow label={canvasT("videoCanvas.nodeUi.infoType", "类型")} value={nodeTypeLabel} />
@@ -663,23 +658,35 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
                                         </div>
                                     ) : (
                                         <div className="flex gap-2">
-                                            <Input
+                                            <input
                                                 value={assetTagInput}
                                                 placeholder={canvasT("videoCanvas.nodeUi.tagPlaceholder", "例如：角色: 张三")}
+                                                className="canvas-sheet-input min-w-0 flex-1"
                                                 onChange={(event) => setAssetTagInput(event.target.value)}
-                                                onPressEnter={addAssetTag}
+                                                onKeyDown={(event) => {
+                                                    if (event.key === "Enter") {
+                                                        event.preventDefault();
+                                                        addAssetTag();
+                                                    }
+                                                }}
                                             />
-                                            <Button type="primary" icon={<Plus className="size-4" />} disabled={!assetTagInput.trim()} onClick={addAssetTag}>
+                                            <CanvasSheetButton theme={theme} variant="primary" disabled={!assetTagInput.trim()} onClick={addAssetTag}>
+                                                <Plus className="size-3.5" />
                                                 {canvasT("videoCanvas.nodeUi.tagAdd", "加入")}
-                                            </Button>
+                                            </CanvasSheetButton>
                                         </div>
                                     )}
                                     <div className="mt-3 flex min-h-10 flex-wrap gap-2 rounded-xl border px-2 py-2" style={{ borderColor: theme.toolbar.border, background: theme.node.fill }}>
                                         {assetTags.length ? (
                                             assetTags.map((tag) => (
-                                                <Tag key={tag} closable={!readOnly} onClose={() => (readOnly ? onUnauthorized?.() : removeAssetTag(tag))} className="!m-0 !rounded-lg !px-2 !py-1 !text-sm">
+                                                <span key={tag} className="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-sm" style={{ background: theme.toolbar.itemHover, color: theme.node.text }}>
                                                     {tag}
-                                                </Tag>
+                                                    {readOnly ? null : (
+                                                        <button type="button" className="grid size-4 place-items-center rounded-full opacity-60 hover:opacity-100" aria-label={canvasT("videoCanvas.nodeUi.tagRemoveAria", "移除标签 {{tag}}", { tag })} onClick={() => removeAssetTag(tag)}>
+                                                            <X className="size-3" />
+                                                        </button>
+                                                    )}
+                                                </span>
                                             ))
                                         ) : (
                                             <span className="px-1 py-1 text-xs opacity-40">{readOnly ? canvasT("videoCanvas.nodeUi.noTags", "暂无标签") : canvasT("videoCanvas.nodeUi.noTagsHint", "还没有标签，输入后点击“加入”或按 Enter。")}</span>
@@ -695,13 +702,13 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
                             ) : null}
                         </div>
                     ) : (
-                        <pre className="thin-scrollbar h-full overflow-auto rounded-2xl border p-3 text-xs leading-5" style={{ background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text }}>
+                        <pre className="thin-scrollbar h-[calc(100%-40px)] overflow-auto rounded-2xl border p-3 text-xs leading-5" style={{ background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text }}>
                             {json}
                         </pre>
                     )}
                 </div>
             ) : null}
-        </Modal>
+        </CanvasSheet>
     );
 }
 

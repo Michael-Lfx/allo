@@ -26,7 +26,6 @@ type CanvasNodeDeletionInput = {
     setUpscaleNodeId: SetNodeId;
     setAngleNodeId: SetNodeId;
     setEmotionNodeId: SetNodeId;
-    setSuperResolveNodeId: SetNodeId;
     setPreviewNodeId: SetNodeId;
     setRunningNodeId: SetNodeId;
     setScriptEditorNodeId: SetNodeId;
@@ -56,7 +55,6 @@ export function useCanvasNodeDeletion(input: CanvasNodeDeletionInput) {
         setUpscaleNodeId,
         setAngleNodeId,
         setEmotionNodeId,
-        setSuperResolveNodeId,
         setPreviewNodeId,
         setRunningNodeId,
         setScriptEditorNodeId,
@@ -83,7 +81,6 @@ export function useCanvasNodeDeletion(input: CanvasNodeDeletionInput) {
             setUpscaleNodeId(clearDeletedId);
             setAngleNodeId(clearDeletedId);
             setEmotionNodeId(clearDeletedId);
-            setSuperResolveNodeId(clearDeletedId);
             setPreviewNodeId(clearDeletedId);
             setRunningNodeId(clearDeletedId);
             setScriptEditorNodeId(clearDeletedId);

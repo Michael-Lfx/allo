@@ -48,7 +48,6 @@ type CanvasProjectCanvasChromeProps = {
     setCropNodeId: SetNodeId;
     setSplitNodeId: SetNodeId;
     setUpscaleNodeId: SetNodeId;
-    setSuperResolveNodeId: SetNodeId;
     setAngleNodeId: SetNodeId;
     setPreviewNodeId: SetNodeId;
     openVideoFrameExtractor: ReturnType<typeof useCanvasMediaTools>["openVideoFrameExtractor"];
@@ -130,7 +129,6 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         setCropNodeId,
         setSplitNodeId,
         setUpscaleNodeId,
-        setSuperResolveNodeId,
         setAngleNodeId,
         setPreviewNodeId,
         openVideoFrameExtractor,
@@ -228,7 +226,6 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onCrop={(node) => setCropNodeId(node.id)}
                         onSplit={(node) => setSplitNodeId(node.id)}
                         onUpscale={(node) => setUpscaleNodeId(node.id)}
-                        onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
                         onAngle={(node) => {
                             setDialogNodeId(null);
                             setAngleNodeId((current) => (current === node.id ? null : node.id));

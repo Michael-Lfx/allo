@@ -5,6 +5,7 @@ import { configuredModelMatchesCapability, defaultConfig, resolveModelRequestCon
 import { resolveImageUrl, uploadImage } from "@oc/services/image-storage";
 import { resolveMediaUrl } from "@oc/services/file-storage";
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
+import { canvasNodeReferenceSource } from "@oc/lib/canvas/canvas-media-id";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
 import { resolveModelVideoBooleanOptions } from "@oc/lib/model-capabilities";
@@ -126,13 +127,14 @@ export function buildImageGenerationMetadata(type: CanvasImageGenerationType, co
 }
 
 export function nodeReferenceImage(node: CanvasNodeData): ReferenceImage | null {
-    if (node.type !== CanvasNodeType.Image || !node.metadata?.content) return null;
+    if (node.type !== CanvasNodeType.Image) return null;
+    const source = canvasNodeReferenceSource(node);
+    if (!source) return null;
     return {
         id: node.id,
         name: `reference-${node.id}.png`,
-        type: node.metadata.mimeType || "image/png",
-        dataUrl: node.metadata.content,
-        storageKey: node.metadata.storageKey,
+        type: node.metadata?.mimeType || "image/png",
+        ...source,
     };
 }
 

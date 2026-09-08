@@ -1,9 +1,18 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
-import { resolveCanvasAppearance, resolveCanvasGridColor, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
-import { canvasDotGridSizePx, canvasDotSizePx } from "@oc/lib/canvas/canvas-live-viewport";
-import { applyCanvasLiveViewport, subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
+import { resolveCanvasAppearance, resolveCanvasGridPalette, type CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
+import {
+    applyCanvasLiveViewport,
+    subscribeCanvasViewportPreview,
+} from "@oc/lib/canvas/canvas-live-viewport";
+import {
+    canvasDotsBackgroundImage,
+    canvasGridBackgroundSize,
+    canvasGridDevicePixelRatio,
+    canvasLinesBackgroundImage,
+    canvasSpatialGridCssVars,
+} from "@oc/lib/canvas/canvas-spatial-grid";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { ViewportTransform } from "@oc/types/canvas";
 
@@ -387,13 +396,7 @@ export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundM
                 "--canvas-live-inverse-scale": 1 / Math.max(viewport.k, 0.05),
                 "--canvas-committed-scale": viewport.k,
                 "--canvas-live-scale-ratio": 1,
-                "--canvas-grid-size": `${48 * viewport.k}px`,
-                "--canvas-grid-x": `${viewport.x % (48 * viewport.k)}px`,
-                "--canvas-grid-y": `${viewport.y % (48 * viewport.k)}px`,
-                "--canvas-dot-grid-size": `${canvasDotGridSizePx(viewport.k)}px`,
-                "--canvas-dot-grid-x": `${viewport.x % canvasDotGridSizePx(viewport.k)}px`,
-                "--canvas-dot-grid-y": `${viewport.y % canvasDotGridSizePx(viewport.k)}px`,
-                "--canvas-dot-size": canvasDotSizePx(viewport.k),
+                ...canvasSpatialGridCssVars(viewport, canvasGridDevicePixelRatio()),
             } as React.CSSProperties}
             onPointerDown={handlePointerDown}
             onDoubleClick={(event) => {
@@ -425,25 +428,23 @@ export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundM
 
 function CanvasGrid({ appearance, mode }: { appearance?: CanvasAppearance; mode: CanvasBackgroundMode }) {
     const colorTheme = useThemeStore((state) => state.theme);
-    const gridColor = resolveCanvasGridColor(appearance, colorTheme, mode);
-    const backgroundImage = mode === "dots"
-        ? `radial-gradient(circle, ${gridColor} var(--canvas-dot-size), transparent calc(var(--canvas-dot-size) + 0.2px))`
-        : `linear-gradient(${gridColor} 1px, transparent 1px), linear-gradient(90deg, ${gridColor} 1px, transparent 1px)`;
     if (mode === "blank") return null;
+    const palette = resolveCanvasGridPalette(appearance, colorTheme, mode);
+    const backgroundImage = mode === "dots"
+        ? canvasDotsBackgroundImage(palette.accent)
+        : canvasLinesBackgroundImage(palette.muted, palette.accent);
 
     return (
         <div
             data-canvas-grid-layer
             className="pointer-events-none absolute"
             style={{
-                inset: mode === "dots" ? "calc(-1 * var(--canvas-dot-grid-size))" : "calc(-1 * var(--canvas-grid-size))",
+                inset: mode === "dots" ? "calc(-1 * var(--canvas-dot-grid-size))" : "calc(-1 * var(--canvas-grid-major-size))",
                 backgroundImage,
-                backgroundSize: mode === "dots" ? "var(--canvas-dot-grid-size) var(--canvas-dot-grid-size)" : "var(--canvas-grid-size) var(--canvas-grid-size)",
+                backgroundSize: canvasGridBackgroundSize(mode === "dots" ? "dots" : "lines"),
                 transform: mode === "dots"
                     ? "translate3d(var(--canvas-dot-grid-x), var(--canvas-dot-grid-y), 0)"
                     : "translate3d(var(--canvas-grid-x), var(--canvas-grid-y), 0)",
-                // 点阵略降不透明度，避免与内容抢视觉权重。
-                opacity: mode === "dots" ? 0.34 : 0.46,
                 willChange: "transform",
             }}
         />

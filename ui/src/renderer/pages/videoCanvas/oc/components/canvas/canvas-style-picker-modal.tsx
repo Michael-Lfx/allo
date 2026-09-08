@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Eye, Palette } from "lucide-react";
-import { Button, Modal, Segmented } from "antd";
 
+import { CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
+import { ChoiceChip } from "@oc/components/generation-settings-chrome";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import {
@@ -58,20 +59,25 @@ export function CanvasStylePickerModal({ open, value, onClose, onSelect }: { ope
     const comboPresets = lookFilter === "all" ? uniqueComboPresets : [];
     return (
         <>
-            <Modal rootClassName="canvas-style-picker-modal" open={open} getContainer={() => document.body} zIndex={1200} title={null} footer={null} centered width="min(1080px, calc(100vw - 24px))" onCancel={onClose} styles={{ container: { padding: 0 }, body: { padding: 0 } }}>
-                <div className="overflow-hidden" style={{ color: theme.node.text, background: theme.node.panel }}>
-                    <header className="border-b px-5 py-4 pr-12" style={{ borderColor: theme.node.stroke }}>
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                            <div className="min-w-0">
-                                <p className="text-[var(--fs-tiny)] font-medium tracking-[0.14em] uppercase" style={{ color: theme.node.activeStroke }}>{canvasT("videoCanvas.stylePicker.kicker", "PROJECT LOOK")}</p>
-                                <h2 className="mt-1 text-lg font-semibold tracking-tight">{canvasT("videoCanvas.stylePicker.title", "选择项目画风")}</h2>
-                                <p className="mt-1.5 max-w-xl text-xs leading-5" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.stylePicker.subtitle", "为整部短剧锁定题材世界、叙事气质与影像媒介。这是全项目美术基线，不是单镜头提示词。")}</p>
-                            </div>
-                            <Segmented size="small" value={mode} options={[{ value: "recommended", label: canvasT("videoCanvas.stylePicker.recommended", "推荐画风") }, { value: "custom", label: canvasT("videoCanvas.stylePicker.custom", "自定义组合") }]} onChange={(next) => setMode(next as typeof mode)} />
+            <CanvasSheet
+                className="canvas-style-picker-modal"
+                open={open}
+                theme={theme}
+                width="min(1080px, calc(100vw - 24px))"
+                title={canvasT("videoCanvas.stylePicker.title", "选择项目画风")}
+                subtitle={canvasT("videoCanvas.stylePicker.subtitle", "为整部短剧锁定题材世界、叙事气质与影像媒介。这是全项目美术基线，不是单镜头提示词。")}
+                onClose={onClose}
+            >
+                <div className="overflow-hidden" style={{ color: theme.node.text }}>
+                    <header className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                        <p className="text-[var(--fs-tiny)] font-medium tracking-[0.14em] uppercase" style={{ color: theme.node.activeStroke }}>{canvasT("videoCanvas.stylePicker.kicker", "PROJECT LOOK")}</p>
+                        <div className="flex flex-wrap gap-1.5">
+                            <ChoiceChip selected={mode === "recommended"} theme={theme} onClick={() => setMode("recommended")}>{canvasT("videoCanvas.stylePicker.recommended", "推荐画风")}</ChoiceChip>
+                            <ChoiceChip selected={mode === "custom"} theme={theme} onClick={() => setMode("custom")}>{canvasT("videoCanvas.stylePicker.custom", "自定义组合")}</ChoiceChip>
                         </div>
                     </header>
                     {mode === "recommended" ? (
-                        <div className="thin-scrollbar max-h-[76vh] overflow-y-auto px-5 py-4">
+                        <div className="thin-scrollbar max-h-[76vh] overflow-y-auto">
                             <div className="mb-3 flex flex-wrap items-center gap-1.5">
                                 <LookFilterChip label={t("videoGeneration.looks.allCategories", { defaultValue: "全部" })} active={lookFilter === "all"} theme={theme} onClick={() => setLookFilter("all")} />
                                 {VISUAL_STYLE_CATEGORIES.map((category) => (
@@ -104,7 +110,7 @@ export function CanvasStylePickerModal({ open, value, onClose, onSelect }: { ope
                         </div>
                     ) : <CanvasStyleComposer selection={selection} value={value} theme={theme} onChange={setSelection} onSelect={onSelect} onDetail={setDetailPreset} />}
                 </div>
-            </Modal>
+            </CanvasSheet>
             <CanvasStyleDetailModal open={Boolean(detailPreset)} preset={detailPreset} selected={detailPreset?.id === value} onClose={() => setDetailPreset(null)} onSelect={(preset) => { setDetailPreset(null); onSelect(preset); }} />
         </>
     );
@@ -229,8 +235,8 @@ function CanvasStyleComposer({ selection, value, theme, onChange, onSelect, onDe
                         <StyleSummary label={canvasT("videoCanvas.stylePicker.summaryCharacter", "角色")} value={localizedStyleOptionLabel("character", selection.character)} muted={theme.node.muted} />
                     </div>
                     <div className="mt-auto flex justify-end gap-2 pt-5">
-                        <Button icon={<Eye className="size-3.5" />} onClick={() => onDetail(preset)}>{canvasT("videoCanvas.stylePicker.viewRules", "查看规范")}</Button>
-                        <Button type="primary" disabled={preset.id === value} icon={preset.id === value ? <Check className="size-3.5" /> : <Palette className="size-3.5" />} onClick={() => onSelect(preset)}>{preset.id === value ? canvasT("videoCanvas.stylePicker.currentStyle", "当前画风") : canvasT("videoCanvas.stylePicker.applyCombo", "应用组合")}</Button>
+                        <CanvasSheetButton theme={theme} onClick={() => onDetail(preset)}><Eye className="size-3.5" />{canvasT("videoCanvas.stylePicker.viewRules", "查看规范")}</CanvasSheetButton>
+                        <CanvasSheetButton theme={theme} variant="primary" disabled={preset.id === value} onClick={() => onSelect(preset)}>{preset.id === value ? <><Check className="size-3.5" />{canvasT("videoCanvas.stylePicker.currentStyle", "当前画风")}</> : <><Palette className="size-3.5" />{canvasT("videoCanvas.stylePicker.applyCombo", "应用组合")}</>}</CanvasSheetButton>
                     </div>
                 </div>
             </section>
@@ -274,20 +280,36 @@ export function CanvasStyleDetailModal({ open, preset, selected = false, onClose
     const display = preset ? localizedStylePresetDisplay(preset) : null;
     const sections = preset ? parseStyleSections(preset.prompt) : [];
     return (
-        <Modal rootClassName="canvas-style-detail-modal" open={open} getContainer={() => document.body} zIndex={1210} title={null} footer={null} centered destroyOnHidden width="min(820px, calc(100vw - 24px))" onCancel={onClose} styles={{ container: { padding: 0 }, body: { padding: 0 } }}>
-            {preset && display ? <div className="flex max-h-[84vh] flex-col overflow-hidden" style={{ color: theme.node.text, background: theme.node.panel }}>
+        <CanvasSheet
+            className="canvas-style-detail-modal"
+            open={open}
+            theme={theme}
+            width="min(820px, calc(100vw - 24px))"
+            title={display?.title || canvasT("videoCanvas.stylePicker.title", "选择项目画风")}
+            subtitle={display?.description}
+            onClose={onClose}
+            footer={
+                <>
+                    <CanvasSheetButton theme={theme} className="ml-auto" onClick={onClose}>{canvasT("videoCanvas.stylePicker.close", "关闭")}</CanvasSheetButton>
+                    {onSelect && preset ? (
+                        <CanvasSheetButton theme={theme} variant="primary" disabled={selected} onClick={() => onSelect(preset)}>
+                            {selected ? <Check className="size-3.5" /> : <Palette className="size-3.5" />}
+                            {selected ? canvasT("videoCanvas.stylePicker.currentStyle", "当前画风") : canvasT("videoCanvas.stylePicker.selectStyle", "选择该画风")}
+                        </CanvasSheetButton>
+                    ) : null}
+                </>
+            }
+        >
+            {preset && display ? <div className="flex max-h-[72vh] flex-col overflow-hidden" style={{ color: theme.node.text }}>
                 <CanvasStyleCoverSwatch cover={preset.cover} className="h-44 w-full shrink-0 border-b sm:h-52" style={{ borderColor: theme.node.stroke }} alt={canvasT("videoCanvas.stylePicker.previewAlt", "{{title}}画风示意", { title: display.title })} />
-                <header className="border-b px-4 py-3 pr-12 sm:px-5 sm:pr-12" style={{ borderColor: theme.node.stroke }}>
+                <header className="border-b py-3" style={{ borderColor: theme.node.stroke }}>
                     <div className="text-[var(--fs-tiny)] font-medium" style={{ color: theme.node.activeStroke }}>{display.category}</div>
-                    <h2 className="mt-1 text-base font-semibold">{display.title}</h2>
-                    <p className="mt-1.5 text-xs leading-5" style={{ color: theme.node.muted }}>{display.description}</p>
                 </header>
-                <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5">
+                <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
                     {sections.map((section) => <section key={section.title} className="border-b py-3 last:border-b-0" style={{ borderColor: theme.node.stroke }}><h3 className="text-xs font-semibold">{section.title}</h3><p className="mt-1.5 text-xs leading-5" style={{ color: theme.node.muted }}>{section.content}</p></section>)}
                 </div>
-                <footer className="flex shrink-0 justify-end gap-2 border-t px-4 py-3 sm:px-5" style={{ borderColor: theme.node.stroke }}><Button onClick={onClose}>{canvasT("videoCanvas.stylePicker.close", "关闭")}</Button>{onSelect ? <Button type="primary" disabled={selected} icon={selected ? <Check className="size-3.5" /> : <Palette className="size-3.5" />} onClick={() => onSelect(preset)}>{selected ? canvasT("videoCanvas.stylePicker.currentStyle", "当前画风") : canvasT("videoCanvas.stylePicker.selectStyle", "选择该画风")}</Button> : null}</footer>
             </div> : null}
-        </Modal>
+        </CanvasSheet>
     );
 }
 

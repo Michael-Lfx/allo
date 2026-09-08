@@ -7,10 +7,9 @@ import { ModelIcon } from "@oc/components/model-picker";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { imageReferenceLabel } from "@oc/lib/image-reference-prompt";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { canvasNodeVideoPreviewUrl } from "@oc/lib/canvas/canvas-media-preview";
+import { canvasResourceNodePreviewUrl, type CanvasResourceKind, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { buildCanvasAgentAliasMap, canvasAgentShortId } from "@oc/lib/canvas/canvas-agent-ids";
 import { getNodeResourceKind } from "@oc/lib/canvas/node-registry";
-import type { CanvasResourceKind, CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { modelDisplayName, resolveModelChannel, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { LocalUser } from "@oc/stores/use-user-store";
@@ -242,13 +241,7 @@ export function buildAgentComposerReferences(nodes: CanvasNodeData[]): CanvasRes
             kind,
             label: `${shortId} ${node.title || node.type}`.trim(),
             title: node.title || shortId,
-            previewUrl: node.metadata?.workflowKind === "character"
-                ? node.metadata.characterCoverUrl
-                : node.type === CanvasNodeType.Drawing
-                    ? node.metadata?.drawingPreviewUrl
-                    : node.type === CanvasNodeType.Video
-                        ? canvasNodeVideoPreviewUrl(node)
-                        : node.metadata?.previewContent || (kind === "image" ? node.metadata?.content : undefined),
+            previewUrl: canvasResourceNodePreviewUrl(node) || undefined,
             storageKey: node.metadata?.storageKey,
             text: node.type === CanvasNodeType.Text ? node.metadata?.content || node.metadata?.prompt : undefined,
             active: true,

@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
-import { Brush, Camera, Copy, FileText, Grid2x2, Lock, LockOpen, Maximize2, PencilLine, Scissors, SlidersHorizontal, Smile, Sparkles, Upload, ZoomIn } from "lucide-react";
+import { Brush, Camera, Copy, FileText, Grid2x2, Lock, LockOpen, Maximize2, PencilLine, Scissors, SlidersHorizontal, Smile, Upload, ZoomIn } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import type { CanvasNodeData } from "@oc/types/canvas";
 
-export type ImageNodeActionToolId = "copyPrompt" | "reversePrompt" | "replace" | "resize" | "annotation" | "maskEdit" | "emotion" | "portraitTexture" | "crop" | "split" | "upscale" | "superResolve" | "angle" | "view";
+export type ImageNodeActionToolId = "copyPrompt" | "reversePrompt" | "replace" | "resize" | "annotation" | "maskEdit" | "emotion" | "portraitTexture" | "crop" | "split" | "upscale" | "angle" | "view";
 export type ImageQuickToolId = "info" | "delete" | "saveAsset" | "download" | "edit" | ImageNodeActionToolId;
 
 export type ImageToolHandlers = {
@@ -17,7 +17,6 @@ export type ImageToolHandlers = {
     onCrop: (node: CanvasNodeData) => void;
     onSplit: (node: CanvasNodeData) => void;
     onUpscale: (node: CanvasNodeData) => void;
-    onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
     onCopyPrompt: (node: CanvasNodeData) => void;
@@ -141,15 +140,6 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
         run: (node, handlers) => handlers.onUpscale(node),
     },
     {
-        id: "superResolve",
-        defaultVisible: false,
-        panelLabel: () => canvasT("videoCanvas.imageTools.superResolve", "超分"),
-        label: () => canvasT("videoCanvas.imageTools.superResolve", "超分"),
-        title: () => canvasT("videoCanvas.imageTools.superResolveTitle", "AI 超分"),
-        icon: () => <Sparkles className="size-3.5" />,
-        run: (node, handlers) => handlers.onSuperResolve(node),
-    },
-    {
         id: "angle",
         defaultVisible: true,
         panelLabel: () => canvasT("videoCanvas.imageTools.angle", "多视角"),
@@ -186,10 +176,38 @@ export function buildImageToolbarTools(node: CanvasNodeData, handlers: ImageTool
     }));
 }
 
+const IMAGE_EDIT_GROUP_IDS: readonly ImageQuickToolId[] = ["maskEdit", "crop", "split"];
+const IMAGE_PORTRAIT_GROUP_IDS: readonly ImageQuickToolId[] = ["emotion", "portraitTexture"];
+
+export type ImageDockLayout = {
+    pin: ImageQuickToolId[];
+    singles: ImageQuickToolId[];
+    editGroup: ImageQuickToolId[];
+    portraitGroup: ImageQuickToolId[];
+    angle: boolean;
+};
+
 export function normalizeImageQuickToolIds(value: unknown[]) {
     const allIds: ImageQuickToolId[] = [...defaultBaseToolIds, ...imageToolDefinitions.map((tool) => tool.id)];
     const ids = new Set(allIds);
     return allIds.filter((id) => value.includes(id) && ids.has(id));
+}
+
+export function resolveImageDockLayout(quickIds: readonly ImageQuickToolId[]): ImageDockLayout {
+    const selected = new Set(normalizeImageQuickToolIds([...quickIds]));
+    selected.add("delete");
+    selected.delete("edit");
+    return {
+        pin: ["delete"],
+        singles: [...selected].filter((id) => id !== "delete" && id !== "angle" && !IMAGE_EDIT_GROUP_IDS.includes(id) && !IMAGE_PORTRAIT_GROUP_IDS.includes(id)),
+        editGroup: IMAGE_EDIT_GROUP_IDS.filter((id) => selected.has(id)),
+        portraitGroup: IMAGE_PORTRAIT_GROUP_IDS.filter((id) => selected.has(id)),
+        angle: selected.has("angle"),
+    };
+}
+
+export function imageDockVisibleIds(layout: ImageDockLayout): string[] {
+    return [...layout.pin, ...layout.singles, ...layout.editGroup, ...layout.portraitGroup, ...(layout.angle ? ["angle"] : [])];
 }
 
 export function readImageQuickToolsConfig(value: unknown): ImageQuickToolId[] {

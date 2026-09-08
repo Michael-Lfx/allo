@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { canvasMediaUrl } from "@renderer/pages/videoCanvas/api";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
-import { canvasAssetDisplayUrl, canvasNodeDisplayUrl, canvasNodeMediaId, rewriteCanvasDisplayUrl } from "./canvas-media-id";
+import { canvasAssetDisplayUrl, canvasNodeDisplayUrl, canvasNodeMediaId, canvasNodeReferenceSource, referenceImagePreviewUrl, rewriteCanvasDisplayUrl } from "./canvas-media-id";
 
 const node = (type: CanvasNodeType, metadata: Record<string, unknown>): CanvasNodeData =>
     ({
@@ -67,6 +67,61 @@ describe("canvasNodeMediaId / canvasNodeDisplayUrl", () => {
         expect(
             canvasNodeDisplayUrl(node(CanvasNodeType.Image, { content: "blob:http://localhost/x" }))
         ).toBe("");
+    });
+});
+
+describe("canvasNodeReferenceSource", () => {
+    test("keeps inline data URLs on dataUrl", () => {
+        const source = canvasNodeReferenceSource(node(CanvasNodeType.Image, { content: "data:image/png;base64,abc" }));
+        expect(source?.dataUrl).toBe("data:image/png;base64,abc");
+        expect(source?.url).toBeUndefined();
+        expect(source?.storageKey).toBeUndefined();
+    });
+
+    test("rewrites canvas media onto storageKey and current-origin url", () => {
+        const source = canvasNodeReferenceSource(node(CanvasNodeType.Image, {
+            content: "http://127.0.0.1:11111/api/video-canvas/media/mid-9",
+        }));
+        expect(source).toEqual({
+            dataUrl: "",
+            url: canvasMediaUrl("mid-9"),
+            storageKey: "resource:mid-9",
+        });
+    });
+
+    test("prefers storageKey when content is a dead blob", () => {
+        const source = canvasNodeReferenceSource(node(CanvasNodeType.Image, {
+            storageKey: "resource:stored",
+            content: "blob:http://127.0.0.1:5173/dead",
+        }));
+        expect(source?.dataUrl).toBe("");
+        expect(source?.url).toBe(canvasMediaUrl("stored"));
+        expect(source?.storageKey).toBe("resource:stored");
+    });
+
+    test("returns null when only a dead blob remains", () => {
+        expect(canvasNodeReferenceSource(node(CanvasNodeType.Image, { content: "blob:http://localhost/x" }))).toBeNull();
+    });
+});
+
+describe("referenceImagePreviewUrl", () => {
+    test("prefers storageKey over an empty dataUrl", () => {
+        expect(referenceImagePreviewUrl({
+            dataUrl: "",
+            url: canvasMediaUrl("mid-9"),
+            storageKey: "resource:mid-9",
+        })).toBe(canvasMediaUrl("mid-9"));
+    });
+
+    test("rewrites a stale-port url when dataUrl was cleared for fetch", () => {
+        expect(referenceImagePreviewUrl({
+            dataUrl: "",
+            url: "http://127.0.0.1:11111/api/video-canvas/media/mid-9",
+        })).toBe(canvasMediaUrl("mid-9"));
+    });
+
+    test("keeps inline data URLs", () => {
+        expect(referenceImagePreviewUrl({ dataUrl: "data:image/png;base64,abc" })).toBe("data:image/png;base64,abc");
     });
 });
 

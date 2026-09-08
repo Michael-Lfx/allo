@@ -16,6 +16,7 @@ import { isMiniMaxH3VideoModel, isWan3VideoModel } from "@renderer/services/vide
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover, type CanvasVideoSettingKey } from "./canvas-video-settings-popover";
+import { defaultVideoOperation } from "@oc/lib/canvas/canvas-config-defaults";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoEditOperation, CanvasWorkspaceMode } from "@oc/types/canvas";
 
 type CanvasConfigNodePanelProps = {
@@ -52,7 +53,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const config = buildNodeConfig(globalConfig, node, mode);
     const videoProfile = mode === "video" ? modelCapabilityConfigFor(config, config.model).video! : undefined;
     const allOps = videoOperationOptions();
-    const operationOptions = videoProfile ? allOps.filter((item) => videoProfile.operations.includes(item.value) || item.value === "concat") : allOps;
+    const operationOptions = videoProfile ? allOps.filter((item) => videoProfile.operations.includes(item.value)) : allOps;
     const textCountValue = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(node.metadata?.textCount) || 1))));
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
@@ -192,23 +193,14 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                         </>
                     ) : (
                         <>
-                            <span>{canvasT("videoCanvas.config.generate", "生成")}</span>
                             <Play className="size-4" />
-                            <span>{canvasT("videoCanvas.config.startGenerate", "开始生成")}</span>
+                            <span>{canvasT("videoCanvas.config.generate", "生成")}</span>
                         </>
                     )}
                 </span>
             </Button>
         </div>
     );
-}
-
-function defaultVideoOperation(inputSummary: CanvasConfigNodePanelProps["inputSummary"]): CanvasVideoEditOperation {
-    if (inputSummary.audioCount > 0 && inputSummary.imageCount === 0 && inputSummary.videoCount === 0) return "audio_to_video";
-    if (inputSummary.videoCount > 0) return "extend";
-    if (inputSummary.imageCount >= 3) return "reference_to_video";
-    if (inputSummary.imageCount > 0) return "image_to_video";
-    return "image_to_video";
 }
 
 function InputChip({ label, value, style }: { label: string; value: string; style: CSSProperties }) {
@@ -262,11 +254,11 @@ function videoConfigPatch(key: CanvasVideoSettingKey, value: string) {
 }
 
 function videoCapabilityError(profile: NonNullable<ReturnType<typeof modelCapabilityConfigFor>["video"]>, seconds: string, prompt: string, input: CanvasConfigNodePanelProps["inputSummary"], operation?: string) {
-    if (!videoDurationAllowed(profile, Number(seconds))) return "当前模型不支持该视频时长";
-    if (Array.from(prompt).length > profile.references.promptMaxChars) return `提示词超过模型限制（最多 ${profile.references.promptMaxChars} 字）`;
-    if (input.imageCount > profile.references.maxImages || input.videoCount > profile.references.maxVideos || input.audioCount > profile.references.maxAudios) return "参考素材数量超过当前模型限制";
-    const resolvedOperation = operation || (input.audioCount > 0 && input.imageCount === 0 && input.videoCount === 0 ? "audio_to_video" : input.videoCount > 0 ? "extend" : input.imageCount >= 3 ? "reference_to_video" : input.imageCount > 0 ? "image_to_video" : "text_to_video");
-    if (!profile.operations.includes(resolvedOperation)) return "当前模型不支持该生成模式";
+    if (!videoDurationAllowed(profile, Number(seconds))) return canvasT("videoCanvas.config.durationUnsupported", "当前模型不支持该视频时长");
+    if (Array.from(prompt).length > profile.references.promptMaxChars) return canvasT("videoCanvas.config.promptTooLong", "提示词超过模型限制（最多 {{count}} 字）", { count: profile.references.promptMaxChars });
+    if (input.imageCount > profile.references.maxImages || input.videoCount > profile.references.maxVideos || input.audioCount > profile.references.maxAudios) return canvasT("videoCanvas.config.refsExceeded", "参考素材数量超过当前模型限制");
+    const resolvedOperation = operation || defaultVideoOperation(input);
+    if (!profile.operations.includes(resolvedOperation)) return canvasT("videoCanvas.config.operationUnsupported", "当前模型不支持该生成模式");
     return "";
 }
 

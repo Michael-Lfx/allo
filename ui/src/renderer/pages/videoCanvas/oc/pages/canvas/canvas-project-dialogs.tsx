@@ -97,7 +97,6 @@ type CanvasProjectDialogsProps = {
     setMaskEditNodeId: SetNodeId;
     setSplitNodeId: SetNodeId;
     setUpscaleNodeId: SetNodeId;
-    setSuperResolveNodeId: SetNodeId;
     setPreviewNodeId: SetNodeId;
     cropImageNode: ReturnType<typeof useCanvasMediaTools>["cropImageNode"];
     saveAnnotatedImageNode: ReturnType<typeof useCanvasMediaTools>["saveAnnotatedImageNode"];
@@ -175,7 +174,6 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
         setMaskEditNodeId,
         setSplitNodeId,
         setUpscaleNodeId,
-        setSuperResolveNodeId,
         setPreviewNodeId,
         cropImageNode,
         saveAnnotatedImageNode,
@@ -206,7 +204,7 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
     } = props;
     const { agentSnapshot, agentUndoCount, applyAgentOps, canUndoAgentOps, undoAgentOps } = agentOps;
     const { assistantMounted } = assistant;
-    const { infoNode, activeScriptNode, activeDirectorScene, versionCompareNodes, cropNode, annotationNode, maskEditNode, splitNode, upscaleNode, superResolveNode, previewNode } = renderModel;
+    const { infoNode, activeScriptNode, activeDirectorScene, versionCompareNodes, cropNode, annotationNode, maskEditNode, splitNode, upscaleNode, previewNode } = renderModel;
     return (
         <>
                     <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
@@ -424,8 +422,6 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
                         taskLogs={taskDetailLogs}
                         taskLoading={taskDetailLoading}
                         onCloseTask={() => setTaskDetail(null)}
-                        superResolveNode={superResolveNode}
-                        onCloseSuperResolve={() => setSuperResolveNodeId(null)}
                         previewNode={previewNode}
                         onClosePreview={() => setPreviewNodeId(null)}
                         clearConfirmOpen={clearConfirmOpen}

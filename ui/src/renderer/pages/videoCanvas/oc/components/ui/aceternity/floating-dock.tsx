@@ -1,8 +1,9 @@
-import { AnimatePresence, motion, useMotionValue, useReducedMotion, useSpring, useTransform, type MotionValue } from "motion/react";
+import { motion, useMotionValue, useReducedMotion, useSpring, useTransform, type MotionValue } from "motion/react";
 import { forwardRef, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 
 import { cn } from "@oc/lib/utils";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
+import { CanvasHoverHint } from "@oc/components/canvas/canvas-overlay";
 
 export type FloatingDockCommand = {
     kind?: "command";
@@ -146,7 +147,7 @@ function renderDockItems(items: FloatingDockEntry[], props: DockItemRenderProps)
         result.push(
             <span key={groupKey} className="aceternity-dock-danger-group flex shrink-0 items-end gap-0.5 rounded-[calc(var(--dock-item-radius)+2px)] px-0.5">
                 {dangerGroup.map((command) => (
-                    <DockCommandButton key={command.id} command={command} mouseX={props.mouseX} metrics={props.metrics} motionEnabled={props.motionEnabled} compact={props.compact} showLabel={props.showLabel} />
+                    <DockCommandButton key={command.id} command={command} mouseX={props.mouseX} metrics={props.metrics} motionEnabled={props.motionEnabled} showLabel={props.showLabel} />
                 ))}
             </span>,
         );
@@ -165,17 +166,15 @@ function renderDockItems(items: FloatingDockEntry[], props: DockItemRenderProps)
             continue;
         }
         flushDangerGroup();
-        result.push(<DockCommandButton key={item.id} command={item} mouseX={props.mouseX} metrics={props.metrics} motionEnabled={props.motionEnabled} compact={props.compact} showLabel={props.showLabel} />);
+        result.push(<DockCommandButton key={item.id} command={item} mouseX={props.mouseX} metrics={props.metrics} motionEnabled={props.motionEnabled} showLabel={props.showLabel} />);
         index += 1;
     }
     flushDangerGroup();
     return result;
 }
 
-function DockCommandButton({ command, mouseX, metrics, motionEnabled, compact, showLabel }: { command: FloatingDockCommand; mouseX: MotionValue<number>; metrics: DockMetrics; motionEnabled: boolean; compact: boolean; showLabel: boolean }) {
+function DockCommandButton({ command, mouseX, metrics, motionEnabled, showLabel }: { command: FloatingDockCommand; mouseX: MotionValue<number>; metrics: DockMetrics; motionEnabled: boolean; showLabel: boolean }) {
     const ref = useRef<HTMLSpanElement>(null);
-    const [focused, setFocused] = useState(false);
-    const [hovered, setHovered] = useState(false);
     const distance = useTransform(mouseX, (value) => {
         const bounds = ref.current?.getBoundingClientRect();
         if (!bounds || !Number.isFinite(value)) return Number.POSITIVE_INFINITY;
@@ -185,81 +184,57 @@ function DockCommandButton({ command, mouseX, metrics, motionEnabled, compact, s
     const iconTarget = useTransform(distance, (value) => proximitySize(value, metrics.icon, metrics.iconMagnified, metrics.distance, motionEnabled));
     const itemSize = useSpring(itemTarget, aceternityMotion.spring.dock);
     const iconSize = useSpring(iconTarget, aceternityMotion.spring.dock);
-    // 鼠标点击产生的 focus 不能阻塞提示收起，只有键盘可见焦点才持续显示提示。
-    const showTooltip = !showLabel && (hovered || focused) && !command.disabled;
-    // scrollable 场景自定义 tooltip 会被 overflow 裁剪，用原生 title 兜底
-    const nativeTitle = !motionEnabled ? command.label : undefined;
+    const hint = command.disabled ? "" : command.label;
 
     if (showLabel) {
+        const labeledHint = command.displayLabel && command.displayLabel !== command.label ? command.label : "";
         return (
-            <motion.span ref={ref} className="relative block h-8 shrink-0">
+            <CanvasHoverHint label={labeledHint} disabled={command.disabled}>
+                <motion.span ref={ref} className="relative block h-8 shrink-0">
+                    <motion.button
+                        type="button"
+                        aria-label={command.label}
+                        aria-expanded={command.expands ? command.active || undefined : undefined}
+                        aria-pressed={command.expands ? undefined : command.active || undefined}
+                        disabled={command.disabled}
+                        className={cn(
+                            "aceternity-dock-command is-labeled group inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--dock-item-radius)] border-0 px-2.5 outline-none",
+                            command.active && "is-active",
+                            command.danger && "is-danger",
+                        )}
+                        whileTap={!command.disabled ? { scale: 0.96 } : undefined}
+                        transition={aceternityMotion.spring.dock}
+                        onClick={command.onClick}
+                    >
+                        <span className="grid size-3.5 shrink-0 place-items-center">{command.icon}</span>
+                        <span className="inline-flex h-4 items-center text-[var(--fs-label)] font-medium leading-none">{command.displayLabel || command.label}</span>
+                    </motion.button>
+                </motion.span>
+            </CanvasHoverHint>
+        );
+    }
+
+    return (
+        <CanvasHoverHint label={hint} disabled={command.disabled}>
+            <motion.span ref={ref} className={cn("relative block shrink-0", command.wide && "min-w-[var(--dock-precision-width)]")} style={{ width: itemSize, height: itemSize }}>
+                {/* 放大项留在 Flex 流内，由布局推开邻项，保持 Aceternity Floating Dock 的空间关系。 */}
                 <motion.button
                     type="button"
                     aria-label={command.label}
                     aria-expanded={command.expands ? command.active || undefined : undefined}
                     aria-pressed={command.expands ? undefined : command.active || undefined}
                     disabled={command.disabled}
-                    className={cn(
-                        "aceternity-dock-command is-labeled group inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--dock-item-radius)] border-0 px-2.5 outline-none",
-                        command.active && "is-active",
-                        command.danger && "is-danger",
-                    )}
-                    whileTap={!command.disabled ? { scale: 0.96 } : undefined}
+                    className={cn("aceternity-dock-command group relative grid size-full place-items-center rounded-full border outline-none", command.quiet && "is-quiet", command.active && "is-active", command.danger && "is-danger")}
+                    whileTap={motionEnabled && !command.disabled ? { scale: 0.92 } : undefined}
                     transition={aceternityMotion.spring.dock}
-                    onMouseEnter={() => setHovered(true)}
-                    onMouseLeave={() => setHovered(false)}
-                    onFocus={() => setFocused(true)}
-                    onBlur={() => setFocused(false)}
                     onClick={command.onClick}
                 >
-                    <span className="grid size-3.5 shrink-0 place-items-center">{command.icon}</span>
-                    <span className="inline-flex h-4 items-center text-[var(--fs-label)] font-medium leading-none">{command.displayLabel || command.label}</span>
+                    <motion.span className={cn("grid place-items-center", command.wide && "w-full")} style={command.wide ? { height: iconSize } : { width: iconSize, height: iconSize }}>
+                        {command.icon}
+                    </motion.span>
                 </motion.button>
             </motion.span>
-        );
-    }
-
-    return (
-        <motion.span ref={ref} className={cn("relative block shrink-0", command.wide && "min-w-[var(--dock-precision-width)]")} style={{ width: itemSize, height: itemSize }}>
-            {/* 放大项留在 Flex 流内，由布局推开邻项，保持 Aceternity Floating Dock 的空间关系。 */}
-            <motion.button
-                type="button"
-                aria-label={command.label}
-                title={nativeTitle}
-                aria-expanded={command.expands ? command.active || undefined : undefined}
-                aria-pressed={command.expands ? undefined : command.active || undefined}
-                disabled={command.disabled}
-                className={cn("aceternity-dock-command group relative grid size-full place-items-center rounded-full border outline-none", command.quiet && "is-quiet", command.active && "is-active", command.danger && "is-danger")}
-                whileTap={motionEnabled && !command.disabled ? { scale: 0.92 } : undefined}
-                transition={aceternityMotion.spring.dock}
-                onMouseEnter={() => setHovered(true)}
-                onMouseLeave={() => setHovered(false)}
-                onFocus={(event) => setFocused(event.currentTarget.matches(":focus-visible"))}
-                onBlur={() => setFocused(false)}
-                onMouseDown={() => setFocused(false)}
-                onClick={command.onClick}
-            >
-                <motion.span className={cn("grid place-items-center", command.wide && "w-full")} style={command.wide ? { height: iconSize } : { width: iconSize, height: iconSize }}>
-                    {command.icon}
-                </motion.span>
-                <AnimatePresence>
-                    {showTooltip ? (
-                        <motion.span
-                            initial={{ opacity: 0, y: 7, scale: 0.94 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: 4, scale: 0.96, transition: { duration: 0 } }}
-                            transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }}
-                            className={cn(
-                                "aceternity-dock-tooltip pointer-events-none absolute left-1/2 z-[var(--dock-tooltip-z)] -translate-x-1/2 whitespace-nowrap border font-medium shadow-xl backdrop-blur-xl",
-                                compact ? "-top-7 rounded-md px-1.5 py-0.5 text-[var(--fs-micro)]" : "-top-8 rounded-md px-2 py-1 text-[var(--fs-tiny)]",
-                            )}
-                        >
-                            {command.label}
-                        </motion.span>
-                    ) : null}
-                </AnimatePresence>
-            </motion.button>
-        </motion.span>
+        </CanvasHoverHint>
     );
 }
 

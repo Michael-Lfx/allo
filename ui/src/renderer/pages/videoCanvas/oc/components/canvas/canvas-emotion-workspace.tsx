@@ -11,6 +11,7 @@ import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { buildEmotionImageArtifacts, buildEmotionPrompt, neutralEmotionPreset, type CanvasEmotionPreset, type CanvasFaceBox } from "@oc/lib/canvas/canvas-emotion";
 import { detectCanvasFaces } from "@oc/lib/canvas/canvas-face-detection";
+import { resolveCanvasNodeMediaBlob } from "@oc/lib/canvas/canvas-node-download";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasNodeData, ViewportTransform } from "@oc/types/canvas";
@@ -26,7 +27,7 @@ type CanvasEmotionWorkspaceProps = {
 };
 
 export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, onConfirm }: CanvasEmotionWorkspaceProps) {
-    const dataUrl = node.metadata?.content || "";
+    const [sourceUrl, setSourceUrl] = useState("");
     const [status, setStatus] = useState<WorkspaceStatus>("detecting");
     const [faces, setFaces] = useState<CanvasFaceBox[]>([]);
     const [characters, setCharacters] = useState<CanvasEmotionCharacter[]>([]);
@@ -39,14 +40,21 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, 
 
     useEffect(() => {
         const controller = new AbortController();
+        let objectUrl = "";
         setStatus("detecting");
         setError("");
         setFaces([]);
         setCharacters([]);
         setActiveCharacterId("");
         setPreset(neutralEmotionPreset);
-        void detectCanvasFaces(dataUrl, controller.signal)
-            .then((result) => {
+        setSourceUrl("");
+        void resolveCanvasNodeMediaBlob(node)
+            .then(async (blob) => {
+                if (controller.signal.aborted) return;
+                objectUrl = URL.createObjectURL(blob);
+                setSourceUrl(objectUrl);
+                const result = await detectCanvasFaces(objectUrl, controller.signal);
+                if (controller.signal.aborted) return;
                 setImageSize({ width: result.imageWidth, height: result.imageHeight });
                 setFaces(result.faces);
                 if (result.faces.length) {
@@ -59,10 +67,19 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, 
             .catch((reason) => {
                 if (reason instanceof DOMException && reason.name === "AbortError") return;
                 setStatus("error");
-                setError(reason instanceof Error ? canvasT("videoCanvas.emotion.detectFailedReason", "{{reason}}，请手动框选", { reason: reason.message }) : canvasT("videoCanvas.emotion.detectFailedGeneric", "人脸识别失败，请手动框选"));
+                const raw = reason instanceof Error ? reason.message : "";
+                const reasonText = /\b(?:failed to fetch|fetch failed|networkerror)\b/i.test(raw)
+                    ? canvasT("videoCanvas.emotion.detectNetwork", "无法读取源图片")
+                    : raw;
+                setError(reasonText
+                    ? canvasT("videoCanvas.emotion.detectFailedReason", "{{reason}}，请手动框选", { reason: reasonText })
+                    : canvasT("videoCanvas.emotion.detectFailedGeneric", "人脸识别失败，请手动框选"));
             });
-        return () => controller.abort();
-    }, [dataUrl]);
+        return () => {
+            controller.abort();
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [node.id, node.metadata?.content, node.metadata?.mediaId, node.metadata?.storageKey]);
 
     const selectFace = (face: CanvasFaceBox) => {
         const existing = characters.find((character) => sameFace(character.faceBox, face));
@@ -72,7 +89,7 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, 
             return;
         }
         const index = characters.length + 1;
-        const character = { id: `character-${face.id}`, name: node.metadata?.characterName && !characters.length ? node.metadata.characterName : `角色${index}`, faceBox: face };
+        const character = { id: `character-${face.id}`, name: node.metadata?.characterName && !characters.length ? node.metadata.characterName : canvasT("videoCanvas.emotion.characterN", "角色 {{n}}", { n: index }), faceBox: face };
         setCharacters((current) => [...current, character]);
         setActiveCharacterId(character.id);
         setStatus("editing");
@@ -87,11 +104,11 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, 
 
     const confirmGeneration = async () => {
         const character = characters.find((item) => item.id === activeCharacterId);
-        if (!character || !imageSize.width || !imageSize.height) return;
+        if (!character || !sourceUrl || !imageSize.width || !imageSize.height) return;
         setStatus("generating");
         setError("");
         try {
-            const artifacts = await buildEmotionImageArtifacts(dataUrl, character.faceBox, imageSize.width, imageSize.height);
+            const artifacts = await buildEmotionImageArtifacts(sourceUrl, character.faceBox, imageSize.width, imageSize.height);
             const params = { presetId: preset.id, intimacy: preset.intimacy, arousal: preset.arousal, characterName: character.name, faceBox: character.faceBox };
             onConfirm({
                 ...params,
@@ -110,7 +127,7 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, 
         }
     };
 
-    if (!portalTarget || !dataUrl) return null;
+    if (!portalTarget) return null;
     const activeCharacter = characters.find((character) => character.id === activeCharacterId);
     return createPortal(
         <>
@@ -138,7 +155,7 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, 
                 {activeCharacter && (status === "editing" || status === "generating") ? (
                     <EmotionPanelOverlay node={node} viewport={viewport} containerRef={containerRef}>
                         <CanvasNodeEmotionPanel
-                            dataUrl={dataUrl}
+                            dataUrl={sourceUrl}
                             imageWidth={imageSize.width}
                             imageHeight={imageSize.height}
                             characters={characters}

@@ -1,8 +1,10 @@
 import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, Image as ImageIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasNodeMetadata } from "@oc/types/canvas";
 
@@ -32,6 +34,7 @@ const MENU_ITEM_HEIGHT = 28;
 const CONTROL_TEXT_STYLE: CSSProperties = { fontFamily: "inherit", fontSize: 11, fontWeight: 400, letterSpacing: 0, lineHeight: 1 };
 
 export function CanvasVideoPromptTools({ metadata, frameOptions, onMetadataChange }: CanvasVideoPromptToolsProps) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const startFrame = metadata?.videoStartFrameNodeId || EMPTY_FRAME_VALUE;
     const endFrame = metadata?.videoEndFrameNodeId || EMPTY_FRAME_VALUE;
@@ -50,7 +53,7 @@ export function CanvasVideoPromptTools({ metadata, frameOptions, onMetadataChang
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
             >
-                连接图片节点后，可在此指定视频首帧 / 尾帧
+                {canvasT("videoCanvas.prompt.connectFramesHint", "连接图片节点后，可在此指定视频首帧 / 尾帧")}
             </div>
         );
     }
@@ -62,21 +65,26 @@ export function CanvasVideoPromptTools({ metadata, frameOptions, onMetadataChang
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
-            <FrameMenu label="首帧" value={startFrame} options={frameOptions} theme={theme} onChange={(value) => setFrame("videoStartFrameNodeId", value)} />
-            <FrameMenu label="尾帧" value={endFrame} options={frameOptions} theme={theme} onChange={(value) => setFrame("videoEndFrameNodeId", value)} />
+            <FrameMenu label={canvasT("videoCanvas.prompt.startFrame", "首帧")} value={startFrame} options={frameOptions} theme={theme} onChange={(value) => setFrame("videoStartFrameNodeId", value)} />
+            <FrameMenu label={canvasT("videoCanvas.prompt.endFrame", "尾帧")} value={endFrame} options={frameOptions} theme={theme} onChange={(value) => setFrame("videoEndFrameNodeId", value)} />
         </div>
     );
 }
 
+function FrameThumb({ src }: { src?: string }) {
+    if (!src) return <ImageIcon className="size-3.5 shrink-0 opacity-90" />;
+    return <img src={src} alt="" className="size-3.5 shrink-0 rounded object-cover" />;
+}
+
 function FrameMenu({ label, value, options, theme, onChange }: { label: string; value: string; options: VideoFrameOption[]; theme: CanvasTheme; onChange: (value: string) => void }) {
     const selected = options.find((item) => item.nodeId === value);
-    const items = [{ value: EMPTY_FRAME_VALUE, label: "不指定" }, ...options.map((option) => ({ value: option.nodeId, label: `${option.label} · ${option.title}`, previewUrl: option.previewUrl }))];
+    const items = [{ value: EMPTY_FRAME_VALUE, label: canvasT("videoCanvas.prompt.unspecified", "不指定") }, ...options.map((option) => ({ value: option.nodeId, label: `${option.label} · ${option.title}`, previewUrl: option.previewUrl }))];
     return (
         <CompactMenuButton
             theme={theme}
             title={label}
             label={selected?.label || label}
-            icon={<ImageIcon className="size-3.5 shrink-0 opacity-90" />}
+            icon={<FrameThumb src={selected?.previewUrl} />}
             value={value}
             items={items}
             menuWidth={220}
@@ -216,7 +224,7 @@ function CompactMenuButton({
             <button
                 ref={triggerRef}
                 type="button"
-                className="inline-flex h-6 w-full min-w-0 items-center gap-1 rounded-[var(--dock-item-radius)] border-0 bg-transparent px-1.5 shadow-none transition hover:opacity-80 focus-visible:outline-none focus-visible:ring-1"
+                className="inline-flex h-7 w-full min-w-0 items-center gap-1 rounded-[var(--dock-item-radius)] border-0 bg-transparent px-1.5 shadow-none transition hover:opacity-80 focus-visible:outline-none focus-visible:ring-1"
                 style={buttonStyle}
                 title={title}
                 onClick={() => setOpen((value) => !value)}

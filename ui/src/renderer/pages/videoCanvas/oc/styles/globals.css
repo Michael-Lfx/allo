@@ -3042,30 +3042,6 @@
         border-color: #78716c !important;
     }
 
-    .canvas-image-settings-popover .ant-popover-inner {
-        border-radius: 18px;
-        box-shadow: 0 18px 54px rgba(28, 25, 23, 0.16);
-        padding: 18px;
-    }
-
-    .canvas-image-settings-popover .ant-popover-inner-content {
-        max-height: calc(100vh - 96px);
-        overflow-y: auto;
-    }
-
-    .canvas-image-settings-popover .ant-segmented {
-        border-radius: 999px;
-        padding: 3px;
-    }
-
-    .canvas-image-settings-popover .ant-segmented-item {
-        border-radius: 999px;
-    }
-
-    .dark .canvas-image-settings-popover .ant-popover-inner {
-        box-shadow: 0 18px 54px rgba(0, 0, 0, 0.45);
-    }
-
     .canvas-floating-dock, .canvas-node-toolbar {
         animation: canvas-panel-in var(--motion-dur-fast-calc) var(--motion-ease-out) both;
     }

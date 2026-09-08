@@ -9,7 +9,9 @@ import {
     normalizeHexColor,
     resolveCanvasAppearance,
     resolveCanvasGridColor,
+    resolveCanvasGridPalette,
     resolveStoredCanvasAppearance,
+    scaleCssRgbaAlpha,
 } from "./canvas-appearance";
 
 describe("canvas custom appearance", () => {
@@ -65,6 +67,12 @@ describe("canvas custom appearance", () => {
         expect(resolved.baseTheme).toBe("light");
         expect(resolved.background).toBe("#F3DCE5");
         expect(resolveCanvasGridColor(appearance, "light", "lines")).toBe("rgba(157,113,130,0.22)");
+        expect(scaleCssRgbaAlpha("rgba(157,113,130,0.22)", 0.5)).toBe("rgba(157,113,130,0.11)");
+        expect(resolveCanvasGridPalette(appearance, "light", "lines")).toEqual({
+            accent: "rgba(157,113,130,0.114)",
+            muted: "rgba(157,113,130,0.048)",
+        });
+        expect(resolveCanvasGridPalette(appearance, "light", "dots").accent).toBe("rgba(157,113,130,0.084)");
 
         appearance.custom!.backgroundBrightness = 10;
         const brighter = resolveCanvasAppearance(appearance, "light").background;
@@ -84,5 +92,14 @@ describe("canvas custom appearance", () => {
         expect(normalizeCanvasAppearance(undefined, DEFAULT_CANVAS_COLOR_THEME)).toEqual({ mode: "light" });
         expect(resolveStoredCanvasAppearance({ mode: "dark" })).toEqual({ mode: "dark" });
         expect(resolveCanvasAppearance(undefined, DEFAULT_CANVAS_COLOR_THEME).baseTheme).toBe("light");
+    });
+
+    test("uses a quieter major/minor lattice for built-in themes", () => {
+        const lightLines = resolveCanvasGridPalette({ mode: "light" }, "light", "lines");
+        const lightDots = resolveCanvasGridPalette({ mode: "light" }, "light", "dots");
+        expect(lightLines.accent).toBe("rgba(72,80,92,.11)");
+        expect(lightLines.muted).toBe("rgba(72,80,92,.05)");
+        expect(lightDots.accent).toBe("rgba(72,80,92,.18)");
+        expect(lightDots.muted).toBe(lightDots.accent);
     });
 });

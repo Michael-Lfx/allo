@@ -297,7 +297,6 @@ const BASELINE = new Map([
   ['ui/src/renderer/pages/videoCanvas/oc/components/canvas/canvas-create-menu.tsx', { borderNoStyle: 1 }],
   ['ui/src/renderer/pages/videoCanvas/oc/components/canvas/canvas-drawing-editor-modal.tsx', { generator: 1 }],
   ['ui/src/renderer/pages/videoCanvas/oc/components/canvas/canvas-node-crop-dialog.tsx', { borderNoStyle: 5 }],
-  ['ui/src/renderer/pages/videoCanvas/oc/components/canvas/canvas-node-mask-edit-dialog.tsx', { borderNoStyle: 1 }],
   ['ui/src/renderer/pages/videoCanvas/oc/components/canvas/canvas-node-split-dialog.tsx', { borderNoStyle: 2 }],
   ['ui/src/renderer/pages/videoCanvas/oc/components/canvas/canvas-node.tsx', { dirNumBorder: 1 }],
   ['ui/src/renderer/pages/videoCanvas/oc/components/canvas/canvas-project-asset-modal.tsx', { generator: 6 }],
