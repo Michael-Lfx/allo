@@ -156,8 +156,14 @@ pub(super) async fn build(
         }
         None => Vec::new(),
     };
+    let enabled_session_mcp_servers = super::filter_enabled_session_mcp_servers(
+        deps.mcp_server_repo.as_deref(),
+        &config.session_mcp_servers,
+        &ctx.conversation_id,
+    )
+    .await;
     let mut session_mcp_servers = user_mcp_servers;
-    for server in &config.session_mcp_servers {
+    for server in &enabled_session_mcp_servers {
         if !session_server_supported_by_capabilities(server, &mcp_capabilities) {
             warn!(
                 ctx.conversation_id,
@@ -308,9 +314,9 @@ pub(super) async fn build(
 /// MCP tool than fail the whole session), and return them in SDK shape ready
 /// for `NewSessionRequest::mcp_servers`.
 ///
-/// When `selected_ids` is present, those rows define the session snapshot and
-/// are injected regardless of the current global `enabled` flag. Legacy
-/// conversations without a snapshot still fall back to "all enabled rows".
+/// When `selected_ids` is present, those rows narrow the session snapshot, but
+/// the global `enabled` flag remains a hard gate. Legacy conversations without
+/// a snapshot still fall back to "all enabled rows".
 /// Builtins are wired through other paths and are not loaded from the user MCP table.
 async fn load_user_mcp_servers(
     repo: &dyn IMcpServerRepository,
@@ -339,12 +345,13 @@ async fn load_user_mcp_servers(
 
     let mut servers = Vec::with_capacity(rows.len());
     for row in rows {
-        let selected = selected_ids
+        let selected = row.enabled
+            && selected_ids
             .map(|ids| {
                 ids.iter()
                     .any(|id| id.as_str() == row.mcp_server_id)
             })
-            .unwrap_or(row.enabled);
+            .unwrap_or(true);
         if !selected || row.builtin {
             continue;
         }
@@ -829,7 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_user_mcp_servers_uses_selected_snapshot_over_enabled_state() {
+    async fn load_user_mcp_servers_keeps_enabled_as_a_hard_gate() {
         let caps = AcpMcpCapabilities {
             stdio: true,
             http: true,
@@ -843,22 +850,22 @@ mod tests {
             false,
             false,
         );
+        let enabled_picked = make_row(
+            32,
+            "enabled-picked",
+            "stdio",
+            r#"{"command":"npx","args":[],"env":{}}"#,
+            true,
+            false,
+        );
         let selected = vec![
+            McpServerId::parse(enabled_picked.mcp_server_id.clone())
+                .expect("fixture mcp_server_id"),
             McpServerId::parse(disabled_picked.mcp_server_id.clone())
                 .expect("fixture mcp_server_id"),
         ];
         let repo: Arc<dyn IMcpServerRepository> = Arc::new(MockRepo {
-            rows: vec![
-                make_row(
-                    30,
-                    "enabled",
-                    "stdio",
-                    r#"{"command":"npx","args":[],"env":{}}"#,
-                    true,
-                    false,
-                ),
-                disabled_picked,
-            ],
+            rows: vec![enabled_picked, disabled_picked],
             fail: false,
         });
 
@@ -866,7 +873,7 @@ mod tests {
 
         assert_eq!(servers.len(), 1);
         match &servers[0] {
-            McpServer::Stdio(s) => assert_eq!(s.name, "disabled-picked"),
+            McpServer::Stdio(server) => assert_eq!(server.name, "enabled-picked"),
             _ => panic!("expected stdio"),
         }
     }

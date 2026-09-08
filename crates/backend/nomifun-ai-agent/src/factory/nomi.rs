@@ -308,9 +308,15 @@ pub(super) async fn build(
         }
     }
     if is_instance_owner {
+        let enabled_session_mcp_servers = super::filter_enabled_session_mcp_servers(
+            deps.mcp_server_repo.as_deref(),
+            &overrides.session_mcp_servers,
+            &ctx.conversation_id,
+        )
+        .await;
         merge_session_snapshot_mcp_servers(
             &mut extra_mcp_servers,
-            &overrides.session_mcp_servers,
+            &enabled_session_mcp_servers,
             &ctx.conversation_id,
         );
     }
@@ -1649,13 +1655,7 @@ async fn load_user_mcp_servers(
 
     let mut servers = HashMap::new();
     for row in rows {
-        let selected = selected_ids
-            .map(|ids| {
-                ids.iter()
-                    .any(|id| id.as_str() == row.mcp_server_id)
-            })
-            .unwrap_or(row.enabled);
-        if !selected || row.builtin {
+        if !should_load_user_mcp_row(&row, selected_ids) {
             continue;
         }
 
@@ -1676,6 +1676,14 @@ async fn load_user_mcp_servers(
     }
 
     servers
+}
+
+fn should_load_user_mcp_row(row: &McpServerRow, selected_ids: Option<&[McpServerId]>) -> bool {
+    row.enabled
+        && !row.builtin
+        && selected_ids
+            .map(|ids| ids.iter().any(|id| id.as_str() == row.mcp_server_id))
+            .unwrap_or(true)
 }
 
 fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, String> {
@@ -2042,6 +2050,33 @@ mod tests {
         assert!(parse_bool_pref("true", false));
         assert!(parse_bool_pref("\"true\"", false));
         assert!(parse_bool_pref("  \"true\"  ", false));
+    }
+
+    #[test]
+    fn disabled_user_mcp_never_passes_the_runtime_gate() {
+        let mut row = McpServerRow {
+            mcp_server_id: "0190f5fe-7c00-7a00-8000-000000000001".to_owned(),
+            name: "disabled".to_owned(),
+            description: None,
+            enabled: false,
+            transport_type: "stdio".to_owned(),
+            transport_config: r#"{"command":"npx"}"#.to_owned(),
+            tools: None,
+            last_test_status: "connected".to_owned(),
+            last_connected: Some(1),
+            original_json: None,
+            builtin: false,
+            deleted_at: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let selected = [McpServerId::parse(row.mcp_server_id.clone()).unwrap()];
+
+        assert!(!should_load_user_mcp_row(&row, Some(&selected)));
+        assert!(!should_load_user_mcp_row(&row, None));
+
+        row.enabled = true;
+        assert!(should_load_user_mcp_row(&row, Some(&selected)));
     }
 
     fn gateway_config(port: u16, binary: &str, owner: &str) -> GatewayMcpConfig {

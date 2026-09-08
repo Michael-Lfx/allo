@@ -15,12 +15,14 @@ mod remote;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::collections::HashSet;
 
 use futures_util::FutureExt;
 use nomi_agent::companion_tools::{CompanionMemorySink, CompanionSkillSink};
 use nomi_agent::requirement_tools::RequirementSink;
 use nomifun_api_types::{
     BrowserMcpConfig, ComputerMcpConfig, GatewayMcpConfig, OpenMcpConfig, RequirementMcpConfig,
+    SessionMcpServer,
 };
 use nomifun_common::{AgentType, AppError, ExecutionAuthority};
 use nomifun_db::{
@@ -35,6 +37,51 @@ use crate::persistence::AcpSessionSyncService;
 use crate::registry::AgentRegistry;
 use crate::runtime_registry::AgentRuntimeFactory;
 use crate::types::AgentRuntimeBuildOptions;
+
+/// Apply the global MCP gate to session snapshots before either agent factory
+/// turns them into runtime configuration. Unknown IDs remain valid for
+/// session-only/extension contributions; IDs owned by the MCP repository must
+/// be enabled. If the repository cannot be read, fail closed for the snapshot
+/// so a stale disabled server cannot bypass the gate.
+pub(crate) async fn filter_enabled_session_mcp_servers(
+    repo: Option<&dyn IMcpServerRepository>,
+    session_mcp_servers: &[SessionMcpServer],
+    conversation_id: &str,
+) -> Vec<SessionMcpServer> {
+    let Some(repo) = repo else {
+        return session_mcp_servers.to_vec();
+    };
+
+    let ids = session_mcp_servers
+        .iter()
+        .map(|server| server.mcp_server_id.to_string())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+
+    let disabled_ids = match repo.list_by_ids_any(&ids).await {
+        Ok(rows) => rows
+            .into_iter()
+            .filter(|row| !row.enabled)
+            .map(|row| row.mcp_server_id)
+            .collect::<HashSet<_>>(),
+        Err(error) => {
+            tracing::warn!(
+                conversation_id,
+                error = %error,
+                "session_mcp: repository read failed; excluding snapshot servers"
+            );
+            ids.into_iter().collect::<HashSet<_>>()
+        }
+    };
+
+    session_mcp_servers
+        .iter()
+        .filter(|server| !disabled_ids.contains(&server.mcp_server_id.to_string()))
+        .cloned()
+        .collect()
+}
 
 /// Builds the persona system prompt for companion-companion conversations that do
 /// not carry one in their extra. Companion companion threads persist a prompt at

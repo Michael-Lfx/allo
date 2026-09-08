@@ -5441,10 +5441,8 @@ impl ConversationService {
             };
             let selected_rows = rows
                 .into_iter()
-                .filter(|row| !row.builtin)
-                .filter(|row| match selected_mcp_server_ids.as_ref() {
-                    Some(ids) => ids.iter().any(|id| id == &row.mcp_server_id),
-                    None => row.enabled,
+                .filter(|row| {
+                    is_available_user_mcp_row(row, selected_mcp_server_ids.as_deref())
                 })
                 .collect::<Vec<_>>();
             resolved_mcp_server_ids = selected_rows
@@ -15756,6 +15754,17 @@ fn upsert_conversation_mcp_status(
     statuses.push(status);
 }
 
+fn is_available_user_mcp_row(
+    row: &nomifun_db::models::McpServerRow,
+    selected_ids: Option<&[String]>,
+) -> bool {
+    row.enabled
+        && !row.builtin
+        && selected_ids
+            .map(|ids| ids.iter().any(|id| id == &row.mcp_server_id))
+            .unwrap_or(true)
+}
+
 fn classify_repo_mcp_status(
     row: &nomifun_db::models::McpServerRow,
     support: McpSupportPolicy,
@@ -17120,6 +17129,33 @@ mod tests {
         );
 
         assert_eq!(status.status, ConversationMcpStatusKind::Failed);
+    }
+
+    #[test]
+    fn disabled_selected_mcp_is_excluded_from_conversation_snapshot() {
+        let server_id = "0190f5fe-7c00-7a00-8000-000000000123".to_owned();
+        let mut row = nomifun_db::models::McpServerRow {
+            mcp_server_id: server_id.clone(),
+            name: "disabled-mcp".into(),
+            description: None,
+            enabled: false,
+            transport_type: "stdio".into(),
+            transport_config: r#"{"command":"npx"}"#.into(),
+            tools: None,
+            last_test_status: "connected".into(),
+            last_connected: Some(1),
+            original_json: None,
+            builtin: false,
+            deleted_at: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let selected = vec![server_id];
+
+        assert!(!is_available_user_mcp_row(&row, Some(&selected)));
+
+        row.enabled = true;
+        assert!(is_available_user_mcp_row(&row, Some(&selected)));
     }
 
     #[test]
