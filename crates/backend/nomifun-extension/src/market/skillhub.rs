@@ -579,6 +579,41 @@ mod tests {
     }
 
     #[test]
+    fn falls_back_to_account_owner_only_when_namespace_is_absent() {
+        // ClawHub-shaped entries carry no namespace object at all (or a null
+        // one); only then may the account `ownerName` become the public owner.
+        let response = query(serde_json::json!({
+            "code": 0,
+            "data": {"total": 2, "skills": [
+                {"slug": "self-improving-agent", "ownerName": "clawhub_pskoett", "version": "3.0.24", "source": "clawhub"},
+                {"slug": "find-skills", "ownerName": "clawhub_root", "namespace": null, "version": "1.0.0", "source": "clawhub"}
+            ]}
+        }));
+        let absent = &response.items[0];
+        assert_eq!(absent.owner, "clawhub_pskoett");
+        assert_eq!(absent.id, "skillhub:clawhub_pskoett/skills/self-improving-agent");
+        assert_eq!(absent.url, "https://skillhub.cn/skills/clawhub_pskoett/self-improving-agent");
+        let null_namespace = &response.items[1];
+        assert_eq!(null_namespace.owner, "clawhub_root");
+        assert_eq!(null_namespace.id, "skillhub:clawhub_root/skills/find-skills");
+        assert_eq!(null_namespace.url, "https://skillhub.cn/skills/clawhub_root/find-skills");
+    }
+
+    #[test]
+    fn same_slug_under_different_public_owners_stays_two_distinct_skills() {
+        let response = query(serde_json::json!({
+            "code": 0,
+            "data": {"total": 2, "skills": [
+                {"slug": "agently-mail", "ownerName": "u_d95b6787", "namespace": {"handle": "tencent-adm"}, "version": "1.0.13"},
+                {"slug": "agently-mail", "ownerName": "someone-else", "version": "2.0.0"}
+            ]}
+        }));
+        assert_eq!(response.items.len(), 2);
+        assert_eq!(response.items[0].id, "skillhub:tencent-adm/skills/agently-mail");
+        assert_eq!(response.items[1].id, "skillhub:someone-else/skills/agently-mail");
+    }
+
+    #[test]
     fn rejects_present_namespace_without_a_public_handle() {
         let value = serde_json::json!({
             "code": 0,

@@ -984,6 +984,200 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_installs_of_one_market_id_download_once() {
+        let (_tmp, paths) = make_paths();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let downloader = FakeDownloader {
+            archive: make_archive(&["skill-skill"]),
+            calls: calls.clone(),
+        };
+        let target = || NativeMarketSkill::SkillHub {
+            owner: "owner".into(),
+            slug: "skill-skill".into(),
+        };
+
+        let (first, second) = tokio::join!(
+            install_market_skill_with_downloader(&paths, SKILLHUB_SOURCE, target(), &downloader),
+            install_market_skill_with_downloader(&paths, SKILLHUB_SOURCE, target(), &downloader),
+        );
+        let statuses = [first.unwrap().status, second.unwrap().status];
+
+        // Exactly one request installs; the other observes the committed
+        // mapping after the lock handoff and reuses it.
+        assert!(statuses.contains(&SkillMarketInstallStatus::Installed));
+        assert!(statuses.contains(&SkillMarketInstallStatus::Reused));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mappings = skill_service::load_market_skill_mappings(&paths).await;
+        assert_eq!(mappings.len(), 1);
+        assert!(mappings.contains_key("skillhub:owner/skills/skill-skill"));
+    }
+
+    #[tokio::test]
+    async fn stale_alias_mapping_is_neither_matched_nor_migrated() {
+        let (_tmp, paths) = make_paths();
+        tokio::fs::create_dir_all(&paths.user_skills_dir).await.unwrap();
+        // A mapping written under the broken account-owner identity stays on
+        // disk untouched: it is never matched for the canonical ID and never
+        // rewritten in place.
+        let legacy = std::collections::HashMap::from([(
+            "skillhub:u_d95b6787/skills/agently-mail".to_owned(),
+            skill_service::MarketSkillMapping {
+                source: SKILLHUB_SOURCE.to_owned(),
+                market_source: "skillhub".to_owned(),
+                owner: "u_d95b6787".to_owned(),
+                slug: "agently-mail".to_owned(),
+                installed_skill_id: "user:agently-mail".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                installed_at: 1,
+            },
+        )]);
+        skill_service::save_market_skill_mappings(&paths, &legacy)
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let downloader = FakeDownloader {
+            archive: make_archive(&["agently-mail"]),
+            calls: calls.clone(),
+        };
+        let response = install_market_skill_with_downloader(
+            &paths,
+            SKILLHUB_SOURCE,
+            NativeMarketSkill::SkillHub {
+                owner: "tencent-adm".into(),
+                slug: "agently-mail".into(),
+            },
+            &downloader,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status, SkillMarketInstallStatus::Installed);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mappings = skill_service::load_market_skill_mappings(&paths).await;
+        assert_eq!(mappings.len(), 2);
+        let legacy_entry = mappings
+            .get("skillhub:u_d95b6787/skills/agently-mail")
+            .unwrap();
+        assert_eq!(legacy_entry.owner, "u_d95b6787");
+        assert_eq!(legacy_entry.version.as_deref(), Some("1.0.0"));
+        let canonical = mappings
+            .get("skillhub:tencent-adm/skills/agently-mail")
+            .unwrap();
+        assert_eq!(canonical.source, "skillhub");
+        assert_eq!(canonical.owner, "tencent-adm");
+        assert_eq!(canonical.slug, "agently-mail");
+        assert_eq!(canonical.installed_skill_id, "user:agently-mail");
+    }
+
+    #[tokio::test]
+    async fn damaged_mapping_sidecar_falls_back_to_a_fresh_install() {
+        let (_tmp, paths) = make_paths();
+        tokio::fs::create_dir_all(&paths.user_skills_dir)
+            .await
+            .unwrap();
+        tokio::fs::write(
+            skill_service::market_skill_mappings_path(&paths),
+            b"{ not json",
+        )
+        .await
+        .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let downloader = FakeDownloader {
+            archive: make_archive(&["skill-skill"]),
+            calls: calls.clone(),
+        };
+        let response = install_market_skill_with_downloader(
+            &paths,
+            SKILLHUB_SOURCE,
+            NativeMarketSkill::SkillHub {
+                owner: "owner".into(),
+                slug: "skill-skill".into(),
+            },
+            &downloader,
+        )
+        .await
+        .unwrap();
+
+        // A damaged sidecar only disables exact reuse; the install proceeds
+        // and rewrites the file with the canonical entry.
+        assert_eq!(response.status, SkillMarketInstallStatus::Installed);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mappings = skill_service::load_market_skill_mappings(&paths).await;
+        assert!(mappings.contains_key("skillhub:owner/skills/skill-skill"));
+    }
+
+    #[tokio::test]
+    async fn mapping_whose_local_directory_disappeared_reinstalls() {
+        let (_tmp, paths) = make_paths();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let downloader = FakeDownloader {
+            archive: make_archive(&["skill-skill"]),
+            calls: calls.clone(),
+        };
+        let target = || NativeMarketSkill::SkillHub {
+            owner: "owner".into(),
+            slug: "skill-skill".into(),
+        };
+        install_market_skill_with_downloader(&paths, SKILLHUB_SOURCE, target(), &downloader)
+            .await
+            .unwrap();
+        tokio::fs::remove_dir_all(paths.user_skills_dir.join("skill-skill"))
+            .await
+            .unwrap();
+
+        let response =
+            install_market_skill_with_downloader(&paths, SKILLHUB_SOURCE, target(), &downloader)
+                .await
+                .unwrap();
+
+        assert_eq!(response.status, SkillMarketInstallStatus::Installed);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(paths.user_skills_dir.join("skill-skill").join("SKILL.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn mapping_entry_that_disagrees_with_its_key_fails_closed() {
+        let (_tmp, paths) = make_paths();
+        tokio::fs::create_dir_all(&paths.user_skills_dir).await.unwrap();
+        // A tampered entry whose fields contradict its own key must never be
+        // trusted as a reuse pointer.
+        let tampered = std::collections::HashMap::from([(
+            "skillhub:owner/skills/skill-skill".to_owned(),
+            skill_service::MarketSkillMapping {
+                source: SKILLHUB_SOURCE.to_owned(),
+                market_source: "skillhub".to_owned(),
+                owner: "other-owner".to_owned(),
+                slug: "skill-skill".to_owned(),
+                installed_skill_id: "user:skill-skill".to_owned(),
+                version: None,
+                installed_at: 1,
+            },
+        )]);
+        skill_service::save_market_skill_mappings(&paths, &tampered)
+            .await
+            .unwrap();
+
+        let downloader = FakeDownloader {
+            archive: make_archive(&["skill-skill"]),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let result = install_market_skill_with_downloader(
+            &paths,
+            SKILLHUB_SOURCE,
+            NativeMarketSkill::SkillHub {
+                owner: "owner".into(),
+                slug: "skill-skill".into(),
+            },
+            &downloader,
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), MarketSkillInstallError::NameConflict);
+    }
+
+    #[tokio::test]
     async fn rejects_multiple_skills_and_preserves_invalid_existing_directory() {
         let (_tmp, paths) = make_paths();
         tokio::fs::create_dir_all(paths.user_skills_dir.join("skill-skill"))
@@ -1317,6 +1511,41 @@ mod tests {
             parse_skill_detail("not json", "owner", "demo").unwrap_err(),
             MarketSkillInstallError::ArtifactInvalid
         );
+    }
+
+    #[test]
+    fn parse_skill_detail_fails_closed_when_namespace_lacks_a_valid_handle() {
+        // A namespace object without a usable handle can never fall back to
+        // the account owner: that would re-admit the internal `u_` identity
+        // as a public one.
+        for namespace in [
+            serde_json::json!({"displayName": "Tencent ADM"}),
+            serde_json::json!({"handle": ""}),
+            serde_json::json!({"handle": "not a handle!"}),
+        ] {
+            let body = serde_json::json!({
+                "skill": { "slug": "agently-mail" },
+                "latestVersion": { "version": "1.0.13" },
+                "owner": { "handle": "u_d95b6787" },
+                "namespace": namespace,
+            });
+            assert_eq!(
+                parse_skill_detail(&body.to_string(), "tencent-adm", "agently-mail").unwrap_err(),
+                MarketSkillInstallError::NotFound,
+                "{namespace}"
+            );
+        }
+        // A null namespace is the documented ClawHub shape and does fall back
+        // to the account owner.
+        let body = serde_json::json!({
+            "skill": { "slug": "find-skills" },
+            "latestVersion": { "version": "1.0.0" },
+            "owner": { "handle": "clawhub_root" },
+            "namespace": null,
+        });
+        let detail = parse_skill_detail(&body.to_string(), "clawhub_root", "find-skills").unwrap();
+        assert_eq!(detail.slug, "find-skills");
+        assert_eq!(detail.version, "1.0.0");
     }
 
     #[test]

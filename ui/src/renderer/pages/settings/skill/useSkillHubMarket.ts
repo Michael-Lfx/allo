@@ -172,6 +172,9 @@ const readQueryCache = (key: string): SkillHubMarketCacheEntry | null => {
   return { cached_at: entry.cached_at, response: entry.response };
 };
 
+// Test-only surface for cache-generation regression coverage.
+export const readSkillHubMarketQueryCache = readQueryCache;
+
 const readCategoriesCache = (): SkillHubCategoriesCacheEntry | null => {
   const value = readLocalStorage(MARKET_CATEGORIES_CACHE_KEY);
   if (!value || typeof value !== 'object') return null;
