@@ -820,6 +820,7 @@ struct TvShowListQuery {
     sort: Option<String>,
     status: Option<String>,
     campaign_id: Option<i64>,
+    award_level: Option<String>,
 }
 
 async fn tv_show_list(
@@ -836,6 +837,8 @@ async fn tv_show_list(
                 query.workflow,
                 query.keyword,
                 query.sort,
+                query.campaign_id,
+                query.award_level,
             )
             .await?,
     )))

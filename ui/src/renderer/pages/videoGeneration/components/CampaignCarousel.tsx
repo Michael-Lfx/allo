@@ -2,7 +2,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { openExternalUrl } from '@renderer/utils/platform';
 import { listCampaignCarousel } from '../api';
 import {
@@ -20,7 +19,6 @@ const CampaignCarousel: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const { status: cloudStatus } = useCloudAuth();
   const [items, setItems] = useState<CampaignCarouselItem[]>([]);
   const [index, setIndex] = useState(0);
   const [hoverPaused, setHoverPaused] = useState(false);
@@ -29,10 +27,6 @@ const CampaignCarousel: React.FC = () => {
   const videoRefs = useRef<Array<HTMLVideoElement | null>>([]);
 
   useEffect(() => {
-    if (cloudStatus !== 'authenticated') {
-      setItems([]);
-      return;
-    }
     let cancelled = false;
     void listCampaignCarousel()
       .then((list) => {
@@ -45,7 +39,7 @@ const CampaignCarousel: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [cloudStatus]);
+  }, []);
 
   useEffect(() => {
     const node = rootRef.current;
@@ -107,7 +101,7 @@ const CampaignCarousel: React.FC = () => {
     [location.search, navigate]
   );
 
-  if (cloudStatus !== 'authenticated' || items.length === 0) return null;
+  if (items.length === 0) return null;
 
   return (
     <div

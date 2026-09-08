@@ -413,7 +413,9 @@ impl VimaxApiService {
 
     // ── TV Show (Flowy cloud) ──────────────────────────────────────────────
 
-    async fn flowy_client_and_session(&self) -> Result<(FlowyApiClient, ServerSession), AppError> {
+    async fn flowy_optional_session(
+        &self,
+    ) -> Result<(FlowyApiClient, Option<ServerSession>), AppError> {
         let cfg: GatewayConfig =
             load_user_config_file(&config_yaml_path(Some(&self.data_dir))).map_err(|e| {
                 AppError::BadRequest(format!("failed to load config: {e}"))
@@ -429,13 +431,14 @@ impl VimaxApiService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?
             .filter(|t| !t.trim().is_empty());
-        if token.is_none() {
-            return Err(AppError::Unauthorized(
-                "cloud login required".into(),
-            ));
-        }
         let client =
             FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok((client, token.is_some().then_some(session)))
+    }
+
+    async fn flowy_client_and_session(&self) -> Result<(FlowyApiClient, ServerSession), AppError> {
+        let (client, session) = self.flowy_optional_session().await?;
+        let session = session.ok_or_else(|| AppError::Unauthorized("cloud login required".into()))?;
         Ok((client, session))
     }
 
@@ -459,16 +462,11 @@ impl VimaxApiService {
             .ok_or_else(|| {
                 AppError::BadRequest("cover image is required before publishing".into())
             })?;
-        let final_video = session
+        let preview_rel = session
             .final_video
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        if final_video.is_none() {
-            return Err(AppError::BadRequest(
-                "finished video is required before publishing".into(),
-            ));
-        }
 
         let (client, cloud_session) = self.flowy_client_and_session().await?;
 
@@ -507,6 +505,50 @@ impl VimaxApiService {
             )
             .await
             .map_err(map_cloud_err)?;
+
+        let preview_upload = if let Some(preview_rel) = preview_rel {
+            let preview_path = self.artifact_path(id, preview_rel)?;
+            if !preview_path.is_file() {
+                warn!(
+                    session_id = %id,
+                    path = %preview_path.display(),
+                    "TV Show: preview file missing, publishing without preview"
+                );
+                None
+            } else {
+                let preview_bytes = tokio::fs::read(&preview_path)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("read preview: {e}")))?;
+                let preview_name = preview_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("preview.mp4");
+                let preview_mime = mime_guess::from_path(&preview_path)
+                    .first_or_octet_stream()
+                    .essence_str()
+                    .to_string();
+                let preview_mime = if preview_mime.starts_with("video/") {
+                    preview_mime
+                } else {
+                    "video/mp4".into()
+                };
+                info!(session_id = %id, bytes = preview_bytes.len(), "TV Show: uploading preview");
+                Some(
+                    client
+                        .upload_bytes_via_oss_detailed(
+                            &cloud_session,
+                            &preview_bytes,
+                            preview_name,
+                            &preview_mime,
+                            None,
+                        )
+                        .await
+                        .map_err(map_cloud_err)?,
+                )
+            }
+        } else {
+            None
+        };
 
         let title_raw = req
             .title
@@ -591,6 +633,8 @@ impl VimaxApiService {
             target_duration_secs,
             cover_url: cover_upload.public_url,
             cover_object_key: cover_upload.object_key,
+            preview_url: preview_upload.as_ref().map(|u| u.public_url.clone()),
+            preview_object_key: preview_upload.and_then(|u| u.object_key),
             package_url: package_upload.public_url,
             package_object_key: package_upload.object_key,
             package_size_bytes: Some(package_upload.byte_size as i64),
@@ -612,16 +656,20 @@ impl VimaxApiService {
         workflow: Option<String>,
         keyword: Option<String>,
         sort: Option<String>,
+        campaign_id: Option<i64>,
+        award_level: Option<String>,
     ) -> Result<TvShowListResponse, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
             .tv_show_list(
-                &session,
+                session.as_ref(),
                 page,
                 page_size,
                 workflow.as_deref(),
                 keyword.as_deref(),
                 sort.as_deref(),
+                campaign_id,
+                award_level.as_deref(),
             )
             .await
             .map_err(map_cloud_err)
@@ -648,9 +696,9 @@ impl VimaxApiService {
     }
 
     pub async fn tv_show_detail(&self, id: i64) -> Result<TvShowVideo, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
-            .tv_show_detail(&session, id)
+            .tv_show_detail(session.as_ref(), id)
             .await
             .map_err(map_cloud_err)
     }
@@ -680,9 +728,9 @@ impl VimaxApiService {
     }
 
     pub async fn campaign_carousel(&self) -> Result<CampaignCarouselResponse, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
-            .campaign_carousel(&session)
+            .campaign_carousel(session.as_ref())
             .await
             .map_err(map_cloud_err)
     }
@@ -693,17 +741,17 @@ impl VimaxApiService {
         page_size: Option<i32>,
         include_ended: Option<bool>,
     ) -> Result<CampaignListResponse, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
-            .campaign_list(&session, page, page_size, include_ended)
+            .campaign_list(session.as_ref(), page, page_size, include_ended)
             .await
             .map_err(map_cloud_err)
     }
 
     pub async fn campaign_detail(&self, id: i64) -> Result<CampaignDetail, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
-            .campaign_detail(&session, id)
+            .campaign_detail(session.as_ref(), id)
             .await
             .map_err(map_cloud_err)
     }
@@ -717,10 +765,10 @@ impl VimaxApiService {
         keyword: Option<String>,
         sort: Option<String>,
     ) -> Result<TvShowListResponse, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
             .campaign_submissions(
-                &session,
+                session.as_ref(),
                 id,
                 page,
                 page_size,
@@ -733,9 +781,9 @@ impl VimaxApiService {
     }
 
     pub async fn campaign_winners(&self, id: i64) -> Result<TvShowListResponse, AppError> {
-        let (client, session) = self.flowy_client_and_session().await?;
+        let (client, session) = self.flowy_optional_session().await?;
         client
-            .campaign_winners(&session, id)
+            .campaign_winners(session.as_ref(), id)
             .await
             .map_err(map_cloud_err)
     }

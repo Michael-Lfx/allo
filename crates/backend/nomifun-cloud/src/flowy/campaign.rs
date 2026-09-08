@@ -12,35 +12,35 @@ use super::{form_urlencode, FlowyApiClient};
 impl FlowyApiClient {
     pub async fn campaign_carousel(
         &self,
-        session: &ServerSession,
+        session: Option<&ServerSession>,
     ) -> Result<CampaignCarouselResponse, ServerClientError> {
-        self.get_data("/vimax/campaigns/carousel", Some(session))
+        self.get_data("/vimax/campaigns/carousel", session)
             .await
     }
 
     pub async fn campaign_list(
         &self,
-        session: &ServerSession,
+        session: Option<&ServerSession>,
         page: Option<i32>,
         page_size: Option<i32>,
         include_ended: Option<bool>,
     ) -> Result<CampaignListResponse, ServerClientError> {
         let path = build_campaign_list_path(page, page_size, include_ended);
-        self.get_data(&path, Some(session)).await
+        self.get_data(&path, session).await
     }
 
     pub async fn campaign_detail(
         &self,
-        session: &ServerSession,
+        session: Option<&ServerSession>,
         id: i64,
     ) -> Result<CampaignDetail, ServerClientError> {
         let path = format!("/vimax/campaigns/{id}");
-        self.get_data(&path, Some(session)).await
+        self.get_data(&path, session).await
     }
 
     pub async fn campaign_submissions(
         &self,
-        session: &ServerSession,
+        session: Option<&ServerSession>,
         id: i64,
         page: Option<i32>,
         page_size: Option<i32>,
@@ -49,16 +49,16 @@ impl FlowyApiClient {
         sort: Option<&str>,
     ) -> Result<TvShowListResponse, ServerClientError> {
         let path = build_campaign_submissions_path(id, page, page_size, workflow, keyword, sort);
-        self.get_data(&path, Some(session)).await
+        self.get_data(&path, session).await
     }
 
     pub async fn campaign_winners(
         &self,
-        session: &ServerSession,
+        session: Option<&ServerSession>,
         id: i64,
     ) -> Result<TvShowListResponse, ServerClientError> {
         let path = format!("/vimax/campaigns/{id}/winners");
-        self.get_data(&path, Some(session)).await
+        self.get_data(&path, session).await
     }
 }
 

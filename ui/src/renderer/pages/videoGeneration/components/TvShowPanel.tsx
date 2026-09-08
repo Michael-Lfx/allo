@@ -1,31 +1,40 @@
 
-import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Drawer, Result, Spin } from '@arco-design/web-react';
-import { Download, Like, Search, VideoOne } from '@icon-park/react';
-import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
+import { Button, Result, Spin } from '@arco-design/web-react';
+import { Search } from '@icon-park/react';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import {
   deleteTvShow,
   getTvShowDetail,
-  importTvShow,
   likeTvShow,
   listMyTvShow,
   listTvShow,
+  remixTvShow,
   unlikeTvShow,
 } from '../api';
-import { importCanvasTvShow } from '../../videoCanvas/api';
 import type { TvShowVideo } from '../types';
-import { parseTvShowScope, writeTvShowScope, type TvShowScope } from '../campaign';
-import { isCanvasTvShow, tvShowWorkflowLabel } from './SessionCard';
+import {
+  parseTvShowTab,
+  tvShowSortParam,
+  uniqueVideosById,
+  writeTvShowTab,
+  type TvShowChannel,
+  type TvShowListSort,
+  type TvShowTab,
+} from '../campaign';
+import FilterPills from './FilterPills';
 import TvShowCard from './TvShowCard';
+import TvShowEmptyState from './TvShowEmptyState';
+import TvShowInspector from './TvShowInspector';
 
 const CampaignPanel = lazy(() => import('./CampaignPanel'));
 
-const TV_SHOW_INITIAL_PAGE_SIZE = 16;
+const PAGE_SIZE = 28;
+const FEATURED_PAGE_SIZE = 8;
 
 interface TvShowPanelProps {
   enabled: boolean;
@@ -37,15 +46,21 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { status: cloudStatus, logout } = useCloudAuth();
   const [message, messageHolder] = useArcoMessage();
+  const authenticated = cloudStatus === 'authenticated';
 
-  const urlScope = parseTvShowScope(searchParams.get('tvScope'));
-  const [scope, setScope] = useState<TvShowScope>(urlScope);
+  const urlTab = parseTvShowTab(searchParams.get('tvScope'), searchParams.get('tvChannel'));
+  const [tab, setTab] = useState<TvShowTab>(urlTab);
+  const scope = tab === 'campaign' || tab === 'mine' ? tab : 'plaza';
+  const channel: TvShowChannel = tab === 'campaign' || tab === 'mine' ? 'all' : tab;
   const [videos, setVideos] = useState<TvShowVideo[]>([]);
+  const [featured, setFeatured] = useState<TvShowVideo[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
   const [keywordInput, setKeywordInput] = useState('');
   const [keyword, setKeyword] = useState('');
+  const [sort, setSort] = useState<TvShowListSort>('latest');
   const [likingId, setLikingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [detail, setDetail] = useState<TvShowVideo | null>(null);
@@ -54,54 +69,63 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const videosRef = useRef(videos);
   videosRef.current = videos;
 
-  const scopeItems: SegmentedTabItem[] = [
-    {
-      key: 'plaza',
-      label: t('videoGeneration.tvShow.scope.plaza', { defaultValue: '广场' }),
-    },
-    {
-      key: 'campaign',
-      label: t('videoGeneration.tvShow.scope.campaign', { defaultValue: '活动' }),
-    },
-    {
-      key: 'mine',
-      label: t('videoGeneration.tvShow.scope.mine', { defaultValue: '我的发布' }),
-    },
-  ];
+  const tabItems = useMemo(
+    () =>
+      [
+        { key: 'all' as const, label: t('videoGeneration.tvShow.channel.all', { defaultValue: '全部' }) },
+        { key: 'idea2video' as const, label: t('videoGeneration.tvShow.channel.idea2video', { defaultValue: '一句话' }) },
+        { key: 'script2video' as const, label: t('videoGeneration.tvShow.channel.script2video', { defaultValue: '剧本' }) },
+        { key: 'novel2video' as const, label: t('videoGeneration.tvShow.channel.novel2video', { defaultValue: '小说' }) },
+        { key: 'canvas' as const, label: t('videoGeneration.tvShow.channel.canvas', { defaultValue: '画布' }) },
+        { key: 'action2video' as const, label: t('videoGeneration.tvShow.channel.action2video', { defaultValue: '动作' }) },
+        { key: 'campaign' as const, label: t('videoGeneration.tvShow.channel.campaign', { defaultValue: '活动' }) },
+        { key: 'mine' as const, label: t('videoGeneration.tvShow.channel.mine', { defaultValue: '我的' }) },
+      ] satisfies { key: TvShowTab; label: string }[],
+    [t]
+  );
 
   const consumeExpiredCloudSession = useCallback(
-    async (error: unknown): Promise<boolean> => {
-      if (!isInvalidCloudSessionError(error)) return false;
+    async (cause: unknown): Promise<boolean> => {
+      if (!isInvalidCloudSessionError(cause)) return false;
       await logout();
       return true;
     },
     [logout]
   );
 
+  const goLogin = useCallback(() => navigate('/cloud-login'), [navigate]);
+
+  const plazaQuery = useCallback(
+    (page: number) =>
+      listTvShow({
+        page,
+        pageSize: PAGE_SIZE,
+        keyword: keyword || undefined,
+        sort: tvShowSortParam(sort),
+        workflow: channel === 'all' ? undefined : channel,
+      }),
+    [channel, keyword, sort]
+  );
+
   const refresh = useCallback(async () => {
-    if (!enabled) return;
-    if (scope === 'campaign') return;
-    if (cloudStatus !== 'authenticated') {
+    if (!enabled || scope === 'campaign') return;
+    if (scope === 'mine' && !authenticated) {
       setVideos([]);
+      setFeatured([]);
+      setTotal(0);
       setError(null);
       setLoading(false);
       return;
     }
-    // Keep existing cards visible while refreshing so the parent page height
-    // (and scrollTop) does not collapse when switching back to this tab.
     const showSpinner = videosRef.current.length === 0;
     if (showSpinner) setLoading(true);
     try {
       const data =
         scope === 'mine'
-          ? await listMyTvShow({ page: 1, pageSize: TV_SHOW_INITIAL_PAGE_SIZE })
-          : await listTvShow({
-              page: 1,
-              pageSize: TV_SHOW_INITIAL_PAGE_SIZE,
-              keyword: keyword.trim() || undefined,
-              sort: 'publishedAtDesc',
-            });
+          ? await listMyTvShow({ page: 1, pageSize: PAGE_SIZE })
+          : await plazaQuery(1);
       setVideos(data.list ?? []);
+      setTotal(data.total ?? 0);
       setError(null);
     } catch (e) {
       console.error('[videoGeneration] TV Show list failed', e);
@@ -110,39 +134,87 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     } finally {
       setLoading(false);
     }
-  }, [cloudStatus, consumeExpiredCloudSession, enabled, keyword, scope]);
+  }, [authenticated, consumeExpiredCloudSession, enabled, plazaQuery, scope]);
 
-  const handleScopeChange = useCallback(
-    (key: string) => {
-      const next = key as TvShowScope;
-      if (next === scope) return;
-      setScope(next);
+  const loadMore = useCallback(async () => {
+    if (loadingMore || videos.length >= total || scope === 'campaign') return;
+    if (scope === 'mine' && !authenticated) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = Math.floor(videos.length / PAGE_SIZE) + 1;
+      const data =
+        scope === 'mine'
+          ? await listMyTvShow({ page: nextPage, pageSize: PAGE_SIZE })
+          : await plazaQuery(nextPage);
+      setVideos((prev) => [...prev, ...(data.list ?? [])]);
+      setTotal(data.total ?? total);
+    } catch (e) {
+      if (await consumeExpiredCloudSession(e)) return;
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [authenticated, consumeExpiredCloudSession, loadingMore, plazaQuery, scope, total, videos.length]);
+
+  const handleTabChange = useCallback(
+    (next: TvShowTab) => {
+      if (next === tab) return;
+      setTab(next);
+      setVideos([]);
       setSearchParams(
         (prev) => {
           const nextParams = new URLSearchParams(prev);
-          writeTvShowScope(nextParams, next);
+          writeTvShowTab(nextParams, next);
           return nextParams;
         },
         { replace: true }
       );
     },
-    [scope, setSearchParams]
+    [setSearchParams, tab]
   );
 
-  // Follow external URL changes (back, campaign home). Do not depend on
-  // `scope` — that would snap back to `campaign` while the query is still stale.
   useEffect(() => {
-    setScope(urlScope);
-  }, [urlScope]);
+    setTab(urlTab);
+  }, [urlTab]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setKeyword(keywordInput.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [keywordInput]);
 
   useEffect(() => {
     if (!enabled) return;
     void refresh();
   }, [enabled, refresh]);
 
+  useEffect(() => {
+    if (!enabled || scope !== 'plaza' || channel !== 'all' || keyword) {
+      setFeatured([]);
+      return;
+    }
+    let cancelled = false;
+    void listTvShow({
+      page: 1,
+      pageSize: FEATURED_PAGE_SIZE,
+      campaignId: 0,
+      awardLevel: 'featured',
+    })
+      .then((data) => {
+        if (!cancelled) setFeatured(data.list ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setFeatured([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [channel, enabled, keyword, scope]);
+
+  const featuredIds = useMemo(() => new Set(featured.map((v) => v.id)), [featured]);
   const displayed = videos.filter((v) => {
+    if (scope === 'plaza' && featuredIds.has(v.id)) return false;
     if (scope !== 'mine') return true;
-    const q = searchQuery.trim().toLowerCase();
+    const q = keywordInput.trim().toLowerCase();
     if (!q) return true;
     return (
       (v.title ?? '').toLowerCase().includes(q) ||
@@ -151,13 +223,15 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     );
   });
 
+  const inspectorItems = uniqueVideosById(featured, displayed);
+  const inspectorIndex = detail ? inspectorItems.findIndex((v) => v.id === detail.id) : -1;
+
   const openDetail = useCallback(
     async (video: TvShowVideo) => {
       setDetail(video);
       setDetailLoading(true);
       try {
-        const full = await getTvShowDetail(video.id);
-        setDetail(full);
+        setDetail(await getTvShowDetail(video.id));
       } catch (e) {
         if (await consumeExpiredCloudSession(e)) return;
         message.error(
@@ -172,24 +246,25 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     [consumeExpiredCloudSession, message, t]
   );
 
+  const patchVideo = useCallback((id: number, liked: boolean, likeCount: number) => {
+    const apply = (list: TvShowVideo[]) =>
+      list.map((v) => (v.id === id ? { ...v, liked, likeCount } : v));
+    setVideos(apply);
+    setFeatured(apply);
+    setDetail((prev) => (prev && prev.id === id ? { ...prev, liked, likeCount } : prev));
+  }, []);
+
   const handleToggleLike = useCallback(
     async (video: TvShowVideo) => {
+      if (!authenticated) {
+        goLogin();
+        return;
+      }
       if (likingId != null) return;
       setLikingId(video.id);
       try {
         const result = video.liked ? await unlikeTvShow(video.id) : await likeTvShow(video.id);
-        setVideos((prev) =>
-          prev.map((v) =>
-            v.id === video.id
-              ? { ...v, liked: result.liked, likeCount: result.likeCount }
-              : v
-          )
-        );
-        setDetail((prev) =>
-          prev && prev.id === video.id
-            ? { ...prev, liked: result.liked, likeCount: result.likeCount }
-            : prev
-        );
+        patchVideo(video.id, result.liked, result.likeCount);
       } catch (e) {
         if (await consumeExpiredCloudSession(e)) return;
         message.error(
@@ -201,7 +276,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         setLikingId(null);
       }
     },
-    [consumeExpiredCloudSession, likingId, message, t]
+    [authenticated, consumeExpiredCloudSession, goLogin, likingId, message, patchVideo, t]
   );
 
   const handleDelete = useCallback(
@@ -211,6 +286,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
       try {
         await deleteTvShow(video.id);
         setVideos((prev) => prev.filter((v) => v.id !== video.id));
+        setFeatured((prev) => prev.filter((v) => v.id !== video.id));
         if (detail?.id === video.id) setDetail(null);
         message.success(
           t('videoGeneration.tvShow.actions.deleteOk', { defaultValue: '已删除发布' })
@@ -233,21 +309,12 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     if (!detail || importing) return;
     setImporting(true);
     try {
-      if (isCanvasTvShow(detail)) {
-        const imported = await importCanvasTvShow(detail.id);
-        message.success(
-          t('videoGeneration.tvShow.actions.importOk', { defaultValue: '工程已导入到本地' })
-        );
-        setDetail(null);
-        navigate(`/video-generation/canvas/${encodeURIComponent(imported.project_id)}`);
-        return;
-      }
-      const imported = await importTvShow(detail.id);
+      const path = await remixTvShow(detail);
       message.success(
         t('videoGeneration.tvShow.actions.importOk', { defaultValue: '工程已导入到本地' })
       );
       setDetail(null);
-      navigate(`/video-generation/${imported.id}`);
+      navigate(path);
     } catch (e) {
       if (await consumeExpiredCloudSession(e)) return;
       message.error(
@@ -260,37 +327,36 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     }
   }, [consumeExpiredCloudSession, detail, importing, message, navigate, t]);
 
-  // Fetch only while visible; keep rendering so a hidden parent can still
-  // reserve layout height and avoid scroll jumps on tab switches.
-  if (cloudStatus === 'checking') {
+  const createCta = (
+    <Button type='primary' size='small' onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+      {t('videoGeneration.tvShow.empty.create', { defaultValue: '去创作' })}
+    </Button>
+  );
+
+  const renderGrid = (list: TvShowVideo[], mine: boolean) => (
+    <div
+      className='grid gap-12px'
+      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))' }}
+    >
+      {list.map((video) => (
+        <TvShowCard
+          key={video.id}
+          video={video}
+          onOpen={(v) => void openDetail(v)}
+          onToggleLike={(v) => void handleToggleLike(v)}
+          onDelete={mine ? (v) => void handleDelete(v) : undefined}
+          liking={likingId === video.id}
+          deleting={deletingId === video.id}
+          showStatus={mine}
+        />
+      ))}
+    </div>
+  );
+
+  if (cloudStatus === 'checking' && scope === 'mine') {
     return (
       <div className='flex justify-center py-38px'>
         <Spin />
-      </div>
-    );
-  }
-
-  if (cloudStatus !== 'authenticated') {
-    return (
-      <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-        <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
-          <VideoOne theme='outline' size={19} fill='currentColor' />
-        </span>
-        <div className='min-w-0 flex-1'>
-          <div className='text-13px font-600 text-[var(--color-text-1)]'>
-            {t('videoGeneration.tvShow.authRequired.title', {
-              defaultValue: '登录后观看 Flowy TV',
-            })}
-          </div>
-          <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-            {t('videoGeneration.tvShow.authRequired.desc', {
-              defaultValue: 'Flowy TV 广场与发布需要云端账号。',
-            })}
-          </div>
-        </div>
-        <Button type='primary' size='small' onClick={() => navigate('/cloud-login')}>
-          {t('videoGeneration.tvShow.authRequired.login', { defaultValue: '去登录' })}
-        </Button>
       </div>
     );
   }
@@ -299,35 +365,37 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     <div className='flex flex-col gap-12px'>
       {messageHolder}
       <div className='flex flex-wrap items-center justify-between gap-12px'>
-        <SegmentedTabs
-          size='sm'
-          items={scopeItems}
-          activeKey={scope}
-          onChange={handleScopeChange}
-        />
+        <FilterPills items={tabItems} active={tab} onChange={handleTabChange} />
         {scope === 'campaign' ? null : (
-        <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
-          <Search theme='outline' size={14} className='flex-none text-[var(--color-text-3)]' />
-          <input
-            className='w-full border-none bg-transparent text-13px text-[var(--color-text-1)] outline-none font-[inherit] placeholder:text-[var(--color-text-3)]'
-            placeholder={t('videoGeneration.tvShow.searchPlaceholder', {
-              defaultValue: '搜索作品...',
-            })}
-            value={scope === 'plaza' ? keywordInput : searchQuery}
-            onChange={(event) => {
-              if (scope === 'plaza') setKeywordInput(event.target.value);
-              else setSearchQuery(event.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && scope === 'plaza') {
-                setKeyword(keywordInput.trim());
-              }
-            }}
-            onBlur={() => {
-              if (scope === 'plaza') setKeyword(keywordInput.trim());
-            }}
-          />
-        </div>
+          <div className='flex flex-wrap items-center gap-8px'>
+            {scope === 'plaza' ? (
+              <FilterPills
+                items={[
+                  {
+                    key: 'latest',
+                    label: t('videoGeneration.tvShow.sort.latest', { defaultValue: '最新' }),
+                  },
+                  {
+                    key: 'likes',
+                    label: t('videoGeneration.tvShow.sort.likes', { defaultValue: '最多赞' }),
+                  },
+                ]}
+                active={sort}
+                onChange={setSort}
+              />
+            ) : null}
+            <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
+              <Search theme='outline' size={14} className='flex-none text-[var(--color-text-3)]' />
+              <input
+                className='w-full border-none bg-transparent text-13px text-[var(--color-text-1)] outline-none font-[inherit] placeholder:text-[var(--color-text-3)]'
+                placeholder={t('videoGeneration.tvShow.searchPlaceholder', {
+                  defaultValue: '搜索作品...',
+                })}
+                value={keywordInput}
+                onChange={(event) => setKeywordInput(event.target.value)}
+              />
+            </div>
+          </div>
         )}
       </div>
 
@@ -341,6 +409,20 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         >
           <CampaignPanel />
         </Suspense>
+      ) : scope === 'mine' && !authenticated ? (
+        <TvShowEmptyState
+          title={t('videoGeneration.tvShow.authRequired.mineTitle', {
+            defaultValue: '登录后查看我的发布',
+          })}
+          desc={t('videoGeneration.tvShow.authRequired.mineDesc', {
+            defaultValue: '点赞、投稿和导入需要云端账号。',
+          })}
+          action={
+            <Button type='primary' size='small' onClick={goLogin}>
+              {t('videoGeneration.tvShow.authRequired.login', { defaultValue: '去登录' })}
+            </Button>
+          }
+        />
       ) : error ? (
         <Result
           status='error'
@@ -356,120 +438,76 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         <div className='flex justify-center py-38px'>
           <Spin />
         </div>
-      ) : displayed.length === 0 ? (
-        <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-          <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
-            <VideoOne theme='outline' size={19} fill='currentColor' />
-          </span>
-          <div>
-            <div className='text-13px font-600 text-[var(--color-text-1)]'>
-              {scope === 'mine'
-                ? t('videoGeneration.tvShow.empty.mineTitle', {
-                    defaultValue: '还没有发布作品',
-                  })
-                : t('videoGeneration.tvShow.empty.plazaTitle', {
-                    defaultValue: '广场暂无作品',
-                  })}
-            </div>
-            <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-              {scope === 'mine'
-                ? t('videoGeneration.tvShow.empty.mineDesc', {
-                    defaultValue: '在短剧工作区或创作画布里点击「发布到 Flowy TV」。',
-                  })
-                : t('videoGeneration.tvShow.empty.plazaDesc', {
-                    defaultValue: '审核通过的作品会出现在这里。',
-                  })}
-            </div>
-          </div>
-        </div>
       ) : (
-        <div
-          className='grid gap-12px'
-          style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))' }}
-        >
-          {displayed.map((video) => (
-            <TvShowCard
-              key={video.id}
-              video={video}
-              onOpen={(v) => void openDetail(v)}
-              onToggleLike={scope === 'plaza' ? (v) => void handleToggleLike(v) : undefined}
-              onDelete={scope === 'mine' ? (v) => void handleDelete(v) : undefined}
-              liking={likingId === video.id}
-              deleting={deletingId === video.id}
-              showStatus={scope === 'mine'}
+        <>
+          {scope === 'plaza' && featured.length > 0 ? (
+            <section className='flex flex-col gap-10px'>
+              <h2 className='m-0 text-15px font-650 text-[var(--color-text-1)]'>
+                {t('videoGeneration.tvShow.featuredTitle', { defaultValue: '精选' })}
+              </h2>
+              {renderGrid(featured, false)}
+            </section>
+          ) : null}
+          {displayed.length === 0 && featured.length === 0 ? (
+            <TvShowEmptyState
+              title={
+                scope === 'mine'
+                  ? t('videoGeneration.tvShow.empty.mineTitle')
+                  : channel === 'all'
+                    ? t('videoGeneration.tvShow.empty.plazaTitle')
+                    : t('videoGeneration.tvShow.empty.channelTitle', {
+                        defaultValue: '这个频道还没有作品',
+                      })
+              }
+              desc={
+                scope === 'mine'
+                  ? t('videoGeneration.tvShow.empty.mineDesc')
+                  : channel === 'all'
+                    ? t('videoGeneration.tvShow.empty.plazaDesc')
+                    : t('videoGeneration.tvShow.empty.channelDesc', {
+                        defaultValue: '换个频道，或自己发一支。',
+                      })
+              }
+              action={createCta}
             />
-          ))}
-        </div>
-      )}
-
-      <Drawer
-        width={420}
-        title={detail?.title || t('videoGeneration.tvShow.detail.title', { defaultValue: '作品详情' })}
-        visible={detail != null}
-        onCancel={() => setDetail(null)}
-        footer={null}
-      >
-        {detailLoading && !detail?.packageUrl ? (
-          <div className='flex justify-center py-40px'>
-            <Spin />
-          </div>
-        ) : detail ? (
-          <div className='flex flex-col gap-14px'>
-            {detail.coverUrl ? (
-              <img
-                src={detail.coverUrl}
-                alt=''
-                className='w-full rd-12px object-contain aspect-video bg-[var(--color-fill-2)]'
-              />
-            ) : null}
-            <div className='text-13px text-[var(--color-text-3)]'>
-              {tvShowWorkflowLabel(detail, t)}
-              {detail.author?.name ? ` · ${detail.author.name}` : ''}
-            </div>
-            {detail.description ? (
-              <p className='m-0 text-13px leading-[1.6] text-[var(--color-text-2)] whitespace-pre-wrap'>
-                {detail.description}
-              </p>
-            ) : null}
-            {detail.rejectReason && detail.status === 'offline' ? (
-              <div className='text-12px text-[rgb(var(--danger-6))]'>{detail.rejectReason}</div>
-            ) : null}
-            <div className='flex flex-wrap gap-8px'>
-              {detail.status === 'published' ? (
-                <Button
-                  type='outline'
-                  size='small'
-                  loading={likingId === detail.id}
-                  onClick={() => void handleToggleLike(detail)}
-                >
-                  <span className='inline-flex items-center gap-4px'>
-                    <Like
-                      theme={detail.liked ? 'filled' : 'outline'}
-                      size={14}
-                      fill='currentColor'
-                    />
-                    {detail.likeCount ?? 0}
-                  </span>
-                </Button>
-              ) : null}
-              <Button
-                type='primary'
-                size='small'
-                loading={importing}
-                disabled={!detail.packageUrl && detailLoading}
-                onClick={() => void handleImport()}
-              >
-                <span className='inline-flex items-center gap-4px'>
-                  <Download theme='outline' size={14} fill='currentColor' />
-                  {t('videoGeneration.tvShow.actions.import', {
-                    defaultValue: '导入到本地',
-                  })}
-                </span>
+          ) : displayed.length > 0 ? (
+            <>
+              {renderGrid(displayed, scope === 'mine')}
+            </>
+          ) : null}
+          {videos.length < total ? (
+            <div className='flex justify-center pt-4px'>
+              <Button size='small' loading={loadingMore} onClick={() => void loadMore()}>
+                {t('videoGeneration.tvShow.loadMore', { defaultValue: '加载更多' })}
               </Button>
             </div>
-          </div>
-        ) : null}
-      </Drawer>
+          ) : null}
+        </>
+      )}
+
+      <TvShowInspector
+        video={detail}
+        loading={detailLoading}
+        importing={importing}
+        liking={likingId === detail?.id}
+        authenticated={authenticated}
+        onClose={() => setDetail(null)}
+        onImport={() => void handleImport()}
+        onToggleLike={() => {
+          if (detail) void handleToggleLike(detail);
+        }}
+        onLogin={goLogin}
+        onPrev={
+          inspectorIndex > 0
+            ? () => void openDetail(inspectorItems[inspectorIndex - 1])
+            : undefined
+        }
+        onNext={
+          inspectorIndex >= 0 && inspectorIndex < inspectorItems.length - 1
+            ? () => void openDetail(inspectorItems[inspectorIndex + 1])
+            : undefined
+        }
+      />
     </div>
   );
 };

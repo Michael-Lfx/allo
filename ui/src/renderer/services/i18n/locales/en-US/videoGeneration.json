@@ -4,17 +4,17 @@
   "mode": {
     "agent": "Short drama",
     "canvas": "Canvas",
-    "generateLabel": "Video generation",
-    "agentLabel": "Short drama mode",
-    "creationLabel": "Creation mode",
-    "agentHint": "Short drama mode: plan storyboards from a prompt and render a film.",
+    "generateLabel": "Instant clip",
+    "agentLabel": "Drama studio",
+    "creationLabel": "Infinite canvas",
+    "agentHint": "Drama studio: plan storyboards from a prompt and render a film.",
     "canvasHint": "Canvas mode (dev): node-based canvas for precise generation control.",
     "generateMenuDesc": "Reference image + prompt to generate a video clip",
     "agentMenuDesc": "Auto-plan storyboards and render a film",
-    "actionLabel": "Action imitation",
+    "actionLabel": "Motion match",
     "actionMenuDesc": "Character still + reference video to imitate motion",
     "creationMenuDesc": "Describe the story, upload characters or scenes, then storyboard",
-    "briefingLabel": "News briefing",
+    "briefingLabel": "Spoken briefing",
     "briefingMenuDesc": "Cited research plus a spoken briefing. Never invent today's news"
   },
   "nav": {
@@ -70,8 +70,26 @@
   },
   "tvShow": {
     "title": "Flowy TV",
-    "subtitle": "Browse published community films, or check your submission status.",
+    "subtitle": "Browse community films and remix the same project.",
+    "subtitleMine": "Track review status and manage what you published.",
+    "subtitleChannel": "Filter plaza films by how they were made.",
     "searchPlaceholder": "Search films...",
+    "featuredTitle": "Featured",
+    "loadMore": "Load more",
+    "sort": {
+      "latest": "Latest",
+      "likes": "Most liked"
+    },
+    "channel": {
+      "all": "All",
+      "idea2video": "One-liner",
+      "script2video": "Script",
+      "novel2video": "Novel",
+      "canvas": "Canvas",
+      "action2video": "Action",
+      "campaign": "Campaigns",
+      "mine": "Mine"
+    },
     "scope": {
       "plaza": "Plaza",
       "campaign": "Campaigns",
@@ -89,12 +107,17 @@
     "empty": {
       "plazaTitle": "No films on the plaza yet",
       "plazaDesc": "Approved submissions will show up here.",
+      "channelTitle": "Nothing in this channel yet",
+      "channelDesc": "Try another channel, or publish one of your own.",
       "mineTitle": "You haven’t published yet",
-      "mineDesc": "Publish from a finished short-drama workspace or a creation canvas."
+      "mineDesc": "Publish from a finished workspace with “Publish to Flowy TV”.",
+      "create": "Start creating"
     },
     "authRequired": {
       "title": "Sign in to watch Flowy TV",
-      "desc": "Cloud account is required for Flowy TV plaza and publishing.",
+      "desc": "Likes, remix, and My posts need a cloud account.",
+      "mineTitle": "Sign in to see your posts",
+      "mineDesc": "Likes, entries, and remix need a cloud account.",
       "login": "Sign in",
       "publish": "Sign in to your cloud account before publishing to Flowy TV."
     },
@@ -109,6 +132,7 @@
       "deleteOk": "Publication deleted",
       "deleteFailed": "Failed to delete",
       "import": "Import locally",
+      "remix": "Make one like this",
       "importOk": "Project imported locally",
       "importFailed": "Import failed"
     },
@@ -144,8 +168,8 @@
       "endedDesc": "No past campaigns yet."
     },
     "authRequired": {
-      "title": "Sign in to view campaigns",
-      "desc": "A cloud account is required to browse and enter campaigns."
+      "title": "Sign in to enter",
+      "desc": "You can browse campaigns without signing in. Entries and likes need a cloud account."
     },
     "cta": {
       "submit": "Enter now",
@@ -156,7 +180,8 @@
     },
     "winnersTitle": "Winners",
     "submissionsTitle": "Campaign films",
-    "submissionsEmpty": "No published entries yet. Approved films will appear here.",
+    "submissionsEmptyTitle": "No published entries yet",
+    "submissionsEmpty": "Approved films will appear here.",
     "mineTitle": "My entries",
     "award": {
       "first": "1st prize",
@@ -184,8 +209,11 @@
     "eyebrow": "AI narrative director",
     "heroTitle": "Turn one idea into a complete film",
     "heroSubtitle": "Create an editable storyboard first, then render after the story and visuals feel right.",
-    "homeHeroPrefix": "Start your",
-    "homeHeroSuffix": " and create now!",
+    "homeHeadlineGenerate": "One reference image. <em>A clip, now.</em>",
+    "homeHeadlineAgent": "One sentence, a finished <em>short drama</em>",
+    "homeHeadlineCreation": "Direct your shots on the <em>infinite canvas</em>",
+    "homeHeadlineAction": "Make the character <em>move with the video</em>",
+    "homeHeadlineBriefing": "Turn a topic into a <em>cited briefing</em>",
     "homeHintAgent": "Type in stories or thoughts — Flowy turns them into a film.",
     "homeHintAction": "Upload a character image and a reference video to imitate the motion.",
     "homeHintCreation": "Describe scenes and shots, then arrange generation on the infinite canvas.",
@@ -255,7 +283,7 @@
       "targetDuration": "Target duration",
       "clipDuration": "Clip duration",
       "specifyDuration": "Set duration",
-      "specifyDurationOffHint": "When off, short drama mode chooses film length from the story.",
+      "specifyDurationOffHint": "When off, Drama studio chooses film length from the story.",
       "planningModel": "Planning model",
       "loading": "Loading…",
       "noModelSelected": "No model selected"

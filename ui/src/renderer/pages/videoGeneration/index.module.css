@@ -277,6 +277,70 @@
   pointer-events: none;
 }
 
+.tvLockup {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background:
+    linear-gradient(135deg, rgba(var(--primary-6), 0.12), transparent 58%),
+    linear-gradient(155deg, #12151c, #0c0f14);
+}
+
+.tvLockupMedia {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+}
+
+.tvLockupScrim {
+  position: absolute;
+  inset: auto 0 0 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 28px 12px 10px;
+  background: linear-gradient(180deg, transparent 0%, rgba(8, 10, 14, 0.78) 100%);
+  color: #fff;
+  pointer-events: none;
+}
+
+.tvLockupPill {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  left: 8px;
+  max-width: calc(100% - 72px);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.tvLockupActions {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.projectCard:hover .tvLockupActions,
+.projectCard:focus-within .tvLockupActions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .projectCoverPlayIndicator {
   position: absolute;
   inset: 0;

@@ -2,32 +2,36 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Drawer, Result, Spin, Tag } from '@arco-design/web-react';
-import { ArrowLeft, Download, Like, Trophy } from '@icon-park/react';
+import { Button, Result, Spin, Tag } from '@arco-design/web-react';
+import { ArrowLeft } from '@icon-park/react';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import {
   getCampaignDetail,
   getTvShowDetail,
-  importTvShow,
   likeTvShow,
   listCampaignSubmissions,
   listCampaignWinners,
   listMyTvShow,
+  remixTvShow,
   unlikeTvShow,
 } from './api';
-import { importCanvasTvShow } from '../videoCanvas/api';
 import {
   campaignCountdownMs,
   campaignHomeSearch,
   formatCampaignRange,
   formatCountdown,
+  tvShowSortParam,
+  uniqueVideosById,
+  type TvShowListSort,
 } from './campaign';
 import type { CampaignDetail } from './types';
 import type { TvShowVideo } from './types';
-import { isCanvasTvShow, tvShowWorkflowLabel } from './components/SessionCard';
 import TvShowCard from './components/TvShowCard';
+import TvShowEmptyState from './components/TvShowEmptyState';
+import TvShowInspector from './components/TvShowInspector';
+import FilterPills from './components/FilterPills';
 import { phaseColor } from './components/CampaignCard';
 import CampaignHtmlBody from './components/CampaignHtmlBody';
 import pageStyles from './index.module.css';
@@ -35,14 +39,7 @@ import styles from './campaign.module.css';
 
 const CampaignSubmitModal = lazy(() => import('./components/CampaignSubmitModal'));
 
-const PAGE_SIZE = 16;
-
-function awardClass(level: string | null | undefined): string {
-  if (level === 'first') return styles.awardFirst;
-  if (level === 'second') return styles.awardSecond;
-  if (level === 'third') return styles.awardThird;
-  return '';
-}
+const PAGE_SIZE = 28;
 
 const CampaignDetailPage: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -51,6 +48,7 @@ const CampaignDetailPage: React.FC = () => {
   const { id: idParam } = useParams();
   const campaignId = Number(idParam);
   const { status: cloudStatus, logout } = useCloudAuth();
+  const authenticated = cloudStatus === 'authenticated';
   const [message, messageHolder] = useArcoMessage();
 
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
@@ -66,6 +64,7 @@ const CampaignDetailPage: React.FC = () => {
   const [videoDetail, setVideoDetail] = useState<TvShowVideo | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [sort, setSort] = useState<TvShowListSort>('latest');
   const winnersRef = useRef<HTMLDivElement>(null);
   const mineRef = useRef<HTMLDivElement>(null);
 
@@ -78,7 +77,7 @@ const CampaignDetailPage: React.FC = () => {
     [logout]
   );
 
-  const loadCore = useCallback(async () => {
+  const loadCampaign = useCallback(async () => {
     if (!Number.isFinite(campaignId) || campaignId <= 0) {
       setError(t('videoGeneration.campaign.notFound', { defaultValue: '活动不存在' }));
       setLoading(false);
@@ -86,23 +85,18 @@ const CampaignDetailPage: React.FC = () => {
     }
     setLoading(true);
     try {
-      const [next, winnerData, mineData, submissionData] = await Promise.all([
+      const [next, winnerData, mineData] = await Promise.all([
         getCampaignDetail(campaignId),
-        listCampaignWinners(campaignId).catch(() => ({ list: [] as TvShowVideo[], total: 0 })),
-        listMyTvShow({ campaignId, page: 1, pageSize: 20 }).catch(
-          () => ({ list: [] as TvShowVideo[], total: 0 })
-        ),
-        listCampaignSubmissions(campaignId, {
-          page: 1,
-          pageSize: PAGE_SIZE,
-          sort: 'publishedAtDesc',
-        }).catch(() => ({ list: [] as TvShowVideo[], total: 0 })),
+        listCampaignWinners(campaignId).catch(() => ({ list: [] as TvShowVideo[] })),
+        authenticated
+          ? listMyTvShow({ campaignId, page: 1, pageSize: 20 }).catch(
+              () => ({ list: [] as TvShowVideo[] })
+            )
+          : Promise.resolve({ list: [] as TvShowVideo[] }),
       ]);
       setDetail(next);
       setWinners(winnerData.list ?? []);
       setMine(mineData.list ?? []);
-      setSubmissions(submissionData.list ?? []);
-      setSubmissionTotal(submissionData.total ?? 0);
       setError(null);
     } catch (e) {
       if (await consumeExpiredCloudSession(e)) return;
@@ -110,15 +104,28 @@ const CampaignDetailPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [campaignId, consumeExpiredCloudSession, t]);
+  }, [authenticated, campaignId, consumeExpiredCloudSession, t]);
+
+  const loadSubmissions = useCallback(async () => {
+    if (!Number.isFinite(campaignId) || campaignId <= 0) return;
+    const data = await listCampaignSubmissions(campaignId, {
+      page: 1,
+      pageSize: PAGE_SIZE,
+      sort: tvShowSortParam(sort),
+    }).catch(() => ({ list: [] as TvShowVideo[], total: 0 }));
+    setSubmissions(data.list ?? []);
+    setSubmissionTotal(data.total ?? 0);
+  }, [campaignId, sort]);
 
   useEffect(() => {
-    if (cloudStatus !== 'authenticated') {
-      setLoading(false);
-      return;
-    }
-    void loadCore();
-  }, [cloudStatus, loadCore]);
+    if (cloudStatus === 'checking') return;
+    void loadCampaign();
+  }, [cloudStatus, loadCampaign]);
+
+  useEffect(() => {
+    if (cloudStatus === 'checking') return;
+    void loadSubmissions();
+  }, [cloudStatus, loadSubmissions]);
 
   useEffect(() => {
     if (detail?.phase !== 'upcoming') return;
@@ -164,8 +171,14 @@ const CampaignDetailPage: React.FC = () => {
     [consumeExpiredCloudSession, message, t]
   );
 
+  const goLogin = useCallback(() => navigate('/cloud-login'), [navigate]);
+
   const handleToggleLike = useCallback(
     async (video: TvShowVideo) => {
+      if (!authenticated) {
+        goLogin();
+        return;
+      }
       if (likingId != null) return;
       setLikingId(video.id);
       try {
@@ -193,28 +206,19 @@ const CampaignDetailPage: React.FC = () => {
         setLikingId(null);
       }
     },
-    [consumeExpiredCloudSession, likingId, message, t]
+    [authenticated, consumeExpiredCloudSession, goLogin, likingId, message, t]
   );
 
   const handleImport = useCallback(async () => {
     if (!videoDetail || importing) return;
     setImporting(true);
     try {
-      if (isCanvasTvShow(videoDetail)) {
-        const imported = await importCanvasTvShow(videoDetail.id);
-        message.success(
-          t('videoGeneration.tvShow.actions.importOk', { defaultValue: '工程已导入到本地' })
-        );
-        setVideoDetail(null);
-        navigate(`/video-generation/canvas/${encodeURIComponent(imported.project_id)}`);
-        return;
-      }
-      const imported = await importTvShow(videoDetail.id);
+      const path = await remixTvShow(videoDetail);
       message.success(
         t('videoGeneration.tvShow.actions.importOk', { defaultValue: '工程已导入到本地' })
       );
       setVideoDetail(null);
-      navigate(`/video-generation/${imported.id}`);
+      navigate(path);
     } catch (e) {
       if (await consumeExpiredCloudSession(e)) return;
       message.error(
@@ -233,77 +237,43 @@ const CampaignDetailPage: React.FC = () => {
     const data = await listCampaignSubmissions(campaignId, {
       page,
       pageSize: PAGE_SIZE,
-      sort: 'publishedAtDesc',
+      sort: tvShowSortParam(sort),
     });
     setSubmissions((prev) => [...prev, ...(data.list ?? [])]);
     setSubmissionTotal(data.total ?? submissionTotal);
-  }, [campaignId, submissionTotal, submissions.length]);
+  }, [campaignId, sort, submissionTotal, submissions.length]);
 
-  const renderVideoGrid = (videos: TvShowVideo[], withAward: boolean) => (
+  const inspectable = useMemo(
+    () => uniqueVideosById(winners, submissions, mine),
+    [mine, submissions, winners]
+  );
+  const inspectorIndex = videoDetail
+    ? inspectable.findIndex((v) => v.id === videoDetail.id)
+    : -1;
+
+  const renderVideoGrid = (videos: TvShowVideo[]) => (
     <div
       className='grid gap-12px'
-      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))' }}
+      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))' }}
     >
       {videos.map((video) => (
-        <div key={video.id} className='relative'>
-          {withAward && (video.awardLabel || video.awardLevel) ? (
-            <span className={`${styles.awardBadge} ${awardClass(video.awardLevel)}`}>
-              {video.awardLabel ||
-                t(`videoGeneration.campaign.award.${video.awardLevel}`, {
-                  defaultValue: video.awardLevel ?? '',
-                })}
-            </span>
-          ) : null}
-          <TvShowCard
-            video={video}
-            onOpen={(v) => void openVideo(v)}
-            onToggleLike={(v) => void handleToggleLike(v)}
-            liking={likingId === video.id}
-            showStatus={Boolean(video.isMine && video.status !== 'published')}
-          />
-        </div>
+        <TvShowCard
+          key={video.id}
+          video={video}
+          onOpen={(v) => void openVideo(v)}
+          onToggleLike={(v) => void handleToggleLike(v)}
+          liking={likingId === video.id}
+          showStatus={Boolean(video.isMine && video.status !== 'published')}
+        />
       ))}
     </div>
   );
 
-  if (cloudStatus === 'checking' || loading) {
+  if (cloudStatus === 'checking' || (loading && !detail)) {
     return (
       <div className={`${pageStyles.page} flex-1 min-h-0 size-full box-border overflow-y-auto px-16px py-24px`}>
         <div className='flex justify-center py-60px'>
           <Spin />
-        </div>
-      </div>
-    );
-  }
-
-  if (cloudStatus !== 'authenticated') {
-    return (
-      <div className={`${pageStyles.page} flex-1 min-h-0 size-full box-border overflow-y-auto px-16px py-24px`}>
-        {messageHolder}
-        <div className='mx-auto flex w-full max-w-860px flex-col gap-16px'>
-          <Button type='text' size='small' className='self-start' onClick={goBack}>
-            <span className='inline-flex items-center gap-4px'>
-              <ArrowLeft theme='outline' size={14} fill='currentColor' />
-              {t('videoGeneration.campaign.back', { defaultValue: '返回' })}
-            </span>
-          </Button>
-          <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-            <div className='min-w-0 flex-1'>
-              <div className='text-13px font-600 text-[var(--color-text-1)]'>
-                {t('videoGeneration.campaign.authRequired.title', {
-                  defaultValue: '登录后查看活动',
-                })}
-              </div>
-              <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                {t('videoGeneration.campaign.authRequired.desc', {
-                  defaultValue: '活动浏览与投稿需要云端账号。',
-                })}
-              </div>
-            </div>
-            <Button type='primary' size='small' onClick={() => navigate('/cloud-login')}>
-              {t('videoGeneration.tvShow.authRequired.login', { defaultValue: '去登录' })}
-            </Button>
-          </div>
         </div>
       </div>
     );
@@ -394,7 +364,7 @@ const CampaignDetailPage: React.FC = () => {
 
         <div className='flex flex-wrap gap-8px'>
           {detail.canSubmit ? (
-            <Button type='primary' onClick={() => setSubmitOpen(true)}>
+            <Button type='primary' onClick={() => (authenticated ? setSubmitOpen(true) : goLogin())}>
               {mine.length > 0
                 ? t('videoGeneration.campaign.cta.submitAgain', { defaultValue: '更新投稿' })
                 : t('videoGeneration.campaign.cta.submit', { defaultValue: '立即参与' })}
@@ -425,28 +395,53 @@ const CampaignDetailPage: React.FC = () => {
             <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
               {t('videoGeneration.campaign.winnersTitle', { defaultValue: '获奖作品' })}
             </h2>
-            {renderVideoGrid(winners, true)}
+            {renderVideoGrid(winners)}
           </section>
         ) : null}
 
         <section className='flex flex-col gap-12px'>
-          <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-            {t('videoGeneration.campaign.submissionsTitle', { defaultValue: '活动作品' })}
-          </h2>
+          <div className='flex flex-wrap items-center justify-between gap-8px'>
+            <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+              {t('videoGeneration.campaign.submissionsTitle', { defaultValue: '活动作品' })}
+            </h2>
+            <FilterPills
+              items={[
+                {
+                  key: 'latest',
+                  label: t('videoGeneration.tvShow.sort.latest', { defaultValue: '最新' }),
+                },
+                {
+                  key: 'likes',
+                  label: t('videoGeneration.tvShow.sort.likes', { defaultValue: '最多赞' }),
+                },
+              ]}
+              active={sort}
+              onChange={setSort}
+            />
+          </div>
           {submissions.length === 0 ? (
-            <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-              <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-primary-6'>
-                <Trophy theme='outline' size={19} fill='currentColor' />
-              </span>
-              <div className='text-13px text-[var(--color-text-3)]'>
-                {t('videoGeneration.campaign.submissionsEmpty', {
-                  defaultValue: '还没有上架作品，通过审核后会出现在这里。',
-                })}
-              </div>
-            </div>
+            <TvShowEmptyState
+              title={t('videoGeneration.campaign.submissionsEmptyTitle', {
+                defaultValue: '还没有上架作品',
+              })}
+              desc={t('videoGeneration.campaign.submissionsEmpty', {
+                defaultValue: '通过审核后会出现在这里。',
+              })}
+              action={
+                detail.canSubmit ? (
+                  <Button
+                    type='primary'
+                    size='small'
+                    onClick={() => (authenticated ? setSubmitOpen(true) : goLogin())}
+                  >
+                    {t('videoGeneration.campaign.cta.submit', { defaultValue: '立即参与' })}
+                  </Button>
+                ) : undefined
+              }
+            />
           ) : (
             <>
-              {renderVideoGrid(submissions, false)}
+              {renderVideoGrid(submissions)}
               {submissions.length < submissionTotal ? (
                 <div className='flex justify-center'>
                   <Button size='small' onClick={() => void loadMoreSubmissions()}>
@@ -463,82 +458,34 @@ const CampaignDetailPage: React.FC = () => {
             <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
               {t('videoGeneration.campaign.mineTitle', { defaultValue: '我的投稿' })}
             </h2>
-            {renderVideoGrid(mine, false)}
+            {renderVideoGrid(mine)}
           </section>
         ) : null}
       </div>
 
-      <Drawer
-        width={420}
-        title={
-          videoDetail?.title ||
-          t('videoGeneration.tvShow.detail.title', { defaultValue: '作品详情' })
+      <TvShowInspector
+        video={videoDetail}
+        loading={detailLoading}
+        importing={importing}
+        liking={likingId === videoDetail?.id}
+        authenticated={authenticated}
+        onClose={() => setVideoDetail(null)}
+        onImport={() => void handleImport()}
+        onToggleLike={() => {
+          if (videoDetail) void handleToggleLike(videoDetail);
+        }}
+        onLogin={goLogin}
+        onPrev={
+          inspectorIndex > 0
+            ? () => void openVideo(inspectable[inspectorIndex - 1])
+            : undefined
         }
-        visible={videoDetail != null}
-        onCancel={() => setVideoDetail(null)}
-        footer={null}
-      >
-        {detailLoading && !videoDetail?.packageUrl ? (
-          <div className='flex justify-center py-40px'>
-            <Spin />
-          </div>
-        ) : videoDetail ? (
-          <div className='flex flex-col gap-14px'>
-            {videoDetail.coverUrl ? (
-              <img
-                src={videoDetail.coverUrl}
-                alt=''
-                className='w-full rd-12px object-contain aspect-video bg-[var(--color-fill-2)]'
-              />
-            ) : null}
-            <div className='text-13px text-[var(--color-text-3)]'>
-              {tvShowWorkflowLabel(videoDetail, t)}
-              {videoDetail.author?.name ? ` · ${videoDetail.author.name}` : ''}
-            </div>
-            {videoDetail.description ? (
-              <p className='m-0 text-13px leading-[1.6] text-[var(--color-text-2)] whitespace-pre-wrap'>
-                {videoDetail.description}
-              </p>
-            ) : null}
-            {videoDetail.rejectReason && videoDetail.status === 'offline' ? (
-              <div className='text-12px text-danger-6'>{videoDetail.rejectReason}</div>
-            ) : null}
-            <div className='flex flex-wrap gap-8px'>
-              {videoDetail.status === 'published' ? (
-                <Button
-                  type='outline'
-                  size='small'
-                  loading={likingId === videoDetail.id}
-                  onClick={() => void handleToggleLike(videoDetail)}
-                >
-                  <span className='inline-flex items-center gap-4px'>
-                    <Like
-                      theme={videoDetail.liked ? 'filled' : 'outline'}
-                      size={14}
-                      fill='currentColor'
-                    />
-                    {videoDetail.likeCount ?? 0}
-                  </span>
-                </Button>
-              ) : null}
-              <Button
-                type='primary'
-                size='small'
-                loading={importing}
-                disabled={!videoDetail.packageUrl && detailLoading}
-                onClick={() => void handleImport()}
-              >
-                <span className='inline-flex items-center gap-4px'>
-                  <Download theme='outline' size={14} fill='currentColor' />
-                  {t('videoGeneration.tvShow.actions.import', {
-                    defaultValue: '导入到本地',
-                  })}
-                </span>
-              </Button>
-            </div>
-          </div>
-        ) : null}
-      </Drawer>
+        onNext={
+          inspectorIndex >= 0 && inspectorIndex < inspectable.length - 1
+            ? () => void openVideo(inspectable[inspectorIndex + 1])
+            : undefined
+        }
+      />
 
       {submitOpen ? (
         <Suspense fallback={null}>
@@ -546,7 +493,10 @@ const CampaignDetailPage: React.FC = () => {
             campaignId={campaignId}
             visible={submitOpen}
             onClose={() => setSubmitOpen(false)}
-            onSubmitted={() => void loadCore()}
+            onSubmitted={() => {
+              void loadCampaign();
+              void loadSubmissions();
+            }}
           />
         </Suspense>
       ) : null}

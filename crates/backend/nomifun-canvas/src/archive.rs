@@ -28,7 +28,7 @@ use zip::write::{SimpleFileOptions, ZipWriter};
 
 use crate::dto::CanvasProjectMeta;
 use crate::fsio::{ensure_dir, read_json_file, write_json_file};
-use crate::service::{CanvasService, MediaIndexEntry, validate_project_id};
+use crate::service::{CanvasService, MediaIndex, MediaIndexEntry, validate_project_id};
 
 pub const ARCHIVE_APP: &str = "nomifun-canvas";
 pub const ARCHIVE_VERSION: u32 = 1;
@@ -246,6 +246,41 @@ impl CanvasService {
             .await
             .map_err(map_cloud_err)?;
 
+        let preview_upload = if let Some(preview) = self.pick_preview_media(&project.doc).await? {
+            let preview_bytes = tokio::fs::read(&preview.path)
+                .await
+                .map_err(|e| AppError::Internal(format!("read preview: {e}")))?;
+            let preview_name = preview
+                .path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("preview.mp4");
+            let preview_mime = if preview.mime.starts_with("video/") {
+                preview.mime.clone()
+            } else {
+                "video/mp4".into()
+            };
+            info!(
+                project_id = %id,
+                bytes = preview_bytes.len(),
+                "TV Show: uploading canvas preview"
+            );
+            Some(
+                client
+                    .upload_bytes_via_oss_detailed(
+                        &cloud_session,
+                        &preview_bytes,
+                        preview_name,
+                        &preview_mime,
+                        None,
+                    )
+                    .await
+                    .map_err(map_cloud_err)?,
+            )
+        } else {
+            None
+        };
+
         let title_raw = req
             .title
             .as_deref()
@@ -319,6 +354,8 @@ impl CanvasService {
             target_duration_secs,
             cover_url: cover_upload.public_url,
             cover_object_key: cover_upload.object_key,
+            preview_url: preview_upload.as_ref().map(|u| u.public_url.clone()),
+            preview_object_key: preview_upload.and_then(|u| u.object_key),
             package_url: package_upload.public_url,
             package_object_key: package_upload.object_key,
             package_size_bytes: Some(package_upload.byte_size as i64),
@@ -337,7 +374,7 @@ impl CanvasService {
     pub async fn import_tv_show(&self, id: i64) -> Result<ImportedCanvasProject, AppError> {
         let (client, session) = self.flowy_client_and_session().await?;
         let detail = client
-            .tv_show_detail(&session, id)
+            .tv_show_detail(Some(&session), id)
             .await
             .map_err(map_cloud_err)?;
         let package_url = detail
@@ -441,6 +478,20 @@ impl CanvasService {
             }
         }
         self.pick_drawing_cover(project_id).await
+    }
+
+    async fn pick_preview_media(&self, doc: &Value) -> Result<Option<CoverFile>, AppError> {
+        let idx = self.load_media_index().await?;
+        let mut seen = BTreeSet::new();
+        for id in preferred_preview_ids(doc) {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(file) = video_file_from_index(&idx, &self.media_dir(), &id) {
+                return Ok(Some(file));
+            }
+        }
+        Ok(None)
     }
 
     async fn pick_drawing_cover(&self, project_id: &str) -> Result<Option<CoverFile>, AppError> {
@@ -1235,7 +1286,7 @@ fn strip_media_url_origin(s: &str) -> String {
     }
 }
 
-fn cover_file_from_index(idx: &crate::service::MediaIndex, media_dir: &Path, id: &str) -> Option<CoverFile> {
+fn cover_file_from_index(idx: &MediaIndex, media_dir: &Path, id: &str) -> Option<CoverFile> {
     let entry = idx.items.iter().find(|e| e.media_id == id)?;
     if !entry.mime.starts_with("image/") && entry.kind != "image" {
         return None;
@@ -1247,6 +1298,22 @@ fn cover_file_from_index(idx: &crate::service::MediaIndex, media_dir: &Path, id:
             entry.mime.clone()
         } else {
             "image/png".into()
+        },
+    })
+}
+
+fn video_file_from_index(idx: &MediaIndex, media_dir: &Path, id: &str) -> Option<CoverFile> {
+    let entry = idx.items.iter().find(|e| e.media_id == id)?;
+    if !entry.mime.starts_with("video/") && entry.kind != "video" {
+        return None;
+    }
+    let path = media_dir.join(format!("{}.{}", entry.media_id, entry.ext));
+    path.is_file().then(|| CoverFile {
+        path,
+        mime: if entry.mime.starts_with("video/") {
+            entry.mime.clone()
+        } else {
+            "video/mp4".into()
         },
     })
 }
@@ -1278,6 +1345,19 @@ fn preferred_cover_ids(doc: &Value) -> Vec<String> {
     pinned.extend(images);
     pinned.extend(others);
     pinned
+}
+
+fn preferred_preview_ids(doc: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(nodes) = doc.get("nodes").and_then(|v| v.as_array()) {
+        for node in nodes {
+            if node.get("type").and_then(|v| v.as_str()) != Some("video") {
+                continue;
+            }
+            ids.extend(node_cover_candidates(node));
+        }
+    }
+    ids
 }
 
 /// Canvas media refs first. `assetId` is often a project/library asset id, not

@@ -76,6 +76,46 @@ const LookPicker = lazy(() => import('../styleCatalog/LookPicker'));
 const VerticalSkillCreateModal = lazy(() => import('./VerticalSkillCreateModal'));
 const CampaignCarousel = lazy(() => import('../components/CampaignCarousel'));
 
+type HomeHeadlineKey =
+  | 'videoGeneration.create.homeHeadlineGenerate'
+  | 'videoGeneration.create.homeHeadlineAgent'
+  | 'videoGeneration.create.homeHeadlineCreation'
+  | 'videoGeneration.create.homeHeadlineAction'
+  | 'videoGeneration.create.homeHeadlineBriefing';
+
+function HeadlineWithEmphasis({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/<em>(.*?)<\/em>/).map((segment, index) =>
+        index % 2 === 1 ? <em key={index}>{segment}</em> : segment
+      )}
+    </>
+  );
+}
+
+const HOME_HEADLINES: Record<VideoHomeMode, { key: HomeHeadlineKey; defaults: string }> = {
+  generate: {
+    key: 'videoGeneration.create.homeHeadlineGenerate',
+    defaults: '一张参考图，<em>直接出片</em>',
+  },
+  agent: {
+    key: 'videoGeneration.create.homeHeadlineAgent',
+    defaults: '一句话，拍成<em>短剧</em>',
+  },
+  creation: {
+    key: 'videoGeneration.create.homeHeadlineCreation',
+    defaults: '在无限画布里<em>排镜头</em>',
+  },
+  action: {
+    key: 'videoGeneration.create.homeHeadlineAction',
+    defaults: '让角色跟着视频<em>动起来</em>',
+  },
+  briefing: {
+    key: 'videoGeneration.create.homeHeadlineBriefing',
+    defaults: '把话题做成<em>可溯源口播</em>',
+  },
+};
+
 function GenerationPreferencesMount({
   onMounted,
   children,
@@ -161,19 +201,19 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const showLookPicker = usesLookPicker(mode);
 
   const generateModeLabel = t('videoGeneration.mode.generateLabel', {
-    defaultValue: '视频生成',
+    defaultValue: '即刻出片',
   });
   const agentModeLabel = t('videoGeneration.mode.agentLabel', {
-    defaultValue: '短剧模式',
+    defaultValue: '短剧工坊',
   });
   const creationModeLabel = t('videoGeneration.mode.creationLabel', {
-    defaultValue: '创作模式',
+    defaultValue: '无限画布',
   });
   const actionModeLabel = t('videoGeneration.mode.actionLabel', {
-    defaultValue: '动作模仿',
+    defaultValue: '动作仿拍',
   });
   const briefingModeLabel = t('videoGeneration.mode.briefingLabel', {
-    defaultValue: '资讯播报',
+    defaultValue: '资讯口播',
   });
   const modeLabel =
     mode === 'generate'
@@ -185,6 +225,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           : mode === 'briefing'
             ? briefingModeLabel
             : actionModeLabel;
+  const headline = HOME_HEADLINES[mode];
 
   useEffect(() => {
     setDraft((current) => {
@@ -652,7 +693,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   return (
     <section className={styles.hero}>
       <div className={styles.heroHeading}>
-        <h1>{modeLabel}</h1>
+        <h1>
+          <HeadlineWithEmphasis
+            text={t(headline.key, { defaultValue: headline.defaults })}
+          />
+        </h1>
         <p className={styles.heroHint}>
           {mode === 'action'
             ? t('videoGeneration.create.homeHintAction', {

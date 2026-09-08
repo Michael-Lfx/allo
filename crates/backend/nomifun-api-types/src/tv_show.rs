@@ -17,6 +17,8 @@ pub struct TvShowVideo {
     pub id: i64,
     pub title: String,
     pub cover_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
     pub workflow: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
@@ -87,6 +89,10 @@ pub struct TvShowPublishRequest {
     pub cover_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_object_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_object_key: Option<String>,
     pub package_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_object_key: Option<String>,

@@ -38,6 +38,8 @@ import type {
   ImagePromptInfo,
   ActionAssetsInfo,
 } from './types';
+import { isCanvasTvShow } from './workflowKind';
+import { importCanvasTvShow } from '../videoCanvas/api';
 
 const BASE = '/api/vimax';
 const SESSION_LIST_CACHE_TTL_MS = 4_000;
@@ -771,6 +773,8 @@ export async function listTvShow(params?: {
   workflow?: string;
   keyword?: string;
   sort?: string;
+  campaignId?: number;
+  awardLevel?: string;
 }): Promise<TvShowListResult> {
   return httpRequest<TvShowListResult>(
     'GET',
@@ -780,6 +784,8 @@ export async function listTvShow(params?: {
       workflow: params?.workflow,
       keyword: params?.keyword,
       sort: params?.sort,
+      campaignId: params?.campaignId,
+      awardLevel: params?.awardLevel,
     })}`
   );
 }
@@ -822,6 +828,16 @@ export async function importTvShow(id: number): Promise<SessionSummary> {
   const session = await httpRequest<SessionSummary>('POST', `${BASE}/tv-show/${id}/import`, {});
   invalidateSessionList();
   return session;
+}
+
+/** Import a published film and return the local editor path. */
+export async function remixTvShow(video: TvShowVideo): Promise<string> {
+  if (isCanvasTvShow(video)) {
+    const imported = await importCanvasTvShow(video.id);
+    return `/video-generation/canvas/${encodeURIComponent(imported.project_id)}`;
+  }
+  const imported = await importTvShow(video.id);
+  return `/video-generation/${imported.id}`;
 }
 
 // ── Campaigns (cloud marketing via local proxy) ─────────────────────────────
