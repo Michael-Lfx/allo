@@ -80,8 +80,9 @@ pub struct LessonGenerationContext {
     pub adjacent_context: String,
     /// 学习图节点专属上下文；传统课时恒为 `None`。
     pub graph: Option<GraphLessonContext>,
-    /// 防超纲黑名单(learnhub「禁止使用的概念」):预渲染的本课时之外概念
-    /// 清单;空 = 无(学习图节点走前置/后续段落控界)。
+    /// 防超纲黑名单(learnhub「禁止使用的概念」):传统课时预渲染本课时
+    /// 之外的概念清单;学习图节点预渲染可及后代节点标题清单。空 = 无
+    /// (短课时或图的终点节点)。由上下文构造方决定原料,提示词统一消费。
     pub forbidden_concepts: String,
 }
 

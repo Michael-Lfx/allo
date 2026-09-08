@@ -45,6 +45,13 @@ use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 /// 不动（course_outline / lesson_content 循环按各自默认值运行）。
 const GENERATE_MAX_ROUNDS: usize = 100;
 
+/// 单批 lg_patch 的操作数上限：与工具 schema 的 maxItems=15 同口径。schema
+/// 只是给模型的软约束（部分网关不校验 JSON Schema），超限批次在运行时
+/// 整体拒绝并附纠错提示——一次塞进 50 个操作的批次是「偷工减料」失败模
+/// 式的信号，拆批后每批都能看到审计反馈（learnhub「每批 ≤35」纪律的引
+/// 擎化版本）。
+const MAX_PATCH_OPS: usize = 15;
+
 /// 学习图循环自己的每轮 token 预算：构建是长程规划任务，大批量 patch JSON
 /// 需要大输出预算，取共享默认（`AGENT_MAX_TOKENS`）的 4 倍。绝不改共享常
 /// 量——course_outline / lesson_content 循环按各自默认值运行；该预算在解
@@ -152,8 +159,9 @@ const GENERATE_AGENT_SYSTEM: &str = r#"你是一名具有教育领域专业知�
 【工具使用】
 1. 先使用lg_scope，这就是你的参考清单，除了覆盖清单你也可以发挥主观能动性，一切以完成用户目标为标准。
 2. 常用 lg_inspect 掌握全局；操作图动手前可以用 lg_query / lg_subgraph 查清单元名的精确写法——patch 里的引用必须与图中名称完全一致，否则整个操作被拒。
-3. 分批构建：每批小于 25 个操作，宁可多批，不要超长批次。
-4. 整张图全部构建完成后调用 lg_audit 自查
+3. 分批构建：每批 5-15 个操作，宁可多批，不要超长批次。
+4. 每次 lg_audit / lg_patch 返回的「Suggestions」段是下一步的行动清单：下一批 lg_patch 必须逐条落实建议；若某条建议不成立，在回复文本中显式驳回并说明理由——既不处理也不驳回视为未推进。
+5. 整张图全部构建完成后调用 lg_audit 自查
 
 【单元命名】（与单次生成管线同标准）
 - 节点大多数 name 是动作句（有必要可以例外）：包含 解/求/证明/推导/比较/判定/构造/区分/计算/应用/理解/辨析/建立/验证/化简/变形/转化/估计/近似/检验/分类/归纳/抽象/训练 等等词以及它们之间的组合存在。  
@@ -191,7 +199,7 @@ const REPAIR_AGENT_SYSTEM: &str = r#"你是一名学习图修复代理：基于�
 1. 审计报告是主要的修复依据：逐条处理 danger 级 findings，按报告给出的证据（节点名、缺失的大块概念名、孤立组件）精确操作；
 2. 不做过大的重构、不删无关节点。（add/link/unlink/set_pre/reverse/split/merge/update/delete）。
 3. 动手前可以用 lg_query / lg_subgraph 查清引用名的精确写法；引用不一致会被拒绝。
-4. 修复动作分批提交每批 25 个操作以内，每批后用 lg_audit 复查该条 finding 是否消除。
+4. 修复动作分批提交每批 15 个操作以内，每批后用 lg_audit 复查该条 finding 是否消除。
 5. 全部 danger 消除后调用 lg_finish 发布。
 
 【常见修复动作对照】
@@ -1145,6 +1153,12 @@ fn lg_patch(ctx: Arc<LoopContext>) -> OneShotTool {
                 if ops.is_empty() {
                     return Err("lg_patch: operations 不能为空".into());
                 }
+                if ops.len() > MAX_PATCH_OPS {
+                    return Err(format!(
+                        "lg_patch: 每批最多 {MAX_PATCH_OPS} 个操作（本批 {} 个），整批已拒绝、未执行任何操作——拆分成多批重新提交",
+                        ops.len()
+                    ));
+                }
                 let report = ctx
                     .service
                     .patch_learning_graph_draft(&draft_id, ops)
@@ -1271,6 +1285,15 @@ mod tests {
 
     fn add_op(name: &str, pre: &[&str]) -> serde_json::Value {
         serde_json::json!({ "op": "add", "name": name, "pre": pre })
+    }
+
+    /// 把一批操作按 MAX_PATCH_OPS 切成多个批次载荷——运行时批次上限的
+    /// 合法输入形态（单批最多 15 个操作）。
+    fn batched(operations: &[serde_json::Value]) -> Vec<serde_json::Value> {
+        operations
+            .chunks(MAX_PATCH_OPS)
+            .map(|chunk| serde_json::json!({ "operations": chunk }))
+            .collect()
     }
 
     /// Completer whose reply never parses as a scope reference: every draft
@@ -1498,24 +1521,27 @@ mod tests {
         for index in 7..=30 {
             operations.push(add_op(&format!("n{index}"), &["n6"]));
         }
+        let batches = batched(&operations);
 
-        let provider = ScriptedProvider::new(vec![
+        let mut script: Vec<Vec<LlmEvent>> = vec![
             // ── generation loop: a premature lg_finish on the injected draft ──
             vec![tool_use("lg_finish", serde_json::json!({})), done(StopReason::ToolUse)],
             vec![
                 LlmEvent::TextDelta("发布被拒，需要先构建单元".into()),
                 done(StopReason::EndTurn),
             ],
-            // ── repair loop 1: build the whole network in one patch ──
-            vec![
-                tool_use(
-                    "lg_patch",
-                    serde_json::json!({ "operations": operations }),
-                ),
-                done(StopReason::ToolUse),
-            ],
-            vec![LlmEvent::TextDelta("已构建完整网络".into()), done(StopReason::EndTurn)],
+        ];
+        // ── repair loop 1: build the whole network in legal batches ──
+        script.extend(
+            batches
+                .into_iter()
+                .map(|payload| vec![tool_use("lg_patch", payload), done(StopReason::ToolUse)]),
+        );
+        script.push(vec![
+            LlmEvent::TextDelta("已构建完整网络".into()),
+            done(StopReason::EndTurn),
         ]);
+        let provider = ScriptedProvider::new(script);
         let record = engine(Arc::clone(&service))
             .run_loops(
                 provider.clone(),
@@ -1569,7 +1595,8 @@ mod tests {
         for index in 7..=30 {
             operations.push(add_op(&format!("n{index}"), &["n6"]));
         }
-        let mut script: Vec<Vec<LlmEvent>> = (0..GENERATE_MAX_ROUNDS - 2)
+        let batches = batched(&operations);
+        let mut script: Vec<Vec<LlmEvent>> = (0..GENERATE_MAX_ROUNDS - 1 - batches.len())
             .map(|_| {
                 vec![
                     tool_use("lg_inspect", serde_json::json!({})),
@@ -1577,13 +1604,9 @@ mod tests {
                 ]
             })
             .collect();
-        script.push(vec![
-            tool_use(
-                "lg_patch",
-                serde_json::json!({ "operations": operations }),
-            ),
-            done(StopReason::ToolUse),
-        ]);
+        for payload in batches {
+            script.push(vec![tool_use("lg_patch", payload), done(StopReason::ToolUse)]);
+        }
         script.push(vec![
             tool_use("lg_finish", serde_json::json!({})),
             done(StopReason::ToolUse),
@@ -1624,8 +1647,10 @@ mod tests {
         for index in 7..=30 {
             operations.push(add_op(&format!("n{index}"), &["n6"]));
         }
+        let batches = batched(&operations);
+        let batch_count = batches.len();
 
-        let provider = ScriptedProvider::new(vec![
+        let mut script: Vec<Vec<LlmEvent>> = vec![
             // ── generation loop: build only 2 units on the injected draft ──
             vec![
                 tool_use(
@@ -1643,13 +1668,18 @@ mod tests {
             // gate blocks the publish (2 < 30 units) and the repair loop
             // starts.
             vec![LlmEvent::TextDelta("done".into()), done(StopReason::EndTurn)],
-            // ── repair loop ──
-            vec![
-                tool_use("lg_patch", serde_json::json!({ "operations": operations })),
-                done(StopReason::ToolUse),
-            ],
-            vec![LlmEvent::TextDelta("fixed".into()), done(StopReason::EndTurn)],
+        ];
+        // ── repair loop: finish the network in legal batches ──
+        script.extend(
+            batches
+                .into_iter()
+                .map(|payload| vec![tool_use("lg_patch", payload), done(StopReason::ToolUse)]),
+        );
+        script.push(vec![
+            LlmEvent::TextDelta("fixed".into()),
+            done(StopReason::EndTurn),
         ]);
+        let provider = ScriptedProvider::new(script);
 
         let record = engine(Arc::clone(&service))
             .run_loops(
@@ -1666,7 +1696,11 @@ mod tests {
         assert_eq!(record.graph.edges.len(), 33, "2 + 28 adds, 3 multi-parent joins");
 
         let seen = provider.seen_tool_names.lock().unwrap();
-        assert_eq!(seen.len(), 4, "2 generation rounds + 2 repair rounds");
+        assert_eq!(
+            seen.len(),
+            2 + batch_count + 1,
+            "2 generation rounds + 2 patch rounds + closing text round"
+        );
         // The SQLite publish replaced the legacy JSON directory.
         let published = service.list_learning_graphs().await.unwrap();
         assert_eq!(published.len(), 1, "one published record");
@@ -1982,15 +2016,17 @@ mod tests {
         for index in 7..=30 {
             operations.push(add_op(&format!("n{index}"), &["n6"]));
         }
+        let batches = batched(&operations);
 
-        let provider = ScriptedProvider::new(vec![
-            // 生成轮：直接在预置草稿上补齐剩余网络
-            vec![
-                tool_use("lg_patch", serde_json::json!({ "operations": operations })),
-                done(StopReason::ToolUse),
-            ],
-            vec![LlmEvent::TextDelta("已补齐".into()), done(StopReason::EndTurn)],
+        let mut script: Vec<Vec<LlmEvent>> = batches
+            .into_iter()
+            .map(|payload| vec![tool_use("lg_patch", payload), done(StopReason::ToolUse)])
+            .collect();
+        script.push(vec![
+            LlmEvent::TextDelta("已补齐".into()),
+            done(StopReason::EndTurn),
         ]);
+        let provider = ScriptedProvider::new(script);
 
         let record = engine(Arc::clone(&service))
             .run_loops(
@@ -2149,6 +2185,102 @@ mod tests {
             )
         });
         assert!(dumped, "full inspect must dump units with minutes and pres");
+    }
+
+    /// 批次上限运行时校验：schema 是给模型的软约束，超限批次（16 个操作）
+    /// 被整体拒绝并附纠错提示，一个操作都不执行。
+    #[tokio::test]
+    async fn oversized_patch_batch_is_rejected_whole() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = seeded_context(Arc::clone(&service)).await;
+        let operations: Vec<serde_json::Value> = (0..=MAX_PATCH_OPS)
+            .map(|index| add_op(&format!("单元{index}"), &[]))
+            .collect();
+        assert_eq!(operations.len(), MAX_PATCH_OPS + 1);
+        let provider = ScriptedProvider::new(vec![
+            vec![
+                tool_use("lg_patch", serde_json::json!({ "operations": operations })),
+                done(StopReason::ToolUse),
+            ],
+            vec![LlmEvent::TextDelta("收到".into()), done(StopReason::EndTurn)],
+        ]);
+        run_agent_loop(
+            provider.clone(),
+            "test-model",
+            GENERATE_AGENT_SYSTEM,
+            "数学基础",
+            &learning_graph_tools(Arc::clone(&ctx)),
+            GENERATE_MAX_ROUNDS,
+            ROUND_TOKEN_BUDGET,
+            ThinkingConfig::Disabled,
+            "test",
+            Some(ctx.as_ref()),
+        )
+        .await
+        .unwrap();
+        let rounds = provider.seen_messages.lock().unwrap();
+        let rejected = rounds.iter().flat_map(|round| round.iter()).any(|message| {
+            matches!(
+                &message.content[0],
+                ContentBlock::ToolResult { is_error: true, content, .. }
+                    if content.contains(&format!("每批最多 {MAX_PATCH_OPS} 个操作"))
+            )
+        });
+        assert!(rejected, "an oversized batch must be rejected with a corrective hint");
+        let draft_id = ctx.draft_slot.lock().unwrap().clone().unwrap();
+        let view = service.inspect_learning_graph_draft(&draft_id).unwrap();
+        assert_eq!(view.node_count, 0, "no operation of the rejected batch may execute");
+    }
+
+    /// lg_audit 输出携带「Suggestions」段：findings 派生的下一批行动清单
+    /// 长在审计文本里（learnhub analyze 建议回路的机制化）。
+    #[tokio::test]
+    async fn audit_output_carries_next_batch_suggestions() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = seeded_context(Arc::clone(&service)).await;
+        // 预置孤立两单元：disconnected_components danger → 建议应点名接入动作。
+        let draft_id = ctx.draft_slot.lock().unwrap().clone().unwrap();
+        service
+            .patch_learning_graph_draft(
+                &draft_id,
+                vec![
+                    GraphOp::Add { name: "a".into(), pre: vec![], min: Some(10) },
+                    GraphOp::Add { name: "b".into(), pre: vec![], min: Some(10) },
+                ],
+            )
+            .unwrap();
+        let provider = ScriptedProvider::new(vec![
+            vec![
+                tool_use("lg_audit", serde_json::json!({})),
+                done(StopReason::ToolUse),
+            ],
+            vec![LlmEvent::TextDelta("ok".into()), done(StopReason::EndTurn)],
+        ]);
+        run_agent_loop(
+            provider.clone(),
+            "test-model",
+            GENERATE_AGENT_SYSTEM,
+            "数学基础",
+            &learning_graph_tools(Arc::clone(&ctx)),
+            GENERATE_MAX_ROUNDS,
+            ROUND_TOKEN_BUDGET,
+            ThinkingConfig::Disabled,
+            "test",
+            Some(ctx.as_ref()),
+        )
+        .await
+        .unwrap();
+        let rounds = provider.seen_messages.lock().unwrap();
+        let carries = rounds.iter().flat_map(|round| round.iter()).any(|message| {
+            matches!(
+                &message.content[0],
+                ContentBlock::ToolResult { content, .. }
+                    if content.contains("==== Suggestions ====")
+                        && content.contains("孤立组件")
+                        && content.contains("逐条落实")
+            )
+        });
+        assert!(carries, "audit output must carry the derived suggestions");
     }
 
     /// 取消包装器：旗标置位时请求在 stream 边界直接拒绝——没有任何请求

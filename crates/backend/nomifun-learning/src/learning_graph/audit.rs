@@ -692,9 +692,110 @@ fn audit_graph_core(graph: &LearningGraphData, min_units: usize) -> Vec<AuditFin
     findings
 }
 
+/// 一次审计最多给出的建议条数：建议是下一批 patch 的行动清单，超过这个
+/// 数量模型只会挑肥拣瘦——截断到最优先的几条（scope 覆盖类永远优先）。
+pub(crate) const SUGGESTION_LIMIT: usize = 10;
+
+/// 从当前 findings 派生的「下一批建议」（learnhub analyze 的 suggestions
+/// 回路的确定性版本）：每条都是可直接落成 lg_patch 操作的行动句，按优先
+/// 级排列（scope 覆盖 > 结构断裂 > 形态优化）。由
+/// `DraftGraph::audit_report` 渲染成「Suggestions」段——下一批 patch 必须
+/// 逐条处理或显式驳回，这是生成循环「审计引导构建」的机制化：不靠模型
+/// 自觉，建议就长在它每轮必读的审计文本里。
+pub(crate) fn derive_suggestions(
+    findings: &[AuditFinding],
+    graph: &LearningGraphData,
+    scope_blocks: Option<&[String]>,
+) -> Vec<String> {
+    let mut suggestions: Vec<String> = Vec::new();
+    let has = |kind: &str| findings.iter().any(|finding| finding.kind == kind);
+
+    // 1. Scope 覆盖缺口：未落地的大块概念点名列出（补单元是最优先动作）。
+    let mut scope_gap_listed = false;
+    if let Some(blocks) = scope_blocks {
+        let missing: Vec<&str> = blocks
+            .iter()
+            .filter(|block| {
+                !graph
+                    .nodes
+                    .iter()
+                    .any(|node| common_substring_len(&node.title, block) >= BLOCK_MIN_SHARED)
+            })
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            let listed: Vec<&str> = missing.iter().take(8).copied().collect();
+            let ellipsis = if missing.len() > 8 { "……" } else { "" };
+            suggestions.push(format!(
+                "为未覆盖的大块概念补单元（改写为动作句）：{}{ellipsis}",
+                listed.join("、")
+            ));
+            scope_gap_listed = true;
+        }
+    }
+    if has("coverage") && !scope_gap_listed {
+        suggestions.push(
+            "对照用户目标补齐缺失子领域的单元——scope 是下限不是上限，宁多勿少".into(),
+        );
+    }
+    // 2. 结构断裂类 danger：逐类给出对应操作。
+    if has("excessive_reference_drops") {
+        suggestions.push(
+            "修正引用名：被丢弃的引用与图中单元名不一致——先 lg_query 核对精确写法，再补边"
+                .into(),
+        );
+    }
+    if has("orphaned_units") {
+        if let Some(finding) = findings.iter().find(|finding| finding.kind == "orphaned_units") {
+            let first = finding.node_ids.first().cloned().unwrap_or_default();
+            suggestions.push(format!(
+                "把失去唯一前置的单元重新接回真正的前置（link 或 set_pre），从 {first} 开始"
+            ));
+        }
+    }
+    if has("disconnected_components") {
+        if let Some(finding) = findings
+            .iter()
+            .find(|finding| finding.kind == "disconnected_components")
+        {
+            let first = finding.node_ids.first().cloned().unwrap_or_default();
+            suggestions.push(format!(
+                "把孤立组件接入主结构：为 {first} 所在组件补一条到主结构邻近单元的依赖边（link）"
+            ));
+        }
+    }
+    if has("tree_structure") {
+        suggestions.push(
+            "为确实需要两条前线的单元补 link 制造收敛——真实知识是 DAG 不是树".into(),
+        );
+    }
+    if has("unit_overload") {
+        suggestions.push("split 超过 60 分钟硬上限的单元".into());
+    }
+    // 3. 形态类 warning：改善建议，优先级最低。
+    if has("shallow_leaves") || has("shallow_depth") {
+        suggestions.push(
+            "在难度跳跃过大处插入铺垫单元，把一步登天的入口拆成阶梯（加深前置链）".into(),
+        );
+    }
+    if has("multiple_sinks") {
+        suggestions.push("收束终点：为并列的终点单元补汇总/应用层单元，或让它们收敛到目标单元".into());
+    }
+    if has("multiple_sources") {
+        suggestions.push("收敛入口：把零散的入门单元合并，或让它们共享同一基础层".into());
+    }
+    if has("near_duplicate_titles") {
+        suggestions.push("merge 近重复单元，或用动作词/限定语区分认知层级".into());
+    }
+    if has("spiral_clash") {
+        suggestions.push("把同主题的并排单元串成螺旋链（后者以前者为前置）".into());
+    }
+    suggestions.truncate(SUGGESTION_LIMIT);
+    suggestions
+}
+
 /// Longest common contiguous substring length (char-based).
-pub(crate) fn common_substring_len(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
+pub(crate) fn common_substring_len(a: &str, b: &str) -> usize {    let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut best = 0usize;
     for i in 0..a.len() {
@@ -1154,5 +1255,70 @@ mod tests {
         // The plain audit entry point carries no content checklist.
         let findings = audit_learning_graph(&g);
         assert!(!findings.iter().any(|f| f.kind == "missing_block_coverage"), "{findings:?}");
+    }
+
+    /// 建议派生：缺块覆盖点名未覆盖大块概念；结构断裂类 finding 给出对应
+    /// 操作（link 接入 / set_pre 重接）；健康图返回空（渲染为「可上交」）。
+    #[test]
+    fn suggestions_derive_from_findings_and_scope() {
+        // 孤立两单元 + 未覆盖大块概念：scope 补单元建议排第一，孤立组件
+        // 接入建议随后。
+        let g = graph(
+            vec![node("用配方法解一元二次方程", Some(15)), node("通分", Some(10))],
+            vec![],
+        );
+        let blocks = vec!["拉格朗日乘数法".to_owned()];
+        let findings = audit_learning_graph_with_scope(&g, Some(&blocks));
+        let suggestions = derive_suggestions(&findings, &g, Some(&blocks));
+        assert!(
+            suggestions[0].contains("拉格朗日乘数法"),
+            "scope coverage tops the list: {suggestions:?}"
+        );
+        assert!(
+            suggestions.iter().any(|s| s.contains("孤立组件")),
+            "{suggestions:?}"
+        );
+
+        // 失去唯一前置的孤儿：建议点名从该单元开始重接。
+        let mut orphaned = graph(
+            vec![node("a", Some(10)), node("b", Some(10)), node("c", Some(10))],
+            vec![edge("b", "c")],
+        );
+        orphaned.audit.dropped_edges.push(DroppedEdge {
+            from: "ghost".into(),
+            to: "a".into(),
+            reason: "unknown reference".into(),
+        });
+        orphaned.audit.ref_drop_count = 1;
+        orphaned.audit.ref_drop_rate = 0.05;
+        let findings = audit_learning_graph(&orphaned);
+        let suggestions = derive_suggestions(&findings, &orphaned, None);
+        assert!(
+            suggestions.iter().any(|s| s.contains("重新接回") && s.contains("a")),
+            "{suggestions:?}"
+        );
+
+        // 健康图（空 findings、无 scope）：无建议——渲染为「可上交」。
+        let healthy = suggestions_from_healthy();
+        assert!(healthy.is_empty(), "{healthy:?}");
+    }
+
+    /// 健康图构造：30 单元收敛网（与循环测试同款），全部检查通过。
+    fn suggestions_from_healthy() -> Vec<String> {
+        let nodes: Vec<LearningGraphNode> =
+            (0..30).map(|i| node(&format!("u{i}"), Some(10))).collect();
+        let mut edges: Vec<LearningGraphEdge> = (0..29)
+            .map(|i| edge(&format!("u{i}"), &format!("u{}", i + 1)))
+            .collect();
+        for target in [5usize, 10, 15] {
+            edges.push(edge("u0", &format!("u{target}")));
+        }
+        let g = graph(nodes, edges);
+        let findings = audit_learning_graph(&g);
+        assert!(
+            !findings.iter().any(|f| f.severity == SEV_DANGER),
+            "the fixture must be healthy: {findings:?}"
+        );
+        derive_suggestions(&findings, &g, None)
     }
 }
