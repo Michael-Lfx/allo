@@ -49,27 +49,41 @@
             points: String::new(),
             body_md: String::new(),
         };
+        // Every valid outline closes with exactly one practice section.
+        let with_practice = |mut sections: Vec<SectionPack>| {
+            sections.push(SectionPack {
+                section_key: format!("s{}", sections.len() + 1),
+                kind: SectionKind::Practice,
+                title: "练习：巩固".into(),
+                points: String::new(),
+                body_md: String::new(),
+            });
+            sections
+        };
         // Empty outline.
         let empty = SectionOutline { tier: None, sections: Vec::new() };
         assert!(validate_section_outline(&empty).is_err());
         // Hard cap at 8.
-        let nine: Vec<SectionPack> = (1..=9).map(|index| section(&format!("s{index}"))).collect();
-        let over = SectionOutline { tier: Some(ComplexityTier::Mid), sections: nine };
+        let nine: Vec<SectionPack> = (1..=8).map(|index| section(&format!("s{index}"))).collect();
+        let over = SectionOutline { tier: Some(ComplexityTier::Mid), sections: with_practice(nine) };
         assert!(validate_section_outline(&over).is_err());
         // High tier with only 2 sections is directionally wrong.
-        let two = SectionOutline { tier: Some(ComplexityTier::High), sections: vec![section("s1"), section("s2")] };
+        let two = SectionOutline {
+            tier: Some(ComplexityTier::High),
+            sections: with_practice(vec![section("s1")]),
+        };
         assert!(validate_section_outline(&two).is_err());
         // Low tier tolerates overrun up to 7 (guardrails only block
         // direction-level extremes), 8+ is the hard cap.
         let six = SectionOutline {
             tier: Some(ComplexityTier::Low),
-            sections: (1..=6).map(|index| section(&format!("s{index}"))).collect(),
+            sections: with_practice((1..=5).map(|index| section(&format!("s{index}"))).collect()),
         };
         assert!(validate_section_outline(&six).is_ok());
         // Mid tier with 3 sections passes; duplicate keys fail.
         let three = SectionOutline {
             tier: Some(ComplexityTier::Mid),
-            sections: vec![section("s1"), section("s2"), section("s3")],
+            sections: with_practice(vec![section("s1"), section("s2")]),
         };
         assert!(validate_section_outline(&three).is_ok());
         let duplicate = SectionOutline {
@@ -77,6 +91,31 @@
             sections: vec![section("s1"), section("s1")],
         };
         assert!(validate_section_outline(&duplicate).is_err());
+
+        // The closing practice section is mandatory: no practice at all, or
+        // practice placed before the end, or two practice sections all fail.
+        let no_practice = SectionOutline {
+            tier: Some(ComplexityTier::Mid),
+            sections: vec![section("s1"), section("s2")],
+        };
+        assert!(validate_section_outline(&no_practice).is_err());
+        let practice = SectionPack {
+            section_key: "sp".into(),
+            kind: SectionKind::Practice,
+            title: "练习：巩固".into(),
+            points: String::new(),
+            body_md: String::new(),
+        };
+        let practice_first = SectionOutline {
+            tier: Some(ComplexityTier::Mid),
+            sections: vec![practice.clone(), section("s1")],
+        };
+        assert!(validate_section_outline(&practice_first).is_err());
+        let two_practices = SectionOutline {
+            tier: Some(ComplexityTier::Mid),
+            sections: vec![section("s1"), practice.clone(), practice],
+        };
+        assert!(validate_section_outline(&two_practices).is_err());
     }
 
     #[test]
@@ -671,10 +710,16 @@
           "tier": "mid",
           "sections": [
             {"section_key": "s1", "kind": "concept", "title": "概念：向量", "points": "什么是向量"},
-            {"section_key": "s2", "kind": "summary", "title": "小结", "points": "要点回顾"}
+            {"section_key": "s2", "kind": "practice", "title": "练习：向量辨析", "points": "统一练习轮"}
           ]
         }"#
         .into()
+    }
+
+    fn practice_body() -> String {
+        // practice 的质检门:40-250 字,只写能力目标与作答引导。
+        "## 练习：向量辨析\n本节目标：给你一组量词与场景，请判断哪些是向量、哪些是标量，         并对每个判断说明理由；作答时先独立判断，再对照答案复盘易混点。"
+            .into()
     }
 
     fn section_body(title: &str) -> String {
@@ -701,7 +746,7 @@
         // plans the manifest, one call per section writes its body, and one
         // final call writes every section-bound question.
         let body1 = section_body("概念：向量");
-        let body2 = section_body("小结");
+        let body2 = practice_body();
         let blueprint = lesson_test_blueprint();
         let module = &blueprint.modules[0];
         let lesson = &module.lessons[0];
@@ -720,10 +765,11 @@
         assert_eq!(output.sections.len(), 2);
         assert_eq!(output.sections[0].section_key, "s1");
         assert_eq!(output.sections[0].kind, SectionKind::Concept);
-        assert_eq!(output.sections[1].body_md, section_body("小结"));
+        assert_eq!(output.sections[1].kind, SectionKind::Practice);
+        assert_eq!(output.sections[1].body_md, practice_body());
         // The flat summary is assembled from the sections (dual-read).
         assert!(output.summary.contains("## 概念：向量"));
-        assert!(output.summary.contains("## 小结"));
+        assert!(output.summary.contains("## 练习：向量辨析"));
         assert_eq!(output.estimated_minutes, 20);
         assert_eq!(output.activities.len(), 4);
         assert_eq!(output.activities[3].section_key.as_deref(), Some("general"));
@@ -755,7 +801,7 @@
             outline_json(),
             "太短。".into(),
             section_body("概念：向量"),
-            section_body("小结"),
+            practice_body(),
             r#"{"estimated_minutes": 20, "activities": []}"#.into(),
             activities_json(),
         ]);
@@ -779,8 +825,9 @@
         let module = &blueprint.modules[0];
         let lesson = &module.lessons[0];
         let completer = ScriptedCompleter::new(vec![
-            r#"{"tier": "low", "sections": [{"section_key": "s1", "kind": "concept", "title": "概念：向量", "points": "p"}]}"#.into(),
+            r#"{"tier": "low", "sections": [{"section_key": "s1", "kind": "concept", "title": "概念：向量", "points": "p"}, {"section_key": "s2", "kind": "practice", "title": "练习：向量辨析", "points": "p"}]}"#.into(),
             section_body("概念：向量"),
+            practice_body(),
             activities_json(),
         ]);
         generate_lesson(

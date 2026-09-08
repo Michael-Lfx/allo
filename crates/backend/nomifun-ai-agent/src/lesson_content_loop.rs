@@ -39,7 +39,7 @@ use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 const GENERATE_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容设计代理：把给定的一个课时规划为若干「节」，逐节撰写正文并设计检索题目，通过工具逐步构建，最终通过确定性审计门禁发布。
 
 【分节契约（每节一次工具调用）】
-- 先 ls_set_section_manifest 规划节清单：每节带 section_key（s1、s2……）、kind（concept 概念 / example 例题 / demo 演示 / summary 小结 / practice 练习）、title（带类型前缀，如「概念：…」）、points（一句话要点）。节数按课时复杂度自定：低 1-3 节、中 3-5、高 4-6，硬上限 8；相邻节要有学习递进；至多 1 个练习节放最后。
+- 先 ls_set_section_manifest 规划节清单：每节带 section_key（s1、s2……）、kind（concept 概念 / example 例题 / demo 演示 / summary 小结 / practice 练习）、title（带类型前缀，如「概念：…」）、points（一句话要点）。节数按课时复杂度自定：低 1-3 节、中 3-5、高 4-6，硬上限 8；相邻节要有学习递进；最后一节必须是练习节（恰好 1 个）——学习者读完即进入统一练习轮。
 - 再逐节调用 ls_set_section_body 写正文：一次调用只写一节，body 直接以该节 `## ` 标题行开头（标题照抄清单），不要 JSON、不要包裹围栏、节内禁止 ### 子标题、不要自设练习环节（题目由题库承载）。
 - 篇幅按节型：concept/example 400-700 中文字符；demo 由可视化块（```svg / ```jsxgraph / ```mermaid / $$数学$$）承载主要信息、旁注 200-400 字；summary 是要点清单；practice 只写能力目标与作答引导（≤120 字，不写题）。
 - 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形块不计入篇幅。
@@ -644,7 +644,7 @@ fn ls_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
 fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_set_section_manifest".into(),
-        description: "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）。节数低 1-3 / 中 3-5 / 高 4-6，硬上限 8；重规划时已写正文按 key 保留。".into(),
+        description: "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）。节数低 1-3 / 中 3-5 / 高 4-6，硬上限 8；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

@@ -449,7 +449,7 @@ Rules:
 - Adjacent sections must build on each other in a learnable order: motivation → concepts → worked examples → recap.
 - Section titles carry the type prefix, e.g. "概念：…" or "例题：…". The title is copied verbatim into later stages, so make it precise.
 - section_key values are s1, s2, s3, … in order.
-- Include at most one practice section (last). Include a demo section when a visualization genuinely carries the message. A summary section at the end is optional, not mandatory.
+- The lesson MUST close with exactly ONE practice section as its last section: the learner finishes reading and then answers in one consolidated practice round. Include a demo section when a visualization genuinely carries the message. A summary section before the practice is optional, not mandatory.
 - Output JSON only, without Markdown fences or commentary."#
     )
 }
