@@ -37,27 +37,21 @@ const McpServerToolsList: React.FC<McpServerToolsListProps> = ({ server, activat
   }
 
   return (
-    <div className='space-y-3'>
-      <div>
-        <div>
-          {server.tools.map((tool, index) => (
-            <div key={index} className='border-b border-b-solid border-arco-2 py-8px last:border-b-0'>
-              <div className='flex gap-12px'>
-                <div className='flex-shrink-0 min-w-0 w-1/3'>
-                  <div className='break-words text-12px font-medium text-t-primary'>{tool.name}</div>
-                </div>
-                <div className='flex-1 min-w-0'>
-                  <Tooltip content={tool.description || t('settings.mcpNoDescription')}>
-                    <div className='line-clamp-2 cursor-pointer text-12px leading-18px text-t-secondary'>
-                      {tool.description || t('settings.mcpNoDescription')}
-                    </div>
-                  </Tooltip>
-                </div>
+    <div>
+      {server.tools.map((tool, index) => (
+        <div key={index} className='flex items-baseline gap-12px border-b border-b-solid border-arco-2 py-8px first:pt-0 last:border-b-0 last:pb-0'>
+          <div className='w-1/3 min-w-0 flex-shrink-0'>
+            <div className='break-words text-12px font-medium text-t-primary'>{tool.name}</div>
+          </div>
+          <div className='min-w-0 flex-1'>
+            <Tooltip content={tool.description || t('settings.mcpNoDescription')}>
+              <div className='line-clamp-2 cursor-pointer text-12px leading-18px text-t-secondary'>
+                {tool.description || t('settings.mcpNoDescription')}
               </div>
-            </div>
-          ))}
+            </Tooltip>
+          </div>
         </div>
-      </div>
+      ))}
     </div>
   );
 };

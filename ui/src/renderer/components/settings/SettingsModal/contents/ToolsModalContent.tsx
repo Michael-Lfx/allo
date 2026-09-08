@@ -308,7 +308,7 @@ function McpInstalledList({
         <SettingsContentLoading className='min-h-220px' />
       ) : mcpServersLoadFailed && !hasServers ? (
         <div
-          className='flex min-h-180px flex-col items-center justify-center gap-10px rd-12px border border-dashed border-arco-2 px-24px py-24px text-center'
+          className='flex w-full min-w-0 min-h-180px flex-col items-center justify-center gap-10px rd-12px border border-dashed border-arco-2 px-24px py-24px text-center'
           role='alert'
         >
           <div className='text-14px text-t-secondary'>{t('settings.mcpSyncError')}</div>
@@ -319,7 +319,7 @@ function McpInstalledList({
           ) : null}
         </div>
       ) : (
-        <div className='space-y-12px'>
+        <div className='w-full min-w-0 space-y-12px'>
           {loadErrorNotice}
           {hasVisibleServers ? (
             <>

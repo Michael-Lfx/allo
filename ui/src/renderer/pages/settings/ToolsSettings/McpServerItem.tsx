@@ -56,7 +56,7 @@ const McpServerItem: React.FC<McpServerItemProps> = ({
         key={server.mcp_server_id}
         activeKey={isCollapsed ? ['1'] : []}
         onChange={onToggleCollapse}
-        className={`${MCP_SERVER_COLLAPSE_CLASS} !mb-0 overflow-hidden rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] transition-colors duration-180 [&_.arco-collapse-item-header]:!px-16px [&_.arco-collapse-item-header]:!py-14px [&_.arco-collapse-item-content-box]:!px-16px [&_.arco-collapse-item-content-box]:!pb-16px [&_.arco-collapse-item-content-box]:!pt-0`}
+        className={`${MCP_SERVER_COLLAPSE_CLASS} !mb-0 overflow-hidden rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] transition-colors duration-180`}
       >
         <Collapse.Item
           header={
@@ -77,7 +77,6 @@ const McpServerItem: React.FC<McpServerItemProps> = ({
             />
           }
           name='1'
-          className={'[&_div.arco-collapse-item-content-box]:py-3'}
         >
           <McpServerDetails server={server} activationState={activationState} activationError={activationError} />
         </Collapse.Item>

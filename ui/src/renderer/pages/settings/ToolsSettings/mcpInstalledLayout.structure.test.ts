@@ -25,6 +25,11 @@ describe('MCP installed layout contracts', () => {
     expect(collapse).toContain("[&_.arco-collapse-item-header-title]:!items-center");
     expect(collapse).toContain('MCP_SERVER_TITLE_CLASS');
     expect(collapse).toContain('-translate-y-2px');
+    expect(collapse).toContain('[&_.arco-collapse-item-header]:!pl-40px');
+    expect(collapse).toContain('[&_.arco-collapse-item-header]:!py-14px');
+    expect(collapse).toContain('[&_.arco-collapse-item-icon-hover]:!top-26px');
+    expect(collapse).toContain('[&_.arco-collapse-item-content-box]:!pl-40px');
+    expect(collapse).toContain('[&_.arco-collapse-item-content-box]:!pb-16px');
     expect(item).toContain('MCP_SERVER_COLLAPSE_CLASS');
     expect(extension).toContain('MCP_SERVER_COLLAPSE_CLASS');
     expect(header).toContain('MCP_SERVER_TITLE_CLASS');
@@ -45,5 +50,12 @@ describe('MCP installed layout contracts', () => {
     expect(details).toContain('settings.mcpAvailableToAgent');
     expect(details).toContain('settings.mcpUnavailableToAgent');
     expect(details).toContain('McpServerToolsList');
+  });
+
+  test('installed list keeps full width when rows are collapsed', () => {
+    const tools = read('../../../components/settings/SettingsModal/contents/ToolsModalContent.tsx');
+
+    expect(tools).toContain("'w-full min-w-0 space-y-12px'");
+    expect(tools).toContain('mx-auto flex w-full max-w-1180px flex-1 min-h-0');
   });
 });
