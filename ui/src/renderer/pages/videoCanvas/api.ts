@@ -77,8 +77,12 @@ export function resolveCanvasUrl(path: string | null | undefined): string | null
   return path.startsWith('/') ? `${base}${path}` : `${base}/${path}`;
 }
 
+export function canvasMediaPath(mediaId: string): string {
+  return `/api/video-canvas/media/${encodeURIComponent(mediaId)}`;
+}
+
 export function canvasMediaUrl(mediaId: string): string {
-  return `${getBaseUrl()}/api/video-canvas/media/${encodeURIComponent(mediaId)}`;
+  return `${getBaseUrl()}${canvasMediaPath(mediaId)}`;
 }
 
 /**

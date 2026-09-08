@@ -1,5 +1,4 @@
 import localforage from "localforage";
-import { nanoid } from "nanoid";
 
 import { getActiveUserScope } from "@oc/lib/user-scope";
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, resolveResourceUrl, uploadResourceFile } from "@oc/services/api/resources";
@@ -32,19 +31,15 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file"): Pr
     const previewUrl = URL.createObjectURL(blob);
     const meta: { width?: number; height?: number; durationMs?: number } = blob.type.startsWith("video/") ? await readVideoMeta(previewUrl) : blob.type.startsWith("audio/") ? await readAudioMeta(previewUrl) : {};
     try {
-        const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
+        const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : prefix === "video" || prefix === "audio" || prefix === "image" ? prefix : "file";
         const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined });
         await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
         URL.revokeObjectURL(previewUrl);
         return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs };
-    } catch {
-        // OSS is optional during local/self-hosted setup. Keep the existing local fallback.
+    } catch (error) {
+        URL.revokeObjectURL(previewUrl);
+        throw error instanceof Error ? error : new Error("媒体上传失败");
     }
-    const storageKey = `${prefix}:${getActiveUserScope()}:${nanoid()}`;
-    await store.setItem(storageKey, blob);
-    const url = previewUrl;
-    objectUrls.set(storageKey, url);
-    return { url, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta };
 }
 
 export async function resolveMediaUrl(storageKey?: string, fallback = "") {

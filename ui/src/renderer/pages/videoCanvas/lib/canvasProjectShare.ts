@@ -6,7 +6,6 @@
 import { ipcBridge } from '@/common';
 import { isDesktopShell } from '@renderer/utils/platform';
 import {
-  canvasMediaUrl,
   extractMediaIdFromCanvasMediaUrl,
   exportCanvasProject,
   getCanvasProjectExtras,
@@ -25,6 +24,7 @@ import {
 } from '@oc/lib/canvas/canvas-drawing-storage';
 import { getMediaBlob } from '@oc/services/file-storage';
 import { getImageBlob } from '@oc/services/image-storage';
+import { persistableCanvasMediaPath, isEphemeralLocalMediaSrc } from '@oc/lib/canvas/canvas-media-id';
 import { resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
 import {
   flushCanvasStorePersistence,
@@ -88,7 +88,7 @@ function rewriteStorageKey(value: unknown, fromKey: string, media: CanvasMediaMe
       typeof record.content === 'string' &&
       !extractMediaIdFromCanvasMediaUrl(record.content)
     ) {
-      next.content = canvasMediaUrl(media.media_id);
+      next.content = persistableCanvasMediaPath(media.media_id);
     }
   }
   return next;
@@ -113,25 +113,32 @@ async function promoteLocalBlobs(project: CanvasProject): Promise<CanvasProject>
   return next;
 }
 
-async function promoteOrphanImageNodes(project: CanvasProject): Promise<CanvasProject> {
+async function promoteOrphanMediaNodes(project: CanvasProject): Promise<CanvasProject> {
   let changed = false;
   const nodes = [];
   for (const node of project.nodes) {
-    if (node.type !== 'image') {
+    if (node.type !== 'image' && node.type !== 'video' && node.type !== 'audio') {
       nodes.push(node);
       continue;
     }
     const existingId =
-      (typeof node.metadata?.mediaId === 'string' && node.metadata.mediaId) ||
+      (typeof node.metadata?.mediaId === 'string' && node.metadata.mediaId.trim()) ||
       resourceIdFromStorageKey(node.metadata?.storageKey) ||
       extractMediaIdFromCanvasMediaUrl(node.metadata?.content) ||
+      extractMediaIdFromCanvasMediaUrl(node.metadata?.storageKey) ||
       '';
     if (existingId) {
-      if (node.metadata?.mediaId !== existingId) {
+      const storageKey = resourceStorageKey(existingId);
+      const content = persistableCanvasMediaPath(existingId);
+      if (
+        node.metadata?.mediaId !== existingId ||
+        node.metadata?.storageKey !== storageKey ||
+        node.metadata?.content !== content
+      ) {
         changed = true;
         nodes.push({
           ...node,
-          metadata: { ...node.metadata, mediaId: existingId },
+          metadata: { ...node.metadata, mediaId: existingId, storageKey, content },
         });
       } else {
         nodes.push(node);
@@ -139,15 +146,21 @@ async function promoteOrphanImageNodes(project: CanvasProject): Promise<CanvasPr
       continue;
     }
     const content = node.metadata?.content;
+    const storageKey = node.metadata?.storageKey;
     let blob: Blob | null = null;
-    if (node.metadata?.storageKey) {
-      blob = node.metadata.storageKey.startsWith('image:')
-        ? await getImageBlob(node.metadata.storageKey)
-        : await getMediaBlob(node.metadata.storageKey);
+    if (storageKey) {
+      blob = storageKey.startsWith('image:')
+        ? await getImageBlob(storageKey)
+        : await getMediaBlob(storageKey);
     }
-    if (!blob && content && (content.startsWith('data:') || content.startsWith('blob:'))) {
+    const ephemeralSrc = isEphemeralLocalMediaSrc(content)
+      ? content
+      : isEphemeralLocalMediaSrc(storageKey)
+        ? storageKey
+        : '';
+    if (!blob && ephemeralSrc) {
       try {
-        blob = await (await fetch(content)).blob();
+        blob = await (await fetch(ephemeralSrc)).blob();
       } catch {
         blob = null;
       }
@@ -156,9 +169,9 @@ async function promoteOrphanImageNodes(project: CanvasProject): Promise<CanvasPr
       nodes.push(node);
       continue;
     }
-    const ext = fileExtension(blob.type, node.metadata?.storageKey || 'image');
+    const ext = fileExtension(blob.type, storageKey || node.type);
     const file = new File([blob], `${safeSegment(node.id)}.${ext}`, {
-      type: blob.type || 'image/png',
+      type: blob.type || (node.type === 'audio' ? 'audio/mpeg' : node.type === 'video' ? 'video/mp4' : 'image/png'),
     });
     const media = await uploadCanvasMedia(file);
     changed = true;
@@ -168,7 +181,7 @@ async function promoteOrphanImageNodes(project: CanvasProject): Promise<CanvasPr
         ...node.metadata,
         storageKey: resourceStorageKey(media.media_id),
         mediaId: media.media_id,
-        content: canvasMediaUrl(media.media_id),
+        content: persistableCanvasMediaPath(media.media_id),
       },
     });
   }
@@ -233,7 +246,7 @@ export async function flushCanvasProjectForShare(projectId: string): Promise<voi
   const current = store.projects.find((item) => item.id === projectId);
   if (!current) throw new Error('canvas project not found');
   let promoted = await promoteLocalBlobs(current);
-  promoted = await promoteOrphanImageNodes(promoted);
+  promoted = await promoteOrphanMediaNodes(promoted);
   if (promoted !== current) {
     store.replaceProjects([
       ...store.projects.filter((item) => item.id !== projectId),

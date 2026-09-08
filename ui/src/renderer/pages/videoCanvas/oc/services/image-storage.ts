@@ -1,6 +1,5 @@
 import localforage from "localforage";
 
-import { nanoid } from "nanoid";
 import { readImageMeta } from "@oc/lib/image-utils";
 import { getActiveUserScope } from "@oc/lib/user-scope";
 import { buildBackendAuthHeaders } from "@/common/adapter/httpBridge";
@@ -52,14 +51,10 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
             bytes: resource.size || blob.size,
             mimeType: resource.mimeType || blob.type || meta.mimeType,
         };
-    } catch {
-        // OSS is optional during local/self-hosted setup. Keep the existing local fallback.
+    } catch (error) {
+        URL.revokeObjectURL(previewUrl);
+        throw error instanceof Error ? error : new Error("图片上传失败");
     }
-    const storageKey = `image:${getActiveUserScope()}:${nanoid()}`;
-    await store.setItem(storageKey, blob);
-    const url = previewUrl;
-    objectUrls.set(storageKey, url);
-    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
 }
 
 function shouldImportRemoteImage(input: string) {

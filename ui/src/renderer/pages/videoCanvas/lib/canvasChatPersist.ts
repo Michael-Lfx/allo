@@ -1,4 +1,5 @@
 import type { CanvasAssistantMessage, CanvasAssistantReference, CanvasAssistantSession } from "@oc/types/canvas";
+import { persistableCanvasNode } from "@oc/lib/canvas/canvas-media-id";
 import type { CanvasProject } from "@oc/stores/canvas/use-canvas-store";
 import type { CanvasDocument } from "../types";
 
@@ -141,7 +142,7 @@ export function projectToCanvasDocument(project: CanvasProject): CanvasDocument 
     return {
         schema: 1,
         title: project.title,
-        nodes: project.nodes as unknown as CanvasDocument["nodes"],
+        nodes: project.nodes.map(persistableCanvasNode) as unknown as CanvasDocument["nodes"],
         connections: project.connections as unknown as CanvasDocument["connections"],
         viewport: project.viewport as CanvasDocument["viewport"],
         backgroundMode: (project.backgroundMode as CanvasDocument["backgroundMode"]) || "dots",

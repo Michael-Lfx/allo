@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { canvasMediaUrl } from "@renderer/pages/videoCanvas/api";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
-import { canvasAssetDisplayUrl, canvasNodeDisplayUrl, canvasNodeMediaId, canvasNodeReferenceSource, referenceImagePreviewUrl, rewriteCanvasDisplayUrl } from "./canvas-media-id";
+import { canvasAssetDisplayUrl, canvasNodeDisplayUrl, canvasNodeMediaId, canvasNodeReferenceSource, persistableCanvasNode, referenceImagePreviewUrl, rewriteCanvasDisplayUrl } from "./canvas-media-id";
 
 const node = (type: CanvasNodeType, metadata: Record<string, unknown>): CanvasNodeData =>
     ({
@@ -67,6 +67,15 @@ describe("canvasNodeMediaId / canvasNodeDisplayUrl", () => {
         expect(
             canvasNodeDisplayUrl(node(CanvasNodeType.Image, { content: "blob:http://localhost/x" }))
         ).toBe("");
+    });
+
+    test("keeps a live blob when a local IndexedDB key can restore it", () => {
+        expect(
+            canvasNodeDisplayUrl(node(CanvasNodeType.Image, {
+                storageKey: "image:u1:local",
+                content: "blob:http://127.0.0.1:5173/session",
+            }))
+        ).toBe("blob:http://127.0.0.1:5173/session");
     });
 });
 
@@ -154,5 +163,29 @@ describe("canvasAssetDisplayUrl", () => {
                 data: { dataUrl: "blob:http://127.0.0.1:5173/session" },
             })
         ).toBe("blob:http://127.0.0.1:5173/session");
+    });
+});
+
+describe("persistableCanvasNode", () => {
+    test("rewrites canvas media onto a portable relative path", () => {
+        const persisted = persistableCanvasNode(node(CanvasNodeType.Image, {
+            mediaId: "mid-7",
+            storageKey: "resource:mid-7",
+            content: "blob:http://127.0.0.1:5173/dead",
+        }));
+        expect(persisted.metadata).toEqual({
+            mediaId: "mid-7",
+            storageKey: "resource:mid-7",
+            content: "/api/video-canvas/media/mid-7",
+        });
+    });
+
+    test("drops an orphan blob and a loopback storageKey", () => {
+        const persisted = persistableCanvasNode(node(CanvasNodeType.Image, {
+            storageKey: "http://127.0.0.1:18080/face.png",
+            content: "blob:http://localhost/x",
+        }));
+        expect(persisted.metadata?.content).toBe("");
+        expect(persisted.metadata?.storageKey).toBeUndefined();
     });
 });

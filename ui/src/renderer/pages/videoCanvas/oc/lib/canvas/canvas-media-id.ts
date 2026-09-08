@@ -1,6 +1,6 @@
 import { resourceIdFromStorageKey, resourceStorageKey } from "@oc/services/api/resources";
-import { canvasMediaUrl, extractMediaIdFromCanvasMediaUrl, resolveCanvasUrl } from "@renderer/pages/videoCanvas/api";
-import type { CanvasNodeData } from "@oc/types/canvas";
+import { canvasMediaPath, canvasMediaUrl, extractMediaIdFromCanvasMediaUrl, resolveCanvasUrl } from "@renderer/pages/videoCanvas/api";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata } from "@oc/types/canvas";
 
 /** Resolve the local `/api/video-canvas/media/{id}` id from a canvas node. */
 export function canvasNodeMediaId(node: CanvasNodeData | undefined | null): string | null {
@@ -44,7 +44,90 @@ export function canvasNodeDisplayUrl(node: CanvasNodeData | undefined | null): s
     if (!node) return "";
     const mediaId = canvasNodeMediaId(node);
     if (mediaId) return canvasMediaUrl(mediaId);
-    return rewriteCanvasDisplayUrl(node.metadata?.content);
+    const content = node.metadata?.content?.trim() || "";
+    // Hydrate restores IndexedDB bytes as a live object URL. Drop only orphan blobs
+    // that have no durable key — those cannot be reconstituted after reload.
+    if (content.startsWith("blob:") && isLocalIndexedDbStorageKey(node.metadata?.storageKey)) return content;
+    return rewriteCanvasDisplayUrl(content);
+}
+
+const LOCAL_INDEXED_DB_KEY = /^(image|video|audio|file|director-clay|model):/;
+
+/** IndexedDB object-store keys from the pre-canvas-media fallback. Not `resource:{id}`. */
+export function isLocalIndexedDbStorageKey(storageKey?: string | null): boolean {
+    const key = storageKey?.trim() || "";
+    return LOCAL_INDEXED_DB_KEY.test(key) && !resourceIdFromStorageKey(key);
+}
+
+function isLoopbackHostname(hostname: string) {
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+}
+
+/**
+ * Session-only bytes that vanish after reload / share unless ingested into
+ * `/api/video-canvas/media/{id}`: blob URLs, data URLs, and loopback HTTP
+ * that is not already a canvas media route (e.g. a local static file server).
+ */
+export function isEphemeralLocalMediaSrc(value?: string | null): boolean {
+    const trimmed = value?.trim() || "";
+    if (!trimmed) return false;
+    if (trimmed.startsWith("blob:") || /^data:/i.test(trimmed)) return true;
+    if (resourceIdFromStorageKey(trimmed) || extractMediaIdFromCanvasMediaUrl(trimmed)) return false;
+    if (!/^https?:\/\//i.test(trimmed)) return false;
+    try {
+        return isLoopbackHostname(new URL(trimmed).hostname);
+    } catch {
+        return false;
+    }
+}
+
+export function persistableCanvasMediaPath(mediaId: string): string {
+    return canvasMediaPath(mediaId);
+}
+
+function persistablePreview(preview: NonNullable<CanvasNodeMetadata["videoPreview"]>): NonNullable<CanvasNodeMetadata["videoPreview"]> {
+    const mediaId = resourceIdFromStorageKey(preview.storageKey) || extractMediaIdFromCanvasMediaUrl(preview.content) || "";
+    if (mediaId) {
+        const content = persistableCanvasMediaPath(mediaId);
+        const storageKey = resourceStorageKey(mediaId);
+        if (preview.content === content && preview.storageKey === storageKey) return preview;
+        return { ...preview, content, storageKey };
+    }
+    if (preview.content?.startsWith("blob:")) return { ...preview, content: "" };
+    return preview;
+}
+
+/** Drop one-shot blob URLs and rewrite canvas media onto a portable relative path. */
+export function persistableCanvasNodeMetadata(metadata?: CanvasNodeMetadata): CanvasNodeMetadata | undefined {
+    if (!metadata) return metadata;
+    const mediaId = metadata.mediaId?.trim() || resourceIdFromStorageKey(metadata.storageKey) || extractMediaIdFromCanvasMediaUrl(metadata.content) || "";
+    let next = metadata;
+    const assign = (patch: Partial<CanvasNodeMetadata>) => {
+        next = next === metadata ? { ...metadata, ...patch } : { ...next, ...patch };
+    };
+    if (mediaId) {
+        const content = persistableCanvasMediaPath(mediaId);
+        const storageKey = resourceStorageKey(mediaId);
+        if (metadata.mediaId !== mediaId || metadata.storageKey !== storageKey || metadata.content !== content) {
+            assign({ mediaId, storageKey, content });
+        }
+    } else {
+        if (metadata.content?.startsWith("blob:")) assign({ content: "" });
+        if (metadata.storageKey && isEphemeralLocalMediaSrc(metadata.storageKey) && !isLocalIndexedDbStorageKey(metadata.storageKey)) {
+            assign({ storageKey: undefined });
+        }
+    }
+    if (metadata.videoPreview) {
+        const videoPreview = persistablePreview(next.videoPreview || metadata.videoPreview);
+        if (videoPreview !== (next.videoPreview || metadata.videoPreview)) assign({ videoPreview });
+    }
+    return next;
+}
+
+export function persistableCanvasNode(node: CanvasNodeData): CanvasNodeData {
+    if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return node;
+    const metadata = persistableCanvasNodeMetadata(node.metadata);
+    return metadata === node.metadata ? node : { ...node, metadata };
 }
 
 /**

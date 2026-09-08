@@ -111,4 +111,41 @@ describe("canvas chat persist", () => {
         expect(shouldPushAssistantSessionsToParent([], [{ ...placeholder, messages: [{ id: "m1", role: "user", text: "hi" }] }], null, placeholder.id)).toBe(true);
         expect(shouldApplyExternalAssistantSessions([session], [], session.id, null)).toBe(true);
     });
+
+    test("persists blob content as a portable canvas media path", () => {
+        const project = {
+            id: "p1",
+            title: "画布",
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            nodes: [
+                {
+                    id: "img-1",
+                    type: CanvasNodeType.Image,
+                    title: "本地图",
+                    position: { x: 0, y: 0 },
+                    width: 320,
+                    height: 180,
+                    metadata: {
+                        mediaId: "mid-share",
+                        storageKey: "resource:mid-share",
+                        content: "blob:http://127.0.0.1:5173/dead",
+                    },
+                },
+            ],
+            connections: [],
+            chatSessions: [],
+            activeChatId: null,
+            backgroundMode: "lines",
+            showImageInfo: false,
+            viewport: { x: 0, y: 0, k: 1 },
+            directorScenes: [],
+        } as CanvasProject;
+        const doc = projectToCanvasDocument(project);
+        expect(doc.nodes[0].metadata).toMatchObject({
+            mediaId: "mid-share",
+            storageKey: "resource:mid-share",
+            content: "/api/video-canvas/media/mid-share",
+        });
+    });
 });

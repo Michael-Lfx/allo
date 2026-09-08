@@ -14,8 +14,8 @@ const bunMock = (await import("bun:test")) as unknown as typeof import("bun:test
 
 const calls: string[] = [];
 const uploaded = {
-    url: "blob:uploaded-preview",
-    storageKey: "image:u1:abc",
+    url: "/api/video-canvas/media/uploaded-1",
+    storageKey: "resource:uploaded-1",
     width: 640,
     height: 360,
     bytes: 1024,
@@ -32,6 +32,7 @@ bunMock.mock.module("@oc/services/image-storage", () => ({
         return uploaded;
     },
     getImageBlob: async () => null,
+    fetchImageSourceBlob: async () => new Blob(["x"], { type: "image/png" }),
 }));
 
 bunMock.mock.module("@oc/services/file-storage", () => ({
@@ -40,12 +41,15 @@ bunMock.mock.module("@oc/services/file-storage", () => ({
         return `object-url:${storageKey}`;
     },
     getMediaBlob: async () => null,
-    uploadMediaFile: async (input: string | Blob) => ({
-        url: "http://local/uploaded",
-        storageKey: "file:u1:x",
-        bytes: 0,
-        mimeType: "application/octet-stream",
-    }),
+    uploadMediaFile: async (input: string | Blob) => {
+        calls.push(`uploadMediaFile:${typeof input === "string" ? input.slice(0, 40) : "blob"}`);
+        return {
+            url: "/api/video-canvas/media/uploaded-media",
+            storageKey: "resource:uploaded-media",
+            bytes: 0,
+            mimeType: "video/mp4",
+        };
+    },
 }));
 
 // mock.module must be registered before the module under test loads.
@@ -105,14 +109,50 @@ describe("hydrateCanvasImages", () => {
         expect(hydrated.metadata?.content).toBe("object-url:video:u1:clip");
     });
 
-    test("uploads legacy data URLs and stamps upload metadata", async () => {
+    test("uploads legacy data URLs and stamps canvas media", async () => {
         calls.length = 0;
         const [hydrated] = await hydrateCanvasImages([
             node(CanvasNodeType.Image, { content: "data:image/png;base64,AAAA" }),
         ]);
         expect(calls).toEqual(["uploadImage:data:image/png;base64,AA"]);
-        expect(hydrated.metadata?.content).toBe("blob:uploaded-preview");
-        expect(hydrated.metadata?.storageKey).toBe("image:u1:abc");
+        expect(hydrated.metadata?.content).toBe("/api/video-canvas/media/uploaded-1");
+        expect(hydrated.metadata?.storageKey).toBe("resource:uploaded-1");
+        expect(hydrated.metadata?.mediaId).toBe("uploaded-1");
         expect(hydrated.metadata?.bytes).toBe(1024);
+    });
+
+    test("resolves empty content plus a local IndexedDB key for display", async () => {
+        calls.length = 0;
+        const [hydrated] = await hydrateCanvasImages([
+            node(CanvasNodeType.Image, {
+                content: "",
+                storageKey: "image:u1:empty",
+            }),
+        ]);
+        expect(calls).toEqual(["resolveImageUrl:image:u1:empty"]);
+        expect(hydrated.metadata?.content).toBe("object-url:image:u1:empty");
+    });
+
+    test("ingests loopback HTTP stills into canvas media", async () => {
+        calls.length = 0;
+        const [hydrated] = await hydrateCanvasImages([
+            node(CanvasNodeType.Image, {
+                content: "http://127.0.0.1:18080/female_face_lock_v2.png",
+            }),
+        ]);
+        expect(calls).toEqual(["uploadImage:http://127.0.0.1:18080/f"]);
+        expect(hydrated.metadata?.storageKey).toBe("resource:uploaded-1");
+        expect(hydrated.metadata?.mediaId).toBe("uploaded-1");
+    });
+
+    test("ingests loopback HTTP clips through uploadMediaFile", async () => {
+        calls.length = 0;
+        const [hydrated] = await hydrateCanvasImages([
+            node(CanvasNodeType.Video, {
+                content: "http://127.0.0.1:18080/clip.mp4",
+            }),
+        ]);
+        expect(calls).toEqual(["uploadMediaFile:http://127.0.0.1:18080/clip.mp4"]);
+        expect(hydrated.metadata?.storageKey).toBe("resource:uploaded-media");
     });
 });
