@@ -41,7 +41,6 @@ const ExtensionMcpServerItem: React.FC<ExtensionMcpServerItemProps> = ({
         name='1'
         disabled={!hasDescription}
         showExpandIcon={hasDescription}
-        className='[&_div.arco-collapse-item-content-box]:py-3'
       >
         {hasDescription ? (
           <div className='text-13px leading-20px text-t-secondary whitespace-pre-wrap break-words'>

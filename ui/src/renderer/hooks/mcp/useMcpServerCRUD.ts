@@ -9,10 +9,10 @@ import { toBackendMcpPayload } from './catalog';
 
 const mergeServerState = (persisted: IMcpServer, fallback?: Partial<IMcpServer>): IMcpServer => ({
   ...persisted,
-  last_test_status: fallback?.last_test_status ?? persisted.last_test_status,
-  tools: fallback?.tools ?? persisted.tools,
-  last_connected: fallback?.last_connected ?? persisted.last_connected,
-  original_json: fallback?.original_json ?? persisted.original_json,
+  last_test_status: persisted.last_test_status ?? fallback?.last_test_status,
+  tools: persisted.tools ?? fallback?.tools,
+  last_connected: persisted.last_connected ?? fallback?.last_connected,
+  original_json: persisted.original_json ?? fallback?.original_json,
 });
 
 const replaceUserServer = (servers: IMcpServer[], nextServer: IMcpServer) => {
@@ -38,20 +38,10 @@ export const useMcpServerCRUD = (
 ) => {
   const { t } = useTranslation();
 
-  const persistEnabledState = useCallback(async (server: IMcpServer, enabled: boolean) => {
-    if (server.enabled === enabled) {
-      return server;
-    }
-
-    return mcpService.toggleServer.invoke({ mcp_server_id: server.mcp_server_id });
-  }, []);
-
   const handleAddMcpServer = useCallback(
     async (serverData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>) => {
       try {
-        let persisted = await mcpService.createServer.invoke(toBackendMcpPayload(serverData));
-        persisted = await persistEnabledState(persisted, serverData.enabled);
-
+        const persisted = await mcpService.createServer.invoke(toBackendMcpPayload(serverData));
         const nextServer = mergeServerState(persisted, serverData);
         await saveMcpServers((prevServers) => replaceUserServer(prevServers, nextServer));
         return nextServer;
@@ -60,7 +50,7 @@ export const useMcpServerCRUD = (
         return undefined;
       }
     },
-    [persistEnabledState, saveMcpServers, t]
+    [saveMcpServers, t]
   );
 
   const handleBatchImportMcpServers = useCallback(
@@ -70,12 +60,10 @@ export const useMcpServerCRUD = (
           servers: serversData.map((server) => toBackendMcpPayload(server)),
         });
 
-        const finalServers: IMcpServer[] = [];
-        for (const importedServer of imported) {
+        const finalServers: IMcpServer[] = imported.map((importedServer) => {
           const original = serversData.find((server) => server.name === importedServer.name);
-          const persisted = await persistEnabledState(importedServer, original?.enabled ?? false);
-          finalServers.push(mergeServerState(persisted, original));
-        }
+          return mergeServerState(importedServer, original);
+        });
 
         await saveMcpServers((prevServers) => {
           let nextServers = prevServers.filter((server) => server.builtin === true);
@@ -100,7 +88,7 @@ export const useMcpServerCRUD = (
         return [];
       }
     },
-    [persistEnabledState, saveMcpServers, t]
+    [saveMcpServers, t]
   );
 
   const handleEditMcpServer = useCallback(
@@ -113,16 +101,17 @@ export const useMcpServerCRUD = (
       }
 
       try {
-        let persisted = await mcpService.updateServer.invoke({
+        const persisted = await mcpService.updateServer.invoke({
           mcp_server_id: editingMcpServer.mcp_server_id,
           data: toBackendMcpPayload(serverData),
         });
-        persisted = await persistEnabledState(persisted, serverData.enabled);
-
-        const nextServer = mergeServerState(persisted, {
-          ...editingMcpServer,
-          ...serverData,
-        });
+        const configurationChanged =
+          JSON.stringify(editingMcpServer.transport) !== JSON.stringify(serverData.transport) ||
+          editingMcpServer.original_json !== serverData.original_json;
+        const nextServer = mergeServerState(
+          persisted,
+          configurationChanged ? undefined : { ...editingMcpServer, ...serverData }
+        );
         await saveMcpServers((prevServers) =>
           prevServers.map((server) => (server.mcp_server_id === editingMcpServer.mcp_server_id ? nextServer : server))
         );
@@ -134,7 +123,7 @@ export const useMcpServerCRUD = (
         return undefined;
       }
     },
-    [persistEnabledState, saveMcpServers, t]
+    [saveMcpServers, t]
   );
 
   const handleDeleteMcpServer = useCallback(
@@ -146,10 +135,73 @@ export const useMcpServerCRUD = (
     [saveMcpServers, t]
   );
 
+  const handleToggleMcpServer = useCallback(
+    async (server: IMcpServer): Promise<IMcpServer | undefined> => {
+      try {
+        const persisted = await mcpService.toggleServer.invoke({ mcp_server_id: server.mcp_server_id });
+        const nextServer = mergeServerState(persisted, server);
+        await saveMcpServers((prevServers) => replaceUserServer(prevServers, nextServer));
+        Message.success(t(nextServer.enabled ? 'settings.mcpEnabledSuccess' : 'settings.mcpDisabledSuccess'));
+        return nextServer;
+      } catch (error) {
+        Message.error(getMcpRequestErrorMessage(error, t('settings.mcpToggleFailed')));
+        return undefined;
+      }
+    },
+    [saveMcpServers, t]
+  );
+
+  // Explicit "add and enable": tests the persisted config by ID and, on
+  // success, enables the server server-side. Failure keeps it disabled.
+  const handleActivateMcpServer = useCallback(
+    async (
+      serverId: McpServerId,
+      options?: { notify?: boolean }
+    ): Promise<
+      | {
+          server: IMcpServer;
+          enabled: boolean;
+          configChanged: boolean;
+          rejectionReason?: string;
+          needsAuth: boolean;
+        }
+      | undefined
+    > => {
+      const notify = options?.notify ?? true;
+      try {
+        const result = await mcpService.activateServer.invoke({ mcp_server_id: serverId });
+        const nextServer = mergeServerState(result.server);
+        await saveMcpServers((prevServers) => replaceUserServer(prevServers, nextServer));
+        const needsAuth = result.needs_auth ?? result.test.needsAuth ?? result.test.needs_auth ?? false;
+        if (result.enabled && notify) {
+          const toolCount = nextServer.tools?.length ?? 0;
+          Message.success(t('settings.mcpActivatedSuccess', { count: toolCount }));
+        } else if (!result.enabled && notify && !result.config_changed) {
+          Message.error(
+            result.enable_rejected_reason || getMcpRequestErrorMessage(undefined, t('settings.mcpTestFailed'))
+          );
+        }
+        return {
+          server: nextServer,
+          enabled: result.enabled,
+          configChanged: result.config_changed ?? false,
+          rejectionReason: result.enable_rejected_reason,
+          needsAuth,
+        };
+      } catch (error) {
+        if (notify) Message.error(getMcpRequestErrorMessage(error, t('settings.mcpTestFailed')));
+        return undefined;
+      }
+    },
+    [saveMcpServers, t]
+  );
+
   return {
     handleAddMcpServer,
     handleBatchImportMcpServers,
     handleEditMcpServer,
     handleDeleteMcpServer,
+    handleToggleMcpServer,
+    handleActivateMcpServer,
   };
 };

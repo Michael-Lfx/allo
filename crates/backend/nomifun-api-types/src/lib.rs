@@ -231,10 +231,11 @@ pub use managed_model::{
 };
 pub use mcp::{
     BatchImportMcpServersRequest, CreateMcpServerRequest, DetectedMcpServerEntry,
-    DetectedMcpServerResponse, ImportMcpServerRequest, McpAuthMethod, McpConnectionTestErrorCode,
-    McpConnectionTestResult, McpServerId, McpServerResponse, McpToolResponse, McpTransport,
-    OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest,
-    OAuthStatusResponse, TestMcpConnectionRequest, UpdateMcpServerRequest,
+    DetectedMcpServerResponse, ImportMcpServerRequest, McpActivationResponse, McpAuthMethod,
+    McpConnectionTestErrorCode, McpConnectionTestResult, McpServerId, McpServerResponse,
+    McpTestByIdResponse, McpToolResponse, McpTransport, OAuthCheckStatusRequest, OAuthLoginRequest,
+    OAuthLoginResponse, OAuthLogoutRequest, OAuthStatusResponse, TestMcpConnectionRequest,
+    UpdateMcpServerRequest,
 };
 pub use media::{
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,

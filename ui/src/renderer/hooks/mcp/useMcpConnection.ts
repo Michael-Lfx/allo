@@ -5,7 +5,6 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { mcpService } from '@/common/adapter/ipcBridge';
-import { buildMcpConnectionTestRequest } from '@/common/adapter/mcpRequest';
 import type { IMcpServer } from '@/common/config/storage';
 
 /**
@@ -162,8 +161,23 @@ export const useMcpConnection = (
       await updateServerStatus('testing');
 
       try {
-        const result = await mcpService.testMcpConnection.invoke(buildMcpConnectionTestRequest(server));
+        // Saved servers must be tested by ID so the backend reads the
+        // authoritative persisted transport. The legacy request remains only
+        // for unsaved editor drafts, if a caller provides one in the future.
+        const response = await mcpService.testServerById.invoke({ mcp_server_id: server.mcp_server_id });
+        const result = response.test;
         const needsAuth = result.needsAuth ?? result.needs_auth;
+
+        if (response.config_changed) {
+          await updateServerStatus('disconnected', { tools: undefined });
+          if (notify) {
+            Message.warning({
+              content: `${server.name}: ${t('settings.mcpConfigChangedDuringTest')}`,
+              duration: 4000,
+            });
+          }
+          return;
+        }
 
         // 检查是否需要认证
         if (needsAuth) {

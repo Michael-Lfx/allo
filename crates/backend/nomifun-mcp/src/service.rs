@@ -24,7 +24,7 @@ const SPLITTABLE_STDIO_LAUNCHERS: &[&str] = &["npx", "pnpx", "bunx", "uvx", "uv"
 ///
 /// - **add**: upsert by name (existing → update, new → create)
 /// - **delete**: removes the stored MCP definition
-/// - **toggle**: flips enabled state
+/// - **toggle**: enables only after a successful connection test, or disables
 /// - **batch_import**: sequential upsert by name
 #[derive(Clone)]
 pub struct McpConfigService {
@@ -55,10 +55,67 @@ impl McpConfigService {
         Ok(server.into_response())
     }
 
+    /// Get a single MCP server by ID as the domain model.
+    ///
+    /// Used by activation orchestration, which needs the structured transport.
+    pub async fn get_server_model(&self, mcp_server_id: &McpServerId) -> Result<McpServer, McpError> {
+        let row = self
+            .repo
+            .find_by_id(mcp_server_id.as_str())
+            .await?
+            .ok_or_else(|| McpError::NotFound(mcp_server_id.to_string()))?;
+        McpServer::from_row(row)
+    }
+
+    /// Read the persisted configuration revision used to guard an external
+    /// connection test from writing results for an older configuration.
+    ///
+    /// A missing row surfaces as [`McpError::NotFound`] so callers keep the
+    /// same contract as `get_server_model`.
+    pub async fn config_revision(&self, mcp_server_id: &McpServerId) -> Result<i64, McpError> {
+        self.repo
+            .config_revision(mcp_server_id.as_str())
+            .await
+            .map_err(|error| match error {
+                nomifun_db::DbError::NotFound(_) => McpError::NotFound(mcp_server_id.to_string()),
+                other => other.into(),
+            })
+    }
+
+    /// Enable an MCP server, enforcing the connection-test gate.
+    ///
+    /// Unlike [`Self::toggle_server`] this never disables and is idempotent
+    /// for already-enabled rows. The gate re-reads the persisted row, so any
+    /// configuration change that cleared the test status also blocks enabling.
+    pub async fn enable_server(&self, mcp_server_id: &McpServerId) -> Result<McpServerResponse, McpError> {
+        let row = self
+            .repo
+            .find_by_id(mcp_server_id.as_str())
+            .await?
+            .ok_or_else(|| McpError::NotFound(mcp_server_id.to_string()))?;
+
+        if row.enabled {
+            return Ok(McpServer::from_row(row)?.into_response());
+        }
+        if row.last_test_status != "connected" {
+            return Err(McpError::Conflict(
+                "MCP server must pass a connection test before it can be enabled".to_owned(),
+            ));
+        }
+        let params = UpdateMcpServerParams {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let updated = self.repo.update(mcp_server_id.as_str(), params).await?;
+        let server = McpServer::from_row(updated)?;
+        Ok(server.into_response())
+    }
+
     /// Add (or upsert) an MCP server.
     ///
     /// If a server with the same name already exists, it is updated
     /// (transport, description, original_json) rather than creating a duplicate.
+    /// Re-imported configurations remain disabled until they pass a new test.
     pub async fn add_server(&self, req: CreateMcpServerRequest) -> Result<McpServerResponse, McpError> {
         let transport = normalize_transport(McpServerTransport::from(req.transport))?;
         self.upsert_server(
@@ -115,11 +172,22 @@ impl McpConfigService {
             .transpose()?;
         let config_json = transport.as_ref().map(McpServerTransport::to_config_json).transpose()?;
 
+        let configuration_changed = transport.as_ref().is_some_and(|transport| {
+            transport.transport_type() != existing_server.transport_type
+                || config_json.as_deref() != Some(existing_server.transport_config.as_str())
+        }) || req.original_json.as_ref().is_some_and(|original_json| {
+            original_json.as_deref() != existing_server.original_json.as_deref()
+        });
+
         let params = UpdateMcpServerParams {
             name: req.name.as_deref(),
             description: req.description.as_ref().map(|opt| opt.as_deref()),
+            enabled: configuration_changed.then_some(false),
             transport_type: transport.as_ref().map(McpServerTransport::transport_type),
             transport_config: config_json.as_deref(),
+            tools: configuration_changed.then_some(None),
+            last_test_status: configuration_changed.then_some("disconnected"),
+            last_connected: configuration_changed.then_some(None),
             original_json: req.original_json.as_ref().map(|opt| opt.as_deref()),
             builtin: req.builtin,
             ..Default::default()
@@ -155,6 +223,11 @@ impl McpConfigService {
             .ok_or_else(|| McpError::NotFound(mcp_server_id.to_string()))?;
 
         let new_enabled = !row.enabled;
+        if new_enabled && row.last_test_status != "connected" {
+            return Err(McpError::Conflict(
+                "MCP server must pass a connection test before it can be enabled".to_owned(),
+            ));
+        }
         let params = UpdateMcpServerParams {
             enabled: Some(new_enabled),
             ..Default::default()
@@ -192,7 +265,9 @@ impl McpConfigService {
                     &transport,
                     server_req.original_json.as_deref(),
                     server_req.builtin,
-                    server_req.enabled.unwrap_or(false),
+                    // Imports are always inert. Enabling is a separate,
+                    // test-gated operation handled by `toggle_server`.
+                    false,
                 )
                 .await?;
             rows.push(server);
@@ -213,17 +288,40 @@ impl McpConfigService {
         mcp_server_id: &McpServerId,
         result: &McpConnectionTestResult,
     ) -> Result<(), McpError> {
+        // Revision before enabled-state read, matching the ordering contract
+        // in `activation.rs`: an edit after the revision snapshot must
+        // invalidate the conditional commit.
+        let revision = self.repo.config_revision(mcp_server_id.as_str()).await?;
+        let server = self.get_server_model(mcp_server_id).await?;
+        self.persist_test_result_at_revision(mcp_server_id, revision, result, server.enabled)
+            .await?;
+        Ok(())
+    }
+
+    /// Persist a test result only when the saved configuration still matches
+    /// the revision captured before the external process was started.
+    pub async fn persist_test_result_at_revision(
+        &self,
+        mcp_server_id: &McpServerId,
+        expected_revision: i64,
+        result: &McpConnectionTestResult,
+        enabled: bool,
+    ) -> Result<bool, McpError> {
         let status = if result.success { "connected" } else { "error" };
         let last_connected = if result.success { Some(now_ms()) } else { None };
         let tools_json = result.tools.as_ref().map(serde_json::to_string).transpose()?;
 
-        self.repo
-            .update_status(mcp_server_id.as_str(), status, last_connected)
-            .await?;
-        self.repo
-            .update_tools(mcp_server_id.as_str(), tools_json.as_deref())
-            .await?;
-        Ok(())
+        Ok(self
+            .repo
+            .complete_activation(
+                mcp_server_id.as_str(),
+                expected_revision,
+                status,
+                last_connected,
+                tools_json.as_deref(),
+                enabled,
+            )
+            .await?)
     }
 
     async fn upsert_server(
@@ -244,11 +342,17 @@ impl McpConfigService {
                 )));
             }
 
+            let configuration_changed = existing.transport_type != transport.transport_type()
+                || existing.transport_config != config_json
+                || existing.original_json.as_deref() != original_json;
             let params = UpdateMcpServerParams {
                 description: Some(description),
-                enabled: Some(enabled),
+                enabled: Some(if configuration_changed { false } else { enabled && existing.enabled }),
                 transport_type: Some(transport.transport_type()),
                 transport_config: Some(&config_json),
+                tools: configuration_changed.then_some(None),
+                last_test_status: configuration_changed.then_some("disconnected"),
+                last_connected: configuration_changed.then_some(None),
                 original_json: Some(original_json),
                 builtin: Some(existing.builtin || builtin),
                 deleted_at: Some(None),
@@ -496,6 +600,12 @@ mod tests {
             if let Some(tools) = params.tools {
                 servers[idx].tools = tools.map(String::from);
             }
+            if let Some(status) = params.last_test_status {
+                servers[idx].last_test_status = status.to_owned();
+            }
+            if let Some(last_connected) = params.last_connected {
+                servers[idx].last_connected = last_connected;
+            }
             if let Some(oj) = params.original_json {
                 servers[idx].original_json = oj.map(String::from);
             }
@@ -645,6 +755,36 @@ mod tests {
         }
     }
 
+    fn successful_test_result() -> McpConnectionTestResult {
+        McpConnectionTestResult {
+            success: true,
+            tools: Some(vec![nomifun_api_types::McpToolResponse {
+                name: "read_file".into(),
+                description: Some("Read a file".into()),
+                input_schema: None,
+            }]),
+            error: None,
+            code: None,
+            details: None,
+            needs_auth: None,
+            auth_method: None,
+            www_authenticate: None,
+        }
+    }
+
+    fn failed_test_result() -> McpConnectionTestResult {
+        McpConnectionTestResult {
+            success: false,
+            tools: None,
+            error: Some("connection failed".into()),
+            code: None,
+            details: None,
+            needs_auth: None,
+            auth_method: None,
+            www_authenticate: None,
+        }
+    }
+
     // -- list_servers --------------------------------------------------------
 
     #[tokio::test]
@@ -709,6 +849,63 @@ mod tests {
             }
             _ => panic!("expected Http transport after upsert"),
         }
+    }
+
+    #[tokio::test]
+    async fn toggle_requires_a_successful_connection_test_and_can_disable() {
+        let svc = make_service();
+        let created = svc.add_server(stdio_create_req("test-gated-toggle")).await.unwrap();
+
+        let err = svc.toggle_server(&created.mcp_server_id).await.unwrap_err();
+        assert!(matches!(err, McpError::Conflict(message) if message.contains("connection test")));
+
+        svc.persist_test_result(&created.mcp_server_id, &failed_test_result())
+            .await
+            .unwrap();
+        let err = svc.toggle_server(&created.mcp_server_id).await.unwrap_err();
+        assert!(matches!(err, McpError::Conflict(message) if message.contains("connection test")));
+
+        svc.persist_test_result(&created.mcp_server_id, &successful_test_result())
+            .await
+            .unwrap();
+        let enabled = svc.toggle_server(&created.mcp_server_id).await.unwrap();
+        assert!(enabled.enabled);
+
+        let disabled = svc.toggle_server(&created.mcp_server_id).await.unwrap();
+        assert!(!disabled.enabled);
+    }
+
+    #[tokio::test]
+    async fn editing_transport_invalidates_previous_test_and_disables_server() {
+        let svc = make_service();
+        let created = svc.add_server(stdio_create_req("invalidate-on-edit")).await.unwrap();
+        svc.persist_test_result(&created.mcp_server_id, &successful_test_result())
+            .await
+            .unwrap();
+        let enabled = svc.toggle_server(&created.mcp_server_id).await.unwrap();
+        assert!(enabled.enabled);
+
+        let edited = svc
+            .edit_server(
+                &created.mcp_server_id,
+                UpdateMcpServerRequest {
+                    name: None,
+                    description: None,
+                    transport: Some(McpTransport::Http {
+                        url: "https://changed.example.com/mcp".into(),
+                        headers: HashMap::new(),
+                    }),
+                    original_json: None,
+                    builtin: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!edited.enabled);
+        assert_eq!(edited.last_test_status, McpServerStatus::Disconnected);
+        assert!(edited.tools.is_none());
+        assert!(edited.last_connected.is_none());
     }
 
     #[tokio::test]
@@ -905,6 +1102,9 @@ mod tests {
     async fn delete_enabled_server_returns_true() {
         let svc = make_service();
         let created = svc.add_server(stdio_create_req("test")).await.unwrap();
+        svc.persist_test_result(&created.mcp_server_id, &successful_test_result())
+            .await
+            .unwrap();
         svc.toggle_server(&created.mcp_server_id).await.unwrap(); // enable
 
         let was_enabled = svc.delete_server(&created.mcp_server_id).await.unwrap();
@@ -926,6 +1126,9 @@ mod tests {
         let created = svc.add_server(stdio_create_req("toggle")).await.unwrap();
         assert!(!created.enabled);
 
+        svc.persist_test_result(&created.mcp_server_id, &successful_test_result())
+            .await
+            .unwrap();
         let toggled = svc.toggle_server(&created.mcp_server_id).await.unwrap();
         assert!(toggled.enabled);
 
@@ -1121,7 +1324,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_import_preserves_enabled_state() {
+    async fn batch_import_always_starts_disabled() {
         let svc = make_service();
         let mut req = stdio_import_req("enabled-mcp");
         req.enabled = Some(true);
@@ -1131,7 +1334,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result[0].name, "enabled-mcp");
-        assert!(result[0].enabled);
+        assert!(!result[0].enabled);
     }
 
     #[tokio::test]

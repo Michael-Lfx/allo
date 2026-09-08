@@ -13,6 +13,9 @@ type BackendMcpPayload = {
 
 const isBuiltinServer = (server: IMcpServer) => server.builtin === true;
 
+/** A server must pass the global gate before it can be selected for a run. */
+export const isMcpServerSelectable = (server: Pick<IMcpServer, 'enabled'>): boolean => server.enabled === true;
+
 const normalizeServerName = (name: string) => name.trim().toLowerCase();
 
 const getCatalogServerKey = (server: Pick<IMcpServer, 'mcp_server_id' | 'name' | 'builtin'>) => {

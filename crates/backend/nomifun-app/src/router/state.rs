@@ -1002,10 +1002,16 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
         nomifun_db::SqliteOAuthTokenRepository::new(services.database.pool().clone()),
     );
 
+    let connection_test_service = McpConnectionTestService::new_dynamic();
+
     McpRouterState {
         config_service: McpConfigService::new(repo.clone()),
         sync_service: McpSyncService::new(adapters),
-        connection_test_service: McpConnectionTestService::new_dynamic(),
+        activation_service: nomifun_mcp::McpActivationService::new(
+            McpConfigService::new(repo.clone()),
+            Arc::new(connection_test_service.clone()),
+        ),
+        connection_test_service,
         oauth_service: nomifun_mcp::McpOAuthService::new_dynamic(oauth_token_repo),
     }
 }

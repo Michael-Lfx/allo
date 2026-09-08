@@ -10,7 +10,6 @@
 
 import type { ConfirmationCorrelationId, IConfirmation } from '@/common/chat/chatLib';
 import { bridge } from '@/platform';
-import type { McpConnectionTestRequest } from './mcpRequest';
 import {
   noopEmitter,
   shellEmitter,
@@ -2145,6 +2144,34 @@ export type DetectedMcpServer = {
   import_skip_reason?: string;
 };
 
+export type McpConnectionTestResultDto = {
+  success: boolean;
+  tools?: Array<{
+    name: string;
+    description?: string;
+    input_schema?: unknown;
+    _meta?: Record<string, unknown>;
+  }>;
+  error?: string;
+  code?: string;
+  details?: unknown;
+  needs_auth?: boolean;
+  needsAuth?: boolean;
+  auth_method?: 'oauth' | 'basic';
+  authMethod?: 'oauth' | 'basic';
+  www_authenticate?: string;
+  wwwAuthenticate?: string;
+};
+
+export type McpActivationResult = {
+  server: IMcpServer;
+  test: McpConnectionTestResultDto;
+  enabled: boolean;
+  needs_auth?: boolean;
+  enable_rejected_reason?: string;
+  config_changed?: boolean;
+};
+
 export const mcpService = {
   listServers: withResponseMap(
     httpGet<ApiMcpServer[], void>('/api/mcp/servers'),
@@ -2189,6 +2216,40 @@ export const mcpService = {
     ),
     fromApiMcpServer
   ),
+  testServerById: withResponseMap(
+    httpPost<
+      { server: ApiMcpServer; test: McpConnectionTestResultDto; config_changed?: boolean },
+      { mcp_server_id: McpServerId }
+    >(
+      (p) => `/api/mcp/servers/${p.mcp_server_id}/test`,
+      () => undefined
+    ),
+    (r) => ({ server: fromApiMcpServer(r.server), test: r.test, config_changed: r.config_changed })
+  ),
+  activateServer: withResponseMap(
+    httpPost<
+      {
+        server: ApiMcpServer;
+        test: McpConnectionTestResultDto;
+        enabled: boolean;
+        needs_auth?: boolean;
+        enable_rejected_reason?: string;
+        config_changed?: boolean;
+      },
+      { mcp_server_id: McpServerId }
+    >(
+      (p) => `/api/mcp/servers/${p.mcp_server_id}/activate`,
+      () => undefined
+    ),
+    (r): McpActivationResult => ({
+      server: fromApiMcpServer(r.server),
+      test: r.test,
+      enabled: r.enabled,
+      needs_auth: r.needs_auth,
+      enable_rejected_reason: r.enable_rejected_reason,
+      config_changed: r.config_changed,
+    })
+  ),
   getAgentMcpConfigs: httpGet<
     Array<{
       source: string;
@@ -2201,27 +2262,6 @@ export const mcpService = {
       cli_path?: string;
     }>
   >('/api/mcp/agent-configs'),
-  testMcpConnection: httpPost<
-    {
-      success: boolean;
-      tools?: Array<{
-        name: string;
-        description?: string;
-        input_schema?: unknown;
-        _meta?: Record<string, unknown>;
-      }>;
-      error?: string;
-      code?: string;
-      details?: unknown;
-      needsAuth?: boolean;
-      needs_auth?: boolean;
-      authMethod?: 'oauth' | 'basic';
-      auth_method?: 'oauth' | 'basic';
-      wwwAuthenticate?: string;
-      www_authenticate?: string;
-    },
-    McpConnectionTestRequest
-  >('/api/mcp/test-connection'),
   checkOAuthStatus: httpPost<{ authenticated: boolean }, { server_url: string }>('/api/mcp/oauth/check-status'),
   loginMcpOAuth: httpPost<{ success: boolean; error?: string }, { server_url: string }>('/api/mcp/oauth/login'),
   logoutMcpOAuth: httpPost<void, { server_url: string }>('/api/mcp/oauth/logout'),

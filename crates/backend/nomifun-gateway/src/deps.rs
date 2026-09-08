@@ -90,6 +90,9 @@ pub struct GatewayDeps {
     pub shell_service: std::sync::Arc<nomifun_shell::ShellService>,
     /// MCP server CRUD (same instance as the `/api/mcp` routes).
     pub mcp_config_service: nomifun_mcp::McpConfigService,
+    /// MCP connection testing and test-gated activation (same instance as the
+    /// `/api/mcp` routes and the installed-list UI).
+    pub mcp_activation_service: nomifun_mcp::McpActivationService,
     /// Extension registry + hub + skills (same instances as the extension routes).
     pub extension_registry: nomifun_extension::ExtensionRegistry,
     pub hub_index_manager: nomifun_extension::HubIndexManager,

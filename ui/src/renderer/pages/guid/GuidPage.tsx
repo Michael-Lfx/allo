@@ -62,7 +62,7 @@ import { useExecutionModelPool } from '@/renderer/pages/conversation/execution/u
 import { reconcileModelRefs, sameModelRefs } from '@/renderer/pages/conversation/execution/executionModelRefs';
 import { usePendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import { preloadCommercialPathChunks } from '@/renderer/utils/motion/flowyMotion';
-import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
+import { ensureBackendMcpCatalog, isMcpServerSelectable } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
 import { findChatModelOption } from '@/renderer/utils/model/chatModelPicker';
 import { isImageAttachment } from '@/renderer/utils/file/imageAttachments';
@@ -164,7 +164,7 @@ const GuidPage: React.FC = () => {
   useEffect(() => {
     void ensureBackendMcpCatalog()
       .then(({ allServers }) => {
-        setAvailableMcpServers(allServers);
+        setAvailableMcpServers(allServers.filter(isMcpServerSelectable));
         setGuidSelectedMcpServerIds((prev) => prev ?? []);
       })
       .catch((error) => {
