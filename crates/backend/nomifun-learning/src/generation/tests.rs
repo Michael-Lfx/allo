@@ -47,6 +47,7 @@
             kind: SectionKind::Concept,
             title: format!("概念：{key}"),
             points: String::new(),
+            visual: "公式".into(),
             body_md: String::new(),
         };
         // Every valid outline closes with exactly one practice section.
@@ -56,6 +57,7 @@
                 kind: SectionKind::Practice,
                 title: "练习：巩固".into(),
                 points: String::new(),
+                visual: String::new(),
                 body_md: String::new(),
             });
             sections
@@ -104,6 +106,7 @@
             kind: SectionKind::Practice,
             title: "练习：巩固".into(),
             points: String::new(),
+            visual: String::new(),
             body_md: String::new(),
         };
         let practice_first = SectionOutline {
@@ -121,20 +124,28 @@
     #[test]
     fn section_body_validation_enforces_kind_rules() {
         let prose = "这是一个用于测试的完整段落，覆盖本节要点并且足够长。".repeat(20);
-        // Concept: long enough plain prose passes.
+        let visual_prose = format!("$$\\vec{{a}}\\cdot\\vec{{b}} = a_x b_x + a_y b_y$$\n{prose}");
+        // Concept with a promised visual delivers it: passes.
         let concept = SectionPack {
             section_key: "s1".into(),
             kind: SectionKind::Concept,
             title: "概念：向量".into(),
             points: String::new(),
-            body_md: prose.clone(),
+            visual: "公式".into(),
+            body_md: visual_prose.clone(),
         };
         assert!(concept.validate_body().is_ok());
+        // Prose-only concept fails the visual-first gate...
+        let prose_only = SectionPack { body_md: prose.clone(), ..concept.clone() };
+        assert!(prose_only.validate_body().is_err());
+        // ...unless the outline explicitly declared 文字.
+        let text_exempt = SectionPack { visual: "文字".into(), ..prose_only.clone() };
+        assert!(text_exempt.validate_body().is_ok());
         // Too short fails.
         let short = SectionPack { body_md: "太短。".into(), ..concept.clone() };
         assert!(short.validate_body().is_err());
         // ### sub-headings are banned inside a section.
-        let subheaded = SectionPack { body_md: format!("{prose}\n### 小标题\n{prose}"), ..concept.clone() };
+        let subheaded = SectionPack { body_md: format!("{visual_prose}\n### 小标题\n{prose}"), ..concept.clone() };
         assert!(subheaded.validate_body().is_err());
         // Demo without a visualization block fails; with one passes.
         let demo_plain = SectionPack { kind: SectionKind::Demo, body_md: prose.clone(), ..concept.clone() };
@@ -597,6 +608,7 @@
             kind: SectionKind::Concept,
             title: "概念：向量".into(),
             points: "什么是向量".into(),
+            visual: "公式".into(),
             body_md: String::new(),
         }];
         let planned = &manifest[0];
@@ -709,7 +721,7 @@
         r#"{
           "tier": "mid",
           "sections": [
-            {"section_key": "s1", "kind": "concept", "title": "概念：向量", "points": "什么是向量"},
+            {"section_key": "s1", "kind": "concept", "title": "概念：向量", "points": "什么是向量", "visual": "公式"},
             {"section_key": "s2", "kind": "practice", "title": "练习：向量辨析", "points": "统一练习轮"}
           ]
         }"#
@@ -723,8 +735,9 @@
     }
 
     fn section_body(title: &str) -> String {
+        // 概念/例题节的可视化门要求至少一个可视化块:fixture 带一段展示公式。
         let prose = "这是一个用于测试的完整段落，覆盖本节要点并且足够长。".repeat(20);
-        format!("## {title}\n{prose}")
+        format!("## {title}\n$$\\vec{{v}} = (v_x, v_y)$$\n{prose}")
     }
 
     fn activities_json() -> String {
@@ -825,7 +838,7 @@
         let module = &blueprint.modules[0];
         let lesson = &module.lessons[0];
         let completer = ScriptedCompleter::new(vec![
-            r#"{"tier": "low", "sections": [{"section_key": "s1", "kind": "concept", "title": "概念：向量", "points": "p"}, {"section_key": "s2", "kind": "practice", "title": "练习：向量辨析", "points": "p"}]}"#.into(),
+            r#"{"tier": "low", "sections": [{"section_key": "s1", "kind": "concept", "title": "概念：向量", "points": "p", "visual": "公式"}, {"section_key": "s2", "kind": "practice", "title": "练习：向量辨析", "points": "p"}]}"#.into(),
             section_body("概念：向量"),
             practice_body(),
             activities_json(),

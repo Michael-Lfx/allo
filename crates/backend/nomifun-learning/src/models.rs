@@ -309,6 +309,10 @@ pub struct SectionPack {
     /// 大纲要点（一句话）；逐节生成时锚定内容，防跑偏。
     #[serde(default)]
     pub points: String,
+    /// 大纲规划的本节可视化形态（公式/函数图/示意图/流程图/图表/表格/
+    /// 文字 之一）。正文质检门据此决定可视化是否强制；空 = 强制。
+    #[serde(default)]
+    pub visual: String,
     /// 节正文（Markdown）。大纲阶段为空。
     #[serde(default)]
     pub body_md: String,
@@ -339,18 +343,36 @@ impl SectionPack {
                 self.section_key, self.title
             ));
         }
-        if self.kind == SectionKind::Demo {
-            let visual = body.contains("```svg")
-                || body.contains("```jsxgraph")
-                || body.contains("```mermaid")
-                || body.contains("$$");
-            if !visual {
-                return Err(format!(
-                    "section {} ({}) is a demo: it must carry its message in a visualization \
-                     block (```svg / ```jsxgraph / ```mermaid / $$math$$), not prose",
-                    self.section_key, self.title
-                ));
-            }
+        let has_visual = body.contains("```svg")
+            || body.contains("```jsxgraph")
+            || body.contains("```mermaid")
+            || body.contains("$$")
+            || body.contains("| ---")
+            || body.contains("| --- ");
+        let visual_exempt = {
+            let hint = self.visual.trim();
+            hint.eq_ignore_ascii_case("文字") || hint.eq_ignore_ascii_case("none")
+        };
+        if self.kind == SectionKind::Demo && !has_visual {
+            return Err(format!(
+                "section {} ({}) is a demo: it must carry its message in a visualization \
+                 block (```svg / ```jsxgraph / ```mermaid / $$math$$), not prose",
+                self.section_key, self.title
+            ));
+        }
+        // 概念/例题同样强制可视化(learnhub「可视化为主、文字为辅」):文字
+        // 是低效载体。唯一豁免是大纲明确声明本节 visual=文字/none。
+        if (self.kind == SectionKind::Concept || self.kind == SectionKind::Example)
+            && !has_visual
+            && !visual_exempt
+        {
+            return Err(format!(
+                "section {} ({}) is {}: it must carry its core explanation in at least one \
+                 visualization — $$formula$$, a ```svg / ```jsxgraph / ```mermaid block, or a \
+                 comparison table — with prose as the caption, not the carrier. Only a section \
+                 whose planned visual is 文字/none may be prose-only",
+                self.section_key, self.title, self.kind.label()
+            ));
         }
         if self.kind == SectionKind::Practice && chars > 250 {
             return Err(format!(
@@ -459,6 +481,7 @@ pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), S
             ));
         }
     }
+    const VISUAL_OPTIONS: [&str; 7] = ["公式", "函数图", "示意图", "流程图", "图表", "表格", "文字"];
     let mut seen = std::collections::HashSet::new();
     for section in &outline.sections {
         if section.title.trim().is_empty() {
@@ -466,6 +489,20 @@ pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), S
         }
         if !seen.insert(section.section_key.as_str()) {
             return Err(format!("duplicate section key {}", section.section_key));
+        }
+        // 可视化前置规划:概念/例题/演示节必须声明具体形态,正文质检门按它
+        // 强制。只有内容确实非视觉才允许声明「文字」。
+        if matches!(
+            section.kind,
+            SectionKind::Concept | SectionKind::Example | SectionKind::Demo
+        ) && !VISUAL_OPTIONS.contains(&section.visual.trim())
+        {
+            return Err(format!(
+                "section {} ({}) must declare its planned visual, one of: {}",
+                section.section_key,
+                section.kind.label(),
+                VISUAL_OPTIONS.join(" / ")
+            ));
         }
     }
     // 收尾练习是硬性结构:恰好一个练习节,且必须是最后一节——学习者读完

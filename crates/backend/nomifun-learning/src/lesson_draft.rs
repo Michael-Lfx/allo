@@ -354,6 +354,7 @@ impl LessonDraft {
                     kind: planned.kind,
                     title: planned.title.clone(),
                     points: planned.points.clone(),
+                    visual: planned.visual.clone(),
                     body_md: trimmed.clone(),
                 };
                 candidate.validate_body()?;
@@ -513,6 +514,7 @@ impl LessonDraft {
                     kind: planned.kind,
                     title: planned.title.clone(),
                     points: planned.points.clone(),
+                    visual: planned.visual.clone(),
                     body_md: body.clone(),
                 })
             })
@@ -605,6 +607,7 @@ fn audit_findings(
                                 kind: section.kind,
                                 title: section.title.clone(),
                                 points: section.points.clone(),
+                                visual: section.visual.clone(),
                                 body_md: body.clone(),
                             };
                             if let Err(error) = candidate.validate_body() {
