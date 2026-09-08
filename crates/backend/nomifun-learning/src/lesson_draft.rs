@@ -80,6 +80,9 @@ pub struct LessonGenerationContext {
     pub adjacent_context: String,
     /// 学习图节点专属上下文；传统课时恒为 `None`。
     pub graph: Option<GraphLessonContext>,
+    /// 防超纲黑名单(learnhub「禁止使用的概念」):预渲染的本课时之外概念
+    /// 清单;空 = 无(学习图节点走前置/后续段落控界)。
+    pub forbidden_concepts: String,
 }
 
 /// One deterministic audit finding. `severity` uses the shared vocabulary
@@ -310,6 +313,21 @@ impl LessonDraft {
                             "the practice section must be the last section (exactly one)".into()
                         );
                     }
+                    if matches!(
+                        section.kind,
+                        SectionKind::Concept | SectionKind::Example | SectionKind::Demo
+                    ) {
+                        const VISUAL_OPTIONS: [&str; 7] =
+                            ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"];
+                        if !VISUAL_OPTIONS.contains(&section.visual.trim()) {
+                            return Err(format!(
+                                "section {} ({}) must declare its planned visual, one of: {}",
+                                section.section_key,
+                                section.kind.label(),
+                                VISUAL_OPTIONS.join(" / ")
+                            ));
+                        }
+                    }
                     // Keep already-written bodies whose key survives the replan.
                     if let Some((body, _)) = self.section_bodies.get(&section.section_key) {
                         let body = body.clone();
@@ -355,13 +373,14 @@ impl LessonDraft {
                     title: planned.title.clone(),
                     points: planned.points.clone(),
                     visual: planned.visual.clone(),
-                    body_md: trimmed.clone(),
+                    body_md: crate::generation::fix_mermaid_quotes(&trimmed),
                 };
                 candidate.validate_body()?;
                 let existed = self.section_bodies.contains_key(&section_key);
                 let report_key = section_key.clone();
+                let fixed = candidate.body_md.clone();
                 self.section_bodies
-                    .insert(section_key, (trimmed, Some(planned)));
+                    .insert(section_key, (fixed, Some(planned)));
                 Ok(format!(
                     "section {report_key} body {} ({chars} non-whitespace characters)",
                     if existed { "replaced" } else { "written" },
@@ -552,6 +571,7 @@ impl LessonDraft {
             estimated_minutes: self.estimated_minutes,
             activities: self.activities.clone(),
             sections,
+            degraded_keys: Vec::new(),
         }
     }
 }
@@ -774,6 +794,7 @@ mod tests {
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,
+            forbidden_concepts: String::new(),
         }
     }
 

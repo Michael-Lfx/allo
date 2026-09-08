@@ -137,6 +137,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     concepts: vec!["vector".into()],
                     activities: vec![ActivityPack {
+            difficulty: None,
                         kind: ActivityKind::TrueFalse,
                         prompt: "A vector has magnitude and direction.".into(),
                         options: Vec::new(),
@@ -174,6 +175,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                 estimated_minutes: 10,
                 activities: Vec::new(),
                 sections: Vec::new(),
+                degraded_keys: Vec::new(),
             })
         }
     }
@@ -340,6 +342,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             explanation: "source-backed explanation".into(),
             distractors: Vec::new(),
             tol: None,
+            difficulty: None,
         };
         let (score, _) = evaluate(ActivityKind::TrueFalse, &config, &Value::Bool(false)).unwrap();
         assert_eq!(score, 0.0);
@@ -501,6 +504,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         // One concept shared across two lessons: completing lesson A seeds a
         // review item for its own question A1, lesson B is never touched.
         let shared = ActivityPack {
+                        difficulty: None,
             kind: ActivityKind::TrueFalse,
             prompt: String::new(),
             options: Vec::new(),
@@ -536,6 +540,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         source: None,
                         concepts: vec!["shared".into()],
                         activities: vec![ActivityPack {
+                        difficulty: None,
                             prompt: "A1".into(),
                             ..shared.clone()
                         }],
@@ -549,6 +554,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         source: None,
                         concepts: vec!["shared".into()],
                         activities: vec![ActivityPack {
+                        difficulty: None,
                             prompt: "A2".into(),
                             ..shared
                         }],
@@ -644,6 +650,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     concepts: vec!["vector".into(), "matrix".into()],
                     activities: vec![ActivityPack {
+            difficulty: None,
                         kind: ActivityKind::Reflection,
                         prompt: "Explain what a vector is.".into(),
                         options: Vec::new(),
@@ -958,6 +965,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     concepts: vec!["vector".into()],
                     activities: vec![ActivityPack {
+            difficulty: None,
                         kind: ActivityKind::FillInBlank,
                         prompt: "A vector has ___ and direction.".into(),
                         options: Vec::new(),
@@ -1115,6 +1123,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     concepts: vec!["vector".into()],
                     activities: vec![
                         ActivityPack {
+                            difficulty: None,
                             kind: ActivityKind::SingleChoice,
                             prompt: "Which term names the size of a vector?".into(),
                             options: vec![
@@ -1130,6 +1139,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             section_key: None,
                         },
                         ActivityPack {
+                            difficulty: None,
                             kind: ActivityKind::FillInBlank,
                             prompt: "A vector has ___ and direction.".into(),
                             options: Vec::new(),

@@ -197,6 +197,7 @@ impl LearningService {
             ),
             // 传统课时永远不走图分支。
             graph: None,
+            forbidden_concepts: crate::generation::forbidden_concepts_text(&blueprint, lesson),
         };
         self.emit_lesson_event(serde_json::json!({
             "phase": "started",
@@ -290,6 +291,14 @@ impl LearningService {
             }
         };
 
+        if !output.degraded_keys.is_empty() {
+            // 降级兜底可见:哪些节以 visual=无 纯文字保底,便于事后重试。
+            self.emit_lesson_event(serde_json::json!({
+                "phase": "degraded",
+                "lesson_id": lesson_id.as_str(),
+                "sections": output.degraded_keys,
+            }));
+        }
         let concepts = self.concept_map_for_course(&course_id).await?;
         self.persist_lesson_output(lesson_id, &output, &concepts, &lesson.concepts)
             .await?;
@@ -463,6 +472,8 @@ impl LearningService {
                 prerequisite_path,
                 upcoming_nodes,
             }),
+            // 学习图节点的范围由前置/后续节点段落约束,无需黑名单。
+            forbidden_concepts: String::new(),
         };
 
         self.emit_lesson_event(serde_json::json!({
@@ -583,6 +594,7 @@ impl LearningService {
                 distractors: activity.distractors.clone(),
                 tol: activity.tol,
                 matches: matching_candidates(activity),
+                difficulty: activity.difficulty,
             };
             // 「general」是提示词对跨节综合题的约定写法，落库归一为 NULL。
             let section_key = activity
@@ -1102,6 +1114,7 @@ pub(super) fn validate_question_payload(
         distractors,
         tol: None,
         section_key: None,
+        difficulty: None,
     };
     pack.validate_shape((2, 5), false)
         .map_err(AppError::BadRequest)?;
@@ -1115,6 +1128,7 @@ pub(super) fn validate_question_payload(
         distractors: pack.distractors,
         tol: pack.tol,
         matches,
+        difficulty: pack.difficulty,
     };
     Ok((prompt.to_string(), config))
 }

@@ -170,6 +170,7 @@ impl LearningService {
                         distractors: activity.distractors.clone(),
                         tol: activity.tol,
                         matches: super::lesson::matching_candidates(activity),
+                        difficulty: activity.difficulty,
                     };
                     sqlx::query(
                         "INSERT INTO learning_activities \

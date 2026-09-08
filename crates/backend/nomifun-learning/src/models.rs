@@ -309,8 +309,9 @@ pub struct SectionPack {
     /// 大纲要点（一句话）；逐节生成时锚定内容，防跑偏。
     #[serde(default)]
     pub points: String,
-    /// 大纲规划的本节可视化形态（公式/函数图/示意图/流程图/图表/表格/
-    /// 文字 之一）。正文质检门据此决定可视化是否强制；空 = 强制。
+    /// 大纲规划的本节讲解主体可视化（公式/函数图/示意图/流程图/图表/
+    /// 表格/无 之一）——正文质检门按它做承诺兑现检查；几乎每节都有，
+    /// 确无（纯推理/论述节）才声明「无」。
     #[serde(default)]
     pub visual: String,
     /// 节正文（Markdown）。大纲阶段为空。
@@ -343,16 +344,22 @@ impl SectionPack {
                 self.section_key, self.title
             ));
         }
+        // 纯文字字数(剥可视化块后):learnhub 的文字预算纪律——公式与图表
+        // 不占文字预算;>2000 硬拦(>600 的软引导走提示词档位额度)。
+        let prose_chars = prose_char_count(body);
+        if prose_chars > 2000 {
+            return Err(format!(
+                "section {} ({}) has {prose_chars} prose characters (visualization blocks \
+                 excluded): the hard cap is 2000 — tighten the prose or split the section",
+                self.section_key, self.title
+            ));
+        }
         let has_visual = body.contains("```svg")
             || body.contains("```jsxgraph")
             || body.contains("```mermaid")
             || body.contains("$$")
             || body.contains("| ---")
             || body.contains("| --- ");
-        let visual_exempt = {
-            let hint = self.visual.trim();
-            hint.eq_ignore_ascii_case("文字") || hint.eq_ignore_ascii_case("none")
-        };
         if self.kind == SectionKind::Demo && !has_visual {
             return Err(format!(
                 "section {} ({}) is a demo: it must carry its message in a visualization \
@@ -360,19 +367,16 @@ impl SectionPack {
                 self.section_key, self.title
             ));
         }
-        // 概念/例题同样强制可视化(learnhub「可视化为主、文字为辅」):文字
-        // 是低效载体。唯一豁免是大纲明确声明本节 visual=文字/none。
-        if (self.kind == SectionKind::Concept || self.kind == SectionKind::Example)
-            && !has_visual
-            && !visual_exempt
-        {
-            return Err(format!(
-                "section {} ({}) is {}: it must carry its core explanation in at least one \
-                 visualization — $$formula$$, a ```svg / ```jsxgraph / ```mermaid block, or a \
-                 comparison table — with prose as the caption, not the carrier. Only a section \
-                 whose planned visual is 文字/none may be prose-only",
-                self.section_key, self.title, self.kind.label()
-            ));
+        // 承诺兑现制:概念/例题节按大纲声明的 visual 检查交付——声明了什么
+        // 载体,正文就必须真的用它承载核心讲解;声明「无」则纯文字合法
+        // (learnhub:「几乎每节都有,确无才写无;纯推理/论述节可无」)。
+        if matches!(self.kind, SectionKind::Concept | SectionKind::Example) {
+            if let Some(missing) = undelivered_visual(&self.visual, has_visual, body) {
+                return Err(format!(
+                    "section {} ({}) planned visual 「{}」 is not delivered: {}",
+                    self.section_key, self.title, self.visual.trim(), missing
+                ));
+            }
         }
         if self.kind == SectionKind::Practice && chars > 250 {
             return Err(format!(
@@ -383,6 +387,79 @@ impl SectionPack {
         }
         Ok(())
     }
+}
+
+/// 承诺兑现检查:Some(说明) = 声明的可视化形态未在正文中交付。
+/// 空 visual(历史/异常路径)按保守处理:要求任意可视化块。
+fn undelivered_visual(visual: &str, has_visual: bool, body: &str) -> Option<String> {
+    let visual = visual.trim();
+    match visual {
+        "无" => None,
+        "公式" => {
+            if body.contains("$$") {
+                None
+            } else {
+                Some("expected a $$…$$ display formula".into())
+            }
+        }
+        "函数图" | "示意图" => {
+            if body.contains("```svg") || body.contains("```jsxgraph") {
+                None
+            } else {
+                Some("expected a ```svg or ```jsxgraph figure".into())
+            }
+        }
+        "流程图" => {
+            if body.contains("```mermaid") {
+                None
+            } else {
+                Some("expected a ```mermaid diagram".into())
+            }
+        }
+        "图表" | "表格" => {
+            if body.contains("| ---") || body.contains("| --- ") {
+                None
+            } else {
+                Some("expected a Markdown comparison table".into())
+            }
+        }
+        _ => {
+            if has_visual {
+                None
+            } else {
+                Some("no visual declared and no visualization block found — declare the \
+                      planned visual in the outline (公式/函数图/示意图/流程图/图表/表格/无)"
+                    .into())
+            }
+        }
+    }
+}
+
+/// 剥离可视化块(svg/jsxgraph/mermaid 围栏、$$ 展示公式、表格行)后的
+/// 纯文字字符数——文字预算的计量口径。
+pub(crate) fn prose_char_count(body: &str) -> usize {
+    let mut count = 0usize;
+    let mut in_visual_fence = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            let language = trimmed[3..].trim();
+            if in_visual_fence {
+                in_visual_fence = false;
+            } else if matches!(language, "svg" | "jsxgraph" | "mermaid") {
+                in_visual_fence = true;
+            }
+            continue;
+        }
+        if in_visual_fence {
+            continue;
+        }
+        if trimmed.starts_with('|') || trimmed.starts_with("$$") || trimmed.contains("$$") {
+            continue;
+        }
+        count += trimmed.chars().filter(|c| !c.is_whitespace()).count();
+    }
+    count
 }
 
 /// 节清单的 JSON 形状：`{"tier": "...", "sections": [...]}`，大纲阶段
@@ -430,6 +507,16 @@ impl ComplexityTier {
             Self::Low => 2,
             Self::Mid => 3,
             Self::High => 4,
+        }
+    }
+
+    /// 每节正文的文字预算（纯文字，公式/图表/可视化块不占）——learnhub
+    /// 复杂度档案 §9 的字数额度；文字纪律靠它才能硬起来。
+    pub const fn prose_budget(self) -> usize {
+        match self {
+            Self::Low => 150,
+            Self::Mid => 250,
+            Self::High => 400,
         }
     }
 }
@@ -481,7 +568,7 @@ pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), S
             ));
         }
     }
-    const VISUAL_OPTIONS: [&str; 7] = ["公式", "函数图", "示意图", "流程图", "图表", "表格", "文字"];
+    const VISUAL_OPTIONS: [&str; 7] = ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"];
     let mut seen = std::collections::HashSet::new();
     for section in &outline.sections {
         if section.title.trim().is_empty() {
@@ -490,8 +577,8 @@ pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), S
         if !seen.insert(section.section_key.as_str()) {
             return Err(format!("duplicate section key {}", section.section_key));
         }
-        // 可视化前置规划:概念/例题/演示节必须声明具体形态,正文质检门按它
-        // 强制。只有内容确实非视觉才允许声明「文字」。
+        // 可视化前置规划(learnhub):几乎每节都有,确无才写「无」。正文
+        // 质检门按声明做承诺兑现检查。
         if matches!(
             section.kind,
             SectionKind::Concept | SectionKind::Example | SectionKind::Demo
@@ -621,6 +708,9 @@ pub struct ActivityPack {
     /// 来源节的 section_key（如 s2）。None = 跨节综合题（通用）。
     #[serde(default)]
     pub section_key: Option<String>,
+    /// 难度分档 1-3（1 概念辨析 / 2 应用 / 3 综合陷阱），出题阶段声明。
+    #[serde(default)]
+    pub difficulty: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -907,9 +997,53 @@ impl ActivityPack {
         if self.prompt.trim().is_empty() {
             return Err("activity prompt is empty".into());
         }
+        // 难度分档 1-3(出题模板的难度递进:概念辨析→应用→综合陷阱)。
+        if let Some(difficulty) = self.difficulty {
+            if !(1..=3).contains(&difficulty) {
+                return Err(format!(
+                    "{} \"{}\" difficulty must be 1-3, got {}",
+                    self.kind.as_str(),
+                    self.prompt,
+                    difficulty
+                ));
+            }
+        }
+        // 选择题选项不得自带 A./B. 编号前缀(系统自动编号,前缀是高频模型
+        // 手误且渲染出双编号)。
+        for kind in [ActivityKind::SingleChoice, ActivityKind::MultiChoice] {
+            if self.kind != kind {
+                continue;
+            }
+            for option in &self.options {
+                if has_letter_prefix(option) {
+                    return Err(format!(
+                        "{} \"{}\" option \"{}\" carries a letter prefix (A./B.…) — \
+                         the system numbers options automatically, write bare option text",
+                        kind.as_str(),
+                        self.prompt,
+                        option.trim()
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
+
+/// `A.` / `b、` / `C：` 式的字母编号前缀(选项文本应裸写)。
+fn has_letter_prefix(option: &str) -> bool {
+    let option = option.trim_start();
+    let mut chars = option.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    matches!(chars.next(), Some('.' | '、' | ':'))
+}
+
+
 
 impl TryFrom<&str> for ActivityKind {
     type Error = String;
@@ -1515,4 +1649,8 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub matches: Vec<String>,
+    /// Difficulty tier 1-3 declared at quiz time (概念辨析/应用/综合陷阱).
+    /// Old rows lack it, so it defaults on read.
+    #[serde(default)]
+    pub difficulty: Option<u8>,
 }

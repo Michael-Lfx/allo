@@ -114,13 +114,19 @@ The nine kinds and their answer shapes:
 - matching: options are the left-column items; answer is an array of right-column values aligned one-to-one with options.
 - reflection: answer must be null; asks the learner to explain or apply one idea.
 - open_question: answer must be null; one comprehensive question assembling the whole lesson (graded on a 0-10 scale).
+Each activity also carries "difficulty": 1 | 2 | 3.
 Rules:
+- Variety first: use at least 3 different kinds across the set — never the same kind throughout.
 - Question budget: about (tier budget) questions per content section (concept/example/demo) as stated in the prompt, plus at most one cross-section comprehensive question. Never fewer than 3 activities in total.
 - Every question binds "section_key" to the section that taught it (exact key from the manifest, e.g. "s2"). Only the single comprehensive question may use section_key "general".
 - At least 2 objective questions in total (single_choice, true_false, fill_in_blank, multi_choice, numeric, ordering, matching).
 - AI-graded questions (reflection plus open_question) together: at least 1, at most 3, and at most one open_question. They must collectively cover ALL of the lesson's concepts.
-- Difficulty ramps: start with concept discrimination, end with application or a deliberate common-mistake trap.
+- Difficulty ramps with "difficulty": open with 1-2 concept-discrimination questions (difficulty 1), then application (difficulty 2), and close with a synthesis or a deliberate common-mistake trap (difficulty 3).
+- Choice options are BARE text without letter prefixes ("A." / "B、" are added by the system automatically) — an option like "A. 权利" is WRONG, write "权利".
+- ordering and matching items must be SHORT and mutually distinct (no two items are synonyms or subsets of each other).
+- Every explanation states WHY the answer is right AND why the tempting wrong options are wrong; for geometry/function/data questions the explanation may include one ```svg block.
 - Every activity binds a concept by its exact "key" as defined in the course blueprint.
+- Only test what the section bodies teach — never introduce a concept, notation or conclusion the bodies do not contain.
 - null is allowed ONLY for a reflection or open_question answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
 - Questions, answers, and explanations must be supported by the section bodies and the cited excerpt.
 - estimated_minutes is a small integer reflecting the lesson length (10-30 typical; the absolute cap is 60).
@@ -227,6 +233,10 @@ pub struct LessonOutput {
     /// 双读回退 summary；非空时 summary 是按节拼装的全文本（兼容现有渲染）。
     #[serde(default)]
     pub sections: Vec<SectionPack>,
+    /// 降级兜底的节 key(可视化承诺兑现失败,以 visual=无 纯文字保底重写
+    /// 的节)——课时终态仍算成功,但降级事实经事件与日志可见。
+    #[serde(default)]
+    pub degraded_keys: Vec<String>,
 }
 
 impl LessonOutput {
@@ -287,7 +297,8 @@ pub(crate) use self::completer::{
     SECTION_OUTLINE_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
 };
 pub(crate) use self::lesson::{
-    build_adjacent_context, build_outline_tree, generate_lesson, validate_lesson_document,
+    build_adjacent_context, build_outline_tree, forbidden_concepts_text, generate_lesson,
+    validate_lesson_document,
 };
-pub(crate) use self::parser::parse_json_object;
+pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
 pub(crate) use self::sample::sample_base_files;
