@@ -49,6 +49,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/courses/{id}/diagnostic",
             get(diagnostic_plan),
         )
+        .route("/api/learning/lessons/{id}", get(lesson_detail))
         .route(
             "/api/learning/lessons/{id}/progress",
             post(update_lesson_progress),
@@ -247,6 +248,17 @@ async fn diagnostic_plan(
             .service
             .diagnostic_plan(&id, &user.id, query.limit)
             .await?,
+    )))
+}
+
+async fn lesson_detail(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::LessonView>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.lesson_detail(&user.id, &id).await?,
     )))
 }
 
