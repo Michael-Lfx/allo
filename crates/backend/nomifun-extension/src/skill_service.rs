@@ -1056,7 +1056,7 @@ pub(crate) async fn extract_skill_archive_to_staging(
             cleanup: extraction_cleanup,
         };
         #[cfg(test)]
-        test_overrides::wait_for_archive_extraction();
+        test_overrides::wait_for_archive_extraction(&destination);
         crate::zip_safe::extract_zip_archive(&archive, &destination)
     })
         .await
@@ -1142,6 +1142,40 @@ pub(crate) async fn validate_market_skill_directory(
         return Err(ExtensionError::InvalidSkillPath(format!(
             "market Skill name mismatch: expected '{expected_name}', got '{declared_name}'"
         )));
+    }
+    Ok(declared_name)
+}
+
+/// Validate the manifest of one staged market Skill and return its declared
+/// name. Unlike [`validate_market_skill_directory`], the declared name is NOT
+/// required to equal the URL slug the market advertised: upstream SkillHub
+/// packages routinely declare a manifest name that differs from their public
+/// slug (e.g. slug `baozheng` ships `name: baozheng-skills`). Callers that
+/// need the slug-equality contract (the expert-package flow) keep using
+/// [`validate_market_skill_directory`].
+pub(crate) async fn validate_market_skill_manifest(skill_dir: &Path) -> Result<String, ExtensionError> {
+    let metadata = tokio::fs::symlink_metadata(skill_dir).await?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(ExtensionError::InvalidSkillPath(format!(
+            "market Skill path '{}' is not a regular directory",
+            skill_dir.display()
+        )));
+    }
+    let skill_file = skill_dir.join(SKILL_MANIFEST_FILE);
+    let content = tokio::fs::read_to_string(&skill_file).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ExtensionError::SkillNotFound(skill_file.display().to_string())
+        } else {
+            ExtensionError::Io(error)
+        }
+    })?;
+    let (declared_name, description) = parse_frontmatter_fields(&content).ok_or_else(|| {
+        ExtensionError::InvalidSkillPath("market Skill has invalid SKILL.md frontmatter".into())
+    })?;
+    if declared_name.trim().is_empty() || description.trim().is_empty() {
+        return Err(ExtensionError::InvalidSkillPath(
+            "market Skill must declare a non-empty name and description".into(),
+        ));
     }
     Ok(declared_name)
 }
@@ -3226,7 +3260,14 @@ pub(crate) mod test_overrides {
     static FORCE_SYMLINK_FAILURE: AtomicBool = AtomicBool::new(false);
     static FAIL_NEXT_PROJECTION_MARKER_WRITE: AtomicBool = AtomicBool::new(false);
     static FAIL_NEXT_PROJECTION_BACKUP_DELETE: AtomicBool = AtomicBool::new(false);
-    static EXTRACTION_BARRIERS: Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>> = Mutex::new(None);
+    /// Optional (started, release, scope) triple. `scope` restricts the pause
+    /// to extractions whose destination lives under that directory, so
+    /// unrelated tests extracting archives in parallel are never parked on
+    /// someone else's barriers (which previously deadlocked them: a stray
+    /// arrival consumes one slot of a `Barrier::new(2)` and then waits on a
+    /// release generation that never completes).
+    static EXTRACTION_BARRIERS: Mutex<Option<(Arc<Barrier>, Arc<Barrier>, std::path::PathBuf)>> =
+        Mutex::new(None);
 
     pub fn should_force_symlink_failure() -> bool {
         FORCE_SYMLINK_FAILURE.load(Ordering::SeqCst)
@@ -3277,14 +3318,20 @@ pub(crate) mod test_overrides {
 
     pub struct ExtractionBarrierGuard;
 
-    pub fn pause_archive_extraction(started: Arc<Barrier>, release: Arc<Barrier>) -> ExtractionBarrierGuard {
-        *EXTRACTION_BARRIERS.lock().unwrap() = Some((started, release));
+    pub fn pause_archive_extraction(
+        started: Arc<Barrier>,
+        release: Arc<Barrier>,
+        scope: std::path::PathBuf,
+    ) -> ExtractionBarrierGuard {
+        *EXTRACTION_BARRIERS.lock().unwrap() = Some((started, release, scope));
         ExtractionBarrierGuard
     }
 
-    pub fn wait_for_archive_extraction() {
+    pub fn wait_for_archive_extraction(destination: &std::path::Path) {
         let barriers = EXTRACTION_BARRIERS.lock().unwrap().clone();
-        if let Some((started, release)) = barriers {
+        if let Some((started, release, scope)) = barriers
+            && destination.starts_with(&scope)
+        {
             started.wait();
             release.wait();
         }
@@ -3821,6 +3868,51 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let result = read_skill_info(&tmp.path().join("nonexistent")).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_market_skill_manifest_returns_declared_name() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("baozheng");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join(SKILL_MANIFEST_FILE),
+            "---\nname: baozheng-skills\ndescription: Legal assistant\n---\nBody",
+        )
+        .unwrap();
+
+        // The declared manifest name is authoritative for the local Skill
+        // identity; it does not have to match the directory/URL slug.
+        let name = validate_market_skill_manifest(&skill_dir).await.unwrap();
+        assert_eq!(name, "baozheng-skills");
+    }
+
+    #[tokio::test]
+    async fn validate_market_skill_manifest_rejects_missing_frontmatter_or_description() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("broken");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        std::fs::write(skill_dir.join(SKILL_MANIFEST_FILE), "no frontmatter at all").unwrap();
+        assert!(validate_market_skill_manifest(&skill_dir).await.is_err());
+
+        std::fs::write(skill_dir.join(SKILL_MANIFEST_FILE), "---\nname: broken\n---\nBody").unwrap();
+        assert!(validate_market_skill_manifest(&skill_dir).await.is_err());
+
+        std::fs::write(
+            skill_dir.join(SKILL_MANIFEST_FILE),
+            "---\ndescription: no name here\n---\nBody",
+        )
+        .unwrap();
+        assert!(validate_market_skill_manifest(&skill_dir).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_market_skill_manifest_rejects_missing_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("empty-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        assert!(validate_market_skill_manifest(&skill_dir).await.is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -4924,7 +5016,13 @@ mod tests {
         assert_eq!(second.migrated, 0);
     }
 
+    // Serial because the copy source here is itself a junction: a concurrent
+    // `ForceFailureGuard` test flips the global symlink-failure flag, the link
+    // step then falls back to `copy_dir_recursive`, and the junction source is
+    // rejected by the no-reparse preflight. The guard tests are `#[serial]`, so
+    // joining the same group keeps their windows from overlapping this test.
     #[tokio::test]
+    #[serial]
     async fn link_workspace_skills_accepts_a_user_import_link_as_source() {
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());

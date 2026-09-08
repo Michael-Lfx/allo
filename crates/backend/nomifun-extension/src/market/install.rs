@@ -4,6 +4,15 @@
 //! [`MarketSkillInstaller::list_installations`]. URL construction, source
 //! revalidation, streaming, archive extraction, deterministic hashing,
 //! provenance, staging cleanup, and the commit/rollback protocol stay here.
+//!
+//! Pipeline: parse the market id → exact detail lookup (binds the requested
+//! owner to the namespace that SkillHub resolves for the slug) → version-
+//! pinned archive download with limited retry → ZIP safety checks →
+//! single-manifest validation → atomic commit with provenance. The fuzzy
+//! `/api/v1/search` endpoint is deliberately NOT used: it is rate-limited and
+//! cannot address one exact skill (its top-20 semantic results routinely omit
+//! the requested entry, which previously surfaced as bogus "not found" and
+//! "network" failures).
 
 use std::fs::{self, Metadata, symlink_metadata};
 use std::io;
@@ -17,7 +26,7 @@ use nomifun_api_types::{
     SkillMarketInstallationResponse,
 };
 use nomifun_common::{AppError, dir_config::write_atomic_replace};
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use reqwest::header::CONTENT_TYPE;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
@@ -26,13 +35,14 @@ use crate::constants::SKILL_MANIFEST_FILE;
 use crate::skill_service::{self, MARKET_IMPORT_SCAN_DEPTH, SkillPaths};
 
 use super::client::{
-    MAX_SKILLHUB_SKILL_ZIP_BYTES, build_skillhub_install_client, read_market_detail_body,
+    MARKET_REQUEST_TIMEOUT, MAX_SKILLHUB_SKILL_ZIP_BYTES, SKILLHUB_DOWNLOAD_TIMEOUT,
+    build_skillhub_install_client, read_market_response, send_skillhub_get_with_retry,
 };
 use super::parse::{is_market_slug, json_text};
 
 const SKILLHUB_SOURCE: &str = "skillhub";
 const SKILLHUB_SKILL_DOWNLOAD_URL: &str = "https://api.skillhub.cn/api/v1/download";
-const SKILLHUB_SKILL_SEARCH_URL: &str = "https://api.skillhub.cn/api/v1/search";
+const SKILLHUB_SKILL_DETAIL_BASE_URL: &str = "https://api.skillhub.cn/api/v1/skills/";
 const INSTALLATIONS_DIR: &str = "skill-market/installations";
 const MARKET_STAGING_DIR: &str = ".market-import";
 const IMPORT_STAGING_DIR: &str = ".import-tmp";
@@ -41,6 +51,10 @@ const PACKAGE_STAGING_PREFIX: &str = "package-";
 const IMPORT_STAGING_PREFIX: &str = "skills-";
 const STAGING_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_INSTALLATION_RECORD_BYTES: usize = 64 * 1024;
+/// Stream-phase retries for one archive download (send-phase transient
+/// failures — 429/5xx/connect/timeout — are already retried inside
+/// [`send_skillhub_get_with_retry`]).
+const MAX_DOWNLOAD_STREAM_ATTEMPTS: u32 = 2;
 
 /// Stable, endpoint-local installation failure categories. The HTTP mapper in
 /// `skill_routes` owns their public status/code representation.
@@ -58,6 +72,8 @@ pub enum MarketSkillInstallError {
     ArtifactInvalid,
     #[error("the downloaded Skill manifest is invalid")]
     ManifestInvalid,
+    #[error("the downloaded Skill is a multi-skill bundle")]
+    BundleUnsupported,
     #[error("the Skill market request failed")]
     Network,
     #[error("the Skill market request timed out")]
@@ -70,24 +86,28 @@ pub enum MarketSkillInstallError {
 /// Consumers of the installer do not receive a URL or archive body.
 #[async_trait]
 trait SkillHubArtifactSource: Send + Sync {
-    async fn find_skill(&self, owner: &str, slug: &str) -> Result<RemoteSkill, MarketSkillInstallError>;
+    /// Exact detail lookup for one market entry. Verifies that the namespace
+    /// SkillHub resolves for `slug` actually belongs to the requested `owner`
+    /// and returns the pinned version to download.
+    async fn fetch_detail(&self, owner: &str, slug: &str) -> Result<RemoteSkillDetail, MarketSkillInstallError>;
+    /// Stream the version-pinned archive to `archive_path`, returning its
+    /// SHA-256 hex digest.
     async fn download_skill(
         &self,
-        skill: &RemoteSkill,
+        skill: &RemoteSkillDetail,
         archive_path: &Path,
     ) -> Result<String, MarketSkillInstallError>;
 }
 
-#[derive(Debug, Clone)]
-struct RemoteSkill {
-    owner: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteSkillDetail {
     slug: String,
-    revision: Option<String>,
+    version: String,
 }
 
 struct HttpSkillHubArtifactSource {
     client: reqwest::Client,
-    search_url: String,
+    detail_base_url: String,
     download_url: String,
 }
 
@@ -96,7 +116,7 @@ impl HttpSkillHubArtifactSource {
         build_skillhub_install_client()
             .map(|client| Self {
                 client,
-                search_url: SKILLHUB_SKILL_SEARCH_URL.into(),
+                detail_base_url: SKILLHUB_SKILL_DETAIL_BASE_URL.into(),
                 download_url: SKILLHUB_SKILL_DOWNLOAD_URL.into(),
             })
             .map_err(|_| MarketSkillInstallError::LocalIo)
@@ -111,7 +131,7 @@ impl HttpSkillHubArtifactSource {
             .expect("test SkillHub client should build");
         Self {
             client,
-            search_url: format!("{base_url}/api/v1/search"),
+            detail_base_url: format!("{base_url}/api/v1/skills/"),
             download_url: format!("{base_url}/api/v1/download"),
         }
     }
@@ -119,37 +139,82 @@ impl HttpSkillHubArtifactSource {
 
 #[async_trait]
 impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
-    async fn find_skill(&self, owner: &str, slug: &str) -> Result<RemoteSkill, MarketSkillInstallError> {
-        let query = format!("{owner}/{slug}");
-        let url = reqwest::Url::parse_with_params(
-            &self.search_url,
-            [("q", query.as_str()), ("limit", "20")],
-        )
-        .map_err(|_| MarketSkillInstallError::LocalIo)?;
-        let body = read_market_detail_body(&self.client, url.as_str(), "SkillHub search")
+    async fn fetch_detail(&self, owner: &str, slug: &str) -> Result<RemoteSkillDetail, MarketSkillInstallError> {
+        let url = skillhub_skill_detail_url(&self.detail_base_url, slug)?;
+        let mut response =
+            send_skillhub_get_with_retry(&self.client, url, "application/json", MARKET_REQUEST_TIMEOUT)
+                .await
+                .map_err(map_app_market_error)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(MarketSkillInstallError::NotFound);
+        }
+        // Exhausted 429/5xx and any other non-success land here.
+        if !response.status().is_success() {
+            return Err(MarketSkillInstallError::Network);
+        }
+        let body = read_market_response(&mut response)
             .await
             .map_err(map_app_market_error)?;
-        let root = serde_json::from_str::<serde_json::Value>(&body)
-            .map_err(|_| MarketSkillInstallError::ArtifactInvalid)?;
-        find_exact_search_result(&root, owner, slug).ok_or(MarketSkillInstallError::NotFound)
+        parse_skill_detail(&body, owner, slug)
     }
 
     async fn download_skill(
         &self,
-        skill: &RemoteSkill,
+        skill: &RemoteSkillDetail,
         archive_path: &Path,
     ) -> Result<String, MarketSkillInstallError> {
-        // Keep the owner bound all the way through the artifact request. The
-        // search response is not sufficient when two namespaces publish the
-        // same slug.
-        let url = skillhub_download_url(&self.download_url, skill)?;
-        let mut response = self
-            .client
-            .get(url)
-            .header(ACCEPT, "application/zip,application/octet-stream")
-            .send()
-            .await
-            .map_err(map_reqwest_market_error)?;
+        // The version from the detail lookup is pinned on the download, so a
+        // publish landing between the two requests cannot silently swap the
+        // archived content. SkillHub's download contract is keyed by
+        // slug + version only; an `owner` parameter is not honored upstream
+        // and is deliberately not sent.
+        let url = reqwest::Url::parse_with_params(
+            &self.download_url,
+            [
+                ("slug", skill.slug.as_str()),
+                ("version", skill.version.as_str()),
+            ],
+        )
+        .map_err(|_| MarketSkillInstallError::LocalIo)?;
+
+        let mut stream_attempt = 0_u32;
+        loop {
+            stream_attempt += 1;
+            match self.download_attempt(&url, archive_path).await {
+                Ok(sha256) => return Ok(sha256),
+                Err(error) => {
+                    // Only a mid-stream transport failure is retried here, with
+                    // a fresh request and a truncated staging file per attempt.
+                    // Validation failures (content type, size, magic) and local
+                    // I/O are deterministic and returned immediately.
+                    if error != MarketSkillInstallError::Network
+                        || stream_attempt >= MAX_DOWNLOAD_STREAM_ATTEMPTS
+                    {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(download_retry_backoff(stream_attempt)).await;
+                }
+            }
+        }
+    }
+}
+
+impl HttpSkillHubArtifactSource {
+    /// One download attempt: send (with transient retry inside the helper),
+    /// status/content-type gates, then stream to `archive_path` while hashing.
+    async fn download_attempt(
+        &self,
+        url: &reqwest::Url,
+        archive_path: &Path,
+    ) -> Result<String, MarketSkillInstallError> {
+        let mut response = send_skillhub_get_with_retry(
+            &self.client,
+            url.clone(),
+            "application/zip,application/octet-stream",
+            SKILLHUB_DOWNLOAD_TIMEOUT,
+        )
+        .await
+        .map_err(map_app_market_error)?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(MarketSkillInstallError::NotFound);
@@ -173,6 +238,8 @@ impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
             return Err(MarketSkillInstallError::ArtifactInvalid);
         }
 
+        // File::create truncates, so a retried attempt never appends to a
+        // partially streamed archive.
         let mut archive = tokio::fs::File::create(archive_path)
             .await
             .map_err(|_| MarketSkillInstallError::LocalIo)?;
@@ -181,7 +248,7 @@ impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
         let mut magic = [0_u8; 2];
         let mut magic_len = 0_usize;
 
-        while let Some(chunk) = response.chunk().await.map_err(map_reqwest_market_error)? {
+        while let Some(chunk) = response.chunk().await.map_err(|_| MarketSkillInstallError::Network)? {
             let chunk_len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
             if total.saturating_add(chunk_len) > MAX_SKILLHUB_SKILL_ZIP_BYTES {
                 return Err(MarketSkillInstallError::ArtifactInvalid);
@@ -208,18 +275,69 @@ impl SkillHubArtifactSource for HttpSkillHubArtifactSource {
     }
 }
 
-fn skillhub_download_url(
-    base_url: &str,
-    skill: &RemoteSkill,
-) -> Result<reqwest::Url, MarketSkillInstallError> {
-    reqwest::Url::parse_with_params(
-        base_url,
-        [
-            ("owner", skill.owner.as_str()),
-            ("slug", skill.slug.as_str()),
-        ],
-    )
-    .map_err(|_| MarketSkillInstallError::LocalIo)
+fn skillhub_skill_detail_url(base_url: &str, slug: &str) -> Result<reqwest::Url, MarketSkillInstallError> {
+    // `slug` has already passed `is_market_slug` via `parse_market_skill_id`,
+    // so it cannot escape the detail path segment.
+    let mut url = reqwest::Url::parse(base_url).map_err(|_| MarketSkillInstallError::LocalIo)?;
+    url.path_segments_mut()
+        .map_err(|_| MarketSkillInstallError::LocalIo)?
+        .pop_if_empty()
+        .push(slug);
+    Ok(url)
+}
+
+/// Parse the exact detail response and bind it to the requested market entry.
+///
+/// Owner verification uses `namespace.handle` — NOT the documented
+/// `owner.handle`, which is SkillHub's internal user handle (e.g.
+/// `u_b0de8114`) rather than the ranking's namespace (e.g. `tencent-adm`).
+/// `namespace` is not listed in the official response schema but is present
+/// on every observed response; when it is missing we fail closed
+/// (ArtifactInvalid) rather than install an unverified identity.
+fn parse_skill_detail(
+    body: &str,
+    expected_owner: &str,
+    expected_slug: &str,
+) -> Result<RemoteSkillDetail, MarketSkillInstallError> {
+    let root = serde_json::from_str::<serde_json::Value>(body)
+        .map_err(|_| MarketSkillInstallError::ArtifactInvalid)?;
+    let namespace = root
+        .get("namespace")
+        .ok_or(MarketSkillInstallError::ArtifactInvalid)?;
+    let handle = json_text(namespace, "handle", 96).ok_or(MarketSkillInstallError::ArtifactInvalid)?;
+    let public_slug = json_text(namespace, "publicSlug", 96)
+        .or_else(|| {
+            json_text(namespace, "canonicalName", 160).and_then(|canonical| {
+                canonical
+                    .trim()
+                    .trim_start_matches('@')
+                    .rsplit('/')
+                    .next()
+                    .map(str::to_string)
+            })
+        })
+        .ok_or(MarketSkillInstallError::ArtifactInvalid)?;
+    if !is_market_slug(&handle) || !is_market_slug(&public_slug) {
+        return Err(MarketSkillInstallError::ArtifactInvalid);
+    }
+    // The download endpoint resolves archives by slug alone; a requested
+    // entry whose namespace does not match what SkillHub resolves is
+    // uninstallable and reported as not found rather than substituted.
+    if !handle.eq_ignore_ascii_case(expected_owner) || !public_slug.eq_ignore_ascii_case(expected_slug) {
+        return Err(MarketSkillInstallError::NotFound);
+    }
+    let version = root
+        .get("latestVersion")
+        .and_then(|value| json_text(value, "version", 64))
+        .ok_or(MarketSkillInstallError::ArtifactInvalid)?;
+    Ok(RemoteSkillDetail {
+        slug: public_slug,
+        version,
+    })
+}
+
+fn download_retry_backoff(stream_attempt: u32) -> Duration {
+    Duration::from_millis(500 * u64::from(stream_attempt))
 }
 
 /// Application-facing installation seam. Route and UI code only depend on
@@ -253,18 +371,13 @@ impl ManagedSkillInstaller {
         source: Arc<dyn SkillHubArtifactSource>,
     ) -> Result<SkillMarketInstallResponse, MarketSkillInstallError> {
         let market_skill = parse_market_skill_id(&request.source, &request.id)?;
-        let remote = source.find_skill(&market_skill.owner, &market_skill.slug).await?;
-        if !remote.owner.eq_ignore_ascii_case(&market_skill.owner)
-            || !remote.slug.eq_ignore_ascii_case(&market_skill.slug)
-        {
-            return Err(MarketSkillInstallError::ArtifactInvalid);
-        }
+        let detail = source.fetch_detail(&market_skill.owner, &market_skill.slug).await?;
 
         let staging = MarketSkillStaging::create(&self.paths).await?;
         let result = async {
             let archive_path = staging.root.join("skill.zip");
             let extract_dir = staging.root.join("extract");
-            let artifact_sha256 = source.download_skill(&remote, &archive_path).await?;
+            let artifact_sha256 = source.download_skill(&detail, &archive_path).await?;
 
             skill_service::extract_skill_archive_to_staging(
                 &archive_path,
@@ -274,17 +387,24 @@ impl ManagedSkillInstaller {
                 .await
                 .map_err(map_archive_error)?;
             let skill_dir = find_single_skill_directory(&extract_dir)?;
-            skill_service::validate_market_skill_directory(&skill_dir, &market_skill.slug)
+            // The manifest's declared name — not the URL slug — is the local
+            // Skill identity: skill listing reads frontmatter names, and
+            // `resolve_skill_source_path` resolves runtime references by
+            // directory name, so the committed directory must use the
+            // declared name for the Skill to be addressable at runtime.
+            let declared_name = skill_service::validate_market_skill_manifest(&skill_dir)
                 .await
                 .map_err(|_| MarketSkillInstallError::ManifestInvalid)?;
-            validate_managed_skill_name(&market_skill.slug)?;
+            validate_managed_skill_name(&declared_name)
+                .map_err(|_| MarketSkillInstallError::ManifestInvalid)?;
             let content_sha256 = hash_skill_directory(&skill_dir).await?;
 
             let _mutation_guard = skill_service::skill_mutation_lock().lock().await;
             commit_managed_skill(
                 &self.paths,
                 &market_skill,
-                remote.revision,
+                &declared_name,
+                &detail.version,
                 &skill_dir,
                 artifact_sha256,
                 content_sha256,
@@ -386,82 +506,18 @@ fn is_windows_device_name(name: &str) -> bool {
             && stem.as_bytes()[3] != b'0')
 }
 
-fn find_exact_search_result(root: &serde_json::Value, owner: &str, slug: &str) -> Option<RemoteSkill> {
-    let mut stack = vec![(root, 0_u8)];
-    while let Some((value, depth)) = stack.pop() {
-        if depth > 16 {
-            continue;
-        }
-        if let Some((candidate_owner, candidate_slug)) = search_item_owner_slug(value)
-            && candidate_owner.eq_ignore_ascii_case(owner)
-            && candidate_slug.eq_ignore_ascii_case(slug)
-        {
-            let revision = json_text(value, "revision", 128)
-                .or_else(|| json_text(value, "version", 128))
-                .or_else(|| json_text(value, "updatedAt", 128));
-            return Some(RemoteSkill {
-                owner: candidate_owner,
-                slug: candidate_slug,
-                revision,
-            });
-        }
-        match value {
-            serde_json::Value::Array(items) => {
-                stack.extend(items.iter().map(|item| (item, depth + 1)));
-            }
-            serde_json::Value::Object(object) => {
-                stack.extend(object.values().map(|item| (item, depth + 1)));
-            }
-            serde_json::Value::Null
-            | serde_json::Value::Bool(_)
-            | serde_json::Value::Number(_)
-            | serde_json::Value::String(_) => {}
-        }
-    }
-    None
-}
-
-fn search_item_owner_slug(item: &serde_json::Value) -> Option<(String, String)> {
-    let namespace = item.get("namespace");
-    let canonical = namespace
-        .and_then(|value| json_text(value, "canonicalName", 160))
-        .or_else(|| json_text(item, "canonicalName", 160));
-    if let Some(canonical) = canonical {
-        let value = canonical.trim().trim_start_matches('@');
-        let mut parts = value.split('/');
-        let owner = parts.next()?.to_string();
-        let slug = parts.next()?.to_string();
-        if parts.next().is_none() && is_market_slug(&owner) && is_market_slug(&slug) {
-            return Some((owner, slug));
-        }
-    }
-
-    let owner = namespace
-        .and_then(|value| json_text(value, "handle", 96))
-        .or_else(|| json_text(item, "ownerHandle", 96))
-        .or_else(|| item.get("owner").and_then(|value| json_text(value, "handle", 96)))?;
-    let slug = namespace
-        .and_then(|value| json_text(value, "publicSlug", 96))
-        .or_else(|| json_text(item, "slug", 96))
-        .or_else(|| item.get("skill").and_then(|value| json_text(value, "slug", 96)))?;
-    if is_market_slug(&owner) && is_market_slug(&slug) {
-        Some((owner, slug))
-    } else {
-        None
-    }
-}
-
 async fn commit_managed_skill(
     paths: &SkillPaths,
     market_skill: &MarketSkillId,
-    revision: Option<String>,
+    declared_name: &str,
+    version: &str,
     staged_dir: &Path,
     artifact_sha256: String,
     content_sha256: String,
 ) -> Result<SkillMarketInstallResponse, MarketSkillInstallError> {
     ensure_regular_directory(&paths.user_skills_dir).await?;
-    let target = paths.user_skills_dir.join(&market_skill.slug);
-    let record = read_installation_record(paths, &market_skill.slug).await?;
+    let target = paths.user_skills_dir.join(declared_name);
+    let record = read_installation_record(paths, declared_name).await?;
 
     match tokio::fs::symlink_metadata(&target).await {
         Ok(metadata) => {
@@ -499,10 +555,10 @@ async fn commit_managed_skill(
             let installed_at = now_epoch_ms();
             let record = MarketSkillInstallationRecord {
                 schema_version: 1,
-                skill_name: market_skill.slug.clone(),
+                skill_name: declared_name.to_string(),
                 source: SKILLHUB_SOURCE.into(),
                 source_id: market_skill.market_id.clone(),
-                revision: revision.clone(),
+                revision: Some(version.to_string()),
                 artifact_sha256: artifact_sha256.clone(),
                 content_sha256: content_sha256.clone(),
                 installed_at,
@@ -542,8 +598,8 @@ async fn commit_managed_skill(
                 status: SkillMarketInstallStatus::Created,
                 source: SKILLHUB_SOURCE.into(),
                 market_id: market_skill.market_id.clone(),
-                skill_name: market_skill.slug.clone(),
-                revision,
+                skill_name: declared_name.to_string(),
+                revision: Some(version.to_string()),
                 artifact_sha256,
                 content_sha256,
                 installed_at,
@@ -613,12 +669,14 @@ async fn read_installation_record(
 }
 
 fn valid_installation_record(record: &MarketSkillInstallationRecord) -> bool {
+    // The record key is the manifest's declared name (the local Skill
+    // identity); `source_id` carries the market identity (owner/slug). The
+    // two are intentionally decoupled: upstream SkillHub packages routinely
+    // declare a manifest name that differs from their public slug.
     record.schema_version == 1
         && record.source == SKILLHUB_SOURCE
         && validate_managed_skill_name(&record.skill_name).is_ok()
-        && parse_market_skill_id(SKILLHUB_SOURCE, &record.source_id)
-            .map(|market| market.slug.eq_ignore_ascii_case(&record.skill_name))
-            .unwrap_or(false)
+        && parse_market_skill_id(SKILLHUB_SOURCE, &record.source_id).is_ok()
         && is_sha256(&record.artifact_sha256)
         && is_sha256(&record.content_sha256)
         && record.installed_at > 0
@@ -761,13 +819,17 @@ async fn hash_skill_directory(path: &Path) -> Result<String, MarketSkillInstallE
 fn find_single_skill_directory(extract_dir: &Path) -> Result<PathBuf, MarketSkillInstallError> {
     let mut manifests = Vec::new();
     collect_skill_manifests(extract_dir, 0, &mut manifests)?;
-    if manifests.len() != 1 {
-        return Err(MarketSkillInstallError::ManifestInvalid);
+    // Zero manifests means the archive is not a Skill at all; more than one
+    // means it is a bundle/package, which this single-Skill installer does
+    // not support — the two failures deserve distinct public error codes.
+    match manifests.len() {
+        1 => manifests
+            .pop()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .ok_or(MarketSkillInstallError::ManifestInvalid),
+        0 => Err(MarketSkillInstallError::ManifestInvalid),
+        _ => Err(MarketSkillInstallError::BundleUnsupported),
     }
-    manifests
-        .pop()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .ok_or(MarketSkillInstallError::ManifestInvalid)
 }
 
 fn collect_skill_manifests(
@@ -799,7 +861,7 @@ fn collect_skill_manifests(
             return Err(MarketSkillInstallError::ArtifactInvalid);
         }
         if manifests.len() > 1 {
-            return Err(MarketSkillInstallError::ManifestInvalid);
+            return Err(MarketSkillInstallError::BundleUnsupported);
         }
     }
     Ok(())
@@ -939,14 +1001,6 @@ fn map_archive_error(error: ExtensionError) -> MarketSkillInstallError {
     }
 }
 
-fn map_reqwest_market_error(error: reqwest::Error) -> MarketSkillInstallError {
-    if error.is_timeout() {
-        MarketSkillInstallError::Timeout
-    } else {
-        MarketSkillInstallError::Network
-    }
-}
-
 fn now_epoch_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -980,7 +1034,7 @@ mod tests {
     use super::*;
     use nomifun_api_types::{SkillMarketInstallRequest, SkillMarketInstallStatus};
     use std::io::Write;
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, Mutex};
     use serial_test::serial;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -989,25 +1043,28 @@ mod tests {
         archive: Vec<u8>,
         owner: String,
         slug: String,
-        revision: Option<String>,
+        version: String,
     }
 
     #[async_trait]
     impl SkillHubArtifactSource for FakeSkillHub {
-        async fn find_skill(&self, owner: &str, slug: &str) -> Result<RemoteSkill, MarketSkillInstallError> {
-            if owner != self.owner || slug != self.slug {
+        async fn fetch_detail(
+            &self,
+            owner: &str,
+            slug: &str,
+        ) -> Result<RemoteSkillDetail, MarketSkillInstallError> {
+            if !owner.eq_ignore_ascii_case(&self.owner) || !slug.eq_ignore_ascii_case(&self.slug) {
                 return Err(MarketSkillInstallError::NotFound);
             }
-            Ok(RemoteSkill {
-                owner: self.owner.clone(),
+            Ok(RemoteSkillDetail {
                 slug: self.slug.clone(),
-                revision: self.revision.clone(),
+                version: self.version.clone(),
             })
         }
 
         async fn download_skill(
             &self,
-            _skill: &RemoteSkill,
+            _skill: &RemoteSkillDetail,
             archive_path: &Path,
         ) -> Result<String, MarketSkillInstallError> {
             tokio::fs::write(archive_path, &self.archive)
@@ -1024,13 +1081,17 @@ mod tests {
 
     #[async_trait]
     impl SkillHubArtifactSource for SlowSkillHub {
-        async fn find_skill(&self, owner: &str, slug: &str) -> Result<RemoteSkill, MarketSkillInstallError> {
-            self.inner.find_skill(owner, slug).await
+        async fn fetch_detail(
+            &self,
+            owner: &str,
+            slug: &str,
+        ) -> Result<RemoteSkillDetail, MarketSkillInstallError> {
+            self.inner.fetch_detail(owner, slug).await
         }
 
         async fn download_skill(
             &self,
-            skill: &RemoteSkill,
+            skill: &RemoteSkillDetail,
             archive_path: &Path,
         ) -> Result<String, MarketSkillInstallError> {
             tokio::time::sleep(self.delay).await;
@@ -1051,40 +1112,122 @@ mod tests {
         }
     }
 
-    fn archive_for(slug: &str, name: &str) -> Vec<u8> {
+    fn archive_for(dir_prefix: &str, name: &str) -> Vec<u8> {
         let mut output = Vec::new();
         {
             let cursor = std::io::Cursor::new(&mut output);
             let mut writer = zip::ZipWriter::new(cursor);
             let options = zip::write::SimpleFileOptions::default();
-            writer.start_file(format!("{slug}/SKILL.md"), options).unwrap();
+            writer.start_file(format!("{dir_prefix}/SKILL.md"), options).unwrap();
             writeln!(writer, "---\nname: {name}\ndescription: Demo\n---").unwrap();
-            writer.start_file(format!("{slug}/README.md"), options).unwrap();
+            writer.start_file(format!("{dir_prefix}/README.md"), options).unwrap();
             writer.write_all(b"demo").unwrap();
             writer.finish().unwrap();
         }
         output
     }
 
-    async fn spawn_http_fixture(
-        responses: Vec<(&'static str, &'static str, Vec<u8>)>,
-    ) -> (String, tokio::task::JoinHandle<()>) {
+    /// Multi-manifest archive mirroring SkillHub bundles like `ima-skills`.
+    fn bundle_archive() -> Vec<u8> {
+        let mut output = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut output);
+            let mut writer = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("bundle/SKILL.md", options).unwrap();
+            writeln!(writer, "---\nname: bundle-root\ndescription: Root\n---").unwrap();
+            writer.start_file("bundle/notes/SKILL.md", options).unwrap();
+            writeln!(writer, "---\nname: bundle-notes\ndescription: Notes\n---").unwrap();
+            writer.finish().unwrap();
+        }
+        output
+    }
+
+    fn no_manifest_archive() -> Vec<u8> {
+        let mut output = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut output);
+            let mut writer = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("skill/README.md", options).unwrap();
+            writer.write_all(b"no manifest here").unwrap();
+            writer.finish().unwrap();
+        }
+        output
+    }
+
+    /// Detail payload in the live SkillHub shape. Note the documented
+    /// `owner.handle` is the internal user handle (`u_internal`), NOT the
+    /// ranking namespace — binding must only trust `namespace`.
+    fn detail_json(owner: &str, slug: &str, version: &str) -> Vec<u8> {
+        serde_json::json!({
+            "namespace": {
+                "canonicalName": format!("@{owner}/{slug}"),
+                "handle": owner,
+                "publicSlug": slug,
+            },
+            "latestVersion": { "version": version, "createdAt": 1, "changelog": "" },
+            "skill": { "slug": slug },
+            "owner": { "handle": "u_internal", "displayName": "internal" }
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    struct StubResponse {
+        status: &'static str,
+        content_type: &'static str,
+        extra_headers: Vec<(&'static str, &'static str)>,
+        body: Vec<u8>,
+        /// Announce a larger Content-Length than `body`, simulating a
+        /// connection that dies mid-stream.
+        announced_length: Option<usize>,
+    }
+
+    fn stub(status: &'static str, content_type: &'static str, body: Vec<u8>) -> StubResponse {
+        StubResponse {
+            status,
+            content_type,
+            extra_headers: Vec::new(),
+            body,
+            announced_length: None,
+        }
+    }
+
+    struct RecordedSkillHub {
+        base_url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    /// Serve one stubbed response per accepted connection and record each raw
+    /// request head.
+    async fn spawn_recorded_fixture(responses: Vec<StubResponse>) -> RecordedSkillHub {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let log = requests.clone();
         let server = tokio::spawn(async move {
-            for (status, content_type, body) in responses {
+            for response in responses {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = [0_u8; 4096];
-                let _ = socket.read(&mut request).await;
-                let headers = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
+                let n = socket.read(&mut request).await.unwrap_or(0);
+                log.lock().unwrap().push(String::from_utf8_lossy(&request[..n]).into_owned());
+                let mut headers = format!("HTTP/1.1 {}\r\nContent-Type: {}\r\n", response.status, response.content_type);
+                for (name, value) in response.extra_headers {
+                    headers.push_str(&format!("{name}: {value}\r\n"));
+                }
+                let length = response.announced_length.unwrap_or(response.body.len());
+                headers.push_str(&format!("Content-Length: {length}\r\nConnection: close\r\n\r\n"));
                 socket.write_all(headers.as_bytes()).await.unwrap();
-                socket.write_all(&body).await.unwrap();
+                socket.write_all(&response.body).await.unwrap();
             }
         });
-        (format!("http://{address}"), server)
+        RecordedSkillHub {
+            base_url: format!("http://{address}"),
+            requests,
+            server,
+        }
     }
 
     async fn spawn_chunked_http_fixture(
@@ -1114,6 +1257,13 @@ mod tests {
         (format!("http://{address}"), server)
     }
 
+    fn install_request(id: &str) -> SkillMarketInstallRequest {
+        SkillMarketInstallRequest {
+            source: SKILLHUB_SOURCE.into(),
+            id: id.into(),
+        }
+    }
+
     #[tokio::test]
     async fn managed_install_creates_then_reuses_without_overwriting() {
         let tmp = TempDir::new().unwrap();
@@ -1123,14 +1273,12 @@ mod tests {
             archive: archive_for("demo", "demo"),
             owner: "owner".into(),
             slug: "demo".into(),
-            revision: Some("r1".into()),
+            version: "r1".into(),
         });
-        let request = SkillMarketInstallRequest {
-            source: SKILLHUB_SOURCE.into(),
-            id: "skillhub:owner/skills/demo".into(),
-        };
+        let request = install_request("skillhub:owner/skills/demo");
         let first = installer.install_with_source(request.clone(), fake.clone()).await.unwrap();
         assert_eq!(first.status, SkillMarketInstallStatus::Created);
+        assert_eq!(first.revision.as_deref(), Some("r1"));
         assert!(paths.user_skills_dir.join("demo/SKILL.md").is_file());
         assert!(paths.data_dir.join("skill-market/installations/demo.json").is_file());
         assert!(!paths.user_skills_dir.join(".market-import").exists());
@@ -1151,15 +1299,12 @@ mod tests {
         assert!(installer.list_installations().await.unwrap().is_empty());
         let error = installer
             .install_with_source(
-                SkillMarketInstallRequest {
-                    source: SKILLHUB_SOURCE.into(),
-                    id: "skillhub:owner/skills/demo".into(),
-                },
+                install_request("skillhub:owner/skills/demo"),
                 Arc::new(FakeSkillHub {
                     archive: archive_for("demo", "demo"),
                     owner: "owner".into(),
                     slug: "demo".into(),
-                    revision: Some("r2".into()),
+                    version: "r2".into(),
                 }),
             )
             .await
@@ -1176,12 +1321,9 @@ mod tests {
             archive: archive_for("parallel", "parallel"),
             owner: "owner".into(),
             slug: "parallel".into(),
-            revision: Some("r1".into()),
+            version: "r1".into(),
         });
-        let request = SkillMarketInstallRequest {
-            source: SKILLHUB_SOURCE.into(),
-            id: "skillhub:owner/skills/parallel".into(),
-        };
+        let request = install_request("skillhub:owner/skills/parallel");
 
         let (left, right) = tokio::join!(
             installer.install_with_source(request.clone(), fake.clone()),
@@ -1210,16 +1352,10 @@ mod tests {
             archive: archive_for("demo", "demo"),
             owner: "owner".into(),
             slug: "demo".into(),
-            revision: None,
+            version: "r1".into(),
         });
         let error = installer
-            .install_with_source(
-                SkillMarketInstallRequest {
-                    source: SKILLHUB_SOURCE.into(),
-                    id: "skillhub:owner/skills/demo".into(),
-                },
-                fake,
-            )
+            .install_with_source(install_request("skillhub:owner/skills/demo"), fake)
             .await
             .unwrap_err();
         assert_eq!(error, MarketSkillInstallError::NameConflict);
@@ -1238,17 +1374,11 @@ mod tests {
             archive: archive_for("rollback", "rollback"),
             owner: "owner".into(),
             slug: "rollback".into(),
-            revision: None,
+            version: "r1".into(),
         });
 
         let error = installer
-            .install_with_source(
-                SkillMarketInstallRequest {
-                    source: SKILLHUB_SOURCE.into(),
-                    id: "skillhub:owner/skills/rollback".into(),
-                },
-                fake,
-            )
+            .install_with_source(install_request("skillhub:owner/skills/rollback"), fake)
             .await
             .unwrap_err();
         assert_eq!(error, MarketSkillInstallError::LocalIo);
@@ -1262,15 +1392,12 @@ mod tests {
         let installer = ManagedSkillInstaller::new(paths.clone());
         let error = installer
             .install_with_source(
-                SkillMarketInstallRequest {
-                    source: SKILLHUB_SOURCE.into(),
-                    id: "skillhub:owner/skills/invalid-archive".into(),
-                },
+                install_request("skillhub:owner/skills/invalid-archive"),
                 Arc::new(FakeSkillHub {
                     archive: b"not a zip".to_vec(),
                     owner: "owner".into(),
                     slug: "invalid-archive".into(),
-                    revision: None,
+                    version: "r1".into(),
                 }),
             )
             .await
@@ -1288,16 +1415,13 @@ mod tests {
         let result = tokio::time::timeout(
             Duration::from_millis(20),
             installer.install_with_source(
-                SkillMarketInstallRequest {
-                    source: SKILLHUB_SOURCE.into(),
-                    id: "skillhub:owner/skills/cancelled-skill".into(),
-                },
+                install_request("skillhub:owner/skills/cancelled-skill"),
                 Arc::new(SlowSkillHub {
                     inner: FakeSkillHub {
                         archive: archive_for("cancelled-skill", "cancelled-skill"),
                         owner: "owner".into(),
                         slug: "cancelled-skill".into(),
-                        revision: None,
+                        version: "r1".into(),
                     },
                     delay: Duration::from_secs(1),
                 }),
@@ -1317,19 +1441,19 @@ mod tests {
         let installer = ManagedSkillInstaller::new(paths.clone());
         let started = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
+        // Scope the pause to this test's own Skill tree: other tests extract
+        // archives in parallel and must never touch these barriers.
         let _gate = crate::skill_service::test_overrides::pause_archive_extraction(
             started.clone(),
             release.clone(),
+            paths.user_skills_dir.clone(),
         );
         let task = tokio::spawn({
             let installer = installer.clone();
             async move {
                 installer
                     .install_with_source(
-                        SkillMarketInstallRequest {
-                            source: SKILLHUB_SOURCE.into(),
-                            id: "skillhub:owner/skills/cancelled-during-extraction".into(),
-                        },
+                        install_request("skillhub:owner/skills/cancelled-during-extraction"),
                         Arc::new(FakeSkillHub {
                             archive: archive_for(
                                 "cancelled-during-extraction",
@@ -1337,7 +1461,7 @@ mod tests {
                             ),
                             owner: "owner".into(),
                             slug: "cancelled-during-extraction".into(),
-                            revision: None,
+                            version: "r1".into(),
                         }),
                     )
                     .await
@@ -1364,52 +1488,322 @@ mod tests {
         assert!(!paths.user_skills_dir.join(MARKET_STAGING_DIR).exists());
     }
 
+    /// Mirrors the real SkillHub `baozheng` package: slug `baozheng` ships a
+    /// manifest declaring `name: baozheng-skills`. The install must succeed,
+    /// commit under the declared name, and keep the market identity in
+    /// provenance. Regression test for the "manifest invalid" rejections.
     #[tokio::test]
-    async fn http_source_binds_search_and_download_to_exact_skill() {
+    async fn managed_install_accepts_manifest_name_different_from_slug() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(tmp.path());
+        let installer = ManagedSkillInstaller::new(paths.clone());
+        let fake = Arc::new(FakeSkillHub {
+            archive: archive_for("baozheng", "baozheng-skills"),
+            owner: "user_741dc82b".into(),
+            slug: "baozheng".into(),
+            version: "1.0.3".into(),
+        });
+        let request = install_request("skillhub:user_741dc82b/skills/baozheng");
+
+        let first = installer.install_with_source(request.clone(), fake.clone()).await.unwrap();
+        assert_eq!(first.status, SkillMarketInstallStatus::Created);
+        assert_eq!(first.skill_name, "baozheng-skills");
+        assert_eq!(first.revision.as_deref(), Some("1.0.3"));
+        // The committed directory uses the declared manifest name so runtime
+        // resolution by directory name (resolve_skill_source_path) works.
+        assert!(paths.user_skills_dir.join("baozheng-skills/SKILL.md").is_file());
+        assert!(!paths.user_skills_dir.join("baozheng").exists());
+        assert!(
+            paths
+                .data_dir
+                .join("skill-market/installations/baozheng-skills.json")
+                .is_file()
+        );
+
+        // Runtime materialization by the declared name resolves the install.
+        let resolved = skill_service::materialize_skills_for_agent(
+            &paths,
+            "conv-1",
+            &["baozheng-skills".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.len(), 1);
+
+        // Provenance still matches by market id: reinstall reuses, and the
+        // installations listing carries both identities.
+        let second = installer.install_with_source(request, fake).await.unwrap();
+        assert_eq!(second.status, SkillMarketInstallStatus::Reused);
+        let listed = installer.list_installations().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].market_id, "skillhub:user_741dc82b/skills/baozheng");
+        assert_eq!(listed[0].skill_name, "baozheng-skills");
+    }
+
+    #[tokio::test]
+    async fn managed_install_rejects_multi_manifest_bundle() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(tmp.path());
+        let installer = ManagedSkillInstaller::new(paths.clone());
+        let error = installer
+            .install_with_source(
+                install_request("skillhub:tencent-adm/skills/ima-skills"),
+                Arc::new(FakeSkillHub {
+                    archive: bundle_archive(),
+                    owner: "tencent-adm".into(),
+                    slug: "ima-skills".into(),
+                    version: "1.1.9".into(),
+                }),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, MarketSkillInstallError::BundleUnsupported);
+        assert!(!paths.user_skills_dir.join(MARKET_STAGING_DIR).exists());
+        assert!(!paths.user_skills_dir.join("ima-skills").exists());
+    }
+
+    #[tokio::test]
+    async fn managed_install_rejects_archive_without_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(tmp.path());
+        let installer = ManagedSkillInstaller::new(paths.clone());
+        let error = installer
+            .install_with_source(
+                install_request("skillhub:owner/skills/no-manifest"),
+                Arc::new(FakeSkillHub {
+                    archive: no_manifest_archive(),
+                    owner: "owner".into(),
+                    slug: "no-manifest".into(),
+                    version: "r1".into(),
+                }),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, MarketSkillInstallError::ManifestInvalid);
+        assert!(!paths.user_skills_dir.join(MARKET_STAGING_DIR).exists());
+    }
+
+    #[test]
+    fn parse_skill_detail_binds_namespace_and_version() {
+        let body = String::from_utf8(detail_json("tencent-adm", "tencent-docs", "1.0.41")).unwrap();
+        let detail = parse_skill_detail(&body, "tencent-adm", "tencent-docs").unwrap();
+        assert_eq!(detail.slug, "tencent-docs");
+        assert_eq!(detail.version, "1.0.41");
+
+        // Case-insensitive binding.
+        let detail = parse_skill_detail(&body, "Tencent-Adm", "TENCENT-DOCS").unwrap();
+        assert_eq!(detail.version, "1.0.41");
+
+        // canonicalName fallback when publicSlug is absent.
+        let body = serde_json::json!({
+            "namespace": { "canonicalName": "@owner/demo", "handle": "owner" },
+            "latestVersion": { "version": "2.0.0" }
+        })
+        .to_string();
+        let detail = parse_skill_detail(&body, "owner", "demo").unwrap();
+        assert_eq!(detail.slug, "demo");
+        assert_eq!(detail.version, "2.0.0");
+    }
+
+    #[test]
+    fn parse_skill_detail_rejects_mismatch_and_missing_fields() {
+        // Namespace owner mismatch → NotFound (the archive download is keyed
+        // by slug alone, so a mismatched entry is uninstallable, never
+        // substituted).
+        let body = String::from_utf8(detail_json("other-owner", "demo", "1.0.0")).unwrap();
+        assert_eq!(
+            parse_skill_detail(&body, "owner", "demo").unwrap_err(),
+            MarketSkillInstallError::NotFound
+        );
+        // The documented `owner.handle` is an internal user handle; binding
+        // against it must fail (only `namespace.handle` is trusted).
+        let body = String::from_utf8(detail_json("tencent-adm", "tencent-docs", "1.0.41")).unwrap();
+        assert_eq!(
+            parse_skill_detail(&body, "u_internal", "tencent-docs").unwrap_err(),
+            MarketSkillInstallError::NotFound
+        );
+        // Slug mismatch → NotFound.
+        assert_eq!(
+            parse_skill_detail(&body, "tencent-adm", "other-skill").unwrap_err(),
+            MarketSkillInstallError::NotFound
+        );
+
+        // Missing namespace / latestVersion / version → ArtifactInvalid
+        // (fail closed: identity or version cannot be verified).
+        for bad in [
+            serde_json::json!({"latestVersion": {"version": "1.0.0"}}),
+            serde_json::json!({"namespace": {"handle": "owner", "publicSlug": "demo"}}),
+            serde_json::json!({
+                "namespace": {"handle": "owner", "publicSlug": "demo"},
+                "latestVersion": {"createdAt": 1}
+            }),
+            serde_json::json!({
+                "namespace": {"handle": "not a handle!", "publicSlug": "demo"},
+                "latestVersion": {"version": "1.0.0"}
+            }),
+        ] {
+            let body = bad.to_string();
+            assert_eq!(
+                parse_skill_detail(&body, "owner", "demo").unwrap_err(),
+                MarketSkillInstallError::ArtifactInvalid,
+                "{body}"
+            );
+        }
+        assert_eq!(
+            parse_skill_detail("not json", "owner", "demo").unwrap_err(),
+            MarketSkillInstallError::ArtifactInvalid
+        );
+    }
+
+    #[test]
+    fn detail_url_targets_one_validated_slug() {
+        assert_eq!(
+            skillhub_skill_detail_url(SKILLHUB_SKILL_DETAIL_BASE_URL, "demo")
+                .unwrap()
+                .as_str(),
+            "https://api.skillhub.cn/api/v1/skills/demo"
+        );
+        // A base without the trailing slash normalizes to the same URL.
+        assert_eq!(
+            skillhub_skill_detail_url("https://api.skillhub.cn/api/v1/skills", "demo")
+                .unwrap()
+                .as_str(),
+            "https://api.skillhub.cn/api/v1/skills/demo"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_source_fetches_detail_then_downloads_pinned_version() {
         let archive = archive_for("demo", "demo");
-        let (base_url, server) = spawn_http_fixture(vec![
-            (
-                "200 OK",
-                "application/json",
-                br#"{"results":[{"namespace":{"canonicalName":"@owner/demo"},"revision":"r1"}]}"#.to_vec(),
-            ),
-            ("200 OK", "application/zip", archive.clone()),
+        let fixture = spawn_recorded_fixture(vec![
+            stub("200 OK", "application/json", detail_json("owner", "demo", "1.2.3")),
+            stub("200 OK", "application/zip", archive.clone()),
         ])
         .await;
-        let source = HttpSkillHubArtifactSource::for_test(&base_url);
-        let remote = source.find_skill("owner", "demo").await.unwrap();
-        assert_eq!(remote.owner, "owner");
-        assert_eq!(remote.slug, "demo");
+        let source = HttpSkillHubArtifactSource::for_test(&fixture.base_url);
+
+        let detail = source.fetch_detail("owner", "demo").await.unwrap();
+        assert_eq!(detail.version, "1.2.3");
 
         let tmp = TempDir::new().unwrap();
         let archive_path = tmp.path().join("skill.zip");
-        let sha = source.download_skill(&remote, &archive_path).await.unwrap();
+        let sha = source.download_skill(&detail, &archive_path).await.unwrap();
         assert_eq!(sha, format!("{:x}", Sha256::digest(&archive)));
         assert_eq!(tokio::fs::read(archive_path).await.unwrap(), archive);
-        server.await.unwrap();
+
+        let requests = fixture.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /api/v1/skills/demo "), "{}", requests[0]);
+        assert!(requests[1].starts_with("GET /api/v1/download?"), "{}", requests[1]);
+        assert!(requests[1].contains("slug=demo"), "{}", requests[1]);
+        assert!(requests[1].contains("version=1.2.3"), "{}", requests[1]);
+        assert!(!requests[1].contains("owner="), "{}", requests[1]);
+        drop(requests);
+        fixture.server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_source_retries_429_download_then_succeeds() {
+        let archive = archive_for("demo", "demo");
+        let fixture = spawn_recorded_fixture(vec![
+            stub("200 OK", "application/json", detail_json("owner", "demo", "1.2.3")),
+            StubResponse {
+                extra_headers: vec![("Retry-After", "0")],
+                ..stub("429 Too Many Requests", "application/json", b"{\"error\":\"too many requests\"}".to_vec())
+            },
+            stub("200 OK", "application/zip", archive.clone()),
+        ])
+        .await;
+        let source = HttpSkillHubArtifactSource::for_test(&fixture.base_url);
+        let detail = source.fetch_detail("owner", "demo").await.unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let sha = source
+            .download_skill(&detail, &tmp.path().join("skill.zip"))
+            .await
+            .unwrap();
+        assert_eq!(sha, format!("{:x}", Sha256::digest(&archive)));
+        assert_eq!(fixture.requests.lock().unwrap().len(), 3);
+        fixture.server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_source_retries_truncated_stream_with_fresh_archive_file() {
+        let archive = archive_for("demo", "demo");
+        let fixture = spawn_recorded_fixture(vec![
+            stub("200 OK", "application/json", detail_json("owner", "demo", "1.2.3")),
+            // Announces far more bytes than it delivers: the connection close
+            // surfaces as a mid-stream error, which must be retried once with
+            // a freshly truncated staging file.
+            StubResponse {
+                announced_length: Some(archive.len() + 100_000),
+                ..stub("200 OK", "application/zip", archive.clone())
+            },
+            stub("200 OK", "application/zip", archive.clone()),
+        ])
+        .await;
+        let source = HttpSkillHubArtifactSource::for_test(&fixture.base_url);
+        let detail = source.fetch_detail("owner", "demo").await.unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let archive_path = tmp.path().join("skill.zip");
+        let sha = source.download_skill(&detail, &archive_path).await.unwrap();
+        assert_eq!(sha, format!("{:x}", Sha256::digest(&archive)));
+        assert_eq!(tokio::fs::read(archive_path).await.unwrap(), archive);
+        assert_eq!(fixture.requests.lock().unwrap().len(), 3);
+        fixture.server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_source_maps_detail_404_and_namespace_mismatch_to_not_found() {
+        // Detail 404 → NotFound, exactly one request.
+        let fixture = spawn_recorded_fixture(vec![stub(
+            "404 Not Found",
+            "application/json",
+            b"{\"error\":\"Skill not found\"}".to_vec(),
+        )])
+        .await;
+        let source = HttpSkillHubArtifactSource::for_test(&fixture.base_url);
+        let error = source.fetch_detail("owner", "missing").await.unwrap_err();
+        assert_eq!(error, MarketSkillInstallError::NotFound);
+        assert_eq!(fixture.requests.lock().unwrap().len(), 1);
+        fixture.server.await.unwrap();
+
+        // Detail resolves to a different namespace → NotFound.
+        let fixture = spawn_recorded_fixture(vec![stub(
+            "200 OK",
+            "application/json",
+            detail_json("other-owner", "demo", "1.0.0"),
+        )])
+        .await;
+        let source = HttpSkillHubArtifactSource::for_test(&fixture.base_url);
+        let error = source.fetch_detail("owner", "demo").await.unwrap_err();
+        assert_eq!(error, MarketSkillInstallError::NotFound);
+        fixture.server.await.unwrap();
     }
 
     #[tokio::test]
     async fn http_source_rejects_wrong_content_type_and_magic() {
-        for (content_type, body) in [("text/html", archive_for("demo", "demo")), ("application/zip", b"not zip".to_vec())] {
-            let (base_url, server) = spawn_http_fixture(vec![
-                (
-                    "200 OK",
-                    "application/json",
-                    br#"{"results":[{"namespace":{"canonicalName":"@owner/demo"}}]}"#.to_vec(),
-                ),
-                ("200 OK", content_type, body),
+        for (content_type, body) in [
+            ("text/html", archive_for("demo", "demo")),
+            ("application/zip", b"not zip".to_vec()),
+        ] {
+            let fixture = spawn_recorded_fixture(vec![
+                stub("200 OK", "application/json", detail_json("owner", "demo", "1.2.3")),
+                stub("200 OK", content_type, body),
             ])
             .await;
-            let source = HttpSkillHubArtifactSource::for_test(&base_url);
-            let remote = source.find_skill("owner", "demo").await.unwrap();
+            let source = HttpSkillHubArtifactSource::for_test(&fixture.base_url);
+            let detail = source.fetch_detail("owner", "demo").await.unwrap();
             let tmp = TempDir::new().unwrap();
             let error = source
-                .download_skill(&remote, &tmp.path().join("skill.zip"))
+                .download_skill(&detail, &tmp.path().join("skill.zip"))
                 .await
                 .unwrap_err();
             assert_eq!(error, MarketSkillInstallError::ArtifactInvalid);
-            server.await.unwrap();
+            fixture.server.await.unwrap();
         }
     }
 
@@ -1423,10 +1817,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let error = source
             .download_skill(
-                &RemoteSkill {
-                    owner: "owner".into(),
+                &RemoteSkillDetail {
                     slug: "demo".into(),
-                    revision: None,
+                    version: "1.0.0".into(),
                 },
                 &tmp.path().join("skill.zip"),
             )
@@ -1445,35 +1838,6 @@ mod tests {
         assert!(validate_managed_skill_name("normal-skill").is_ok());
         assert!(parse_market_skill_id(SKILLHUB_SOURCE, "skillhub:owner/skills/normal-skill").is_ok());
         assert!(parse_market_skill_id(SKILLHUB_SOURCE, "skillhub:owner/other/normal-skill").is_err());
-    }
-
-    #[test]
-    fn search_result_requires_exact_owner_and_slug() {
-        let root = serde_json::json!({
-            "results": [
-                {"namespace": {"canonicalName": "@owner/other"}},
-                {"namespace": {"canonicalName": "@owner/demo"}, "revision": "r2"}
-            ]
-        });
-        let found = find_exact_search_result(&root, "owner", "demo").unwrap();
-        assert_eq!(found.slug, "demo");
-        assert_eq!(found.revision.as_deref(), Some("r2"));
-        assert!(find_exact_search_result(&root, "other", "demo").is_none());
-    }
-
-    #[test]
-    fn download_url_keeps_owner_and_slug_bound() {
-        let url = skillhub_download_url(
-            SKILLHUB_SKILL_DOWNLOAD_URL,
-            &RemoteSkill {
-                owner: "owner-a".into(),
-                slug: "demo".into(),
-                revision: None,
-            },
-        )
-        .unwrap();
-        let pairs: Vec<_> = url.query_pairs().into_owned().collect();
-        assert_eq!(pairs, vec![("owner".into(), "owner-a".into()), ("slug".into(), "demo".into())]);
     }
 
     #[test]

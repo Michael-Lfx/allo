@@ -79,6 +79,8 @@ impl IntoResponse for MarketSkillRouteError {
                         (StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_ARTIFACT_INVALID"),
                     MarketSkillInstallError::ManifestInvalid =>
                         (StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_MANIFEST_INVALID"),
+                    MarketSkillInstallError::BundleUnsupported =>
+                        (StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_BUNDLE_UNSUPPORTED"),
                     MarketSkillInstallError::Network =>
                         (StatusCode::BAD_GATEWAY, "MARKET_SKILL_NETWORK"),
                     MarketSkillInstallError::Timeout =>
@@ -866,5 +868,19 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "MARKET_SKILL_NAME_CONFLICT");
         assert!(!json["error"].as_str().unwrap_or_default().contains("http"));
+    }
+
+    #[tokio::test]
+    async fn managed_skill_install_route_maps_bundle_unsupported() {
+        let mut state = make_state().await;
+        state.market_skill_installer = Some(Arc::new(FakeMarketInstaller {
+            result: Err(MarketSkillInstallError::BundleUnsupported),
+        }));
+
+        let response = skill_routes(state).oneshot(install_request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "MARKET_SKILL_BUNDLE_UNSUPPORTED");
     }
 }
