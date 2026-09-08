@@ -16,6 +16,7 @@ use nomifun_api_types::{
     ReadSkillInfoResponse, RemoveExternalPathRequest, ScanForSkillsRequest, ScanForSkillsResponse,
     ScannedSkillResponse, SetSkillTagsRequest, SkillCatalogItemResponse, SkillCatalogResponse,
     SkillCatalogSource, SkillId,
+    SkillHubMarketCategoriesResponse, SkillHubMarketQueryRequest, SkillHubMarketQueryResponse,
     SkillListItemResponse, SkillMarketMcpConfigRequest,
     SkillMarketMcpConfigResponse, SkillMarketPackageInstallResponse, SkillMarketPackageRequest,
     SkillMarketSkillInstallRequest, SkillMarketSkillInstallResponse, SkillMarketSyncRequest,
@@ -28,7 +29,7 @@ use nomifun_db::ISkillTagRepository;
 use crate::classifier::PresetRuleDispatcher;
 use crate::external_paths::ExternalPathsManager;
 use crate::skill_service::{self, SkillPaths, SkillSource};
-use crate::market::{MarketPackagePresetInstaller, MarketSkillInstallError};
+use crate::market::{MarketPackagePresetInstaller, MarketSkillInstallError, SkillHubMarketError};
 
 fn to_source_response(source: SkillSource) -> SkillSourceResponse {
     match source {
@@ -52,6 +53,34 @@ fn imported_user_skill_ids(names: &[String]) -> Vec<String> {
 enum MarketSkillRouteError {
     Json(String),
     Install(MarketSkillInstallError),
+}
+
+#[derive(Debug)]
+enum SkillHubMarketRouteError {
+    Json(String),
+    Market(SkillHubMarketError),
+}
+
+impl From<SkillHubMarketError> for SkillHubMarketRouteError {
+    fn from(error: SkillHubMarketError) -> Self {
+        Self::Market(error)
+    }
+}
+
+impl IntoResponse for SkillHubMarketRouteError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Json(message) => {
+                (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message, "BAD_REQUEST"))).into_response()
+            }
+            Self::Market(SkillHubMarketError::Deadline) => (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(ErrorResponse::new("SkillHub market request timed out", "TIMEOUT")),
+            )
+                .into_response(),
+            Self::Market(SkillHubMarketError::App(error)) => error.into_response(),
+        }
+    }
 }
 
 impl From<MarketSkillInstallError> for MarketSkillRouteError {
@@ -171,6 +200,14 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
             post(sync_skill_market_rankings),
         )
         .route(
+            "/api/skills/market/skillhub/query",
+            post(query_skillhub_market),
+        )
+        .route(
+            "/api/skills/market/skillhub/categories",
+            get(list_skillhub_market_categories),
+        )
+        .route(
             "/api/skills/market/mcp/config",
             post(resolve_skill_market_mcp_config),
         )
@@ -194,6 +231,7 @@ async fn list_skills(
     State(state): State<SkillRouterState>,
 ) -> Result<Json<ApiResponse<Vec<SkillListItemResponse>>>, AppError> {
     let items = skill_service::list_available_skills(&state.skill_paths).await?;
+    let market_mappings = skill_service::load_market_skill_mappings(&state.skill_paths).await;
     let builtin_display = skill_service::load_builtin_skill_display_metadata();
     // user sidecar assignments (decode JSON arrays), keyed by skill name
     let user_rows = state.skill_tag_repo.get_all().await.map_err(AppError::from)?;
@@ -206,6 +244,9 @@ async fn list_skills(
     let resp: Vec<SkillListItemResponse> = items
         .into_iter()
         .map(|s| {
+            let market_id = (s.source == skill_service::SkillSource::Custom)
+                .then(|| market_id_for_skill_name(&market_mappings, &s.name))
+                .flatten();
             let display = if s.source == skill_service::SkillSource::Builtin {
                 builtin_display.get(&s.name).cloned().unwrap_or_default()
             } else {
@@ -227,6 +268,7 @@ async fn list_skills(
                 source: to_source_response(s.source),
                 audience_tags,
                 scenario_tags,
+                market_id,
             }
         })
         .collect();
@@ -239,20 +281,49 @@ async fn list_skills(
 async fn list_catalog_skills(
     State(state): State<SkillRouterState>,
 ) -> Result<Json<ApiResponse<SkillCatalogResponse>>, AppError> {
+    let market_mappings = skill_service::load_market_skill_mappings(&state.skill_paths).await;
     let skills = skill_service::list_catalog_skills(&state.skill_paths)
         .await?
         .into_iter()
         .map(|item| {
+            let market_id = (item.source == SkillCatalogSource::User && item.source_key.is_none())
+                .then(|| market_id_for_skill_name(&market_mappings, &item.name))
+                .flatten();
             SkillCatalogItemResponse {
                 skill_id: SkillId::new(item.source, item.source_key.as_deref(), &item.local_key),
                 name: item.name,
                 description: item.description,
                 source: item.source,
                 source_key: item.source_key,
+                market_id,
             }
         })
         .collect();
     Ok(Json(ApiResponse::ok(SkillCatalogResponse { skills })))
+}
+
+fn market_id_for_skill_name(
+    mappings: &std::collections::HashMap<String, skill_service::MarketSkillMapping>,
+    name: &str,
+) -> Option<String> {
+    let expected_skill_id = SkillId::new(SkillCatalogSource::User, None, name).as_str().to_owned();
+    let mut found = None;
+    for (market_id, mapping) in mappings {
+        if !market_id.starts_with("skillhub:")
+            || mapping.source != "skillhub"
+            || mapping.installed_skill_id != expected_skill_id
+        {
+            continue;
+        }
+        if found.is_some() {
+            // An ambiguous legacy mapping is not safe to present as an exact
+            // identity; the market action can still use its conservative name
+            // fallback.
+            return None;
+        }
+        found = Some(market_id.clone());
+    }
+    found
 }
 
 /// Decode a JSON-array TEXT column into a `Vec<String>`. Fail-soft on purpose
@@ -656,6 +727,24 @@ async fn sync_skill_market_rankings(
     Ok(Json(ApiResponse::ok(resp)))
 }
 
+/// `POST /api/skills/market/skillhub/query` — query the ordinary SkillHub
+/// catalog with server-side filtering, sorting, and pagination.
+async fn query_skillhub_market(
+    body: Result<Json<SkillHubMarketQueryRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<SkillHubMarketQueryResponse>>, SkillHubMarketRouteError> {
+    let Json(req) = body.map_err(|e| SkillHubMarketRouteError::Json(e.to_string()))?;
+    let resp = crate::market::query_skillhub_market(req).await?;
+    Ok(Json(ApiResponse::ok(resp)))
+}
+
+/// `GET /api/skills/market/skillhub/categories` — return SkillHub's active
+/// first-level category dictionary.
+async fn list_skillhub_market_categories(
+) -> Result<Json<ApiResponse<SkillHubMarketCategoriesResponse>>, SkillHubMarketRouteError> {
+    let resp = crate::market::list_skillhub_market_categories().await?;
+    Ok(Json(ApiResponse::ok(resp)))
+}
+
 /// `POST /api/skills/market/mcp/config` — resolve a market MCP entry into
 /// importable `mcpServers` JSON.
 async fn resolve_skill_market_mcp_config(
@@ -709,6 +798,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn market_mapping_uses_canonical_encoded_user_skill_id() {
+        let market_id = "skillhub:owner/skills/review-notes".to_owned();
+        let mut mappings = HashMap::new();
+        mappings.insert(
+            market_id.clone(),
+            skill_service::MarketSkillMapping {
+                source: "skillhub".into(),
+                market_source: "skillhub".into(),
+                owner: "owner".into(),
+                slug: "review-notes".into(),
+                installed_skill_id: SkillId::new(SkillCatalogSource::User, None, "review notes")
+                    .as_str()
+                    .to_owned(),
+                version: Some("1.0.0".into()),
+                installed_at: 1,
+            },
+        );
+
+        assert_eq!(market_id_for_skill_name(&mappings, "review notes"), Some(market_id));
+    }
+
     #[tokio::test]
     async fn market_skill_route_error_maps_status_code_and_stable_code() {
         for (error, status, code) in [
@@ -747,6 +858,18 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "BAD_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn skillhub_market_deadline_maps_to_gateway_timeout() {
+        let response = SkillHubMarketRouteError::from(SkillHubMarketError::Deadline).into_response();
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "TIMEOUT");
+        assert_eq!(json["success"], false);
     }
 
     #[derive(Default)]

@@ -155,10 +155,9 @@ fn nomifun_skills_guide_is_bundled_and_does_not_require_remote_fetch() {
         !skill.contains("### Step 1 — Fetch the skill guide"),
         "must not require fetching a remote SKILL.md before use"
     );
-    assert!(
-        skill.contains("ClawHub") && skill.contains("SkillHub"),
-        "must document the in-app Skill Market sources"
-    );
+    assert!(skill.contains("SkillHub") && skill.contains("https://skillhub.cn/skills"));
+    assert!(!skill.contains("ClawHub"));
+    assert!(!skill.contains("npx skills"));
     assert!(
         skill.contains("no") && skill.contains("subcommand"),
         "must document that Skill args are not market subcommands"

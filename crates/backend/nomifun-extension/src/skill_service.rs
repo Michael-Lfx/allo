@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use include_dir::{Dir, include_dir};
 use nomifun_api_types::{SkillCatalogSource, SkillId};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
@@ -31,6 +32,83 @@ pub const BUILTIN_SKILLS_ENV_VAR: &str = "NOMIFUN_BUILTIN_SKILLS_PATH";
 const AGENT_SKILLS_DIR: &str = ".agents/skills";
 const GLOBAL_AGENT_SKILLS_SOURCE_KEY: &str = "agents";
 const PROJECT_AGENT_SKILLS_SOURCE_KEY: &str = "workspace";
+pub const MARKET_SKILL_MAPPINGS_FILE_NAME: &str = ".nomifun-market-mappings.json";
+
+/// Sidecar record linking a SkillHub identity to the actual manifest name on
+/// disk. It is deliberately outside the database so existing installations
+/// and profiles need no migration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketSkillMapping {
+    pub source: String,
+    pub market_source: String,
+    pub owner: String,
+    pub slug: String,
+    pub installed_skill_id: String,
+    pub version: Option<String>,
+    pub installed_at: i64,
+}
+
+pub fn market_skill_mappings_path(paths: &SkillPaths) -> PathBuf {
+    paths.user_skills_dir.join(MARKET_SKILL_MAPPINGS_FILE_NAME)
+}
+
+/// Read the market mapping sidecar fail-soft. A damaged sidecar must not make
+/// the local Skill catalog unavailable; it only disables exact market reuse
+/// until the next successful install rewrites the file.
+pub async fn load_market_skill_mappings(paths: &SkillPaths) -> HashMap<String, MarketSkillMapping> {
+    let path = market_skill_mappings_path(paths);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return HashMap::new(),
+        Err(error) => {
+            warn!(path = %path.display(), error = %error, "unable to read Skill market mappings");
+            return HashMap::new();
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(mappings) => mappings,
+        Err(error) => {
+            warn!(path = %path.display(), error = %error, "ignoring damaged Skill market mappings");
+            HashMap::new()
+        }
+    }
+}
+
+/// Atomically persist the complete market mapping sidecar. Callers serialize
+/// writes with the market installation lock.
+pub async fn save_market_skill_mappings(
+    paths: &SkillPaths,
+    mappings: &HashMap<String, MarketSkillMapping>,
+) -> Result<(), ExtensionError> {
+    tokio::fs::create_dir_all(&paths.user_skills_dir).await?;
+    let bytes = serde_json::to_vec_pretty(mappings)?;
+    let path = market_skill_mappings_path(paths);
+    let tmp_path = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp_path, bytes).await?;
+    #[cfg(windows)]
+    {
+        // Windows does not replace an existing destination with rename. Keep
+        // a same-directory backup while swapping so a failed second rename
+        // can restore the previous mapping instead of losing it.
+        let backup_path = path.with_extension("json.bak");
+        if tokio::fs::try_exists(&backup_path).await? {
+            tokio::fs::remove_file(&backup_path).await?;
+        }
+        if tokio::fs::try_exists(&path).await? {
+            tokio::fs::rename(&path, &backup_path).await?;
+        }
+        if let Err(error) = tokio::fs::rename(&tmp_path, &path).await {
+            if tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
+                let _ = tokio::fs::rename(&backup_path, &path).await;
+            }
+            return Err(error.into());
+        }
+        let _ = tokio::fs::remove_file(&backup_path).await;
+    }
+    #[cfg(not(windows))]
+    tokio::fs::rename(&tmp_path, &path).await?;
+    Ok(())
+}
 
 /// Expose the embedded builtin skills corpus for startup
 /// materialization. Consumers outside this crate should not depend on
@@ -980,8 +1058,8 @@ pub(crate) async fn validate_market_skill_directory(
 }
 
 /// Strictly validate one staged market Skill and return the manifest name.
-/// This variant is used when a source (for example LoopHub) does not provide
-/// a trusted canonical name outside the downloaded archive.
+/// This variant is used when a market source does not provide a trusted
+/// canonical name outside the downloaded archive.
 pub(crate) async fn validate_market_skill_directory_name(
     skill_dir: &Path,
 ) -> Result<String, ExtensionError> {

@@ -5,33 +5,29 @@
 //! packages and ordinary Skills share the same validation and commit rules.
 
 use std::io;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nomifun_api_types::{
-    SkillMarketInstallStatus, SkillMarketSkillInstallRequest, SkillMarketSkillInstallResponse,
+    SkillCatalogSource, SkillHubMarketContentSource, SkillId, SkillMarketInstallStatus,
+    SkillMarketSkillInstallRequest, SkillMarketSkillInstallResponse,
 };
 use nomifun_common::AppError;
 use reqwest::Url;
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use serde::Deserialize;
+use reqwest::header::CONTENT_TYPE;
 
 use crate::error::ExtensionError;
 use crate::skill_service::{self, SkillPaths};
 
 use super::client::{
     MARKET_REQUEST_TIMEOUT, MAX_MARKET_SKILL_ARCHIVE_BYTES, SKILLHUB_DOWNLOAD_TIMEOUT,
-    build_market_client, map_market_fetch_error, read_market_bytes, read_market_response,
+    build_market_client, read_market_response,
     send_skillhub_get_with_retry,
 };
 use super::parse::{is_market_slug, json_text};
 use super::staging::{MarketStaging, create_market_staging};
 
-const CLAWHUB_SOURCE: &str = "clawhub";
 const SKILLHUB_SOURCE: &str = "skillhub";
-const LOOPHUB_SOURCE: &str = "loophub";
-const CLAWHUB_DOWNLOAD_URL: &str = "https://clawhub.ai/api/v1/download";
-const GITHUB_ARCHIVE_HOST: &str = "codeload.github.com";
 /// Exact single-Skill detail endpoint (`skills`, not the `skillsets` base in
 /// `package.rs`). Loose rate limits, clean 404s.
 const SKILLHUB_SKILL_DETAIL_BASE_URL: &str = "https://api.skillhub.cn/api/v1/skills/";
@@ -44,6 +40,13 @@ const MAX_MARKET_SKILL_NAME_BYTES: usize = 96;
 /// failures — 429/5xx/connect/timeout — are already retried inside
 /// [`send_skillhub_get_with_retry`]).
 const MAX_DOWNLOAD_STREAM_ATTEMPTS: u32 = 2;
+
+fn now_epoch_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// Stable, endpoint-local installation failure categories. The HTTP mapper in
 /// `skill_routes` owns their public status/code representation.
@@ -73,34 +76,13 @@ pub enum MarketSkillInstallError {
 
 #[derive(Debug)]
 enum NativeMarketSkill {
-    ClawHub { owner: String, slug: String },
     SkillHub { owner: String, slug: String },
-    LoopHub { artifact_url: Url },
-}
-
-impl NativeMarketSkill {
-    /// The name the installed directory must declare, when the source knows
-    /// it upfront. ClawHub archives are keyed by slug, so the manifest must
-    /// match it exactly. SkillHub/LoopHub install under the manifest's
-    /// declared name instead: SkillHub's public slug diverges from the
-    /// manifest `name` for a large share of the catalog (e.g. slug
-    /// `baozheng` ships `name: baozheng-skills`), and the runtime resolves
-    /// Skills by directory name, so pinning the slug would silently drop
-    /// those Skills from sessions.
-    fn expected_name(&self) -> Option<&str> {
-        match self {
-            Self::ClawHub { slug, .. } => Some(slug),
-            Self::SkillHub { .. } | Self::LoopHub { .. } => None,
-        }
-    }
 }
 
 #[derive(Debug)]
 struct DownloadedArtifact {
     bytes: Vec<u8>,
-    /// A GitHub descriptor can point at a Skill directory inside the repo.
-    /// The path is used only to narrow the extracted archive search.
-    descriptor_path: Option<PathBuf>,
+    version: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -163,58 +145,12 @@ impl MarketSkillDownloader for HttpMarketSkillDownloader {
         target: &NativeMarketSkill,
     ) -> Result<DownloadedArtifact, MarketSkillInstallError> {
         match target {
-            NativeMarketSkill::ClawHub { owner, slug } => {
-                let slug_param = format!("{owner}/{slug}");
-                let url = Url::parse_with_params(CLAWHUB_DOWNLOAD_URL, &[("slug", &slug_param)])
-                    .map_err(|_| MarketSkillInstallError::LocalIo)?;
-                let bytes = download_http_bytes(&self.client, url, "ClawHub skill archive").await?;
-                if is_zip_bytes(&bytes) {
-                    return Ok(DownloadedArtifact {
-                        bytes,
-                        descriptor_path: None,
-                    });
-                }
-
-                let descriptor = parse_public_github_descriptor(&bytes)?;
-                let bytes = download_http_bytes(
-                    &self.client,
-                    descriptor.archive_url,
-                    "ClawHub GitHub skill archive",
-                )
-                .await?;
-                Ok(DownloadedArtifact {
-                    bytes,
-                    descriptor_path: descriptor.path,
-                })
-            }
             NativeMarketSkill::SkillHub { owner, slug } => {
                 let detail = self.fetch_skillhub_detail(owner, slug).await?;
                 let bytes = self.download_skillhub_archive(&detail).await?;
                 Ok(DownloadedArtifact {
                     bytes,
-                    descriptor_path: None,
-                })
-            }
-            NativeMarketSkill::LoopHub { artifact_url } => {
-                let mut response = self
-                    .client
-                    .get(artifact_url.clone())
-                    .header(ACCEPT, "application/zip,application/octet-stream,*/*")
-                    .send()
-                    .await
-                    .map_err(|error| map_app_market_error(map_market_fetch_error(error)))?;
-                validate_loophub_artifact_url(response.url().as_str()).map_err(|_| {
-                    MarketSkillInstallError::ArtifactInvalid
-                })?;
-                Ok(DownloadedArtifact {
-                    bytes: read_market_bytes(
-                        &mut response,
-                        MAX_MARKET_SKILL_ARCHIVE_BYTES,
-                        "LoopHub skill archive",
-                    )
-                    .await
-                    .map_err(map_app_market_error)?,
-                    descriptor_path: None,
+                    version: Some(detail.version),
                 })
             }
         }
@@ -230,11 +166,10 @@ struct RemoteSkillDetail {
 }
 
 impl HttpMarketSkillDownloader {
-    /// Exact detail lookup for one market entry. Verifies that the namespace
-    /// SkillHub resolves for `slug` actually belongs to the requested `owner`
-    /// and returns the pinned version to download. Replaces the old fuzzy
-    /// `/api/v1/search` fallback, which missed valid entries outside the top
-    /// search results and was aggressively rate limited.
+    /// Exact detail lookup for one market entry. Verifies the documented
+    /// `owner.handle` and `skill.slug` before returning the pinned version to
+    /// download. An observed legacy `namespace.handle` is treated as a second
+    /// identity assertion, never as a replacement for the official owner field.
     async fn fetch_skillhub_detail(
         &self,
         owner: &str,
@@ -378,12 +313,11 @@ fn skillhub_skill_detail_url(base_url: &str, slug: &str) -> Result<Url, MarketSk
 
 /// Parse the exact detail response and bind it to the requested market entry.
 ///
-/// Owner verification uses `namespace.handle` — NOT the documented
-/// `owner.handle`, which is SkillHub's internal user handle (e.g.
-/// `u_b0de8114`) rather than the ranking's namespace (e.g. `tencent-adm`).
-/// `namespace` is not listed in the official response schema but is present
-/// on every observed response; when it is missing we fail closed
-/// (ArtifactInvalid) rather than install an unverified identity.
+/// The official detail contract identifies the publisher with
+/// `owner.handle` and the Skill with `skill.slug`. Some deployments also
+/// return `namespace.handle`; when present it must agree with the requested
+/// owner as well. Missing or conflicting identity fields fail closed as
+/// `NotFound`, so a stale list entry cannot be substituted by another Skill.
 fn parse_skill_detail(
     body: &str,
     expected_owner: &str,
@@ -391,29 +325,38 @@ fn parse_skill_detail(
 ) -> Result<RemoteSkillDetail, MarketSkillInstallError> {
     let root = serde_json::from_str::<serde_json::Value>(body)
         .map_err(|_| MarketSkillInstallError::ArtifactInvalid)?;
-    let namespace = root
-        .get("namespace")
-        .ok_or(MarketSkillInstallError::ArtifactInvalid)?;
-    let handle = json_text(namespace, "handle", 96).ok_or(MarketSkillInstallError::ArtifactInvalid)?;
-    let public_slug = json_text(namespace, "publicSlug", 96)
-        .or_else(|| {
-            json_text(namespace, "canonicalName", 160).and_then(|canonical| {
-                canonical
-                    .trim()
-                    .trim_start_matches('@')
-                    .rsplit('/')
-                    .next()
-                    .map(str::to_string)
-            })
-        })
-        .ok_or(MarketSkillInstallError::ArtifactInvalid)?;
-    if !is_market_slug(&handle) || !is_market_slug(&public_slug) {
-        return Err(MarketSkillInstallError::ArtifactInvalid);
+    if root.get("code").is_some_and(|code| {
+        !(code.as_i64().is_some_and(|value| value == 0)
+            || code.as_str().is_some_and(|value| value == "0"))
+    }) {
+        return Err(MarketSkillInstallError::Network);
     }
-    // The download endpoint resolves archives by slug alone; a requested
-    // entry whose namespace does not match what SkillHub resolves is
-    // uninstallable and reported as not found rather than substituted.
-    if !handle.eq_ignore_ascii_case(expected_owner) || !public_slug.eq_ignore_ascii_case(expected_slug) {
+    let root = root.get("data").unwrap_or(&root);
+    let skill = root
+        .get("skill")
+        .ok_or(MarketSkillInstallError::NotFound)?;
+    let resolved_slug = json_text(skill, "slug", 96).ok_or(MarketSkillInstallError::NotFound)?;
+    if !is_market_slug(&resolved_slug)
+        || !resolved_slug.eq_ignore_ascii_case(expected_slug)
+    {
+        return Err(MarketSkillInstallError::NotFound);
+    }
+    let owner = root
+        .get("owner")
+        .and_then(|value| json_text(value, "handle", 96))
+        .ok_or(MarketSkillInstallError::NotFound)?;
+    let namespace_owner = root
+        .get("namespace")
+        .and_then(|value| json_text(value, "handle", 96));
+    if !is_market_slug(&owner)
+        || !owner.eq_ignore_ascii_case(expected_owner)
+        || namespace_owner
+            .as_deref()
+            .is_some_and(|value| !is_market_slug(value) || !value.eq_ignore_ascii_case(expected_owner))
+        || namespace_owner
+            .as_deref()
+            .is_some_and(|value| !value.eq_ignore_ascii_case(&owner))
+    {
         return Err(MarketSkillInstallError::NotFound);
     }
     let version = root
@@ -421,7 +364,7 @@ fn parse_skill_detail(
         .and_then(|value| json_text(value, "version", 64))
         .ok_or(MarketSkillInstallError::ArtifactInvalid)?;
     Ok(RemoteSkillDetail {
-        slug: public_slug,
+        slug: resolved_slug,
         version,
     })
 }
@@ -430,25 +373,9 @@ fn download_retry_backoff(stream_attempt: u32) -> Duration {
     Duration::from_millis(500 * u64::from(stream_attempt))
 }
 
-#[derive(Debug)]
-struct PublicGithubDescriptor {
-    archive_url: Url,
-    path: Option<PathBuf>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawPublicGithubDescriptor {
-    source: String,
-    repo: String,
-    #[serde(rename = "ref")]
-    git_ref: String,
-    #[serde(default)]
-    path: Option<String>,
-}
-
 /// Install one ordinary Skill without starting OpenClaw or another external
-/// CLI. The backend derives all ClawHub/SkillHub URLs from the validated id;
-/// only LoopHub receives a source-owned artifact hint from the ranking feed.
+/// CLI. The backend derives the SkillHub detail and download URLs from the
+/// validated canonical id.
 pub async fn install_market_skill(
     paths: &SkillPaths,
     req: SkillMarketSkillInstallRequest,
@@ -459,23 +386,61 @@ pub async fn install_market_skill(
         client,
         skillhub: SkillHubEndpoints::production(),
     };
-    install_market_skill_with_downloader(paths, &req.source, &req.id, target, &downloader).await
+    install_market_skill_with_downloader_and_source(
+        paths,
+        &req.source,
+        target,
+        req.market_source
+            .map(market_source_name)
+            .unwrap_or("unknown"),
+        &downloader,
+    )
+    .await
 }
 
+#[cfg(test)]
 async fn install_market_skill_with_downloader<D: MarketSkillDownloader>(
     paths: &SkillPaths,
     source: &str,
-    id: &str,
     target: NativeMarketSkill,
     downloader: &D,
 ) -> Result<SkillMarketSkillInstallResponse, MarketSkillInstallError> {
-    if let Some(expected_name) = target.expected_name()
-        && reuse_existing_skill(paths, expected_name).await?.is_some()
-    {
+    install_market_skill_with_downloader_and_source(paths, source, target, "unknown", downloader).await
+}
+
+async fn install_market_skill_with_downloader_and_source<D: MarketSkillDownloader>(
+    paths: &SkillPaths,
+    source: &str,
+    target: NativeMarketSkill,
+    market_source: &str,
+    downloader: &D,
+) -> Result<SkillMarketSkillInstallResponse, MarketSkillInstallError> {
+    // The lock covers the complete idempotent transaction. In particular,
+    // mapping lookup happens before download so two concurrent requests for a
+    // SkillHub entry cannot both fetch the same archive.
+    let _commit_guard = super::market_commit_lock().lock().await;
+    let market_id = market_skill_id(&target);
+    let mut mappings = skill_service::load_market_skill_mappings(paths).await;
+    if let Some(mapping) = mappings.get(&market_id) {
+        let Some(skill_name) = mapped_skill_name(mapping, &target)? else {
+            return Err(MarketSkillInstallError::NameConflict);
+        };
+        if reuse_existing_skill(paths, &skill_name).await?.is_some() {
+            return Ok(install_response(
+                source,
+                &skill_name,
+                SkillMarketInstallStatus::Reused,
+            ));
+        }
+    } else if let Some(skill_name) = find_legacy_skill_match(paths, &target).await? {
+        let mapping = build_market_skill_mapping(&target, &skill_name, None, market_source);
+        mappings.insert(market_id.clone(), mapping);
+        skill_service::save_market_skill_mappings(paths, &mappings)
+            .await
+            .map_err(|_| MarketSkillInstallError::LocalIo)?;
         return Ok(install_response(
             source,
-            id,
-            expected_name,
+            &skill_name,
             SkillMarketInstallStatus::Reused,
         ));
     }
@@ -488,18 +453,17 @@ async fn install_market_skill_with_downloader<D: MarketSkillDownloader>(
     let staging = create_market_staging(paths, "skill")
         .await
         .map_err(|_| MarketSkillInstallError::LocalIo)?;
-    let (staged_dir, skill_name) = stage_market_skill(&staging, artifact, target.expected_name()).await?;
+    let artifact_version = artifact.version.clone();
+    let (staged_dir, skill_name) = stage_market_skill(&staging, artifact).await?;
 
-    // Re-check under the same lock used by expert packages. A second window
-    // may have installed this Skill while this request was downloading it.
-    // This is also the idempotency fence for declared-name installs: a
-    // name≠slug SkillHub entry skips the pre-download check (its declared
-    // name is unknown until extraction) and is caught here instead.
-    let _commit_guard = super::market_commit_lock().lock().await;
     if reuse_existing_skill(paths, &skill_name).await?.is_some() {
+        let mapping = build_market_skill_mapping(&target, &skill_name, artifact_version, market_source);
+        mappings.insert(market_id, mapping);
+        skill_service::save_market_skill_mappings(paths, &mappings)
+            .await
+            .map_err(|_| MarketSkillInstallError::LocalIo)?;
         return Ok(install_response(
             source,
-            id,
             &skill_name,
             SkillMarketInstallStatus::Reused,
         ));
@@ -512,18 +476,116 @@ async fn install_market_skill_with_downloader<D: MarketSkillDownloader>(
         skill_service::MarketSkillCommit::Created => SkillMarketInstallStatus::Installed,
         skill_service::MarketSkillCommit::Reused => SkillMarketInstallStatus::Reused,
     };
-    Ok(install_response(source, id, &skill_name, status))
+    let mapping = build_market_skill_mapping(&target, &skill_name, artifact_version, market_source);
+    mappings.insert(market_id, mapping);
+    skill_service::save_market_skill_mappings(paths, &mappings)
+        .await
+        .map_err(|_| MarketSkillInstallError::LocalIo)?;
+    Ok(install_response(source, &skill_name, status))
+}
+
+fn market_skill_id(target: &NativeMarketSkill) -> String {
+    match target {
+        NativeMarketSkill::SkillHub { owner, slug } => {
+            format!("skillhub:{owner}/skills/{slug}")
+        }
+    }
+}
+
+fn mapped_skill_name(
+    mapping: &skill_service::MarketSkillMapping,
+    target: &NativeMarketSkill,
+) -> Result<Option<String>, MarketSkillInstallError> {
+    let (expected_owner, expected_slug) = match target {
+        NativeMarketSkill::SkillHub { owner, slug } => (owner, slug),
+    };
+    if mapping.source != SKILLHUB_SOURCE
+        || mapping.owner != *expected_owner
+        || mapping.slug != *expected_slug
+    {
+        return Err(MarketSkillInstallError::NameConflict);
+    }
+    let parsed_skill_id = SkillId::parse(&mapping.installed_skill_id)
+        .map_err(|_| MarketSkillInstallError::NameConflict)?;
+    if parsed_skill_id.source() != SkillCatalogSource::User
+        || mapping.installed_skill_id.matches(':').count() != 1
+    {
+        return Err(MarketSkillInstallError::NameConflict);
+    }
+    let Some(skill_name) = parsed_skill_id.local_key() else {
+        return Err(MarketSkillInstallError::NameConflict);
+    };
+    validate_market_skill_name(&skill_name)?;
+    Ok(Some(skill_name))
+}
+
+fn build_market_skill_mapping(
+    target: &NativeMarketSkill,
+    skill_name: &str,
+    version: Option<String>,
+    market_source: &str,
+) -> skill_service::MarketSkillMapping {
+    let (owner, slug) = match target {
+        NativeMarketSkill::SkillHub { owner, slug } => (owner, slug),
+    };
+    skill_service::MarketSkillMapping {
+        source: SKILLHUB_SOURCE.to_owned(),
+        market_source: market_source.to_owned(),
+        owner: owner.clone(),
+        slug: slug.clone(),
+        installed_skill_id: SkillId::new(SkillCatalogSource::User, None, skill_name)
+            .as_str()
+            .to_owned(),
+        version,
+        installed_at: now_epoch_ms(),
+    }
+}
+
+fn market_source_name(source: SkillHubMarketContentSource) -> &'static str {
+    match source {
+        SkillHubMarketContentSource::Skillhub => "skillhub",
+        SkillHubMarketContentSource::Clawhub => "clawhub",
+        SkillHubMarketContentSource::Unknown => "unknown",
+    }
+}
+
+async fn find_legacy_skill_match(
+    paths: &SkillPaths,
+    target: &NativeMarketSkill,
+) -> Result<Option<String>, MarketSkillInstallError> {
+    let slug = match target {
+        NativeMarketSkill::SkillHub { slug, .. } => slug,
+    };
+    let entries = skill_service::scan_for_skills(&paths.user_skills_dir)
+        .await
+        .map_err(|_| MarketSkillInstallError::LocalIo)?;
+    let mut matches = Vec::new();
+    for entry in entries {
+        if !entry.name.eq_ignore_ascii_case(slug) {
+            continue;
+        }
+        validate_market_skill_name(&entry.name)?;
+        if reuse_existing_skill(paths, &entry.name).await?.is_some() {
+            matches.push(entry.name);
+        }
+    }
+    if matches.len() == 1 {
+        Ok(matches.pop())
+    } else {
+        Ok(None)
+    }
 }
 
 fn install_response(
     source: &str,
-    id: &str,
     skill_name: &str,
     status: SkillMarketInstallStatus,
 ) -> SkillMarketSkillInstallResponse {
     SkillMarketSkillInstallResponse {
         source: source.to_owned(),
-        id: id.to_owned(),
+        skill_id: SkillId::new(SkillCatalogSource::User, None, skill_name)
+            .as_str()
+            .to_owned(),
         skill_name: skill_name.to_owned(),
         status,
     }
@@ -533,17 +595,7 @@ fn parse_install_target(
     req: &SkillMarketSkillInstallRequest,
 ) -> Result<NativeMarketSkill, MarketSkillInstallError> {
     match req.source.as_str() {
-        CLAWHUB_SOURCE => {
-            if req.artifact_url.is_some() {
-                return Err(MarketSkillInstallError::IdInvalid);
-            }
-            let (owner, slug) = parse_two_part_id(&req.id, CLAWHUB_SOURCE)?;
-            Ok(NativeMarketSkill::ClawHub { owner, slug })
-        }
         SKILLHUB_SOURCE => {
-            if req.artifact_url.is_some() {
-                return Err(MarketSkillInstallError::IdInvalid);
-            }
             let suffix = req
                 .id
                 .strip_prefix("skillhub:")
@@ -566,144 +618,14 @@ fn parse_install_target(
                 slug: slug.to_owned(),
             })
         }
-        LOOPHUB_SOURCE => {
-            let suffix = req
-                .id
-                .strip_prefix("loophub:")
-                .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-                .ok_or(MarketSkillInstallError::IdInvalid)?;
-            let id = suffix
-                .parse::<u64>()
-                .map_err(|_| MarketSkillInstallError::IdInvalid)?;
-            if id == 0 {
-                return Err(MarketSkillInstallError::IdInvalid);
-            }
-            let artifact_url = req
-                .artifact_url
-                .as_deref()
-                .ok_or(MarketSkillInstallError::IdInvalid)?;
-            Ok(NativeMarketSkill::LoopHub {
-                artifact_url: validate_loophub_artifact_url(artifact_url)?,
-            })
-        }
         _ => Err(MarketSkillInstallError::SourceUnsupported),
     }
-}
-
-fn parse_two_part_id(id: &str, prefix: &str) -> Result<(String, String), MarketSkillInstallError> {
-    let suffix = id
-        .strip_prefix(&format!("{prefix}:"))
-        .ok_or(MarketSkillInstallError::IdInvalid)?;
-    let mut parts = suffix.split('/');
-    let first = parts.next().unwrap_or_default();
-    let second = parts.next().unwrap_or_default();
-    if parts.next().is_some() || !is_market_slug(first) || !is_market_slug(second) {
-        return Err(MarketSkillInstallError::IdInvalid);
-    }
-    Ok((first.to_owned(), second.to_owned()))
-}
-
-fn validate_loophub_artifact_url(value: &str) -> Result<Url, MarketSkillInstallError> {
-    let url = Url::parse(value).map_err(|_| MarketSkillInstallError::IdInvalid)?;
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port().is_some()
-        || !url
-            .host_str()
-            .is_some_and(|host| host.eq_ignore_ascii_case("dl.cocoloop.cn"))
-        || !url.path().starts_with("/bss/skills/")
-    {
-        return Err(MarketSkillInstallError::IdInvalid);
-    }
-    Ok(url)
-}
-
-async fn download_http_bytes(
-    client: &reqwest::Client,
-    url: Url,
-    label: &str,
-) -> Result<Vec<u8>, MarketSkillInstallError> {
-    let mut response = client
-        .get(url)
-        .header(ACCEPT, "application/zip,application/octet-stream,application/json,*/*")
-        .send()
-        .await
-        .map_err(|error| map_app_market_error(map_market_fetch_error(error)))?;
-    read_market_bytes(&mut response, MAX_MARKET_SKILL_ARCHIVE_BYTES, label)
-        .await
-        .map_err(map_app_market_error)
 }
 
 fn is_zip_bytes(bytes: &[u8]) -> bool {
     bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") || bytes.starts_with(b"PK\x07\x08")
 }
 
-fn parse_public_github_descriptor(bytes: &[u8]) -> Result<PublicGithubDescriptor, MarketSkillInstallError> {
-    let raw = serde_json::from_slice::<RawPublicGithubDescriptor>(bytes)
-        .map_err(|_| MarketSkillInstallError::ArtifactInvalid)?;
-    if raw.source != "public-github" {
-        return Err(MarketSkillInstallError::ArtifactInvalid);
-    }
-    let (owner, repo) = parse_github_repo(&raw.repo)?;
-    if !is_safe_github_ref(&raw.git_ref) {
-        return Err(MarketSkillInstallError::ArtifactInvalid);
-    }
-    let path = raw
-        .path
-        .as_deref()
-        .map(parse_descriptor_path)
-        .transpose()?;
-    let archive_url = Url::parse(&format!(
-        "https://{GITHUB_ARCHIVE_HOST}/{owner}/{repo}/zip/{}",
-        raw.git_ref
-    ))
-    .map_err(|_| MarketSkillInstallError::LocalIo)?;
-    Ok(PublicGithubDescriptor { archive_url, path })
-}
-
-fn parse_github_repo(repo: &str) -> Result<(String, String), MarketSkillInstallError> {
-    let mut parts = repo.split('/');
-    let owner = parts.next().unwrap_or_default();
-    let name = parts.next().unwrap_or_default();
-    if parts.next().is_some() || !is_market_slug(owner) || !is_market_slug(name) {
-        return Err(MarketSkillInstallError::ArtifactInvalid);
-    }
-    Ok((owner.to_owned(), name.to_owned()))
-}
-
-fn is_safe_github_ref(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 160
-        && !value.contains("..")
-        && !value.chars().any(|character| {
-            character.is_control() || matches!(character, '?' | '#' | '\\' | '%')
-        })
-}
-
-fn parse_descriptor_path(value: &str) -> Result<PathBuf, MarketSkillInstallError> {
-    if value.is_empty()
-        || value.len() > 320
-        || value.starts_with('/')
-        || value.contains('\\')
-        || value.contains(':')
-    {
-        return Err(MarketSkillInstallError::ArtifactInvalid);
-    }
-    let mut path = PathBuf::new();
-    let mut depth = 0;
-    for component in value.split('/') {
-        if component.is_empty() || component == "." || component == ".." || component.contains('\0') {
-            return Err(MarketSkillInstallError::ArtifactInvalid);
-        }
-        depth += 1;
-        if depth > skill_service::MARKET_IMPORT_SCAN_DEPTH {
-            return Err(MarketSkillInstallError::ArtifactInvalid);
-        }
-        path.push(component);
-    }
-    Ok(path)
-}
 
 async fn reuse_existing_skill(
     paths: &SkillPaths,
@@ -728,7 +650,6 @@ async fn reuse_existing_skill(
 async fn stage_market_skill(
     staging: &MarketStaging,
     artifact: DownloadedArtifact,
-    expected_name: Option<&str>,
 ) -> Result<(PathBuf, String), MarketSkillInstallError> {
     let archive_path = staging.root.join("skill.zip");
     let extract_dir = staging.root.join("extract");
@@ -750,9 +671,6 @@ async fn stage_market_skill(
     )
     .await
     .map_err(map_archive_error)?;
-    if let Some(descriptor_path) = artifact.descriptor_path.as_deref() {
-        skill_dirs.retain(|path| path_ends_with(path, descriptor_path));
-    }
     // A single-Skill install cannot guess which manifest the user wanted:
     // zero manifests means the archive is broken, more than one means it is a
     // multi-Skill bundle (e.g. SkillHub's `ima-skills`) this endpoint does
@@ -765,11 +683,9 @@ async fn stage_market_skill(
     }
 
     let skill_dir = skill_dirs.pop().expect("length checked above");
-    let skill_name = match expected_name {
-        Some(expected_name) => skill_service::validate_market_skill_directory(&skill_dir, expected_name).await,
-        None => skill_service::validate_market_skill_directory_name(&skill_dir).await,
-    }
-    .map_err(|_| MarketSkillInstallError::ManifestInvalid)?;
+    let skill_name = skill_service::validate_market_skill_directory_name(&skill_dir)
+        .await
+        .map_err(|_| MarketSkillInstallError::ManifestInvalid)?;
     validate_market_skill_name(&skill_name)?;
     Ok((skill_dir, skill_name))
 }
@@ -802,19 +718,6 @@ fn is_windows_device_name(name: &str) -> bool {
             && (stem.starts_with("COM") || stem.starts_with("LPT"))
             && stem.as_bytes()[3].is_ascii_digit()
             && stem.as_bytes()[3] != b'0')
-}
-
-fn path_ends_with(path: &Path, suffix: &Path) -> bool {
-    let path_components = path
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .collect::<Vec<_>>();
-    let suffix_components = suffix
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .collect::<Vec<_>>();
-    path_components.len() >= suffix_components.len()
-        && path_components[path_components.len() - suffix_components.len()..] == suffix_components[..]
 }
 
 fn map_commit_error(error: ExtensionError) -> MarketSkillInstallError {
@@ -872,22 +775,10 @@ mod tests {
             target: &NativeMarketSkill,
         ) -> Result<DownloadedArtifact, MarketSkillInstallError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            match target {
-                NativeMarketSkill::ClawHub { owner, slug } => {
-                    assert_eq!(owner, "owner");
-                    assert_eq!(slug, "claw-skill");
-                }
-                // SkillHub routing (owner/slug propagation) is asserted by the
-                // recorded-HTTP pipeline tests below; this fake only serves
-                // bytes for any SkillHub target.
-                NativeMarketSkill::SkillHub { .. } => {}
-                NativeMarketSkill::LoopHub { artifact_url } => {
-                    assert_eq!(artifact_url.host_str(), Some("dl.cocoloop.cn"));
-                }
-            }
+            assert!(matches!(target, NativeMarketSkill::SkillHub { .. }));
             Ok(DownloadedArtifact {
                 bytes: self.archive.clone(),
-                descriptor_path: None,
+                version: None,
             })
         }
     }
@@ -963,197 +854,149 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
 
-    fn request(source: &str, id: &str, artifact_url: Option<&str>) -> SkillMarketSkillInstallRequest {
+    fn request(source: &str, id: &str) -> SkillMarketSkillInstallRequest {
         SkillMarketSkillInstallRequest {
             source: source.into(),
             id: id.into(),
-            artifact_url: artifact_url.map(str::to_owned),
+            market_source: None,
         }
     }
 
     #[test]
-    fn parses_three_native_source_ids_and_rejects_external_sources() {
-        assert!(matches!(
-            parse_install_target(&request(CLAWHUB_SOURCE, "clawhub:owner/claw-skill", None)).unwrap(),
-            NativeMarketSkill::ClawHub { .. }
-        ));
-        // The SkillHub owner is preserved for namespace binding at detail time.
-        match parse_install_target(&request(SKILLHUB_SOURCE, "skillhub:owner/skills/skill-skill", None))
+    fn parses_only_canonical_skillhub_ids_and_rejects_external_sources() {
+        match parse_install_target(&request(SKILLHUB_SOURCE, "skillhub:owner/skills/skill-skill"))
             .unwrap()
         {
             NativeMarketSkill::SkillHub { owner, slug } => {
                 assert_eq!(owner, "owner");
                 assert_eq!(slug, "skill-skill");
             }
-            other => panic!("expected SkillHub target, got {other:?}"),
         }
-        assert!(matches!(
-            parse_install_target(&request(
-                LOOPHUB_SOURCE,
-                "loophub:12277",
-                Some("https://dl.cocoloop.cn/bss/skills/skill.zip")
-            ))
-            .unwrap(),
-            NativeMarketSkill::LoopHub { .. }
-        ));
         assert_eq!(
-            parse_install_target(&request("mcpworld", "mcpworld:x", None)).unwrap_err(),
+            parse_install_target(&request("mcpworld", "mcpworld:x")).unwrap_err(),
             MarketSkillInstallError::SourceUnsupported
         );
         assert_eq!(
-            parse_install_target(&request(SKILLHUB_SOURCE, "skillhub:owner/skills/../x", None))
+            parse_install_target(&request(SKILLHUB_SOURCE, "skillhub:owner/skills/../x"))
                 .unwrap_err(),
             MarketSkillInstallError::IdInvalid
         );
         assert_eq!(
-            parse_install_target(&request(SKILLHUB_SOURCE, "skillhub:owner/other/skill-skill", None))
+            parse_install_target(&request(SKILLHUB_SOURCE, "skillhub:owner/other/skill-skill"))
                 .unwrap_err(),
             MarketSkillInstallError::IdInvalid
         );
     }
 
     #[test]
-    fn validates_loophub_artifact_allowlist() {
-        assert!(validate_loophub_artifact_url("https://dl.cocoloop.cn/bss/skills/a.zip").is_ok());
-        for url in [
-            "http://dl.cocoloop.cn/bss/skills/a.zip",
-            "https://evil.example/bss/skills/a.zip",
-            "https://dl.cocoloop.cn/other/a.zip",
-            "https://user:pass@dl.cocoloop.cn/bss/skills/a.zip",
-        ] {
-            assert_eq!(
-                validate_loophub_artifact_url(url).unwrap_err(),
-                MarketSkillInstallError::IdInvalid,
-                "must reject {url}"
-            );
-        }
-    }
-
-    #[test]
-    fn validates_public_github_descriptor_without_accepting_arbitrary_urls() {
-        let descriptor = br#"{"source":"public-github","repo":"owner/repo","ref":"main","path":"skills/demo"}"#;
-        let parsed = parse_public_github_descriptor(descriptor).unwrap();
-        assert_eq!(parsed.archive_url.host_str(), Some(GITHUB_ARCHIVE_HOST));
-        assert_eq!(parsed.archive_url.path(), "/owner/repo/zip/main");
-        assert_eq!(parsed.path.as_deref(), Some(Path::new("skills/demo")));
-
-        for descriptor in [
-            br#"{"source":"public-github","repo":"https://evil.example/repo","ref":"main"}"#
-                .as_slice(),
-            br#"{"source":"public-github","repo":"owner/repo","ref":"../main"}"#.as_slice(),
-            br#"{"source":"public-github","repo":"owner/repo","ref":"main","path":"../secret"}"#
-                .as_slice(),
-        ] {
-            assert_eq!(
-                parse_public_github_descriptor(descriptor).unwrap_err(),
-                MarketSkillInstallError::ArtifactInvalid
-            );
-        }
+    fn rejects_external_sources_and_keeps_the_install_request_contract_strict() {
+        assert_eq!(
+            parse_install_target(&request("clawhub", "clawhub:owner/demo")).unwrap_err(),
+            MarketSkillInstallError::SourceUnsupported
+        );
     }
 
     #[tokio::test]
-    async fn installs_all_three_sources_and_reuses_valid_existing_skill() {
+    async fn installs_skillhub_and_reuses_valid_existing_skill() {
         let (_tmp, paths) = make_paths();
         let calls = Arc::new(AtomicUsize::new(0));
         let downloader = FakeDownloader {
-            archive: make_archive(&["claw-skill"]),
+            archive: make_archive(&["skill-skill"]),
             calls: calls.clone(),
         };
 
-        let claw = install_market_skill_with_downloader(
-            &paths,
-            CLAWHUB_SOURCE,
-            "clawhub:owner/claw-skill",
-            parse_install_target(&request(CLAWHUB_SOURCE, "clawhub:owner/claw-skill", None)).unwrap(),
-            &downloader,
-        )
-        .await
-        .unwrap();
-        assert_eq!(claw.status, SkillMarketInstallStatus::Installed);
-        assert!(paths.user_skills_dir.join("claw-skill").is_dir());
-
-        let skillhub = install_market_skill_with_downloader(
+        let installed = install_market_skill_with_downloader(
             &paths,
             SKILLHUB_SOURCE,
-            "skillhub:owner/skills/skill-skill",
             NativeMarketSkill::SkillHub {
                 owner: "owner".into(),
                 slug: "skill-skill".into(),
             },
-            &FakeDownloader {
-                archive: make_archive(&["skill-skill"]),
-                calls: calls.clone(),
-            },
+            &downloader,
         )
         .await
         .unwrap();
-        assert_eq!(skillhub.status, SkillMarketInstallStatus::Installed);
-
-        let loophub = install_market_skill_with_downloader(
-            &paths,
-            LOOPHUB_SOURCE,
-            "loophub:12277",
-            NativeMarketSkill::LoopHub {
-                artifact_url: validate_loophub_artifact_url("https://dl.cocoloop.cn/bss/skills/loop.zip")
-                    .unwrap(),
-            },
-            &FakeDownloader {
-                archive: make_archive(&["loop-skill"]),
-                calls: calls.clone(),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(loophub.status, SkillMarketInstallStatus::Installed);
+        assert_eq!(installed.status, SkillMarketInstallStatus::Installed);
+        assert_eq!(installed.skill_id, "user:skill-skill");
+        assert!(paths.user_skills_dir.join("skill-skill").is_dir());
 
         let reused = install_market_skill_with_downloader(
             &paths,
-            CLAWHUB_SOURCE,
-            "clawhub:owner/claw-skill",
-            parse_install_target(&request(CLAWHUB_SOURCE, "clawhub:owner/claw-skill", None)).unwrap(),
+            SKILLHUB_SOURCE,
+            NativeMarketSkill::SkillHub {
+                owner: "owner".into(),
+                slug: "skill-skill".into(),
+            },
             &downloader,
         )
         .await
         .unwrap();
         assert_eq!(reused.status, SkillMarketInstallStatus::Reused);
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(reused.skill_id, "user:skill-skill");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(skill_service::market_skill_mappings_path(&paths).is_file());
+
+        let second_downloader = FakeDownloader {
+            archive: make_archive(&["second-skill"]),
+            calls: calls.clone(),
+        };
+        let second_skill = install_market_skill_with_downloader(
+            &paths,
+            SKILLHUB_SOURCE,
+            NativeMarketSkill::SkillHub {
+                owner: "owner".into(),
+                slug: "second".into(),
+            },
+            &second_downloader,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second_skill.status, SkillMarketInstallStatus::Installed);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
     async fn rejects_multiple_skills_and_preserves_invalid_existing_directory() {
         let (_tmp, paths) = make_paths();
-        tokio::fs::create_dir_all(paths.user_skills_dir.join("claw-skill"))
+        tokio::fs::create_dir_all(paths.user_skills_dir.join("skill-skill"))
             .await
             .unwrap();
-        tokio::fs::write(paths.user_skills_dir.join("claw-skill").join("README.md"), "invalid")
+        tokio::fs::write(paths.user_skills_dir.join("skill-skill").join("README.md"), "invalid")
             .await
             .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let downloader = FakeDownloader {
-            archive: make_archive(&["claw-skill", "another-skill"]),
+            archive: make_archive(&["skill-skill"]),
             calls: calls.clone(),
         };
         let result = install_market_skill_with_downloader(
             &paths,
-            CLAWHUB_SOURCE,
-            "clawhub:owner/claw-skill",
-            parse_install_target(&request(CLAWHUB_SOURCE, "clawhub:owner/claw-skill", None)).unwrap(),
+            SKILLHUB_SOURCE,
+            NativeMarketSkill::SkillHub {
+                owner: "owner".into(),
+                slug: "skill-skill".into(),
+            },
             &downloader,
         )
         .await;
         assert_eq!(result.unwrap_err(), MarketSkillInstallError::NameConflict);
-        assert!(paths.user_skills_dir.join("claw-skill").join("README.md").is_file());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(paths.user_skills_dir.join("skill-skill").join("README.md").is_file());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-        tokio::fs::remove_dir_all(paths.user_skills_dir.join("claw-skill"))
+        tokio::fs::remove_dir_all(paths.user_skills_dir.join("skill-skill"))
             .await
             .unwrap();
         let result = install_market_skill_with_downloader(
             &paths,
-            CLAWHUB_SOURCE,
-            "clawhub:owner/claw-skill",
-            parse_install_target(&request(CLAWHUB_SOURCE, "clawhub:owner/claw-skill", None)).unwrap(),
-            &downloader,
+            SKILLHUB_SOURCE,
+            NativeMarketSkill::SkillHub {
+                owner: "owner".into(),
+                slug: "skill-skill".into(),
+            },
+            &FakeDownloader {
+                archive: make_archive(&["skill-skill", "another-skill"]),
+                calls: calls.clone(),
+            },
         )
         .await;
         assert_eq!(result.unwrap_err(), MarketSkillInstallError::BundleUnsupported);
@@ -1173,7 +1016,6 @@ mod tests {
         let response = install_market_skill_with_downloader(
             &paths,
             SKILLHUB_SOURCE,
-            "skillhub:owner/skills/baozheng",
             NativeMarketSkill::SkillHub {
                 owner: "owner".into(),
                 slug: "baozheng".into(),
@@ -1189,9 +1031,8 @@ mod tests {
         assert!(!paths.user_skills_dir.join("baozheng").exists());
     }
 
-    /// Reinstalling a name≠slug entry cannot hit the pre-download reuse check
-    /// (the declared name is unknown until extraction), so it downloads again
-    /// and is caught by the in-lock recheck: Reused, never overwritten.
+    /// Reinstalling a name≠slug entry uses the persisted market mapping, so it
+    /// reuses the declared-name directory without downloading again.
     #[tokio::test]
     async fn skillhub_reinstall_with_differing_name_reuses_via_commit_recheck() {
         let (_tmp, paths) = make_paths();
@@ -1204,7 +1045,6 @@ mod tests {
         let first = install_market_skill_with_downloader(
             &paths,
             SKILLHUB_SOURCE,
-            "skillhub:owner/skills/baozheng",
             NativeMarketSkill::SkillHub {
                 owner: "owner".into(),
                 slug: "baozheng".into(),
@@ -1218,7 +1058,6 @@ mod tests {
         let second = install_market_skill_with_downloader(
             &paths,
             SKILLHUB_SOURCE,
-            "skillhub:owner/skills/baozheng",
             NativeMarketSkill::SkillHub {
                 owner: "owner".into(),
                 slug: "baozheng".into(),
@@ -1228,8 +1067,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(second.status, SkillMarketInstallStatus::Reused);
-        // The second install paid one extra download; documented trade-off.
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(paths.user_skills_dir.join("baozheng-skills").join("SKILL.md").is_file());
     }
 
@@ -1244,7 +1082,6 @@ mod tests {
         let result = install_market_skill_with_downloader(
             &paths,
             SKILLHUB_SOURCE,
-            "skillhub:owner/skills/demo",
             NativeMarketSkill::SkillHub {
                 owner: "owner".into(),
                 slug: "demo".into(),
@@ -1261,7 +1098,6 @@ mod tests {
         let result = install_market_skill_with_downloader(
             &paths,
             SKILLHUB_SOURCE,
-            "skillhub:owner/skills/demo",
             NativeMarketSkill::SkillHub {
                 owner: "owner".into(),
                 slug: "demo".into(),
@@ -1322,26 +1158,22 @@ mod tests {
     // SkillHub exact-detail pipeline
     // -----------------------------------------------------------------------
 
-    /// Detail payload in the live SkillHub shape. Note the documented
-    /// `owner.handle` is the internal user handle (`u_internal`), NOT the
-    /// ranking namespace — binding must only trust `namespace`.
+    /// Detail payload in the documented SkillHub shape. The optional
+    /// namespace assertion is included to exercise the observed dual-field
+    /// response without making it the primary identity source.
     fn detail_json(owner: &str, slug: &str, version: &str) -> Vec<u8> {
         serde_json::json!({
-            "namespace": {
-                "canonicalName": format!("@{owner}/{slug}"),
-                "handle": owner,
-                "publicSlug": slug,
-            },
             "latestVersion": { "version": version, "createdAt": 1, "changelog": "" },
             "skill": { "slug": slug },
-            "owner": { "handle": "u_internal", "displayName": "internal" }
+            "owner": { "handle": owner, "displayName": "owner" },
+            "namespace": { "handle": owner }
         })
         .to_string()
         .into_bytes()
     }
 
     #[test]
-    fn parse_skill_detail_binds_namespace_and_version() {
+    fn parse_skill_detail_binds_official_owner_and_version() {
         let body = String::from_utf8(detail_json("tencent-adm", "tencent-docs", "1.0.41")).unwrap();
         let detail = parse_skill_detail(&body, "tencent-adm", "tencent-docs").unwrap();
         assert_eq!(detail.slug, "tencent-docs");
@@ -1351,10 +1183,12 @@ mod tests {
         let detail = parse_skill_detail(&body, "Tencent-Adm", "TENCENT-DOCS").unwrap();
         assert_eq!(detail.version, "1.0.41");
 
-        // canonicalName fallback when publicSlug is absent.
+        // The observed namespace assertion is optional when the official
+        // owner and skill fields are present.
         let body = serde_json::json!({
-            "namespace": { "canonicalName": "@owner/demo", "handle": "owner" },
-            "latestVersion": { "version": "2.0.0" }
+            "skill": { "slug": "demo" },
+            "latestVersion": { "version": "2.0.0" },
+            "owner": { "handle": "owner" }
         })
         .to_string();
         let detail = parse_skill_detail(&body, "owner", "demo").unwrap();
@@ -1364,7 +1198,7 @@ mod tests {
 
     #[test]
     fn parse_skill_detail_rejects_mismatch_and_missing_fields() {
-        // Namespace owner mismatch → NotFound (the archive download is keyed
+        // Official owner mismatch → NotFound (the archive download is keyed
         // by slug alone, so a mismatched entry is uninstallable, never
         // substituted).
         let body = String::from_utf8(detail_json("other-owner", "demo", "1.0.0")).unwrap();
@@ -1372,11 +1206,16 @@ mod tests {
             parse_skill_detail(&body, "owner", "demo").unwrap_err(),
             MarketSkillInstallError::NotFound
         );
-        // The documented `owner.handle` is an internal user handle; binding
-        // against it must fail (only `namespace.handle` is trusted).
-        let body = String::from_utf8(detail_json("tencent-adm", "tencent-docs", "1.0.41")).unwrap();
+        // The optional observed namespace assertion must also agree.
+        let body = serde_json::json!({
+            "skill": { "slug": "tencent-docs" },
+            "latestVersion": { "version": "1.0.41" },
+            "owner": { "handle": "tencent-adm" },
+            "namespace": { "handle": "other-owner" }
+        })
+        .to_string();
         assert_eq!(
-            parse_skill_detail(&body, "u_internal", "tencent-docs").unwrap_err(),
+            parse_skill_detail(&body, "tencent-adm", "tencent-docs").unwrap_err(),
             MarketSkillInstallError::NotFound
         );
         // Slug mismatch → NotFound.
@@ -1385,27 +1224,61 @@ mod tests {
             MarketSkillInstallError::NotFound
         );
 
-        // Missing namespace / latestVersion / version → ArtifactInvalid
-        // (fail closed: identity or version cannot be verified).
+        // Missing identity fields are not found; missing version is an
+        // invalid detail payload because the download cannot be pinned.
         for bad in [
             serde_json::json!({"latestVersion": {"version": "1.0.0"}}),
-            serde_json::json!({"namespace": {"handle": "owner", "publicSlug": "demo"}}),
-            serde_json::json!({
-                "namespace": {"handle": "owner", "publicSlug": "demo"},
-                "latestVersion": {"createdAt": 1}
-            }),
-            serde_json::json!({
-                "namespace": {"handle": "not a handle!", "publicSlug": "demo"},
-                "latestVersion": {"version": "1.0.0"}
-            }),
+            serde_json::json!({"skill": {"slug": "demo"}, "latestVersion": {"version": "1.0.0"}}),
         ] {
-            let body = bad.to_string();
             assert_eq!(
-                parse_skill_detail(&body, "owner", "demo").unwrap_err(),
-                MarketSkillInstallError::ArtifactInvalid,
-                "{body}"
+                parse_skill_detail(&bad.to_string(), "owner", "demo").unwrap_err(),
+                MarketSkillInstallError::NotFound,
+                "{bad}"
             );
         }
+        assert_eq!(
+            parse_skill_detail(
+                &serde_json::json!({
+                    "skill": {"slug": "demo"},
+                    "owner": {"handle": "owner"},
+                    "latestVersion": {"createdAt": 1}
+                })
+                .to_string(),
+                "owner",
+                "demo"
+            )
+            .unwrap_err(),
+            MarketSkillInstallError::ArtifactInvalid
+        );
+        assert_eq!(
+            parse_skill_detail(
+                &serde_json::json!({
+                    "skill": {"slug": "demo"},
+                    "owner": {"handle": "not a handle!"},
+                    "latestVersion": {"version": "1.0.0"}
+                })
+                .to_string(),
+                "owner",
+                "demo"
+            )
+            .unwrap_err(),
+            MarketSkillInstallError::NotFound
+        );
+        assert_eq!(
+            parse_skill_detail(
+                &serde_json::json!({
+                    "code": 17,
+                    "skill": {"slug": "demo"},
+                    "owner": {"handle": "owner"},
+                    "latestVersion": {"version": "1.0.0"}
+                })
+                .to_string(),
+                "owner",
+                "demo"
+            )
+            .unwrap_err(),
+            MarketSkillInstallError::Network
+        );
         assert_eq!(
             parse_skill_detail("not json", "owner", "demo").unwrap_err(),
             MarketSkillInstallError::ArtifactInvalid
