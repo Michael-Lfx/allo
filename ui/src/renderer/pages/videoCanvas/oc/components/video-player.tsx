@@ -1,11 +1,14 @@
 import { useMemo } from "react";
 import type { ComponentProps } from "react";
-import { MediaPlayer, MediaProvider, type VideoMimeType } from "@vidstack/react";
+import { MediaPlayer, MediaProvider, Track, type VideoMimeType } from "@vidstack/react";
 import { DefaultVideoLayout, defaultLayoutIcons, type DefaultLayoutTranslations } from "@vidstack/react/player/layouts/default";
 import "@vidstack/react/player/styles/base.css";
 import "@vidstack/react/player/styles/default/theme.css";
 import "@vidstack/react/player/styles/default/layouts/video.css";
 import "./video-player.css";
+
+import { serializeVttEntries } from "@oc/lib/timeline/srt-parser";
+import type { SrtEntry, SubtitleStyle } from "@oc/types/timeline";
 
 type MediaPlayerProps = ComponentProps<typeof MediaPlayer>;
 
@@ -22,6 +25,9 @@ type VideoPlayerProps = {
     dataCanvasNoZoom?: boolean;
     compactControls?: boolean;
     onCanPlay?: MediaPlayerProps["onCanPlay"];
+    subtitleEntries?: SrtEntry[];
+    subtitleStyle?: SubtitleStyle;
+    subtitleLabel?: string;
 };
 
 const zhCNTranslations = {
@@ -72,15 +78,33 @@ const supportedVideoMimeTypes = new Set<VideoMimeType>(["video/mp4", "video/webm
  * 统一视频播放表面，保留原生媒体 URL 契约，同时提供可访问的完整控件布局。
  * 画布节点需要隔离播放器手势，避免拖动进度条时被误判为拖动画布。
  */
-export function VideoPlayer({ src, mimeType, title = "视频", className, brandColor = "#f5f5f5", poster, preload = "metadata", autoPlay = false, muted = false, dataCanvasNoZoom = false, compactControls = false, onCanPlay }: VideoPlayerProps) {
+export function VideoPlayer({
+    src,
+    mimeType,
+    title = "视频",
+    className,
+    brandColor = "#f5f5f5",
+    poster,
+    preload = "metadata",
+    autoPlay = false,
+    muted = false,
+    dataCanvasNoZoom = false,
+    compactControls = false,
+    onCanPlay,
+    subtitleEntries,
+    subtitleStyle,
+    subtitleLabel = "字幕",
+}: VideoPlayerProps) {
     const stopCanvasControlInteraction = (event: { target: EventTarget | null; stopPropagation: () => void }) => {
         if (!dataCanvasNoZoom || !(event.target instanceof Element)) return;
         if (event.target.closest(".vds-controls,.vds-menu-items")) event.stopPropagation();
     };
     const type = mimeType && supportedVideoMimeTypes.has(mimeType as VideoMimeType) ? (mimeType as VideoMimeType) : "video/mp4";
     const mediaSource = useMemo(() => ({ src, type }), [src, type]);
+    const vtt = useMemo(() => (subtitleEntries?.length ? serializeVttEntries(subtitleEntries) : ""), [subtitleEntries]);
     // 画布节点与预览都用大布局，保证音量滑条可用（进度/时间在大布局下也正常）。
     const smallLayoutWhen = false;
+    const captionPosition = subtitleStyle?.position || "bottom";
 
     return (
         <MediaPlayer
@@ -98,12 +122,19 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
             load={autoPlay ? "eager" : "visible"}
             preload={preload}
             data-canvas-no-zoom={dataCanvasNoZoom ? "true" : undefined}
-            style={{ "--video-brand": brandColor }}
+            data-caption-position={captionPosition}
+            style={{
+                "--video-brand": brandColor,
+                "--caption-size": `${subtitleStyle?.fontSize || 18}px`,
+                "--caption-color": subtitleStyle?.color || "#ffffff",
+            }}
             onCanPlay={onCanPlay}
             onPointerDown={stopCanvasControlInteraction}
             onMouseDown={stopCanvasControlInteraction}
         >
-            <MediaProvider />
+            <MediaProvider>
+                {vtt ? <Track content={vtt} type="vtt" kind="subtitles" label={subtitleLabel} lang="zh" default /> : null}
+            </MediaProvider>
             <DefaultVideoLayout icons={defaultLayoutIcons} translations={zhCNTranslations} smallLayoutWhen={smallLayoutWhen} />
         </MediaPlayer>
     );

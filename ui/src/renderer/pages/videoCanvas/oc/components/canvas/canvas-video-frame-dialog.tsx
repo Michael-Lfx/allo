@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { App, Button, InputNumber, Modal } from "antd";
+import { App } from "antd";
 import { Check, Image as ImageIcon, SkipBack, SkipForward, Trash2 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useTranslation } from "react-i18next";
@@ -12,6 +12,7 @@ import { resolveMediaUrl } from "@oc/services/file-storage";
 import { cacheResourceObjectUrl } from "@oc/services/resource-blob-cache";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasNodeData } from "@oc/types/canvas";
+import { CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
 type SelectedVideoFrame = {
     id: string;
@@ -100,21 +101,28 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onConfirm }: Canva
     const removeFrame = (id: string) => setFrames((current) => current.filter((frame) => frame.id !== id));
     const lastFrameMs = Math.max(0, durationMs - 1);
 
-    const title = (
-        <div className="flex min-w-0 items-center gap-2.5">
-            <span className="grid size-8 shrink-0 place-items-center rounded-lg" style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}>
-                <ImageIcon className="size-4" />
-            </span>
-            <div className="min-w-0">
-                <div className="truncate font-semibold leading-6">{canvasT("videoCanvas.frames.title", "提取视频画面")}</div>
-                <div className="truncate text-xs opacity-45">{node.title || canvasT("videoCanvas.frames.videoNode", "视频节点")}</div>
-            </div>
-        </div>
-    );
-
     return (
-        <Modal title={title} open={open} onCancel={onClose} footer={null} width={760} centered destroyOnHidden>
+        <CanvasSheet
+            open={open}
+            theme={theme}
+            width={760}
+            title={canvasT("videoCanvas.frames.title", "提取视频画面")}
+            onClose={onClose}
+            footer={
+                <>
+                    <span className="mr-auto text-[11px]" style={{ color: theme.node.muted }}>
+                        {canvasT("videoCanvas.frames.noAutoGenerate", "提取后只创建图片节点，不会自动发起生成任务。")}
+                    </span>
+                    <CanvasSheetButton theme={theme} onClick={onClose}>{canvasT("videoCanvas.frames.cancel", "取消")}</CanvasSheetButton>
+                    <CanvasSheetButton theme={theme} variant="primary" disabled={!frames.length} onClick={() => onConfirm({ timesMs: frames.map((frame) => frame.timeMs) })}>
+                        <Check className="size-3.5" />
+                        {frames.length ? canvasT("videoCanvas.frames.extractN", "提取 {{n}} 帧", { n: frames.length }) : canvasT("videoCanvas.frames.extract", "提取画面")}
+                    </CanvasSheetButton>
+                </>
+            }
+        >
             <div className="space-y-4">
+            <p className="m-0 truncate text-xs" style={{ color: theme.node.muted }}>{node.title || canvasT("videoCanvas.frames.videoNode", "视频节点")}</p>
                 <div className="flex min-h-0 items-center justify-center overflow-hidden rounded-xl bg-black">
                     {videoUrl ? (
                         <video
@@ -141,43 +149,43 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onConfirm }: Canva
 
                 <div className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: theme.toolbar.itemHover }}>
                     <span className="text-xs font-medium opacity-60">{canvasT("videoCanvas.frames.currentTime", "当前时间")}</span>
-                    <InputNumber
-                        size="small"
+                    <input
+                        type="number"
                         min={0}
                         max={Math.max(0, lastFrameMs / 1000)}
                         step={0.001}
-                        precision={3}
-                        value={currentTimeMs / 1000}
-                        className="w-28"
+                        value={(currentTimeMs / 1000).toFixed(3)}
+                        className="canvas-sheet-input w-28"
                         aria-label={canvasT("videoCanvas.frames.timeAria", "当前取帧时间（秒）")}
-                        onChange={(value) => seekTo(Math.round((value || 0) * 1000))}
+                        onChange={(event) => seekTo(Math.round((Number(event.target.value) || 0) * 1000))}
                     />
-                    <span className="mr-auto text-xs opacity-45">/ {durationMs ? formatVideoFrameTime(durationMs) : "--:--.---"}</span>
-                    <Button
-                        size="small"
-                        icon={<SkipBack className="size-3.5" />}
+                    <span className="mr-auto text-xs" style={{ color: theme.node.muted }}>/ {durationMs ? formatVideoFrameTime(durationMs) : "--:--.---"}</span>
+                    <CanvasSheetButton
+                        theme={theme}
                         disabled={!durationMs}
                         onClick={() => {
                             seekTo(0);
                             addFrame(0);
                         }}
                     >
+                        <SkipBack className="size-3.5" />
                         {canvasT("videoCanvas.frames.first", "首帧")}
-                    </Button>
-                    <Button size="small" type="primary" icon={<ImageIcon className="size-3.5" />} disabled={!durationMs} onClick={() => addFrame(currentTimeMs)}>
+                    </CanvasSheetButton>
+                    <CanvasSheetButton theme={theme} variant="primary" disabled={!durationMs} onClick={() => addFrame(currentTimeMs)}>
+                        <ImageIcon className="size-3.5" />
                         {canvasT("videoCanvas.frames.addCurrent", "添加当前画面")}
-                    </Button>
-                    <Button
-                        size="small"
-                        icon={<SkipForward className="size-3.5" />}
+                    </CanvasSheetButton>
+                    <CanvasSheetButton
+                        theme={theme}
                         disabled={!durationMs}
                         onClick={() => {
                             seekTo(lastFrameMs);
                             addFrame(lastFrameMs);
                         }}
                     >
+                        <SkipForward className="size-3.5" />
                         {canvasT("videoCanvas.frames.last", "尾帧")}
-                    </Button>
+                    </CanvasSheetButton>
                 </div>
 
                 <section aria-labelledby="selected-video-frames-title">
@@ -197,7 +205,9 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onConfirm }: Canva
                                         <span className="block text-[var(--fs-micro)] opacity-45">{canvasT("videoCanvas.frames.frameN", "画面 {{n}}", { n: index + 1 })}</span>
                                         <span className="block truncate font-mono text-xs font-medium">{formatVideoFrameTime(frame.timeMs)}</span>
                                     </button>
-                                    <Button type="text" size="small" danger icon={<Trash2 className="size-3.5" />} aria-label={canvasT("videoCanvas.frames.removeN", "删除画面 {{n}}", { n: index + 1 })} onClick={() => removeFrame(frame.id)} />
+                                    <CanvasSheetButton theme={theme} aria-label={canvasT("videoCanvas.frames.removeN", "删除画面 {{n}}", { n: index + 1 })} onClick={() => removeFrame(frame.id)}>
+                                        <Trash2 className="size-3.5" />
+                                    </CanvasSheetButton>
                                 </div>
                             ))}
                         </div>
@@ -207,17 +217,7 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onConfirm }: Canva
                         </div>
                     )}
                 </section>
-
-                <div className="flex items-center justify-between gap-3">
-                    <div className="text-xs opacity-45">{canvasT("videoCanvas.frames.noAutoGenerate", "提取后只创建图片节点，不会自动发起生成任务。")}</div>
-                    <div className="flex shrink-0 items-center gap-2">
-                        <Button onClick={onClose}>{canvasT("videoCanvas.frames.cancel", "取消")}</Button>
-                        <Button type="primary" icon={<Check className="size-4" />} disabled={!frames.length} onClick={() => onConfirm({ timesMs: frames.map((frame) => frame.timeMs) })}>
-                            {frames.length ? canvasT("videoCanvas.frames.extractN", "提取 {{n}} 帧", { n: frames.length }) : canvasT("videoCanvas.frames.extract", "提取画面")}
-                        </Button>
-                    </div>
-                </div>
             </div>
-        </Modal>
+        </CanvasSheet>
     );
 }

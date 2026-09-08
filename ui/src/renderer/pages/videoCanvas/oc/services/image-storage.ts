@@ -3,6 +3,9 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { readImageMeta } from "@oc/lib/image-utils";
 import { getActiveUserScope } from "@oc/lib/user-scope";
+import { buildBackendAuthHeaders } from "@/common/adapter/httpBridge";
+import { extractMediaIdFromCanvasMediaUrl, resolveCanvasUrl } from "@renderer/pages/videoCanvas/api";
+import { rewriteCanvasDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { importResourceFromUrl, isResourceUrl, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, resolveResourceUrl, uploadResourceFile } from "@oc/services/api/resources";
 import { cacheResourceObjectUrl, getCachedResourceBlob, getCachedResourceObjectUrl, primeResourceBlobCache } from "@oc/services/resource-blob-cache";
 
@@ -109,6 +112,40 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
     return url;
 }
 
+async function blobFromCanvasMediaRef(value?: string) {
+    if (!value) return null;
+    const mediaId = resourceIdFromStorageKey(value) || extractMediaIdFromCanvasMediaUrl(value);
+    if (!mediaId) return null;
+    try {
+        const blob = await getImageBlob(resourceStorageKey(mediaId));
+        return blob && blob.size > 0 ? blob : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Read image bytes without CORS/`Failed to fetch` on `/api/video-canvas/media/{id}`. */
+export async function fetchImageSourceBlob(source: string, signal?: AbortSignal) {
+    if (!source) throw new Error("无法读取源图片，请重新上传后再试");
+    if (source.startsWith("data:") || source.startsWith("blob:")) {
+        const response = await fetch(source, { signal });
+        if (!response.ok) throw new Error("无法读取源图片，请重新上传后再试");
+        return response.blob();
+    }
+    const fromMedia = await blobFromCanvasMediaRef(source);
+    if (fromMedia) return fromMedia;
+    const absolute = rewriteCanvasDisplayUrl(source) || resolveCanvasUrl(source) || source;
+    const authenticated = isResourceUrl(absolute);
+    const response = await fetch(absolute, {
+        signal,
+        headers: authenticated ? buildBackendAuthHeaders("GET") : undefined,
+        credentials: authenticated ? "omit" : "same-origin",
+        cache: authenticated ? "no-store" : undefined,
+    });
+    if (!response.ok) throw new Error("无法读取源图片，请重新上传后再试");
+    return response.blob();
+}
+
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string; name?: string; type?: string; mimeType?: string }) {
     if (image.storageKey) {
         try {
@@ -118,11 +155,14 @@ export async function imageToDataUrl(image: { url?: string; dataUrl?: string; st
             // Prefer URL / public media fallback below.
         }
     }
+    for (const candidate of [image.dataUrl, image.url]) {
+        const fromMedia = await blobFromCanvasMediaRef(candidate);
+        if (fromMedia) return blobToDataUrl(await normalizeImageBlob(fromMedia, image.name || candidate));
+    }
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || "")) || image.url || "";
     if (!url) return url;
     if (url.startsWith("data:image/")) return url;
-    if (url.startsWith("data:")) return blobToDataUrl(await normalizeImageBlob(await (await fetch(url)).blob(), image.name));
-    const blob = await (await fetch(url, { credentials: isResourceUrl(url) ? "omit" : "same-origin" })).blob();
+    const blob = await fetchImageSourceBlob(url);
     return blobToDataUrl(await normalizeImageBlob(blob, image.name || url));
 }
 

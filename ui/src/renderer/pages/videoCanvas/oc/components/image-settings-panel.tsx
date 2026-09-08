@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { type ReactNode, useState } from "react";
-import { ConfigProvider, Switch } from "antd";
 
+import { CanvasToggle } from "@oc/components/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { type CanvasTheme } from "@oc/lib/canvas-theme";
 import { type AiConfig } from "@oc/stores/use-config-store";
@@ -88,9 +88,10 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </SettingsSection>
                 <SettingsSection title={canvasT("videoCanvas.settings.transparentBg", "透明背景")} hint={canvasT("videoCanvas.settings.transparentHint", "请求模型输出保留 Alpha 通道的 PNG")} extra={(
                     <span title={canvasT("videoCanvas.settings.transparentSupportHint", "是否支持透明背景由当前模型接口决定")} onMouseDown={(event) => event.stopPropagation()}>
-                        <Switch
-                            size="small"
+                        <CanvasToggle
+                            theme={theme}
                             checked={transparentBackground}
+                            ariaLabel={canvasT("videoCanvas.settings.transparentBg", "透明背景")}
                             onChange={(checked) => onConfigChange("transparentBackground", checked ? "true" : "false")}
                         />
                     </span>
@@ -103,7 +104,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                 {canvasT("videoCanvas.settings.size16Hint", "16倍数对齐")}
                             </span>
                             <span title={canvasT("videoCanvas.settings.size16AutoHint", "输入完成后自动向上补成 16 的倍数")} onMouseDown={(event) => event.stopPropagation()}>
-                                <Switch size="small" checked={snapDimensionToStep} onChange={setSnapDimensionToStep} />
+                                <CanvasToggle theme={theme} checked={snapDimensionToStep} onChange={setSnapDimensionToStep} ariaLabel={canvasT("videoCanvas.settings.size16Hint", "16倍数对齐")} />
                             </span>
                         </div>
                     )}
@@ -146,17 +147,8 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     );
 }
 
-export function ImageSettingsTheme({ theme, children }: { theme: CanvasTheme; children: ReactNode }) {
-    return (
-        <ConfigProvider
-            theme={{
-                token: { colorBgContainer: theme.canvas.background, colorBgElevated: theme.canvas.background, colorBorder: theme.node.stroke, colorPrimary: theme.node.activeStroke, colorText: theme.node.text, colorTextLightSolid: theme.node.panel },
-                components: { Button: { defaultBg: theme.canvas.background, defaultBorderColor: theme.node.stroke, defaultColor: theme.node.text } },
-            }}
-        >
-            {children}
-        </ConfigProvider>
-    );
+export function ImageSettingsTheme({ children }: { theme: CanvasTheme; children: ReactNode }) {
+    return <>{children}</>;
 }
 
 export function imageQualityLabel(value: string) {

@@ -13,7 +13,7 @@ export function SettingsPanelHeader({ title, subtitle, theme }: { title: string;
 
 export function SettingsSection({ title, hint, extra, theme, children }: { title: string; hint?: string; extra?: ReactNode; theme: CanvasTheme; children?: ReactNode }) {
     return (
-        <section className="rounded-xl border px-3 py-2.5" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}>
+        <section className="canvas-settings-section">
             <div className={children ? "mb-2 flex items-center justify-between gap-3" : "flex items-center justify-between gap-3"}>
                 <div className="min-w-0">
                     <div className="text-[var(--fs-tiny)] font-semibold tracking-wide" style={{ color: theme.node.muted }}>{title}</div>

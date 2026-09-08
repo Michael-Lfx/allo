@@ -5,9 +5,10 @@ export const canvasThemes = {
     light: {
         canvas: {
             background: "#edeeee",
-            // 点阵略提亮但仍压过背景，避免远距缩放时糊成噪点。
-            dot: "rgba(15,23,42,.20)",
-            line: "rgba(15,23,42,.15)",
+            // 点阵/线网 alpha 已按最终观感烘焙，叠加层不再二次降透明。
+            dot: "rgba(72,80,92,.18)",
+            line: "rgba(72,80,92,.05)",
+            lineMajor: "rgba(72,80,92,.11)",
             selectionFill: "rgba(79,110,232,.10)",
         },
         node: {
@@ -56,9 +57,10 @@ export const canvasThemes = {
     dark: {
         canvas: {
             background: "#090a0c",
-            // 点阵略提亮但仍压过背景，避免远距缩放时糊成噪点。
-            dot: "rgba(174,184,199,.18)",
-            line: "rgba(174,184,199,.06)",
+            // 点阵/线网 alpha 已按最终观感烘焙，叠加层不再二次降透明。
+            dot: "rgba(206,214,226,.16)",
+            line: "rgba(206,214,226,.05)",
+            lineMajor: "rgba(206,214,226,.10)",
             selectionFill: "rgba(96,126,234,.18)",
         },
         node: {

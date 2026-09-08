@@ -24,6 +24,7 @@ import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover"
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { resolveModelVideoBooleanOptions } from "@oc/lib/model-capabilities";
+import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
 
@@ -51,7 +52,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const [presetOpen, setPresetOpen] = useState(false);
     const [expanded, setExpanded] = useState(false);
     const [promptContentHeight, setPromptContentHeight] = useState(0);
-    const videoFrameOptions = mentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
+    const resolvedMentions = useResolvedCanvasResourceReferences(mentionReferences);
+    const videoFrameOptions = resolvedMentions.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
     const hasVideoPromptTools = mode === "video" && videoFrameOptions.length > 0;
     const composerMinHeight = expanded ? 220 : 56;
     const composerHeight = Math.min(expanded ? 360 : 140, Math.max(composerMinHeight, Math.ceil(promptContentHeight + 12)));
@@ -103,10 +105,11 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
             onPointerDown={(event) => event.stopPropagation()}
             onWheel={(event) => event.stopPropagation()}
         >
+            {videoTools}
             <div className="canvas-composer-field overflow-hidden" style={{ height: composerHeight, background: theme.spatial.surface }}>
                 <CanvasResourceMentionTextarea
                     value={prompt}
-                    references={mentionReferences}
+                    references={resolvedMentions}
                     onChange={updatePrompt}
                     containerClassName="min-h-0 h-full"
                     className="thin-scrollbar h-full w-full resize-none overflow-y-auto border-none bg-transparent px-2.5 py-2 text-[var(--fs-body)] leading-5 !outline-none placeholder:text-current placeholder:opacity-35"
@@ -116,7 +119,6 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     onSubmit={submit}
                 />
             </div>
-            {videoTools}
 
             <div className="canvas-composer-footer">
                 {isPortraitTexture ? (
@@ -124,7 +126,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 ) : (
                     <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={presetOpen} onOpenChange={setPresetOpen} onSelect={applyPreset} compact />
                 )}
-                <div className="min-w-0 max-w-[168px] flex-1">
+                <div className="min-w-0 flex-1">
                     <ModelPicker
                         className="!h-7 !w-full !min-w-0 !text-[var(--fs-label)]"
                         fullWidth
@@ -150,20 +152,17 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     <CanvasImageSettingsPopover
                         config={config}
                         placement="topLeft"
-                        buttonClassName="!max-w-[132px]"
                         onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
                         onOpenChange={onImageSettingsOpenChange}
                     />
                 ) : mode === "video" ? (
                     <CanvasVideoSettingsPopover
                         config={config}
-                        buttonClassName="!max-w-[120px]"
                         onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))}
                     />
                 ) : mode === "audio" ? (
                     <CanvasAudioSettingsPopover
                         config={config}
-                        buttonClassName="!max-w-[108px]"
                         onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))}
                     />
                 ) : null}

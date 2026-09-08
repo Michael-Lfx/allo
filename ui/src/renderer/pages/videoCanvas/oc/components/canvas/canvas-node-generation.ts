@@ -59,7 +59,7 @@ export type NodeGenerationInput = {
 export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string, promptOnly = false): NodeGenerationContext {
     const connectedInputs = buildNodeGenerationInputs(nodeId, nodes, connections);
     const sourceNode = nodes.find((node) => node.id === nodeId);
-    const portraitTextureInput: NodeGenerationInput[] = sourceNode?.type === CanvasNodeType.Image && sourceNode.metadata?.content && sourceNode.metadata?.portraitTexture
+    const portraitTextureInput: NodeGenerationInput[] = sourceNode?.type === CanvasNodeType.Image && sourceNode.metadata?.portraitTexture
         ? (() => {
               const image = readReferenceImage(sourceNode);
               return image ? [{ nodeId: sourceNode.id, type: "image" as const, title: sourceNode.title, image }] : [];

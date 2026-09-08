@@ -1,9 +1,11 @@
 import { useTranslation } from "react-i18next";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, Coins, Cpu } from "lucide-react";
-import { Popover } from "antd";
 
+import { overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { anchoredOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@oc/lib/model-capabilities";
 import { cn } from "@oc/lib/utils";
@@ -38,9 +40,9 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     const triggerRef = useRef<HTMLButtonElement>(null);
     const options = useMemo(() => {
         const filtered = selectableModelsByCapability(config, capability);
-        const current = value?.trim();
-        const currentIncluded = current ? filtered.includes(current) : true;
-        return Array.from(new Set([...filtered, ...(!currentIncluded && current ? [current] : [])].filter((model): model is string => Boolean(model))));
+        const currentModel = value?.trim();
+        const currentIncluded = currentModel ? filtered.includes(currentModel) : true;
+        return Array.from(new Set([...filtered, ...(!currentIncluded && currentModel ? [currentModel] : [])].filter((model): model is string => Boolean(model))));
     }, [capability, config, value]);
     const optionGroups = useMemo(() => {
         const channelGroups = config.channels
@@ -57,6 +59,10 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     const current = value || "";
     const currentPrice = modelMenuPrice(config, current);
     const creationVariant = variant === "creation";
+    const close = useCallback(() => setOpen(false), []);
+    const rect = useAnchoredOverlay(open, triggerRef, menuRef, close);
+    const panelWidth = creationVariant ? 360 : 280;
+    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: panelWidth, placement: "bottomLeft" }) : null;
 
     useEffect(() => {
         const closeOtherPicker = (event: Event) => {
@@ -65,19 +71,6 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
         window.addEventListener("model-picker-open", closeOtherPicker);
         return () => window.removeEventListener("model-picker-open", closeOtherPicker);
     }, [pickerId]);
-
-    useEffect(() => {
-        if (!open) return;
-        // 画布拖拽从 pointerdown 开始，须在捕获阶段关闭 Portal 菜单，避免菜单与触发器分离。
-        const closeOnOutsidePointer = (event: PointerEvent) => {
-            const target = event.target;
-            if (!(target instanceof Node)) return;
-            if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
-            setOpen(false);
-        };
-        window.addEventListener("pointerdown", closeOnOutsidePointer, true);
-        return () => window.removeEventListener("pointerdown", closeOnOutsidePointer, true);
-    }, [open]);
 
     const setPickerOpen = (nextOpen: boolean) => {
         if (nextOpen && !options.length && config.channelMode === "local") onMissingConfig?.();
@@ -114,15 +107,11 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     };
     const content = (
         <div
-            ref={menuRef}
             data-canvas-no-zoom
-            className={cn("canvas-model-picker-menu max-w-[calc(100vw-24px)]", creationVariant ? "creation-model-picker-menu w-[360px]" : "w-[var(--panel-width-compact)]")}
-            style={{ background: theme.node.panel, color: theme.node.text }}
+            className={cn("canvas-model-picker-menu max-w-[calc(100vw-24px)]", creationVariant ? "creation-model-picker-menu w-full" : "w-full")}
             role="listbox"
             aria-label={resolvedPlaceholder}
             onKeyDown={handleMenuKeyDown}
-            onMouseDown={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
         >
             {creationVariant ? (
                 <div className="creation-model-picker-heading">
@@ -153,7 +142,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                                             window.requestAnimationFrame(() => triggerRef.current?.focus());
                                         }}
                                     >
-                                        <ModelLabel config={config} model={model} capability={capability} theme={theme} showPrice={false} />
+                                        <ModelLabel config={config} model={model} capability={capability} theme={theme} showPrice={creditsEnabled} />
                                         {selected ? <Check className="canvas-model-picker-option-check" style={{ color: theme.node.activeStroke }} /> : null}
                                     </button>
                                 );
@@ -170,39 +159,42 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     );
 
     return (
-                <div className={cn(fullWidth ? "w-full min-w-0 max-w-full overflow-hidden" : "w-fit max-w-full")} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
-            <Popover
-                open={open}
-                onOpenChange={setPickerOpen}
-                trigger="click"
-                placement="bottomLeft"
-                arrow={false}
-                content={content}
-                classNames={{
-                    root: cn("canvas-model-picker-popover", creationVariant && "creation-model-picker-popover"),
-                    container: cn("canvas-composer-popover-surface", creationVariant && "creation-model-picker-surface"),
-                    content: "canvas-composer-popover-content",
-                }}
+        <div className={cn(fullWidth ? "w-full min-w-0 max-w-full overflow-hidden" : "w-fit max-w-full")} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+            <button
+                ref={triggerRef}
+                type="button"
+                className={cn("canvas-composer-model-picker", fullWidth ? "w-full" : "min-w-36 max-w-full", className)}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                aria-label={resolvedPlaceholder}
+                title={current ? modelOptionLabel(config, current) : resolvedPlaceholder}
+                onClick={() => setPickerOpen(!open)}
+                onKeyDown={handleTriggerKeyDown}
             >
-                <button
-                    ref={triggerRef}
-                    type="button"
-                    className={cn("canvas-composer-model-picker", fullWidth ? "w-full" : "min-w-36 max-w-full", className)}
-                    aria-haspopup="listbox"
-                    aria-expanded={open}
-                    aria-label={resolvedPlaceholder}
-                    title={current ? modelOptionLabel(config, current) : resolvedPlaceholder}
-                    onKeyDown={handleTriggerKeyDown}
-                >
-                    <span className="canvas-model-picker-label flex min-w-0 items-center gap-1.5">
-                        <span className="canvas-model-picker-trigger-icon" style={{ background: theme.toolbar.itemHover }}>
-                            <ModelIcon config={config} model={current} />
-                        </span>
-                        <span className="min-w-0 flex-1 truncate">{current ? (creationVariant ? modelDisplayName(config, current) : modelOptionLabel(config, current)) : resolvedPlaceholder}</span>
+                <span className="canvas-model-picker-label flex min-w-0 items-center gap-1.5">
+                    <span className="canvas-model-picker-trigger-icon" style={{ background: theme.toolbar.itemHover }}>
+                        <ModelIcon config={config} model={current} />
                     </span>
-                    <ChevronDown className={cn("canvas-model-picker-chevron", open && "is-open")} aria-hidden="true" />
-                </button>
-            </Popover>
+                    <span className="min-w-0 flex-1 truncate">{current ? (creationVariant ? modelDisplayName(config, current) : modelOptionLabel(config, current)) : resolvedPlaceholder}</span>
+                    {showSelectedPrice && creditsEnabled ? <ModelPrice compact price={currentPrice} /> : null}
+                </span>
+                <ChevronDown className={cn("canvas-model-picker-chevron", open && "is-open")} aria-hidden="true" />
+            </button>
+            {open && geometry
+                ? createPortal(
+                    <div
+                        ref={menuRef}
+                        data-canvas-no-zoom
+                        className={cn("canvas-overlay", creationVariant && "creation-model-picker-popover")}
+                        style={overlayPanelStyle(theme, geometry)}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                    >
+                        {content}
+                    </div>,
+                    document.body,
+                )
+                : null}
         </div>
     );
 }

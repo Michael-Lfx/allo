@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Button, Input, Modal, Slider } from "antd";
-import { Brush, Eraser, RotateCcw, WandSparkles, X } from "lucide-react";
+import { Brush, Eraser, RotateCcw, WandSparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { canvasThemes } from "@oc/lib/canvas-theme";
 import { readImageMeta } from "@oc/lib/image-utils";
+import { useThemeStore } from "@oc/stores/use-theme-store";
+import { ChoiceChip } from "@oc/components/generation-settings-chrome";
+import { CanvasRange, CanvasSheet, CanvasSheetButton } from "./canvas-overlay";
 
 export type CanvasImageMaskEditPayload = {
     prompt: string;
@@ -16,6 +21,8 @@ const maskFillColor = "rgba(37, 99, 235, .38)";
 const maskBorderColor = "rgba(255, 255, 255, .72)";
 
 export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (payload: CanvasImageMaskEditPayload) => void }) {
+    useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const maskCanvasRef = useRef<HTMLCanvasElement>(null);
     const previewCanvasRef = useRef<HTMLCanvasElement>(null);
     const drawingRef = useRef<{ active: boolean; last: { x: number; y: number } | null }>({ active: false, last: null });
@@ -92,18 +99,39 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
     const submit = () => {
         const nextPrompt = prompt.trim();
         const canvas = maskCanvasRef.current;
-        if (!nextPrompt) return setError("请输入修改要求");
+        if (!nextPrompt) return setError(canvasT("videoCanvas.mask.promptRequired", "请输入修改要求"));
         if (!canvas) return;
-        if (!canvasHasPaint(canvas)) return setError("请先涂抹局部区域");
+        if (!canvasHasPaint(canvas)) return setError(canvasT("videoCanvas.mask.maskRequired", "请先涂抹局部区域"));
         onConfirm({ prompt: nextPrompt, maskDataUrl: buildEditMask(canvas) });
     };
 
     return (
-        <Modal title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={980} centered destroyOnHidden>
-            <div className="grid gap-5 lg:grid-cols-[minmax(360px,1fr)_320px]">
-                <div className="flex min-h-[360px] items-center justify-center rounded-xl border border-black/10 bg-transparent p-0 dark:border-white/10">
-                    <div className="relative inline-block max-w-full overflow-hidden rounded-lg bg-transparent select-none">
-                        <img src={dataUrl} alt="" className="block max-h-[68vh] max-w-full bg-transparent" draggable={false} />
+        <CanvasSheet
+            open={open && Boolean(dataUrl)}
+            theme={theme}
+            width="min(980px, 94vw)"
+            title={canvasT("videoCanvas.mask.title", "局部遮罩编辑")}
+            subtitle={image ? `${image.width} × ${image.height}px` : canvasT("videoCanvas.mask.reading", "读取中")}
+            onClose={onClose}
+            footer={
+                <>
+                    <CanvasSheetButton theme={theme} onClick={resetMask}>
+                        <RotateCcw className="size-3.5" />
+                        {canvasT("videoCanvas.mask.reset", "重置")}
+                    </CanvasSheetButton>
+                    <span className="flex-1" />
+                    <CanvasSheetButton theme={theme} onClick={onClose}>{canvasT("videoCanvas.mask.cancel", "取消")}</CanvasSheetButton>
+                    <CanvasSheetButton theme={theme} variant="primary" onClick={submit}>
+                        <WandSparkles className="size-3.5" />
+                        {canvasT("videoCanvas.mask.apply", "AI 修改")}
+                    </CanvasSheetButton>
+                </>
+            }
+        >
+            <div className="grid gap-4 lg:grid-cols-[minmax(360px,1fr)_280px]">
+                <div className="flex min-h-[320px] items-center justify-center overflow-hidden rounded-[var(--r-lg)]" style={{ background: theme.node.fill }}>
+                    <div className="relative inline-block max-w-full overflow-hidden rounded-lg select-none">
+                        <img src={dataUrl} alt="" className="block max-h-[58vh] max-w-full" draggable={false} />
                         {image ? (
                             <>
                                 <canvas ref={maskCanvasRef} width={image.width} height={image.height} className="hidden" />
@@ -122,60 +150,41 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
                     </div>
                 </div>
 
-                <div className="flex min-h-[360px] flex-col gap-5">
-                    <div>
-                        <h2 className="text-xl font-semibold">局部遮罩编辑</h2>
-                        <div className="mt-2 text-sm opacity-60">{image ? `${image.width} x ${image.height}px` : "读取中"}</div>
+                <div className="flex min-h-[280px] flex-col gap-4">
+                    <div className="flex flex-wrap gap-1.5">
+                        <ChoiceChip selected={mode === "paint"} theme={theme} onClick={() => setMode("paint")}>
+                            <span className="inline-flex items-center gap-1"><Brush className="size-3.5" />{canvasT("videoCanvas.mask.brush", "画笔")}</span>
+                        </ChoiceChip>
+                        <ChoiceChip selected={mode === "erase"} theme={theme} onClick={() => setMode("erase")}>
+                            <span className="inline-flex items-center gap-1"><Eraser className="size-3.5" />{canvasT("videoCanvas.mask.erase", "擦除")}</span>
+                        </ChoiceChip>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                        <Button type={mode === "paint" ? "primary" : "default"} icon={<Brush className="size-4" />} onClick={() => setMode("paint")}>
-                            画笔
-                        </Button>
-                        <Button type={mode === "erase" ? "primary" : "default"} icon={<Eraser className="size-4" />} onClick={() => setMode("erase")}>
-                            擦除
-                        </Button>
-                    </div>
-
-                    <div className="space-y-2">
-                        <div className="flex items-center justify-between text-sm">
-                            <span className="font-medium opacity-75">笔刷大小</span>
-                            <span className="font-semibold">{brushSize}px</span>
+                    <div className="space-y-1.5">
+                        <div className="flex items-center justify-between text-[var(--fs-tiny)]">
+                            <span style={{ color: theme.node.muted }}>{canvasT("videoCanvas.mask.brushSize", "笔刷大小")}</span>
+                            <span className="font-semibold tabular-nums">{brushSize}px</span>
                         </div>
-                        <Slider min={8} max={160} step={2} value={brushSize} onChange={setBrushSize} />
+                        <CanvasRange theme={theme} min={8} max={160} step={2} value={brushSize} ariaLabel={canvasT("videoCanvas.mask.brushSize", "笔刷大小")} onChange={setBrushSize} />
                     </div>
 
-                    <div className="space-y-2">
-                        <div className="text-sm font-medium opacity-75">修改要求</div>
-                        <Input.TextArea
+                    <div className="space-y-1.5">
+                        <div className="text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.mask.prompt", "修改要求")}</div>
+                        <textarea
                             rows={6}
+                            className="canvas-sheet-input min-h-28 w-full resize-y py-2"
                             value={prompt}
-                            status={error && !prompt.trim() ? "error" : undefined}
-                            placeholder="例如：把选中区域改成金属材质，保持原图光影"
+                            placeholder={canvasT("videoCanvas.mask.promptPlaceholder", "例如：把选中区域改成金属材质，保持原图光影")}
                             onChange={(event) => {
                                 setPrompt(event.target.value);
                                 setError("");
                             }}
                         />
-                        {error ? <div className="text-xs font-medium text-[#ef4444]">{error}</div> : null}
-                    </div>
-
-                    <div className="mt-auto flex items-center justify-between gap-2">
-                        <Button icon={<RotateCcw className="size-4" />} onClick={resetMask}>
-                            重置
-                        </Button>
-                        <div className="flex items-center gap-2">
-                            <Button icon={<X className="size-4" />} onClick={onClose}>
-                                取消
-                            </Button>
-                            <Button type="primary" icon={<WandSparkles className="size-4" />} onClick={submit}>
-                                AI 修改
-                            </Button>
-                        </div>
+                        {error ? <div className="text-xs font-medium" style={{ color: theme.accent.danger }}>{error}</div> : null}
                     </div>
                 </div>
             </div>
-        </Modal>
+        </CanvasSheet>
     );
 }
 

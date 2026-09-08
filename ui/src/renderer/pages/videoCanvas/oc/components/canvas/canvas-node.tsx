@@ -1066,6 +1066,8 @@ function VideoNodeContent({ node, theme, reduceMediaEffects, mediaActive = false
                         className="h-full w-full rounded-[var(--node-radius)] bg-black"
                         dataCanvasNoZoom
                         compactControls
+                        subtitleEntries={node.metadata?.subtitleEntries}
+                        subtitleStyle={node.metadata?.subtitleStyle}
                     />
                 </Suspense>
             </div>

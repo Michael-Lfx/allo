@@ -7,6 +7,7 @@ import { FileText, Image as ImageIcon, Music2, Pencil, Sparkles, Video, X } from
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { referenceImagePreviewUrl } from "@oc/lib/canvas/canvas-media-id";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import type { NodeGenerationInput } from "./canvas-node-generation";
 import { CanvasVideoPromptTools } from "./canvas-video-prompt-tools";
@@ -60,7 +61,7 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
         () =>
             inputs
                 .filter((input) => input.type === "image" && input.image)
-                .map((input) => ({ nodeId: input.nodeId, label: resourceLabel(input, inputs), title: input.title, previewUrl: input.image?.dataUrl })),
+                .map((input) => ({ nodeId: input.nodeId, label: resourceLabel(input, inputs), title: input.title, previewUrl: referenceImagePreviewUrl(input.image) })),
         [inputs],
     );
     const candidates = useMemo(() => {
@@ -315,7 +316,14 @@ function ResourcePreview({ candidate }: { candidate: ComposerCandidate }) {
             </span>
         );
     }
-    if (input.type === "image" && input.image) return <img src={input.image.dataUrl} alt="" className="size-9 rounded-md object-cover" />;
+    if (input.type === "image" && input.image) {
+        const previewUrl = referenceImagePreviewUrl(input.image);
+        return previewUrl ? <img src={previewUrl} alt="" className="size-9 rounded-md object-cover" /> : (
+            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-black/10">
+                <ImageIcon className="size-4" />
+            </span>
+        );
+    }
     if (input.type === "video" && input.video) return <video src={input.video.url} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
     const Icon = input.type === "audio" ? Music2 : input.type === "video" ? Video : input.type === "image" ? ImageIcon : FileText;
     return (
@@ -337,24 +345,27 @@ function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationI
     wrapper.className = "mx-px inline-flex h-7 max-w-40 items-center justify-center overflow-hidden rounded-md border px-1 text-xs leading-none align-middle";
     Object.assign(wrapper.style, chipStyle(theme));
     if (input.type === "image" && input.image && input.sourceKind !== "drawing") {
-        const image = document.createElement("img");
-        image.src = input.image.dataUrl;
-        image.alt = input.title;
-        image.className = "size-6 rounded object-cover";
-        wrapper.className = "mx-px inline-flex size-6 items-center justify-center overflow-hidden rounded align-middle";
-        wrapper.appendChild(image);
-        wrapper.addEventListener("click", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onImagePreview(input.image?.dataUrl || "");
-        });
-    } else {
-        wrapper.title = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.text || input.title;
-        const text = document.createElement("span");
-        text.className = "block truncate";
-        text.textContent = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.type === "text" ? input.text || input.title : input.title;
-        wrapper.appendChild(text);
+        const previewUrl = referenceImagePreviewUrl(input.image);
+        if (previewUrl) {
+            const image = document.createElement("img");
+            image.src = previewUrl;
+            image.alt = input.title;
+            image.className = "size-6 rounded object-cover";
+            wrapper.className = "mx-px inline-flex size-6 items-center justify-center overflow-hidden rounded align-middle";
+            wrapper.appendChild(image);
+            wrapper.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onImagePreview(previewUrl);
+            });
+            return wrapper;
+        }
     }
+    wrapper.title = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.text || input.title;
+    const text = document.createElement("span");
+    text.className = "block truncate";
+    text.textContent = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.type === "text" ? input.text || input.title : input.title;
+    wrapper.appendChild(text);
     return wrapper;
 }
 

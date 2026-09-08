@@ -99,6 +99,38 @@ export function resolveCanvasGridColor(appearance: CanvasAppearance | undefined,
     return mode === "dots" ? theme.canvas.dot : theme.canvas.line;
 }
 
+export type CanvasGridPalette = {
+    accent: string;
+    muted: string;
+};
+
+/** 点阵用 accent；线网 muted 为次网格、accent 为每 4 格主网格。自定义色会按强度拆成主次。 */
+export function resolveCanvasGridPalette(appearance: CanvasAppearance | undefined, fallback: CanvasColorTheme, mode: CanvasBackgroundMode): CanvasGridPalette {
+    const ink = resolveCanvasGridColor(appearance, fallback, mode);
+    const normalized = normalizeCanvasAppearance(appearance, fallback);
+    if (normalized.mode === "custom" && normalized.custom) {
+        if (mode === "dots") {
+            const accent = scaleCssRgbaAlpha(ink, 0.38);
+            return { accent, muted: accent };
+        }
+        return {
+            accent: scaleCssRgbaAlpha(ink, 0.52),
+            muted: scaleCssRgbaAlpha(ink, 0.22),
+        };
+    }
+    if (mode === "dots") return { accent: ink, muted: ink };
+    const theme = canvasThemes[canvasAppearanceBaseTheme(normalized, fallback)];
+    return { accent: theme.canvas.lineMajor, muted: theme.canvas.line };
+}
+
+export function scaleCssRgbaAlpha(color: string, factor: number): string {
+    const match = color.trim().match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/i);
+    if (!match) return color;
+    const alpha = Number(match[4] ?? "1") * factor;
+    const formatted = Math.min(1, Math.max(0, alpha)).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+    return `rgba(${match[1]},${match[2]},${match[3]},${formatted})`;
+}
+
 export function normalizeHexColor(value: string) {
     const match = value.trim().match(HEX_COLOR_PATTERN);
     if (!match) return null;

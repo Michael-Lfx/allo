@@ -31,6 +31,7 @@ import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { generationErrorMessage } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { storeGeneratedVideo } from "@oc/services/api/video";
+import { resolveCanvasNodeMediaBlob } from "@oc/lib/canvas/canvas-node-download";
 import { getMediaBlob } from "@oc/services/file-storage";
 import { uploadImage } from "@oc/services/image-storage";
 import type { GenerationTask } from "@oc/services/api/task-center";
@@ -135,7 +136,7 @@ export function useCanvasMediaTools({
     }, [effectiveConfig.model, effectiveConfig.textModel, message, setConnections, setContextMenu, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
 
     const openPortraitTextureEditor = useCallback((node: CanvasNodeData) => {
-        if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
+        if (node.type !== CanvasNodeType.Image || !nodeReferenceImage(node)) {
             message.warning(canvasT("videoCanvas.media.emptyPortrait", "图片节点为空，无法调节人物质感"));
             return;
         }
@@ -435,7 +436,8 @@ export function useCanvasMediaTools({
     }, [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, projectId, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedNodeIds, startGenerationRequest]);
 
     const generateEmotionNode = useCallback(async (node: CanvasNodeData, payload: CanvasImageEmotionPayload) => {
-        if (!node.metadata?.content) return;
+        const source = nodeReferenceImage(node);
+        if (!source) return;
         const baseConfig = buildGenerationConfig(effectiveConfig, node, "image");
         const providerSize = emotionGenerationSize(payload.editRegion);
         const generationConfig = { ...baseConfig, count: "1", size: providerSize, quality: !baseConfig.quality || baseConfig.quality === "auto" ? "high" : baseConfig.quality };
@@ -444,8 +446,6 @@ export function useCanvasMediaTools({
             message.error("表情编辑需要支持蒙版的 OpenAI Images 渠道，当前渠道已拒绝整图重绘");
             return;
         }
-        const source = nodeReferenceImage(node);
-        if (!source) return;
         const editReference = {
             id: `${node.id}-${payload.presetId}-edit-region`,
             name: "emotion-edit-region.png",
@@ -469,11 +469,13 @@ export function useCanvasMediaTools({
         setSelectedConnectionId(null);
         setDialogNodeId(childId);
         const controller = startGenerationRequest(childId, node.id, childId);
+        let sourceUrl = "";
         try {
+            sourceUrl = URL.createObjectURL(await resolveCanvasNodeMediaBlob(node));
             const result = await runBackendCanvasGenerationTask({ projectId, nodeId: childId, mode: "image", prompt: payload.prompt, config: generationConfig, referenceImages: [editReference, characterReference], mask: { id: `${node.id}-emotion-mask`, name: "emotion-mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, signal: controller.signal, metadata: { sourceNodeId: node.id, edit: "emotion", emotion: emotionEdit }, onTaskCreated: (task) => bindGenerationTask(childId, task) });
             const image = result.images?.[0];
             if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
-            const composited = await compositeEmotionImage(node.metadata.content, image.dataUrl, payload.editRegion, payload.faceBox);
+            const composited = await compositeEmotionImage(sourceUrl, image.dataUrl, payload.editRegion, payload.faceBox);
             const uploaded = await uploadImage(composited);
             const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
             setNodes((current) => current.map((item) => item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt: payload.prompt, ...generationMetadata, emotionEdit } } : item));
@@ -482,7 +484,11 @@ export function useCanvasMediaTools({
             const details = generationErrorMessage(error);
             message.error(formatCanvasUserError(details));
             setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
-        } finally { finishGenerationRequest(childId, controller); setRunningNodeId(null); }
+        } finally {
+            if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+            finishGenerationRequest(childId, controller);
+            setRunningNodeId(null);
+        }
     }, [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, projectId, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedConnectionId, setSelectedNodeIds, startGenerationRequest]);
 
     return {

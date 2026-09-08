@@ -56,7 +56,16 @@
     height: 14px;
 }
 
-.canvas-menu-row-detail,
+.canvas-menu-row-detail {
+    display: block;
+    margin-top: 1px;
+    font-size: var(--fs-label, 11px);
+    font-weight: 400;
+    line-height: 1.25;
+    opacity: 0.42;
+    white-space: normal;
+}
+
 .canvas-menu-row-shortcut {
     font-size: var(--fs-label, 11px);
     font-weight: 400;
@@ -159,4 +168,140 @@
 .canvas-send-token:disabled {
     cursor: not-allowed;
     opacity: 0.4;
+}
+
+.canvas-sheet-root {
+    position: fixed;
+    inset: 0;
+    z-index: 1100;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+}
+
+.canvas-sheet-mask {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: color-mix(in srgb, #0f172a 42%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    cursor: default;
+}
+
+.canvas-sheet {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.canvas-sheet-header,
+.canvas-sheet-footer {
+    display: flex;
+    min-height: 44px;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    border-bottom-width: 1px;
+    border-bottom-style: solid;
+    padding: 8px 12px;
+}
+
+.canvas-sheet-footer {
+    justify-content: flex-end;
+    border-bottom: 0;
+    border-top-width: 1px;
+    border-top-style: solid;
+}
+
+.canvas-sheet-body {
+    min-height: 0;
+    flex: 1;
+    overflow: auto;
+    padding: 12px;
+}
+
+.canvas-sheet-btn {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    font: inherit;
+    font-size: var(--fs-label, 11px);
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    outline: none;
+}
+
+.canvas-sheet-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
+.canvas-sheet-input {
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, currentColor 6%, transparent);
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+}
+
+.canvas-sheet-input:focus-visible {
+    border-color: color-mix(in srgb, currentColor 42%, transparent);
+}
+
+.canvas-toggle {
+    position: relative;
+    width: 44px;
+    height: 28px;
+    flex: none;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    cursor: pointer;
+    outline: none;
+}
+
+.canvas-toggle-knob {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.24);
+    transition: transform 120ms ease;
+}
+
+.canvas-toggle-knob[data-on] {
+    transform: translateX(16px);
+}
+
+.canvas-range {
+    width: 100%;
+    height: 28px;
+    margin: 0;
+    cursor: pointer;
+    accent-color: inherit;
+}
+
+.canvas-settings-section {
+    padding-bottom: 10px;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.canvas-settings-section:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
 }

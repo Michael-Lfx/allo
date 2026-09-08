@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
-import { Input, Popover } from "antd";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Search, WandSparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { anchoredOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasGenerationMode } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
@@ -88,14 +90,19 @@ export function CanvasPresetPicker({
 }) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const buttonRef = useRef<HTMLButtonElement>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
     const [internalOpen, setInternalOpen] = useState(false);
     const [query, setQuery] = useState("");
     const actualOpen = open ?? internalOpen;
-    const setOpen = (next: boolean) => {
+    const setOpen = useCallback((next: boolean) => {
         if (!next) setQuery("");
         setInternalOpen(next);
         onOpenChange?.(next);
-    };
+    }, [onOpenChange]);
+    const close = useCallback(() => setOpen(false), [setOpen]);
+    const rect = useAnchoredOverlay(actualOpen, buttonRef, panelRef, close);
+    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 320, placement: "topLeft" }) : null;
     const skillPresets = useMemo(() => {
         return skillReferences.flatMap((reference): CanvasPromptPreset[] => {
             if (!reference.skill) return [];
@@ -117,82 +124,84 @@ export function CanvasPresetPicker({
         return [...BUILTIN_PRESETS.filter((preset) => preset.modes.includes(mode)), ...skillPresets].filter((preset) => !normalized || `${preset.name} ${preset.description}`.toLowerCase().includes(normalized));
     }, [mode, query, skillPresets]);
 
-    const content = (
-        <div data-canvas-no-zoom className="canvas-preset-picker-menu w-[var(--panel-width-compact)] max-w-[calc(100vw-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
-            <Input
-                className="canvas-preset-picker-search"
-                variant="borderless"
-                autoFocus
-                allowClear
-                size="small"
-                prefix={<Search className="size-3.5" />}
-                placeholder={canvasT("videoCanvas.preset.searchPlaceholder", "搜索预设或已加入技能")}
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-            />
-            <div className="thin-scrollbar mt-1 max-h-72 space-y-0.5 overflow-y-auto">
-                {presets.length ? (
-                    presets.map((preset) => (
-                        <button
-                            key={preset.id}
-                            type="button"
-                            className="canvas-preset-picker-option"
-                            onClick={() => {
-                                onSelect(preset);
-                                setOpen(false);
-                            }}
-                        >
-                            <span className="canvas-preset-picker-option-icon" style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}>
-                                <WandSparkles className="size-3.5" />
-                            </span>
-                            <span className="min-w-0 flex-1">
-                                <span className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: theme.node.text }}>
-                                    <span className="truncate">{preset.name}</span>
-                                    <span className="shrink-0 text-[var(--fs-micro)] font-medium" style={{ color: theme.accent.primary }}>
-                                        {preset.source === "skill" ? canvasT("videoCanvas.preset.badgeSkill", "技能") : canvasT("videoCanvas.preset.badgePreset", "预设")}
-                                    </span>
-                                </span>
-                                <span className="mt-0.5 block truncate text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
-                                    {preset.description}
-                                </span>
-                            </span>
-                        </button>
-                    ))
-                ) : (
-                    <div className="py-8 text-center text-xs" style={{ color: theme.node.muted }}>
-                        {canvasT("videoCanvas.preset.noMatch", "没有匹配的预设")}
-                    </div>
-                )}
-                {!query.trim() && !skillPresets.length ? (
-                    <div className="mt-1 border-t border-t-solid border-t-[var(--border)] px-2 py-2 text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
-                        {canvasT("videoCanvas.preset.skillsHint", "画布上的技能节点会出现在这里（例如从首页带风格进入创作时）。")}
-                    </div>
-                ) : null}
-            </div>
-        </div>
-    );
-
     return (
-        <Popover
-            open={actualOpen}
-            onOpenChange={setOpen}
-            trigger="click"
-            placement="topLeft"
-            arrow={false}
-            content={content}
-            classNames={{ root: "canvas-preset-picker-popover", container: "canvas-composer-popover-surface", content: "canvas-composer-popover-content" }}
-        >
+        <>
             <button
+                ref={buttonRef}
                 type="button"
-                className={`canvas-preset-picker-trigger inline-flex shrink-0 items-center justify-center gap-1 rounded-lg transition hover:brightness-110 focus-visible:outline-none ${compact ? "size-6" : dense ? "h-6 px-1.5" : "h-7 px-2"}`}
+                className={`canvas-preset-picker-trigger canvas-chrome-token inline-flex shrink-0 items-center justify-center gap-1 ${compact ? "is-icon !px-0" : dense ? "px-1.5" : "px-2"}`}
                 style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}
                 title={canvasT("videoCanvas.preset.open", "打开提示词预设")}
                 aria-label={canvasT("videoCanvas.preset.open", "打开提示词预设")}
                 aria-expanded={actualOpen}
+                onClick={() => setOpen(!actualOpen)}
             >
                 <WandSparkles className={dense ? "size-3" : "size-3.5"} />
                 {compact ? null : <span className="text-[var(--fs-tiny)] font-semibold">{canvasT("videoCanvas.preset.label", "预设")}</span>}
             </button>
-        </Popover>
+            {actualOpen && geometry
+                ? createPortal(
+                    <div
+                        ref={panelRef}
+                        data-canvas-no-zoom
+                        className="canvas-overlay canvas-preset-picker-menu"
+                        style={overlayPanelStyle(theme, geometry)}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                    >
+                        <label className="flex items-center gap-1.5 rounded-md px-1.5" style={{ background: theme.toolbar.itemHover }}>
+                            <Search className="size-3.5 shrink-0" style={{ color: theme.node.muted }} />
+                            <input
+                                className="canvas-sheet-input h-7 flex-1 border-0 bg-transparent px-0"
+                                autoFocus
+                                placeholder={canvasT("videoCanvas.preset.searchPlaceholder", "搜索预设或已加入技能")}
+                                value={query}
+                                onChange={(event) => setQuery(event.target.value)}
+                            />
+                        </label>
+                        <div className="thin-scrollbar mt-1 max-h-72 space-y-0.5 overflow-y-auto">
+                            {presets.length ? (
+                                presets.map((preset) => (
+                                    <button
+                                        key={preset.id}
+                                        type="button"
+                                        className="canvas-preset-picker-option"
+                                        onClick={() => {
+                                            onSelect(preset);
+                                            setOpen(false);
+                                        }}
+                                    >
+                                        <span className="canvas-preset-picker-option-icon" style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}>
+                                            <WandSparkles className="size-3.5" />
+                                        </span>
+                                        <span className="min-w-0 flex-1">
+                                            <span className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: theme.node.text }}>
+                                                <span className="truncate">{preset.name}</span>
+                                                <span className="shrink-0 text-[var(--fs-micro)] font-medium" style={{ color: theme.accent.primary }}>
+                                                    {preset.source === "skill" ? canvasT("videoCanvas.preset.badgeSkill", "技能") : canvasT("videoCanvas.preset.badgePreset", "预设")}
+                                                </span>
+                                            </span>
+                                            <span className="mt-0.5 block truncate text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
+                                                {preset.description}
+                                            </span>
+                                        </span>
+                                    </button>
+                                ))
+                            ) : (
+                                <div className="py-8 text-center text-xs" style={{ color: theme.node.muted }}>
+                                    {canvasT("videoCanvas.preset.noMatch", "没有匹配的预设")}
+                                </div>
+                            )}
+                            {!query.trim() && !skillPresets.length ? (
+                                <div className="mt-1 border-t px-2 py-2 text-[var(--fs-tiny)] leading-4" style={{ borderColor: theme.toolbar.border, color: theme.node.muted }}>
+                                    {canvasT("videoCanvas.preset.skillsHint", "画布上的技能节点会出现在这里（例如从首页带风格进入创作时）。")}
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>,
+                    document.body,
+                )
+                : null}
+        </>
     );
 }
