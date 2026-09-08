@@ -87,6 +87,53 @@ pub(super) fn strip_markdown_fences(raw: &str) -> String {
 /// escaping errors (raw newlines, LaTeX backslashes) and trailing commas.
 /// Shared with the reflection-grading parser in `service.rs`, which faces the
 /// same fence/prose habits from the same models.
+/// mermaid 节点/边文本含 | { } 等特殊字符且未整体双引号包裹时自动补引号
+/// ——learnhub 实测的「渲染降级为源码」高频根因,确定性后处理零风险
+/// (只动含高信号字符且未带引号的方括号标签)。
+pub(crate) fn fix_mermaid_quotes(body: &str) -> String {
+    let mut fixed = Vec::with_capacity(body.lines().count());
+    let mut in_mermaid = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if in_mermaid {
+                in_mermaid = false;
+            } else if trimmed[3..].trim() == "mermaid" {
+                in_mermaid = true;
+            }
+            fixed.push(line.to_owned());
+            continue;
+        }
+        if !in_mermaid {
+            fixed.push(line.to_owned());
+            continue;
+        }
+        fixed.push(fix_mermaid_line(line));
+    }
+    fixed.join("\n")
+}
+
+fn fix_mermaid_line(line: &str) -> String {
+    let open = match line.find('[') {
+        Some(at) => at,
+        None => return line.into(),
+    };
+    let close = match line.rfind(']') {
+        Some(at) => at,
+        None => return line.into(),
+    };
+    if close <= open + 1 {
+        return line.into();
+    }
+    let label = &line[open + 1..close];
+    let high_signal = label.contains(['|', '{', '"', '#']);
+    let already_quoted = label.trim_start().starts_with('"');
+    if !high_signal || already_quoted {
+        return line.into();
+    }
+    format!("{}[\"{}\"]{}", &line[..open + 1], label, &line[close..])
+}
+
 pub(crate) fn parse_json_object<T: DeserializeOwned>(raw: &str) -> Result<T, String> {
     let mut last_error = "no complete JSON object found".to_owned();
     let mut scan_from = 0usize;

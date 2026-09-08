@@ -647,7 +647,7 @@ fn ls_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
 fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_set_section_manifest".into(),
-        description: "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）、visual（可视化形态：公式/函数图/示意图/流程图/图表/表格/文字）。节数低 1-3 / 中 3-5 / 高 4-6，硬上限 8；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。".into(),
+        description: "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）、visual（可视化形态：公式/函数图/示意图/流程图/图表/表格/无）。节数低 1-3 / 中 3-5 / 高 4-6，硬上限 8；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -663,7 +663,7 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
                             "kind": { "type": "string", "enum": ["concept", "example", "demo", "summary", "practice"] },
                             "title": { "type": "string" },
                             "points": { "type": "string" },
-                            "visual": { "type": "string", "enum": ["公式", "函数图", "示意图", "流程图", "图表", "表格", "文字"] }
+                            "visual": { "type": "string", "enum": ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"] }
                         },
                         "required": ["section_key", "kind", "title", "visual"]
                     }
@@ -976,6 +976,7 @@ mod tests {
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,
+            forbidden_concepts: String::new(),
         }
     }
 

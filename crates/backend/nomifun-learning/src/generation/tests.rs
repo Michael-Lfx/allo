@@ -138,8 +138,8 @@
         // Prose-only concept fails the visual-first gate...
         let prose_only = SectionPack { body_md: prose.clone(), ..concept.clone() };
         assert!(prose_only.validate_body().is_err());
-        // ...unless the outline explicitly declared 文字.
-        let text_exempt = SectionPack { visual: "文字".into(), ..prose_only.clone() };
+        // ...unless the outline explicitly declared 无.
+        let text_exempt = SectionPack { visual: "无".into(), ..prose_only.clone() };
         assert!(text_exempt.validate_body().is_ok());
         // Too short fails.
         let short = SectionPack { body_md: "太短。".into(), ..concept.clone() };
@@ -336,7 +336,8 @@
                 distractors: Vec::new(),
                 tol: None,
                 section_key: None,
-            },
+                        difficulty: None,
+},
             ActivityPack {
                 kind: ActivityKind::TrueFalse,
                 prompt: "q2".into(),
@@ -347,7 +348,8 @@
                 distractors: Vec::new(),
                 tol: None,
                 section_key: None,
-            },
+                        difficulty: None,
+},
         ];
         let reflection = |prompt: &str| ActivityPack {
             kind: ActivityKind::Reflection,
@@ -359,7 +361,8 @@
             distractors: Vec::new(),
             tol: None,
             section_key: None,
-        };
+                difficulty: None,
+};
 
         // Up to three AI-graded questions pass (validate_shape gate each).
         let mut at_cap = objective.clone();
@@ -404,7 +407,8 @@
             distractors: vec!["length".into(), "norm".into()],
             tol: None,
             section_key: None,
-        };
+                difficulty: None,
+};
         assert!(base.validate_shape((3, 5), true).is_ok());
 
         let no_blank = ActivityPack { prompt: "A vector is a quantity.".into(), ..base.clone() };
@@ -621,6 +625,8 @@
             &manifest,
             None,
             Some("下一课"),
+            "",
+            ComplexityTier::Mid,
         );
         assert!(body_prompt.contains("## 本节任务"));
         assert!(body_prompt.contains("节类型：概念"));
