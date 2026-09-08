@@ -6,6 +6,7 @@ mod common;
 
 use axum::http::StatusCode;
 use nomifun_api_types::McpServerId;
+use nomifun_db::{IMcpServerRepository, SqliteMcpServerRepository};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -588,6 +589,28 @@ async fn toggle_server_enables_then_disables() {
     let mcp_server_id = assert_mcp_server_id(&json["data"]);
     assert!(!json["data"]["enabled"].as_bool().unwrap());
 
+    // Enabling before a successful connection test is rejected.
+    let req = json_with_token(
+        "POST",
+        &format!("/api/mcp/servers/{mcp_server_id}/toggle"),
+        json!({}),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let json = body_json(resp).await;
+    assert!(json["error"].as_str().unwrap().contains("connection test"));
+
+    // Simulate the persisted result of a successful test. The connection-test
+    // endpoint owns the probing; this fixture only supplies its durable state
+    // so the toggle contract can be exercised without spawning a real server.
+    let mcp_repo = SqliteMcpServerRepository::new(services.database.pool().clone());
+    mcp_repo
+        .update_status(&mcp_server_id, "connected", Some(nomifun_common::now_ms()))
+        .await
+        .unwrap();
+
     // Toggle → enabled
     let req = json_with_token(
         "POST",
@@ -614,6 +637,112 @@ async fn toggle_server_enables_then_disables() {
     let json = body_json(resp).await;
     assert_eq!(assert_mcp_server_id(&json["data"]), mcp_server_id);
     assert!(!json["data"]["enabled"].as_bool().unwrap());
+}
+
+// ===========================================================================
+// A-1..A-3: Activate (test and enable)
+// ===========================================================================
+
+#[tokio::test]
+async fn activate_with_failing_command_stays_disabled() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    // Create a stdio server whose command cannot exist.
+    let req = json_with_token(
+        "POST",
+        "/api/mcp/servers",
+        json!({
+            "name": "activate-fail",
+            "transport": { "type": "stdio", "command": "definitely-not-a-real-mcp-command-xyz" }
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let json = body_json(resp).await;
+    let mcp_server_id = assert_mcp_server_id(&json["data"]);
+
+    // Activate runs the real test against the persisted config and must keep
+    // the server disabled while reporting the failure as data.
+    let req = json_with_token(
+        "POST",
+        &format!("/api/mcp/servers/{mcp_server_id}/activate"),
+        json!({}),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(!json["data"]["enabled"].as_bool().unwrap());
+    assert!(!json["data"]["test"]["success"].as_bool().unwrap());
+    let reason = json["data"]["enable_rejected_reason"].as_str().unwrap();
+    assert!(!reason.trim().is_empty());
+
+    // The persisted row reflects the failed test.
+    let resp = app
+        .clone()
+        .oneshot(get_with_token(
+            &format!("/api/mcp/servers/{mcp_server_id}"),
+            &token,
+        ))
+        .await
+        .unwrap();
+    let json = body_json(resp).await;
+    assert!(!json["data"]["enabled"].as_bool().unwrap());
+    assert_eq!(json["data"]["last_test_status"], "error");
+}
+
+#[tokio::test]
+async fn test_by_id_with_failing_command_persists_error() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    let req = json_with_token(
+        "POST",
+        "/api/mcp/servers",
+        json!({
+            "name": "test-by-id-fail",
+            "transport": { "type": "stdio", "command": "definitely-not-a-real-mcp-command-xyz" }
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let json = body_json(resp).await;
+    let mcp_server_id = assert_mcp_server_id(&json["data"]);
+
+    let req = json_with_token(
+        "POST",
+        &format!("/api/mcp/servers/{mcp_server_id}/test"),
+        json!({}),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(!json["data"]["test"]["success"].as_bool().unwrap());
+    assert!(!json["data"]["server"]["enabled"].as_bool().unwrap());
+    assert_eq!(json["data"]["server"]["last_test_status"], "error");
+}
+
+#[tokio::test]
+async fn activate_nonexistent_server_returns_404() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    let req = json_with_token(
+        "POST",
+        &format!("/api/mcp/servers/{}/activate", missing_mcp_server_id()),
+        json!({}),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

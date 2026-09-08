@@ -329,6 +329,7 @@ pub async fn create_router(services: &AppServices) -> Router {
         file_service: states.file.file_service.clone(),
         shell_service: states.shell.shell_service.clone(),
         mcp_config_service: states.mcp.config_service.clone(),
+        mcp_activation_service: states.mcp.activation_service.clone(),
         extension_registry: states.extension.registry.clone(),
         hub_index_manager: states.hub.index_manager.clone(),
         hub_installer: states.hub.installer.clone(),

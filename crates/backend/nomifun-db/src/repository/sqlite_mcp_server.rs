@@ -167,8 +167,8 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         sqlx::query(
             "UPDATE mcp_servers SET \
                 name = ?, description = ?, enabled = ?, transport_type = ?, \
-                transport_config = ?, tools = ?, original_json = ?, \
-                builtin = ?, deleted_at = ?, updated_at = ? \
+                transport_config = ?, tools = ?, last_test_status = ?, last_connected = ?, original_json = ?, \
+                builtin = ?, deleted_at = ?, updated_at = ?, config_revision = config_revision + 1 \
              WHERE mcp_server_id = ?",
         )
         .bind(&merged.name)
@@ -177,6 +177,8 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         .bind(&merged.transport_type)
         .bind(&merged.transport_config)
         .bind(&merged.tools)
+        .bind(&merged.last_test_status)
+        .bind(merged.last_connected)
         .bind(&merged.original_json)
         .bind(merged.builtin)
         .bind(merged.deleted_at)
@@ -294,6 +296,53 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
         }
         Ok(())
     }
+
+    async fn config_revision(&self, mcp_server_id: &str) -> Result<i64, DbError> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT config_revision FROM mcp_servers \
+             WHERE mcp_server_id = ? AND deleted_at IS NULL",
+        )
+        .bind(mcp_server_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("MCP server '{mcp_server_id}' not found")))
+    }
+
+    async fn complete_activation(
+        &self,
+        mcp_server_id: &str,
+        expected_revision: i64,
+        status: &str,
+        last_connected: Option<TimestampMs>,
+        tools: Option<&str>,
+        enabled: bool,
+    ) -> Result<bool, DbError> {
+        let now = nomifun_common::now_ms();
+        let updated = sqlx::query(
+            "UPDATE mcp_servers SET last_test_status = ?, \
+             last_connected = COALESCE(?, last_connected), tools = ?, enabled = ?, \
+             updated_at = ? \
+             WHERE mcp_server_id = ? AND deleted_at IS NULL AND config_revision = ?",
+        )
+        .bind(status)
+        .bind(last_connected)
+        .bind(tools)
+        .bind(enabled)
+        .bind(now)
+        .bind(mcp_server_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+
+        if updated.rows_affected() > 0 {
+            return Ok(true);
+        }
+
+        if self.find_by_id(mcp_server_id).await?.is_none() {
+            return Err(DbError::NotFound(format!("MCP server '{mcp_server_id}' not found")));
+        }
+        Ok(false)
+    }
 }
 
 fn merge_update(existing: McpServerRow, params: UpdateMcpServerParams<'_>) -> McpServerRow {
@@ -309,8 +358,11 @@ fn merge_update(existing: McpServerRow, params: UpdateMcpServerParams<'_>) -> Mc
             .unwrap_or(&existing.transport_config)
             .to_string(),
         tools: params.tools.map_or(existing.tools, |v| v.map(String::from)),
-        last_test_status: existing.last_test_status,
-        last_connected: existing.last_connected,
+        last_test_status: params
+            .last_test_status
+            .unwrap_or(&existing.last_test_status)
+            .to_owned(),
+        last_connected: params.last_connected.unwrap_or(existing.last_connected),
         original_json: params
             .original_json
             .map_or(existing.original_json, |v| v.map(String::from)),
@@ -502,6 +554,41 @@ mod tests {
 
         assert!(updated.description.is_none());
         assert!(updated.original_json.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_can_clear_connection_state_after_configuration_change() {
+        let (repo, _db) = setup().await;
+        let created = repo
+            .create(CreateMcpServerParams {
+                tools: Some(r#"[{"name":"read_file"}]"#),
+                ..stdio_params()
+            })
+            .await
+            .unwrap();
+        let connected_at = nomifun_common::now_ms();
+        repo.update_status(&created.mcp_server_id, "connected", Some(connected_at))
+            .await
+            .unwrap();
+
+        let updated = repo
+            .update(
+                &created.mcp_server_id,
+                UpdateMcpServerParams {
+                    enabled: Some(false),
+                    tools: Some(None),
+                    last_test_status: Some("disconnected"),
+                    last_connected: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!updated.enabled);
+        assert_eq!(updated.last_test_status, "disconnected");
+        assert!(updated.last_connected.is_none());
+        assert!(updated.tools.is_none());
     }
 
     #[tokio::test]

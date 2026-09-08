@@ -72,9 +72,9 @@ pub struct CreateMcpServerRequest {
 
 /// Request item for `POST /api/mcp/servers/import`.
 ///
-/// Import can preserve the enabled state from a legacy source. Plain create
-/// intentionally does not accept `enabled`; the UI persists the default
-/// enabled flag in a follow-up toggle request.
+/// Import requests are always persisted disabled. The optional field remains
+/// accepted for wire compatibility, but enabling is a separate test-gated
+/// toggle operation.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportMcpServerRequest {
@@ -174,6 +174,37 @@ pub struct TestMcpConnectionRequest {
     pub mcp_server_id: Option<McpServerId>,
     pub name: String,
     pub transport: McpTransport,
+}
+
+/// Response for `POST /api/mcp/servers/{mcp_server_id}/test`.
+///
+/// The tested transport is read from the persisted row only; clients never
+/// re-submit it. The connection test itself never fails the HTTP request —
+/// failures are encoded in `test` and persisted via `server.last_test_status`.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpTestByIdResponse {
+    pub server: McpServerResponse,
+    pub test: McpConnectionTestResult,
+    #[serde(default)]
+    pub config_changed: bool,
+}
+
+/// Response for `POST /api/mcp/servers/{mcp_server_id}/activate` (test-and-enable).
+///
+/// `enabled` is `true` only when the test succeeded against an unchanged
+/// persisted configuration. When enabling was refused, `enable_rejected_reason`
+/// carries the reason and the server stays disabled.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpActivationResponse {
+    pub server: McpServerResponse,
+    pub test: McpConnectionTestResult,
+    pub enabled: bool,
+    #[serde(default)]
+    pub needs_auth: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_rejected_reason: Option<String>,
+    #[serde(default)]
+    pub config_changed: bool,
 }
 
 /// Authentication method detected during connection test.

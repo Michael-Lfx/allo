@@ -1,4 +1,5 @@
 //! MCP server configuration, multi-agent sync adapters, OAuth, and connection testing.
+pub mod activation;
 pub mod adapter;
 pub mod adapters;
 pub mod connection_test;
@@ -10,6 +11,7 @@ pub mod session_injection;
 pub mod sync_service;
 pub mod types;
 
+pub use activation::{McpActivationService, McpConnectionTester};
 pub use adapter::{DetectedServer, McpAgentAdapter};
 pub use adapters::{
     ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, GeminiAdapter, NomiAdapter, NomifunAdapter, OpencodeAdapter,
