@@ -536,6 +536,11 @@ pub struct SkillHubMarketSubCategory {
 pub struct SkillHubMarketItem {
     /// Stable market identity: `skillhub:{owner}/skills/{slug}`.
     pub id: String,
+    /// Public namespace owner, not the account owner. SkillHub routes expose
+    /// `namespace.handle` when present (enterprise entries commonly differ
+    /// from their account identity like `u_d95b6787`); only entries with no
+    /// namespace fall back to the account `ownerName`. Account ownership is
+    /// never exposed through this DTO.
     pub owner: String,
     pub slug: String,
     pub market_source: SkillHubMarketContentSource,

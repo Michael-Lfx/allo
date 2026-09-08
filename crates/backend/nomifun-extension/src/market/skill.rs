@@ -439,7 +439,6 @@ async fn install_market_skill_with_downloader_and_source<D: MarketSkillDownloade
     // mapping lookup happens before download so two concurrent requests for a
     // SkillHub entry cannot both fetch the same archive.
     let _commit_guard = super::market_commit_lock().lock().await;
-    let detail = downloader.prepare(&target).await?;
     let market_id = market_skill_id(&target);
     let mut mappings = skill_service::load_market_skill_mappings(paths).await;
     if let Some(mapping) = mappings.get(&market_id) {
@@ -454,6 +453,11 @@ async fn install_market_skill_with_downloader_and_source<D: MarketSkillDownloade
             ));
         }
     }
+    // The exact detail is re-fetched only when the archive is actually
+    // needed. A valid installed entry reuses from the canonical mapping
+    // alone, so an upstream removal or outage cannot turn a local reuse
+    // into a failure.
+    let detail = downloader.prepare(&target).await?;
 
     let artifact = downloader.download(&target, &detail).await?;
     if artifact.bytes.len() as u64 > MAX_MARKET_SKILL_ARCHIVE_BYTES {
@@ -778,6 +782,29 @@ mod tests {
         }
     }
 
+    /// Downloader whose detail lookup is unreachable. A correctly installed
+    /// market entry must never reach it: reuse short-circuits from the
+    /// canonical mapping alone.
+    struct OfflinePrepareDownloader;
+
+    #[async_trait::async_trait]
+    impl MarketSkillDownloader for OfflinePrepareDownloader {
+        async fn prepare(
+            &self,
+            _target: &NativeMarketSkill,
+        ) -> Result<RemoteSkillDetail, MarketSkillInstallError> {
+            Err(MarketSkillInstallError::Network)
+        }
+
+        async fn download(
+            &self,
+            _target: &NativeMarketSkill,
+            _detail: &RemoteSkillDetail,
+        ) -> Result<DownloadedArtifact, MarketSkillInstallError> {
+            panic!("reused install must not download");
+        }
+    }
+
     fn make_paths() -> (TempDir, SkillPaths) {
         let tmp = TempDir::new().unwrap();
         let paths = SkillPaths {
@@ -948,6 +975,44 @@ mod tests {
         .unwrap();
         assert_eq!(second_skill.status, SkillMarketInstallStatus::Installed);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn reused_install_does_not_require_upstream_detail() {
+        let (_tmp, paths) = make_paths();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let target = || NativeMarketSkill::SkillHub {
+            owner: "tencent-adm".into(),
+            slug: "agently-mail".into(),
+        };
+
+        // First install writes the canonical mapping.
+        install_market_skill_with_downloader(
+            &paths,
+            SKILLHUB_SOURCE,
+            target(),
+            &FakeDownloader {
+                archive: make_archive(&["agently-mail"]),
+                calls: calls.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // A second click while the upstream detail lookup is unavailable must
+        // still reuse from the mapping alone — the downloader is never
+        // reached, so an outage or removal cannot block a local reuse.
+        let response = install_market_skill_with_downloader(
+            &paths,
+            SKILLHUB_SOURCE,
+            target(),
+            &OfflinePrepareDownloader,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status, SkillMarketInstallStatus::Reused);
+        assert_eq!(response.skill_id, "user:agently-mail");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1691,6 +1756,28 @@ mod tests {
                 extra_headers: vec![("Retry-After", "0")],
                 ..stub("429 Too Many Requests", "application/json", b"{\"error\":\"too many requests\"}".to_vec())
             },
+            stub("200 OK", "application/zip", archive.clone()),
+        ])
+        .await;
+        let downloader = HttpMarketSkillDownloader::for_test(&fixture.base_url);
+
+        let artifact = downloader
+            .download(&skillhub_target("owner", "demo"))
+            .await
+            .unwrap();
+        assert_eq!(artifact.bytes, archive);
+        assert_eq!(fixture.requests.lock().unwrap().len(), 3);
+        fixture.server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_skillhub_retries_server_error_download_then_succeeds() {
+        let archive = archive_for("demo", "demo");
+        let fixture = spawn_recorded_fixture(vec![
+            stub("200 OK", "application/json", detail_json("owner", Some("owner"), "demo", "1.2.3")),
+            // 5xx is retried inside the send helper alongside 429: the first
+            // attempt fails on a server error, the fresh request lands.
+            stub("502 Bad Gateway", "application/json", b"{\"error\":\"bad gateway\"}".to_vec()),
             stub("200 OK", "application/zip", archive.clone()),
         ])
         .await;
