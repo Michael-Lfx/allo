@@ -264,7 +264,13 @@ fn parse_skillhub_query_response(
 }
 
 fn parse_skillhub_item(raw: &Value) -> Option<SkillHubMarketItem> {
-    let owner = json_text(raw, "ownerName", 96)?;
+    // `ownerName` is the account owner returned by the upstream API. Public
+    // SkillHub URLs use the namespace handle when one is present (enterprise
+    // entries commonly have different account and namespace identities).
+    let owner = match raw.get("namespace") {
+        None | Some(Value::Null) => json_text(raw, "ownerName", 96)?,
+        Some(namespace) => json_text(namespace, "handle", 96)?,
+    };
     let slug = json_text(raw, "slug", 96)?;
     if !is_market_slug(&owner) || !is_market_slug(&slug) {
         return None;
@@ -538,7 +544,8 @@ mod tests {
                 "total": 1,
                 "skills": [{
                     "slug": "pdf-tools",
-                    "ownerName": "alice",
+                    "ownerName": "u_d95b6787",
+                    "namespace": {"handle": "tencent-adm"},
                     "name": "PDF tools",
                     "description": "English",
                     "description_zh": "中文描述",
@@ -559,8 +566,9 @@ mod tests {
             }
         }));
         let item = &response.items[0];
-        assert_eq!(item.owner, "alice");
-        assert_eq!(item.id, "skillhub:alice/skills/pdf-tools");
+        assert_eq!(item.owner, "tencent-adm");
+        assert_eq!(item.id, "skillhub:tencent-adm/skills/pdf-tools");
+        assert_eq!(item.url, "https://skillhub.cn/skills/tencent-adm/pdf-tools");
         assert_eq!(item.description, "中文描述");
         assert_eq!(item.sub_categories[0].key, "document");
         assert_eq!(item.requires_api_key, Some(false));
@@ -568,6 +576,24 @@ mod tests {
         assert_eq!(item.avatar, None);
         assert_eq!(item.market_source, SkillHubMarketContentSource::Skillhub);
         assert_eq!(item.upstream_source.as_deref(), Some("enterprise"));
+    }
+
+    #[test]
+    fn rejects_present_namespace_without_a_public_handle() {
+        let value = serde_json::json!({
+            "code": 0,
+            "data": {
+                "total": 1,
+                "skills": [{
+                    "slug": "pdf-tools",
+                    "ownerName": "u_d95b6787",
+                    "namespace": {"displayName": "Tencent ADM"},
+                    "version": "1.0.0"
+                }]
+            }
+        });
+
+        assert!(parse_skillhub_query_response(&value, 1, 20).is_err());
     }
 
     #[test]
