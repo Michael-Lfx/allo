@@ -48,6 +48,7 @@ describe('SkillHub market data boundaries', () => {
       source: 'skillhub' as const,
     };
     const key = skillHubMarketCacheKey(base, 1);
+    expect(key.startsWith('nomifun.skillHubMarket.v8.query:')).toBe(true);
     expect(key).toContain('"keyword":"pdf"');
     expect(key).toContain('"category":"content"');
     expect(key).toContain('"requires_api_key":true');

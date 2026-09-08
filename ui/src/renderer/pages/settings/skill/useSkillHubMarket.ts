@@ -11,7 +11,7 @@ import { ipcBridge } from '@/common';
 import { isSafeMarketAvatarUrl } from './skillMarket';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-const MARKET_CACHE_VERSION = 'v7';
+const MARKET_CACHE_VERSION = 'v8';
 const MARKET_CACHE_PREFIX = `nomifun.skillHubMarket.${MARKET_CACHE_VERSION}`;
 const MARKET_CATEGORIES_CACHE_KEY = `${MARKET_CACHE_PREFIX}.categories`;
 const DEFAULT_PAGE_SIZE = 20;
