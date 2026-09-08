@@ -127,8 +127,9 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     .await
     .expect("tables");
 
-    // 048 学习图：+learning_graph_prerequisites。新增产品表时必须同步 +1。
-    assert_eq!(tables.len(), 107);
+    // 048 学习图:+learning_graph_prerequisites;049 课时分节:
+    // +learning_lesson_sections。新增产品表时必须同步 +1。
+    assert_eq!(tables.len(), 108);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
