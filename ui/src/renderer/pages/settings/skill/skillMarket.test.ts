@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   filterSkillMarketItems,
+  managedInstallErrorMessage,
   normalizeSkillMarketErrors,
   normalizeSkillMarketItem,
   normalizeSkillMarketItems,
@@ -148,5 +149,16 @@ describe('skill market helpers', () => {
       '来自 vercel-labs/skills 的 SkillHub 榜单技能。'
     );
     expect(translateMarketDescription('GitHub coding helper', item).includes('开发')).toBe(true);
+  });
+
+  test('maps managed install error codes to i18n keys with fallbacks', () => {
+    expect(managedInstallErrorMessage('MARKET_SKILL_BUNDLE_UNSUPPORTED')).toEqual({
+      key: 'settings.skillsMarket.installBundleUnsupported',
+      fallback: '该条目是技能合集，暂不支持单技能安装。',
+    });
+    expect(managedInstallErrorMessage('MARKET_SKILL_NOT_FOUND').key).toBe(
+      'settings.skillsMarket.installNotFound'
+    );
+    expect(managedInstallErrorMessage('SOMETHING_ELSE').key).toBe('settings.skillsMarket.installError');
   });
 });

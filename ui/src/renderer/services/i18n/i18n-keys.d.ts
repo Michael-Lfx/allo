@@ -6474,6 +6474,7 @@ export type I18nKey =
   | 'settings.skillsMarket.empty'
   | 'settings.skillsMarket.install'
   | 'settings.skillsMarket.installArtifactInvalid'
+  | 'settings.skillsMarket.installBundleUnsupported'
   | 'settings.skillsMarket.installConflict'
   | 'settings.skillsMarket.installError'
   | 'settings.skillsMarket.installInvalidId'

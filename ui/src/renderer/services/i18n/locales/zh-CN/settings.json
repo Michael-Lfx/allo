@@ -119,6 +119,7 @@
     "installConflict": "该技能名称已存在，请前往已安装 Skill 处理。",
     "installArtifactInvalid": "下载的技能包无法通过安全校验。",
     "installManifestInvalid": "下载的技能清单无效。",
+    "installBundleUnsupported": "该条目是技能合集，暂不支持单技能安装。",
     "installNetwork": "网络暂时不可用，请重试。",
     "installTimeout": "下载超时，请重试。",
     "installLocalIo": "本地技能目录暂时不可用，请重试。"

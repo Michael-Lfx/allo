@@ -119,6 +119,7 @@
     "installConflict": "A Skill with this name already exists. Manage it from Installed Skills.",
     "installArtifactInvalid": "The downloaded Skill package failed safety validation.",
     "installManifestInvalid": "The downloaded Skill manifest is invalid.",
+    "installBundleUnsupported": "This entry is a multi-Skill bundle. Installing a single Skill is not supported yet.",
     "installNetwork": "The network is temporarily unavailable. Please try again.",
     "installTimeout": "The download timed out. Please try again.",
     "installLocalIo": "The local Skill directory is temporarily unavailable. Please try again."
