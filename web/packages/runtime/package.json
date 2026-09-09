@@ -1,7 +1,7 @@
 {
   "name": "@flowy-agent-store/runtime-win32-x64",
   "version": "0.1.0-beta.2",
-  "description": "Agent Store App Server runtime binary for win32-x64 (vendored agent-store.exe)",
+  "description": "Agent Store App Server runtime binary for win32-x64 (vendored flowy-agent-store.exe)",
   "type": "module",
   "license": "Apache-2.0",
   "os": [
