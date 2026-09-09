@@ -10,12 +10,16 @@
 
 import type { AgentRunInput, RunEvent, RunReceipt, RunStatus, RunView } from "@agent-store/protocol";
 import type { RunClient } from "./runs";
+import { aggregateTurnResult, type TurnResult } from "./turn-result";
 
 /** Poll cadence while waiting for a terminal state (authoritative backstop). */
 const POLL_INTERVAL_MS = 3000;
 
 /** Absolute cap so a wedged run cannot hang `finished` forever. */
 const FINISHED_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Live events kept for the terminal aggregation (bounded). */
+const MAX_BUFFERED_EVENTS = 2000;
 
 const TERMINAL: readonly RunStatus[] = ["completed", "failed", "cancelled"];
 
@@ -33,19 +37,22 @@ export class AgentRunHandle {
   readonly runId: string;
   readonly receipt: RunReceipt;
   private readonly runClient: RunClient;
-  private readonly poll: (runId: string) => Promise<{ status: RunStatus }>;
+  private readonly poll: (runId: string) => Promise<RunView>;
   private subscription: import("./runs").EventSubscription | null;
-  private terminalView: { status: RunStatus } | null = null;
-  private finishWaiters: Array<(error: unknown, view?: { status: RunStatus }) => void> = [];
+  private terminalView: RunView | null = null;
+  private terminalResult: TurnResult | null = null;
+  private finishWaiters: Array<(error: unknown, result?: TurnResult) => void> = [];
   private iteratorQueue: RunEvent[] = [];
   private iteratorWaiters: Array<(value: IteratorResult<RunEvent>) => void> = [];
   private iteratorClosed = false;
+  private readonly bufferedEvents: RunEvent[] = [];
+  private readonly bufferedSequences = new Set<number>();
 
   constructor(
     runClient: RunClient,
     receipt: RunReceipt,
     subscription: import("./runs").EventSubscription | null,
-    poll: (runId: string) => Promise<{ status: RunStatus }>,
+    poll: (runId: string) => Promise<RunView>,
   ) {
     this.runId = receipt.run_id;
     this.receipt = receipt;
@@ -56,18 +63,22 @@ export class AgentRunHandle {
     subscription?.onError(() => undefined);
   }
 
-  /** Resolves with the authoritative terminal view (≈ `thread.run()`). */
-  get finished(): Promise<{ status: RunStatus }> {
-    if (this.terminalView) {
-      return Promise.resolve(this.terminalView);
+  /**
+   * Resolves with the aggregated terminal turn result (≈ `thread.run()`):
+   * authoritative status/version plus `final_response`, output files, the
+   * persisted event stream and derived items.
+   */
+  get finished(): Promise<TurnResult> {
+    if (this.terminalResult) {
+      return Promise.resolve(this.terminalResult);
     }
     return new Promise((resolve, reject) => {
-      this.finishWaiters.push((error, view) => {
+      this.finishWaiters.push((error, result) => {
         if (error) {
           reject(error);
           return;
         }
-        resolve(view as { status: RunStatus });
+        resolve(result as TurnResult);
       });
       this.ensureTerminalWatch();
     });
@@ -124,12 +135,34 @@ export class AgentRunHandle {
   }
 
   private pushEvent(event: RunEvent): void {
+    if (!this.bufferedSequences.has(event.sequence)) {
+      this.bufferedSequences.add(event.sequence);
+      this.bufferedEvents.push(event);
+      if (this.bufferedEvents.length > MAX_BUFFERED_EVENTS) {
+        const dropped = this.bufferedEvents.shift();
+        if (dropped) this.bufferedSequences.delete(dropped.sequence);
+      }
+    }
     const waiter = this.iteratorWaiters.shift();
     if (waiter) {
       waiter({ value: event, done: false });
       return;
     }
     this.iteratorQueue.push(event);
+  }
+
+  /**
+   * Authoritative backfill for `finished`: `run/result` (terminal summary)
+   * plus the persisted `run/events` stream, falling back to the live buffer
+   * when the query fails.
+   */
+  private async aggregate(view: RunView): Promise<TurnResult> {
+    const result = await this.runClient.result(this.runId).catch(() => null);
+    const events = await this.runClient
+      .events({ runId: this.runId, afterSequence: 0, limit: MAX_BUFFERED_EVENTS })
+      .catch(() => this.bufferedEvents);
+    const source = events.length > 0 ? events : this.bufferedEvents;
+    return aggregateTurnResult(result ?? view, source);
   }
 
   /** Poll run/get until terminal, then resolve all `finished` waiters once. */
@@ -154,8 +187,9 @@ export class AgentRunHandle {
           }
           return;
         }
+        this.terminalResult = await this.aggregate(this.terminalView);
         for (const waiter of waiters) {
-          waiter(undefined, this.terminalView);
+          waiter(undefined, this.terminalResult);
         }
       } catch (error) {
         const waiters = this.finishWaiters;
