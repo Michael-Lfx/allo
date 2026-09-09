@@ -2208,14 +2208,16 @@ async fn execute_agent_run(
             &resolved_preset_id,
             PresetTarget::ExecutionStep,
             None,
-            overrides,
+            overrides.clone(),
         )
         .await?;
     // Installed agent-store presets are created without a model binding
     // (the definition payload has no model mandate). A run without a
     // resolved model is rejected at the runtime boundary, so fall back to
     // the owner's first enabled provider/model when the preset left the
-    // model unbound.
+    // model unbound. The fallback must keep every mention override
+    // (`include_skills`, `mcp_server_ids`, ...): re-resolving from
+    // `PresetOverrides::default()` silently drops them.
     if snapshot.resolved_model.is_none() {
         if let Some(model) = default_run_model(state).await? {
             let retry = preset_service
@@ -2223,11 +2225,7 @@ async fn execute_agent_run(
                     &resolved_preset_id,
                     PresetTarget::ExecutionStep,
                     None,
-                    PresetOverrides {
-                        model: Some(model.model.clone()),
-                        provider_id: model.provider_id.clone(),
-                        ..Default::default()
-                    },
+                    with_default_model(overrides, &model),
                 )
                 .await?;
             snapshot = retry;
@@ -3685,6 +3683,21 @@ async fn default_run_model(
             model: provider.models[0].clone(),
             required: true,
         }))
+}
+
+/// Merge the owner's default model into an existing override set. Mention
+/// overrides (`include_skills`, `mcp_server_ids`, ...) must survive the model
+/// fallback: re-resolving from a fresh `PresetOverrides` silently drops them
+/// and the run loses every skill/connector the caller mentioned (WP-2 B5).
+fn with_default_model(
+    base: PresetOverrides,
+    model: &nomifun_api_types::ModelPreference,
+) -> PresetOverrides {
+    PresetOverrides {
+        model: Some(model.model.clone()),
+        provider_id: model.provider_id.clone(),
+        ..base
+    }
 }
 
 fn request_fingerprint<T: Serialize>(request: &T) -> Result<String, AppServerError> {    let bytes = serde_json::to_vec(request).map_err(|error| {
@@ -5166,6 +5179,33 @@ mod tests {
         assert_eq!(overrides.include_skills, vec!["wb-demo-release-notes"]);
         assert_eq!(
             overrides.mcp_server_ids,
+            Some(vec!["0190f5fe-7c00-7a00-8000-000000000020".into()])
+        );
+    }
+
+    #[test]
+    fn default_model_fallback_keeps_mention_overrides() {
+        // WP-2 B5: the owner-default model fallback re-resolves the preset,
+        // and that second resolve must not drop the mention overrides.
+        let base = PresetOverrides {
+            include_skills: vec!["legacy:hello".into()],
+            mcp_server_ids: Some(vec!["0190f5fe-7c00-7a00-8000-000000000020".into()]),
+            ..Default::default()
+        };
+        let model = nomifun_api_types::ModelPreference {
+            provider_id: Some("0190f5fe-7c00-7a00-8000-000000000001".into()),
+            model: "mimo-v2.5".into(),
+            required: true,
+        };
+        let merged = with_default_model(base, &model);
+        assert_eq!(merged.model.as_deref(), Some("mimo-v2.5"));
+        assert_eq!(
+            merged.provider_id.as_deref(),
+            Some("0190f5fe-7c00-7a00-8000-000000000001")
+        );
+        assert_eq!(merged.include_skills, vec!["legacy:hello"]);
+        assert_eq!(
+            merged.mcp_server_ids,
             Some(vec!["0190f5fe-7c00-7a00-8000-000000000020".into()])
         );
     }
