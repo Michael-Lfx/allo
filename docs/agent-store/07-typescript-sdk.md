@@ -121,6 +121,8 @@ export class AppServerClient {
   readonly teams: TeamClient;
   readonly skills: SkillClient;
   readonly connectors: ConnectorClient;
+  /** 公共模型目录（`models/list`，REQ-PAR-05b；2026-09-09 增补）。 */
+  readonly models: ModelClient;
   readonly threads: ThreadClient;
   readonly runs: RunClient;
   readonly artifacts: ArtifactClient;
