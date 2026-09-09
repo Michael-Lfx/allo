@@ -32,6 +32,16 @@ const AGENT_SKILLS_DIR: &str = ".agents/skills";
 const GLOBAL_AGENT_SKILLS_SOURCE_KEY: &str = "agents";
 const PROJECT_AGENT_SKILLS_SOURCE_KEY: &str = "workspace";
 
+/// Managed Agent Store skill subtree under `user_skills_dir`
+/// (`<user_skills_dir>/agent-store/<snapshot_id>/<slug>/SKILL.md`).
+const AGENT_STORE_MANAGED_SUBDIR: &str = "agent-store";
+
+/// Directory levels scanned under a user Skill root. The managed Agent
+/// Store layout nests skills two levels deeper than the flat
+/// `<slug>/SKILL.md`, so the bound must reach
+/// `agent-store/<snapshot_id>/<slug>/SKILL.md`.
+const USER_SKILLS_SCAN_DEPTH: usize = 3;
+
 /// Expose the embedded builtin skills corpus for startup
 /// materialization. Consumers outside this crate should not depend on
 /// `include_dir` directly.
@@ -446,7 +456,7 @@ pub async fn list_available_skills(
 
     // 2. User custom skills (higher priority, overrides builtin)
     let mut custom_skills = Vec::new();
-    if let Ok(entries) = scan_skill_dirs(&paths.user_skills_dir).await {
+    if let Ok(entries) = scan_skill_dirs(&paths.user_skills_dir, USER_SKILLS_SCAN_DEPTH).await {
         for item in entries {
             builtin_skills.remove(&item.name);
             custom_skills.push(SkillListItem {
@@ -465,6 +475,12 @@ pub async fn list_available_skills(
             .cmp(&skill_modified_time(&a.location))
             .then_with(|| a.name.cmp(&b.name))
     });
+    // The managed Agent Store root can hold the same skill name in more than
+    // one snapshot (reinstall / market update). The list is newest-first, so
+    // keep the first occurrence per name: public ids stay unique and the
+    // newest copy wins.
+    let mut seen = std::collections::HashSet::new();
+    custom_skills.retain(|item| seen.insert(item.name.clone()));
 
     let mut builtin_items: Vec<SkillListItem> = builtin_skills.into_values().collect();
     builtin_items.sort_by(|a, b| a.name.cmp(&b.name));
@@ -657,7 +673,7 @@ async fn extend_catalog_with_directory(
     source: SkillCatalogSource,
     source_key: Option<&str>,
 ) -> Result<(), ExtensionError> {
-    for item in scan_skill_dirs(root).await? {
+    for item in scan_skill_dirs(root, USER_SKILLS_SCAN_DEPTH).await? {
         let local_key = catalog_local_key(root, &item.path, &item.name);
         candidates.push(CatalogSkillFile {
             skill_id: SkillId::new(source, source_key, &local_key).as_str().to_owned(),
@@ -720,7 +736,7 @@ async fn list_builtin_skills_from_disk(dir: &Path) -> Vec<SkillListItem> {
     let mut items = Vec::new();
 
     // Top-level opt-in skills (siblings of auto-inject/).
-    if let Ok(top) = scan_skill_dirs(dir).await {
+    if let Ok(top) = scan_skill_dirs(dir, 1).await {
         for s in top {
             if s.name == BUILTIN_AUTO_SKILLS_SUBDIR {
                 continue;
@@ -752,7 +768,7 @@ async fn list_builtin_skills_from_disk(dir: &Path) -> Vec<SkillListItem> {
 
     // auto-inject children.
     let auto_dir = dir.join(BUILTIN_AUTO_SKILLS_SUBDIR);
-    if let Ok(auto) = scan_skill_dirs(&auto_dir).await {
+    if let Ok(auto) = scan_skill_dirs(&auto_dir, 1).await {
         for s in auto {
             let dir_name = Path::new(&s.path)
                 .file_name()
@@ -888,7 +904,7 @@ pub fn load_builtin_skill_display_metadata() -> HashMap<String, BuiltinSkillDisp
 }
 
 async fn list_auto_skills_from_disk(auto_dir: &Path) -> Vec<BuiltinAutoSkillItem> {
-    let entries = match scan_skill_dirs(auto_dir).await {
+    let entries = match scan_skill_dirs(auto_dir, 1).await {
         Ok(entries) => entries,
         Err(_) => return Vec::new(),
     };
@@ -1421,6 +1437,11 @@ fn resolve_skill_source_path(paths: &SkillPaths, name: &str) -> Option<PathBuf> 
     if user.is_dir() {
         return Some(user);
     }
+    // Managed Agent Store skills are never flat: they live under
+    // `<user_skills_dir>/agent-store/<snapshot_id>/<slug>/`.
+    if let Some(managed) = resolve_managed_agent_store_skill(paths, name) {
+        return Some(managed);
+    }
     let top = paths.builtin_skills_dir.join(name);
     if top.is_dir() {
         return Some(top);
@@ -1439,13 +1460,62 @@ fn resolve_skill_source_path(paths: &SkillPaths, name: &str) -> Option<PathBuf> 
     None
 }
 
+/// Resolve `name` under the managed Agent Store subtree
+/// (`<user_skills_dir>/agent-store/<snapshot_id>/<slug>/SKILL.md`),
+/// preferring the newest snapshot: snapshot ids are UUIDv7 and sort
+/// chronologically, so the last directory wins when several installs
+/// carry the same skill name.
+fn resolve_managed_agent_store_skill(paths: &SkillPaths, name: &str) -> Option<PathBuf> {
+    let root = paths.user_skills_dir.join(AGENT_STORE_MANAGED_SUBDIR);
+    let mut snapshots: Vec<PathBuf> = std::fs::read_dir(&root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    snapshots.sort();
+    snapshots
+        .into_iter()
+        .rev()
+        .find_map(|snapshot| find_managed_skill_dir(&snapshot, name))
+}
+
+/// Find the skill directory for `name` inside one managed snapshot.
+///
+/// The on-disk slug usually equals the frontmatter name; a frontmatter
+/// scan is the fallback for single-skill snapshots whose directory slug
+/// differs from the name recorded in `SKILL.md`.
+fn find_managed_skill_dir(snapshot: &Path, name: &str) -> Option<PathBuf> {
+    let direct = snapshot.join(name);
+    if direct.join(SKILL_MANIFEST_FILE).is_file() {
+        return Some(direct);
+    }
+    for entry in std::fs::read_dir(snapshot).ok()?.flatten() {
+        let candidate = entry.path();
+        if !candidate.is_dir() {
+            continue;
+        }
+        let manifest = candidate.join(SKILL_MANIFEST_FILE);
+        if !manifest.is_file() {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(&manifest)
+            && let Some((frontmatter_name, _)) = parse_frontmatter_fields(&content)
+            && frontmatter_name == name
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // E. Scanning & discovery
 // ---------------------------------------------------------------------------
 
 /// Scan a directory for subdirectories containing SKILL.md.
 pub async fn scan_for_skills(folder_path: &Path) -> Result<Vec<ScannedSkill>, ExtensionError> {
-    scan_skill_dirs(folder_path).await
+    scan_skill_dirs(folder_path, 1).await
 }
 
 /// Named filesystem path.
@@ -1517,7 +1587,7 @@ pub async fn detect_and_count_external_skills(
         if !full_path.exists() {
             continue;
         }
-        if let Ok(skills) = scan_skill_dirs(&full_path).await {
+        if let Ok(skills) = scan_skill_dirs(&full_path, 1).await {
             sources.push(ExternalSkillSource {
                 name: (*name).to_string(),
                 path: full_path.to_string_lossy().into_owned(),
@@ -1531,7 +1601,7 @@ pub async fn detect_and_count_external_skills(
     // 2. Custom external paths
     for np in custom_paths {
         let path = Path::new(&np.path);
-        if let Ok(skills) = scan_skill_dirs(path).await {
+        if let Ok(skills) = scan_skill_dirs(path, 1).await {
             sources.push(ExternalSkillSource {
                 name: np.name.clone(),
                 path: np.path.clone(),
@@ -1622,12 +1692,36 @@ fn validate_builtin_skill_path(rel: &str) -> Result<(), ExtensionError> {
 }
 
 /// Scan a directory for subdirectories containing a SKILL.md file.
-async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError> {
+///
+/// `max_depth` bounds how many directory levels below `dir` are searched
+/// (1 = direct children only, the historical behavior). Subdirectories
+/// without a `SKILL.md` are descended into while depth remains, so nested
+/// layouts such as the managed Agent Store root
+/// (`agent-store/<snapshot>/<slug>/SKILL.md`) are discovered without
+/// unbounded walking. A directory that owns a `SKILL.md` is never
+/// descended into: its children are skill resources, not skills.
+async fn scan_skill_dirs(
+    dir: &Path,
+    max_depth: usize,
+) -> Result<Vec<ScannedSkill>, ExtensionError> {
     let mut result = Vec::new();
+    scan_skill_dirs_into(dir, max_depth, &mut result).await?;
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(result)
+}
+
+async fn scan_skill_dirs_into(
+    dir: &Path,
+    remaining_depth: usize,
+    result: &mut Vec<ScannedSkill>,
+) -> Result<(), ExtensionError> {
+    if remaining_depth == 0 {
+        return Ok(());
+    }
 
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(result),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(ExtensionError::Io(e)),
     };
 
@@ -1639,6 +1733,15 @@ async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError
 
         let skill_file = entry_path.join(SKILL_MANIFEST_FILE);
         if !skill_file.exists() {
+            // No SKILL.md at this level: a nested layout may still hold
+            // skills (managed Agent Store snapshots). Descend while the
+            // bound allows.
+            Box::pin(scan_skill_dirs_into(
+                &entry_path,
+                remaining_depth - 1,
+                result,
+            ))
+            .await?;
             continue;
         }
 
@@ -1675,8 +1778,7 @@ async fn scan_skill_dirs(dir: &Path) -> Result<Vec<ScannedSkill>, ExtensionError
         }
     }
 
-    result.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(result)
+    Ok(())
 }
 
 async fn collect_skill_dirs_recursive(
@@ -2628,6 +2730,135 @@ mod tests {
         let names: Vec<_> = skills.into_iter().map(|skill| skill.name).collect();
         assert_eq!(names[0], "newer-skill");
         assert_eq!(names[1], "older-skill");
+    }
+
+    /// Seed one managed Agent Store skill:
+    /// `<user_skills_dir>/agent-store/<snapshot>/<slug>/SKILL.md`.
+    fn create_managed_skill(paths: &SkillPaths, snapshot: &str, slug: &str, name: &str) {
+        let dir = paths
+            .user_skills_dir
+            .join(AGENT_STORE_MANAGED_SUBDIR)
+            .join(snapshot)
+            .join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(SKILL_MANIFEST_FILE),
+            format!("---\nname: {name}\ndescription: Managed {name}\n---\nBody content for {name}."),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_available_skills_includes_managed_agent_store_skills() {
+        // B1: installed store skills nest two levels deeper than the flat
+        // layout; the list must still expose them.
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_managed_skill(&paths, "01a06c14-0000-7000-8000-000000000001", "hello", "hello");
+
+        let skills = list_available_skills(&paths).await.unwrap();
+        let hello = skills
+            .iter()
+            .find(|skill| skill.name == "hello")
+            .expect("managed skill must be listed");
+        assert!(
+            hello.location.contains(AGENT_STORE_MANAGED_SUBDIR),
+            "{}",
+            hello.location
+        );
+    }
+
+    #[tokio::test]
+    async fn list_available_skills_dedupes_managed_names_across_snapshots() {
+        // Reinstall / market update leaves the older snapshot on disk; the
+        // newest copy must win and the public name must stay unique.
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_managed_skill(&paths, "01a06c14-0000-7000-8000-000000000001", "hello", "hello");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        create_managed_skill(&paths, "01a06c15-0000-7000-8000-000000000002", "hello", "hello");
+
+        let skills = list_available_skills(&paths).await.unwrap();
+        let hellos: Vec<_> = skills
+            .iter()
+            .filter(|skill| skill.name == "hello")
+            .collect();
+        assert_eq!(hellos.len(), 1, "duplicate names must collapse: {skills:?}");
+        assert!(
+            hellos[0]
+                .location
+                .contains("01a06c15-0000-7000-8000-000000000002"),
+            "{}",
+            hellos[0].location
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_skill_source_path_prefers_newest_managed_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_managed_skill(&paths, "01a06c14-0000-7000-8000-000000000001", "hello", "hello");
+        create_managed_skill(&paths, "01a06c15-0000-7000-8000-000000000002", "hello", "hello");
+
+        let resolved = resolve_skill_source_path(&paths, "hello").expect("managed skill resolves");
+        assert!(
+            resolved
+                .to_string_lossy()
+                .contains("01a06c15-0000-7000-8000-000000000002"),
+            "{}",
+            resolved.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn materialize_skills_for_agent_resolves_managed_agent_store_skill() {
+        // B2: preset-bound / mentioned store skills must reach the runtime by
+        // name even though they never live in a flat directory.
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_managed_skill(&paths, "01a06c14-0000-7000-8000-000000000001", "hello", "hello");
+
+        let resolved = materialize_skills_for_agent(&paths, "conv-1", &["hello".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].name, "hello");
+        assert!(
+            resolved[0]
+                .source_path
+                .to_string_lossy()
+                .contains(AGENT_STORE_MANAGED_SUBDIR),
+            "{}",
+            resolved[0].source_path.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn load_catalog_skills_resolves_managed_agent_store_skill_id() {
+        let tmp = TempDir::new().unwrap();
+        let paths = make_test_paths(tmp.path());
+        create_managed_skill(&paths, "01a06c14-0000-7000-8000-000000000001", "hello", "hello");
+
+        let catalog = list_catalog_skills(&paths).await.unwrap();
+        let item = catalog
+            .iter()
+            .find(|item| item.name == "hello")
+            .expect("managed skill must be in the catalog");
+        assert!(
+            item.local_key.contains(AGENT_STORE_MANAGED_SUBDIR),
+            "{}",
+            item.local_key
+        );
+        let skill_id = SkillId::new(SkillCatalogSource::User, None, &item.local_key)
+            .as_str()
+            .to_owned();
+
+        let loaded = load_catalog_skills(&paths, &[skill_id.clone()])
+            .await
+            .unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].skill_id, skill_id);
+        assert!(loaded[0].content.contains("Body content for hello"));
     }
 
     #[tokio::test]

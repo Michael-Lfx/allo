@@ -158,6 +158,12 @@ impl AgentDoc {
         set_opt(&mut payload, "isolation", &self.isolation);
         set_localized(&mut payload, "display_name", &self.display_name);
         set_localized(&mut payload, "profession", &self.profession);
+        // The Markdown body is the agent persona. Install projects it into
+        // the Preset instructions; without it a store-installed expert runs
+        // with an empty system prompt.
+        if !self.body.trim().is_empty() {
+            payload["instructions"] = json!(self.body);
+        }
         payload
     }
 
@@ -300,6 +306,23 @@ Plan the team's release.
         assert_eq!(doc.permission_mode.as_deref(), Some("default"));
         assert!(doc.has_ignored_permission_fields());
         assert!(doc.body.contains("Plan the team's release."));
+    }
+
+    #[test]
+    fn agent_payload_carries_markdown_body_as_instructions() {
+        let doc = parse_agent(AGENT_MD, "agents/software-team-lead.md").unwrap();
+        let payload = doc.to_payload("wb-x", "1.0.0", "agents/software-team-lead.md");
+        assert_eq!(
+            payload["instructions"].as_str(),
+            Some("Plan the team's release.\n"),
+            "persona body must be projected for preset creation"
+        );
+
+        // An empty body must not emit a stray empty instruction string.
+        let mut empty = doc.clone();
+        empty.body = "   \n".to_owned();
+        let payload = empty.to_payload("wb-x", "1.0.0", "agents/software-team-lead.md");
+        assert!(payload.get("instructions").is_none(), "{payload}");
     }
 
     #[test]
