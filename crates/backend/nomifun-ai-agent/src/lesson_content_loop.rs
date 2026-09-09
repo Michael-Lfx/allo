@@ -446,7 +446,7 @@ impl LiveLessonContentAgentEngine {
 /// Everything the tool handlers need, captured once per generation. The two
 /// slots are the only mutable cross-round state: which draft is active and
 /// which lesson output (if any) was published by `ls_finish`.
-struct LoopContext {
+pub(crate) struct LoopContext {
     service: Arc<LearningService>,
     context: LessonGenerationContext,
     draft_slot: Arc<Mutex<Option<String>>>,
