@@ -832,3 +832,6 @@ button:disabled { cursor: default; opacity: .48; }
 .loading-spinner { display: grid; place-items: center; color: var(--primary); }
 .loading-title { color: var(--ink-strong); font-size: 14px; font-weight: 620; }
 .loading-hint { color: var(--muted); font-size: 12px; }
+/* Model picker — 默认模型行与默认徽标（WP-7） */
+.model-option-default .model-option-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-default-badge { flex: 0 0 auto; border-radius: 5px; background: var(--sidebar-active); color: var(--muted); padding: 1px 5px; font-size: 10px; font-weight: 600; }

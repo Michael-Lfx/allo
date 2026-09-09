@@ -17,6 +17,7 @@ import type {
   ConversationModelOptions,
   ConversationView,
   MentionRef,
+  ModelSummary,
   ProviderWithModel,
   ReasoningEffort,
   WorkspaceView,
@@ -123,6 +124,9 @@ export type AppState = {
 
   // ── Model selection ───────────────────────────────────────────────────
   modelOptions: ConversationModelOptions | null;
+  /** `models/list` directory (REQ-PAR-05b): authoritative provider/model rows
+   *  incl. DB-registered providers the config-only options omit. */
+  modelDirectory: ModelSummary[];
   selectedModelKey: string | null;
   selectedEffort: ReasoningEffort | "";
 
@@ -255,6 +259,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   shareNotice: null,
 
   modelOptions: null,
+  modelDirectory: [],
   selectedModelKey: initial.modelKey || null,
   selectedEffort: (initial.reasoningEffort as ReasoningEffort) || "",
 
@@ -394,15 +399,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
         requestTimeoutMs: 20_000,
       });
       await next.connect();
-      const [threads, options, workspaceList] = await Promise.all([
+      const [threads, options, directory, workspaceList] = await Promise.all([
         next.conversations.list(100),
         next.conversations.modelOptions().catch(() => null),
+        next.models.list().catch((): ModelSummary[] => []),
         next.workspaces.list().catch((): WorkspaceView[] => []),
       ]);
       get().client?.close();
       set({ client: next });
       set({ conversations: threads });
       set({ modelOptions: options });
+      set({ modelDirectory: directory });
       set({ workspaces: workspaceList });
       set({ phase: "online", settingsOpen: false });
       const requestedConversationId = new URLSearchParams(window.location.search).get("conversation");
@@ -663,8 +670,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   chooseModel: (key) => {
     set({ selectedModelKey: key });
-    if (key && get().selectedConversationId) {
+    if (!get().selectedConversationId) return;
+    if (key) {
       void get().applyConversationUpdate({ model: modelKeyToSelection(key) });
+      return;
+    }
+    // 「默认模型」：把已有会话的模型解析回目录里的默认项（`models/list`
+    // 的 is_default，与 agent/run 的默认回退同源）；目录缺失时保持原模型。
+    const fallback = get().modelDirectory.find((entry) => entry.is_default);
+    if (fallback) {
+      void get().applyConversationUpdate({
+        model: { provider_id: fallback.provider_name, model: fallback.model },
+      });
     }
   },
 

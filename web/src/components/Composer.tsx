@@ -58,6 +58,7 @@ export function Composer(props: {
   const providerId = useAppStore((s) => s.providerId);
   const model = useAppStore((s) => s.model);
   const modelOptions = useAppStore((s) => s.modelOptions);
+  const modelDirectory = useAppStore((s) => s.modelDirectory);
   const selectedModelKey = useAppStore((s) => s.selectedModelKey);
   const selectedEffort = useAppStore((s) => s.selectedEffort);
   const hasConversation = useAppStore((s) => s.selectedConversationId !== null);
@@ -207,6 +208,7 @@ export function Composer(props: {
             {modelPickerOpen && (
               <ModelPicker
                 options={modelOptions}
+                directory={modelDirectory}
                 selectedKey={selectedModelKey}
                 effort={selectedEffort}
                 hasConversation={hasConversation}

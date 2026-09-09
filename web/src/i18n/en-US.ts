@@ -99,6 +99,7 @@ const enUS: Resources = {
     ariaLabel: "Select model and reasoning level",
     modelTitle: "Model",
     defaultModel: "Default model",
+    defaultBadge: "Default",
     defaultMeta: "~/.agent-store/config.toml · applies to new sessions",
     contextMeta: " · {{k}}k context",
     noModels: "No configurable models in ~/.agent-store/config.toml",
