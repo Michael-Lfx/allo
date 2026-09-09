@@ -9,21 +9,24 @@
 
 | 工作包 | 用例 | 结果 |
 |---|---|---|
-| P0-A | TC-RT-004 / TC-RT-002 / TC-RT-010 | **15/15 PASS** |
+| P0-A | TC-RT-004 / TC-RT-002 / TC-RT-010 / TC-API-002 / TC-API-003 | **18/18 PASS** |
 | P0-B | TC-RT-005 / TC-RT-006 | **10/10 PASS** |
 
 **P0-A/B 已关闭**（无 engine 持久化改造，未触发降级条件）；按 `13` §4 出口与
 `15` §7 门禁，Phase 0 出口条件满足，Team Spike（Phase 2）可立项。
+剩余 P0-C/D：OAuth 运行时证据（TC-OAUTH-001/002/004）待补；TC-CONN-002 已在 WP-2 覆盖。
 
-## P0-A（TC-RT-004 / TC-RT-002 / TC-RT-010）
+## P0-A（TC-RT-004 / TC-RT-002 / TC-RT-010 / TC-API-002 / TC-API-003）
 
-最近一次：**15/15 PASS**（`RESULT PASS`，data `agent-store-p0a-1788932869212`）。
+最近一次：**18/18 PASS**（`RESULT PASS`，data `agent-store-p0a-1788933195275`）。
 
 | 用例 | 判据 | 实测 |
 |---|---|---|
 | TC-RT-004 取消 | cancel 前非终态；终态 `cancelled`；版本递进 | `planning@v0` → `cancel-accepted` → `cancelled`，版本 **v0→v1** |
-| TC-RT-002 版本冻结 | 运行中发布同 Agent 新版本，冻结字段不变；历史可追溯；preset_id ≠ runtime agent id | 重装 v9.9.9（9 组件）后 `preset_revision:1` + `content_digest:sha256:59255c1e…` 在 run/get 与 run/result 均不变；`preset_id=01a084b5-…` ≠ `agent_id=wb-software-company-software-architect` |
+| TC-RT-002 版本冻结 | 运行中发布同 Agent 新版本，冻结字段不变；历史可追溯；preset_id ≠ runtime agent id | 重装 v9.9.9（9 组件）后 `preset_revision:1` + `content_digest:sha256:1fd66d36…` 在 run/get 与 run/result 均不变；`preset_id=01a084ba-…` ≠ `agent_id=wb-software-company-software-architect` |
 | TC-RT-010 规范化 | 无内部 ID、无凭据；错误为稳定 code | run/get、run/result、run/events、store/install-entry、install/status、agents/list 六处扫描零泄漏；未知 run → `not_found` |
+| TC-API-002 幂等重放 | 同 key + 同请求 → 同 run_id；同 key + 不同请求 → `idempotency_conflict` | 重放返回同一 run_id `01a084ba-537e-…`；改 goal 后返回 `idempotency_conflict` |
+| TC-API-003 终态一致 | `run/get` 与 `run/result` 终态一致 | 两者均 `completed@v6` |
 
 ### 语义澄清（本轮 live 校准）
 

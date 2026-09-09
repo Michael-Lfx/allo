@@ -132,12 +132,13 @@ try {
   await cancelHandle.close();
 
   // ================= TC-RT-002 版本冻结 =================
-  const freezeHandle = await launchRun(client.runs, {
+  const freezeInput = {
     agentId: "",
     goal: "用不少于 300 字说明软件架构评审的要点。",
-    mentions: [{ kind: "agent", id: AGENT_MENTION }],
+    mentions: [{ kind: "agent" as const, id: AGENT_MENTION }],
     idempotencyKey: `p0a-freeze-${Date.now()}`,
-  });
+  };
+  const freezeHandle = await launchRun(client.runs, freezeInput);
   let freezeView = await client.runs.get(freezeHandle.runId);
   const frozen = {
     preset_revision: freezeView.preset_revision ?? null,
@@ -181,6 +182,32 @@ try {
     (freezeResult?.preset_revision ?? null) === frozen.preset_revision &&
       (freezeResult?.content_digest ?? null) === frozen.content_digest,
     { frozen, result: { preset_revision: freezeResult?.preset_revision, content_digest: freezeResult?.content_digest } },
+  );
+
+  // ================= TC-API-002 幂等重放 =================
+  const replay = await client.runs.agent(freezeInput);
+  check("TC-API-002.replay-same-run", replay.run_id === freezeHandle.runId, {
+    first: freezeHandle.runId,
+    replay: replay.run_id,
+  });
+  try {
+    await client.runs.agent({ ...freezeInput, goal: `${freezeInput.goal}（改）` });
+    check("TC-API-002.conflict-on-different-payload", false, "same key + different payload must conflict");
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    check("TC-API-002.conflict-on-different-payload", code === "idempotency_conflict", { code });
+  }
+
+  // ================= TC-API-003 终态一致 =================
+  const terminalView = await client.runs.get(freezeHandle.runId);
+  const terminalResult = await client.runs.result(freezeHandle.runId);
+  check(
+    "TC-API-003.get-result-consistent",
+    terminalView.status === terminalResult.status && terminalView.version === terminalResult.version,
+    {
+      get: { status: terminalView.status, version: terminalView.version },
+      result: { status: terminalResult.status, version: terminalResult.version },
+    },
   );
 
   // ================= TC-RT-010 规范化审计 =================
