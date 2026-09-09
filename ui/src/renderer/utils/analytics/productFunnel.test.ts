@@ -16,6 +16,7 @@ import {
   resetFunnelForTests,
   resetTurnTimingForTests,
   trackFunnelEvent,
+  trackFunnelEventOnce,
 } from './productFunnel';
 import {
   listQueuedTelemetryEventsForTests,
@@ -168,6 +169,22 @@ describe('product funnel', () => {
     expect(queued).toHaveLength(1);
     expect(queued[0]?.name).toBe('app_opened');
     expect(queued[0]?.module).toBe('platform');
+  });
+
+  test('trackFunnelEventOnce dedupes by stable id', () => {
+    resetFunnelForTests();
+    const first = trackFunnelEventOnce('update_applied', 'update:update_applied:1->2', {
+      feature: 'desktop_update',
+      from_version: '1',
+      to_version: '2',
+    });
+    const second = trackFunnelEventOnce('update_applied', 'update:update_applied:1->2', {
+      feature: 'desktop_update',
+      from_version: '1',
+      to_version: '2',
+    });
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
   });
 
   test('opt-out skips first-party telemetry upload', () => {

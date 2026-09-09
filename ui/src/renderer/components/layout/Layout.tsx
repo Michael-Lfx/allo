@@ -36,6 +36,8 @@ import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShortcuts';
 import { isDesktopShell } from '@renderer/utils/platform';
+import { tauriUpdateCurrentVersion } from '@/common/adapter/tauriUpdater';
+import { trackUpdateCheckCompleted } from '@/renderer/utils/analytics/updateTelemetry';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
 import SidebarToggleIcon from '@renderer/components/layout/Sider/SidebarToggleIcon';
@@ -416,18 +418,51 @@ const Layout: React.FC<{
     let cancelled = false;
     const includePrerelease = localStorage.getItem('update.includePrerelease') === 'true';
     void (async () => {
+      const startedAt = performance.now();
+      let fromVersion = '';
+      try {
+        fromVersion = await tauriUpdateCurrentVersion();
+      } catch {
+        fromVersion = '';
+      }
       try {
         const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
-        if (!cancelled && res?.success && res.data?.updateInfo) {
+        if (cancelled) return;
+        const durationMs = performance.now() - startedAt;
+        if (res?.success && res.data?.updateInfo) {
+          // Modal re-check records `update_check_completed` + prompt for this path.
           reportUpdateAvailable(res.data.updateInfo.version);
           window.dispatchEvent(
             new CustomEvent(UPDATE_AVAILABLE_EVENT, { detail: { version: res.data.updateInfo.version } }),
           );
           window.dispatchEvent(new CustomEvent('nomifun-open-update-modal', { detail: { source: 'startup' } }));
-        } else if (!cancelled && res?.success) {
+        } else if (res?.success) {
+          trackUpdateCheckCompleted({
+            source: 'startup',
+            status: 'up_to_date',
+            duration_ms: durationMs,
+            from_version: fromVersion,
+          });
           reportNoUpdateAvailable();
+        } else {
+          trackUpdateCheckCompleted({
+            source: 'startup',
+            status: 'failed',
+            duration_ms: durationMs,
+            from_version: fromVersion,
+            error_code: 'unknown',
+          });
         }
       } catch {
+        if (!cancelled) {
+          trackUpdateCheckCompleted({
+            source: 'startup',
+            status: 'failed',
+            duration_ms: performance.now() - startedAt,
+            from_version: fromVersion,
+            error_code: 'network',
+          });
+        }
         /* offline / endpoint unreachable — silent; the About page button still works */
       }
     })();

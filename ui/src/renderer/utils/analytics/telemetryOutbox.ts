@@ -24,6 +24,12 @@ const LEGACY_QUEUE_KEY = 'flowy.growth.video.events.v1';
 const MAX_QUEUE_SIZE = 500;
 const BATCH_SIZE = 50;
 const ALLOWED_PROPERTIES = new Set([
+  'already_ready',
+  'average_bps',
+  'bytes_total',
+  'bytes_transferred',
+  'cdn_host',
+  'cold_start',
   'credits_consumed',
   'duration_ms',
   'duration_secs',
@@ -31,16 +37,22 @@ const ALLOWED_PROPERTIES = new Set([
   'error_message',
   'failure_channel',
   'feature',
+  'from_version',
   'has_references',
   'image_model',
   'llm_model',
+  'locale',
   'mode',
+  'network_class',
+  'peak_bps',
   'phase',
   'project_id',
   'runtime',
   'session_id',
   'source',
   'status',
+  'to_version',
+  'tz_offset_min',
   'video_model',
   'viewport',
   'workflow',
@@ -54,6 +66,20 @@ const ALLOWED_PROPERTIES = new Set([
   'failure_code',
   'skill_slug',
   'http_status',
+]);
+
+const PLATFORM_EVENT_NAMES = new Set([
+  'app_opened',
+  'expert_package_install_failed',
+  'update_check_completed',
+  'update_prompt_shown',
+  'update_download_started',
+  'update_download_succeeded',
+  'update_download_failed',
+  'update_install_started',
+  'update_install_failed',
+  'update_install_blocked',
+  'update_applied',
 ]);
 
 let memoryQueue: FirstPartyTelemetryEvent[] = [];
@@ -115,7 +141,7 @@ function writeQueue(events: FirstPartyTelemetryEvent[]): void {
 }
 
 function firstPartyModule(event: FunnelEvent): FirstPartyTelemetryEvent['module'] | null {
-  if (event.name === 'app_opened' || event.name === 'expert_package_install_failed') return 'platform';
+  if (PLATFORM_EVENT_NAMES.has(event.name)) return 'platform';
   if (event.props?.feature !== 'video_generation') return null;
   if (event.name === 'first_value_confirmed') return null;
   return 'video_generation';

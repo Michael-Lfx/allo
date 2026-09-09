@@ -43,7 +43,7 @@ const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const MAX_GROWTH_EVENTS_PER_BATCH: usize = 50;
 const MAX_GROWTH_PROPERTIES: usize = 24;
-const TELEMETRY_EVENT_NAMES: [&str; 19] = [
+const TELEMETRY_EVENT_NAMES: [&str; 28] = [
     "app_opened",
     "home_viewed",
     "task_drafted",
@@ -63,6 +63,15 @@ const TELEMETRY_EVENT_NAMES: [&str; 19] = [
     "resume_started",
     "resume_succeeded",
     "expert_package_install_failed",
+    "update_check_completed",
+    "update_prompt_shown",
+    "update_download_started",
+    "update_download_succeeded",
+    "update_download_failed",
+    "update_install_started",
+    "update_install_failed",
+    "update_install_blocked",
+    "update_applied",
 ];
 
 #[derive(Clone)]
@@ -197,7 +206,17 @@ fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError>
     }
     if let Some(module) = event.module.as_deref() {
         let expected = match event.name.as_str() {
-            "app_opened" | "expert_package_install_failed" => "platform",
+            "app_opened"
+            | "expert_package_install_failed"
+            | "update_check_completed"
+            | "update_prompt_shown"
+            | "update_download_started"
+            | "update_download_succeeded"
+            | "update_download_failed"
+            | "update_install_started"
+            | "update_install_failed"
+            | "update_install_blocked"
+            | "update_applied" => "platform",
             _ => "video_generation",
         };
         if module != expected {
@@ -336,6 +355,38 @@ mod growth_tests {
 
         event.module = Some("video_generation".into());
         assert!(validate_video_growth_event(&event).is_err());
+    }
+
+    #[test]
+    fn accepts_update_pipeline_events_as_platform() {
+        for name in [
+            "update_check_completed",
+            "update_prompt_shown",
+            "update_download_started",
+            "update_download_succeeded",
+            "update_download_failed",
+            "update_install_started",
+            "update_install_failed",
+            "update_install_blocked",
+            "update_applied",
+        ] {
+            assert!(TELEMETRY_EVENT_NAMES.contains(&name), "{name}");
+            let mut event = event(name);
+            event.module = Some("platform".into());
+            event
+                .properties
+                .insert("from_version".into(), serde_json::json!("1.0.0"));
+            event
+                .properties
+                .insert("to_version".into(), serde_json::json!("1.1.0"));
+            event
+                .properties
+                .insert("duration_ms".into(), serde_json::json!(1200));
+            assert!(validate_video_growth_event(&event).is_ok(), "{name}");
+
+            event.module = Some("video_generation".into());
+            assert!(validate_video_growth_event(&event).is_err(), "{name}");
+        }
     }
 
     #[test]

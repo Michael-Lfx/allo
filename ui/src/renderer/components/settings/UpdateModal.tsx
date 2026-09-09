@@ -18,6 +18,20 @@ import { deriveUpdateStatus, shouldApplyDownloadEvent } from './deriveUpdateStat
 import { reportNoUpdateAvailable, reportUpdateAvailable } from '@renderer/hooks/system/useUpdateAvailability';
 import { isDesktopShell } from '@/renderer/utils/platform';
 import type { TauriUpdatePackageState } from '@/common/adapter/tauriShell';
+import {
+  classifyUpdateError,
+  clearPendingUpdateApply,
+  markPendingUpdateApply,
+  normalizeUpdateTelemetrySource,
+  trackUpdateCheckCompleted,
+  trackUpdateDownloadFailed,
+  trackUpdateDownloadStarted,
+  trackUpdateDownloadSucceeded,
+  trackUpdateInstallFailed,
+  trackUpdateInstallStarted,
+  trackUpdatePromptShown,
+  type UpdateTelemetrySource,
+} from '@/renderer/utils/analytics/updateTelemetry';
 
 type UpdateStatus =
   | 'checking'
@@ -71,6 +85,27 @@ const UpdateModal: React.FC = () => {
   // Version the in-flight download belongs to, so a progress frame from a
   // superseded flow cannot repaint the bar.
   const downloadVersionRef = useRef<string | null>(null);
+  const telemetrySourceRef = useRef<UpdateTelemetrySource>('modal');
+  const downloadStartedAtRef = useRef<number | null>(null);
+  const installStartedAtRef = useRef<number | null>(null);
+  const promptShownForVersionRef = useRef<string | null>(null);
+  const downloadSucceededForVersionRef = useRef<string | null>(null);
+  const currentVersionRef = useRef('');
+  const progressTotalRef = useRef(0);
+  const progressTransferredRef = useRef(0);
+  const peakBpsRef = useRef(0);
+
+  useEffect(() => {
+    currentVersionRef.current = currentVersion;
+  }, [currentVersion]);
+
+  useEffect(() => {
+    progressTotalRef.current = progress.total;
+  }, [progress.total]);
+
+  useEffect(() => {
+    progressTransferredRef.current = progress.transferred;
+  }, [progress.transferred]);
 
   const resetState = () => {
     setPresentation('compact');
@@ -83,10 +118,23 @@ const UpdateModal: React.FC = () => {
     installRequestedRef.current = false;
     downloadRequestedRef.current = false;
     downloadVersionRef.current = null;
+    downloadStartedAtRef.current = null;
+    installStartedAtRef.current = null;
     setErrorMsg('');
     setDownloadPath('');
     setAutoUpdateAvailable(false);
     setAutoUpdateInfo(null);
+  };
+
+  const emitPromptShown = (fromVersion: string, toVersion: string) => {
+    const normalized = toVersion.trim();
+    if (!normalized || promptShownForVersionRef.current === normalized) return;
+    promptShownForVersionRef.current = normalized;
+    trackUpdatePromptShown({
+      source: telemetrySourceRef.current,
+      from_version: fromVersion,
+      to_version: toVersion,
+    });
   };
 
   const includePrerelease = useMemo(() => localStorage.getItem('update.includePrerelease') === 'true', [visible]);
@@ -104,6 +152,8 @@ const UpdateModal: React.FC = () => {
     // modal while the request is in flight.
     setPresentation('compact');
     setStatus('checking');
+    const checkStartedAt = performance.now();
+    const source = telemetrySourceRef.current;
     try {
       if (isNativeUpdater) {
         const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
@@ -112,7 +162,9 @@ const UpdateModal: React.FC = () => {
         }
 
         const detail = await ipcBridge.update.check.invoke({ includePrerelease });
-        setCurrentVersion(detail.data?.currentVersion || '');
+        const fromVersion = detail.data?.currentVersion || '';
+        setCurrentVersion(fromVersion);
+        const durationMs = performance.now() - checkStartedAt;
 
         if (res.data?.updateInfo) {
           setAutoUpdateAvailable(true);
@@ -136,8 +188,30 @@ const UpdateModal: React.FC = () => {
             // Re-attach to the running download rather than re-arming Download.
             downloadRequestedRef.current = true;
             downloadVersionRef.current = res.data.packageVersion ?? null;
+            downloadStartedAtRef.current = performance.now();
+          }
+          trackUpdateCheckCompleted({
+            source,
+            status: 'available',
+            duration_ms: durationMs,
+            from_version: fromVersion,
+            to_version: res.data.updateInfo.version,
+          });
+          if (derived === 'downloaded') {
+            const toVersion = res.data.updateInfo.version;
+            if (downloadSucceededForVersionRef.current !== toVersion) {
+              downloadSucceededForVersionRef.current = toVersion;
+              trackUpdateDownloadSucceeded({
+                source,
+                duration_ms: 0,
+                from_version: fromVersion,
+                to_version: toVersion,
+                already_ready: true,
+              });
+            }
           }
           setStatus(derived);
+          emitPromptShown(fromVersion, res.data.updateInfo.version);
           return;
         }
 
@@ -146,6 +220,12 @@ const UpdateModal: React.FC = () => {
         }
 
         if (detail.data && !detail.data.updateAvailable) {
+          trackUpdateCheckCompleted({
+            source,
+            status: 'up_to_date',
+            duration_ms: durationMs,
+            from_version: fromVersion,
+          });
           setStatus('upToDate');
           return;
         }
@@ -187,7 +267,9 @@ const UpdateModal: React.FC = () => {
       if (!res?.success) {
         throw new Error(res?.msg || t('update.checkFailed'));
       }
-      setCurrentVersion(res.data?.currentVersion || '');
+      const fromVersion = res.data?.currentVersion || '';
+      setCurrentVersion(fromVersion);
+      const durationMs = performance.now() - checkStartedAt;
 
       if (autoUpdateOk) {
         // Auto-update available — use manual check data for display only
@@ -208,8 +290,29 @@ const UpdateModal: React.FC = () => {
           // Re-attach to the running download rather than re-arming Download.
           downloadRequestedRef.current = true;
           downloadVersionRef.current = packageVersion;
+          downloadStartedAtRef.current = performance.now();
+        }
+        trackUpdateCheckCompleted({
+          source,
+          status: 'available',
+          duration_ms: durationMs,
+          from_version: fromVersion,
+          to_version: availableVersion,
+        });
+        if (derived === 'downloaded' && availableVersion) {
+          if (downloadSucceededForVersionRef.current !== availableVersion) {
+            downloadSucceededForVersionRef.current = availableVersion;
+            trackUpdateDownloadSucceeded({
+              source,
+              duration_ms: 0,
+              from_version: fromVersion,
+              to_version: availableVersion,
+              already_ready: true,
+            });
+          }
         }
         setStatus(derived);
+        emitPromptShown(fromVersion, availableVersion);
         return;
       }
 
@@ -220,16 +323,36 @@ const UpdateModal: React.FC = () => {
         if (!res.data.latest.recommendedAsset) {
           setErrorMsg(t('update.noCompatibleAssetManual'));
         }
+        trackUpdateCheckCompleted({
+          source,
+          status: 'available',
+          duration_ms: durationMs,
+          from_version: fromVersion,
+          to_version: res.data.latest.version,
+        });
         setStatus('available');
+        emitPromptShown(fromVersion, res.data.latest.version);
         return;
       }
 
       setUpdateInfo(res.data?.latest || null);
       reportNoUpdateAvailable();
+      trackUpdateCheckCompleted({
+        source,
+        status: 'up_to_date',
+        duration_ms: durationMs,
+        from_version: fromVersion,
+      });
       setStatus('upToDate');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Update check failed:', err);
+      trackUpdateCheckCompleted({
+        source,
+        status: 'failed',
+        duration_ms: performance.now() - checkStartedAt,
+        error_code: classifyUpdateError(err).error_code,
+      });
       if (isNativeUpdater) {
         setErrorMsg(t('update.nativeCheckFailed'));
       } else {
@@ -244,7 +367,18 @@ const UpdateModal: React.FC = () => {
     if (downloadRequestedRef.current) return;
     if (!updateInfo && !autoUpdateAvailable) return;
     downloadRequestedRef.current = true;
-    downloadVersionRef.current = updateInfo?.version || autoUpdateInfo?.version || null;
+    const toVersion = updateInfo?.version || autoUpdateInfo?.version || null;
+    downloadVersionRef.current = toVersion;
+    downloadStartedAtRef.current = performance.now();
+    downloadSucceededForVersionRef.current = null;
+    peakBpsRef.current = 0;
+    progressTransferredRef.current = 0;
+    progressTotalRef.current = 0;
+    trackUpdateDownloadStarted({
+      source: telemetrySourceRef.current,
+      from_version: currentVersion,
+      to_version: toVersion,
+    });
     // The compact card owns progress presentation. This does not alter the
     // existing download path; it only collapses the optional detail dialog.
     setPresentation('compact');
@@ -302,6 +436,17 @@ const UpdateModal: React.FC = () => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Download failed:', err);
+      trackUpdateDownloadFailed({
+        source: telemetrySourceRef.current,
+        duration_ms: downloadStartedAtRef.current != null ? performance.now() - downloadStartedAtRef.current : 0,
+        from_version: currentVersion,
+        to_version: downloadVersionRef.current,
+        bytes_total: progressTotalRef.current || null,
+        bytes_transferred: progressTransferredRef.current || null,
+        peak_bps: peakBpsRef.current || null,
+        error: err,
+      });
+      downloadStartedAtRef.current = null;
       // A failed download must be retryable; only a LIVE download holds the guard.
       downloadRequestedRef.current = false;
       downloadVersionRef.current = null;
@@ -313,6 +458,16 @@ const UpdateModal: React.FC = () => {
   const quitAndInstall = async () => {
     if (installRequestedRef.current) return;
     installRequestedRef.current = true;
+    const toVersion = updateInfo?.version || autoUpdateInfo?.version || '';
+    installStartedAtRef.current = performance.now();
+    trackUpdateInstallStarted({
+      source: telemetrySourceRef.current,
+      from_version: currentVersion,
+      to_version: toVersion,
+    });
+    if (currentVersion && toVersion) {
+      markPendingUpdateApply(currentVersion, toVersion);
+    }
     setInstallPhase('preparing');
     setProgress({ percent: 0, speed: '', total: 0, transferred: 0 });
     setErrorMsg('');
@@ -321,6 +476,16 @@ const UpdateModal: React.FC = () => {
       await ipcBridge.autoUpdate.quitAndInstall.invoke();
     } catch (err: unknown) {
       installRequestedRef.current = false;
+      clearPendingUpdateApply();
+      trackUpdateInstallFailed({
+        source: telemetrySourceRef.current,
+        duration_ms: installStartedAtRef.current != null ? performance.now() - installStartedAtRef.current : 0,
+        from_version: currentVersion,
+        to_version: toVersion,
+        phase: installPhase,
+        error: err,
+      });
+      installStartedAtRef.current = null;
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Install failed:', err);
       const messageKey = getUpdateErrorMessageKey(msg);
@@ -352,7 +517,17 @@ const UpdateModal: React.FC = () => {
     return `${(bytes / 1024).toFixed(1)} KB`;
   };
 
-  const handleOpenUpdateModal = () => {
+  const handleOpenUpdateModal = (payload?: { source?: string } | Event) => {
+    let source: UpdateTelemetrySource = 'modal';
+    if (payload && typeof payload === 'object') {
+      if ('detail' in payload) {
+        const detail = (payload as CustomEvent<{ source?: string }>).detail;
+        source = normalizeUpdateTelemetrySource(detail?.source);
+      } else if ('source' in payload) {
+        source = normalizeUpdateTelemetrySource(payload.source);
+      }
+    }
+    telemetrySourceRef.current = source;
     setVisible(true);
     if (installRequestedRef.current) return;
     // Always re-check, even while a download is running. Skipping the reset here
@@ -367,11 +542,11 @@ const UpdateModal: React.FC = () => {
 
   useEffect(() => {
     const removeOpenListener = ipcBridge.update.open.on(handleOpenUpdateModal);
-    window.addEventListener('nomifun-open-update-modal', handleOpenUpdateModal);
+    window.addEventListener('nomifun-open-update-modal', handleOpenUpdateModal as EventListener);
 
     return () => {
       removeOpenListener();
-      window.removeEventListener('nomifun-open-update-modal', handleOpenUpdateModal);
+      window.removeEventListener('nomifun-open-update-modal', handleOpenUpdateModal as EventListener);
     };
   }, []);
 
@@ -411,6 +586,12 @@ const UpdateModal: React.FC = () => {
           // separate byte counters, and letting both write here is what made one
           // bar flip between two unrelated progress readings.
           if (evt.progress) {
+            const bps = evt.progress.bytesPerSecond;
+            if (typeof bps === 'number' && Number.isFinite(bps) && bps > peakBpsRef.current) {
+              peakBpsRef.current = bps;
+            }
+            progressTransferredRef.current = evt.progress.transferred;
+            progressTotalRef.current = evt.progress.total;
             setProgress({
               percent: Math.round(evt.progress.percent),
               speed: formatSpeed(evt.progress.bytesPerSecond),
@@ -421,6 +602,25 @@ const UpdateModal: React.FC = () => {
           break;
         case 'downloaded':
           downloadRequestedRef.current = false;
+          {
+            const toVersion = evt.version || downloadVersionRef.current || '';
+            if (toVersion && downloadSucceededForVersionRef.current !== toVersion) {
+              downloadSucceededForVersionRef.current = toVersion;
+              trackUpdateDownloadSucceeded({
+                source: telemetrySourceRef.current,
+                duration_ms:
+                  downloadStartedAtRef.current != null
+                    ? performance.now() - downloadStartedAtRef.current
+                    : 0,
+                from_version: currentVersionRef.current,
+                to_version: toVersion,
+                bytes_total: evt.progress?.total ?? progressTotalRef.current ?? null,
+                peak_bps: peakBpsRef.current || null,
+                already_ready: false,
+              });
+            }
+            downloadStartedAtRef.current = null;
+          }
           setStatus('downloaded');
           break;
         case 'installing':
@@ -436,6 +636,19 @@ const UpdateModal: React.FC = () => {
           }
           break;
         case 'error':
+          if (downloadStartedAtRef.current != null) {
+            trackUpdateDownloadFailed({
+              source: telemetrySourceRef.current,
+              duration_ms: performance.now() - downloadStartedAtRef.current,
+              from_version: currentVersionRef.current,
+              to_version: evt.version || downloadVersionRef.current,
+              bytes_total: progressTotalRef.current || null,
+              bytes_transferred: progressTransferredRef.current || null,
+              peak_bps: peakBpsRef.current || null,
+              error: evt.error || 'download_failed',
+            });
+            downloadStartedAtRef.current = null;
+          }
           setStatus('error');
           setErrorMsg(evt.error || t('update.downloadFailed'));
           break;
@@ -458,15 +671,52 @@ const UpdateModal: React.FC = () => {
         total: evt.totalBytes ?? 0,
         transferred: evt.receivedBytes ?? 0,
       });
+      const bps = evt.bytesPerSecond ?? 0;
+      if (typeof bps === 'number' && Number.isFinite(bps) && bps > peakBpsRef.current) {
+        peakBpsRef.current = bps;
+      }
+      progressTransferredRef.current = evt.receivedBytes ?? 0;
+      progressTotalRef.current = evt.totalBytes ?? 0;
 
       if (evt.status === 'completed') {
         downloadRequestedRef.current = false;
+        const toVersion = updateInfo?.version || autoUpdateInfo?.version || '';
+        if (toVersion && downloadSucceededForVersionRef.current !== toVersion) {
+          downloadSucceededForVersionRef.current = toVersion;
+          trackUpdateDownloadSucceeded({
+            source: telemetrySourceRef.current,
+            duration_ms:
+              downloadStartedAtRef.current != null
+                ? performance.now() - downloadStartedAtRef.current
+                : 0,
+            from_version: currentVersionRef.current,
+            to_version: toVersion,
+            bytes_total: evt.totalBytes ?? null,
+            peak_bps: peakBpsRef.current || null,
+            already_ready: false,
+          });
+        }
+        downloadStartedAtRef.current = null;
         setStatus('success');
         if (evt.file_path) {
           setDownloadPath(evt.file_path);
         }
       } else if (evt.status === 'error' || evt.status === 'cancelled') {
         downloadRequestedRef.current = false;
+        trackUpdateDownloadFailed({
+          source: telemetrySourceRef.current,
+          duration_ms:
+            downloadStartedAtRef.current != null
+              ? performance.now() - downloadStartedAtRef.current
+              : 0,
+          from_version: currentVersionRef.current,
+          to_version: updateInfo?.version || autoUpdateInfo?.version,
+          bytes_total: evt.totalBytes ?? progressTotalRef.current || null,
+          bytes_transferred: evt.receivedBytes ?? progressTransferredRef.current || null,
+          peak_bps: peakBpsRef.current || null,
+          error: evt.error || evt.status,
+        });
+        downloadStartedAtRef.current = null;
         setStatus('error');
         setErrorMsg(evt.error || t('update.downloadFailed'));
       }

@@ -44,7 +44,16 @@ export type FunnelEventName =
   | 'turn_idle'
   | 'retry_succeeded'
   | 'abandoned_before_first_token'
-  | 'expert_package_install_failed';
+  | 'expert_package_install_failed'
+  | 'update_check_completed'
+  | 'update_prompt_shown'
+  | 'update_download_started'
+  | 'update_download_succeeded'
+  | 'update_download_failed'
+  | 'update_install_started'
+  | 'update_install_failed'
+  | 'update_install_blocked'
+  | 'update_applied';
 
 export type FunnelEvent = {
   id: string;
@@ -175,6 +184,17 @@ function recordFunnelEvent(
 
 export function trackFunnelEvent(name: FunnelEventName, props?: FunnelEvent['props']): FunnelEvent {
   return recordFunnelEvent(name, props);
+}
+
+/** Idempotent funnel emit keyed by a stable event id (max 128 chars). */
+export function trackFunnelEventOnce(
+  name: FunnelEventName,
+  eventId: string,
+  props?: FunnelEvent['props']
+): FunnelEvent | null {
+  const id = eventId.slice(0, 128);
+  if (!id || readEvents().some((event) => event.id === id)) return null;
+  return recordFunnelEvent(name, props, id);
 }
 
 export type VideoSessionEventName =

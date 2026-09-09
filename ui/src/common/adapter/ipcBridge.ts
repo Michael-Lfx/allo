@@ -1290,7 +1290,7 @@ export const application = {
 const MODELSCOPE_RELEASE_PAGE = 'https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo';
 
 export const update = {
-  open: noopEmitter<{ source?: 'menu' | 'about' }>(),
+  open: noopEmitter<{ source?: 'menu' | 'about' | 'startup' | 'titlebar' | 'modal' }>(),
   check: shellProvider<IBridgeResponse<UpdateCheckResult>, UpdateCheckRequest>(async () => {
     try {
       const currentVersion = await tauriUpdateCurrentVersion();

@@ -67,6 +67,7 @@ import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJo
 // Components and utilities
 import AppLoader from './components/layout/AppLoader';
 import { maybeTrackRetention } from './utils/analytics/productFunnel';
+import { maybeTrackUpdateApplied } from './utils/analytics/updateTelemetry';
 import {
   startProductTelemetry,
   syncBackendClientId,
@@ -374,6 +375,7 @@ const Main = () => {
         // Local identity is enough until the device endpoint is reachable.
       }
       maybeTrackRetention();
+      void maybeTrackUpdateApplied();
     });
   }, [ready, status]);
 
