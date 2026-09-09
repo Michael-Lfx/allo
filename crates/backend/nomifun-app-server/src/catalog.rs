@@ -16,7 +16,7 @@ use nomifun_api_types::{
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceEntry, AppServerMarketplaceRefreshResult,
     AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
-    AppServerModelList, AppServerModelSummary,
+    AppServerModelList,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
     AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
@@ -191,7 +191,7 @@ pub trait ModelCatalogProvider: Send + Sync {
 
 /// In-memory model catalog fake.
 pub struct FakeModelCatalog {
-    pub models: Vec<AppServerModelSummary>,
+    pub models: Vec<nomifun_api_types::AppServerModelSummary>,
 }
 
 #[async_trait]
