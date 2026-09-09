@@ -42,10 +42,13 @@ pub trait McpRegistrar: Send + Sync {
 /// `nomifun_preset::PresetService`; tests fake it).
 #[async_trait]
 pub trait PresetRegistrar: Send + Sync {
+    /// `instructions` carries the Agent Markdown body (the persona); store
+    /// installs must not drop it or the expert runs with an empty prompt.
     async fn create_agent_store_preset(
         &self,
         name: &str,
         description: Option<&str>,
+        instructions: Option<&str>,
         agent_id: Option<&str>,
         model: Option<nomifun_api_types::ModelPreference>,
     ) -> Result<String, AppError>;
@@ -99,6 +102,7 @@ impl PresetRegistrar for AppServerPresetRegistrar {
         &self,
         name: &str,
         description: Option<&str>,
+        instructions: Option<&str>,
         agent_id: Option<&str>,
         model: Option<nomifun_api_types::ModelPreference>,
     ) -> Result<String, AppError> {
@@ -109,7 +113,7 @@ impl PresetRegistrar for AppServerPresetRegistrar {
                 name: name.to_owned(),
                 description: description.map(str::to_owned),
                 routing_description: None,
-                instructions: String::new(),
+                instructions: instructions.unwrap_or_default().to_owned(),
                 avatar: None,
                 fallback_allowed: false,
                 targets: vec![],
@@ -235,10 +239,17 @@ impl InstallProvider for AppServerInstallProvider {
             }
             let payload = decode_payload(&component.payload_json);
             let description = payload.get("description").and_then(|v| v.as_str());
+            let instructions = payload.get("instructions").and_then(|v| v.as_str());
             let preset_name = format!("agent-store: {}", component.name);
             match self
                 .presets
-                .create_agent_store_preset(&preset_name, description, Some(NOMI_RUNTIME_AGENT_ID), None)
+                .create_agent_store_preset(
+                    &preset_name,
+                    description,
+                    instructions,
+                    Some(NOMI_RUNTIME_AGENT_ID),
+                    None,
+                )
                 .await
             {
                 Ok(preset_id) => pending.push(Pending {
@@ -260,6 +271,21 @@ impl InstallProvider for AppServerInstallProvider {
                 continue;
             }
             let payload = decode_payload(&component.payload_json);
+            // V1 registers MCP connectors only. `cli` connectors describe a
+            // command-line integration (`cli.json` init commands), not an MCP
+            // server; projecting their init command into a stdio transport
+            // would execute the installer command as a server. Controlled CLI
+            // wrapping is Phase 2, so skip with a warning instead of
+            // registering a bogus server.
+            let connector_kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or_default();
+            if connector_kind == "cli" {
+                warnings.push(format!(
+                    "cli connector {} is not registered as an MCP server in V1",
+                    component.component_id
+                ));
+                skipped.push(component.component_id.clone());
+                continue;
+            }
             let transport_json = connector_transport(&payload);
             match self.mcp.upsert(&component.name, &transport_json).await {
                 Ok(server_id) => pending.push(Pending {

@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use common::{body_json, build_app, setup_and_login};
+use common::{body_json, build_app, get_with_token, setup_and_login};
 
 const SOFTWARE_COMPANY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -264,6 +264,27 @@ async fn importer_install_registers_components_into_runtime() {
     assert!(
         install_json["installed_count"].as_u64().unwrap() > 0,
         "at least skills/agents/connectors must be registered: {install_json}"
+    );
+
+    // B3: the installed expert Preset must carry the Agent Markdown body as
+    // its instructions (persona); an empty prompt would silently drop it.
+    let presets = app
+        .clone()
+        .oneshot(get_with_token("/api/presets", &token))
+        .await
+        .unwrap();
+    assert_eq!(presets.status(), StatusCode::OK, "preset list must succeed");
+    let presets_json = body_json(presets).await;
+    let expert = presets_json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|preset| preset["name"] == "agent-store: software-architect")
+        .expect("installed agent must create a preset");
+    let instructions = expert["instructions"].as_str().unwrap_or_default();
+    assert!(
+        instructions.contains("Produce the design."),
+        "expert persona must reach the preset: {expert}"
     );
 
     // Status reflects per-component state.
@@ -692,6 +713,55 @@ async fn importer_store_lists_mcp_connectors_with_index_display_and_installs() {
         .find(|item| item["entry_name"] == "agent-earth")
         .expect("agent-earth present after install");
     assert_eq!(earth2["installed"], true, "{earth2}");
+
+    // B4: CLI connectors describe a command-line integration, not an MCP
+    // server; V1 must skip them instead of registering the init command as a
+    // bogus stdio server.
+    let cli_install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/store/{marketplace_id}/entries/wecom/install"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        cli_install.status(),
+        StatusCode::OK,
+        "CLI install must not fail: {}",
+        body_json(cli_install).await
+    );
+    let cli_installed = body_json(cli_install).await;
+    assert_eq!(cli_installed["installed_count"], 0, "{cli_installed}");
+    let cli_warnings = cli_installed["warnings"].as_array().cloned().unwrap_or_default();
+    assert!(
+        cli_warnings
+            .iter()
+            .any(|warning| warning.as_str().is_some_and(|text| text.contains("cli connector"))),
+        "CLI connector must be skipped with a warning: {cli_installed}"
+    );
+
+    // The bogus stdio server must not exist in the connector catalog.
+    let connectors = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/connectors", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(connectors.status(), StatusCode::OK);
+    let connectors_json = body_json(connectors).await;
+    let has_cli_server = connectors_json
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|server| server["name"] == "wecom");
+    assert!(
+        !has_cli_server,
+        "CLI connector must not register an MCP server: {connectors_json}"
+    );
 }
 
 #[tokio::test]
