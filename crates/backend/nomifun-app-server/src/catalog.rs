@@ -16,6 +16,7 @@ use nomifun_api_types::{
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceEntry, AppServerMarketplaceRefreshResult,
     AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
+    AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
     AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
@@ -176,9 +177,29 @@ pub trait TeamCatalogProvider: Send + Sync {
     async fn get(&self, id: &str) -> Result<AppServerTeamDetail, AppError>;
 }
 
+/// Public model directory seam (`models/list`, REQ-PAR-05b). Projects the
+/// provider registry into provider/model pairs; credentials and endpoints
+/// never cross this seam.
+#[async_trait]
+pub trait ModelCatalogProvider: Send + Sync {
+    async fn list(&self) -> Result<AppServerModelList, AppError>;
+}
+
 // ---------------------------------------------------------------------------
 // Test fakes
 // ---------------------------------------------------------------------------
+
+/// In-memory model catalog fake.
+pub struct FakeModelCatalog {
+    pub models: Vec<AppServerModelSummary>,
+}
+
+#[async_trait]
+impl ModelCatalogProvider for FakeModelCatalog {
+    async fn list(&self) -> Result<AppServerModelList, AppError> {
+        Ok(AppServerModelList { items: self.models.clone() })
+    }
+}
 
 /// In-memory Skill catalog fake.
 pub struct FakeSkillCatalog {
