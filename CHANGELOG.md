@@ -5,7 +5,13 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-- Wan 3.0 video create requests now send DashScope `input`/`parameters` (not Seedance `content[]`), with 2–30s clips and `480P`/`720P`/`1080P` resolution tokens.
+## v1.2.7 - 2026-09-09
+
+- Vimax fills missing shots at the finished-film level before packing, so storyboards do not duplicate rows or split extra clips.
+
+## v1.2.6 - 2026-09-09
+
+- Release CI no longer replaces crates.io with rsproxy, which was breaking ModelScope builds.
 
 ## v1.2.2 - 2026-09-05
 
