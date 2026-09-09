@@ -11,7 +11,7 @@ import { statusColors } from '../constants';
 import { statusLabel } from '../utils';
 import type {
   Activity,
-  AttemptResult,
+  AttemptRecord,
   CourseDetail,
   GraphNodeView,
   Lesson,
@@ -32,7 +32,7 @@ const { Text, Title, Paragraph } = Typography;
 const LearningGraphWorkspace: React.FC<{
   detail: CourseDetail;
   busyId: string | null;
-  attemptResults: Record<string, AttemptResult>;
+  attemptResults: Record<string, AttemptRecord>;
   onBack: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
