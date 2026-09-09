@@ -1,7 +1,7 @@
 # Agent Store 实施计划：四链路闭环与协议 vNext
 
 > 状态：计划冻结（2026-09-09）；按优先级顺序执行，排期为范围值、按实测校准，不构成承诺
-> 进展：WP-1 完成（B1–B4 修复）；WP-2 完成（四链路 live 20/20 PASS，live 另逼出 B5/B6 并修复，见 `four-chain-live-evidence.zh.md`）；WP-3 P0-A/B 已关闭（18+10 PASS，见 `p0-runtime-evidence.zh.md`），P0-C/D 的 OAuth 协议面证据完成（TC-OAUTH-001/002/004 26/26 PASS，live 另逼出 B7/B8 并修复，见 `oauth-runtime-evidence.zh.md`）；**WP-4 完成**（05a steer、05b models/list、05c TurnResult、05d ConversationHandle 9/9 PASS、05e withRetry）
+> 进展：WP-1 完成（B1–B4 修复）；WP-2 完成（四链路 live 20/20 PASS，live 另逼出 B5/B6 并修复，见 `four-chain-live-evidence.zh.md`）；WP-3 P0-A/B 已关闭（18+10 PASS，见 `p0-runtime-evidence.zh.md`），P0-C/D 的 OAuth 协议面证据完成（TC-OAUTH-001/002/004 26/26 PASS，live 另逼出 B7/B8 并修复，见 `oauth-runtime-evidence.zh.md`）；**WP-4 完成**（05a steer、05b models/list、05c TurnResult、05d ConversationHandle 9/9 PASS、05e withRetry）；**WP-6 已发布**（npm 四包 `0.1.0-beta.2` + `runtime-win32-x64`，第三方零配置安装实测通过）；WP-7 模型选择器完成（`models/list` 合并 config providers + webui 默认行/徽标/思考等级默认项），附件与图片输入待做
 > 说明：模型 provider 唯一来源是 `~/.agent-store/config.toml`（`[providers.*]`），live 脚本不再经 `/api/providers` 运行时注册。
 > 日期：2026-09-09
 > 前置：`05`（协议 v1 基线）、`07`（SDK v1 基线）、`12-sdk-packaging.md`、`13-p0-execution-plan.md`、`agent-store-v1-roadmap.md` §10（决策记录）
@@ -109,6 +109,8 @@
 ### WP-7 webui 生产就绪剩余
 
 `11-webui-production-readiness.md` 剩余项：附件 / 图片输入（全线缺口）、模型选择器联动（依赖 WP-4 的 models/list）。
+
+**模型选择器联动（2026-09-09 完成）**：`models/list` 改为 DB providers ∪ `~/.agent-store/config.toml`（裸启动不再为空，默认项取 config `default_model`）；webui 拉取该目录并补齐 DB-only provider、标注 `is_default`，新增「默认模型」行（已有会话解析回目录默认项）、思考等级「默认」项与提示文案。剩余：附件 / 图片输入。
 
 ## 7. 门禁与依赖
 
