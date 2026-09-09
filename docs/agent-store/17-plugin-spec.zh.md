@@ -36,18 +36,40 @@
 
 ---
 
-## 3. 清单字段与冲突规则
+## 3. 清单字段：必填 / 可选 / 默认
 
-三份清单按 §2 的路径发现。字段分组：
+三份清单按 §2 的路径发现。**`name` 是唯一必填字段**（空白视为缺失，导入阻断为 `MissingIdentity`）；其余全部可选且有明确默认。
 
-| 组 | 字段（兼容层接受） | 处理 |
-| --- | --- | --- |
-| 标识 | `name`、`version` | `name` 参与 ID 派生（§5）；`version` 记为 `declared_version` |
-| 展示元数据 | `displayName`、`profession`、`displayDescription`、`tags`、`quickPrompts`、`defaultInitPrompt`、`expertType`、`categoryId` | **保真透传**到展示层；本地化字段按语言取用 |
-| 组件声明 | `agents`、`skills`、`hooks`、`commands`、`mcpServers` | `agents` / `skills` / `mcpServers` 参与归一化；`hooks` / `commands` 仅记录 |
-| 依赖 | `dependencies` | 见 §7 |
-| 严格性 | `strict` | `true`：要求插件源自带 `plugin.json`；`false`：市场条目可补充或代替清单 |
-| 资产 | `avatars` 等相对路径 | 经受控资产端点 serve；**不落绝对路径** |
+| 字段（wire key） | 必填 | 类型 | 默认 | 处理 |
+| --- | --- | --- | --- | --- |
+| `name` | ✅ | string | — | 唯一必填；参与 ID 派生（§5）；空白 → 阻断 |
+| `version` | — | string | 无 | 记为 `declared_version` |
+| `description` | — | string | 无 | 展示 |
+| `author` | — | string \| `{name, email}` | 无 | 对象形式归一化为人名（有 email 时附上） |
+| `agents` / `skills` / `commands` | — | string \| string[] | `[]` | 单字符串与数组都接受；`agents`/`skills` 参与归一化，`commands` 仅记录 |
+| `hooks` | — | object | 无 | 仅记录，**不启用** |
+| `mcpServers` | — | object | 无 | 参与归一化 |
+| `lspServers` | — | string \| object | 无 | V1 元数据级（仅保留服务器名清单），**不启用** |
+| `userConfig` | — | object | 无 | 配置 schema → `CredentialSchema`；敏感值仅引用安全存储 |
+| `dependencies` | — | array \| object | `[]` | 对象形式按 kind 展开为条目并附 `group` 标记（§7） |
+| `teamInfo` | — | object | 无 | WorkBuddy 扩展 → `AgentTeamDefinition`（`02` §6） |
+| `displayName` / `profession` / `displayDescription` / `defaultInitPrompt` | — | localized | 无 | 展示元数据，**保真透传** |
+| `quickPrompts` / `tags` | — | localized \| localized[] | `[]` | 同上 |
+| `avatar` | — | string（相对路径） | 无 | 资产随快照复制，经受控端点 serve |
+| `expertType` / `categoryId` / `agentName` | — | string | 无 | 展示 / 分类 |
+| `defaultEnabled` / `channels` | — | — | — | 安装 / 启用策略元数据 |
+| `strict` | — | bool | `false` | `true`：要求插件源自带 `plugin.json`；`false`：市场条目可补充或代替清单 |
+
+**宽容解析规则**（兼容源真实数据形态不一，以下差异一律归一化，不报错）：
+
+| 字段 | 接受形态 |
+| --- | --- |
+| `author` | `"张三"` 或 `{"name": "张三", "email": "…"}` |
+| `agents` / `skills` / `commands` | `"./agents/"` 或 `["./agents/a.md"]` |
+| `dependencies` | 数组 `[{name}]` 或按 kind 分组的对象 `{connectors: ["x"]}` |
+| 展示元数据 | 字符串或按语言的对象 |
+
+> **字段级唯一正文是 `02-codebuddy-workbuddy-import-spec.md` §4 / §5**（含每个字段的来源与保留清单）；本规范只固定**必填性、默认值与宽容规则**。
 
 **冲突规则**：市场条目字段与插件清单字段合并时逐项比对，冲突以**插件清单为准**并记录冲突（不静默覆盖）。
 
@@ -111,3 +133,15 @@
 ## 9. 验收口径
 
 按本规范 + `02`，能够**独立复现**一个可被 `market/add` → `market/refresh` → `store/list` → 安装 的插件包，且现有真实市场（experts / skills / connectors）逐条对照无例外。字段级细节以 `02` 为唯一正文。
+
+---
+
+## 10. 已知偏差
+
+**登记规则（强制）**：规范与实现不一致时，**先在本节登记，再择一修正**——要么改实现，要么改规范，不允许默默不一致。每条偏差须写明：现象、证据位置、影响、待决选项。
+
+| # | 现象 | 证据 | 影响 | 待决 |
+| --- | --- | --- | --- | --- |
+| — | *当前无登记项* | — | — | — |
+
+> 说明：`02` §8 的「自动更新默认值」偏差登记在 `18-marketplace-spec.zh.md` §11（属市场行为，不属插件格式）。
