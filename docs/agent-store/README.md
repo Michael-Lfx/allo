@@ -35,7 +35,7 @@
 
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| `15-store-chain-and-protocol-vnext-plan.zh.md` | **当前执行顺序**：四链路闭环 + 协议 vNext（WP-1~WP-7） | 📋 计划冻结 2026-09-09 |
+| `15-store-chain-and-protocol-vnext-plan.zh.md` | **当前执行顺序**：四链路闭环 + 协议 vNext（WP-1~WP-7） | 🔧 执行中（WP-1/2 已完成） |
 | `13-p0-execution-plan.md` | P0-A/B/C/D 执行细则与出口条件 | 📋 起草（Step 1 待开工） |
 | `agent-store-v1-roadmap.md` | 阶段基线与决策记录（§10） | 🧊 冻结 |
 | `agent-store-v1-test-cases.md` | 测试主表（`TC-*` 用例唯一正文） | 🧊 冻结 |
@@ -52,6 +52,7 @@
 | `importer-runtime-evidence.zh.md` | TC-IMP-001~009（Importer） |
 | `mcp-oauth-runtime-evidence.zh.md` | OAuth 登录 → 注入 → 401 刷新（真实 MCP 服务） |
 | `single-run-runtime-evidence.zh.md` | TC-RT-001 单 Agent Run（mimo-v2.5 真实模型） |
+| `four-chain-live-evidence.zh.md` | WP-2 四链路 live（C1–C4 + S1 + TC-CONN-002，20/20 PASS） |
 
 ## 四、设计记录
 
@@ -70,5 +71,5 @@
 
 1. **冻结文档状态行**：`00/01/04/06/07/08` 头部状态行多为 2026-08-26 快照，未逐份刷新（当前状态以本索引为准）。
 2. **App Server stdio 口径**：架构文档（`00/05/06/07/08/10`）按“本地可信进程（stdio 或 WebSocket）”表述；实现与交付范围以 `roadmap §10` 决策为准——**stdio 不纳入**。P1 统一口径。
-3. **证据文件位置**：三份证据页散在根目录，后续可归入 `evidence/` 子目录（需同步改跨文档链接）。
+3. **证据文件位置**：四份证据页散在根目录，后续可归入 `evidence/` 子目录（需同步改跨文档链接）。
 4. **规划文档重叠**：`开发计划.md`/`技术方案.md` 与 `roadmap`/`13`/`15` 内容有重叠，保留为历史追溯，不再更新正文。
