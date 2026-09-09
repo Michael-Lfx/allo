@@ -2,8 +2,9 @@
 
 > 日期：2026-09-04
 > 前置：`开发计划.md`（Phase 0）、`agent-store-v1-test-cases.md`、`12-sdk-packaging.md`、`single-run-runtime-evidence.zh.md`
-> 状态：P0-A/B 已关闭（2026-09-09，证据 `p0-runtime-evidence.zh.md`）；P0-C/D 剩 OAuth 运行时证据；
-> REQ-PAR-05a（run/steer）与 05b（models/list）已落地
+> 状态：P0-A/B 已关闭（2026-09-09，证据 `p0-runtime-evidence.zh.md`）；P0-C/D 的 OAuth 运行时证据已完成
+> （`oauth-runtime-evidence.zh.md`，TC-OAUTH-001/002/004 26/26 PASS；live 另逼出并修复 B7/B8）；
+> REQ-PAR-05a（run/steer）、05b（models/list）、05c（TurnResult）、05e（withRetry）已落地
 > 说明：本文件是执行层计划，不替代 `开发计划.md` 的阶段定义与 `09` 的门禁定义；
 > 每个任务遵循开发计划 §11（REQ 编号/文件/契约/TC/失败场景/验证入口）
 
