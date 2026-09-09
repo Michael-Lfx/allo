@@ -1,6 +1,7 @@
 # Agent Store 实施计划：四链路闭环与协议 vNext
 
 > 状态：计划冻结（2026-09-09）；按优先级顺序执行，排期为范围值、按实测校准，不构成承诺
+> **优先级调整（2026-09-09）**：SDK 与 WebUI 功能列为第一优先级、站点开发者体验为高优先级，**WP-5（协议 vNext）顺延**；新的执行顺序见 `16-sdk-webui-site-priority-plan.zh.md`。本文件中 WP-1~WP-4/WP-6 已完成部分继续有效，WP-7 剩余项（附件 / 图片输入）并入 `16`。
 > 进展：WP-1 完成（B1–B4 修复）；WP-2 完成（四链路 live 20/20 PASS，live 另逼出 B5/B6 并修复，见 `four-chain-live-evidence.zh.md`）；WP-3 P0-A/B 已关闭（18+10 PASS，见 `p0-runtime-evidence.zh.md`），P0-C/D 的 OAuth 协议面证据完成（TC-OAUTH-001/002/004 26/26 PASS，live 另逼出 B7/B8 并修复，见 `oauth-runtime-evidence.zh.md`）；**WP-4 完成**（05a steer、05b models/list、05c TurnResult、05d ConversationHandle 9/9 PASS、05e withRetry）；**WP-6 已发布**（npm 四包 `0.1.0-beta.2` + `runtime-win32-x64`，第三方零配置安装实测通过）；WP-7 模型选择器完成（`models/list` 合并 config providers + webui 默认行/徽标/思考等级默认项），附件与图片输入待做
 > 说明：模型 provider 唯一来源是 `~/.agent-store/config.toml`（`[providers.*]`），live 脚本不再经 `/api/providers` 运行时注册。
 > 日期：2026-09-09

@@ -35,7 +35,8 @@
 
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| `15-store-chain-and-protocol-vnext-plan.zh.md` | **当前执行顺序**：四链路闭环 + 协议 vNext（WP-1~WP-7） | 🔧 执行中（WP-1/2 已完成） |
+| `16-sdk-webui-site-priority-plan.zh.md` | **当前执行顺序**：SDK 与 WebUI 功能（P0/P1）+ 站点开发者体验；WP-5 顺延 | 🔧 执行中（第 1 批未开工） |
+| `15-store-chain-and-protocol-vnext-plan.zh.md` | 四链路闭环 + 协议 vNext（WP-1~WP-7） | 🔧 WP-1/2/3/4/6 完成，WP-7 模型选择器完成；WP-5 顺延至 `16` |
 | `13-p0-execution-plan.md` | P0-A/B/C/D 执行细则与出口条件 | 🔧 P0-A/B 已关闭；P0-C/D 的 OAuth 运行时证据已完成（`oauth-runtime-evidence.zh.md`，26/26 PASS） |
 | `agent-store-v1-roadmap.md` | 阶段基线与决策记录（§10） | 🧊 冻结 |
 | `agent-store-v1-test-cases.md` | 测试主表（`TC-*` 用例唯一正文） | 🧊 冻结 |
