@@ -1,7 +1,8 @@
 # Agent Store TypeScript SDK 规格
 
-> 状态：架构冻结（Phase 0）；SDK 待实现验证；发布阻断
+> 状态：架构冻结（Phase 0）；SDK v1 基线；包主体已实现（见 `12-sdk-packaging.md`）
 > 日期：2026-08-26
+> 更新：2026-09-09 —— 包名 `@agent-store/node` → `@agent-store/sdk`（以 `12` 为准）；TC 引用对齐测试主表现有范围（001~003）；本文为协议 vNext 前的 v1 基线
 > 前置：`01-domain-model.md`、`05-allo-app-server-protocol.md`、`06-connector-oauth-security.md`、`10-public-contracts.md`
 > 目标：提供 App Server Protocol 的 typed client；SDK 不直接依赖 allo 内部实现
 
@@ -38,10 +39,12 @@ SDK 不负责：
 ```text
 @agent-store/protocol
 @agent-store/client
-@agent-store/node
+@agent-store/sdk
 @agent-store/browser
 @agent-store/react
 ```
+
+> 注（2026-09-09）：`@agent-store/node` 已改名 `@agent-store/sdk`（以 `12-sdk-packaging.md` 为准）；`browser`/`react` 为预留包。
 
 ### 2.1 `@agent-store/protocol`
 
@@ -399,4 +402,4 @@ SDK 测试用例的唯一正文位于 `agent-store-v1-test-cases.md`，本文件
 Protocol Schema → generated types → Transport → Clients → reconnect → React wrapper
 ```
 
-SDK 必须通过 `TC-SDK-001` 至 `TC-SDK-010`；不要在此处复制测试步骤。
+SDK 必须通过测试主表现有 SDK 用例 `TC-SDK-001` 至 `TC-SDK-003`（004~010 待补用例定义）；`TC-SDK-001` 已修订为 spawn + 回环 WS（见 `13-p0-execution-plan.md`）；不要在此处复制测试步骤。

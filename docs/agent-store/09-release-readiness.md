@@ -1,7 +1,8 @@
 # Agent Store V1 发布准入与风险清单
 
-> 状态：发布门禁已定义；当前结论 blocked
+> 状态：发布门禁已定义；当前结论 blocked（评估快照见 §9）
 > 日期：2026-08-26
+> 更新：2026-09-09 —— §9 快照内 TC-SDK-001 矛盾已消（改为 spawn + 回环 WS，与 `12` 非目标一致）；其余门禁结论未变
 > 适用范围：`docs/agent-store/` 中的 Agent Store 当前方案文档
 > 前置：`00-architecture-decision.md` 至 `agent-store-v1-test-cases.md`
 
@@ -226,7 +227,7 @@ blocking_items:
   - Gate 4（Connector/OAuth：登录注入、401 刷新、重试、探针）：OAuth 运行证据已留存（mcp-oauth-runtime-evidence.zh.md），TC-CONN/TC-OAUTH 其余用例未全量执行
   - Gate 2（Importer）：TC-IMP-001~009 已通过（importer-runtime-evidence.zh.md）；GitHub/Git/HTTP 市场源未实现
   - Gate 3（App Server）：initialize/版本协商/store 与 run 查询一致已有真机实证（smoke --real + A1）；
-    TC-API-002（幂等重放）/TC-API-004（公共 ID 隔离）未执行；TC-SDK-001（Node stdio）与 12 非目标矛盾，待修订一边
+    TC-API-002（幂等重放）/TC-API-004（公共 ID 隔离）未执行；TC-SDK-001 已修订为 spawn + 回环 WS，与 `12` 非目标一致（见 `13-p0-execution-plan.md`）
   - Gate 5（安全扫描与来源审核）：未执行
   - V1 默认不启用：Hook/LSP/bin/scripts 执行、跨市场依赖
 ```
