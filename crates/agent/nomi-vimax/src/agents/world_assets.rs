@@ -57,11 +57,22 @@ pub type WorldAssetRegistry = HashMap<String, HashMap<String, HashMap<String, St
 pub struct WorldAssetsPlanner {
     chat: Arc<dyn VimaxChat>,
     image: Arc<dyn VimaxImage>,
+    /// Seedream canvas sized to the film aspect — environment volume plates only.
+    env_image: Arc<dyn VimaxImage>,
 }
 
 impl WorldAssetsPlanner {
     pub fn new(chat: Arc<dyn VimaxChat>, image: Arc<dyn VimaxImage>) -> Self {
-        Self { chat, image }
+        Self {
+            chat,
+            image: Arc::clone(&image),
+            env_image: image,
+        }
+    }
+
+    pub fn with_env_image(mut self, env_image: Arc<dyn VimaxImage>) -> Self {
+        self.env_image = env_image;
+        self
     }
 
     pub async fn extract(
@@ -121,20 +132,7 @@ impl WorldAssetsPlanner {
                 "dropped people-centric prop concepts (portraits / group photos)"
             );
         }
-        if spec.environments.len() > 5 {
-            spec.environments.truncate(5);
-        }
-        if spec.props.len() > 8 {
-            spec.props.truncate(8);
-        }
-        for (i, e) in spec.environments.iter_mut().enumerate() {
-            e.idx = i as i32;
-            e.description = strip_people_mentions(&e.description);
-        }
-        for (i, p) in spec.props.iter_mut().enumerate() {
-            p.idx = i as i32;
-            p.description = strip_people_mentions(&p.description);
-        }
+        finalize_world_spec(&mut spec);
         Ok(spec)
     }
 
@@ -263,6 +261,9 @@ impl WorldAssetsPlanner {
             }
         }
 
+        let aspect = crate::aspect::load_aspect_from_dir(film_root).await;
+        refresh_environment_plates_for_aspect(film_root, &aspect).await?;
+
         let env_ref_paths: Vec<PathBuf> = style_refs
             .iter()
             .filter(|p| {
@@ -332,6 +333,7 @@ impl WorldAssetsPlanner {
                     &env.slugline,
                     &stripped_desc,
                     &style,
+                    &aspect,
                 ))
             } else {
                 None
@@ -401,7 +403,11 @@ impl WorldAssetsPlanner {
                 let Some(prompt) = plate.prompt.clone() else {
                     continue;
                 };
-                let image = Arc::clone(&self.image);
+                let image = if plate.group == "environments" {
+                    Arc::clone(&self.env_image)
+                } else {
+                    Arc::clone(&self.image)
+                };
                 let chat = Arc::clone(&self.chat);
                 // Props are always T2I catalog plates. Env may restyle from Cameo
                 // location photos, never from look_plate.png.
@@ -418,7 +424,11 @@ impl WorldAssetsPlanner {
                     })?;
                     let refs: Vec<&Path> =
                         style_refs.iter().map(|p| p.as_path()).collect();
-                    let planner = WorldAssetsPlanner { image, chat };
+                    let planner = WorldAssetsPlanner {
+                        image: Arc::clone(&image),
+                        env_image: image,
+                        chat,
+                    };
                     planner
                         .generate_empty_plate_resilient(&prompt, &refs, &out)
                         .await?;
@@ -444,6 +454,7 @@ impl WorldAssetsPlanner {
                         "environments" => WorldPromptKind::Environment {
                             slugline: &plate.key,
                             description: &plate.stripped_desc,
+                            aspect: &aspect,
                         },
                         _ => WorldPromptKind::Prop {
                             name: &plate.key,
@@ -565,7 +576,7 @@ or framed photo of people."
             } else {
                 // Short hard prompt so safety prefix + truncate cannot bury the empty-set rule.
                 format!(
-                    "Wide 16:9 vacant unoccupied film location or isolated object plate. \
+                    "Vacant unoccupied film location or isolated object plate filling the frame. \
                      Completely empty. Zero people, zero humans, zero faces, zero silhouettes, zero hands, zero body parts. \
                      Architecture furniture props lighting only. {prompt}"
                 )
@@ -659,6 +670,7 @@ async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
         "world_assets.json",
         "world_assets_registry.json",
         "world_assets_cameo_lock.txt",
+        "world_assets_aspect.txt",
     ] {
         let p = film_root.join(name);
         if p.exists() {
@@ -666,6 +678,183 @@ async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
         }
     }
     Ok(())
+}
+
+const WORLD_ASPECT_LOCK: &str = "world_assets_aspect.txt";
+const MAX_ENVIRONMENTS: usize = 12;
+const MAX_PROPS: usize = 5;
+
+/// Old env plates were always 16:9 2K. Missing lock + non-16:9 film → regen.
+async fn refresh_environment_plates_for_aspect(film_root: &Path, aspect: &str) -> VimaxResult<()> {
+    let lock = film_root.join(WORLD_ASPECT_LOCK);
+    let prev = tokio::fs::read_to_string(&lock).await.unwrap_or_default();
+    let prev = prev.trim().to_string();
+    let stale = if prev.is_empty() {
+        aspect != crate::aspect::DEFAULT_ASPECT_RATIO
+    } else {
+        crate::aspect::normalize_aspect_ratio(&prev) != aspect
+    };
+    if stale {
+        tracing::info!(
+            film_root = %film_root.display(),
+            aspect,
+            prev = %prev,
+            "film aspect changed — regenerating environment volume plates"
+        );
+        let dir = film_root.join("environments");
+        if dir.is_dir() {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+        }
+        let registry_path = film_root.join("world_assets_registry.json");
+        if registry_path.exists() {
+            if let Ok(mut registry) =
+                read_json_artifact::<WorldAssetRegistry>(&registry_path).await
+            {
+                registry.remove("environments");
+                let _ = write_json_artifact(&registry_path, &registry).await;
+            }
+        }
+    }
+    crate::session::write_text_artifact(&lock, aspect).await?;
+    Ok(())
+}
+
+fn finalize_world_spec(spec: &mut WorldAssetsSpec) {
+    spec.environments = dedup_environments(std::mem::take(&mut spec.environments));
+    if spec.environments.len() > MAX_ENVIRONMENTS {
+        spec.environments.truncate(MAX_ENVIRONMENTS);
+    }
+    if spec.props.len() > MAX_PROPS {
+        spec.props.truncate(MAX_PROPS);
+    }
+    for (i, e) in spec.environments.iter_mut().enumerate() {
+        e.idx = i as i32;
+        e.description = strip_people_mentions(&e.description);
+    }
+    for (i, p) in spec.props.iter_mut().enumerate() {
+        p.idx = i as i32;
+        p.description = strip_people_mentions(&p.description);
+    }
+}
+
+fn dedup_environments(envs: Vec<EnvironmentAsset>) -> Vec<EnvironmentAsset> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for env in envs {
+        let key = crate::domain::normalize_location_key(&env.slugline);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(env);
+    }
+    out
+}
+
+/// First INT./EXT. / 内景/外景 heading in a scene script.
+pub fn first_scene_slugline(script: &str) -> String {
+    for line in script.lines() {
+        let t = line.trim().trim_start_matches(['#', ' ']);
+        if t.is_empty() {
+            continue;
+        }
+        let upper = t.to_ascii_uppercase();
+        if upper.starts_with("INT.")
+            || upper.starts_with("EXT.")
+            || upper.starts_with("INT ")
+            || upper.starts_with("EXT ")
+            || t.contains("内景")
+            || t.contains("外景")
+        {
+            return t.chars().take(80).collect();
+        }
+    }
+    String::new()
+}
+
+/// Fill empty `location_id` from the scene heading, then snap to extracted sluglines.
+///
+/// Consecutive rows in one scene share that heading. Visual-token overlap must
+/// not retarget a row to another environment — that splits packing (and the
+/// story) for no location change.
+pub fn bind_location_ids(
+    briefs: &mut [crate::domain::ShotBriefDescription],
+    script: &str,
+    sluglines: &[String],
+) {
+    let fallback = first_scene_slugline(script);
+    let scene_loc = match_slugline(&fallback, sluglines).unwrap_or(fallback);
+    for brief in briefs {
+        let existing = brief.location_id.trim();
+        brief.location_id = if existing.is_empty() {
+            scene_loc.clone()
+        } else {
+            match_slugline(existing, sluglines).unwrap_or_else(|| scene_loc.clone())
+        };
+    }
+}
+
+fn match_slugline(id: &str, sluglines: &[String]) -> Option<String> {
+    if sluglines.is_empty() {
+        return None;
+    }
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    if let Some(s) = sluglines
+        .iter()
+        .find(|s| crate::domain::location_keys_match(id, s))
+    {
+        return Some(s.clone());
+    }
+    sluglines
+        .iter()
+        .find(|s| {
+            crate::domain::normalize_location_key(s)
+                .contains(&crate::domain::normalize_location_key(id))
+                || crate::domain::normalize_location_key(id)
+                    .contains(&crate::domain::normalize_location_key(s))
+        })
+        .cloned()
+}
+
+pub async fn environment_sluglines_from_dir(film_root: &Path) -> Vec<String> {
+    let path = film_root.join("world_assets.json");
+    let Ok(spec) = read_json_artifact::<WorldAssetsSpec>(&path).await else {
+        return Vec::new();
+    };
+    spec.environments
+        .into_iter()
+        .map(|e| e.slugline)
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
+fn is_env_pair_path(path: &Path) -> bool {
+    let s = path.to_string_lossy().to_ascii_lowercase();
+    s.contains("environments") || s.contains("environment_plate")
+}
+
+/// Bind one location plate by slugline. No "first environment" fallback.
+pub fn select_environment_plate(
+    location_id: &str,
+    pairs: &[(PathBuf, String)],
+) -> Option<(PathBuf, String)> {
+    let key = location_id.trim();
+    if key.is_empty() {
+        return None;
+    }
+    pairs
+        .iter()
+        .find(|(p, t)| is_env_pair_path(p) && plate_matches_location(p, t, key))
+        .cloned()
+}
+
+fn plate_matches_location(path: &Path, text: &str, location_id: &str) -> bool {
+    let blob = format!("{} {}", path.to_string_lossy(), text);
+    crate::domain::location_keys_match(&blob, location_id)
+        || crate::domain::normalize_location_key(&blob)
+            .contains(&crate::domain::normalize_location_key(location_id))
 }
 
 fn asset_item(path: &Path, description: &str) -> HashMap<String, String> {
@@ -676,7 +865,11 @@ fn asset_item(path: &Path, description: &str) -> HashMap<String, String> {
 }
 
 enum WorldPromptKind<'a> {
-    Environment { slugline: &'a str, description: &'a str },
+    Environment {
+        slugline: &'a str,
+        description: &'a str,
+        aspect: &'a str,
+    },
     Prop { name: &'a str, description: &'a str },
 }
 
@@ -709,11 +902,13 @@ async fn ensure_world_prompt_sidecar(
         WorldPromptKind::Environment {
             slugline,
             description,
+            aspect,
         } => environment_plate_prompt(
             theme,
             slugline,
             &strip_people_mentions(description),
             style,
+            aspect,
         ),
         WorldPromptKind::Prop { name, description } => prop_plate_prompt(
             theme,
@@ -725,12 +920,19 @@ async fn ensure_world_prompt_sidecar(
     write_generation_prompt_sidecar(image_path, &prompt).await
 }
 
-fn environment_plate_prompt(theme: &str, slugline: &str, description: &str, style: &str) -> String {
+fn environment_plate_prompt(
+    theme: &str,
+    slugline: &str,
+    description: &str,
+    style: &str,
+    aspect: &str,
+) -> String {
     include_str!("../../prompts/world_assets__prompt_template_environment_plate.txt")
         .replace("{theme}", theme)
         .replace("{slugline}", slugline)
         .replace("{description}", description)
         .replace("{style}", &crate::planning::production_look_lock(style))
+        .replace("{frame}", &crate::aspect::aspect_prompt_clause(aspect))
 }
 
 fn prop_plate_prompt(theme: &str, name: &str, description: &str, style: &str) -> String {
@@ -922,23 +1124,10 @@ pub fn rank_world_pairs_for_frame(
         if out.len() >= max {
             break;
         }
-        // Keep weak matches only for the first env fallback.
-        if score <= 1 && !out.is_empty() {
+        if score <= 1 {
             continue;
         }
         out.push(pairs[i].clone());
-    }
-    if out.is_empty() {
-        // Fallback: first environment plate if any, else first prop.
-        if let Some(env) = pairs.iter().find(|(p, _)| {
-            p.to_string_lossy()
-                .to_ascii_lowercase()
-                .contains("environments")
-        }) {
-            out.push(env.clone());
-        } else {
-            out.push(pairs[0].clone());
-        }
     }
     out
 }
@@ -976,8 +1165,9 @@ fn match_tokens(blob: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorldAssetsSpec, environment_plate_prompt, is_look_plate_path, is_people_centric_prop,
-        is_safe_world_style_ref, prop_plate_prompt, rank_world_pairs_for_frame, strip_people_mentions,
+        WorldAssetsSpec, bind_location_ids, environment_plate_prompt, first_scene_slugline,
+        is_look_plate_path, is_people_centric_prop, is_safe_world_style_ref, prop_plate_prompt,
+        rank_world_pairs_for_frame, select_environment_plate, strip_people_mentions,
     };
     use std::path::{Path, PathBuf};
 
@@ -1015,7 +1205,13 @@ mod tests {
     fn world_plate_prompts_share_production_look_lock_not_face_clause() {
         let style = "cinematic film look";
         let look = crate::planning::production_look_lock(style);
-        let env = environment_plate_prompt("rainy alley", "EXT. ALLEY - NIGHT", "wet brick", style);
+        let env = environment_plate_prompt(
+            "rainy alley",
+            "EXT. ALLEY - NIGHT",
+            "wet brick",
+            style,
+            "9:16",
+        );
         let prop = prop_plate_prompt("rainy alley", "red umbrella", "oil-paper", style);
         assert!(env.contains(&look));
         assert!(prop.contains(&look));
@@ -1030,8 +1226,10 @@ mod tests {
         assert!(prop_l.contains("catalog") || prop_l.contains("studio"));
         assert!(prop_l.contains("real-world") || prop_l.contains("scale"));
         assert!(prop_l.contains("prop bible"));
-        assert!(env.to_ascii_lowercase().contains("architectural scale"));
+        assert!(env.to_ascii_lowercase().contains("architectural"));
         assert!(env.to_ascii_lowercase().contains("full frame"));
+        assert!(env.to_ascii_lowercase().contains("9:16"));
+        assert!(env.to_ascii_lowercase().contains("door handle") || env.to_ascii_lowercase().contains("volume"));
     }
 
     #[test]
@@ -1071,6 +1269,98 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("coffee")
         );
+    }
+
+    #[test]
+    fn rank_does_not_fall_back_to_the_first_environment() {
+        let pairs = vec![
+            (
+                PathBuf::from("environments/0_INT_OFFICE/INT_OFFICE_environment_plate.png"),
+                "GLOBAL EMPTY environment plate (no people): INT. OFFICE - DAY.".into(),
+            ),
+            (
+                PathBuf::from("environments/1_INT_DOCK/INT_DOCK_environment_plate.png"),
+                "GLOBAL EMPTY environment plate (no people): EXT. DOCK - NIGHT.".into(),
+            ),
+        ];
+        let ranked = rank_world_pairs_for_frame("a close-up of two hands exchanging a letter", &pairs, 2);
+        assert!(ranked.is_empty(), "{ranked:?}");
+    }
+
+    #[test]
+    fn select_environment_plate_uses_location_id() {
+        let pairs = vec![
+            (
+                PathBuf::from("environments/0_INT_OFFICE/INT_OFFICE_environment_plate.png"),
+                "GLOBAL EMPTY environment plate (no people): INT. OFFICE - DAY.".into(),
+            ),
+            (
+                PathBuf::from(
+                    "environments/1_INT_COFFEE_SHOP/INT_COFFEE_SHOP_environment_plate.png",
+                ),
+                "GLOBAL EMPTY environment plate (no people): INT. COFFEE SHOP - NIGHT.".into(),
+            ),
+        ];
+        let hit = select_environment_plate("INT. COFFEE SHOP - NIGHT", &pairs)
+            .expect("coffee plate");
+        assert!(
+            hit.0
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("coffee")
+        );
+        assert!(select_environment_plate("", &pairs).is_none());
+    }
+
+    #[test]
+    fn bind_location_ids_uses_scene_heading() {
+        let mut briefs = vec![crate::domain::ShotBriefDescription {
+            idx: 0,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: "wide of the shop".into(),
+            audio_desc: None,
+            location_id: String::new(),
+            beats: Vec::new(),
+        }];
+        bind_location_ids(
+            &mut briefs,
+            "INT. COFFEE SHOP - NIGHT\nSteam on the glass.",
+            &["INT. COFFEE SHOP - NIGHT".into(), "INT. OFFICE - DAY".into()],
+        );
+        assert_eq!(briefs[0].location_id, "INT. COFFEE SHOP - NIGHT");
+        assert!(first_scene_slugline("INT. CAFE - DAY\nHello").contains("CAFE"));
+    }
+
+    #[test]
+    fn bind_location_ids_keeps_scene_heading_despite_other_env_tokens() {
+        let mut briefs = vec![
+            crate::domain::ShotBriefDescription {
+                idx: 0,
+                is_last: false,
+                cam_idx: 0,
+                visual_desc: "steam on the coffee shop glass".into(),
+                audio_desc: None,
+                location_id: String::new(),
+                beats: Vec::new(),
+            },
+            crate::domain::ShotBriefDescription {
+                idx: 1,
+                is_last: true,
+                cam_idx: 0,
+                visual_desc: "she remembers the office fluorescent lights".into(),
+                audio_desc: None,
+                location_id: String::new(),
+                beats: Vec::new(),
+            },
+        ];
+        bind_location_ids(
+            &mut briefs,
+            "INT. COFFEE SHOP - NIGHT\nSteam on the glass.",
+            &["INT. COFFEE SHOP - NIGHT".into(), "INT. OFFICE - DAY".into()],
+        );
+        assert_eq!(briefs[0].location_id, "INT. COFFEE SHOP - NIGHT");
+        assert_eq!(briefs[1].location_id, "INT. COFFEE SHOP - NIGHT");
     }
 
     #[test]

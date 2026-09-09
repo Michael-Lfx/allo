@@ -50,6 +50,8 @@ interface StoryboardBoardProps {
   revising?: boolean;
   /** Select this filmstrip card when the agent session focuses a shot. */
   focusSceneId?: string | null;
+  /** Keep workspace focus in sync when the user picks a filmstrip card. */
+  onFocusScene?: (sceneId: string) => void;
   /** Persist edited Visual / audio direction for the active shot. */
   onSaveSceneDescriptions: (
     scene: StoryboardScene,
@@ -131,6 +133,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
     if (!url) return <Spin size={compact ? 12 : 18} />;
     return (
       <video
+        key={path}
         src={url}
         controls={!compact}
         muted={compact}
@@ -138,7 +141,9 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
         preload={compact ? 'metadata' : 'auto'}
         className={compact ? 'h-full w-full object-contain' : styles.storyShot}
         onError={() => reload()}
-        onLoadedMetadata={(event) => seekMediaElementToFirstFrame(event.currentTarget)}
+        onLoadedMetadata={(event) => {
+          if (compact) seekMediaElementToFirstFrame(event.currentTarget);
+        }}
       />
     );
   }
@@ -155,6 +160,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
     }
     return (
       <img
+        key={path}
         src={url}
         alt={alt}
         className={compact ? 'h-full w-full object-cover' : styles.storyShot}
@@ -189,6 +195,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   disabled,
   revising,
   focusSceneId,
+  onFocusScene,
   onSaveSceneDescriptions,
 }) => {
   const { t } = useTranslation();
@@ -231,26 +238,39 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     ).then((boards) => {
       if (cancelled) return;
       setStoryboardEntries((previous) =>
-        mergeStoryboardsWithoutGrowth(previous, boards)
+        mergeStoryboardsWithoutGrowth(previous, boards, !rendering)
       );
     });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- paths + packed content/dirs
-  }, [sessionId, storyboardPathKey, storyboardRefreshKey]);
+  }, [sessionId, storyboardPathKey, storyboardRefreshKey, rendering]);
 
   const scenes = useMemo(
     () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries),
     [artifacts, storyboardEntries]
   );
 
+  // Snap once when the agent focuses a new shot. Re-applying on every
+  // `scenes` rebuild (artifact poll) stole the card the user just clicked.
+  const syncedFocusSceneIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!focusSceneId) return;
-    if (scenes.some((scene) => scene.id === focusSceneId)) {
-      setActiveSceneId(focusSceneId);
-    }
+    if (!scenes.some((scene) => scene.id === focusSceneId)) return;
+    if (syncedFocusSceneIdRef.current === focusSceneId) return;
+    syncedFocusSceneIdRef.current = focusSceneId;
+    setActiveSceneId(focusSceneId);
   }, [focusSceneId, scenes]);
+
+  const selectScene = useCallback(
+    (sceneId: string) => {
+      syncedFocusSceneIdRef.current = sceneId;
+      setActiveSceneId(sceneId);
+      onFocusScene?.(sceneId);
+    },
+    [onFocusScene]
+  );
 
   const activeScene =
     scenes.find((scene) => scene.id === activeSceneId) ??
@@ -415,6 +435,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
       <div className={styles.storyStage}>
         <div className={styles.storyMedia}>
           <SceneMedia
+            key={activeScene.id}
             sessionId={sessionId}
             path={mainPath}
             video={mainIsVideo}
@@ -604,15 +625,14 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
             // downloads its whole clip just to render a thumbnail.
             const thumbPath = scene.imagePath ?? scene.videoPath;
             return (
+              <div key={scene.id} className={styles.shotCardStack} data-scene-id={scene.id}>
               <button
-                key={scene.id}
                 type='button'
-                data-scene-id={scene.id}
                 className={`${styles.shotCard} ${active ? styles.shotCardActive : ''} ${
                   status === 'generating' ? styles.shotCardGenerating : ''
                 }`}
                 aria-pressed={active}
-                onClick={() => setActiveSceneId(scene.id)}
+                onClick={() => selectScene(scene.id)}
               >
               <span className={styles.shotThumb}>
                 <SceneMedia
@@ -646,6 +666,22 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                   })}
               </span>
             </button>
+                {scene.beats && scene.beats.length >= 2 ? (
+                  <ol className={styles.shotCoverageList}>
+                    {scene.beats.map((beat, beatIndex) => (
+                      <li key={`${scene.id}-beat-${beatIndex}`}>
+                        {t('videoGeneration.studio.storyboard.packedBeatItem', {
+                          number: beatIndex + 1,
+                          defaultValue: '切镜 {{number}}',
+                        })}
+                        {beat.visualDescription
+                          ? ` · ${beat.visualDescription}`
+                          : ''}
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+              </div>
             );
           })}
         </div>

@@ -1010,17 +1010,15 @@ fn compose_video_prompt(
     }
     if use_voice_audio_ref {
         parts.push(
-            "@Audio1 is the voice timbre bible; match speaker identity for dialogue. No background music — dialogue and essential on-screen foley only."
+            "@Audio1 is the voice timbre bible; match speaker identity for dialogue. Keep the scene's room tone and BGM."
                 .into(),
         );
     } else if !audio.trim().is_empty() {
         parts.push(format!("Audio / dialogue: {}", audio.trim()));
     }
-    if !use_voice_audio_ref {
-        for clause in voice_clauses {
-            if !parts.iter().any(|p| p.contains(clause)) {
-                parts.push(clause.clone());
-            }
+    for clause in voice_clauses {
+        if !parts.iter().any(|p| p.contains(clause)) {
+            parts.push(clause.clone());
         }
     }
     if !film.aspect_ratio.trim().is_empty() {

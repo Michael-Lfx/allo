@@ -25,6 +25,12 @@ pub struct ShotBriefDescription {
     pub visual_desc: String,
     #[serde(default)]
     pub audio_desc: Option<String>,
+    /// World-asset slugline this row belongs to (e.g. `INT. CAFE - NIGHT`).
+    ///
+    /// Empty on artifacts written before location binding. Render binds the
+    /// environment plate by this field, not token overlap with the visual line.
+    #[serde(default)]
+    pub location_id: String,
     /// Timeline-ordered beats this row plays in one generation.
     ///
     /// Empty for a single-beat row. Two or more is an inner timeline of the
@@ -95,6 +101,10 @@ pub struct ShotDescription {
     pub motion_desc: String,
     #[serde(default)]
     pub audio_desc: Option<String>,
+    /// World-asset slugline this clip belongs to. Empty means "unknown" —
+    /// the renderer will not guess the first environment plate.
+    #[serde(default)]
+    pub location_id: String,
     /// Timeline-ordered beats this clip plays in one generation.
     ///
     /// Empty for the usual one-beat clip. Two or more marks a packed clip, which
@@ -134,4 +144,25 @@ impl ShotDescription {
             .iter()
             .any(|beat| beat.cam_idx.is_some_and(|cam| cam != self.cam_idx))
     }
+}
+
+/// True when both sides name a location and they are not the same place.
+pub fn location_changed(a: &str, b: &str) -> bool {
+    let a = a.trim();
+    let b = b.trim();
+    !a.is_empty() && !b.is_empty() && !location_keys_match(a, b)
+}
+
+/// Slugline / path matching that ignores whitespace and ASCII case.
+pub fn location_keys_match(a: &str, b: &str) -> bool {
+    let na = normalize_location_key(a);
+    let nb = normalize_location_key(b);
+    !na.is_empty() && na == nb
+}
+
+pub fn normalize_location_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || (*c as u32) > 127)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }

@@ -8,6 +8,9 @@ description: >-
 category: drama
 version: "1.0.0"
 tags: [horror, suspense, thriller, dread, mystery]
+director:
+  pack-policy: coverage
+  over-budget: fold
 requirement-overlay: |
   Direct suspense / horror with controlled dread rather than constant noise.
   Prioritize: spatial clarity, off-screen threat, slow information drip,

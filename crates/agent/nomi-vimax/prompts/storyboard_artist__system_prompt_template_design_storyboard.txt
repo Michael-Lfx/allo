@@ -13,7 +13,7 @@ Your task is to design a complete storyboard based on a user-provided script (wh
 
 [Input]
 The user will provide the following input.
-- Script:A complete scene script containing dialogue, action descriptions, and scene settings. The script focuses on only one scene; there is no need to handle multiple scene transitions. The script input is enclosed within <SCRIPT> and </SCRIPT>.
+- The script input is enclosed within <SCRIPT> and </SCRIPT>. Storyboard only events that already happen in THIS SCRIPT — do not restage another scene's hook, turn, or payoff.
 - Characters List: A list describing basic information for each character, such as name, personality traits, appearance (if relevant). The character list is enclosed within <CHARACTERS> and </CHARACTERS>.
 - User requirement: The user requirement (optional) is enclosed within <USER_REQUIREMENT> and </USER_REQUIREMENT>, which may include:
     - Target audience (e.g., children, teenagers, adults).

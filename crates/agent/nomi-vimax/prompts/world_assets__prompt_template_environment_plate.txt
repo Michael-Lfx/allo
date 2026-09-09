@@ -1,10 +1,10 @@
-Wide 16:9 vacant location plate. Completely unoccupied.
+{frame} vacant location plate. Completely unoccupied.
 HARD: zero people, zero humans, zero faces, zero silhouettes, zero hands, zero body parts, zero mannequins. Empty architecture only.
 Theme: {theme}
 Location: {slugline}
 Set (empty): {description}
 {style}
 HARD LOOK LOCK: this empty SET must share the SAME production look as the cast three-views and prop bibles — one medium, one palette, one lighting language. Do not switch medium (no photoreal scout photo if Style is drawn; no illustration if Style is live-action).
-SCALE (CRITICAL): real architectural scale — a street fills like a street, a room fills like a room. Do not shrink the set into a miniature diorama, tabletop model, or tiny inset on another plate. Do not stretch a small interior into a landscape. The location occupies the full frame.
+VOLUME (CRITICAL): show the full architectural volume of this location — walls, ceiling or sky, floor, and spatial depth as an establishing wide of the room or street. Do not crop to a door handle, desktop, doorway close-up, product still life, or a single prop standing in for the room. The location occupies the full frame at real architectural scale — not a miniature diorama, tabletop model, or tiny inset.
 Do not composite this set onto a different background plate. Invent THIS location only.
 Output: vacant location plate in that locked look — furniture/lighting/weather only, no people.

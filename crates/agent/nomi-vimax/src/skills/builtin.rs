@@ -84,8 +84,22 @@ mod tests {
             .iter()
             .find(|s| s.id.qualified() == DEFAULT_SHORT_DRAMA_SKILL_ID)
             .expect("short-drama builtin");
-        assert!(skill.requirement_overlay.contains("NEVER add shots"));
+        assert!(skill.requirement_overlay.contains("COVERAGE"));
+        assert!(!skill.requirement_overlay.contains("NEVER add shots"));
+        assert_eq!(skill.director.pack_policy, crate::skills::PackPolicy::Dense);
+        assert_eq!(skill.director.over_budget, crate::skills::OverBudget::Fold);
         // Default-injected: it must not hijack the user's visual style.
         assert!(skill.style_overlay.trim().is_empty());
+    }
+
+    #[test]
+    fn vertical_directors_set_pack_policy() {
+        let skills = load_builtin_skills().unwrap();
+        let female = skills.iter().find(|s| s.name == "female-drama").unwrap();
+        assert_eq!(female.director.over_budget, crate::skills::OverBudget::Extend);
+        let horror = skills.iter().find(|s| s.name == "horror-suspense").unwrap();
+        assert_eq!(horror.director.pack_policy, crate::skills::PackPolicy::Coverage);
+        let fight = skills.iter().find(|s| s.name == "fight-fx").unwrap();
+        assert_eq!(fight.director.pack_policy, crate::skills::PackPolicy::Coverage);
     }
 }

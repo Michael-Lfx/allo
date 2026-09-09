@@ -58,6 +58,6 @@ pub use session::{
     SessionIndex, SessionRecord, SessionSummary, apply_video_task_credits,
 };
 pub use skills::{
-    pack_skill_dir, SkillCatalog, SkillId, SkillOverlay, SkillSource, SkillVisibility,
-    VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
+    pack_skill_dir, DirectorSpec, OverBudget, PackPolicy, SkillCatalog, SkillId, SkillOverlay,
+    SkillSource, SkillVisibility, VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
 };

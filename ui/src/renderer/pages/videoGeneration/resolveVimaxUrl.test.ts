@@ -52,4 +52,17 @@ describe('vimax artifact media cache loans', () => {
     expect(agent.includes('useArtifactMediaUrl')).toBe(true);
     expect(agent.includes('seekMediaElementToFirstFrame')).toBe(true);
   });
+
+  test('filmstrip click is not overwritten by artifact-poll scene rebuilds', () => {
+    const storyboard = source('./components/StoryboardBoard.tsx');
+    expect(storyboard.includes('syncedFocusSceneIdRef')).toBe(true);
+    expect(storyboard.includes('selectScene')).toBe(true);
+  });
+
+  test('agent lightbox video preview plays unmuted', () => {
+    const lightbox = source('./studioAgentSession/StudioMediaLightbox.tsx');
+    expect(lightbox.includes('el.muted = false')).toBe(true);
+    expect(lightbox.includes('autoPlay\n            muted')).toBe(false);
+    expect(lightbox.includes('seekMediaElementToFirstFrame')).toBe(false);
+  });
 });

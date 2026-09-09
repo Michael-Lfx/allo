@@ -5,14 +5,14 @@ You extract stable visual world assets from a screenplay or story so later shot 
 List the distinct environments (locations) and important props/objects that should have global reference images.
 Do NOT list characters (people). Do NOT invent locations or props that are not implied by the text.
 Every environment/prop MUST match the story's period, genre, culture, and atmosphere (not a generic stock set).
-Prefer fewer, high-value assets.
+Environments follow scene headings (location + time of day). Props stay few — only named, plot-critical objects.
 
 [Output]
 {format_instructions}
 
 [Guidelines]
-- Environments: unique places with a clear slugline-like name (e.g. "INT. COFFEE SHOP - NIGHT") and a detailed EMPTY-SET description (architecture, era materials, lighting, weather, furniture, color palette). Describe the room as vacant — never mention people, crowds, patrons, staff, or actions.
+- Environments: one plate per distinct location+time from scene headings (e.g. "INT. COFFEE SHOP - NIGHT" and "INT. COFFEE SHOP - DAY" are different). Detailed EMPTY-SET description of the full architectural volume (architecture, era materials, lighting, weather, furniture, color palette) — never a close-up of a door, desk, or prop. Describe the room as vacant — never mention people, crowds, patrons, staff, or actions.
 - Props: only distinctive recurring objects that matter for recognition. Describe the object alone — never "a man holding X". Include a real-world size class (handheld / tabletop / furniture / vehicle) so later catalog plates keep true physical scale.
-- Cap: at most 5 environments and 8 props.
+- Cap: at most 12 environments (do not collapse the whole film to 5) and 5 props.
 - Match the language of the input text for names/descriptions.
 - Honor the provided Visual style when it affects materials/lighting/rendering medium (e.g. noir wet streets, ink-wash interiors, anime painted backgrounds). If Style is anime/animation/illustration, describe environments/props as belonging to that drawn world — not photoreal live-action sets.

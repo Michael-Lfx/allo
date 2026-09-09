@@ -1,8 +1,9 @@
-//! Aspect ratios for **Seedance video** + **Seedream film cover** only.
+//! Aspect ratios for **Seedance video**, **Seedream film cover**, and
+//! **environment volume plates**.
 //!
-//! Character portraits / world plates intentionally ignore session aspect and
-//! keep the model default canvas (`2K`). Cover generation maps the session
-//! ratio onto Seedream-supported 2K pixel sizes (unsupported → 16:9).
+//! Character portraits and prop catalog plates ignore session aspect and keep
+//! the model default canvas (`2K`). Cover + env plates map the session ratio
+//! onto Seedream-supported 2K pixel sizes (unsupported → 16:9).
 
 use std::path::Path;
 
@@ -136,8 +137,8 @@ pub fn aspect_to_upload_dims(ratio: &str) -> (u32, u32) {
     }
 }
 
-/// JSON `extra` for cover generation — Seedream `size` + DashScope `parameters.size`.
-/// Portraits / world plates must NOT call this (they keep default `2K`).
+/// JSON `extra` for cover / environment-plate generation — Seedream `size` + DashScope `parameters.size`.
+/// Portraits / prop catalog plates must NOT call this (they keep default `2K`).
 pub fn image_request_extra_for_aspect(ratio: &str) -> serde_json::Value {
     let r = normalize_aspect_ratio(ratio);
     serde_json::json!({

@@ -260,12 +260,14 @@ export interface StoryboardFile {
  * Video start rewrites per-shot specs and may briefly rewrite the board; the
  * filmstrip must not gain a phantom last card. Shrinking (packed absorb) is OK.
  * New scene paths not seen before are accepted in full.
+ * Pass `allowGrowth` while planning so coverage-appended rows can appear.
  */
 export function mergeStoryboardsWithoutGrowth(
   previous: StoryboardFile[],
-  incoming: StoryboardFile[]
+  incoming: StoryboardFile[],
+  allowGrowth = false
 ): StoryboardFile[] {
-  if (previous.length === 0) return incoming;
+  if (previous.length === 0 || allowGrowth) return incoming;
   const prevByPath = new Map(
     previous.map((board) => [board.path.replace(/\\/g, '/'), board])
   );

@@ -5,6 +5,7 @@ mod ai_face_sanitizer;
 pub(crate) mod artifact_cache;
 mod cameo_bind;
 pub(crate) mod clip_beats;
+mod film_coverage;
 mod idea2video;
 mod novel2video;
 mod privacy_face;
@@ -51,7 +52,8 @@ impl PipelineBackends {
         self.cancel.as_ref().is_some_and(|t| t.is_cancelled())
     }
 
-    /// Image client with Seedream-safe canvas sized to the film aspect (posters only).
+    /// Image client with Seedream-safe canvas sized to the film aspect (posters
+    /// and environment volume plates).
     pub fn poster_image(&self, aspect_ratio: &str) -> Arc<dyn VimaxImage> {
         match &self.flowy {
             Some(flowy) => Arc::new(flowy.image_with_model_and_aspect(
@@ -60,6 +62,12 @@ impl PipelineBackends {
             )),
             None => Arc::clone(&self.image),
         }
+    }
+
+    pub async fn world_planner(&self, film_root: &Path) -> crate::agents::WorldAssetsPlanner {
+        let aspect = crate::aspect::load_aspect_from_dir(film_root).await;
+        crate::agents::WorldAssetsPlanner::new(Arc::clone(&self.chat), Arc::clone(&self.image))
+            .with_env_image(self.poster_image(&aspect))
     }
 }
 

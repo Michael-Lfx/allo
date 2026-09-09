@@ -1782,14 +1782,28 @@ fn content_compress_floor(bounds: ClipBounds, need: u32) -> u32 {
     }
 }
 
-/// Hard max shots for a budget (for post-LLM truncation).
+/// Hard max shots for a budget (for post-LLM fold/extend, not silent drop).
 pub fn max_shots_for_budget(bounds: ClipBounds, budget_secs: u32) -> usize {
     suggested_shot_count(bounds, budget_secs).1 as usize
 }
 
-/// Hard max scenes for a film-level budget (for post-LLM truncation).
+/// Hard max scenes for a film-level budget (for post-LLM fold).
 pub fn max_scenes_for_budget(bounds: ClipBounds, total_secs: u32) -> usize {
     suggested_scene_count(bounds, total_secs).1 as usize
+}
+
+/// Keep overflow scene text by concatenating the tail into the last kept scene.
+pub fn fold_scenes_to_budget(mut scenes: Vec<String>, max_scenes: usize) -> Vec<String> {
+    let max_scenes = max_scenes.max(1);
+    if scenes.len() <= max_scenes {
+        return scenes;
+    }
+    let overflow = scenes.split_off(max_scenes.saturating_sub(1));
+    if overflow.is_empty() {
+        return scenes;
+    }
+    scenes.push(overflow.join("\n\n"));
+    scenes
 }
 
 #[cfg(test)]
@@ -2153,6 +2167,21 @@ mod tests {
         assert_eq!(budgets.len(), 3);
         assert!(budgets.iter().sum::<u32>() >= 30);
         assert!(budgets.iter().all(|&b| b >= SEEDANCE.min_secs()));
+    }
+
+    #[test]
+    fn fold_scenes_concatenates_the_tail() {
+        let scenes = vec![
+            "hook".into(),
+            "escalate".into(),
+            "turn".into(),
+            "payoff".into(),
+        ];
+        let folded = fold_scenes_to_budget(scenes, 2);
+        assert_eq!(folded.len(), 2);
+        assert_eq!(folded[0], "hook");
+        assert!(folded[1].contains("escalate"));
+        assert!(folded[1].contains("payoff"));
     }
 
     #[test]

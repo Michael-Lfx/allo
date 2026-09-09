@@ -38,7 +38,8 @@ pub use voice_reference_generator::{
     has_usable_voice_ref, voice_ref_abs_path, VoiceReferenceGenerator,
 };
 pub use world_assets::{
-    WorldAssetRegistry, WorldAssetsPlanner, rank_world_pairs_for_frame, world_asset_pairs,
+    WorldAssetRegistry, WorldAssetsPlanner, bind_location_ids, environment_sluglines_from_dir,
+    select_environment_plate, world_asset_pairs,
 };
 
 /// Concise JSON schema strings substituted for `{format_instructions}`.
@@ -59,8 +60,8 @@ One entry per input character (same idx / identifier_in_scene). voice_profile mu
         let speech = crate::planning::speech_budget_line(clip);
         format!(
             r#"Return a JSON object:
-{{"storyboard":[{{"idx":0,"is_last":false,"cam_idx":0,"visual_desc":"string","audio_desc":"string"}}]}}
-idx from 0; is_last true only on the final shot; cam_idx is the OPENING camera of this narrative clip (not a grouping key — do not emit a new object because the camera moves). visual_desc is the story unit this file plays (composition + events); reverse/insert/push-in of the SAME beat is CUT TO inside this object. Between rows keep screen-left/screen-right of each named person (do not flip 左侧/右侧 across a file splice). Slice objects by NARRATIVE, never by tripod. ONE ROW = ONE VIDEO. Identity is locked by reference images. audio_desc is REQUIRED for EVERY shot — put spoken dialogue and/or SFX+BGM intent there (never null/empty). When a character speaks, prefix with identifier_in_scene (e.g. 李薇：「……」 / Alice: "…") and put the line in quotes so duration estimation ignores SFX/BGM. Do NOT invent vocal timbre/age/gender in audio_desc (no 低沉嗓音/尖细女声/沙哑男声) — voice identity is locked separately; only dialogue text, emotion intensity, SFX, BGM. {speech} All shots in the scene MUST reuse the SAME continuous underscore motif/tempo/instrumentation in audio_desc — no new music style per cut. Purely visual beats still need ambient audio_desc (room tone + that same cinematic underscore). Prefer fewer, richer clips over micro-cuts; do not pad long takes or split one beat into extra shots. Natural-language values MUST match the user's input language (Chinese input → 简体中文)."#
+{{"storyboard":[{{"idx":0,"is_last":false,"cam_idx":0,"location_id":"INT. PLACE - TIME","visual_desc":"string","audio_desc":"string"}}]}}
+idx from 0; is_last true only on the final shot; cam_idx is the OPENING camera of this narrative clip (not a grouping key — do not emit a new object because the camera moves). location_id is the scene heading / world-asset slugline this clip is IN (copy from the script; keep it stable across reverse angles of the same place). visual_desc is the story unit this file plays (composition + events); reverse/insert/push-in of the SAME beat is CUT TO inside this object. Between rows keep screen-left/screen-right of each named person (do not flip 左侧/右侧 across a file splice). Slice objects by NARRATIVE, never by tripod. ONE ROW = ONE VIDEO. Identity is locked by reference images. audio_desc is REQUIRED for EVERY shot — put spoken dialogue and/or SFX+BGM intent there (never null/empty). When a character speaks, prefix with identifier_in_scene (e.g. 李薇：「……」 / Alice: "…") and put the line in quotes so duration estimation ignores SFX/BGM. Two people in frame: write who speaks and who is silent (A：「…」 B silent). Do NOT invent vocal timbre/age/gender in audio_desc (no 低沉嗓音/尖细女声/沙哑男声) — voice identity is locked separately; only dialogue text, emotion intensity, SFX, BGM. {speech} All shots in the scene MUST reuse the SAME continuous underscore motif/tempo/instrumentation in audio_desc — no new music style per cut. Purely visual beats still need ambient audio_desc (room tone + that same cinematic underscore). Prefer fewer, richer clips over micro-cuts; do not pad long takes or split one beat into extra shots. Natural-language values MUST match the user's input language (Chinese input → 简体中文)."#
         )
     }
 
@@ -117,5 +118,5 @@ Merge event characters into the novel-level list without duplicates. Feature pro
 
     pub const WORLD_ASSETS: &str = r#"Return a JSON object:
 {"environments":[{"idx":0,"slugline":"INT. PLACE - TIME","description":"empty set details"}],"props":[{"idx":0,"name":"string","description":"appearance details"}]}
-environments: distinct locations, no people. props: key recurring objects only. Keep lists short. description/name prose MUST match the user's input language (Chinese input → 简体中文; slugline may stay INT./EXT. style)."#;
+environments: one entry per distinct location+time of day from scene headings (do not collapse the film to a global top-5). props: few named plot-critical objects only. description/name prose MUST match the user's input language (Chinese input → 简体中文; slugline may stay INT./EXT. style)."#;
 }

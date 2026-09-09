@@ -9928,6 +9928,7 @@ export type I18nKey =
   | 'videoGeneration.studio.storyboard.lastFramePlaceholder'
   | 'videoGeneration.studio.storyboard.motionDirection'
   | 'videoGeneration.studio.storyboard.motionPlaceholder'
+  | 'videoGeneration.studio.storyboard.packedBeatItem'
   | 'videoGeneration.studio.storyboard.packedBeats'
   | 'videoGeneration.studio.storyboard.packedBeatsHint'
   | 'videoGeneration.studio.storyboard.packedBeatsShort'
