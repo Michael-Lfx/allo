@@ -9,6 +9,9 @@ description: >-
 category: drama
 version: "1.1.0"
 tags: [drama, romance, short-drama, female, relationship]
+director:
+  pack-policy: dense
+  over-budget: extend
 requirement-overlay: |
   Direct as a female-audience short drama beat.
   Prioritize: relationship tension, character charm, emotional reversals,

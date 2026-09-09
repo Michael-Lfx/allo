@@ -4,19 +4,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    CharacterExtractor, Screenwriter, VoiceProfileGenerator, WorldAssetsPlanner, ensure_film_cover,
+    CharacterExtractor, Screenwriter, VoiceProfileGenerator, ensure_film_cover,
 };
-use crate::drama::{DramaEngine, with_drama_engine};
+use crate::drama::{
+    DramaEngine, with_drama_engine, with_scene_drama_engine,
+};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
 use crate::planning::{
     allocate_scene_budgets, enrich_requirement_for_scene,
-    enrich_requirement_for_scene_model_decides, normalize_target_duration_secs,
+    enrich_requirement_for_scene_model_decides, fold_scenes_to_budget,
+    normalize_target_duration_secs,
 };
 use crate::progress::ProgressCallback;
 use crate::session::{
     copy_json_artifact_if_readable, read_json_artifact, write_json_artifact, write_text_artifact,
 };
+use crate::skills::{DirectorSpec, OverBudget};
 
 use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
@@ -61,17 +65,24 @@ impl Idea2VideoPipeline {
     /// Requirement enriched with the persisted drama engine, when planning
     /// wrote one. Absence is not an error — legacy sessions planned before the
     /// engine existed keep rendering with the raw requirement.
-    async fn requirement_with_drama_engine(&self, user_requirement: &str) -> String {
+    async fn loaded_drama_engine(&self) -> Option<DramaEngine> {
         let path = self.working_dir.join("drama_engine.json");
         if !path.exists() {
-            return user_requirement.to_string();
+            return None;
         }
         match read_json_artifact::<DramaEngine>(&path).await {
-            Ok(engine) => with_drama_engine(user_requirement, &engine),
+            Ok(engine) => Some(engine),
             Err(e) => {
                 tracing::warn!(error = %e, "drama_engine.json unreadable; rendering without it");
-                user_requirement.to_string()
+                None
             }
+        }
+    }
+
+    async fn requirement_with_scene_drama_engine(&self, user_requirement: &str) -> String {
+        match self.loaded_drama_engine().await {
+            Some(engine) => with_scene_drama_engine(user_requirement, &engine),
+            None => user_requirement.to_string(),
         }
     }
 
@@ -167,6 +178,7 @@ impl Idea2VideoPipeline {
         )
         .await?;
         let drama_requirement = with_drama_engine(user_requirement, &engine);
+        let scene_requirement = with_scene_drama_engine(user_requirement, &engine);
         let drama_requirement = drama_requirement.as_str();
 
         emit_pct(&progress, "develop_story", "正在根据灵感扩写故事", 10.0);
@@ -270,10 +282,7 @@ impl Idea2VideoPipeline {
                 "正在生成全局环境与道具参考图",
                 45.0,
             );
-            let world_planner = WorldAssetsPlanner::new(
-                Arc::clone(&self.backends.chat),
-                Arc::clone(&self.backends.image),
-            );
+            let world_planner = self.backends.world_planner(&self.working_dir).await;
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
             world_planner
                 .ensure(
@@ -305,14 +314,26 @@ impl Idea2VideoPipeline {
         if let Some(film_total) = film_total {
             let max_scenes = crate::planning::max_scenes_for_budget(clip, film_total);
             if scenes.len() > max_scenes {
-                tracing::warn!(
-                    kept = max_scenes,
-                    dropped = scenes.len() - max_scenes,
-                    film_total,
-                    "truncated idea script scenes to respect film duration budget"
-                );
-                scenes.truncate(max_scenes);
-                write_json_artifact(&self.working_dir.join("script.json"), &scenes).await?;
+                let spec = DirectorSpec::load_from_dir(&self.working_dir);
+                let before = scenes.len();
+                scenes = match spec.over_budget {
+                    OverBudget::Extend => scenes,
+                    OverBudget::Truncate => {
+                        scenes.truncate(max_scenes);
+                        scenes
+                    }
+                    OverBudget::Fold => fold_scenes_to_budget(scenes, max_scenes),
+                };
+                if scenes.len() != before {
+                    tracing::info!(
+                        kept = scenes.len(),
+                        dropped_slots = before.saturating_sub(scenes.len()),
+                        over_budget = ?spec.over_budget,
+                        film_total,
+                        "folded idea script scenes to duration budget (overflow text kept)"
+                    );
+                    write_json_artifact(&self.working_dir.join("script.json"), &scenes).await?;
+                }
             }
         }
 
@@ -344,7 +365,7 @@ impl Idea2VideoPipeline {
             let scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
                     clip,
-                    drama_requirement,
+                    &scene_requirement,
                     budget,
                     i,
                     scene_count,
@@ -352,7 +373,7 @@ impl Idea2VideoPipeline {
                 ),
                 _ => enrich_requirement_for_scene_model_decides(
                     clip,
-                    drama_requirement,
+                    &scene_requirement,
                     i,
                     scene_count,
                 ),
@@ -389,6 +410,7 @@ impl Idea2VideoPipeline {
         while let Some(joined) = set.join_next().await {
             joined.map_err(|e| crate::error::VimaxError::msg(e.to_string()))??;
         }
+        super::film_coverage::apply_film_coverage(&self.working_dir, self.backends.clip).await?;
 
         let synopsis = format!("{idea}\n{story}\n{user_requirement}");
         let cover_aspect = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
@@ -429,10 +451,10 @@ impl Idea2VideoPipeline {
                 .await?;
         }
 
-        // Same dramatic contract planning saw — a resumed render must not
-        // silently drop the engine block from scene requirements.
-        let drama_requirement = self.requirement_with_drama_engine(user_requirement).await;
-        let drama_requirement = drama_requirement.as_str();
+        // Scene boards film this SCRIPT only — a resumed render must not
+        // restage other scenes' hook/turn/payoff via the film contract.
+        let scene_requirement = self.requirement_with_scene_drama_engine(user_requirement).await;
+        let scene_requirement = scene_requirement.as_str();
 
         let story = tokio::fs::read_to_string(&story_path).await?;
         let characters: Vec<crate::domain::CharacterInScene> = serde_json::from_str(
@@ -490,7 +512,7 @@ impl Idea2VideoPipeline {
             let scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
                     clip,
-                    drama_requirement,
+                    scene_requirement,
                     budget,
                     i,
                     scene_total,
@@ -498,7 +520,7 @@ impl Idea2VideoPipeline {
                 ),
                 _ => enrich_requirement_for_scene_model_decides(
                     clip,
-                    drama_requirement,
+                    scene_requirement,
                     i,
                     scene_total,
                 ),

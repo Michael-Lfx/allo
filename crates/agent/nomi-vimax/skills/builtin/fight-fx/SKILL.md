@@ -9,6 +9,9 @@ description: >-
 category: action
 version: "1.1.0"
 tags: [action, fight, fx, wuxia, stunt, combat]
+director:
+  pack-policy: coverage
+  over-budget: fold
 requirement-overlay: |
   Direct fight / action set pieces with clear screen geography.
   Prioritize: readable attacker-defender axis, impact frames, weighty hits,

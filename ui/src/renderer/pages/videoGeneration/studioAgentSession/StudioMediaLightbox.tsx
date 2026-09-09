@@ -1,9 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { CloseSmall, Left, Right } from '@icon-park/react';
 import { loadStudioMediaPreviewUrl } from './collectStudioMedia';
-import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import type { StudioSessionMedia } from './types';
 import styles from './index.module.css';
@@ -60,6 +59,7 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
   }, [sessionId, current?.path, current?.kind, current?.origin]);
 
   const url = current?.origin === 'cameo' ? cameoUrl : artifactUrl;
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const neighbor = items[index + 1] ?? items[index - 1];
@@ -89,6 +89,16 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
       window.removeEventListener('keydown', onKey);
     };
   }, [onClose, step]);
+
+  // Opening the lightbox is a user gesture, so play with sound. Do not leave
+  // `muted` on for autoplay — that is only required for inline thumbnails.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !url || current?.kind !== 'video') return;
+    el.muted = false;
+    el.volume = 1;
+    void el.play().catch(() => undefined);
+  }, [url, current?.kind, current?.path]);
 
   if (!current || typeof document === 'undefined') return null;
 
@@ -146,14 +156,19 @@ const StudioMediaLightbox: React.FC<StudioMediaLightboxProps> = ({
         {url && current.kind === 'video' ? (
           <video
             key={url}
+            ref={videoRef}
             className={styles.lightboxVideo}
             src={url}
             controls
             playsInline
             autoPlay
-            muted
+            onLoadedData={(event) => {
+              const el = event.currentTarget;
+              el.muted = false;
+              el.volume = 1;
+              void el.play().catch(() => undefined);
+            }}
             onError={() => reload()}
-            onLoadedMetadata={(event) => seekMediaElementToFirstFrame(event.currentTarget)}
           />
         ) : url && current.kind === 'audio' ? (
           <audio key={url} className={styles.lightboxAudio} src={url} controls autoPlay onError={() => reload()} />

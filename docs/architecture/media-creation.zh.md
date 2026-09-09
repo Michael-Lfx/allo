@@ -1,6 +1,6 @@
 # 媒体与创作域（Workshop / 视频生成 / 模型调用层）
 
-> **最后维护：** 2026-09-01 · 核对基准：源码（nomi-vimax 终态 hook + 第一方遥测）
+> **最后维护：** 2026-09-08 · 核对基准：源码（nomi-vimax 分镜 packing / Skill director）
 > 文档性质：现行架构文档（新建，基于源码逐项核对）
 
 本域覆盖 Flowy 的所有"生成媒体"能力：创意工坊画布、ViMax 视频管线、视频生成
@@ -79,6 +79,7 @@ P1 多模态重构的产物（设计稿：
   **纯文件存储**（`{data_dir}/vimax/.vimax/sessions.json` +
   `.working_dir/<id>/`，无 SQL）；垂直技能包与 skill-hub；creative IR +
   `build_canvas_document` 供画布物化。
+- **分镜契约**：一张胶片卡 = 一次视频任务。规划把相邻微镜 pack 进成片行；超时长默认把尾巴**折进**最后一场/最后一镜（`over-budget: fold`），不截断反转。Skill YAML `director.pack-policy` / `over-budget` 写入工作目录 `director_spec.json` 并进入 packing。缺 turn/payoff 时补成片行。规划中胶片可变长；渲染中禁止 phantom 增长。
 - HTTP 面 [`nomifun-vimax`](../../crates/backend/nomifun-vimax/)：
   sessions CRUD/import/plan/revise/render/status/cancel/export、artifacts、cameos、
   action-assets、`materialize-to-canvas` / `sync-from-canvas`（与 Canvas 双向同步，

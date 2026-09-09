@@ -247,6 +247,26 @@ describe('video artifact presentation', () => {
     expect(merged[0]?.shots[0]?.visualDescription).toBe('Opening updated');
   });
 
+  test('allows storyboard growth while planning coverage rows land', () => {
+    const previous = [
+      {
+        path: 'script2video/storyboard.json',
+        shots: [{ index: 0, visualDescription: 'Opening' }],
+      },
+    ];
+    const incoming = [
+      {
+        path: 'script2video/storyboard.json',
+        shots: [
+          { index: 0, visualDescription: 'Opening' },
+          { index: 1, visualDescription: 'Payoff on camera' },
+        ],
+      },
+    ];
+    const merged = mergeStoryboardsWithoutGrowth(previous, incoming, true);
+    expect(merged[0]?.shots).toHaveLength(2);
+  });
+
   test('does not add a phantom shot from leftover media once the storyboard loaded', () => {
     const treeWithStray: ArtifactNode[] = [
       {

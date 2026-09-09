@@ -39,6 +39,14 @@ use regex::Regex;
 
 use crate::clip_bounds::ClipBounds;
 use crate::domain::{ShotBeat, ShotBriefBeat, ShotBriefDescription, ShotDescription};
+use crate::skills::{OverBudget, PackPolicy};
+
+/// Packing knobs from the active DirectorSpec plus drama-engine split tokens.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PackOpts {
+    pub policy: PackPolicy,
+    pub split_needles: Vec<String>,
+}
 
 /// Pack maximal runs of adjacent **storyboard rows** into single clips.
 ///
@@ -50,6 +58,14 @@ pub(crate) fn pack_scene_briefs(
     bounds: ClipBounds,
     briefs: Vec<ShotBriefDescription>,
 ) -> Vec<ShotBriefDescription> {
+    pack_scene_briefs_with(bounds, briefs, PackOpts::default())
+}
+
+pub(crate) fn pack_scene_briefs_with(
+    bounds: ClipBounds,
+    briefs: Vec<ShotBriefDescription>,
+    opts: PackOpts,
+) -> Vec<ShotBriefDescription> {
     let mut out: Vec<ShotBriefDescription> = Vec::with_capacity(briefs.len());
     let mut run: Vec<ShotBriefDescription> = Vec::new();
     let mut run_need = 0u32;
@@ -57,7 +73,7 @@ pub(crate) fn pack_scene_briefs(
     for brief in briefs {
         let need = brief_need_secs(bounds, &brief);
         let joins = run.last().is_some_and(|prev| {
-            can_pack_briefs(prev, &brief, run_need, need, bounds)
+            can_pack_briefs(prev, &brief, run_need, need, bounds, &opts)
         });
         if !joins {
             flush_briefs(&mut out, std::mem::take(&mut run));
@@ -69,6 +85,50 @@ pub(crate) fn pack_scene_briefs(
     flush_briefs(&mut out, run);
     reindex_briefs(&mut out);
     out
+}
+
+/// Pack, then apply the duration budget. Completeness inserts must run *before*
+/// this so new rows are in the same window pass as the LLM draft.
+pub(crate) fn pack_briefs_for_publish(
+    bounds: ClipBounds,
+    briefs: Vec<ShotBriefDescription>,
+    opts: PackOpts,
+    max_shots: Option<usize>,
+    over_budget: OverBudget,
+) -> Vec<ShotBriefDescription> {
+    let packed = pack_scene_briefs_with(bounds, briefs, opts);
+    match max_shots.filter(|&n| n > 0) {
+        Some(max) => apply_shot_budget(packed, max, over_budget),
+        None => packed,
+    }
+}
+
+/// After packing: fold overflow into the last kept clip, extend, or truncate.
+pub(crate) fn apply_shot_budget(
+    mut briefs: Vec<ShotBriefDescription>,
+    max_shots: usize,
+    over_budget: OverBudget,
+) -> Vec<ShotBriefDescription> {
+    let max_shots = max_shots.max(1);
+    if briefs.len() <= max_shots || over_budget == OverBudget::Extend {
+        return briefs;
+    }
+    if over_budget == OverBudget::Truncate {
+        briefs.truncate(max_shots);
+        reindex_briefs(&mut briefs);
+        return briefs;
+    }
+    let overflow = briefs.split_off(max_shots.saturating_sub(1));
+    if overflow.is_empty() {
+        return briefs;
+    }
+    briefs.push(if overflow.len() == 1 {
+        overflow.into_iter().next().expect("len checked")
+    } else {
+        collapse_briefs(overflow)
+    });
+    reindex_briefs(&mut briefs);
+    briefs
 }
 
 /// Rebuild the storyboard so it has exactly one row per renderable clip.
@@ -108,6 +168,7 @@ fn apply_clip_to_brief(
     row.idx = clip.idx;
     row.is_last = is_last;
     row.cam_idx = clip.cam_idx;
+    row.location_id = clip.location_id.clone();
     if clip.is_merged() {
         row.beats = clip
             .beats
@@ -295,6 +356,7 @@ pub(crate) fn storyboard_differs(
             || a.is_last != b.is_last
             || a.beats.len() != b.beats.len()
             || a.visual_desc != b.visual_desc
+            || a.location_id != b.location_id
     })
 }
 
@@ -337,6 +399,7 @@ fn shot_from_brief(brief: &ShotBriefDescription) -> ShotDescription {
         lf_vis_char_idxs: vec![],
         motion_desc: motion,
         audio_desc: brief.audio_desc.clone(),
+        location_id: brief.location_id.clone(),
         beats,
     }
 }
@@ -384,6 +447,9 @@ fn can_pack_onto(
     if prev.is_merged() || shot.is_merged() {
         return false;
     }
+    if crate::domain::location_changed(&prev.location_id, &shot.location_id) {
+        return false;
+    }
     if swapped_screen_blocking(&prev.visual_desc, &shot.visual_desc)
         || swapped_screen_blocking(&prev.lf_desc, &shot.ff_desc)
     {
@@ -406,9 +472,26 @@ fn can_pack_briefs(
     run_need: u32,
     need: u32,
     bounds: ClipBounds,
+    opts: &PackOpts,
 ) -> bool {
     if prev.is_merged() || brief.is_merged() {
         return false;
+    }
+    if crate::domain::location_changed(&prev.location_id, &brief.location_id) {
+        return false;
+    }
+    if crosses_split(prev, brief, &opts.split_needles) {
+        return false;
+    }
+    if opts.policy == PackPolicy::Coverage {
+        return swapped_screen_blocking(&prev.visual_desc, &brief.visual_desc)
+            && coverage_fits(
+                bounds,
+                run_need,
+                need,
+                prev.audio_desc.as_deref(),
+                brief.audio_desc.as_deref(),
+            );
     }
     if swapped_screen_blocking(&prev.visual_desc, &brief.visual_desc) {
         return coverage_fits(
@@ -420,6 +503,31 @@ fn can_pack_briefs(
         );
     }
     run_need + need <= bounds.max_secs()
+}
+
+fn crosses_split(
+    prev: &ShotBriefDescription,
+    brief: &ShotBriefDescription,
+    needles: &[String],
+) -> bool {
+    if needles.is_empty() {
+        return false;
+    }
+    let next_hit = brief_hits_needles(brief, needles);
+    if !next_hit {
+        return false;
+    }
+    !brief_hits_needles(prev, needles)
+}
+
+fn brief_hits_needles(brief: &ShotBriefDescription, needles: &[String]) -> bool {
+    needles.iter().any(|n| {
+        brief.visual_desc.contains(n)
+            || brief
+                .beats
+                .iter()
+                .any(|b| b.visual_desc.contains(n))
+    })
 }
 
 /// Reverse / over-shoulder of the same beat occupies the *same* story seconds.
@@ -936,14 +1044,7 @@ fn flush_briefs(out: &mut Vec<ShotBriefDescription>, mut run: Vec<ShotBriefDescr
 }
 
 fn collapse_briefs(run: Vec<ShotBriefDescription>) -> ShotBriefDescription {
-    let beats: Vec<ShotBriefBeat> = run
-        .iter()
-        .map(|brief| ShotBriefBeat {
-            visual_desc: brief.visual_desc.clone(),
-            audio_desc: brief.audio_desc.clone(),
-            cam_idx: brief.cam_idx,
-        })
-        .collect();
+    let beats: Vec<ShotBriefBeat> = run.iter().flat_map(brief_as_beats).collect();
     let visual_desc =
         join_visual_with_cuts(beats.iter().map(|b| (b.cam_idx, b.visual_desc.as_str())));
     let audio_desc = {
@@ -963,6 +1064,18 @@ fn collapse_briefs(run: Vec<ShotBriefDescription>) -> ShotBriefDescription {
     head.audio_desc = audio_desc;
     head.beats = beats;
     head
+}
+
+fn brief_as_beats(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
+    if brief.is_merged() {
+        brief.beats.clone()
+    } else {
+        vec![ShotBriefBeat {
+            visual_desc: brief.visual_desc.clone(),
+            audio_desc: brief.audio_desc.clone(),
+            cam_idx: brief.cam_idx,
+        }]
+    }
 }
 
 fn reindex_briefs(briefs: &mut [ShotBriefDescription]) {
@@ -1113,6 +1226,7 @@ mod tests {
             lf_vis_char_idxs: vec![idx],
             motion_desc: motion.into(),
             audio_desc: audio.map(str::to_string),
+            location_id: String::new(),
             beats: Vec::new(),
         }
     }
@@ -1124,6 +1238,7 @@ mod tests {
             cam_idx,
             visual_desc: visual.into(),
             audio_desc: audio.map(str::to_string),
+            location_id: String::new(),
             beats: Vec::new(),
         }
     }
@@ -1166,6 +1281,25 @@ mod tests {
         let clips = shots_from_packed_briefs(&packed);
         assert_eq!(clips.len(), packed.len());
         assert!(clips_follow_board(&packed, &clips));
+    }
+
+    #[test]
+    fn three_silent_adjacent_rows_pack_into_one_clip() {
+        let briefs = vec![
+            brief(0, 0, "she turns", None),
+            brief(1, 0, "she steps closer", None),
+            brief(2, 0, "she sees him", None),
+        ];
+        let packed = pack_briefs_for_publish(
+            SEEDANCE,
+            briefs,
+            PackOpts::default(),
+            None,
+            OverBudget::Fold,
+        );
+        assert_eq!(packed.len(), 1);
+        assert!(packed[0].is_merged());
+        assert_eq!(packed[0].beats.len(), 3);
     }
 
     #[test]
@@ -1677,5 +1811,39 @@ mod tests {
         assert_eq!(clips.len(), 3);
         assert!(clip_indices_are_dense(&clips));
         assert_eq!(briefs.iter().map(|b| b.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn fold_budget_keeps_overflow_as_beats() {
+        let briefs = vec![
+            brief(0, 0, "a", None),
+            brief(1, 0, "b", None),
+            brief(2, 0, "c", None),
+            brief(3, 0, "d", None),
+        ];
+        let folded = apply_shot_budget(briefs, 2, OverBudget::Fold);
+        assert_eq!(folded.len(), 2);
+        assert_eq!(folded[1].beats.len(), 3);
+        assert!(folded[1].visual_desc.contains("b"));
+        assert!(folded[1].visual_desc.contains("d"));
+    }
+
+    #[test]
+    fn pack_does_not_join_across_turn_needles() {
+        let briefs = vec![
+            brief(0, 0, "她攥紧通知书", None),
+            brief(1, 0, "父亲推来自行车，车筐里是录取副本", None),
+        ];
+        let joined = pack_scene_briefs(SEEDANCE, briefs.clone());
+        assert_eq!(joined.len(), 1);
+        let packed = pack_scene_briefs_with(
+            SEEDANCE,
+            briefs,
+            PackOpts {
+                policy: PackPolicy::Dense,
+                split_needles: vec!["自行车".into(), "录取".into()],
+            },
+        );
+        assert_eq!(packed.len(), 2);
     }
 }

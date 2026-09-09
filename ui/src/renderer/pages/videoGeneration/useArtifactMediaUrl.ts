@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   acquireCachedArtifactMediaUrl,
@@ -14,15 +14,23 @@ export function useArtifactMediaUrl(sessionId: string | undefined, path: string 
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [epoch, setEpoch] = useState(0);
+  const loadedPathRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!sessionId || !path) {
+      loadedPathRef.current = null;
       setUrl(null);
       setFailed(false);
       return;
     }
     let cancelled = false;
     let loaned = false;
+    if (loadedPathRef.current !== path) {
+      // Drop clip A immediately so switching filmstrip cards cannot keep
+      // playing the previous shot while the next blob loads.
+      loadedPathRef.current = path;
+      setUrl(null);
+    }
     setFailed(false);
     void acquireCachedArtifactMediaUrl(sessionId, path)
       .then((next) => {

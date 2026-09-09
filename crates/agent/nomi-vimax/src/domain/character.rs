@@ -101,10 +101,11 @@ impl VoiceProfile {
         self.build_canonical_clause(character_name)
     }
 
-    /// Short speaker lock for Seedance prompts — timbre fingerprint only.
+    /// Short speaker lock for Seedance prompts — id + four stable traits.
     ///
     /// The canonical [`Self::seedance_clause`] is too long to paste into every
-    /// clip; Seedance follows `@AudioN` + this one-liner better than a full bible.
+    /// clip; this one-liner is identical on every shot so Seedance does not
+    /// reinvent timbre/pitch/volume/style.
     pub fn compact_lock(&self, character_name: &str) -> String {
         let name = character_name.trim();
         let timbre = self.timbre.trim();
@@ -114,10 +115,23 @@ impl VoiceProfile {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("mid");
-        if timbre.is_empty() {
-            return format!("{name}: stable speaker identity, pitch {pitch}");
+        let volume = self
+            .volume
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("normal");
+        let style = self.speaking_style.trim();
+        let mut bits = Vec::new();
+        if !timbre.is_empty() {
+            bits.push(format!("timbre「{timbre}」"));
         }
-        format!("{name}: 「{timbre}」 pitch {pitch}")
+        bits.push(format!("pitch {pitch}"));
+        bits.push(format!("volume {volume}"));
+        if !style.is_empty() {
+            bits.push(style.to_string());
+        }
+        format!("{name}: SPEAKER LOCK — {}", bits.join("; "))
     }
 
     fn build_canonical_clause(&self, character_name: &str) -> String {
@@ -279,7 +293,7 @@ mod tests {
         assert_eq!(vp.caption_clause.as_deref(), Some(clause.as_str()));
         assert_eq!(
             vp.compact_lock("李薇"),
-            "李薇: 「清亮柔和的女中音，气息稳定」 pitch mid-high"
+            "李薇: SPEAKER LOCK — timbre「清亮柔和的女中音，气息稳定」; pitch mid-high; volume normal; 语速平稳"
         );
     }
 

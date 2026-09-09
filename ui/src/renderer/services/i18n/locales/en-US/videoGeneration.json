@@ -803,6 +803,7 @@
       "filmstripNext": "Scroll shots right",
       "packedBeats": "{{count}} beats in one clip",
       "packedBeatsShort": "{{count}} beats",
+      "packedBeatItem": "Beat {{number}}",
       "packedBeatsHint": "These {{count}} adjacent short shots are merged into this one clip, billed once."
     }
   },

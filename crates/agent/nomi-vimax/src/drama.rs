@@ -8,12 +8,14 @@
 //! so a failing plan is reproducible and the one repair round gets concrete,
 //! actionable feedback instead of "make it better".
 //!
-//! Scope guard: everything in this module changes WHAT happens inside the
-//! clips that planning already produces. It never adds storyboard rows, never
-//! splits clips, and never touches clip packing — the "镜太多" fixes in
-//! [`crate::planning`] and `pipelines/clip_beats.rs` stay authoritative.
+//! Scope guard: the engine lints WHAT happens in the film. Clip packing and
+//! duration folding live in [`crate::planning`] and `pipelines/clip_beats.rs`.
+//! Coverage repair inserts a locked `engine.action` onto the scene that owns
+//! the beat when that beat is missing from the concatenated boards.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::path::Path;
 
 use crate::domain::ShotBriefDescription;
 
@@ -40,6 +42,18 @@ pub struct DramaEngine {
     /// Play-order beat sheet; each beat is a dramatic promise the script and
     /// storyboard must keep.
     pub beats: Vec<DramaBeat>,
+}
+
+pub fn load_drama_engine(dir: &Path) -> Option<DramaEngine> {
+    for candidate in [dir, dir.parent().unwrap_or(dir)] {
+        let path = candidate.join("drama_engine.json");
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(engine) = serde_json::from_str(&raw) {
+                return Some(engine);
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,10 +205,22 @@ pub fn lint_drama_engine(engine: &DramaEngine) -> Vec<String> {
     issues
 }
 
+/// Where the engine contract is injected. Film = story/screenplay; Scene =
+/// one storyboard, which must not restage other scenes' beats.
+#[derive(Clone, Copy)]
+enum DramaContractScope {
+    Film,
+    Scene,
+}
+
 /// Requirement block that carries the validated engine into every downstream
 /// LLM call (story, scene scripts, storyboards). Rendered as prose, not JSON,
 /// so it reads like the other `[SECTION]` directives in the requirement.
 pub fn drama_engine_block(engine: &DramaEngine) -> String {
+    drama_engine_block_for(engine, DramaContractScope::Film)
+}
+
+fn drama_engine_block_for(engine: &DramaEngine, scope: DramaContractScope) -> String {
     let mut beats = String::new();
     for (i, beat) in engine.beats.iter().enumerate() {
         beats.push_str(&format!(
@@ -211,6 +237,20 @@ pub fn drama_engine_block(engine: &DramaEngine) -> String {
     } else {
         format!("         - 视觉母题（须跨场景复现）: {motif}\n")
     };
+    let rules = match scope {
+        DramaContractScope::Film => {
+            "         - 节拍表按序在成片某处兑现即可，尤其 turn 与 payoff 不得从全片消失。\n\
+         - 每一场推动 Want / Obstacle / 地位弧线至少一项；同一拍不要在多场各演一遍。\n\
+         - 情绪一律外化成可拍行为（手、眼、走位、道具），禁止只写抽象情绪词。\n\
+         - 密度优先做进已有成片；时长不够时把后半场折进最后一场，不要砍掉反转与收束。跨 turn/payoff 必须拆成新的成片行。"
+        }
+        DramaContractScope::Scene => {
+            "         - 本场分镜只拍摄 SCRIPT 里已经发生的事，禁止把其他场的 hook/turn/payoff 再写进本场。\n\
+         - 本场仍须推动 Want / Obstacle / 地位弧线至少一项。\n\
+         - 情绪一律外化成可拍行为（手、眼、走位、道具），禁止只写抽象情绪词。\n\
+         - 本场若包含 turn/payoff，跨该拍拆成新的成片行；不要为整片节拍表另造镜头。"
+        }
+    };
     format!(
         "[DRAMA_ENGINE — MUST FOLLOW]\n\
          - 主角: {protagonist}\n\
@@ -222,9 +262,7 @@ pub fn drama_engine_block(engine: &DramaEngine) -> String {
 {motif_line}\
          - 节拍表（按序执行，每一拍都是必须兑现的戏剧承诺）:\n\
 {beats}\
-         - 每一场必须推动 Want / Obstacle / 地位弧线至少一项；turn 与 payoff 节拍不得删除、稀释或合并掉。\n\
-         - 情绪一律外化成可拍行为（手、眼、走位、道具），禁止只写抽象情绪词。\n\
-         - 这是密度要求，不是镜头数要求：把戏做进已有的镜头里，不要为此增加镜头或切镜。",
+{rules}",
         protagonist = engine.protagonist.trim(),
         want = engine.want.trim(),
         obstacle = engine.obstacle.trim(),
@@ -235,16 +273,27 @@ pub fn drama_engine_block(engine: &DramaEngine) -> String {
     )
 }
 
-/// Append the engine block to a base requirement (idempotent per plan run —
-/// the base comes fresh from the session record every time).
-pub fn with_drama_engine(base_requirement: &str, engine: &DramaEngine) -> String {
+fn compose_requirement(base_requirement: &str, block: String) -> String {
     let base = base_requirement.trim();
-    let block = drama_engine_block(engine);
     if base.is_empty() {
         block
     } else {
         format!("{base}\n\n{block}")
     }
+}
+
+/// Append the engine block to a base requirement (idempotent per plan run —
+/// the base comes fresh from the session record every time).
+pub fn with_drama_engine(base_requirement: &str, engine: &DramaEngine) -> String {
+    compose_requirement(base_requirement, drama_engine_block(engine))
+}
+
+/// Scene storyboard contract: film this SCRIPT only, do not restage the film.
+pub fn with_scene_drama_engine(base_requirement: &str, engine: &DramaEngine) -> String {
+    compose_requirement(
+        base_requirement,
+        drama_engine_block_for(engine, DramaContractScope::Scene),
+    )
 }
 
 /// Show-don't-tell lint for one scene's screenplay text.
@@ -437,6 +486,229 @@ pub fn storyboard_structure_matches(
         })
 }
 
+/// Distinctive tokens from turn / payoff / reversal used to split packing
+/// so a reversal does not get absorbed into the previous clip.
+pub fn pack_split_needles(engine: &DramaEngine) -> Vec<String> {
+    let mut parts = vec![engine.reversal.as_str()];
+    for beat in &engine.beats {
+        if matches!(beat.role, BeatRole::Turn | BeatRole::Payoff) {
+            parts.push(beat.action.as_str());
+        }
+    }
+    distinctive_needles(&parts.join("\n"))
+}
+
+pub fn lint_storyboard_coverage(engine: &DramaEngine, rows: &[ShotBriefDescription]) -> Vec<String> {
+    uncovered_critical_beats(engine, rows)
+        .into_iter()
+        .map(|beat| {
+            format!(
+                "{} 节拍未出现在任何成片行——必须有对应镜头: {}",
+                beat.role.as_str(),
+                clip_for_report(&beat.action)
+            )
+        })
+        .collect()
+}
+
+pub fn uncovered_critical_beats<'a>(
+    engine: &'a DramaEngine,
+    rows: &[ShotBriefDescription],
+) -> Vec<&'a DramaBeat> {
+    let blob = board_blob(rows);
+    engine
+        .beats
+        .iter()
+        .filter(|beat| matches!(beat.role, BeatRole::Turn | BeatRole::Payoff | BeatRole::Hook))
+        .filter(|beat| !beat_covered_in(&blob, beat))
+        .collect()
+}
+
+/// Insert missing turn/payoff/hook onto this board. Returns whether it grew.
+/// Caller packs afterwards.
+pub fn ensure_storyboard_coverage(
+    engine: &DramaEngine,
+    rows: &mut Vec<ShotBriefDescription>,
+) -> bool {
+    let mut boards = vec![std::mem::take(rows)];
+    let dirty = place_missing_film_beats(engine, &[""], &mut boards);
+    *rows = boards.pop().unwrap_or_default();
+    !dirty.is_empty()
+}
+
+/// Scene whose script already contains this beat, if any.
+pub fn owner_scene_for_beat<S: AsRef<str>>(beat: &DramaBeat, scene_scripts: &[S]) -> Option<usize> {
+    scene_scripts
+        .iter()
+        .position(|script| beat_covered_in(script.as_ref(), beat))
+}
+
+fn default_owner_scene(beat: &DramaBeat, scene_count: usize) -> usize {
+    if scene_count == 0 {
+        return 0;
+    }
+    match beat.role {
+        BeatRole::Hook => 0,
+        BeatRole::Payoff | BeatRole::Button => scene_count - 1,
+        _ => (scene_count / 2).min(scene_count - 1),
+    }
+}
+
+/// Insert missing film-level beats onto the owning scene boards.
+///
+/// Returns dirty scene indexes. Does nothing when the concatenated boards
+/// already cover the beat — this is an existence check, not a later dedup.
+pub fn place_missing_film_beats<S: AsRef<str>>(
+    engine: &DramaEngine,
+    scene_scripts: &[S],
+    boards: &mut [Vec<ShotBriefDescription>],
+) -> Vec<usize> {
+    let n = boards.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let concat: Vec<ShotBriefDescription> = boards.iter().flatten().cloned().collect();
+    let missing = uncovered_critical_beats(engine, &concat);
+    if missing.is_empty() {
+        return Vec::new();
+    }
+    let mut dirty = BTreeSet::new();
+    for beat in missing {
+        let i = owner_scene_for_beat(beat, scene_scripts).unwrap_or_else(|| default_owner_scene(beat, n));
+        let i = i.min(n - 1);
+        let at_front = beat.role == BeatRole::Hook;
+        insert_coverage_beat(&mut boards[i], beat, at_front);
+        dirty.insert(i);
+    }
+    dirty.into_iter().collect()
+}
+
+fn insert_coverage_beat(rows: &mut Vec<ShotBriefDescription>, beat: &DramaBeat, at_front: bool) {
+    let cam_idx = if at_front {
+        rows.first().map(|r| r.cam_idx).unwrap_or(0)
+    } else {
+        rows.last().map(|r| r.exit_cam_idx()).unwrap_or(0)
+    };
+    let location_id = if at_front {
+        rows.first()
+    } else {
+        rows.last()
+    }
+    .map(|r| r.location_id.clone())
+    .unwrap_or_default();
+    let row = ShotBriefDescription {
+        idx: 0,
+        is_last: false,
+        cam_idx,
+        visual_desc: beat.action.clone(),
+        audio_desc: None,
+        location_id,
+        beats: Vec::new(),
+    };
+    if at_front {
+        rows.insert(0, row);
+    } else {
+        rows.push(row);
+    }
+    let last = rows.len().saturating_sub(1);
+    for (i, row) in rows.iter_mut().enumerate() {
+        row.idx = i as i32;
+        row.is_last = i == last;
+    }
+}
+
+fn board_blob(rows: &[ShotBriefDescription]) -> String {
+    let mut out = String::new();
+    for row in rows {
+        out.push_str(&row.visual_desc);
+        out.push('\n');
+        if let Some(audio) = &row.audio_desc {
+            out.push_str(audio);
+            out.push('\n');
+        }
+        for beat in &row.beats {
+            out.push_str(&beat.visual_desc);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn beat_covered_in(blob: &str, beat: &DramaBeat) -> bool {
+    let action = beat.action.trim();
+    if !action.is_empty() && blob.contains(action) {
+        return true;
+    }
+    let needles = distinctive_needles(action);
+    if needles.is_empty() {
+        return false;
+    }
+    let hits = needles.iter().filter(|n| blob.contains(n.as_str())).count();
+    if needles.len() <= 1 {
+        hits == 1
+    } else {
+        hits >= 2
+    }
+}
+
+fn distinctive_needles(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ('\u{4e00}'..='\u{9fff}').contains(&ch) {
+            if current.chars().any(|c| c.is_ascii_alphabetic()) {
+                flush_latin_word(&mut current, &mut out);
+            }
+            current.push(ch);
+            continue;
+        }
+        flush_cjk_run(&mut current, &mut out);
+        if ch.is_ascii_alphabetic() {
+            current.push(ch);
+        } else {
+            flush_latin_word(&mut current, &mut out);
+        }
+    }
+    flush_cjk_run(&mut current, &mut out);
+    flush_latin_word(&mut current, &mut out);
+    out.sort();
+    out.dedup();
+    out.truncate(8);
+    out
+}
+
+fn flush_cjk_run(run: &mut String, out: &mut Vec<String>) {
+    if run.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+        let chars: Vec<char> = run.chars().filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c)).collect();
+        let mut i = 0;
+        while i + 1 < chars.len() {
+            let gram: String = chars[i..i + 2].iter().collect();
+            if !CJK_STOP.contains(&gram.as_str()) {
+                out.push(gram);
+            }
+            i += 2;
+        }
+        if chars.len() >= 3 {
+            let long: String = chars.iter().take(4).collect();
+            if !out.iter().any(|s| s == &long) {
+                out.push(long);
+            }
+        }
+    }
+    run.clear();
+}
+
+fn flush_latin_word(run: &mut String, out: &mut Vec<String>) {
+    let w = run.trim().to_ascii_lowercase();
+    run.clear();
+    if w.len() >= 4 && !LATIN_STOP.contains(&w.as_str()) {
+        out.push(w);
+    }
+}
+
+const CJK_STOP: &[&str] = &["一个", "这个", "那个", "自己", "他们", "她们", "然后", "因为"];
+const LATIN_STOP: &[&str] = &["that", "this", "with", "from", "into", "then", "have"];
+
 fn is_dialogue_or_heading(line: &str) -> bool {
     if line.contains('「') || line.contains('“') || line.contains('"') {
         return true;
@@ -575,6 +847,7 @@ mod tests {
         assert!(lint_scene_spoken_plot(spoken).is_empty());
     }
 
+    #[test]
     fn scene_lint_skips_dialogue_and_parentheticals() {
         let scene = "场景一：县城车站\n\
                      林晚：「我真的很难过。」\n\
@@ -595,6 +868,7 @@ mod tests {
                 cam_idx: 0,
                 visual_desc: "<林晚>攥着撕碎的通知书冲进雨里，纸片粘在掌心".into(),
                 audio_desc: Some("雨声".into()),
+                location_id: String::new(),
                 beats: vec![],
             },
             ShotBriefDescription {
@@ -603,6 +877,7 @@ mod tests {
                 cam_idx: 1,
                 visual_desc: "<姐姐>站在门口，非常愤怒，然后环顾四周".into(),
                 audio_desc: Some("门响".into()),
+                location_id: String::new(),
                 beats: vec![],
             },
         ];
@@ -622,6 +897,7 @@ mod tests {
             cam_idx: idx,
             visual_desc: "v".into(),
             audio_desc: None,
+            location_id: String::new(),
             beats: beats
                 .into_iter()
                 .map(|cam_idx| ShotBriefBeat {
@@ -649,13 +925,101 @@ mod tests {
     }
 
     #[test]
+    fn coverage_lint_requires_turn_and_payoff_on_the_board() {
+        let engine = dense_engine();
+        let hook_only = vec![ShotBriefDescription {
+            idx: 0,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: "林晚从垃圾桶里抢出被撕成两半的通知书，攥进袖口".into(),
+            audio_desc: None,
+            location_id: String::new(),
+            beats: vec![],
+        }];
+        let issues = lint_storyboard_coverage(&engine, &hook_only);
+        assert!(issues.iter().any(|i| i.contains("turn")));
+        assert!(issues.iter().any(|i| i.contains("payoff")));
+        let mut rows = hook_only;
+        assert!(ensure_storyboard_coverage(&engine, &mut rows));
+        assert!(lint_storyboard_coverage(&engine, &rows).is_empty());
+        assert_eq!(rows.len(), 3);
+    }
+
+    fn brief(visual: &str) -> ShotBriefDescription {
+        ShotBriefDescription {
+            idx: 0,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: visual.into(),
+            audio_desc: None,
+            location_id: String::new(),
+            beats: vec![],
+        }
+    }
+
+    #[test]
+    fn film_beats_are_not_cloned_onto_every_scene() {
+        let engine = dense_engine();
+        let hook = engine.beats[0].action.clone();
+        let turn = engine.beats.iter().find(|b| b.role == BeatRole::Turn).unwrap().action.clone();
+        let payoff = engine.beats.iter().find(|b| b.role == BeatRole::Payoff).unwrap().action.clone();
+        let mut boards = vec![
+            vec![brief(&hook), brief(&turn), brief(&payoff)],
+            vec![brief("姐姐把行李箱摔在林晚脚边，抢走她的身份证")],
+        ];
+        let dirty = place_missing_film_beats(
+            &engine,
+            &[
+                format!("{hook}\n{turn}\n{payoff}"),
+                "姐姐把行李箱摔在林晚脚边，抢走她的身份证".into(),
+            ],
+            &mut boards,
+        );
+        assert!(dirty.is_empty());
+        assert_eq!(
+            boards[1]
+                .iter()
+                .filter(|r| r.visual_desc == hook)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn missing_hook_inserts_into_the_scene_that_owns_the_script() {
+        let engine = dense_engine();
+        let hook = engine.beats[0].action.clone();
+        let turn = engine.beats[2].action.clone();
+        let payoff = engine.beats[3].action.clone();
+        let mut boards = vec![
+            vec![brief("厨房里水烧开了")],
+            vec![brief(&turn), brief(&payoff)],
+        ];
+        let scene1 = format!("{turn}\n{payoff}");
+        let dirty = place_missing_film_beats(
+            &engine,
+            &[hook.as_str(), scene1.as_str()],
+            &mut boards,
+        );
+        assert_eq!(dirty, vec![0]);
+        assert_eq!(boards[0][0].visual_desc, hook);
+        assert_ne!(boards[1][0].visual_desc, hook);
+    }
+
+    #[test]
     fn engine_block_carries_beats_and_scope_guard() {
         let block = drama_engine_block(&dense_engine());
         assert!(block.starts_with("[DRAMA_ENGINE"));
         assert!(block.contains("[hook]"));
         assert!(block.contains("[payoff]"));
         assert!(block.contains("纸船"));
-        assert!(block.contains("不要为此增加镜头"));
+        assert!(block.contains("折进最后一场"));
+        assert!(block.contains("成片某处兑现"));
+        assert!(!block.contains("不要为此增加镜头"));
+        assert!(!block.contains("禁止把其他场"));
+        let scene = with_scene_drama_engine("多用日常场景", &dense_engine());
+        assert!(scene.contains("禁止把其他场"));
+        assert!(!scene.contains("成片某处兑现"));
         let composed = with_drama_engine("多用日常场景", &dense_engine());
         assert!(composed.starts_with("多用日常场景"));
         assert!(composed.contains("[DRAMA_ENGINE"));

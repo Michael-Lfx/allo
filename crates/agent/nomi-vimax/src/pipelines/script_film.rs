@@ -10,9 +10,10 @@ use std::sync::Arc;
 
 use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, VoiceProfileGenerator, VoiceReferenceGenerator,
-    WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
+    ensure_film_cover, has_usable_portrait,
 };
 use crate::error::VimaxResult;
+use crate::drama::{load_drama_engine, with_scene_drama_engine};
 use crate::media_local;
 use crate::planning::{
     allocate_scene_budgets, enrich_requirement_for_scene,
@@ -246,10 +247,7 @@ impl ScriptFilmPipeline {
         )
         .await?;
 
-        let world_planner = WorldAssetsPlanner::new(
-            Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
-        );
+        let world_planner = self.backends.world_planner(&self.working_dir).await;
         emit_pct(
             &progress,
             "character_portraits_start",
@@ -359,6 +357,7 @@ impl ScriptFilmPipeline {
             &format!("正在规划 0/{scene_count} 个场次文本产物"),
             40.0,
         );
+        let scene_base = scene_requirement_base(&self.working_dir, user_requirement);
         for (i, scene_script) in bodies.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
             let backends = self.backends.clone();
@@ -368,7 +367,7 @@ impl ScriptFilmPipeline {
             let mut scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
                     clip,
-                    user_requirement,
+                    &scene_base,
                     budget,
                     i,
                     scene_count,
@@ -376,7 +375,7 @@ impl ScriptFilmPipeline {
                 ),
                 _ => enrich_requirement_for_scene_model_decides(
                     clip,
-                    user_requirement,
+                    &scene_base,
                     i,
                     scene_count,
                 ),
@@ -414,6 +413,7 @@ impl ScriptFilmPipeline {
         while let Some(joined) = set.join_next().await {
             joined.map_err(|e| crate::error::VimaxError::msg(e.to_string()))??;
         }
+        super::film_coverage::apply_film_coverage(&self.working_dir, self.backends.clip).await?;
 
         let synopsis = format!("{corpus}\n{user_requirement}");
         let cover_aspect = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
@@ -478,6 +478,7 @@ impl ScriptFilmPipeline {
         let split = split_screenplay(script);
         let selected = apply_script_selection(&split, &selection);
         let scope = Self::scope_note(&selection, &selected);
+        let scene_base = scene_requirement_base(&self.working_dir, user_requirement);
 
         let characters: Vec<crate::domain::CharacterInScene> = serde_json::from_str(
             &tokio::fs::read_to_string(self.working_dir.join("characters.json")).await?,
@@ -511,7 +512,7 @@ impl ScriptFilmPipeline {
             let mut scene_req = match (budget, film_total) {
                 (Some(budget), Some(film_total)) => enrich_requirement_for_scene(
                     clip,
-                    user_requirement,
+                    &scene_base,
                     budget,
                     i,
                     scene_total,
@@ -519,7 +520,7 @@ impl ScriptFilmPipeline {
                 ),
                 _ => enrich_requirement_for_scene_model_decides(
                     clip,
-                    user_requirement,
+                    &scene_base,
                     i,
                     scene_total,
                 ),
@@ -572,6 +573,13 @@ impl ScriptFilmPipeline {
         }
         emit_pct(&progress, "render_done", "剧本成片渲染完成", 100.0);
         Ok(final_path)
+    }
+}
+
+fn scene_requirement_base(film_root: &Path, user_requirement: &str) -> String {
+    match load_drama_engine(film_root) {
+        Some(engine) => with_scene_drama_engine(user_requirement, &engine),
+        None => user_requirement.to_string(),
     }
 }
 

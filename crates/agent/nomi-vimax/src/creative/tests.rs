@@ -94,6 +94,7 @@ fn sample_film() -> CreativeFilm {
                 cam_idx: 0,
                 visual_desc: "Alice walks into frame".into(),
                 audio_desc: Some("你好".into()),
+                location_id: String::new(),
                 beats: Vec::new(),
             }],
             shot_descriptions: vec![ShotDescription {
@@ -109,6 +110,7 @@ fn sample_film() -> CreativeFilm {
                 lf_vis_char_idxs: vec![0],
                 motion_desc: "slow dolly in".into(),
                 audio_desc: Some("你好".into()),
+                location_id: String::new(),
                 beats: Vec::new(),
             }],
             camera_tree: vec![Camera {

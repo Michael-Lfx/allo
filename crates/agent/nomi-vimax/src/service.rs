@@ -1075,7 +1075,8 @@ impl VimaxService {
         );
         Ok(PipelineBackends {
             chat: Arc::new(flowy.chat_with_model(llm)),
-            // Portraits / env plates use default Seedream 2K — do NOT bind video aspect here.
+            // Portraits / prop plates use default Seedream 2K. Environment volume
+            // plates bind film aspect via `PipelineBackends::poster_image`.
             image: Arc::new(flowy.image_with_model(image.clone())),
             // Fine-grained create / poll / download progress for the progress rail.
             video: Arc::new(flowy.video_with_session_quality(
@@ -1269,6 +1270,11 @@ impl VimaxService {
             &record.user_requirement,
             &record.style,
         )?;
+        let _ = crate::session::write_json_artifact(
+            &work.join("director_spec.json"),
+            &skill_overlay.director,
+        )
+        .await;
         if !skill_overlay.applied_skill_ids.is_empty() {
             let _ = crate::session::write_text_artifact(
                 &work.join("vertical_skills.txt"),

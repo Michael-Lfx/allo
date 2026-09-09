@@ -924,11 +924,35 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
-  scroll-snap-align: start;
   transition:
     border-color 160ms ease,
     transform 160ms ease,
     box-shadow 160ms ease;
+}
+
+.shotCardStack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  scroll-snap-align: start;
+}
+
+.shotCoverageList {
+  margin: 0;
+  padding: 4px 8px 8px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shotCoverageList li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--color-text-3);
 }
 
 .shotCard:hover {
@@ -962,6 +986,11 @@
   place-items: center;
   overflow: hidden;
   background: linear-gradient(160deg, #1b2233 0%, #111722 55%, #0c1018 100%);
+}
+
+.shotThumb video,
+.shotThumb img {
+  pointer-events: none;
 }
 
 .shotCardGenerating {

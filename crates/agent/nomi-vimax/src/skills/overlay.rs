@@ -17,6 +17,7 @@ pub fn compose_overlays(
     let mut applied = Vec::new();
     let mut req_blocks = Vec::new();
     let mut style_parts = Vec::new();
+    let mut director = crate::skills::DirectorSpec::default();
 
     let base_style = base_style.trim();
     if !base_style.is_empty() {
@@ -33,6 +34,7 @@ pub fn compose_overlays(
             continue;
         }
         applied.push(skill.id.qualified());
+        director = director.merge(skill.director);
 
         let mut block = format!(
             "### {} ({})\n{}",
@@ -78,6 +80,7 @@ pub fn compose_overlays(
         user_requirement,
         style: style_parts.join(STYLE_SEP),
         applied_skill_ids: applied,
+        director,
     }
 }
 
@@ -113,6 +116,7 @@ mod tests {
             requirement_overlay: "Sparse premium pacing.".into(),
             style_overlay: "luxury commercial light".into(),
             playbook: "Think Hermes campaign.".into(),
+            director: crate::skills::DirectorSpec::default(),
             dir: String::new(),
         }
     }
@@ -130,6 +134,7 @@ mod tests {
         assert!(overlay.style.contains("cinematic"));
         assert!(overlay.style.contains("luxury commercial"));
         assert_eq!(overlay.applied_skill_ids, vec!["builtin:luxury-tvc"]);
+        assert_eq!(overlay.director, crate::skills::DirectorSpec::default());
     }
 
     #[test]

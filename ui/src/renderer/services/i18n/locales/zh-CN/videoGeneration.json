@@ -803,6 +803,7 @@
       "filmstripNext": "向右查看镜头",
       "packedBeats": "{{count}} 个切镜一次生成",
       "packedBeatsShort": "{{count}} 切",
+      "packedBeatItem": "切镜 {{number}}",
       "packedBeatsHint": "这 {{count}} 个相邻短镜头已合并进这一条成片，生成时只出一条视频。"
     }
   },

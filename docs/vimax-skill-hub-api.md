@@ -62,6 +62,9 @@ requirement-overlay: |
   Direct this as a high-end luxury TVC…
 style-overlay: |
   luxury commercial cinematography…
+director:
+  pack-policy: dense
+  over-budget: fold
 ---
 
 ## 做什么
@@ -124,6 +127,7 @@ style-overlay: |
 | `case-url` | 否 | 精选案例链接 |
 | `requirement-overlay` | 否 | 注入叙事 `<USER_REQUIREMENT>` |
 | `style-overlay` | 否 | 注入视觉 `style` |
+| `director` | 否 | 可执行规程：`pack-policy: dense \| coverage`，`over-budget: fold \| extend \| truncate`。写入会话 `director_spec.json`，改变 packing / 时长处理；不是 prompt 贴片。缺省 `dense` + `fold`。 |
 | 正文 playbook | 是* | Markdown；创建 UI 必填；建议含「做什么 / 需要什么输入 / 怎么做 / 产出什么 / 什么时候问你」 |
 
 ### 2.4 Skill 内容写作模板（推荐）

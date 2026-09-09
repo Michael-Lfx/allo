@@ -202,6 +202,7 @@ CRITICAL CONTINUITY: This shot is timeline-adjacent to the previous shot in the 
             lf_vis_char_idxs: d.lf_vis_char_idxs,
             motion_desc: d.motion_desc,
             audio_desc: brief.audio_desc.clone(),
+            location_id: brief.location_id.clone(),
             beats: brief
                 .beats
                 .iter()

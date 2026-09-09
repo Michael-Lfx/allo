@@ -1628,6 +1628,7 @@ const WorkspacePage: React.FC = () => {
               disabled={busy}
               revising={revising}
               focusSceneId={focusSceneId}
+              onFocusScene={setFocusSceneId}
               onSaveSceneDescriptions={handleSaveSceneDescriptions}
             />
           </section>

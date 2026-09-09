@@ -4,12 +4,14 @@ display-name: 短剧导演
 description: >-
   Default drama-density director for idea-driven short films. Enforces a fast
   hook, a visible want/obstacle/stakes engine, one real reversal, an on-camera
-  payoff, and show-don't-tell performance — inside the existing shot plan,
-  never by adding shots. Use for 短剧, story shorts, or any narrative idea
-  that must land as a bingeable finished film.
+  payoff, and show-don't-tell performance. Use for 短剧, story shorts, or any
+  narrative idea that must land as a bingeable finished film.
 category: drama
-version: "1.0.0"
+version: "1.1.0"
 tags: [drama, short-drama, story, pacing, density]
+director:
+  pack-policy: dense
+  over-budget: fold
 requirement-overlay: |
   Direct as a high-density short drama (短剧).
   DRAMA DENSITY: every scene must visibly move at least one of — the
@@ -24,8 +26,8 @@ requirement-overlay: |
   SHOW, DON'T TELL: emotions are performed, never named. Write faces, hands,
   blocking, and prop business (攥拳、指节发白、后退半步、捏皱纸张), not mood
   labels (伤心/愤怒/紧张). Recurring visual motifs beat spoken exposition.
-  SCOPE: these are density rules, not coverage rules. Make each existing clip
-  carry more drama; NEVER add shots, cuts, or storyboard rows to satisfy them.
+  COVERAGE: if the reversal or on-camera payoff is missing from the board,
+  add one clip row for it. Do not add empty establishing shots for density.
 ---
 
 # 短剧导演 Playbook
@@ -47,5 +49,6 @@ requirement-overlay: |
 - 空持镜、缓慢环视、望向远方一律禁止
 
 ## 红线
-- 不为密度加镜头：戏做进已有镜头内部
+- 超时长把尾巴折进最后一场/最后一镜，不删反转和收束
+- 缺反转或收束时允许追加成片行；不为气氛加空镜
 - 不堆二次反转：一个真反转好过三个假反转
