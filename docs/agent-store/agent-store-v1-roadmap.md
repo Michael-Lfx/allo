@@ -68,7 +68,7 @@ V1 不要求：
 | Team | 固定成员、Leader Planning Context、planned DAG、局部并行、retry/replan |
 | Connector | 至少一个 MCP Connector、工具过滤、Probe |
 | OAuth | 标准 PKCE Loopback OAuth、存储、注入、刷新、重试 |
-| Protocol | Versioned App Server Protocol、stdio/WebSocket、状态查询 |
+| Protocol | Versioned App Server Protocol、WebSocket 绑定、状态查询（stdio 不纳入，见 §10 决策） |
 | SDK | TypeScript typed client、重连与状态同步、错误处理 |
 | Web | Catalog、Run、Plan/DAG、Timeline、Artifact、Approval、Connector 状态 |
 | 安全 | 凭据隔离、Tool Policy、审批、脱敏审计 |
@@ -348,19 +348,9 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
 
 具体用例、输入、断言和证据要求统一维护在测试主表。
 
-```text
-agent-store/00-architecture-decision.md
-agent-store/01-domain-model.md
-agent-store/02-codebuddy-workbuddy-import-spec.md
-agent-store/03-codebuddy-compatibility-matrix.md
-agent-store/04-allo-runtime-adapter.md
-agent-store/05-allo-app-server-protocol.md
-agent-store/06-connector-oauth-security.md
-agent-store/07-typescript-sdk.md
-agent-store/08-flowy-web-integration.md
-agent-store/agent-store-v1-roadmap.md
-agent-store/agent-store-v1-test-cases.md
-```
+完整文档地图与权威顺序见 `README.md`。
+
+> 注（2026-09-09）：本节原文档清单仅覆盖 `00`~`08` + roadmap + test-cases，已过期；`09`~`15`、证据页与设计记录未列入，以上方指针为准。
 
 ## 9. 排期说明
 
@@ -372,3 +362,10 @@ agent-store/agent-store-v1-test-cases.md
 - MCP OAuth transport 注入和刷新；
 - App Server 两种传输的稳定性；
 - software-company 端到端运行时间与资源占用。
+
+## 10. 决策记录（2026-09-09 增补）
+
+以下决策由用户拍板，作为后续实施依据，覆盖此前文档中的“待定/备选”表述；实施顺序见 `15-store-chain-and-protocol-vnext-plan.zh.md`。
+
+1. **二进制分发走 npm optionalDependencies**（2026-09-09）：按平台发布 `@agent-store/runtime-<platform>-<arch>` 包，作为 `@agent-store/sdk` 的 `optionalDependencies`；`resolveAppServerBin` 查找顺序 `bin` → `AGENT_STORE_BIN` → `require.resolve` 定位 platform 包内二进制 → PATH（详见 `12-sdk-packaging.md` §6）。否决 GitHub releases + checksum 下载缓存方案。
+2. **协议 vNext 完全重命名（thread/turn/item），stdio 不纳入**（2026-09-09）：V1 之后破坏性升级公共协议为 v2，概念模型对齐 Codex app-server（`run/conversation → thread`、`agent/run → turn*`、事件项归并为 `item`）；`initialize` 版本协商与 `dispatch_connection_request` 唯一分发保留；stdio 维持排除（SDK 仍走 spawn + 回环 WS）。该决策将重构 webui 事件层（`conversation-events` / `RunHandle` 等）与 SDK 方法面，需在 vNext 立项前先产出 Codex app-server spec diff（方法/事件/概念映射表）再动工；V1 冻结版本文档（`05`、`07`）标为 v1 基线。
