@@ -12,7 +12,7 @@
 
 | 方向 | 范围 | 现状 | 主文档 |
 | --- | --- | --- | --- |
-| **① SDK + 站点** | SDK 加固（A1–A6）+ 站点事实修正与开发者文档（C1–C5） | 均未开工。**两者是派生关系，必须配对执行**（§3.2 C0） | 本文 §3.1 / §3.2 |
+| **① SDK + 站点** | SDK 加固（A1–A5；A6 已决策延后）+ 站点事实修正与开发者文档（C1–C5） | 均未开工。**两者是派生关系，必须配对执行**（§3.2 C0） | 本文 §3.1 / §3.2 |
 | **② 插件与市场规范** | D1 规范正文 ✅ / D2 机器可校验 Schema | 正文已完成（`17`/`18`）；剩 D2（P2） | `17-plugin-spec.zh.md`、`18-marketplace-spec.zh.md` |
 | **③ WebUI 功能** | W1–W14（Codex app 体验对齐，四层） | 未开工 | `19-webui-codex-alignment.zh.md` |
 | **④ 待立项** | `11` 号未纳入的 8 项 + WP-5 协议 vNext | 未排期 | `11-webui-production-readiness.md`、`15-...zh.md` |
@@ -38,7 +38,7 @@
 | --- | --- | --- | --- |
 | F1 | 下载目录**只有 2 个产物**，均为 Windows x86_64 | `curl http://111.170.173.22:10014/downloads/` → `flowy-agent-store-latest-windows-x86_64.zip`、`flowy-agent-store-v1.0.11-windows-x86_64.zip` | 非 Windows 访客无产物 |
 | F2 | 首页主下载按钮**按访客系统直接拼 URL**，未校验是否已发布 | `DownloadCTA.tsx`：`detectedUrl = releaseAssetUrl("latest", detected)`；仅手动列表限定 Windows | macOS/Linux/ARM 访客点击 → **404** |
-| F3 | 兼容性矩阵声称 **5 个平台「支持」** | `content/docs/zh-CN/compatibility.md` 平台表 | 与 F1 冲突，属对外过度承诺 |
+| F3 | 兼容性矩阵声称 **5 个平台「支持」** | `content/docs/zh-CN/compatibility.md` 平台表 | 与 F1 冲突，属对外过度承诺。**已决策（2026-09-09）：仅 Windows**，矩阵收敛为「仅 Windows x64 已发布」 |
 | F4 | npm 侧仅发布 `runtime-win32-x64` | `sdk/package.json` optionalDependencies 预列 5 平台，实际只发 1 个 | 非 Windows 的 `launchClient` 找不到二进制 |
 | F5 | 站点部署口径漂移 | `README.md` 称 GitHub Pages；`deploy-site.yml` 的 `push:` 触发**已注释**，仅剩 `workflow_dispatch` | 文档与真实部署不一致；线上是 VPS 裸 IP + HTTP |
 | F6 | 三个包均**无 `engines`**、无 `repository`、无 `sideEffects` | `protocol/client/sdk` 的 `package.json` | 未声明 Node 版本下限 |
@@ -107,10 +107,11 @@
 - 范围：补 `engines`、`repository`、`sideEffects: false`；`protocol` 包从 0 单测起（类型守卫、错误分类）。
 - 验收：`npm view` 字段齐全；`protocol` 有可运行用例。
 
-**A6 · 平台矩阵（P1，与站点强耦合）**
-- 范围：Linux / macOS runtime 包（GitHub Actions 各 runner 各自构建发布；需仓库 secret）；Windows 包随版本重发。
-- 验收：Linux x64 干净环境 `npm i` 后 `launchClient` 成功；站点兼容性矩阵与产物一致。
-- 依赖：需要一次仓库 secret 配置（用户参与）。
+**A6 · 平台矩阵（✅ 已决策：仅 Windows，延后）**
+- **决策（2026-09-09）**：本轮只支持 **Windows x64**。站点口径随之收敛（C1-2 只列 Windows x64 为「已发布」，其余写「未提供」）。
+- **延后条件**：出现真实非 Windows 需求（外部 issue / 客户要求）再立项；届时的路径是 GitHub Actions 各 runner 各自构建发布（需仓库 secret）+ `sdk/package.json` 的 optionalDependencies 已预列五平台。
+- 不做：在无需求前预先构建 Linux/macOS 产物——避免维护无人使用的构建矩阵。
+- 关联：`12-sdk-packaging.md` §6（分发方式定案为 npm optionalDependencies）。
 
 ### 3.2 方向一 · 站点（C）
 
@@ -125,7 +126,7 @@
 | A3 事件面（Conversation 追平、解码器） | §4.4（子客户端）+ 新增「事件与追平」章节 |
 | A4 HTTP 绑定公共面 | §4.2 + §6（浏览器接入场景） |
 | A5 包元数据（`engines` / `repository`） | §1（安装：Node 版本要求、beta 状态、版本固定示例） |
-| A6 平台矩阵 | `compatibility.md` + `quick-start.md` + §5.3（二进制定位） |
+| A6 平台矩阵（已延后） | `compatibility.md` + `quick-start.md` + §5.3（二进制定位）——随 C1-2 收敛口径，无构建产物需同步 |
 | D 插件 / 市场规范 | `configuration.md`（`default_marketplaces` / `source_kind`）、`plugins-market.md` |
 
 **已发生的债（需一并偿还）**：包已发布 `0.1.0-beta.2`，但 `typescript-sdk.md` §1 **未标注 beta 状态、未写 Node 版本要求**（三包均无 `engines`），只在 §4.2 顺带提了一句「Node 22+/Bun」。
@@ -134,7 +135,7 @@
 
 **C1 · 事实性硬伤（P0，先修）**
 1. **下载 404**（F1+F2）：主 CTA 只在已发布平台给直链，其余平台引导到发布页并明确说明「当前仅 Windows x64 已发布」。
-2. **兼容性矩阵与事实对齐**（F3+F4）：改为「已发布 / 待发布」两栏，覆盖 zip 与 npm runtime 包两个维度。
+2. **兼容性矩阵与事实对齐**（F3+F4）：**仅列 Windows x64 为「已发布」**；其余平台明确写「未提供」——不写「待发布」（避免暗示已排期），并覆盖 zip 与 npm runtime 包两个维度。
 3. **部署口径对齐**（F5）：README 与真实部署一致，明确当前线上入口与后续域名/HTTPS 计划。
 
 **C2 · 开发者入口叙事（P1）**
@@ -206,7 +207,7 @@
 
 | # | 问题 | 选项 |
 | --- | --- | --- |
-| Q1 | 平台矩阵策略 | ① 先补 Linux/macOS 构建（A6） ② 先把文档改成「仅 Windows 已发布」（C1-2），构建后补 |
+| Q1 | 平台矩阵策略 | ✅ **已定（2026-09-09）：仅 Windows**——站点口径收敛（C1-2），A6 延后至出现真实非 Windows 需求 |
 | Q2 | 站点托管与域名 | VPS + 自定义域名 / EdgeOne / GitHub Pages |
 | Q3 | 附件图片输入时机 | 现在做（W10） / 等协议 vNext 一起做 |
 | Q4 | SDK 发版节奏 | A1+A2 先发 `0.1.0-beta.3` / A1–A4 一起发 |
@@ -225,11 +226,24 @@
 | 第 3 批 | A2 / A3 / A4（传输、事件、HTTP 绑定）+ **`typescript-sdk.md` §4.2/§4.4 与新增「事件与追平」章节同步** | SDK 断线与事件追平可用；第三方不必自建 HTTP 层；文档与公共面同步 |
 | 第 4 批 | **W2（审批卡）+ W3（`steer`）+ W4（计划树）+ W6（Run 状态树）** | 对齐核心：审批 / 引导 / 计划 / 状态可读可控 |
 | 第 5 批 | **W7（消息重试/编辑/重新生成）+ W8（通知与重连）+ W9（用量与模型能力）** | 失败可自助恢复；断线不再静默；用量可查 |
-| 第 6 批 | **W10（附件）+ W11（设置）+ W12（技能管理）+ W14（消费 SDK）** + A6 + **`compatibility.md`/`quick-start.md`/§5.3 同步** + C3 + D2 | 输入与配置补全；非 Windows 用户可用；市场内容可自检 |
+| 第 6 批 | **W10（附件）+ W11（设置）+ W12（技能管理）+ W14（消费 SDK）** + **`compatibility.md`/`quick-start.md`/§5.3 同步** + C3 + D2 | 输入与配置补全；市场内容可自检 |
 | 待决策 | C5（域名 / HTTPS，等 Q2） | — |
 | 未排期 | 方向四全部 | 需单独立项 |
 
 > 第 2 批全部是「后端/client 已就绪、只差前端接线」，不碰协议，风险最低、见效最快。
+> **若采纳 §5.1 退出条件**，批次调整为：第 1 批 A1+C1 → 第 2 批 **A2 + `typescript-sdk.md` §4.2 同步 + 发 `0.1.0-beta.3`（SDK 转维护模式）** → 第 3 批 **W5 + W1 + W13（webui 三闭环）** → 第 4 批 **规范 4 处修补 + 已知偏差小节 → v1 冻结** → 其余按真实反馈排。A3/A4/A5 移入「维护模式待议」。
+
+### 5.1 退出条件（建议，待确认）
+
+三条线现在都缺「什么算完成」，这是无限打磨的根源。建议为每个方向写死退出条件：
+
+| 方向 | 退出条件 | 退出后状态 |
+| --- | --- | --- |
+| ① SDK + 站点 | A1 + A2 修完；发 `0.1.0-beta.3`；C1 三处事实错误修正 | **维护模式**：新需求须有真实外部 issue 才排期（A3/A4/A5 不再主动做） |
+| ② 插件与市场规范 | 4 处真缺陷修补 + 「已知偏差」小节落地 | **v1 冻结**：等第一个外部发布者来挑战 |
+| ③ WebUI | 本轮只做三个闭环（W5 产物面板 / W1 命令面板 / W13 市场管理）验收全绿 | 其余按真实使用反馈排，不按「对齐 Codex 的完整性」排 |
+
+> 依据：npm 下载量 API 对四包**均无可观测数据**（发布仅数小时 / 无外部下载）——目前没有可观测的第三方使用，SDK 的 A3/A4/A5 收益依赖尚未出现的用户。
 
 ---
 
