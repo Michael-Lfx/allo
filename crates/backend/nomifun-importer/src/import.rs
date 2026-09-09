@@ -1084,6 +1084,34 @@ fn build_mcp_connector_components(
         let transport_summary = url
             .clone()
             .unwrap_or_else(|| command.clone().unwrap_or_else(|| name.clone()));
+        // A stdio server is command + argv (+ env). The human-readable summary
+        // alone loses `args` (and splits on whitespace), so persist the
+        // structured transport too; registration prefers it over the summary.
+        let args: Vec<String> = config
+            .get("args")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let env = config
+            .get("env")
+            .and_then(|value| value.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let transport = match (&url, &command) {
+            (Some(url), _) => json!({ "type": "http", "url": url }),
+            (None, Some(command)) => json!({
+                "type": "stdio",
+                "command": command,
+                "args": args,
+                "env": env,
+            }),
+            (None, None) => json!({ "type": "stdio", "command": "", "args": [] }),
+        };
         let id = component_id(&meta.plugin_id, &format!("mcp-{}", sanitize_slug(name)));
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
@@ -1097,6 +1125,7 @@ fn build_mcp_connector_components(
                 "name": name,
                 "connector_id": directory_name,
                 "kind": kind,
+                "transport": transport,
                 "transport_summary": transport_summary,
                 "auth_mode": if pre_auth.is_empty() {
                     "oauth".to_owned()

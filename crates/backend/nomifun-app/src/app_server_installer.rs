@@ -404,6 +404,13 @@ fn decode_payload(json: &str) -> serde_json::Value {
 /// `transport_summary` (URL or command). Unknown shapes land in `http` only
 /// when a URL is present; otherwise the component stays unregistered.
 fn connector_transport(payload: &serde_json::Value) -> String {
+    // Prefer the structured transport captured at import time: the summary is
+    // display-oriented and loses argv entries (a stdio server is useless
+    // without them). Fall back to deriving from the summary for older
+    // snapshots that predate the structured field.
+    if let Some(transport) = payload.get("transport").filter(|value| value.is_object()) {
+        return transport.to_string();
+    }
     let summary = payload.get("transport_summary").and_then(|v| v.as_str()).unwrap_or("");
     let transport = if summary.starts_with("http") {
         serde_json::json!({ "type": "http", "url": summary })
@@ -442,6 +449,28 @@ mod tests {
         assert_eq!(value["type"], "stdio");
         assert_eq!(value["command"], "npx");
         assert_eq!(value["args"], serde_json::json!(["@playwright/mcp", "--flag"]));
+    }
+
+    #[test]
+    fn connector_transport_prefers_structured_transport() {
+        // WP-2 B6: stdio argv must survive import → registration; the summary
+        // only carries the command.
+        let payload = serde_json::json!({
+            "kind": "stdio-mcp",
+            "transport": {
+                "type": "stdio",
+                "command": "C:/appexe/bun.exe",
+                "args": ["C:/tmp/mock-mcp.mjs", "--flag"],
+                "env": { "TOKEN": "x" },
+            },
+            "transport_summary": "C:/appexe/bun.exe",
+        });
+        let json = connector_transport(&payload);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["type"], "stdio");
+        assert_eq!(value["command"], "C:/appexe/bun.exe");
+        assert_eq!(value["args"], serde_json::json!(["C:/tmp/mock-mcp.mjs", "--flag"]));
+        assert_eq!(value["env"]["TOKEN"], "x");
     }
 
     #[test]
