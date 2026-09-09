@@ -38,6 +38,7 @@ import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShor
 import { isDesktopShell } from '@renderer/utils/platform';
 import { tauriUpdateCurrentVersion } from '@/common/adapter/tauriUpdater';
 import { trackUpdateCheckCompleted } from '@/renderer/utils/analytics/updateTelemetry';
+import { scheduleDeferred } from '@/renderer/utils/scheduleDeferred';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
 import SidebarToggleIcon from '@renderer/components/layout/Sider/SidebarToggleIcon';
@@ -409,65 +410,77 @@ const Layout: React.FC<{
     return () => unsubscribe();
   }, []);
 
-  // 启动后静默检查一次更新（仅桌面壳）：发现新版本时同步全局 Logo 入口并沿用现有弹窗提醒；
-  // 无更新 / 离线 / 出错时不显示 Logo 入口。
-  // Startup silent update check (desktop shell only): keep the persistent Logo
-  // entry in sync and preserve the existing modal prompt when an update exists.
+  // Deferred startup update check (desktop only): wait for first paint + idle
+  // before hitting ModelScope so OTA network work does not compete with 秒开.
+  // When an update exists, badge first; open the modal shortly after so the
+  // initial route remains visible.
   useEffect(() => {
     if (!isDesktopShell()) return;
     let cancelled = false;
     const includePrerelease = localStorage.getItem('update.includePrerelease') === 'true';
-    void (async () => {
-      const startedAt = performance.now();
-      let fromVersion = '';
-      try {
-        fromVersion = await tauriUpdateCurrentVersion();
-      } catch {
-        fromVersion = '';
-      }
-      try {
-        const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
-        if (cancelled) return;
-        const durationMs = performance.now() - startedAt;
-        if (res?.success && res.data?.updateInfo) {
-          // Modal re-check records `update_check_completed` + prompt for this path.
-          reportUpdateAvailable(res.data.updateInfo.version);
-          window.dispatchEvent(
-            new CustomEvent(UPDATE_AVAILABLE_EVENT, { detail: { version: res.data.updateInfo.version } }),
-          );
-          window.dispatchEvent(new CustomEvent('nomifun-open-update-modal', { detail: { source: 'startup' } }));
-        } else if (res?.success) {
-          trackUpdateCheckCompleted({
-            source: 'startup',
-            status: 'up_to_date',
-            duration_ms: durationMs,
-            from_version: fromVersion,
-          });
-          reportNoUpdateAvailable();
-        } else {
-          trackUpdateCheckCompleted({
-            source: 'startup',
-            status: 'failed',
-            duration_ms: durationMs,
-            from_version: fromVersion,
-            error_code: 'unknown',
-          });
+    let modalTimer: number | null = null;
+
+    const cancelDefer = scheduleDeferred(() => {
+      void (async () => {
+        const startedAt = performance.now();
+        let fromVersion = '';
+        try {
+          fromVersion = await tauriUpdateCurrentVersion();
+        } catch {
+          fromVersion = '';
         }
-      } catch {
-        if (!cancelled) {
-          trackUpdateCheckCompleted({
-            source: 'startup',
-            status: 'failed',
-            duration_ms: performance.now() - startedAt,
-            from_version: fromVersion,
-            error_code: 'network',
-          });
+        try {
+          const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
+          if (cancelled) return;
+          const durationMs = performance.now() - startedAt;
+          if (res?.success && res.data?.updateInfo) {
+            // Modal re-check records `update_check_completed` + prompt for this path.
+            reportUpdateAvailable(res.data.updateInfo.version);
+            window.dispatchEvent(
+              new CustomEvent(UPDATE_AVAILABLE_EVENT, { detail: { version: res.data.updateInfo.version } }),
+            );
+            modalTimer = window.setTimeout(() => {
+              if (cancelled) return;
+              window.dispatchEvent(
+                new CustomEvent('nomifun-open-update-modal', { detail: { source: 'startup' } }),
+              );
+            }, 1_500);
+          } else if (res?.success) {
+            trackUpdateCheckCompleted({
+              source: 'startup',
+              status: 'up_to_date',
+              duration_ms: durationMs,
+              from_version: fromVersion,
+            });
+            reportNoUpdateAvailable();
+          } else {
+            trackUpdateCheckCompleted({
+              source: 'startup',
+              status: 'failed',
+              duration_ms: durationMs,
+              from_version: fromVersion,
+              error_code: 'unknown',
+            });
+          }
+        } catch {
+          if (!cancelled) {
+            trackUpdateCheckCompleted({
+              source: 'startup',
+              status: 'failed',
+              duration_ms: performance.now() - startedAt,
+              from_version: fromVersion,
+              error_code: 'network',
+            });
+          }
+          /* offline / endpoint unreachable — silent; the About page button still works */
         }
-        /* offline / endpoint unreachable — silent; the About page button still works */
-      }
-    })();
+      })();
+    });
+
     return () => {
       cancelled = true;
+      cancelDefer();
+      if (modalTimer != null) window.clearTimeout(modalTimer);
     };
   }, []);
 

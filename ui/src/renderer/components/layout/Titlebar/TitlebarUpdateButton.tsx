@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback } from 'react';
 import classNames from 'classnames';
 import { Download } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 
-import { ipcBridge } from '@/common';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
+import { useUpdateAvailability } from '@renderer/hooks/system/useUpdateAvailability';
 import { isDesktopShell } from '@/renderer/utils/platform';
 
 /** Custom event Layout dispatches when a startup check finds an update. */
@@ -32,58 +32,15 @@ const UpdateBadge: React.FC = () => (
 /**
  * Desktop-only titlebar entry for in-app updates.
  *
- * - Silent check on mount; the icon is shown only when a newer version exists.
- * - Listens for startup check results from Layout.
- * - Click opens UpdateModal via the existing custom event.
+ * Consumes the shared availability store (filled by Layout's deferred startup
+ * check / UpdateModal). Does not hit ModelScope itself — that duplicate mount
+ * check used to race the first paint.
  */
 const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, strokeWidth, className }) => {
   const { t } = useTranslation();
-  const [hasUpdate, setHasUpdate] = useState(false);
-  const [latestVersion, setLatestVersion] = useState<string | null>(null);
-  const checkedRef = useRef(false);
-
-  const runSilentCheck = useCallback(async () => {
-    if (!isDesktopShell()) return;
-    const includePrerelease = localStorage.getItem('update.includePrerelease') === 'true';
-    try {
-      const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
-      if (res?.success && res.data?.updateInfo?.version) {
-        setHasUpdate(true);
-        setLatestVersion(res.data.updateInfo.version);
-        window.dispatchEvent(
-          new CustomEvent<UpdateAvailableDetail>(UPDATE_AVAILABLE_EVENT, {
-            detail: { version: res.data.updateInfo.version },
-          }),
-        );
-      } else {
-        setHasUpdate(false);
-        setLatestVersion(null);
-      }
-    } catch {
-      /* offline / endpoint unreachable — hide icon until a check succeeds */
-      setHasUpdate(false);
-      setLatestVersion(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isDesktopShell() || checkedRef.current) return;
-    checkedRef.current = true;
-    void runSilentCheck();
-  }, [runSilentCheck]);
-
-  useEffect(() => {
-    if (!isDesktopShell()) return undefined;
-    const onAvailable = (event: Event) => {
-      const detail = (event as CustomEvent<UpdateAvailableDetail>).detail;
-      if (detail?.version) {
-        setHasUpdate(true);
-        setLatestVersion(detail.version);
-      }
-    };
-    window.addEventListener(UPDATE_AVAILABLE_EVENT, onAvailable as EventListener);
-    return () => window.removeEventListener(UPDATE_AVAILABLE_EVENT, onAvailable as EventListener);
-  }, []);
+  const availability = useUpdateAvailability();
+  const hasUpdate = availability.available;
+  const latestVersion = availability.version ?? null;
 
   const openUpdateModal = useCallback(() => {
     window.dispatchEvent(new CustomEvent('nomifun-open-update-modal', { detail: { source: 'titlebar' } }));

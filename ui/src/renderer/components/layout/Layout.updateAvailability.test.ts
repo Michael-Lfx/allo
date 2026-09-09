@@ -27,6 +27,7 @@ describe('global update availability entry', () => {
   test('keeps startup and modal checks connected to the shared state', () => {
     expect(layoutSource.includes('reportUpdateAvailable(res.data.updateInfo.version)')).toBe(true);
     expect(layoutSource.includes('reportNoUpdateAvailable()')).toBe(true);
+    expect(layoutSource.includes('scheduleDeferred')).toBe(true);
     expect(modalSource.includes('reportUpdateAvailable(res.data.latest.version)')).toBe(true);
     expect(modalSource.includes('reportUpdateAvailable(evt.version)')).toBe(true);
   });
