@@ -16,7 +16,9 @@ use crate::generation::{
     LESSON_MAX_REFLECTION_ACTIVITIES, LESSON_MIN_ACTIVITIES, LESSON_MIN_OBJECTIVE_ACTIVITIES,
     LessonOutput, validate_lesson_document,
 };
-use crate::models::{ActivityKind, ActivityPack, ConceptPack, SectionKind, SectionPack};
+use crate::models::{
+    ActivityKind, ActivityPack, ConceptPack, SectionKind, SectionPack, VISUAL_OPTIONS,
+};
 
 use crate::learning_graph::{SEV_DANGER, SEV_WARNING};
 
@@ -321,8 +323,6 @@ impl LessonDraft {
                         section.kind,
                         SectionKind::Concept | SectionKind::Example | SectionKind::Demo
                     ) {
-                        const VISUAL_OPTIONS: [&str; 7] =
-                            ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"];
                         if !VISUAL_OPTIONS.contains(&section.visual.trim()) {
                             return Err(format!(
                                 "section {} ({}) must declare its planned visual, one of: {}",

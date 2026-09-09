@@ -45,6 +45,10 @@ pub use models::{
     DueReview, GenerateCourseRequest, GenerateLessonRequest, LessonStatus, LessonView, ModuleView,
     RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack, SectionView,
     SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
+    VISUAL_OPTIONS,
+};
+pub use models::{
+    PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_menu_text,
 };
 pub use routes::learning_routes;
 pub use service::LearningService;
