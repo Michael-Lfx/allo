@@ -25,7 +25,8 @@ use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
     apply_status_to_record, apply_video_task_credits, cameo, video_task_credit_delta,
 };
-use crate::skills::{SkillCatalog, VerticalSkillDraft, VerticalSkillSummary};
+use crate::clip_bounds::ClipBounds;
+use crate::skills::{SkillCatalog, SkillOverlay, VerticalSkillDraft, VerticalSkillSummary};
 
 fn first_nonempty<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> String {
     for c in candidates {
@@ -45,6 +46,53 @@ fn live_status<'a>(
 ) -> &'a mut RenderStatus {
     map.entry(id.to_string())
         .or_insert_with(|| index.load_run_status(id).unwrap_or_default())
+}
+
+/// Same requirement + style the planner fingerprinted. Render must reuse this
+/// string or `storyboard.json` sidecars miss and the board is redesigned
+/// mid-film (user sees 8 shots, then 15 at clip 6).
+fn plan_skill_ids(record: &SessionRecord) -> Vec<String> {
+    if record.vertical_skill_ids.is_empty() && record.workflow == WorkflowKind::Idea2Video {
+        vec![crate::skills::DEFAULT_SHORT_DRAMA_SKILL_ID.to_string()]
+    } else {
+        record.vertical_skill_ids.clone()
+    }
+}
+
+fn requirement_and_style_from_overlay(
+    record: &SessionRecord,
+    skill_overlay: &SkillOverlay,
+    clip: ClipBounds,
+    target_secs: Option<u32>,
+) -> (String, String) {
+    let lang_sources = [
+        record.idea.as_str(),
+        record.script.as_str(),
+        record.novel_text.as_str(),
+        record.user_requirement.as_str(),
+    ];
+    let req_base = crate::planning::with_language_lock(
+        &skill_overlay.user_requirement,
+        &lang_sources,
+    );
+    let req = match record.workflow {
+        WorkflowKind::Script2Video
+        | WorkflowKind::Idea2Video
+        | WorkflowKind::Novel2Video => {
+            crate::planning::enrich_requirement_for_film(clip, &req_base, target_secs)
+        }
+        WorkflowKind::Action2Video => req_base,
+    };
+    let style_s = crate::planning::resolve_visual_style(if skill_overlay.style.is_empty() {
+        if record.style.is_empty() {
+            ""
+        } else {
+            record.style.as_str()
+        }
+    } else {
+        skill_overlay.style.as_str()
+    });
+    (req, style_s)
 }
 
 fn persist_run_status(index: &SessionIndex, id: &str, st: &RenderStatus) {
@@ -1243,30 +1291,17 @@ impl VimaxService {
             let cover = work.join(crate::agents::COVER_FILENAME);
             let _ = tokio::fs::remove_file(&cover).await;
         }
-        // Idea/Novel/Script: film-level enrich. Per-scene pacing is applied inside each pipeline.
-        // Language lock uses the user's creative source so Chinese ideas stay Chinese in planning.
-        let lang_sources = [
-            record.idea.as_str(),
-            record.script.as_str(),
-            record.novel_text.as_str(),
-            record.user_requirement.as_str(),
-        ];
-        // Vertical skills inject at plan-time only — do not overwrite the user's raw requirement.
+        // Vertical skills overlay the requirement for planning fingerprints.
+        // Render must compose the same string or sidecars miss and the board
+        // is redesigned after the user already signed off on 「故事分镜」.
         // Idea-driven films with no explicitly chosen skill get the built-in
         // short-drama director: drama-density rules only (requirement overlay,
         // no style overlay), so it never overrides a user-picked vertical or
         // the user's visual style.
-        let default_short_drama = [crate::skills::DEFAULT_SHORT_DRAMA_SKILL_ID.to_string()];
-        let skill_ids: &[String] = if record.vertical_skill_ids.is_empty()
-            && record.workflow == WorkflowKind::Idea2Video
-        {
-            &default_short_drama
-        } else {
-            &record.vertical_skill_ids
-        };
+        let skill_ids = plan_skill_ids(&record);
         let skill_overlay = self.skills.compose_for_plan(
             record.workflow,
-            skill_ids,
+            &skill_ids,
             &record.user_requirement,
             &record.style,
         )?;
@@ -1287,22 +1322,12 @@ impl VimaxService {
             )
             .await;
         }
-        let req_base = crate::planning::with_language_lock(
-            &skill_overlay.user_requirement,
-            &lang_sources,
+        let (req, style_s) = requirement_and_style_from_overlay(
+            &record,
+            &skill_overlay,
+            backends.clip,
+            target_secs,
         );
-        let req = match record.workflow {
-            WorkflowKind::Script2Video
-            | WorkflowKind::Idea2Video
-            | WorkflowKind::Novel2Video => {
-                crate::planning::enrich_requirement_for_film(
-                    backends.clip,
-                    &req_base,
-                    target_secs,
-                )
-            }
-            WorkflowKind::Action2Video => req_base,
-        };
         // Persist an explicit budget only. Agent mode omits duration so ViMax-style
         // planning lets the model size the film from the story.
         if let Some(target_secs) = target_secs {
@@ -1317,15 +1342,6 @@ impl VimaxService {
                     .update_fields(id, |r| r.target_duration_secs = target_secs);
             }
         }
-        let style_s = crate::planning::resolve_visual_style(if skill_overlay.style.is_empty() {
-            if record.style.is_empty() {
-                ""
-            } else {
-                record.style.as_str()
-            }
-        } else {
-            skill_overlay.style.as_str()
-        });
         let _ = crate::session::write_text_artifact(&work.join("style.txt"), &style_s).await;
         // Keep session field in sync when client omitted style (store base style, not overlays).
         if record.style.is_empty() && skill_overlay.style.is_empty() {
@@ -1480,12 +1496,18 @@ impl VimaxService {
             )
             .await;
         }
-        let req = record.user_requirement.clone();
-        let style_s = crate::planning::resolve_visual_style(if record.style.is_empty() {
-            ""
-        } else {
-            record.style.as_str()
-        });
+        let skill_overlay = self.skills.compose_for_plan(
+            record.workflow,
+            &plan_skill_ids(&record),
+            &record.user_requirement,
+            &record.style,
+        )?;
+        let (req, style_s) = requirement_and_style_from_overlay(
+            &record,
+            &skill_overlay,
+            backends.clip,
+            target_secs,
+        );
         let _ = crate::session::write_text_artifact(&work.join("style.txt"), &style_s).await;
         let progress = progress_callback(Arc::clone(self), id);
 

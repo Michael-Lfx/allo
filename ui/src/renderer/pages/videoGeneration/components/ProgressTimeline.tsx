@@ -235,7 +235,7 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
                   <span
                     className={[
                       'min-w-0 flex-1 font-500',
-                      ev.stage === 'failed'
+                      ev.stage === 'failed' || ev.stage.endsWith('_failed')
                         ? 'text-[rgb(var(--danger-6))]'
                         : 'text-[rgb(var(--primary-6))]',
                     ].join(' ')}

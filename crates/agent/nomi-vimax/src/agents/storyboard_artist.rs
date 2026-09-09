@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::backends::VimaxChat;
 use crate::clip_bounds::ClipBounds;
 use crate::domain::{CharacterInScene, ShotBriefDescription, ShotDescription};
-use crate::error::VimaxResult;
+use crate::error::{VimaxError, VimaxResult};
 use crate::json_util::complete_and_parse_llm_json;
 
 use super::formats;
@@ -60,12 +60,40 @@ impl StoryboardArtist {
         }
         let resp: Resp =
             complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
-        let rows = resp.storyboard;
+        let mut rows = resp.storyboard;
 
-        // Performance lint: emotions must be visible behavior, filler holds are
-        // banned. One repair round rewrites TEXT inside flagged rows only; a
-        // repair that changes the row/beat/camera skeleton is discarded so this
-        // pass can never regrow the shot count ("镜太多" stays fixed).
+        // Coverage first: missing SCRIPT events mean the board is wrong, not
+        // a cue to append stub rows later. One rewrite of the full list.
+        // Performance lint afterwards is text-only and must not grow shots.
+        let coverage = crate::drama::lint_script_promise_coverage(script, &rows);
+        if !coverage.is_empty() {
+            tracing::info!(
+                issues = coverage.len(),
+                "storyboard missed script-locked lines; running one full-board coverage repair"
+            );
+            let repair_user = format!(
+                "{user}\n\n[LINT_FEEDBACK]\nYour previous storyboard was:\n{}\n\n\
+It is INCOMPLETE — these SCRIPT-locked lines never appear:\n- {}\n\n\
+Rewrite a COMPLETE storyboard of THIS SCRIPT only. Cover every location, reversal, \
+and closing line already in <SCRIPT>. You MAY add rows so those events are filmed. \
+Do NOT invent episodes, characters, or punchlines that are not in SCRIPT. \
+Do NOT pad filler holds. Pack related beats into the same row when speech still fits.",
+                serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                coverage.join("\n- ")
+            );
+            let repaired: Resp =
+                complete_and_parse_llm_json(self.chat.as_ref(), &system, &repair_user).await?;
+            let remaining =
+                crate::drama::lint_script_promise_coverage(script, &repaired.storyboard);
+            if !remaining.is_empty() {
+                return Err(VimaxError::Llm(format!(
+                    "分镜未覆盖剧本已锁定的收束/台词: {}",
+                    remaining.join("; ")
+                )));
+            }
+            rows = repaired.storyboard;
+        }
+
         let issues = crate::drama::lint_storyboard_performance(&rows);
         if issues.is_empty() {
             return Ok(rows);

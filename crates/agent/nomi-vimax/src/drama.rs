@@ -14,7 +14,7 @@
 //! the beat when that beat is missing from the concatenated boards.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use crate::domain::ShotBriefDescription;
@@ -536,6 +536,83 @@ pub fn ensure_storyboard_coverage(
     !dirty.is_empty()
 }
 
+/// Quoted lines the source SCRIPT already locked. Missing them is 少戏, not a
+/// cue to invent extra rows — the storyboard artist must rewrite the board.
+pub fn lint_script_promise_coverage(script: &str, rows: &[ShotBriefDescription]) -> Vec<String> {
+    let blob = board_blob(rows);
+    let mut missing: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for quote in extract_quoted_promises(script) {
+        if !seen.insert(quote.clone()) {
+            continue;
+        }
+        if quote_covered_in(&blob, &quote) {
+            continue;
+        }
+        missing.push(quote);
+    }
+    if missing.len() > MAX_PROMISE_LINT {
+        missing = missing.split_off(missing.len() - MAX_PROMISE_LINT);
+    }
+    missing
+        .into_iter()
+        .map(|quote| format!("剧本原句未出现在任何分镜：{quote}"))
+        .collect()
+}
+
+/// Dialogue-heavy scripts can lock many lines; lint the uncovered tail so the
+/// repair round focuses on the closing payoff, not every paraphrased aside.
+const MAX_PROMISE_LINT: usize = 4;
+
+fn extract_quoted_promises(script: &str) -> Vec<String> {
+    let chars: Vec<char> = script.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let closer = match chars[i] {
+            '「' => Some('」'),
+            '“' => Some('”'),
+            '"' => Some('"'),
+            _ => None,
+        };
+        if let Some(end_ch) = closer {
+            i += 1;
+            let start = i;
+            while i < chars.len() && chars[i] != end_ch {
+                i += 1;
+            }
+            if i >= chars.len() {
+                break;
+            }
+            let quote: String = chars[start..i].iter().collect();
+            let quote = quote.trim();
+            if is_locked_script_line(quote) {
+                out.push(quote.to_string());
+            }
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn is_locked_script_line(quote: &str) -> bool {
+    quote.chars().count() >= 4
+}
+
+fn quote_covered_in(blob: &str, quote: &str) -> bool {
+    if blob.contains(quote) {
+        return true;
+    }
+    let cjk: String = quote
+        .chars()
+        .filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c))
+        .take(4)
+        .collect();
+    cjk.chars().count() >= 4 && blob.contains(&cjk)
+}
+
 /// Scene whose script already contains this beat, if any.
 pub fn owner_scene_for_beat<S: AsRef<str>>(beat: &DramaBeat, scene_scripts: &[S]) -> Option<usize> {
     scene_scripts
@@ -584,6 +661,15 @@ pub fn place_missing_film_beats<S: AsRef<str>>(
 }
 
 fn insert_coverage_beat(rows: &mut Vec<ShotBriefDescription>, beat: &DramaBeat, at_front: bool) {
+    insert_coverage_row(rows, beat.action.clone(), None, at_front);
+}
+
+fn insert_coverage_row(
+    rows: &mut Vec<ShotBriefDescription>,
+    visual_desc: String,
+    audio_desc: Option<String>,
+    at_front: bool,
+) {
     let cam_idx = if at_front {
         rows.first().map(|r| r.cam_idx).unwrap_or(0)
     } else {
@@ -600,8 +686,8 @@ fn insert_coverage_beat(rows: &mut Vec<ShotBriefDescription>, beat: &DramaBeat, 
         idx: 0,
         is_last: false,
         cam_idx,
-        visual_desc: beat.action.clone(),
-        audio_desc: None,
+        visual_desc,
+        audio_desc,
         location_id,
         beats: Vec::new(),
     };
@@ -943,6 +1029,22 @@ mod tests {
         assert!(ensure_storyboard_coverage(&engine, &mut rows));
         assert!(lint_storyboard_coverage(&engine, &rows).is_empty());
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn script_promise_coverage_flags_missing_punchline() {
+        let script = "司机把手机支在仪表台上，对着镜头怒怼：「吃俩桃你不噎得慌么」";
+        let rows = vec![brief("男主把桃扔进副驾车窗，女生接住桃笑着说谢谢")];
+        let issues = lint_script_promise_coverage(script, &rows);
+        assert!(issues.iter().any(|i| i.contains("吃俩桃你不噎得慌么")));
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn script_promise_coverage_passes_when_punchline_already_on_board() {
+        let script = "司机怒怼：「吃俩桃你不噎得慌么」";
+        let rows = vec![brief("司机对着镜头说吃俩桃你不噎得慌么")];
+        assert!(lint_script_promise_coverage(script, &rows).is_empty());
     }
 
     fn brief(visual: &str) -> ShotBriefDescription {

@@ -50,7 +50,12 @@ const TvShowCard: React.FC<TvShowCardProps> = ({
     const el = videoRef.current;
     if (!el) return;
     el.pause();
-    el.currentTime = 0;
+    window.setTimeout(() => {
+      const node = videoRef.current;
+      if (node && node.paused) {
+        node.currentTime = 0;
+      }
+    }, 180);
   };
 
   useEffect(() => {
@@ -105,6 +110,7 @@ const TvShowCard: React.FC<TvShowCardProps> = ({
           <video
             ref={videoRef}
             src={previewUrl}
+            poster={video.coverUrl || undefined}
             muted
             playsInline
             loop

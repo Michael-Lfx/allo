@@ -7,10 +7,10 @@ use std::sync::Arc;
 use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, StoryboardArtist, VoiceProfileGenerator,
     VoiceReferenceGenerator, bind_location_ids, ensure_film_cover, environment_sluglines_from_dir,
-    has_usable_portrait, select_environment_plate, voice_ref_abs_path, world_asset_pairs,
+    has_usable_portrait, resolve_environment_plate, voice_ref_abs_path, world_asset_pairs,
 };
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
-use crate::drama::{ensure_storyboard_coverage, load_drama_engine, pack_split_needles};
+use crate::drama::{lint_script_promise_coverage, load_drama_engine, pack_split_needles};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
 use crate::media_local::SpliceSeam;
@@ -586,9 +586,10 @@ impl Script2VideoPipeline {
         // Draft stays in RAM. `storyboard.json` is the published clip list
         // (one row = one video). Writing the LLM's micro-shots first is what
         // made 「故事分镜」 flash absorbed cards during planning.
-        let mut storyboard = match load_json_if_cached(&path, plan_fp).await {
-            Some(cached) => cached,
-            None => {
+        let mut storyboard: Vec<ShotBriefDescription> =
+            match load_json_if_cached::<Vec<ShotBriefDescription>>(&path, plan_fp).await {
+            Some(cached) if lint_script_promise_coverage(script, &cached).is_empty() => cached,
+            _ => {
                 self.storyboard
                     .design_storyboard(script, characters, user_requirement)
                     .await?
@@ -598,21 +599,10 @@ impl Script2VideoPipeline {
             tracing::info!("filled missing storyboard audio_desc with ambient defaults");
         }
         let film_root = resolve_film_root(&self.working_dir);
-        let scene_only = film_root != self.working_dir;
         let slugs = environment_sluglines_from_dir(&film_root).await;
         bind_location_ids(&mut storyboard, script, &slugs);
         let spec = DirectorSpec::load_from_dir(&self.working_dir);
         let engine = load_drama_engine(&self.working_dir);
-        if !scene_only {
-            if let Some(engine) = engine.as_ref() {
-                if ensure_storyboard_coverage(engine, &mut storyboard) {
-                    tracing::info!(
-                        clips = storyboard.len(),
-                        "inserted missing film beats before packing"
-                    );
-                }
-            }
-        }
         let split_needles = engine
             .as_ref()
             .map(pack_split_needles)
@@ -1139,7 +1129,6 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
 
         let continuity_ref = continuity_still_for_seam(seam, continuity_source.as_deref());
         let keep_env = keep_location_plate(seam, shot, prev);
-        let keep_env = keep_env || continuity_ref.is_none();
         let ref_pairs = shot_video_ref_pairs(
             shot,
             continuity_ref,
@@ -1149,6 +1138,18 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             &resolve_film_root(&self.working_dir),
             keep_env,
         );
+        if keep_env
+            && !ref_pairs
+                .iter()
+                .any(|(p, _)| is_environment_ref_path(p))
+        {
+            tracing::warn!(
+                shot = shot.idx,
+                location_id = %shot.location_id,
+                world = world_pairs.len(),
+                "shot has no environment plate in the Seedance ref strip"
+            );
+        }
         if ref_pairs.is_empty() {
             return Err(VimaxError::Video(format!(
                 "Shot {}: no usable reference images (cast/env/prop{}) for multi-ref video",
@@ -2926,7 +2927,7 @@ fn shot_video_ref_pairs(
     let world_query = shot_world_query(shot);
     if keep_env {
         if let Some(env) =
-            select_environment_plate(&shot.location_id, world_pairs)
+            resolve_environment_plate(&shot.location_id, &world_query, world_pairs)
         {
             pairs.push(env);
         }
@@ -2946,20 +2947,14 @@ fn shot_video_ref_pairs(
     pick_video_assets(pairs, continuity, keep_env)
 }
 
+/// Location bible always travels with the clip. Last-frame continuity is
+/// people + framing; the empty environment plate is architecture identity.
 fn keep_location_plate(
-    seam: SpliceSeam,
-    shot: &ShotDescription,
-    prev: Option<&ShotDescription>,
+    _seam: SpliceSeam,
+    _shot: &ShotDescription,
+    _prev: Option<&ShotDescription>,
 ) -> bool {
-    if seam != SpliceSeam::SameTake {
-        return true;
-    }
-    match prev {
-        Some(prev) if crate::domain::location_changed(&prev.location_id, &shot.location_id) => {
-            true
-        }
-        _ => false,
-    }
+    true
 }
 
 /// Speakers named in this clip's audio, stable by character idx (not vis order).
@@ -4067,16 +4062,41 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
     }
 
     #[test]
-    fn same_take_drops_env_unless_location_changed() {
+    fn same_take_still_keeps_location_plate() {
         let mut cur = shot(1, 0);
         let mut prev = shot(0, 0);
         prev.location_id = "INT. CAFE - NIGHT".into();
         cur.location_id = "INT. CAFE - NIGHT".into();
-        assert!(!keep_location_plate(SpliceSeam::SameTake, &cur, Some(&prev)));
+        assert!(keep_location_plate(SpliceSeam::SameTake, &cur, Some(&prev)));
         assert!(keep_location_plate(SpliceSeam::MatchCut, &cur, Some(&prev)));
         cur.location_id = "EXT. PIER - NIGHT".into();
         assert!(keep_location_plate(SpliceSeam::SameTake, &cur, Some(&prev)));
         assert!(keep_location_plate(SpliceSeam::Cut, &cur, None));
+    }
+
+    #[test]
+    fn empty_location_id_still_binds_sole_environment_plate() {
+        let mut s = shot(1, 0);
+        s.visual_desc = "taxi back seat".into();
+        s.location_id.clear();
+        let env = PathBuf::from("environments/0_TAXI/TAXI_environment_plate.png");
+        let world = vec![(
+            env.clone(),
+            "GLOBAL EMPTY environment plate: 出租车后座".into(),
+        )];
+        let pairs = shot_video_ref_pairs(
+            &s,
+            None,
+            &[],
+            &HashMap::new(),
+            &world,
+            Path::new("."),
+            true,
+        );
+        assert!(
+            pairs.iter().any(|(p, _)| p == &env),
+            "sole environment plate must ride with the clip: {pairs:?}"
+        );
     }
 
     #[test]

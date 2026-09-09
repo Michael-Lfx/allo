@@ -103,6 +103,30 @@ describe('projectStudioSessionMessages', () => {
     expect(messages[0].text).toBe('A rainy alley fight.');
   });
 
+  test('keeps cover failure visible after planning finishes', () => {
+    const messages = projectStudioSessionMessages({
+      sourceText: 'A rainy alley fight.',
+      artifacts: [],
+      status: {
+        stage: 'planned',
+        message: '',
+        progress: 100,
+        status: 'idle',
+        events: [
+          { stage: 'film_cover_start', message: '', at: 'a' },
+          { stage: 'film_cover_failed', message: '封面失败', at: 'b' },
+          { stage: 'planned', message: '', at: 'c' },
+        ],
+      },
+      hasStoryboard: true,
+      hasFinalVideo: false,
+      isAction: false,
+    });
+    const film = messages.find((m) => m.beat === 'film');
+    expect(film?.stage).toBe('film_cover_failed');
+    expect(messages.some((m) => m.kind === 'gate_render')).toBe(true);
+  });
+
   test('attaches home uploads onto the user brief', () => {
     const messages = projectStudioSessionMessages({
       sourceText: 'A rainy alley fight.',

@@ -27,6 +27,7 @@ describe('macroStageOf', () => {
     expect(macroStageOf('planned', 'action')).toBe('assets');
     expect(macroStageOf('action_generate', 'action')).toBe('generate');
     expect(macroStageOf('film_cover_start', 'action')).toBe('generate');
+    expect(macroStageOf('film_cover_failed', 'action')).toBe('generate');
     expect(macroStageOf('render_done', 'action')).toBe('film');
     expect(macroStageOf('design_storyboard', 'action')).toBeNull();
   });

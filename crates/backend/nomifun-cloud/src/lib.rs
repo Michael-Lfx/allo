@@ -38,7 +38,7 @@ pub use auth::{
 pub use doctor::{DoctorReport, run_doctor};
 pub use error::{CloudError, ServerClientError};
 pub use flowy::{
-    ClawModelEntry, CreateVideoTaskResponse, CreditsBalance, CreditsCheckinResponse,
+    AvailableModelsClaw, ClawModelEntry, CreateVideoTaskResponse, CreditsBalance, CreditsCheckinResponse,
     FlowyApiClient, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
     MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, OssUploadResult,
     TurnCreditUsage, TurnCreditUsageCall, UserMe, VideoContentImage, VideoCreateParams,

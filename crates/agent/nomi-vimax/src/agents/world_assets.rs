@@ -750,25 +750,53 @@ fn dedup_environments(envs: Vec<EnvironmentAsset>) -> Vec<EnvironmentAsset> {
     out
 }
 
-/// First INT./EXT. / 内景/外景 heading in a scene script.
+/// First scene heading in a scene script (INT./EXT., 内景/外景, `1-3 夜 内 …`, 第N场).
 pub fn first_scene_slugline(script: &str) -> String {
     for line in script.lines() {
         let t = line.trim().trim_start_matches(['#', ' ']);
-        if t.is_empty() {
-            continue;
-        }
-        let upper = t.to_ascii_uppercase();
-        if upper.starts_with("INT.")
-            || upper.starts_with("EXT.")
-            || upper.starts_with("INT ")
-            || upper.starts_with("EXT ")
-            || t.contains("内景")
-            || t.contains("外景")
-        {
+        if looks_like_scene_heading(t) {
             return t.chars().take(80).collect();
         }
     }
     String::new()
+}
+
+fn looks_like_scene_heading(t: &str) -> bool {
+    let t = t.trim();
+    if t.is_empty() || t.chars().count() > 48 {
+        return false;
+    }
+    if t.contains('「') {
+        return false;
+    }
+    let upper = t.to_ascii_uppercase();
+    if upper.starts_with("INT.")
+        || upper.starts_with("EXT.")
+        || upper.starts_with("INT ")
+        || upper.starts_with("EXT ")
+        || upper.starts_with("INT/")
+        || upper.starts_with("SCENE")
+    {
+        return true;
+    }
+    if t.contains("内景") || t.contains("外景") || t.starts_with("场景") {
+        return true;
+    }
+    if t.starts_with('第') && (t.contains('场') || t.contains('幕')) {
+        return true;
+    }
+    let bytes = t.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 {
+        let rest = t[i..].trim_start();
+        if rest.starts_with('-') || rest.starts_with('–') || rest.starts_with('—') {
+            return true;
+        }
+    }
+    false
 }
 
 /// Fill empty `location_id` from the scene heading, then snap to extracted sluglines.
@@ -776,19 +804,32 @@ pub fn first_scene_slugline(script: &str) -> String {
 /// Consecutive rows in one scene share that heading. Visual-token overlap must
 /// not retarget a row to another environment — that splits packing (and the
 /// story) for no location change.
+///
+/// Unmatched LLM `location_id` is kept (do not wipe to empty) so the renderer
+/// can still substring-match a plate path/description.
 pub fn bind_location_ids(
     briefs: &mut [crate::domain::ShotBriefDescription],
     script: &str,
     sluglines: &[String],
 ) {
     let fallback = first_scene_slugline(script);
-    let scene_loc = match_slugline(&fallback, sluglines).unwrap_or(fallback);
+    let scene_loc = match_slugline(&fallback, sluglines)
+        .or_else(|| {
+            if sluglines.len() == 1 {
+                sluglines.first().cloned()
+            } else if !fallback.is_empty() {
+                Some(fallback)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
     for brief in briefs {
         let existing = brief.location_id.trim();
         brief.location_id = if existing.is_empty() {
             scene_loc.clone()
         } else {
-            match_slugline(existing, sluglines).unwrap_or_else(|| scene_loc.clone())
+            match_slugline(existing, sluglines).unwrap_or_else(|| existing.to_string())
         };
     }
 }
@@ -835,7 +876,8 @@ fn is_env_pair_path(path: &Path) -> bool {
     s.contains("environments") || s.contains("environment_plate")
 }
 
-/// Bind one location plate by slugline. No "first environment" fallback.
+/// Bind one location plate by slugline. Empty id → no match (use
+/// [`resolve_environment_plate`] when a clip still needs a set bible).
 pub fn select_environment_plate(
     location_id: &str,
     pairs: &[(PathBuf, String)],
@@ -848,6 +890,32 @@ pub fn select_environment_plate(
         .iter()
         .find(|(p, t)| is_env_pair_path(p) && plate_matches_location(p, t, key))
         .cloned()
+}
+
+/// Location bible for a clip: match `location_id`, else the only env plate,
+/// else the env plate whose path/description overlaps the shot text.
+pub fn resolve_environment_plate(
+    location_id: &str,
+    shot_query: &str,
+    pairs: &[(PathBuf, String)],
+) -> Option<(PathBuf, String)> {
+    let envs: Vec<(PathBuf, String)> = pairs
+        .iter()
+        .filter(|(p, _)| is_env_pair_path(p))
+        .cloned()
+        .collect();
+    if envs.is_empty() {
+        return None;
+    }
+    if let Some(hit) = select_environment_plate(location_id, &envs) {
+        return Some(hit);
+    }
+    if envs.len() == 1 {
+        return envs.into_iter().next();
+    }
+    rank_world_pairs_for_frame(shot_query, &envs, 1)
+        .into_iter()
+        .next()
 }
 
 fn plate_matches_location(path: &Path, text: &str, location_id: &str) -> bool {
@@ -1167,7 +1235,8 @@ mod tests {
     use super::{
         WorldAssetsSpec, bind_location_ids, environment_plate_prompt, first_scene_slugline,
         is_look_plate_path, is_people_centric_prop, is_safe_world_style_ref, prop_plate_prompt,
-        rank_world_pairs_for_frame, select_environment_plate, strip_people_mentions,
+        rank_world_pairs_for_frame, resolve_environment_plate, select_environment_plate,
+        strip_people_mentions,
     };
     use std::path::{Path, PathBuf};
 
@@ -1310,6 +1379,25 @@ mod tests {
                 .contains("coffee")
         );
         assert!(select_environment_plate("", &pairs).is_none());
+        let only_taxi = vec![pairs[1].clone()];
+        let fallback = resolve_environment_plate("", "close-up of hands", &only_taxi)
+            .expect("single plate is the set");
+        assert!(
+            fallback
+                .0
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("coffee")
+        );
+        let ranked = resolve_environment_plate("", "coffee shop glass steam", &pairs)
+            .expect("rank by shot text");
+        assert!(
+            ranked
+                .0
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("coffee")
+        );
     }
 
     #[test]
@@ -1330,6 +1418,30 @@ mod tests {
         );
         assert_eq!(briefs[0].location_id, "INT. COFFEE SHOP - NIGHT");
         assert!(first_scene_slugline("INT. CAFE - DAY\nHello").contains("CAFE"));
+        assert!(
+            first_scene_slugline("1-3 夜 内 出租车后座\n男生低头看手机")
+                .contains("出租车")
+        );
+        assert!(first_scene_slugline("第2场 学校门口\n她下车").contains("学校"));
+    }
+
+    #[test]
+    fn bind_location_ids_keeps_unmatched_llm_slug() {
+        let mut briefs = vec![crate::domain::ShotBriefDescription {
+            idx: 0,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: "taxi interior".into(),
+            audio_desc: None,
+            location_id: "出租车后座".into(),
+            beats: Vec::new(),
+        }];
+        bind_location_ids(
+            &mut briefs,
+            "男生把桃子递过去。",
+            &["INT. OFFICE - DAY".into()],
+        );
+        assert_eq!(briefs[0].location_id, "出租车后座");
     }
 
     #[test]

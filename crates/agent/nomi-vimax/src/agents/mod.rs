@@ -39,7 +39,7 @@ pub use voice_reference_generator::{
 };
 pub use world_assets::{
     WorldAssetRegistry, WorldAssetsPlanner, bind_location_ids, environment_sluglines_from_dir,
-    select_environment_plate, world_asset_pairs,
+    resolve_environment_plate, select_environment_plate, world_asset_pairs,
 };
 
 /// Concise JSON schema strings substituted for `{format_instructions}`.

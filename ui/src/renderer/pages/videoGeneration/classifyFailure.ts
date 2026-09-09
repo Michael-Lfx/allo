@@ -29,6 +29,7 @@ const PLANNING_LLM_STAGES = new Set([
   'develop_story',
   'extract_characters',
   'write_script',
+  'drama_engine',
   'plan_scene',
   'design_storyboard',
   'decompose_shots',
