@@ -39,12 +39,14 @@ pub(super) use crate::models::{
     DueReview, GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
     GraphEdgeView, GraphNodeView, GeneratedLessonActivity, LearningGraphView, SectionKind,
     SectionView, LessonStatus,
-    LessonView, ModuleView, QuestionEntry, TeachingStyle,
+    LessonView, MemoryCalibrationBin, MemoryCurvePoint, MemoryHealthStats, MemoryLoadDay,
+    MemoryStateBucket, MemoryTrueRetention, ModuleView, QuestionEntry, TeachingStyle,
     ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
     ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
 };
 pub(super) use crate::scheduler::{
-    SchedulerSettings, first_review_due_at, review_day_number, review_day_start_utc, schedule_review,
+    SchedulerSettings, days_elapsed_between, first_review_due_at, predicted_retrievability,
+    recall_bucket, review_day_number, review_day_start_utc, schedule_review,
 };
 #[derive(Clone)]
 pub struct LearningService {
@@ -572,6 +574,7 @@ mod diagnostic;
 mod generate;
 mod lesson;
 mod lesson_draft;
+mod memory;
 mod progress;
 mod review;
 mod tags;

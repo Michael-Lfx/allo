@@ -21,6 +21,9 @@ import { QuestionEditDialog } from './QuestionDialogs';
 
 const { Text } = Typography;
 
+/** 「忘记」申报的主动回忆门：卡面展示满 5 秒才允许申报，防止以申报代替回忆 */
+const FORGOT_GATE_MS = 5_000;
+
 export function ReviewCard({
   review,
   busy,
@@ -38,8 +41,8 @@ export function ReviewCard({
   review: DueReview;
   busy: boolean;
   locked: boolean;
-  onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
-  onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
+  onAnswer: (review: DueReview, response: unknown, elapsedMs: number) => Promise<ReviewAnswerResult | undefined>;
+  onForget: (review: DueReview, elapsedMs: number) => Promise<ReviewAnswerResult | undefined>;
   onRate: (review: DueReview, rating: ReviewRating) => void;
   onSkip: (review: DueReview) => void;
   /** Leave the finished card and move to the next review item. */
@@ -54,12 +57,23 @@ export function ReviewCard({
   const [response, setResponse] = useState<unknown>();
   const [result, setResult] = useState<ReviewAnswerResult | null>(null);
   const [wasForgot, setWasForgot] = useState(false);
+  // 卡面展示计时：驱动「忘记」申报的回忆门，同时作为作答耗时上报
+  const [shownAt, setShownAt] = useState(() => Date.now());
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, []);
   // 卡片内容被编辑后，旧作答与结果不再有效，重置本轮作答状态
   useEffect(() => {
     setResponse(undefined);
     setResult(null);
     setWasForgot(false);
-  }, [review.question.prompt, review.question.options, review.question.kind]);
+    setShownAt(Date.now());
+    setNowTick(Date.now());
+  }, [review.id, review.question.prompt, review.question.options, review.question.kind]);
+  const gateElapsed = nowTick - shownAt;
+  const forgotGateLocked = gateElapsed < FORGOT_GATE_MS;
   const question = review.question;
   const hasResponse =
     typeof response === 'string' ? response.trim().length > 0 : response !== undefined;
@@ -163,6 +177,11 @@ export function ReviewCard({
             {t('learning.reviewConceptLabel')}: {review.concept_title}
           </Tag>
         )}
+        {review.r !== null && (
+          <Tag size='small' color='green'>
+            {t('learning.reviewPredictedRecall', { percent: Math.round(review.r * 100) })}
+          </Tag>
+        )}
         {review.edit_pending &&
           (review.edit_note ? (
             <Tooltip content={review.edit_note} position='top'>
@@ -192,7 +211,7 @@ export function ReviewCard({
             disabled={!hasResponse || locked}
             loading={busy}
             onClick={() =>
-              void onAnswer(review, response).then((answerResult) => {
+              void onAnswer(review, response, Date.now() - shownAt).then((answerResult) => {
                 if (answerResult) {
                   setResult(answerResult);
                 }
@@ -203,10 +222,10 @@ export function ReviewCard({
           </Button>
           <Button
             size='small'
-            disabled={locked}
+            disabled={locked || forgotGateLocked}
             loading={busy}
             onClick={() =>
-              void onForget(review).then((answerResult) => {
+              void onForget(review, Date.now() - shownAt).then((answerResult) => {
                 if (answerResult) {
                   setWasForgot(true);
                   setResult(answerResult);
@@ -216,6 +235,11 @@ export function ReviewCard({
           >
             {t('learning.reviewForgot')}
           </Button>
+          {forgotGateLocked && !locked && (
+            <span className='text-12px text-t-tertiary'>
+              {t('learning.reviewForgotGate', { seconds: Math.ceil((FORGOT_GATE_MS - gateElapsed) / 1000) })}
+            </span>
+          )}
           <Button
             size='small'
             type='text'
@@ -310,8 +334,8 @@ export function ReviewSessionModal({
   open: boolean;
   queue: DueReview[];
   busyId: string | null;
-  onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
-  onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
+  onAnswer: (review: DueReview, response: unknown, elapsedMs: number) => Promise<ReviewAnswerResult | undefined>;
+  onForget: (review: DueReview, elapsedMs: number) => Promise<ReviewAnswerResult | undefined>;
   onRate: (review: DueReview, rating: ReviewRating) => Promise<boolean>;
   onSkip: (review: DueReview) => Promise<boolean>;
   /** 归档动作：成功后由调用方推进队列 */

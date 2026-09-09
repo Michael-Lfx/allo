@@ -78,6 +78,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route("/api/learning/reviews/due", get(due_reviews))
         .route("/api/learning/checkins/today", get(checkin_today))
         .route("/api/learning/stats/calendar", get(calendar_stats))
+        .route("/api/learning/stats/memory", get(memory_stats))
         .route("/api/learning/tags", get(list_tags))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
@@ -467,6 +468,32 @@ async fn calendar_stats(
     )))
 }
 
+#[derive(Debug, Deserialize)]
+struct MemoryStatsQuery {
+    /// Minutes east of UTC (same sign as `SchedulerSettings::tz_offset_minutes`),
+    /// reported by the frontend as `-Date().getTimezoneOffset()`.
+    tz_offset: i32,
+}
+
+async fn memory_stats(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<MemoryStatsQuery>,
+) -> Result<Json<ApiResponse<crate::models::MemoryHealthStats>>, AppError> {
+    if !(-24 * 60..=24 * 60).contains(&query.tz_offset) {
+        return Err(AppError::BadRequest(format!(
+            "tz_offset out of range: {}",
+            query.tz_offset
+        )));
+    }
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .memory_health_stats(&user.id, query.tz_offset)
+            .await?,
+    )))
+}
+
 async fn rate_review(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -492,7 +519,13 @@ async fn answer_review(
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .answer_review(&id, &user.id, request.response, request.forgot)
+            .answer_review(
+                &id,
+                &user.id,
+                request.response,
+                request.forgot,
+                request.elapsed_ms,
+            )
             .await?,
     )))
 }

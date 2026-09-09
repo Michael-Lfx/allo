@@ -12,6 +12,7 @@ import type {
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
+  MemoryHealthStats,
   GeneratedLessonActivity,
   LearningGraphGenerationStatus,
   Lesson,
@@ -105,6 +106,8 @@ export const learningApi = {
   },
   listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),
   checkinToday: () => httpRequest<CheckinStatus>('GET', `${BASE}/checkins/today`),
+  getMemoryStats: (tzOffset: number) =>
+    httpRequest<MemoryHealthStats>('GET', `${BASE}/stats/memory?tz_offset=${tzOffset}`),
   getCalendarStats: (year: number, month: number | undefined, tzOffset: number) =>
     httpRequest<CalendarStats>(
       'GET',
@@ -127,10 +130,18 @@ export const learningApi = {
           `${BASE}/questions/${encodeURIComponent(entry.question_id)}/tags`,
           { tags }
         ),
-  answerReview: (source: ReviewSource, id: string, response: unknown, forgot = false) =>
+  answerReview: (
+    source: ReviewSource,
+    id: string,
+    response: unknown,
+    forgot = false,
+    elapsedMs?: number
+  ) =>
     httpRequest<ReviewAnswerResult>('POST', `${reviewBase(source, id)}/answer`, {
       response,
       forgot,
+      // 题面展示到提交的墙钟耗时，供乱猜判定等后续启发式使用
+      ...(elapsedMs === undefined ? {} : { elapsed_ms: elapsedMs }),
     }),
   rateReview: (source: ReviewSource, id: string, rating: ReviewRating) =>
     httpRequest<ReviewResult>('POST', `${reviewBase(source, id)}/rate`, { rating }),

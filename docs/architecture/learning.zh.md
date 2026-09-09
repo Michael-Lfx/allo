@@ -70,6 +70,16 @@ agent 可以触发课程生成但不亲自执行生成：接缝
 保持率、权重与时区偏移；每日 02:00 翻日。复习流：
 `reviews/due → answer → rate`，支持 skip/archive/mark-edit。
 
+复习调度消费侧（迁移 051 起）：每次真实推进 FSRS 卡都在
+`learning_review_log` 落一行（rating 1-4、rating_source auto/self/synthetic、
+间隔日数与推进前 S·D·r_pred 快照、review_day）；种卡只落 synthetic 标记行，
+统计与优化训练一律排除。**到期门**：到期卡即可推进；当日尚未推进过的卡允许
+提前练一次（课程复习会话出示未到期卡）；只有「未到期且当日已推进」的过期
+重复只记作答流水（accuracy/诊断），不推进、不落日志、不进打卡。到期队列按
+预测回忆率 R 的五百分点分桶升序出示（桶内先易后难），响应逐卡带 `r`，
+前端披露「预测回忆 xx%」；「忘记」申报有 5 秒主动回忆门。口径详见
+`CONTEXT.md` 与 `docs/research-learnhub-migration.zh-CN.md` §9。
+
 ## 存储与路由
 
 迁移族：`015_learning_engine.sql`（courses/lessons/concepts/prerequisites/
@@ -78,14 +88,18 @@ progress/attempts/review_items）、`036` tags、`037` course_jobs、`039` 复�
 content_generated）、`042` 打卡 + review_events、`043` 归档、`044`
 edit-pending、`048_learning_graph.sql`（course_kind/goal/scope/graph_meta +
 课时级前置边表）、`049_learning_sections_and_question_kinds.sql`
-（分节表 + 9 种题型 + teaching_style）。
+（分节表 + 9 种题型 + teaching_style）、`050_learning_section_visual.sql`
+（节 visual 承诺落库）、`051_learning_review_log.sql`（逐次复习日志
+`learning_review_log` + `learning_attempts.elapsed_ms`）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs:899` 挂载，实例 owner 保护）：
 `/api/learning/courses*`（列表/导入/生成/续建/状态/取消/删除/标签/注册/诊断）、
 `/api/learning/course-jobs*`、`/api/learning/lessons/{id}`（详情按需加载）、
 `/api/learning/lessons/{id}/progress|generate|activities*`、`/api/learning/activities/{id}/attempts`、
 `/api/learning/reviews/*`、`/api/learning/checkins/today`、
-`/api/learning/stats/calendar`、`/api/learning/(custom-)questions*`、
+`/api/learning/stats/calendar`、`/api/learning/stats/memory`（记忆健康
+四面板：负载预报/卡池状态/真实保留率+预测对照/遗忘曲线）、
+`/api/learning/(custom-)questions*`、
 `/api/learning/tags`、`/api/learning/concepts`。
 
 生成进度经 WebSocket 推送：`learning.course-generation` /
@@ -95,7 +109,8 @@ HTTP 面（`nomifun-app/src/router/routes.rs:899` 挂载，实例 owner 保护�
 
 `ui/src/renderer/pages/learning/`：CourseWorkspace（分节 stepper、按需拉取
 课时详情）、LearningGraphWorkspace / GraphDagView、CreateCourseDialog、
-ReviewSession、CourseJobTable、CheckinPanel、QuestionManager、
+ReviewSession、CourseJobTable、CheckinPanel、MemoryHealthPanel（复习横幅
+下的记忆健康折叠条）、QuestionManager、
 LearningModelSelector 等；hooks `useCourseLearning` / `useReviewSession` /
 `useCourseJobs` / `useCourseCreation` / `useCheckinStatus`。
 
