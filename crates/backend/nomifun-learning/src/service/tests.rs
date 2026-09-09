@@ -1211,6 +1211,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                 &user_id,
                 Value::String("Magnitude".into()),
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -1381,7 +1382,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
              (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
               due_at, stability_days, difficulty, review_count, lapse_count, \
               last_reviewed_at, created_at, updated_at) \
-             VALUES (?, ?, 'true_false', 'p', '{}', NULL, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
+             VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', NULL, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
         )
         .bind(LearningReviewItemId::new().into_string())
         .bind(user_id.as_str())
@@ -1405,7 +1406,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
              (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
               due_at, stability_days, difficulty, review_count, lapse_count, \
               last_reviewed_at, created_at, updated_at) \
-             VALUES (?, ?, 'true_false', 'p', '{}', NULL, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
+             VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', NULL, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
         )
         .bind(LearningReviewItemId::new().into_string())
         .bind(user_id.as_str())
@@ -1963,3 +1964,469 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .unwrap();
         assert_eq!(view.summary, "## 已有内容");
     }
+
+// ==== review log & due-ness gate（迁移 051，ADR-0005 同批）====
+
+/// 全部日志行，按写入序：(source, rating, rating_source)。
+async fn review_log_rows(service: &LearningService) -> Vec<(String, i64, String)> {
+    sqlx::query_as(
+        "SELECT source, rating, rating_source FROM learning_review_log \
+         ORDER BY created_at, log_id",
+    )
+    .fetch_all(service.pool_for_tests())
+    .await
+    .unwrap()
+}
+
+async fn review_log_count(service: &LearningService) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM learning_review_log")
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap()
+}
+
+/// 单题课程包：一道单选题（答案 magnitude），用于复习日志与门禁测试。
+fn review_log_test_pack() -> CoursePack {
+    CoursePack {
+        title: "Log".into(),
+        teaching_style: crate::models::TeachingStyle::Standard,
+        description: String::new(),
+        domain: "general".into(),
+        source_kb_id: None,
+        version: 1,
+        concepts: Vec::new(),
+        modules: vec![ModulePack {
+            title: "Module".into(),
+            description: String::new(),
+            lessons: vec![LessonPack {
+                title: "Lesson".into(),
+                summary: String::new(),
+                purpose: String::new(),
+                estimated_minutes: 10,
+                source: None,
+                concepts: Vec::new(),
+                activities: vec![ActivityPack {
+                    difficulty: None,
+                    kind: ActivityKind::SingleChoice,
+                    prompt: "Which term names the size of a vector?".into(),
+                    options: vec!["magnitude".into(), "speed".into()],
+                    answer: json!("magnitude"),
+                    explanation: String::new(),
+                    concepts: Vec::new(),
+                    distractors: Vec::new(),
+                    tol: None,
+                    section_key: None,
+                }],
+                sections: Vec::new(),
+            }],
+        }],
+    }
+}
+
+#[tokio::test]
+async fn review_log_writes_advances_and_gate_blocks_stale_repeats() {
+    let (service, user_id) = checkin_test_service().await;
+    let course = service.import_course(review_log_test_pack()).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    // 完成课时只落一条 synthetic 种卡行，不是真实作答。
+    assert_eq!(
+        review_log_rows(&service).await,
+        vec![("course".into(), 0, "synthetic".into())]
+    );
+
+    make_all_due(&service, &user_id).await;
+    let due = service
+        .due_reviews(&user_id, 10, &[], true, false, &[])
+        .await
+        .unwrap();
+    assert_eq!(due.len(), 1);
+    let card = due[0].id.clone();
+
+    // 答错：自动 Again 是一次真实推进，落 auto 日志行。
+    let wrong = service
+        .answer_review(&card, &user_id, json!("speed"), false, Some(4_200_i64))
+        .await
+        .unwrap();
+    assert!(!wrong.correct);
+    assert!(wrong.rated.is_some());
+    assert!(wrong.advanced);
+    assert_eq!(
+        review_log_rows(&service).await,
+        vec![
+            ("course".into(), 0, "synthetic".into()),
+            ("course".into(), 1, "auto".into()),
+        ]
+    );
+    // 作答耗时落在 attempt 行上。
+    let elapsed: Option<i64> =
+        sqlx::query_scalar("SELECT elapsed_ms FROM learning_attempts")
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+    assert_eq!(elapsed, Some(4_200));
+
+    // 重学步把卡排到几分钟后：立刻重复作答=未到期的重复——作答照记
+    // （计正确率与诊断），但不推进、不落日志、不进打卡。
+    let repeat = service
+        .answer_review(&card, &user_id, json!("speed"), false, None)
+        .await
+        .unwrap();
+    assert!(!repeat.correct);
+    assert!(repeat.rated.is_none());
+    assert!(!repeat.advanced);
+    assert_eq!(review_log_count(&service).await, 2);
+    let events: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_review_events WHERE item_id = ?",
+    )
+    .bind(card.as_str())
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(events, 1, "被门挡下的重复作答不得计入每日打卡");
+
+    // 卡重新到期（模拟几分钟后）：这次作答合法，自评 Good 推进并落
+    // self 行，带推进前记忆快照。
+    sqlx::query("UPDATE learning_review_items SET due_at = ? WHERE review_item_id = ?")
+        .bind(now_ms() - 1000)
+        .bind(card.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let correct = service
+        .answer_review(&card, &user_id, json!("magnitude"), false, None)
+        .await
+        .unwrap();
+    assert!(correct.correct);
+    assert!(correct.rated.is_none());
+    let rated = service
+        .rate_review(&card, &user_id, ReviewRating::Good)
+        .await
+        .unwrap();
+    assert!(rated.advanced);
+    let rows = review_log_rows(&service).await;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2], ("course".into(), 3, "self".into()));
+    let (stability_before, r_pred): (Option<f64>, Option<f64>) = sqlx::query_as(
+        "SELECT stability_before, r_pred FROM learning_review_log \
+         WHERE rating_source = 'self'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(stability_before.unwrap() > 0.0, "重学推进携带推进前稳定度");
+    assert!(r_pred.unwrap() > 0.0 && r_pred.unwrap() <= 1.0);
+
+    // 过期 UI 数秒后再次自评：未到期且本学习日已推进过 → 门拦下，
+    // 排期与日志原样不动。
+    let stale = service
+        .rate_review(&card, &user_id, ReviewRating::Easy)
+        .await
+        .unwrap();
+    assert!(!stale.advanced);
+    assert_eq!(stale.due_at, rated.due_at);
+    assert_eq!(stale.stability_days, rated.stability_days);
+    assert_eq!(review_log_count(&service).await, 3);
+}
+
+#[tokio::test]
+async fn due_gate_admits_first_same_day_early_review() {
+    let (service, user_id) = checkin_test_service().await;
+    let course = service.import_course(review_log_test_pack()).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    // 新卡的 due 在下一个学习日：课程复习会话（due_only=false）会出示
+    // 这张未到期卡。当日尚无任何推进 → 首次提前复习放行。
+    let due = service
+        .due_reviews(&user_id, 10, &[], false, false, &[])
+        .await
+        .unwrap();
+    assert_eq!(due.len(), 1);
+    let card = due[0].id.clone();
+    let wrong = service
+        .answer_review(&card, &user_id, json!("speed"), false, None)
+        .await
+        .unwrap();
+    assert!(!wrong.correct);
+    assert!(wrong.advanced);
+    assert_eq!(
+        review_log_rows(&service).await,
+        vec![
+            ("course".into(), 0, "synthetic".into()),
+            ("course".into(), 1, "auto".into()),
+        ]
+    );
+    // 同日再来的未到期作答 = 已推过又来：被门拦下。
+    let repeat = service
+        .answer_review(&card, &user_id, json!("speed"), false, None)
+        .await
+        .unwrap();
+    assert!(!repeat.advanced);
+    assert_eq!(review_log_count(&service).await, 2);
+}
+
+#[tokio::test]
+async fn custom_review_log_writes_and_gate_blocks_stale_repeats() {
+    let (service, user_id) = checkin_test_service().await;
+    // 经服务 API 建题，保证 config_json 满足存储契约（不走测试直插）。
+    let card = service
+        .create_custom_question(
+            &user_id,
+            CreateCustomQuestionRequest {
+                kind: ActivityKind::TrueFalse,
+                prompt: "FSRS schedules reviews per card.".into(),
+                options: vec!["true".into(), "false".into()],
+                answer: json!(true),
+                explanation: String::new(),
+                concept_id: None,
+                distractors: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    make_all_due(&service, &user_id).await;
+    let due = service
+        .due_reviews(&user_id, 10, &[], true, true, &[])
+        .await
+        .unwrap();
+    assert_eq!(due.len(), 1);
+    let card = due[0].id.clone();
+
+    // 答错自动 Again：真实推进，落 custom auto 行。
+    let wrong = service
+        .answer_custom_review(&card, &user_id, json!("wrong"), false)
+        .await
+        .unwrap();
+    assert!(!wrong.correct);
+    assert!(wrong.advanced);
+    assert_eq!(
+        review_log_rows(&service).await,
+        vec![("custom".into(), 1, "auto".into())]
+    );
+
+    // 未到期的重复作答：反馈照给（判卷照常），但不推进。
+    let repeat = service
+        .answer_custom_review(&card, &user_id, json!("wrong"), false)
+        .await
+        .unwrap();
+    assert!(!repeat.correct);
+    assert!(!repeat.advanced);
+    assert_eq!(review_log_count(&service).await, 1);
+
+    // 重新到期后申报忘记：按答错记，落第二次推进。
+    sqlx::query("UPDATE learning_custom_questions SET due_at = ? WHERE custom_question_id = ?")
+        .bind(now_ms() - 1000)
+        .bind(card.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let forgot = service
+        .answer_custom_review(&card, &user_id, Value::Null, true)
+        .await
+        .unwrap();
+    assert!(!forgot.correct);
+    assert!(forgot.advanced);
+    assert_eq!(review_log_count(&service).await, 2);
+
+    // 到期自评与过期重复自评：自评前先把卡拉回到期（forgot 又把排期
+    // 推向了未来）。
+    sqlx::query("UPDATE learning_custom_questions SET due_at = ? WHERE custom_question_id = ?")
+        .bind(now_ms() - 1000)
+        .bind(card.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let rated = service
+        .rate_custom_review(&card, &user_id, ReviewRating::Easy)
+        .await
+        .unwrap();
+    assert!(rated.advanced);
+    assert_eq!(review_log_count(&service).await, 3);
+    let stale = service
+        .rate_custom_review(&card, &user_id, ReviewRating::Good)
+        .await
+        .unwrap();
+    assert!(!stale.advanced);
+    assert_eq!(stale.due_at, rated.due_at);
+    assert_eq!(review_log_count(&service).await, 3);
+}
+
+/// 插入一张带记忆状态、即时到期的自建卡，返回卡 id。
+async fn insert_custom_card(
+    service: &LearningService,
+    user_id: &UserId,
+    stability: f64,
+    difficulty: f64,
+) -> String {
+    let id = LearningReviewItemId::new().into_string();
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO learning_custom_questions \
+         (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
+          due_at, stability_days, difficulty, review_count, lapse_count, \
+          last_reviewed_at, created_at, updated_at) \
+         VALUES (?, ?, 'true_false', 'p', '{\"options\":[\"true\",\"false\"],\"answer\":true,\"explanation\":\"\",\"matches\":[],\"distractors\":[]}', NULL, ?, ?, ?, 1, 0, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(user_id.as_str())
+    .bind(now - 1000)
+    .bind(stability)
+    .bind(difficulty)
+    .bind(now - 3 * 86_400_000)
+    .bind(now)
+    .bind(now)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn due_reviews_rank_by_retrievability_buckets() {
+    let (service, user_id) = checkin_test_service().await;
+    // 五张已见卡（3 天前推进，稳定度/难度各异）+ 一张未见卡。
+    // R：稳定度越低风险越高；同桶内难度低（更易）的先出。
+    let low = insert_custom_card(&service, &user_id, 1.0, 5.0).await;
+    let mid = insert_custom_card(&service, &user_id, 5.0, 5.0).await;
+    let easy = insert_custom_card(&service, &user_id, 10.0, 3.0).await;
+    let mid2 = insert_custom_card(&service, &user_id, 30.0, 5.0).await;
+    let hard = insert_custom_card(&service, &user_id, 10.0, 8.0).await;
+    let unseen = insert_custom_card(&service, &user_id, 1.0, 5.0).await;
+    sqlx::query(
+        "UPDATE learning_custom_questions SET review_count = 0, last_reviewed_at = NULL \
+         WHERE custom_question_id = ?",
+    )
+    .bind(&unseen)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+
+    let due = service
+        .due_reviews(&user_id, 10, &[], true, true, &[])
+        .await
+        .unwrap();
+    assert_eq!(due.len(), 6);
+    let order: Vec<String> = due.iter().map(|card| card.id.as_str().to_string()).collect();
+    let pos = |id: &str| order.iter().position(|value| value == id).unwrap();
+    // 遗忘风险降序（R 升序）：最不稳定的卡最先。
+    assert!(pos(&low) < pos(&mid));
+    assert!(due[0].r.unwrap() < due[pos(&mid)].r.unwrap());
+    // 高 R 区聚在同一桶时，桶内按难度升序（先易后难）。
+    assert!(pos(&easy) < pos(&mid2));
+    assert!(pos(&mid2) < pos(&hard));
+    // 排序键是五百分点桶：桶序单调不减（桶内按难度，原始 r 可局部倒序）；
+    // 未见卡 r 为空且排最后。
+    let buckets: Vec<i64> = due
+        .iter()
+        .filter_map(|card| card.r)
+        .map(recall_bucket)
+        .collect();
+    assert!(buckets.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert_eq!(due[5].id.as_str(), unseen);
+    assert!(due[5].r.is_none());
+}
+
+#[tokio::test]
+async fn memory_stats_aggregates_retention_calibration_and_load() {
+    let (service, user_id) = checkin_test_service().await;
+    let now = now_ms();
+    let today = review_day_number(now, 480);
+    // 手工摆日志：x 当日两推（首推=pass，其后同日重复按口径剔除）、
+    // y 单推 fail、z 为 synthetic 排除。期望 True Retention = 1/2；
+    // 校准分箱各含 1 条。
+    let rows: Vec<(&str, &str, i64, &str, i64, Option<f64>, Option<f64>)> = vec![
+        ("course", "x", 3, "self", 3, Some(5.0), Some(0.90)),
+        ("course", "x", 1, "auto", 3, Some(5.0), Some(0.90)),
+        ("custom", "y", 1, "auto", 7, Some(2.0), Some(0.60)),
+        ("course", "z", 0, "synthetic", 0, None, None),
+    ];
+    for (index, (source, item, rating, rating_source, elapsed, stability_before, r_pred)) in
+        rows.into_iter().enumerate()
+    {
+        sqlx::query(
+            "INSERT INTO learning_review_log \
+             (log_id, user_id, source, item_id, rating, rating_source, elapsed_days, \
+              stability_before, difficulty_before, r_pred, review_day, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(source)
+        .bind(item)
+        .bind(rating)
+        .bind(rating_source)
+        .bind(elapsed)
+        .bind(stability_before)
+        .bind(stability_before.map(|_| 6.0))
+        .bind(r_pred)
+        .bind(today)
+        .bind(now - 100 + index as i64)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+    // 负载面：一张逾期卡（到期已过）+ 一张三天后的卡；再放一张已见卡
+    // 供状态分布计数。
+    insert_due_custom_question(&service, &user_id).await;
+    insert_custom_question_due_at(&service, &user_id, now + 3 * 86_400_000).await;
+    insert_custom_card(&service, &user_id, 2.0, 5.0).await;
+
+    let stats = service.memory_health_stats(&user_id, 480).await.unwrap();
+    let retention = stats.true_retention.expect("有真实到期推进即有保留率");
+    assert_eq!((retention.passes, retention.fails), (1, 1));
+    assert!((retention.rate.unwrap() - 0.5).abs() < 1e-9);
+
+    // 校准：两条计入样本分别落在 0.90 与 0.60 预测桶，实测对比如下。
+    let counted: Vec<_> = stats.calibration.iter().filter(|bin| bin.count > 0).collect();
+    assert_eq!(counted.len(), 2);
+    let pass_bin = counted.iter().find(|bin| bin.actual == Some(1.0)).unwrap();
+    let fail_bin = counted.iter().find(|bin| bin.actual == Some(0.0)).unwrap();
+    assert!((pass_bin.predicted - 0.90).abs() < 0.051);
+    assert!((fail_bin.predicted - 0.60).abs() < 0.051);
+
+    // 遗忘曲线：elapsed=3（pass）与 elapsed=7（fail）落在不同时点。
+    assert!(stats
+        .forgetting_curve
+        .iter()
+        .any(|point| point.count == 1 && point.actual == Some(1.0)));
+    assert!(stats
+        .forgetting_curve
+        .iter()
+        .any(|point| point.count == 1 && point.actual == Some(0.0)));
+
+    // 负载预报：今天逾期 ≥1，第 3 天桶 ≥1。
+    assert!(stats.overdue_count >= 1);
+    let due_in_3 = review_day_number(now + 3 * 86_400_000, 480);
+    assert!(stats
+        .load_forecast
+        .iter()
+        .any(|day| day.review_day == due_in_3 && day.due_count >= 1));
+
+    // 状态分布：两张自建卡中一张 new（未见）、一张已见。
+    let bucket = |key: &str| {
+        stats
+            .state_distribution
+            .iter()
+            .find(|bucket| bucket.key == key)
+            .unwrap()
+            .count
+    };
+    assert!(bucket("new") >= 1);
+    assert!(bucket("young") + bucket("mature") + bucket("master") >= 1);
+}

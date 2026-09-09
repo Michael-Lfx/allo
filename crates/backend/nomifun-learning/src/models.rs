@@ -1408,6 +1408,18 @@ pub enum ReviewRating {
     Easy,
 }
 
+impl ReviewRating {
+    /// FSRS rating scale (1=again .. 4=easy) used by the review log.
+    pub fn fsrs_value(self) -> i64 {
+        match self {
+            ReviewRating::Again => 1,
+            ReviewRating::Hard => 2,
+            ReviewRating::Good => 3,
+            ReviewRating::Easy => 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RateReviewRequest {
     pub rating: ReviewRating,
@@ -1439,6 +1451,10 @@ pub struct DueReview {
     pub difficulty: f64,
     pub review_count: i64,
     pub lapse_count: i64,
+    /// FSRS-predicted recall probability at now (0..1); `None` for cards
+    /// that never carried a memory state. Drives the queue's
+    /// forgettability ranking and the card's predicted-recall disclosure.
+    pub r: Option<f64>,
     /// Marked "edit me later" from the review session; the card keeps its
     /// schedule untouched and a note (optional) records the intent.
     pub edit_pending: bool,
@@ -1467,6 +1483,11 @@ pub struct AnswerReviewRequest {
     /// the item is rated `again` and the correct answer is returned.
     #[serde(default)]
     pub forgot: bool,
+    /// Wall-clock milliseconds from the card being shown to the answer
+    /// being submitted, as measured by the review session. Stored on the
+    /// attempt for future anti-guessing heuristics.
+    #[serde(default)]
+    pub elapsed_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1478,6 +1499,12 @@ pub struct ReviewAnswerResult {
     /// Present when the answer was wrong and the item was automatically
     /// rated `again`; otherwise the caller rates after a correct answer.
     pub rated: Option<ReviewResult>,
+    /// Whether this submission actually moved the card's schedule. `false`
+    /// means the due-ness gate blocked the push (a stale repeat of a card
+    /// that was already pushed today and is not due): the attempt is still
+    /// recorded for accuracy/diagnostics, but scheduling and the review log
+    /// are untouched.
+    pub advanced: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1489,6 +1516,9 @@ pub struct ReviewResult {
     pub difficulty: f64,
     pub review_count: i64,
     pub lapse_count: i64,
+    /// Whether this rating advanced the card; `false` when the due-ness
+    /// gate blocked a stale repeat (schedule and review log untouched).
+    pub advanced: bool,
 }
 
 /// Daily check-in snapshot for the current review day: goal, progress and
@@ -1508,6 +1538,73 @@ pub struct CheckinStatus {
     pub completed: bool,
     /// Lock moment in UTC milliseconds when completed, else null.
     pub locked_at: Option<i64>,
+}
+
+/// Memory-health dashboard: one snapshot over the active card pool and the
+/// review log, in review-day semantics (02:00 rollover).
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryHealthStats {
+    /// Current local review day as YYYYMMDD.
+    pub review_day: i64,
+    pub tz_offset: i32,
+    /// Active cards whose due time has already passed.
+    pub overdue_count: i64,
+    /// Due-card counts for the current and the next six review days.
+    pub load_forecast: Vec<MemoryLoadDay>,
+    /// Active-card pool split by memory state (never pushed / stability
+    /// below 7 / below 30 / 30+ days).
+    pub state_distribution: Vec<MemoryStateBucket>,
+    /// True Retention over counted pushes (first push per card per review
+    /// day, cards that carried a memory state); `None` without samples.
+    pub true_retention: Option<MemoryTrueRetention>,
+    /// FSRS prediction vs actual outcome, bucketed by predicted recall in
+    /// five-percentage-point bins; only bins with samples are listed.
+    pub calibration: Vec<MemoryCalibrationBin>,
+    /// Actual vs predicted retention per elapsed-days point since the last
+    /// push; only points with samples are listed.
+    pub forgetting_curve: Vec<MemoryCurvePoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryLoadDay {
+    pub review_day: i64,
+    pub due_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryStateBucket {
+    /// `new` | `young` | `mature` | `master`.
+    pub key: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryTrueRetention {
+    pub passes: i64,
+    pub fails: i64,
+    /// passes / (passes + fails); `None` when nothing counted yet.
+    pub rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryCalibrationBin {
+    /// Bin index over predicted recall, `bucket / 20 .. (bucket + 1) / 20`.
+    pub bucket: i64,
+    pub min: f64,
+    pub max: f64,
+    pub predicted: f64,
+    /// Share of pushes rated pass (rating >= 2) inside the bin.
+    pub actual: Option<f64>,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryCurvePoint {
+    /// Anchor of the elapsed-days bin (0, 1, 2, 3, 5, 7, 14 or 30).
+    pub elapsed_days: i64,
+    pub predicted: f64,
+    pub actual: Option<f64>,
+    pub count: i64,
 }
 
 /// One lesson completed on a review day (calendar aggregation detail).

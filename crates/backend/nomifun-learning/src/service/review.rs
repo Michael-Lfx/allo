@@ -25,6 +25,10 @@ impl LearningService {
     ) -> Result<Vec<DueReview>, AppError> {
         let limit = limit.clamp(1, 100);
         let now = now_ms();
+        let settings = self.scheduler_settings().await;
+        // Ranking quality: the forgettability order is computed over a wider
+        // due-ordered window than the requested page, then truncated.
+        let fetch_limit = (limit * 4).min(500);
         let base = "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
                     r.activity_id, a.kind, a.prompt, a.config_json, \
                     l.title AS lesson_title, m.title AS module_title, \
@@ -36,7 +40,7 @@ impl LearningService {
                      WHERE ac.activity_id = r.activity_id \
                      ORDER BY ac.concept_id LIMIT 1) AS concept_title, \
                     r.due_at, r.stability_days, r.difficulty, r.review_count, r.lapse_count, \
-                    r.edit_pending_at, r.edit_note \
+                    r.last_reviewed_at, r.edit_pending_at, r.edit_note \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
              LEFT JOIN learning_courses c ON c.course_id = e.course_id \
@@ -78,7 +82,7 @@ impl LearningService {
             for tag in tags {
                 query = query.bind(tag);
             }
-            query.bind(limit).fetch_all(&self.pool).await.map_err(internal)?
+            query.bind(fetch_limit).fetch_all(&self.pool).await.map_err(internal)?
         };
         // Each row is one review item = one question card: the item's own
         // activity is the card's question, so every question (including
@@ -127,6 +131,13 @@ impl LearningService {
                 difficulty: row.try_get("difficulty").map_err(internal)?,
                 review_count: row.try_get("review_count").map_err(internal)?,
                 lapse_count: row.try_get("lapse_count").map_err(internal)?,
+                r: compute_card_r(
+                    row.try_get("review_count").map_err(internal)?,
+                    row.try_get("stability_days").map_err(internal)?,
+                    row.try_get("last_reviewed_at").map_err(internal)?,
+                    now,
+                    &settings,
+                ),
                 edit_pending: row
                     .try_get::<Option<i64>, _>("edit_pending_at")
                     .map_err(internal)?
@@ -142,7 +153,7 @@ impl LearningService {
             let mut sql = String::from(
                 "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
                         q.stability_days, q.difficulty, q.review_count, q.lapse_count, \
-                        q.edit_pending_at, q.edit_note \
+                        q.last_reviewed_at, q.edit_pending_at, q.edit_note \
                  FROM learning_custom_questions q \
                  WHERE q.user_id = ? AND q.due_at <= ? AND q.archived_at IS NULL AND q.edit_pending_at IS NULL",
             );
@@ -161,7 +172,7 @@ impl LearningService {
                 query = query.bind(tag);
             }
             let custom_rows = query
-                .bind(limit)
+                .bind(fetch_limit)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(internal)?;
@@ -194,6 +205,13 @@ impl LearningService {
                     difficulty: row.try_get("difficulty").map_err(internal)?,
                     review_count: row.try_get("review_count").map_err(internal)?,
                     lapse_count: row.try_get("lapse_count").map_err(internal)?,
+                    r: compute_card_r(
+                        row.try_get("review_count").map_err(internal)?,
+                        row.try_get("stability_days").map_err(internal)?,
+                        row.try_get("last_reviewed_at").map_err(internal)?,
+                        now,
+                        &settings,
+                    ),
                     edit_pending: row
                         .try_get::<Option<i64>, _>("edit_pending_at")
                         .map_err(internal)?
@@ -202,7 +220,22 @@ impl LearningService {
                 });
             }
         }
-        reviews.sort_by_key(|review| (review.due_at, review.id.clone()));
+        // Forgettability ranking: ascending predicted-recall buckets of five
+        // percentage points (most-at-risk first), easier cards first inside
+        // a bucket, then due time and item id as stable tiebreakers. Cards
+        // without a memory state sort last.
+        let bucket = |r: Option<f64>| r.map_or(i64::MAX, recall_bucket);
+        reviews.sort_by(|a, b| {
+            bucket(a.r)
+                .cmp(&bucket(b.r))
+                .then_with(|| {
+                    a.difficulty
+                        .partial_cmp(&b.difficulty)
+                        .unwrap_or(Ordering::Equal)
+                })
+                .then_with(|| a.due_at.cmp(&b.due_at))
+                .then_with(|| a.id.cmp(&b.id))
+        });
         reviews.truncate(limit as usize);
         Ok(reviews)
     }
@@ -1124,7 +1157,7 @@ impl LearningService {
         forgot: bool,
     ) -> Result<ReviewAnswerResult, AppError> {
         let row = sqlx::query(
-            "SELECT kind, config_json FROM learning_custom_questions \
+            "SELECT kind, config_json, due_at FROM learning_custom_questions \
              WHERE custom_question_id = ? AND user_id = ?",
         )
         .bind(question_id)
@@ -1140,6 +1173,7 @@ impl LearningService {
             &row.try_get::<String, _>("config_json").map_err(internal)?,
         )
         .map_err(internal)?;
+        let due_at: i64 = row.try_get("due_at").map_err(internal)?;
         let (feedback, correct) = if forgot {
             let feedback = if config.explanation.is_empty() {
                 "Review the material before retrieving this question again.".to_string()
@@ -1151,27 +1185,43 @@ impl LearningService {
             let (score, feedback) = evaluate(kind, &config, &response)?;
             (feedback, score >= 0.6)
         };
+        let now = now_ms();
+        let settings = self.scheduler_settings().await;
+        let allowed = self
+            .push_allowed(
+                ReviewSource::Custom,
+                question_id,
+                due_at,
+                now,
+                &settings,
+            )
+            .await?;
         let rated = if correct {
             None
         } else {
-            Some(
-                self.rate_custom_review(question_id, user_id, ReviewRating::Again)
-                    .await?,
-            )
+            let result = self
+                .rate_custom_inner(question_id, user_id, ReviewRating::Again, "auto")
+                .await?;
+            // A gate-blocked lapse reports no rating result: the schedule
+            // did not move.
+            result.advanced.then_some(result)
         };
         // Answered reviews (including auto-rated lapses) count toward the
-        // daily check-in regardless of the outcome.
-        sqlx::query(
-            "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
-             VALUES (?, ?, 'custom', ?, ?)",
-        )
-        .bind(generate_id())
-        .bind(user_id.as_str())
-        .bind(question_id)
-        .bind(now_ms())
-        .execute(&self.pool)
-        .await
-        .map_err(internal)?;
+        // daily check-in regardless of the outcome — gate-blocked repeats
+        // do not.
+        if allowed {
+            sqlx::query(
+                "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
+                 VALUES (?, ?, 'custom', ?, ?)",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(question_id)
+            .bind(now_ms())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        }
         Ok(ReviewAnswerResult {
             correct,
             feedback,
@@ -1181,6 +1231,7 @@ impl LearningService {
                 Some(config.answer.clone())
             },
             rated,
+            advanced: !correct && allowed,
         })
     }
 
@@ -1191,8 +1242,22 @@ impl LearningService {
         user_id: &UserId,
         rating: ReviewRating,
     ) -> Result<ReviewResult, AppError> {
+        self.rate_custom_inner(question_id, user_id, rating, "self")
+            .await
+    }
+
+    /// Rating entry with the log's rating source: `self` for learner
+    /// self-ratings, `auto` when the answer flow drives a lapse.
+    async fn rate_custom_inner(
+        &self,
+        question_id: &str,
+        user_id: &UserId,
+        rating: ReviewRating,
+        rating_source: &str,
+    ) -> Result<ReviewResult, AppError> {
         let row = sqlx::query(
-            "SELECT stability_days, difficulty, review_count, lapse_count, last_reviewed_at \
+            "SELECT due_at, stability_days, difficulty, review_count, lapse_count, \
+                    last_reviewed_at \
              FROM learning_custom_questions \
              WHERE custom_question_id = ? AND user_id = ?",
         )
@@ -1202,19 +1267,47 @@ impl LearningService {
         .await
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("custom question {question_id}")))?;
-        let last_reviewed_at: Option<i64> = row.try_get("last_reviewed_at").map_err(internal)?;
+        let due_at: i64 = row.try_get("due_at").map_err(internal)?;
+        let lapse_count: i64 = row.try_get("lapse_count").map_err(internal)?;
+        let snapshot = PushSnapshot {
+            review_count: row.try_get("review_count").map_err(internal)?,
+            stability_days: row.try_get("stability_days").map_err(internal)?,
+            difficulty: row.try_get("difficulty").map_err(internal)?,
+            last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
+        };
         let now = now_ms();
         let settings = self.scheduler_settings().await;
+        if !self
+            .push_allowed(
+                ReviewSource::Custom,
+                question_id,
+                due_at,
+                now,
+                &settings,
+            )
+            .await?
+        {
+            return Ok(ReviewResult {
+                id: question_id.to_string(),
+                due_at,
+                stability_days: snapshot.stability_days,
+                difficulty: snapshot.difficulty,
+                review_count: snapshot.review_count,
+                lapse_count,
+                advanced: false,
+            });
+        }
         let next = schedule_review(
             now,
-            row.try_get("stability_days").map_err(internal)?,
-            row.try_get("difficulty").map_err(internal)?,
-            row.try_get("review_count").map_err(internal)?,
-            row.try_get("lapse_count").map_err(internal)?,
-            last_reviewed_at,
+            snapshot.stability_days,
+            snapshot.difficulty,
+            snapshot.review_count,
+            lapse_count,
+            snapshot.last_reviewed_at,
             rating,
             &settings,
         )?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "UPDATE learning_custom_questions SET due_at = ?, stability_days = ?, \
              difficulty = ?, review_count = ?, lapse_count = ?, last_reviewed_at = ?, \
@@ -1229,9 +1322,22 @@ impl LearningService {
         .bind(now)
         .bind(question_id)
         .bind(user_id.as_str())
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(internal)?;
+        record_review_log(
+            &mut *transaction,
+            user_id,
+            ReviewSource::Custom,
+            question_id,
+            rating,
+            rating_source,
+            &snapshot,
+            now,
+            &settings,
+        )
+        .await?;
+        transaction.commit().await.map_err(internal)?;
         Ok(ReviewResult {
             id: question_id.to_string(),
             due_at: next.due_at,
@@ -1239,6 +1345,7 @@ impl LearningService {
             difficulty: next.difficulty,
             review_count: next.review_count,
             lapse_count: next.lapse_count,
+            advanced: true,
         })
     }
 
@@ -1279,6 +1386,7 @@ impl LearningService {
             difficulty: row.try_get("difficulty").map_err(internal)?,
             review_count: row.try_get("review_count").map_err(internal)?,
             lapse_count: row.try_get("lapse_count").map_err(internal)?,
+            advanced: false,
         })
     }
 
@@ -1289,7 +1397,7 @@ impl LearningService {
         rating: ReviewRating,
     ) -> Result<ReviewResult, AppError> {
         let row = sqlx::query(
-            "SELECT r.enrollment_id, r.activity_id, r.stability_days, r.difficulty, \
+            "SELECT r.enrollment_id, r.activity_id, r.due_at, r.stability_days, r.difficulty, \
                     r.review_count, r.lapse_count, r.last_reviewed_at \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
@@ -1305,16 +1413,44 @@ impl LearningService {
             parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
         let activity_id: LearningActivityId =
             parse_id(row.try_get("activity_id").map_err(internal)?)?;
-        let last_reviewed_at: Option<i64> = row.try_get("last_reviewed_at").map_err(internal)?;
+        let due_at: i64 = row.try_get("due_at").map_err(internal)?;
+        let lapse_count: i64 = row.try_get("lapse_count").map_err(internal)?;
+        let snapshot = PushSnapshot {
+            review_count: row.try_get("review_count").map_err(internal)?,
+            stability_days: row.try_get("stability_days").map_err(internal)?,
+            difficulty: row.try_get("difficulty").map_err(internal)?,
+            last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
+        };
         let now = now_ms();
         let settings = self.scheduler_settings().await;
+        if !self
+            .push_allowed(
+                ReviewSource::Course,
+                review_id.as_str(),
+                due_at,
+                now,
+                &settings,
+            )
+            .await?
+        {
+            // Stale repeat: report the untouched schedule and log nothing.
+            return Ok(ReviewResult {
+                id: review_id.to_string(),
+                due_at,
+                stability_days: snapshot.stability_days,
+                difficulty: snapshot.difficulty,
+                review_count: snapshot.review_count,
+                lapse_count,
+                advanced: false,
+            });
+        }
         let next = schedule_review(
             now,
-            row.try_get("stability_days").map_err(internal)?,
-            row.try_get("difficulty").map_err(internal)?,
-            row.try_get("review_count").map_err(internal)?,
-            row.try_get("lapse_count").map_err(internal)?,
-            last_reviewed_at,
+            snapshot.stability_days,
+            snapshot.difficulty,
+            snapshot.review_count,
+            lapse_count,
+            snapshot.last_reviewed_at,
             rating,
             &settings,
         )?;
@@ -1343,6 +1479,18 @@ impl LearningService {
         .map_err(internal)?;
         update_activity_mastery(&mut transaction, &enrollment_id, &activity_id, score, now)
             .await?;
+        record_review_log(
+            &mut *transaction,
+            user_id,
+            ReviewSource::Course,
+            review_id.as_str(),
+            rating,
+            "self",
+            &snapshot,
+            now,
+            &settings,
+        )
+        .await?;
         transaction.commit().await.map_err(internal)?;
         Ok(ReviewResult {
             id: review_id.to_string(),
@@ -1351,6 +1499,7 @@ impl LearningService {
             difficulty: next.difficulty,
             review_count: next.review_count,
             lapse_count: next.lapse_count,
+            advanced: true,
         })
     }
 
@@ -1392,6 +1541,7 @@ impl LearningService {
             difficulty: row.try_get("difficulty").map_err(internal)?,
             review_count: row.try_get("review_count").map_err(internal)?,
             lapse_count: row.try_get("lapse_count").map_err(internal)?,
+            advanced: false,
         })
     }
 
@@ -1406,9 +1556,12 @@ impl LearningService {
         user_id: &UserId,
         response: Value,
         forgot: bool,
+        elapsed_ms: Option<i64>,
     ) -> Result<ReviewAnswerResult, AppError> {
         let row = sqlx::query(
-            "SELECT r.enrollment_id, r.activity_id, a.kind, a.config_json \
+            "SELECT r.enrollment_id, r.activity_id, r.due_at, r.stability_days, \
+                    r.difficulty, r.review_count, r.lapse_count, r.last_reviewed_at, \
+                    a.kind, a.config_json \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
              JOIN learning_activities a ON a.activity_id = r.activity_id \
@@ -1424,6 +1577,13 @@ impl LearningService {
             parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
         let activity_id: LearningActivityId =
             parse_id(row.try_get("activity_id").map_err(internal)?)?;
+        let due_at: i64 = row.try_get("due_at").map_err(internal)?;
+        let snapshot = PushSnapshot {
+            review_count: row.try_get("review_count").map_err(internal)?,
+            stability_days: row.try_get("stability_days").map_err(internal)?,
+            difficulty: row.try_get("difficulty").map_err(internal)?,
+            last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
+        };
         let kind_text: String = row.try_get("kind").map_err(internal)?;
         let kind = ActivityKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?;
         let config: StoredActivityConfig = serde_json::from_str(
@@ -1446,11 +1606,21 @@ impl LearningService {
         let attempt_id = LearningAttemptId::new();
         let now = now_ms();
         let settings = self.scheduler_settings().await;
+        let allowed = self
+            .push_allowed(
+                ReviewSource::Course,
+                review_id.as_str(),
+                due_at,
+                now,
+                &settings,
+            )
+            .await?;
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_attempts \
-             (attempt_id, enrollment_id, activity_id, response_json, score, passed, feedback, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (attempt_id, enrollment_id, activity_id, response_json, score, passed, feedback, \
+              elapsed_ms, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(attempt_id.as_str())
         .bind(enrollment_id.as_str())
@@ -1459,26 +1629,30 @@ impl LearningService {
         .bind(score)
         .bind(correct)
         .bind(&feedback)
+        .bind(elapsed_ms)
         .bind(now)
         .execute(&mut *transaction)
         .await
         .map_err(internal)?;
         // Every answered review counts toward the daily check-in, so the
-        // event lands in the same transaction as the attempt.
-        sqlx::query(
-            "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
-             VALUES (?, ?, 'course', ?, ?)",
-        )
-        .bind(generate_id())
-        .bind(user_id.as_str())
-        .bind(review_id.as_str())
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(internal)?;
+        // event lands in the same transaction as the attempt — but a stale
+        // repeat blocked by the gate is not review work, so it does not.
+        if allowed {
+            sqlx::query(
+                "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
+                 VALUES (?, ?, 'course', ?, ?)",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(review_id.as_str())
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        }
         let rated = if correct {
             None
-        } else {
+        } else if allowed {
             update_mastery_and_review(
                 &mut transaction,
                 review_id,
@@ -1486,6 +1660,18 @@ impl LearningService {
                 &activity_id,
                 score,
                 ReviewRating::Again,
+                now,
+                &settings,
+            )
+            .await?;
+            record_review_log(
+                &mut *transaction,
+                user_id,
+                ReviewSource::Course,
+                review_id.as_str(),
+                ReviewRating::Again,
+                "auto",
+                &snapshot,
                 now,
                 &settings,
             )
@@ -1505,7 +1691,10 @@ impl LearningService {
                 difficulty: updated.try_get("difficulty").map_err(internal)?,
                 review_count: updated.try_get("review_count").map_err(internal)?,
                 lapse_count: updated.try_get("lapse_count").map_err(internal)?,
+                advanced: true,
             })
+        } else {
+            None
         };
         transaction.commit().await.map_err(internal)?;
         Ok(ReviewAnswerResult {
@@ -1517,9 +1706,138 @@ impl LearningService {
                 Some(config.answer.clone())
             },
             rated,
+            advanced: !correct && allowed,
         })
     }
 
+}
+
+/// Pre-push memory state of one card, feeding both the due-ness gate's
+/// day semantics and the review-log row written on a real advance.
+struct PushSnapshot {
+    review_count: i64,
+    stability_days: f64,
+    difficulty: f64,
+    last_reviewed_at: Option<i64>,
+}
+
+/// Predicted recall for the queue ranking: `None` for cards that never
+/// carried a memory state, else FSRS retrievability at `now`.
+fn compute_card_r(
+    review_count: i64,
+    stability_days: f64,
+    last_reviewed_at: Option<i64>,
+    now: i64,
+    settings: &SchedulerSettings,
+) -> Option<f64> {
+    if review_count <= 0 {
+        return None;
+    }
+    let elapsed = days_elapsed_between(
+        last_reviewed_at.unwrap_or(now),
+        now,
+        settings.tz_offset_minutes,
+    );
+    predicted_retrievability(stability_days, elapsed, settings)
+}
+
+fn source_text(source: ReviewSource) -> &'static str {
+    match source {
+        ReviewSource::Course => "course",
+        ReviewSource::Custom => "custom",
+    }
+}
+
+impl LearningService {
+    /// Due-ness gate: a push is allowed when the card is actually due, or
+    /// when the current review day carries no real push of it yet (early
+    /// review of a course card that is not due today still advances once).
+    /// Only the stale repeat — already pushed today and no longer due — is
+    /// blocked: the attempt is still recorded for accuracy and diagnostics,
+    /// but the schedule, the review log and the daily check-in are untouched.
+    /// This deliberately diverges from learnhub's one-push-per-day gate:
+    /// allo keeps sub-day relearning steps, so a same-day re-advance of a
+    /// resurfaced card is a legitimate review, not grinding (CONTEXT.md
+    /// "Review Queue").
+    async fn push_allowed(
+        &self,
+        source: ReviewSource,
+        item_id: &str,
+        due_at: i64,
+        now: i64,
+        settings: &SchedulerSettings,
+    ) -> Result<bool, AppError> {
+        if due_at <= now {
+            return Ok(true);
+        }
+        let review_day = review_day_number(now, settings.tz_offset_minutes);
+        let hit: Option<i8> = sqlx::query_scalar(
+            "SELECT 1 FROM learning_review_log \
+             WHERE source = ? AND item_id = ? AND review_day = ? \
+             AND rating_source != 'synthetic' LIMIT 1",
+        )
+        .bind(source_text(source))
+        .bind(item_id)
+        .bind(review_day)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(hit.is_none())
+    }
+}
+
+/// Appends the review-log row for one real advance of a card: rating and
+/// source, review-day granular elapsed days, the pre-push memory snapshot
+/// and the FSRS recall prediction. Seeding writes synthetic rows elsewhere.
+async fn record_review_log(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    user_id: &UserId,
+    source: ReviewSource,
+    item_id: &str,
+    rating: ReviewRating,
+    rating_source: &str,
+    snapshot: &PushSnapshot,
+    now: i64,
+    settings: &SchedulerSettings,
+) -> Result<(), AppError> {
+    let (elapsed_days, stability_before, difficulty_before, r_pred) = if snapshot.review_count > 0
+    {
+        let elapsed = days_elapsed_between(
+            snapshot.last_reviewed_at.unwrap_or(now),
+            now,
+            settings.tz_offset_minutes,
+        );
+        (
+            i64::from(elapsed),
+            Some(snapshot.stability_days),
+            Some(snapshot.difficulty),
+            predicted_retrievability(snapshot.stability_days, elapsed, settings),
+        )
+    } else {
+        (0, None, None, None)
+    };
+    sqlx::query(
+        "INSERT INTO learning_review_log \
+         (log_id, user_id, source, item_id, rating, rating_source, elapsed_days, \
+          stability_before, difficulty_before, r_pred, review_day, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(generate_id())
+    .bind(user_id.as_str())
+    .bind(source_text(source))
+    .bind(item_id)
+    .bind(rating.fsrs_value())
+    .bind(rating_source)
+    .bind(elapsed_days)
+    .bind(stability_before)
+    .bind(difficulty_before)
+    .bind(r_pred)
+    .bind(review_day_number(now, settings.tz_offset_minutes))
+    .bind(now)
+    .execute(executor)
+    .await
+    .map_err(internal)?;
+    Ok(())
 }
 
 /// Skipping a due review defers it by a full day without rating it.

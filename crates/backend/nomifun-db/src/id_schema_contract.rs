@@ -80,6 +80,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_modules",
     "learning_review_events",
     "learning_review_items",
+    "learning_review_log",
     "learning_tags",
     "mcp_servers",
     "meeting_segments",
@@ -166,6 +167,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_modules", "module_id"),
     ("learning_review_events", "event_id"),
     ("learning_review_items", "review_item_id"),
+    ("learning_review_log", "log_id"),
     ("learning_tags", "tag_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
@@ -263,6 +265,8 @@ const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_review_events", "event_id"),
     ("learning_review_events", "item_id"),
     ("learning_review_items", "review_item_id"),
+    ("learning_review_log", "log_id"),
+    ("learning_review_log", "item_id"),
     ("learning_tags", "tag_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
@@ -847,6 +851,10 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // Check-in rows and review events are user-scoped history rows.
     text_ref!("learning_checkins", "user_id" => "users", "user_id", false, "idx_learning_checkins_user_id", Cascade),
     text_ref!("learning_review_events", "user_id" => "users", "user_id", false, "idx_learning_review_events_user_id", Cascade),
+    // Review-log rows are append-only user-scoped honesty records; the card
+    // id is polymorphic (course item or custom question) and stays listed as
+    // a non-reference id column.
+    text_ref!("learning_review_log", "user_id" => "users", "user_id", false, "idx_learning_review_log_user_day", Cascade),
     text_ref!("learning_custom_questions", "user_id" => "users", "user_id", false, "idx_learning_custom_questions_user_id", Cascade),
     // Course-generation jobs: user-scoped tasks; kb/course links are history —
     // jobs keep working from persisted snapshots even if the base or the

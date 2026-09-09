@@ -175,6 +175,8 @@ export interface DueReview {
   difficulty: number;
   review_count: number;
   lapse_count: number;
+  /** FSRS 预测回忆率（0-1）；从未推进过的卡为 null */
+  r: number | null;
   /** 已标记“待编辑”，刷卡时记录，不打断复习；描述用于找回思路 */
   edit_pending: boolean;
   edit_note: string | null;
@@ -185,6 +187,8 @@ export interface ReviewResult {
   due_at: number;
   stability_days: number;
   difficulty: number;
+  /** 本次评分是否真实推进了排期；被到期门拦下的过期重复为 false */
+  advanced: boolean;
   review_count: number;
   lapse_count: number;
 }
@@ -244,6 +248,8 @@ export interface ReviewAnswerResult {
   feedback: string;
   correct_answer: unknown | null;
   rated: ReviewResult | null;
+  /** 本次作答是否真实推进了排期；被到期门拦下的重复作答为 false */
+  advanced: boolean;
 }
 
 export interface QuestionEntry {
@@ -376,4 +382,48 @@ export interface LearningGraphView {
   recommended: string[];
   /** 课程行 graph_meta_json 透传（审计快照/生成留档/扩展备注） */
   meta: Record<string, unknown> | null;
+}
+
+/** 记忆健康面板：到期预报、卡池状态、真实保留率与预测对照/遗忘曲线 */
+export interface MemoryLoadDay {
+  review_day: number;
+  due_count: number;
+}
+
+export interface MemoryStateBucket {
+  key: 'new' | 'young' | 'mature' | 'master';
+  count: number;
+}
+
+export interface MemoryTrueRetention {
+  passes: number;
+  fails: number;
+  rate: number | null;
+}
+
+export interface MemoryCalibrationBin {
+  bucket: number;
+  min: number;
+  max: number;
+  predicted: number;
+  actual: number | null;
+  count: number;
+}
+
+export interface MemoryCurvePoint {
+  elapsed_days: number;
+  predicted: number;
+  actual: number | null;
+  count: number;
+}
+
+export interface MemoryHealthStats {
+  review_day: number;
+  tz_offset: number;
+  overdue_count: number;
+  load_forecast: MemoryLoadDay[];
+  state_distribution: MemoryStateBucket[];
+  true_retention: MemoryTrueRetention | null;
+  calibration: MemoryCalibrationBin[];
+  forgetting_curve: MemoryCurvePoint[];
 }

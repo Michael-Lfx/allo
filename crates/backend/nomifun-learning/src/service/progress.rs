@@ -649,16 +649,41 @@ pub(super) async fn ensure_review_item(
     if exists.is_some() {
         return Ok(());
     }
+    let review_item_id = LearningReviewItemId::new().into_string();
     sqlx::query(
         "INSERT INTO learning_review_items \
          (review_item_id, enrollment_id, activity_id, due_at, stability_days, difficulty, \
           review_count, lapse_count, last_reviewed_at, updated_at) \
          VALUES (?, ?, ?, ?, 0, 5.0, 0, 0, NULL, ?)",
     )
-    .bind(LearningReviewItemId::new().into_string())
+    .bind(&review_item_id)
     .bind(enrollment_id.as_str())
     .bind(activity_id)
     .bind(first_review_due_at(now, tz_offset_minutes))
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(internal)?;
+    // Synthetic marker row: the card exists from this moment, but seeding
+    // is not an answer — it never counts as a push, and memory statistics
+    // and optimizer training exclude it (review log rating_source rules).
+    let user_id: String = sqlx::query_scalar(
+        "SELECT user_id FROM learning_enrollments WHERE enrollment_id = ?",
+    )
+    .bind(enrollment_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(internal)?;
+    sqlx::query(
+        "INSERT INTO learning_review_log \
+         (log_id, user_id, source, item_id, rating, rating_source, elapsed_days, \
+          stability_before, difficulty_before, r_pred, review_day, created_at) \
+         VALUES (?, ?, 'course', ?, 0, 'synthetic', 0, NULL, NULL, NULL, ?, ?)",
+    )
+    .bind(generate_id())
+    .bind(&user_id)
+    .bind(&review_item_id)
+    .bind(review_day_number(now, tz_offset_minutes))
     .bind(now)
     .execute(&mut **transaction)
     .await
