@@ -237,11 +237,12 @@ git push origin v1.0.6
   `ui-dist` artifact。Windows / macOS / Linux 构建都下载这份产物，并叠加
   `tauri.ci-skip-ui.conf.json`，不再在各平台 runner 上重跑 Vite。macOS
   runner 只有 ~7GB，Vite 在那里会 JS heap OOM（SIGABRT / exit 134）。
-- macOS：`macos-15` 打 Apple Silicon，`macos-15-intel` 打 Intel；两边结束后
-  在 `macos-15` 上 `lipo` 成 universal（一份产物写入 `darwin-aarch64` 与
-  `darwin-x86_64`）。先下载 `ui-dist`，再叠加 `tauri.ci-skip-ui.conf.json`
-  让 beforeBuildCommand 不再重跑 Vite。Intel 切片不链接 Silero/ort，
-  robot VAD 回退 energy。
+- macOS：两个 `macos-15` job 并行——arm 原生编 Apple Silicon，另一个交叉编
+  Intel（`x86_64-apple-darwin`）；两边结束后在第三个 `macos-15` job 上 `lipo`
+  成 universal（一份产物写入 `darwin-aarch64` 与 `darwin-x86_64`）。不要用
+  `macos-15-intel`：池子稀缺，v1.2.7 上排队把墙钟拖到 2h+。先下载 `ui-dist`，
+  再叠加 `tauri.ci-skip-ui.conf.json` 让 beforeBuildCommand 不再重跑 Vite。
+  Intel 切片不链接 Silero/ort，robot VAD 回退 energy。
 - Linux：当前 CI 只打 `linux-x86_64`。
 
 Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（可选）、

@@ -309,7 +309,9 @@ jobs:
             build_arch: arm
             artifact_name: macos-arm64-app
           - arch: intel
-            runner: macos-15-intel
+            # Same macos-15 pool as arm64 (cross-compile x86_64). macos-15-intel
+            # is scarce and queued ~1h on v1.2.7, blowing out wall clock.
+            runner: macos-15
             rust_target: x86_64-apple-darwin
             build_arch: intel
             artifact_name: macos-intel-app
