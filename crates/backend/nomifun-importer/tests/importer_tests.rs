@@ -408,6 +408,38 @@ async fn skill_market_imports_skills_with_market_identity() {
 }
 
 #[tokio::test]
+async fn mcp_connector_import_preserves_stdio_args_and_env() {
+    // WP-2 B6: a stdio server is command + argv (+ env); registration reads
+    // the structured transport, so the import must capture all three.
+    let (service, _temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: fixtures().join("mcp-connector"),
+            source_kind: SourceKind::WorkBuddyMcpConnector,
+            marketplace_id: None,
+            entry_name: None,
+            source_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.status, "completed", "errors: {:?}", result.errors);
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    let connector = components
+        .iter()
+        .find(|component| component.kind == "connector")
+        .expect("connector component");
+    let payload: serde_json::Value = serde_json::from_str(&connector.payload_json).unwrap();
+    assert_eq!(payload["kind"], "stdio-mcp");
+    assert_eq!(payload["transport"]["type"], "stdio");
+    assert_eq!(payload["transport"]["command"], "npx");
+    assert_eq!(
+        payload["transport"]["args"],
+        serde_json::json!(["-y", "@demo/mcp-server", "--root", "C:/demo root"])
+    );
+    assert_eq!(payload["transport"]["env"]["DEMO_TOKEN"], "demo-token");
+}
+
+#[tokio::test]
 async fn connector_market_imports_connector_entries() {
     let (service, _temp, repo) = setup().await;
     let result = service

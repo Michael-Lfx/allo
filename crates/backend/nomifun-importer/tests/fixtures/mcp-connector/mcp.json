@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "demo-stdio": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@demo/mcp-server", "--root", "C:/demo root"],
+      "env": {
+        "DEMO_TOKEN": "demo-token"
+      }
+    }
+  }
+}
