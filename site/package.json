@@ -1,5 +1,5 @@
 {
-  "name": "flowy-agent-store-site",
+  "name": "@flowy-agent-store/site",
   "private": true,
   "version": "0.1.0",
   "type": "module",
