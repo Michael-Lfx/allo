@@ -35,7 +35,7 @@ use crate::knowledge_completer::resolve_default_model;
 use crate::learning_loop::{
     CANCEL_MESSAGE, CancellableProvider, FlowCycle, LoopBudgets, LoopChannel, WireConfig, run_loops,
 };
-use crate::loop_core::{LoopEventSink, json_compact, log_text};
+use crate::loop_core::{LoopEventSink, json_compact};
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
 /// 学习图循环的显式预算表（ADR-0004，替代原三个遮蔽/覆盖共享默认的本地
