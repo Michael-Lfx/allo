@@ -47,6 +47,10 @@
       "name": "@flowy-agent-store/protocol",
       "version": "0.1.0",
     },
+    "packages/runtime": {
+      "name": "@flowy-agent-store/runtime-win32-x64",
+      "version": "0.1.0-beta.1",
+    },
     "packages/sdk": {
       "name": "@flowy-agent-store/sdk",
       "version": "0.1.0",
@@ -62,6 +66,8 @@
     "@flowy-agent-store/client": ["@flowy-agent-store/client@workspace:packages/client"],
 
     "@flowy-agent-store/protocol": ["@flowy-agent-store/protocol@workspace:packages/protocol"],
+
+    "@flowy-agent-store/runtime-win32-x64": ["@flowy-agent-store/runtime-win32-x64@workspace:packages/runtime"],
 
     "@flowy-agent-store/sdk": ["@flowy-agent-store/sdk@workspace:packages/sdk"],
 
