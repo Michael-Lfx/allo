@@ -38,6 +38,7 @@ import { ConnectorClient } from "./connectors";
 import { RunClient } from "./runs";
 import { SkillClient } from "./skills";
 import { TeamClient } from "./teams";
+import { ModelClient } from "./models";
 import { WorkspaceClient } from "./workspaces";
 import { type NotificationListener, type Transport } from "./transport";
 
@@ -64,6 +65,8 @@ export class AppServerClient {
   readonly agents: AgentClient;
   /** Agent Store Team catalog client (`team/list`, `team/get`). */
   readonly teams: TeamClient;
+  /** Public model directory (`models/list`, REQ-PAR-05b). */
+  readonly models: ModelClient;
   readonly clientInfo: ClientInfo;
   readonly capabilities?: ClientCapabilities;
 
@@ -81,6 +84,7 @@ export class AppServerClient {
     this.connectors = new ConnectorClient(this.transport);
     this.agents = new AgentClient(this.transport);
     this.teams = new TeamClient(this.transport);
+    this.models = new ModelClient(this.transport);
     this.transport.onNotification((notification) => {
       for (const listener of [...this.notificationListeners]) {
         try {

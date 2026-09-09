@@ -106,6 +106,7 @@ export interface Capabilities {
   installs: boolean;
   marketplaces: boolean;
   store: boolean;
+  models: boolean;
 }
 
 export interface WorkspaceRef { id: string }
@@ -583,6 +584,23 @@ export interface StoreItem {
 
 export interface StoreList {
   items: StoreItem[];
+}
+
+/** One model in the public catalog (`models/list`, REQ-PAR-05b). Provider
+ *  credentials, base URLs and health internals never cross this projection. */
+export interface ModelSummary {
+  provider_id: string;
+  provider_name: string;
+  model: string;
+  /** Provider-supplied display label when configured. */
+  display_name?: string | null;
+  /** True when an unbound preset resolves to this provider/model. */
+  is_default: boolean;
+}
+
+/** `models/list` response: the public model directory over enabled providers. */
+export interface ModelList {
+  items: ModelSummary[];
 }
 
 export interface StoreInstallResult {

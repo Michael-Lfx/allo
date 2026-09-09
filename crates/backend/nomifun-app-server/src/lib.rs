@@ -11,7 +11,8 @@ pub mod workspace_resolver;
 pub use agent_store::{AgentStoreConfig, AgentStoreMarketplace, AgentStoreModel, AgentStoreProvider};
 pub use catalog::{
     AgentCatalogProvider, ConnectorAuthProvider, ConnectorCatalogProvider, ImportProvider,
-    InstallProvider, MarketplaceProvider, SkillCatalogProvider, StoreProvider, TeamCatalogProvider,
+    InstallProvider, MarketplaceProvider, ModelCatalogProvider, SkillCatalogProvider,
+    StoreProvider, TeamCatalogProvider,
 };
 pub use workspace_resolver::{
     FilesystemWorkspaceResolver, ResolvedWorkspace, WorkspaceResolver,
@@ -54,7 +55,7 @@ use nomifun_api_types::{
     AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
-    AppServerMarketplaceSummary,
+    AppServerMarketplaceSummary, AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
     AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
@@ -174,6 +175,7 @@ pub struct CapabilityAvailability {
     pub agents: bool,
     pub teams: bool,
     pub store: bool,
+    pub models: bool,
 }
 
 impl CapabilityAvailability {
@@ -190,6 +192,7 @@ impl CapabilityAvailability {
             agents: state.agent_catalog.is_some(),
             teams: state.team_catalog.is_some(),
             store: state.store.is_some(),
+            models: state.models.is_some(),
         }
     }
 }
@@ -367,6 +370,7 @@ pub struct Capabilities {
     pub installs: bool,
     pub marketplaces: bool,
     pub store: bool,
+    pub models: bool,
 }
 
 impl Capabilities {
@@ -385,6 +389,7 @@ impl Capabilities {
             installs: availability.installs,
             marketplaces: availability.marketplaces,
             store: availability.store,
+            models: availability.models,
         }
     }
 }
@@ -806,6 +811,9 @@ pub struct AppServerRouterState {
     /// marketplaces with install state + one-click install. `None` keeps the
     /// `store` capability off.
     pub store: Option<Arc<dyn StoreProvider>>,
+    /// Public model directory (REQ-PAR-05b). `None` keeps `models/list` and
+    /// the `models` capability off.
+    pub models: Option<Arc<dyn ModelCatalogProvider>>,
     /// Agent Store immutable snapshot root (`{work_dir}/agent-store-imports`).
     /// `Some` enables the public asset endpoint for snapshot-attached display
     /// assets (avatars etc.); `None` keeps it off.
@@ -836,6 +844,7 @@ impl Default for AppServerRouterState {
             agent_catalog: None,
             team_catalog: None,
             store: None,
+            models: None,
             snapshot_assets_root: None,
         }
     }
@@ -870,6 +879,7 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route("/api/app-server/skills/{skill_id}", get(get_skill_route))
         // Agent Store Connector catalog / status / probe / OAuth
         .route("/api/app-server/connectors", get(list_connectors_route))
+        .route("/api/app-server/models", get(list_models_route))
         .route("/api/app-server/connectors/{connector_id}", get(get_connector_route))
         .route(
             "/api/app-server/connectors/{connector_id}/status",
@@ -1228,6 +1238,19 @@ fn connector_catalog_provider(
     })
 }
 
+fn model_catalog_provider(
+    state: &AppServerRouterState,
+) -> Result<Arc<dyn ModelCatalogProvider>, AppServerError> {
+    state.models.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "model catalog is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
 fn connector_auth_provider(
     state: &AppServerRouterState,
 ) -> Result<Arc<dyn ConnectorAuthProvider>, AppServerError> {
@@ -1258,6 +1281,12 @@ async fn list_connectors_impl(
     state: &AppServerRouterState,
 ) -> Result<Vec<AppServerConnectorSummary>, AppServerError> {
     connector_catalog_provider(state)?.list().await.map_err(AppServerError::from)
+}
+
+async fn list_models_impl(
+    state: &AppServerRouterState,
+) -> Result<AppServerModelList, AppServerError> {
+    model_catalog_provider(state)?.list().await.map_err(AppServerError::from)
 }
 
 async fn get_connector_impl(
@@ -2043,6 +2072,15 @@ async fn list_connectors_route(
 ) -> Result<Json<Vec<AppServerConnectorSummary>>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(list_connectors_impl(&state).await?))
+}
+
+async fn list_models_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<AppServerModelList>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(list_models_impl(&state).await?))
 }
 
 async fn get_connector_route(
@@ -4507,6 +4545,14 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode connectors: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // ---------------- Public model directory ----------------
+        "models/list" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let models = list_models_impl(state).await?;
+            Ok(ws_response(request_id, serde_json::to_value(models).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode models: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         "connector/get" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsConnectorQuery>(params)?;
@@ -6166,6 +6212,16 @@ display_name = "MiMo V2.5 Free"
         }
     }
 
+    fn sample_model_summary() -> nomifun_api_types::AppServerModelSummary {
+        nomifun_api_types::AppServerModelSummary {
+            provider_id: "0190f5fe-7c00-7a00-8000-000000000002".into(),
+            provider_name: "Demo Provider".into(),
+            model: "demo-model".into(),
+            display_name: Some("Demo Model".into()),
+            is_default: true,
+        }
+    }
+
     fn ready_catalog_state() -> (AppServerRouterState, CurrentUser, ConnectionState) {
         let state = AppServerRouterState {
             skills: Some(Arc::new(crate::catalog::FakeSkillCatalog {
@@ -6178,6 +6234,9 @@ display_name = "MiMo V2.5 Free"
             })),
             connector_auth: Some(Arc::new(crate::catalog::FakeConnectorAuth {
                 authenticated: std::sync::Mutex::new(vec![]),
+            })),
+            models: Some(Arc::new(crate::catalog::FakeModelCatalog {
+                models: vec![sample_model_summary()],
             })),
             ..Default::default()
         };
@@ -6260,6 +6319,34 @@ display_name = "MiMo V2.5 Free"
     }
 
     #[tokio::test]
+    async fn websocket_dispatch_serves_model_directory_and_advertises_capability() {
+        let (state, user, connection) = ready_catalog_state();
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
+        assert!(CapabilityAvailability::from_state(&state).models);
+
+        let models = dispatch_connection_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "models/list",
+            serde_json::json!({}),
+            Some(serde_json::json!("req-models")),
+        )
+        .await
+        .expect("models/list");
+        let entry = &models["result"]["items"][0];
+        assert_eq!(entry["provider_id"], "0190f5fe-7c00-7a00-8000-000000000002");
+        assert_eq!(entry["provider_name"], "Demo Provider");
+        assert_eq!(entry["model"], "demo-model");
+        assert_eq!(entry["display_name"], "Demo Model");
+        assert_eq!(entry["is_default"], true);
+        // Credential/endpoint internals must never cross the protocol.
+        assert!(entry.get("api_key").is_none());
+        assert!(entry.get("base_url").is_none());
+    }
+
+    #[tokio::test]
     async fn websocket_dispatch_rejects_catalog_methods_without_providers() {
         let state = AppServerRouterState::default();
         let user = CurrentUser {
@@ -6283,6 +6370,7 @@ display_name = "MiMo V2.5 Free"
         for (method, params) in [
             ("skill/list", serde_json::json!({})),
             ("skill/get", serde_json::json!({ "skill_id": "demo" })),
+            ("models/list", serde_json::json!({})),
             ("connector/list", serde_json::json!({})),
             ("connector/get", serde_json::json!({ "connector_id": "playwright" })),
             ("connector/status", serde_json::json!({ "connector_id": "playwright" })),

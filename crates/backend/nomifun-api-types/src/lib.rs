@@ -79,6 +79,7 @@ pub use app_server::{
     AppServerMarketplaceAddRequest, AppServerMarketplaceDetail, AppServerMarketplaceEntry,
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
     AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
+    AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
     AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,

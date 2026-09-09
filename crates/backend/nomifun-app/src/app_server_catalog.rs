@@ -11,10 +11,13 @@ use async_trait::async_trait;
 use nomifun_api_types::{
     AppServerCompatibilityStatus, AppServerConnectorDetail, AppServerConnectorProbeResult,
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
-    AppServerConnectorTool, AppServerOAuthStartResult, AppServerOAuthStatusView,
+    AppServerConnectorTool, AppServerModelList, AppServerModelSummary,
+    AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult, McpTransport,
 };
-use nomifun_app_server::{ConnectorAuthProvider, ConnectorCatalogProvider, SkillCatalogProvider};
+use nomifun_app_server::{
+    ConnectorAuthProvider, ConnectorCatalogProvider, ModelCatalogProvider, SkillCatalogProvider,
+};
 use nomifun_common::{AppError, McpServerStatus};
 use nomifun_extension::skill_service::{self, SkillListItem, SkillPaths, SkillSource};
 use nomifun_mcp::{McpConfigService, McpConnectionTestService, McpOAuthService};
@@ -418,5 +421,69 @@ impl ConnectorAuthProvider for AppServerConnectorAuth {
     async fn logout(&self, id: &str) -> Result<(), AppError> {
         let url = self.remote_url(id).await?;
         self.oauth.logout(&url).await.map_err(AppError::from)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public model directory (REQ-PAR-05b)
+// ---------------------------------------------------------------------------
+
+/// Read-only model directory over the system provider registry. Projects
+/// enabled providers into `provider/model` rows; API keys, base URLs and
+/// health internals are dropped at this boundary.
+#[derive(Clone)]
+pub struct AppServerModelCatalog {
+    providers: std::sync::Arc<nomifun_system::ProviderService>,
+}
+
+impl AppServerModelCatalog {
+    pub fn new(providers: std::sync::Arc<nomifun_system::ProviderService>) -> Self {
+        Self { providers }
+    }
+}
+
+#[async_trait]
+impl ModelCatalogProvider for AppServerModelCatalog {
+    async fn list(&self) -> Result<AppServerModelList, AppError> {
+        let providers = self.providers.list().await.map_err(AppError::from)?;
+        // Mirror the `agent/run` fallback: the first enabled provider with a
+        // model is what an unbound preset resolves to.
+        let default = providers
+            .iter()
+            .find(|provider| provider.enabled && !provider.models.is_empty())
+            .map(|provider| (provider.provider_id.clone(), provider.models[0].clone()));
+        let mut items = Vec::new();
+        for provider in providers {
+            if !provider.enabled {
+                continue;
+            }
+            for model in &provider.models {
+                if provider
+                    .model_enabled
+                    .as_ref()
+                    .and_then(|enabled| enabled.get(model))
+                    == Some(&false)
+                {
+                    continue;
+                }
+                let is_default = default
+                    .as_ref()
+                    .is_some_and(|(provider_id, default_model)| {
+                        provider_id == &provider.provider_id && default_model == model
+                    });
+                items.push(AppServerModelSummary {
+                    provider_id: provider.provider_id.clone(),
+                    provider_name: provider.name.clone(),
+                    model: model.clone(),
+                    display_name: provider
+                        .model_descriptions
+                        .as_ref()
+                        .and_then(|descriptions| descriptions.get(model))
+                        .cloned(),
+                    is_default,
+                });
+            }
+        }
+        Ok(AppServerModelList { items })
     }
 }

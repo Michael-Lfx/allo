@@ -8,4 +8,5 @@ export * from "./runs";
 export * from "./run-handle";
 export * from "./skills";
 export * from "./teams";
+export * from "./models";
 export * from "./workspaces";

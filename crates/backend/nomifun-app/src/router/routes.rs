@@ -745,8 +745,9 @@ pub fn create_router_with_all_state(
 
     // The App Server owns no provider UI of its own: it reuses the system
     // provider service (encryption + model rows) when it registers providers
-    // that came from the local agent-store config.
-    let app_server_provider_service = states.system.provider_service.clone();
+    // that came from the local agent-store config. The public model directory
+    // (`models/list`) projects the same service.
+    let app_server_provider_service = std::sync::Arc::new(states.system.provider_service.clone());
 
     // System routes protected by auth middleware
     let system_authenticated = protect_instance_owner(
@@ -1007,7 +1008,12 @@ pub fn create_router_with_all_state(
                     .expect("App Server workspace registry must be available at router startup"),
             )),
             event_bus: Some(services.event_bus.clone()),
-            provider_service: Some(Arc::new(app_server_provider_service)),
+            provider_service: Some(app_server_provider_service.clone()),
+            models: Some(std::sync::Arc::new(
+                crate::app_server_catalog::AppServerModelCatalog::new(
+                    app_server_provider_service.clone(),
+                ),
+            )),
             agent_store_config_path: services.agent_store_config_path.clone(),
             // Agent Store Skill/Connector catalog over the system services.
             // `None` keeps the capabilities off and yields

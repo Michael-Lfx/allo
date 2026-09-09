@@ -685,3 +685,26 @@ pub struct AppServerStoreInstallResult {
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
 }
+
+/// One model in the public catalog (`models/list`). The projection carries
+/// only provider identity and model names — credentials, endpoints and health
+/// internals never cross this seam.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerModelSummary {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model: String,
+    /// Provider-supplied display label when configured (`model_descriptions`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// `true` when an unbound preset resolves to this provider/model
+    /// (mirrors the `agent/run` default-model fallback).
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+/// `models/list` response: the public model directory over enabled providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerModelList {
+    pub items: Vec<AppServerModelSummary>,
+}
