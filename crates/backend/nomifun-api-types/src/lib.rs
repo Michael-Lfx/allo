@@ -57,9 +57,10 @@ mod webhook;
 mod websocket;
 
 pub use agent_eval::{
-    EvalArtifactView, EvalCaseTraceView, EvalCaseView, EvalCategoryView, EvalRunView,
-    EvalScorerView, EvalSuiteDescriptor, EvalSummaryView, EvalTrajectoryEventView,
-    PullEvalDatasetResponse, StartEvalRunRequest,
+    AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
+    EvalArtifactView, EvalCaseFlip, EvalCaseTraceView, EvalCaseView, EvalCategoryView,
+    EvalRunDiffView, EvalRunListItem, EvalRunView, EvalScorerView, EvalSuiteDescriptor,
+    EvalSummaryView, EvalTrajectoryEventView, PullEvalDatasetResponse, StartEvalRunRequest,
 };
 pub use acp::{
     AcpHealthCheckRequest, AcpHealthCheckResponse, AgentModeResponse,

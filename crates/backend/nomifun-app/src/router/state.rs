@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nomifun_ai_agent::{
-    AgentRouterState, AgentRuntimeRegistry, AgentService, EvalLab, RemoteAgentRouterState,
-    RemoteAgentService,
+    AgentRouterState, AgentRuntimeRegistry, AgentService, EvalLab, EvalQualitySink,
+    RemoteAgentRouterState, RemoteAgentService,
 };
 use nomifun_api_types::TerminalExitEvent;
 use nomifun_preset::{BuiltinPresetRegistry, PresetRouterState, PresetService};
@@ -617,6 +617,20 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             }));
         }
     }
+    let eval_lab = Arc::new(EvalLab::with_session_binding(
+        services.data_dir.clone(),
+        services.provider_repo.clone(),
+        services.provider_model_repo.clone(),
+        services.encryption_key,
+        Arc::new(SqliteClientPreferenceRepository::new(
+            services.database.pool().clone(),
+        )) as Arc<dyn nomifun_db::IClientPreferenceRepository>,
+        Some(eval_session_bridge),
+        eval_trace_hub,
+    ));
+    eval_lab.set_quality_sink(Arc::new(
+        crate::eval_quality_sink::CloudEvalQualitySink::new(services.cloud_service.clone()),
+    ) as Arc<dyn EvalQualitySink>);
     let states = ModuleStates {
         system,
         conversation,
@@ -626,17 +640,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         agent: AgentRouterState {
             agent_registry: services.agent_registry.clone(),
             service: agent_service,
-            eval_lab: Arc::new(EvalLab::with_session_binding(
-                services.data_dir.clone(),
-                services.provider_repo.clone(),
-                services.provider_model_repo.clone(),
-                services.encryption_key,
-                Arc::new(SqliteClientPreferenceRepository::new(
-                    services.database.pool().clone(),
-                )) as Arc<dyn nomifun_db::IClientPreferenceRepository>,
-                Some(eval_session_bridge),
-                eval_trace_hub,
-            )),
+            eval_lab,
         },
         connection_test: build_connection_test_state(),
         file: build_file_state(services, snapshot_service),

@@ -199,6 +199,9 @@ You may verify with:\n`{pytest_hint}`\n",
         task_profile: Some("coding".into()),
         workspace_files: exercise.files,
         timeout_secs: Some(600),
+        advisory_scorers: vec![],
+        isolation: None,
+        trial: 0,
     })
 }
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "corpus_version": "2026-08-18-harness-control-v1",
-  "suite": "harness_control",
+  "corpus_version": "2026-09-09-harness-smoke-v1",
+  "suite": "harness_smoke",
   "cases": [
     {
       "id": "write-marker",
@@ -15,7 +15,7 @@
         { "type": "file_contains", "path": "MARKER.txt", "marker": "HARNESS_OK" },
         { "type": "tool_called", "name": "Write" }
       ],
-      "notes": "Live coding harness must actually write a file; offline demo does not cover this suite."
+      "notes": "Runtime smoke: Write must land in write_root. Not a capability KPI."
     },
     {
       "id": "edit-existing",

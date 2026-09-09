@@ -15,6 +15,9 @@ export type EvalSuiteDescriptor = {
   notes: string;
   requires_download: boolean;
   cached: boolean;
+  tier?: string;
+  default_trials?: number;
+  requires_sandbox?: boolean;
 };
 
 export type EvalScorerView = {
@@ -62,6 +65,8 @@ export type EvalCaseView = {
   stop_reason?: string | null;
   error?: string | null;
   scorer_results: EvalScorerView[];
+  advisory_results?: EvalScorerView[];
+  trial?: number;
   prompt?: string | null;
   trajectory_event_count?: number;
   artifact_count?: number;
@@ -86,6 +91,10 @@ export type EvalSummaryView = {
   avg_input_tokens: number;
   avg_output_tokens: number;
   by_category: EvalCategoryView[];
+  unique_cases?: number;
+  n_trials?: number;
+  pass_at_1?: number;
+  pass_hat_k?: number;
 };
 
 export type EvalRunView = {
@@ -108,12 +117,29 @@ export type EvalRunView = {
   workspace_path?: string | null;
 };
 
+export type EvalRunListItem = {
+  run_id: string;
+  suite: string;
+  status: string;
+  passed: number;
+  failed: number;
+  pass_at_1: number;
+};
+
+export type EvalRunDiffView = {
+  a: string;
+  b: string;
+  flipped: Array<{ case_id: string; a_success: boolean; b_success: boolean }>;
+  pass_at_1_delta: number;
+};
+
 export type StartEvalRunRequest = {
   suite: string;
   provider_id?: ProviderId;
   model?: string;
   limit?: number;
   task_profile?: string;
+  n_trials?: number;
 };
 
 export const evalApi = {
@@ -129,17 +155,28 @@ export const evalApi = {
     httpRequest<EvalRunView>('POST', `${BASE}/runs`, request),
   latestRun: () =>
     httpRequest<EvalRunView | null>('GET', `${BASE}/runs`, undefined, SILENT_403),
+  history: () =>
+    httpRequest<EvalRunListItem[]>('GET', `${BASE}/history`, undefined, SILENT_403),
+  diffRuns: (a: string, b: string) =>
+    httpRequest<EvalRunDiffView>(
+      'GET',
+      `${BASE}/runs/${encodeURIComponent(a)}/diff/${encodeURIComponent(b)}`,
+      undefined,
+      SILENT_403
+    ),
   getRun: (runId: string) =>
     httpRequest<EvalRunView>('GET', `${BASE}/runs/${encodeURIComponent(runId)}`, undefined, SILENT_403),
   cancelRun: (runId: string) =>
     httpRequest<EvalRunView>('POST', `${BASE}/runs/${encodeURIComponent(runId)}/cancel`),
-  getCaseTrace: (runId: string, caseId: string) =>
-    httpRequest<EvalCaseTraceView>(
+  getCaseTrace: (runId: string, caseId: string, trial?: number) => {
+    const query = trial != null ? `?trial=${trial}` : '';
+    return httpRequest<EvalCaseTraceView>(
       'GET',
-      `${BASE}/runs/${encodeURIComponent(runId)}/cases/${encodeURIComponent(caseId)}/trace`,
+      `${BASE}/runs/${encodeURIComponent(runId)}/cases/${encodeURIComponent(caseId)}/trace${query}`,
       undefined,
       { silentStatuses: [403, 404] }
-    ),
+    );
+  },
   getCaseObservation: (runId: string, caseId: string, limit?: number) => {
     const query = limit != null ? `?limit=${limit}` : '';
     return httpRequest<{
@@ -167,4 +204,13 @@ export const evalApi = {
       { silentStatuses: [403, 404] }
     );
   },
+  reportCase: (body: {
+    case_id: string;
+    suite: string;
+    category: string;
+    error?: string | null;
+    prompt: string;
+    scorer_json: string;
+  }) => httpRequest<unknown>('POST', `${BASE}/report-case`, body),
+  syncPrivate: () => httpRequest<number>('POST', `${BASE}/private/sync`),
 };

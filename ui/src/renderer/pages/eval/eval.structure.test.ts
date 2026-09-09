@@ -15,9 +15,15 @@ describe('agent eval lab', () => {
     expect(page.includes('useDeveloperModeGate')).toBe(true);
     expect(page.includes("Navigate to='/guid'")).toBe(true);
     expect(page.includes('/api/debug/agent-evals')).toBe(false);
-    expect(page.includes("useState('office_tasks')")).toBe(true);
+    expect(page.includes("useState('office_core')")).toBe(true);
     expect(page.includes('evalApi.startRun')).toBe(true);
     expect(page.includes('evalApi.cancelRun')).toBe(true);
+    expect(page.includes('evalApi.history')).toBe(true);
+    expect(page.includes('evalApi.diffRuns')).toBe(true);
+    expect(page.includes('n_trials')).toBe(true);
+    expect(page.includes('pass_at_1')).toBe(true);
+    expect(page.includes('requires_sandbox')).toBe(true);
+    expect(page.includes('reportTurn')).toBe(true);
     expect(page.includes('getCaseTrace')).toBe(true);
     expect(page.includes('getCaseObservation')).toBe(true);
     expect(page.includes('current_trace')).toBe(true);
@@ -40,6 +46,10 @@ describe('agent eval lab', () => {
     expect(api.includes('/pull')).toBe(true);
     expect(api.includes('/cases/')).toBe(true);
     expect(api.includes('/trace')).toBe(true);
+    expect(api.includes('/history')).toBe(true);
+    expect(api.includes('/diff/')).toBe(true);
+    expect(api.includes('report-case')).toBe(true);
+    expect(api.includes('private/sync')).toBe(true);
     expect(api.includes('/observation')).toBe(true);
     expect(api.includes('getCaseTrace')).toBe(true);
     expect(api.includes('getCaseObservation')).toBe(true);

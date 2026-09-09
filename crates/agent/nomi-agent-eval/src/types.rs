@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
-pub const SCORING_VERSION: &str = "agent-eval-v2";
+pub const SCORING_VERSION: &str = "agent-eval-v3";
 
 /// Per-case turn / token budgets.
 ///
@@ -74,6 +74,38 @@ pub enum ScorerSpec {
         entry_point: String,
         test: String,
     },
+    FileNotContains {
+        path: String,
+        marker: String,
+    },
+    FileRegex {
+        pattern: String,
+        path: String,
+        #[serde(default = "default_minimum_hits")]
+        minimum_hits: usize,
+    },
+    CsvValid {
+        path: String,
+        #[serde(default)]
+        must_contain: Vec<String>,
+        #[serde(default)]
+        total_equals_sum: bool,
+    },
+    JsonArray {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_len: Option<usize>,
+        #[serde(default)]
+        required_keys: Vec<String>,
+    },
+    /// Advisory-friendly keyword coverage over a workspace file (or assistant text if path is empty).
+    KeywordCoverage {
+        keywords: Vec<String>,
+        #[serde(default)]
+        path: String,
+        #[serde(default = "default_minimum_hits")]
+        minimum: usize,
+    },
 }
 
 fn default_minimum_hits() -> usize {
@@ -92,6 +124,15 @@ pub struct Case {
     #[serde(default)]
     pub budgets: CaseBudgets,
     pub scorers: Vec<ScorerSpec>,
+    /// Recorded but excluded from pass/fail until a rubric is calibrated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisory_scorers: Vec<ScorerSpec>,
+    /// Isolation overlay: `smoke` | `office` | `coding` | `browser` | `mcp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
+    /// 1-based trial index filled by the runner; not part of corpus JSON.
+    #[serde(default, skip)]
+    pub trial: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     /// `office` or `coding`. Live harness installs CodingHarness when coding.
@@ -106,6 +147,50 @@ pub struct Case {
 
 fn default_enabled() -> bool {
     true
+}
+
+/// Suite / case isolation overlay for the live harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolationKind {
+    Smoke,
+    Office,
+    Coding,
+    Browser,
+    Mcp,
+}
+
+impl IsolationKind {
+    pub fn resolve(case_isolation: Option<&str>, suite: &str) -> Self {
+        match case_isolation.map(str::trim).filter(|s| !s.is_empty()) {
+            Some("browser") => Self::Browser,
+            Some("mcp") => Self::Mcp,
+            Some("smoke") => Self::Smoke,
+            Some("office") => Self::Office,
+            Some("coding") => Self::Coding,
+            _ => match suite.trim() {
+                "browser_smoke" => Self::Browser,
+                "mcp_fixture" => Self::Mcp,
+                "office_core" | "office_tasks" => Self::Office,
+                "coding_local"
+                | "agent_workflows"
+                | "aider_polyglot"
+                | "classeval"
+                | "harbor_terminal_bench" => Self::Coding,
+                _ => Self::Smoke,
+            },
+        }
+    }
+
+    pub fn parse_label(label: &str) -> Option<Self> {
+        match label.trim() {
+            "smoke" => Some(Self::Smoke),
+            "office" => Some(Self::Office),
+            "coding" => Some(Self::Coding),
+            "browser" => Some(Self::Browser),
+            "mcp" => Some(Self::Mcp),
+            _ => None,
+        }
+    }
 }
 
 /// Top-level corpus manifest.
@@ -214,6 +299,8 @@ pub struct EvalResult {
     pub prompt: String,
     pub success: bool,
     pub scorer_results: Vec<ScorerResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisory_results: Vec<ScorerResult>,
     pub elapsed_ms: u128,
     pub turns: u32,
     pub tool_call_count: u32,
@@ -242,6 +329,12 @@ pub struct EvalResult {
     /// Session Observation / conversation shell id for this case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
+    #[serde(default = "default_trial")]
+    pub trial: u32,
+}
+
+fn default_trial() -> u32 {
+    1
 }
 
 /// Aggregated summary over one or more JSONL evidence files.
@@ -266,6 +359,17 @@ pub struct Summary {
     pub avg_input_tokens: f64,
     #[serde(default)]
     pub avg_output_tokens: f64,
+    /// Distinct cases after grouping trials.
+    #[serde(default)]
+    pub unique_cases: usize,
+    #[serde(default)]
+    pub n_trials: u32,
+    /// Fraction of cases with at least one passing trial.
+    #[serde(default)]
+    pub pass_at_1: f64,
+    /// Fraction of cases where every trial passed (`pass^k`).
+    #[serde(default)]
+    pub pass_hat_k: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
