@@ -5,33 +5,9 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-## v1.3.8 - 2026-09-15
+- Lesson practice sections present questions one at a time with instant grading feedback ("Next question" after each submit); the stepper is gated per practice section and unlocks past it only once its questions are answered. Answered questions stay reviewable with your own response and the grader's feedback.
+- Wan 3.0 video create requests now send DashScope `input`/`parameters` (not Seedance `content[]`), with 2–30s clips and `480P`/`720P`/`1080P` resolution tokens.
 
-- Canvas camera controls become independent four-column rollers, with tighter generation chrome.
-- Chat and home modes can send images with auto/models, mention uploaded stills with `@`, and show account credits with a purchase entry.
-- Vimax packs closing reactions into dialogue shots, covers script lines without treating title cards as gaps, and downloads FFmpeg from ModelScope first.
-
-## v1.3.7 - 2026-09-14
-
-- Vimax skips last-frame likeness preflight at the finished-film stage and only repairs after a risk-control error.
-- Wan 3.0 reference audio is limited, planning thumbnails are cleaned up, and model catalogs load per app.
-
-## v1.3.6 - 2026-09-12
-
-- NSIS quotes DirectML ExecWait commands so Windows installers run them reliably.
-
-## v1.3.5 - 2026-09-12
-
-- DirectML detection is fixed, and the installer downloads the package with curl or PowerShell.
-
-## v1.3.4 - 2026-09-12
-
-- The installer downloads DirectML when `DMLCreateDevice1` is missing.
-
-## v1.3.3 - 2026-09-11
-
-- Windows NSIS embeds the WebView2 bootstrapper with branded install copy.
-- Canvas adds a generation-template shelf and keeps the node editor docked below.
 
 ## v1.3.2 - 2026-09-11
 

@@ -21,6 +21,7 @@ import Markdown from '@renderer/components/Markdown';
 import { statusColors } from '../constants';
 import type {
   Activity,
+  AttemptRecord,
   AttemptResult,
   CourseDetail,
   DiagnosticPlan,
@@ -40,16 +41,19 @@ function ActivityBlock({
   disabled,
   loading,
   result,
+  initialResponse,
   onSubmit,
 }: {
   activity: Activity;
   disabled: boolean;
   loading?: boolean;
   result?: AttemptResult;
+  /** 回看已答题时回显提交过的作答（组件重挂载后本地输入态已丢） */
+  initialResponse?: unknown;
   onSubmit: (activity: Activity, response: unknown) => void;
 }) {
   const { t } = useTranslation();
-  const [response, setResponse] = useState<unknown>();
+  const [response, setResponse] = useState<unknown>(initialResponse);
   const hasResponse =
     typeof response === 'string'
       ? response.trim().length > 0
@@ -248,6 +252,97 @@ function LessonSourcePanel({
   );
 }
 
+// 「已作答」判据：判卷结果由后端返回后写入，出现即算作答过（不论对错）
+const hasAttempt = (attemptResults: Record<string, AttemptRecord>, id: string) =>
+  attemptResults[id] !== undefined;
+
+/** 练习轮逐题推进（learnhub 的先答后进）：一次只渲染一题，提交判卷反馈
+ * 出现后「下一题」才解锁；已答题只读回看（回显自己的作答）、未答题不可
+ * 预览，全部作答后整轮转为只读回看。游标是纯本地态——按前缀扫描定位
+ * 首个未答题，重进练习步时自动恢复；作答后锁定重答（noRedo），对错都算
+ * 做完，不引入连对/struggle 机制。 */
+function PracticeRound({
+  activities,
+  busyId,
+  attemptResults,
+  onAttempt,
+}: {
+  activities: Activity[];
+  busyId: string | null;
+  attemptResults: Record<string, AttemptRecord>;
+  onAttempt: (activity: Activity, response: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  // 前缀扫描而非计数：乱序的已答记录（如诊断写入同一题）不会让游标跳题
+  const firstUnanswered = activities.findIndex(
+    (activity) => !hasAttempt(attemptResults, activity.id)
+  );
+  const allDone = firstUnanswered === -1;
+  const [cursor, setCursor] = useState(() =>
+    firstUnanswered === -1 ? Math.max(activities.length - 1, 0) : firstUnanswered
+  );
+  if (activities.length === 0) return null;
+  const idx = Math.min(cursor, activities.length - 1);
+  const current = activities[idx];
+  const currentAnswered = hasAttempt(attemptResults, current.id);
+  const header = (
+    <div className='flex items-center justify-between'>
+      <div className='text-13px font-600 text-t-secondary'>
+        {t('learning.sectionPractice')}
+      </div>
+      <Text type='secondary' className='text-12px'>
+        {t('learning.practiceProgress', {
+          current: allDone ? activities.length : idx + 1,
+          total: activities.length,
+        })}
+      </Text>
+    </div>
+  );
+  if (allDone) {
+    return (
+      <div className='flex flex-col gap-10px'>
+        {header}
+        <Text type='success'>{t('learning.practiceAllDone')}</Text>
+        {activities.map((activity) => (
+          <ActivityBlock
+            key={activity.id}
+            activity={activity}
+            disabled
+            result={attemptResults[activity.id]}
+            initialResponse={attemptResults[activity.id]?.response}
+            onSubmit={onAttempt}
+          />
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className='flex flex-col gap-10px'>
+      {header}
+      <ActivityBlock
+        key={current.id}
+        activity={current}
+        disabled={busyId === current.id || currentAnswered}
+        loading={busyId === current.id}
+        result={attemptResults[current.id]}
+        initialResponse={attemptResults[current.id]?.response}
+        onSubmit={onAttempt}
+      />
+      <div className='flex items-center justify-end gap-8px'>
+        <Button size='small' disabled={idx === 0} onClick={() => setCursor(idx - 1)}>
+          {t('learning.practicePrev')}
+        </Button>
+        {currentAnswered && idx < activities.length - 1 && (
+          <Button type='primary' size='small' onClick={() => setCursor(idx + 1)}>
+            {t('learning.nextQuestion')}
+            <IconRight />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** 分节交付的一步：节正文 + 该节绑定的练习题。综合题（无节绑定）收进
  * 末尾的额外一步，不与单节内容混排。 */
 function SectionedLessonBody({
@@ -258,7 +353,7 @@ function SectionedLessonBody({
 }: {
   lesson: Lesson;
   busyId: string | null;
-  attemptResults: Record<string, AttemptResult>;
+  attemptResults: Record<string, AttemptRecord>;
   onAttempt: (activity: Activity, response: unknown) => void;
 }) {
   const { t } = useTranslation();
@@ -278,6 +373,44 @@ function SectionedLessonBody({
   useEffect(() => setCurrent(0), [lesson.id]);
   const stepIndex = Math.min(current, steps.length - 1);
   const step = steps[stepIndex];
+  // 练习节步进门禁：每个练习节各自设门——它出的题目全部作答过才允许步进
+  // 越过该节（进入不受限，上一节随时可回）。练习节可穿插，不假设收尾位置；
+  // 内容节绑定与通用综合题归最后一个练习节收尾。门禁是本地 UI 态不作持久
+  // 化（ADR-0002：节不新增持久化完成状态），刷新后重来；无题的练习节不拦。
+  const practiceIndexes = steps
+    .map((entry, index) => (entry.section?.kind === 'practice' ? index : -1))
+    .filter((index) => index >= 0);
+  const lastPracticeIndex = practiceIndexes[practiceIndexes.length - 1] ?? -1;
+  const earlierPracticeKeys = new Set<string>();
+  steps.slice(0, lastPracticeIndex).forEach((entry) => {
+    if (entry.section?.kind === 'practice') earlierPracticeKeys.add(entry.section.section_key);
+  });
+  const stepActivities = (index: number): Activity[] => {
+    const entry = steps[index];
+    if (!entry.section || entry.section.kind !== 'practice') return [];
+    const sectionKey = entry.section.section_key;
+    if (index !== lastPracticeIndex) {
+      return lesson.activities.filter((activity) => activity.section_key === sectionKey);
+    }
+    // 收尾轮：除更早练习节已出的题外全部归此（本节绑定 + 内容节绑定 + 通用）
+    return lesson.activities.filter(
+      (activity) =>
+        activity.section_key === null || !earlierPracticeKeys.has(activity.section_key)
+    );
+  };
+  const stepLocked = (index: number) => {
+    const roundActivities = stepActivities(index);
+    return (
+      roundActivities.length > 0 &&
+      !roundActivities.every((activity) => hasAttempt(attemptResults, activity.id))
+    );
+  };
+  const canGoTo = (target: number) => {
+    for (let index = 0; index < target; index += 1) {
+      if (stepLocked(index)) return false;
+    }
+    return true;
+  };
   const sectionActivities = (section: Section | null) =>
     section === null
       ? generalActivities
@@ -289,7 +422,9 @@ function SectionedLessonBody({
       <Steps
         size='small'
         current={stepIndex + 1}
-        onChange={(next) => setCurrent(next - 1)}
+        onChange={(next) => {
+          if (canGoTo(next - 1)) setCurrent(next - 1);
+        }}
       >
         {steps.map((entry, index) => (
           <Steps.Step
@@ -304,25 +439,17 @@ function SectionedLessonBody({
       </Steps>
       {step.section ? (
         step.section.kind === 'practice' ? (
-          // 新规范：练习节 = 统一练习轮,出题是课时级一次产出,全部题目
-          // 收进这一轮作答(learnhub 的「练习节=一等练习轮」);内容节只读。
+          // 新规范：练习节 = 一等练习轮(learnhub),内容节只读;练习节可穿插
+          // 在内容节之间,各轮只出自己绑定的题,综合题随最后一轮收尾;轮内
+          // 逐题推进,全部作答完才放行节步进(见下方门禁)。
           <div className='flex flex-col gap-10px'>
             <Markdown>{step.section.body_md}</Markdown>
-            <div className='flex flex-col gap-10px'>
-              <div className='text-13px font-600 text-t-secondary'>
-                {t('learning.sectionPractice')}
-              </div>
-              {lesson.activities.map((activity) => (
-                <ActivityBlock
-                  key={activity.id}
-                  activity={activity}
-                  disabled={busyId === activity.id}
-                  loading={busyId === activity.id}
-                  result={attemptResults[activity.id]}
-                  onSubmit={onAttempt}
-                />
-              ))}
-            </div>
+            <PracticeRound
+              activities={stepActivities(stepIndex)}
+              busyId={busyId}
+              attemptResults={attemptResults}
+              onAttempt={onAttempt}
+            />
           </div>
         ) : (
           <div className='flex flex-col gap-10px'>
@@ -339,6 +466,7 @@ function SectionedLessonBody({
                     disabled={busyId === activity.id}
                     loading={busyId === activity.id}
                     result={attemptResults[activity.id]}
+                    initialResponse={attemptResults[activity.id]?.response}
                     onSubmit={onAttempt}
                   />
                 ))}
@@ -358,10 +486,16 @@ function SectionedLessonBody({
               disabled={busyId === activity.id}
               loading={busyId === activity.id}
               result={attemptResults[activity.id]}
+              initialResponse={attemptResults[activity.id]?.response}
               onSubmit={onAttempt}
             />
           ))}
         </div>
+      )}
+      {stepLocked(stepIndex) && (
+        <Text type='secondary' className='text-12px'>
+          {t('learning.practiceGateHint')}
+        </Text>
       )}
       <div className='flex items-center justify-between'>
         <Button
@@ -375,7 +509,7 @@ function SectionedLessonBody({
           {stepIndex + 1} / {steps.length}
         </Text>
         <Button
-          disabled={stepIndex >= steps.length - 1}
+          disabled={stepIndex >= steps.length - 1 || !canGoTo(stepIndex + 1)}
           onClick={() => setCurrent(stepIndex + 1)}
         >
           {t('learning.sectionNext')}
@@ -401,7 +535,7 @@ export function LessonBlock({
   lesson: Lesson;
   sourceKbId: string | null;
   busyId: string | null;
-  attemptResults: Record<string, AttemptResult>;
+  attemptResults: Record<string, AttemptRecord>;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
   onGenerate: (lesson: Lesson) => void;
@@ -506,6 +640,7 @@ export function LessonBlock({
                   disabled={busyId === activity.id}
                   loading={busyId === activity.id}
                   result={attemptResults[activity.id]}
+                  initialResponse={attemptResults[activity.id]?.response}
                   onSubmit={onAttempt}
                 />
               ))}
@@ -564,7 +699,7 @@ export function CourseWorkspace({
 }: {
   detail: CourseDetail;
   busyId: string | null;
-  attemptResults: Record<string, AttemptResult>;
+  attemptResults: Record<string, AttemptRecord>;
   onBack: () => void;
   onDiagnostic: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;

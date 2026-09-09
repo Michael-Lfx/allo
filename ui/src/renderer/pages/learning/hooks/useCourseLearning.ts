@@ -4,6 +4,7 @@ import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
 import type {
   Activity,
+  AttemptRecord,
   AttemptResult,
   DiagnosticPlan,
   GenerateLessonRequest,
@@ -29,7 +30,7 @@ export function useCourseLearning({
   diagnosticLimit,
   setBusyId,
 }: UseCourseLearningOptions) {
-  const [attemptResults, setAttemptResults] = useState<Record<string, AttemptResult>>({});
+  const [attemptResults, setAttemptResults] = useState<Record<string, AttemptRecord>>({});
   const [diagnosticPlan, setDiagnosticPlan] = useState<DiagnosticPlan | null>(null);
   const [diagnosticIndex, setDiagnosticIndex] = useState(0);
   const [diagnosticResult, setDiagnosticResult] = useState<AttemptResult>();
@@ -116,7 +117,7 @@ export function useCourseLearning({
       setBusyId(activity.id);
       try {
         const result = await learningApi.submitAttempt(activity.id, attemptRequest(response));
-        setAttemptResults((current) => ({ ...current, [activity.id]: result }));
+        setAttemptResults((current) => ({ ...current, [activity.id]: { ...result, response } }));
         setDiagnosticResult(result);
       } catch (actionError) {
         Message.error(errorMessage(t, actionError));
@@ -160,7 +161,7 @@ export function useCourseLearning({
       setBusyId(activity.id);
       try {
         const result = await learningApi.submitAttempt(activity.id, attemptRequest(response));
-        setAttemptResults((current) => ({ ...current, [activity.id]: result }));
+        setAttemptResults((current) => ({ ...current, [activity.id]: { ...result, response } }));
         await load();
       } catch (actionError) {
         Message.error(errorMessage(t, actionError));

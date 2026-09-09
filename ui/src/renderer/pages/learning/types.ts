@@ -151,6 +151,11 @@ export interface AttemptResult {
   feedback: string;
 }
 
+/** 作答记录 = 判卷结果 + 提交的原始作答；response 用于回看时回显用户答案 */
+export interface AttemptRecord extends AttemptResult {
+  response?: unknown;
+}
+
 /** 活动作答提交。reflection 批改可携带显式模型偏好；未携带时后端回落默认模型 */
 export interface SubmitAttemptRequest {
   response: unknown;
