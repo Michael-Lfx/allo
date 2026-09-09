@@ -148,6 +148,12 @@ pub struct McpOAuthService {
     http_client: HttpClientFactory,
     /// Mutex protecting the pending login state (only one login at a time).
     pending: Arc<Mutex<Option<PendingLogin>>>,
+    /// Serializes `login` so only one PKCE flow owns the shared `pending` slot
+    /// at a time. `auth_start` spawns logins in background tasks; without a
+    /// gate two concurrent flows overwrite each other's pending state and the
+    /// first callback fails with a CSRF state mismatch (live: two concurrent
+    /// connector logins → one login broken). `Arc` so every clone shares it.
+    login_gate: Arc<tokio::sync::Mutex<()>>,
     /// Optional browser-open hook. Replaces the system-browser launch during
     /// the authorize step; used by tests to capture the authorization URL and
     /// drive the redirect without a real browser. `None` → `open::that`.
@@ -191,6 +197,7 @@ impl McpOAuthService {
             registration_repo: Arc::new(InMemoryOAuthClientRegistrationRepository::default()),
             http_client: Arc::new(move || http_client.clone()),
             pending: Arc::new(Mutex::new(None)),
+            login_gate: Arc::new(tokio::sync::Mutex::new(())),
             browser_hook: hook,
         }
     }
@@ -243,6 +250,10 @@ impl McpOAuthService {
     /// 5. Wait for the redirect with the authorization code
     /// 6. Exchange code for tokens and persist them
     pub async fn login(&self, server_url: &str) -> Result<OAuthLoginResponse, McpError> {
+        // Serialize PKCE flows: the shared `pending` slot holds one login at a
+        // time (concurrent `auth_start` background tasks would otherwise
+        // overwrite each other → CSRF mismatch on the first callback).
+        let _gate = self.login_gate.lock().await;
         let (authorize_url, listener) = match self.prepare_login_flow(server_url).await {
             Ok(value) => value,
             Err(error) => {

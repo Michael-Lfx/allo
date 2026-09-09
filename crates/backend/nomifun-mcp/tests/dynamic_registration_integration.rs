@@ -836,8 +836,7 @@ async fn callback_state_mismatch_is_rejected() {
     let _ = reqwest::Client::new()
         .get(format!("{callback}?code=forged&state=wrong-state"))
         .send()
-        .await
-        .expect("forged callback");
+        .await; // 服务端拒收后直接断连（无响应），客户端可能报 IncompleteMessage
 
     let result = task.await.expect("login task").expect("login returns");
     assert!(!result.success, "forged state must fail the login");
@@ -874,8 +873,7 @@ async fn callback_path_mismatch_is_rejected() {
     let _ = reqwest::Client::new()
         .get(format!("{callback}/wrong/path?code=x&state=y"))
         .send()
-        .await
-        .expect("wrong-path callback");
+        .await; // 同上：拒收即断连
 
     let result = task.await.expect("login task").expect("login returns");
     assert!(!result.success, "wrong callback path must fail the login");
@@ -913,4 +911,66 @@ async fn login_errors_carry_no_sensitive_material() {
             "error must not leak {sensitive:?}: {error}"
         );
     }
+}
+
+/// §10 #10 — two concurrent logins on ONE service (the `auth_start` background
+/// task shape) must both succeed: `login` serializes on the shared pending
+/// slot, so the first callback is never rejected with a CSRF mismatch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_logins_on_shared_service_both_succeed() {
+    let _env_guard = env_lock().lock().await;
+    let url1 = serve_platform(MockConfig::default(), Arc::new(Mutex::new(MockLog::default()))).await;
+    let url2 = serve_platform(MockConfig::default(), Arc::new(Mutex::new(MockLog::default()))).await;
+
+    let (token_repo, registration_repo) = make_repos().await;
+    let captures: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let hook = {
+        let captures = captures.clone();
+        Arc::new(move |url: &str| captures.lock().unwrap().push(url.to_owned()))
+            as Arc<dyn Fn(&str) + Send + Sync>
+    };
+    let oauth = McpOAuthService::new_with_browser_hook(token_repo, test_http_client(), Some(hook))
+        .with_registration_repository(registration_repo);
+
+    let o1 = oauth.clone();
+    let u1 = url1.clone();
+    let t1 = tokio::spawn(async move { o1.login(&u1).await });
+    let o2 = oauth.clone();
+    let u2 = url2.clone();
+    let t2 = tokio::spawn(async move { o2.login(&u2).await });
+
+    // Both authorize URLs must be driven as soon as each appears: the login
+    // gate serializes flows, so login 2 only reaches its authorize step after
+    // login 1 completes — waiting for both URLs before driving would deadlock.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut driven = std::collections::HashSet::new();
+    loop {
+        let urls = captures.lock().unwrap().clone();
+        for url in urls {
+            if driven.insert(url.clone()) {
+                // 服务端拒收时直接断连，客户端可能报 IncompleteMessage —— 忽略。
+                let _ = reqwest::Client::new().get(&url).send().await;
+            }
+        }
+        if driven.len() >= 2 {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "both authorize URLs must be captured");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let r1 = tokio::time::timeout(Duration::from_secs(60), t1)
+        .await
+        .expect("login 1 join")
+        .expect("login 1 returns")
+        .expect("login 1 result");
+    let r2 = tokio::time::timeout(Duration::from_secs(60), t2)
+        .await
+        .expect("login 2 join")
+        .expect("login 2 returns")
+        .expect("login 2 result");
+    assert!(r1.success, "login 1 failed: {:?}", r1.error);
+    assert!(r2.success, "login 2 failed: {:?}", r2.error);
+    assert!(oauth.check_oauth_status(&url1).await.unwrap().authenticated);
+    assert!(oauth.check_oauth_status(&url2).await.unwrap().authenticated);
 }

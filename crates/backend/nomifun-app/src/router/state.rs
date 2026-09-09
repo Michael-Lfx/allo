@@ -996,15 +996,22 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
     let oauth_token_repo: Arc<dyn nomifun_db::IOAuthTokenRepository> = Arc::new(
         nomifun_db::SqliteOAuthTokenRepository::new(services.database.pool().clone()),
     );
+    // 动态注册身份必须落盘：token 行通过 `registration_id` 关联它，缺失时
+    // 重启后刷新只能落到 `reauthorization_required`（与 AppServices 的
+    // OAuth service 保持同一持久化仓库）。
+    let oauth_registration_repo: Arc<dyn nomifun_db::IOAuthClientRegistrationRepository> =
+        Arc::new(nomifun_db::SqliteOAuthClientRegistrationRepository::new(
+            services.database.pool().clone(),
+        ));
+    let oauth_service = nomifun_mcp::McpOAuthService::new_dynamic(oauth_token_repo.clone())
+        .with_registration_repository(oauth_registration_repo);
 
     McpRouterState {
         config_service: McpConfigService::new(repo.clone()),
         sync_service: McpSyncService::new(adapters),
         connection_test_service: McpConnectionTestService::new_dynamic()
-            .with_oauth_service(nomifun_mcp::McpOAuthService::new_dynamic(
-                oauth_token_repo.clone(),
-            )),
-        oauth_service: nomifun_mcp::McpOAuthService::new_dynamic(oauth_token_repo),
+            .with_oauth_service(oauth_service.clone()),
+        oauth_service,
     }
 }
 
