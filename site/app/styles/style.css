@@ -693,6 +693,47 @@ div[id] {
   font-family: var(--mono);
   font-size: 12px;
 }
+.ps-block {
+  padding: 0 18px 18px;
+  animation: fx-drop 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ps-hint {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+.ps-cmd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  overflow-x: auto;
+}
+.ps-cmd code {
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
+  flex: 1;
+}
+.ps-cmd .copy-btn {
+  flex: none;
+}
+.ps-note {
+  margin-top: 10px;
+  font-size: 13px;
+}
+.ps-note a {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ps-note a:hover {
+  color: var(--ink);
+}
 .release-note {
   margin-top: 24px;
   color: var(--muted);

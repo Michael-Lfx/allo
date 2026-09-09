@@ -129,6 +129,13 @@ const enUS = {
       s4: { value: "2", label: "UI and doc languages" },
     },
     marketStat: "resources in the market",
+    download: {
+      psTitle: "One-line PowerShell install (npm)",
+      psHint:
+        "Paste this line into PowerShell: installs the npm runtime package and adds agent-store to your user PATH (Node.js / npm required, no admin rights).",
+      psView: "View the install script source",
+      copy: "Copy command",
+    },
   },
   market: {
     title: "Resource Market",
