@@ -7,7 +7,7 @@
 import { Alert, Button, Empty, Modal, Spin, Tag, Typography } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { statusColors } from '../constants';
+import { lessonStatusTagColors, prereqLockedIds } from '../model';
 import { statusLabel } from '../utils';
 import type {
   Activity,
@@ -17,7 +17,7 @@ import type {
   Lesson,
   LessonStatus,
 } from '../types';
-import { LessonBlock } from './CourseWorkspace';
+import { LessonBlock } from './LessonStudy';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import GraphDagView from './GraphDagView';
 
@@ -97,21 +97,12 @@ const LearningGraphWorkspace: React.FC<{
     () => new Map((graph?.nodes ?? []).map((node) => [node.lesson_id, node])),
     [graph]
   );
-  // 解锁 = 不存在任何「未完成且未跳过」的前置（根节点天然解锁）。
-  // 前端从边表推导：完成/跳过集合 ∩ 入边 from，命中即锁定 to。
-  const lockedIds = useMemo(() => {
-    const locked = new Set<string>();
-    if (!graph) return locked;
-    const satisfied = new Set(
-      graph.nodes
-        .filter((node) => node.status === 'completed' || node.status === 'skipped')
-        .map((node) => node.lesson_id)
-    );
-    for (const edge of graph.edges) {
-      if (!satisfied.has(edge.from)) locked.add(edge.to);
-    }
-    return locked;
-  }, [graph]);
+  // 解锁 = 不存在任何「未完成且未跳过」的前置（根节点天然解锁）；
+  // 推导逻辑收在 model.ts，DAG 与列表视图共用。
+  const lockedIds = useMemo(
+    () => prereqLockedIds(graph?.nodes ?? [], graph?.edges ?? []),
+    [graph]
+  );
   const isRecommended = useCallback(
     (lessonId: string) => graph?.recommended.includes(lessonId) ?? false,
     [graph]
@@ -342,7 +333,7 @@ const LearningGraphWorkspace: React.FC<{
                 <Title heading={4} className='!m-0'>
                   {selectedLesson.title}
                 </Title>
-                <Tag size='small' color={statusColors[selectedLesson.status]} className='!mx-0'>
+                <Tag size='small' color={lessonStatusTagColors[selectedLesson.status]} className='!mx-0'>
                   {statusLabel(selectedLesson.status, t)}
                 </Tag>
                 {selectedLocked && (

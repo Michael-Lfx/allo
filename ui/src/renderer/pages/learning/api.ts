@@ -8,7 +8,6 @@ import type {
   CourseSummary,
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
-  DiagnosticPlan,
   DueReview,
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
@@ -63,17 +62,20 @@ export const learningApi = {
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/${encodeURIComponent(id)}/enroll`),
-  getDiagnostic: (id: string, limit = 10) =>
-    httpRequest<DiagnosticPlan>(
-      'GET',
-      `${BASE}/courses/${encodeURIComponent(id)}/diagnostic?limit=${limit}`
-    ),
   getLesson: (id: string) =>
     httpRequest<Lesson>('GET', `${BASE}/lessons/${encodeURIComponent(id)}`),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
   generateLesson: (id: string, request: GenerateLessonRequest = {}) =>
     httpRequest<Lesson>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/generate`, request),
+  // 单节重写（ADR-0003）：确定性单节管线，返回重写后的最新课时详情
+  //（其余节与题目不动）；旧课时（无节清单）返回 400。
+  rewriteLessonSection: (id: string, sectionKey: string, request: GenerateLessonRequest = {}) =>
+    httpRequest<Lesson>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionKey)}/rewrite`,
+      request
+    ),
   createLessonActivity: (lessonId: string, request: CreateLessonActivityRequest) =>
     httpRequest<Lesson>(
       'POST',
