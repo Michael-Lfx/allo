@@ -267,12 +267,17 @@ impl SectionKind {
         }
     }
 
-    /// 该节型的正文非空白字符下限（生成质检门）。
+    /// 该节型的正文下限（生成质检门）。可视化为主的三节型（概念/例题/
+    /// 演示）与文字预算同口径同源：下限取低档预算（`ComplexityTier::
+    /// prose_budget` 的最小值）——任何档位的预算都不低于它，照预算写就
+    /// 必然过门，且计量口径一致（剥可视化块，见 `SectionPack::
+    /// validate_body`）。数值禁止在此之外另写一份。
     pub const fn min_body_chars(self) -> usize {
         match self {
-            Self::Concept | Self::Example | Self::Demo => 300,
+            Self::Concept | Self::Example | Self::Demo => ComplexityTier::Low.prose_budget(),
             Self::Summary => 120,
-            // 练习节只写能力目标与作答引导（≤120 字目标），下限从宽。
+            // 练习节只写能力目标与作答引导（PRACTICE_BODY_TARGET_CHARS 字
+            // 目标），下限从宽。
             Self::Practice => 40,
         }
     }
@@ -327,11 +332,23 @@ impl SectionPack {
         if body.is_empty() {
             return Err(format!("section {} ({}) body is empty", self.section_key, self.title));
         }
+        // 可视化为主的三节型按文字预算口径计量（剥可视化块）——提示词按
+        // 档位预算写、门按下限查，同一把尺子；小结/练习无可视化承诺，按
+        // 全文字符计量。
         let chars = body.chars().filter(|c| !c.is_whitespace()).count();
+        let counted = if matches!(
+            self.kind,
+            SectionKind::Concept | SectionKind::Example | SectionKind::Demo
+        ) {
+            prose_char_count(body)
+        } else {
+            chars
+        };
         let min = self.kind.min_body_chars();
-        if chars < min {
+        if counted < min {
             return Err(format!(
-                "section {} ({}) has {chars} non-whitespace characters, expected at least {min}",
+                "section {} ({}) has {counted} body characters (visualization blocks \
+                 excluded for visual-first kinds), expected at least {min}",
                 self.section_key, self.title
             ));
         }
@@ -381,7 +398,8 @@ impl SectionPack {
         if self.kind == SectionKind::Practice && chars > 250 {
             return Err(format!(
                 "section {} ({}) is a practice section: write only the capability goal and \
-                 answering guidance (≤120 characters target); the questions come from the bank",
+                 answering guidance (≤{PRACTICE_BODY_TARGET_CHARS} characters target); the \
+                 questions come from the bank",
                 self.section_key, self.title
             ));
         }
@@ -492,6 +510,15 @@ impl ComplexityTier {
         }
     }
 
+    /// 提示词里的中文档位名（配比规则的渲染用）。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Low => "低",
+            Self::Mid => "中",
+            Self::High => "高",
+        }
+    }
+
     /// 节数区间（含端点）。
     pub const fn section_range(self) -> (usize, usize) {
         match self {
@@ -540,17 +567,72 @@ impl TryFrom<&str> for ComplexityTier {
     }
 }
 
+/// ── 内容契约：常量与提示词渲染 ───────────────────────────────────────
+/// 节配比、visual 菜单、文字预算在提示词与工具描述里的一切拼写都必须由
+/// 本节渲染函数从 owner 表格生成（ADR-0002 追加决策：契约数值唯一事实
+/// 源）——改数值只改表格；新增拼写点必须调用这里，不允许手写字面量。
+
+/// 节清单硬上限（大纲与清单护栏、提示词配比渲染共用）。
+pub(crate) const SECTION_OUTLINE_CAP: usize = 8;
+
+/// 可视化声明菜单：大纲/清单 visual 字段的全部取值（几乎每节都有，确无
+/// 才写「无」）。两处质检门、提示词与工具 schema 枚举共用。
+pub const VISUAL_OPTIONS: [&str; 7] = ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"];
+
+/// 练习节正文的作答引导目标字数（提示词口径；质检门硬拦 250）。
+pub const PRACTICE_BODY_TARGET_CHARS: usize = 120;
+
+/// 节数配比规则的渲染（大纲提示词与 ls_set_section_manifest 工具描述共
+/// 用）：`低 1-3 节、中 3-5、高 4-6，硬上限 8`。
+pub fn section_range_rules() -> String {
+    let low = ComplexityTier::Low.section_range();
+    let mid = ComplexityTier::Mid.section_range();
+    let high = ComplexityTier::High.section_range();
+    format!(
+        "{} {}-{} 节、{} {}-{}、{} {}-{}，硬上限 {}",
+        ComplexityTier::Low.label(),
+        low.0,
+        low.1,
+        ComplexityTier::Mid.label(),
+        mid.0,
+        mid.1,
+        ComplexityTier::High.label(),
+        high.0,
+        high.1,
+        SECTION_OUTLINE_CAP,
+    )
+}
+
+/// visual 声明菜单的渲染：`公式 / 函数图 / 示意图 / 流程图 / 图表 / 表格 / 无`。
+pub fn visual_menu_text() -> String {
+    VISUAL_OPTIONS.join(" / ")
+}
+
+/// 文字预算规则的渲染（逐节正文提示词与 ls_set_section_body 工具描述共
+/// 用）：档位预算表即事实源，质检门下限同源（低档预算）。
+pub fn prose_budget_rules() -> String {
+    format!(
+        "文字预算按课时复杂度档位（仅正文，公式/图表/可视化块不占）：{} {} 字、{} {} 字、{} {} 字；质检门下限 {} 字（同一纯文字口径，低于即拒）",
+        ComplexityTier::Low.label(),
+        ComplexityTier::Low.prose_budget(),
+        ComplexityTier::Mid.label(),
+        ComplexityTier::Mid.prose_budget(),
+        ComplexityTier::High.label(),
+        ComplexityTier::High.prose_budget(),
+        SectionKind::Concept.min_body_chars(),
+    )
+}
+
 /// 节清单护栏：只拦方向性极端（learnhub checkOutlineBudget 的对齐）。
 /// 低档 >7 节、高档 ≤2 节、任意 >8 节都判定大纲跑偏，回灌反馈重跑一次。
 pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), String> {
-    const MAX_SECTIONS: usize = 8;
     let count = outline.sections.len();
     if count == 0 {
         return Err("section outline is empty: plan at least one section".into());
     }
-    if count > MAX_SECTIONS {
+    if count > SECTION_OUTLINE_CAP {
         return Err(format!(
-            "section outline plans {count} sections, the hard cap is {MAX_SECTIONS}"
+            "section outline plans {count} sections, the hard cap is {SECTION_OUTLINE_CAP}"
         ));
     }
     if let Some(tier) = outline.tier {
@@ -568,7 +650,6 @@ pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), S
             ));
         }
     }
-    const VISUAL_OPTIONS: [&str; 7] = ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"];
     let mut seen = std::collections::HashSet::new();
     for section in &outline.sections {
         if section.title.trim().is_empty() {
@@ -588,7 +669,7 @@ pub(crate) fn validate_section_outline(outline: &SectionOutline) -> Result<(), S
                 "section {} ({}) must declare its planned visual, one of: {}",
                 section.section_key,
                 section.kind.label(),
-                VISUAL_OPTIONS.join(" / ")
+                visual_menu_text()
             ));
         }
     }
@@ -1656,4 +1737,83 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub difficulty: Option<u8>,
+}
+
+#[cfg(test)]
+mod contract_tests {
+    //! 内容契约的反漂移钉子（ADR-0002 追加决策）：渲染产物必须由 owner
+    //! 表格生成，门槛与预算必须同口径同源——数值改动只能发生在表格里。
+
+    use super::*;
+
+    /// 质检门下限与低档文字预算同源：提示词照任何档位的预算写，都不会
+    /// 撞门（历史 bug：门 300 全字符 vs 低档预算 150 纯文字，自相矛盾）。
+    #[test]
+    fn prose_floor_is_low_tier_budget() {
+        assert_eq!(
+            SectionKind::Concept.min_body_chars(),
+            ComplexityTier::Low.prose_budget()
+        );
+        assert_eq!(
+            SectionKind::Demo.min_body_chars(),
+            ComplexityTier::Low.prose_budget()
+        );
+        // 预算表本身必须单调，"低档是最小预算"才成立。
+        assert!(ComplexityTier::Low.prose_budget() < ComplexityTier::Mid.prose_budget());
+        assert!(ComplexityTier::Mid.prose_budget() < ComplexityTier::High.prose_budget());
+    }
+
+    /// 可视化为主三节型按纯文字口径计量：带大可视化块 + 低档预算正文即
+    /// 过门；纯文字不足低档预算则拒。
+    #[test]
+    fn visual_first_kinds_measure_prose_only() {
+        let figure = "```svg\n<svg viewBox=\"0 0 10 10\"><text x=\"1\" y=\"1\">unit circle figure with named points and ticks</text></svg>\n```";
+        let prose = "正弦函数是单位圆上纵坐标的投影。".repeat(10); // 160 字 ≥ 低档预算 150
+        let body = format!("## 概念：正弦函数\n\n{prose}\n\n{figure}");
+        let pack = SectionPack {
+            section_key: "s1".into(),
+            kind: SectionKind::Concept,
+            title: "概念：正弦函数".into(),
+            points: String::new(),
+            visual: "函数图".into(),
+            body_md: body,
+        };
+        // 计量断言：纯文字恰好过门（全字符口径会因图块文本虚高）。
+        let prose_chars = prose_char_count(&pack.body_md);
+        assert!(prose_chars >= ComplexityTier::Low.prose_budget());
+        assert!(pack.validate_body().is_ok(), "prose at budget passes: {prose_chars}");
+
+        let thin = SectionPack {
+            body_md: "## 概念：正弦函数\n\n太短。".into(),
+            ..pack.clone()
+        };
+        let error = thin.validate_body().unwrap_err();
+        assert!(error.contains("visualization blocks excluded"), "{error}");
+    }
+
+    /// 渲染产物由表格生成：改表格数值必然改渲染——反之，提示词里手写
+    /// 数值字面量的新拼写点会被这里抓住（渲染不含表格外的数字）。
+    #[test]
+    fn rendered_rules_come_from_the_tables() {
+        let ranges = section_range_rules();
+        for tier in [ComplexityTier::Low, ComplexityTier::Mid, ComplexityTier::High] {
+            let (min, max) = tier.section_range();
+            assert!(ranges.contains(&format!("{} {min}-{max}", tier.label())), "{ranges}");
+        }
+        assert!(ranges.contains(&format!("硬上限 {SECTION_OUTLINE_CAP}")), "{ranges}");
+
+        assert_eq!(visual_menu_text(), VISUAL_OPTIONS.join(" / "));
+
+        let budgets = prose_budget_rules();
+        for tier in [ComplexityTier::Low, ComplexityTier::Mid, ComplexityTier::High] {
+            assert!(
+                budgets.contains(&format!("{} {} 字", tier.label(), tier.prose_budget())),
+                "{budgets}"
+            );
+        }
+        assert!(
+            budgets.contains(&format!("下限 {} 字", SectionKind::Concept.min_body_chars())),
+            "{budgets}"
+        );
+    }
 }
