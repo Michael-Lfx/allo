@@ -1,57 +1,89 @@
-# SDK / WebUI / 站点开发者体验：优先级调整与执行计划
+# SDK / 站点 / 插件市场 / WebUI：方向与执行计划
 
 > 状态：计划（2026-09-09）。**先定方向与验收口径，不含实现**。
-> 方向调整：**SDK 与 WebUI 功能 = 第一优先级；站点（开发者体验）与插件 / 市场规范 = 高优先级；WP-5 协议 vNext 延后。**
-> 上游依据：`15-store-chain-and-protocol-vnext-plan.zh.md`（其 WP-5 顺延，WP-6/WP-7 已完成部分继续有效）、**`19-webui-codex-alignment.zh.md`（WebUI 子计划，取代本文档原 §3 B 章）**、`11-webui-production-readiness.md`、`12-sdk-packaging.md`、`07-typescript-sdk.md`、`17-plugin-spec.zh.md`、`18-marketplace-spec.zh.md`。
+> **四个方向**：① SDK + 站点（配对执行） · ② 插件与市场规范（收尾） · ③ WebUI 功能 · ④ 待立项（生产化硬指标）。
+> 优先级：**① ③ 第一优先级；② 高优先级（已完成 90%）；④ 未排期；WP-5 协议 vNext 延后。**
+> 上游依据：`19-webui-codex-alignment.zh.md`（方向三子计划）、`17-plugin-spec.zh.md`、`18-marketplace-spec.zh.md`（方向二交付）、`15-store-chain-and-protocol-vnext-plan.zh.md`（WP-5 顺延）、`11-webui-production-readiness.md`、`12-sdk-packaging.md`、`07-typescript-sdk.md`。
 > 口径：排期为范围值、按实测校准，不构成承诺；结论区分「已验证事实 / 推断 / 待定」。
 
 ---
 
-## 1. 为什么调整
+## 0. 方向一览
 
-- **四类资产闭环已收口**：专家 / 专家团 / 技能 / 连接器「下载 → 安装 → 使用」全链路已验收（四链路 24/24、P0-A/B、OAuth 26/26），继续在协议层大改的收益低于把 SDK 与 UI 打磨到可用。
-- **npm beta 已发布，第三方开始长期驻留使用**：`0.1.0-beta.2` 四包 + `runtime-win32-x64` 已上线，SDK 的进程与传输健壮性直接决定第三方是否踩坑——本轮已确认一个会冻死服务端的缺陷（F10 / A1）。
-- **站点是开发者的第一触点，且当前存在已确认的事实性错误**（F1–F5）：下载按钮对非 Windows 访客 404、兼容性矩阵声称 5 平台而实际只有 1 个平台有产物。
-- **WebUI 存在「协议已就绪、界面未接」的成片空白**（F19–F21）：`run/steer`、产物、全局通知均已具备后端能力却零使用；同时 `11` 号就绪清单中多项仍为未做（对账见 `19` §7）。
-- **协议 vNext 属重构型工作**：在 SDK 公共面与 webui 功能尚未稳定时动工，会把返工风险带进破坏性重命名。故延后，待 SDK/UI 稳定后再启动。
+| 方向 | 范围 | 现状 | 主文档 |
+| --- | --- | --- | --- |
+| **① SDK + 站点** | SDK 加固（A1–A6）+ 站点事实修正与开发者文档（C1–C5） | 均未开工。**两者是派生关系，必须配对执行**（§3.2 C0） | 本文 §3.1 / §3.2 |
+| **② 插件与市场规范** | D1 规范正文 ✅ / D2 机器可校验 Schema | 正文已完成（`17`/`18`）；剩 D2（P2） | `17-plugin-spec.zh.md`、`18-marketplace-spec.zh.md` |
+| **③ WebUI 功能** | W1–W14（Codex app 体验对齐，四层） | 未开工 | `19-webui-codex-alignment.zh.md` |
+| **④ 待立项** | `11` 号未纳入的 8 项 + WP-5 协议 vNext | 未排期 | `11-webui-production-readiness.md`、`15-...zh.md` |
 
 ---
 
-## 2. 现状核查（2026-09-09 实测）
+## 1. 为什么这样排序
+
+- **四类资产闭环已收口**：专家 / 专家团 / 技能 / 连接器「下载 → 安装 → 使用」全链路已验收（四链路 24/24、P0-A/B、OAuth 26/26），继续在协议层大改的收益低于把 SDK 与 UI 打磨到可用。
+- **npm beta 已发布，第三方开始长期驻留使用**：`0.1.0-beta.2` 四包 + `runtime-win32-x64` 已上线，SDK 的进程与传输健壮性直接决定第三方是否踩坑——本轮已确认一个会冻死服务端的缺陷（F10 / A1）。
+- **站点是开发者的第一触点，且存在已确认的事实性错误**（F1–F5）：下载按钮对非 Windows 访客 404、兼容性矩阵声称 5 平台而实际只有 1 个平台有产物。
+- **SDK 与站点是同一条链的两端**：站点 SDK 文档是 SDK 公共面的投影，公共面每改一处即欠一笔文档债（§3.2 C0），因此合并为一个方向、配对执行。
+- **WebUI 存在「协议已就绪、界面未接」的成片空白**（F19–F21）：`run/steer`、产物、全局通知均已具备后端能力却零使用（对账见 `19` §7）。
+- **协议 vNext 属重构型工作**：在 SDK 公共面与 webui 功能尚未稳定时动工，会把返工风险带进破坏性重命名，故延后。
+
+---
+
+## 2. 现状核查（2026-09-09 实测，按方向分组）
+
+### 2.1 站点与开发者体验
 
 | # | 事实 | 证据 | 影响 |
 | --- | --- | --- | --- |
 | F1 | 下载目录**只有 2 个产物**，均为 Windows x86_64 | `curl http://111.170.173.22:10014/downloads/` → `flowy-agent-store-latest-windows-x86_64.zip`、`flowy-agent-store-v1.0.11-windows-x86_64.zip` | 非 Windows 访客无产物 |
-| F2 | 首页主下载按钮**按访客系统直接拼 URL**，未校验是否已发布 | `DownloadCTA.tsx`：`detectedUrl = releaseAssetUrl("latest", detected)`（`platform.ts` 拼 `flowy-agent-store-latest-<os>-<arch>.zip`）；仅手动列表限定 Windows | macOS/Linux/ARM 访客点击 → **404** |
+| F2 | 首页主下载按钮**按访客系统直接拼 URL**，未校验是否已发布 | `DownloadCTA.tsx`：`detectedUrl = releaseAssetUrl("latest", detected)`；仅手动列表限定 Windows | macOS/Linux/ARM 访客点击 → **404** |
 | F3 | 兼容性矩阵声称 **5 个平台「支持」** | `content/docs/zh-CN/compatibility.md` 平台表 | 与 F1 冲突，属对外过度承诺 |
 | F4 | npm 侧仅发布 `runtime-win32-x64` | `sdk/package.json` optionalDependencies 预列 5 平台，实际只发 1 个 | 非 Windows 的 `launchClient` 找不到二进制 |
-| F5 | 站点部署口径漂移 | `README.md` 称 GitHub Pages；`.github/workflows/deploy-site.yml` 的 `push:` 触发**已注释**，仅剩 `workflow_dispatch` | 文档与真实部署不一致；线上是 VPS 裸 IP + HTTP |
-| F6 | 三个包均**无 `engines`**、无 `repository`、无 `sideEffects` | `protocol/client/sdk` 的 `package.json` | 未声明 Node 版本下限；文档也未写 |
-| F7 | SDK 文档无**版本与 beta 状态**标注 | `content/docs/zh-CN/typescript-sdk.md` 第 1 节只有 `bun add`，无版本号 / dist-tag / 平台矩阵 | 读者无法判断自己装的版本与支持范围 |
-| F8 | 站点市场数据**停在 2026-09-04** | `content/market.json` 的 `updatedAt` | 首页/市场页展示的数据已过期 5 天 |
-| F9 | 中英文档行数完全一致 | 7 篇 × 2 语言逐篇比对，行数相同 | 双语同步机制目前靠人工，无校验脚本（漂移风险） |
+| F5 | 站点部署口径漂移 | `README.md` 称 GitHub Pages；`deploy-site.yml` 的 `push:` 触发**已注释**，仅剩 `workflow_dispatch` | 文档与真实部署不一致；线上是 VPS 裸 IP + HTTP |
+| F6 | 三个包均**无 `engines`**、无 `repository`、无 `sideEffects` | `protocol/client/sdk` 的 `package.json` | 未声明 Node 版本下限 |
+| F7 | SDK 文档无**版本与 beta 状态**标注 | `typescript-sdk.md` §1 只有 `bun add`，无版本号 / dist-tag / 平台矩阵 | 读者无法判断自己装的版本与支持范围 |
+| F8 | 站点市场数据**停在 2026-09-04** | `content/market.json` 的 `updatedAt` | 首页/市场页展示的数据已过期 |
+| F9 | 中英文档行数完全一致 | 7 篇 × 2 语言逐篇比对 | 双语同步靠人工，无校验脚本（漂移风险） |
+| F25 | **文档债未制度化** | 没有「SDK 公共面变更 → 文档同批更新」的机制；F7 是首次欠债的证据 | 文档将持续滞后于实现 |
+
+### 2.2 SDK
+
+| # | 事实 | 证据 | 影响 |
+| --- | --- | --- | --- |
 | F10 | SDK 子进程 **stdout 背压**会冻死运行时 | `spawn.ts` 收到就绪行后 `lines.close()` → Node `readline.close()` 会 `pause()` 输入；实测合成子进程写满管道后 8s 未退出 | 长会话（多轮 turn / 扫市场树）静默卡死，表现为「请求超时」 |
 | F11 | `transport.close()` **不清通知监听器** | `transport.ts` `close()` 仅关 socket、清 pending | 订阅对象与闭包泄漏；若重连，旧订阅游标过期 → 静默丢事件 |
 | F12 | Conversation 与 Run 订阅**成熟度不对称** | Run：去重集 + gap 检测 + `autoResync` + `onError`；Conversation：仅 `sequence <= lastSeen` 丢弃 | 主要 UX 面缺追平能力，webui 只能自行重做（`conversation-events.ts` 289 行） |
 | F13 | 包面**无 HTTP 绑定** | `client/src/transport.ts` 只导出 `WebSocketTransport`；`index.ts` 无 http 导出 | webui 自建 5 个 fetch 辅助；第三方用一次性 HTTP 需自己实现 |
 | F14 | `ConversationEvent.payload` 无类型化，`event_type` 带 `\| string` 转义 | `protocol.ts` | 每个消费者都要重写解码层（webui 的 `activity.ts` 145 行）；穷尽性检查失效 |
+
+### 2.3 插件与市场规范
+
+| # | 事实 | 证据 | 影响 |
+| --- | --- | --- | --- |
 | F15 | **插件与市场的规范主体只存在于代码** | `market_source.rs` 头注释（源类型 / staging→校验→原子晋升→last-good / ETag 短路）、`app_server_marketplace.rs`（清单发现、条目解析）、`market_fetch.rs`（git vs HTTP 获取策略） | 无权威正文可依，行为变更无法评审；第三方无法按规范实现市场 |
 | F16 | **`_files.txt` 目录枚举格式只在脚本注释里** | `scripts/serve-agent-store-market.mjs`（逐行相对路径、无头、`--emit-listings` 预生成） | 发布方只能读脚本反推；HTTP 市场条目树镜像行为无契约 |
-| F17 | **无 Agent Store 原生插件格式规范** | `02-codebuddy-workbuddy-import-spec.md` 只定义「导入源」映射；`plugin.json` / `marketplace.json` 语义全部继承 CodeBuddy | 插件作者不知道该按什么写；原生格式的演进无据可依 |
-| F18 | **无机器可校验的 Schema** | 全仓仅 `crates/agent/flowy-web/evaluation/corpus.json` 的 schema（无关）；`plugin.json` / `marketplace.json` / `_files.txt` 均无 schema | 市场内容只能靠运行时校验，发布方无法自检 |
-| F19 | **`run/steer` 协议与 SDK 已实现，webui 零使用** | 全仓 `web/src` 搜 `steer` 无命中；`RunClient.steer` 已导出（REQ-PAR-05a，含 live 验证） | 用户无法中途纠偏运行，只能等待或取消 |
-| F20 | **产物无任何展示** | `web/src` 搜 `output_files` / `artifact` 无命中；`TurnResult.output_files` 已聚合、`artifact.created` 事件已发 | 跑完看不到产出文件，「使用」环节缺一环 |
-| F21 | **无全局通知层；连接状态仅一个小圆点** | `web/src` 无 toast / notification 组件（仅 i18n 文案）；`Composer` 的 `composer-model-dot ${phase}` 是唯一连接指示，无横幅、无重连动作 | 断线、后台 Run 完成、导入完成均静默；与 F11/A2 叠加时表现为「莫名其妙不能用」 |
+| F17 | **无 Agent Store 原生插件格式规范** | `02-...import-spec.md` 只定义「导入源」映射；`plugin.json` / `marketplace.json` 语义全部继承 CodeBuddy | 插件作者不知道该按什么写；原生格式演进无据可依 |
+| F18 | **无机器可校验的 Schema** | 全仓仅 `flowy-web/evaluation/corpus.schema.json`（无关）；`plugin.json` / `marketplace.json` / `_files.txt` 均无 schema | 市场内容只能靠运行时校验，发布方无法自检 |
+
+### 2.4 WebUI
+
+| # | 事实 | 证据 | 影响 |
+| --- | --- | --- | --- |
+| F19 | **`run/steer` 协议与 SDK 已实现，webui 零使用** | `web/src` 搜 `steer` 无命中；`RunClient.steer` 已导出（REQ-PAR-05a，含 live 验证） | 用户无法中途纠偏运行，只能等待或取消 |
+| F20 | **产物无任何展示** | `web/src` 搜 `output_files` / `artifact` 无命中；`TurnResult.output_files` 已聚合、`artifact.created` 已发 | 跑完看不到产出文件，「使用」环节缺一环 |
+| F21 | **无全局通知层；连接状态仅一个小圆点** | 无 toast / notification 组件（仅 i18n 文案）；`composer-model-dot ${phase}` 是唯一连接指示 | 断线、后台 Run 完成、导入完成均静默；与 F11/A2 叠加时表现为「莫名其妙不能用」 |
 | F22 | **`RunDetail` / `RunPanel` 是调试视图** | raw JSON dump + `seq/type/payload` 表格；文案硬编码英文（未走 i18n） | 界面不像产品；英文与中文界面混排 |
-| F23 | **无统一重试入口** | `isRetryableError` 全仓仅 1 处使用（`CatalogView.tsx:344`）；`11` §2.1 消息重试/编辑/重新生成未做（仅「复制错误」按钮） | 失败即失败，用户无自助恢复路径 |
+| F23 | **无统一重试入口** | `isRetryableError` 全仓仅 1 处使用（`CatalogView.tsx:344`）；`11` §2.1 未做 | 失败即失败，用户无自助恢复路径 |
 | F24 | 审批（Approvals）无 UI，且被 `approvals: false` 阻塞 | `initialize` 硬编码 `approvals: false`；webui 无审批界面 | `approval.required` 事件无法消费 |
-| F25 | **站点 SDK 文档未反映 SDK 真实状态** | 包已发布 `0.1.0-beta.2`，但 `typescript-sdk.md` §1 未标注 beta 与 Node 版本要求；三包无 `engines` | 开发者不知装什么版本、Node 下限多少；文档是 SDK 公共面的投影，公共面改动即欠文档债 |
+
+> WebUI 的完整对账（协议已就绪未接 / `11` 号清单 20 项核实）见 `19-webui-codex-alignment.zh.md` §7。
 
 ---
 
 ## 3. 工作包
 
-### A. SDK（第一优先级）
+### 3.1 方向一 · SDK（A）
 
 **A1 · 运行时进程生命周期（P0）**
 - 范围：stdout 持续排空（或提供 `onLog` / `logFile`）；`onExit` / `exited` 暴露运行时崩溃；`env` / `cwd` 透传。
@@ -80,25 +112,7 @@
 - 验收：Linux x64 干净环境 `npm i` 后 `launchClient` 成功；站点兼容性矩阵与产物一致。
 - 依赖：需要一次仓库 secret 配置（用户参与）。
 
-### B. WebUI（第一优先级）
-
-**WebUI 部分已独立为 `19-webui-codex-alignment.zh.md`（Codex app 体验对齐基线）。**
-
-- 原 B1–B12 全部迁入该文档，并按「体验骨架 / 审查面 / 会话与反馈 / 输入与配置」四层重组为 **W1–W14**（编号映射见其 §8）。
-- 现状对账两张表（协议已就绪未接 / `11` 号清单核实）随迁至该文档 §7。
-- 本节只保留跨工作包依赖；批次表改用 W 编号。
-
-**WebUI 与其它工作包的依赖**
-
-| 工作包 | 依赖 |
-| --- | --- |
-| W2 审批卡 | 后端解冻 `capabilities.approvals` + 安全评审（第 1 层唯一有后端改动者） |
-| W8 通知与重连 | SDK A2（传输层重连） |
-| W12 技能管理 | 协议增量（`skill/create|update|delete`），建议与 D2 同批 |
-| W14 消费 SDK 新能力 | A3（事件面补齐） |
-| W1 / W10 | 同批做（都改 composer 输入模型，避免两次重写） |
-
-### C. 站点与开发者体验（高优先级）
+### 3.2 方向一 · 站点（C）
 
 **C0 · A ↔ C 派生关系（文档是 SDK 公共面的投影）**
 
@@ -142,7 +156,7 @@
 - 待定：站点最终域名与托管方式（VPS + 自定义域名 / EdgeOne / GitHub Pages 三选一），见 Q2。
 - 已知约束：EdgeOne preset 域名带签名 `eo_token` 且按路径签名，不适合做公开源，需自定义域名。
 
-### D. 插件与市场规范（高优先级，以文档为主）
+### 3.3 方向二 · 插件与市场规范（D）
 
 **D1 · 规范缺口收口（正文）** — ✅ **已完成（2026-09-09）**
 - 交付：`17-plugin-spec.zh.md`（插件规范，兼容层）+ `18-marketplace-spec.zh.md`（市场规范，兼容层）。
@@ -153,11 +167,38 @@
 - 范围：`plugin.schema.json` / `marketplace.schema.json` + `_files.txt` 校验器；接入市场发布脚本与 CI。
 - 验收：对现有市场数据全绿；构造的非法样例被拒绝并给出字段级定位。
 
-### E. 延后
+### 3.4 方向三 · WebUI（子计划）
 
-- **WP-5 协议 vNext**（方法/事件/概念映射表与边界拍板）——待 SDK/UI 稳定后启动。
-- A5 中与站点无关的部分、C4 的搜索功能。
-- `11` 号清单中未被本计划纳入的项：§1.1 认证令牌、§1.2 Origin/CSP/CSRF、§3.1–§3.3 可观测性、§4.1 只读标识、§5.2 压缩建议——待基础功能稳定后单独立项。
+**WebUI 部分已独立为 `19-webui-codex-alignment.zh.md`**（Codex app 体验对齐基线，W1–W14 四层）。
+
+- 原 B1–B12 全部迁入该文档并按四层重组（编号映射见其 §8）；现状对账两张表随迁至其 §7。
+- 本节只保留跨方向依赖：
+
+| 工作包 | 依赖 |
+| --- | --- |
+| W2 审批卡 | 后端解冻 `capabilities.approvals` + 安全评审（第 1 层唯一有后端改动者） |
+| W8 通知与重连 | SDK A2（传输层重连） |
+| W12 技能管理 | 协议增量（`skill/create|update|delete`），建议与 D2 同批 |
+| W14 消费 SDK 新能力 | A3（事件面补齐） |
+| W1 / W10 | 同批做（都改 composer 输入模型，避免两次重写） |
+
+### 3.5 方向四 · 待立项（生产化硬指标）
+
+**性质：不是「不做」，而是「未排期」。** 这些是 `11-webui-production-readiness.md` 中未被方向一/三纳入的项，需单独立项与排期，否则会变成「以为做过、其实没做」。
+
+| 项 | 内容 |
+| --- | --- |
+| §1.1 正式认证与令牌管理 | 当前无正式认证 |
+| §1.2 Origin / CSP / CSRF 策略 | 未做 |
+| §2.2 归档 / 回收站 | 仅删除，无归档 |
+| §2.3 批量操作 | 未做 |
+| §3.1 统一 Request ID / 错误上报 | 未做 |
+| §3.2 健康检查 | 未做 |
+| §3.3 配额 / 限流 | 未做 |
+| §4.1 只读 / 不可访问标识 | 未做 |
+| §4.2 工作区重命名 | 会话重命名有，工作区无 |
+| §6.4 无障碍与 E2E 回归 | 无 E2E |
+| WP-5 协议 vNext | 方法 / 事件 / 概念映射表与边界拍板；待 SDK/UI 稳定后启动 |
 
 ---
 
@@ -186,7 +227,7 @@
 | 第 5 批 | **W7（消息重试/编辑/重新生成）+ W8（通知与重连）+ W9（用量与模型能力）** | 失败可自助恢复；断线不再静默；用量可查 |
 | 第 6 批 | **W10（附件）+ W11（设置）+ W12（技能管理）+ W14（消费 SDK）** + A6 + **`compatibility.md`/`quick-start.md`/§5.3 同步** + C3 + D2 | 输入与配置补全；非 Windows 用户可用；市场内容可自检 |
 | 待决策 | C5（域名 / HTTPS，等 Q2） | — |
-| 延后 | A5 其余、C4、WP-5、`11` 未纳入项 | — |
+| 未排期 | 方向四全部 | 需单独立项 |
 
 > 第 2 批全部是「后端/client 已就绪、只差前端接线」，不碰协议，风险最低、见效最快。
 
@@ -198,4 +239,5 @@
 - **不为了「纯粹」牺牲权限边界**：`fs/browse` 若进入公共协议，等于给远程客户端文件系统枚举能力。
 - **不在 SDK 稳定前动协议重命名**（WP-5 延后）。
 - **不做假开关**：设置分区、市场开关等一律要有真实数据源与回写路径，未实现的继续标「即将推出」而非留占位控件。
+- **不让文档滞后于公共面**：A 与 C 配对同批（§3.2 C0），F25 的债机制化。
 - **不承诺排期**：本计划只给批次与验收口径，实际节奏按实测校准。

@@ -37,7 +37,7 @@
 
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| `16-sdk-webui-site-priority-plan.zh.md` | **当前执行顺序**：SDK（A）+ 站点开发者体验（C）+ 插件/市场规范（D）；WebUI 已独立为 `19` | 🔧 执行中（第 1 批未开工） |
+| `16-sdk-webui-site-priority-plan.zh.md` | **当前执行顺序（四方向）**：① SDK + 站点（配对） ② 插件与市场规范 ③ WebUI ④ 待立项 | 🔧 执行中（第 1 批未开工） |
 | `19-webui-codex-alignment.zh.md` | **WebUI 子计划**：Codex app 体验对齐基线 + 四层工作包 W1–W14 | 📋 已定稿（2026-09-09） |
 | `15-store-chain-and-protocol-vnext-plan.zh.md` | 四链路闭环 + 协议 vNext（WP-1~WP-7） | 🔧 WP-1/2/3/4/6 完成，WP-7 模型选择器完成；WP-5 顺延至 `16` |
 | `13-p0-execution-plan.md` | P0-A/B/C/D 执行细则与出口条件 | 🔧 P0-A/B 已关闭；P0-C/D 的 OAuth 运行时证据已完成（`oauth-runtime-evidence.zh.md`，26/26 PASS） |
