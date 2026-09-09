@@ -98,6 +98,7 @@ const zhCN = {
     ariaLabel: "选择模型和思考等级",
     modelTitle: "模型",
     defaultModel: "默认模型",
+    defaultBadge: "默认",
     defaultMeta: "~/.agent-store/config.toml · 新会话生效",
     contextMeta: " · {{k}}k 上下文",
     noModels: "~/.agent-store/config.toml 中没有可配置的模型",
