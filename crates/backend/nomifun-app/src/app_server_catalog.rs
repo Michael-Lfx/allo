@@ -16,7 +16,8 @@ use nomifun_api_types::{
     AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult, McpTransport,
 };
 use nomifun_app_server::{
-    ConnectorAuthProvider, ConnectorCatalogProvider, ModelCatalogProvider, SkillCatalogProvider,
+    agent_store::AgentStoreConfig, ConnectorAuthProvider, ConnectorCatalogProvider,
+    ModelCatalogProvider, SkillCatalogProvider,
 };
 use nomifun_common::{AppError, McpServerStatus};
 use nomifun_extension::skill_service::{self, SkillListItem, SkillPaths, SkillSource};
@@ -434,26 +435,84 @@ impl ConnectorAuthProvider for AppServerConnectorAuth {
 #[derive(Clone)]
 pub struct AppServerModelCatalog {
     providers: std::sync::Arc<nomifun_system::ProviderService>,
+    /// `~/.agent-store/config.toml` path when the host declares one. Providers
+    /// declared there but not yet registered in the DB still surface in
+    /// `models/list` (WP-7 模型选择器联动: the picker must show the full
+    /// catalog a fresh install has, not just what an earlier run/turn already
+    /// lazily registered).
+    agent_store_config_path: Option<std::path::PathBuf>,
 }
 
 impl AppServerModelCatalog {
-    pub fn new(providers: std::sync::Arc<nomifun_system::ProviderService>) -> Self {
-        Self { providers }
+    pub fn new(
+        providers: std::sync::Arc<nomifun_system::ProviderService>,
+        agent_store_config_path: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            providers,
+            agent_store_config_path,
+        }
     }
 }
 
 #[async_trait]
 impl ModelCatalogProvider for AppServerModelCatalog {
     async fn list(&self) -> Result<AppServerModelList, AppError> {
-        let providers = self.providers.list().await.map_err(AppError::from)?;
-        // Mirror the `agent/run` fallback: the first enabled provider with a
-        // model is what an unbound preset resolves to.
-        let default = providers
+        let db_providers = self.providers.list().await.map_err(AppError::from)?;
+
+        // `~/.agent-store/config.toml` is the model-provider source of truth:
+        // providers declared there but not yet registered in the DB (fresh
+        // install — nothing registered until the first agent/run lazily
+        // registers one) still surface in `models/list`, so the picker shows
+        // the full catalog the runtime can actually resolve.
+        let config = self
+            .agent_store_config_path
+            .as_deref()
+            .and_then(AgentStoreConfig::load_ok);
+        let known: std::collections::HashSet<String> = db_providers
             .iter()
-            .find(|provider| provider.enabled && !provider.models.is_empty())
-            .map(|provider| (provider.provider_id.clone(), provider.models[0].clone()));
+            .map(|provider| provider.name.clone())
+            .collect();
+        let mut config_only: Vec<(String, Vec<(String, Option<String>, Option<i64>)>)> = Vec::new();
+        if let Some(config) = config.as_ref() {
+            let mut keys: Vec<String> = config
+                .providers
+                .iter()
+                .filter(|(_, cfg)| cfg.enabled.unwrap_or(true))
+                .filter(|(key, _)| !known.contains(*key))
+                .map(|(key, _)| key.clone())
+                .collect();
+            keys.sort();
+            for key in keys {
+                let limits = config.context_limits_for_provider(&key);
+                let names = config.display_names_for_provider(&key);
+                let models: Vec<(String, Option<String>, Option<i64>)> = config
+                    .models_for_provider(&key)
+                    .into_iter()
+                    .map(|model| (names.get(&model).cloned(), limits.get(&model).copied(), model))
+                    .map(|(display_name, context_limit, model)| (model, display_name, context_limit))
+                    .collect();
+                if !models.is_empty() {
+                    config_only.push((key, models));
+                }
+            }
+        }
+
+        // Default selection mirrors the `agent/run` fallback: the config's
+        // `default_model` when declared, else the first enabled provider with
+        // a model.
+        let default = config
+            .as_ref()
+            .and_then(AgentStoreConfig::default_selection)
+            .or_else(|| {
+                db_providers
+                    .iter()
+                    .find(|provider| provider.enabled && !provider.models.is_empty())
+                    .map(|provider| (provider.name.clone(), provider.models[0].clone()))
+            });
+
         let mut items = Vec::new();
-        for provider in providers {
+        for provider in &db_providers {
             if !provider.enabled {
                 continue;
             }
@@ -466,11 +525,6 @@ impl ModelCatalogProvider for AppServerModelCatalog {
                 {
                     continue;
                 }
-                let is_default = default
-                    .as_ref()
-                    .is_some_and(|(provider_id, default_model)| {
-                        provider_id == &provider.provider_id && default_model == model
-                    });
                 items.push(AppServerModelSummary {
                     provider_id: provider.provider_id.clone(),
                     provider_name: provider.name.clone(),
@@ -480,10 +534,99 @@ impl ModelCatalogProvider for AppServerModelCatalog {
                         .as_ref()
                         .and_then(|descriptions| descriptions.get(model))
                         .cloned(),
+                    is_default: default
+                        .as_ref()
+                        .is_some_and(|(key, default_model)| key == &provider.name && default_model == model),
+                });
+            }
+        }
+        for (provider_name, models) in config_only {
+            for (model, display_name, _context_limit) in models {
+                let is_default = default
+                    .as_ref()
+                    .is_some_and(|(key, default_model)| key == &provider_name && default_model == &model);
+                items.push(AppServerModelSummary {
+                    provider_id: provider_name.clone(),
+                    provider_name: provider_name.clone(),
+                    model,
+                    display_name,
                     is_default,
                 });
             }
         }
         Ok(AppServerModelList { items })
+    }
+}
+#[cfg(test)]
+mod model_catalog_tests {
+    use super::*;
+
+    const CONFIG_BODY: &str = r#"
+default_model = "mimo/mimo-v2.5"
+
+[providers.mimo]
+type = "openai"
+api_key = "sk-test"
+base_url = "https://mimo.example"
+
+[models."mimo/mimo-v2.5"]
+provider = "mimo"
+model = "mimo-v2.5"
+display_name = "MiMo V2.5"
+max_context_size = 1000000
+"#;
+
+    fn write_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("config.toml");
+        std::fs::write(&path, CONFIG_BODY).expect("write config");
+        path
+    }
+
+    async fn service() -> std::sync::Arc<nomifun_system::ProviderService> {
+        let db = nomifun_db::init_database_memory().await.unwrap();
+        let pool = db.pool().clone();
+        std::mem::forget(db);
+        std::sync::Arc::new(nomifun_system::ProviderService::new(
+            std::sync::Arc::new(nomifun_db::SqliteProviderRepository::new(pool.clone())),
+            std::sync::Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool)),
+            [0x42; 32],
+        ))
+    }
+
+    #[tokio::test]
+    async fn models_list_merges_unregistered_agent_store_config_providers() {
+        let dir = std::env::temp_dir().join(format!("allo-wp7-{}", nomifun_common::generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let config_path = write_config(&dir);
+        let catalog = AppServerModelCatalog::new(service().await, Some(config_path));
+
+        // DB is empty (fresh install) — the config provider must still surface.
+        let list = catalog.list().await.expect("list ok");
+        assert_eq!(list.items.len(), 1, "config-only provider projects: {:?}", list.items);
+        let entry = &list.items[0];
+        assert_eq!(entry.provider_name, "mimo");
+        assert_eq!(entry.model, "mimo-v2.5");
+        assert_eq!(entry.display_name.as_deref(), Some("MiMo V2.5"));
+        assert!(entry.is_default, "config default_model marks the entry");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn models_list_falls_back_to_db_default_when_config_has_none() {
+        let dir = std::env::temp_dir().join(format!("allo-wp7-{}", nomifun_common::generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // No default_model: strip it from the fixture.
+        let body = CONFIG_BODY.replacen("default_model = \"mimo/mimo-v2.5\"\n", "", 1);
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, body).expect("write config");
+        let catalog = AppServerModelCatalog::new(service().await, Some(config_path));
+
+        let list = catalog.list().await.expect("list ok");
+        assert_eq!(list.items.len(), 1);
+        // No DB provider and no config default → nothing flagged default.
+        assert!(!list.items[0].is_default);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

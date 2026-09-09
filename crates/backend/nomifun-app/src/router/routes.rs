@@ -1012,6 +1012,7 @@ pub fn create_router_with_all_state(
             models: Some(std::sync::Arc::new(
                 crate::app_server_catalog::AppServerModelCatalog::new(
                     app_server_provider_service.clone(),
+                    services.agent_store_config_path.clone(),
                 ),
             )),
             agent_store_config_path: services.agent_store_config_path.clone(),
