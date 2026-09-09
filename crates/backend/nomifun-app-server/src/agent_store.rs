@@ -119,6 +119,12 @@ impl AgentStoreConfig {
         toml::from_str(&raw).map_err(|error| format!("{}: {error}", path.display()))
     }
 
+    /// `load` flattened to `Option` for read-only catalog projections: a
+    /// missing/unparseable config simply contributes nothing.
+    pub fn load_ok(path: &Path) -> Option<Self> {
+        Self::load(path).ok()
+    }
+
     /// Builtin marketplace sources used when `~/.agent-store/config.toml` is
     /// missing (or has no `[default_marketplaces]`): the official public
     /// mirror, so a fresh install can browse the store before touching any
