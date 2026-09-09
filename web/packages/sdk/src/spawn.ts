@@ -12,7 +12,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { APP_SERVER_PROTOCOL_VERSION } from "@agent-store/protocol";
+import { APP_SERVER_PROTOCOL_VERSION } from "@flowy-agent-store/protocol";
 import { resolveAppServerBin } from "./bin";
 import { parseReadinessLine, type ReadinessInfo } from "./readiness";
 

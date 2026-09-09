@@ -2,7 +2,7 @@
 
 > 状态：架构冻结（Phase 0）；SDK v1 基线；包主体已实现（见 `12-sdk-packaging.md`）
 > 日期：2026-08-26
-> 更新：2026-09-09 —— 包名 `@agent-store/node` → `@agent-store/sdk`（以 `12` 为准）；TC 引用对齐测试主表现有范围（001~003）；本文为协议 vNext 前的 v1 基线
+> 更新：2026-09-09 —— 包名 `@flowy-agent-store/node` → `@flowy-agent-store/sdk`（以 `12` 为准）；TC 引用对齐测试主表现有范围（001~003）；本文为协议 vNext 前的 v1 基线
 > 前置：`01-domain-model.md`、`05-allo-app-server-protocol.md`、`06-connector-oauth-security.md`、`10-public-contracts.md`
 > 目标：提供 App Server Protocol 的 typed client；SDK 不直接依赖 allo 内部实现
 
@@ -37,16 +37,16 @@ SDK 不负责：
 推荐拆分：
 
 ```text
-@agent-store/protocol
-@agent-store/client
-@agent-store/sdk
-@agent-store/browser
-@agent-store/react
+@flowy-agent-store/protocol
+@flowy-agent-store/client
+@flowy-agent-store/sdk
+@flowy-agent-store/browser
+@flowy-agent-store/react
 ```
 
-> 注（2026-09-09）：`@agent-store/node` 已改名 `@agent-store/sdk`（以 `12-sdk-packaging.md` 为准）；`browser`/`react` 为预留包。
+> 注（2026-09-09）：`@flowy-agent-store/node` 已改名 `@flowy-agent-store/sdk`（以 `12-sdk-packaging.md` 为准）；`browser`/`react` 为预留包。
 
-### 2.1 `@agent-store/protocol`
+### 2.1 `@flowy-agent-store/protocol`
 
 只包含：
 
@@ -63,7 +63,7 @@ Connector/OAuth 类型
 
 该包不得依赖 Node.js、Electron、浏览器 DOM 或 allo Rust 类型。
 
-### 2.2 `@agent-store/client`
+### 2.2 `@flowy-agent-store/client`
 
 包含：
 
@@ -293,7 +293,7 @@ stream.onError(() => scheduleReconnect());             // 重连后重新拉取�
 
 ## 6.1 AgentRunHandle 与 TurnResult（REQ-PAR-04/05c）
 
-`launchRun(runClient, input)`（`@agent-store/client`）返回 `AgentRunHandle`：
+`launchRun(runClient, input)`（`@flowy-agent-store/client`）返回 `AgentRunHandle`：
 异步迭代实时事件（`for await ... of handle`），`handle.finished` 阻塞到终态
 并返回聚合的 `TurnResult`（2026-09-09 由终态视图升级为聚合对象）：
 
@@ -314,7 +314,7 @@ token 用量之前保持缺省，调用方不得假设其存在。
 
 ### 6.2 ConversationHandle（REQ-PAR-05d，多轮会话）
 
-`@agent-store/client` 提供 Codex-Thread 式的多轮句柄：
+`@flowy-agent-store/client` 提供 Codex-Thread 式的多轮句柄：
 
 ```ts
 const handle = await ConversationHandle.open(client.conversations, {
@@ -377,7 +377,7 @@ attempt_stale         → 重新获取 Run 状态
 
 ## 8. React 集成
 
-`@agent-store/react` 只封装服务器状态，不隐藏协议语义：
+`@flowy-agent-store/react` 只封装服务器状态，不隐藏协议语义：
 
 ```ts
 useAgents(query)
@@ -442,7 +442,7 @@ resource_version
 - SDK minor 版本可以增加可选字段；
 - 新增事件类型必须允许旧客户端安全忽略；
 - 删除字段、改变状态语义和修改错误码含义需要 major 版本；
-- `@agent-store/protocol` 与 `@agent-store/client` 的版本必须记录生成来源；
+- `@flowy-agent-store/protocol` 与 `@flowy-agent-store/client` 的版本必须记录生成来源；
 - SDK 不将 allo crate 版本当作公共协议版本。
 
 ## 11. 验收与实现顺序

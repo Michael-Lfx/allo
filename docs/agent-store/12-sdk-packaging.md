@@ -25,10 +25,10 @@ Codex SDK 的形态是“可被拉起的本地 runtime + typed client”：`code
 ## 3. 总体结构
 
 ```text
-@agent-store/protocol   纯类型（请求/响应/通知/错误），零运行时依赖
-@agent-store/client     AppServerClient + 子客户端 + Transport 接口
-@agent-store/sdk          spawn 二进制 + WS 建连 + 通知分发/重连/Approval 钩子
-@agent-store/browser    WS 绑定 + <img> 资产 URL 辅助（Web/Flowy 用）
+@flowy-agent-store/protocol   纯类型（请求/响应/通知/错误），零运行时依赖
+@flowy-agent-store/client     AppServerClient + 子客户端 + Transport 接口
+@flowy-agent-store/sdk          spawn 二进制 + WS 建连 + 通知分发/重连/Approval 钩子
+@flowy-agent-store/browser    WS 绑定 + <img> 资产 URL 辅助（Web/Flowy 用）
 python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Codex client.py）
 ```
 
@@ -47,14 +47,14 @@ python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Code
 
 | # | 事项 | 来源与改动 |
 |---|---|---|
-| P1-1 | `@agent-store/protocol` | ✅ 已落地：`web/packages/protocol`（`protocol.ts`+`errors.ts`，`git mv` 保留历史），`web` 经 `workspaces` + 精确版本引用；旧路径为单行 re-export 垫片。tsdown 编译（esm+cjs+dts），裸 Node ESM/CJS 消费验证通过。 |
-| P1-2 | `@agent-store/client` | ✅ 已落地：`web/packages/client`（`Transport`+基类+7 子客户端，`transport` 必填）；Web 3 方法（`serverRootUrl`/`browseDirectory`/`registerWorkspace`+HTTP 底座）由 `web/src/lib/client.ts` 子类承载，调用点零改动。tsdown 编译，`dev/test/typecheck/build` 前置 `build:packages`（热构建约 8s，`dist/` 不入库）。 |
-| P1-3 | `@agent-store/sdk` | 🔧 主体已落地（Approval 钩子除外）：`web/packages/sdk`（spawn+就绪扫描+回环建连+版本检查+退出清理），e2e 实测通过（覆盖修订后的 TC-SDK-001：spawn + 回环 WS）；tsdown 编译；npm publish dry-run 通过。`MessageRouter`/重连复用基类订阅原语，`approval/request` 等解冻。 |
+| P1-1 | `@flowy-agent-store/protocol` | ✅ 已落地：`web/packages/protocol`（`protocol.ts`+`errors.ts`，`git mv` 保留历史），`web` 经 `workspaces` + 精确版本引用；旧路径为单行 re-export 垫片。tsdown 编译（esm+cjs+dts），裸 Node ESM/CJS 消费验证通过。 |
+| P1-2 | `@flowy-agent-store/client` | ✅ 已落地：`web/packages/client`（`Transport`+基类+7 子客户端，`transport` 必填）；Web 3 方法（`serverRootUrl`/`browseDirectory`/`registerWorkspace`+HTTP 底座）由 `web/src/lib/client.ts` 子类承载，调用点零改动。tsdown 编译，`dev/test/typecheck/build` 前置 `build:packages`（热构建约 8s，`dist/` 不入库）。 |
+| P1-3 | `@flowy-agent-store/sdk` | 🔧 主体已落地（Approval 钩子除外）：`web/packages/sdk`（spawn+就绪扫描+回环建连+版本检查+退出清理），e2e 实测通过（覆盖修订后的 TC-SDK-001：spawn + 回环 WS）；tsdown 编译；npm publish dry-run 通过。`MessageRouter`/重连复用基类订阅原语，`approval/request` 等解冻。 |
 | P1-4 | Python SDK | ⏸️ 已决策延后（2026-09-04）：优先完善已有 TS 功能。结构对标 Codex `client.py:CodexClient`（`Popen` + reader 线程 + pending 表）；类型用 pydantic 与 `protocol` 对齐。 |
 
 ## 6. P2：发行与文档
 
-- **二进制分发**（已定案 2026-09-09，走 npm optionalDependencies）：发布一组按平台的 runtime 包（`@agent-store/runtime-<platform>-<arch>`，如 `runtime-win32-x64`，每个包内置 `agent-store[.exe]`），作为 `@agent-store/sdk` 的 `optionalDependencies` 加载；`resolveAppServerBin` 查找顺序改为：`bin` 参数 → `AGENT_STORE_BIN` 环境变量 → **`require.resolve` 定位 platform 包内二进制** → PATH。runtime 包与 `protocol/client/sdk` 同版本锁步，客户额外传入 `bin` 时跳过包查找。这解决“SDK 已发布但代码库外拿不到 `agent-store` 可执行文件”的核心缺口。备选（GitHub releases + checksum 下载缓存）不采用。
+- **二进制分发**（已定案 2026-09-09，走 npm optionalDependencies）：发布一组按平台的 runtime 包（`@flowy-agent-store/runtime-<platform>-<arch>`，如 `runtime-win32-x64`，每个包内置 `agent-store[.exe]`），作为 `@flowy-agent-store/sdk` 的 `optionalDependencies` 加载；`resolveAppServerBin` 查找顺序改为：`bin` 参数 → `AGENT_STORE_BIN` 环境变量 → **`require.resolve` 定位 platform 包内二进制** → PATH。runtime 包与 `protocol/client/sdk` 同版本锁步，客户额外传入 `bin` 时跳过包查找。这解决“SDK 已发布但代码库外拿不到 `agent-store` 可执行文件”的核心缺口。备选（GitHub releases + checksum 下载缓存）不采用。
 - **版本政策**：协议版本起 changelog；Team 完整能力、事件 cursor 追平（V2）等未稳能力在 SDK 层标 experimental（参考 Codex `experimental_api`），可暂不暴露。
 - **同机声明**：`import/run`、`workspace/create`、`market/* directory` 要求 client 与 server 同文件系统；文档明确，远端场景 SDK 对这类方法前置拒绝。
 - **文档三件套**：getting-started / api-reference / examples（对标 Codex SDK 的 `docs/` + `examples/` 布局）。
@@ -64,7 +64,7 @@ python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Code
 - SDK 级 roundtrip（spawn 真实二进制 + 临时 data_dir）：`initialize → store/list → store/install-entry → agent/run → run/events → run/result` 全绿。
   - 2026-09-04 进展：`agent/run → run/get → run/result → run/events` 子链已绿（TC-RT-001，见 `single-run-runtime-evidence.zh.md`）；
     `store/install-entry` 产品路径未走（A1 用 import/install 直调），待补。
-- 与冻结文档 `07-typescript-sdk.md` 的差异：包名以本文为准（`@agent-store/sdk`；`07` 已于 2026-09-09 同步改名并加注）；
+- 与冻结文档 `07-typescript-sdk.md` 的差异：包名以本文为准（`@flowy-agent-store/sdk`；`07` 已于 2026-09-09 同步改名并加注）；
   `Transport` 必填、`exports` 直指 `dist` 等包边界结论同样以本文为准。
 - 双开冒烟：桌面端 + SDK 实例同机运行，无锁库、无跨 owner 数据串扰。
 - 远端 URL 被 SDK 明确拒绝；协议版本不匹配时报错信息包含两端版本号。

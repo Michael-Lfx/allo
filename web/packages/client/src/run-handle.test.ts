@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RunClient } from "./runs";
 import { launchRun, type AgentRunHandle } from "./run-handle";
-import type { RunEvent, ServerNotification } from "@agent-store/protocol";
+import type { RunEvent, ServerNotification } from "@flowy-agent-store/protocol";
 import type { NotificationListener, Transport } from "./transport";
 
 const RUN_ID = "0190f5fe-run-handle-0000-000000000001";

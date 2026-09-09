@@ -7,13 +7,13 @@
  * the SDK use the `Authorization` header instead.
  */
 
-import { AppServerError, RequestTimeoutError, TransportError } from "@agent-store/protocol";
+import { AppServerError, RequestTimeoutError, TransportError } from "@flowy-agent-store/protocol";
 import type {
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
   ServerNotification,
-} from "@agent-store/protocol";
+} from "@flowy-agent-store/protocol";
 
 export type NotificationListener = (notification: ServerNotification) => void;
 

@@ -6,8 +6,8 @@
  *
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-p0b.ts
  */
-import { AppServerClient, WebSocketTransport } from "@agent-store/client";
-import { parseReadinessLine, resolveAppServerBin, type ReadinessInfo } from "@agent-store/sdk";
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
+import { parseReadinessLine, resolveAppServerBin, type ReadinessInfo } from "@flowy-agent-store/sdk";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";

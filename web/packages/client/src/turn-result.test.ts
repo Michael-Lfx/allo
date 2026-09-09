@@ -1,6 +1,6 @@
 /** aggregateTurnResult: event-derived items, ordering and usage projection. */
 import { describe, expect, it } from "vitest";
-import type { RunEvent, RunView } from "@agent-store/protocol";
+import type { RunEvent, RunView } from "@flowy-agent-store/protocol";
 import { aggregateTurnResult } from "./turn-result";
 
 const RUN_ID = "0190f5fe-turn-result-0000-000000000001";

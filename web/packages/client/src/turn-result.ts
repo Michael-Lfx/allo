@@ -8,7 +8,7 @@
  * otherwise — callers must not assume it is populated.
  */
 
-import type { RunEvent, RunStatus, RunView } from "@agent-store/protocol";
+import type { RunEvent, RunStatus, RunView } from "@flowy-agent-store/protocol";
 
 /** Token/context usage for the turn (absent until the runtime projects it). */
 export interface TurnUsage {

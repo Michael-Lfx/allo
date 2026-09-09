@@ -5,7 +5,7 @@
  */
 
 import type { Transport } from "./transport";
-import type { ModelList, ModelSummary } from "@agent-store/protocol";
+import type { ModelList, ModelSummary } from "@flowy-agent-store/protocol";
 
 export class ModelClient {
   constructor(private readonly transport: Transport) {}

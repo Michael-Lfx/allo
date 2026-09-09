@@ -200,8 +200,8 @@ V1 不要求：
 
 交付：
 
-- `@agent-store/protocol`；
-- `@agent-store/client`；
+- `@flowy-agent-store/protocol`；
+- `@flowy-agent-store/client`；
 - Node stdio Transport；
 - Browser/WebSocket Transport；
 - Catalog/Run/Event/Artifact/Approval/Connector Client；
@@ -367,5 +367,5 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
 
 以下决策由用户拍板，作为后续实施依据，覆盖此前文档中的“待定/备选”表述；实施顺序见 `15-store-chain-and-protocol-vnext-plan.zh.md`。
 
-1. **二进制分发走 npm optionalDependencies**（2026-09-09）：按平台发布 `@agent-store/runtime-<platform>-<arch>` 包，作为 `@agent-store/sdk` 的 `optionalDependencies`；`resolveAppServerBin` 查找顺序 `bin` → `AGENT_STORE_BIN` → `require.resolve` 定位 platform 包内二进制 → PATH（详见 `12-sdk-packaging.md` §6）。否决 GitHub releases + checksum 下载缓存方案。
+1. **二进制分发走 npm optionalDependencies**（2026-09-09）：按平台发布 `@flowy-agent-store/runtime-<platform>-<arch>` 包，作为 `@flowy-agent-store/sdk` 的 `optionalDependencies`；`resolveAppServerBin` 查找顺序 `bin` → `AGENT_STORE_BIN` → `require.resolve` 定位 platform 包内二进制 → PATH（详见 `12-sdk-packaging.md` §6）。否决 GitHub releases + checksum 下载缓存方案。
 2. **协议 vNext 完全重命名（thread/turn/item），stdio 不纳入**（2026-09-09）：V1 之后破坏性升级公共协议为 v2，概念模型对齐 Codex app-server（`run/conversation → thread`、`agent/run → turn*`、事件项归并为 `item`）；`initialize` 版本协商与 `dispatch_connection_request` 唯一分发保留；stdio 维持排除（SDK 仍走 spawn + 回环 WS）。该决策将重构 webui 事件层（`conversation-events` / `RunHandle` 等）与 SDK 方法面，需在 vNext 立项前先产出 Codex app-server spec diff（方法/事件/概念映射表）再动工；V1 冻结版本文档（`05`、`07`）标为 v1 基线。

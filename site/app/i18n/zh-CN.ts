@@ -86,15 +86,15 @@ const zhCN = {
       subtitle:
         "类型安全的 TypeScript SDK：只用类型、连接已运行的 App Server，或一键拉起整个运行时。",
       pkgProtocol: {
-        name: "@agent-store/protocol",
+        name: "@flowy-agent-store/protocol",
         desc: "线协议唯一类型源：请求、响应、通知与错误。零运行时依赖。",
       },
       pkgClient: {
-        name: "@agent-store/client",
+        name: "@flowy-agent-store/client",
         desc: "AppServerClient 与 7 个子客户端，Transport 抽象可接 WS / HTTP。",
       },
       pkgSdk: {
-        name: "@agent-store/sdk",
+        name: "@flowy-agent-store/sdk",
         desc: "spawn 二进制 → 回环 WebSocket → 就绪握手，返回可用客户端。",
       },
       codeTitle: "quick-start.ts",

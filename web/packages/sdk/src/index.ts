@@ -1,17 +1,17 @@
 /**
- * `@agent-store/sdk` — spawn the runtime, connect over loopback, hand back
+ * `@flowy-agent-store/sdk` — spawn the runtime, connect over loopback, hand back
  * a ready `AppServerClient`.
  */
 import {
   AppServerClient,
   WebSocketTransport,
   isLoopbackUrl,
-} from "@agent-store/client";
+} from "@flowy-agent-store/client";
 import type {
   ClientCapabilities,
   ClientInfo,
   InitializeResult,
-} from "@agent-store/protocol";
+} from "@flowy-agent-store/protocol";
 import { resolveAppServerBin } from "./bin";
 import { parseReadinessLine, type ReadinessInfo } from "./readiness";
 import { spawnAppServer, type SpawnOptions, type SpawnedServer } from "./spawn";

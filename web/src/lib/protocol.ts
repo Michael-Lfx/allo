@@ -1,2 +1,2 @@
-/** Historical import path — the contract lives in `@agent-store/protocol`. */
-export * from "@agent-store/protocol";
+/** Historical import path — the contract lives in `@flowy-agent-store/protocol`. */
+export * from "@flowy-agent-store/protocol";

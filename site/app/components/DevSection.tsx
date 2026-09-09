@@ -5,7 +5,7 @@ import type { CSSProperties } from "react";
 import { revealDelay } from "../lib/effects";
 import CopyButton from "./CopyButton";
 
-const SDK_SNIPPET = `import { launchClient } from "@agent-store/sdk";
+const SDK_SNIPPET = `import { launchClient } from "@flowy-agent-store/sdk";
 
 const session = await launchClient({
   client: { name: "my-app", version: "0.1.0" },

@@ -1,9 +1,9 @@
-# `@agent-store/sdk`
+# `@flowy-agent-store/sdk`
 
-Node.js host for the Agent Store runtime (`docs/agent-store/12-sdk-packaging.md P1-3`): spawn `agent-store`, wait for its stdout readiness line, connect over loopback with `@agent-store/client`.
+Node.js host for the Agent Store runtime (`docs/agent-store/12-sdk-packaging.md P1-3`): spawn `agent-store`, wait for its stdout readiness line, connect over loopback with `@flowy-agent-store/client`.
 
 ```ts
-import { launchClient } from "@agent-store/sdk";
+import { launchClient } from "@flowy-agent-store/sdk";
 
 const session = await launchClient({
   client: { name: "my-app", version: "0.1.0" },

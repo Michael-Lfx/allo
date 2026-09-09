@@ -10,7 +10,7 @@
  * 3 次（good/forbidden 自动 302 回环回调；timeout 停在 mock 提示页），属预期。
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-oauth.ts
  */
-import { launchClient } from "@agent-store/sdk";
+import { launchClient } from "@flowy-agent-store/sdk";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

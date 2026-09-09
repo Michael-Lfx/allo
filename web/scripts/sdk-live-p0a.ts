@@ -5,8 +5,8 @@
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-p0a.ts
  * 模型 key 只读自 Hermes attachments config，仅内存持有、不打印。
  */
-import { launchClient } from "@agent-store/sdk";
-import { launchRun } from "@agent-store/client";
+import { launchClient } from "@flowy-agent-store/sdk";
+import { launchRun } from "@flowy-agent-store/client";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";

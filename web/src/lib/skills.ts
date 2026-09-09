@@ -1,2 +1,2 @@
-/** Historical import path — the client lives in `@agent-store/client`. */
-export * from "@agent-store/client";
+/** Historical import path — the client lives in `@flowy-agent-store/client`. */
+export * from "@flowy-agent-store/client";

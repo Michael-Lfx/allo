@@ -1,6 +1,6 @@
 /** EventSubscription: dedupe, cursor, auto/manual resync (no server needed). */
 import { describe, expect, it, vi } from "vitest";
-import type { RunEvent, ServerNotification } from "@agent-store/protocol";
+import type { RunEvent, ServerNotification } from "@flowy-agent-store/protocol";
 import { RunClient } from "./runs";
 import type { NotificationListener, Transport } from "./transport";
 

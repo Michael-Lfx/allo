@@ -87,15 +87,15 @@ const enUS = {
       subtitle:
         "A type-safe TypeScript SDK: types only, connect to a running App Server, or launch the whole runtime in one call.",
       pkgProtocol: {
-        name: "@agent-store/protocol",
+        name: "@flowy-agent-store/protocol",
         desc: "The single source of wire-protocol types: requests, responses, notifications and errors. Zero runtime.",
       },
       pkgClient: {
-        name: "@agent-store/client",
+        name: "@flowy-agent-store/client",
         desc: "AppServerClient and 7 sub-clients with a Transport abstraction for WS / HTTP.",
       },
       pkgSdk: {
-        name: "@agent-store/sdk",
+        name: "@flowy-agent-store/sdk",
         desc: "Spawns the binary → loopback WebSocket → readiness handshake, returning a ready client.",
       },
       codeTitle: "quick-start.ts",

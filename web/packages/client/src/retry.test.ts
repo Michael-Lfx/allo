@@ -1,6 +1,6 @@
 /** withRetry: exponential backoff, jitter bounds and retryable gating. */
 import { describe, expect, it, vi } from "vitest";
-import { AppServerError, TransportError } from "@agent-store/protocol";
+import { AppServerError, TransportError } from "@flowy-agent-store/protocol";
 import { withRetry } from "./retry";
 
 function appServerError(retryable: boolean): AppServerError {

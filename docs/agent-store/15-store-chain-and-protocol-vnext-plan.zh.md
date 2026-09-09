@@ -42,7 +42,7 @@
 - **stdio 不纳入**：SDK 维持 spawn + 回环 WS（`12` §2 非目标不变）；
 - **保留资产**：`initialize` 版本协商、`dispatch_connection_request` 唯一分发、事件 sequence/cursor 语义；
 - **第一步交付物**：Codex app-server spec diff —— 方法映射表 / 事件映射表 / 概念映射表。对齐对象是 **codex app-server**（IDE 用 JSON-RPC 服务端），不是 `sdk/python`；
-- **影响面**：webui 事件层（`conversation-events` / `RunHandle` / REQ-PAR-03/04）、`@agent-store/client`、`@agent-store/sdk`、`05`/`07` 标 v1 基线、SDK 0.2.0；
+- **影响面**：webui 事件层（`conversation-events` / `RunHandle` / REQ-PAR-03/04）、`@flowy-agent-store/client`、`@flowy-agent-store/sdk`、`05`/`07` 标 v1 基线、SDK 0.2.0；
 - **动工条件**：spec diff 评审 + 深度/stdio/approvals 边界确认后立项（WP-5）。
 
 ## 5. 优先级排序（执行顺序）
@@ -103,7 +103,7 @@
 
 ### WP-6 发行链路
 
-- **二进制**：npm optionalDependencies（已定案，`12` §6）——按平台发布 `@agent-store/runtime-<platform>-<arch>`，`resolveAppServerBin` 查找顺序 `bin` → `AGENT_STORE_BIN` → `require.resolve` 包内二进制 → PATH；
+- **二进制**：npm optionalDependencies（已定案，`12` §6）——按平台发布 `@flowy-agent-store/runtime-<platform>-<arch>`，`resolveAppServerBin` 查找顺序 `bin` → `AGENT_STORE_BIN` → `require.resolve` 包内二进制 → PATH；
 - **npm 发布**：`protocol` / `client` / `sdk` 三包 + runtime 包，同版本锁步；发布前清理 dist 与 license 检查。
 
 ### WP-7 webui 生产就绪剩余
