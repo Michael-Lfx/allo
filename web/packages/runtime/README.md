@@ -1,6 +1,6 @@
 # @flowy-agent-store/runtime-win32-x64
 
-Vendored `agent-store.exe` (Agent Store App Server runtime, win32-x64) for
+Vendored `flowy-agent-store.exe` (Agent Store App Server runtime, win32-x64) for
 [`@flowy-agent-store/sdk`](https://www.npmjs.com/package/@flowy-agent-store/sdk).
 
 `@flowy-agent-store/sdk` declares the `runtime-<platform>-<arch>` packages as

@@ -2,8 +2,8 @@
  * WP-6 release: publish the TS packages + platform runtime binary to npm.
  *
  * - `protocol` / `client` / `sdk`: tsdown build → `npm publish`
- * - `runtime-<platform>-<arch>`: copy the release `agent-store[.exe]` into
- *   `web/packages/runtime/vendor/` → `npm publish` (one package per host;
+ * - `runtime-<platform>-<arch>`: copy the release binary into
+ *   `web/packages/runtime/vendor/flowy-agent-store[.exe]` → `npm publish` (one package per host;
  *   this script publishes the platform it runs on — linux/darwin go through
  *   the same script in CI)
  *
@@ -32,7 +32,10 @@ const DRY_RUN = process.env["DRY_RUN"] === "1";
 const REGISTRY = process.env["REGISTRY"] ?? "https://registry.npmjs.org/";
 const PLATFORM = process.platform; // win32 | linux | darwin
 const ARCH = process.arch; // x64 | arm64
+/** Cargo's output binary name (cargo package `agent-store`). */
 const EXE = PLATFORM === "win32" ? "agent-store.exe" : "agent-store";
+/** Public CLI name shipped in the vendored runtime package (unified). */
+const VENDORED_EXE = PLATFORM === "win32" ? "flowy-agent-store.exe" : "flowy-agent-store";
 
 function run(cmd: string, args: string[], cwd: string, usePath = false): void {
   const label = `${cmd} ${args.join(" ")} (cwd=${cwd})`;
@@ -92,13 +95,13 @@ if (!existsSync(binSource)) {
 if (!existsSync(binSource)) throw new Error(`runtime binary still missing: ${binSource}`);
 rmSync(VENDOR_DIR, { recursive: true, force: true });
 mkdirSync(VENDOR_DIR, { recursive: true });
-copyFileSync(binSource, join(VENDOR_DIR, EXE));
-console.log(`vendored ${binSource} → runtime/vendor/${EXE}`);
+copyFileSync(binSource, join(VENDOR_DIR, VENDORED_EXE));
+console.log(`vendored ${binSource} → runtime/vendor/${VENDORED_EXE}`);
 
 // 5. Sanity: the vendored binary must answer a spawn roundtrip via the SDK.
 //    (skipped in dry-run; the live e2e covers it)
 if (!DRY_RUN) {
-  run("bun", ["scripts/verify-published-sdk.ts", join(VENDOR_DIR, EXE)], WEB_ROOT);
+  run("bun", ["scripts/verify-published-sdk.ts", join(VENDOR_DIR, VENDORED_EXE)], WEB_ROOT);
 }
 
 // 6. Publish (pack first so a tarball failure costs nothing).

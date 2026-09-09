@@ -1,5 +1,5 @@
 /**
- * Locate the `agent-store` runtime binary.
+ * Locate the `flowy-agent-store` runtime binary.
  *
  * Order (docs/agent-store/12 §6):
  *   1. explicit `bin` argument (skips every other lookup)
@@ -7,8 +7,8 @@
  *   3. platform runtime package (`@flowy-agent-store/runtime-<platform>-<arch>`,
  *      an optionalDependency of `@flowy-agent-store/sdk`) resolved via
  *      `createRequire(import.meta.url).resolve` — the binary ships inside the
- *      package (`vendor/agent-store[.exe]`)
- *   4. `agent-store[.exe]` on `PATH`
+ *      package (`vendor/flowy-agent-store[.exe]`)
+ *   4. `flowy-agent-store[.exe]` on `PATH`
  *
  * Anything else is a hard error — the SDK never downloads or guesses.
  */
@@ -17,7 +17,9 @@ import { createRequire } from "node:module";
 import { delimiter, join } from "node:path";
 
 const VENDOR_DIR = "vendor";
-const BIN_NAMES = ["agent-store", "agent-store.exe"];
+const BIN_NAMES = ["flowy-agent-store", "flowy-agent-store.exe"];
+/** Legacy vendored/PATH name (pre-unification packages); still accepted. */
+const LEGACY_BIN_NAMES = ["agent-store", "agent-store.exe"];
 
 export function resolveAppServerBin(explicit?: string): string {
   if (explicit && existsSync(explicit)) return explicit;
@@ -35,9 +37,9 @@ export function resolveAppServerBin(explicit?: string): string {
   const hit = candidates.find((candidate) => existsSync(candidate));
   if (!hit) {
     throw new Error(
-      "cannot find the agent-store runtime binary: pass `bin`, set AGENT_STORE_BIN, " +
+      "cannot find the flowy-agent-store runtime binary: pass `bin`, set AGENT_STORE_BIN, " +
         `install @flowy-agent-store/runtime-${process.platform}-${process.arch} alongside @flowy-agent-store/sdk, ` +
-        "or put agent-store[.exe] on PATH",
+        "or put flowy-agent-store[.exe] on PATH",
     );
   }
   return hit;
@@ -52,7 +54,9 @@ function findInRuntimePackage(): string | undefined {
     const require = createRequire(import.meta.url);
     const pkgJsonPath = require.resolve(`${pkg}/package.json`);
     const pkgRoot = pkgJsonPath.slice(0, -"package.json".length);
-    for (const name of BIN_NAMES) {
+    // Vendored name (flowy-agent-store) first; accept the legacy name so
+    // pre-unification runtime packages keep resolving.
+    for (const name of [...BIN_NAMES, ...LEGACY_BIN_NAMES]) {
       const candidate = join(pkgRoot, VENDOR_DIR, name);
       if (existsSync(candidate)) return candidate;
     }
