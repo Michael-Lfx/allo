@@ -53,7 +53,7 @@
 | `mcp-oauth-runtime-evidence.zh.md` | OAuth 登录 → 注入 → 401 刷新（真实 MCP 服务） |
 | `single-run-runtime-evidence.zh.md` | TC-RT-001 单 Agent Run（mimo-v2.5 真实模型） |
 | `four-chain-live-evidence.zh.md` | WP-2 四链路 live（C1–C4 + S1 + TC-CONN-002，20/20 PASS） |
-| `p0-runtime-evidence.zh.md` | WP-3 P0-A/B（TC-RT-004/002/010 + 005/006；15+10 PASS） |
+| `p0-runtime-evidence.zh.md` | WP-3 P0-A/B（TC-RT-004/002/010 + TC-API-002/003 + TC-RT-005/006；18+10 PASS） |
 
 ## 四、设计记录
 
