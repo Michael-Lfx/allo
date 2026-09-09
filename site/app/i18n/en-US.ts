@@ -153,6 +153,7 @@ const enUS = {
     sections: {
       quickStart: "Quick start",
       cli: "CLI usage",
+      pluginsMarket: "Plugins & Market",
       typescriptSdk: "TypeScript SDK",
       configuration: "Configuration",
       architecture: "Architecture",

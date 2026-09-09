@@ -165,6 +165,7 @@ const zhCN = {
     sections: {
       quickStart: "快速开始",
       cli: "命令行用法",
+      pluginsMarket: "插件与市场",
       typescriptSdk: "TypeScript SDK",
       configuration: "配置文件",
       architecture: "架构说明",
