@@ -36,7 +36,7 @@
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | `15-store-chain-and-protocol-vnext-plan.zh.md` | **当前执行顺序**：四链路闭环 + 协议 vNext（WP-1~WP-7） | 🔧 执行中（WP-1/2 已完成） |
-| `13-p0-execution-plan.md` | P0-A/B/C/D 执行细则与出口条件 | 🔧 P0-A/B 已关闭（证据 `p0-runtime-evidence.zh.md`）；P0-C/D 待做 |
+| `13-p0-execution-plan.md` | P0-A/B/C/D 执行细则与出口条件 | 🔧 P0-A/B 已关闭；P0-C/D 的 OAuth 运行时证据已完成（`oauth-runtime-evidence.zh.md`，26/26 PASS） |
 | `agent-store-v1-roadmap.md` | 阶段基线与决策记录（§10） | 🧊 冻结 |
 | `agent-store-v1-test-cases.md` | 测试主表（`TC-*` 用例唯一正文） | 🧊 冻结 |
 | `12-sdk-packaging.md` | SDK 封装与发行（P0/P1 已落地，P2 待做） | 🔧 进行中 |
@@ -50,7 +50,8 @@
 | 文档 | 覆盖 |
 |---|---|
 | `importer-runtime-evidence.zh.md` | TC-IMP-001~009（Importer） |
-| `mcp-oauth-runtime-evidence.zh.md` | OAuth 登录 → 注入 → 401 刷新（真实 MCP 服务） |
+| `mcp-oauth-runtime-evidence.zh.md` | OAuth 登录 → 注入 → 401 刷新（真实 MCP 服务，引擎层） |
+| `oauth-runtime-evidence.zh.md` | WP-3 P0-C/D OAuth 协议面证据（TC-OAUTH-001/002/004，SDK 公共面 26/26 PASS） |
 | `single-run-runtime-evidence.zh.md` | TC-RT-001 单 Agent Run（mimo-v2.5 真实模型） |
 | `four-chain-live-evidence.zh.md` | WP-2 四链路 live（C1–C4 + S1 + TC-CONN-002，20/20 PASS） |
 | `p0-runtime-evidence.zh.md` | WP-3 P0-A/B（TC-RT-004/002/010 + TC-API-002/003 + TC-RT-005/006；18+10 PASS） |
