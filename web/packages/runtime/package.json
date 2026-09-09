@@ -1,0 +1,17 @@
+{
+  "name": "@flowy-agent-store/runtime-win32-x64",
+  "version": "0.1.0-beta.1",
+  "description": "Agent Store App Server runtime binary for win32-x64 (vendored agent-store.exe)",
+  "type": "module",
+  "license": "Apache-2.0",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": [
+    "vendor",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
