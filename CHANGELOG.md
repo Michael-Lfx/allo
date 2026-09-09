@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.2.8 - 2026-09-09
+
+- Vimax cover generation, storyboard truncation, and missing scene reference images are fixed.
+- Desktop defers the startup OTA check until after first paint, and reports update-funnel plus CDN quality telemetry.
+- Agent eval adds layered suites, pass@k, and a cloud bad-case pipeline.
+
 ## v1.2.7 - 2026-09-09
 
 - Vimax fills missing shots at the finished-film level before packing, so storyboards do not duplicate rows or split extra clips.
