@@ -45,7 +45,7 @@ use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 /// 型声明的输出上限）；时长 1800s——200 节点规模的构建要跑多轮生成与修
 /// 复循环，共享默认 600s 必然撞墙。共享常量不动（course_outline /
 /// lesson_content 循环按各自默认值声明）。
-const BUDGETS: LoopBudgets = LoopBudgets {
+pub(crate) const BUDGETS: LoopBudgets = LoopBudgets {
     generate_max_rounds: 100,
     round_tokens: 32768,
     timeout_secs: 1800,
@@ -53,7 +53,7 @@ const BUDGETS: LoopBudgets = LoopBudgets {
 
 /// 线上翻译差异表（ADR-0004）：学习图独有项——kind 帧标记、损坏降级
 /// （round_feedback）上 WS、轮次日志（构建标签）、start 阶段帧。
-const WIRE: WireConfig = WireConfig {
+pub(crate) const WIRE: WireConfig = WireConfig {
     kind_tag: Some("learning_graph"),
     round_log_gen_label: Some("构建"),
     translate_round_feedback: true,

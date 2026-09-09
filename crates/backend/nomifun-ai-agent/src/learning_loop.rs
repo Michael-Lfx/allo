@@ -641,3 +641,184 @@ pub(crate) mod test_support {
         (service, dir)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! 行为差异矩阵 + 线上翻译器单测——ADR-0004 的反损失验收：三流之间
+    //! 的每一个已声明差异在此钉死，无声归并会在这里先红。
+
+    use std::sync::{Arc, Mutex};
+
+    use nomifun_realtime::UserEventSink;
+    use nomifun_learning::{LearningEventEmitter, LearningService};
+
+    use super::test_support::{FakeCompleter, test_service_with};
+    use super::LoopChannel;
+    use crate::course_outline_loop::{BUDGETS as CO_BUDGETS, WIRE as CO_WIRE};
+    use crate::learning_graph_loop::{BUDGETS as LG_BUDGETS, WIRE as LG_WIRE};
+    use crate::lesson_content_loop::{BUDGETS as LS_BUDGETS, WIRE as LS_WIRE};
+
+    /// 捕获 learning 事件帧的 sink：翻译器测试直接断言（流名，帧）。
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<(String, serde_json::Value)>>);
+
+    impl RecordingSink {
+        fn frames(&self, stream: &str) -> Vec<serde_json::Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(name, _)| name == stream)
+                .map(|(_, data)| data.clone())
+                .collect()
+        }
+    }
+
+    impl UserEventSink for RecordingSink {
+        fn send_to_user(
+            &self,
+            _user_id: &str,
+            event: nomifun_api_types::WebSocketMessage<serde_json::Value>,
+        ) {
+            self.0.lock().unwrap().push((event.name, event.data));
+        }
+    }
+
+    async fn recording_service() -> (Arc<LearningService>, tempfile::TempDir, Arc<RecordingSink>) {
+        let (service, dir) = test_service_with(Arc::new(FakeCompleter)).await;
+        let sink = Arc::new(RecordingSink::default());
+        service.set_event_sink(LearningEventEmitter::new(
+            Arc::clone(&sink) as Arc<dyn UserEventSink>,
+            Arc::from("0190f5fe-7c00-7a00-8000-000000000001"),
+        ));
+        (service, dir, sink)
+    }
+
+    /// 行为差异矩阵：三流的预算与线上翻译配置逐字钉死。统一某个差异 =
+    /// 修改对应流的声明 + 更新这里的断言（ADR-0004）。
+    #[test]
+    fn flow_difference_matrix_is_pinned() {
+        // 预算：学习图 100 轮 / 32768 token / 1800s；大纲与课时与 loop_core
+        // 的共享默认逐字一致。
+        assert_eq!(
+            (LG_BUDGETS.generate_max_rounds, LG_BUDGETS.round_tokens, LG_BUDGETS.timeout_secs),
+            (100, 32768, 1800)
+        );
+        for (name, budgets) in [("course outline", CO_BUDGETS), ("lesson content", LS_BUDGETS)] {
+            assert_eq!(budgets.generate_max_rounds, crate::loop_core::GENERATE_MAX_ROUNDS, "{name}");
+            assert_eq!(budgets.round_tokens, crate::loop_core::AGENT_MAX_TOKENS, "{name}");
+            assert_eq!(budgets.timeout_secs, crate::loop_core::TOTAL_TIMEOUT_SECS, "{name}");
+        }
+        // 线上差异表：kind 标记、round_feedback 翻译、轮次日志、start 阶段
+        // 帧、事件流选择。
+        assert_eq!(LG_WIRE.kind_tag, Some("learning_graph"));
+        assert!(LG_WIRE.translate_round_feedback);
+        assert_eq!(LG_WIRE.round_log_gen_label, Some("构建"));
+        assert_eq!(LG_WIRE.generate_start_phase, Some("generating"));
+        assert_eq!(LG_WIRE.repair_start_phase, Some("repairing"));
+        assert!(!LG_WIRE.lesson_stream);
+        assert_eq!(CO_WIRE.kind_tag, None);
+        assert!(!CO_WIRE.translate_round_feedback);
+        assert_eq!(CO_WIRE.round_log_gen_label, None);
+        assert_eq!(CO_WIRE.generate_start_phase, None);
+        assert_eq!(CO_WIRE.repair_start_phase, None);
+        assert!(!CO_WIRE.lesson_stream);
+        assert_eq!(LS_WIRE.kind_tag, None);
+        assert!(!LS_WIRE.translate_round_feedback);
+        assert_eq!(LS_WIRE.round_log_gen_label, Some("生成"));
+        assert_eq!(LS_WIRE.generate_start_phase, None);
+        assert_eq!(LS_WIRE.repair_start_phase, None);
+        assert!(LS_WIRE.lesson_stream);
+    }
+
+    #[tokio::test]
+    async fn lg_wire_tags_frames_translates_round_feedback_and_keeps_round_log() {
+        let (service, _dir, sink) = recording_service().await;
+        let channel = LoopChannel::new(LG_WIRE, LG_BUDGETS.generate_max_rounds);
+        channel.emit(
+            &service,
+            "agent_round",
+            &serde_json::json!({
+                "loop": "generate", "round": 3, "text": "计划：覆盖10/12大块",
+                "tool_calls": [{ "name": "lg_patch", "is_error": false }],
+            }),
+        );
+        channel.emit(
+            &service,
+            "round_feedback",
+            &serde_json::json!({
+                "loop": "generate", "round": 4, "feedbacks_used": 1, "error": "malformed",
+            }),
+        );
+        // 无 phase 的 loop 内部事件不上线。
+        channel.emit(
+            &service,
+            "finish_blocked",
+            &serde_json::json!({ "round": 1, "draft_id": "d" }),
+        );
+        let frames = sink.frames("learning.course-generation");
+        assert_eq!(frames.len(), 2, "phase-less events stay off the wire: {frames:?}");
+        assert_eq!(frames[0]["kind"], "learning_graph");
+        assert_eq!(frames[0]["phase"], "round");
+        assert_eq!(frames[0]["max_rounds"], 100);
+        assert_eq!(frames[1]["kind"], "learning_graph");
+        assert!(frames[1]["text"].as_str().unwrap().contains("第 1 次"));
+        let log = channel.round_log_snapshot();
+        assert_eq!(log.len(), 1);
+        assert!(log[0].contains("第3轮(构建)") && log[0].contains("lg_patch✓"), "{log:?}");
+    }
+
+    #[tokio::test]
+    async fn co_wire_passes_frames_verbatim_without_kind_or_round_log() {
+        let (service, _dir, sink) = recording_service().await;
+        let channel = LoopChannel::new(CO_WIRE, CO_BUDGETS.generate_max_rounds);
+        channel.emit(
+            &service,
+            "agent_round",
+            &serde_json::json!({
+                "loop": "repair", "round": 2, "text": "x",
+                "tool_calls": [{ "name": "co_patch", "is_error": false }],
+            }),
+        );
+        channel.emit(
+            &service,
+            "round_feedback",
+            &serde_json::json!({
+                "loop": "repair", "round": 3, "feedbacks_used": 1, "error": "malformed",
+            }),
+        );
+        // 带 phase 的事件原样上线（audit / session_end / publish_ok），不加 kind。
+        channel.emit(
+            &service,
+            "audit",
+            &serde_json::json!({ "phase": "audit", "danger": 1 }),
+        );
+        let frames = sink.frames("learning.course-generation");
+        assert_eq!(frames.len(), 2, "round_feedback stays off the co wire: {frames:?}");
+        assert!(frames[0].get("kind").is_none());
+        assert_eq!(frames[0]["max_rounds"], crate::loop_core::REPAIR_MAX_ROUNDS);
+        assert!(frames[1]["phase"] == "audit" && frames[1].get("kind").is_none());
+        assert!(channel.round_log_snapshot().is_empty(), "co keeps no round log");
+    }
+
+    #[tokio::test]
+    async fn ls_wire_targets_the_lesson_stream() {
+        let (service, _dir, sink) = recording_service().await;
+        let channel = LoopChannel::new(LS_WIRE, LS_BUDGETS.generate_max_rounds);
+        channel.emit(
+            &service,
+            "agent_round",
+            &serde_json::json!({
+                "loop": "generate", "round": 1, "text": "",
+                "tool_calls": [{ "name": "ls_start", "is_error": false }],
+            }),
+        );
+        assert!(sink.frames("learning.course-generation").is_empty());
+        let frames = sink.frames("learning.lesson-generation");
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert!(frames[0].get("kind").is_none());
+        assert_eq!(frames[0]["max_rounds"], crate::loop_core::GENERATE_MAX_ROUNDS);
+        let log = channel.round_log_snapshot();
+        assert!(log[0].contains("第1轮(生成)") && log[0].contains("ls_start✓"), "{log:?}");
+    }
+}
