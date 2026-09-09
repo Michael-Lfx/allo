@@ -109,5 +109,5 @@ Thumbs.db
 # Local absorb scratch (never commit)
 .absorb_tmp/
 
-.codebuddy/# Runtime 包的 vendored 二进制（publish-packages.ts 发布时 stage，182MB 不入库）
+.codebuddy/
 web/packages/runtime/vendor/
