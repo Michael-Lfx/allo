@@ -72,6 +72,8 @@ cli.json
 {base}/marketplace.json
 ```
 
+**清单自身的结构**：`plugin.json` 字段见 `17-plugin-spec.zh.md` §3；市场清单（`marketplace.json` / `connectors.json`）的条目字段（`name`、`source`、`version`、`strict`、`commands`、`agents`、`skills`、`hooks`、`mcpServers`）与合并/冲突规则见 `02-codebuddy-workbuddy-import-spec.md` §8。**本规范定义市场如何被解析与获取，不重复清单字段。**
+
 ---
 
 ## 4. 条目模型
@@ -87,6 +89,8 @@ cli.json
 | `description` / `keywords` / `category` | 展示元数据 |
 
 **硬约束**：条目 `source` 必须是相对路径，保证 `entries/{entry}/import` 在不暴露宿主文件系统的前提下解析。
+
+**跨市场命名空间**：条目 `name` 仅在**市场内**唯一。`store/list` 聚合多个启用市场时，条目标识为 **`{marketplace_id}/{entry_name}`**，因此不同市场的同名条目互不冲突。`market/entries/{entry}/import` 的 `entry` 参数在指定市场内按 `name` 查找，找不到返回 `not_found`。
 
 ---
 
@@ -114,6 +118,17 @@ cli.json
 
 staging 目录由本次获取独占：正常完成时晋升并解除守卫；提前返回或外层超时**必须清理**，避免 `staging-*` 残留堆积。
 
+### 5.4 `content_digest` 算法
+
+⚠️ **当前存在两处实现**（偏差登记见 §11）：
+
+| 场景 | 实现 | 算法 |
+| --- | --- | --- |
+| 导入 / 快照幂等 | `tree_digest`（`nomifun-importer/src/digest.rs`） | 对**按相对路径排序**的每个文件，依次喂入 `relative + "\n"` + 该文件的 SHA-256 十六进制 + `"\n"`，最后整体 SHA-256 |
+| 目录市场刷新（变更检测） | `simple_tree_digest`（`app_server_marketplace.rs`） | 对**按完整路径排序**的每个文件，依次喂入 `相对路径字节` + `文件原始字节`（**无分隔符**），最后整体 SHA-256 |
+
+**规范要求**（择一统一后写死）：摘要必须**路径敏感、内容敏感、顺序稳定**，不得依赖文件系统遍历顺序；跨路径比对必须用同一算法。
+
 ---
 
 ## 6. `_files.txt` 规范
@@ -135,18 +150,27 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 
 | 字段 | 说明 |
 | --- | --- |
-| `marketplace_id` | 稳定 ID；`name` 缺省时由源派生 |
+| `marketplace_id` | 稳定 ID，派生规则见下 |
 | `name` / `description` | 展示名与描述 |
 | `source_kind` / `source_uri` | 源类型与地址 |
-| `version` / `content_digest` | 清单版本与内容摘要 |
-| `auto_update` | 自动更新开关 |
+| `version` / `content_digest` | 清单版本与内容摘要（算法见 §5.4） |
+| `auto_update` | 自动更新开关（默认值偏差见 §11） |
 | `enabled` | 是否参与 `store/list` 聚合 |
 | `entry_count` | 条目投影数量 |
 | `added_at` | 注册时间 |
 
-- **命名空间**：多市场并存时以 `marketplace_id` 隔离；条目 `name` 的市场内唯一性不跨市场。
+**`marketplace_id` 派生规则**（规范定义，实现不得偏离）：
+
+1. 取 `market/add` 的显式 `name`；
+2. `name` 缺失或空白 → 取 `source` 的 `file_name`（目录名 / 仓库名）；
+3. 做 slug 化：**仅保留 `[A-Za-z0-9-_]`**，其余字符替换为 `-`，连续 `-` 合并为一个，首尾 `-` 去除；
+4. 结果为空 → 字面量 `market`。
+
+> 稳定性要求：同一 `source` 反复注册必须得到同一 `marketplace_id`；`name` 变化会改变 ID，属破坏性变更（需重新注册）。
+
+- **命名空间**：多市场并存时以 `marketplace_id` 隔离；条目 `name` 仅在市场内唯一（见 §4）。
 - **级联移除**：`market/remove` 默认 `cascade=true`，同时卸载由该市场安装的快照并清空组件安装状态。
-- ⚠️ **已知偏差（待修正）**：`02` §8 表述为「官方市场默认开启自动更新、第三方默认关闭」；实现 `market/add` **恒写入 `auto_update: false`**，不存在官方/第三方区分。二者必须择一：要么实现区分，要么修正 `02`。
+- ⚠️ **`auto_update` 默认值偏差**见 §11。
 
 ---
 
@@ -187,3 +211,16 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 - 不定义 Agent Store 原生市场格式；
 - 不做市场审核后台、签名与信任链（见 `agent-store-v1-roadmap.md` §10 非目标）；
 - 原生格式与市场签名体系待生态起量后单独立项。
+
+---
+
+## 11. 已知偏差
+
+**登记规则（强制）**：规范与实现不一致时，**先在本节登记，再择一修正**——要么改实现，要么改规范，不允许默默不一致。
+
+| # | 现象 | 证据 | 影响 | 待决 |
+| --- | --- | --- | --- | --- |
+| D1 | **`auto_update` 默认值与文档不符** | `02` §8 称「官方市场默认开启、第三方默认关闭」；`market/add` 恒写入 `auto_update: false`（`app_server_marketplace.rs:527`），不存在官方/第三方区分 | 第三方无法预期自动更新行为；webui 的 auto-update 开关语义不明（W13） | ① 改实现以区分官方/第三方 ② 改 `02` §8 表述以匹配实现 |
+| D2 | **两套 `content_digest` 算法** | `tree_digest`（导入）vs `simple_tree_digest`（目录刷新），见 §5.4 | 同一内容在两条路径下摘要不同，跨路径比对不可行 | ① 统一为一套算法 ② 在规范中明确「用途不同、不可互比」 |
+
+> D1 影响 webui 的 W13（市场管理）排期，需优先拍板（主计划 Q7）。
