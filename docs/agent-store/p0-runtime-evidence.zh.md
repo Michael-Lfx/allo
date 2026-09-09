@@ -1,0 +1,48 @@
+# P0 运行时证据（WP-3）
+
+> 状态：📎 证据（运行时实测快照，非契约）
+> 日期：2026-09-09
+> 脚本：`web/scripts/sdk-live-p0a.ts`（协议面经 SDK `client.*`；provider 注册为宿主 admin）
+> 模型：mimo-v2.5（key 仅脚本内存）
+
+## P0-A（TC-RT-004 / TC-RT-002 / TC-RT-010）
+
+最近一次：**15/15 PASS**（`RESULT PASS`，data `agent-store-p0a-1788932869212`）。
+
+| 用例 | 判据 | 实测 |
+|---|---|---|
+| TC-RT-004 取消 | cancel 前非终态；终态 `cancelled`；版本递进 | `planning@v0` → `cancel-accepted` → `cancelled`，版本 **v0→v1** |
+| TC-RT-002 版本冻结 | 运行中发布同 Agent 新版本，冻结字段不变；历史可追溯；preset_id ≠ runtime agent id | 重装 v9.9.9（9 组件）后 `preset_revision:1` + `content_digest:sha256:59255c1e…` 在 run/get 与 run/result 均不变；`preset_id=01a084b5-…` ≠ `agent_id=wb-software-company-software-architect` |
+| TC-RT-010 规范化 | 无内部 ID、无凭据；错误为稳定 code | run/get、run/result、run/events、store/install-entry、install/status、agents/list 六处扫描零泄漏；未知 run → `not_found` |
+
+### 语义澄清（本轮 live 校准）
+
+- **version 从 0 起算**：`agent_executions` INSERT 显式 `version=0`，每次状态迁移 +1。
+  TC-RT-004 的「版本递进」应断言**相对取消前严格递增**（v0→v1），而非绝对值 >1。
+- `run/cancel` 走 CAS（`expected_version`），并发失配返回 conflict；脚本按「重读→重试」处理。
+
+### 判据与用例原文的差异
+
+`13-p0-execution-plan.md` 对 TC-RT-004 写「终态为 cancelled 且版本递进」；用例原文
+（`agent-store-v1-test-cases.md` §TC-RT-004）为「取消请求不直接伪造终态；最终收到
+`run.cancelled` 或明确无法取消的结果」。两者均满足。
+
+## P0-B（TC-RT-005 重启恢复 / TC-RT-006 事件序）
+
+待做。阻塞点：需要在 run 运行中**硬杀进程**再以同一 data dir 重启，而当前 SDK
+`SpawnedServer` 只暴露 `close()`（优雅停），不暴露 pid/child 句柄。两个方案：
+
+1. P0-B 脚本自持进程（`Bun.spawn` 起 `agent-store`，用 SDK client 连 WS）——不动公共面；
+2. 给 `SpawnedServer` 增补 `pid`（或 `kill()`）访问器——顺手补齐 SDK 进程控制能力。
+
+未选定前 P0-B 不标记 PASS/BLOCKED。
+
+## 复现
+
+```bash
+cd web
+AGENT_STORE_BIN=<repo>/target/debug/agent-store.exe bun scripts/sdk-live-p0a.ts
+# CHAIN_KEEP_DATA=1 保留实例数据目录供取证
+```
+
+退出码即判据：0 = 全部 PASS。
