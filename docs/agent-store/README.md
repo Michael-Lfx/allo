@@ -30,6 +30,8 @@
 | `08-flowy-web-integration.md` | Flowy/Web 集成面 | 🧊 冻结 |
 | `10-public-contracts.md` | 公共契约（状态、事件、错误、幂等、认证） | 🧊 冻结 |
 | `11-webui-production-readiness.md` | WebUI 生产就绪差距清单 | 📋 规划中 |
+| `17-plugin-spec.zh.md` | **插件规范（兼容层）**：接受的格式、归一化、安全边界 | ✅ 规范 v1（2026-09-09） |
+| `18-marketplace-spec.zh.md` | **市场规范（兼容层）**：目录形态、清单发现、获取晋升、发布与客户端契约 | ✅ 规范 v1（2026-09-09） |
 
 ## 二、计划与执行（按权威顺序）
 

@@ -116,7 +116,7 @@
 
 ### D. 插件与市场规范（高优先级，以文档为主）
 
-**D1 · 规范缺口收口（正文）**
+**D1 · 规范缺口收口（正文）** — ✅ **已完成（2026-09-09）**：`17-plugin-spec.zh.md` + `18-marketplace-spec.zh.md`（均为兼容层 v1，原生格式按 Q5 决策留待）
 - 范围：
   - **插件规范**（拟 `17-plugin-spec.zh.md`）：插件包布局；`plugin.json` 字段全集（必填 / 可选 / 类型 / 默认）；组件（agents / skills / connectors / hooks / commands / mcpServers）；版本与兼容性声明（最低 runtime、协议版本）；权限与风险标签；凭据 schema 引用；依赖解析（SemVer 范围）；ID 与溯源；安全边界（导入期不执行脚本）。
   - **市场规范**（拟 `18-marketplace-spec.zh.md`）：市场源类型与地址解析（`directory` / `github` / `git` / `url`）；目录布局；清单发现与优先级（`plugin.json` / `marketplace.json` / `connectors.json`）；`_files.txt` 枚举格式；获取与晋升语义（staging → 全量校验 → 原子晋升 → last-good 不破坏）；revision / ETag 短路；注册表与命名空间；发布流程；客户端解析与安装状态机；错误码。
@@ -142,7 +142,7 @@
 | Q2 | 站点托管与域名 | VPS + 自定义域名 / EdgeOne / GitHub Pages |
 | Q3 | 附件图片输入时机 | 现在做（B1） / 等协议 vNext 一起做 |
 | Q4 | SDK 发版节奏 | A1+A2 先发 `0.1.0-beta.3` / A1–A4 一起发 |
-| Q5 | 插件格式策略 | ① 现在就定义 Agent Store **原生插件格式**（可演进、可校验） ② 先只做 CodeBuddy 兼容层，在规范中明确标注「非原生」 |
+| Q5 | 插件格式策略 | ✅ **已定（2026-09-09）：先只做兼容层**——规范中明确「当前接受 CodeBuddy / WorkBuddy 格式，非 Agent Store 原生格式」，原生格式待生态起量后再定 |
 
 ---
 
