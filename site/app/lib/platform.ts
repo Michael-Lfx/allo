@@ -15,7 +15,7 @@ export interface DetectedPlatform {
 const DOWNLOAD_HOST = "http://111.170.173.22:10014";
 
 /** GitHub repository (source only — binaries ship from the VPS). */
-const GITHUB_REPO = "your-org/flowy-agent-store";
+const GITHUB_REPO = "Michael-Lfx/allo";
 
 /** Asset file name convention produced by the release build. */
 function assetName(version: string, p: DetectedPlatform): string {

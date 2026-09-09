@@ -40,7 +40,7 @@ BASE_PATH=/<repo>/ bun run build
 ## Configure before shipping
 
 1. **Binary repo** — edit `app/lib/platform.ts`: set `GITHUB_REPO` to
-   `your-org/flowy-agent-store`. The download CTA points here for every platform
+   `Michael-Lfx/allo`. The download CTA points here for every platform
    asset (`flowy-agent-store-<tag>-<os>-<arch>.zip`).
 2. **CLI name** — docs use `flowy-agent-store` as the runtime command; adjust if
    the distributable is named differently.

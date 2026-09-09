@@ -57,6 +57,12 @@ pub async fn fetch_remote(
 
     let staging = marketplace_root.join(format!("staging-{}", nomifun_common::generate_id()));
     let live_root = marketplace_root.join("live");
+    // Staging is owned by this fetch regardless of how it ends: a normal
+    // completion promotes it (and the guard disarms), an early return or an
+    // outer `tokio::time::timeout` drop removes it. Without the guard a
+    // timeout strand leaves staging-* dirs accumulating under
+    // `{market_root}/{marketplace_id}/` (observed in the wild).
+    let mut staging_guard = StagingGuard::new(staging.clone());
 
     // Fetch into staging; validate the tree looks like a market after the
     // fetch (git clones the whole repo; http downloads the manifest only).
@@ -132,8 +138,36 @@ pub async fn fetch_remote(
         let _ = std::fs::remove_dir_all(&staging);
         AppError::Internal(error)
     })?;
+    staging_guard.disarm();
 
     Ok(RemoteFetchOutcome::Fresh(FetchedEntrySet { live_root, revision, entries }))
+}
+
+/// RAII cleanup for a `fetch_remote` staging dir: removes it on Drop unless
+/// disarmed (promotion succeeded). Covers early returns, `?` failures, and —
+/// critically — an outer `tokio::time::timeout` cancelling the future, where
+/// the normal error paths never run.
+struct StagingGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl StagingGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 }
 
 /// Probe entries from an HTTP-manifest-only market: each declared entry must
