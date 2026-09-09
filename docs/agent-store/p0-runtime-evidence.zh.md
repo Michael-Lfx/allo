@@ -2,8 +2,18 @@
 
 > 状态：📎 证据（运行时实测快照，非契约）
 > 日期：2026-09-09
-> 脚本：`web/scripts/sdk-live-p0a.ts`（协议面经 SDK `client.*`；provider 注册为宿主 admin）
+> 脚本：`web/scripts/sdk-live-p0a.ts`（P0-A）、`web/scripts/sdk-live-p0b.ts`（P0-B）
 > 模型：mimo-v2.5（key 仅脚本内存）
+
+## 摘要
+
+| 工作包 | 用例 | 结果 |
+|---|---|---|
+| P0-A | TC-RT-004 / TC-RT-002 / TC-RT-010 | **15/15 PASS** |
+| P0-B | TC-RT-005 / TC-RT-006 | **10/10 PASS** |
+
+**P0-A/B 已关闭**（无 engine 持久化改造，未触发降级条件）；按 `13` §4 出口与
+`15` §7 门禁，Phase 0 出口条件满足，Team Spike（Phase 2）可立项。
 
 ## P0-A（TC-RT-004 / TC-RT-002 / TC-RT-010）
 
@@ -29,13 +39,38 @@
 
 ## P0-B（TC-RT-005 重启恢复 / TC-RT-006 事件序）
 
-待做。阻塞点：需要在 run 运行中**硬杀进程**再以同一 data dir 重启，而当前 SDK
-`SpawnedServer` 只暴露 `close()`（优雅停），不暴露 pid/child 句柄。两个方案：
+最近一次：**10/10 PASS**（`RESULT PASS`，data `agent-store-p0b-6X0Zum`）。
 
-1. P0-B 脚本自持进程（`Bun.spawn` 起 `agent-store`，用 SDK client 连 WS）——不动公共面；
-2. 给 `SpawnedServer` 增补 `pid`（或 `kill()`）访问器——顺手补齐 SDK 进程控制能力。
+脚本 `web/scripts/sdk-live-p0b.ts`：自持进程（硬杀 pid 模拟崩溃）→ 同一 data dir
+重启 → 协议面仍走 SDK client。
 
-未选定前 P0-B 不标记 PASS/BLOCKED。
+| 用例 | 判据 | 实测 |
+|---|---|---|
+| TC-RT-005 重启恢复 | 事件与终态保留；不伪装 completed；无法证明安全时 `recovery_required` | 杀前 `running@v4`（seq1–5）→ 重启后可解析且首读 `running`（非 completed）→ 安全收敛 `recovery_required@v5` |
+| TC-RT-006 事件序 | 已持久化事件保留、序列无缺口、重启后续号单调 | 崩溃前 seq1–5 完整保留；重启后新增 seq6；最终 [1..6] 单调无缺口 |
+
+```text
+PASS P0B.pre-kill.running :: {"status":"running","version":4}
+PASS P0B.pre-kill.events-exist :: ["1:run.started","2:run.plan_changed","3:run.status_changed","4:attempt.updated","5:attempt.updated"]
+KILLED pid=24464
+PASS TC-RT-005.run-resolvable-after-restart :: "running"
+PASS TC-RT-005.not-fake-completed :: "running"
+PASS TC-RT-006.events-preserved :: {"pre":[1,2,3,4,5],"post":[1,2,3,4,5]}
+PASS TC-RT-006.sequence-gapless :: [1,2,3,4,5]
+PASS TC-RT-005.settles-safely :: {"status":"recovery_required","version":5}
+PASS TC-RT-006.final-sequence-monotonic :: [1,2,3,4,5,6]
+```
+
+说明：恢复路径 `reconcile_recovered_attempt` 判定无法证明安全 → `review_blocked`
+（`runtime_state.reason=process_restart`）→ run 投影为 `recovery_required`；
+未做任何 engine 持久化改造，未触发 §4 的 2 天降级条件。
+
+### 方案选择（P0-B 前置）
+
+SDK `SpawnedServer` 只暴露 `close()`（优雅停），不暴露 pid/child。采用**方案 1**：
+脚本自持进程（`Bun.spawn` + 持续排空 stdout/stderr 防背压），协议面经
+`AppServerClient` + `WebSocketTransport` 连回环 WS——**不动 SDK 公共面**。
+若后续需要 App 侧进程管理能力，再单独评估给 `SpawnedServer` 增补 `pid`。
 
 ## 复现
 
