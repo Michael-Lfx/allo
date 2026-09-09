@@ -6,7 +6,7 @@ Flowy Agent Store 提供三个配套的 TypeScript 包，让 Node.js / Electron 
 | --- | --- | --- | --- |
 | `@flowy-agent-store/protocol` | 协议线类型（请求/响应/通知/错误） | 任意（零运行时、无 DOM/Node） | 无 |
 | `@flowy-agent-store/client` | `AppServerClient` + 7 个子客户端 + `Transport` 抽象 | 任意（无 HTTP、无 DOM、无 Node） | `@flowy-agent-store/protocol` |
-| `@flowy-agent-store/sdk` | spawn `agent-store` 二进制 → 回环 WS 建连 → 就绪客户端 | Node.js（依赖 `node:child_process` 等） | `@flowy-agent-store/client`、`@flowy-agent-store/protocol` |
+| `@flowy-agent-store/sdk` | spawn `flowy-agent-store` 二进制 → 回环 WS 建连 → 就绪客户端 | Node.js（依赖 `node:child_process` 等） | `@flowy-agent-store/client`、`@flowy-agent-store/protocol` |
 
 三个包按需组合：**只用类型**取 `protocol`；**连已运行的 App Server**（如桌面端已启动）取 `client` + 自建 `WebSocketTransport`；**自己拉起整个运行时**取 `sdk` 的 `launchClient`。
 
@@ -40,7 +40,7 @@ await session.close();
 
 `launchClient` 完成的事：
 
-1. 按 `bin` → `AGENT_STORE_BIN` → `PATH` 定位 `agent-store` 可执行文件；
+1. 按 `bin` → `AGENT_STORE_BIN` → `PATH` 定位 `flowy-agent-store` 可执行文件；
 2. 以 `--host 127.0.0.1 --port 0 --no-open` 并携带自动创建的临时 `--data-dir` 启动子进程；
 3. 扫描 stdout 就绪行（`{"agent_store":"listening",...}`），取得实际端口；
 4. **校验就绪行 `protocol_version` 与 SDK 一致**，不一致则杀进程并报错（含两端版本）；
@@ -324,10 +324,10 @@ interface SpawnOptions {
 
 ### 5.3 二进制定位
 
-顺序：`bin` 参数 → 环境变量 `AGENT_STORE_BIN` → `PATH` 上的 `agent-store` / `agent-store.exe`。找不到**直接报错、绝不下载或猜测**（release 资产下载属 P2）。
+顺序：`bin` 参数 → 环境变量 `AGENT_STORE_BIN` → `PATH` 上的 `flowy-agent-store` / `flowy-agent-store.exe`。找不到**直接报错、绝不下载或猜测**（release 资产下载属 P2）。
 
 ```bash
-AGENT_STORE_BIN=/opt/agent-store/agent-store node your-app.mjs
+AGENT_STORE_BIN=/opt/flowy-agent-store/flowy-agent-store node your-app.mjs
 ```
 
 ### 5.4 运行契约（P0 实测结论）

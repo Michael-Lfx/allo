@@ -6,7 +6,7 @@ Flowy Agent Store ships three companion TypeScript packages that let Node.js / E
 | --- | --- | --- | --- |
 | `@flowy-agent-store/protocol` | Wire types (requests/responses/notifications/errors) | Any — zero runtime, no DOM/Node | — |
 | `@flowy-agent-store/client` | `AppServerClient` + 7 sub-clients + `Transport` abstraction | Any — no HTTP, no DOM, no Node | `@flowy-agent-store/protocol` |
-| `@flowy-agent-store/sdk` | Spawn the `agent-store` binary → loopback WebSocket → ready client | Node.js (`node:child_process`, …) | `@flowy-agent-store/client`, `@flowy-agent-store/protocol` |
+| `@flowy-agent-store/sdk` | Spawn the `flowy-agent-store` binary → loopback WebSocket → ready client | Node.js (`node:child_process`, …) | `@flowy-agent-store/client`, `@flowy-agent-store/protocol` |
 
 Mix and match: **types only** → `protocol`; **connect to an already-running App Server** (e.g. a desktop app) → `client` with your own `WebSocketTransport`; **launch the whole runtime yourself** → `launchClient` from `sdk`.
 
@@ -40,7 +40,7 @@ await session.close();
 
 What `launchClient` does:
 
-1. Locates the `agent-store` binary via `bin` → `AGENT_STORE_BIN` → `PATH`;
+1. Locates the `flowy-agent-store` binary via `bin` → `AGENT_STORE_BIN` → `PATH`;
 2. Spawns it with `--host 127.0.0.1 --port 0 --no-open` and an auto-created temp `--data-dir`;
 3. Scans stdout for the readiness line (`{"agent_store":"listening",...}`) to learn the actual port;
 4. **Validates the readiness `protocol_version` against the SDK** — on mismatch it kills the process and reports both versions;
@@ -324,10 +324,10 @@ interface SpawnOptions {
 
 ### 5.3 Binary resolution
 
-Order: `bin` argument → env `AGENT_STORE_BIN` → `agent-store` / `agent-store.exe` on `PATH`. Not found ⇒ **hard error; never downloads or guesses** (release-asset download is P2).
+Order: `bin` argument → env `AGENT_STORE_BIN` → `flowy-agent-store` / `flowy-agent-store.exe` on `PATH`. Not found ⇒ **hard error; never downloads or guesses** (release-asset download is P2).
 
 ```bash
-AGENT_STORE_BIN=/opt/agent-store/agent-store node your-app.mjs
+AGENT_STORE_BIN=/opt/flowy-agent-store/flowy-agent-store node your-app.mjs
 ```
 
 ### 5.4 Runtime contract (P0, verified)

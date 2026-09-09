@@ -71,6 +71,12 @@ export function githubUrl(): string {
   return `https://github.com/${GITHUB_REPO}`;
 }
 
+/** URL of the PowerShell install script (base-path aware, works under GitHub Pages subpaths). */
+export function installScriptUrl(): string {
+  const base = import.meta.env.BASE_URL ?? "/";
+  return `${base}${base.endsWith("/") ? "" : "/"}install.ps1`;
+}
+
 export const PLATFORM_LABELS: Record<TargetOS, Record<Language, string>> = {
   macos: { "zh-CN": "macOS", "en-US": "macOS" },
   windows: { "zh-CN": "Windows", "en-US": "Windows" },

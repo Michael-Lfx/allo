@@ -11,9 +11,11 @@ import {
   PLATFORM_LABELS,
   type TargetArch,
   type TargetOS,
+  installScriptUrl,
   releaseAssetUrl,
   releasesPageUrl,
 } from "../lib/platform";
+import CopyButton from "./CopyButton";
 
 // Only the currently shipped target is downloadable; others return once
 // their builds are published (see the assets dir on the download host).
@@ -28,9 +30,12 @@ export default function DownloadCTA({
 }) {
   const { t } = useTranslation();
   const [detected, setDetected] = useState<DetectedPlatform | null>(null);
+  const [oneLiner, setOneLiner] = useState("");
 
   useEffect(() => {
     setDetected(detectPlatform());
+    // Absolute URL so `irm | iex` works from any terminal cwd.
+    setOneLiner(`irm ${window.location.origin}${installScriptUrl()} | iex`);
   }, []);
 
   const detectedUrl = detected ? releaseAssetUrl("latest", detected) : releasesPageUrl();
@@ -64,6 +69,22 @@ export default function DownloadCTA({
           </a>
           {detected && <span className="detect-note">{t("landing.download.detectNote")}</span>}
         </div>
+
+        <details className="platforms" data-reveal style={revealDelay(160)}>
+          <summary>{t("landing.download.psTitle")}</summary>
+          <div className="ps-block">
+            <p className="ps-hint">{t("landing.download.psHint")}</p>
+            <div className="ps-cmd">
+              <code>{oneLiner || `irm ${installScriptUrl()} | iex`}</code>
+              <CopyButton text={oneLiner || `irm ${installScriptUrl()} | iex`} label={t("landing.download.copy")} />
+            </div>
+            <p className="ps-note">
+              <a href={installScriptUrl()} target="_blank" rel="noreferrer">
+                {t("landing.download.psView")}
+              </a>
+            </p>
+          </div>
+        </details>
 
         <details className="platforms" data-reveal style={revealDelay(200)}>
           <summary>{t("landing.download.manual")}</summary>
