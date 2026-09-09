@@ -22,24 +22,10 @@ import '@xyflow/react/dist/style.css';
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { GraphEdgeView, GraphNodeView, LessonStatus } from '../types';
+import { RECOMMENDED_ACCENT, lessonStatusAccents } from '../model';
 
 const NODE_WIDTH = 124;
 const NODE_HEIGHT = 54;
-
-/**
- * 学习进度五态色板（Arco 语义 token，随主题切换）：
- * not_started 中性、in_progress 主色、completed 成功绿、
- * skipped 灰（已声明掌握）、recommended 琥珀（下一步推荐）。
- * 注意：主题体系未导出 warning/primary/success 的 `-6` 色阶变量，
- * 必须带字面 fallback——SVG stroke 的 var() 失效时会 fallback 到
- * 初始值 none，连线直接消失（HTML 属性只是变色，不会消失）。
- */
-const STATUS_COLOR: Record<LessonStatus, string> = {
-  not_started: 'var(--color-text-4)',
-  in_progress: 'var(--color-primary-6, #165dff)',
-  completed: 'var(--color-success-6, #00b42a)',
-  skipped: 'var(--color-text-3)',
-};
 
 type GraphFlowNode = Node<
   {
@@ -59,10 +45,10 @@ type GraphFlowNode = Node<
 const GraphNodeInner: React.FC<NodeProps<GraphFlowNode>> = ({ data }) => {
   const { t } = useTranslation();
   const accent = data.recommended
-    ? 'var(--color-warning-6, #ff7d00)'
+    ? RECOMMENDED_ACCENT
     : data.locked
       ? 'var(--color-text-4)'
-      : STATUS_COLOR[data.status];
+      : lessonStatusAccents[data.status];
   const border = data.recommended
     ? 'border-warning-6'
     : data.locked
@@ -151,12 +137,12 @@ function layoutGraph(
     };
   });
   // 汇入推荐节点的边用琥珀描边做视线引导，其余保持极淡的背景级灰。
-  // 琥珀 token 必须带字面 fallback（见 STATUS_COLOR 注释）：var() 失效时
+  // 琥珀 token 必须带字面 fallback（见 model.ts 的 lessonStatusAccents 注释）：var() 失效时
   // SVG stroke 变 none，推荐节点的全部前置线会从图上消失。
   const flowEdges = edges.map<Edge>((edge) => {
     const highlighted = recommendedSet.has(edge.to);
     const stroke = highlighted
-      ? 'var(--color-warning-6, #ff7d00)'
+      ? RECOMMENDED_ACCENT
       : 'var(--color-border-2)';
     return {
       id: `${edge.from}->${edge.to}`,
@@ -253,8 +239,8 @@ const GraphDagView: React.FC<GraphDagViewProps> = ({
             const data = (node as GraphFlowNode).data;
             if (data.locked) return 'var(--color-text-4)';
             return data.recommended
-              ? 'var(--color-warning-6, #ff7d00)'
-              : STATUS_COLOR[data.status];
+              ? RECOMMENDED_ACCENT
+              : lessonStatusAccents[data.status];
           }}
         />
       </ReactFlow>

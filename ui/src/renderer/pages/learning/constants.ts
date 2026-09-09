@@ -1,5 +1,3 @@
-import type { LessonStatus } from './types';
-
 /** 导入课程的示例 JSON，作为导入对话框的默认填充内容 */
 export const EMPTY_PACK = `{
   "title": "Linear Algebra Foundations",
@@ -30,14 +28,6 @@ export const EMPTY_PACK = `{
     }
   ]
 }`;
-
-/** 课时状态 → Arco Tag 颜色 */
-export const statusColors: Record<LessonStatus, string> = {
-  not_started: 'gray',
-  in_progress: 'blue',
-  completed: 'green',
-  skipped: 'gray',
-};
 
 // Sentinel value for the review-queue course filter that selects
 // learner-authored questions belonging to no course at all.

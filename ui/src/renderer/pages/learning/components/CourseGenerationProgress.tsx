@@ -7,56 +7,11 @@ import type {
   ILearningGenerationToolCall,
 } from '@/common/adapter/ipcBridge';
 import type { CourseDetail } from '../types';
+import { deriveStep, summarizeTools } from '../model';
 
 const { Text, Title } = Typography;
 
-/** 步骤条四段：准备 → 构建大纲 → 审计 → 修复（仅审计不过时出现）→ 完成 */
-type GenStep = 0 | 1 | 2 | 3 | 4;
 
-/** 把已收到的事件流折叠成步骤条状态：修复轮数与是否出现过 DANGER 审计 */
-function deriveStep(events: ILearningCourseGenerationEvent[]): {
-  step: GenStep;
-  repairRounds: number;
-  sawDanger: boolean;
-} {
-  let step: GenStep = 0;
-  let repairRounds = 0;
-  let sawDanger = false;
-  for (const event of events) {
-    if (event.phase === 'round' && event.loop === 'repair') {
-      step = Math.max(step, 3) as GenStep;
-      repairRounds += 1;
-    } else if (event.phase === 'audit') {
-      step = Math.max(step, 2) as GenStep;
-      if ((event.danger ?? 0) > 0) sawDanger = true;
-    } else if (event.phase === 'round' && event.loop === 'generate') {
-      step = Math.max(step, 1) as GenStep;
-    } else if (event.phase === 'publishing' || event.phase === 'completed') {
-      step = Math.max(step, 4) as GenStep;
-    }
-  }
-  // 事件流缺失（WS 未连接/丢帧）时退化为构建大纲进行中，只转 spinner
-  if (events.length === 0) step = 1;
-  return { step, repairRounds, sawDanger };
-}
-
-/** 一轮工具调用聚合成 `co_patch ×8 ✓ · co_query ✗` 形态 */
-function summarizeTools(tools: ILearningGenerationToolCall[] | undefined): string {
-  const counts = new Map<string, { ok: number; failed: number }>();
-  for (const call of tools ?? []) {
-    const entry = counts.get(call.name) ?? { ok: 0, failed: 0 };
-    if (call.is_error) entry.failed += 1;
-    else entry.ok += 1;
-    counts.set(call.name, entry);
-  }
-  return [...counts.entries()]
-    .map(([name, { ok, failed }]) => {
-      const times = ok + failed > 1 ? ` ×${ok + failed}` : '';
-      const mark = failed > 0 ? ' ✗' : ' ✓';
-      return `${name}${times}${mark}`;
-    })
-    .join(' · ');
-}
 
 /** 课程生成过程视图：CreateCourseDialog 提交后就地展示。
  * 过程事件经 WS best-effort 推送（不重放不补发），事件流只是增强——

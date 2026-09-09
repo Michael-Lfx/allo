@@ -8,7 +8,6 @@ import { learningApi } from './api';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
 import { CourseGenerationPill } from './components/CourseGenerationPill';
 import { CourseWorkspace } from './components/CourseWorkspace';
-// 知识诊断暂时下线：恢复时改回 import { CourseWorkspace, DiagnosticModal } 并取消下方相关注释
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
 import { ReviewBanner } from './components/ReviewBanner';
 import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_BANNER_EXPANDED_KEY, REVIEW_FILTERS_STORAGE_KEY } from './constants';
@@ -70,7 +69,6 @@ const LearningPage: React.FC = () => {
   );
   const checkin = useCheckinStatus();
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
-  const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
   // 学习页统一的 AI 模型偏好：反思题评分、课程生成、任务重试均使用该选择
   const learningModel = useLearningAutogenModel();
 
@@ -137,10 +135,8 @@ const LearningPage: React.FC = () => {
 
   // 各功能域：课程学习（报名/诊断/进度/作答）、复习会话、创建课程
   const courseLearning = useCourseLearning({
-    id,
     load,
     t,
-    diagnosticLimit,
     setBusyId,
   });
   const reviewSession = useReviewSession({
@@ -239,10 +235,6 @@ const LearningPage: React.FC = () => {
       )),
     [courses, navigate, openTagEditor, reviewSession.startCourseReviewSession]
   );
-  // 知识诊断暂时下线：与当前学习模块（按需课时生成 + 左侧大纲导航）流程脱节，
-  // 恢复时连同下方 DiagnosticModal 注释块一并取消注释
-  // const diagnosticActivityId = courseLearning.diagnosticPlan?.items[courseLearning.diagnosticIndex]?.activity.id;
-
   if (loading && !detail && courses.length === 0) {
     return (
       <div className='flex h-full items-center justify-center'>
@@ -271,35 +263,16 @@ const LearningPage: React.FC = () => {
       );
     }
     return (
-      <>
-        <CourseWorkspace
+      <CourseWorkspace
           detail={detail}
           busyId={busyId}
           attemptResults={courseLearning.attemptResults}
           onBack={() => navigate('/learn')}
-          onDiagnostic={() => void courseLearning.startDiagnostic()}
           onProgress={courseLearning.updateProgress}
           onAttempt={courseLearning.submitAttempt}
           onGenerate={courseLearning.generateLesson}
           onRefresh={() => void load()}
-        />
-        {/* 知识诊断暂时下线：与当前学习模块流程脱节，待重新设计后恢复
-            （恢复时需同步取消 diagnosticActivityId 与 import 中 DiagnosticModal 的注释） */}
-        {/* <DiagnosticModal
-          plan={courseLearning.diagnosticPlan}
-          index={courseLearning.diagnosticIndex}
-          result={courseLearning.diagnosticResult}
-          busy={diagnosticActivityId !== undefined && busyId === diagnosticActivityId}
-          onSubmit={courseLearning.submitDiagnostic}
-          onNext={courseLearning.advanceDiagnostic}
-          onCancel={() => {
-            if (busyId === null) {
-              courseLearning.setDiagnosticPlan(null);
-              courseLearning.setDiagnosticResult(undefined);
-            }
-          }}
-        /> */}
-      </>
+      />
     );
   }
 
