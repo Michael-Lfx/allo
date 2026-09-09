@@ -2,7 +2,7 @@
 
 > 状态：计划（2026-09-09）。**先定方向与验收口径，不含实现**。
 > 方向调整：**SDK 与 WebUI 功能 = 第一优先级；站点（开发者体验）与插件 / 市场规范 = 高优先级；WP-5 协议 vNext 延后。**
-> 上游依据：`15-store-chain-and-protocol-vnext-plan.zh.md`（其 WP-5 顺延，WP-6/WP-7 已完成部分继续有效）、`11-webui-production-readiness.md`、`12-sdk-packaging.md`、`07-typescript-sdk.md`。
+> 上游依据：`15-store-chain-and-protocol-vnext-plan.zh.md`（其 WP-5 顺延，WP-6/WP-7 已完成部分继续有效）、`11-webui-production-readiness.md`、`12-sdk-packaging.md`、`07-typescript-sdk.md`、`17-plugin-spec.zh.md`、`18-marketplace-spec.zh.md`。
 > 口径：排期为范围值、按实测校准，不构成承诺；结论区分「已验证事实 / 推断 / 待定」。
 
 ---
@@ -10,8 +10,9 @@
 ## 1. 为什么调整
 
 - **四类资产闭环已收口**：专家 / 专家团 / 技能 / 连接器「下载 → 安装 → 使用」全链路已验收（四链路 24/24、P0-A/B、OAuth 26/26），继续在协议层大改的收益低于把 SDK 与 UI 打磨到可用。
-- **npm beta 已发布，第三方开始长期驻留使用**：`0.1.0-beta.2` 四包 + `runtime-win32-x64` 已上线，SDK 的进程与传输健壮性直接决定第三方是否踩坑——本轮已确认一个会冻死服务端的缺陷（见 A1）。
-- **站点是开发者的第一触点，且当前存在已确认的事实性错误**（见 C1）：下载按钮对非 Windows 访客 404、兼容性矩阵声称 5 平台而实际只有 1 个平台有产物。
+- **npm beta 已发布，第三方开始长期驻留使用**：`0.1.0-beta.2` 四包 + `runtime-win32-x64` 已上线，SDK 的进程与传输健壮性直接决定第三方是否踩坑——本轮已确认一个会冻死服务端的缺陷（F10 / A1）。
+- **站点是开发者的第一触点，且当前存在已确认的事实性错误**（F1–F5）：下载按钮对非 Windows 访客 404、兼容性矩阵声称 5 平台而实际只有 1 个平台有产物。
+- **WebUI 存在「协议已就绪、界面未接」的成片空白**（F19–F21）：`run/steer`、产物、全局通知均已具备后端能力却零使用；同时 `11` 号就绪清单中多项仍为未做（见 §3 B0 对账）。
 - **协议 vNext 属重构型工作**：在 SDK 公共面与 webui 功能尚未稳定时动工，会把返工风险带进破坏性重命名。故延后，待 SDK/UI 稳定后再启动。
 
 ---
@@ -37,7 +38,13 @@
 | F15 | **插件与市场的规范主体只存在于代码** | `market_source.rs` 头注释（源类型 / staging→校验→原子晋升→last-good / ETag 短路）、`app_server_marketplace.rs`（清单发现、条目解析）、`market_fetch.rs`（git vs HTTP 获取策略） | 无权威正文可依，行为变更无法评审；第三方无法按规范实现市场 |
 | F16 | **`_files.txt` 目录枚举格式只在脚本注释里** | `scripts/serve-agent-store-market.mjs`（逐行相对路径、无头、`--emit-listings` 预生成） | 发布方只能读脚本反推；HTTP 市场条目树镜像行为无契约 |
 | F17 | **无 Agent Store 原生插件格式规范** | `02-codebuddy-workbuddy-import-spec.md` 只定义「导入源」映射；`plugin.json` / `marketplace.json` 语义全部继承 CodeBuddy | 插件作者不知道该按什么写；原生格式的演进无据可依 |
-| F18 | **无机器可校验的 Schema** | 全仓仅 `crates/agent/flowy-web/evaluation/corpus.schema.json`（无关）；`plugin.json` / `marketplace.json` / `_files.txt` 均无 schema | 市场内容只能靠运行时校验，发布方无法自检 |
+| F18 | **无机器可校验的 Schema** | 全仓仅 `crates/agent/flowy-web/evaluation/corpus.json` 的 schema（无关）；`plugin.json` / `marketplace.json` / `_files.txt` 均无 schema | 市场内容只能靠运行时校验，发布方无法自检 |
+| F19 | **`run/steer` 协议与 SDK 已实现，webui 零使用** | 全仓 `web/src` 搜 `steer` 无命中；`RunClient.steer` 已导出（REQ-PAR-05a，含 live 验证） | 用户无法中途纠偏运行，只能等待或取消 |
+| F20 | **产物无任何展示** | `web/src` 搜 `output_files` / `artifact` 无命中；`TurnResult.output_files` 已聚合、`artifact.created` 事件已发 | 跑完看不到产出文件，「使用」环节缺一环 |
+| F21 | **无全局通知层；连接状态仅一个小圆点** | `web/src` 无 toast / notification 组件（仅 i18n 文案）；`Composer` 的 `composer-model-dot ${phase}` 是唯一连接指示，无横幅、无重连动作 | 断线、后台 Run 完成、导入完成均静默；与 F11/A2 叠加时表现为「莫名其妙不能用」 |
+| F22 | **`RunDetail` / `RunPanel` 是调试视图** | raw JSON dump + `seq/type/payload` 表格；文案硬编码英文（未走 i18n） | 界面不像产品；英文与中文界面混排 |
+| F23 | **无统一重试入口** | `isRetryableError` 全仓仅 1 处使用（`CatalogView.tsx:344`）；`11` §2.1 消息重试/编辑/重新生成未做（仅「复制错误」按钮） | 失败即失败，用户无自助恢复路径 |
+| F24 | 审批（Approvals）无 UI，且被 `approvals: false` 阻塞 | `initialize` 硬编码 `approvals: false`；webui 无审批界面 | `approval.required` 事件无法消费 |
 
 ---
 
@@ -74,6 +81,46 @@
 
 ### B. WebUI（第一优先级）
 
+#### B0. 现状对账（2026-09-09 代码核实）
+
+**表 1 · 协议已就绪、UI 未接（零协议改动的「白给」项）**
+
+| 能力 | 后端 / SDK | webui | 归入 |
+| --- | --- | --- | --- |
+| `run/steer` 运行中引导 | 已实现并 live 验证 | 零使用 | B10 |
+| 产物 `output_files` / `artifact.created` | 已聚合、事件已发 | 无展示 | B9 |
+| `client.onNotification` 全局通知 | 已提供 | 未用 | B11 |
+| `setMarketplaceAutoUpdate` | 已提供（`market/auto-update`） | 未接 | B7 |
+| `importMarketplaceEntry` | 已提供（`market/entries/{entry}/import`） | 未接 | B7 |
+| 结构化 `mentions`（agent/skill/connector） | 已存在（`agent/run`，TC-INS-007） | 仅 `+` 菜单点选，无输入触发 | B5 |
+
+**表 2 · `11-webui-production-readiness.md` 清单核实**
+
+| 清单项 | 实际状态 |
+| --- | --- |
+| §1.1 正式认证与令牌管理 | ❌ 未做 |
+| §1.2 Origin / CSP / CSRF 策略 | ❌ 未做 |
+| §1.3 WS 断线重连与多标签协调 | ❌ 未做（F21；连接状态仅小圆点） |
+| §2.1 消息重试 / 编辑 / 重新生成 | ❌ 未做（F23） |
+| §2.2 归档 / 回收站 | ❌ 未做（仅删除） |
+| §2.3 批量操作 | ❌ 未做 |
+| §2.4 历史分页 / 虚拟列表 | 🟡 虚拟列表已用 `@tanstack/react-virtual`；游标分页有 `history-cursor.ts` |
+| §3.1 统一 Request ID / 错误上报 | ❌ 未做 |
+| §3.2 健康检查 | ❌ 未做 |
+| §3.3 配额 / 限流 | ❌ 未做 |
+| §4.1 只读 / 不可访问标识 | ❌ 未做 |
+| §4.2 重命名注册 | 🟡 会话重命名有（`RenameDialog`）；**工作区重命名无** |
+| §4.3 跨平台路径显示 | 🟡 `\\?\` 前缀剥离已做 |
+| §5.1 token / 费用按 turn 汇总 | 🟡 `ContextIndicator` 仅显示 token 百分比，**无费用** |
+| §5.2 接近上限的压缩 / 新会话建议 | ❌ 未做 |
+| §5.3 模型健康 / 能力限制 | ❌ 未做 |
+| §6.1 正式 i18n | 🟡 `RunDetail` / `RunPanel` 硬编码英文（F22） |
+| §6.2 Markdown / XSS 安全渲染 | ✅ 未启用 `rehype-raw`，链接新窗口，基本安全 |
+| §6.3 附件上传 / 预览 | ❌ 未做 |
+| §6.4 无障碍与 E2E 回归 | ❌ 无 E2E |
+
+#### 工作包
+
 **B1 · 附件 / 图片输入（WP-7 剩余，全线缺口）**
 - 范围：消息 content 的图片载体（协议加法，保持向后兼容）、后端 run/turn 处理、composer 拖拽/粘贴附件 UI、发送前与模型能力校验。
 - 验收：拖拽与粘贴图片 → 发送 → 模型实际收到；不支持的模型在发送前给出明确提示而非静默失败。
@@ -101,7 +148,7 @@
 - 依赖：后端结构化 `mentions` 已存在（`agent/run`，TC-INS-007），无需协议改动。
 
 **B6 · Sub-agent / Step / Attempt 可视化**
-- 现状（已核实）：**无结构化视图**。`RunDetail.tsx` 是调试视图——raw JSON + `seq/type/payload` 表格，且文案硬编码英文未走 i18n。
+- 现状（已核实）：**无结构化视图**（F22）。`RunDetail.tsx` 是调试视图——raw JSON + `seq/type/payload` 表格，且文案硬编码英文未走 i18n。
 - 数据基础：`01-domain-model.md` §8 已定义事件与 `resource` 维度（`run / plan_revision / step / attempt / member / approval / artifact / connector`）与事件类型（`step.ready|started|completed|failed`、`attempt.*`、`approval.required`、`artifact.created`、`plan.revised`）。
 - 范围：Run 视图按 **step / attempt 树**渲染（状态、耗时、重试次数、失败原因）；sub-agent（member）与其产出归属可见；`approval.required` 可见（审批动作可后置）；原始事件降级为可展开的调试面板。
 - 验收：一次多 step 的 Run 能看清每个 step 的状态与重试；失败 step 能定位到 attempt 与错误；UI 文案走 i18n（zh-CN / en-US）。
@@ -110,13 +157,37 @@
 - 现状（已核实）：基础可用——4 种源添加（`directory/github/git/url`）、列表、详情、刷新、移除均已接；但 **client 已提供而 UI 未接**：`setMarketplaceAutoUpdate`（`market/auto-update`）与 `importMarketplaceEntry`（`market/entries/{entry}/import`）；且未展示 `version` / `revision` / 上次刷新时间 / `enabled`。
 - 范围：auto-update 开关；市场条目浏览 + 条目级导入（与 `store install-entry` 两条路径的语义区分）；注册表字段展示（version、revision、entry_count、added_at、enabled）；移除的级联确认（`cascade` 会卸载已安装快照，必须二次确认并列出受影响快照）。
 - 验收：auto-update 切换后 `market/list` 回读一致；条目级导入产生带溯源的快照；级联移除前明确列出将卸载的快照。
-- 关联：`18-marketplace-spec.zh.md` §7 的 `auto_update` 默认值偏差需先拍板（实现恒 `false`）。
+- 关联：`18-marketplace-spec.zh.md` §7 的 `auto_update` 默认值偏差需先拍板（实现恒 `false`，见 Q7）。
 
 **B8 · 设置 Dialog 补全**
 - 现状（已核实）：8 个分区，**只有 `general` 实现**；`agent / account / provider / plugin / advanced / lab / archived` 全部是「即将推出」占位。
 - 范围（按优先级）：① provider 管理（增删改、默认模型、健康状态，注意与 `~/.agent-store/config.toml` 唯一来源的关系）；② 账户；③ 插件 / 市场；④ 高级（数据目录、日志、协议版本）；⑤ 实验室 / 归档（可长期占位）。
 - 验收：每个落地的分区都有真实数据源与回写路径（不留假开关）；与宿主管理面边界一致（`config.toml` 为模型 provider 唯一来源）。
-- 依赖：provider 分区需先定「UI 写 DB 还是写 config.toml」——当前两者并存（`models/list` 已合并投影）。
+- 依赖：provider 分区需先定「UI 写 DB 还是写 config.toml」——当前两者并存（`models/list` 已合并投影），见 Q6。
+
+**B9 · 产物面板（Artifacts）**
+- 现状（已核实）：F20——`TurnResult.output_files` 已聚合、`artifact.created` 事件已发，webui 零展示。
+- 范围：会话内产物列表（文件名 / 类型 / 大小 / 生成 step 归属 / 时间）；点击预览或下载；按会话与按 Run 两种视角；与 B6 的 step 树互相跳转。
+- 验收：跑一次产出文件的 Run，产物面板可见并可下载；事件缺失时以 `run/result` 兜底（不回退到空列表）。
+- 依赖：无需协议改动。
+
+**B10 · `run/steer` 运行中引导**
+- 现状（已核实）：F19——协议与 SDK 已实现，webui 零使用。
+- 范围：运行中 composer 切换为「引导输入」形态（不打断当前 turn）；`steer` 提交与回执可见；失败（运行已终态 / 版本冲突）给出明确提示；与 `cancel` 的入口区分清晰。
+- 验收：Run 进行中提交引导文本 → 服务端 `run/steer` 收到且后续事件体现；终态提交被拒并提示。
+- 依赖：无需协议改动。
+
+**B11 · 通知与连接状态层**
+- 现状（已核实）：F21——无 toast / notification 组件；连接状态仅 `composer-model-dot ${phase}` 一个小圆点。
+- 范围：① 全局 Toast（导入/安装/刷新完成、可重试错误、后台 Run 终态）；② 断线横幅 + 手动重连动作（与 A2 配套）；③ 多标签协调（同一会话在多个标签页时的订阅归属）。
+- 验收：断网后出现横幅并可一键重连；重连成功后待处理请求可继续；后台 Run 完成有可点击通知；两个标签页不再互相抢订阅。
+- 依赖：A2（传输层重连能力）。
+
+**B12 · 消息重试 / 编辑 / 重新生成**
+- 现状（已核实）：F23——仅 `MessageItem` 的「复制错误」按钮；`isRetryableError` 全仓仅 1 处使用。
+- 范围：失败消息的重试（复用幂等键语义，避免重复执行）；编辑后重发；重新生成（新 turn，保留原 turn）；统一「可重试」错误呈现。
+- 验收：失败 turn 可一键重试且不产生重复副作用（幂等键一致）；重新生成不覆盖历史 turn；`retryable` 与不可重试错误在 UI 上区分。
+- 关联：`11` §2.1；消息错误事件已带 `result_error_retryable`。
 
 ### C. 站点与开发者体验（高优先级）
 
@@ -141,17 +212,15 @@
 
 **C5 · 部署与可达性（P1，信任问题）**
 - 现状是裸 IP + HTTP 的 `irm ... | iex`，用户与安全软件都会质疑。
-- 待定：站点最终域名与托管方式（VPS + 自定义域名 / EdgeOne / GitHub Pages 三选一）。
+- 待定：站点最终域名与托管方式（VPS + 自定义域名 / EdgeOne / GitHub Pages 三选一），见 Q2。
 - 已知约束：EdgeOne preset 域名带签名 `eo_token` 且按路径签名，不适合做公开源，需自定义域名。
 
 ### D. 插件与市场规范（高优先级，以文档为主）
 
-**D1 · 规范缺口收口（正文）** — ✅ **已完成（2026-09-09）**：`17-plugin-spec.zh.md` + `18-marketplace-spec.zh.md`（均为兼容层 v1，原生格式按 Q5 决策留待）
-- 范围：
-  - **插件规范**（拟 `17-plugin-spec.zh.md`）：插件包布局；`plugin.json` 字段全集（必填 / 可选 / 类型 / 默认）；组件（agents / skills / connectors / hooks / commands / mcpServers）；版本与兼容性声明（最低 runtime、协议版本）；权限与风险标签；凭据 schema 引用；依赖解析（SemVer 范围）；ID 与溯源；安全边界（导入期不执行脚本）。
-  - **市场规范**（拟 `18-marketplace-spec.zh.md`）：市场源类型与地址解析（`directory` / `github` / `git` / `url`）；目录布局；清单发现与优先级（`plugin.json` / `marketplace.json` / `connectors.json`）；`_files.txt` 枚举格式；获取与晋升语义（staging → 全量校验 → 原子晋升 → last-good 不破坏）；revision / ETag 短路；注册表与命名空间；发布流程；客户端解析与安装状态机；错误码。
-  - 明确「Agent Store 原生格式」与「CodeBuddy 兼容层」的边界（见 Q5）。
-- 验收：按规范能**独立复现**一个可被 `market/add` → `market/refresh` → `store/list` → 安装 的市场；现有三个真实市场（experts / skills / connectors）在规范下逐条对照无例外。
+**D1 · 规范缺口收口（正文）** — ✅ **已完成（2026-09-09）**
+- 交付：`17-plugin-spec.zh.md`（插件规范，兼容层）+ `18-marketplace-spec.zh.md`（市场规范，兼容层）。
+- 定位：按 Q5 决策，**只定义兼容层**——明确「当前接受 CodeBuddy / WorkBuddy 格式，非 Agent Store 原生格式」，原生格式待生态起量后再定。
+- 验收（已满足）：规范覆盖源类型与地址解析、清单发现优先级、`_files.txt` 格式、获取与晋升不变式、注册表字段、发布自检清单、客户端契约。
 
 **D2 · 机器可校验 Schema（P2）**
 - 范围：`plugin.schema.json` / `marketplace.schema.json` + `_files.txt` 校验器；接入市场发布脚本与 CI。
@@ -161,6 +230,7 @@
 
 - **WP-5 协议 vNext**（方法/事件/概念映射表与边界拍板）——待 SDK/UI 稳定后启动。
 - A5 中与站点无关的部分、C4 的搜索功能。
+- `11` 号清单中未被本计划纳入的项：§1.1 认证令牌、§1.2 Origin/CSP/CSRF、§3.1–§3.3 可观测性、§4.1 只读标识、§5.2 压缩建议——待基础功能稳定后单独立项。
 
 ---
 
@@ -172,7 +242,9 @@
 | Q2 | 站点托管与域名 | VPS + 自定义域名 / EdgeOne / GitHub Pages |
 | Q3 | 附件图片输入时机 | 现在做（B1） / 等协议 vNext 一起做 |
 | Q4 | SDK 发版节奏 | A1+A2 先发 `0.1.0-beta.3` / A1–A4 一起发 |
-| Q5 | 插件格式策略 | ✅ **已定（2026-09-09）：先只做兼容层**——规范中明确「当前接受 CodeBuddy / WorkBuddy 格式，非 Agent Store 原生格式」，原生格式待生态起量后再定 |
+| Q5 | 插件格式策略 | ✅ **已定（2026-09-09）：先只做兼容层** |
+| Q6 | 设置里 provider 的写入目标 | ① 写 `~/.agent-store/config.toml`（与「唯一来源」一致） ② 写 DB（现状之一，需说明两套关系） |
+| Q7 | `auto_update` 默认值 | ① 改实现以区分官方/第三方（按 `02` §8 表述） ② 改 `02` §8 表述以匹配实现（恒 `false`） |
 
 ---
 
@@ -181,14 +253,14 @@
 | 批次 | 内容 | 出口 |
 | --- | --- | --- |
 | 第 1 批 | A1（进程生命周期 P0）+ C1（站点三处事实硬伤） | 长会话不再卡死；非 Windows 访客不再点到 404；对外文档不再过度承诺 |
-| 第 2 批 | **B5（`@` 提及）+ B7（市场管理）** + C2（文档叙事）+ D1 ✅ | webui 两处「数据已在、只差 UI」落地；开发者能判断装什么、支持什么 |
+| 第 2 批 | **B5（`@` 提及）+ B7（市场管理）+ B9（产物面板）** + C2（文档叙事） | 三处「协议已就绪、只差接线」落地：能提及、能管市场、能看到产出 |
 | 第 3 批 | A2 / A3 / A4（传输、事件、HTTP 绑定） | SDK 断线与事件追平可用；第三方不必自建 HTTP 层 |
-| 第 4 批 | **B8（设置 Dialog）+ B4（Slash 命令）+ B6（Sub-agent 可视化）** | 设置分区有真实数据源与回写；`/` 与 Run 状态树可用 |
-| 第 5 批 | B1（附件 / 图片输入）+ A6（平台矩阵）+ C3（文档深度）+ D2（Schema） | 图片输入端到端；非 Windows 用户可用；市场内容可自检 |
+| 第 4 批 | **B6（Step/Attempt 树）+ B10（steer）+ B11（通知与连接层）+ B12（消息重试/编辑/重新生成）** | Run 过程可读可控；失败可自助恢复；断线不再静默 |
+| 第 5 批 | **B4（Slash）+ B8（设置 Dialog）** + B1（附件 / 图片输入）+ A6（平台矩阵）+ C3（文档深度）+ D2（Schema） | 输入与设置补全；图片输入端到端；非 Windows 用户可用 |
 | 待决策 | C5（域名 / HTTPS，等 Q2） | — |
-| 延后 | A5 其余、C4、WP-5 | — |
+| 延后 | A5 其余、C4、WP-5、`11` 未纳入项 | — |
 
-> D1 为纯文档，可与第 1 批代码工作并行、无文件冲突；建议尽早启动（Q5 一旦拍板即可定稿结构）。
+> 第 2 批全部是「后端/client 已就绪、只差前端接线」，不碰协议，风险最低、见效最快。
 
 ---
 
@@ -197,4 +269,5 @@
 - **不把宿主管理面收编进协议**：进程生命周期、数据目录、provider / MCP 配置、`fs/browse`、资产直链保持为宿主管理面。判断规则：*第三方 SDK 消费者是否应该能调用它？* 不能 → 不进包。
 - **不为了「纯粹」牺牲权限边界**：`fs/browse` 若进入公共协议，等于给远程客户端文件系统枚举能力。
 - **不在 SDK 稳定前动协议重命名**（WP-5 延后）。
+- **不做假开关**：设置分区、市场开关等一律要有真实数据源与回写路径，未实现的继续标「即将推出」而非留占位控件。
 - **不承诺排期**：本计划只给批次与验收口径，实际节奏按实测校准。
