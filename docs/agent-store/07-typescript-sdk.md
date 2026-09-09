@@ -312,6 +312,34 @@ result.usage;           // 仅当运行时在事件流上发布 usage 时存在
 做权威回填（拉取失败时退回本地事件缓冲）；`usage` 字段在服务端投影
 token 用量之前保持缺省，调用方不得假设其存在。
 
+### 6.2 ConversationHandle（REQ-PAR-05d，多轮会话）
+
+`@agent-store/client` 提供 Codex-Thread 式的多轮句柄：
+
+```ts
+const handle = await ConversationHandle.open(client.conversations, {
+  name: "task",
+  model: { provider_id: "mimo-cv", model: "mimo-v2.5" },
+});
+const turn = await handle.send("用一句话说明你负责什么。");
+turn.completed;         // 终态（turn.status completed 或 message.error）
+turn.assistant_text;    // 权威回填（send receipt.result_text），否则 delta 聚合
+turn.turn_id;           // wire/billing turn id
+turn.events;            // 本次 turn 的事件（sequence 序）
+turn.usage;             // context.usage（运行时报告时）
+turn.isError;           // receipt.result_error 或 message.error
+
+await handle.messages(); // 分页 transcript
+await handle.cancel();   // 取消在途 turn
+await handle.close();    // 退订
+```
+
+`send` 在发送前安装事件收集器（不漏流式 delta/usage），`receipt.completed`
+为真或等待到 `turn.status(status="completed")`/`message.error` 后返回聚合 turn；
+缺省幂等键 `crypto.randomUUID()`；`open`（新建+订阅）与 `attach`（订阅既有）两种绑定。
+webui 现有私有 reducer（`web/src/lib/conversation-events.ts`）为 UI 状态层，
+切到同一句柄属后续（见 `15` WP-4 / WP-7）。
+
 ## 7. 错误模型
 
 ```ts

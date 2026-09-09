@@ -3,6 +3,7 @@ export * from "./transport";
 export * from "./client";
 export * from "./agents";
 export * from "./conversations";
+export * from "./conversation-handle";
 export * from "./connectors";
 export * from "./runs";
 export * from "./run-handle";
