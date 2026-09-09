@@ -88,6 +88,36 @@
 - 范围：A3 完成后 webui 事件层瘦身；统一走包内解码器。
 - 验收：行为不变（回归测试通过），本地 reducer 代码量下降。
 
+**B4 · Slash 命令（`/`）**
+- 现状（已核实）：composer **无任何 `/` 触发**；`quick_prompts` 只作为目录详情面板里的按钮渲染（`CatalogView.tsx:1514`）。
+- 范围：`/` 触发命令面板；命令来源（内置动作 + 目录 `quick_prompts` / `defaultInitPrompt`）；键盘导航（↑↓ / Enter / Esc）；与 `+` 目录菜单共存不冲突。
+- 验收：输入 `/` 弹出面板、可筛选、回车插入；无匹配时明确提示；不干扰 IME 与换行。
+- 待定：命令集合是否需要协议支持（当前 `quick_prompts` 只在目录展示层）。
+
+**B5 · `@` 提及补全**
+- 现状（已核实）：**半实现**——仅能从 `+` 菜单点选（`Composer.pickCatalogItem`）写入结构化 `MentionRef` 并回填 `@name`；`onChange` 只 `setDraft(value)`，**输入 `@` 不触发补全**，也无 token 高亮/删除联动。
+- 范围：输入 `@` 触发候选（专家 / 技能 / 连接器，按前缀过滤）；键盘选择；插入结构化 mention；token 在输入框内可识别与删除；发送时与 `composerMentions` 一致（避免「文本里有 @、结构化列表里没有」的漂移）。
+- 验收：`@` 触发 → 选择 → 发送，服务端收到对应 `mentions`；删除 token 同步移除结构化项；与 B4 的 `/` 面板互不抢占。
+- 依赖：后端结构化 `mentions` 已存在（`agent/run`，TC-INS-007），无需协议改动。
+
+**B6 · Sub-agent / Step / Attempt 可视化**
+- 现状（已核实）：**无结构化视图**。`RunDetail.tsx` 是调试视图——raw JSON + `seq/type/payload` 表格，且文案硬编码英文未走 i18n。
+- 数据基础：`01-domain-model.md` §8 已定义事件与 `resource` 维度（`run / plan_revision / step / attempt / member / approval / artifact / connector`）与事件类型（`step.ready|started|completed|failed`、`attempt.*`、`approval.required`、`artifact.created`、`plan.revised`）。
+- 范围：Run 视图按 **step / attempt 树**渲染（状态、耗时、重试次数、失败原因）；sub-agent（member）与其产出归属可见；`approval.required` 可见（审批动作可后置）；原始事件降级为可展开的调试面板。
+- 验收：一次多 step 的 Run 能看清每个 step 的状态与重试；失败 step 能定位到 attempt 与错误；UI 文案走 i18n（zh-CN / en-US）。
+
+**B7 · 市场管理补全**
+- 现状（已核实）：基础可用——4 种源添加（`directory/github/git/url`）、列表、详情、刷新、移除均已接；但 **client 已提供而 UI 未接**：`setMarketplaceAutoUpdate`（`market/auto-update`）与 `importMarketplaceEntry`（`market/entries/{entry}/import`）；且未展示 `version` / `revision` / 上次刷新时间 / `enabled`。
+- 范围：auto-update 开关；市场条目浏览 + 条目级导入（与 `store install-entry` 两条路径的语义区分）；注册表字段展示（version、revision、entry_count、added_at、enabled）；移除的级联确认（`cascade` 会卸载已安装快照，必须二次确认并列出受影响快照）。
+- 验收：auto-update 切换后 `market/list` 回读一致；条目级导入产生带溯源的快照；级联移除前明确列出将卸载的快照。
+- 关联：`18-marketplace-spec.zh.md` §7 的 `auto_update` 默认值偏差需先拍板（实现恒 `false`）。
+
+**B8 · 设置 Dialog 补全**
+- 现状（已核实）：8 个分区，**只有 `general` 实现**；`agent / account / provider / plugin / advanced / lab / archived` 全部是「即将推出」占位。
+- 范围（按优先级）：① provider 管理（增删改、默认模型、健康状态，注意与 `~/.agent-store/config.toml` 唯一来源的关系）；② 账户；③ 插件 / 市场；④ 高级（数据目录、日志、协议版本）；⑤ 实验室 / 归档（可长期占位）。
+- 验收：每个落地的分区都有真实数据源与回写路径（不留假开关）；与宿主管理面边界一致（`config.toml` 为模型 provider 唯一来源）。
+- 依赖：provider 分区需先定「UI 写 DB 还是写 config.toml」——当前两者并存（`models/list` 已合并投影）。
+
 ### C. 站点与开发者体验（高优先级）
 
 **C1 · 事实性硬伤（P0，先修）**
@@ -151,9 +181,11 @@
 | 批次 | 内容 | 出口 |
 | --- | --- | --- |
 | 第 1 批 | A1（进程生命周期 P0）+ C1（站点三处事实硬伤） | 长会话不再卡死；非 Windows 访客不再点到 404；对外文档不再过度承诺 |
-| 第 2 批 | A2 / A3 / A4（传输、事件、HTTP 绑定）+ C2（文档叙事）+ **D1（插件与市场规范正文）** | SDK 断线与事件追平可用；开发者能判断装什么、支持什么；第三方能按规范实现市场 |
-| 第 3 批 | A6（平台矩阵）+ C5（域名 / HTTPS） | 非 Windows 用户可用；公开入口可信 |
-| 第 4 批 | B1（附件 / 图片输入）+ C3（文档深度）+ **D2（Schema 与校验器）** | 图片输入端到端可用；API 参考与示例齐备；市场内容可自检 |
+| 第 2 批 | **B5（`@` 提及）+ B7（市场管理）** + C2（文档叙事）+ D1 ✅ | webui 两处「数据已在、只差 UI」落地；开发者能判断装什么、支持什么 |
+| 第 3 批 | A2 / A3 / A4（传输、事件、HTTP 绑定） | SDK 断线与事件追平可用；第三方不必自建 HTTP 层 |
+| 第 4 批 | **B8（设置 Dialog）+ B4（Slash 命令）+ B6（Sub-agent 可视化）** | 设置分区有真实数据源与回写；`/` 与 Run 状态树可用 |
+| 第 5 批 | B1（附件 / 图片输入）+ A6（平台矩阵）+ C3（文档深度）+ D2（Schema） | 图片输入端到端；非 Windows 用户可用；市场内容可自检 |
+| 待决策 | C5（域名 / HTTPS，等 Q2） | — |
 | 延后 | A5 其余、C4、WP-5 | — |
 
 > D1 为纯文档，可与第 1 批代码工作并行、无文件冲突；建议尽早启动（Q5 一旦拍板即可定稿结构）。
