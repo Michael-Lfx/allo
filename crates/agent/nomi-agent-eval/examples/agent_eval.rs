@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
 use nomi_agent_eval::{
-    cache_dir, load_suite_manifest, run, run_demo, summarize, OfflineDemoHarness, RunConfig,
+    cache_dir, load_suite_manifest, run, run_corpus_gate, run_demo, summarize, OfflineDemoHarness,
+    RunConfig,
 };
 
 #[derive(Debug, Parser)]
@@ -21,6 +22,8 @@ enum Command {
     Run(RunArgs),
     Pull(PullArgs),
     Summarize(SummarizeArgs),
+    /// Load bundled suites and reject magic-token prompts (no LLM).
+    Smoke,
 }
 
 #[derive(Debug, Args)]
@@ -80,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     model: None,
                     provider_id: None,
                     harness_profile: Some("offline-demo".into()),
+                    n_trials: 1,
                 },
                 Arc::new(OfflineDemoHarness),
             )
@@ -106,6 +110,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Summarize(args) => {
             let summary = summarize(&args.input, args.output.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Command::Smoke => {
+            run_corpus_gate()?;
+            println!("ok");
         }
     }
     Ok(())

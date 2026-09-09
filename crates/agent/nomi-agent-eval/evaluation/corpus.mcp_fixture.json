@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026-09-09-mcp-fixture-v1",
+  "suite": "mcp_fixture",
+  "cases": [
+    {
+      "id": "crm-lookup",
+      "category": "mcp",
+      "task_profile": "office",
+      "isolation": "mcp",
+      "timeout_secs": 180,
+      "prompt": "Use the CRM tools. Look up order ORD-1 and write its status (one word) into order.txt.",
+      "enabled": true,
+      "budgets": { "max_turns": 10, "max_tokens": 65536 },
+      "scorers": [
+        { "type": "file_contains", "path": "order.txt", "marker": "open" }
+      ],
+      "notes": "Injected stdio MCP CRM. No third-party network."
+    },
+    {
+      "id": "crm-refund",
+      "category": "mcp",
+      "task_profile": "office",
+      "isolation": "mcp",
+      "timeout_secs": 180,
+      "prompt": "Use the CRM tools. Refund order ORD-1. After the tool succeeds, write the new status into order.txt.",
+      "enabled": true,
+      "budgets": { "max_turns": 10, "max_tokens": 65536 },
+      "scorers": [
+        { "type": "file_contains", "path": "order.txt", "marker": "refunded" },
+        { "type": "file_contains", "path": "crm_state.json", "marker": "refunded" }
+      ]
+    }
+  ]
+}

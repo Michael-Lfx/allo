@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "corpus_version": "2026-09-09-coding-local-v1",
-  "suite": "agent_workflows",
+  "suite": "coding_local",
   "cases": [
     {
       "id": "fix-failing-tests",
@@ -20,7 +20,7 @@
         { "type": "python_module", "args": ["-m", "pytest", "-q"] },
         { "type": "file_contains", "path": "test_calculator.py", "marker": "assert add(2, 3) == 5" }
       ],
-      "notes": "Legacy alias of coding_local. Prefer suite id coding_local."
+      "notes": "Read → edit → verify with pytest. Local coding-agent loop without Docker."
     },
     {
       "id": "csv-to-json-pipeline",
@@ -40,6 +40,13 @@
           "path": "inventory.json",
           "min_len": 3,
           "required_keys": ["sku", "name", "qty"]
+        },
+        {
+          "type": "python_module",
+          "args": [
+            "-c",
+            "import json; data=json.load(open('inventory.json')); assert isinstance(data, list) and len(data)==3; assert data[0]['sku']=='A-1' and data[0]['qty']==3"
+          ]
         }
       ]
     },

@@ -15,6 +15,7 @@ use crate::activation::DeviceActivation;
 use crate::flowy::FlowyApiClient;
 use crate::session::ServerSession;
 use nomifun_api_types::{
+    AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
     CloudImConversation, CloudImLogUploadResponse, CloudImMessage, CloudImMessageList,
     CloudImSendMessageRequest, CloudBillingAirwallexSession, CloudBillingCouponList,
     CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
@@ -399,6 +400,38 @@ impl CloudService {
         }
         client
             .upload_video_growth_events(&session, &request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn submit_agent_badcase(
+        &self,
+        request: AgentQualityBadcaseRequest,
+    ) -> Result<AgentQualityAck, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .submit_agent_badcase(&session, &request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn submit_agent_eval_run(
+        &self,
+        request: AgentQualityRunRequest,
+    ) -> Result<AgentQualityAck, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .submit_agent_eval_run(&session, &request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn list_promoted_agent_badcases(
+        &self,
+    ) -> Result<Vec<AgentQualityPromotedItem>, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .list_promoted_agent_badcases(&session)
             .await
             .map_err(map_im_client_error)
     }

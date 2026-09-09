@@ -72,27 +72,31 @@ HTTP 路由只输出 `nomifun-api-types` 中的 Session Observation DTO；Agent 
 
 ### 隔离（不得影响真实用户 Agent）
 
-- 工作区：开跑时创建业务命名父目录 `{data_dir}/diagnostics/agent-evals/workspaces/评测-{套件业务名}-{时间戳}-{run短ID}/`，case 在其子目录 `{case_id}/`
+- 工作区：开跑时创建业务命名父目录 `{data_dir}/diagnostics/agent-evals/workspaces/评测-{套件业务名}-{时间戳}-{run短ID}/`，case 在其子目录 `{case_id}/`（`n_trials>1` 时为 `{case_id}__t{n}`）
 - `session.enabled = false`（不写 nomi session 文件）；观测通过显式 `ObservationSession` 写入
 - **不**注册 `AgentRuntimeRegistry`
-- 会话壳：`{case_id} · {category}`，`extra.origin=eval` / `extra.eval=true`，幂等键 `eval:{run_id}:{case_id}`；`extra.workspace` 绑定**父 run 工作区**（使 SessionList 出现独立业务工作区，而非「默认工作空间」）；轨迹投影为 thinking / tool_call / text，并写入 `last_token_usage`；`execute_turn` 包在 `with_flowy_billing_turn_id` 下以便积分芯片
+- 会话壳：`{case_id} · {category}`，`extra.origin=eval` / `extra.eval=true`，幂等键 `eval:{run_id}:{case_id}`（trial>1 为 `eval:{run}:{case}:t{trial}`）；`extra.workspace` 绑定**父 run 工作区**；轨迹投影为 thinking / tool_call / text，并写入 `last_token_usage`；`execute_turn` 包在 `with_flowy_billing_turn_id` 下以便积分芯片
 - Agent 执行 cwd / `write_root` 仍为 case 子目录；`convert.rs` 对 `eval` 会话按 companion 同类规则不标 `is_temporary_workspace`
 - `auto_approve = true`，`write_root` = eval workspace
-- 默认关闭 MCP、browser、computer-use、web search、memory distill、MoA、embedded AgentExecution
+- 隔离 overlay 按套件：`harness_smoke` / `office_core` / `coding_local` 关闭 MCP、browser、computer-use、web search；`browser_smoke` 只开 browser（本地 HTML fixture）；`mcp_fixture` 注入 stdio 假 CRM。仍关闭 memory distill / MoA / embedded AgentExecution
 - 证据 JSONL 不含 workspace 绝对路径；prompt 经 `nomi-redact` 脱敏
-- 完整 trajectory / artifact 不进 JSONL，落在 `{data_dir}/diagnostics/agent-evals/runs/{run_id}/traces/{case_id}.json`
+- 完整 trajectory / artifact 不进 JSONL，落在 `{data_dir}/diagnostics/agent-evals/runs/{run_id}/traces/{case_id}.json`（trial>1 带 `__t{n}`）
 
 ### 套件
 
-评测对象是 **harness / runtime**，不是刷题排行榜。已移除 HumanEval / MBPP / 简单 marker Q&A 作为 live KPI。
+评测对象是 **harness / runtime**，不是刷题排行榜。已移除 HumanEval / MBPP / 简单 marker Q&A 作为 live KPI。旧 id `office_tasks` / `harness_control` / `agent_workflows` 仍可 load（alias）。
 
-| Suite | 来源 |
-| --- | --- |
-| `office_tasks` | 捆绑办公语料（备忘录、纪要、CSV 预算、客户邮件、原地改稿；Office profile，**不是** CodingHarness） |
-| `agent_workflows` | 捆绑多步 agent 语料（多源简报、修测、CSV→JSON、重构+文档、约束编辑） |
-| `aider_polyglot` | [Aider polyglot](https://github.com/Aider-AI/polyglot-benchmark) Python（主 coding-agent 套件：读说明、改 stub、跑测试。去掉 `.meta/example.py`。非官方 Aider 分数） |
-| `classeval` | [ClassEval](https://github.com/FudanSELab/ClassEval)（类级 skeleton + 隐藏 unittest） |
-| `harness_control` | 捆绑 Write/Edit 冒烟 |
+| Suite | 来源 | 层级 |
+| --- | --- | --- |
+| `harness_smoke` | 捆绑 Write/Edit 冒烟（应接近 100%） | 回归 |
+| `office_core` | 捆绑办公语料（结构 oracle；Office profile，**不是** CodingHarness） | 能力 |
+| `coding_local` | 捆绑本地编码（修测 / CSV→JSON / 重构） | 能力 |
+| `browser_smoke` | 本地 HTML fixture + browser 工具 | 能力 |
+| `mcp_fixture` | stdio 假 CRM MCP | 能力 |
+| `private_badcases` | 云端 promoted 同步到本机 private corpus | 私有 |
+| `aider_polyglot` | [Aider polyglot](https://github.com/Aider-AI/polyglot-benchmark) Python | Advanced |
+| `classeval` | [ClassEval](https://github.com/FudanSELab/ClassEval) | Advanced |
+| `harbor_terminal_bench` | Harbor/Docker 占位，`requires_sandbox`，本机不可跑 | 沙箱占位 |
 
 SWE-bench / Terminal-Bench / GAIA / τ-bench / OSWorld 需要 Docker 或评测隔离默认关闭的工具面，**不得**在无沙箱时宣称官方分数。
 
@@ -102,14 +106,20 @@ SWE-bench / Terminal-Bench / GAIA / τ-bench / OSWorld 需要 Docker 或评测�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/debug/agent-evals/suites` | 套件目录与缓存状态 |
+| GET | `/api/debug/agent-evals/suites` | 套件目录（含 `tier` / `default_trials` / `requires_sandbox`） |
 | POST | `/api/debug/agent-evals/datasets/{suite}/pull?limit=` | 下载并缓存 |
-| POST | `/api/debug/agent-evals/runs` | 启动 live 评测（每条 case 绑定 session） |
+| POST | `/api/debug/agent-evals/runs` | 启动 live 评测（`n_trials` 可选） |
 | GET | `/api/debug/agent-evals/runs` | 最近一轮（含进行中） |
-| GET | `/api/debug/agent-evals/runs/{id}` | 单轮快照（进行中含 `current_trace` / `current_conversation_id`） |
-| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/trace` | 该用例完整 trajectory + 工作区产物（相对路径、脱敏） |
-| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/observation` | 与真实会话相同的 Session Observation 投影 |
+| GET | `/api/debug/agent-evals/history` | 本地历史摘要（最多保留 50） |
+| GET | `/api/debug/agent-evals/runs/{a}/diff/{b}` | 两次 run 按 case 对照 |
+| GET | `/api/debug/agent-evals/runs/{id}` | 单轮快照（含 `pass_at_1` / `pass_hat_k` / advisory scorers） |
+| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/trace?trial=` | 该用例完整 trajectory + 工作区产物 |
+| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/observation` | Session Observation 投影 |
 | POST | `/api/debug/agent-evals/runs/{id}/cancel` | 在 **case 边界** 取消 |
+| POST | `/api/debug/agent-evals/report-case` | 手动上报失败回合（excerpt only；需云端登录） |
+| POST | `/api/debug/agent-evals/private/sync` | 拉取 promoted badcase → 本机 private corpus |
+
+云端登记走 FlowyClaw `agent_quality`（不并入 VG 增长事件）：run 摘要与 badcase excerpt。未登录时自动上报跳过；手动上报返回明确错误。默认不上报用户原文。
 
 取消当前正在跑的 case 会等到该 case 结束或超时。进行中再开一轮返回 409。
 
@@ -117,6 +127,9 @@ SWE-bench / Terminal-Bench / GAIA / τ-bench / OSWorld 需要 Docker 或评测�
 
 ```bash
 cargo test -p nomi-agent-eval --all-targets
+
+cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
+  smoke
 
 cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
   demo --output /tmp/agent-eval-demo.jsonl

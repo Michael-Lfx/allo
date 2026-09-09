@@ -5,12 +5,20 @@
     "navTooltip": "Agent eval lab (developer mode)"
   },
   "subtitle": "Score the real harness/runtime. Each case binds one eval session and reuses Session Observation.",
-  "isolationNote": "Each run first creates a business-named parent workspace (e.g. Eval-OfficeTasks-date-shortId). Cases run production AgentEngine in child folders and write the same Observation JSONL as real sessions (session_kind=eval). Conversation shells project thinking / tool calls / replies plus token usage so the chat page shows a real process rail and credits. Use Office tasks for office KPIs, Agent workflows for multi-step agent KPIs, and Aider Polyglot / ClassEval for coding-agent KPIs. MCP, browser, computer-use, and web search stay off. One run at a time.",
+  "isolationNote": "Live eval runs production AgentEngine. Isolation follows the suite overlay: smoke / office / coding keep MCP and browser off; browser_smoke enables browser with a local HTML fixture; mcp_fixture injects a stdio fake CRM. Use office_core (3 trials by default) for office KPIs and coding_local for coding KPIs. Aider / ClassEval live under Advanced. Harbor needs a sandbox runner and cannot run locally. One run at a time.",
   "developerModeRequired": "Turn on Developer Mode in Settings → System to use evals.",
   "workspace": "Workspace",
   "model": "Model",
   "suite": "Suite",
   "limit": "Case limit",
+  "trials": "Trials",
+  "history": "Run history",
+  "diff": "Diff two runs",
+  "diffDelta": "pass@1 delta {{delta}}, {{flips}} flipped cases",
+  "syncPrivate": "Sync private corpus",
+  "sandboxDisabled": "This suite needs a sandbox runner and cannot be started locally.",
+  "reportTurn": "Report this turn",
+  "reportConfirm": "Upload a failure excerpt to the cloud (no full JSONL or raw prompt). Continue?",
   "pull": "Download dataset",
   "run": "Run",
   "cancel": "Cancel",
@@ -41,6 +49,8 @@
   "metric": {
     "passed": "Passed / scored",
     "successRate": "Success rate",
+    "passAt1": "pass@1",
+    "passHatK": "pass^k",
     "avgTurns": "Avg turns",
     "avgElapsed": "Avg latency",
     "avgTokens": "Avg tokens in / out",
@@ -52,12 +62,15 @@
     "passed": "Passed",
     "successRate": "Rate",
     "case": "Case",
+    "trial": "Trial",
+    "run": "Run",
     "result": "Result",
     "turns": "Turns",
     "tools": "Tools",
     "tokens": "Tokens",
     "elapsed": "Elapsed",
     "scorer": "Scorer",
+    "advisory": "Advisory",
     "detail": "Detail",
     "events": "Trace",
     "artifacts": "Artifacts",
@@ -80,5 +93,11 @@
       "error": "error",
       "info": "info"
     }
+  },
+  "tier": {
+    "smoke": "Smoke",
+    "capability": "Capability",
+    "advanced": "Advanced",
+    "sandbox": "Sandbox"
   }
 }

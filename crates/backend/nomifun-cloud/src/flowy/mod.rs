@@ -1,6 +1,7 @@
 //! Flowy `/claw` REST API client.
 
 mod asr;
+mod agent_quality;
 mod billing;
 mod growth;
 mod im;

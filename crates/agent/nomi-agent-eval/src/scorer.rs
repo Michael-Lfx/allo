@@ -162,6 +162,245 @@ pub fn score_one(spec: &ScorerSpec, transcript: &TurnTranscript) -> ScorerResult
                 },
             }
         }
+        ScorerSpec::FileNotContains { path, marker } => match read_workspace_file(transcript, path) {
+            Ok(text) => {
+                let hits = count_contains(&text, marker);
+                ScorerResult {
+                    scorer_type: "file_not_contains".into(),
+                    passed: hits == 0,
+                    detail: Some(format!("path={path} hits={hits}")),
+                }
+            }
+            Err(detail) => ScorerResult {
+                scorer_type: "file_not_contains".into(),
+                passed: false,
+                detail: Some(detail),
+            },
+        },
+        ScorerSpec::FileRegex {
+            pattern,
+            path,
+            minimum_hits,
+        } => match read_workspace_file(transcript, path) {
+            Ok(text) => match Regex::new(pattern) {
+                Ok(re) => {
+                    let hits = re.find_iter(&text).count();
+                    ScorerResult {
+                        scorer_type: "file_regex".into(),
+                        passed: hits >= *minimum_hits,
+                        detail: Some(format!("path={path} hits={hits} minimum={minimum_hits}")),
+                    }
+                }
+                Err(e) => ScorerResult {
+                    scorer_type: "file_regex".into(),
+                    passed: false,
+                    detail: Some(format!("invalid pattern: {e}")),
+                },
+            },
+            Err(detail) => ScorerResult {
+                scorer_type: "file_regex".into(),
+                passed: false,
+                detail: Some(detail),
+            },
+        },
+        ScorerSpec::CsvValid {
+            path,
+            must_contain,
+            total_equals_sum,
+        } => match read_workspace_file(transcript, path) {
+            Ok(text) => score_csv_valid(path, &text, must_contain, *total_equals_sum),
+            Err(detail) => ScorerResult {
+                scorer_type: "csv_valid".into(),
+                passed: false,
+                detail: Some(detail),
+            },
+        },
+        ScorerSpec::JsonArray {
+            path,
+            min_len,
+            required_keys,
+        } => match read_workspace_file(transcript, path) {
+            Ok(text) => score_json_array(path, &text, *min_len, required_keys),
+            Err(detail) => ScorerResult {
+                scorer_type: "json_array".into(),
+                passed: false,
+                detail: Some(detail),
+            },
+        },
+        ScorerSpec::KeywordCoverage {
+            keywords,
+            path,
+            minimum,
+        } => {
+            let haystack = if path.trim().is_empty() {
+                Ok(transcript.assistant_text.clone())
+            } else {
+                read_workspace_file(transcript, path)
+            };
+            match haystack {
+                Ok(text) => {
+                    let hits = keywords.iter().filter(|k| !k.is_empty() && text.contains(k.as_str())).count();
+                    ScorerResult {
+                        scorer_type: "keyword_coverage".into(),
+                        passed: hits >= *minimum,
+                        detail: Some(format!("hits={hits} minimum={minimum}")),
+                    }
+                }
+                Err(detail) => ScorerResult {
+                    scorer_type: "keyword_coverage".into(),
+                    passed: false,
+                    detail: Some(detail),
+                },
+            }
+        }
+    }
+}
+
+fn score_csv_valid(
+    path: &str,
+    text: &str,
+    must_contain: &[String],
+    total_equals_sum: bool,
+) -> ScorerResult {
+    let missing: Vec<_> = must_contain
+        .iter()
+        .filter(|needle| !text.contains(needle.as_str()))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return ScorerResult {
+            scorer_type: "csv_valid".into(),
+            passed: false,
+            detail: Some(format!("path={path} missing={}", missing.join("|"))),
+        };
+    }
+    if !total_equals_sum {
+        return ScorerResult {
+            scorer_type: "csv_valid".into(),
+            passed: true,
+            detail: Some(format!("path={path}")),
+        };
+    }
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        rows.push(
+            trimmed
+                .split(',')
+                .map(|cell| cell.trim().to_string())
+                .collect::<Vec<_>>(),
+        );
+    }
+    if rows.len() < 3 {
+        return ScorerResult {
+            scorer_type: "csv_valid".into(),
+            passed: false,
+            detail: Some(format!("path={path} too_few_rows={}", rows.len())),
+        };
+    }
+    let header = &rows[0];
+    let amount_idx = header.iter().position(|h| h.eq_ignore_ascii_case("amount"));
+    let category_idx = header
+        .iter()
+        .position(|h| h.eq_ignore_ascii_case("category"));
+    let (Some(amount_idx), Some(category_idx)) = (amount_idx, category_idx) else {
+        return ScorerResult {
+            scorer_type: "csv_valid".into(),
+            passed: false,
+            detail: Some(format!("path={path} missing Category/Amount header")),
+        };
+    };
+    let mut total: Option<i64> = None;
+    let mut sum = 0i64;
+    for row in rows.iter().skip(1) {
+        if row.len() <= amount_idx.max(category_idx) {
+            return ScorerResult {
+                scorer_type: "csv_valid".into(),
+                passed: false,
+                detail: Some(format!("path={path} ragged_row")),
+            };
+        }
+        let amount: i64 = match row[amount_idx].parse() {
+            Ok(n) => n,
+            Err(_) => {
+                return ScorerResult {
+                    scorer_type: "csv_valid".into(),
+                    passed: false,
+                    detail: Some(format!("path={path} non_integer_amount")),
+                };
+            }
+        };
+        if row[category_idx].eq_ignore_ascii_case("total") {
+            total = Some(amount);
+        } else {
+            sum += amount;
+        }
+    }
+    let passed = total == Some(sum);
+    ScorerResult {
+        scorer_type: "csv_valid".into(),
+        passed,
+        detail: Some(format!("path={path} total={total:?} sum={sum}")),
+    }
+}
+
+fn score_json_array(
+    path: &str,
+    text: &str,
+    min_len: Option<usize>,
+    required_keys: &[String],
+) -> ScorerResult {
+    let value: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(e) => {
+            return ScorerResult {
+                scorer_type: "json_array".into(),
+                passed: false,
+                detail: Some(format!("path={path} json: {e}")),
+            };
+        }
+    };
+    let Some(items) = value.as_array() else {
+        return ScorerResult {
+            scorer_type: "json_array".into(),
+            passed: false,
+            detail: Some(format!("path={path} not_array")),
+        };
+    };
+    if let Some(min) = min_len {
+        if items.len() < min {
+            return ScorerResult {
+                scorer_type: "json_array".into(),
+                passed: false,
+                detail: Some(format!("path={path} len={} min={min}", items.len())),
+            };
+        }
+    }
+    for (i, item) in items.iter().enumerate() {
+        let Some(obj) = item.as_object() else {
+            return ScorerResult {
+                scorer_type: "json_array".into(),
+                passed: false,
+                detail: Some(format!("path={path} item_{i}_not_object")),
+            };
+        };
+        for key in required_keys {
+            if !obj.contains_key(key) {
+                return ScorerResult {
+                    scorer_type: "json_array".into(),
+                    passed: false,
+                    detail: Some(format!("path={path} item_{i}_missing_{key}")),
+                };
+            }
+        }
+    }
+    ScorerResult {
+        scorer_type: "json_array".into(),
+        passed: true,
+        detail: Some(format!("path={path} len={}", items.len())),
     }
 }
 
@@ -303,7 +542,7 @@ fn run_python_hidden_check(
     ))
 }
 
-fn find_python() -> Option<String> {
+pub fn find_python() -> Option<String> {
     for bin in ["python3", "python"] {
         if Command::new(bin)
             .args(["-c", "import sys"])
@@ -469,5 +708,73 @@ mod tests {
             &t,
         );
         assert!(result.passed, "{result:?}");
+    }
+
+    #[test]
+    fn csv_valid_checks_total_row() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("budget.csv"),
+            "Category,Amount\nTravel,10\nMeals,5\nSoftware,7\nTotal,22\n",
+        )
+        .unwrap();
+        let t = TurnTranscript {
+            workspace: Some(dir.path().to_path_buf()),
+            ..TurnTranscript::default()
+        };
+        let spec = ScorerSpec::CsvValid {
+            path: "budget.csv".into(),
+            must_contain: vec![
+                "Category,Amount".into(),
+                "Travel".into(),
+                "Meals".into(),
+                "Software".into(),
+                "Total".into(),
+            ],
+            total_equals_sum: true,
+        };
+        assert!(score_one(&spec, &t).passed);
+        fs::write(
+            dir.path().join("budget.csv"),
+            "Category,Amount\nTravel,10\nMeals,5\nSoftware,7\nTotal,99\n",
+        )
+        .unwrap();
+        assert!(!score_one(&spec, &t).passed);
+    }
+
+    #[test]
+    fn json_array_and_file_not_contains() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("inventory.json"),
+            r#"[{"sku":"A-1","name":"Widget","qty":3}]"#,
+        )
+        .unwrap();
+        fs::write(dir.path().join("draft.md"), "formal briefing 4.2M\n").unwrap();
+        let t = TurnTranscript {
+            workspace: Some(dir.path().to_path_buf()),
+            ..TurnTranscript::default()
+        };
+        assert!(
+            score_one(
+                &ScorerSpec::JsonArray {
+                    path: "inventory.json".into(),
+                    min_len: Some(1),
+                    required_keys: vec!["sku".into(), "qty".into()],
+                },
+                &t
+            )
+            .passed
+        );
+        assert!(
+            score_one(
+                &ScorerSpec::FileNotContains {
+                    path: "draft.md".into(),
+                    marker: "lol".into(),
+                },
+                &t
+            )
+            .passed
+        );
     }
 }

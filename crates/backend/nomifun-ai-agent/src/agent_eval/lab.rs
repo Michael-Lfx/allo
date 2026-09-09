@@ -1,25 +1,31 @@
 //! In-process eval lab: one live run at a time, isolated from user sessions.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nomi_agent_eval::{
-    cache_dir, list_suites, load_suite_manifest, run_loaded_manifest, summarize, EvalCaseTrace,
-    EvalResult, RunConfig, RunProgress, RunProgressPhase, SuiteDescriptor,
+    cache_dir, default_trials_for_suite, list_suites, load_suite_manifest, private_corpus_dir,
+    run_loaded_manifest, summarize, Case, EvalCaseTrace, EvalResult, Manifest, RunConfig,
+    RunProgress, RunProgressPhase, ScorerResult, ScorerSpec, SuiteDescriptor, Summary,
+    SCHEMA_VERSION,
 };
 use nomifun_api_types::{
-    EvalArtifactView, EvalCaseTraceView, EvalCaseView, EvalCategoryView, EvalRunView,
-    EvalScorerView, EvalSuiteDescriptor, EvalSummaryView, EvalTrajectoryEventView,
-    PullEvalDatasetResponse, StartEvalRunRequest,
+    EvalArtifactView, EvalCaseFlip, EvalCaseTraceView, EvalCaseView, EvalCategoryView,
+    EvalRunDiffView, EvalRunListItem, EvalRunView, EvalScorerView, EvalSuiteDescriptor,
+    EvalSummaryView, EvalTrajectoryEventView, PullEvalDatasetResponse, StartEvalRunRequest,
 };
 use nomifun_common::AppError;
 use nomifun_db::{IClientPreferenceRepository, IProviderModelRepository, IProviderRepository};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
-use crate::agent_eval::live::{sanitize_case_dir, LiveEvalTrace, LiveNomiHarness};
+use crate::agent_eval::live::{
+    sanitize_case_dir, trace_file_name, LiveEvalTrace, LiveNomiHarness,
+};
+use crate::agent_eval::quality::{EvalQualityCase, EvalQualityReport, EvalQualitySink};
 use crate::agent_eval::session_bridge::{eval_run_workspace_label, EvalSessionBridge};
 use crate::agent_trace::developer_mode_enabled;
 use crate::{AgentTraceHub, SessionObservationList};
@@ -33,6 +39,7 @@ pub struct EvalLab {
     client_prefs: Arc<dyn IClientPreferenceRepository>,
     session_bridge: Option<Arc<dyn EvalSessionBridge>>,
     trace_hub: Option<Arc<AgentTraceHub>>,
+    quality_sink: Mutex<Option<Arc<dyn EvalQualitySink>>>,
     inner: AsyncMutex<LabInner>,
 }
 
@@ -86,8 +93,13 @@ impl EvalLab {
             client_prefs,
             session_bridge,
             trace_hub,
+            quality_sink: Mutex::new(None),
             inner: AsyncMutex::new(LabInner { active: None }),
         }
+    }
+
+    pub fn set_quality_sink(&self, sink: Arc<dyn EvalQualitySink>) {
+        *self.quality_sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }
 
     pub async fn require_developer_mode(&self) -> Result<(), AppError> {
@@ -203,6 +215,15 @@ impl EvalLab {
         let summary_path_for_fail = summary_path.clone();
         let limit = request.limit;
         let task_profile = request.task_profile.clone();
+        let n_trials = request
+            .n_trials
+            .filter(|n| *n >= 1)
+            .unwrap_or_else(|| default_trials_for_suite(&suite));
+        let quality_sink = self
+            .quality_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
 
         tokio::spawn(async move {
             let result = run_eval_job(RunEvalJob {
@@ -226,6 +247,8 @@ impl EvalLab {
                 run_id,
                 user_id,
                 session_bridge,
+                n_trials,
+                quality_sink,
             })
             .await;
             if let Err(error) = result {
@@ -282,10 +305,115 @@ impl EvalLab {
         Ok(self.load_latest_persisted())
     }
 
+    pub async fn history(&self) -> Result<Vec<EvalRunListItem>, AppError> {
+        self.require_developer_mode().await?;
+        Ok(list_summary_files(&self.runs_dir())
+            .into_iter()
+            .rev()
+            .filter_map(|path| {
+                let run_id = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_suffix(".summary.json"))?
+                    .to_owned();
+                let view: EvalRunView = fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str(&text).ok())?;
+                Some(EvalRunListItem {
+                    run_id,
+                    suite: view.suite,
+                    status: view.status,
+                    passed: view.passed,
+                    failed: view.failed,
+                    pass_at_1: view.summary.as_ref().map(|s| s.pass_at_1).unwrap_or(0.0),
+                })
+            })
+            .collect())
+    }
+
+    pub async fn diff_runs(&self, a: &str, b: &str) -> Result<EvalRunDiffView, AppError> {
+        self.require_developer_mode().await?;
+        let left = self.load_persisted(a)?;
+        let right = self.load_persisted(b)?;
+        let left_map = case_pass_map(&left.cases);
+        let right_map = case_pass_map(&right.cases);
+        let mut ids: Vec<_> = left_map.keys().chain(right_map.keys()).cloned().collect();
+        ids.sort();
+        ids.dedup();
+        let flipped = ids
+            .into_iter()
+            .filter_map(|case_id| {
+                let a_success = *left_map.get(&case_id).unwrap_or(&false);
+                let b_success = *right_map.get(&case_id).unwrap_or(&false);
+                (a_success != b_success).then_some(EvalCaseFlip {
+                    case_id,
+                    a_success,
+                    b_success,
+                })
+            })
+            .collect();
+        let pass_at_1_delta = right
+            .summary
+            .as_ref()
+            .map(|s| s.pass_at_1)
+            .unwrap_or(0.0)
+            - left.summary.as_ref().map(|s| s.pass_at_1).unwrap_or(0.0);
+        Ok(EvalRunDiffView {
+            a: a.to_owned(),
+            b: b.to_owned(),
+            flipped,
+            pass_at_1_delta,
+        })
+    }
+
+    pub async fn report_case(&self, case: EvalQualityCase) -> Result<(), AppError> {
+        self.require_developer_mode().await?;
+        let sink = self
+            .quality_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("cloud quality sink is not configured".into()))?;
+        sink.report_badcase(case).await
+    }
+
+    pub async fn sync_private_corpus(&self) -> Result<usize, AppError> {
+        self.require_developer_mode().await?;
+        let sink = self
+            .quality_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("cloud quality sink is not configured".into()))?;
+        let items = sink.fetch_promoted().await?;
+        let dir = private_corpus_dir(&self.data_dir);
+        fs::create_dir_all(&dir)
+            .map_err(|e| AppError::Internal(format!("private corpus dir: {e}")))?;
+        let cases: Vec<Case> = items
+            .into_iter()
+            .filter_map(promoted_to_case)
+            .collect();
+        let written = cases.len();
+        let manifest = Manifest {
+            schema_version: SCHEMA_VERSION,
+            corpus_version: "private-promoted".into(),
+            suite: "private_badcases".into(),
+            cases,
+        };
+        fs::write(
+            dir.join("promoted.json"),
+            serde_json::to_string_pretty(&manifest)
+                .map_err(|e| AppError::Internal(e.to_string()))?,
+        )
+        .map_err(|e| AppError::Internal(format!("write private corpus: {e}")))?;
+        Ok(written)
+    }
+
     pub async fn get_case_trace(
         &self,
         run_id: &str,
         case_id: &str,
+        trial: Option<u32>,
     ) -> Result<EvalCaseTraceView, AppError> {
         self.require_developer_mode().await?;
         let live = {
@@ -303,8 +431,11 @@ impl EvalLab {
                 return Ok(trace_view(slot.snapshot()));
             }
         }
-        let path = traces_dir_for(&self.runs_dir(), run_id)
-            .join(format!("{}.json", sanitize_case_dir(case_id)));
+        let path = resolve_trace_path(
+            &traces_dir_for(&self.runs_dir(), run_id),
+            case_id,
+            trial,
+        );
         if !path.exists() {
             return Err(AppError::NotFound(format!(
                 "eval trace {run_id}/{case_id} not found"
@@ -354,8 +485,11 @@ impl EvalLab {
                 return Ok(slot.conversation_id);
             }
         }
-        let path = traces_dir_for(&self.runs_dir(), run_id)
-            .join(format!("{}.json", sanitize_case_dir(case_id)));
+        let path = resolve_trace_path(
+            &traces_dir_for(&self.runs_dir(), run_id),
+            case_id,
+            None,
+        );
         if path.exists() {
             let text = fs::read_to_string(&path)
                 .map_err(|e| AppError::Internal(format!("read eval trace: {e}")))?;
@@ -439,19 +573,7 @@ impl EvalLab {
 
     fn load_latest_persisted(&self) -> Option<EvalRunView> {
         let dir = self.runs_dir();
-        let mut files: Vec<_> = fs::read_dir(&dir)
-            .ok()?
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .path()
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.ends_with(".summary.json"))
-            })
-            .collect();
-        files.sort_by_key(|entry| entry.file_name());
-        let path = files.last()?.path();
+        let path = list_summary_files(&dir).pop()?;
         let mut view: EvalRunView = fs::read_to_string(&path)
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())?;
@@ -491,6 +613,8 @@ struct RunEvalJob {
     run_id: String,
     user_id: Option<String>,
     session_bridge: Option<Arc<dyn EvalSessionBridge>>,
+    n_trials: u32,
+    quality_sink: Option<Arc<dyn EvalQualitySink>>,
 }
 
 async fn run_eval_job(job: RunEvalJob) -> Result<(), AppError> {
@@ -501,10 +625,8 @@ async fn run_eval_job(job: RunEvalJob) -> Result<(), AppError> {
     {
         let mut view = lock_snapshot(&job.snapshot);
         view.status = "running".into();
-        view.planned = manifest.cases.iter().filter(|c| c.enabled).count();
-        if let Some(limit) = job.limit {
-            view.planned = view.planned.min(limit);
-        }
+        let enabled = manifest.cases.iter().filter(|c| c.enabled).count();
+        view.planned = enabled.saturating_mul(job.n_trials.max(1) as usize);
     }
 
     let harness = Arc::new(LiveNomiHarness {
@@ -559,6 +681,7 @@ async fn run_eval_job(job: RunEvalJob) -> Result<(), AppError> {
             model: Some(job.model.clone()),
             provider_id: Some(job.provider_id.clone()),
             harness_profile: job.task_profile.clone().or_else(|| Some("live".into())),
+            n_trials: job.n_trials.max(1),
         },
         &manifest,
         harness,
@@ -586,29 +709,19 @@ async fn run_eval_job(job: RunEvalJob) -> Result<(), AppError> {
         view.current_trace = None;
         view.current_conversation_id = None;
         view.cases = cases;
-        view.summary = Some(EvalSummaryView {
-            total_cases: summary.total_cases,
-            passed: summary.passed,
-            failed: summary.failed,
-            success_rate: summary.success_rate,
-            avg_turns: summary.avg_turns,
-            avg_elapsed_ms: summary.avg_elapsed_ms,
-            avg_input_tokens: summary.avg_input_tokens,
-            avg_output_tokens: summary.avg_output_tokens,
-            by_category: summary
-                .by_category
-                .into_iter()
-                .map(|row| EvalCategoryView {
-                    category: row.category,
-                    total: row.total,
-                    passed: row.passed,
-                    success_rate: row.success_rate,
-                })
-                .collect(),
-        });
+        view.summary = Some(summary_view(&summary));
         view.clone()
     };
     persist_summary(&job.summary_path, &view)?;
+    prune_old_runs(job.summary_path.parent().unwrap_or(Path::new(".")), 50);
+    if let Some(sink) = job.quality_sink {
+        let report = quality_report_from_view(&view);
+        tokio::spawn(async move {
+            if let Err(error) = sink.report_failed_cases(report).await {
+                tracing::warn!(error = %error, "eval quality auto-report failed");
+            }
+        });
+    }
     Ok(())
 }
 
@@ -639,9 +752,8 @@ fn load_case_views(path: &Path, traces_dir: &Path) -> Result<Vec<EvalCaseView>, 
         }
         let row: EvalResult =
             serde_json::from_str(trimmed).map_err(|e| AppError::Internal(e.to_string()))?;
-        let has_trace = traces_dir
-            .join(format!("{}.json", sanitize_case_dir(&row.case_id)))
-            .exists();
+        let trial = if row.trial == 0 { 1 } else { row.trial };
+        let has_trace = resolve_trace_path(traces_dir, &row.case_id, Some(trial)).exists();
         cases.push(EvalCaseView {
             case_id: row.case_id,
             category: row.category,
@@ -654,15 +766,9 @@ fn load_case_views(path: &Path, traces_dir: &Path) -> Result<Vec<EvalCaseView>, 
             tool_error_count: row.tool_error_count,
             stop_reason: row.stop_reason,
             error: row.error,
-            scorer_results: row
-                .scorer_results
-                .into_iter()
-                .map(|s| EvalScorerView {
-                    scorer_type: s.scorer_type,
-                    passed: s.passed,
-                    detail: s.detail,
-                })
-                .collect(),
+            scorer_results: scorer_views(row.scorer_results),
+            advisory_results: scorer_views(row.advisory_results),
+            trial,
             prompt: Some(row.prompt),
             trajectory_event_count: row.trajectory_event_count,
             artifact_count: row.artifact_count,
@@ -677,12 +783,164 @@ fn traces_dir_for(runs_dir: &Path, run_id: &str) -> PathBuf {
     runs_dir.join(run_id).join("traces")
 }
 
+fn resolve_trace_path(dir: &Path, case_id: &str, trial: Option<u32>) -> PathBuf {
+    let named = dir.join(trace_file_name(case_id, trial.unwrap_or(1)));
+    if named.exists() {
+        return named;
+    }
+    dir.join(format!("{}.json", sanitize_case_dir(case_id)))
+}
+
 fn overlay_trace_flags(view: &mut EvalRunView, traces_dir: &Path) {
     for case in &mut view.cases {
-        case.has_trace = traces_dir
-            .join(format!("{}.json", sanitize_case_dir(&case.case_id)))
-            .exists();
+        case.has_trace = resolve_trace_path(traces_dir, &case.case_id, Some(case.trial)).exists();
     }
+}
+
+fn scorer_views(rows: Vec<ScorerResult>) -> Vec<EvalScorerView> {
+    rows.into_iter()
+        .map(|s| EvalScorerView {
+            scorer_type: s.scorer_type,
+            passed: s.passed,
+            detail: s.detail,
+        })
+        .collect()
+}
+
+fn summary_view(summary: &Summary) -> EvalSummaryView {
+    EvalSummaryView {
+        total_cases: summary.total_cases,
+        passed: summary.passed,
+        failed: summary.failed,
+        success_rate: summary.success_rate,
+        avg_turns: summary.avg_turns,
+        avg_elapsed_ms: summary.avg_elapsed_ms,
+        avg_input_tokens: summary.avg_input_tokens,
+        avg_output_tokens: summary.avg_output_tokens,
+        by_category: summary
+            .by_category
+            .iter()
+            .map(|row| EvalCategoryView {
+                category: row.category.clone(),
+                total: row.total,
+                passed: row.passed,
+                success_rate: row.success_rate,
+            })
+            .collect(),
+        unique_cases: summary.unique_cases,
+        n_trials: summary.n_trials,
+        pass_at_1: summary.pass_at_1,
+        pass_hat_k: summary.pass_hat_k,
+    }
+}
+
+fn case_pass_map(cases: &[EvalCaseView]) -> HashMap<String, bool> {
+    let mut map = HashMap::new();
+    for case in cases {
+        *map.entry(case.case_id.clone()).or_insert(false) |= case.success;
+    }
+    map
+}
+
+fn list_summary_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<_> = fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".summary.json"))
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+fn prune_old_runs(runs_dir: &Path, keep: usize) {
+    let files = list_summary_files(runs_dir);
+    if files.len() <= keep {
+        return;
+    }
+    for path in files.iter().take(files.len() - keep) {
+        let Some(run_id) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".summary.json"))
+        else {
+            continue;
+        };
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(runs_dir.join(format!("{run_id}.jsonl")));
+        let _ = fs::remove_dir_all(runs_dir.join(run_id));
+    }
+}
+
+fn quality_report_from_view(view: &EvalRunView) -> EvalQualityReport {
+    let mut seen = HashSet::new();
+    let cases = view
+        .cases
+        .iter()
+        .filter(|case| !case.success && seen.insert(case.case_id.clone()))
+        .map(|case| EvalQualityCase {
+            case_id: case.case_id.clone(),
+            suite: view.suite.clone(),
+            category: case.category.clone(),
+            error: case.error.clone(),
+            prompt: case.prompt.clone().unwrap_or_default(),
+            scorer_json: serde_json::to_string(&case.scorer_results).unwrap_or_else(|_| "[]".into()),
+        })
+        .collect();
+    let summary = view.summary.as_ref();
+    EvalQualityReport {
+        run_id: view.run_id.clone(),
+        suite: view.suite.clone(),
+        model: view.model.clone(),
+        pass_at_1: summary.map(|s| s.pass_at_1).unwrap_or(0.0),
+        pass_hat_k: summary.map(|s| s.pass_hat_k).unwrap_or(0.0),
+        passed: summary.map(|s| s.passed as u32).unwrap_or(0),
+        failed: summary.map(|s| s.failed as u32).unwrap_or(0),
+        unique_cases: summary.map(|s| s.unique_cases as u32).unwrap_or(0),
+        n_trials: summary.map(|s| s.n_trials).unwrap_or(1),
+        cases,
+    }
+}
+
+fn promoted_to_case(item: EvalQualityCase) -> Option<Case> {
+    let prompt = item.prompt.trim();
+    if prompt.is_empty() {
+        return None;
+    }
+    let scorers = serde_json::from_str::<Vec<ScorerSpec>>(&item.scorer_json)
+        .ok()
+        .filter(|specs| !specs.is_empty())
+        .unwrap_or_else(|| vec![ScorerSpec::ToolCalled { name: "write".into() }]);
+    let id = if item.case_id.trim().is_empty() {
+        format!("promoted-{}", Uuid::now_v7())
+    } else {
+        item.case_id
+    };
+    Some(Case {
+        id,
+        category: if item.category.trim().is_empty() {
+            "private".into()
+        } else {
+            item.category
+        },
+        prompt: prompt.to_owned(),
+        enabled: true,
+        budgets: Default::default(),
+        scorers,
+        advisory_scorers: Vec::new(),
+        isolation: Some("office".into()),
+        trial: 0,
+        notes: Some("promoted from agent_quality".into()),
+        task_profile: Some("office".into()),
+        workspace_files: Default::default(),
+        timeout_secs: None,
+    })
 }
 
 fn attach_live_trace(view: &mut EvalRunView, live: &Mutex<Option<LiveEvalTrace>>) {
@@ -748,6 +1006,9 @@ fn descriptor_view(suite: SuiteDescriptor, cache: &Path) -> EvalSuiteDescriptor 
         notes: suite.notes,
         requires_download: suite.requires_download,
         cached,
+        tier: suite.tier,
+        default_trials: suite.default_trials,
+        requires_sandbox: suite.requires_sandbox,
     }
 }
 
@@ -758,6 +1019,12 @@ fn dataset_error(error: nomi_agent_eval::DatasetError) -> AppError {
         }
         nomi_agent_eval::DatasetError::Download { url, message } => {
             AppError::BadGateway(format!("failed to download {url}: {message}"))
+        }
+        nomi_agent_eval::DatasetError::RequiresSandbox(suite) => AppError::BadRequest(format!(
+            "suite {suite} requires a sandbox runner (not implemented)"
+        )),
+        nomi_agent_eval::DatasetError::EmptySuite(suite) => {
+            AppError::BadRequest(format!("suite {suite} has no cases"))
         }
         other => AppError::Internal(other.to_string()),
     }

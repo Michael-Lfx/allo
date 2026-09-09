@@ -15,9 +15,10 @@ use nomi_agent::output::OutputSink;
 use nomi_agent::task_profile::{CodingEnvContext, TaskProfile};
 use nomi_agent::ObservationSession;
 use nomi_agent_eval::{
-    collect_workspace_artifacts, materialize_files, Case, ConversationEvalHarness, EvalCaseTrace,
-    HarnessError, TurnTranscript,
+    collect_workspace_artifacts, find_python, materialize_files, Case, ConversationEvalHarness,
+    EvalCaseTrace, HarnessError, IsolationKind, TurnTranscript,
 };
+use nomi_agent_eval::fixtures::{BROWSER_FORM_HTML, MCP_CRM_PY};
 use nomi_agent_trace::{ExecutionStatus, ObservationIds, ObservationRecorder};
 use nomi_config::config::Config;
 use nomifun_common::AppError;
@@ -81,11 +82,33 @@ impl ConversationEvalHarness for LiveNomiHarness {
 
 impl LiveNomiHarness {
     async fn run_case_inner(&self, case: &Case) -> Result<TurnTranscript, AppError> {
-        let workspace = self.work_root.join(sanitize_case_dir(&case.id));
+        let mut case = case.clone();
+        let trial = case.trial.max(1);
+        let dir_name = if trial == 1 {
+            sanitize_case_dir(&case.id)
+        } else {
+            format!("{}__t{trial}", sanitize_case_dir(&case.id))
+        };
+        let workspace = self.work_root.join(dir_name);
         std::fs::create_dir_all(&workspace)
             .map_err(|e| AppError::Internal(format!("eval workspace: {e}")))?;
         materialize_files(&workspace, &case.workspace_files)
             .map_err(|e| AppError::Internal(format!("eval materialize: {e}")))?;
+
+        let isolation = IsolationKind::resolve(case.isolation.as_deref(), &self.suite);
+        let mut fixture_server = None;
+        if isolation == IsolationKind::Browser || case.prompt.contains("{{FIXTURE_URL}}") {
+            std::fs::write(workspace.join("fixture.html"), BROWSER_FORM_HTML)
+                .map_err(|e| AppError::Internal(format!("eval fixture html: {e}")))?;
+            let server = serve_local_html(BROWSER_FORM_HTML)
+                .map_err(|e| AppError::Internal(format!("eval fixture http: {e}")))?;
+            case.prompt = case.prompt.replace("{{FIXTURE_URL}}", &server.url);
+            fixture_server = Some(server);
+        }
+        if isolation == IsolationKind::Mcp {
+            std::fs::write(workspace.join("mcp_crm.py"), MCP_CRM_PY)
+                .map_err(|e| AppError::Internal(format!("eval mcp fixture: {e}")))?;
+        }
 
         // Canonical UUIDv7: conversation messages, billing, and Observation share it.
         let root_turn_id = Uuid::now_v7().to_string();
@@ -101,6 +124,7 @@ impl LiveNomiHarness {
                     case_id: case.id.clone(),
                     case_category: case.category.clone(),
                     prompt: case.prompt.clone(),
+                    trial,
                     workspace: workspace.clone(),
                     run_workspace: self.work_root.clone(),
                     run_workspace_label: self.run_workspace_label.clone(),
@@ -137,7 +161,14 @@ impl LiveNomiHarness {
         )
         .await?;
         let max_turns = case.budgets.max_turns.map(|n| n as usize);
-        isolate_eval_config(&mut config, &workspace, max_turns);
+        isolate_eval_config(
+            &mut config,
+            &workspace,
+            max_turns,
+            isolation,
+            find_python().as_deref(),
+        );
+        let _fixture_server = fixture_server;
 
         let sink = Arc::new(EvalCaptureSink::default());
         {
@@ -150,7 +181,7 @@ impl LiveNomiHarness {
             });
         }
         let output: Arc<dyn OutputSink> = sink.clone();
-        let coding = is_coding_case(case, self.profile_override.as_deref());
+        let coding = is_coding_case(&case, self.profile_override.as_deref());
 
         let observation = ObservationSession::new(ObservationRecorder::shared(&self.data_dir));
         observation.bind_ids_with_preview(
@@ -257,7 +288,7 @@ impl LiveNomiHarness {
         }
         trace.artifacts = artifacts.clone();
         trace.conversation_id = Some(conversation_id.clone());
-        persist_case_trace(&self.traces_dir, &case.id, &trace)?;
+        persist_case_trace(&self.traces_dir, &case.id, trial, &trace)?;
         {
             let mut slot = self.live_trace.lock().unwrap_or_else(|e| e.into_inner());
             *slot = None;
@@ -314,27 +345,43 @@ impl LiveNomiHarness {
     }
 }
 
+pub(crate) fn trace_file_name(case_id: &str, trial: u32) -> String {
+    let stem = sanitize_case_dir(case_id);
+    if trial <= 1 {
+        format!("{stem}.json")
+    } else {
+        format!("{stem}__t{trial}.json")
+    }
+}
+
 fn persist_case_trace(
     traces_dir: &Path,
     case_id: &str,
+    trial: u32,
     trace: &EvalCaseTrace,
 ) -> Result<(), AppError> {
     std::fs::create_dir_all(traces_dir)
         .map_err(|e| AppError::Internal(format!("eval traces dir: {e}")))?;
-    let path = traces_dir.join(format!("{}.json", sanitize_case_dir(case_id)));
+    let path = traces_dir.join(trace_file_name(case_id, trial));
     let json = serde_json::to_string_pretty(trace)
         .map_err(|e| AppError::Internal(format!("eval trace json: {e}")))?;
     std::fs::write(path, json).map_err(|e| AppError::Internal(format!("eval trace write: {e}")))
 }
 
-pub(crate) fn isolate_eval_config(config: &mut Config, workspace: &Path, max_turns: Option<usize>) {
+pub(crate) fn isolate_eval_config(
+    config: &mut Config,
+    workspace: &Path,
+    max_turns: Option<usize>,
+    isolation: IsolationKind,
+    python: Option<&str>,
+) {
     // Session *persistence* stays off so nomi session files do not collide with
     // the conversation shell. Observation is wired explicitly above.
     config.session.enabled = false;
     config.mcp.servers.clear();
     config.file_cache.enabled = false;
     config.tools.auto_approve = true;
-    config.tools.browser.enabled = false;
+    config.tools.browser.enabled = isolation == IsolationKind::Browser;
     config.tools.computer.enabled = false;
     config.tools.web.enabled = false;
     config.tools.write_root = workspace.to_string_lossy().into_owned();
@@ -342,6 +389,73 @@ pub(crate) fn isolate_eval_config(config: &mut Config, workspace: &Path, max_tur
     config.memory.distill_enabled = false;
     config.moa.enabled = false;
     config.max_turns = max_turns;
+    if isolation == IsolationKind::Mcp {
+        let command = python.unwrap_or("python").to_owned();
+        let script = workspace.join("mcp_crm.py");
+        config.mcp.servers.insert(
+            "eval_crm".into(),
+            nomi_config::config::McpServerConfig {
+                transport: nomi_config::config::TransportType::Stdio,
+                command: Some(command),
+                args: Some(vec![
+                    script.to_string_lossy().into_owned(),
+                    workspace.to_string_lossy().into_owned(),
+                ]),
+                env: None,
+                url: None,
+                headers: None,
+                deferred: Some(false),
+                request_timeout_secs: Some(20),
+            },
+        );
+    }
+}
+
+struct LocalHtmlServer {
+    url: String,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for LocalHtmlServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn serve_local_html(html: &str) -> std::io::Result<LocalHtmlServer> {
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let addr = listener.local_addr()?;
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let flag = shutdown.clone();
+    let body = html.to_owned();
+    std::thread::spawn(move || {
+        while !flag.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let header = format!(
+                        "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(body.as_bytes());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    Ok(LocalHtmlServer {
+        url: format!("http://127.0.0.1:{}", addr.port()),
+        shutdown,
+    })
 }
 
 fn is_coding_case(case: &Case, override_profile: Option<&str>) -> bool {
@@ -411,7 +525,13 @@ mod tests {
                 request_timeout_secs: None,
             },
         );
-        isolate_eval_config(&mut config, dir.path(), Some(6));
+        isolate_eval_config(
+            &mut config,
+            dir.path(),
+            Some(6),
+            IsolationKind::Smoke,
+            None,
+        );
         assert!(config.mcp.servers.is_empty());
         assert!(!config.session.enabled);
         assert!(config.mcp.servers.is_empty());
@@ -424,11 +544,28 @@ mod tests {
         assert!(!config.moa.enabled);
         assert_eq!(config.max_turns, Some(6));
         assert!(!config.tools.write_root.is_empty());
+        isolate_eval_config(
+            &mut config,
+            dir.path(),
+            Some(6),
+            IsolationKind::Browser,
+            None,
+        );
+        assert!(config.tools.browser.enabled);
+        isolate_eval_config(
+            &mut config,
+            dir.path(),
+            Some(6),
+            IsolationKind::Mcp,
+            Some("python"),
+        );
+        assert!(config.mcp.servers.contains_key("eval_crm"));
+        assert!(!config.mcp.servers["eval_crm"].deferred.unwrap_or(true));
     }
 
     #[test]
     fn coding_profile_follows_case_then_override() {
-        let mut case = nomi_agent_eval::load_bundled_manifest("harness_control")
+        let mut case = nomi_agent_eval::load_bundled_manifest("harness_smoke")
             .unwrap()
             .cases
             .remove(0);

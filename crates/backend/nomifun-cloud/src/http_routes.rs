@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use nomifun_api_types::{
+    AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityRunRequest, AgentQualityPromotedItem,
     ApiResponse, CloudBillingAirwallexSession, CloudBillingCouponList,
     CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
     CloudBillingPaymentChannel, CloudBillingPlan, CloudDeviceActivationRetryResponse,
@@ -173,6 +174,15 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
             "/api/cloud/im/logs/upload-from-path",
             post(upload_im_log_from_path),
         )
+        .route(
+            "/api/cloud/agent-quality/badcases",
+            post(submit_agent_badcase),
+        )
+        .route("/api/cloud/agent-quality/runs", post(submit_agent_eval_run))
+        .route(
+            "/api/cloud/agent-quality/badcases/promoted",
+            get(list_promoted_agent_badcases),
+        )
         .with_state(state)
         .merge(upload_routes)
         .merge(screenshot_upload_routes)
@@ -240,6 +250,41 @@ async fn upload_video_growth_events(
     }
     Ok(Json(ApiResponse::ok(
         state.service.upload_video_growth_events(&request).await?,
+    )))
+}
+
+async fn submit_agent_badcase(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(request): Json<AgentQualityBadcaseRequest>,
+) -> Result<Json<ApiResponse<AgentQualityAck>>, AppError> {
+    if request.event_id.trim().is_empty() {
+        return Err(AppError::BadRequest("eventId is required".into()));
+    }
+    Ok(Json(ApiResponse::ok(
+        state.service.submit_agent_badcase(request).await?,
+    )))
+}
+
+async fn submit_agent_eval_run(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(request): Json<AgentQualityRunRequest>,
+) -> Result<Json<ApiResponse<AgentQualityAck>>, AppError> {
+    if request.event_id.trim().is_empty() || request.suite.trim().is_empty() {
+        return Err(AppError::BadRequest("eventId and suite are required".into()));
+    }
+    Ok(Json(ApiResponse::ok(
+        state.service.submit_agent_eval_run(request).await?,
+    )))
+}
+
+async fn list_promoted_agent_badcases(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<AgentQualityPromotedItem>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_promoted_agent_badcases().await?,
     )))
 }
 
