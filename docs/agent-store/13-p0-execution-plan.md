@@ -4,7 +4,7 @@
 > 前置：`开发计划.md`（Phase 0）、`agent-store-v1-test-cases.md`、`12-sdk-packaging.md`、`single-run-runtime-evidence.zh.md`
 > 状态：P0-A/B 已关闭（2026-09-09，证据 `p0-runtime-evidence.zh.md`）；P0-C/D 的 OAuth 运行时证据已完成
 > （`oauth-runtime-evidence.zh.md`，TC-OAUTH-001/002/004 26/26 PASS；live 另逼出并修复 B7/B8）；
-> REQ-PAR-05a（run/steer）、05b（models/list）、05c（TurnResult）、05e（withRetry）已落地
+> **REQ-PAR-05 全部落地**（05a run/steer、05b models/list、05c TurnResult、05d ConversationHandle、05e withRetry）
 > 说明：本文件是执行层计划，不替代 `开发计划.md` 的阶段定义与 `09` 的门禁定义；
 > 每个任务遵循开发计划 §11（REQ 编号/文件/契约/TC/失败场景/验证入口）
 
@@ -94,8 +94,9 @@ webui 不直接依赖 `@agent-store/sdk`（Node 专属，浏览器不可运行�
   3. REQ-PAR-05c `TurnResult` 聚合（client 层）✅ 2026-09-09 已落地：从事件流聚合 `final_response`（文本）
    + token usage（`context.usage` 事件）+ 事件/物品清单，`handle.finished` 升级返回聚合对象；
    webui 后续切同一聚合（消现有私有实现）。
-  4. REQ-PAR-05d 多轮 `ConversationHandle`（client 层）：包装现有 conversation 域
-   （create/send/cancel + 会话事件归并原语），≈Codex Thread 多轮形态；webui 切同一句柄。
+  4. REQ-PAR-05d 多轮 `ConversationHandle`（client 层）✅ 2026-09-09 已落地：包装现有 conversation 域
+   （create/send/cancel + 会话事件归并原语），≈Codex Thread 多轮形态；`send` 等待终态并返回聚合 turn；
+   webui 切同一句柄为后续（说明：webui 的 React reducer 为 UI 状态层，非本次 client 契约）。
   5. REQ-PAR-05e 重试辅助（client 层）✅ 2026-09-09 已落地：`retryable` + 指数退避 + 抖动的 `withRetry` 助手（≈Codex `retry_on_overload`）。
   顺序：05a → 05b → 05c → 05d → 05e（a/b 动协议，c/d/e 纯 client 层）。
   图片输入、sandbox 一等参数、archive/resume/fork 不列入本包（11 §6.3 或 V2）。

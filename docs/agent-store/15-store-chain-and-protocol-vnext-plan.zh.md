@@ -1,7 +1,8 @@
 # Agent Store 实施计划：四链路闭环与协议 vNext
 
 > 状态：计划冻结（2026-09-09）；按优先级顺序执行，排期为范围值、按实测校准，不构成承诺
-> 进展：WP-1 完成（B1–B4 修复）；WP-2 完成（四链路 live 20/20 PASS，live 另逼出 B5/B6 并修复，见 `four-chain-live-evidence.zh.md`）；WP-3 P0-A/B 已关闭（18+10 PASS，见 `p0-runtime-evidence.zh.md`），P0-C/D 的 OAuth 协议面证据完成（TC-OAUTH-001/002/004 26/26 PASS，live 另逼出 B7/B8 并修复，见 `oauth-runtime-evidence.zh.md`）；WP-4 05b/05c/05e 已落地，05d 待做
+> 进展：WP-1 完成（B1–B4 修复）；WP-2 完成（四链路 live 20/20 PASS，live 另逼出 B5/B6 并修复，见 `four-chain-live-evidence.zh.md`）；WP-3 P0-A/B 已关闭（18+10 PASS，见 `p0-runtime-evidence.zh.md`），P0-C/D 的 OAuth 协议面证据完成（TC-OAUTH-001/002/004 26/26 PASS，live 另逼出 B7/B8 并修复，见 `oauth-runtime-evidence.zh.md`）；**WP-4 完成**（05a steer、05b models/list、05c TurnResult、05d ConversationHandle 9/9 PASS、05e withRetry）
+> 说明：模型 provider 唯一来源是 `~/.agent-store/config.toml`（`[providers.*]`），live 脚本不再经 `/api/providers` 运行时注册。
 > 日期：2026-09-09
 > 前置：`05`（协议 v1 基线）、`07`（SDK v1 基线）、`12-sdk-packaging.md`、`13-p0-execution-plan.md`、`agent-store-v1-roadmap.md` §10（决策记录）
 > 范围：① webui 与 SDK 的 专家/专家团/技能/连接器「下载 → 安装 → 使用」全链路；② App Server 协议对齐 Codex app-server
