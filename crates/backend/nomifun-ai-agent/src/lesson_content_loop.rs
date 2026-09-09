@@ -16,12 +16,14 @@
 //! agent path and the legacy two-stage path produce interchangeable output.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
 use nomifun_common::{AppError, ProviderId, UserId};
 use nomifun_learning::{
     LessonContentAgentEngine, LessonGenerationContext, LessonOp, LessonOutput, LearningService,
+    PRACTICE_BODY_TARGET_CHARS, VISUAL_OPTIONS, prose_budget_rules, section_range_rules,
+    visual_menu_text,
 };
 
 use crate::factory::provider_config::resolve_provider_config;
@@ -55,14 +57,21 @@ pub(crate) const WIRE: WireConfig = WireConfig {
 /// the rounds: plan the manifest once, then one tool call per section body
 /// (the model's attention stays on one learnable unit), then the activities
 /// bound to section keys. The deterministic audit enforces the same rules.
-const GENERATE_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容设计代理：把给定的一个课时规划为若干「节」，逐节撰写正文并设计检索题目，通过工具逐步构建，最终通过确定性审计门禁发布。
+/// 契约数值（节配比 / visual 菜单 / 文字预算）由 nomifun-learning 的渲染
+/// 函数从 owner 表格生成（ADR-0002 追加决策：唯一事实源，禁止手写字面量）。
+static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
+    let section_ranges = section_range_rules();
+    let visual_menu = visual_menu_text();
+    let prose_budgets = prose_budget_rules();
+    format!(
+        r#"你是一名课时内容设计代理：把给定的一个课时规划为若干「节」，逐节撰写正文并设计检索题目，通过工具逐步构建，最终通过确定性审计门禁发布。
 
 【分节契约（每节一次工具调用）】
-- 先 ls_set_section_manifest 规划节清单：每节带 section_key（s1、s2……）、kind（concept 概念 / example 例题 / demo 演示 / summary 小结 / practice 练习）、title（带类型前缀，如「概念：…」）、points（一句话要点）。节数按课时复杂度自定：低 1-3 节、中 3-5、高 4-6，硬上限 8；相邻节要有学习递进；最后一节必须是练习节（恰好 1 个）——学习者读完即进入统一练习轮。
-- 每节带 visual 字段（该节承载核心讲解的可视化形态：公式/函数图/示意图/流程图/图表/表格 之一，内容确实非视觉才可用 文字）。
+- 先 ls_set_section_manifest 规划节清单：每节带 section_key（s1、s2……）、kind（concept 概念 / example 例题 / demo 演示 / summary 小结 / practice 练习）、title（带类型前缀，如「概念：…」）、points（一句话要点）。节数按课时复杂度自定：{section_ranges}；相邻节要有学习递进；最后一节必须是练习节（恰好 1 个）——学习者读完即进入统一练习轮。
+- 每节带 visual 字段（该节承载核心讲解的可视化形态：{visual_menu} 之一，内容确实非视觉才可用 无）。
 - 可视化为主、文字为辅是硬规则：概念/例题节的正文必须以至少一个可视化块（$$公式$$、```svg、```jsxgraph、```mermaid、对比表格）承载核心讲解，文字只作旁注；短段落、枚举用列表/表格、不写过渡废话。纯文字的概念/例题节会被质检门拒绝。
 - 再逐节调用 ls_set_section_body 写正文：一次调用只写一节，body 直接以该节 `## ` 标题行开头（标题照抄清单），不要 JSON、不要包裹围栏、节内禁止 ### 子标题、不要自设练习环节（题目由题库承载）。
-- 篇幅按节型：concept/example 400-700 中文字符；demo 由可视化块（```svg / ```jsxgraph / ```mermaid / $$数学$$）承载主要信息、旁注 200-400 字；summary 是要点清单；practice 只写能力目标与作答引导（≤120 字，不写题）。
+- 篇幅：{prose_budgets}；演示节由可视化块（```svg / ```jsxgraph / ```mermaid / $$数学$$）承载主要信息、旁注同预算；summary 是要点清单；practice 只写能力目标与作答引导（≤{PRACTICE_BODY_TARGET_CHARS} 字，不写题）。
 - 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形块不计入篇幅。
 - 与前一节已写正文自然衔接：不重复它讲过的内容；只写本节任务命中的范围，不越界讲后续节/课时。
 
@@ -79,7 +88,9 @@ const GENERATE_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容设计代�
 3. ls_inspect 随时掌握草稿状态；全部构建完成后 ls_audit 自查，确认没有 danger 级问题才调用 ls_finish。
 
 【结束条件】
-- 只有 ls_audit 报告无 danger 时才调用 ls_finish；被门禁拒绝时按报告继续修复。"#;
+- 只有 ls_audit 报告无 danger 时才调用 ls_finish；被门禁拒绝时按报告继续修复。"#
+    )
+});
 
 /// Repair-loop system prompt: the audit report is the ONLY repair basis;
 /// the model patches locally and never rewrites the lesson wholesale.
@@ -321,7 +332,7 @@ impl FlowCycle for LiveLessonContentAgentEngine {
     }
 
     fn generate_system(&self) -> &'static str {
-        GENERATE_LESSON_AGENT_SYSTEM
+        GENERATE_LESSON_AGENT_SYSTEM.as_str()
     }
 
     fn repair_system(&self) -> &'static str {
@@ -698,9 +709,15 @@ fn ls_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
 }
 
 fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
+    // 契约数值从 owner 表格渲染（ADR-0002 追加决策：禁止手写字面量）。
+    let section_ranges = section_range_rules();
+    let visual_menu = visual_menu_text();
+    let visual_enum: Vec<&str> = VISUAL_OPTIONS.to_vec();
     OneShotTool {
         name: "ls_set_section_manifest".into(),
-        description: "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）、visual（可视化形态：公式/函数图/示意图/流程图/图表/表格/无）。节数低 1-3 / 中 3-5 / 高 4-6，硬上限 8；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。".into(),
+        description: format!(
+            "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）、visual（可视化形态：{visual_menu}）。节数{section_ranges}；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。"
+        ),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -716,7 +733,7 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
                             "kind": { "type": "string", "enum": ["concept", "example", "demo", "summary", "practice"] },
                             "title": { "type": "string" },
                             "points": { "type": "string" },
-                            "visual": { "type": "string", "enum": ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"] }
+                            "visual": { "type": "string", "enum": visual_enum }
                         },
                         "required": ["section_key", "kind", "title", "visual"]
                     }
@@ -748,9 +765,12 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
 }
 
 fn ls_set_section_body(ctx: Arc<LoopContext>) -> OneShotTool {
+    let prose_budgets = prose_budget_rules();
     OneShotTool {
         name: "ls_set_section_body".into(),
-        description: "写入一节正文：body 是该节的完整 Markdown，直接以 `## ` 标题行开头（照抄清单标题），不要 JSON、不要包裹围栏、节内禁止 ### 子标题。篇幅按节型（concept/example 400-700 字；demo 可视化为主；summary 要点清单；practice ≤120 字不写题）。每节调用一次；重复调用即整节重写。".into(),
+        description: format!(
+            "写入一节正文：body 是该节的完整 Markdown，直接以 `## ` 标题行开头（照抄清单标题），不要 JSON、不要包裹围栏、节内禁止 ### 子标题。篇幅按节型（{prose_budgets}；demo 可视化为主；summary 要点清单；practice ≤{PRACTICE_BODY_TARGET_CHARS} 字不写题）。每节调用一次；重复调用即整节重写。"
+        ),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -1115,7 +1135,7 @@ mod tests {
         run_agent_loop(
             provider.clone(),
             "test-model",
-            GENERATE_LESSON_AGENT_SYSTEM,
+            GENERATE_LESSON_AGENT_SYSTEM.as_str(),
             &lesson_user_text(&ctx.context),
             &lesson_content_tools(Arc::clone(&ctx), true),
             BUDGETS.generate_max_rounds,
