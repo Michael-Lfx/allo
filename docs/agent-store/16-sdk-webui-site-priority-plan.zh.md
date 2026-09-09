@@ -1,7 +1,7 @@
 # SDK / WebUI / 站点开发者体验：优先级调整与执行计划
 
 > 状态：计划（2026-09-09）。**先定方向与验收口径，不含实现**。
-> 方向调整：**SDK 与 WebUI 功能 = 第一优先级；站点（开发者体验）= 高优先级；WP-5 协议 vNext 延后。**
+> 方向调整：**SDK 与 WebUI 功能 = 第一优先级；站点（开发者体验）与插件 / 市场规范 = 高优先级；WP-5 协议 vNext 延后。**
 > 上游依据：`15-store-chain-and-protocol-vnext-plan.zh.md`（其 WP-5 顺延，WP-6/WP-7 已完成部分继续有效）、`11-webui-production-readiness.md`、`12-sdk-packaging.md`、`07-typescript-sdk.md`。
 > 口径：排期为范围值、按实测校准，不构成承诺；结论区分「已验证事实 / 推断 / 待定」。
 
@@ -34,6 +34,10 @@
 | F12 | Conversation 与 Run 订阅**成熟度不对称** | Run：去重集 + gap 检测 + `autoResync` + `onError`；Conversation：仅 `sequence <= lastSeen` 丢弃 | 主要 UX 面缺追平能力，webui 只能自行重做（`conversation-events.ts` 289 行） |
 | F13 | 包面**无 HTTP 绑定** | `client/src/transport.ts` 只导出 `WebSocketTransport`；`index.ts` 无 http 导出 | webui 自建 5 个 fetch 辅助；第三方用一次性 HTTP 需自己实现 |
 | F14 | `ConversationEvent.payload` 无类型化，`event_type` 带 `\| string` 转义 | `protocol.ts` | 每个消费者都要重写解码层（webui 的 `activity.ts` 145 行）；穷尽性检查失效 |
+| F15 | **插件与市场的规范主体只存在于代码** | `market_source.rs` 头注释（源类型 / staging→校验→原子晋升→last-good / ETag 短路）、`app_server_marketplace.rs`（清单发现、条目解析）、`market_fetch.rs`（git vs HTTP 获取策略） | 无权威正文可依，行为变更无法评审；第三方无法按规范实现市场 |
+| F16 | **`_files.txt` 目录枚举格式只在脚本注释里** | `scripts/serve-agent-store-market.mjs`（逐行相对路径、无头、`--emit-listings` 预生成） | 发布方只能读脚本反推；HTTP 市场条目树镜像行为无契约 |
+| F17 | **无 Agent Store 原生插件格式规范** | `02-codebuddy-workbuddy-import-spec.md` 只定义「导入源」映射；`plugin.json` / `marketplace.json` 语义全部继承 CodeBuddy | 插件作者不知道该按什么写；原生格式的演进无据可依 |
+| F18 | **无机器可校验的 Schema** | 全仓仅 `crates/agent/flowy-web/evaluation/corpus.schema.json`（无关）；`plugin.json` / `marketplace.json` / `_files.txt` 均无 schema | 市场内容只能靠运行时校验，发布方无法自检 |
 
 ---
 
@@ -110,7 +114,20 @@
 - 待定：站点最终域名与托管方式（VPS + 自定义域名 / EdgeOne / GitHub Pages 三选一）。
 - 已知约束：EdgeOne preset 域名带签名 `eo_token` 且按路径签名，不适合做公开源，需自定义域名。
 
-### D. 延后
+### D. 插件与市场规范（高优先级，以文档为主）
+
+**D1 · 规范缺口收口（正文）**
+- 范围：
+  - **插件规范**（拟 `17-plugin-spec.zh.md`）：插件包布局；`plugin.json` 字段全集（必填 / 可选 / 类型 / 默认）；组件（agents / skills / connectors / hooks / commands / mcpServers）；版本与兼容性声明（最低 runtime、协议版本）；权限与风险标签；凭据 schema 引用；依赖解析（SemVer 范围）；ID 与溯源；安全边界（导入期不执行脚本）。
+  - **市场规范**（拟 `18-marketplace-spec.zh.md`）：市场源类型与地址解析（`directory` / `github` / `git` / `url`）；目录布局；清单发现与优先级（`plugin.json` / `marketplace.json` / `connectors.json`）；`_files.txt` 枚举格式；获取与晋升语义（staging → 全量校验 → 原子晋升 → last-good 不破坏）；revision / ETag 短路；注册表与命名空间；发布流程；客户端解析与安装状态机；错误码。
+  - 明确「Agent Store 原生格式」与「CodeBuddy 兼容层」的边界（见 Q5）。
+- 验收：按规范能**独立复现**一个可被 `market/add` → `market/refresh` → `store/list` → 安装 的市场；现有三个真实市场（experts / skills / connectors）在规范下逐条对照无例外。
+
+**D2 · 机器可校验 Schema（P2）**
+- 范围：`plugin.schema.json` / `marketplace.schema.json` + `_files.txt` 校验器；接入市场发布脚本与 CI。
+- 验收：对现有市场数据全绿；构造的非法样例被拒绝并给出字段级定位。
+
+### E. 延后
 
 - **WP-5 协议 vNext**（方法/事件/概念映射表与边界拍板）——待 SDK/UI 稳定后启动。
 - A5 中与站点无关的部分、C4 的搜索功能。
@@ -125,6 +142,7 @@
 | Q2 | 站点托管与域名 | VPS + 自定义域名 / EdgeOne / GitHub Pages |
 | Q3 | 附件图片输入时机 | 现在做（B1） / 等协议 vNext 一起做 |
 | Q4 | SDK 发版节奏 | A1+A2 先发 `0.1.0-beta.3` / A1–A4 一起发 |
+| Q5 | 插件格式策略 | ① 现在就定义 Agent Store **原生插件格式**（可演进、可校验） ② 先只做 CodeBuddy 兼容层，在规范中明确标注「非原生」 |
 
 ---
 
@@ -133,10 +151,12 @@
 | 批次 | 内容 | 出口 |
 | --- | --- | --- |
 | 第 1 批 | A1（进程生命周期 P0）+ C1（站点三处事实硬伤） | 长会话不再卡死；非 Windows 访客不再点到 404；对外文档不再过度承诺 |
-| 第 2 批 | A2 / A3 / A4（传输、事件、HTTP 绑定）+ C2（文档叙事） | SDK 断线与事件追平可用；开发者能判断装什么、支持什么 |
+| 第 2 批 | A2 / A3 / A4（传输、事件、HTTP 绑定）+ C2（文档叙事）+ **D1（插件与市场规范正文）** | SDK 断线与事件追平可用；开发者能判断装什么、支持什么；第三方能按规范实现市场 |
 | 第 3 批 | A6（平台矩阵）+ C5（域名 / HTTPS） | 非 Windows 用户可用；公开入口可信 |
-| 第 4 批 | B1（附件 / 图片输入）+ C3（文档深度） | 图片输入端到端可用；API 参考与示例齐备 |
+| 第 4 批 | B1（附件 / 图片输入）+ C3（文档深度）+ **D2（Schema 与校验器）** | 图片输入端到端可用；API 参考与示例齐备；市场内容可自检 |
 | 延后 | A5 其余、C4、WP-5 | — |
+
+> D1 为纯文档，可与第 1 批代码工作并行、无文件冲突；建议尽早启动（Q5 一旦拍板即可定稿结构）。
 
 ---
 
