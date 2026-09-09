@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "flowy-ssh"
 version.workspace = true
 edition.workspace = true
