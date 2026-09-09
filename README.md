@@ -1,9 +1,5 @@
 <div align="center">
 
-<a href="https://www.nomifun.com">
-  <img src="docs/images/readme-00-agent-collaboration-hero.png" alt="Flowy Agent collaboration, reusable roles, and execution graph" width="100%">
-</a>
-
 <h3>Flowy — the AI workstation that looks sharp and finishes real work.</h3>
 
 <p>
@@ -82,34 +78,6 @@ See [`SECURITY.md`](SECURITY.md) for the deployment threat model and responsible
 
 <div align="center">
 
-<p>
-  🎬 <b>Demo videos:</b>
-  China:
-  <a href="https://www.bilibili.com/video/BV1kwKZ6UE5X/">Bilibili</a>
-  &nbsp;|&nbsp;
-  International:
-  <a href="https://youtu.be/AsEToBDFR9s">YouTube</a>
-</p>
-
-<p>
-  <img src="docs/images/readme-01-workbench-overview.png" alt="Flowy Agent collaboration and execution graph" width="100%">
-  <br/><sub><b>Agent collaboration: one conversation, reusable roles, and a live execution graph</b></sub>
-</p>
-
-<table>
-  <tr>
-    <td width="50%"><img src="docs/images/readme-05-companions.png" alt="Desktop companion overview"><br/><sub><b>Desktop companions · memory and growth</b></sub></td>
-    <td width="50%"><img src="docs/images/readme-07-requirements.png" alt="Requirements platform list"><br/><sub><b>Requirements platform · AutoWork entry</b></sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/images/readme-06-knowledge.png" alt="Knowledge base list"><br/><sub><b>Knowledge base · local domain context</b></sub></td>
-    <td width="50%"><img src="docs/images/readme-02-terminal-create.png" alt="Create an agent terminal"><br/><sub><b>Terminal · capabilities for Agent CLI</b></sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/images/readme-03-presets.png" alt="Presets and Skills capability library"><br/><sub><b>Presets & Skills · reusable capability templates</b></sub></td>
-    <td width="50%"><img src="docs/images/readme-04-model-agents.png" alt="Models and Agents management"><br/><sub><b>Models & Agents · unified management and setup</b></sub></td>
-  </tr>
-</table>
 
 <sub>Captured from the live Flowy desktop app on 2026-07-01 and kept at 2560px wide. See <a href="docs/images/SCREENSHOTS.md">the screenshot manifest</a> for the full set and capture method.</sub>
 
