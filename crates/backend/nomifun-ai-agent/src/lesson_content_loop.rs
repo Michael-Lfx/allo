@@ -33,7 +33,7 @@ use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 /// 课时内容循环的显式预算表（ADR-0004）：与 loop_core 的共享默认逐字一致
 /// （50 轮 / 8192 token / 600s）——显式声明而非隐式继承，每流的生效值在
 /// 自己的文件里可见。
-const BUDGETS: LoopBudgets = LoopBudgets {
+pub(crate) const BUDGETS: LoopBudgets = LoopBudgets {
     generate_max_rounds: crate::loop_core::GENERATE_MAX_ROUNDS,
     round_tokens: crate::loop_core::AGENT_MAX_TOKENS,
     timeout_secs: crate::loop_core::TOTAL_TIMEOUT_SECS,
@@ -42,7 +42,7 @@ const BUDGETS: LoopBudgets = LoopBudgets {
 /// 线上翻译差异表（ADR-0004）：课时流无 kind 标记、不翻译 round_feedback、
 /// start 帧不带 phase（不上线），但保留轮次日志（「生成」标签）且走课时
 /// 专属事件流（`learning.lesson-generation`）。
-const WIRE: WireConfig = WireConfig {
+pub(crate) const WIRE: WireConfig = WireConfig {
     kind_tag: None,
     round_log_gen_label: Some("生成"),
     translate_round_feedback: false,
