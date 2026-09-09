@@ -160,8 +160,10 @@ pub async fn mirror_http_tree(manifest_url: &str, staging: &Path) -> Result<(), 
 
     // Download concurrently in small batches: user markets routinely carry
     // hundreds of small assets (avatars, prompts), and serial GETs would make
-    // a refresh take tens of seconds over a local server.
-    const BATCH: usize = 8;
+    // a refresh take tens of seconds over a local server. 32 keeps a public
+    // mirror saturated without overwhelming a modest VPS; the fixed 15s
+    // client timeout keeps one slow asset from stalling a batch.
+    const BATCH: usize = 32;
     for chunk in files.chunks(BATCH) {
         let futures = chunk.iter().map(|relative| {
             let client = client.clone();

@@ -1535,10 +1535,13 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) {
         };
         // Best effort: default sources are convenience, never a hard failure.
         // Timeout-bounded so a dead source cannot block store/market listing.
-        // Full-tree mirrors (e.g. hundreds of expert assets over local HTTP)
-        // can take tens of seconds, so the bound is generous: 120s.
+        // A full-tree HTTP mirror (hundreds of skill dirs, thousands of
+        // assets) is the common worst case and takes 1–3 minutes over a
+        // public mirror at BATCH=32, so the bound is 600s; a genuinely dead
+        // source still fails fast per-request (15s client timeout) and the
+        // staging guard reclaims the partial tree.
         let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(600),
             provider.add(request),
         )
         .await;
