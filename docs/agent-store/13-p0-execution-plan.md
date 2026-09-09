@@ -95,7 +95,7 @@ webui 不直接依赖 `@agent-store/sdk`（Node 专属，浏览器不可运行�
    webui 后续切同一聚合（消现有私有实现）。
   4. REQ-PAR-05d 多轮 `ConversationHandle`（client 层）：包装现有 conversation 域
    （create/send/cancel + 会话事件归并原语），≈Codex Thread 多轮形态；webui 切同一句柄。
-  5. REQ-PAR-05e 重试辅助（client 层）：`retryable` + 指数退避 + 抖动的 `withRetry` 助手（≈Codex `retry_on_overload`）。
+  5. REQ-PAR-05e 重试辅助（client 层）✅ 2026-09-09 已落地：`retryable` + 指数退避 + 抖动的 `withRetry` 助手（≈Codex `retry_on_overload`）。
   顺序：05a → 05b → 05c → 05d → 05e（a/b 动协议，c/d/e 纯 client 层）。
   图片输入、sandbox 一等参数、archive/resume/fork 不列入本包（11 §6.3 或 V2）。
 - REQ-PAR-01：抽 `@agent-store/browser`（12 §3 预留）：迁移 `web/src/lib/client.ts` 子类
