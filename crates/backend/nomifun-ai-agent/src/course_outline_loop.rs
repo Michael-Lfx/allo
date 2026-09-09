@@ -27,7 +27,7 @@ use nomifun_learning::{
 
 use crate::factory::provider_config::resolve_provider_config;
 use crate::knowledge_completer::resolve_default_model;
-use crate::learning_graph_loop::{CANCEL_MESSAGE, CancellableProvider};
+use crate::learning_loop::{CANCEL_MESSAGE, CancellableProvider};
 use crate::loop_core::{
     AGENT_MAX_TOKENS, GENERATE_MAX_ROUNDS, GENERATE_REASONING_EFFORT, LoopEventSink,
     REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS, REPAIR_REASONING_EFFORT, TOTAL_TIMEOUT_SECS,
@@ -361,7 +361,7 @@ impl LiveCourseOutlineAgentEngine {
 /// Everything the tool handlers need, captured once per generation. The two
 /// slots are the only mutable cross-round state: which draft is active and
 /// which blueprint (if any) was published by `co_finish`.
-struct LoopContext {
+pub(crate) struct LoopContext {
     service: Arc<LearningService>,
     brief: OutlineBrief,
     model_override: Option<(ProviderId, String)>,

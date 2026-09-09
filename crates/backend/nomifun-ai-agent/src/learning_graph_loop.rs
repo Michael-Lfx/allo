@@ -21,30 +21,46 @@
 //! only `lg_finish` (which re-runs the audit as a hard gate) publishes.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use nomi_providers::{LlmProvider, ProviderError, create_provider};
-use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
+use nomi_providers::{LlmProvider, create_provider};
 use nomifun_common::{AppError, LearningCourseId, ProviderId, UserId};
 use nomifun_learning::{
     LearningGraphAgentEngine, LearningGraphRecord, GraphOp, LearningService, NodeQuery,
     SubgraphDirection,
 };
-use tokio::sync::mpsc;
 
 use crate::factory::provider_config::resolve_provider_config_with_output_limit;
 use crate::knowledge_completer::resolve_default_model;
-use crate::loop_core::{
-    GENERATE_REASONING_EFFORT, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS,
-    REPAIR_REASONING_EFFORT, json_compact, log_text, run_agent_loop,
+use crate::learning_loop::{
+    CANCEL_MESSAGE, CancellableProvider, FlowCycle, LoopBudgets, LoopChannel, WireConfig, run_loops,
 };
+use crate::loop_core::{LoopEventSink, json_compact, log_text};
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
-/// 生成循环的轮次上限：学习图本地覆盖共享默认（loop_core 的 50）——200+
-/// 节点的构建每轮只落一小批 patch，复杂目标 50 轮必然中途断头。共享常量
-/// 不动（course_outline / lesson_content 循环按各自默认值运行）。
-const GENERATE_MAX_ROUNDS: usize = 100;
+/// 学习图循环的显式预算表（ADR-0004，替代原三个遮蔽/覆盖共享默认的本地
+/// 常量）：轮次 100 覆盖共享默认 50——200+ 节点的构建每轮只落一小批
+/// patch，复杂目标 50 轮必然中途断头；token 32768 = 共享默认的 4 倍（构建
+/// 是长程规划任务，大批量 patch JSON 需要大输出预算；解析时还会收敛到模
+/// 型声明的输出上限）；时长 1800s——200 节点规模的构建要跑多轮生成与修
+/// 复循环，共享默认 600s 必然撞墙。共享常量不动（course_outline /
+/// lesson_content 循环按各自默认值声明）。
+const BUDGETS: LoopBudgets = LoopBudgets {
+    generate_max_rounds: 100,
+    round_tokens: 32768,
+    timeout_secs: 1800,
+};
+
+/// 线上翻译差异表（ADR-0004）：学习图独有项——kind 帧标记、损坏降级
+/// （round_feedback）上 WS、轮次日志（构建标签）、start 阶段帧。
+const WIRE: WireConfig = WireConfig {
+    kind_tag: Some("learning_graph"),
+    round_log_gen_label: Some("构建"),
+    translate_round_feedback: true,
+    generate_start_phase: Some("generating"),
+    repair_start_phase: Some("repairing"),
+    lesson_stream: false,
+};
 
 /// 单批 lg_patch 的操作数上限：与工具 schema 的 maxItems=15 同口径。schema
 /// 只是给模型的软约束（部分网关不校验 JSON Schema），超限批次在运行时
@@ -52,65 +68,6 @@ const GENERATE_MAX_ROUNDS: usize = 100;
 /// 式的信号，拆批后每批都能看到审计反馈（learnhub「每批 ≤35」纪律的引
 /// 擎化版本）。
 const MAX_PATCH_OPS: usize = 15;
-
-/// 学习图循环自己的每轮 token 预算：构建是长程规划任务，大批量 patch JSON
-/// 需要大输出预算，取共享默认（`AGENT_MAX_TOKENS`）的 4 倍。绝不改共享常
-/// 量——course_outline / lesson_content 循环按各自默认值运行；该预算在解
-/// 析时还会收敛到模型声明的输出上限（见
-/// `resolve_provider_config_with_output_limit`）。
-const ROUND_TOKEN_BUDGET: u32 = 32768;
-
-/// 本循环的总时长预算（生成 + 修复 + 审计门禁）：200 节点规模的构建要
-/// 跑多轮生成与修复循环，共享默认 600s 必然撞墙。超时不是模型可解决的
-/// 错误，而是预算墙——本地声明而非改共享常量（调用方本地覆盖，见
-/// loop_core 的 `TOTAL_TIMEOUT_SECS`）。超时后草稿与轮次日志存活，续建
-/// 接着建。
-const GENERATE_TIMEOUT_SECS: u64 = 1800;
-
-/// 取消提示语：以 `LlmEvent::Error` / `ProviderError::Api` 注入。循环的
-/// 错误分支不会把它当作可同轮重试的错误（只匹配 malformed JSON），整个
-/// 生成以"已取消"失败收场。取消不保留草稿（重试即全新生成）；真实失
-/// 败仍保留草稿供续建。学习图与课程大纲两个生成循环共用。
-pub(crate) const CANCEL_MESSAGE: &str = "生成已被用户取消";
-
-/// 生成循环共用的 provider 包装：每次 LLM 请求开始前与流转发途中轮询
-/// 取消旗标（旗标挂在 [`LearningService`] 的生成注册上，取消端点置位）。
-/// 取消在流边界即刻生效——请求前直接拒绝；流中把取消作为 Error 事件注入
-/// 并停止转发（下游 receiver 被 drop 后上游发送失败，HTTP 流随之终止）。
-pub(crate) struct CancellableProvider {
-    pub(crate) inner: Arc<dyn LlmProvider>,
-    pub(crate) cancel: Arc<AtomicBool>,
-}
-
-#[async_trait::async_trait]
-impl LlmProvider for CancellableProvider {
-    async fn stream(
-        &self,
-        request: &LlmRequest,
-    ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-        if self.cancel.load(Ordering::Relaxed) {
-            return Err(ProviderError::Api {
-                status: 499,
-                message: CANCEL_MESSAGE.to_owned(),
-            });
-        }
-        let mut rx = self.inner.stream(request).await?;
-        let cancel = Arc::clone(&self.cancel);
-        let (tx, out) = mpsc::channel(64);
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if cancel.load(Ordering::Relaxed) {
-                    let _ = tx.send(LlmEvent::Error(CANCEL_MESSAGE.to_owned())).await;
-                    break;
-                }
-                if tx.send(event).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(out)
-    }
-}
 
 /// 第一轮 user 消息：任务主题 + 预创建草稿的视图与范围参考。取代旧的
 /// `lg_start` / `lg_scope` 两个纯读轮次——同一份信息零成本落进上下文。
@@ -275,13 +232,13 @@ impl LiveLearningGraphAgentEngine {
     ) -> Result<LearningGraphRecord, AppError> {
         let (provider_id, model, provider, output_limit) =
             self.resolve_provider(model_override).await?;
-        // 请求预算用本循环的 ROUND_TOKEN_BUDGET（4×），但绝不越过模型声明
-        // 的输出上限——目录/模型行给出更小的 output_limit 时自动降档到该
-        // 上限（严格网关会对超限请求直接 400）。思考模式禁用（实验中；开
-        // 启版本为 round_budget/2 预算的 Enabled，见 dad18d00d）。
+        // 请求预算用本循环的 BUDGETS.round_tokens（共享默认的 4 倍），但绝
+        // 不越过模型声明的输出上限——目录/模型行给出更小的 output_limit 时
+        // 自动降档到该上限（严格网关会对超限请求直接 400）。思考模式禁用
+        // （实验中；开启版本为 round_budget/2 预算的 Enabled，见 dad18d00d）
+        // ——由统一外壳按三流一致的策略施加。
         let round_budget =
-            output_limit.map_or(ROUND_TOKEN_BUDGET, |ceiling| ROUND_TOKEN_BUDGET.min(ceiling));
-        let thinking = ThinkingConfig::Disabled;
+            output_limit.map_or(BUDGETS.round_tokens, |ceiling| BUDGETS.round_tokens.min(ceiling));
         // 取消旗标：挂在服务端生成注册上，取消端点置位；包装后的 provider
         // 在每次 LLM 请求边界轮询（见 `CancellableProvider`）。
         let provider: Arc<dyn LlmProvider> = Arc::new(CancellableProvider {
@@ -379,7 +336,7 @@ impl LiveLearningGraphAgentEngine {
             model_override: Some((provider_id, model.clone())),
             draft_slot: Arc::new(Mutex::new(Some(draft_id))),
             published_slot: Arc::new(Mutex::new(None)),
-            round_log: Mutex::new(Vec::new()),
+            channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
         });
 
         // 注入完成即广播一条可见事件：第一轮 LLM（思考开启）要 1-2 分钟才
@@ -393,14 +350,14 @@ impl LiveLearningGraphAgentEngine {
         );
 
         match tokio::time::timeout(
-            std::time::Duration::from_secs(GENERATE_TIMEOUT_SECS),
-            self.run_loops(
+            std::time::Duration::from_secs(BUDGETS.timeout_secs),
+            run_loops(
+                self,
                 provider,
                 &model,
                 &user_text,
                 Arc::clone(&ctx),
                 round_budget,
-                thinking,
             ),
         )
         .await
@@ -459,10 +416,8 @@ impl LiveLearningGraphAgentEngine {
                     }
                     (false, Some(draft_id)) => {
                         // 轮次日志归档到草稿名下：续建时注入开场恢复认知。
-                        if let (Ok(mut logs), Ok(round_log)) =
-                            (self.round_logs.lock(), ctx.round_log.lock())
-                        {
-                            logs.insert(draft_id, round_log.clone());
+                        if let Ok(mut logs) = self.round_logs.lock() {
+                            logs.insert(draft_id, ctx.channel.round_log_snapshot());
                         }
                     }
                     _ => {}
@@ -476,7 +431,8 @@ impl LiveLearningGraphAgentEngine {
             }
             Err(_) => {
                 let mut message = format!(
-                    "生成进行到 {GENERATE_TIMEOUT_SECS}s 达到本次会话的时长预算——这不是图的问题，是会话预算墙"
+                    "生成进行到 {}s 达到本次会话的时长预算——这不是图的问题，是会话预算墙",
+                    BUDGETS.timeout_secs
                 );
                 if let Some(draft_id) = ctx
                     .draft_slot
@@ -485,10 +441,8 @@ impl LiveLearningGraphAgentEngine {
                     .and_then(|slot| slot.clone())
                 {
                     // 轮次日志归档：续建时接着此进度继续。
-                    if let (Ok(mut logs), Ok(round_log)) =
-                        (self.round_logs.lock(), ctx.round_log.lock())
-                    {
-                        logs.insert(draft_id.clone(), round_log.clone());
+                    if let Ok(mut logs) = self.round_logs.lock() {
+                        logs.insert(draft_id.clone(), ctx.channel.round_log_snapshot());
                     }
                     match self.service.audit_learning_graph_draft(&draft_id) {
                         Ok(audit) => {
@@ -537,184 +491,113 @@ impl LearningGraphAgentEngine for LiveLearningGraphAgentEngine {
     }
 }
 
-impl LiveLearningGraphAgentEngine {
-    /// Generation loop, then audit-gated repair loops. `provider` is
-    /// injected so tests stub the LLM here (same seam as
-    /// `run_one_shot_turn_with_provider`). `max_tokens`/`thinking` are the
-    /// resolved per-round budget and thinking policy — the learning-graph
-    /// loop reasons and clamps its budget to the model's output ceiling.
-    async fn run_loops(
+/// 统一外壳（[`FlowCycle`]）的学习图插头。预算与线上差异表见 [`BUDGETS`] /
+/// [`WIRE`]；finish 门即服务层的确定性审计门（含发布前独立终审软门）；
+/// 修复轮错误附加存活草稿诊断；发布优先于循环错误——末轮发布可存活于
+/// 预算墙。
+#[async_trait::async_trait]
+impl FlowCycle for LiveLearningGraphAgentEngine {
+    type Ctx = LoopContext;
+    type Output = LearningGraphRecord;
+
+    fn name(&self) -> &'static str {
+        "learning graph"
+    }
+
+    fn budgets(&self) -> LoopBudgets {
+        BUDGETS
+    }
+
+    fn wire(&self) -> WireConfig {
+        WIRE
+    }
+
+    fn generate_system(&self) -> &'static str {
+        GENERATE_AGENT_SYSTEM
+    }
+
+    fn repair_system(&self) -> &'static str {
+        REPAIR_AGENT_SYSTEM
+    }
+
+    fn tools(&self, ctx: Arc<LoopContext>, _repair_face: bool) -> Vec<OneShotTool> {
+        learning_graph_tools(ctx)
+    }
+
+    async fn finish(
         &self,
-        provider: Arc<dyn LlmProvider>,
-        model: &str,
-        user_text: &str,
-        ctx: Arc<LoopContext>,
-        max_tokens: u32,
-        thinking: ThinkingConfig,
+        ctx: &LoopContext,
+        draft_id: &str,
     ) -> Result<LearningGraphRecord, AppError> {
-        // ── Generation loop: full tool set, the injected opening message
-        // (topic + draft view + scope reference) as the user turn ──
-        ctx.log("generate_loop_start", serde_json::json!({
-            "phase": "generating",
-            "max_rounds": GENERATE_MAX_ROUNDS,
-            "tool_count": learning_graph_tools(Arc::clone(&ctx)).len(),
-        }));
-        let generate_tools = learning_graph_tools(Arc::clone(&ctx));
-        let loop_result = run_agent_loop(
-            provider.clone(),
-            model,
-            GENERATE_AGENT_SYSTEM,
-            user_text,
-            &generate_tools,
-            GENERATE_MAX_ROUNDS,
-            max_tokens,
-            thinking.clone(),
-            GENERATE_REASONING_EFFORT,
-            "generate",
-            Some(ctx.as_ref()),
+        self.service
+            .finish_learning_graph_draft(&ctx.user_id, draft_id)
+            .await
+    }
+
+    fn revision(&self, _ctx: &LoopContext, draft_id: &str) -> Result<u64, AppError> {
+        Ok(self.service.inspect_learning_graph_draft(draft_id)?.revision)
+    }
+
+    fn repair_audit(
+        &self,
+        _ctx: &LoopContext,
+        draft_id: &str,
+        _round: usize,
+    ) -> Result<String, AppError> {
+        self.service.audit_learning_graph_draft(draft_id)
+    }
+
+    fn exhausted_audit(&self, _ctx: &LoopContext, draft_id: &str) -> Result<String, AppError> {
+        self.service.audit_learning_graph_draft(draft_id)
+    }
+
+    fn publish_frame(
+        output: &LearningGraphRecord,
+        loop_label: &str,
+        round: Option<usize>,
+    ) -> serde_json::Value {
+        let mut frame = serde_json::json!({
+            "phase": "publishing",
+            "loop": loop_label,
+            "record_id": output.id,
+        });
+        if let Some(round) = round {
+            frame["round"] = serde_json::json!(round);
+        }
+        frame
+    }
+
+    fn on_published(&self, _ctx: &LoopContext) {}
+
+    fn idle_nudge_actions(&self) -> &'static str {
+        "lg_patch 执行修复动作，或以 lg_finish 尝试发布"
+    }
+
+    fn map_loop_error(&self, ctx: &LoopContext, error: AppError) -> AppError {
+        attach_draft_context(&self.service, ctx, error)
+    }
+
+    fn publish_before_error(&self) -> bool {
+        true
+    }
+
+    fn missing_draft_texts(&self) -> (&'static str, &'static str) {
+        (
+            "no draft was ever created (the pre-loop draft injection went missing)",
+            "learning graph agent finished without creating a draft (the pre-loop draft injection went missing — internal error)",
         )
-        .await;
-        // lg_finish 可能在循环的最后一轮成功发布（预算恰好在发布轮耗尽）
-        // ——发布优先于任何循环错误：已入库的成果不能被预算墙吞掉。
-        if let Some(record) = take_published(&ctx) {
-            ctx.log("publish_ok", serde_json::json!({
-                "phase": "publishing",
-                "loop": "generate",
-                "record_id": record.id,
-            }));
-            return Ok(record);
-        }
-        let final_text = loop_result
-            .map_err(|error| attach_draft_context(&self.service, &ctx, error))?;
-        let draft_id = ctx
-            .draft_slot
-            .lock()
-            .map_err(|_| AppError::Internal("learning graph draft slot poisoned".into()))?
-            .clone()
-            .ok_or_else(|| {
-                ctx.log("generate_loop_end", serde_json::json!({
-                    "ok": false,
-                    "reason": "no draft was ever created (the pre-loop draft injection went missing)",
-                    "text": log_text(&final_text),
-                }));
-                AppError::Internal(
-                    "learning graph agent finished without creating a draft (the pre-loop draft injection went missing — internal error)"
-                        .into(),
-                )
-            })?;
-        ctx.log("generate_loop_end", serde_json::json!({
-            "ok": true,
-            "draft_id": draft_id,
-            "text": log_text(&final_text),
-        }));
+    }
 
-        // ── Repair loops: the audit gate has the last word ──────────────
-        // `finish_learning_graph_draft` IS the deterministic gate: success
-        // means the graph cleared it, UnprocessableEntity means danger
-        // findings remain and the repair loop gets the full report.
-        // `idle_nudge` carries a warning into the next loop when the model
-        // ended a repair round without touching the draft (revision
-        // unchanged) — models may otherwise "reply, not repair".
-        let mut idle_nudge: Option<String> = None;
-        for round in 0..REPAIR_LOOP_LIMIT {
-            ctx.log("repair_loop_start", serde_json::json!({
-                "phase": "repairing",
-                "round": round + 1,
-                "draft_id": draft_id,
-            }));
-            match ctx
-                .service
-                .finish_learning_graph_draft(&ctx.user_id, &draft_id)
-                .await
-            {
-                Ok(record) => {
-                    ctx.log("publish_ok", serde_json::json!({
-                        "phase": "publishing",
-                        "loop": "repair",
-                        "round": round + 1,
-                        "record_id": record.id,
-                    }));
-                    return Ok(record);
-                }
-                Err(AppError::UnprocessableEntity(_)) => {
-                    ctx.log("finish_blocked", serde_json::json!({
-                        "round": round + 1,
-                        "draft_id": draft_id,
-                    }));
-                }
-                Err(error) => return Err(error),
-            }
-            let audit = ctx.service.audit_learning_graph_draft(&draft_id)?;
-            let repair_user = match &idle_nudge {
-                Some(nudge) => format!("{nudge}\n\n{audit}"),
-                None => audit,
-            };
-            let repair_tools = learning_graph_tools(Arc::clone(&ctx));
-            let revision_before = ctx
-                .service
-                .inspect_learning_graph_draft(&draft_id)?
-                .revision;
-            let loop_result = run_agent_loop(
-                provider.clone(),
-                model,
-                REPAIR_AGENT_SYSTEM,
-                &repair_user,
-                &repair_tools,
-                REPAIR_MAX_ROUNDS,
-                max_tokens,
-                thinking.clone(),
-                REPAIR_REASONING_EFFORT,
-                "repair",
-                Some(ctx.as_ref()),
-            )
-            .await;
-            // 发布优先于循环错误（同 generate 循环）。
-            if let Some(record) = take_published(&ctx) {
-                ctx.log("publish_ok", serde_json::json!({
-                    "phase": "publishing",
-                    "loop": "repair",
-                    "round": round + 1,
-                    "record_id": record.id,
-                }));
-                return Ok(record);
-            }
-            let final_text = loop_result
-                .map_err(|error| attach_draft_context(&self.service, &ctx, error))?;
-            let revision_after = ctx
-                .service
-                .inspect_learning_graph_draft(&draft_id)?
-                .revision;
-            if revision_after == revision_before {
-                ctx.log("repair_loop_idle", serde_json::json!({
-                    "round": round + 1,
-                    "revision": revision_after,
-                    "text": log_text(&final_text),
-                }));
-                idle_nudge = Some(format!(
-                    "警告：你上一轮没有对草稿做任何修改（revision 仍是 {revision_after}），只回复了文字。\
-                     禁止空手结束：本轮必须调用 lg_patch 执行修复动作，或以 lg_finish 尝试发布；\
-                     只输出文字而不调用任何工具，会被判定为拒绝修复，整个生成将以失败告终。"
-                ));
-            } else {
-                idle_nudge = None;
-            }
-            ctx.log("repair_loop_end", serde_json::json!({
-                "round": round + 1,
-                "draft_id": draft_id,
-                "revision": revision_after,
-                "text": log_text(&final_text),
-            }));
-        }
+    fn slot_poisoned(&self) -> AppError {
+        AppError::Internal("learning graph draft slot poisoned".into())
+    }
 
-        // Budget exhausted: report honestly with the surviving findings
-        // (the draft is kept, so a human or a later run can continue).
-        let audit = ctx.service.audit_learning_graph_draft(&draft_id)?;
-        ctx.log("repair_budget_exhausted", serde_json::json!({
-            "draft_id": draft_id,
-        }));
-        Err(AppError::UnprocessableEntity(format!(
-            "learning graph agent exhausted {REPAIR_LOOP_LIMIT} repair loops; the draft survives with these blocking findings:\n{audit}"
-        )))
+    fn draft_slot(ctx: &LoopContext) -> &Arc<Mutex<Option<String>>> {
+        &ctx.draft_slot
+    }
+
+    fn published_slot(ctx: &LoopContext) -> &Arc<Mutex<Option<LearningGraphRecord>>> {
+        &ctx.published_slot
     }
 }
 
@@ -722,17 +605,15 @@ impl LiveLearningGraphAgentEngine {
 
 /// Everything the tool handlers need, captured once per generation. The two
 /// slots are the only mutable cross-round state: which draft is active and
-/// which record (if any) was published by `lg_finish`.
-struct LoopContext {
+/// which record (if any) was published by `lg_finish`. 线上翻译与轮次日志
+/// 由统一外壳的 [`LoopChannel`] 承载（差异表见 [`WIRE`]）。
+pub(crate) struct LoopContext {
     service: Arc<LearningService>,
     user_id: UserId,
     model_override: Option<(ProviderId, String)>,
     draft_slot: Arc<Mutex<Option<String>>>,
     published_slot: Arc<Mutex<Option<LearningGraphRecord>>>,
-    /// 轮次日志：每轮的意图文本与工具摘要（`emit_progress` 的 agent_round
-    /// 分支追加）。对话历史无法跨会话保留，这些计划轨迹在续建时注入开场
-    /// 消息，恢复模型对「做到哪了、接下来干什么」的认知。
-    round_log: Mutex<Vec<String>>,
+    channel: LoopChannel,
 }
 
 impl LoopContext {
@@ -740,101 +621,7 @@ impl LoopContext {
     /// stream (the shared progress channel — no session files). Best-effort
     /// and never fails the caller.
     fn log(&self, event: &str, fields: serde_json::Value) {
-        self.emit_progress(event, &fields);
-    }
-
-    /// Translate loop-core log events into `learning.course-generation`
-    /// frames, tagged `kind: "learning_graph"`. `agent_round` carries the
-    /// loop-core shape (loop/round/text/tool_calls) and is reshaped; events
-    /// with a `phase` field pass through with the tag added; anything else
-    /// is loop-internal and stays off the wire.
-    fn emit_progress(&self, event: &str, fields: &serde_json::Value) {
-        let payload = match event {
-            "agent_round" => {
-                let repair =
-                    fields.get("loop").and_then(serde_json::Value::as_str) != Some("generate");
-                // 轮次日志：记录每轮意图（工具摘要 + 计划文本），续建时注
-                // 入开场消息恢复认知（见 `round_log` 字段注释）。
-                let tools_text = fields
-                    .get("tool_calls")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|calls| {
-                        calls
-                            .iter()
-                            .map(|call| {
-                                let name =
-                                    call.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                let failed = call
-                                    .get("is_error")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-                                format!("{name}{}", if failed { "✗" } else { "✓" })
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" · ")
-                    })
-                    .unwrap_or_default();
-                let text = fields
-                    .get("text")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .trim();
-                let mut line = format!(
-                    "第{}轮({}): {}",
-                    fields
-                        .get("round")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0),
-                    if repair { "修复" } else { "构建" },
-                    tools_text,
-                );
-                if !text.is_empty() {
-                    let char_count = text.chars().count();
-                    let mut brief: String = text.chars().take(120).collect();
-                    if char_count > 120 {
-                        brief.push('…');
-                    }
-                    line.push(' ');
-                    line.push_str(&brief);
-                }
-                if let Ok(mut log) = self.round_log.lock() {
-                    log.push(line);
-                }
-                serde_json::json!({
-                    "kind": "learning_graph",
-                    "phase": "round",
-                    "loop": fields.get("loop"),
-                    "round": fields.get("round"),
-                    "max_rounds": if repair { REPAIR_MAX_ROUNDS } else { GENERATE_MAX_ROUNDS },
-                    "tools": fields.get("tool_calls").cloned().unwrap_or_default(),
-                    "text": fields.get("text").cloned().unwrap_or_default(),
-                })
-            }
-            "round_feedback" => {
-                // 损坏降级上 WS：否则用户会看到轮次凭空从 1 跳到 2，不知道
-                // 中间发生过一次传输损坏与自动恢复。复用 round 行渲染。
-                serde_json::json!({
-                    "kind": "learning_graph",
-                    "phase": "round",
-                    "loop": fields.get("loop"),
-                    "round": fields.get("round"),
-                    "tools": [],
-                    "text": format!(
-                        "工具调用参数损坏，本轮操作未执行——已自动要求模型重新提交（第 {} 次）",
-                        fields.get("feedbacks_used").and_then(serde_json::Value::as_u64).unwrap_or(0),
-                    ),
-                })
-            }
-            _other if fields.get("phase").is_some() => {
-                let mut payload = fields.clone();
-                if let Some(object) = payload.as_object_mut() {
-                    object.insert("kind".to_owned(), serde_json::json!("learning_graph"));
-                }
-                payload
-            }
-            _ => return,
-        };
-        self.service.emit_course_event(payload);
+        self.channel.emit(&self.service, event, &fields);
     }
 
     fn require_draft(&self) -> Result<String, String> {
@@ -850,15 +637,6 @@ impl LoopEventSink for LoopContext {
     fn log(&self, event: &str, fields: serde_json::Value) {
         LoopContext::log(self, event, fields);
     }
-}
-
-/// Take the published record out of the slot (once) — called after every
-/// loop, because the model may legitimately `lg_finish` from either loop.
-fn take_published(ctx: &LoopContext) -> Option<LearningGraphRecord> {
-    ctx.published_slot
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
 }
 
 /// Parse the published record id (a `learning_courses.course_id` string)
@@ -1214,82 +992,18 @@ fn lg_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
     use nomi_providers::ProviderError;
     use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
-    use nomi_types::message::{ContentBlock, Message, StopReason, TokenUsage};
+    use nomi_types::message::{ContentBlock, StopReason};
     use nomifun_learning::LearningCompleter;
-    use tokio::sync::mpsc;
 
-    use crate::knowledge_completer::tests::{ListOnlyModelRepo, ListOnlyRepo};
-    use crate::loop_core::AGENT_MAX_TOKENS;
-
-    /// Scripted fake provider: each `stream` call pops the next script
-    /// entry; every observed request (tool names + messages) is recorded.
-    struct ScriptedProvider {
-        script: Mutex<Vec<Vec<LlmEvent>>>,
-        seen_tool_names: Mutex<Vec<Vec<String>>>,
-        seen_messages: Mutex<Vec<Vec<Message>>>,
-        seen_thinking: Mutex<Vec<Option<ThinkingConfig>>>,
-        /// 每轮请求的推理档位——修复循环升档（REPAIR_REASONING_EFFORT）
-        /// 的观测点。
-        seen_effort: Mutex<Vec<Option<String>>>,
-    }
-
-    impl ScriptedProvider {
-        fn new(script: Vec<Vec<LlmEvent>>) -> Arc<Self> {
-            Arc::new(Self {
-                script: Mutex::new(script),
-                seen_tool_names: Mutex::new(Vec::new()),
-                seen_messages: Mutex::new(Vec::new()),
-                seen_thinking: Mutex::new(Vec::new()),
-                seen_effort: Mutex::new(Vec::new()),
-            })
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl LlmProvider for ScriptedProvider {
-        async fn stream(
-            &self,
-            request: &LlmRequest,
-        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-            self.seen_tool_names
-                .lock()
-                .unwrap()
-                .push(request.tools.iter().map(|tool| tool.name.clone()).collect());
-            self.seen_messages.lock().unwrap().push(request.messages.clone());
-            self.seen_thinking.lock().unwrap().push(request.thinking.clone());
-            self.seen_effort.lock().unwrap().push(request.reasoning_effort.clone());
-            let mut script = self.script.lock().unwrap();
-            if script.is_empty() {
-                return Err(ProviderError::Connection("script exhausted".into()));
-            }
-            let events = script.remove(0);
-            let (tx, rx) = mpsc::channel(events.len().max(1));
-            tokio::spawn(async move {
-                for event in events {
-                    if tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-            });
-            Ok(rx)
-        }
-    }
-
-    fn done(stop_reason: StopReason) -> LlmEvent {
-        LlmEvent::Done { stop_reason, usage: TokenUsage::default() }
-    }
-
-    fn tool_use(name: &str, input: serde_json::Value) -> LlmEvent {
-        LlmEvent::ToolUse {
-            id: format!("call_{name}"),
-            name: name.into(),
-            input,
-            extra: None,
-        }
-    }
+    use crate::learning_loop::test_support::{
+        ScriptedProvider, done, test_deps, test_service, test_service_with, tool_use,
+    };
+    use crate::loop_core::{AGENT_MAX_TOKENS, run_agent_loop};
 
     fn add_op(name: &str, pre: &[&str]) -> serde_json::Value {
         serde_json::json!({ "op": "add", "name": name, "pre": pre })
@@ -1302,23 +1016,6 @@ mod tests {
             .chunks(MAX_PATCH_OPS)
             .map(|chunk| serde_json::json!({ "operations": chunk }))
             .collect()
-    }
-
-    /// Completer whose reply never parses as a scope reference: every draft
-    /// starts scope-free, keeping the deterministic audit fully structural.
-    struct FakeCompleter;
-
-    #[async_trait::async_trait]
-    impl LearningCompleter for FakeCompleter {
-        async fn complete(
-            &self,
-            _model_override: Option<(&str, &str)>,
-            _system: &str,
-            _user: &str,
-            _max_tokens: u32,
-        ) -> Result<String, AppError> {
-            Ok("not a scope json".into())
-        }
     }
 
     /// 终审 completer：返回咨询级意见 JSON。scope 分析容忍解析失败（照旧
@@ -1338,75 +1035,11 @@ mod tests {
         }
     }
 
-    /// [`test_service`] 的自定义 completer 变体（终审软门测试用）。
-    async fn test_service_with_completer(
-        completer: Arc<dyn LearningCompleter>,
-    ) -> (Arc<LearningService>, tempfile::TempDir) {
-        let database = nomifun_db::init_database_memory().await.unwrap();
-        let owner_id = nomifun_db::installation_owner_id(database.pool())
-            .await
-            .unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let knowledge_service = Arc::new(nomifun_knowledge::KnowledgeService::new(
-            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
-                database.pool().clone(),
-            )),
-            dir.path(),
-            nomifun_knowledge::KnowledgeEventEmitter::new(
-                Arc::new(NoopBroadcaster),
-                Arc::from(owner_id),
-            ),
-        ));
-        let service = Arc::new(LearningService::new(database.pool().clone()));
-        service.set_generation_dependencies(knowledge_service, completer);
-        (service, dir)
-    }
-
-    #[derive(Default)]
-    struct NoopBroadcaster;
-
-    impl nomifun_realtime::UserEventSink for NoopBroadcaster {
-        fn send_to_user(
-            &self,
-            _user_id: &str,
-            _event: nomifun_api_types::WebSocketMessage<serde_json::Value>,
-        ) {
-        }
-    }
-
-    /// A service wired with the fake completer and a scratch knowledge dir;
-    /// the temp dir stays alive for the test's duration.
-    async fn test_service() -> (Arc<LearningService>, tempfile::TempDir) {
-        let database = nomifun_db::init_database_memory().await.unwrap();
-        let owner_id = nomifun_db::installation_owner_id(database.pool())
-            .await
-            .unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let knowledge_service = Arc::new(nomifun_knowledge::KnowledgeService::new(
-            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
-                database.pool().clone(),
-            )),
-            dir.path(),
-            nomifun_knowledge::KnowledgeEventEmitter::new(
-                Arc::new(NoopBroadcaster),
-                Arc::from(owner_id),
-            ),
-        ));
-        let service = Arc::new(LearningService::new(database.pool().clone()));
-        service.set_generation_dependencies(knowledge_service, Arc::new(FakeCompleter));
-        (service, dir)
-    }
-
     fn engine(service: Arc<LearningService>) -> LiveLearningGraphAgentEngine {
         LiveLearningGraphAgentEngine {
             service,
             round_logs: Arc::new(Mutex::new(HashMap::new())),
-            deps: OneShotDeps {
-                provider_repo: Arc::new(ListOnlyRepo(Vec::new())),
-                provider_model_repo: Arc::new(ListOnlyModelRepo(Vec::new())),
-                encryption_key: [0u8; 32],
-                workspace: std::env::temp_dir(),
-            },
+            deps: test_deps(),
         }
     }
 
@@ -1425,7 +1058,7 @@ mod tests {
             model_override: None,
             draft_slot: Arc::clone(&draft_slot),
             published_slot: Arc::clone(&published_slot),
-            round_log: Mutex::new(Vec::new()),
+            channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
         });
         (ctx, draft_slot, published_slot)
     }
@@ -1452,7 +1085,7 @@ mod tests {
             model_override: None,
             draft_slot: Arc::clone(&draft_slot),
             published_slot: Arc::clone(&published_slot),
-            round_log: Mutex::new(Vec::new()),
+            channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
         });
         (ctx, draft_slot, published_slot)
     }
@@ -1488,8 +1121,8 @@ mod tests {
             GENERATE_AGENT_SYSTEM,
             "数学基础",
             &tools,
-            GENERATE_MAX_ROUNDS,
-            ROUND_TOKEN_BUDGET,
+            BUDGETS.generate_max_rounds,
+            BUDGETS.round_tokens,
             ThinkingConfig::Disabled,
             None,
             "generate",
@@ -1593,14 +1226,13 @@ mod tests {
             done(StopReason::EndTurn),
         ]);
         let provider = ScriptedProvider::new(script);
-        let record = engine(Arc::clone(&service))
-            .run_loops(
-                provider.clone(),
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let record = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .unwrap();
@@ -1647,7 +1279,7 @@ mod tests {
             operations.push(add_op(&format!("n{index}"), &["n6"]));
         }
         let batches = batched(&operations);
-        let mut script: Vec<Vec<LlmEvent>> = (0..GENERATE_MAX_ROUNDS - 1 - batches.len())
+        let mut script: Vec<Vec<LlmEvent>> = (0..BUDGETS.generate_max_rounds - 1 - batches.len())
             .map(|_| {
                 vec![
                     tool_use("lg_inspect", serde_json::json!({})),
@@ -1663,14 +1295,13 @@ mod tests {
             done(StopReason::ToolUse),
         ]);
 
-        let record = engine(Arc::clone(&service))
-            .run_loops(
-                ScriptedProvider::new(script),
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let record = run_loops(
+            &engine(Arc::clone(&service)),
+            ScriptedProvider::new(script),
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .expect("publish on the final round must win over the round-budget error");
@@ -1732,14 +1363,13 @@ mod tests {
         ]);
         let provider = ScriptedProvider::new(script);
 
-        let record = engine(Arc::clone(&service))
-            .run_loops(
-                provider.clone(),
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let record = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .unwrap();
@@ -1780,14 +1410,13 @@ mod tests {
             LlmEvent::TextDelta("nothing to do".into()),
             done(StopReason::EndTurn),
         ]]);
-        let error = engine(service)
-            .run_loops(
-                provider,
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let error = run_loops(
+            &engine(service),
+            provider,
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .unwrap_err();
@@ -1814,14 +1443,13 @@ mod tests {
             // repair loop 3
             vec![LlmEvent::TextDelta("cannot fix".into()), done(StopReason::EndTurn)],
         ]);
-        let error = engine(Arc::clone(&service))
-            .run_loops(
-                provider.clone(),
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let error = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .unwrap_err();
@@ -1990,14 +1618,13 @@ mod tests {
             vec![malformed()],
             vec![malformed()],
         ]);
-        let error = engine(Arc::clone(&service))
-            .run_loops(
-                provider,
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let error = run_loops(
+            &engine(Arc::clone(&service)),
+            provider,
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .unwrap_err();
@@ -2023,14 +1650,13 @@ mod tests {
             .expect("seeded draft registers its id");
         service.cancel_generation();
         let provider = ScriptedProvider::new(vec![vec![LlmEvent::Error("provider exploded".into())]]);
-        let error = engine(Arc::clone(&service))
-            .run_loops(
-                provider,
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let error = run_loops(
+            &engine(Arc::clone(&service)),
+            provider,
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .unwrap_err();
@@ -2070,7 +1696,7 @@ mod tests {
             model_override: None,
             draft_slot: Arc::new(Mutex::new(Some(view.draft_id.clone()))),
             published_slot: Arc::new(Mutex::new(None)),
-            round_log: Mutex::new(Vec::new()),
+            channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
         });
 
         // 补齐到 30 个单元的收敛结构（与修复测试同构）。
@@ -2095,14 +1721,13 @@ mod tests {
         ]);
         let provider = ScriptedProvider::new(script);
 
-        let record = engine(Arc::clone(&service))
-            .run_loops(
-                provider.clone(),
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let record = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .unwrap();
@@ -2167,7 +1792,7 @@ mod tests {
                 "tool_calls": [{ "name": "lg_patch", "is_error": true }],
             }),
         );
-        let log = ctx.round_log.lock().unwrap();
+        let log = ctx.channel.round_log_snapshot();
         assert_eq!(log.len(), 2);
         assert!(
             log[0].contains("第12轮(构建)")
@@ -2233,8 +1858,8 @@ mod tests {
             GENERATE_AGENT_SYSTEM,
             "数学基础",
             &learning_graph_tools(Arc::clone(&ctx)),
-            GENERATE_MAX_ROUNDS,
-            ROUND_TOKEN_BUDGET,
+            BUDGETS.generate_max_rounds,
+            BUDGETS.round_tokens,
             ThinkingConfig::Disabled,
             None,
             "test",
@@ -2278,8 +1903,8 @@ mod tests {
             GENERATE_AGENT_SYSTEM,
             "数学基础",
             &learning_graph_tools(Arc::clone(&ctx)),
-            GENERATE_MAX_ROUNDS,
-            ROUND_TOKEN_BUDGET,
+            BUDGETS.generate_max_rounds,
+            BUDGETS.round_tokens,
             ThinkingConfig::Disabled,
             None,
             "test",
@@ -2331,8 +1956,8 @@ mod tests {
             GENERATE_AGENT_SYSTEM,
             "数学基础",
             &learning_graph_tools(Arc::clone(&ctx)),
-            GENERATE_MAX_ROUNDS,
-            ROUND_TOKEN_BUDGET,
+            BUDGETS.generate_max_rounds,
+            BUDGETS.round_tokens,
             ThinkingConfig::Disabled,
             None,
             "test",
@@ -2358,7 +1983,7 @@ mod tests {
     /// 终审、直接发布——咨询意见永远不单独拦截发布。
     #[tokio::test]
     async fn final_review_bounces_once_then_publishes() {
-        let (service, _dir) = test_service_with_completer(Arc::new(ReviewFindingCompleter))
+        let (service, _dir) = test_service_with(Arc::new(ReviewFindingCompleter))
             .await;
         let (ctx, _draft, _published) = seeded_context(Arc::clone(&service)).await;
 
@@ -2389,14 +2014,13 @@ mod tests {
             done(StopReason::EndTurn),
         ]);
 
-        let record = engine(Arc::clone(&service))
-            .run_loops(
-                ScriptedProvider::new(script),
-                "test-model",
-                "数学基础",
-                ctx,
-                ROUND_TOKEN_BUDGET,
-                ThinkingConfig::Disabled,
+        let record = run_loops(
+            &engine(Arc::clone(&service)),
+            ScriptedProvider::new(script),
+            "test-model",
+            "数学基础",
+            ctx,
+            BUDGETS.round_tokens,
             )
             .await
             .expect("the second finish must publish without re-running the review");

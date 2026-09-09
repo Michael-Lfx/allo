@@ -26,6 +26,7 @@ pub mod knowledge_writeback;
 pub mod learning_completer;
 pub mod learning_course;
 pub mod lesson_content_loop;
+pub(crate) mod learning_loop;
 pub(crate) mod loop_core;
 pub mod meeting_sink;
 #[cfg(feature = "managed-search")]
