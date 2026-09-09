@@ -35,6 +35,17 @@ class FakeTransport implements Transport {
     if (method === "run/cancel") {
       return { run_id: RUN_ID, status: "cancelling", version: 2, summary: null, output_files: [] } as unknown as T;
     }
+    if (method === "run/result") {
+      return {
+        run_id: RUN_ID,
+        status: "completed",
+        version: 6,
+        summary: "done: 3 steps",
+        output_files: ["report.md"],
+        preset_revision: 1,
+        content_digest: "sha256:x",
+      } as unknown as T;
+    }
     if (method === "run/events") {
       if (this.failEvents) {
         throw new Error("events unavailable");
@@ -64,13 +75,19 @@ class FakeTransport implements Transport {
 }
 
 describe("AgentRunHandle", () => {
-  it("finished resolves with the authoritative terminal view", async () => {
+  it("finished resolves with the aggregated terminal turn result", async () => {
     const transport = new FakeTransport();
+    transport.eventsByCursor = [runEvent(1, "run.started"), runEvent(2, "attempt.updated")];
     // run/get flips to completed after the first poll.
     vi.spyOn(transport, "getStatus").mockReturnValueOnce("planning").mockReturnValue("completed");
     const handle = await launchRun(new RunClient(transport), { agentId: "", goal: "hi" });
-    const view = await handle.finished;
-    expect(view.status).toBe("completed");
+    const result = await handle.finished;
+    expect(result.status).toBe("completed");
+    expect(result.final_response).toBe("done: 3 steps");
+    expect(result.output_files).toEqual(["report.md"]);
+    expect(result.preset_revision).toBe(1);
+    expect(result.items.map((item) => item.kind)).toEqual(["other", "attempt"]);
+    expect(result.events.map((event) => event.sequence)).toEqual([1, 2]);
     await handle.close();
   });
 
