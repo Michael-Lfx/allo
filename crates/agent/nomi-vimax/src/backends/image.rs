@@ -100,15 +100,12 @@ impl FlowyImage {
         out_path: &Path,
         opts: &ImageGenerateOpts,
     ) -> Result<(), nomifun_cloud::ServerClientError> {
-        // Only poster/cover paths set `aspect_ratio`. Portraits / world plates must
-        // keep the default Seedream `2K` canvas — forcing video aspect (e.g. 1280x720)
-        // fails Seedream 5.0's ≥3.6M pixel floor and warps three-view sheets.
-        let mut extra = if self.aspect_ratio.is_some() {
-            crate::aspect::image_request_extra_for_aspect(&self.resolved_aspect())
-        } else {
-            Value::Null
-        };
-        extra = merge_image_edit_opts(extra, opts);
+        // Poster/cover clients set `aspect_ratio` (Seedream pixel `size`).
+        // Portraits / world plates keep the default `2K` canvas. Do not merge
+        // img2img extras onto the poster canvas — Seedream 5.x 400s on
+        // `denoising_strength` / `negative_prompt` here, and negative anatomy
+        // lists trip content inspection (safety rewrite never strips extras).
+        let extra = image_request_extra(self.aspect_ratio.is_some(), &self.resolved_aspect(), opts);
         let req = ImageGenerationRequest {
             model: model.to_string(),
             prompt: prompt.to_string(),
@@ -340,6 +337,15 @@ impl VimaxImage for FlowyImage {
     }
 }
 
+/// Extra blob for one image request: poster canvas XOR mild img2img controls.
+fn image_request_extra(sized_poster: bool, resolved_aspect: &str, opts: &ImageGenerateOpts) -> Value {
+    if sized_poster {
+        crate::aspect::image_request_extra_for_aspect(resolved_aspect)
+    } else {
+        merge_image_edit_opts(Value::Null, opts)
+    }
+}
+
 /// Merge mild img2img controls into the Flowy image `extra` object.
 fn merge_image_edit_opts(base: Value, opts: &ImageGenerateOpts) -> Value {
     let mut map = match base {
@@ -437,4 +443,38 @@ async fn download_to_path(url: &str, out_path: &Path) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poster_extra_drops_img2img_opts() {
+        let extra = image_request_extra(
+            true,
+            "16:9",
+            &ImageGenerateOpts {
+                negative_prompt: Some("extra limbs, deformed anatomy".into()),
+                denoising_strength: Some(0.62),
+            },
+        );
+        assert_eq!(extra["size"], "2816x1584");
+        assert!(extra.get("denoising_strength").is_none());
+        assert!(extra.get("negative_prompt").is_none());
+    }
+
+    #[test]
+    fn default_image_extra_keeps_denoise() {
+        let extra = image_request_extra(
+            false,
+            "16:9",
+            &ImageGenerateOpts {
+                negative_prompt: None,
+                denoising_strength: Some(0.5),
+            },
+        );
+        assert_eq!(extra["denoising_strength"], 0.5);
+        assert!(extra.get("size").is_none());
+    }
 }

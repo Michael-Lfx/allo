@@ -711,8 +711,8 @@ const UpdateModal: React.FC = () => {
               : 0,
           from_version: currentVersionRef.current,
           to_version: updateInfo?.version || autoUpdateInfo?.version,
-          bytes_total: evt.totalBytes ?? progressTotalRef.current || null,
-          bytes_transferred: evt.receivedBytes ?? progressTransferredRef.current || null,
+          bytes_total: evt.totalBytes ?? progressTotalRef.current ?? null,
+          bytes_transferred: evt.receivedBytes ?? progressTransferredRef.current ?? null,
           peak_bps: peakBpsRef.current || null,
           error: evt.error || evt.status,
         });

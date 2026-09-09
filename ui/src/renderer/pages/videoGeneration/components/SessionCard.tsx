@@ -152,7 +152,12 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
     const el = videoRef.current;
     if (!el) return;
     el.pause();
-    el.currentTime = 0;
+    window.setTimeout(() => {
+      const node = videoRef.current;
+      if (node && node.paused) {
+        node.currentTime = 0;
+      }
+    }, 180);
   };
 
   useEffect(() => {
@@ -201,6 +206,7 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
           <video
             ref={videoRef}
             src={videoUrl}
+            poster={coverUrl || undefined}
             muted
             playsInline
             loop

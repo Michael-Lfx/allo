@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    CharacterExtractor, CharacterPortraitsGenerator, VoiceProfileGenerator, VoiceReferenceGenerator,
-    ensure_film_cover, has_usable_portrait,
+    CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, VoiceProfileGenerator,
+    VoiceReferenceGenerator, ensure_film_cover, has_usable_portrait,
 };
 use crate::error::VimaxResult;
-use crate::drama::{load_drama_engine, with_scene_drama_engine};
+use crate::drama::{
+    DramaEngine, load_drama_engine, with_drama_engine, with_scene_drama_engine,
+};
 use crate::media_local;
 use crate::planning::{
     allocate_scene_budgets, enrich_requirement_for_scene,
@@ -42,6 +44,7 @@ use super::{
 pub struct ScriptFilmPipeline {
     backends: PipelineBackends,
     working_dir: PathBuf,
+    screenwriter: Screenwriter,
     character_extractor: CharacterExtractor,
     portraits: CharacterPortraitsGenerator,
 }
@@ -49,10 +52,53 @@ pub struct ScriptFilmPipeline {
 impl ScriptFilmPipeline {
     pub fn new(backends: PipelineBackends, working_dir: PathBuf) -> Self {
         Self {
+            screenwriter: Screenwriter::new(Arc::clone(&backends.chat), backends.clip),
             character_extractor: CharacterExtractor::new(Arc::clone(&backends.chat)),
             portraits: CharacterPortraitsGenerator::new(Arc::clone(&backends.image)),
             backends,
             working_dir,
+        }
+    }
+
+    /// Best-effort dramatic engine for script-to-film. A thin user script must
+    /// still plan — unlike idea2video, a lint failure here does not abort.
+    async fn ensure_drama_engine(
+        &self,
+        script: &str,
+        user_requirement: &str,
+        progress: &Option<ProgressCallback>,
+    ) -> Option<DramaEngine> {
+        emit_pct(
+            progress,
+            "drama_engine",
+            "正在设计戏剧引擎（欲望/阻力/反转/节拍）",
+            6.0,
+        );
+        let engine_fp = artifact_fingerprint(&[script, user_requirement]);
+        let path = self.working_dir.join("drama_engine.json");
+        match load_or_write_json_cached(&path, &engine_fp, || async {
+            self.screenwriter
+                .develop_validated_drama_engine(script, user_requirement)
+                .await
+        })
+        .await
+        {
+            Ok(engine) => Some(engine),
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&path).await;
+                tracing::warn!(
+                    error = %e,
+                    "script film drama engine skipped; continuing without it"
+                );
+                None
+            }
+        }
+    }
+
+    fn requirement_with_film_drama(&self, user_requirement: &str) -> String {
+        match load_drama_engine(&self.working_dir) {
+            Some(engine) => with_drama_engine(user_requirement, &engine),
+            None => user_requirement.to_string(),
         }
     }
 
@@ -173,11 +219,21 @@ impl ScriptFilmPipeline {
             "script2video screenplay split/selection"
         );
 
+        let engine = self
+            .ensure_drama_engine(script, user_requirement, &progress)
+            .await;
+
         if split.units.len() <= 1 {
             // True single-beat script — legacy flat film-root layout.
+            // Film-scope drama so the storyboard covers hook/turn/payoff of
+            // THIS whole script, not "don't restage another scene's payoff".
+            let req = match engine.as_ref() {
+                Some(engine) => with_drama_engine(user_requirement, engine),
+                None => user_requirement.to_string(),
+            };
             let s2v = Script2VideoPipeline::new(self.backends.clone(), self.working_dir.clone());
             let plan = s2v
-                .plan_text_artifacts(script, user_requirement, &style, progress)
+                .plan_text_artifacts(script, &req, &style, progress)
                 .await?;
             write_json_artifact(
                 &self.working_dir.join("script.json"),
@@ -459,10 +515,9 @@ impl ScriptFilmPipeline {
             && multi_scene_or_selected_script_json(&script_json).await;
 
         if !use_scene_dirs {
+            let req = self.requirement_with_film_drama(user_requirement);
             let s2v = Script2VideoPipeline::new(self.backends.clone(), self.working_dir.clone());
-            return s2v
-                .render(script, user_requirement, &style, progress)
-                .await;
+            return s2v.render(script, &req, &style, progress).await;
         }
 
         let scenes: Vec<String> =

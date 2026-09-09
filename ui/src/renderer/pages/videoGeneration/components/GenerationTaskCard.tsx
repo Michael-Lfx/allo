@@ -154,7 +154,7 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete,
             loop
             autoPlay
             preload='auto'
-            className={`${styles.projectCoverMedia} ${styles.projectCoverVideo}`}
+            className={`${styles.projectCoverMedia} ${styles.projectCoverVideo} ${styles.projectCoverVideoAlwaysOn}`}
             onLoadedData={() => setPreviewReady(true)}
             onLoadedMetadata={(event) => {
               const el = event.currentTarget;

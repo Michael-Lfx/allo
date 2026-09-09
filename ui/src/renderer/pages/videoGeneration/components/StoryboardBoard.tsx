@@ -57,6 +57,8 @@ interface StoryboardBoardProps {
     scene: StoryboardScene,
     descriptions: StoryboardSceneSave
   ) => Promise<void> | void;
+  /** Published clip count for the panel header. */
+  onShotCount?: (count: number) => void;
 }
 
 interface SceneMediaProps {
@@ -197,6 +199,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   focusSceneId,
   onFocusScene,
   onSaveSceneDescriptions,
+  onShotCount,
 }) => {
   const { t } = useTranslation();
   const runStatus = useRunStatusFull();
@@ -251,6 +254,10 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries),
     [artifacts, storyboardEntries]
   );
+
+  useEffect(() => {
+    onShotCount?.(scenes.length);
+  }, [onShotCount, scenes.length]);
 
   // Snap once when the agent focuses a new shot. Re-applying on every
   // `scenes` rebuild (artifact poll) stole the card the user just clicked.
@@ -446,9 +453,10 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
             videoStatus={activeVideoStatus}
           />
           <span className='absolute left-14px top-14px z-2 rd-full bg-black/55 px-9px py-4px text-11px font-650 text-white backdrop-blur'>
-            {t('videoGeneration.studio.storyboard.shotNumber', {
+            {t('videoGeneration.studio.storyboard.shotNumberOf', {
               number: sceneNumber,
-              defaultValue: '镜头 {{number}}',
+              total: scenes.length,
+              defaultValue: '镜头 {{number}} / {{total}}',
             })}
             {activeScene.beatCount != null
               ? ` · ${t('videoGeneration.studio.storyboard.packedBeats', {
@@ -605,7 +613,9 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
       <div
         ref={filmstripRef}
         className={styles.filmstrip}
-        aria-label={t('videoGeneration.studio.storyboard.filmstrip', { defaultValue: '分镜胶片' })}
+        aria-label={t('videoGeneration.studio.storyboard.filmstrip', {
+          defaultValue: '分镜胶片',
+        })}
         tabIndex={showFilmstripNav ? 0 : undefined}
         onKeyDown={(event) => {
           if (event.key === 'ArrowLeft') {

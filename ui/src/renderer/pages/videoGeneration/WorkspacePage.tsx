@@ -226,6 +226,7 @@ const WorkspacePage: React.FC = () => {
   const [studioShellWidth, setStudioShellWidth] = useState(1280);
   const [sessionRatio, setSessionRatio] = useState(loadStudioSessionWidthRatio);
   const [sessionCollapsed, setSessionCollapsed] = useState(loadStudioSessionCollapsed);
+  const [storyboardShotCount, setStoryboardShotCount] = useState(0);
   const sessionWidth = computeStudioSessionWidth(studioShellWidth, sessionRatio);
 
   useLayoutEffect(() => {
@@ -259,6 +260,10 @@ const WorkspacePage: React.FC = () => {
   const shouldAutoPlan = Boolean(launchState?.autoPlan) && !launchState?.launchError;
   const sourceDocumentName =
     launchDraft?.sourceDocumentName?.trim() || readStoredSourceDocument(sessionId);
+
+  useEffect(() => {
+    setStoryboardShotCount(0);
+  }, [sessionId]);
 
   useEffect(() => {
     const name = launchDraft?.sourceDocumentName?.trim();
@@ -1611,10 +1616,19 @@ const WorkspacePage: React.FC = () => {
               <div>
                 <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
                   {t('videoGeneration.studio.storyboard.title', { defaultValue: '故事分镜' })}
+                  {storyboardShotCount > 0 ? (
+                    <span className='ml-8px text-12px font-500 text-[var(--color-text-3)]'>
+                      {t('videoGeneration.studio.storyboard.shotCount', {
+                        count: storyboardShotCount,
+                        defaultValue: '共 {{count}} 个镜头',
+                      })}
+                    </span>
+                  ) : null}
                 </h2>
                 <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.storyboard.hint', {
-                    defaultValue: '逐镜头检查叙事和画面，满意后再生成成片。',
+                    defaultValue:
+                      '胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。',
                   })}
                 </p>
               </div>
@@ -1630,6 +1644,7 @@ const WorkspacePage: React.FC = () => {
               focusSceneId={focusSceneId}
               onFocusScene={setFocusSceneId}
               onSaveSceneDescriptions={handleSaveSceneDescriptions}
+              onShotCount={setStoryboardShotCount}
             />
           </section>
         ) : null}

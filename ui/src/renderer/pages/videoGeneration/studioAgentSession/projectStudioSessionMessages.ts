@@ -73,6 +73,7 @@ const FILM_BEAT_STAGES: Record<string, StudioNarrativeBeat> = {
   develop_story: 'plan',
   extract_characters: 'plan',
   write_script: 'plan',
+  drama_engine: 'plan',
   plan: 'plan',
   plan_scene: 'storyboard',
   design_storyboard: 'storyboard',
@@ -107,6 +108,7 @@ const FILM_BEAT_STAGES: Record<string, StudioNarrativeBeat> = {
   image_generate: 'render_frames',
   film_cover_start: 'film',
   film_cover_done: 'film',
+  film_cover_failed: 'film',
   video_clips_start: 'render_clips',
   video_clip_exists: 'render_clips',
   video_clip_start: 'render_clips',
@@ -133,6 +135,7 @@ const ACTION_BEAT_STAGES: Record<string, StudioNarrativeBeat> = {
   render_start: 'action_generate',
   film_cover_start: 'film',
   film_cover_done: 'film',
+  film_cover_failed: 'film',
   video_create: 'action_generate',
   video_poll: 'action_generate',
   video_download: 'action_generate',
@@ -242,6 +245,7 @@ function planningStageRank(stage: string): number {
     stage === 'planned' ||
     stage === 'develop_story' ||
     stage === 'write_script' ||
+    stage === 'drama_engine' ||
     stage === 'design_storyboard'
   ) {
     return 2;

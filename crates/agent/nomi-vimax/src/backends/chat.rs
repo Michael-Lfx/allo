@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use base64::Engine;
-use nomifun_cloud::ClawModelEntry;
+use nomifun_cloud::{AvailableModelsClaw, ClawModelEntry};
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::Path;
@@ -11,12 +11,18 @@ use std::sync::Mutex;
 use super::{FlowyVimaxServices, VimaxChat, map_model_err};
 use crate::error::{VimaxError, VimaxResult};
 
+/// Last-resort caps when `availableListClaw` `extra.max_tokens` is missing.
+const FALLBACK_PLANNING_MAX_TOKENS: u32 = 8192;
+const FALLBACK_VISION_MAX_TOKENS: u32 = 4096;
+
 pub struct FlowyChat {
     services: FlowyVimaxServices,
     /// Session override; empty / None → Flowy server default LLM.
     model: Option<String>,
     /// Sticky multimodal model after a successful vision call in this pipeline.
     vision_model: Mutex<Option<String>>,
+    /// Cached `GET /api/v2/model/availableListClaw` (category=chat).
+    chat_catalog: Mutex<Option<AvailableModelsClaw>>,
 }
 
 impl FlowyChat {
@@ -25,6 +31,7 @@ impl FlowyChat {
             services,
             model: nonempty(model),
             vision_model: Mutex::new(None),
+            chat_catalog: Mutex::new(None),
         }
     }
 
@@ -32,8 +39,20 @@ impl FlowyChat {
         self.model.as_deref()
     }
 
-    /// Catalog chat models whose `extra.input` includes `image`.
-    async fn vision_model_candidates(&self) -> VimaxResult<Vec<String>> {
+    fn resolved_chat_model_id(&self) -> String {
+        self.model_arg()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.services.server.effective_default_llm_model())
+    }
+
+    async fn chat_catalog(&self) -> VimaxResult<AvailableModelsClaw> {
+        if let Ok(guard) = self.chat_catalog.lock() {
+            if let Some(cached) = guard.as_ref() {
+                return Ok(cached.clone());
+            }
+        }
         let catalog = self
             .services
             .api
@@ -41,18 +60,61 @@ impl FlowyChat {
             .await
             .map_err(|e| {
                 VimaxError::Llm(format!(
-                    "failed to load chat model catalog for vision routing: {e}"
+                    "failed to load chat model catalog: {e}"
                 ))
             })?;
+        if let Ok(mut guard) = self.chat_catalog.lock() {
+            *guard = Some(catalog.clone());
+        }
+        Ok(catalog)
+    }
+
+    async fn max_tokens_for_model(&self, model: &str, fallback: u32) -> u32 {
+        let catalog = match self.chat_catalog().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    model,
+                    fallback,
+                    error = %e,
+                    "chat catalog unavailable; using fallback max_tokens"
+                );
+                return fallback;
+            }
+        };
+        match catalog.max_output_tokens_for(model) {
+            Some(n) => {
+                tracing::debug!(
+                    model,
+                    max_tokens = n,
+                    "using catalog extra.max_tokens"
+                );
+                n
+            }
+            None => {
+                tracing::warn!(
+                    model,
+                    fallback,
+                    "catalog extra.max_tokens missing; using fallback"
+                );
+                fallback
+            }
+        }
+    }
+
+    /// Catalog chat models whose `extra.input` includes `image`.
+    async fn vision_model_candidates(&self) -> VimaxResult<Vec<String>> {
+        let catalog = self.chat_catalog().await?;
         let sticky = self
             .vision_model
             .lock()
             .ok()
             .and_then(|g| g.clone());
+        let entries: Vec<ClawModelEntry> = catalog.chat_entries().cloned().collect();
         Ok(order_vision_models(
             sticky.as_deref(),
             self.model_arg(),
-            &catalog.cloud,
+            &entries,
         ))
     }
 
@@ -109,21 +171,25 @@ impl VimaxChat for FlowyChat {
             "{system}\n\n{}",
             crate::planning::language_lock_for_text(user)
         );
+        let model = self.resolved_chat_model_id();
+        let max_tokens = self
+            .max_tokens_for_model(&model, FALLBACK_PLANNING_MAX_TOKENS)
+            .await;
         self.services
             .api
             .chat_completions_text(
                 &self.services.session,
                 &system,
                 user,
-                8192,
+                max_tokens,
                 0.7,
-                self.model_arg(),
+                Some(model.as_str()),
             )
             .await
             .map_err(|e| {
                 map_model_err(
                     "llm",
-                    self.model_arg(),
+                    Some(model.as_str()),
                     "chat_completions",
                     e,
                 )
@@ -181,6 +247,9 @@ impl VimaxChat for FlowyChat {
 
         let mut last_err: Option<VimaxError> = None;
         for model in &candidates {
+            let max_tokens = self
+                .max_tokens_for_model(model, FALLBACK_VISION_MAX_TOKENS)
+                .await;
             match self
                 .services
                 .api
@@ -188,7 +257,7 @@ impl VimaxChat for FlowyChat {
                     &self.services.session,
                     &system,
                     user_parts.clone(),
-                    4096,
+                    max_tokens,
                     0.3,
                     Some(model.as_str()),
                 )
@@ -282,7 +351,7 @@ fn nonempty(model: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::order_vision_models;
-    use nomifun_cloud::ClawModelEntry;
+    use nomifun_cloud::{AvailableModelsClaw, ClawModelEntry};
 
     fn entry(id: &str, extra: &str) -> ClawModelEntry {
         ClawModelEntry {
@@ -353,5 +422,26 @@ mod tests {
             r#"{"input":["text"]}"#,
         )];
         assert!(order_vision_models(None, Some("AIPC-deepseek-v4-pro"), &catalog).is_empty());
+    }
+
+    #[test]
+    fn planning_max_tokens_comes_from_catalog_extra() {
+        let catalog = AvailableModelsClaw {
+            cloud: vec![entry(
+                "AIPC-deepseek-v4-pro",
+                r#"{"input":["text"],"max_tokens":16384}"#,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            catalog.max_output_tokens_for("AIPC-deepseek-v4-pro"),
+            Some(16384)
+        );
+        assert_eq!(
+            catalog
+                .max_output_tokens_for("AIPC-missing")
+                .unwrap_or(8192),
+            8192
+        );
     }
 }

@@ -251,12 +251,17 @@
 }
 
 .projectCoverVideo {
-  opacity: 1;
+  opacity: 0;
   background: #0c0f14;
   object-fit: cover;
+  transition: opacity 160ms ease;
 }
 
 .projectCoverVideoVisible {
+  opacity: 1;
+}
+
+.projectCoverVideoAlwaysOn {
   opacity: 1;
 }
 

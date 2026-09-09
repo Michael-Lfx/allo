@@ -394,12 +394,32 @@ pub struct DeviceActivateRequest {
     pub currency: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct AvailableModelsClaw {
     #[serde(default)]
     pub auto: Vec<ClawModelEntry>,
     #[serde(default)]
     pub cloud: Vec<ClawModelEntry>,
+}
+
+impl AvailableModelsClaw {
+    /// Chat catalog rows (`auto` then `cloud`).
+    pub fn chat_entries(&self) -> impl Iterator<Item = &ClawModelEntry> {
+        self.auto.iter().chain(self.cloud.iter())
+    }
+
+    /// Positive `extra.max_tokens` for `model` (`AIPC-…` or `flowy/…`).
+    pub fn max_output_tokens_for(&self, model: &str) -> Option<u32> {
+        self.chat_entries()
+            .find(|entry| entry.matches_model_candidate(model))
+            .and_then(|entry| entry.model_extra().max_output_tokens())
+    }
+}
+
+/// `max_tokens` to send on a completion: catalog `extra.max_tokens` when
+/// advertised, otherwise `fallback`.
+pub fn completion_max_tokens(catalog_cap: Option<u32>, fallback: u32) -> u32 {
+    catalog_cap.filter(|n| *n > 0).unwrap_or(fallback)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -591,7 +611,10 @@ pub struct ChatSessionReportResponse {
 
 #[cfg(test)]
 mod plan_label_tests {
-    use super::{format_plan_tier, strip_plan_suffix, ClawModelExtra, UserCurrentPlan};
+    use super::{
+        completion_max_tokens, format_plan_tier, strip_plan_suffix, AvailableModelsClaw,
+        ClawModelEntry, ClawModelExtra, UserCurrentPlan,
+    };
 
     #[test]
     fn strip_plan_suffix_removes_english_plan() {
@@ -662,6 +685,29 @@ mod plan_label_tests {
     }
 
     #[test]
+    fn available_models_claw_reads_extra_max_tokens() {
+        let catalog = AvailableModelsClaw {
+            cloud: vec![ClawModelEntry {
+                id: "AIPC-deepseek-v4-pro".into(),
+                extra: r#"{"input":["text"],"max_tokens":16384}"#.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            catalog.max_output_tokens_for("AIPC-deepseek-v4-pro"),
+            Some(16384)
+        );
+        assert_eq!(
+            catalog.max_output_tokens_for("flowy/deepseek-v4-pro"),
+            Some(16384)
+        );
+        assert_eq!(catalog.max_output_tokens_for("AIPC-missing"), None);
+        assert_eq!(completion_max_tokens(Some(16384), 8192), 16384);
+        assert_eq!(completion_max_tokens(None, 8192), 8192);
+        assert_eq!(completion_max_tokens(Some(0), 8192), 8192);
+    }
+
     fn claw_model_extra_treats_zero_or_empty_as_unset() {
         assert_eq!(ClawModelExtra::parse("").context_window_tokens(), None);
         assert_eq!(ClawModelExtra::parse("").max_output_tokens(), None);
