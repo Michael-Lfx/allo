@@ -117,6 +117,20 @@ try {
     enabled: true,
   });
 
+  // ---- S2 public model directory (REQ-PAR-05b) ----
+  const models = await client.models.list();
+  check(
+    "S2.models-listed",
+    models.some((entry) => entry.model === "mimo-v2.5"),
+    models.map((entry) => `${entry.provider_name}/${entry.model}`),
+  );
+  check(
+    "S2.models-default-flagged",
+    models.filter((entry) => entry.is_default).length === 1,
+    models.filter((entry) => entry.is_default),
+  );
+  check("S2.models-no-credentials", !JSON.stringify(models).includes(apiKey), "scanned");
+
   // ============================ C1 专家 ============================
   const agentImport = await client.runImport({
     source_path: SOFTWARE_COMPANY,

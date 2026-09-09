@@ -519,7 +519,41 @@ Composer 的 `@` 引用以**结构化 mention** 传入 `agent/run`，客户端�
 - agent-store 安装 preset（`agent-store: <name>` 命名）在 `validate_agent_store_preset_source`
   白名单内（Builtin+builtin-office 保持不变）；任意用户 preset 仍被拒绝；
 - preset 未绑定 model 时，服务端回退到 owner 的第一个启用 provider/model
-  （`default_run_model`），避免 `resolved_model=None` 在运行时边界被拒。
+  （`default_run_model`），避免 `resolved_model=None` 在运行时边界被拒；
+  回退重解析**保留 mention overrides**（`include_skills` / `mcp_server_ids`
+  不丢失）。
+
+### 4.9 模型目录（models/list，REQ-PAR-05b）
+
+SDK/第三方此前无法枚举可用模型。`models/list` 把 provider 注册表投影为
+公共模型目录：只含启用 provider 的未显式禁用模型，`is_default` 标记
+`agent/run` 在 preset 未绑定模型时的回退目标（与 `default_run_model` 同序）。
+
+能力协商：`capabilities.models`（`ModelCatalogProvider` 注入时开启）。
+
+```text
+WS   models/list  {}
+HTTP GET /api/app-server/models
+```
+
+响应（`AppServerModelList`）：
+
+```json
+{
+  "items": [
+    {
+      "provider_id": "0190f5fe-...",
+      "provider_name": "mimo",
+      "model": "mimo-v2.5",
+      "display_name": "MiMo v2.5",
+      "is_default": true
+    }
+  ]
+}
+```
+
+边界：投影**不含** API key、base URL、健康状态等内部字段；`display_name`
+仅在 provider 配置了 `model_descriptions` 时出现。
 
 ## 5. Thread 与 Run
 
