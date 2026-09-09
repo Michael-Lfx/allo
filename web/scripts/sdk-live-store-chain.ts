@@ -153,6 +153,16 @@ try {
   const c1Final = await c1.finished;
   await c1.close();
   check("C1.run-completed", c1Final.status === "completed", c1Final.status);
+  // S3 TurnResult aggregation (REQ-PAR-05c): final text + event/item lists.
+  check(
+    "S3.turn-result-aggregated",
+    Boolean(c1Final.final_response) && c1Final.events.length > 0 && c1Final.items.length > 0,
+    {
+      final_response: (c1Final.final_response ?? "").slice(0, 60),
+      events: c1Final.events.length,
+      items: c1Final.items.map((item) => item.kind),
+    },
+  );
 
   // ============================ C4 专家团 ============================
   // V1 口径：下载 → 安装 → 可见；运行时为 Phase 2（§12 门禁）。

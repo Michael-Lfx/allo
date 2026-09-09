@@ -291,6 +291,27 @@ stream.onEvent(event => dedupeByEventId(event, store)); // 通知触发刷新
 stream.onError(() => scheduleReconnect());             // 重连后重新拉取状态
 ```
 
+## 6.1 AgentRunHandle 与 TurnResult（REQ-PAR-04/05c）
+
+`launchRun(runClient, input)`（`@agent-store/client`）返回 `AgentRunHandle`：
+异步迭代实时事件（`for await ... of handle`），`handle.finished` 阻塞到终态
+并返回聚合的 `TurnResult`（2026-09-09 由终态视图升级为聚合对象）：
+
+```ts
+const handle = await launchRun(client.runs, { agentId: "", goal, mentions });
+const result = await handle.finished;   // TurnResult
+result.status;          // completed | failed | cancelled
+result.final_response;  // 终态文本（run/result summary）
+result.output_files;
+result.events;          // run/events 权威回填（sequence 序）
+result.items;           // 事件派生的 plan/task/attempt/approval 条目
+result.usage;           // 仅当运行时在事件流上发布 usage 时存在
+```
+
+聚合语义：`finished` 先以 `run/get` 轮询到终态，再拉 `run/result` + `run/events`
+做权威回填（拉取失败时退回本地事件缓冲）；`usage` 字段在服务端投影
+token 用量之前保持缺省，调用方不得假设其存在。
+
 ## 7. 错误模型
 
 ```ts
