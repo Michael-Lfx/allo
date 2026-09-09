@@ -90,7 +90,7 @@ webui 不直接依赖 `@agent-store/sdk`（Node 专属，浏览器不可运行�
    HTTP 薄适配双落；client `handle.steer(text)`；验证：协议测试 + live 脚本。
   2. REQ-PAR-05b `models/list`（协议 + client）✅ 2026-09-09 已落地：SDK/第三方无法枚举模型，唯一服务端真空缺；
    从 ProviderService 投影公共模型目录（不暴露 key）；client `models()`。
-  3. REQ-PAR-05c `TurnResult` 聚合（client 层）：从事件流聚合 `final_response`（文本）
+  3. REQ-PAR-05c `TurnResult` 聚合（client 层）✅ 2026-09-09 已落地：从事件流聚合 `final_response`（文本）
    + token usage（`context.usage` 事件）+ 事件/物品清单，`handle.finished` 升级返回聚合对象；
    webui 后续切同一聚合（消现有私有实现）。
   4. REQ-PAR-05d 多轮 `ConversationHandle`（client 层）：包装现有 conversation 域
