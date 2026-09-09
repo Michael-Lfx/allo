@@ -1,4 +1,4 @@
-/** `@agent-store/client` — transport-agnostic App Server client. */
+/** `@flowy-agent-store/client` — transport-agnostic App Server client. */
 export * from "./transport";
 export * from "./client";
 export * from "./agents";

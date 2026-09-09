@@ -8,7 +8,7 @@
  * `run/get` poll as the authoritative backstop.
  */
 
-import type { AgentRunInput, RunEvent, RunReceipt, RunStatus, RunView } from "@agent-store/protocol";
+import type { AgentRunInput, RunEvent, RunReceipt, RunStatus, RunView } from "@flowy-agent-store/protocol";
 import type { RunClient } from "./runs";
 import { aggregateTurnResult, type TurnResult } from "./turn-result";
 

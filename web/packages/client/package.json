@@ -1,5 +1,5 @@
 {
-  "name": "@agent-store/client",
+  "name": "@flowy-agent-store/client",
   "version": "0.1.0",
   "description": "Transport-agnostic App Server client (docs/agent-store/07 §2.2)",
   "type": "module",
@@ -16,7 +16,7 @@
     "dist"
   ],
   "dependencies": {
-    "@agent-store/protocol": "0.1.0"
+    "@flowy-agent-store/protocol": "0.1.0"
   },
   "scripts": {
     "build": "tsdown",

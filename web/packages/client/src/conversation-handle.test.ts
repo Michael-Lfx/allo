@@ -1,6 +1,6 @@
 /** ConversationHandle (REQ-PAR-05d): open/attach, send-await-turn, cancel, transcript. */
 import { describe, expect, it } from "vitest";
-import type { ServerNotification } from "@agent-store/protocol";
+import type { ServerNotification } from "@flowy-agent-store/protocol";
 import { ConversationClient } from "./conversations";
 import { ConversationHandle } from "./conversation-handle";
 import type { NotificationListener, Transport } from "./transport";

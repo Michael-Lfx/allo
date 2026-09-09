@@ -6,8 +6,8 @@
  *
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-conversation.ts
  */
-import { launchClient } from "@agent-store/sdk";
-import { ConversationHandle } from "@agent-store/client";
+import { launchClient } from "@flowy-agent-store/sdk";
+import { ConversationHandle } from "@flowy-agent-store/client";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {

@@ -4,7 +4,7 @@
  */
 
 import type { Transport } from "./transport";
-import type { SkillDetail, SkillSummary } from "@agent-store/protocol";
+import type { SkillDetail, SkillSummary } from "@flowy-agent-store/protocol";
 
 export class SkillClient {
   constructor(private readonly transport: Transport) {}

@@ -1,5 +1,5 @@
 /**
- * Typed App Server client (`@agent-store/client`).
+ * Typed App Server client (`@flowy-agent-store/client`).
  *
  * Transport-agnostic: all business methods go through the injected
  * `Transport` (07 §2.3). Web-only helpers (asset URLs, `/api/fs/browse`,
@@ -10,7 +10,7 @@
  * ready client; the server rejects them with `not_initialized` otherwise.
  */
 
-import { ProtocolError } from "@agent-store/protocol";
+import { ProtocolError } from "@flowy-agent-store/protocol";
 import {
   APP_SERVER_PROTOCOL_VERSION,
   type ClientCapabilities,
@@ -31,7 +31,7 @@ import {
   type MarketplaceSummary,
   type StoreInstallResult,
   type StoreList,
-} from "@agent-store/protocol";
+} from "@flowy-agent-store/protocol";
 import { AgentClient } from "./agents";
 import { ConversationClient } from "./conversations";
 import { ConnectorClient } from "./connectors";

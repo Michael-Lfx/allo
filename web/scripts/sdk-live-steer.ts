@@ -6,9 +6,9 @@
  * Usage: AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-steer.ts
  * Key from Hermes attachments config, in-memory only.
  */
-import { launchClient } from "@agent-store/sdk";
-import { launchRun } from "@agent-store/client";
-import type { RunView } from "@agent-store/protocol";
+import { launchClient } from "@flowy-agent-store/sdk";
+import { launchRun } from "@flowy-agent-store/client";
+import type { RunView } from "@flowy-agent-store/protocol";
 
 const HERMES_CONFIG = "C:/Users/15165/AppData/Local/hermes/attachments/config.toml";
 const FIXTURE = "C:/workspace/allo/crates/backend/nomifun-importer/tests/fixtures/software-company";

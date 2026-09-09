@@ -12,7 +12,7 @@ import type {
   ConversationUpdateInput,
   ConversationView,
   ServerNotification,
-} from "@agent-store/protocol";
+} from "@flowy-agent-store/protocol";
 
 export class ConversationClient {
   constructor(private readonly transport: Transport) {}

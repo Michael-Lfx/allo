@@ -1,6 +1,6 @@
 /**
  * Web host's `AppServerClient`: the transport-agnostic base from
- * `@agent-store/client` plus the three Web-only helpers that don't belong
+ * `@flowy-agent-store/client` plus the three Web-only helpers that don't belong
  * in the published package — asset `<img>` URL derivation, `/api/fs/browse`
  * (independent file service), and the one-shot HTTP workspace registration
  * used by the smoke/dev script.
@@ -11,16 +11,16 @@ import {
   WebSocketTransport,
   type AppServerClientOptions as BaseOptions,
   type Transport,
-} from "@agent-store/client";
-import { TransportError } from "@agent-store/protocol";
-import { AppServerError } from "@agent-store/protocol";
+} from "@flowy-agent-store/client";
+import { TransportError } from "@flowy-agent-store/protocol";
+import { AppServerError } from "@flowy-agent-store/protocol";
 import {
   APP_SERVER_PROTOCOL_VERSION,
   type BrowseDirectoryResult,
   type WorkspaceRegistration,
-} from "@agent-store/protocol";
+} from "@flowy-agent-store/protocol";
 
-export * from "@agent-store/client";
+export * from "@flowy-agent-store/client";
 
 export interface AppServerClientOptions extends Omit<BaseOptions, "transport"> {
   /** Ready-made transport; defaults to a `WebSocketTransport` over `wsUrl`. */

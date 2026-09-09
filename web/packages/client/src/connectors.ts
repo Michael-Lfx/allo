@@ -14,7 +14,7 @@ import type {
   ConnectorSummary,
   OAuthStartResult,
   OAuthStatusView,
-} from "@agent-store/protocol";
+} from "@flowy-agent-store/protocol";
 
 export class ConnectorClient {
   constructor(private readonly transport: Transport) {}

@@ -3,7 +3,7 @@
  *
  * These helpers carry UI wording (and, for `modelChipLabel`, a fallback
  * label), so they live outside `src/lib` — that directory stays React-free
- * and wording-free so it can be extracted as `@agent-store/client`
+ * and wording-free so it can be extracted as `@flowy-agent-store/client`
  * (see README "目录结构" and docs/agent-store/07-typescript-sdk.md).
  *
  * Helpers with a single consumer are deliberately kept next to that

@@ -1,6 +1,6 @@
 /** ModelClient: `models/list` unwrapping + wire shape (no server needed). */
 import { describe, expect, it } from "vitest";
-import type { ModelList } from "@agent-store/protocol";
+import type { ModelList } from "@flowy-agent-store/protocol";
 import { ModelClient } from "./models";
 import type { NotificationListener, Transport } from "./transport";
 

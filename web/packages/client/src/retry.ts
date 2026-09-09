@@ -8,7 +8,7 @@
  * App Server deduplicates replayed mutations.
  */
 
-import { isRetryableError } from "@agent-store/protocol";
+import { isRetryableError } from "@flowy-agent-store/protocol";
 
 export interface RetryInfo {
   /** 1-based attempt that just failed and triggered the next try. */

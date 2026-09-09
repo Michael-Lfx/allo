@@ -3,7 +3,7 @@
  * realtime `follow` subscription over the WebSocket transport.
  */
 
-import { TransportError } from "@agent-store/protocol";
+import { TransportError } from "@flowy-agent-store/protocol";
 import {
   type AgentRunInput,
   type AgentRunRequestWire,
@@ -16,8 +16,8 @@ import {
   type RunSubscriptionParams,
   type RunView,
   type ServerNotification,
-} from "@agent-store/protocol";
-import { type JsonRpcEventNotification } from "@agent-store/protocol";
+} from "@flowy-agent-store/protocol";
+import { type JsonRpcEventNotification } from "@flowy-agent-store/protocol";
 import type { Transport } from "./transport";
 
 export class RunClient {

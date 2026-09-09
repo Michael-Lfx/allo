@@ -9,7 +9,7 @@
 
 ```text
 Flowy/Web UI
-    ↓ @agent-store/client / @agent-store/react
+    ↓ @flowy-agent-store/client / @flowy-agent-store/react
 TypeScript SDK
     ↓ App Server Protocol
 Agent Store App Server

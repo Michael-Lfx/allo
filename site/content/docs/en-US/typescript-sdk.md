@@ -4,9 +4,9 @@ Flowy Agent Store ships three companion TypeScript packages that let Node.js / E
 
 | Package | Responsibility | Runtime | Depends on |
 | --- | --- | --- | --- |
-| `@agent-store/protocol` | Wire types (requests/responses/notifications/errors) | Any — zero runtime, no DOM/Node | — |
-| `@agent-store/client` | `AppServerClient` + 7 sub-clients + `Transport` abstraction | Any — no HTTP, no DOM, no Node | `@agent-store/protocol` |
-| `@agent-store/sdk` | Spawn the `agent-store` binary → loopback WebSocket → ready client | Node.js (`node:child_process`, …) | `@agent-store/client`, `@agent-store/protocol` |
+| `@flowy-agent-store/protocol` | Wire types (requests/responses/notifications/errors) | Any — zero runtime, no DOM/Node | — |
+| `@flowy-agent-store/client` | `AppServerClient` + 7 sub-clients + `Transport` abstraction | Any — no HTTP, no DOM, no Node | `@flowy-agent-store/protocol` |
+| `@flowy-agent-store/sdk` | Spawn the `agent-store` binary → loopback WebSocket → ready client | Node.js (`node:child_process`, …) | `@flowy-agent-store/client`, `@flowy-agent-store/protocol` |
 
 Mix and match: **types only** → `protocol`; **connect to an already-running App Server** (e.g. a desktop app) → `client` with your own `WebSocketTransport`; **launch the whole runtime yourself** → `launchClient` from `sdk`.
 
@@ -16,10 +16,10 @@ Mix and match: **types only** → `protocol`; **connect to an already-running Ap
 
 ```bash
 # Usually the sdk alone is enough (it re-exports client capabilities and spawns)
-bun add @agent-store/sdk        # or npm install / pnpm add
+bun add @flowy-agent-store/sdk        # or npm install / pnpm add
 
 # Declare protocol explicitly when you import wire types
-bun add @agent-store/protocol
+bun add @flowy-agent-store/protocol
 ```
 
 All packages ship ESM + CJS (`exports` maps `import` / `require` / `types`); they work out of the box in Node and bundlers.
@@ -29,7 +29,7 @@ All packages ship ESM + CJS (`exports` maps `import` / `require` / `types`); the
 ## 2. Quick start (one-liner with the SDK)
 
 ```ts
-import { launchClient } from "@agent-store/sdk";
+import { launchClient } from "@flowy-agent-store/sdk";
 
 const session = await launchClient({
   client: { name: "my-app", version: "0.1.0" },
@@ -49,7 +49,7 @@ What `launchClient` does:
 ### Full lifecycle example
 
 ```ts
-import { launchClient } from "@agent-store/sdk";
+import { launchClient } from "@flowy-agent-store/sdk";
 
 const session = await launchClient({ client: { name: "demo", version: "1.0.0" } });
 try {
@@ -72,7 +72,7 @@ try {
 
 ---
 
-## 3. `@agent-store/protocol` — the wire layer
+## 3. `@flowy-agent-store/protocol` — the wire layer
 
 ### 3.1 Position
 
@@ -113,7 +113,7 @@ The single TypeScript source of truth for the wire contract: every request/respo
 Helpers:
 
 ```ts
-import { isAppServerError, isRetryableTransportError, formatError } from "@agent-store/protocol";
+import { isAppServerError, isRetryableTransportError, formatError } from "@flowy-agent-store/protocol";
 
 try {
   await client.runs.agent({ agentId, goal });
@@ -132,7 +132,7 @@ try {
 
 ---
 
-## 4. `@agent-store/client` — the transport-agnostic client
+## 4. `@flowy-agent-store/client` — the transport-agnostic client
 
 ### 4.1 Position
 
@@ -153,7 +153,7 @@ export interface Transport {
 Built-in `WebSocketTransport` (browser + Node 22+/Bun, uses the global `WebSocket`):
 
 ```ts
-import { AppServerClient, WebSocketTransport } from "@agent-store/client";
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
 
 const transport = new WebSocketTransport(
   "ws://127.0.0.1:8787/api/app-server/ws",
@@ -280,7 +280,7 @@ client.workspaces.revoke(workspaceId: string): Promise<WorkspaceRevokeResult>; /
 
 ---
 
-## 5. `@agent-store/sdk` — the Node host
+## 5. `@flowy-agent-store/sdk` — the Node host
 
 ### 5.1 `launchClient(options): Promise<LaunchedClient>`
 
@@ -360,7 +360,7 @@ try {
 When a desktop App Server is already running, the browser connects directly (no sdk):
 
 ```ts
-import { AppServerClient, WebSocketTransport } from "@agent-store/client";
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
 
 const ws = new WebSocketTransport(`ws://127.0.0.1:8787/api/app-server/ws`);
 const client = new AppServerClient({ transport: ws, client: { name: "web", version: "1.0.0" } });

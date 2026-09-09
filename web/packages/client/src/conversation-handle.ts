@@ -17,7 +17,7 @@ import type {
   ConversationMessagesQuery,
   ConversationSendReceipt,
   ContextUsage,
-} from "@agent-store/protocol";
+} from "@flowy-agent-store/protocol";
 import type { ConversationClient, ConversationSubscription } from "./conversations";
 
 /** One completed (or in-flight / timed-out) turn in a conversation. */

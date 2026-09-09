@@ -4,7 +4,7 @@
  */
 
 import type { Transport } from "./transport";
-import type { TeamDetail, TeamSummary } from "@agent-store/protocol";
+import type { TeamDetail, TeamSummary } from "@flowy-agent-store/protocol";
 
 export class TeamClient {
   constructor(private readonly transport: Transport) {}

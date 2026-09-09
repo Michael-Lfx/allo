@@ -4,9 +4,9 @@ Flowy Agent Store 提供三个配套的 TypeScript 包，让 Node.js / Electron 
 
 | 包 | 职责 | 运行环境 | 依赖 |
 | --- | --- | --- | --- |
-| `@agent-store/protocol` | 协议线类型（请求/响应/通知/错误） | 任意（零运行时、无 DOM/Node） | 无 |
-| `@agent-store/client` | `AppServerClient` + 7 个子客户端 + `Transport` 抽象 | 任意（无 HTTP、无 DOM、无 Node） | `@agent-store/protocol` |
-| `@agent-store/sdk` | spawn `agent-store` 二进制 → 回环 WS 建连 → 就绪客户端 | Node.js（依赖 `node:child_process` 等） | `@agent-store/client`、`@agent-store/protocol` |
+| `@flowy-agent-store/protocol` | 协议线类型（请求/响应/通知/错误） | 任意（零运行时、无 DOM/Node） | 无 |
+| `@flowy-agent-store/client` | `AppServerClient` + 7 个子客户端 + `Transport` 抽象 | 任意（无 HTTP、无 DOM、无 Node） | `@flowy-agent-store/protocol` |
+| `@flowy-agent-store/sdk` | spawn `agent-store` 二进制 → 回环 WS 建连 → 就绪客户端 | Node.js（依赖 `node:child_process` 等） | `@flowy-agent-store/client`、`@flowy-agent-store/protocol` |
 
 三个包按需组合：**只用类型**取 `protocol`；**连已运行的 App Server**（如桌面端已启动）取 `client` + 自建 `WebSocketTransport`；**自己拉起整个运行时**取 `sdk` 的 `launchClient`。
 
@@ -16,10 +16,10 @@ Flowy Agent Store 提供三个配套的 TypeScript 包，让 Node.js / Electron 
 
 ```bash
 # 通常只需要 sdk（它 re-export client 的能力并自带 spawn）
-bun add @agent-store/sdk        # 或 npm install / pnpm add
+bun add @flowy-agent-store/sdk        # 或 npm install / pnpm add
 
 # 需要协议类型时显式声明
-bun add @agent-store/protocol
+bun add @flowy-agent-store/protocol
 ```
 
 包均发布为 ESM + CJS 双格式（`exports` 提供 `import` / `require` / `types`），Node 与打包器开箱即用。
@@ -29,7 +29,7 @@ bun add @agent-store/protocol
 ## 2. 快速开始（SDK 一行拉起）
 
 ```ts
-import { launchClient } from "@agent-store/sdk";
+import { launchClient } from "@flowy-agent-store/sdk";
 
 const session = await launchClient({
   client: { name: "my-app", version: "0.1.0" },
@@ -49,7 +49,7 @@ await session.close();
 ### 完整生命周期示例
 
 ```ts
-import { launchClient } from "@agent-store/sdk";
+import { launchClient } from "@flowy-agent-store/sdk";
 
 const session = await launchClient({ client: { name: "demo", version: "1.0.0" } });
 try {
@@ -72,7 +72,7 @@ try {
 
 ---
 
-## 3. `@agent-store/protocol` — 协议层
+## 3. `@flowy-agent-store/protocol` — 协议层
 
 ### 3.1 定位
 
@@ -113,7 +113,7 @@ try {
 辅助判定：
 
 ```ts
-import { isAppServerError, isRetryableTransportError, formatError } from "@agent-store/protocol";
+import { isAppServerError, isRetryableTransportError, formatError } from "@flowy-agent-store/protocol";
 
 try {
   await client.runs.agent({ agentId, goal });
@@ -132,7 +132,7 @@ try {
 
 ---
 
-## 4. `@agent-store/client` — 传输无关客户端
+## 4. `@flowy-agent-store/client` — 传输无关客户端
 
 ### 4.1 定位
 
@@ -153,7 +153,7 @@ export interface Transport {
 内置实现 `WebSocketTransport`（浏览器与 Node 22+/Bun 通用，使用全局 `WebSocket`）：
 
 ```ts
-import { AppServerClient, WebSocketTransport } from "@agent-store/client";
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
 
 const transport = new WebSocketTransport(
   "ws://127.0.0.1:8787/api/app-server/ws",
@@ -280,7 +280,7 @@ client.workspaces.revoke(workspaceId: string): Promise<WorkspaceRevokeResult>; /
 
 ---
 
-## 5. `@agent-store/sdk` — Node 宿主
+## 5. `@flowy-agent-store/sdk` — Node 宿主
 
 ### 5.1 `launchClient(options): Promise<LaunchedClient>`
 
@@ -360,7 +360,7 @@ try {
 桌面端已启动 App Server 时，浏览器直接建连（无需 sdk）：
 
 ```ts
-import { AppServerClient, WebSocketTransport } from "@agent-store/client";
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
 
 const ws = new WebSocketTransport(`ws://127.0.0.1:8787/api/app-server/ws`);
 const client = new AppServerClient({ transport: ws, client: { name: "web", version: "1.0.0" } });

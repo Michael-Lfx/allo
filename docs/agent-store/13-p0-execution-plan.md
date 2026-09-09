@@ -13,7 +13,7 @@
 - TC-RT-001 PASS：临时实例 + mimo-v2.5 真实模型，`planning → running → completed`
  （`single-run-runtime-evidence.zh.md`）；附带修复 `runtime_adapter` actor 落库 500
  （`external_agent("app-server")` → `user(owner_id)`，已提交 `7f035f88a`）。
-- TS 三包主体落地：`@agent-store/{protocol,client,sdk}` 0.1.0，tsdown 编译，
+- TS 三包主体落地：`@flowy-agent-store/{protocol,client,sdk}` 0.1.0，tsdown 编译，
   npm dry-run 通过；`web/src/lib` 为 re-export 垫片 + Web 子类。
 - 文档矛盾已消：TC-SDK-001 改为 spawn + 回环 WS；开发计划 TC 引用收缩到主表现有编号。
 - 按开发计划 §12 停止条件：P0-A/B 关闭前不得扩展 Team/Web。
@@ -81,8 +81,8 @@ Python SDK（已决策延后）、Flowy 纵向闭环（Phase 5）。
 
 ## 6. 工作包 D：SDK/Web 对齐（Step 5，可与 A 并行）
 
-原则：webui 与 SDK 共用 `@agent-store/client` 为唯一协议实现；
-webui 不直接依赖 `@agent-store/sdk`（Node 专属，浏览器不可运行）。
+原则：webui 与 SDK 共用 `@flowy-agent-store/client` 为唯一协议实现；
+webui 不直接依赖 `@flowy-agent-store/sdk`（Node 专属，浏览器不可运行）。
 
 - REQ-PAR-05（SDK 应用功能与工效包，用户 2026-09-04 定为优先于 PAR-01/02）：
   1. REQ-PAR-05a `run/steer`（协议 + client + handle）：runtime 能力已在
@@ -100,7 +100,7 @@ webui 不直接依赖 `@agent-store/sdk`（Node 专属，浏览器不可运行�
   5. REQ-PAR-05e 重试辅助（client 层）✅ 2026-09-09 已落地：`retryable` + 指数退避 + 抖动的 `withRetry` 助手（≈Codex `retry_on_overload`）。
   顺序：05a → 05b → 05c → 05d → 05e（a/b 动协议，c/d/e 纯 client 层）。
   图片输入、sandbox 一等参数、archive/resume/fork 不列入本包（11 §6.3 或 V2）。
-- REQ-PAR-01：抽 `@agent-store/browser`（12 §3 预留）：迁移 `web/src/lib/client.ts` 子类
+- REQ-PAR-01：抽 `@flowy-agent-store/browser`（12 §3 预留）：迁移 `web/src/lib/client.ts` 子类
  （serverRootUrl/browseDirectory/registerWorkspace + HTTP 底座）；`web/src` 只剩垫片。
 - REQ-PAR-02：防漂移 contract test：`web/src` 禁止协议方法名字面量；
   新增协议方法必须 dispatch arms + client 方法 + 类型三件套（12 §7 入测试）。
@@ -131,7 +131,7 @@ PAR 与 A 无文件冲突，可并行。
 | stdio 传输 | V2/deferred；TC-SDK-001 已改为 spawn + 回环 WS | 2026-09-04 |
 | Python SDK | 延后，优先 TS | 2026-09-04 |
 | TC 编号范围 | 收缩到主表现有（SDK 001~003、WEB 001~004），缺号待开工补 | 2026-09-04 |
-| 包名 | `@agent-store/sdk`（07 冻结文档未改，以 12 为准） | 2026-09-04 |
+| 包名 | `@flowy-agent-store/sdk`（07 冻结文档未改，以 12 为准） | 2026-09-04 |
 | 证据体例 | `*-runtime-evidence.zh.md` + 可重复入口为正式证据 | 2026-09-04 |
 | 点火脚本教训 | 子进程 stdout 必须持续消费/重定向（64KB 背压冻住服务端） | 2026-09-04 |
 

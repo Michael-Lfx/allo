@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assertProtocolCompatible } from "./spawn";
-import { APP_SERVER_PROTOCOL_VERSION } from "@agent-store/protocol";
+import { APP_SERVER_PROTOCOL_VERSION } from "@flowy-agent-store/protocol";
 
 describe("assertProtocolCompatible", () => {
   it("accepts the SDK protocol version", () => {

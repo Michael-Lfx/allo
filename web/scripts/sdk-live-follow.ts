@@ -8,8 +8,8 @@
  * Provider key is read from the Hermes attachments config into memory only
  * and never printed.
  */
-import { launchClient } from "@agent-store/sdk";
-import type { RunEvent } from "@agent-store/protocol";
+import { launchClient } from "@flowy-agent-store/sdk";
+import type { RunEvent } from "@flowy-agent-store/protocol";
 
 const HERMES_CONFIG = "C:/Users/15165/AppData/Local/hermes/attachments/config.toml";
 const FIXTURE = "C:/workspace/allo/crates/backend/nomifun-importer/tests/fixtures/software-company";

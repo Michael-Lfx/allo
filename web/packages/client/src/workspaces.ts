@@ -1,7 +1,7 @@
 /** Owner-scoped App Server workspace client (list + user-path registration). */
 
 import type { Transport } from "./transport";
-import type { WorkspaceRevokeResult, WorkspaceView } from "@agent-store/protocol";
+import type { WorkspaceRevokeResult, WorkspaceView } from "@flowy-agent-store/protocol";
 
 export class WorkspaceClient {
   constructor(private readonly transport: Transport) {}

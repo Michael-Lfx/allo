@@ -7,8 +7,8 @@
  * 用法：AGENT_STORE_BIN=.../agent-store.exe bun scripts/sdk-live-store-chain.ts
  * 模型 key 只读自 Hermes attachments config，仅内存持有、不打印。
  */
-import { launchClient } from "@agent-store/sdk";
-import { launchRun } from "@agent-store/client";
+import { launchClient } from "@flowy-agent-store/sdk";
+import { launchRun } from "@flowy-agent-store/client";
 import { Database } from "bun:sqlite";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";

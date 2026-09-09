@@ -80,4 +80,4 @@ scripts/mock-server.ts   支持聊天事件、旧 run 协议与技能/连接器�
 scripts/smoke.ts         端到端冒烟测试
 ```
 
-`src/lib` 模块刻意保持零依赖（不依赖 React，也不依赖 allo 内部），以便日后可按 `docs/agent-store/07-typescript-sdk.md` 抽取为可复用的 `@agent-store/client` 包。聊天 UI 不提供 Team、审批、附件或原始 `work_dir` 控件。
+`src/lib` 模块刻意保持零依赖（不依赖 React，也不依赖 allo 内部），以便日后可按 `docs/agent-store/07-typescript-sdk.md` 抽取为可复用的 `@flowy-agent-store/client` 包。聊天 UI 不提供 Team、审批、附件或原始 `work_dir` 控件。
