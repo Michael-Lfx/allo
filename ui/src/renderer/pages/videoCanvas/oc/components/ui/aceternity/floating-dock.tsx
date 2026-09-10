@@ -99,18 +99,30 @@ export const FloatingDock = forwardRef<HTMLDivElement, FloatingDockProps>(functi
                     : coarsePointer
                       ? embedded
                           ? size === "compact"
-                              ? "h-10 gap-1 px-0.5"
-                              : "h-11 gap-1 px-0.5"
+                              ? "h-10 items-center gap-1 px-0.5"
+                              : "h-11 items-center gap-1 px-0.5"
                           : size === "compact"
-                            ? "h-11 gap-1 rounded-[var(--dock-radius-tight)] px-1.5 pb-1"
-                            : "h-12 gap-1 rounded-[var(--panel-radius)] px-2 pb-1"
+                            ? motionEnabled
+                              ? "h-11 gap-1 rounded-[var(--dock-radius-tight)] px-1.5 pb-1"
+                              : "h-11 items-center gap-1 rounded-2xl px-1.5"
+                            : motionEnabled
+                              ? "h-12 gap-1 rounded-[var(--panel-radius)] px-2 pb-1"
+                              : "h-12 items-center gap-1 rounded-2xl px-2"
                       : embedded
                         ? size === "compact"
-                            ? "h-8 gap-0.5 px-0.5 pb-0.5"
-                            : "h-9 gap-0.5 px-0.5 pb-0.5"
+                            ? motionEnabled
+                              ? "h-8 gap-0.5 px-0.5 pb-0.5"
+                              : "h-8 items-center gap-0.5 px-0.5"
+                            : motionEnabled
+                              ? "h-9 gap-0.5 px-0.5 pb-0.5"
+                              : "h-9 items-center gap-0.5 px-0.5"
                         : size === "compact"
-                          ? "h-8 gap-0.5 rounded-[var(--r-lg)] px-1 pb-1"
-                          : "h-10 gap-0.5 rounded-[var(--dock-radius)] px-1.5 pb-1",
+                          ? motionEnabled
+                            ? "h-8 gap-0.5 rounded-[var(--r-lg)] px-1 pb-1"
+                            : "h-9 items-center gap-0.5 rounded-2xl px-1.5"
+                          : motionEnabled
+                            ? "h-10 gap-0.5 rounded-[var(--dock-radius)] px-1.5 pb-1"
+                            : "h-11 items-center gap-1 rounded-2xl px-1.5",
                 className,
             )}
             style={style}
@@ -119,7 +131,7 @@ export const FloatingDock = forwardRef<HTMLDivElement, FloatingDockProps>(functi
             }}
             onPointerLeave={() => mouseX.set(Number.POSITIVE_INFINITY)}
         >
-            {renderDockItems(items, { mouseX, metrics, motionEnabled: motionEnabled && !showLabels, compact: size === "compact", showLabel: showLabels })}
+            {renderDockItems(items, { mouseX, metrics, motionEnabled: motionEnabled && !showLabels, compact: size === "compact", showLabel: showLabels, even: !motionEnabled })}
         </motion.div>
     );
 });
@@ -130,6 +142,7 @@ type DockItemRenderProps = {
     motionEnabled: boolean;
     compact: boolean;
     showLabel: boolean;
+    even: boolean;
 };
 
 /**
@@ -145,7 +158,7 @@ function renderDockItems(items: FloatingDockEntry[], props: DockItemRenderProps)
         if (!dangerGroup.length) return;
         const groupKey = `danger-group-${index}`;
         result.push(
-            <span key={groupKey} className="aceternity-dock-danger-group flex shrink-0 items-end gap-0.5 rounded-[calc(var(--dock-item-radius)+2px)] px-0.5">
+            <span key={groupKey} className={cn("aceternity-dock-danger-group flex shrink-0 gap-0.5 rounded-[calc(var(--dock-item-radius)+2px)] px-0.5", props.even ? "items-center" : "items-end")}>
                 {dangerGroup.map((command) => (
                     <DockCommandButton key={command.id} command={command} mouseX={props.mouseX} metrics={props.metrics} motionEnabled={props.motionEnabled} showLabel={props.showLabel} />
                 ))}
@@ -157,7 +170,7 @@ function renderDockItems(items: FloatingDockEntry[], props: DockItemRenderProps)
     for (const item of items) {
         if (item.kind === "separator") {
             flushDangerGroup();
-            result.push(<DockSeparator key={item.id} compact={props.compact} labeled={props.showLabel} />);
+            result.push(<DockSeparator key={item.id} compact={props.compact} labeled={props.showLabel} even={props.even} />);
             continue;
         }
         if (item.danger) {
@@ -224,7 +237,7 @@ function DockCommandButton({ command, mouseX, metrics, motionEnabled, showLabel 
                     aria-expanded={command.expands ? command.active || undefined : undefined}
                     aria-pressed={command.expands ? undefined : command.active || undefined}
                     disabled={command.disabled}
-                    className={cn("aceternity-dock-command group relative grid size-full place-items-center rounded-full border outline-none", command.quiet && "is-quiet", command.active && "is-active", command.danger && "is-danger")}
+                    className={cn("aceternity-dock-command group relative grid size-full place-items-center rounded-[var(--dock-item-radius)] border-0 outline-none", command.quiet && "is-quiet", command.active && "is-active", command.danger && "is-danger")}
                     whileTap={motionEnabled && !command.disabled ? { scale: 0.92 } : undefined}
                     transition={aceternityMotion.spring.dock}
                     onClick={command.onClick}
@@ -238,8 +251,8 @@ function DockCommandButton({ command, mouseX, metrics, motionEnabled, showLabel 
     );
 }
 
-function DockSeparator({ compact, labeled }: { compact: boolean; labeled: boolean }) {
-    return <span aria-hidden className={cn("aceternity-dock-separator shrink-0 self-center", labeled ? "mx-1.5 h-6 w-px" : compact ? "mx-0.5 mb-0.5 h-3.5 w-px" : "mx-0.5 mb-0.5 h-4 w-px")} />;
+function DockSeparator({ compact, labeled, even }: { compact: boolean; labeled: boolean; even: boolean }) {
+    return <span aria-hidden className={cn("aceternity-dock-separator shrink-0 self-center", labeled ? "mx-1.5 h-6 w-px" : even ? compact ? "mx-1 h-3.5 w-px" : "mx-1 h-4 w-px" : compact ? "mx-0.5 mb-0.5 h-3.5 w-px" : "mx-0.5 mb-0.5 h-4 w-px")} />;
 }
 
 function proximitySize(distance: number, base: number, magnified: number, range: number, enabled: boolean) {

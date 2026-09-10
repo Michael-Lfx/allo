@@ -140,7 +140,7 @@
 }
 
 .canvas-composer-field {
-    min-height: 56px;
+    min-height: 112px;
     border-radius: var(--r-md, 8px);
     outline: none;
 }

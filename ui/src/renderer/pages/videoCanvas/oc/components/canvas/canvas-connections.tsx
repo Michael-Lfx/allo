@@ -3,7 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
-import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
+import { STORYBOARD_COMPOSER_MIN_HEIGHT, STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@oc/types/canvas";
 
 export const ConnectionPath = React.memo(function ConnectionPath({
@@ -169,7 +169,7 @@ export function activeConnectionPath(node: CanvasNodeData | undefined, handle: C
  * 视觉上像节点有很多端口。真正的多端口只存在于分镜脚本的 `row:` 句柄。
  */
 export function connectionHandleY(node: CanvasNodeData, handleId?: string, scrollTop = 0) {
-    if (handleId === "storyboard:context") return node.position.y + node.height - (node.metadata?.storyboardComposerHeight || 104) / 2;
+    if (handleId === "storyboard:context") return node.position.y + node.height - (node.metadata?.storyboardComposerHeight || STORYBOARD_COMPOSER_MIN_HEIGHT) / 2;
     if (!handleId?.startsWith("row:")) return node.position.y + node.height / 2;
     const rowId = handleId.slice(4);
     const index = (node.metadata?.storyboard?.rows || []).findIndex((row) => row.id === rowId);

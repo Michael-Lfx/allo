@@ -40,7 +40,8 @@ describe("creation IR", () => {
     expect(ir?.view).toBe("timeline");
     expect(ir?.shots[0]?.stillRole).toBe("last");
     expect(parseCreationView("canvas")).toBe("canvas");
-    expect(parseCreationView("nope")).toBe("storyboard");
+    expect(parseCreationView("storyboard")).toBe("storyboard");
+    expect(parseCreationView("nope")).toBe("canvas");
     expect(isCreationShotBusy("running")).toBe(true);
     expect(isCreationShotBusy("idle")).toBe(false);
   });
@@ -56,7 +57,7 @@ describe("creation IR", () => {
         { kind: "scene", name: "客厅", mediaId: "media-b" },
       ],
     });
-    expect(ir.view).toBe("storyboard");
+    expect(ir.view).toBe("canvas");
     expect(ir.subjects.map((item) => item.kind)).toEqual(["character", "scene"]);
     expect(ir.shots).toHaveLength(1);
     expect(ir.shots[0]?.plot).toBe("噜噜在客厅跳舞");

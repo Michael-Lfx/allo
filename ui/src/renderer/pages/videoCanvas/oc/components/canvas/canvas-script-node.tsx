@@ -20,10 +20,10 @@ import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGeneration
 export const STORYBOARD_ROW_HEIGHT = 48;
 export const STORYBOARD_HEADER_HEIGHT = 124;
 const STORYBOARD_ADD_ROW_HEIGHT = 36;
-const STORYBOARD_COMPOSER_MIN_HEIGHT = 104;
-const STORYBOARD_COMPOSER_MAX_HEIGHT = 180;
-const STORYBOARD_PROMPT_MIN_HEIGHT = 40;
-const STORYBOARD_PROMPT_MAX_HEIGHT = 116;
+export const STORYBOARD_COMPOSER_MIN_HEIGHT = 152;
+const STORYBOARD_COMPOSER_MAX_HEIGHT = 244;
+const STORYBOARD_PROMPT_MIN_HEIGHT = 88;
+const STORYBOARD_PROMPT_MAX_HEIGHT = 180;
 const SCRIPT_GRID_TEMPLATE = "72px 150px minmax(280px, 1.4fr) minmax(220px, 1fr) 58px";
 
 export function storyboardNodeHeight(rowCount: number, composerHeight = STORYBOARD_COMPOSER_MIN_HEIGHT) {

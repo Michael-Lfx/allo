@@ -19,7 +19,7 @@ import { useCanvasAgentStore } from "@oc/stores/canvas/use-canvas-agent-store";
 import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
 import { batchSourceRestriction } from "@oc/lib/canvas/canvas-batch-connection";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
-import { createCanvasNode, readCanvasWorkspaceMode } from "@oc/lib/canvas/canvas-project-domain";
+import { readCanvasWorkspaceMode } from "@oc/lib/canvas/canvas-project-domain";
 import { CanvasRefreshShell } from "./canvas-refresh-shell";
 import { useCanvasConnectionController } from "./use-canvas-connection-controller";
 import { useCanvasAgentOperations } from "./use-canvas-agent-operations";
@@ -38,17 +38,8 @@ import { useCanvasNodeEditor } from "./use-canvas-node-editor";
 import { useCanvasNodeOperations } from "./use-canvas-node-operations";
 import { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import { useCanvasProjectShare } from "./use-canvas-project-share";
-import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
-import { nanoid } from "nanoid";
 import { homeAgentAutoStartFromCreative, canvasConfigPatchFromHomeLaunch, readHomeLaunchSidecar } from "@renderer/pages/videoCanvas/lib/home-agent-launch";
-import {
-    findCreationScriptNode,
-    readCreationMemory,
-    resolveCreationIr,
-    writeCreationIr,
-    type CreationView,
-} from "@renderer/pages/videoCanvas/lib/creation-ir";
-import { CreationSpecBar, CreationStoryboardList, CreationTimelineList } from "./creation-workbench";
+import { resolveCreationIr } from "@renderer/pages/videoCanvas/lib/creation-ir";
 import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
 import { loadCanvasAssistantPanel } from "@renderer/pages/videoCanvas/loadAssistantPanel";
 import { useCanvasRenderModel } from "./use-canvas-render-model";
@@ -798,80 +789,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         () => resolveCreationIr(currentProject?.alloCreative, nodes),
         [currentProject?.alloCreative, nodes],
     );
-    const persistCreationView = useCallback((view: CreationView) => {
-        if (!creationIr) return;
-        const creative = currentProject?.alloCreative;
-        updateProject(projectId, {
-            alloCreative: writeCreationIr(
-                typeof creative === "object" && creative ? { ...creative } : {},
-                { ...creationIr, view },
-            ),
-        });
-    }, [creationIr, currentProject?.alloCreative, projectId, updateProject]);
-    const openCreationNodeOnCanvas = useCallback((nodeId: string) => {
-        persistCreationView("canvas");
-        focusCanvasNode(nodeId);
-    }, [focusCanvasNode, persistCreationView]);
-    const showCreationBoard = Boolean(creationIr && (creationIr.view === "storyboard" || creationIr.view === "timeline") && !focusMode);
-    const creationMemory = readCreationMemory(currentProject?.alloCreative);
-    const restoreCreationSpec = useCallback(() => {
-        const previous = creationMemory.at(-2) || creationMemory.at(-1);
-        if (!creationIr || !previous) return;
-        const spec = previous.spec;
-        const creative = currentProject?.alloCreative;
-        updateProject(projectId, {
-            alloCreative: writeCreationIr(
-                typeof creative === "object" && creative ? { ...creative } : {},
-                { ...creationIr, spec },
-            ),
-        });
-        setNodes((current) => current.map((node) => {
-            if (node.type !== CanvasNodeType.Config) return node;
-            return {
-                ...node,
-                metadata: {
-                    ...node.metadata,
-                    size: spec.aspectRatio,
-                    vquality: spec.resolution,
-                    seconds: String(spec.durationSecs),
-                    generationMode: spec.mediaKind,
-                    ...(spec.mediaKind === "image" && spec.imageModel ? { model: spec.imageModel } : {}),
-                    ...(spec.mediaKind === "video" && spec.videoModel ? { model: spec.videoModel } : {}),
-                },
-            };
-        }));
-    }, [creationIr, creationMemory, currentProject?.alloCreative, projectId, setNodes, updateProject]);
-    const openCreationTimeline = useCallback(() => {
-        const videoId = creationIr?.shots.find((shot) => shot.videoNodeId)?.videoNodeId
-            || nodes.find((node) => node.type === CanvasNodeType.Video)?.id;
-        if (!videoId) return;
-        setTimelineNodeId(videoId);
-        persistCreationView("canvas");
-    }, [creationIr, nodes, persistCreationView, setTimelineNodeId]);
-    const createCreationThreeView = useCallback((shotId: string) => {
-        if (!creationIr) return;
-        const shot = creationIr.shots.find((item) => item.id === shotId);
-        const subject = creationIr.subjects.find((item) => item.kind === "character" && item.nodeId && shot?.subjectIds.includes(item.id));
-        if (!shot || !subject?.nodeId) return;
-        const sourceNodeId = subject.nodeId;
-        const source = nodes.find((node) => node.id === sourceNodeId);
-        const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
-        const node = createCanvasNode(CanvasNodeType.Image, {
-            x: (source?.position.x || 0) + (source?.width || spec.width) + spec.width / 2 + 72,
-            y: (source?.position.y || 0) + spec.height / 2,
-        }, {
-            prompt: `请基于上游角色「${subject.name}」生成正面、侧面、背面三视图，保持服饰、发型、道具和比例一致。`,
-            workflowKind: "character",
-            characterView: "multi",
-            characterName: subject.name,
-            status: "idle",
-        });
-        node.title = canvasT("videoCanvas.creation.threeViewTitle", "{{name}} · 三视图", { name: subject.name });
-        setNodes((current) => [...current, node]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: sourceNodeId, toNodeId: node.id }]);
-        persistCreationView("canvas");
-        focusCanvasNode(node.id);
-    }, [creationIr, focusCanvasNode, nodes, persistCreationView, setConnections, setNodes]);
 
     const handleRetryNode = useCanvasGenerationRetry({
         ...canvasSetters,
@@ -1013,56 +930,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         selectCanvasStyle={selectCanvasStyle}
                         projectShare={projectShare}
                     />
-                    {creationIr && !focusMode ? (
-                        <CreationSpecBar
-                            ir={creationIr}
-                            theme={theme}
-                            memoryCount={creationMemory.length}
-                            onViewChange={persistCreationView}
-                            onRestoreSpec={restoreCreationSpec}
-                            onFocusSubject={(subject) => {
-                                if (subject.nodeId) openCreationNodeOnCanvas(subject.nodeId);
-                            }}
-                        />
-                    ) : null}
                     <div className="relative flex min-h-0 min-w-0 flex-1">
-                        {showCreationBoard && creationIr?.view === "timeline" ? (
-                            <CreationTimelineList
-                                ir={creationIr}
-                                theme={theme}
-                                onOpenNle={openCreationTimeline}
-                                onOpenOnCanvas={openCreationNodeOnCanvas}
-                            />
-                        ) : showCreationBoard && creationIr ? (
-                            <CreationStoryboardList
-                                ir={creationIr}
-                                theme={theme}
-                                nodes={nodes}
-                                onAddShot={() => {
-                                    const script = findCreationScriptNode(nodes);
-                                    if (script) addScriptRow(script.id);
-                                }}
-                                onOpenOnCanvas={openCreationNodeOnCanvas}
-                                onUpdateShot={(shotId, patch) => {
-                                    const script = findCreationScriptNode(nodes);
-                                    if (!script) return;
-                                    updateScriptRow(script.id, shotId, {
-                                        ...(patch.plot !== undefined ? { plotDescription: patch.plot } : {}),
-                                        ...(patch.durationSecs !== undefined ? { durationSeconds: patch.durationSecs } : {}),
-                                        ...(patch.stillRole !== undefined ? { stillRole: patch.stillRole } : {}),
-                                    });
-                                }}
-                                onCreateActionBoard={(shotId) => {
-                                    const script = findCreationScriptNode(nodes);
-                                    if (script) void createScriptActionBoards(script.id, [shotId]);
-                                }}
-                                onOpenDirector={(nodeId) => {
-                                    persistCreationView("canvas");
-                                    openDirectorWorkbench(nodeId);
-                                }}
-                                onCreateThreeView={createCreationThreeView}
-                            />
-                        ) : (
                         <CanvasProjectStage
                         {...directorActions}
                         {...canvasInteraction}
@@ -1113,7 +981,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                             openProjectAssets={openProjectAssets}
                             updateNodeMetadata={(nodeId, patch) => setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...patch } } : node)))}
                         />
-                        )}
                         <CanvasProjectAssistantColumn
                         {...dialogState}
                         assistant={assistant}
@@ -1136,8 +1003,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                             modelCatalogReady={modelCatalogReady}
                         />
                     </div>
-                    {showCreationBoard ? null : (
-                    <>
                     {/* 选区框、连接草稿与节点弹层（HideWhileSelectionBox/HideWhileNodeDragging 隔离）统一在此编排 */}
                     <CanvasProjectOverlays
                         {...mediaActions}
@@ -1218,8 +1083,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         handleConfigNodeChange={handleConfigNodeChange}
                         toggleFrameCollapsed={toggleFrameCollapsed}
                     />
-                    </>
-                    )}
                     <CanvasProjectDialogs
                         {...viewportActions}
                         {...directorActions}

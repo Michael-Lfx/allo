@@ -53,8 +53,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const resolvedMentions = useResolvedCanvasResourceReferences(mentionReferences);
     const videoFrameOptions = resolvedMentions.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
     const hasVideoPromptTools = mode === "video" && videoFrameOptions.length > 0;
-    const composerMinHeight = expanded ? 220 : 56;
-    const composerHeight = Math.min(expanded ? 360 : 140, Math.max(composerMinHeight, Math.ceil(promptContentHeight + 12)));
+    const composerMinHeight = expanded ? 280 : 112;
+    const composerHeight = Math.min(expanded ? 440 : 220, Math.max(composerMinHeight, Math.ceil(promptContentHeight + 12)));
     const isSubmitDisabled = !isRunning && !prompt.trim();
     const canExpandPrompt = mode === "image" || mode === "video";
     const isPortraitTexture = mode === "image" && Boolean(node.metadata?.portraitTexture);

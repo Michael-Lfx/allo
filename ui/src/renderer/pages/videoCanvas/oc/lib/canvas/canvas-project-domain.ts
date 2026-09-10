@@ -1,5 +1,5 @@
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@oc/constant/canvas";
-import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
+import { STORYBOARD_COMPOSER_MIN_HEIGHT, STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@oc/components/canvas/canvas-script-node";
 import type { CanvasImageAngleParams } from "@oc/components/canvas/canvas-node-angle-dialog";
 import type { NodeGenerationInput } from "@oc/components/canvas/canvas-node-generation";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
@@ -161,14 +161,14 @@ export function storyboardHandleAtY(node: CanvasNodeData, worldY: number, scroll
         const index = Math.max(0, Math.min(rows.length - 1, Math.floor((localY + scrollTop) / STORYBOARD_ROW_HEIGHT)));
         return `row:${rows[index].id}`;
     }
-    const composerTop = node.height - (node.metadata?.storyboardComposerHeight || 104);
+    const composerTop = node.height - (node.metadata?.storyboardComposerHeight || STORYBOARD_COMPOSER_MIN_HEIGHT);
     if (worldY >= node.position.y + composerTop && worldY <= node.position.y + node.height) return "storyboard:context";
     return undefined;
 }
 
 function storyboardHandleY(node: CanvasNodeData, handleId?: string, scrollTop = 0) {
     if (node.type !== CanvasNodeType.Script) return undefined;
-    if (handleId === "storyboard:context") return node.position.y + node.height - (node.metadata?.storyboardComposerHeight || 104) / 2;
+    if (handleId === "storyboard:context") return node.position.y + node.height - (node.metadata?.storyboardComposerHeight || STORYBOARD_COMPOSER_MIN_HEIGHT) / 2;
     if (!handleId?.startsWith("row:")) return undefined;
     const rowId = handleId.slice(4);
     const index = (node.metadata?.storyboard?.rows || []).findIndex((row) => row.id === rowId);
