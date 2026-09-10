@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import {
+  Files,
   Folder,
   Menu,
   Square,
@@ -17,6 +18,7 @@ export function Topbar() {
 
   const setSidebarOpen = useAppStore((s) => s.setSidebarOpen);
   const cancel = useAppStore((s) => s.cancel);
+  const toggleArtifactPanel = useAppStore((s) => s.toggleArtifactPanel);
 
   const currentConversation = useMemo<ConversationView | null>(
     () => conversations.find((item) => item.conversation_id === selectedConversationId) ?? null,
@@ -32,6 +34,7 @@ export function Topbar() {
       </div>
     </div>
     <div className="topbar-actions">
+      <IconButton label={t("topbar.artifacts")} onClick={toggleArtifactPanel}><Files aria-hidden="true" size={17} strokeWidth={1.7} /></IconButton>
       {isProcessing && <button className="stop-button" type="button" onClick={() => void cancel()}><Square aria-hidden="true" size={11} fill="currentColor" /> {t("topbar.stop")}</button>}
     </div>
   </header>;

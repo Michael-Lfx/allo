@@ -70,7 +70,7 @@ Event Log 是 allo 引擎内部的事实来源；V1 公共契约只承诺状态�
 
 ## 4. Team Planning
 
-V1 Team 采用模式 A：TeamRun 由服务端直接构造 Planning Context，并调用内部 `Planner/LlmPlanProducer` 生成结构化 planned DAG。`lead_agent_id` 表示规划角色；它不要求对应一个独立的用户可见 Conversation，也不要求通过模型可见的 `nomi_delegate` 工具启动 Team。
+V1 Team 采用模式 A：TeamRun 创建时由服务端创建 Leader Conversation 并绑定 Team 的 `AgentExecutionTemplate`；Leader 模型在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`，服务端据此构造 Planning Context 并调用内部 `Planner/LlmPlanProducer` 生成结构化 planned DAG（2026-09-10 修订，见 `agent-store-v1-roadmap.md` §10 决策 3）。`lead_agent_id` 表示规划角色，不必对应一个用户可见的独立 Conversation，但必须有一个承载工具调用的 Conversation/Attempt。
 
 Planning Context 由以下部分组成：
 
@@ -105,7 +105,7 @@ interface PlanningOptions {
 }
 ```
 
-V1 只支持固定成员、Planning Context 驱动的 planned DAG、局部并行、有限 retry 和 replan。服务端必须在 Plan 物化前校验每个 Step 的成员路由、依赖、工具策略和并发限制；Prompt 不能替代这些校验。普通可信会话仍可使用 `nomi_delegate`，但它不是 TeamRun 的必要依赖。
+V1 只支持固定成员、Planning Context 驱动的 planned DAG、局部并行、有限 retry 和 replan。服务端必须在 Plan 物化前校验每个 Step 的成员路由、依赖、工具策略和并发限制；Prompt 不能替代这些校验。成员池、并发上限和路由来自绑定的 `AgentExecutionTemplate` 与服务端策略，不接受模型输入。`nomi_delegate(strategy=planned)` 是 Team 的计划触发入口；仅支持 `strategy=parallel` 或无持久化的实现不得用于 Team。
 
 ## 5. 兼容性维度
 

@@ -14,11 +14,23 @@ import type {
 } from "@flowy-agent-store/protocol";
 import { resolveAppServerBin } from "./bin";
 import { parseReadinessLine, type ReadinessInfo } from "./readiness";
-import { spawnAppServer, type SpawnOptions, type SpawnedServer } from "./spawn";
+import {
+  assertProtocolCompatible,
+  spawnAppServer,
+  type SpawnExitInfo,
+  type SpawnOptions,
+  type SpawnedServer,
+} from "./spawn";
 
 export { resolveAppServerBin };
 export { parseReadinessLine, type ReadinessInfo };
-export { spawnAppServer, type SpawnOptions, type SpawnedServer };
+export {
+  assertProtocolCompatible,
+  spawnAppServer,
+  type SpawnExitInfo,
+  type SpawnOptions,
+  type SpawnedServer,
+};
 
 export interface LaunchOptions extends SpawnOptions {
   client: ClientInfo;

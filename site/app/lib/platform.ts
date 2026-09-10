@@ -62,6 +62,19 @@ export function releaseAssetUrl(version: string, p: DetectedPlatform): string {
   return `${DOWNLOAD_HOST}/downloads/${file}`;
 }
 
+/**
+ * Platforms with a published build artifact. The download host currently serves
+ * Windows x64 only, so everything else must be pointed at the downloads page
+ * instead of a direct asset URL (which would 404). Add targets here only once
+ * their builds are actually published.
+ */
+export const RELEASED_PLATFORMS: readonly DetectedPlatform[] = [{ os: "windows", arch: "x86_64" }];
+
+/** Whether a detected platform has a downloadable artifact right now. */
+export function isReleasedPlatform(p: DetectedPlatform): boolean {
+  return RELEASED_PLATFORMS.some((r) => r.os === p.os && r.arch === p.arch);
+}
+
 /** VPS download directory (file listing / all published assets). */
 export function releasesPageUrl(): string {
   return `${DOWNLOAD_HOST}/downloads/`;

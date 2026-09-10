@@ -238,10 +238,10 @@ pub async fn fetch_http_market(
     staging: &Path,
     if_none_match: Option<&str>,
 ) -> Result<HttpFetchOutcome, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("allo-agent-store/1.0")
-        .build()
-        .map_err(|error| format!("build http client: {error}"))?;
+    // Same client contract as the listing probe / mirror (doc 18 §5.2 step 2:
+    // UA + 15s). Building a second client here used to drop the timeout, so a
+    // hung manifest server held the whole refresh open with no bound.
+    let client = http_client()?;
     let mut request = client.get(url);
     if let Some(etag) = if_none_match {
         request = request.header("if-none-match", etag);

@@ -279,6 +279,36 @@ export class EventSubscription {
     }
   }
 
+  /**
+   * Re-arm after the connection was re-established (docs/agent-store/16 T8).
+   * A new socket means the server dropped its subscriptions and the transport
+   * dropped its notification listeners, so this:
+   *
+   * 1. re-registers this subscription's notification listener,
+   * 2. resets the cursor to 0 and forgets the dedupe set, then
+   * 3. re-issues `run/subscribe` and replays **all** persisted events.
+   *
+   * The replay is deliberate (the plan's "重连后重置 lastSeenSequence"): a
+   * consumer must dedupe by `sequence`, since events seen before the outage
+   * are delivered again. Call it only once the session handshake has completed
+   * again — the transport's `open` event fires before `initialize`. A no-op
+   * once closed.
+   */
+  async rearm(): Promise<RunEvent[]> {
+    if (this.closed || !this.fetchAfter) {
+      return [];
+    }
+    this.unsubscribeNotification?.();
+    this.unsubscribeNotification = this.transport.onNotification((notification) => {
+      this.dispatch(notification);
+    });
+    this.lastSeenSequence = 0;
+    this.seenSequences.clear();
+    this.resyncInFlight = null;
+    await this.transport.request<{ subscribed: boolean }>("run/subscribe", { run_id: this.runId });
+    return this.resync();
+  }
+
   private markSeen(sequence: number): void {
     this.seenSequences.add(sequence);
     if (sequence > this.lastSeenSequence) {

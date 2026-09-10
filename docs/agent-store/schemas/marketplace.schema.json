@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-store/marketplace.schema.json",
+  "title": "Agent Store marketplace manifest",
+  "description": "Market manifests discovered per doc 18 §3 — `.codebuddy-plugin/marketplace.json` (plugins[]), `.codebuddy-skill/marketplace.json` (skills[]), `.codebuddy-connector/connectors.json` (connectors[]), plus root `marketplace.json`. Entry fields follow doc 02 §8; doc 18 §4 fixes the entry model and the hard constraint that an entry `source`, when present, is RELATIVE to the market root. `name` is the only required manifest field; unknown keys are tolerated.",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": { "$ref": "#/$defs/identity" },
+    "version": { "type": "string" },
+    "description": { "$ref": "#/$defs/localized" },
+    "owner": { "$ref": "#/$defs/author", "description": "Publisher. Real shops carry `{name, email}` (the same shape doc 17 §3 accepts for `author`), so a plain string and an object are both accepted." },
+    "tags_zh": { "type": "array", "items": { "type": "string" } },
+    "tags_en": { "type": "array", "items": { "type": "string" } },
+    "plugins": { "type": "array", "items": { "$ref": "#/$defs/entry" }, "description": "Expert/plugin marketplace entries ('.codebuddy-plugin/marketplace.json')." },
+    "skills": { "type": "array", "items": { "$ref": "#/$defs/entry" }, "description": "Skill marketplace entries ('.codebuddy-skill/marketplace.json')." },
+    "connectors": { "type": "array", "items": { "$ref": "#/$defs/entry" }, "description": "Connector marketplace entries ('.codebuddy-connector/connectors.json')." },
+    "auth_injection_rules": { "type": "array", "items": { "type": "object" }, "description": "Connector credential-injection rules; recorded, never executed at import time." }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Only required manifest field; whitespace-only counts as missing."
+    },
+    "localized": {
+      "anyOf": [
+        { "type": "string" },
+        { "type": "object" },
+        { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "object" }] } }
+      ]
+    },
+    "localizedList": {
+      "anyOf": [{ "type": "string" }, { "type": "object" }, { "type": "array" }]
+    },
+    "stringOrList": {
+      "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
+    },
+    "relativePath": {
+      "type": "string",
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$",
+      "description": "Path relative to the market root: no absolute or UNC path, no `..` segment, no backslash (doc 18 §4 hard constraint, §6 for `_files.txt` entries)."
+    },
+    "entry": {
+      "title": "Marketplace entry",
+      "type": "object",
+      "anyOf": [{ "required": ["name"] }, { "required": ["id"] }],
+      "properties": {
+        "name": { "$ref": "#/$defs/identity", "description": "Entry name; unique within the market (doc 18 §4)." },
+        "id": { "type": "string", "description": "Connector-style identifier; accepted where a shop keys entries by id instead of name." },
+        "source": { "$ref": "#/$defs/relativePath", "description": "REQUIRED to be relative when present (doc 18 §4)." },
+        "version": { "type": "string" },
+        "strict": { "type": "boolean", "default": false },
+        "description": { "$ref": "#/$defs/localized" },
+        "category": { "$ref": "#/$defs/localized" },
+        "keywords": { "$ref": "#/$defs/localizedList" },
+        "tags_zh": { "type": "array", "items": { "type": "string" } },
+        "tags_en": { "type": "array", "items": { "type": "string" } },
+        "commands": { "$ref": "#/$defs/stringOrList" },
+        "agents": { "$ref": "#/$defs/stringOrList" },
+        "skills": { "$ref": "#/$defs/stringOrList" },
+        "hooks": { "type": "object" },
+        "mcpServers": { "type": "object" },
+        "lspServers": { "anyOf": [{ "type": "string" }, { "type": "object" }] },
+        "userConfig": { "type": "object" },
+        "dependencies": { "anyOf": [{ "type": "array" }, { "type": "object" }] },
+        "avatar": { "$ref": "#/$defs/relativePath" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

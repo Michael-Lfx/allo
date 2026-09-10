@@ -1488,25 +1488,29 @@ fn marketplace_provider(
 }
 
 /// Register marketplace sources declared under `[default_marketplaces.*]` in
-/// the agent-store config. Idempotent (same source returns the existing row),
-/// so it is safe to run before every store/market listing. Failures are
-/// non-fatal: a broken default source is reported as a warning and the rest
-/// keeps working. Network reach is bounded by `tokio::time::timeout`.
+/// the agent-store config. Idempotent (same source returns the existing row).
+/// Failures are non-fatal: a broken default source is reported as a warning and
+/// the rest keeps working. Network reach is bounded by `tokio::time::timeout`.
+///
+/// Returns `true` when every source is registered (or there is nothing to
+/// register) and `false` when at least one source could not be fetched; the
+/// caller uses that to decide whether a later attempt should retry.
 ///
 /// When the config file is absent (fresh install), the builtin public mirror
 /// is registered instead, so a new user can browse the store before touching
 /// any config. A config file that exists but declares no `default_marketplaces`
 /// also falls back. Explicit user markets always win over builtin ones.
-async fn ensure_default_marketplaces(state: &AppServerRouterState) {
+async fn ensure_default_marketplaces(state: &AppServerRouterState) -> bool {
     let provider = match marketplace_provider(state) {
         Ok(provider) => provider,
-        Err(_) => return,
+        // Nothing to register: no provider means the store surface is off.
+        Err(_) => return true,
     };
     // Only an *explicitly injected* config path enables default marketplace
     // auto-registration (production passes the agent-store config; tests keep
     // `None` so the host user's personal sources never leak into test state).
     let Some(path) = state.agent_store_config_path.clone() else {
-        return;
+        return true;
     };
     // Load the user config; a missing/unreadable file falls back to the
     // builtin public mirror, an existing file drives the source list.
@@ -1522,6 +1526,7 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) {
         Ok(_) => AgentStoreConfig::builtin_default_marketplaces(),
         Err(_) => AgentStoreConfig::builtin_default_marketplaces(),
     };
+    let mut complete = true;
     for (marketplace_id, source_kind, source) in sources {
         let request = AppServerMarketplaceAddRequest {
             name: Some(marketplace_id.clone()),
@@ -1534,18 +1539,72 @@ async fn ensure_default_marketplaces(state: &AppServerRouterState) {
             source,
         };
         // Best effort: default sources are convenience, never a hard failure.
-        // Timeout-bounded so a dead source cannot block store/market listing.
+        // Timeout-bounded so a dead source cannot hold the warm-up forever.
         // A full-tree HTTP mirror (hundreds of skill dirs, thousands of
         // assets) is the common worst case and takes 1–3 minutes over a
         // public mirror at BATCH=32, so the bound is 600s; a genuinely dead
         // source still fails fast per-request (15s client timeout) and the
         // staging guard reclaims the partial tree.
-        let _ = tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(600),
             provider.add(request),
         )
         .await;
+        if !matches!(outcome, Ok(Ok(_))) {
+            complete = false;
+        }
     }
+    complete
+}
+
+/// Default-marketplace warm-up state (D-SDK-1 ①). Two flags because "in flight"
+/// and "finished" are different questions:
+/// - `RUNNING` is set when a warm-up task starts and cleared when it ends, so
+///   `marketplaces_warming()` tells a client the truth;
+/// - `DONE` latches only on a **complete** run and stops later calls from
+///   re-spawning. An incomplete run leaves it clear, so the next store/market
+///   call retries.
+static DEFAULT_MARKETPLACES_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static DEFAULT_MARKETPLACES_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// `true` while the built-in default marketplaces are still registering in the
+/// background (D-SDK-1 ①). The store projection surfaces it so a client can
+/// tell an incomplete catalog from a genuinely empty one.
+///
+/// Deliberately *not* "has a warm-up ever run": a completed run reports
+/// `false`, otherwise `markets_pending` would be permanently true.
+pub fn marketplaces_warming() -> bool {
+    DEFAULT_MARKETPLACES_RUNNING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Start the default-marketplace registration **off the request path**.
+///
+/// Before this (D-SDK-1), `store/list` / `market/list` / `market/get` awaited
+/// `ensure_default_marketplaces` inline: on a fresh data dir that is a
+/// full-tree HTTP mirror of the builtin markets (~90s measured), so the first
+/// call of a cold install paid it — and the SDK's default temp data dir paid it
+/// again on every spawn. A request now answers from whatever is already
+/// registered (possibly empty) while the mirroring continues in the
+/// background; clients re-list later.
+pub fn warm_default_marketplaces(state: &AppServerRouterState) {
+    use std::sync::atomic::Ordering;
+    if DEFAULT_MARKETPLACES_DONE.load(Ordering::SeqCst) {
+        return; // an earlier run already registered everything
+    }
+    if DEFAULT_MARKETPLACES_RUNNING.swap(true, Ordering::SeqCst) {
+        return; // already running
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        let complete = ensure_default_marketplaces(&state).await;
+        // Latch a complete run only: an incomplete one stays clear so the next
+        // store/market call retries. (This crate has no logging seam; the
+        // caller-visible effect is the retry itself.)
+        DEFAULT_MARKETPLACES_DONE.store(complete, Ordering::SeqCst);
+        DEFAULT_MARKETPLACES_RUNNING.store(false, Ordering::SeqCst);
+    });
 }
 
 async fn market_add_impl(
@@ -1558,7 +1617,7 @@ async fn market_add_impl(
 async fn market_list_impl(
     state: &AppServerRouterState,
 ) -> Result<Vec<AppServerMarketplaceSummary>, AppServerError> {
-    ensure_default_marketplaces(state).await;
+    warm_default_marketplaces(state);
     marketplace_provider(state)?.list().await.map_err(AppServerError::from)
 }
 
@@ -1566,7 +1625,7 @@ async fn market_get_impl(
     state: &AppServerRouterState,
     marketplace_id: &str,
 ) -> Result<AppServerMarketplaceDetail, AppServerError> {
-    ensure_default_marketplaces(state).await;
+    warm_default_marketplaces(state);
     marketplace_provider(state)?.get(marketplace_id).await.map_err(AppServerError::from)
 }
 
@@ -1631,7 +1690,7 @@ fn store_provider(
 async fn store_list_impl(
     state: &AppServerRouterState,
 ) -> Result<AppServerStoreList, AppServerError> {
-    ensure_default_marketplaces(state).await;
+    warm_default_marketplaces(state);
     store_provider(state)?.list().await.map_err(AppServerError::from)
 }
 
@@ -4027,6 +4086,12 @@ fn project_conversation_notification(
                         "message_id": message_id,
                         "name": event.data.pointer("/data/name").cloned().unwrap_or(serde_json::Value::Null),
                         "status": event.data.pointer("/data/status").cloned().unwrap_or(serde_json::Value::Null),
+                        // The live row must render what the reloaded row renders:
+                        // without these, the same tool call showed no arguments
+                        // while streaming and gained them after a reload.
+                        // Opaque ids (`call_id`, session ids) stay behind the seam.
+                        "args": event.data.pointer("/data/args").cloned().unwrap_or(serde_json::Value::Null),
+                        "output": event.data.pointer("/data/output").cloned().unwrap_or(serde_json::Value::Null),
                     }),
                 ),
                 "error" => (
@@ -5899,7 +5964,7 @@ display_name = "MiMo V2.5 Free"
     }
 
     #[test]
-    fn conversation_tool_projection_carries_only_public_tool_fields() {
+    fn conversation_tool_projection_carries_args_and_output_but_hides_ids() {
         let conversation_id = "0190f5fe-7c00-7a00-8000-000000000009";
         let subscriptions = Arc::new(RwLock::new(WsSubscriptions {
             conversations: HashSet::from([conversation_id.to_owned()]),
@@ -5924,9 +5989,15 @@ display_name = "MiMo V2.5 Free"
         assert_eq!(notification["params"]["event_type"], "message.tool");
         assert_eq!(notification["params"]["payload"]["name"], "Read");
         assert_eq!(notification["params"]["payload"]["status"], "completed");
-        assert!(notification["params"]["payload"].get("args").is_none());
+        // The live row renders exactly what a reloaded row renders — no
+        // "arguments appear only after a reload" second look.
+        assert_eq!(
+            notification["params"]["payload"]["args"]["file_path"],
+            "C:\\internal\\MEMORY.md"
+        );
+        assert_eq!(notification["params"]["payload"]["output"], "internal output");
+        // Opaque runtime identifiers stay behind the module seam.
         assert!(notification["params"]["payload"].get("input").is_none());
-        assert!(notification["params"]["payload"].get("output").is_none());
         assert!(notification["params"]["payload"].get("call_id").is_none());
         assert!(notification["params"].get("turn_id").is_none());
     }

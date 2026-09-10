@@ -364,7 +364,7 @@ pub async fn register_remote(
                 version: None,
                 content_digest: None,
                 entries,
-                auto_update: false,
+                auto_update: crate::app_server_marketplace::is_official_source(source_kind, source),
             })
             .await
             .map_err(AppError::from)?;

@@ -13,7 +13,7 @@
 | 方向 | 范围 | 现状 | 主文档 |
 | --- | --- | --- | --- |
 | **① SDK + 站点** | SDK 加固（A1–A5；A6 已决策延后）+ 站点事实修正与开发者文档（C1–C5） | 均未开工。**两者是派生关系，必须配对执行**（§3.2 C0） | 本文 §3.1 / §3.2 |
-| **② 插件与市场规范** | D1 规范正文 ✅ / D2 机器可校验 Schema | 正文已完成（`17`/`18`）；剩 D2（P2） | `17-plugin-spec.zh.md`、`18-marketplace-spec.zh.md` |
+| **② 插件与市场规范** | D1 规范正文 ✅ / D2 机器可校验 Schema ✅（T19） / 反向验证 ✅（T20） / v1 冻结 ✅（T21） | **已收口（2026-09-10）**：`17`/`18` 标为「v1 冻结」，偏差全部登记 | `17-plugin-spec.zh.md`、`18-marketplace-spec.zh.md` |
 | **③ WebUI 功能** | W1–W14（Codex app 体验对齐，四层） | 未开工 | `19-webui-codex-alignment.zh.md` |
 | **④ 待立项** | `11` 号未纳入的 8 项 + WP-5 协议 vNext | 未排期 | `11-webui-production-readiness.md`、`15-...zh.md` |
 
@@ -164,9 +164,10 @@
 - 定位：按 Q5 决策，**只定义兼容层**——明确「当前接受 CodeBuddy / WorkBuddy 格式，非 Agent Store 原生格式」，原生格式待生态起量后再定。
 - 验收（已满足）：规范覆盖源类型与地址解析、清单发现优先级、`_files.txt` 格式、获取与晋升不变式、注册表字段、发布自检清单、客户端契约。
 
-**D2 · 机器可校验 Schema（P2）**
-- 范围：`plugin.schema.json` / `marketplace.schema.json` + `_files.txt` 校验器；接入市场发布脚本与 CI。
-- 验收：对现有市场数据全绿；构造的非法样例被拒绝并给出字段级定位。
+**D2 · 机器可校验 Schema（P2）** — ✅ **已完成（2026-09-10，T19）**
+- 交付：`docs/agent-store/schemas/plugin.schema.json`（`17` §3 + `02` 的必填/默认/宽容形态）、`docs/agent-store/schemas/marketplace.schema.json`（`18` §3/§4，覆盖 `plugins` / `skills` / `connectors` 三种条目数组）；校验器 `scripts/check-agent-store-market.mjs`（① `18` §3 清单发现优先级 ② 清单字段 ③ 条目 `source` 相对性 + 镜像模式下的存在性 + 条目重名 ④ `_files.txt` 全规则与覆盖自检），**每条发现都带 `文件#/指针` 字段级定位**。
+- 接入：`scripts/serve-agent-store-market.mjs --emit-listings` 写完清单后**立即校验**（不合格 exit 1）；`package.json` 新增 `check:market`（自检，已并入 `check`）与 `test:market`；测试 `scripts/check-agent-store-market.test.mjs`。
+- 验收证据（2026-09-10）：真实市场 `experts / skills / connectors` → **`3 market(s), 0 error(s)`**；自检 **17/17**（14 个非法样例全部被拒且带定位）；单测 **6 pass / 0 fail**；发布脚本连续两次 `--emit-listings` 均 `listings validated`。过程中发现并修掉两处**工具侧**缺陷：schema 一开始把 `owner` 写成 `string`（真实市场是 `{name,email}`，已按 `author` 同形放宽），发布脚本 `listFiles` 会把 `_files.txt` 自身写进清单（违反 `18` §6，已修）。
 
 ### 3.4 方向三 · WebUI（子计划）
 
@@ -208,12 +209,12 @@
 | # | 问题 | 选项 |
 | --- | --- | --- |
 | Q1 | 平台矩阵策略 | ✅ **已定（2026-09-09）：仅 Windows**——站点口径收敛（C1-2），A6 延后至出现真实非 Windows 需求 |
-| Q2 | 站点托管与域名 | VPS + 自定义域名 / EdgeOne / GitHub Pages |
-| Q3 | 附件图片输入时机 | 现在做（W10） / 等协议 vNext 一起做 |
-| Q4 | SDK 发版节奏 | A1+A2 先发 `0.1.0-beta.3` / A1–A4 一起发 |
+| Q2 | 站点托管与域名 | ⏸ **已延后（2026-09-10）**——VPS + 自定义域名 / EdgeOne / GitHub Pages；待 C5 与 D-SDK-1 的带宽问题需要一并解决时再拍 |
+| Q3 | 附件图片输入时机 | ✅ **已定（2026-09-10）：等协议 vNext**——W10 属「待反馈」批，不进本轮三闭环（`19` §3 W10） |
+| Q4 | SDK 发版节奏 | ✅ **已定（2026-09-09）：A1+A2 先发 `0.1.0-beta.3`**——已于 2026-09-10 发布 |
 | Q5 | 插件格式策略 | ✅ **已定（2026-09-09）：先只做兼容层** |
-| Q6 | 设置里 provider 的写入目标 | ① 写 `~/.agent-store/config.toml`（与「唯一来源」一致） ② 写 DB（现状之一，需说明两套关系） |
-| Q7 | `auto_update` 默认值 | ① 改实现以区分官方/第三方（按 `02` §8 表述） ② 改 `02` §8 表述以匹配实现（恒 `false`） |
+| Q6 | 设置里 provider 的写入目标 | ✅ **已定（2026-09-10）：① 写 `~/.agent-store/config.toml`**（与「唯一来源」一致）——解锁 W11 provider 分区 |
+| Q7 | `auto_update` 默认值 | ✅ **已定（2026-09-10）：① 改实现以区分官方/第三方**（按 `02` §8：官方默认开、第三方默认关，V1 不自动更新第三方来源）——解锁 T14 |
 
 ---
 
@@ -224,13 +225,13 @@
 | **第 1 批** | A1（进程生命周期 P0）+ `typescript-sdk.md` §5.1/5.2/5.4/5.5 同步 + C1（站点三处事实硬伤） | 长会话不再卡死；站点不再 404 / 过度承诺 |
 | **第 2 批** | A2（传输止血）+ `typescript-sdk.md` §4.2 同步 + 补 `engines` + 发 `0.1.0-beta.3` | **SDK 转维护模式** |
 | **第 3 批** | W5（产物面板）+ W1（命令面板 V1：`/` + `@`）+ W13（市场管理） | **webui 三闭环验收全绿** |
-| **第 4 批** | 规范 4 处修补（已完成的见 §5.2）+ D2（Schema 与校验器）+ 规范反向验证 | **17/18 v1 冻结** |
+| **第 4 批（已收口）** | 规范 4 处修补 + D2（Schema 与校验器，✅ T19）+ 规范反向验证（✅ T20）+ v1 冻结（✅ T21） | ✅ `17`/`18` v1 冻结（2026-09-10） |
 | 待反馈 | 其余 webui：W2 / W3 / W4 / W6 / W7 / W8 / W9 / W10 / W11 / W12 / W1b / W14 | 按真实使用反馈排期 |
 | 待决策 | C5（域名 / HTTPS，等 Q2） | — |
 | 维护模式待议 | A3 / A4 / A5 | 须有真实外部 issue |
 | 未排期 | 方向四全部 | 需单独立项 |
 
-> 第 2 批全部是「后端/client 已就绪、只差前端接线」，不碰协议，风险最低、见效最快。
+> 第 3 批全部是「后端/client 已就绪、只差前端接线」，不碰协议，风险最低、见效最快。
 
 ### 5.1 退出条件（✅ 已采纳 2026-09-09）
 
@@ -257,6 +258,8 @@
 | T4 | 兼容性矩阵收敛 | `compatibility.md`（zh/en） | 只列 Windows x64「已发布」，其余「未提供」；中英一致 |
 | T6 | 文档同步（A1） | `typescript-sdk.md` §5.1 / §5.2 / §5.4 / §5.5 | 文档描述与 `spawn.ts` 公共面逐项对应（与 T1 同批，不攒债） |
 
+> ✅ **P0 批次已执行（2026-09-10）：T1 / T3 / T4 / T6 完成**，见下方「已完成」表。
+
 #### P1 · 核心价值
 
 | # | 任务 | 交付物 | 验证 | 依赖 |
@@ -277,26 +280,70 @@
 
 | # | 任务 | 交付物 | 验证 | 依赖 |
 | --- | --- | --- | --- | --- |
-| T19 | D2：Schema 与校验器 | `plugin.schema.json` / `marketplace.schema.json` + `_files.txt` 校验器 | 现有三个市场全绿；非法样例被拒绝并给出字段级定位 | — |
-| T20 | 规范反向验证 | 验证记录 | 拿 17/18 当清单跑三个真实市场，发现的偏差全部登记 | T19 |
-| T21 | v1 冻结标记 | 17/18 状态改为「v1 冻结」 | — | T20 |
+| T19 | D2：Schema 与校验器 — ✅ **已完成（2026-09-10）** | `docs/agent-store/schemas/{plugin,marketplace}.schema.json` + `scripts/check-agent-store-market.mjs`（+ `.test.mjs`） | ✅ 三个真实市场 `0 error`；14 个非法样例被拒且带 `文件#/指针`；已接入 `--emit-listings` 与 `check` | — |
+| T20 | 规范反向验证 — ✅ **已完成（2026-09-10）** | 验证记录：`17` §10 P1–P4、`18` §11 D3–D8 | ✅ 逐条核对 `18` §5/§7 与 `17` §4/§6/§7 + `18` §9，并对三个真实市场做字段普查（`--census`）；**新登记 8 条**，其中 2 条已修（`18` D5 清单抓取漏 15s 超时、`17` P2 依赖丢名），其余按建议「改规范 / 列 v1.1」择一 | T19 |
+| T21 | v1 冻结标记 — ✅ **已完成（2026-09-10）** | `17` / `18` 状态行改为「**v1 冻结**」+ 冻结范围与已接受缺口清单 | ✅ 21 个批次任务全部收口 | T20 |
 
 #### 已完成
 
 | # | 任务 | 完成 |
 | --- | --- | --- |
+| T1 | SDK stdout 背压修复（`spawn.ts` 就绪后持续排空 + 回归用例） | 2026-09-10 |
+| T2 | 运行时生命周期回调（`exited` / `onExit`、`env` / `cwd` 透传 + 用例） | 2026-09-10 |
+| T3 | 站点下载 CTA 平台守卫（`DownloadCTA` 仅 Windows x64 给直链） | 2026-09-10 |
+| T4 | 兼容性矩阵收敛（仅 Windows x64「已发布」，中英一致） | 2026-09-10 |
+| T5 | 部署口径对齐（`site/README.md` 与 `deploy-site.yml` 手动触发一致） | 2026-09-10 |
+| T6 | 文档同步（A1）：`typescript-sdk.md` §5.4 / §5.5 | 2026-09-10 |
+| T7 | 传输层健壮性（并发 `connect` / `connectTimeoutMs` / `close` 结算与清监听 / 陈旧 socket 隔离 + 6 用例） | 2026-09-10 |
+| T8 | 重连游标重置（`Transport.onLifecycle` + `rearm()`，游标归零 + 重订阅 + 全量重放 + 7 用例） | 2026-09-10 |
+| W8 | 通知与连接状态层（⚠️ 部分：Toast 层 + 断线横幅 + 一键重连；多标签协调与 catalog/后台 Run 通知未做，见 `19` §3 第 3 层 W8「进度」） | 2026-09-10 |
+| T9 | 包元数据（`protocol`/`client`/`sdk` 补 `engines` / `repository` / `sideEffects`） | 2026-09-10 |
+| T10 | 发 `0.1.0-beta.3`（四包发布至 npmjs，`tag=beta`，`latest` 未动） | 2026-09-10 |
+| T11 | 文档同步（A2）：`typescript-sdk.md` §4.2 实现契约 | 2026-09-10 |
+| T12 | W5 产物面板（⚠️ 按 D-W5-1 收敛为宿主面文件服务：会话 workspace 的列表 / 预览 / 下载 / 评论入下一条消息；**无**「按 Run 归属」与「接受 / 回退」） | 2026-09-10 |
+| T13 | W1 命令面板 V1（`/` 命令 + `@` 提及 + ↑↓/Enter/Esc + IME 守卫 + `Cmd/Ctrl+K`；无 `+` 菜单抢占） | 2026-09-10 |
+| T14 | W13 市场管理补全（auto-update 开关回读 / 条目级导入 / 注册表字段 / 级联移除确认列出影响面）+ Q7 ① 后端官方-第三方 `auto_update` 区分（⚠️ `revision`、上次刷新未做 → D-W13-1） | 2026-09-10 |
+| T15 | 三闭环验收（✅ **全绿**：协议级 live 验收 11/11，脚本 `web/scripts/sdk-live-w13-acceptance.ts`；UI 点击与键盘级 = 用户人工审查通过，期间排掉 3 个阻塞项 D-W13-2 / D-STREAM-1 / D-STREAM-2；记录见 `19` §5） | 2026-09-10 |
+| T19 | D2：Schema 与校验器（`docs/agent-store/schemas/*.json` + `scripts/check-agent-store-market.mjs`；三个真实市场 `0 error`、自检 17/17、单测 6 pass；已接入发布脚本与 `check`） | 2026-09-10 |
+| T20 | 规范反向验证（新登记 8 条偏差：`18` D4–D8、`17` P1–P4；已修 D5 / P2；其余按建议「改规范 / 列 v1.1」择一；普查模式 `check-agent-store-market.mjs --census`） | 2026-09-10 |
+| T21 | `17`/`18` v1 冻结（状态行 + 冻结范围 + 已接受缺口清单：`17` P1/P3/P4、`18` D4/D8） | 2026-09-10 |
 | T16 | 17 字段必填 / 默认 + 偏差小节 | 2026-09-09 |
 | T17 | 18 `marketplace_id` / `content_digest` / 跨市场命名 + 偏差小节 | 2026-09-09 |
 | T18 | 19 过时引用修正 + W1 拆分 | 2026-09-09 |
+
+> **第 2 批已收口**：T2 / T5 / T7 / T8 / T9 / T10 / T11（+ W8）全部完成；`0.1.0-beta.3` 于 2026-09-10 发布。
+> **T8 的重连策略（已实现）**：T7 让 `close()` 清空 `onNotification` 监听器，故「只重置 `lastSeenSequence`」无法恢复投递；实现为 `Transport.onLifecycle` 广播连接丢失 → `EventSubscription.rearm()` / `ConversationSubscription.rearm()` 重建订阅（`run/subscribe`）并全量重放，宿主持有的 `AppServerClient` 负责重挂通知桥并重跑 `initialize`。
+> **发布环节要求**：npm 账号开启 2FA，`npm login` 的 token 不带 bypass-2FA（首次发布返回 403），必须用 granular token（bypass 2FA）经临时 npmrc 注入；临时 npmrc 只写 `_authToken=${NODE_AUTH_TOKEN}` 变量引用，token 只入进程环境变量。
+
+#### 已知偏差
+
+**登记规则（强制）**：规范与实现不一致时，先在本节登记，再择一修正——要么改实现，要么改规范，不允许默默不一致。
+
+| # | 现象 | 证据 | 影响 | 待决 |
+| --- | --- | --- | --- | --- |
+| D-SDK-1 | **冷启动首次 `store/list` 远超默认请求超时** | 干净目录 `npm i @flowy-agent-store/sdk@0.1.0-beta.3` 后实测：`launchClient` 2565ms、`models/list` 1ms、**首次 `store/list` 91733ms**（438 条目，全新 data-dir） | `typescript-sdk.md` 只写 `requestTimeoutMs` 默认 30s，按文档默认参数调用首次 `store/list` 必得 `RequestTimeoutError`；发布闸门 `verify-published-sdk.ts` 已硬编码 120s 绕开该问题；**SDK 默认每次新建临时 data-dir（`spawn.ts:72-82`）→ 每次 spawn 都重付**；仓库自带的 `bun scripts/smoke.ts --real` 也会被它自己的 15s 超时打爆（2026-09-10 实测冷启动运行时，第二次现场复现） | ① 把默认市场注册从 `store/list` 解耦——✅ **已修（2026-09-10）**：`ensure_default_marketplaces` 改为返回「是否全部注册成功」，新增 `warm_default_marketplaces`（`AtomicBool` 守卫 + `tokio::spawn`，不完整则清标记供下次重试），`store/list` / `market/list` / `market/get` 三个调用点不再 `await`。**实测**（重建 release 二进制 + 全新 data-dir）：`first store/list: 1ms items=0` → 130 秒后 `store/list: 133ms items=438`、`market/list count=3`。**加载态——✅ 已做（2026-09-10，用户放开协议改动）**：① 启动即预热（`nomifun-app/src/router/routes.rs` 构造 state 后调一次 `warm_default_marketplaces`，带 `Handle::try_current()` 守卫，无运行时则退回懒触发）；② `store/list` 响应新增 `markets_pending`（`#[serde(default, skip_serializing_if = "Not::not")]`，纯 additive，`false` 时不上 wire），由 `nomifun_app_server::marketplaces_warming()` 供 `AppServerStoreProvider::list` 读取；③ WebUI 空目录时显示「内置市场仍在后台载入…」而非「还没有市场」。**实测（2026-09-10，重建二进制 + 全新 data-dir）**：`first store/list: 1ms items=0 markets_pending=true` → 135 秒时**仍未完成**（`items=275`、`market/list count=2`、`markets_pending=true`，第三个源 `connectors` 未完）——真实窗口可达 **2 分钟以上**（随源站带宽波动），标记如实反映。**残留**：`markets_pending` 目前只作用于「空目录文案」，**部分目录（非空）时 UI 不额外提示**；如需提示，要把 store 面板包一层 banner（小改，未做）——**已在同日修复，见下**。
+> **人工实测暴露的 3 处修正（2026-09-10）**：
+> 1. **`markets_pending` 永久为 true（我实现的 bug）**：原用一个 `AtomicBool` 兼表「运行中」与「已完成」，预热成功后仍为 `true`——实测 3 个市场全在册却报 `markets_pending=true`。已拆为 `DEFAULT_MARKETPLACES_RUNNING`（跑时置位、结束清位）+ `DEFAULT_MARKETPLACES_DONE`（仅完整跑完才 latch，不完整则留空供下次重试），`marketplaces_warming()` 只读 RUNNING。
+> 2. **市场列表只在挂载时拉一次、不轮询**（使用陷阱）：在预热窗口内打开页面 → `market/list` 返回空 → 列表停在空态、**没有可点的市场行**，W13 的详情字段/开关/仅导入/移除弹窗全部无从出现。已在 `CatalogView` 增补 pending 期间**自动重取**（20s × 最多 5 次，之后停止），并在市场源页非空的部分目录时显示 `.market-pending-note` 提示。
+> 3. 市场源页空态文案改为复用 `catalog.storePending`（区分「仍在载入」与「还没有市场」）。② SDK 默认 data-dir——✅ **已定（2026-09-10）：不改默认**；预热后台化后「每次 spawn 重付」的痛感已消除，需要跨进程复用就自持 `dataDir`（`typescript-sdk.md` §4.3 已写明）③ 文档止血——✅ **已被 ① 取代**（2026-09-10：中英 §4.3 从「首次请传 120s」改为「首次可能为空 + 后台预热」，§5.1 注释同步）④ 缩短镜像代价（加大 BATCH / 增量跳过 / 换 HTTPS+CDN，与 Q2 同源） |
+| D-W5-1 | **W5 的「artifact 协议已就绪」前提不成立** | `19` §3 / §7 原称 `artifact/list` / `artifact/get` 已定义、`artifact.created` 已发；实测 `05`:152 与 `TC-AS-008` 明确 Artifact 能力**延后实现**（`capabilities.artifacts` 恒 `false`，且规定不允许任意路径读取），TS 协议包与 `packages/client` 均无对应类型与子客户端，`artifact.created` 事件不存在 | W5 无法按「按 Run 的产物 + 接受/回退」交付；在「第 3 批不碰协议」的边界下，AC-5 的「按 Run 归属」与「回退」两项不可达 | ✅ **已定（2026-09-10）：收敛为宿主面文件服务方案**——按会话 workspace 交付列表 / 预览 / 下载（`/api/fs/list` + `/api/fs/read`，服务端已有），「按 Run 归属」与「接受 / 回退」留待 Artifact Phase；`19` §3 / §7 已按实测修正 |
+| D-W13-1 | **W13 要展示的 `revision` / 上次刷新在 wire 上不存在** | `MarketplaceSummary`（`protocol.ts:526`）与 `AppServerMarketplaceSummary`（`nomifun-api-types/src/app_server.rs:542`）只有 `version` / `auto_update` / `enabled` / `entry_count` / `added_at`；`resolved_revision` 仅出现在 `market/refresh` 响应里，`last_checked_at` 只是 DB 列（`plugin_marketplace.rs:52`），两者都未上 wire。另外 `market/remove` 的受影响快照只在**移除后**返回（`MarketplaceRemoveResult.snapshots`），没有移除前投影 | W13 的注册表字段展示缺这两项；级联确认清单只能从聚合的 `store/list` 派生（已如此实现） | ① 协议增量——✅ **已做（2026-09-10，用户已放开协议改动）**：`AppServerMarketplaceSummary` 加 `resolved_revision` / `last_checked_at`（`#[serde(default, skip_serializing_if)]`，纯 additive，`Detail` 走 `#[serde(flatten)]` 自动带上），`to_summary` 投影补两字段，测试替身同步；TS `MarketplaceSummary` 补两字段，`CatalogView` 详情面板加两行 `MetaRow`（源修订 mono、上次检查本地时间）。② 不再需要。**实测注意**：`resolved_revision` 在 `market/add` 后即有值；`last_checked_at` 由**刷新**写入，`market/add` 插入时显式 NULL（DB 语义即「上次检查」），因此新注册的市场在首次 `market/refresh` 前该列为空——UI 显示显式 `—` 而非静默丢行 |
+| D-W13-2 | **「市场源」与「导入记录」两个页面在 UI 上不可达** | `CatalogTab`（`CatalogView.tsx:59`）定义了 `"store" \| "sources" \| "installed" \| "imports"`，`sources` 面板（`:1261`）与 `imports` 面板（`:1474`）都有完整渲染块，但 `setTab("sources")` 只在**商店空态**按钮里出现一次、`setTab("imports")` 全文件**零次**调用；`catalog.tabStore` / `tabSources` / `tabImports` 三个文案键已存在却无控件消费（顶栏页签在某次「分类行取代页签」的改动中被删掉） | 商店非空时（实测 438 条）空态永不出现 → **W13 的全部验收项（注册表字段 / auto-update 开关 / 条目级导入 / 移除确认）在 UI 上都无法触达**，T15 的 UI 级验收卡在此处；`19` §3 W13 的「点市场进详情」路径没有入口 | ✅ **已修（2026-09-10）**：`.market-tabs` 恢复为四页签分段控件「应用商店 / 市场源 / 导入 / 已安装」（`Store` / `Globe` / `Upload` / `Users` 图标，激活态 `.market-mine.is-active`），搜索框仍只在商店/已安装显示 |
+| D-STREAM-1 | **直播流里工具事件与「本轮首段思考」共用 `msg_id`，前端整条互相覆盖** | 运行时：本轮第一段 thinking 的 wire id = `root_turn_id`（`stream_relay.rs` 的 `mint_thinking_segment_id`，:2385 → :3654），而工具事件走 `forward_to_websocket(&event)` → 内部固定用 `self.msg_id`（:3698，默认即 `root_turn_id`）；App Server 投影把两者都写成同一个 `message_id`（`nomifun-app-server/src/lib.rs:4032-4036` / `4063-4073` / `4083-4090`）；前端 `mergeMessagesById` 按 `message_id` 扁平 upsert、**后写整条覆盖**（`web/src/lib/conversation-events.ts:259-263`） | 实时渲染时首段「思考过程」被紧随其后的工具事件**顶掉**；同一轮内两次工具调用也会互相覆盖；重载历史后一切正常（两条 id 本不相同）——表现为「实时少一段思考、刷新后才对」 | ✅ **已修（2026-09-10）**：`ToolCall`（含 artifact 路径共 3 处转发）/`ToolGroup`/`AgentStatus` 改为使用各自持久化行的派生 id（`tool_message_id` / `derived_message_id("tool_group", …)` / `agent_status_message_id`），直播与历史同 id；`cargo check -p nomifun-conversation --tests` + `cargo test -p nomifun-conversation --lib thinking` 9 passed。**残留**：① `_ =>` 兜底转发与其他仍用 `self.msg_id` 的事件（permission / 未列举 kind）在首段思考之后到达时仍会顶掉它；② 直播 `message.tool` 投影**不含 `args`/`output`**——✅ **已做（2026-09-10，用户拍板）**：投影补齐 `args`/`output`（`nomifun-app-server/src/lib.rs`，仍不带 `call_id`/`input`/`turn_id` 等不透明标识），前端 reducer（`web/src/lib/conversation-events.ts`）改为**按字段增量合并**，使 running → completed 两帧不会互相清空；投影测试同步改名为 `conversation_tool_projection_carries_args_and_output_but_hides_ids`。**实测**：`4431ms message.tool name=Glob args={"path":".","pattern":"*.md"} status=running` → `4438ms … status=completed output=No files matched the pattern`。**代价（已记录）**：args/output 会随每个状态帧重复上 wire，大输出工具会放大流量；历史路径本就是同一份数据、只是晚到。 |
+| D-STREAM-2 | **回答可见后仍显示「正在处理」约 6–15 秒（后端收尾 child 阻塞 `Finish`）** | 实测探针（临时会话，跑完即删）：`33ms RECEIPT completed=false` / `33ms turn.status{running}` → `15079ms message.delta`（回答完成）→ `15245ms message.activity{turn_completed}` → **25s 时 `conversations.get` 仍报 `is_processing=true status=running`**。运行时日志同轮：`execute_turn() completed; closing exact post-turn effects before Finish, elapsed_ms=15178` → `StreamRelay received terminal event event_type="Finish" elapsed_ms=24996`，即**回答完成后 9.8 秒才发 `Finish`**。代码位置：`nomifun-ai-agent/src/manager/nomi/agent.rs:1965-2036` —— **post-session memory distillation**（`super::distill::run_distill_exact_turn`，一次 provider 调用；门控 = host opt-in `distill_enabled` + `distill_dir` + human origin）在 `Finish` 之前被 `await`，注释明写「Finish is forbidden until this child closes」；其后还有 `post_turn_review` hooks | 用户视角「答案已出但一直转圈、输入框被锁」；前端**没有说谎**（服务端此刻确实 `is_processing=true`），是该窗口内没有任何 wire 信号（最后可见事件为 `turn_completed`，下一个事件要等近 10 秒） | ⏸ **待拍板**：① 让 `Finish` 不再等待记忆蒸馏（改为后台 child + 已有 recovery 观测），使「回答完成」与「轮次结束」同时发生——动 durability 语义，需记忆侧确认；② 纯 UI：`message.activity{kind:"turn_completed"}` 之后把忙态文案分级为「正在收尾…」（不改语义，成本最低）；③ 关掉记忆蒸馏——✅ **已做（2026-09-10）：配置化**。`~/.agent-store/config.toml` 新增 `[memory].distill_enabled`（`AgentStoreConfig.memory`，`Option<bool>`，缺省 = 上游默认 ON；`nomifun-app-server/src/agent_store.rs`），由 agent-store 主机启动时经 `nomifun_ai_agent::manager::nomi::distill::set_distill_host_override()` 注入（**进程内原子，不改环境变量、不受线程启动顺序限制**；优先级：`NOMIFUN_MEMORY_DISTILL` 环境变量 > 本文件 > 上游默认）。文档：`site/content/docs/{zh-CN,en-US}/configuration.md` 新增 `## memory` 小节 + 顶层键行；本机 `~/.agent-store/config.toml` 已写入 `[memory] distill_enabled = false`。①（让 `Finish` 不再等待蒸馏 child）仍未做，需要记忆侧确认 durability 语义。 |
+
+> **D-SDK-1 根因（已定位，2026-09-10）**：`store/list` → `ensure_default_marketplaces`（`nomifun-app-server/src/lib.rs:1634` / `1500-1549`）**同步**对三个内置 URL 市场执行 `add` → `fetch_remote` → `mirror_http_tree`（BATCH=32，`market_source.rs:132-200`），从明文公网镜像 `http://111.170.173.22:10072` 整树下全量 HTTP 下载（`agent_store.rs:137-155`）。就绪行在该工作**之前**发出（`apps/agent-store/src/main.rs:373-384`），故代价全落在首个 `store/list`；`initialize` / `models/list` 不触市场，仅毫秒。`add` 的幂等短路（`app_server_marketplace.rs:420-441`）是 DB 查询，只在**同一 data-dir** 生效；单源上游超时 **600s**（`lib.rs:1543`），故「调高默认值」的正确取值无上界——只能靠 ①/④ 解决，③ 仅止血。
 
 #### 阻塞决策（拍板即解锁任务）
 
 | 决策 | 内容 | 解锁 |
 | --- | --- | --- |
-| Q7 | `auto_update` 默认值（改实现 / 改 `02`） | T14 |
-| Q6 | 设置里 provider 写入目标（`config.toml` / DB） | W11（待反馈） |
-| Q2 | 站点域名与托管（VPS + 域名 / EdgeOne / GitHub Pages） | C5（待决策） |
-| Q3 | 附件图片输入时机 | W10（待反馈） |
+| Q7 | ✅ **已定（2026-09-10）：① 改实现以区分官方/第三方** | T14 已解锁（登记见 `18` §11 D1） |
+| Q6 | ✅ **已定（2026-09-10）：① 写 `~/.agent-store/config.toml`** | W11 provider 分区（仍属待反馈批） |
+| Q2 | ⏸ **已延后（2026-09-10）** | C5 继续挂起；D-SDK-1 的镜像带宽大头一并等它，但**不阻塞** ③（已做）与 ① |
+| Q3 | ✅ **已定（2026-09-10）：等协议 vNext** | W10 留在「待反馈」批，不进本轮三闭环 |
+
+> **本轮已无待拍板项**：Q1 / Q3 / Q4 / Q5 / Q6 / Q7 已定，Q2 延后——带决策部分按上表执行。
 
 ---
 

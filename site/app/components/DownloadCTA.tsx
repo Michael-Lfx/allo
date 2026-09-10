@@ -8,18 +8,14 @@ import {
   ARCH_LABELS,
   detectPlatform,
   type DetectedPlatform,
+  isReleasedPlatform,
   PLATFORM_LABELS,
-  type TargetArch,
-  type TargetOS,
+  RELEASED_PLATFORMS,
   installScriptUrl,
   releaseAssetUrl,
   releasesPageUrl,
 } from "../lib/platform";
 import CopyButton from "./CopyButton";
-
-// Only the currently shipped target is downloadable; others return once
-// their builds are published (see the assets dir on the download host).
-const PLATFORMS: { os: TargetOS; arch: TargetArch }[] = [{ os: "windows", arch: "x86_64" }];
 
 export default function DownloadCTA({
   variant = "full",
@@ -38,7 +34,11 @@ export default function DownloadCTA({
     setOneLiner(`irm ${window.location.origin}${installScriptUrl()} | iex`);
   }, []);
 
-  const detectedUrl = detected ? releaseAssetUrl("latest", detected) : releasesPageUrl();
+  // Only point at a direct asset when the visitor's platform is actually
+  // published; everyone else goes to the downloads page (a guessed asset URL
+  // would 404 on macOS / Linux / ARM).
+  const detectedReleased = detected !== null && isReleasedPlatform(detected);
+  const detectedUrl = detected && detectedReleased ? releaseAssetUrl("latest", detected) : releasesPageUrl();
   const detectedLabel = detected
     ? `${PLATFORM_LABELS[detected.os][lang]} · ${ARCH_LABELS[detected.arch][lang]}`
     : "";
@@ -65,9 +65,17 @@ export default function DownloadCTA({
         <div className="download-actions" data-reveal style={revealDelay(120)}>
           <a className="btn btn-primary btn-lg btn-glow" href={detectedUrl}>
             <Download size={18} />
-            {t("landing.download.primaryCta", { os: detectedLabel })}
+            {detectedReleased
+              ? t("landing.download.primaryCta", { os: detectedLabel })
+              : t("landing.download.fallbackCta")}
           </a>
-          {detected && <span className="detect-note">{t("landing.download.detectNote")}</span>}
+          {detected && (
+            <span className="detect-note">
+              {detectedReleased
+                ? t("landing.download.detectNote")
+                : t("landing.download.unavailableNote")}
+            </span>
+          )}
         </div>
 
         <details className="platforms" data-reveal style={revealDelay(160)}>
@@ -89,7 +97,7 @@ export default function DownloadCTA({
         <details className="platforms" data-reveal style={revealDelay(200)}>
           <summary>{t("landing.download.manual")}</summary>
           <div className="platform-grid">
-            {PLATFORMS.map((p) => (
+            {RELEASED_PLATFORMS.map((p) => (
               <a key={`${p.os}-${p.arch}`} className="platform-card" href={releaseAssetUrl("latest", p)}>
                 <span className="platform-os">{PLATFORM_LABELS[p.os][lang]}</span>
                 <span className="platform-arch">{ARCH_LABELS[p.arch][lang]}</span>

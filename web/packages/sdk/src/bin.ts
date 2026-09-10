@@ -18,8 +18,6 @@ import { delimiter, join } from "node:path";
 
 const VENDOR_DIR = "vendor";
 const BIN_NAMES = ["flowy-agent-store", "flowy-agent-store.exe"];
-/** Legacy vendored/PATH name (pre-unification packages); still accepted. */
-const LEGACY_BIN_NAMES = ["agent-store", "agent-store.exe"];
 
 export function resolveAppServerBin(explicit?: string): string {
   if (explicit && existsSync(explicit)) return explicit;
@@ -54,9 +52,9 @@ function findInRuntimePackage(): string | undefined {
     const require = createRequire(import.meta.url);
     const pkgJsonPath = require.resolve(`${pkg}/package.json`);
     const pkgRoot = pkgJsonPath.slice(0, -"package.json".length);
-    // Vendored name (flowy-agent-store) first; accept the legacy name so
-    // pre-unification runtime packages keep resolving.
-    for (const name of [...BIN_NAMES, ...LEGACY_BIN_NAMES]) {
+    // Vendored name only — no legacy alias; an older runtime package is not
+    // accepted (no published users to support).
+    for (const name of BIN_NAMES) {
       const candidate = join(pkgRoot, VENDOR_DIR, name);
       if (existsSync(candidate)) return candidate;
     }

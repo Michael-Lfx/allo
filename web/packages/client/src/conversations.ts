@@ -133,6 +133,24 @@ export class ConversationSubscription {
     }
   }
 
+  /**
+   * Re-arm after a reconnect (docs/agent-store/16 T8): re-register the
+   * notification listener, reset the cursor and re-issue
+   * `conversation/subscribe`. This subscription has no event-replay API, so the
+   * caller must still backfill the transcript for the outage window
+   * (`conversation/messages`). Call it once the handshake completed; a no-op
+   * once closed.
+   */
+  async rearm(): Promise<void> {
+    if (this.closed) return;
+    this.removeListener?.();
+    this.removeListener = this.transport.onNotification((notification) => this.dispatch(notification));
+    this.lastSeenSequence = 0;
+    await this.transport.request<{ subscribed: boolean }>("conversation/subscribe", {
+      conversation_id: this.conversationId,
+    });
+  }
+
   private dispatch(notification: ServerNotification): void {
     if (notification.method === "conversation/event") {
       const event = notification.params;

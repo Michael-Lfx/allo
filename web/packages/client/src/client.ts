@@ -72,6 +72,8 @@ export class AppServerClient {
 
   private initializeResult: InitializeResult | null = null;
   private notificationListeners = new Set<NotificationListener>();
+  /** Transport → client notification bridge; re-armed after a transport close. */
+  private unbridgeNotifications: (() => void) | null = null;
 
   constructor(options: AppServerClientOptions) {
     this.clientInfo = options.client;
@@ -85,7 +87,17 @@ export class AppServerClient {
     this.agents = new AgentClient(this.transport);
     this.teams = new TeamClient(this.transport);
     this.models = new ModelClient(this.transport);
-    this.transport.onNotification((notification) => {
+    this.bridgeNotifications();
+  }
+
+  /**
+   * Subscribe the client-level fan-out on the transport exactly once.
+   * `transport.close()` drops its listeners, so this is also called on
+   * `connect()`: otherwise a reconnect would leave notifications silent.
+   */
+  private bridgeNotifications(): void {
+    if (this.unbridgeNotifications) return;
+    this.unbridgeNotifications = this.transport.onNotification((notification) => {
       for (const listener of [...this.notificationListeners]) {
         try {
           listener(notification);
@@ -106,6 +118,9 @@ export class AppServerClient {
 
   /** Connect and perform the initialize/initialized handshake. */
   async connect(): Promise<InitializeResult> {
+    // A previous `close()` (or transport close) dropped the bridge; re-arm it
+    // so a reconnect keeps delivering notifications instead of going silent.
+    this.bridgeNotifications();
     await this.transport.connect();
     const request: InitializeRequest = {
       protocol_version: APP_SERVER_PROTOCOL_VERSION,
@@ -133,6 +148,8 @@ export class AppServerClient {
 
   /** Close the transport; the server revokes the connection immediately. */
   close(): void {
+    this.unbridgeNotifications?.();
+    this.unbridgeNotifications = null;
     this.transport.close();
     this.initializeResult = null;
     this.notificationListeners.clear();

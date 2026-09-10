@@ -1,9 +1,18 @@
 {
   "name": "@flowy-agent-store/protocol",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Versioned App Server Protocol types and wire errors (no runtime, no DOM/Node deps)",
   "type": "module",
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Michael-Lfx/allo.git",
+    "directory": "web/packages/protocol"
+  },
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",

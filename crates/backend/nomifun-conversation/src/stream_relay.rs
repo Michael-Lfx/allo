@@ -2907,7 +2907,10 @@ impl StreamRelay {
                                         "Artifact delivery could not claim a durable message identity"
                                             .to_owned(),
                                     );
-                                    self.forward_to_websocket(&AgentStreamEvent::ToolCall(failed));
+                                    self.forward_to_websocket_with_msg_id(
+                                        &self.tool_message_id(&data.call_id).await,
+                                        &AgentStreamEvent::ToolCall(failed),
+                                    );
                                     fatal_tracking_error = Some(
                                         "Artifact delivery could not be projected durably; the turn was terminated"
                                             .to_owned(),
@@ -2921,7 +2924,10 @@ impl StreamRelay {
                                 // history hydration; the full Completed frame is
                                 // published by the terminal commit barrier.
                                 let provisional = Self::provisional_artifact_tool_call(data);
-                                self.forward_to_websocket(&AgentStreamEvent::ToolCall(provisional));
+                                self.forward_to_websocket_with_msg_id(
+                                    &self.tool_message_id(&data.call_id).await,
+                                    &AgentStreamEvent::ToolCall(provisional),
+                                );
                                 let _ = self
                                     .ordered_event_side_effect(
                                         "persist_provisional_artifact_tool_call",
@@ -2929,7 +2935,18 @@ impl StreamRelay {
                                     )
                                     .await;
                             } else {
-                                self.forward_to_websocket(&event);
+                                // Forward with the call's own durable id, never the
+                                // shared turn id (`self.msg_id`): that id is also
+                                // this turn's first thinking segment, and clients
+                                // key transcript items by `msg_id` — a shared id
+                                // made the tool row overwrite that thinking segment
+                                // (and two tool calls in one turn overwrite each
+                                // other). The persisted row uses the same derived
+                                // id, so live and reloaded history agree.
+                                self.forward_to_websocket_with_msg_id(
+                                    &self.tool_message_id(&data.call_id).await,
+                                    &event,
+                                );
                                 let _ = self
                                     .ordered_event_side_effect(
                                         "persist_tool_call",
@@ -3252,7 +3269,20 @@ impl StreamRelay {
                                     ),
                                 )
                                 .await;
-                            self.forward_to_websocket(&AgentStreamEvent::ToolGroup(entries.to_vec()));
+                            // Same derived id the persisted group row gets, so the
+                            // live row updates in place instead of colliding with
+                            // the turn id shared by every other record.
+                            let group_source = entries
+                                .first()
+                                .map(|entry| entry.call_id.clone())
+                                .unwrap_or_else(ConversationService::mint_msg_id);
+                            let group_id = self
+                                .derived_message_id("tool_group", &group_source)
+                                .await;
+                            self.forward_to_websocket_with_msg_id(
+                                &group_id,
+                                &AgentStreamEvent::ToolGroup(entries.to_vec()),
+                            );
                             let _ = self
                                 .ordered_event_side_effect(
                                     "persist_tool_group",
@@ -3261,7 +3291,13 @@ impl StreamRelay {
                                 .await;
                         }
                         AgentStreamEvent::AgentStatus(data) => {
-                            self.forward_to_websocket(&event);
+                            // The status pill is one durable record per turn
+                            // (`agent_status_message_id`); using the shared turn id
+                            // would let it overwrite the first thinking segment.
+                            self.forward_to_websocket_with_msg_id(
+                                &self.agent_status_message_id().await,
+                                &event,
+                            );
                             if data.backend == "nomi" && (data.status == "preparing" || data.status == "prepared") {
                                 active_agent_status = Some(data.clone());
                                 let persisted = self

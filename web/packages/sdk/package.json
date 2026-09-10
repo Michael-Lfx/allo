@@ -1,9 +1,18 @@
 {
   "name": "@flowy-agent-store/sdk",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Node.js host for the Agent Store App Server: spawn the runtime binary and connect over loopback (docs/agent-store/12 P1-3)",
   "type": "module",
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Michael-Lfx/allo.git",
+    "directory": "web/packages/sdk"
+  },
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",
@@ -16,8 +25,8 @@
     "dist"
   ],
   "dependencies": {
-    "@flowy-agent-store/client": "0.1.0-beta.2",
-    "@flowy-agent-store/protocol": "0.1.0-beta.2"
+    "@flowy-agent-store/client": "0.1.0-beta.3",
+    "@flowy-agent-store/protocol": "0.1.0-beta.3"
   },
   "scripts": {
     "build": "tsdown",
@@ -31,10 +40,10 @@
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
   "optionalDependencies": {
-    "@flowy-agent-store/runtime-win32-x64": "0.1.0-beta.2",
-    "@flowy-agent-store/runtime-linux-x64": "0.1.0-beta.2",
-    "@flowy-agent-store/runtime-linux-arm64": "0.1.0-beta.2",
-    "@flowy-agent-store/runtime-darwin-x64": "0.1.0-beta.2",
-    "@flowy-agent-store/runtime-darwin-arm64": "0.1.0-beta.2"
+    "@flowy-agent-store/runtime-win32-x64": "0.1.0-beta.3",
+    "@flowy-agent-store/runtime-linux-x64": "0.1.0-beta.3",
+    "@flowy-agent-store/runtime-linux-arm64": "0.1.0-beta.3",
+    "@flowy-agent-store/runtime-darwin-x64": "0.1.0-beta.3",
+    "@flowy-agent-store/runtime-darwin-arm64": "0.1.0-beta.3"
   }
 }

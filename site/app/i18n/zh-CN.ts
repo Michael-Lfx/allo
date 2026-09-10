@@ -109,7 +109,7 @@ const zhCN = {
         },
         q2: {
           q: "支持哪些平台？",
-          a: "兼容性矩阵覆盖 macOS（Apple 芯片 / Intel）、Windows x64 与 Linux x64 / arm64。当前发布渠道优先提供 Windows x64 构建，其余平台随构建发布逐步开放。",
+          a: "当前仅发布 Windows x64 构建；macOS（Apple 芯片 / Intel）与 Linux（x64 / arm64）暂未提供，需按需立项后再开放。",
         },
         q3: {
           q: "需要登录吗？",
@@ -135,6 +135,7 @@ const zhCN = {
       copy: "复制命令",
       copied: "已复制",
       fallbackCta: "前往 Releases",
+      unavailableNote: "仅 Windows x64 已发布；其他平台暂未提供。",
     },
     platforms: {
       macos: "macOS",

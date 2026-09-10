@@ -20,6 +20,7 @@ import type {
   ModelSummary,
   ProviderWithModel,
   ReasoningEffort,
+  WorkspaceFlatFile,
   WorkspaceView,
 } from "../lib/protocol";
 
@@ -55,6 +56,23 @@ function defaultWsUrl(): string {
 /** Messages fetched per history page (first screen + each scroll-up load). */
 const HISTORY_PAGE_SIZE = 60;
 
+/** How long a toast stays on screen before auto-dismissing. */
+const TOAST_TTL_MS = 6_000;
+
+export type ToastTone = "success" | "error";
+
+export interface Toast {
+  id: string;
+  tone: ToastTone;
+  /** i18n key resolved by `ToastHost` (the store holds no translator). */
+  messageKey: string;
+}
+
+/** Identity of the live client's endpoint; a reconnect only reuses it when both parts match. */
+function endpointOf(wsUrl: string, token: string): string {
+  return `${wsUrl.trim()}\n${token.trim()}`;
+}
+
 type StoredSettings = {
   wsUrl: string;
   providerId: string;
@@ -84,6 +102,21 @@ const savedSettings = (): StoredSettings => {
   }
 };
 
+/**
+ * W5 artifact panel: the one artifact whose content is currently shown.
+ *
+ * `content === null` without an `error` means the host file service could not
+ * hand the file back as text (binary or too large).
+ */
+export interface ArtifactPreview {
+  path: string;
+  name: string;
+  content: string | null;
+  loading: boolean;
+  /** Raw error text, or the `"offline"` sentinel when there is no live client. */
+  error: string | null;
+}
+
 export type AppState = {
   // ── Connection / settings ─────────────────────────────────────────────
   wsUrl: string;
@@ -95,6 +128,12 @@ export type AppState = {
    *  flows read it through `get()` so a reconnect never hands them a stale
    *  instance. */
   client: AppServerClient | null;
+  /** Endpoint (`wsUrl` + token) the live client was built for (W8: reconnect reuses it). */
+  clientEndpoint: string | null;
+  /** An established connection was lost; the banner offers a manual reconnect. */
+  connectionLost: boolean;
+  /** Transient notices (`ToastHost`); kept out of the render path's state shape. */
+  toasts: Toast[];
 
   // ── Conversation list / selection ─────────────────────────────────────
   conversations: ConversationView[];
@@ -118,6 +157,15 @@ export type AppState = {
   modelPickerOpen: boolean;
   /** `chat` = conversation shell; `catalog` = Agent Store skills/connectors. */
   mainView: "chat" | "catalog";
+  /** W5 artifact panel: right-side drawer scoped to the selected conversation. */
+  artifactPanelOpen: boolean;
+  /** Absolute workspace root the list was last read from; `null` = no workspace. */
+  artifactsRoot: string | null;
+  artifacts: WorkspaceFlatFile[];
+  artifactsLoading: boolean;
+  artifactsError: string | null;
+  /** The file whose content/preview is open, if any. */
+  artifactPreview: ArtifactPreview | null;
   error: string | null;
   resyncNotice: string | null;
   shareNotice: string | null;
@@ -166,6 +214,13 @@ export type AppState = {
   // ── Actions ───────────────────────────────────────────────────────────
   connect: () => Promise<void>;
   disconnect: () => void;
+  /** Hide the disconnect banner without reconnecting. */
+  dismissConnectionLost: () => void;
+  /** Push a transient notice (i18n key, resolved by `ToastHost`). */
+  pushToast: (tone: ToastTone, messageKey: string) => void;
+  dismissToast: (id: string) => void;
+  /** Re-read a transcript without touching its subscription (reconnect backfill). */
+  refreshConversation: (conversationId: string) => Promise<void>;
   loadConversation: (conversationId: string, follow?: boolean) => Promise<void>;
   loadOlderHistory: () => Promise<void>;
   selectConversation: (conversationId: string) => void;
@@ -207,6 +262,19 @@ export type AppState = {
   toggleModelPicker: () => void;
   closeModelPicker: () => void;
   toggleCatalog: () => void;
+  /**
+   * W5 artifact panel. Scoped to the selected conversation's workspace and fed
+   * by the host file service (`/api/fs/list` + `/api/fs/read`) — the Artifact
+   * protocol itself is deferred (doc 05 §8 / TC-AS-008, deviation D-W5-1).
+   */
+  toggleArtifactPanel: () => void;
+  closeArtifactPanel: () => void;
+  /** Re-list the selected conversation's workspace files. */
+  refreshArtifacts: () => Promise<void>;
+  openArtifactPreview: (file: WorkspaceFlatFile) => Promise<void>;
+  closeArtifactPreview: () => void;
+  /** Append an artifact comment to the composer draft (AC-5: next-turn context). */
+  quoteArtifactIntoDraft: (text: string) => void;
   dismissError: () => void;
   dismissResync: () => void;
   dismissShare: () => void;
@@ -225,7 +293,40 @@ function upsertWorkspace(items: WorkspaceView[], value: WorkspaceView): Workspac
   return [value, ...items.filter((item) => item.workspace_id !== value.workspace_id)];
 }
 
+/**
+ * Absolute path of the selected conversation's workspace, or `null` when the
+ * conversation is unclassified (legacy chats) or its workspace is not loaded.
+ * The W5 artifact panel scopes to this root.
+ */
+function selectedWorkspacePath(state: AppState): string | null {
+  const conversation = state.conversations.find((item) => item.conversation_id === state.selectedConversationId) ?? null;
+  const workspaceId = conversation?.workspace_id ?? null;
+  if (!workspaceId) return null;
+  return state.workspaces.find((item) => item.workspace_id === workspaceId)?.canonical_path ?? null;
+}
+
 const initial = savedSettings();
+
+/** Detaches the lifecycle listener of the live client. Module-scoped plumbing:
+ *  it is never render state, so it must not live inside the store snapshot. */
+let detachLifecycle: (() => void) | null = null;
+
+/**
+ * Wire the transport lifecycle into the store (T8 / W8).
+ *
+ * `closed` means an established link was lost → raise the banner, pause the UI
+ * and drop a toast (so a later drop still surfaces after the banner was
+ * dismissed). The matching `open` fires mid-reconnect, before the `initialize`
+ * handshake, so the banner is cleared by `connect()` once the session is
+ * really back — together with the subscription rearm.
+ */
+function attachLifecycle(client: AppServerClient, set: (partial: Partial<AppState>) => void): () => void {
+  const detach = client.transport.onLifecycle?.((state) => {
+    if (state !== "closed") return;
+    set({ connectionLost: true, phase: "offline" });
+  });
+  return detach ?? (() => {});
+}
 
 export const useAppStore = create<AppState>()((set, get) => ({
   wsUrl: initial.wsUrl,
@@ -234,6 +335,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   model: initial.model,
   phase: "offline",
   client: null,
+  clientEndpoint: null,
+  connectionLost: false,
+  toasts: [],
 
   conversations: [],
   selectedConversationId: null,
@@ -254,6 +358,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   composerMenuOpen: false,
   modelPickerOpen: false,
   mainView: "chat",
+  artifactPanelOpen: false,
+  artifactsRoot: null,
+  artifacts: [],
+  artifactsLoading: false,
+  artifactsError: null,
+  artifactPreview: null,
   error: null,
   resyncNotice: null,
   shareNotice: null,
@@ -343,6 +453,36 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
+  /**
+   * Re-read the transcript and processing flag of one conversation **without**
+   * touching its subscription: used to backfill the window missed while the
+   * connection was down, where the subscription was re-armed separately
+   * (`rearm()`), so re-following here would only churn the stream.
+   */
+  refreshConversation: async (conversationId) => {
+    const client = get().client;
+    if (!client) return;
+    try {
+      const [view, history] = await Promise.all([
+        client.conversations.get(conversationId),
+        client.conversations.messages({ conversationId, pageSize: HISTORY_PAGE_SIZE, cursor: "" }),
+      ]);
+      if (get().selectedConversationId !== conversationId) return;
+      get().dispatchStream({ type: "reset", messages: history.items, isProcessing: view.is_processing });
+      set((s) => ({
+        conversations: upsertConversation(s.conversations, view),
+        stream: {
+          ...s.stream,
+          historyCursor: history.items.length > 0 ? encodeHistoryCursor(history.items[0]) : null,
+          hasMore: history.has_more,
+          loadingOlder: false,
+        },
+      }));
+    } catch (caught) {
+      set({ error: formatError(caught) });
+    }
+  },
+
   loadOlderHistory: async () => {
     const { client, selectedConversationId, stream } = get();
     if (!client || !selectedConversationId) return;
@@ -389,29 +529,58 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   connect: async () => {
     set({ phase: "connecting", error: null });
+    const lost = get().connectionLost;
     try {
       const { wsUrl, token } = get();
-      const next = new AppServerClient({
-        wsUrl: wsUrl.trim(),
-        token: token.trim() || undefined,
-        client: { name: "allo-app-server-chat", version: "0.3.0" },
-        capabilities: { events: true },
-        requestTimeoutMs: 20_000,
-      });
-      await next.connect();
+      const endpoint = endpointOf(wsUrl, token);
+      let client = get().client;
+      if (!client || get().clientEndpoint !== endpoint) {
+        // First connect, or the endpoint changed: the old transport points
+        // somewhere else, so it has to go.
+        detachLifecycle?.();
+        detachLifecycle = null;
+        client?.close();
+        client = new AppServerClient({
+          wsUrl: wsUrl.trim(),
+          token: token.trim() || undefined,
+          client: { name: "allo-app-server-chat", version: "0.3.0" },
+          capabilities: { events: true },
+          requestTimeoutMs: 20_000,
+        });
+        detachLifecycle = attachLifecycle(client, set);
+        set({ client, clientEndpoint: endpoint });
+      }
+      // Reusing the live client makes this a real reconnect (W8): the transport
+      // re-dials and the `initialize` handshake runs again.
+      await client.connect();
       const [threads, options, directory, workspaceList] = await Promise.all([
-        next.conversations.list(100),
-        next.conversations.modelOptions().catch(() => null),
-        next.models.list().catch((): ModelSummary[] => []),
-        next.workspaces.list().catch((): WorkspaceView[] => []),
+        client.conversations.list(100),
+        client.conversations.modelOptions().catch(() => null),
+        client.models.list().catch((): ModelSummary[] => []),
+        client.workspaces.list().catch((): WorkspaceView[] => []),
       ]);
-      get().client?.close();
-      set({ client: next });
-      set({ conversations: threads });
-      set({ modelOptions: options });
-      set({ modelDirectory: directory });
-      set({ workspaces: workspaceList });
-      set({ phase: "online", settingsOpen: false });
+      set({
+        conversations: threads,
+        modelOptions: options,
+        modelDirectory: directory,
+        workspaces: workspaceList,
+        phase: "online",
+        connectionLost: false,
+        settingsOpen: false,
+      });
+
+      if (lost) {
+        // Reconnect: the server dropped its subscriptions and the outage window
+        // is missing from the rendered transcript. Re-arm the live subscription
+        // (T8) and backfill the history — `loadConversation` would re-follow and
+        // reset the stream, so the transcript is refreshed without it.
+        await get().subscription?.rearm();
+        const currentId = get().selectedConversationId;
+        if (currentId) void get().refreshConversation(currentId);
+        get().pushToast("success", "connection.restored");
+        return;
+      }
+
       const requestedConversationId = new URLSearchParams(window.location.search).get("conversation");
       const initialThread = threads.find((thread) => thread.conversation_id === requestedConversationId) ?? threads[0];
       if (initialThread) {
@@ -423,6 +592,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       }
     } catch (caught) {
       set({ phase: "offline", error: formatError(caught) });
+      if (lost) get().pushToast("error", "connection.restoreFailed");
     }
     // Settings persistence is owned by the effect below, which already wrote
     // these values on mount and on every edit.
@@ -431,8 +601,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   disconnect: () => {
     void get().subscription?.close();
     set({ subscription: null });
+    detachLifecycle?.();
+    detachLifecycle = null;
     get().client?.close();
-    set({ client: null, phase: "offline", conversations: [], selectedConversationId: null });
+    set({ client: null, clientEndpoint: null, connectionLost: false, phase: "offline", conversations: [], selectedConversationId: null });
     get().dispatchStream({ type: "reset", messages: [], isProcessing: false });
     set({
       workspaces: [],
@@ -793,9 +965,67 @@ export const useAppStore = create<AppState>()((set, get) => ({
   toggleModelPicker: () => set((s) => ({ modelPickerOpen: !s.modelPickerOpen })),
   closeModelPicker: () => set({ modelPickerOpen: false }),
   toggleCatalog: () => set((s) => ({ mainView: s.mainView === "catalog" ? "chat" : "catalog" })),
+  toggleArtifactPanel: () => {
+    // Loading is driven by `ArtifactPanel`'s effect (open / conversation change),
+    // so the toggle only owns the switch and the preview teardown.
+    set((s) => (s.artifactPanelOpen ? { artifactPanelOpen: false, artifactPreview: null } : { artifactPanelOpen: true }));
+  },
+  closeArtifactPanel: () => set({ artifactPanelOpen: false, artifactPreview: null }),
+  refreshArtifacts: async () => {
+    const client = get().client;
+    // Resolved every time: switching conversations re-scopes the panel.
+    const root = selectedWorkspacePath(get());
+    set({ artifactsRoot: root, artifactsError: null });
+    if (!client || !root) {
+      set({ artifacts: [], artifactsLoading: false });
+      return;
+    }
+    set({ artifactsLoading: true });
+    try {
+      const files = await client.listWorkspaceFiles(root);
+      set({ artifacts: files, artifactsLoading: false });
+    } catch (caught) {
+      set({ artifactsLoading: false, artifactsError: formatError(caught) });
+    }
+  },
+  openArtifactPreview: async (file) => {
+    const client = get().client;
+    const base = { path: file.full_path, name: file.name, content: null };
+    set({ artifactPreview: { ...base, loading: true, error: null } });
+    if (!client) {
+      set({ artifactPreview: { ...base, loading: false, error: "offline" } });
+      return;
+    }
+    try {
+      const content = await client.readFileContent(file.full_path, get().artifactsRoot ?? undefined);
+      // A newer preview may have replaced this one while the read was in flight.
+      if (get().artifactPreview?.path !== file.full_path) return;
+      set({ artifactPreview: { ...base, content, loading: false, error: null } });
+    } catch (caught) {
+      if (get().artifactPreview?.path !== file.full_path) return;
+      set({ artifactPreview: { ...base, loading: false, error: formatError(caught) } });
+    }
+  },
+  closeArtifactPreview: () => set({ artifactPreview: null }),
+  /** AC-5's "comment becomes next-turn context": queued into the draft, so it
+   *  rides the existing composer/send path with no protocol addition. */
+  quoteArtifactIntoDraft: (text) => {
+    const line = text.trim();
+    if (!line) return;
+    set((s) => ({ draft: s.draft.trim() ? `${s.draft.trimEnd()}\n${line}` : line }));
+    get().pushToast("success", "toast.artifactCommentQueued");
+  },
   dismissError: () => set({ error: null }),
   dismissResync: () => set({ resyncNotice: null }),
   dismissShare: () => set({ shareNotice: null }),
+  dismissConnectionLost: () => set({ connectionLost: false }),
+  pushToast: (tone, messageKey) => {
+    const id = crypto.randomUUID();
+    set((s) => ({ toasts: [...s.toasts, { id, tone, messageKey }] }));
+    // Transient by design: the layer must never accumulate stale notices.
+    window.setTimeout(() => get().dismissToast(id), TOAST_TTL_MS);
+  },
+  dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((toast) => toast.id !== id) })),
   setOpenMenu: (menu) => set({ openMenu: menu }),
   setRenameValue: (value) => set({ renameValue: value }),
   cancelRename: () => set({ renameFor: null }),

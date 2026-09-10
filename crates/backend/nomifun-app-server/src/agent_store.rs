@@ -53,6 +53,32 @@ pub struct AgentStoreConfig {
     /// ```
     #[serde(default)]
     pub default_marketplaces: HashMap<String, AgentStoreMarketplace>,
+    /// `[memory]` — session-end memory behaviour for this host.
+    ///
+    /// ```toml
+    /// [memory]
+    /// distill_enabled = false   # skip the post-answer distillation model call
+    /// ```
+    #[serde(default)]
+    pub memory: Option<AgentStoreMemory>,
+}
+
+/// `[memory]` in `~/.agent-store/config.toml`.
+///
+/// Upstream (`nomi` `[memory].distill_enabled`) defaults to ON: after every
+/// human turn the runtime makes one extra model call that distils the session
+/// into file-based memory. That call is awaited **before** the turn's terminal
+/// `Finish`, so a client sees its answer complete while the turn still reports
+/// "processing" for the whole call (measured 6–15s in the agent-store host).
+/// Declaring this table is how the Agent Store host opts out without touching
+/// upstream defaults for other hosts.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentStoreMemory {
+    /// `false` disables post-answer distillation on this host; `true` or an
+    /// absent key keeps the upstream default. `NOMIFUN_MEMORY_DISTILL` still
+    /// overrides whichever value lands here.
+    #[serde(default)]
+    pub distill_enabled: Option<bool>,
 }
 
 /// One default marketplace source declared in `~/.agent-store/config.toml`.
@@ -320,6 +346,23 @@ base_url = "https://example.test/v1"
         );
         assert_eq!(config.default_selection().unwrap().0, "octo");
         assert!(config.providers.contains_key("octo"));
+    }
+
+    #[test]
+    fn memory_distill_gate_is_optional_and_explicit() {
+        // No `[memory]` table → None: the upstream nomi default stays in charge.
+        let absent = AgentStoreConfig::load_from_str("default_model = \"octo/coral\"\n");
+        assert!(absent.memory.is_none());
+
+        // Declared but silent → present, no opinion.
+        let silent = AgentStoreConfig::load_from_str("[memory]\n");
+        assert_eq!(silent.memory.and_then(|memory| memory.distill_enabled), None);
+
+        // The switch the Agent Store host reads (doc 16 / D-STREAM-2).
+        let off = AgentStoreConfig::load_from_str("[memory]\ndistill_enabled = false\n");
+        assert_eq!(off.memory.and_then(|memory| memory.distill_enabled), Some(false));
+        let on = AgentStoreConfig::load_from_str("[memory]\ndistill_enabled = true\n");
+        assert_eq!(on.memory.and_then(|memory| memory.distill_enabled), Some(true));
     }
 
     impl AgentStoreConfig {

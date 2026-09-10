@@ -176,15 +176,27 @@ function applyEvent(state: ConversationStreamState, event: ConversationEvent): C
   }
   if (event.event_type === "message.tool") {
     const id = stringValue(event.payload.message_id) ?? `${event.conversation_id}:tool`;
+    const existing = state.messages.find((message) => message.message_id === id);
+    // A tool call streams as several events (running → completed). Later frames
+    // may omit what an earlier one carried, so merge field-by-field with what is
+    // already on screen instead of replacing the row.
+    const prior = existing && existing.content && typeof existing.content === "object"
+      ? existing.content as Record<string, unknown>
+      : null;
     return {
       ...state,
       messages: mergeMessagesById(state.messages, [{
         message_id: id,
         conversation_id: event.conversation_id,
         role: "activity",
-        content: { name: stringValue(event.payload.name), status: stringValue(event.payload.status) },
+        content: {
+          name: stringValue(event.payload.name) ?? stringValue(prior?.name),
+          args: event.payload.args ?? prior?.args,
+          output: event.payload.output ?? prior?.output,
+          status: stringValue(event.payload.status) ?? stringValue(prior?.status),
+        },
         message_type: "tool_call",
-        created_at: Date.now(),
+        created_at: existing?.created_at ?? Date.now(),
       }]),
     };
   }

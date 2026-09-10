@@ -302,6 +302,22 @@ async fn serve(
         );
     }
 
+    // Agent Store scenario: `[memory].distill_enabled` in
+    // `~/.agent-store/config.toml` is this host's authoritative memory policy.
+    // Session-end distillation is one extra model call awaited *before* the
+    // turn's terminal `Finish`, so leaving it on shows up to clients as a
+    // 6–15s "still processing" tail after the answer is already complete
+    // (doc 16 / D-STREAM-2). Absent key = upstream default (ON).
+    if let Some(enabled) = cli
+        .agent_store_config
+        .as_deref()
+        .and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok)
+        .and_then(|config| config.memory)
+        .and_then(|memory| memory.distill_enabled)
+    {
+        nomifun_ai_agent::manager::nomi::distill::set_distill_host_override(Some(enabled));
+    }
+
     // Boot the backend in-process (env → data layer → services), then mount
     // the real API router with the embedded SPA as the fallback.
     let env = nomifun_app::bootstrap::init_environment(&cli, &merged_path)?;

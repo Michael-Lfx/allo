@@ -24,6 +24,9 @@ bun add @flowy-agent-store/protocol
 
 包均发布为 ESM + CJS 双格式（`exports` 提供 `import` / `require` / `types`），Node 与打包器开箱即用。
 
+> **版本状态**：三个包当前均为 `0.1.0-beta.*` 预发布（API 尚未冻结）。生产接入请固定版本，如 `bun add @flowy-agent-store/sdk@0.1.0-beta.2`。
+> **运行环境**：Node.js **≥ 22**（依赖全局 `WebSocket`）或 Bun；版本下限由各包 `engines.node` 声明。
+
 ---
 
 ## 2. 快速开始（SDK 一行拉起）
@@ -147,6 +150,7 @@ export interface Transport {
   notify(method: string, params: unknown): void;     // 通知（无响应）
   onNotification(listener: NotificationListener): () => void; // 订阅下行通知，返回退订函数
   close(): void;
+  onLifecycle?(listener: (state: "open" | "closed") => void): () => void; // 可选：通道生命周期
 }
 ```
 
@@ -157,11 +161,20 @@ import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
 
 const transport = new WebSocketTransport(
   "ws://127.0.0.1:8787/api/app-server/ws",
-  { requestTimeoutMs: 30_000, token: "optional-bearer" } // token 浏览器里走 ?token= 查询参数
+  { requestTimeoutMs: 30_000, connectTimeoutMs: 10_000, token: "optional-bearer" } // token 浏览器里走 ?token= 查询参数
 );
 const client = new AppServerClient({ transport, client: { name: "my-app", version: "0.1.0" } });
 await client.connect(); // initialize 握手 + 版本校验
 ```
+
+`WebSocketTransport` 的实现契约（A2 / T8）：
+
+- **`connect()` 幂等且并发安全**：并发调用共享同一次建连（不会开出第二个 socket）；超过 `connectTimeoutMs`（默认 10s）仍未打开，则 reject `TransportError(phase: "connect", retryable: true)` 并关闭该 socket。
+- **`close()` 是终态清理**：结算所有挂起请求与在途 `connect()`（`TransportError(phase: "close")`），并清空经 `onNotification` 注册的监听器。因此**关闭后重新 `connect()` 必须重新注册监听器**（`AppServerClient` 会自动重挂其通知桥，自建传输的调用方需自行处理）。
+- **陈旧连接隔离**：被替换或已关闭的 socket，其迟到事件一律忽略，不会影响当前连接。
+- **不自动重连**：断线只让挂起请求以 `TransportError(retryable: true)` 失败；重连策略由调用方决定。
+- **重连可观测（T8）**：`onLifecycle` 在每次成功建连后报 `open`；仅在**已建立的连接丢失**时报 `closed`（首次拨号失败不算断线，调用方主动 `close()` 也不报）。`closed → open` 即一次重连。这类监听器**不随 `close()` 清空**——它们正是用来驱动重连的。
+- **重连后必须重新握手并重订阅**：新 socket 意味着服务端订阅与本地 `onNotification` 监听器都已失效，所以重连流程是 `transport onLifecycle("open")` → `client.connect()`（重跑 `initialize` 握手）→ 对每个存活的订阅调用 `rearm()`。
 
 自建传输只需实现接口即可：测试用内存假传输、CLI 用 stdio、Electron 主进程用 Node WebSocket——业务代码零改动。
 
@@ -183,6 +196,13 @@ await client.connect(); // initialize 握手 + 版本校验
 | `importMarketplaceEntry(mkt, entry)` | `market/entry-import` | 单条目导入（带 provenance） |
 | `listStore()` | `store/list` | 全市场统一目录（含安装状态） |
 | `installStoreEntry(mkt, entry)` | `store/install-entry` | 一键安装：缺导入就导入 + 注册 |
+
+> ℹ️ **首次 `listStore()` 可能返回空或不完整的目录——这是设计如此，不是错误**：内置默认市场的注册在**后台**进行（D-SDK-1 ①）。首个 `store/list` 只负责触发它，然后立即用**当前已注册**的内容作答，不会等待镜像完成。
+> 注册本身要把市场源整棵树从镜像站 HTTP 下载到本地（数百个技能目录 + 上千个资产），全新 data-dir 上约 **90 秒**，这段时间内该调用返回 `items: 0`。
+> 实测（2026-09-10，本地全新 data-dir）：`first store/list: 1ms items=0` → 130 秒后 `store/list: 133ms items=438`、`market/list count=3`。
+> 因此：**不需要为首次调用加大 `requestTimeoutMs`**；要完整目录请在预热后**重新调用**（WebUI 有显式刷新）。若镜像源不可达，本次热身记为不完整，下一次 store/market 调用会自动重试。
+> 想区分「真的没有市场」与「仍在载入」：`listStore()` 的返回（`store/list`）现在带 `markets_pending` —— 为 `true` 时表示内置市场仍在后台注册、目录可能不完整。
+> 若你自持 `dataDir`，同一目录的后续调用走幂等短路，不再联网。
 
 ### 4.4 子客户端
 
@@ -245,8 +265,11 @@ const sub = await client.conversations.follow(convId);
 sub.onEvent((event) => console.log("seq", event.sequence, event)); // 自动按 sequence 去重
 sub.onResync((reason) => console.log("resync required:", reason)); // 断网追平提示
 sub.lastSequence; // 已见最大序号
+await sub.rearm(); // 重连后：重注册监听 + 游标归零 + 重发 conversation/subscribe
 await sub.close(); // 服务器端退订（也可靠关闭 socket 隐式退订）
 ```
+
+> `rearm()` 之后仍需自行补齐断线窗口的正文：该订阅没有事件重放接口，请用 `conversation/messages` 重新拉取（游标归零意味着后续重复事件由调用方按 `sequence` 去重）。
 
 #### `runs` — Run 生命周期与实时事件
 
@@ -265,8 +288,11 @@ sub.onEvent((event) => console.log(event));       // 尽力而为实时事件（
 sub.onResync(({ run_ids, reason }) => …);         // 订阅失效要求重放
 sub.onError((error) => …);                        // 传输错误转发
 sub.lastSequence;
+const replayed = await sub.rearm();               // 重连后：游标归零 + 重订阅 + 全量重放
 await sub.close();
 ```
+
+> `rearm()` 会**重放全部历史事件**（游标归零是刻意的），因此消费方必须按 `sequence` 去重；返回值即本次重放的事件。只应在重连握手（`initialize`）完成后调用。
 
 > 事件语义是尽力而为：持久性依赖 `run/events` 游标重放，节点实现需自行去重排序。
 
@@ -289,11 +315,11 @@ interface LaunchOptions extends SpawnOptions {
   client: ClientInfo;             // { name, version }
   capabilities?: ClientCapabilities;
   token?: string;                 // 传给 WebSocketTransport
-  requestTimeoutMs?: number;      // 默认 30s
+  requestTimeoutMs?: number;      // 默认 30s（不足以覆盖首次 store/list，见 §4.3 警告）
 }
 
 interface LaunchedClient {
-  server: SpawnedServer;          // readiness/dataDir/close
+  server: SpawnedServer;          // readiness / dataDir / exited / close
   client: AppServerClient;        // 已握手就绪
   initializeResult: InitializeResult;
   close(): Promise<void>;         // 退订 → 关传输 → 终止子进程 → 删临时 data-dir
@@ -309,6 +335,7 @@ interface LaunchedClient {
 | `parseReadinessLine(line)` | 解析单行；非就绪行返回 `null` |
 | `ReadinessInfo` | `{ host, port, url, protocol_version, version, auth }` |
 | `assertProtocolCompatible(runtimeVersion)` | 版本不一致直接 throw（含两端版本） |
+| `SpawnExitInfo` | `{ code, signal }`——子进程如何退出（`exited` / `onExit` 的载荷） |
 
 `SpawnOptions`：
 
@@ -319,8 +346,13 @@ interface SpawnOptions {
   port?: number;           // 默认 0 = 系统分配
   extraArgs?: string[];    // 追加 CLI 参数
   readyTimeoutMs?: number; // 默认 120s（冷启动建库）
+  env?: Record<string, string | undefined>; // 在 process.env 之上合并
+  cwd?: string;            // 子进程工作目录；省略即继承父进程
+  onExit?: (info: SpawnExitInfo) => void;   // 子进程退出时回调一次
 }
 ```
+
+`SpawnedServer.exited` 是一个**永不 reject** 的 `Promise<SpawnExitInfo>`，在子进程因任意原因退出时 settle——这是观察运行时崩溃的唯一入口。
 
 ### 5.3 二进制定位
 
@@ -336,12 +368,16 @@ AGENT_STORE_BIN=/opt/flowy-agent-store/flowy-agent-store node your-app.mjs
 - **data-dir 独占**：省略 `dataDir` → 自动 `mkdtemp` 临时目录，`close()` 时删除；传入自己的目录即表示独占——后端单实例锁会 fail-fast（`already in use by another running Flowy backend`）。
 - **版本校验**：就绪行 `protocol_version` 与 SDK 不符立即杀进程报错（含两端版本号）。
 - **就绪行格式**：子进程 stdout 单行 JSON `{"agent_store":"listening","host":...,"port":...,"url":...,"protocol_version":...,"version":...,"auth":...}`；SDK 逐行扫描、忽略其他行（tracing 也走 stdout）。
+- **stdout 持续排空**：就绪行解析完成后，SDK 继续读取并丢弃子进程 stdout（`readline.close()` 会 `pause` 该流，所以不能就此停止读取）。否则运行时日志写满 OS 管道缓冲（约 64KB）后会永久阻塞在写上，长会话（多轮 turn、市场树扫描）表现为静默卡死。后续输出仅被排空丢弃，本轮不提供日志回调。
+- **`env` / `cwd` 透传**：`env` 在父进程 `process.env` 之上**合并**（不是替换，`PATH` 等仍可见）；`cwd` 省略即继承父进程工作目录。两者原样交给 `child_process.spawn`。
+- **退出可见**：`SpawnedServer.exited`（`{ code, signal }`）在子进程**任意原因退出**时 settle，含崩溃与非零退出码；`onExit` 同时触发一次。SDK **不自动重启**，重启用 `launchClient` 的调用方负责。
 
 ### 5.5 错误与清理
 
 - spawn 失败：报错附 **stderr 尾部 50 行**（`stderr tail:` 段）。
 - 超时：默认 120s 后抛 `timed out waiting for the runtime readiness line`。
 - 任何失败路径都会 `child.kill()` → 2s 宽限 → `SIGKILL`，并删除自动创建的 data-dir。
+- 就绪成功后 promise 已结算：此后子进程再 `exit` / `error` 不再走失败路径（不会被当成启动失败）；这类退出（含崩溃）只通过 `SpawnedServer.exited` 与 `onExit` 暴露，SDK 不自动重启，生命周期由调用方以 `close()` 负责。
 - 正确用法：`try/finally` 中 `close()`；进程退出时若未 close，临时目录会残留（SDK 不装退出钩子）。
 
 ```ts

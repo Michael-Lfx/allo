@@ -49,6 +49,7 @@ source = "http://111.170.173.22:10072/experts/.codebuddy-plugin/marketplace.json
 | `providers` | `table` | API provider table → `providers` |
 | `models` | `table` | Model alias table → `models` |
 | `default_marketplaces` | `table` | Marketplace sources auto-registered on startup → `default_marketplaces` |
+| `memory` | `table` | Post-session memory policy → `memory` (below) |
 
 ## `providers`
 
@@ -99,6 +100,23 @@ source = "http://111.170.173.22:10072/skills/.codebuddy-skill/marketplace.json"
 source_kind = "url"
 source = "http://111.170.173.22:10072/connectors/.codebuddy-connector/connectors.json"
 ```
+
+## `memory`
+
+Post-session memory policy. **Distillation** makes one extra model call after every normal turn to distil the session into file-based memory; that call happens **before** the turn's terminal signal, so clients see the answer fully rendered while the conversation still reports "processing" for roughly **6–15 s** (it tracks model latency).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `distill_enabled` | `boolean` | `false` disables distillation (no extra model call after the turn, so "answer complete" and "turn finished" coincide); `true` or an absent key keeps the upstream default (**on**) |
+
+```toml
+# Skip session-end memory distillation (one less model call per turn, and no
+# 6–15 s finalization tail after the answer is complete)
+[memory]
+distill_enabled = false
+```
+
+> Precedence: the `NOMIFUN_MEMORY_DISTILL` environment variable (`0`/`false` off, `1`/`true` on) > this file's `[memory].distill_enabled` > the upstream default (on). Without a `[memory]` section the behaviour is exactly what it was before.
 
 ## Differences from Kimi Code / Claude Code configs
 

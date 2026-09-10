@@ -324,13 +324,14 @@ NOT_RUN
 
 - 等级：P0
 - 操作：启动 software-company TeamRun
-- 断言：生成固定 Participant 池和 AgentExecutionTemplate；成员来自 TeamDefinition，不由模型任意新增；Leader 和每个成员分别绑定各自 Preset/ResolvedPresetSnapshot，成员 Prompt 不被合并到 Leader Prompt
+- 断言：生成固定 Participant 池和 AgentExecutionTemplate；成员来自 TeamDefinition，不由模型任意新增；Leader 和每个成员分别绑定各自 Preset/ResolvedPresetSnapshot，成员 Prompt 不被合并到 Leader Prompt；TeamRun 创建时服务端创建 Leader Conversation，并把该 AgentExecutionTemplate 绑定为其 `execution_template_id`
 
-### TC-TEAM-002：Planning Context 驱动的 planned DAG
+### TC-TEAM-002：Leader 经 `nomi_delegate(strategy=planned)` 触发 planned DAG
 
 - 等级：P0
 - 操作：提交 Team goal
-- 断言：服务端根据 Leader Preset 规划指令、Team 目标、脱敏成员能力摘要和 Team 策略构造 Planning Context，由内部 Planner 生成 Plan；Plan 经过依赖、成员路由、并发和策略校验后才物化 Step；不创建独立 Leader Conversation，也不依赖 `nomi_delegate` 工具
+- 断言：Leader 在其 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`；服务端据此构造 Planning Context（Leader Preset 规划指令 + Team 目标 + 脱敏成员能力摘要 + Team 策略），由内部 Planner 生成 Plan；Plan 经过依赖、成员路由、并发和策略校验后才物化 Step；成员池与并发上限取自绑定的 Template，不接受模型参数；不创建用户可见的 Leader Conversation
+- 断言（实现选择）：注册给 Leader 的 delegate 工具必须支持 `strategy=planned` 且绑定持久 `AgentExecutionEngine`；仅支持 `strategy=parallel` 的同步 embedded 实现不得出现在 Team 会话工具面；以 `strategy=parallel` 替代 planned 流程的顶层调用被拒绝
 
 ### TC-TEAM-003：依赖调度
 
