@@ -308,6 +308,7 @@ jobs:
             rust_target: aarch64-apple-darwin
             build_arch: arm
             artifact_name: macos-arm64-app
+            macho_arch: arm64
           - arch: intel
             # Same macos-15 pool as arm64 (cross-compile x86_64). macos-15-intel
             # is scarce and queued ~1h on v1.2.7, blowing out wall clock.
@@ -315,6 +316,7 @@ jobs:
             rust_target: x86_64-apple-darwin
             build_arch: intel
             artifact_name: macos-intel-app
+            macho_arch: x86_64
     steps:
       - uses: actions/checkout@v5
         with:
@@ -359,6 +361,13 @@ jobs:
             --config apps/desktop/tauri.channel.macos.conf.json \
             --config apps/desktop/tauri.ci-skip-ui.conf.json
           test -d "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app"
+          # Catch host-arch resource sidecars before the merge job (cross-compile
+          # on macos-15 must ship x86_64 rg for the intel slice).
+          lipo -archs "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app/Contents/MacOS/Flowy" \
+            | grep -qw "${{ matrix.macho_arch }}"
+          if [[ -f "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app/Contents/Resources/bin/rg" ]]; then
+            [[ "$(lipo -archs "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app/Contents/Resources/bin/rg")" == "${{ matrix.macho_arch }}" ]]
+          fi
           ditto -c -k --keepParent \
             "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app" \
             flowy-app.zip

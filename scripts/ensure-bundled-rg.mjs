@@ -1,12 +1,17 @@
 #!/usr/bin/env bun
 /**
- * Download a platform-matched ripgrep binary into apps/desktop/resources/bin/
+ * Download a target-matched ripgrep binary into apps/desktop/resources/bin/
  * so Tauri packages it as `<resource_dir>/bin/rg[.exe]`.
  *
- * Idempotent unless ENSURE_BUNDLED_RG_FORCE=1.
+ * Prefer Tauri hook env (TAURI_ENV_TARGET_TRIPLE / ARCH / PLATFORM) so
+ * cross-compiles (e.g. x86_64-apple-darwin on an arm64 runner) get the
+ * correct slice. Falls back to process.platform / process.arch.
+ *
+ * Idempotent unless ENSURE_BUNDLED_RG_FORCE=1 or the on-disk binary's
+ * recorded target does not match the requested target.
  * Uses the host `tar` (available on modern Windows / macOS / Linux).
  */
-import { access, chmod, copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, readdir, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,10 +22,67 @@ const RG_VERSION = "15.2.0";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
 const outDir = join(root, "apps", "desktop", "resources", "bin");
+const TARGET_MARKER = ".rg-target";
 
-function platformAsset() {
-  const platform = process.platform;
-  const arch = process.arch;
+/** Map Tauri/Cargo arch names onto Node's process.arch vocabulary. */
+export function normalizeArch(arch) {
+  if (!arch) return null;
+  const a = arch.toLowerCase();
+  if (a === "x86_64" || a === "amd64" || a === "x64") return "x64";
+  if (a === "aarch64" || a === "arm64") return "arm64";
+  return a;
+}
+
+/** Map Tauri platform names onto Node's process.platform vocabulary. */
+export function normalizePlatform(platform) {
+  if (!platform) return null;
+  const p = platform.toLowerCase();
+  if (p === "windows" || p === "win32") return "win32";
+  if (p === "darwin" || p === "macos" || p === "mac") return "darwin";
+  if (p === "linux") return "linux";
+  return p;
+}
+
+/**
+ * Resolve the ripgrep download target for this build.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ platform?: string, arch?: string }} [host]
+ */
+export function resolveRgTarget(env = process.env, host = process) {
+  const triple = (env.TAURI_ENV_TARGET_TRIPLE || "").trim();
+  if (triple === "universal-apple-darwin") {
+    return { platform: "darwin", arch: "universal", triple, binary: "rg" };
+  }
+
+  let platform = normalizePlatform(env.TAURI_ENV_PLATFORM);
+  let arch = normalizeArch(env.TAURI_ENV_ARCH);
+
+  if (triple) {
+    const parts = triple.split("-");
+    if (!arch && parts[0]) arch = normalizeArch(parts[0]);
+    if (!platform) {
+      if (triple.includes("apple-darwin") || triple.includes("macos")) platform = "darwin";
+      else if (triple.includes("windows")) platform = "win32";
+      else if (triple.includes("linux")) platform = "linux";
+    }
+  }
+
+  platform = platform || normalizePlatform(host.platform) || host.platform;
+  arch = arch || normalizeArch(host.arch) || host.arch;
+
+  const binary = platform === "win32" ? "rg.exe" : "rg";
+  const resolvedTriple =
+    triple ||
+    (platform === "darwin"
+      ? `${arch === "arm64" ? "aarch64" : "x86_64"}-apple-darwin`
+      : platform === "win32"
+        ? `${arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`
+        : `${arch === "arm64" ? "aarch64" : "x86_64"}-unknown-linux-gnu`);
+
+  return { platform, arch, triple: resolvedTriple, binary };
+}
+
+export function platformAsset(platform, arch) {
   const base = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}`;
 
   if (platform === "win32" && arch === "x64") {
@@ -104,22 +166,8 @@ async function findFile(dir, targetName) {
   return null;
 }
 
-async function main() {
-  const asset = platformAsset();
-  const dest = join(outDir, asset.binary);
-  const force = process.env.ENSURE_BUNDLED_RG_FORCE === "1";
-
-  await mkdir(outDir, { recursive: true });
-  // Keep an empty marker so Tauri resource globs don't fail if download is skipped in CI.
-  await Bun.write(join(outDir, ".gitkeep"), "");
-
-  if (!force && (await pathExists(dest))) {
-    console.log(`[ensure-bundled-rg] already present: ${dest}`);
-    return;
-  }
-
+async function extractBinary(asset, extractDir) {
   const archive = join(outDir, asset.archiveName);
-  const extractDir = join(outDir, ".extract-tmp");
   await rm(extractDir, { recursive: true, force: true });
   await mkdir(extractDir, { recursive: true });
 
@@ -137,17 +185,70 @@ async function main() {
   if (!found) {
     throw new Error(`${asset.binary} not found after extracting ${archive}`);
   }
-  await copyFile(found, dest);
-  if (process.platform !== "win32") {
-    await chmod(dest, 0o755);
-  }
-
   await rm(archive, { force: true });
-  await rm(extractDir, { recursive: true, force: true });
-  console.log(`[ensure-bundled-rg] installed: ${dest}`);
+  return found;
 }
 
-main().catch((err) => {
-  console.error(`[ensure-bundled-rg] ${err?.stack || err}`);
-  process.exit(1);
-});
+async function installSingleArch(platform, arch, dest) {
+  const asset = platformAsset(platform, arch);
+  const extractDir = join(outDir, ".extract-tmp");
+  const found = await extractBinary(asset, extractDir);
+  await copyFile(found, dest);
+  if (platform !== "win32") {
+    await chmod(dest, 0o755);
+  }
+  await rm(extractDir, { recursive: true, force: true });
+}
+
+async function installUniversalDarwin(dest) {
+  const extractDir = join(outDir, ".extract-tmp");
+  const armAsset = platformAsset("darwin", "arm64");
+  const intelAsset = platformAsset("darwin", "x64");
+  const armBin = await extractBinary(armAsset, join(extractDir, "arm"));
+  const intelBin = await extractBinary(intelAsset, join(extractDir, "intel"));
+  const lipo = spawnSync("lipo", ["-create", armBin, intelBin, "-output", dest], {
+    encoding: "utf8",
+  });
+  if (lipo.status !== 0) {
+    throw new Error(`lipo failed: ${lipo.stderr || lipo.stdout || lipo.status}`);
+  }
+  await chmod(dest, 0o755);
+  await rm(extractDir, { recursive: true, force: true });
+}
+
+async function recordedTargetMatches(markerPath, triple) {
+  if (!(await pathExists(markerPath))) return false;
+  const recorded = (await readFile(markerPath, "utf8")).trim();
+  return recorded === triple;
+}
+
+async function main() {
+  const target = resolveRgTarget();
+  const dest = join(outDir, target.binary);
+  const markerPath = join(outDir, TARGET_MARKER);
+  const force = process.env.ENSURE_BUNDLED_RG_FORCE === "1";
+
+  await mkdir(outDir, { recursive: true });
+  await Bun.write(join(outDir, ".gitkeep"), "");
+
+  if (!force && (await pathExists(dest)) && (await recordedTargetMatches(markerPath, target.triple))) {
+    console.log(`[ensure-bundled-rg] already present for ${target.triple}: ${dest}`);
+    return;
+  }
+
+  if (target.arch === "universal") {
+    await installUniversalDarwin(dest);
+  } else {
+    await installSingleArch(target.platform, target.arch, dest);
+  }
+
+  await writeFile(markerPath, `${target.triple}\n`, "utf8");
+  console.log(`[ensure-bundled-rg] installed ${target.triple}: ${dest}`);
+}
+
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(`[ensure-bundled-rg] ${err?.stack || err}`);
+    process.exit(1);
+  });
+}

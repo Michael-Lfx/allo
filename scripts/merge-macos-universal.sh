@@ -91,6 +91,38 @@ relpath_under() {
 ARM_APP="$(find_app "$ARM64_ROOT")"
 INTEL_APP="$(find_app "$INTEL_ROOT")"
 
+require_slice_arch() {
+  local label="$1"
+  local app="$2"
+  local want="$3"
+  local main="$app/Contents/MacOS/$PRODUCT"
+  local rg="$app/Contents/Resources/bin/rg"
+  if [[ ! -f "$main" ]]; then
+    echo "$label missing main binary: $main" >&2
+    exit 1
+  fi
+  local main_archs rg_archs
+  main_archs="$(lipo -archs "$main")"
+  echo "$label $PRODUCT archs: $main_archs"
+  echo "$main_archs" | grep -qw "$want" || {
+    echo "$label $PRODUCT must include $want (got: $main_archs)" >&2
+    exit 1
+  }
+  # Reject fat/wrong host-arch sidecars from a cross-compile that bundled the
+  # runner's ripgrep instead of the target's (see ensure-bundled-rg.mjs).
+  if [[ -f "$rg" ]]; then
+    rg_archs="$(lipo -archs "$rg")"
+    echo "$label rg archs: $rg_archs"
+    if [[ "$rg_archs" != "$want" ]]; then
+      echo "$label rg must be exactly $want (got: $rg_archs). Re-run ensure-bundled-rg with TAURI_ENV_TARGET_TRIPLE." >&2
+      exit 1
+    fi
+  fi
+}
+
+require_slice_arch "arm64" "$ARM_APP" "arm64"
+require_slice_arch "intel" "$INTEL_APP" "x86_64"
+
 BUNDLE_MACOS="$ROOT/target/universal-apple-darwin/release/bundle/macos"
 BUNDLE_DMG="$ROOT/target/universal-apple-darwin/release/bundle/dmg"
 UNIV_APP="$BUNDLE_MACOS/$PRODUCT.app"
