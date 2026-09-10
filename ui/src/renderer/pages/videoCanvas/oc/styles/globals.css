@@ -1441,11 +1441,6 @@
         to { opacity: 1; transform: translateY(0) scale(1); }
     }
 
-    @keyframes creation-workbench-enter {
-        from { opacity: 0; transform: translateY(12px) scale(.992); }
-        to { opacity: 1; transform: translateY(0) scale(1); }
-    }
-
     /* 创作首页使用独立的“编辑面 + 操作 Dock”结构，避免继承画布的面板语言。 */
     
 
@@ -2127,50 +2122,87 @@
         backdrop-filter: blur(var(--space-2));
     }
 
-    .canvas-toolbar-settings-modal {
-        max-width: calc(100vw - var(--space-8));
+    .canvas-toolbar-settings-sheet {
+        border-radius: 20px;
+        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.18);
     }
 
-    .canvas-toolbar-settings-modal .ant-modal-container,
-    .canvas-toolbar-settings-modal .ant-modal-content {
-        overflow: hidden;
-        border: 0 !important;
-        border-radius: var(--r-xl);
-        padding: 0 !important;
-        background: var(--cn-spatial-elevated) !important;
+    .dark .canvas-toolbar-settings-sheet {
+        box-shadow: 0 28px 90px rgba(0, 0, 0, 0.48);
     }
 
-    .canvas-toolbar-settings-modal .ant-modal-content {
-        box-shadow: var(--workspace-overlay-shadow) !important;
+    .canvas-toolbar-settings-sheet .canvas-sheet-body {
+        padding: 0;
     }
 
-    .canvas-toolbar-settings-modal .ant-modal-container {
-        box-shadow: none !important;
+    .canvas-toolbar-settings-sheet .canvas-sheet-footer {
+        justify-content: space-between;
     }
 
-    .canvas-toolbar-settings-modal .ant-modal-body {
-        padding: 0 !important;
-    }
-
-    .canvas-toolbar-settings-card {
-        background: var(--cn-spatial-surface);
+    .canvas-toolbar-settings-row {
+        background: transparent;
         transition: background-color var(--motion-dur-fast) var(--motion-ease-out), opacity var(--motion-dur-fast) var(--motion-ease-out);
     }
 
-    .canvas-toolbar-settings-card:hover {
-        background: color-mix(in srgb, var(--cn-spatial-surface) 72%, var(--cn-spatial-elevated));
+    .canvas-toolbar-settings-row:hover {
+        background: color-mix(in srgb, var(--cn-spatial-surface) 88%, transparent);
     }
 
-    .canvas-toolbar-settings-card.is-hidden {
-        background: color-mix(in srgb, var(--cn-spatial-surface) 52%, transparent);
+    .canvas-toolbar-settings-row.is-hidden {
+        opacity: 0.55;
     }
 
-    .canvas-toolbar-settings-card.is-hidden .canvas-toolbar-settings-card-content {
-        opacity: var(--opa-subtle);
-    }
-
-    .canvas-toolbar-settings-card.is-dragging {
+    .canvas-toolbar-settings-row.is-dragging {
         opacity: var(--opa-muted);
+        background: var(--cn-spatial-surface);
+    }
+
+    .canvas-toolbar-settings-row svg {
+        stroke-width: 1.65;
+    }
+
+    .canvas-toolbar-toggle {
+        position: relative;
+        width: 32px;
+        height: 18px;
+        flex: none;
+        padding: 0;
+        border: 0;
+        border-radius: 999px;
+        background: color-mix(in srgb, currentColor 16%, transparent);
+        cursor: pointer;
+        outline: none;
+        transition: background-color 160ms ease;
+    }
+
+    .canvas-toolbar-toggle[aria-checked="true"] {
+        background: var(--dock-command-active, currentColor);
+    }
+
+    .canvas-toolbar-toggle::after {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        background: #fff;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.2);
+        content: "";
+        transition: transform 160ms ease;
+    }
+
+    .canvas-toolbar-toggle[aria-checked="true"]::after {
+        transform: translateX(14px);
+    }
+
+    .canvas-toolbar-toggle:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
+    }
+
+    .canvas-toolbar-toggle:focus-visible {
+        box-shadow: 0 0 0 2px var(--cn-spatial-elevated), 0 0 0 4px var(--dock-command-active, currentColor);
     }
 
     :where(.ant-select-dropdown, .ant-dropdown-menu, .ant-popover-inner) {
@@ -2304,10 +2336,10 @@
     }
 
     .aceternity-dock-command {
-        border-color: color-mix(in srgb, currentColor 11%, transparent);
-        background: var(--dock-command-bg);
+        border-color: transparent;
+        background: transparent;
         color: inherit;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 5px 15px rgba(15, 23, 42, 0.08);
+        box-shadow: none;
         transition:
             border-color var(--motion-instant) ease-out,
             background-color var(--motion-instant) ease-out,
@@ -2318,13 +2350,13 @@
     .aceternity-dock-command > span:first-child svg {
         width: 100%;
         height: 100%;
-        stroke-width: 1.8;
+        stroke-width: 1.65;
     }
 
     .aceternity-dock-command:hover:not(:disabled) {
-        border-color: color-mix(in srgb, currentColor 20%, transparent);
+        border-color: transparent;
         background: var(--dock-command-hover);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 12px 30px rgba(15, 23, 42, 0.14);
+        box-shadow: none;
     }
 
     .aceternity-dock-command.is-labeled {
@@ -2345,10 +2377,10 @@
     }
 
     .aceternity-dock-command.is-active {
-        border-color: color-mix(in srgb, var(--dock-command-active) 28%, transparent);
+        border-color: transparent;
         background: var(--dock-command-active);
         color: var(--dock-command-active-text);
-        box-shadow: 0 12px 30px color-mix(in srgb, var(--dock-command-active) 22%, transparent);
+        box-shadow: none;
     }
 
     .aceternity-dock-command.is-active > span:first-child,
@@ -2376,7 +2408,7 @@
     }
 
     .aceternity-dock-danger-group {
-        background: color-mix(in srgb, var(--dock-command-danger) 8%, transparent);
+        background: transparent;
     }
 
     .aceternity-dock-command:focus-visible {
@@ -3046,26 +3078,28 @@
         animation: canvas-panel-in var(--motion-dur-fast-calc) var(--motion-ease-out) both;
     }
 
-    /* 覆盖工具栏与节点之间的视觉留白，避免鼠标途中被相邻节点抢走悬浮状态。 */
+    /* 覆盖工具栏与节点之间的贴合间隙，避免鼠标途中被相邻节点抢走悬浮状态。 */
     .canvas-node-toolbar::after {
         position: absolute;
         top: 100%;
         right: -8px;
         left: -8px;
-        height: 14px;
+        height: 10px;
         content: "";
     }
 
     .canvas-floating-dock {
         box-shadow:
-            0 1px 2px rgba(15, 23, 42, 0.06),
-            0 10px 26px rgba(15, 23, 42, 0.08);
+            0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+            0 1px 2px rgba(15, 23, 42, 0.04),
+            0 12px 32px rgba(15, 23, 42, 0.1);
     }
 
     .dark .canvas-floating-dock {
         box-shadow:
-            0 1px 1px rgba(0, 0, 0, 0.28),
-            0 12px 28px rgba(0, 0, 0, 0.3);
+            0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+            0 1px 1px rgba(0, 0, 0, 0.22),
+            0 16px 40px rgba(0, 0, 0, 0.34);
     }
 
     

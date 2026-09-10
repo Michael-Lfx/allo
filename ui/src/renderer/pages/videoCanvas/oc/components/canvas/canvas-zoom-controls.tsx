@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Compass, Focus, HelpCircle, LayoutTemplate, Minus, Plus } from "lucide-react";
+import { Keyboard, Map, Minus, Plus, Scan, UnfoldHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { CanvasOverlay } from "@oc/components/canvas/canvas-overlay";
@@ -72,18 +72,17 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, onAutoArrang
         onScaleChange(clampedScale);
     }
 
-    const navigateItems: FloatingDockEntry[] = [
+    const items: FloatingDockEntry[] = [
         {
             id: "zoom-minimap",
             label: isMiniMapOpen ? canvasT("videoCanvas.zoom.closeMinimap", "关闭小地图") : canvasT("videoCanvas.zoom.openMinimap", "打开小地图"),
-            icon: <Compass />,
+            icon: <Map />,
             active: isMiniMapOpen,
             onClick: onToggleMiniMap,
         },
-        { id: "zoom-fit", label: canvasT("videoCanvas.zoom.fitAll", "适应全部内容"), icon: <Focus />, onClick: onReset },
-        ...(onAutoArrange ? [{ id: "zoom-auto-arrange", label: canvasT("videoCanvas.zoom.autoArrange", "整理画布"), icon: <LayoutTemplate />, onClick: onAutoArrange }] : []),
-    ];
-    const zoomItems: FloatingDockEntry[] = [
+        { id: "zoom-fit", label: canvasT("videoCanvas.zoom.fitAll", "适应全部内容"), icon: <Scan />, onClick: onReset },
+        ...(onAutoArrange ? [{ id: "zoom-auto-arrange", label: canvasT("videoCanvas.zoom.autoArrange", "整理画布"), icon: <UnfoldHorizontal />, onClick: onAutoArrange }] : []),
+        { kind: "separator", id: "sep-zoom" },
         { id: "zoom-out", label: canvasT("videoCanvas.zoom.zoomOut", "缩小画布"), icon: <Minus />, onClick: () => commitScale(liveScaleRef.current - 0.1) },
         {
             id: "zoom-precision",
@@ -100,53 +99,48 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, onAutoArrang
             onClick: () => setPrecisionOpen((value) => !value),
         },
         { id: "zoom-in", label: canvasT("videoCanvas.zoom.zoomIn", "放大画布"), icon: <Plus />, onClick: () => commitScale(liveScaleRef.current + 0.1) },
-    ];
-    const helpItems: FloatingDockEntry[] = [
-        { id: "zoom-shortcuts", label: canvasT("videoCanvas.zoom.shortcuts", "画布快捷键"), icon: <HelpCircle />, onClick: onOpenShortcuts },
+        { kind: "separator", id: "sep-help" },
+        { id: "zoom-shortcuts", label: canvasT("videoCanvas.zoom.shortcuts", "画布快捷键"), icon: <Keyboard />, onClick: onOpenShortcuts },
     ];
 
     return (
-        <div ref={rootRef} data-canvas-no-zoom className="relative z-[var(--z-toolbar)] flex items-end gap-1.5" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
-            <FloatingDock items={navigateItems} size="compact" magnify={false} className="canvas-floating-dock" style={dockStyle} ariaLabel={canvasT("videoCanvas.zoom.dockAria", "画布视图控制")} />
-            <div className="relative">
-                {precisionOpen ? (
-                    <CanvasOverlay theme={theme} className="absolute bottom-[var(--canvas-dock-popover-offset)] left-0 w-[200px] overflow-hidden p-2.5">
-                        <div className="flex items-center justify-between gap-3">
-                            <span className="text-[var(--fs-label)] font-medium">{canvasT("videoCanvas.zoom.scaleTitle", "画布尺度")}</span>
-                            <span ref={panelLabelRef} className="text-[var(--fs-label)] font-semibold tabular-nums" style={{ color: theme.node.muted }}>
-                                {Math.round(scale * 100)}%
-                            </span>
-                        </div>
-                        <input
-                            ref={rangeRef}
-                            type="range"
-                            min="5"
-                            max="200"
-                            step="1"
-                            defaultValue={Math.round(scale * 100)}
-                            className="aceternity-zoom-range mt-2 h-4 w-full"
-                            style={{ accentColor: theme.node.text }}
-                            onChange={(event) => commitScale(Number(event.target.value) / 100)}
-                            aria-label={canvasT("videoCanvas.zoom.precisionAria", "精确缩放画布")}
-                        />
-                        <div className="mt-2 grid grid-cols-4 gap-0.5">
-                            {QUICK_ZOOM_LEVELS.map((level) => (
-                                <button
-                                    key={level}
-                                    type="button"
-                                    className="h-7 rounded-md text-[var(--fs-label)] font-medium tabular-nums outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8"
-                                    style={{ color: theme.node.muted }}
-                                    onClick={() => commitScale(level)}
-                                >
-                                    {Math.round(level * 100)}%
-                                </button>
-                            ))}
-                        </div>
-                    </CanvasOverlay>
-                ) : null}
-                <FloatingDock items={zoomItems} size="compact" magnify={false} className="canvas-floating-dock" style={dockStyle} ariaLabel={canvasT("videoCanvas.zoom.precision", "精确缩放")} />
-            </div>
-            <FloatingDock items={helpItems} size="compact" magnify={false} className="canvas-floating-dock" style={dockStyle} ariaLabel={canvasT("videoCanvas.zoom.shortcuts", "画布快捷键")} />
+        <div ref={rootRef} data-canvas-no-zoom className="relative z-[var(--z-toolbar)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+            {precisionOpen ? (
+                <CanvasOverlay theme={theme} className="absolute bottom-[var(--canvas-dock-popover-offset)] left-0 w-[200px] overflow-hidden p-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                        <span className="text-[var(--fs-label)] font-medium">{canvasT("videoCanvas.zoom.scaleTitle", "画布尺度")}</span>
+                        <span ref={panelLabelRef} className="text-[var(--fs-label)] font-semibold tabular-nums" style={{ color: theme.node.muted }}>
+                            {Math.round(scale * 100)}%
+                        </span>
+                    </div>
+                    <input
+                        ref={rangeRef}
+                        type="range"
+                        min="5"
+                        max="200"
+                        step="1"
+                        defaultValue={Math.round(scale * 100)}
+                        className="aceternity-zoom-range mt-2 h-4 w-full"
+                        style={{ accentColor: theme.node.text }}
+                        onChange={(event) => commitScale(Number(event.target.value) / 100)}
+                        aria-label={canvasT("videoCanvas.zoom.precisionAria", "精确缩放画布")}
+                    />
+                    <div className="mt-2 grid grid-cols-4 gap-0.5">
+                        {QUICK_ZOOM_LEVELS.map((level) => (
+                            <button
+                                key={level}
+                                type="button"
+                                className="h-7 rounded-md text-[var(--fs-label)] font-medium tabular-nums outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8"
+                                style={{ color: theme.node.muted }}
+                                onClick={() => commitScale(level)}
+                            >
+                                {Math.round(level * 100)}%
+                            </button>
+                        ))}
+                    </div>
+                </CanvasOverlay>
+            ) : null}
+            <FloatingDock items={items} size="compact" magnify={false} className="canvas-floating-dock" style={dockStyle} ariaLabel={canvasT("videoCanvas.zoom.dockAria", "画布视图控制")} />
         </div>
     );
 }

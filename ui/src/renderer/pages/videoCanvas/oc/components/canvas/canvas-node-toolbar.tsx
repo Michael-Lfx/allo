@@ -23,6 +23,7 @@ import { CanvasHoverHint, CanvasMenuRow, CanvasSheet, CanvasSheetButton, overlay
 import { ChoiceChip } from "@oc/components/generation-settings-chrome";
 import { ImageToolSettingsModal } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, isImageQuickToolId, readImageQuickToolsConfig, resolveImageDockLayout, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
+import { computeCanvasNodeToolbarAnchor } from "./canvas-node-toolbar-anchor";
 
 type CanvasNodeToolbarProps = {
     node: CanvasNodeData | null;
@@ -165,13 +166,11 @@ export function CanvasNodeToolbar({
         const update = () => {
             const nodeRect = element.getBoundingClientRect();
             const containerRect = container.getBoundingClientRect();
-            const preferredLeft = nodeRect.left - containerRect.left + nodeRect.width / 2;
-            const toolbarWidth = toolbarRef.current?.offsetWidth || 0;
-            const halfToolbar = toolbarWidth / 2;
-            const canClamp = toolbarWidth > 0 && toolbarWidth <= containerRect.width - 20;
-            const left = Math.round(canClamp ? Math.min(Math.max(preferredLeft, halfToolbar + 10), containerRect.width - halfToolbar - 10) : preferredLeft);
-            // 外置标题固定占 24px，额外保留 6px 即可兼顾层级和名称编辑入口。
-            const top = Math.round(nodeRect.top - containerRect.top - 30);
+            const { left, top } = computeCanvasNodeToolbarAnchor({
+                nodeRect,
+                containerRect,
+                toolbarWidth: toolbarRef.current?.offsetWidth || 0,
+            });
             if (toolbarRef.current) {
                 toolbarRef.current.style.left = `${left}px`;
                 toolbarRef.current.style.top = `${top}px`;
@@ -358,8 +357,8 @@ export function CanvasNodeToolbar({
         <>
             <div
                 ref={toolbarRef}
-                className="canvas-node-toolbar absolute z-[var(--z-node-toolbar)] flex -translate-x-1/2 -translate-y-full items-end justify-center overflow-visible"
-                style={{ left: anchor.left, top: anchor.top, width: "max-content", maxWidth: `min(calc(100% - 20px), ${showDockLabels ? 960 : 560}px)`, color: theme.node.text }}
+                className="canvas-node-toolbar fixed z-[var(--z-node-toolbar)] flex -translate-x-1/2 -translate-y-full items-end justify-center overflow-visible"
+                style={{ left: anchor.left, top: anchor.top, width: "max-content", maxWidth: `min(calc(100% - 20px), ${showDockLabels ? 960 : 560}px)`, color: theme.node.text, transformOrigin: "bottom center" }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
                     if (!imageToolSettingsOpenRef.current && !openMenuId) onLeave();

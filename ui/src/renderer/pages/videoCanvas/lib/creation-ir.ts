@@ -1,6 +1,8 @@
 /**
  * Creation-mode project memory: spec + labeled subjects + storyboard shots.
  * The infinite canvas is a view over this IR, not the source of truth.
+ * `view` is persisted for older projects; the canvas surface stays on the
+ * node graph. Storyboard and timeline live on canvas nodes, not a workbench overlay.
  */
 
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkflowKind, type StoryboardRow } from "@oc/types/canvas";
@@ -80,7 +82,7 @@ export function isCreationStillRole(value: unknown): value is CreationStillRole 
 }
 
 export function parseCreationView(value: unknown): CreationView {
-  return typeof value === "string" && CREATION_VIEWS.has(value as CreationView) ? value as CreationView : "storyboard";
+  return typeof value === "string" && CREATION_VIEWS.has(value as CreationView) ? value as CreationView : "canvas";
 }
 
 export function isCreationShotBusy(status: string | undefined) {
@@ -200,7 +202,7 @@ export type CreationLaunchInput = {
   }>;
 };
 
-export function buildCreationIrFromLaunch(launch: CreationLaunchInput, view: CreationView = "storyboard"): CreationIR {
+export function buildCreationIrFromLaunch(launch: CreationLaunchInput, view: CreationView = "canvas"): CreationIR {
   const subjects = (launch.subjects ?? []).map((item, index) => normalizeSubject({
     id: item.id || subjectIdFromMedia(item.mediaId, index),
     kind: isCreationSubjectKind(item.kind) ? item.kind : "character",
