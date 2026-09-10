@@ -6,6 +6,9 @@ import { CanvasStylePickerModal } from "@oc/components/canvas/canvas-style-picke
 import { CanvasDirectorTemplateModal } from "@oc/components/canvas/director/canvas-director-template-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
+import { resolveCanvasStylePreset } from "@oc/lib/canvas/canvas-style-system";
+import { PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/catalog";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { CanvasNodeData, CanvasMediaPerformanceMode, Position } from "@oc/types/canvas";
 import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import type { useCanvasHistory } from "./use-canvas-history";
@@ -55,6 +58,8 @@ type CanvasProjectTopChromeProps = {
     activateShortDramaStep: ReturnType<typeof useCanvasShortDrama>["activateStep"];
     stylePickerOpen: boolean;
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryTab: Dispatch<SetStateAction<LibraryTab>>;
     directorTemplateRequest: { position?: Position } | null;
     setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
     createDirectorShot: ReturnType<typeof useCanvasDirector>["createDirectorShot"];
@@ -104,6 +109,8 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
         activateShortDramaStep,
         stylePickerOpen,
         setStylePickerOpen,
+        setLibraryOpen,
+        setLibraryTab,
         directorTemplateRequest,
         setDirectorTemplateRequest,
         createDirectorShot,
@@ -115,6 +122,9 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { assistantOpen, closeAgent, openAgent } = assistant;
+    const lookTitle = activeStylePresetId ? resolveCanvasStylePreset(activeStylePresetId)?.title : undefined;
+    const playbookNode = nodes.find((node) => node.metadata?.projectPlaybook);
+    const playbookTitle = playbookNode?.metadata?.skillSnapshot?.name || (playbookNode?.metadata?.skillId ? PLAYBOOK_BY_QUALIFIED.get(playbookNode.metadata.skillId)?.title.zh : undefined);
     return (
         <>
                     {!focusMode ? (
@@ -140,6 +150,17 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
                             mediaPerformanceMode={mediaPerformanceMode}
                             onMediaPerformanceModeChange={setMediaPerformanceMode}
                             onOpenSearch={() => setNodeSearchOpen(true)}
+                            onOpenLibrary={() => {
+                                setLibraryTab("recipe");
+                                setLibraryOpen(true);
+                            }}
+                            lookLabel={lookTitle}
+                            onOpenStyle={() => setStylePickerOpen(true)}
+                            playbookLabel={playbookTitle}
+                            onOpenPlaybook={() => {
+                                setLibraryTab("playbook");
+                                setLibraryOpen(true);
+                            }}
                             projectContext={
                                 shortDramaEnabled && currentProject?.projectId
                                     ? {

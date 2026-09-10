@@ -12,6 +12,7 @@ import { getNodeGenerationMode } from "@oc/lib/canvas/node-registry";
 import { deriveStoryboardPipelineProgress } from "@oc/lib/canvas/canvas-storyboard-progress";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasWorkspaceMode, type StoryboardShotCount, type StoryboardShotDuration } from "@oc/types/canvas";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import type { DirectorScene } from "@oc/types/director";
 import type { useCanvasRenderModel } from "./use-canvas-render-model";
@@ -72,6 +73,8 @@ type CanvasNodeRenderersInput = {
     setScriptEditorNodeId: Dispatch<SetStateAction<string | null>>;
     setScriptScrollTopById: Dispatch<SetStateAction<Record<string, number>>>;
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryTab: Dispatch<SetStateAction<LibraryTab>>;
     setToolbarNodeId: Dispatch<SetStateAction<string | null>>;
 };
 
@@ -112,6 +115,8 @@ export function useCanvasNodeRenderers(input: CanvasNodeRenderersInput) {
         setScriptEditorNodeId,
         setScriptScrollTopById,
         setStylePickerOpen,
+        setLibraryOpen,
+        setLibraryTab,
         setToolbarNodeId,
     } = input;
 
@@ -129,6 +134,10 @@ export function useCanvasNodeRenderers(input: CanvasNodeRenderersInput) {
                     onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent })}
                     onMetadataChange={(patch) => handleConfigNodeChange(panelNode.id, patch)}
                     onClose={() => setDialogNodeId(null)}
+                    onOpenLibrary={() => {
+                        setLibraryTab("recipe");
+                        setLibraryOpen(true);
+                    }}
                 />
             ) : (
                 <CanvasNodePromptPanel
@@ -144,10 +153,14 @@ export function useCanvasNodeRenderers(input: CanvasNodeRenderersInput) {
                         setNodeImageSettingsOpen(open);
                         if (open) setToolbarNodeId(null);
                     }}
+                    onOpenLibrary={() => {
+                        setLibraryTab("recipe");
+                        setLibraryOpen(true);
+                    }}
                 />
             );
         },
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, runningNodeId, skillMentionReferences, workspaceMode],
+        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, runningNodeId, setLibraryOpen, setLibraryTab, skillMentionReferences, workspaceMode],
     );
 
     // 回调身份恒定：易变依赖经 ref 桶读取（渲染期同步赋值，子组件渲染时必读到最新提交值）。

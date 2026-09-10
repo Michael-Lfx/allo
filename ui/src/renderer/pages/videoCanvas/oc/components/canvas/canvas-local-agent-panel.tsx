@@ -15,7 +15,7 @@ import { useCanvasAgentStore, type AgentChatItem, type AgentPendingToolCall, typ
 import { canvasAgentPostconditionMessage, canvasAgentStateHashBlocksWrite, summarizeCanvasAgentOps, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
 import { buildCanvasAgentPlan } from "@oc/lib/canvas/canvas-agent-plan";
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@oc/lib/canvas/canvas-agent-context";
-import { collectCanvasSkills } from "@oc/lib/canvas/canvas-skill-mentions";
+import { getAgentPlaybook, listAgentPlaybooks } from "@oc/lib/canvas/craft/agent-catalog";
 import { isProjectAgentReadTool, isProjectAgentToolName, runProjectAgentTool } from "@oc/services/api/project-agent-tools";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCard, AgentWorkingMessage } from "./canvas-agent-chat-ui";
 import { compactCanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-snapshot-compact";
@@ -287,14 +287,14 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                                   : payload.name === "canvas_validate_ops"
                                     ? validateCanvasAgentOps(snapshotRef.current, (input.ops || []) as CanvasAgentOp[])
                                     : payload.name === "canvas_list_skills"
-                                      ? collectCanvasSkills(snapshotRef.current.nodes).map((skill) => ({ skillId: skill.skill_id, name: skill.skill_name, description: skill.description, tag: skill.tag }))
+                                      ? listAgentPlaybooks(snapshotRef.current.nodes)
                                       : payload.name === "canvas_get_skill"
                                         ? (() => {
                                               const skillId = typeof input.skillId === "string" ? input.skillId : "";
-                                              const nameQuery = typeof input.name === "string" ? input.name.trim().toLocaleLowerCase() : "";
-                                              const skill = collectCanvasSkills(snapshotRef.current.nodes).find((item) => item.skill_id === skillId || item.skill_name.toLocaleLowerCase() === nameQuery);
-                                              if (!skill) throw new Error("未找到画布技能，请先调用 canvas_list_skills。");
-                                              return { skillId: skill.skill_id, name: skill.skill_name, description: skill.description, instruction: skill.instruction || skill.description, version: skill.update_time };
+                                              const nameQuery = typeof input.name === "string" ? input.name : "";
+                                              const skill = getAgentPlaybook(snapshotRef.current.nodes, skillId, nameQuery);
+                                              if (!skill) throw new Error("未找到手册，请先 canvas_list_skills。");
+                                              return { skillId: skill.skillId, name: skill.name, description: skill.description, instruction: skill.instruction, version: skill.version };
                                           })()
                                         : payload.name === "canvas_get_selection"
                                           ? (() => {

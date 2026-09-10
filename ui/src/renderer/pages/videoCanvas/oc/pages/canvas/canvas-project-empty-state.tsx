@@ -16,17 +16,19 @@ type CanvasProjectEmptyStateProps = {
     onCreatePipeline: () => void;
     onOpenAgent: () => void;
     onStartFreeform: () => void;
+    onApplyGraph?: (graphId: string) => void;
+    onOpenLibrary?: () => void;
 };
 
 export function CanvasProjectEmptyState(props: CanvasProjectEmptyStateProps) {
-    const { shortDramaEnabled, currentProject, linkedProject, onUpload, onAddText, onAddScript, onAddChapter, onOpenAssets, onCreatePipeline, onOpenAgent, onStartFreeform } = props;
+    const { shortDramaEnabled, currentProject, linkedProject, onUpload, onAddText, onAddScript, onAddChapter, onOpenAssets, onCreatePipeline, onOpenAgent, onStartFreeform, onApplyGraph, onOpenLibrary } = props;
     const kind = resolveCanvasEmptyStateKind({
         nodeCount: 0,
         shortDramaEnabled,
         isProjectLinked: Boolean(currentProject?.projectId),
         starterMode: currentProject?.starterMode,
     });
-    if (kind === "freeform") return <CanvasFreeformEmptyState onUpload={onUpload} onAddText={onAddText} />;
+    if (kind === "freeform") return <CanvasFreeformEmptyState onUpload={onUpload} onAddText={onAddText} onApplyGraph={onApplyGraph} onOpenLibrary={onOpenLibrary} />;
     if (kind === "linked") {
         return (
             <CanvasLinkedProjectEmptyState
@@ -41,5 +43,5 @@ export function CanvasProjectEmptyState(props: CanvasProjectEmptyStateProps) {
             />
         );
     }
-    return <CanvasShortDramaEmptyState onCreatePipeline={onCreatePipeline} onOpenAgent={onOpenAgent} onStartFreeform={onStartFreeform} onUpload={onUpload} onAddText={onAddText} onAddScript={onAddScript} />;
+    return <CanvasShortDramaEmptyState onCreatePipeline={onCreatePipeline} onOpenAgent={onOpenAgent} onStartFreeform={onStartFreeform} onUpload={onUpload} onAddText={onAddText} onAddScript={onAddScript} onApplyGraph={onApplyGraph} onOpenLibrary={onOpenLibrary} />;
 }

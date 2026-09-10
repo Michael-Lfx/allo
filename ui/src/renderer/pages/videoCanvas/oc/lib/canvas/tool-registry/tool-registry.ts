@@ -86,22 +86,16 @@ const COMPACT_CREATE_HIDDEN_IDS = new Set<string>([
     CanvasNodeType.ColorGrade,
     CanvasNodeType.ArtCritique,
 ]);
-const COMPACT_CREATE_PRIMARY_IDS = new Set<string>(["style", CanvasNodeType.Script, CanvasNodeType.Image, CanvasNodeType.Video, "director", CanvasNodeType.Audio]);
 
-function resolveAddNodeMenuSection(command: AddNodeMenuCommand, compact: boolean): AddNodeMenuCommand["section"] {
-    if (!compact || command.section === "resource" || command.section === "project") return command.section;
-    return COMPACT_CREATE_PRIMARY_IDS.has(command.id) ? "node" : "extension";
-}
-
-/** 解析添加节点菜单命令——applicable 过滤，并将 label/badge 解析为具体字符串 */
+/** 解析添加节点菜单命令——applicable 过滤，并将 label/badge/icon 解析为具体值 */
 export function resolveAddNodeMenuCommands(ctx: AddNodeMenuContext): ResolvedAddNodeMenuCommand[] {
     return getAddNodeMenuCommands()
         .filter((command) => !command.applicable || command.applicable(ctx))
         .filter((command) => !ctx.compactCreateMenu || !COMPACT_CREATE_HIDDEN_IDS.has(command.id))
         .map((command) => ({
             ...command,
-            section: resolveAddNodeMenuSection(command, Boolean(ctx.compactCreateMenu)),
             label: typeof command.label === "function" ? command.label() : command.label,
+            icon: typeof command.icon === "function" ? command.icon() : command.icon,
             badge: command.badge === undefined ? undefined : typeof command.badge === "function" ? command.badge() : command.badge,
         }));
 }

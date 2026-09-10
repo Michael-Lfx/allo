@@ -504,7 +504,8 @@ const VideoGenerationListPage: React.FC = () => {
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
           mode: 'creation',
-          skill: identity?.vimaxKey ?? identity?.canvasPresetId ?? draft.creationSkillId,
+          workflow: 'canvas',
+          session_id: id,
           project_id: id,
         });
         clearVideoHomeDraft();

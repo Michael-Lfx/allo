@@ -109,8 +109,8 @@ function toolDefinition(name: string, description: string, properties: Record<st
 }
 
 export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
-    toolDefinition("canvas_list_skills", "列出当前画布上可按需加载的技能节点；只返回元数据。", {}),
-    toolDefinition("canvas_get_skill", "按 skillId 或技能名称加载一条技能手册（流程、停等、模型、提示词）。Look 只是视觉槽。不会自动注入每条用户消息。", { skillId: { type: "string" }, name: { type: "string" } }),
+    toolDefinition("canvas_list_skills", "列出画布手册：已放置的 Skill 节点 ∪ 16 本内置手册。只返回元数据。", {}),
+    toolDefinition("canvas_get_skill", "按 skillId（builtin:name / hub:id）或名称加载手册正文。Look 只是视觉槽。未放置的内置手册也可读。", { skillId: { type: "string" }, name: { type: "string" } }),
     toolDefinition("storyboard_inspect", "读取现有 Script 分镜：镜头、缺口、主体引用。不要另起空分镜。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
     toolDefinition("storyboard_apply", "把镜头写进已有 Script 节点 rows。按 id 或 index 修补 plot/duration/prompts/stillRole；replace=true 时整表替换。禁止只为了分镜去 canvas_apply 新建 Script。", { shots: { type: "array", items: STORYBOARD_APPLY_SHOT_SCHEMA }, replace: { type: "boolean" } }, ["shots"]),
     toolDefinition("subject_inspect", "读取已标注主体（角色/场景/道具）及缺口。保持面孔与场景，不要另造替换身份。", {}),

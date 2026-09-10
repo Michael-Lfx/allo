@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getPanelWidthBounds } from "./canvas-assistant-panel-column";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { Position } from "@oc/types/canvas";
 
 export function useCanvasDialogState() {
@@ -11,6 +12,8 @@ export function useCanvasDialogState() {
     const [characterReferenceNodeId, setCharacterReferenceNodeId] = useState<string | null>(null);
     const [drawingNodeId, setDrawingNodeId] = useState<string | null>(null);
     const [stylePickerOpen, setStylePickerOpen] = useState(false);
+    const [libraryOpen, setLibraryOpen] = useState(false);
+    const [libraryTab, setLibraryTab] = useState<LibraryTab>("recipe");
     const [directorTemplateRequest, setDirectorTemplateRequest] = useState<{ position?: Position } | null>(null);
     const [projectAssetOpen, setProjectAssetOpen] = useState(false);
     const [projectAssetInitialCategory, setProjectAssetInitialCategory] = useState("all");
@@ -51,6 +54,10 @@ export function useCanvasDialogState() {
         setDrawingNodeId,
         stylePickerOpen,
         setStylePickerOpen,
+        libraryOpen,
+        setLibraryOpen,
+        libraryTab,
+        setLibraryTab,
         directorTemplateRequest,
         setDirectorTemplateRequest,
         projectAssetOpen,

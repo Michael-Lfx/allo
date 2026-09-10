@@ -201,6 +201,9 @@ export interface VimaxCloudSkill {
   howToUse?: string | null;
   output?: string | null;
   coverUrl?: string | null;
+  previewUrl?: string | null;
+  origin?: "ugc" | "official";
+  kind?: string;
   caseUrl?: string | null;
   installCount?: number;
   likeCount?: number;

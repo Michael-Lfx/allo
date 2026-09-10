@@ -20,6 +20,7 @@ import {
 import type { CanvasNodeData, CanvasConnection, ViewportTransform } from '@oc/types/canvas';
 import { CanvasNodeType } from '@oc/types/canvas';
 import { createCanvasNode, createStoryboardRow } from '@oc/lib/canvas/canvas-project-domain';
+import { buildPlaybookNode, findPlaybook } from '@oc/lib/canvas/craft/catalog';
 import { storyboardNodeHeight } from '@oc/components/canvas/canvas-script-node';
 import { encodeChannelModel } from '@oc/stores/use-config-store';
 import { parsePersistedChatSessions, projectToCanvasDocument } from './canvasChatPersist';
@@ -31,7 +32,6 @@ import {
   writeCreationIr,
   type CreationSubjectKind,
 } from './creation-ir';
-import { creationSkillHandbook } from './creation-skill-handbook';
 import { resolveLookIdentity } from '@renderer/pages/videoGeneration/styleCatalog/lookIdentity';
 import { resolveCanvasStylePreset } from '@oc/lib/canvas/canvas-style-system';
 
@@ -297,41 +297,12 @@ function buildHomeInputNodes(
           height: 280,
         }
       : null;
+  const playbook = skill && (skill.id.startsWith('builtin:') || skill.id.startsWith('hub:'))
+    ? findPlaybook(skill.id)
+    : undefined;
   const skillNode =
-    !isGenerate && skill
-      ? {
-          ...createCanvasNode(CanvasNodeType.Skill, { x: 220, y: styleNode ? 820 : 500 }, {
-            content: look?.modelPrompt || skill.stylePrompt,
-            prompt: look?.modelPrompt || skill.stylePrompt,
-            status: 'success',
-            skillId: skill.id,
-            skillVersion: 1,
-            stylePresetId: canvasPresetId || skill.stylePresetId || skill.id,
-            skillSnapshot: {
-              id: skill.id,
-              name: skill.label,
-              description: skill.description,
-              category: launch.mediaKind,
-              template: creationSkillHandbook({
-                lookLabel: skill.label,
-                stylePrompt: look?.modelPrompt || skill.stylePrompt,
-                spec: {
-                  aspectRatio: launch.preferences.aspectRatio || '16:9',
-                  resolution: launch.preferences.resolution || '1080p',
-                  durationSecs: launch.preferences.targetDurationSecs || 5,
-                  mediaKind: launch.mediaKind === 'image' ? 'image' : 'video',
-                  imageModel: launch.preferences.imageModel,
-                  videoModel: launch.preferences.videoModel,
-                },
-              }),
-              outputMode: launch.mediaKind === 'image' ? 'image_prompt' : 'workflow',
-              outputContract: 'Look is a visual slot only. Follow the handbook: inspect/apply storyboard and spec, then run. Do not invent subjects.',
-              version: 1,
-              tags: ['video-home', 'style', 'handbook'],
-            },
-          }),
-          title: skill.label,
-        }
+    !isGenerate && playbook
+      ? buildPlaybookNode(playbook, playbook.brief, { x: 220, y: styleNode ? 820 : 500 })
       : null;
   const selectedModel =
     launch.mediaKind === 'image'
@@ -368,7 +339,10 @@ function buildHomeInputNodes(
           : `${skill?.label ?? '创作'}创作`,
       workflowDescription: launch.requirement,
       ...(skill && !isGenerate
-        ? { stylePresetId: canvasPresetId || skill.stylePresetId || skill.id, skillId: skill.id }
+        ? {
+            stylePresetId: canvasPresetId || skill.stylePresetId,
+            ...(playbook ? { skillId: playbook.qualifiedId } : {}),
+          }
         : {}),
     }),
     title: mode === 'agent'

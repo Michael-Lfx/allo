@@ -1,15 +1,18 @@
 import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, KeyboardEvent, MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
-import { FileText, Image as ImageIcon, Music2, Pencil, Sparkles, UserRound, Video } from "lucide-react";
+import { FileText, Image as ImageIcon, Music2, Pencil, UserRound, Video } from "lucide-react";
 
 import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { canvasResourceMentionToken, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
+import { craftCover, craftStillUrl, PLAYBOOK_BY_QUALIFIED, splitCraftTokenParts } from "@oc/lib/canvas/craft/catalog";
 import { CanvasNodeType } from "@oc/types/canvas";
 import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
 import { contentSizeShouldNotify, measureElementScrollHeight, resizeObserverWidthChanged } from "./canvas-content-size";
+import { CanvasStyleCoverSwatch } from "./canvas-style-cover";
+import { createCraftAttachmentChipElement, recipeAttachmentChip, skillAttachmentChip } from "./canvas-craft-token-chip";
 
 type MentionState = {
     start: number;
@@ -89,12 +92,12 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
             return;
         }
         const selection = pendingSelectionRef.current ?? (isFocused ? getEditableSelection(editor)?.start ?? null : null);
-        renderEditableContent(editor, value, activeReferences);
+        renderEditableContent(editor, value, activeReferences, theme);
         lastRenderedValueRef.current = value;
         if (isFocused && selection !== null) setEditableSelection(editor, selection);
         pendingSelectionRef.current = null;
         reportContentSize(editor);
-    }, [activeReferences, reportContentSize, useRichEditor, value]);
+    }, [activeReferences, reportContentSize, theme, useRichEditor, value]);
 
     useLayoutEffect(() => {
         const element = useRichEditor ? editorRef.current : textareaRef.current;
@@ -406,9 +409,18 @@ function createInlinePreview(reference: CanvasResourceReference) {
         }
         return media;
     }
+    if (reference.kind === "skill") {
+        const skillId = reference.skill?.skill_id || "";
+        const coverId = PLAYBOOK_BY_QUALIFIED.get(skillId)?.coverLookId || "cinematic";
+        const media = document.createElement("img");
+        media.className = "size-[1.18em] shrink-0 rounded-[0.24em] object-cover";
+        media.setAttribute("src", reference.previewUrl || craftStillUrl(coverId));
+        media.setAttribute("alt", "");
+        return media;
+    }
     const fallback = document.createElement("span");
     fallback.className = "grid size-[1.18em] shrink-0 place-items-center rounded-[0.24em] bg-current/10";
-    fallback.textContent = reference.sourceType === CanvasNodeType.Drawing ? "✎" : reference.kind === "audio" ? "♪" : reference.kind === "video" ? "▶" : reference.kind === "image" ? "□" : reference.kind === "skill" ? "✦" : "";
+    fallback.textContent = reference.sourceType === CanvasNodeType.Drawing ? "✎" : reference.kind === "audio" ? "♪" : reference.kind === "video" ? "▶" : reference.kind === "image" ? "□" : "";
     return fallback;
 }
 
@@ -475,11 +487,10 @@ function ReferencePreview({ reference }: { reference: CanvasResourceReference })
     if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
     if (reference.kind === "character" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-9 rounded-md bg-black/5 object-contain" />;
     if (reference.kind === "skill") {
-        return (
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-cyan-500/12 text-cyan-600 dark:text-cyan-200">
-                <Sparkles className="size-4" />
-            </span>
-        );
+        const skillId = reference.skill?.skill_id || "";
+        const coverId = PLAYBOOK_BY_QUALIFIED.get(skillId)?.coverLookId || "cinematic";
+        const cover = reference.previewUrl ? { ...craftCover(coverId), image: reference.previewUrl } : craftCover(coverId);
+        return <CanvasStyleCoverSwatch cover={cover} className="size-9 shrink-0 rounded-md" alt="" />;
     }
     const Icon = reference.sourceType === CanvasNodeType.Drawing ? Pencil : reference.kind === "character" ? UserRound : reference.kind === "audio" ? Music2 : reference.kind === "video" ? Video : reference.kind === "image" ? ImageIcon : FileText;
     return (
@@ -516,9 +527,16 @@ function splitMentionText(value: string, references: CanvasResourceReference[]) 
     return parts;
 }
 
-function renderEditableContent(editor: HTMLElement, value: string, references: CanvasResourceReference[]) {
+function renderEditableContent(editor: HTMLElement, value: string, references: CanvasResourceReference[], theme: (typeof canvasThemes)[keyof typeof canvasThemes]) {
     const parts = splitMentionText(value, references);
-    const nodes = parts.map((part) => (part.type === "mention" ? createInlineMentionChip(part.reference, part.token) : document.createTextNode(part.text)));
+    const nodes = parts.flatMap((part) => {
+        if (part.type === "mention") return [createInlineMentionChip(part.reference, part.token)];
+        return splitCraftTokenParts(part.text).map((token) => {
+            if (token.type === "recipe") return createCraftAttachmentChipElement(recipeAttachmentChip(token.id), theme);
+            if (token.type === "skill") return createCraftAttachmentChipElement(skillAttachmentChip(token.id), theme);
+            return document.createTextNode(token.value);
+        });
+    });
     editor.replaceChildren(...nodes);
 }
 

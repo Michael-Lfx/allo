@@ -32,6 +32,7 @@ type CanvasNodeContextMenuProps = {
     onAddNode: (type: CanvasNodeType) => void;
     onAddFolder: () => void;
     onChooseStyle: () => void;
+    onOpenLibrary: () => void;
     onOpenDirector: (position: Position) => void;
     onUpload: () => void;
     onOpenAssets: () => void;
@@ -68,6 +69,7 @@ export function CanvasNodeContextMenu({
     onAddNode,
     onAddFolder,
     onChooseStyle,
+    onOpenLibrary,
     onOpenDirector,
     onUpload,
     onOpenAssets,
@@ -229,6 +231,7 @@ export function CanvasNodeContextMenu({
                     onAddNode={(type) => runAction(() => onAddNode(type))}
                     onAddFolder={() => runAction(onAddFolder)}
                     onChooseStyle={() => runAction(onChooseStyle)}
+                    onOpenLibrary={() => runAction(onOpenLibrary)}
                     onOpenDirector={() => runAction(() => onOpenDirector(menu.position))}
                     onUpload={() => runAction(onUpload)}
                     onOpenAssets={() => runAction(onOpenAssets)}
@@ -239,7 +242,7 @@ export function CanvasNodeContextMenu({
     );
 }
 
-function AddNodeContextMenu({ parentPosition, workspaceMode, compactCreateMenu, isProjectLinked, onAddNode, onAddFolder, onChooseStyle, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number }; workspaceMode: CanvasWorkspaceMode; compactCreateMenu?: boolean; isProjectLinked: boolean; onAddNode: (type: CanvasNodeType) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
+function AddNodeContextMenu({ parentPosition, workspaceMode, compactCreateMenu, isProjectLinked, onAddNode, onAddFolder, onChooseStyle, onOpenLibrary, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number }; workspaceMode: CanvasWorkspaceMode; compactCreateMenu?: boolean; isProjectLinked: boolean; onAddNode: (type: CanvasNodeType) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenLibrary: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const left = getSubmenuLeft(parentPosition.left);
     const createContext: AddNodeMenuContext = {
@@ -256,6 +259,7 @@ function AddNodeContextMenu({ parentPosition, workspaceMode, compactCreateMenu, 
             onAddFolder,
             onAddDrawing: () => onAddNode(CanvasNodeType.Drawing),
             onChooseStyle,
+            onOpenLibrary,
             onOpenDirector,
             onAddExtensionNode: (type) => onAddNode(type),
             onUpload,

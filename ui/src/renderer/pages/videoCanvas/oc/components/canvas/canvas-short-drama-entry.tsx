@@ -7,6 +7,7 @@ import { resolveCanvasStylePreset } from "@oc/components/canvas/canvas-style-pic
 import { CanvasStyleCoverSwatch } from "@oc/components/canvas/canvas-style-cover";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { CRAFT_GRAPHS, craftCover, craftText } from "@oc/lib/canvas/craft/catalog";
 import type { CanvasShortDramaProgress, CanvasShortDramaStepId } from "@oc/lib/canvas/canvas-short-drama";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasNodeData } from "@oc/types/canvas";
@@ -28,13 +29,15 @@ export function CanvasLinkedProjectEmptyState({ projectName, hasChapter, onAddFi
     );
 }
 
-export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onStartFreeform, onUpload, onAddText, onAddScript }: {
+export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onStartFreeform, onUpload, onAddText, onAddScript, onApplyGraph, onOpenLibrary }: {
     onCreatePipeline: () => void;
     onOpenAgent: () => void;
     onStartFreeform: () => void;
     onUpload: () => void;
     onAddText: () => void;
     onAddScript: () => void;
+    onApplyGraph?: (graphId: string) => void;
+    onOpenLibrary?: () => void;
 }) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -94,22 +97,51 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onSt
                         </button>
                     </Dropdown>
                 </div>
+                {onApplyGraph ? <CanvasGraphStarterGrid onApply={onApplyGraph} onOpenLibrary={onOpenLibrary} /> : null}
             </div>
         </div>
     );
 }
 
-export function CanvasFreeformEmptyState({ onUpload, onAddText }: { onUpload: () => void; onAddText: () => void }) {
+export function CanvasFreeformEmptyState({ onUpload, onAddText, onApplyGraph, onOpenLibrary }: { onUpload: () => void; onAddText: () => void; onApplyGraph?: (graphId: string) => void; onOpenLibrary?: () => void }) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-20 pt-24">
-            <div className="pointer-events-auto w-full max-w-[440px] rounded-lg border p-4 shadow-sm backdrop-blur" data-canvas-no-zoom style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}>
-                <div className="text-center"><h2 className="text-base font-semibold">{canvasT("videoCanvas.empty.blankStart", "从空白画布开始")}</h2><p className="mt-1 text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.blankStartHint", "添加文本或导入已有素材。")}</p></div>
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                    <button type="button" onClick={onAddText} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Type className="size-4" />{canvasT("videoCanvas.empty.newText", "新建文本")}</button>
-                    <button type="button" onClick={onUpload} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Upload className="size-4" />{canvasT("videoCanvas.chrome.importMedia", "导入素材")}</button>
+            <div className="pointer-events-auto w-full max-w-[760px]" data-canvas-no-zoom>
+                <div className="mx-auto max-w-[440px] rounded-lg border p-4 shadow-sm backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}>
+                    <div className="text-center"><h2 className="text-base font-semibold">{canvasT("videoCanvas.empty.blankStart", "从空白画布开始")}</h2><p className="mt-1 text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.blankStartHint", "添加文本或导入已有素材。")}</p></div>
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                        <button type="button" onClick={onAddText} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Type className="size-4" />{canvasT("videoCanvas.empty.newText", "新建文本")}</button>
+                        <button type="button" onClick={onUpload} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Upload className="size-4" />{canvasT("videoCanvas.chrome.importMedia", "导入素材")}</button>
+                    </div>
                 </div>
+                {onApplyGraph ? <CanvasGraphStarterGrid onApply={onApplyGraph} onOpenLibrary={onOpenLibrary} /> : null}
+            </div>
+        </div>
+    );
+}
+
+function CanvasGraphStarterGrid({ onApply, onOpenLibrary }: { onApply: (graphId: string) => void; onOpenLibrary?: () => void }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    return (
+        <div className="mt-4">
+            <div className="mb-2 flex items-center justify-between px-1">
+                <p className="text-xs font-medium" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.craft.graphHint", "或从一条工作流开始")}</p>
+                {onOpenLibrary ? (
+                    <button type="button" className="text-xs font-medium" style={{ color: theme.accent.primary }} onClick={onOpenLibrary}>{canvasT("videoCanvas.craft.openShelf", "打开货架")}</button>
+                ) : null}
+            </div>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                {CRAFT_GRAPHS.map((item) => (
+                    <button key={item.id} type="button" className="overflow-hidden rounded-lg border text-left" style={{ borderColor: theme.node.stroke, background: theme.node.fill, color: theme.node.text }} onClick={() => onApply(item.id)}>
+                        <CanvasStyleCoverSwatch cover={craftCover(item.coverLookId)} className="aspect-video w-full" alt={craftText(item.title)} />
+                        <span className="block px-2 py-1.5">
+                            <span className="block truncate text-[11px] font-semibold">{craftText(item.title)}</span>
+                            <span className="mt-0.5 line-clamp-2 block text-[10px] leading-3" style={{ color: theme.node.muted }}>{craftText(item.job)}</span>
+                        </span>
+                    </button>
+                ))}
             </div>
         </div>
     );

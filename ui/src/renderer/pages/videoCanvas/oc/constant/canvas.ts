@@ -14,7 +14,7 @@ export const NODE_DEFAULT_SIZE = {
     [CanvasNodeType.Text]: { width: 340, height: 240, title: "Note" },
     [CanvasNodeType.Drawing]: { width: 440, height: 300, title: "绘图" },
     [CanvasNodeType.Script]: { width: 920, height: 360, title: "分镜脚本" },
-    [CanvasNodeType.Skill]: { width: 360, height: 220, title: "技能" },
+    [CanvasNodeType.Skill]: { width: 320, height: 168, title: "技能" },
     [CanvasNodeType.Config]: { width: 360, height: 340, title: "生成配置" },
     [CanvasNodeType.Video]: { width: 480, height: 270, title: "Video" },
     [CanvasNodeType.Audio]: { width: 340, height: 120, title: "Audio" },

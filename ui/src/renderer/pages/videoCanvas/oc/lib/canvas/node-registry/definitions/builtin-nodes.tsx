@@ -10,6 +10,27 @@ import { registerNodeDefinitions } from "../node-registry";
 /** 非媒体节点的拉伸下限 */
 const DEFAULT_MIN_SIZE = { width: 220, height: 160 } as const;
 
+/** 节点类型 → Lucide 组件。创建菜单直接用这个表，不走注册表里预创建的 element。 */
+export const BUILTIN_NODE_ICONS = {
+    [CanvasNodeType.Image]: ImageIcon,
+    [CanvasNodeType.Text]: Type,
+    [CanvasNodeType.Drawing]: Pencil,
+    [CanvasNodeType.Script]: Clapperboard,
+    [CanvasNodeType.Skill]: Sparkles,
+    [CanvasNodeType.Config]: Settings2,
+    [CanvasNodeType.Video]: Video,
+    [CanvasNodeType.Audio]: Music2,
+    [CanvasNodeType.Frame]: PanelTop,
+    [CanvasNodeType.Markdown]: FileText,
+    [CanvasNodeType.Svg]: Shapes,
+    [CanvasNodeType.Html]: Code,
+    [CanvasNodeType.Panorama]: Globe,
+    [CanvasNodeType.Compare]: Columns2,
+    [CanvasNodeType.Chart]: ChartColumn,
+    [CanvasNodeType.ColorGrade]: Palette,
+    [CanvasNodeType.ArtCritique]: ScanSearch,
+} satisfies Record<CanvasNodeType, typeof ImageIcon>;
+
 /**
  * 每种内置节点的自有特征。
  *
@@ -22,7 +43,6 @@ const DEFAULT_MIN_SIZE = { width: 220, height: 160 } as const;
 const BUILTIN_NODE_TRAITS = {
     [CanvasNodeType.Image]: {
         label: "图片",
-        icon: <ImageIcon />,
         minSize: MEDIA_NODE_MIN_SIZE,
         keepAspectRatio: (node: CanvasNodeData) => !node.metadata?.freeResize,
         showInCreateMenu: true,
@@ -32,7 +52,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Text]: {
         label: "文本",
-        icon: <Type />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         resourceKind: (node: CanvasNodeData) => (node.metadata?.content || node.metadata?.prompt ? "text" : null),
@@ -41,7 +60,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Drawing]: {
         label: "绘图",
-        icon: <Pencil />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         // 绘图产出的是图像，所以作为素材与输入都按图片计。
@@ -50,7 +68,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Script]: {
         label: "分镜脚本",
-        icon: <Clapperboard />,
         // 分镜脚本的表格布局需要更宽的下限；高度仍由内容动态撑开（见 canvas-node.tsx）。
         minSize: { width: 800, height: DEFAULT_MIN_SIZE.height },
         showInCreateMenu: true,
@@ -60,7 +77,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Skill]: {
         label: "技能",
-        icon: <Sparkles />,
         minSize: DEFAULT_MIN_SIZE,
         // 技能节点不占创建菜单；由首页风格启动等视频模块入口写入画布。
         showInCreateMenu: false,
@@ -70,7 +86,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Config]: {
         label: "生成配置",
-        icon: <Settings2 />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         // 生成模式由用户在配置节点上选择，缺省按图片。
@@ -79,7 +94,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Video]: {
         label: "视频",
-        icon: <Video />,
         minSize: MEDIA_NODE_MIN_SIZE,
         keepAspectRatio: () => true,
         showInCreateMenu: true,
@@ -89,7 +103,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Audio]: {
         label: "音频",
-        icon: <Music2 />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         resourceKind: (node: CanvasNodeData) => (node.metadata?.content ? "audio" : null),
@@ -100,14 +113,12 @@ const BUILTIN_NODE_TRAITS = {
         label: "背板",
         // 背板在列表里就叫「背板」，不是「背板节点」——显式钉住，避免被 label 派生改写。
         listLabel: "背板",
-        icon: <PanelTop />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         // 背板只是视觉容器，既不是素材也不参与计数。
     },
     [CanvasNodeType.Markdown]: {
         label: "Markdown",
-        icon: <FileText />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         resourceKind: (node: CanvasNodeData) => (node.metadata?.content ? "text" : null),
@@ -115,7 +126,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Svg]: {
         label: "SVG",
-        icon: <Shapes />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         resourceKind: (node: CanvasNodeData) => (node.metadata?.content ? "text" : null),
@@ -123,7 +133,6 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Html]: {
         label: "HTML",
-        icon: <Code />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         resourceKind: (node: CanvasNodeData) => (node.metadata?.content ? "text" : null),
@@ -131,28 +140,24 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.Panorama]: {
         label: "全景",
-        icon: <Globe />,
         minSize: MEDIA_NODE_MIN_SIZE,
         showInCreateMenu: true,
         inputKind: "image",
     },
     [CanvasNodeType.Compare]: {
         label: "对比",
-        icon: <Columns2 />,
         minSize: MEDIA_NODE_MIN_SIZE,
         showInCreateMenu: true,
         inputKind: "image",
     },
     [CanvasNodeType.Chart]: {
         label: "图表",
-        icon: <ChartColumn />,
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         inputKind: "text",
     },
     [CanvasNodeType.ColorGrade]: {
         label: "调色",
-        icon: <Palette />,
         minSize: MEDIA_NODE_MIN_SIZE,
         showInCreateMenu: true,
         // 无条件返回 image：图来自上游而不是自身 metadata。
@@ -161,18 +166,19 @@ const BUILTIN_NODE_TRAITS = {
     },
     [CanvasNodeType.ArtCritique]: {
         label: "AI 审美批改",
-        icon: <ScanSearch />,
         minSize: { width: 360, height: 280 },
         showInCreateMenu: true,
         // 不设 inputKind：批改节点接受图片连入，但不作为下游生成的参考素材。
     },
-} satisfies Record<CanvasNodeType, Omit<CanvasNodeDefinition, "type" | "defaultTitle" | "defaultSize" | "defaultMetadata">>;
+} satisfies Record<CanvasNodeType, Omit<CanvasNodeDefinition, "type" | "icon" | "defaultTitle" | "defaultSize" | "defaultMetadata">>;
 
 export const BUILTIN_NODE_DEFINITIONS: CanvasNodeDefinition[] = (Object.keys(BUILTIN_NODE_TRAITS) as CanvasNodeType[]).map((type) => {
     const spec = NODE_SPECS[type];
+    const Icon = BUILTIN_NODE_ICONS[type];
     return {
         type,
         ...BUILTIN_NODE_TRAITS[type],
+        icon: <Icon />,
         defaultTitle: spec.title,
         defaultSize: { width: spec.width, height: spec.height },
         defaultMetadata: spec.metadata,

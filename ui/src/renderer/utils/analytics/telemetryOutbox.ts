@@ -46,6 +46,7 @@ const ALLOWED_PROPERTIES = new Set([
   'network_class',
   'peak_bps',
   'phase',
+  'playbook_id',
   'project_id',
   'runtime',
   'session_id',

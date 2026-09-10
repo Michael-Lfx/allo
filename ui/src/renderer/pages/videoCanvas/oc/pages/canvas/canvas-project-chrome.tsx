@@ -7,6 +7,7 @@ import { CanvasAssetTray } from "@oc/components/canvas/canvas-asset-tray";
 import { CanvasProjectContextMenu } from "./canvas-project-context-menu";
 import { HideWhileNodeDragging } from "./canvas-project-world-layers";
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ContextMenuState, type Position, type ViewportTransform } from "@oc/types/canvas";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
 import type { useCanvasUpload } from "./use-canvas-upload";
 import type { useCanvasMediaTools } from "./use-canvas-media-tools";
@@ -82,6 +83,8 @@ type CanvasProjectCanvasChromeProps = {
     createNode: ReturnType<typeof useCanvasNodeOperations>["createNode"];
     createFolder: ReturnType<typeof useCanvasNodeOperations>["createFolder"];
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryTab: Dispatch<SetStateAction<LibraryTab>>;
     setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
     openAssetsAtPosition: ReturnType<typeof useCanvasUpload>["openAssetsAtPosition"];
     assetTrayOpenNonce: ReturnType<typeof useCanvasUpload>["assetTrayOpenNonce"];
@@ -163,6 +166,8 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         createNode,
         createFolder,
         setStylePickerOpen,
+        setLibraryOpen,
+        setLibraryTab,
         setDirectorTemplateRequest,
         openAssetsAtPosition,
         assetTrayOpenNonce,
@@ -290,6 +295,10 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onAddNode={(type, position) => createNode(type, position)}
                         onAddFolder={(position) => createFolder(position)}
                         onChooseStyle={() => setStylePickerOpen(true)}
+                        onOpenLibrary={() => {
+                            setLibraryTab("recipe");
+                            setLibraryOpen(true);
+                        }}
                         onOpenDirector={(position) => setDirectorTemplateRequest({ position })}
                         onUpload={(nodeId, position) => handleUploadRequest(nodeId, position)}
                         onOpenAssets={openAssetsAtPosition}
