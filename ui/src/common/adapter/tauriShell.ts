@@ -105,6 +105,16 @@ export async function tauriRelaunch(): Promise<void> {
   await invoke('restart_application');
 }
 
+/**
+ * Open the on-disk support log directory via a Tauri command.
+ * Does not touch the embedded HTTP backend — required when startup recovery
+ * is showing because `127.0.0.1` is unreachable from the webview.
+ */
+export async function tauriOpenSupportLogsDir(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('open_support_logs_dir');
+}
+
 /** OS directory paths (@tauri-apps/api/path). */
 export async function tauriGetPath(name: 'desktop' | 'home' | 'downloads'): Promise<string> {
   const path = await import('@tauri-apps/api/path');

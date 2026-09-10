@@ -1272,6 +1272,13 @@ pub fn create_router_with_all_state(
     // a cookie), so an `Any`-origin attacker page can neither read it nor read
     // cross-origin responses. Remote browsers are served same-origin and do not
     // rely on CORS.
+    //
+    // `allow_private_network(true)` is required for Chromium/WebView2 Private
+    // Network Access: the desktop page origin (`http://tauri.localhost`) treating
+    // a fetch to `http://127.0.0.1:<port>` as a public→private hop will preflight
+    // with `Access-Control-Request-Private-Network: true`. Without the matching
+    // allow header the preflight fails as TypeError "Failed to fetch", which the
+    // renderer surfaces as "backend unreachable" on first `/api/system/info`.
     if services.auth_policy.allows_local_webview() {
         let cors = CorsLayer::new()
             .allow_origin(Any)
@@ -1283,7 +1290,8 @@ pub fn create_router_with_all_state(
                 Method::DELETE,
                 Method::OPTIONS,
             ])
-            .allow_headers(Any);
+            .allow_headers(Any)
+            .allow_private_network(true);
         router.layer(cors)
     } else {
         router

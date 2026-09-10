@@ -1115,6 +1115,100 @@ fn restart_application(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the on-disk support log directory without going through the embedded
+/// HTTP backend. Startup recovery must keep working when the webview cannot
+/// reach `127.0.0.1` (system proxy / Private Network Access failures).
+#[tauri::command]
+fn open_support_logs_dir() -> Result<(), String> {
+    let log_dir = resolve_support_log_dir();
+    std::fs::create_dir_all(&log_dir).map_err(|error| {
+        format!("failed to create support log directory {}: {error}", log_dir.display())
+    })?;
+    open::that(&log_dir).map_err(|error| {
+        format!("failed to open support log directory {}: {error}", log_dir.display())
+    })
+}
+
+fn resolve_support_log_dir() -> PathBuf {
+    for key in ["FLOWY_LOG_DIR", "NOMIFUN_LOG_DIR"] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+    }
+    default_data_dir().join("logs")
+}
+
+/// Force WebView2/Chromium (and process-level HTTP clients) to reach the
+/// embedded loopback backend directly.
+///
+/// Win11 Home installs in China commonly run Clash/V2Ray as a *system* proxy.
+/// WebView2 honors that proxy; when `127.0.0.1` is intercepted (bad
+/// ProxyOverride, or Clash "proxy localhost"), every desktop
+/// `fetch("http://127.0.0.1:<port>/api/...")` fails as TypeError "Failed to
+/// fetch" — which the renderer reports as `backend unreachable` on first
+/// `/api/system/info`, while "open logs" / "sign out" look dead because they
+/// also depend on that same HTTP path.
+///
+/// `--proxy-bypass-list` alone is a no-op for system-proxy mode (Chromium
+/// ignores it unless `--proxy-server` is also set). The desktop webview only
+/// talks to the in-process loopback backend; outbound cloud/provider traffic
+/// goes through that Rust backend (which has its own proxy config). Forcing
+/// `direct://` therefore unblocks the API without breaking cloud features.
+///
+/// Must run before the WebView2 environment is created. Prefer also applying
+/// [`webview_loopback_browser_args`] on each `WebviewWindowBuilder`.
+fn configure_webview_loopback_proxy_bypass() {
+    const LOOPBACK_NO_PROXY: &str = "127.0.0.1,localhost,::1";
+    let browser_args = webview_loopback_browser_args();
+
+    match std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
+        Ok(existing) if existing.contains("proxy-server=direct://") => {}
+        Ok(existing) => {
+            let merged = format!("{} {}", existing.trim(), browser_args);
+            // SAFETY: called before Tauri creates the WebView2 environment or
+            // any worker threads that read this variable.
+            unsafe {
+                std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
+            }
+        }
+        Err(_) => unsafe {
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args);
+        },
+    }
+
+    for key in ["NO_PROXY", "no_proxy"] {
+        match std::env::var(key) {
+            Ok(existing) => {
+                let lower = existing.to_ascii_lowercase();
+                if lower.contains("127.0.0.1") && lower.contains("localhost") {
+                    continue;
+                }
+                let merged = if existing.trim().is_empty() {
+                    LOOPBACK_NO_PROXY.to_owned()
+                } else {
+                    format!("{existing},{LOOPBACK_NO_PROXY}")
+                };
+                unsafe {
+                    std::env::set_var(key, merged);
+                }
+            }
+            Err(_) => unsafe {
+                std::env::set_var(key, LOOPBACK_NO_PROXY);
+            },
+        }
+    }
+}
+
+/// Browser args that keep the desktop webview off the system HTTP(S) proxy.
+/// Applied both via env (WebView2 environment creation) and per-window
+/// `additional_browser_args` so companion windows inherit the same policy.
+fn webview_loopback_browser_args() -> &'static str {
+    "--proxy-server=direct://"
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod keep_awake_tests {
     use super::acquire_keep_awake;
@@ -2315,6 +2409,7 @@ fn complete_main_thread_setup(
             .min_inner_size(main_window_geometry.min_width, main_window_geometry.min_height)
             .prevent_overflow()
             .center()
+            .additional_browser_args(webview_loopback_browser_args())
             .initialization_script(&init_script);
     // macOS: Overlay makes the titlebar transparent + extends content under
     // it, but it does NOT hide the native title text. With the title still
@@ -2612,6 +2707,7 @@ fn reconcile_companion_windows(
                 .skip_taskbar(true)
                 .shadow(false)
                 .visible(false)
+                .additional_browser_args(webview_loopback_browser_args())
                 .initialization_script(&init_script);
         // Show the freshly-built window from here rather than relying SOLELY on
         // the companion page's self-show (applyWindowState): on a FIRST enable
@@ -2650,6 +2746,11 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = nomifun_app::commands::run_mcp_stdio_subcommand_if_present() {
         return code;
     }
+
+    // Before WebView2/Chromium boots: keep loopback API traffic off the system
+    // proxy. Otherwise a Win11 Home Clash/V2Ray install turns every desktop
+    // fetch to `127.0.0.1` into "Failed to fetch" / backend unreachable.
+    configure_webview_loopback_proxy_bypass();
 
     // Env mutation + runtime init BEFORE Tauri builds its runtime/threads,
     // mirroring the nomicore bin's ordering. `default_data_dir` resolves the
@@ -3078,6 +3179,7 @@ fn main() -> std::process::ExitCode {
             set_keep_awake,
             meeting_tray::set_tray_labels,
             restart_application,
+            open_support_logs_dir,
             system_notify::show_os_notification_cmd,
             taskbar_badge::clear_attention_cmd,
             taskbar_badge::clear_attention_scope_cmd,

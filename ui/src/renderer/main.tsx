@@ -88,6 +88,8 @@ import { useAuth } from './hooks/context/AuthContext';
 import { useCloudAuth } from './hooks/context/CloudAuthContext';
 import { ConversationHistoryProvider } from './hooks/context/ConversationHistoryContext';
 import HOC from './utils/ui/HOC';
+import { isDesktopShell } from './utils/platform';
+import { tauriOpenSupportLogsDir, tauriRelaunch } from '@/common/adapter/tauriShell';
 
 void startProductTelemetry();
 const SupportSurfaceProbe = React.lazy(() => import('./pages/test/SupportSurfaceProbe'));
@@ -137,7 +139,8 @@ const StartupRecoveryPanel: React.FC<{
   onOpenLogs: () => void;
   onSignOut: () => void;
   logsError: string | null;
-}> = ({ error, onRetry, onOpenLogs, onSignOut, logsError }) => {
+  desktopShell: boolean;
+}> = ({ error, onRetry, onOpenLogs, onSignOut, logsError, desktopShell }) => {
   const { t } = useTranslation();
   return (
     <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)] px-24px'>
@@ -160,7 +163,9 @@ const StartupRecoveryPanel: React.FC<{
           {t('common.startupRecovery.retrySystemInfo')}
         </Button>
         <Button onClick={onOpenLogs}>{t('common.startupRecovery.openLogs')}</Button>
-        <Button onClick={onSignOut}>{t('common.userMenu.logout')}</Button>
+        <Button onClick={onSignOut}>
+          {desktopShell ? t('common.startupRecovery.restartApp') : t('common.userMenu.logout')}
+        </Button>
       </div>
     </div>
   );
@@ -288,6 +293,12 @@ const Main = () => {
   const openSupportLogs = useCallback(async () => {
     setLogsError(null);
     try {
+      // Prefer the native command: it does not need the embedded HTTP backend,
+      // which is exactly what is unreachable on this recovery screen.
+      if (isDesktopShell()) {
+        await tauriOpenSupportLogsDir();
+        return;
+      }
       const info = await application.systemInfo.invoke();
       await ipcBridgeModule.shell.openFolderWith.invoke({ folder_path: info.logDir, tool: 'explorer' });
     } catch (error: unknown) {
@@ -299,9 +310,16 @@ const Main = () => {
     try {
       if (cloudStatus === 'authenticated') {
         await cloudLogout();
-      } else {
-        await localLogout();
       }
+      // Desktop local auth is always-on (local-trust); AuthContext.logout is a
+      // no-op that keeps status=authenticated, so the recovery panel never
+      // leaves. Restart the shell instead — also the right recovery when the
+      // backend was unreachable because of proxy/PNA.
+      if (isDesktopShell()) {
+        await tauriRelaunch();
+        return;
+      }
+      await localLogout();
     } catch (error) {
       setLogsError(error instanceof Error ? error.message : String(error));
     }
@@ -413,6 +431,7 @@ const Main = () => {
         onOpenLogs={() => void openSupportLogs()}
         onSignOut={() => void signOutFromStartup()}
         logsError={logsError}
+        desktopShell={isDesktopShell()}
       />
     );
   }

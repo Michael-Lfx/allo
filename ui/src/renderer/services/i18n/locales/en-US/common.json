@@ -57,9 +57,10 @@
   },
   "startupRecovery": {
     "title": "Startup data could not be loaded",
-    "description": "System information is temporarily unavailable. Retry, open support logs, or sign out.",
+    "description": "System information is temporarily unavailable. Retry, open support logs, or restart the app.",
     "retrySystemInfo": "Retry system info",
-    "openLogs": "Open support logs"
+    "openLogs": "Open support logs",
+    "restartApp": "Restart app"
   },
   "codeEditorErrorTitle": "Code editor failed to load",
   "codeEditorErrorDescription": "An editor extension failed. Retry or close this editor to continue.",

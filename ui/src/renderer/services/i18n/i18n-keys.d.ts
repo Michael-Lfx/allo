@@ -1048,6 +1048,7 @@ export type I18nKey =
   | 'common.skills'
   | 'common.startupRecovery.description'
   | 'common.startupRecovery.openLogs'
+  | 'common.startupRecovery.restartApp'
   | 'common.startupRecovery.retrySystemInfo'
   | 'common.startupRecovery.title'
   | 'common.status'
