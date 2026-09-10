@@ -21,14 +21,20 @@ import { ContextIndicator } from "./ContextIndicator";
 import { ModelPicker } from "./ModelPicker";
 import { useTranslation } from "react-i18next";
 import { ComposerCatalogMenu } from "./ComposerCatalogMenu";
+import { CommandPalette, type PaletteItem, type PaletteItemKind } from "./CommandPalette";
 import { useAppStore, registerComposerFocus } from "../store/appStore";
 import { modelChipLabel } from "../ui/format";
 import type {
+  AgentSummary,
+  ConnectorSummary,
   ConversationModelOptions,
   ConversationView,
+  LocalizedText,
   MentionKind,
+  MentionRef,
   ProviderWithModel,
   ReasoningEffort,
+  SkillSummary,
 } from "../lib/protocol";
 
 /** Human label for a reasoning-effort value shown in the model chip. */
@@ -105,9 +111,212 @@ export function Composer(props: {
     const token = `@${item.name}`;
     const current = draft.trim();
     setDraft(current ? `${current} ${token}` : token);
+    // Track the token so deleting it also drops the structured mention (AC-1).
+    mentionTokensRef.current.set(token, { kind: mentionKind, id: item.id });
     setCatalogMenu(null);
     toggleComposerMenu();
   };
+
+  /** ── W1 command palette (doc 19 §3 W1) ─────────────────────────────────
+   *  The palette never takes focus: its query is derived from the draft text
+   *  after the `/` or `@` trigger, so ordinary typing and IME composition keep
+   *  working, and deleting the inserted token can drop the structured mention.
+   */
+  const client = useAppStore((s) => s.client);
+  const toggleCatalog = useAppStore((s) => s.toggleCatalog);
+  const shareConversation = useAppStore((s) => s.shareConversation);
+  const toggleArtifactPanel = useAppStore((s) => s.toggleArtifactPanel);
+  const [palette, setPalette] = useState<{ mode: "command" | "mention"; start: number; active: number } | null>(null);
+  const [catalogs, setCatalogs] = useState<{
+    agents: AgentSummary[];
+    skills: SkillSummary[];
+    connectors: ConnectorSummary[];
+  } | null>(null);
+  const [palettePrompts, setPalettePrompts] = useState<PaletteItem[]>([]);
+  const [paletteLoading, setPaletteLoading] = useState(false);
+  /** Caret index, tracked outside React state (read synchronously on keydown). */
+  const cursorRef = useRef(0);
+  /** `@name` token → structured mention, so token deletion is observable. */
+  const mentionTokensRef = useRef(new Map<string, MentionRef>());
+
+  const localize = (text: LocalizedText | null | undefined): string => (text ? text.zh || text.en || "" : "");
+
+  // Mention mode: load the three catalogs once per connection.
+  useEffect(() => {
+    if (palette?.mode !== "mention" || catalogs || !client) return;
+    let cancelled = false;
+    setPaletteLoading(true);
+    void Promise.all([client.agents.list(), client.skills.list(), client.connectors.list()])
+      .then(([agents, skills, connectorList]) => {
+        if (!cancelled) setCatalogs({ agents, skills, connectors: connectorList });
+      })
+      .catch(() => {
+        if (!cancelled) setCatalogs({ agents: [], skills: [], connectors: [] });
+      })
+      .finally(() => {
+        if (!cancelled) setPaletteLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [palette?.mode, catalogs, client]);
+
+  // Command mode: offer the quick prompts / default init prompt of the experts
+  // already mentioned in the draft — that mention is the composer's only
+  // expert binding (docs/agent-store/05 §4.7).
+  useEffect(() => {
+    if (palette?.mode !== "command" || !client) return;
+    const agentIds = (composerMentions ?? []).filter((m) => m.kind === "agent").map((m) => m.id);
+    if (agentIds.length === 0) {
+      setPalettePrompts([]);
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(agentIds.map((id) => client.agents.get(id).catch(() => null))).then((details) => {
+      if (cancelled) return;
+      const items: PaletteItem[] = [];
+      for (const detail of details) {
+        if (!detail) continue;
+        const init = localize(detail.default_init_prompt);
+        if (init) items.push({ id: `init:${detail.id}`, kind: "prompt", label: init, hint: detail.name });
+        (detail.quick_prompts ?? []).forEach((prompt, index) => {
+          const text = localize(prompt);
+          if (text) items.push({ id: `qp:${detail.id}:${index}`, kind: "prompt", label: text, hint: detail.name });
+        });
+      }
+      setPalettePrompts(items);
+    });
+    return () => { cancelled = true; };
+  }, [palette?.mode, composerMentions, client]);
+
+  // The store clears mentions after a send / draft reset: drop the token map too.
+  useEffect(() => {
+    if (!composerMentions || composerMentions.length === 0) mentionTokensRef.current.clear();
+  }, [composerMentions]);
+
+  /** Drop mentions whose `@token` is no longer present in the draft (AC-1). */
+  const syncMentionTokens = (nextDraft: string) => {
+    const tokens = mentionTokensRef.current;
+    if (tokens.size === 0) return;
+    const alive = new Set<MentionRef>();
+    let removed = false;
+    for (const [token, ref] of [...tokens]) {
+      if (nextDraft.includes(token)) {
+        alive.add(ref);
+      } else {
+        tokens.delete(token);
+        removed = true;
+      }
+    }
+    if (!removed) return;
+    const next = (composerMentions ?? []).filter((m) => [...alive].some((r) => r.id === m.id && r.kind === m.kind));
+    setComposerMentions(next.length > 0 ? next : null);
+  };
+
+  /** Re-derive the open palette (if any) from the draft up to the caret. */
+  const syncPalette = (value: string, cursor: number) => {
+    const before = value.slice(0, cursor);
+    const at = Math.max(before.lastIndexOf("/"), before.lastIndexOf("@"));
+    if (at < 0) {
+      setPalette(null);
+      return;
+    }
+    const preceding = at === 0 ? "" : before[at - 1];
+    // Only a line-leading or whitespace-preceded trigger counts, and a query
+    // containing whitespace means ordinary prose — not a palette.
+    if ((preceding && !/\s/.test(preceding)) || /\s/.test(before.slice(at + 1))) {
+      setPalette(null);
+      return;
+    }
+    setPalette({ mode: before[at] === "/" ? "command" : "mention", start: at, active: 0 });
+  };
+
+  const paletteQuery = palette ? draft.slice(palette.start + 1, cursorRef.current).trim().toLowerCase() : "";
+
+  const paletteItems = useMemo<PaletteItem[]>(() => {
+    if (!palette) return [];
+    const matches = (label: string) => !paletteQuery || label.toLowerCase().includes(paletteQuery);
+    if (palette.mode === "command") {
+      const actions: PaletteItem[] = [
+        { id: "newChat", kind: "action", label: t("palette.newChat") },
+        { id: "newChatFolder", kind: "action", label: t("palette.newChatFolder") },
+        { id: "store", kind: "action", label: t("palette.store") },
+        { id: "artifacts", kind: "action", label: t("palette.artifacts") },
+        { id: "settings", kind: "action", label: t("palette.settings") },
+        { id: "share", kind: "action", label: t("palette.share") },
+      ];
+      return [
+        ...actions.filter((item) => matches(item.label)),
+        ...palettePrompts.filter((item) => matches(item.label)),
+      ];
+    }
+    if (!catalogs) return [];
+    const rows = (kind: PaletteItemKind, list: Array<{ id: string; name: string }>): PaletteItem[] =>
+      list
+        .map((row) => ({
+          id: row.id,
+          kind,
+          label: localize((row as { display_name?: LocalizedText | null }).display_name) || row.name,
+        }))
+        .filter((item) => matches(item.label));
+    return [
+      ...rows("agent", catalogs.agents),
+      ...rows("skill", catalogs.skills),
+      ...rows("connector", catalogs.connectors),
+    ];
+  }, [palette, paletteQuery, palettePrompts, catalogs, t]);
+
+  /** Swap the typed `/query` or `@query` (trigger → caret) for `inserted`. */
+  const replaceTrigger = (inserted: string) => {
+    if (!palette) return;
+    const cursor = cursorRef.current;
+    setDraft(`${draft.slice(0, palette.start)}${inserted}${draft.slice(cursor)}`);
+  };
+
+  const runPaletteAction = (id: string) => {
+    switch (id) {
+      case "newChat": void newChat(); break;
+      case "newChatFolder": openNewChatDialog(); break;
+      case "store": toggleCatalog(); break;
+      case "artifacts": toggleArtifactPanel(); break;
+      case "settings": openSettings(); break;
+      case "share": void shareConversation(); break;
+      default: break;
+    }
+  };
+
+  const pickPaletteItem = (item: PaletteItem) => {
+    const current = palette;
+    if (!current) return;
+    if (current.mode === "command") {
+      replaceTrigger(item.kind === "action" ? "" : item.label);
+      setPalette(null);
+      if (item.kind === "action") runPaletteAction(item.id);
+      return;
+    }
+    const kind: MentionKind = item.kind === "agent" ? "agent" : item.kind === "skill" ? "skill" : "connector";
+    const token = `@${item.label}`;
+    replaceTrigger(`${token} `);
+    const ref: MentionRef = { kind, id: item.id };
+    mentionTokensRef.current.set(token, ref);
+    setComposerMentions([...(composerMentions ?? []).filter((m) => !(m.id === ref.id && m.kind === ref.kind)), ref]);
+    setPalette(null);
+  };
+
+  /** Escape: close and drop the half-typed trigger so the draft stays clean. */
+  const dismissPalette = () => {
+    replaceTrigger("");
+    setPalette(null);
+  };
+
+  /** `Cmd/Ctrl+K` summons the same panel (doc 19 §3 W1 ④). */
+  const summonPalette = () => {
+    const cursor = composerRef.current?.selectionStart ?? draft.length;
+    cursorRef.current = cursor + 1;
+    setDraft(`${draft.slice(0, cursor)}/${draft.slice(cursor)}`);
+    setPalette({ mode: "command", start: cursor, active: 0 });
+  };
+
+  const paletteNote =
+    paletteItems.length > 0 ? null : !client ? t("palette.offline") : paletteLoading ? null : t("palette.empty");
 
   // Clicking outside the composer menu closes it (whole popover).
   useClickAway(() => { closeComposerMenu(); setCatalogMenu(null); }, popoverRef, ["mousedown", "touchstart"]);
@@ -152,9 +361,46 @@ export function Composer(props: {
       <textarea
         ref={composerRef}
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          const next = event.target.value;
+          cursorRef.current = event.target.selectionStart ?? next.length;
+          setDraft(next);
+          syncMentionTokens(next);
+          syncPalette(next, cursorRef.current);
+        }}
+        onSelect={(event) => { cursorRef.current = event.currentTarget.selectionStart ?? cursorRef.current; }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey && !composingRef.current) {
+          // `Cmd/Ctrl+K` summons the palette while typing (W1 ④).
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+            event.preventDefault();
+            summonPalette();
+            return;
+          }
+          // An active IME composition owns Enter and the arrow keys.
+          if (composingRef.current) return;
+          if (palette) {
+            const count = paletteItems.length;
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              if (count > 0) {
+                const delta = event.key === "ArrowDown" ? 1 : -1;
+                setPalette((p) => (p ? { ...p, active: (p.active + delta + count) % count } : p));
+              }
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              dismissPalette();
+              return;
+            }
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              const item = paletteItems[palette.active];
+              if (item) pickPaletteItem(item);
+              return;
+            }
+          }
+          if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             void send();
           }
@@ -167,6 +413,17 @@ export function Composer(props: {
         aria-label="消息内容"
         aria-keyshortcuts="Enter"
       />
+      {palette && (
+        <CommandPalette
+          mode={palette.mode}
+          items={paletteItems}
+          activeIndex={palette.active}
+          loading={paletteLoading}
+          note={paletteNote}
+          onPick={pickPaletteItem}
+          onHover={(index) => setPalette((p) => (p ? { ...p, active: index } : p))}
+        />
+      )}
       <div className="composer-footer">
         <div className="composer-footer-left">
           <div className="composer-add-menu">

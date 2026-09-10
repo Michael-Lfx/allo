@@ -333,6 +333,20 @@ fn derive_marketplace_id(name: Option<&str>, source: &str) -> String {
     }
 }
 
+/// Q7 ① / `02` §8: official markets default to auto-update, third-party ones do
+/// not (and V1 never auto-updates a third-party source).
+///
+/// "Official" is the product's own public-mirror set
+/// (`AgentStoreConfig::builtin_default_marketplaces`). A source an operator
+/// declares in `config.toml [default_marketplaces]` is deliberately treated as
+/// third-party: the product does not own it, so it never auto-updates by
+/// default.
+pub(crate) fn is_official_source(source_kind: &str, source: &str) -> bool {
+    nomifun_app_server::AgentStoreConfig::builtin_default_marketplaces()
+        .iter()
+        .any(|(_, kind, uri)| kind == source_kind && uri == source)
+}
+
 /// Composition-root Marketplace provider.
 #[derive(Clone)]
 pub struct AppServerMarketplaceProvider {
@@ -387,6 +401,8 @@ fn to_summary(row: &PluginMarketplaceRow) -> AppServerMarketplaceSummary {
         enabled: row.enabled == 1,
         entry_count: row.entries().len(),
         added_at: row.added_at,
+        resolved_revision: row.resolved_revision.clone(),
+        last_checked_at: row.last_checked_at,
     }
 }
 
@@ -495,7 +511,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // basename (the fixtures' manifests declare `name`).
         let declared_name = read_manifest_name(&root);
         let row = if reactivating {
-            let digest = simple_tree_digest(&root);
+            let digest = nomifun_importer::digest::tree_digest_of_dir(&root);
             self.markets
                 .reactivate_marketplace(
                     reactivating_id.expect("reactivating id is set"),
@@ -524,7 +540,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                     version: None,
                     content_digest: None,
                     entries,
-                    auto_update: false,
+                    auto_update: is_official_source(source_kind, &request.source),
                 })
                 .await
                 .map_err(AppError::from)?
@@ -691,7 +707,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                     category: entry.category,
                 })
                 .collect();
-            let content_digest = simple_tree_digest(&root);
+            let content_digest = nomifun_importer::digest::tree_digest_of_dir(&root);
             self.markets
                 .update_marketplace_entries(marketplace_id, &entries, &content_digest, None)
                 .await
@@ -906,39 +922,6 @@ fn row_source_kind(row: &PluginMarketplaceRow) -> SourceKind {
     }
 }
 
-/// Cheap content fingerprint of a directory tree (path + bytes) so a
-/// directory-source refresh can detect changes without git/HTTP revisions.
-fn simple_tree_digest(root: &Path) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_files(root, &mut files);
-    files.sort();
-    for file in files {
-        if let Ok(bytes) = std::fs::read(&file) {
-            if let Ok(rel) = file.strip_prefix(root) {
-                hasher.update(rel.to_string_lossy().as_bytes());
-                hasher.update(&bytes);
-            }
-        }
-    }
-    format!("{:x}", hasher.finalize())
-}
-
-fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(&path, out);
-        } else if path.is_file() {
-            out.push(path);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -946,6 +929,23 @@ mod tests {
     fn write(path: &Path, content: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
+    }
+
+    /// Q7 ①: only the product's own public-mirror sources count as official;
+    /// every other source stays third-party (no auto-update in V1).
+    #[test]
+    fn official_sources_are_the_builtin_public_mirror() {
+        for (_, kind, source) in nomifun_app_server::AgentStoreConfig::builtin_default_marketplaces() {
+            assert!(is_official_source(&kind, &source), "{source} must be official");
+        }
+        assert!(
+            !is_official_source("url", "https://example.test/.codebuddy-plugin/marketplace.json"),
+            "a third-party URL source must not be official"
+        );
+        assert!(
+            !is_official_source("directory", "/tmp/company-tools"),
+            "a local directory source must not be official"
+        );
     }
 
     #[test]

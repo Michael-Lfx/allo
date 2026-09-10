@@ -108,7 +108,7 @@ themes/monitors/output-styles 运行          → unsupported
 | Hook | 生命周期钩子（onInstall/onActivate/...）+ 少量命令钩子 | 事件级 Hook 需独立运行时 → manual-review |
 | MCP Config / OAuth 服务 | 登录/存储/刷新/登出存在（源码已证实）；transport 注入待验证 | OAuth 按两段披露：login implemented / runtime integration partial |
 | AgentExecutionTemplate | 多参与者执行模板存在（源码已证实） | 承载固定成员名册 |
-| nomi_delegate planned/parallel | 参数契约与限制已证实（源码） | 普通可信会话的委派能力；Team V1 通过内部 Planner 使用 planned DAG，不依赖该工具 |
+| nomi_delegate planned/parallel | 参数契约与限制已证实（源码） | 普通可信会话的委派能力；**同时是 Team V1 的计划触发入口**（Leader 模型调用 `strategy=planned`，2026-09-10 修订） |
 | 执行事件/序列/游标/审批 | 基础设施存在（源码已证实） | 事件模型可复用，对外形态需规范化 |
 | Hub 安装器 | 校验已存在目录；远程下载未完整实现（源码注释） | 市场安装标记 compatible-with-adapter |
 | Extension 远程插件运行时 | entry_point/channel-plugin 仅为元数据+内置 Rust 运行（源码已证实） | 任意 JS/Python 插件 = unsupported（V1） |

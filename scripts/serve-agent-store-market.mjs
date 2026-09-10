@@ -37,6 +37,7 @@ import { createServer } from "node:http";
 import { readFile, stat, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateMarketTree } from "./check-agent-store-market.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.resolve(
@@ -97,6 +98,21 @@ if (process.argv.slice(2).includes("--emit-listings")) {
     await writeFile(path.join(dir, "_files.txt"), body);
     console.log(`[agent-store-market] wrote ${path.join(dir, "_files.txt")} (${files.length} files)`);
   }
+  // doc 18 §8.4: validate exactly what we just published. A listing that drops a
+  // file or carries an illegal path must fail the publish step, not a client.
+  let errors = 0;
+  for (const [name, dir] of targets) {
+    const result = validateMarketTree({ name, dir });
+    for (const finding of result.findings.filter((item) => item.level === "error")) {
+      errors += 1;
+      console.error(`[agent-store-market] ✗ ${name} ${finding.file}${finding.pointer} ${finding.rule}: ${finding.message}`);
+    }
+  }
+  if (errors > 0) {
+    console.error(`[agent-store-market] ${errors} error(s) — listing not publishable`);
+    process.exit(1);
+  }
+  console.log("[agent-store-market] listings validated");
   process.exit(0);
 }
 
@@ -136,6 +152,9 @@ async function listFiles(dir, prefix = "") {
     if (entry.isDirectory()) {
       out.push(...(await listFiles(path.join(dir, entry.name), `${prefix}${entry.name}/`)));
     } else if (entry.isFile()) {
+      // doc 18 §6: the listing must exclude itself — otherwise re-emitting a
+      // market that already has a listing would list `_files.txt`.
+      if (prefix === "" && entry.name === "_files.txt") continue;
       out.push(`${prefix}${entry.name}`);
     }
   }

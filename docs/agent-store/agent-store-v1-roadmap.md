@@ -11,6 +11,7 @@
 > 2026-09-04：单 Agent 真实 Run 通过（TC-RT-001 planning→running→completed，mimo-v2.5 临时实例，
 > `single-run-runtime-evidence.zh.md`；附带修复 actor 落库 500）；
 > 其余 Runtime 门禁（TC-RT-002/005/006/009/010）与最小 TeamRun 尚未执行，排期仍待校准。
+> 2026-09-10：Team 触发方式修订为 Leader 模型调用 `nomi_delegate(strategy=planned)`（§10 决策 3），同步修订 `00`/`01`/`03`/`04`/`10` 与 TC-TEAM-001/002。
 
 ## 1. V1 目标
 
@@ -160,6 +161,8 @@ V1 不要求：
 - Preset/ResolvedPresetSnapshot；
 - 固定 Team Participant Pool；
 - AgentExecutionTemplate；
+- Leader Conversation 创建与 `execution_template_id` 绑定；
+- Leader 可调用的 `nomi_delegate(strategy=planned)` 入口（绑定持久 `AgentExecutionEngine`）；
 - Planning Context 构造与摘要/digest；
 - Step/Attempt 状态；
 - Planning Context 驱动的 planned DAG、ready 调度、局部并行；
@@ -170,6 +173,7 @@ V1 不要求：
 
 - 完成单 Agent Run；
 - 完成 software-company 最小 TeamRun，并验证 Planning Context 摘要/digest 与成员 Prompt 隔离；
+- Leader 触发的 TeamRun 能从内部 Execution 反查出公共 `run_id`，且成员池/并发上限不可被模型覆盖；
 - 独立 Step 可局部并行；
 - 依赖 Step 正确等待；
 - 失败产生新 Attempt；
@@ -369,3 +373,9 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
 
 1. **二进制分发走 npm optionalDependencies**（2026-09-09）：按平台发布 `@flowy-agent-store/runtime-<platform>-<arch>` 包，作为 `@flowy-agent-store/sdk` 的 `optionalDependencies`；`resolveAppServerBin` 查找顺序 `bin` → `AGENT_STORE_BIN` → `require.resolve` 定位 platform 包内二进制 → PATH（详见 `12-sdk-packaging.md` §6）。否决 GitHub releases + checksum 下载缓存方案。
 2. **协议 vNext 完全重命名（thread/turn/item），stdio 不纳入**（2026-09-09）：V1 之后破坏性升级公共协议为 v2，概念模型对齐 Codex app-server（`run/conversation → thread`、`agent/run → turn*`、事件项归并为 `item`）；`initialize` 版本协商与 `dispatch_connection_request` 唯一分发保留；stdio 维持排除（SDK 仍走 spawn + 回环 WS）。该决策将重构 webui 事件层（`conversation-events` / `RunHandle` 等）与 SDK 方法面，需在 vNext 立项前先产出 Codex app-server spec diff（方法/事件/概念映射表）再动工；V1 冻结版本文档（`05`、`07`）标为 v1 基线。
+3. **Team Run 改由 Leader 模型调用 `nomi_delegate(strategy=planned)` 触发**（2026-09-10）：撤销此前"Team Runtime 不依赖 `nomi_delegate` 工具"的表述（`00` §4.4、`04` §4.3、TC-TEAM-002）。`team/run` 由服务端创建 Leader Conversation，并把 Team 的 `AgentExecutionTemplate` 绑定为该会话的 `execution_template_id`；Leader 在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`，服务端据此构造 Planning Context 并调用内部 Planner 生成/物化 DAG。
+   - 成员池、`max_parallel`、`routing_constraints` 与权限取自绑定的 Template 和服务端策略，不接受模型输入（不放松 `00` §1.2「不让模型直接决定权限、成员路由、状态迁移或审批结果」）。
+   - 顶层仍不得以 `strategy=parallel` 代替 planned 流程；局部并行仍由已校验 DAG 中的独立 ready Step 表达。
+   - 注册给 Leader 的必须是绑定真实 `AgentExecutionEngine`（具备持久化 Execution/Event/Attempt）的 planned 实现。仅支持 `strategy=parallel`、以同步无持久化方式投影的 embedded 实现（`nomi-agent::local_delegate_tool`）不得用于 Team Runtime；Store 会话必须关闭该实现，避免模型选中错误版本。
+   - App Server 的公共 `run_id` 仍由 `AppServerRunMapping` 从内部 Execution 映射，模型不可见；Leader turn 产生的 Execution 通过 ConversationExecutionLink 反查。
+   - 该决策把"Leader 必须有 Conversation/Attempt"从"暂不要求"变为"必须"（不必用户可见）。

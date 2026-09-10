@@ -553,6 +553,13 @@ pub struct AppServerMarketplaceSummary {
     /// Entry count from the entries projection.
     pub entry_count: usize,
     pub added_at: i64,
+    /// Last resolved source revision (git commit / HTTP freshness marker).
+    /// Internal traceability, never a public identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_revision: Option<String>,
+    /// Last successful freshness check (epoch ms); `None` before the first one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_checked_at: Option<i64>,
 }
 
 /// One discovered entry (`market/get`).
@@ -669,6 +676,11 @@ pub struct AppServerStoreItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerStoreList {
     pub items: Vec<AppServerStoreItem>,
+    /// `true` while the builtin default marketplaces are still registering in
+    /// the background (D-SDK-1 ①): the catalog may be incomplete. Omitted when
+    /// `false` so the addition stays wire-compatible.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub markets_pending: bool,
 }
 
 /// `market install-entry` result: import (when missing) + runtime

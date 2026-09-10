@@ -1,6 +1,7 @@
 # 市场规范（兼容层）
 
-> 状态：规范 v1（2026-09-09）。
+> 状态：**v1 冻结（2026-09-10，T21）**。冻结范围：目录布局与发现优先级（§3）、条目模型（§4）、获取与晋升不变式（§5）、`_files.txt`（§6）、注册表与命名空间（§7）、发布自检（§8）、客户端契约（§9），以及机器可校验形态（`docs/agent-store/schemas/marketplace.schema.json` + `scripts/check-agent-store-market.mjs`）。
+> 已知偏差见 §11：**D2 已统一、D3 / D5 / D6 / D7 已处理**；**D4（条件请求取值）与 D8（`market/get` 安装快照）为已接受的 v1 缺口**（v1.1 收口）。此后任何变更走 v1.1 增量或 v2，不静默修改本冻结版本。
 > 定位：定义**市场的目录形态、清单发现、远程获取与晋升、发布流程、客户端契约**。依 `16` §4 Q5 决策，当前只覆盖 CodeBuddy / WorkBuddy 兼容格式，**不定义 Agent Store 原生市场格式**。
 > 代码事实来源：`crates/backend/nomifun-app/src/market_source.rs`、`market_fetch.rs`、`app_server_marketplace.rs`、`scripts/serve-agent-store-market.mjs`、`05-allo-app-server-protocol.md`。
 
@@ -92,6 +93,19 @@ cli.json
 
 **跨市场命名空间**：条目 `name` 仅在**市场内**唯一。`store/list` 聚合多个启用市场时，条目标识为 **`{marketplace_id}/{entry_name}`**，因此不同市场的同名条目互不冲突。`market/entries/{entry}/import` 的 `entry` 参数在指定市场内按 `name` 查找，找不到返回 `not_found`。
 
+**真实市场已出现、本规范未消费的条目字段（普查 2026-09-10，T20）**——透传但不消费；其中「本地化变体」是最可能被 v1.1 正式收编的一类：
+
+| 字段 | 出现次数（skills 市场） | 现状 |
+| --- | --- | --- |
+| `description_zh` / `description_en` | 268 / 268 | 透传；本规范的条目模型只固定 `description` |
+| `examples_zh` / `examples_en` | 268 / 268 | 透传 |
+| `legacy_tags_zh` / `legacy_tags_en` | 154 / 154 | 透传（与 `tags_zh` / `tags_en` 并存，展示取后者） |
+| `name_zh` / `name_en` | 15 / 2 | 透传 |
+| `category_zh` / `category_en` | 1 / 1 | 透传 |
+| `featured` | 3 | 透传；注意是**数字**而非布尔 |
+
+> 复现：`node scripts/check-agent-store-market.mjs --census --market <name>=<dir>`。市场清单层面的 `owner`（`{name,email}`）见 §11 D3；marketplace 清单字段的完整普查结果见 §11 D7。
+
 ---
 
 ## 5. 远程获取与晋升
@@ -108,11 +122,11 @@ cli.json
 
 ### 5.2 HTTP 源（`url`）
 
-1. 条件请求清单（`ETag` / `Last-Modified`）；
-2. 客户端：User-Agent `allo-agent-store/1.0`，超时 **15s**；
+1. **revision 短路**：清单请求携带 `If-None-Match`，值为上次记录的 revision **摘要**（`sha256(ETag|Last-Modified)`），而非服务器原始 `ETag`；**v1 不发送 `If-Modified-Since`**（原因与影响见 §11 D4）。服务器返回 `304` 时同样按 `Unchanged` 处理；
+2. 客户端：User-Agent `allo-agent-store/1.0`，超时 **15s**——清单抓取、`_files.txt` 探测与整树镜像**共用同一个 client 工厂**（§11 D5）；
 3. `304 Not Modified` → `Unchanged`（保留 last-good）；
 4. `Fresh` → 全量校验清单 → 与当前 revision 相同则丢弃；否则晋升；
-5. **若源暴露 `_files.txt`**，镜像整棵条目树（见 §6）；否则条目保持 `manifest-only`，其条目来源标记为 **`external`**（不可镜像）。
+5. **若源暴露 `_files.txt`**，镜像整棵条目树（见 §6）；否则条目保持 `manifest-only`，按条目类型标记来源：`skills` / `connectors` 条目解析不到时标 **`external`**（不可镜像），`plugins[]` 条目保留 `directory` + 相对 `source`（导入时再解析并给出缺失报错，§11 D6）。
 
 ### 5.3 staging 生命周期
 
@@ -120,14 +134,16 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 
 ### 5.4 `content_digest` 算法
 
-⚠️ **当前存在两处实现**（偏差登记见 §11）：
+✅ **已统一为一套实现（2026-09-10，D2 收口 / T20）**：
 
 | 场景 | 实现 | 算法 |
 | --- | --- | --- |
 | 导入 / 快照幂等 | `tree_digest`（`nomifun-importer/src/digest.rs`） | 对**按相对路径排序**的每个文件，依次喂入 `relative + "\n"` + 该文件的 SHA-256 十六进制 + `"\n"`，最后整体 SHA-256 |
-| 目录市场刷新（变更检测） | `simple_tree_digest`（`app_server_marketplace.rs`） | 对**按完整路径排序**的每个文件，依次喂入 `相对路径字节` + `文件原始字节`（**无分隔符**），最后整体 SHA-256 |
+| 目录市场刷新（变更检测） | **同一个** `tree_digest`，经目录入口 `tree_digest_of_dir(root)` | 同上：先遍历出 `(相对路径, 文件 SHA-256)` 对，再套用同一个 `tree_digest` |
 
-**规范要求**（择一统一后写死）：摘要必须**路径敏感、内容敏感、顺序稳定**，不得依赖文件系统遍历顺序；跨路径比对必须用同一算法。
+**规范要求（已满足）**：摘要必须**路径敏感、内容敏感、顺序稳定**，不得依赖文件系统遍历顺序；跨路径比对必须用同一算法。排序在 `tree_digest` **内部**完成（不再只依赖 `copy_tree` 的调用约定），并由 `digest.rs` 单测钉住「目录入口与拷贝清单入口对同一棵树给出相同摘要」。
+
+> **迁移影响（一次性）**：目录源市场此前按旧算法写入的 `content_digest` 与新算法不同 → 下一次刷新会判定「内容变了」并重建一次投影。幂等语义、条目内容与安装状态均不受影响。
 
 ---
 
@@ -154,7 +170,7 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 | `name` / `description` | 展示名与描述 |
 | `source_kind` / `source_uri` | 源类型与地址 |
 | `version` / `content_digest` | 清单版本与内容摘要（算法见 §5.4） |
-| `auto_update` | 自动更新开关（默认值偏差见 §11） |
+| `auto_update` | 自动更新开关（默认值偏差见 §11）。**V1 仅为预留标记**：目前没有任何自动更新执行逻辑（刷新调度器编入 roadmap 阶段 C/D），因此「官方默认开启」只表示该标记的取值，不产生自动更新行为 |
 | `enabled` | 是否参与 `store/list` 聚合 |
 | `entry_count` | 条目投影数量 |
 | `added_at` | 注册时间 |
@@ -185,6 +201,8 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
    - `_files.txt` 覆盖全部需要镜像的文件且不含 `_files.txt` 自身；
    - 非法路径（绝对 / `..` / 反斜杠）为 0。
 5. 现有示例：VPS 上的 `experts` / `skills` / `connectors` 三个市场。
+
+> **第 4 步已可自动校验（D2 / T19，2026-09-10）**：`scripts/check-agent-store-market.mjs` 把上述四条实现为机器检查（外加清单发现优先级、条目重名、镜像模式下的 `source` 存在性），每条发现带 `文件#/指针`；`--emit-listings` 写完清单后会串行跑它，不合格即 `exit 1`，因此**发布流程自带这道闸门**。`--self-test` 用 14 个非法样例保证校验器自身不退化成「什么都通过」。参见 `docs/agent-store/schemas/marketplace.schema.json`。
 
 ---
 
@@ -220,7 +238,13 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 
 | # | 现象 | 证据 | 影响 | 待决 |
 | --- | --- | --- | --- | --- |
-| D1 | **`auto_update` 默认值与文档不符** | `02` §8 称「官方市场默认开启、第三方默认关闭」；`market/add` 恒写入 `auto_update: false`（`app_server_marketplace.rs:527`），不存在官方/第三方区分 | 第三方无法预期自动更新行为；webui 的 auto-update 开关语义不明（W13） | ① 改实现以区分官方/第三方 ② 改 `02` §8 表述以匹配实现 |
-| D2 | **两套 `content_digest` 算法** | `tree_digest`（导入）vs `simple_tree_digest`（目录刷新），见 §5.4 | 同一内容在两条路径下摘要不同，跨路径比对不可行 | ① 统一为一套算法 ② 在规范中明确「用途不同、不可互比」 |
+| D1 | **`auto_update` 默认值与文档不符** | `02` §8 称「官方市场默认开启、第三方默认关闭」；`market/add` 恒写入 `auto_update: false`（`app_server_marketplace.rs:527`），不存在官方/第三方区分 | 第三方无法预期自动更新行为；webui 的 auto-update 开关语义不明（W13） | ✅ **已定（2026-09-10）：采纳 ①**——改实现以区分官方/第三方（官方默认开、第三方默认关，V1 不自动更新第三方来源）；`02` §8 表述不动 ✅ **已修（2026-09-10，T14）**：新增 `is_official_source()`（`nomifun-app/src/app_server_marketplace.rs`，与 `AgentStoreConfig::builtin_default_marketplaces()` 同一事实源），`market/add` 的 directory 分支与 `register_remote`（远程源）都改用该默认值；「官方」按**源地址**判定（`source_kind` + `source` 落在 `builtin_default_marketplaces()` 集合内），**不按「由谁声明」判定**：`config.toml [default_marketplaces]` 里指向**其它地址**的源自成第三方（不默认自动更新），而本机 config 声明的三个源正指向官方镜像地址，故按官方处理。实测（重建二进制）：三个官方源 `auto_update=true`，本地第三方 `directory` 市场 `false`。Rust 单测 `official_sources_are_the_builtin_public_mirror` + `cargo check -p nomifun-app --tests` 通过。**注意：当前尚无自动更新后台任务（roadmap 明确留待后续），本项只修默认标记语义** |
+| D2 | **两套 `content_digest` 算法** | `tree_digest`（导入）vs `simple_tree_digest`（目录刷新），见 §5.4 | 同一内容在两条路径下摘要不同，跨路径比对不可行 | ✅ **已定（2026-09-10，用户拍板）：采纳 ①——统一为一套算法**。实现：`tree_digest` 内部排序；新增目录入口 `tree_digest_of_dir(root)`（`nomifun-importer/src/digest.rs`），`app_server_marketplace.rs` 的两处调用改走它，`simple_tree_digest` / `collect_files` 已删除（§5.4 已改写）。验证：`cargo check -p nomifun-app -p nomifun-importer --tests` exit 0；`cargo test -p nomifun-importer --lib digest` **4 passed**（含「两条路径摘要一致」新用例）。迁移：目录源市场首次刷新会因摘要变化重建一次投影 |
+| D3 | **清单 `owner` 字段本规范未定义，真实数据是对象** | 真实 `skills` 与 `connectors` 市场的 `owner` 为 `{name, email}`（CodeBuddy），而 `17` §3 只固定了 `author`（`string \| {name, email}`），§3 又把清单字段整体让给 `02` §8 | 机器校验若把 `owner` 当字符串，会把两个真实市场判错（T19 首轮即发生，被自检/真实市场跑检验出） | ✅ **已处理（2026-09-10，T19）**：`docs/agent-store/schemas/marketplace.schema.json` 按 `author` 同形接受 `owner`；规范正文不改（该字段归 `02` §8），仅记此观察项 |
+| D4 | **清单条件请求的取值不是服务器原始 `ETag`，且从不发送 `If-Modified-Since`** | `market/refresh` 把存库的 `resolved_revision`（= `sha256_hex(etag \| last-modified)`，`market_source.rs:278-282`）当作 `if-none-match` 发出（`market_fetch.rs:88` → `market_source.rs:246-248`）；`Last-Modified` 只参与摘要计算，从未用于条件请求 | 对真实服务器 304 分支不可达 → §5.2 声称的「条件请求短路」在 v1 实际由 revision 摘要比对兜底。**功能结果一致**（清单未变仍判 `Unchanged`、不重镜像），代价是每次刷新多下载一次清单 | ✅ **已定（2026-09-10，T20）：采纳 ② 改规范**——§5.2 步骤 1 已改写为「revision 短路（摘要比对）+ 304 仍按 Unchanged 处理」，并明示不发送 `If-Modified-Since`。① 真正持久化服务器 ETag/Last-Modified 并发送条件请求列为 **v1.1 roadmap**（需新增 DB 列） |
+| D5 | **清单抓取那条路径漏设 15s 超时** | `fetch_http_market` 自建 `reqwest::Client`（`market_source.rs:241-244`）只设 UA，无 `.timeout()`；同文件 `http_client()`（`:107-113`）才是 UA + 15s | 清单服务器挂起时 `market/refresh` 无自身超时（只剩外层 600s 兜底），与 §5.2 步骤 2 不符 | ✅ **已修（2026-09-10，T20）：改实现**——`fetch_http_market` 改用 `http_client()?`，与探测/镜像共用同一 client 工厂 |
+| D6 | **manifest-only 模式下 `plugins[]` 条目未标 `external`** | `market_fetch.rs:226` 的 `key_kind != "plugin"` 例外：skills/connectors 解析不到时标 `external`（`:229-241`），plugins 仍标 `directory`（`:244-255`） | 与 §5.2 步骤 5 原文「条目标记为 external」不符；plugin 市场在 manifest-only 场景下 UI 显示成本地目录，导入时才报缺失 | ✅ **已定（2026-09-10，T20）：采纳 ② 改规范**——§5.2 步骤 5 已按条目类型写明；① 改实现（去掉例外）会改变 `store/list` 投影与既有断言，收益不抵风险 |
+| D7 | **真实市场携带规范未列的清单/条目字段** | `scripts/check-agent-store-market.mjs --census`（T20 新增模式）对三个真实市场普查：manifest 层 spec-silent = `plugin`(×7)、`members`(×3)、`license`(×1)（experts）/ `distribution`、`homepage`、`license`、`repository`、`settings`（skills）；**entry 层** = `description_zh/en`(×268)、`examples_zh/en`(×268)、`legacy_tags_zh/en`(×154)、`name_zh`(×15)、`featured`(×3, number)、`name_en`(×2)、`category_zh/en`(×1) | 这些字段当前靠 schema `additionalProperties` 容忍（不报错、不消费）。但 §3/§4 的字段表声称固定「必填/可选/默认」，表里没有它们 → 第三方无法从规范判断哪些会被消费 | ✅ **已定（2026-09-10，T20）：采纳 ①**——在 §3 末尾补「真实市场已出现、规范未消费」清单（标注**透传、不消费**），使 v1 冻结的字段表与真实数据一致；后续若要消费其中某项（如本地化变体），按 v1.1 增量定义 |
+| D8 | **`market/get` 未返回条目安装快照** | 响应结构 `AppServerMarketplaceDetail`（`app_server.rs:592-599`）只有 `summary + entries`；类型 `AppServerMarketplaceEntrySnapshot`（`:583-590`）已定义却未挂载；`to_entry`（`app_server_marketplace.rs:409-419`）不含 `snapshot_id` / 安装态 | §9 声称 `market/get`「含发现条目**与安装快照**」；W13 的「移除市场」影响面因此只能从聚合的 `store/list` 派生（见 `16` 已知偏差 D-W13-1） | ⏸ **建议 ① 实现（additive）**：把已定义的类型挂上并在 `to_entry` 填 `snapshot_id`/安装态。当前 UI 有等价派生路径，故不阻塞 v1，可并入 v1.1 |
 
 > D1 影响 webui 的 W13（市场管理）排期，需优先拍板（主计划 Q7）。

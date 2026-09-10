@@ -42,16 +42,36 @@ export function isLoopbackUrl(raw: string): boolean {
  * so business code never knows whether it runs over WebSocket (browser),
  * stdio (Node/CLI, future) or a one-shot HTTP binding.
  */
+/**
+ * Lifecycle of the underlying channel. `open` is emitted on every successful
+ * dial (the first one included), `closed` only when an established connection
+ * is lost — so `closed` → `open` is exactly a reconnect.
+ */
+export type TransportLifecycle = "open" | "closed";
+
+export type TransportLifecycleListener = (state: TransportLifecycle) => void;
+
 export interface Transport {
   connect(): Promise<void>;
   request<T>(method: string, params: unknown): Promise<T>;
   notify(method: string, params: unknown): void;
   onNotification(listener: NotificationListener): () => void;
   close(): void;
+  /**
+   * Optional: observe the channel lifecycle so a host can show a disconnect
+   * banner and re-arm subscriptions on reconnect (docs/agent-store/16 T8/W8).
+   * Custom transports may omit it.
+   */
+  onLifecycle?(listener: TransportLifecycleListener): () => void;
 }
+
+/** How long an unopened `connect()` waits before it fails. */
+const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 
 export interface TransportOptions {
   requestTimeoutMs?: number;
+  /** Max time `connect()` may stay unopened before failing (default 10s). */
+  connectTimeoutMs?: number;
   token?: string;
 }
 
@@ -68,11 +88,19 @@ export class WebSocketTransport implements Transport {
     }
   >();
   private listeners = new Set<NotificationListener>();
-  private connectResolvers: Array<() => void> = [];
-  private connectRejecters: Array<(reason: unknown) => void> = [];
+  private lifecycleListeners = new Set<TransportLifecycleListener>();
+  private lifecycle: TransportLifecycle | null = null;
   private closedByCaller = false;
+  /** Single in-flight connect shared by concurrent callers; null once settled. */
+  private connecting: {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
 
   readonly requestTimeoutMs: number;
+  readonly connectTimeoutMs: number;
   readonly url: string;
   readonly token?: string;
 
@@ -80,6 +108,7 @@ export class WebSocketTransport implements Transport {
     this.url = url;
     this.token = options.token;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   }
 
   get connected(): boolean {
@@ -90,42 +119,65 @@ export class WebSocketTransport implements Transport {
     if (this.connected) {
       return Promise.resolve();
     }
+    // Concurrent callers share one socket: a second `new WebSocket` here would
+    // orphan the first one and let both race over `this.socket`.
+    if (this.connecting) {
+      return this.connecting.promise;
+    }
     this.closedByCaller = false;
 
     const target = this.token ? `${this.url}${this.url.includes("?") ? "&" : "?"}token=${encodeURIComponent(this.token)}` : this.url;
     const socket = new WebSocket(target);
     this.socket = socket;
 
+    let resolveConnect!: () => void;
+    let rejectConnect!: (error: unknown) => void;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveConnect = resolve;
+      rejectConnect = reject;
+    });
+    const timer = setTimeout(() => {
+      // Still unopened past the deadline: detach first so this socket's later
+      // `close` event can never touch the next connection, then fail the caller.
+      this.detachSocket(socket);
+      this.rejectConnect(
+        new TransportError("connect", `app-server connect timed out after ${this.connectTimeoutMs}ms`, {
+          retryable: true,
+        }),
+      );
+    }, this.connectTimeoutMs);
+    this.connecting = { promise, resolve: resolveConnect, reject: rejectConnect, timer };
+
     socket.onopen = () => {
-      for (const resolve of this.connectResolvers.splice(0)) {
-        resolve();
-      }
+      if (this.socket !== socket) return; // superseded: ignore the stale socket
+      this.resolveConnect();
+      this.setLifecycle("open");
     };
     socket.onmessage = (event: MessageEvent) => {
+      if (this.socket !== socket) return; // superseded: ignore the stale socket
       this.handleMessage(event.data);
     };
     socket.onclose = (event: CloseEvent) => {
+      // A superseded socket must never tear down the live one or reject the
+      // connect promise that now belongs to its replacement.
+      if (this.socket !== socket) return;
       this.failAllPending(
         new TransportError("close", `app-server connection closed (code ${event.code})`, {
           retryable: !this.closedByCaller,
         }),
       );
       this.socket = null;
-      for (const reject of this.connectRejecters.splice(0)) {
-        reject(
-          new TransportError("connect", "app-server connection closed before opening"),
-        );
-      }
+      this.setLifecycle("closed");
+      this.rejectConnect(
+        new TransportError("connect", "app-server connection closed before opening"),
+      );
     };
     socket.onerror = () => {
       // The close event carries the terminal state; nothing else to do here.
-      this.socket?.close();
+      if (this.socket === socket) socket.close();
     };
 
-    return new Promise<void>((resolve, reject) => {
-      this.connectResolvers.push(resolve);
-      this.connectRejecters.push(reject);
-    });
+    return promise;
   }
 
   request<T>(method: string, params: unknown): Promise<T> {
@@ -173,10 +225,26 @@ export class WebSocketTransport implements Transport {
     };
   }
 
+  /**
+   * Observe the channel lifecycle. `closed` is only reported when an
+   * established connection is lost (a failed first dial is not a disconnect),
+   * and `open` follows it on the next successful dial — that pair is what a
+   * host should treat as a reconnect. Unlike `onNotification`, these listeners
+   * survive `close()`, since they exist to drive the reconnection itself.
+   */
+  onLifecycle(listener: TransportLifecycleListener): () => void {
+    this.lifecycleListeners.add(listener);
+    return () => {
+      this.lifecycleListeners.delete(listener);
+    };
+  }
+
   close(): void {
     this.closedByCaller = true;
-    this.socket?.close();
-    this.socket = null;
+    // Detach before closing: the socket's own `close` event then hits the stale
+    // guard instead of rejecting the state of a later connection.
+    this.detachSocket(this.socket);
+    this.rejectConnect(new TransportError("close", "app-server transport closed by caller"));
     for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.reject(
@@ -184,6 +252,55 @@ export class WebSocketTransport implements Transport {
       );
     }
     this.pending.clear();
+    // Registrations do not survive a close: a reconnected transport must not
+    // deliver into listeners bound to the previous connection.
+    this.listeners.clear();
+    // Caller-initiated: silent (no `closed` for a deliberate teardown), but the
+    // next dial must be reported as `open` again.
+    this.lifecycle = null;
+  }
+
+  private setLifecycle(state: TransportLifecycle): void {
+    // A dial that never opened is not a lost connection.
+    if (state === "closed" && this.lifecycle !== "open") return;
+    if (this.lifecycle === state) return;
+    this.lifecycle = state;
+    for (const listener of [...this.lifecycleListeners]) {
+      try {
+        listener(state);
+      } catch {
+        // listener isolation
+      }
+    }
+  }
+
+  /** Detach the current socket (if any) and close it; its later events are ignored. */
+  private detachSocket(socket: WebSocket | null): void {
+    if (!socket) return;
+    if (this.socket === socket) this.socket = null;
+    try {
+      socket.close();
+    } catch {
+      // already closing / closed
+    }
+  }
+
+  /** Settle the in-flight `connect()` successfully, when there is one. */
+  private resolveConnect(): void {
+    const connecting = this.connecting;
+    if (!connecting) return;
+    this.connecting = null;
+    clearTimeout(connecting.timer);
+    connecting.resolve();
+  }
+
+  /** Fail the in-flight `connect()`, when there is one. */
+  private rejectConnect(error: unknown): void {
+    const connecting = this.connecting;
+    if (!connecting) return;
+    this.connecting = null;
+    clearTimeout(connecting.timer);
+    connecting.reject(error);
   }
 
   private requireSocket(): WebSocket {

@@ -487,6 +487,8 @@ impl FakeMarketplaceProvider {
             enabled: true,
             entry_count: 2,
             added_at: 1,
+            resolved_revision: None,
+            last_checked_at: None,
         };
         Self {
             detail: AppServerMarketplaceDetail {
@@ -771,7 +773,7 @@ impl FakeStoreProvider {
 #[async_trait]
 impl StoreProvider for FakeStoreProvider {
     async fn list(&self) -> Result<AppServerStoreList, AppError> {
-        Ok(AppServerStoreList { items: self.items.clone() })
+        Ok(AppServerStoreList { items: self.items.clone(), markets_pending: false })
     }
 
     async fn install_entry(

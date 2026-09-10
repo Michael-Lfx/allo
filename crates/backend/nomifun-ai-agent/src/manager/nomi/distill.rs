@@ -32,17 +32,48 @@ const DISTILL_MAX_TOKENS: u32 = 2048;
 /// `[memory]` config section (optimization 5), but this env var is still
 /// honoured as a backward-compatible override: setting it to `"1"` / `"true"`
 /// forces ON regardless of config; `"0"` / `"false"` forces OFF.
-const DISTILL_ENABLED_ENV: &str = "NOMIFUN_MEMORY_DISTILL";
+pub const DISTILL_ENABLED_ENV: &str = "NOMIFUN_MEMORY_DISTILL";
 
-/// Whether distillation is enabled. The config section `[memory].distill_enabled`
-/// (default ON) is the primary gate; the `NOMIFUN_MEMORY_DISTILL` env var
-/// overrides it when set to `"1"`/`"true"` (force ON) or `"0"`/`"false"` (force OFF).
+/// Host-level policy override (`-1` = the host expressed no opinion). A host
+/// whose own configuration file carries the switch — the Agent Store host reads
+/// `[memory].distill_enabled` from `~/.agent-store/config.toml` — records it
+/// here once at startup instead of exporting `NOMIFUN_MEMORY_DISTILL`, so no
+/// process env mutation is involved.
+static HOST_DISTILL_OVERRIDE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+
+/// Record this host's distillation policy. Intended to be called once during
+/// startup, before the first turn; `None` clears it back to "no opinion".
+pub fn set_distill_host_override(enabled: Option<bool>) {
+    HOST_DISTILL_OVERRIDE.store(
+        match enabled {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => -1,
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn host_distill_override() -> Option<bool> {
+    match HOST_DISTILL_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether distillation is enabled.
+///
+/// Precedence: the `NOMIFUN_MEMORY_DISTILL` env var (`"1"`/`"true"` forces ON,
+/// `"0"`/`"false"` forces OFF) → this host's own switch via
+/// [`set_distill_host_override`] → the config section `[memory].distill_enabled`
+/// (default ON).
 pub fn distill_enabled(cfg: &Config) -> bool {
     let env = std::env::var(DISTILL_ENABLED_ENV).ok();
     match env.as_deref() {
         Some(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
         Some(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
-        _ => cfg.memory.distill_enabled,
+        _ => host_distill_override().unwrap_or(cfg.memory.distill_enabled),
     }
 }
 

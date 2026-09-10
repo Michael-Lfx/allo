@@ -42,7 +42,7 @@ Agent Store Run / Task / Event / Artifact
 | SkillDefinition | allo Skill/Skill reference | 运行前校验路径与版本 |
 | ConnectorDefinition | MCP Config/Connector runtime | 工具名必须经命名空间和策略过滤 |
 | AgentTeamDefinition | AgentExecutionTemplate | 保存固定成员、角色、模型/技能/工具快照 |
-| TeamRun | Execution + Planning Context | V1 由服务端 Planner 生成 planned DAG；不创建独立 Leader Conversation |
+| TeamRun | Execution + Planning Context | V1 由 Leader 调用 `nomi_delegate(strategy=planned)` 触发服务端 Planner 生成 planned DAG；Leader 需要 Conversation/Attempt，但不创建用户可见的独立会话 |
 | Task/Step | Execution Step | 用 dependency/participant_index 映射 |
 | Attempt | Attempt/Conversation execution | 公开 opaque attempt_id |
 | Event | Allo event/sequence → canonical Event | 不直接转发 provider/UI 事件 |
@@ -119,7 +119,7 @@ AgentTeamDefinition vN
 
 ### 4.2 Leader planned 流程（模式 A）
 
-这里的 Leader 是 `lead_agent_id` 指向的规划角色，不要求创建独立的用户可见 Conversation。TeamRun 创建时，Runtime Adapter 将以下内容组成一次性的 Planning Context，交给内部 `Planner/LlmPlanProducer`：
+这里的 Leader 是 `lead_agent_id` 指向的规划角色，不必是用户可见的独立会话，但必须有一个可执行工具调用的 allo Conversation/Attempt。TeamRun 创建时，Runtime Adapter 先冻结固定成员快照（`AgentExecutionTemplate`），并把该 Template 绑定为 Leader Conversation 的 `execution_template_id`；随后 Leader 在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`。服务端据此把以下内容组成一次性的 Planning Context，交给内部 `Planner/LlmPlanProducer`：
 
 ```text
 Leader Preset 的规划指令
@@ -128,12 +128,16 @@ Leader Preset 的规划指令
     + routing_constraints、workflow_limits 和有效策略
 ```
 
-成员的完整 persona、Skill、Connector 和 Tool Policy 不进入共享 Planning Context，而是保留在各自 Participant 的不可变 Snapshot 中。
+成员的完整 persona、Skill、Connector 和 Tool Policy 不进入共享 Planning Context，而是保留在各自 Participant 的不可变 Snapshot 中。成员池、`max_parallel`、`routing_constraints` 与权限全部来自绑定的 Template 和服务端策略，不接受模型输入。
 
 ```text
 TeamRun 创建
     ↓
-解析 TeamDefinition 并物化固定 Participant 池
+解析 TeamDefinition 并物化固定 Participant 池（冻结成员快照）
+    ↓
+创建 Leader Conversation 并绑定该 AgentExecutionTemplate
+    ↓
+Leader 调用 nomi_delegate(strategy=planned, goal)
     ↓
 构造 Planning Context
     ↓
@@ -167,11 +171,12 @@ V1 不允许：
 - 嵌套 Team；
 - 模型绕过 routing_constraints 指定成员；
 - 直接把任意 `role` 字符串当权限边界；
-- 顶层用 `strategy=parallel` 代替 Team planned 流程。
+- 顶层用 `strategy=parallel` 代替 Team planned 流程；
+- 用仅支持 `strategy=parallel`、或无持久化的 delegate 实现充当 Team 的计划入口。
 
 ### 4.3 Planner 参数映射
 
-V1 Team 的 `planned` 是 Runtime Adapter 对内部 Planner 的执行策略，不要求通过模型可见的 `nomi_delegate` 工具触发。普通可信会话仍可使用 `nomi_delegate`；它不是 TeamRun 的必要依赖。
+V1 Team 的 `planned` **由 Leader 模型经 `nomi_delegate(strategy=planned)` 触发**（2026-09-10 修订，见 `agent-store-v1-roadmap.md` §10 决策 3）。Runtime Adapter 的职责是：创建 Leader Conversation、把 Team 的 `AgentExecutionTemplate` 绑定为其 `execution_template_id`，并保证注册给 Leader 的 delegate 工具支持 `strategy=planned` 且绑定持久 `AgentExecutionEngine`。仅支持 `strategy=parallel`、同步且无持久化的 embedded 实现（`nomi-agent::local_delegate_tool`）不得出现在 Team 会话的工具面。
 
 Runtime Adapter 只允许向内部 Planner 传递经校验的规划参数；这些参数不是公共协议，也不是模型可见工具的 delegation 参数：
 

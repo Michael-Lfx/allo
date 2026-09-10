@@ -49,6 +49,7 @@ source = "http://111.170.173.22:10072/experts/.codebuddy-plugin/marketplace.json
 | `providers` | `table` | API 供应商表 → `providers` |
 | `models` | `table` | 模型别名表 → `models` |
 | `default_marketplaces` | `table` | 启动自动注册的市场源表 → `default_marketplaces` |
+| `memory` | `table` | 会话结束后的记忆策略 → `memory`（见下） |
 
 ## `providers`
 
@@ -100,6 +101,22 @@ source_kind = "url"
 source = "http://111.170.173.22:10072/connectors/.codebuddy-connector/connectors.json"
 ```
 
+## `memory`
+
+会话结束后的记忆策略。**记忆蒸馏**（distillation）会在每个正常对话轮次结束后额外调用一次模型，把本轮会话蒸馏进基于文件的记忆；这次调用发生在该轮**终止信号之前**，所以客户端会看到「回答已经完整，但会话仍显示正在处理」约 **6~15 秒**（随模型响应时间波动）。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `distill_enabled` | `boolean` | `false` 关闭记忆蒸馏（本轮结束后不再有额外模型调用，「回答完成」与「轮次结束」同时发生）；`true` 或不写该键 = 沿用上游默认（**开**） |
+
+```toml
+# 关闭会话结束后的记忆蒸馏（省掉每轮一次的额外模型调用与 6~15 秒收尾等待）
+[memory]
+distill_enabled = false
+```
+
+> 优先级：环境变量 `NOMIFUN_MEMORY_DISTILL`（`0`/`false` 关、`1`/`true` 开）> 本文件的 `[memory].distill_enabled` > 上游默认（开）。不写 `[memory]` 段落时行为与以前完全一致。
+
 ## 与 Kimi Code / Claude Code 配置的异同
 
 | 维度 | Agent Store | Kimi Code 等 |
@@ -109,6 +126,6 @@ source = "http://111.170.173.22:10072/connectors/.codebuddy-connector/connectors
 | `default_model` | `"<provider>/<model>"` 别名 | 同构 |
 | 未知键 | 容忍，不报错 | 容忍 |
 | 环境变量后备 | **无**——凭证只从文件读取 | 部分工具有 `env` 子表/环境变量后备 |
-| Agent Store 专属 | `default_marketplaces` | 无 |
+| Agent Store 专属 | `default_marketplaces`、`[memory]` | 无 |
 
 如果你的配置里已经有 Kimi Code 或其他工具的 `[providers]`、`[models]` 段落，可以**直接复制**它们到 `~/.agent-store/config.toml` 使用（前提是该供应商走 OpenAI/Anthropic 兼容协议）；不相关的段落（`thinking`、`permission`、`hooks` 等）保留与否都不影响 Agent Store 解析。

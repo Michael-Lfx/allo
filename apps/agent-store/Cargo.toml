@@ -32,6 +32,7 @@ anyhow.workspace = true
 #   channel inboxes, no AWS catalog fetch). Cuts ~90 MB off the binary.
 # - Only the channel the store actually uses is re-enabled below.
 nomifun-app = { workspace = true, default-features = false, features = ["qqbot"] }
+nomifun-ai-agent.workspace = true
 nomifun-app-server.workspace = true
 nomifun-common.workspace = true
 nomifun-runtime.workspace = true

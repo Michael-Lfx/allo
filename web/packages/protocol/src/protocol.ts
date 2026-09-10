@@ -155,6 +155,24 @@ export interface BrowseDirectoryResult {
   isRoot?: boolean | null;
 }
 
+/** `POST /api/fs/list` — one flat file entry under a workspace root (host file service). */
+export interface WorkspaceFlatFile {
+  name: string;
+  full_path: string;
+  relative_path: string;
+}
+
+/** `POST /api/fs/metadata` response (host file service). */
+export interface FileMetadata {
+  name: string;
+  path: string;
+  size: number;
+  /** Server-reported MIME type. */
+  type: string;
+  last_modified: number;
+  is_directory?: boolean | null;
+}
+
 export type RunStatus =
   | "planning" | "running" | "completed" | "completed_with_failures"
   | "failed" | "cancelled" | "paused" | "waiting_input"
@@ -515,6 +533,10 @@ export interface MarketplaceSummary {
   enabled: boolean;
   entry_count: number;
   added_at: number;
+  /** Last resolved source revision (git commit / freshness marker). */
+  resolved_revision?: string | null;
+  /** Last successful freshness check (epoch ms); absent before the first one. */
+  last_checked_at?: number | null;
 }
 
 export interface MarketplaceEntry {
@@ -584,6 +606,9 @@ export interface StoreItem {
 
 export interface StoreList {
   items: StoreItem[];
+  /** `true` while the builtin default marketplaces are still registering in the
+   *  background (D-SDK-1 ①) — the catalog may be incomplete. */
+  markets_pending?: boolean;
 }
 
 /** One model in the public catalog (`models/list`, REQ-PAR-05b). Provider

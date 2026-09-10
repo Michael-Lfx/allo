@@ -40,11 +40,31 @@ export interface SpawnOptions {
   extraArgs?: string[];
   /** How long to wait for the readiness line. Defaults to 120s (cold DB init). */
   readyTimeoutMs?: number;
+  /** Extra environment variables, merged over the parent's `process.env`. */
+  env?: Record<string, string | undefined>;
+  /** Working directory for the child. Defaults to the parent's cwd. */
+  cwd?: string;
+  /** Called once when the child exits, for any reason (crash included). */
+  onExit?: (info: SpawnExitInfo) => void;
+}
+
+/** How a spawned runtime process ended. */
+export interface SpawnExitInfo {
+  /** Exit code, or `null` when the process was terminated by a signal. */
+  code: number | null;
+  /** Terminating signal, or `null` on a normal exit. */
+  signal: string | null;
 }
 
 export interface SpawnedServer {
   readonly readiness: ReadinessInfo;
   readonly dataDir: string;
+  /**
+   * Settles when the runtime process exits — including an unexpected crash,
+   * which is otherwise indistinguishable from "still starting up". Never
+   * rejects: inspect `code` / `signal`.
+   */
+  readonly exited: Promise<SpawnExitInfo>;
   /** Terminate the child and remove the data dir when it was auto-created. */
   close(): Promise<void>;
 }
@@ -55,10 +75,11 @@ export async function spawnAppServer(options: SpawnOptions = {}): Promise<Spawne
   const dataDir = ownedDir ? await mkdtemp(join(tmpdir(), "agent-store-sdk-")) : options.dataDir as string;
   const port = options.port ?? 0;
 
-  const child = spawn(bin, ["--host", "127.0.0.1", "--port", String(port), "--data-dir", dataDir, "--no-open", ...(options.extraArgs ?? [])], {
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const { child, exited } = spawnRuntimeChild(
+    bin,
+    ["--host", "127.0.0.1", "--port", String(port), "--data-dir", dataDir, "--no-open", ...(options.extraArgs ?? [])],
+    options,
+  );
 
   const stderrTail: string[] = [];
   child.stderr?.on("data", (chunk: Buffer) => {
@@ -100,6 +121,7 @@ export async function spawnAppServer(options: SpawnOptions = {}): Promise<Spawne
     return {
       readiness,
       dataDir,
+      exited,
       close: async () => {
         if (closed) return;
         closed = true;
@@ -114,31 +136,75 @@ export async function spawnAppServer(options: SpawnOptions = {}): Promise<Spawne
   }
 }
 
-function waitForReadiness(child: ChildProcess, timeoutMs: number): Promise<ReadinessInfo> {
+/**
+ * Spawn the runtime process and start tracking its exit.
+ *
+ * Internal (not part of the package entry): exported so the lifecycle and
+ * `env` / `cwd` passthrough contract can be exercised with a synthetic child,
+ * which is what the managed CLI args normally make impossible to inject.
+ */
+export function spawnRuntimeChild(
+  bin: string,
+  args: string[],
+  options: Pick<SpawnOptions, "env" | "cwd" | "onExit"> = {},
+): { child: ChildProcess; exited: Promise<SpawnExitInfo> } {
+  const child = spawn(bin, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+  });
+  const exited = new Promise<SpawnExitInfo>((resolve) => {
+    child.once("exit", (code, signal) => {
+      const info: SpawnExitInfo = { code, signal };
+      resolve(info);
+      try {
+        options.onExit?.(info);
+      } catch {
+        // An exit observer must never destabilize the exit path.
+      }
+    });
+  });
+  return { child, exited };
+}
+
+/** Internal: exported for the stdout-backpressure regression test only. */
+export function waitForReadiness(child: ChildProcess, timeoutMs: number): Promise<ReadinessInfo> {
   return new Promise<ReadinessInfo>((resolve, reject) => {
     if (!child.stdout) {
       reject(new Error("spawned runtime has no stdout pipe"));
       return;
     }
-    const lines = createInterface({ input: child.stdout });
-    const timer = setTimeout(() => {
+    const stdout = child.stdout;
+    const lines = createInterface({ input: stdout });
+    let settled = false;
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
       lines.close();
-      reject(new Error(`timed out after ${timeoutMs}ms waiting for the runtime readiness line`));
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      fail(new Error(`timed out after ${timeoutMs}ms waiting for the runtime readiness line`));
     }, timeoutMs);
-    const done = (fn: () => void): void => {
+    lines.on("line", (line: string) => {
+      if (settled) return;
+      const readiness = parseReadinessLine(line);
+      if (!readiness) return;
+      settled = true;
       clearTimeout(timer);
       lines.close();
-      fn();
-    };
-    lines.on("line", (line: string) => {
-      const readiness = parseReadinessLine(line);
-      if (readiness) done(() => resolve(readiness));
+      // `readline.close()` pauses the underlying stream. Without an active
+      // reader the child blocks once the OS pipe buffer (~64KB) fills, so keep
+      // draining stdout for the child's whole lifetime (output is discarded).
+      stdout.resume();
+      resolve(readiness);
     });
     child.once("error", (error: Error) => {
-      done(() => reject(new Error(`failed to spawn the runtime: ${error.message}`)));
+      fail(new Error(`failed to spawn the runtime: ${error.message}`));
     });
     child.once("exit", (code: number | null) => {
-      done(() => reject(new Error(`runtime exited before reporting readiness (code ${code})`)));
+      fail(new Error(`runtime exited before reporting readiness (code ${code})`));
     });
   });
 }

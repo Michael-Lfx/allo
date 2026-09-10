@@ -277,16 +277,12 @@ where
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(match value {
-        serde_json::Value::Array(items) => items,
+        serde_json::Value::Array(items) => items.into_iter().map(normalize_dependency).collect(),
         serde_json::Value::Object(map) => {
             let mut out: Vec<serde_json::Value> = Vec::new();
             for (group, entries) in map {
                 for entry in entries.as_array().cloned().unwrap_or_default() {
-                    let mut item = match entry {
-                        serde_json::Value::String(name) => json!({ "name": name }),
-                        serde_json::Value::Object(object) => serde_json::Value::Object(object),
-                        other => other,
-                    };
+                    let mut item = normalize_dependency(entry);
                     if let Some(object) = item.as_object_mut() {
                         object.insert("group".into(), json!(group));
                     }
@@ -297,6 +293,17 @@ where
         }
         _ => Vec::new(),
     })
+}
+
+/// A dependency entry is either an object (`{name, version?, marketplace?}`) or a
+/// bare string naming it. Both normalize to an object: a bare string used to be
+/// passed through verbatim, so the consumer's `name` lookup failed and the
+/// dependency silently became `dependency-<index>` (doc 17 §7 / §10 P2).
+fn normalize_dependency(entry: serde_json::Value) -> serde_json::Value {
+    match entry {
+        serde_json::Value::String(name) => json!({ "name": name }),
+        other => other,
+    }
 }
 
 /// `author`, `displayName`, `profession`, … fields that real markets emit
@@ -577,6 +584,24 @@ mod tests {
         let broken = r#"{"preAuth":"cli"}"#;
         let value: serde_json::Value = serde_json::from_str(broken).unwrap();
         assert!(value.get("mcpServers").and_then(|v| v.as_object()).is_none());
+    }
+
+    #[test]
+    fn bare_string_dependencies_keep_their_name() {
+        // Array form (doc 17 §7): a bare string used to pass through verbatim, so
+        // the consumer's `name` lookup failed and the dependency silently became
+        // `dependency-<index>` (deviation P2 in doc 17 §10).
+        let array =
+            parse_plugin_manifest(r#"{"name":"d","dependencies":["foo",{"name":"bar"}]}"#).unwrap();
+        assert_eq!(array.dependencies.len(), 2);
+        assert_eq!(array.dependencies[0]["name"], "foo");
+        assert_eq!(array.dependencies[1]["name"], "bar");
+        // Grouped form still expands with its `group` marker.
+        let grouped =
+            parse_plugin_manifest(r#"{"name":"d","dependencies":{"connectors":["westock-mcp"]}}"#)
+                .unwrap();
+        assert_eq!(grouped.dependencies[0]["name"], "westock-mcp");
+        assert_eq!(grouped.dependencies[0]["group"], "connectors");
     }
 
     #[test]

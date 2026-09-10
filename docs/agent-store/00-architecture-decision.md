@@ -2,6 +2,7 @@
 
 > 状态：架构冻结（Phase 0）；Runtime 尚未验证；发布阻断
 > 日期：2026-08-26
+> 修订：2026-09-10 — Team 触发方式改为 Leader 模型调用 `nomi_delegate(strategy=planned)`（见 `agent-store-v1-roadmap.md` §10 决策 3）
 > 范围：Agent Store / Runtime Platform 的架构边界、组件职责与取舍决策
 > 口径：本文明确区分「源码/文档已证实」「设计决策」「待 Spike 验证」「暂不支持」四类结论
 
@@ -40,6 +41,7 @@ Agent Store Agent/AgentDefinition
 | AD-07 | V1 交付目标 | 完整功能核心（Agent/Team/Skill/Connector + App Server + SDK + Web/Flowy 集成），Team V1 限定为固定成员 + Leader Planning Context 驱动 planned DAG 的最小闭环 | 需求口径；当前产品范围决策 |
 | AD-08 | 企业级能力 | 多租户、HA、灾备、全量 Marketplace、签名安装、全部 OAuth 变体、运营后台、安全认证为 V1 明确非目标 | 范围控制 |
 | AD-09 | 凭据 | 凭据只存本地安全存储，定义/日志/前端状态只存引用；文档中一律 `[REDACTED]` | 安全要求 |
+| AD-10 | Agent Team 触发方式 | Leader 模型在自有 Conversation 内调用 `nomi_delegate(strategy=planned)` 触发服务端 Planner；成员池/并发/权限来自绑定的 `AgentExecutionTemplate` 与服务端策略，不接受模型输入 | 设计决策（2026-09-10）；`agent-store-v1-roadmap.md` §10 决策 3 |
 
 ## 3. 总体架构
 
@@ -85,7 +87,7 @@ WorkBuddy Skill / Connector Marketplace
 
 - Agent Execution / Agent Execution Template；
 - Planner、Plan Materializer、Participant Router/Resolver；
-- `nomi_delegate`：普通可信会话的委派入口；`planned` 的结构化 DAG 规划能力由 Team Runtime 内部调用 Planner；
+- `nomi_delegate`：普通可信会话的委派入口；`strategy=planned` 的结构化 DAG 规划能力同时是 V1 Team Runtime 的计划触发入口（由 Leader 模型调用）；
 - 执行事件、序列、游标、审批、取消/暂停/恢复基础设施；
 - Extension Registry、Skill 服务、MCP 配置与 OAuth 服务。
 
@@ -131,7 +133,7 @@ Planner/LlmPlanProducer 生成结构化 DAG
 Execution 事件、重试、replan
 ```
 
-这里的 **Leader** 是 `lead_agent_id` 指向的规划角色，不要求 V1 为它创建一个独立的用户可见 Conversation。Leader Preset 的指令用于构造 Planning Context；每个成员的完整 persona、Skill、Connector 和 Tool Policy 只进入该成员自己的 Participant/Attempt Snapshot。规划器可以看到经过筛选的成员能力摘要，但不得依赖完整成员 Prompt 或自然语言自行授予权限。
+这里的 **Leader** 是 `lead_agent_id` 指向的规划角色，必须有一个承载工具调用的 allo Conversation/Attempt（不必是用户可见的独立会话）。TeamRun 创建时把 Team 的 `AgentExecutionTemplate` 绑定为该 Conversation 的 `execution_template_id`；Leader 在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned)` 触发计划生成，Leader Preset 的规划指令与 Team 策略进入 Planning Context。每个成员的完整 persona、Skill、Connector 和 Tool Policy 只进入该成员自己的 Participant/Attempt Snapshot。规划器可以看到经过筛选的成员能力摘要，但不得依赖完整成员 Prompt 或自然语言自行授予权限。
 
 V1 必须支持：
 
@@ -144,14 +146,18 @@ V1 必须支持：
 
 V1 暂不要求：
 
-- 为 Leader 创建独立 Conversation；
+- 用户可见的独立 Leader Conversation（Leader 仍必须有一个非用户可见的 Conversation/Attempt 承载工具调用，见下）；
 - 完整 Mailbox；
 - 成员自主认领任务；
 - 成员之间任意直连消息；
 - 成员长期独立会话生命周期；
 - 嵌套 Team。
 
-Team Runtime 不依赖 `nomi_delegate` 工具。普通可信会话仍可使用 `nomi_delegate`；但 `team/run` 由服务端直接构造 Planning Context 并调用内部 Planner。顶层不使用 `strategy=parallel` 代替 Team planned 流程；局部并行由已校验 DAG 中的独立 ready 步骤表达。
+Team Runtime **依赖** `nomi_delegate(strategy=planned)` 作为计划生成入口（2026-09-10 修订，见 `agent-store-v1-roadmap.md` §10 决策 3）：`team/run` 由服务端创建 Leader Conversation 并绑定 Team 的 `AgentExecutionTemplate`，Leader 模型在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`，服务端据此构造 Planning Context 并调用内部 Planner 生成/物化 DAG。成员池、`max_parallel`、`routing_constraints` 与权限来自绑定的 Template 和服务端策略，不接受模型输入。
+
+顶层仍不得使用 `strategy=parallel` 代替 Team planned 流程；局部并行由已校验 DAG 中的独立 ready 步骤表达。
+
+注册给 Leader 的必须是绑定真实 `AgentExecutionEngine`（具备持久化 Execution/Event/Attempt）的 planned 实现；仅支持 `strategy=parallel`、以同步无持久化方式投影的 embedded 实现不得用于 Team Runtime。
 
 ## 5. 导入边界
 

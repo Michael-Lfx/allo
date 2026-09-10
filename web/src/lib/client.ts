@@ -1,9 +1,9 @@
 /**
  * Web host's `AppServerClient`: the transport-agnostic base from
- * `@flowy-agent-store/client` plus the three Web-only helpers that don't belong
- * in the published package — asset `<img>` URL derivation, `/api/fs/browse`
- * (independent file service), and the one-shot HTTP workspace registration
- * used by the smoke/dev script.
+ * `@flowy-agent-store/client` plus the Web-only helpers that don't belong in the
+ * published package — asset `<img>` URL derivation, the independent host file
+ * service (`/api/fs/*`, doc 19 §3 W5), and the one-shot HTTP workspace
+ * registration used by the smoke/dev script.
  */
 
 import {
@@ -17,6 +17,8 @@ import { AppServerError } from "@flowy-agent-store/protocol";
 import {
   APP_SERVER_PROTOCOL_VERSION,
   type BrowseDirectoryResult,
+  type FileMetadata,
+  type WorkspaceFlatFile,
   type WorkspaceRegistration,
 } from "@flowy-agent-store/protocol";
 
@@ -37,6 +39,12 @@ export interface AppServerClientOptions extends Omit<BaseOptions, "transport"> {
 }
 
 const CONNECTION_HEADER = "x-app-server-connection-id";
+
+/** `{ success, data }` envelope used by the standalone host file service. */
+interface ApiResponse<T> {
+  success?: boolean;
+  data?: T;
+}
 
 /** Derive the HTTP helper base URL from the WebSocket URL. */
 function deriveHttpBaseUrl(wsUrl: string): string | undefined {
@@ -127,6 +135,56 @@ export class AppServerClient extends BaseClient {
     const { connectionId } = await this.httpHandshake();
     const payload = await this.httpGet<{ success?: boolean; data?: BrowseDirectoryResult } & BrowseDirectoryResult>(`${rootBase}/api/fs/browse${query}`, connectionId);
     return payload.data ?? payload;
+  }
+
+  /**
+   * List every file under a workspace root (host file service, `POST /api/fs/list`).
+   *
+   * This is the WebUI-side stand-in for the deferred Artifact protocol: doc `05`
+   * §8 defines `artifact/list` / `artifact/get` but hard-codes
+   * `capabilities.artifacts=false` and forbids arbitrary path reads
+   * (`TC-AS-008`), so per-Run attribution is unavailable and the panel scopes to
+   * a workspace instead (doc `19` §3 W5, deviation D-W5-1).
+   */
+  async listWorkspaceFiles(root: string): Promise<WorkspaceFlatFile[]> {
+    const payload = await this.httpPostRoot<WorkspaceFlatFile[]>("/api/fs/list", { root });
+    return payload.data ?? [];
+  }
+
+  /**
+   * Read one text file (host file service, `POST /api/fs/read`). Resolves `null`
+   * when the server cannot hand the file back as text (binary or too large).
+   */
+  async readFileContent(path: string, workspace?: string): Promise<string | null> {
+    const payload = await this.httpPostRoot<string | null>("/api/fs/read", workspace ? { path, workspace } : { path });
+    return payload.data ?? null;
+  }
+
+  /** Size / MIME type / mtime for one path (host file service, `POST /api/fs/metadata`). */
+  async getFileMetadata(path: string, workspace?: string): Promise<FileMetadata | null> {
+    const payload = await this.httpPostRoot<FileMetadata>("/api/fs/metadata", workspace ? { path, workspace } : { path });
+    return payload.data ?? null;
+  }
+
+  /**
+   * POST to the server **root** file service. `/api/fs/*` is served outside the
+   * `/api/app-server` prefix that `httpPost` targets, exactly like `/api/fs/browse`.
+   */
+  private async httpPostRoot<T>(path: string, body: unknown): Promise<ApiResponse<T>> {
+    const base = this.serverRootUrl;
+    if (!base) {
+      throw new TransportError("send", "serverRootUrl is required for host file-service calls");
+    }
+    const { connectionId } = await this.httpHandshake();
+    const response = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: this.httpHeaders(connectionId),
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw await this.httpError(response);
+    }
+    return (await response.json()) as ApiResponse<T>;
   }
 
   private async httpHandshake(): Promise<{ connectionId: string }> {

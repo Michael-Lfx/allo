@@ -1108,6 +1108,14 @@ pub fn create_router_with_all_state(
             )),
             snapshot_assets_root: Some(import_root.clone()),
     };
+    // D-SDK-1 ①: warm the default marketplaces at startup instead of waiting for
+    // the first store/market request, so a cold install's mirroring overlaps with
+    // app boot rather than with the user's first click. Guarded: a caller that
+    // builds this state outside a Tokio runtime keeps the lazy path in the
+    // request handlers.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        nomifun_app_server::warm_default_marketplaces(&app_server_state);
+    }
     // Display assets (avatars / market icons) are referenced by plain
     // `<img>` tags and must not sit behind the owner auth middleware.
     let app_server_public =

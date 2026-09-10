@@ -300,7 +300,12 @@ impl StoreProvider for AppServerStoreProvider {
                 });
             }
         }
-        Ok(AppServerStoreList { items })
+        Ok(AppServerStoreList {
+            items,
+            // D-SDK-1 ①: the builtin default marketplaces register in the
+            // background, so a cold `store/list` may be legitimately partial.
+            markets_pending: nomifun_app_server::marketplaces_warming(),
+        })
     }
 
     async fn install_entry(

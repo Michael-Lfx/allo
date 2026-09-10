@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-store/plugin.schema.json",
+  "title": "Agent Store plugin manifest",
+  "description": "`.codebuddy-plugin/plugin.json` — doc 17 §3 fixes required fields, defaults and the tolerant shapes; doc 02 §4/§5 is the field-level authority. `name` is the ONLY required field (blank counts as missing: import blocks with MissingIdentity). Unknown keys are tolerated, so this schema never rejects a manifest merely for carrying extra fields.",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": { "$ref": "#/$defs/identity" },
+    "version": { "type": "string", "description": "Recorded as declared_version." },
+    "description": { "$ref": "#/$defs/localized" },
+    "author": { "$ref": "#/$defs/author" },
+    "agents": { "$ref": "#/$defs/stringOrList" },
+    "skills": { "$ref": "#/$defs/stringOrList" },
+    "commands": { "$ref": "#/$defs/stringOrList", "description": "Recorded only (not executed)." },
+    "hooks": { "type": "object", "description": "Recorded only — NOT enabled in V1." },
+    "mcpServers": { "type": "object" },
+    "lspServers": { "anyOf": [{ "type": "string" }, { "type": "object" }], "description": "V1 metadata level: server names only, NOT enabled." },
+    "userConfig": { "type": "object", "description": "Credential schema; values live in secure storage only." },
+    "dependencies": { "anyOf": [{ "type": "array" }, { "type": "object" }], "description": "Array of entries, or an object keyed by dependency kind (grouped form)." },
+    "teamInfo": { "type": "object" },
+    "displayName": { "$ref": "#/$defs/localized" },
+    "profession": { "$ref": "#/$defs/localized" },
+    "displayDescription": { "$ref": "#/$defs/localized" },
+    "defaultInitPrompt": { "$ref": "#/$defs/localized" },
+    "quickPrompts": { "$ref": "#/$defs/localizedList" },
+    "tags": { "$ref": "#/$defs/localizedList" },
+    "avatar": { "$ref": "#/$defs/relativePath" },
+    "expertType": { "type": "string" },
+    "categoryId": { "type": "string" },
+    "agentName": { "type": "string" },
+    "channels": { "description": "Enablement metadata; doc 17 §3 fixes no type." },
+    "defaultEnabled": { "description": "Install/enable policy metadata; doc 17 §3 fixes no type." },
+    "strict": { "type": "boolean", "default": false, "description": "true requires the plugin source to carry its own plugin.json." }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Only required field. Whitespace-only is treated as missing (import blocks with MissingIdentity)."
+    },
+    "author": {
+      "anyOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "required": ["name"],
+          "properties": { "name": { "type": "string" }, "email": { "type": "string" } },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "localized": {
+      "anyOf": [
+        { "type": "string" },
+        { "type": "object" },
+        { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "object" }] } }
+      ],
+      "description": "Display metadata: a plain string, or an object keyed by language."
+    },
+    "localizedList": {
+      "anyOf": [{ "type": "string" }, { "type": "object" }, { "type": "array" }],
+      "description": "A localized value, or a list of them."
+    },
+    "stringOrList": {
+      "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
+      "description": "Single string and array are both accepted (`\"./agents/\"` or `[\"./agents/a.md\"]`)."
+    },
+    "relativePath": {
+      "type": "string",
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$",
+      "description": "Path relative to the market/plugin root: no absolute or UNC path, no `..` segment, no backslash. Applies to `avatar` (doc 17 §3) and to entry `source` (doc 18 §4)."
+    }
+  }
+}

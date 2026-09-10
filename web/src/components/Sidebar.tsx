@@ -107,17 +107,8 @@ export function Sidebar() {
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Ctrl/Cmd+K focuses the sidebar search (Kimi-style shortcut).
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        searchInputRef.current?.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  // `Ctrl/Cmd+K` used to focus this search box; since doc 19 §3 W1 it summons
+  // the composer command palette instead, so one shortcut reaches `/` and `@`.
 
   const workspaceGroups = useMemo(
     () => groupByWorkspace(conversations, workspaces),

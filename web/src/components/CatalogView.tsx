@@ -17,10 +17,12 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Globe,
   LoaderCircle,
   Plus,
   RefreshCw,
   Search,
+  Store,
   Upload,
   Users,
   X,
@@ -54,6 +56,7 @@ import type {
   TeamDetail,
   TeamSummary,
 } from "../lib/protocol";
+import { DialogShell } from "./dialogs/DialogShell";
 
 type CatalogTab = "store" | "sources" | "installed" | "imports";
 type PanelKind = "store" | "skill" | "connector" | "agent" | "team" | "import";
@@ -285,6 +288,7 @@ export function CatalogView() {
   const client = useAppStore((s) => s.client);
   const capabilities = useAppStore((s) => s.client?.initializeInfo?.capabilities ?? null);
   const onBack = useAppStore((s) => s.toggleCatalog);
+  const pushToast = useAppStore((s) => s.pushToast);
 
   const [tab, setTab] = useState<CatalogTab>("store");
   const [query, setQuery] = useState("");
@@ -296,6 +300,9 @@ export function CatalogView() {
   const [storeKind, setStoreKind] = useState<"all" | StoreItemKind>("all");
   const [sortBy, setSortBy] = useState<"default" | "name">("default");
   const [storeInstallBusy, setStoreInstallBusy] = useState<string | null>(null);
+  /** True while the builtin marketplaces are still mirroring in the background
+   *  (D-SDK-1 ①): the catalog is legitimately incomplete, not empty. */
+  const [storePending, setStorePending] = useState(false);
 
   // lists (null = loading)
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
@@ -336,6 +343,10 @@ export function CatalogView() {
   const [marketBusy, setMarketBusy] = useState(false);
   const [marketDetail, setMarketDetail] = useState<MarketplaceDetail | null>(null);
   const [marketRefreshBusy, setMarketRefreshBusy] = useState<string | null>(null);
+  /** `<marketplace_id>/<entry>` whose entry-level import is in flight (W13). */
+  const [marketEntryBusy, setMarketEntryBusy] = useState<string | null>(null);
+  /** Cascade-remove confirmation target; null = dialog closed (W13). */
+  const [marketRemoveFor, setMarketRemoveFor] = useState<string | null>(null);
 
   const [reloadTick, setReloadTick] = useState(0);
   const activeRef = useRef(true);
@@ -381,6 +392,7 @@ export function CatalogView() {
         ]);
         if (cancelled || !activeRef.current) return;
         setStoreItems(storeList?.items ?? null);
+        setStorePending(storeList?.markets_pending ?? false);
         setSkills(skillList);
         setConnectors(connectorList);
         setAgents(agentList);
@@ -403,6 +415,21 @@ export function CatalogView() {
       cancelled = true;
     };
   }, [client, capabilities, reloadTick]);
+
+  // D-SDK-1 ①: a page loaded during the background marketplace warm-up sees an
+  // incomplete catalog. `store/list` reports `markets_pending`, so re-list a few
+  // times instead of making the user hit refresh. Bounded: 5 × 20s, then stop.
+  const pendingRetriesRef = useRef(0);
+  useEffect(() => {
+    if (!storePending || !client) {
+      pendingRetriesRef.current = 0;
+      return;
+    }
+    if (pendingRetriesRef.current >= 5) return;
+    pendingRetriesRef.current += 1;
+    const timer = window.setTimeout(reload, 20_000);
+    return () => window.clearTimeout(timer);
+  }, [storePending, client, reloadTick, reload]);
 
   const openSkill = useCallback(async (skillId: string) => {
     if (!client) return;
@@ -695,10 +722,13 @@ export function CatalogView() {
     }
   }, [client]);
 
-  const removeMarket = useCallback(async (marketplaceId: string) => {
-    if (!client) return;
-    const confirmed = window.confirm(t("catalog.marketRemoveConfirm"));
-    if (!confirmed) return;
+  /**
+   * W13: cascade removal is confirmed through a dialog that lists the entries it
+   * will uninstall (`marketRemoveFor`) instead of a bare `window.confirm`.
+   */
+  const confirmRemoveMarket = useCallback(async () => {
+    const marketplaceId = marketRemoveFor;
+    if (!client || !marketplaceId) return;
     setMarketBusy(true);
     setError(null);
     try {
@@ -708,13 +738,65 @@ export function CatalogView() {
       setMarkets(list);
       setImports(importsList);
       setMarketDetail(null);
+      setMarketRemoveFor(null);
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     } finally {
       if (activeRef.current) setMarketBusy(false);
     }
-  }, [client, t]);
+  }, [client, marketRemoveFor]);
+
+  /** W13: flip `auto_update`, then read `market/list` back (no optimistic guess). */
+  const toggleMarketAutoUpdate = useCallback(async (marketplaceId: string, enabled: boolean) => {
+    if (!client) return;
+    setMarketBusy(true);
+    setError(null);
+    try {
+      const updated = await client.setMarketplaceAutoUpdate(marketplaceId, enabled);
+      const list = await client.listMarketplaces();
+      if (!activeRef.current) return;
+      setMarkets(list);
+      setMarketDetail((current) =>
+        current && current.marketplace_id === marketplaceId
+          ? { ...current, auto_update: updated.auto_update, enabled: updated.enabled }
+          : current,
+      );
+      pushToast("success", updated.auto_update ? "catalog.marketAutoUpdateOnToast" : "catalog.marketAutoUpdateOffToast");
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setMarketBusy(false);
+    }
+  }, [client, pushToast]);
+
+  /**
+   * W13: entry-level import. Deliberately distinct from `store/install-entry`
+   * (`runStoreInstall`): this only imports the provenance-linked snapshot and
+   * leaves the install state untouched.
+   */
+  const importMarketEntry = useCallback(async (marketplaceId: string, entryName: string) => {
+    if (!client) return;
+    setMarketEntryBusy(`${marketplaceId}/${entryName}`);
+    setError(null);
+    try {
+      const result = await client.importMarketplaceEntry(marketplaceId, entryName);
+      const [importsList, detail] = await Promise.all([
+        client.listImports(),
+        client.getMarketplace(marketplaceId).catch(() => null),
+      ]);
+      if (!activeRef.current) return;
+      setImports(importsList);
+      if (detail) setMarketDetail(detail);
+      pushToast("success", result.reused ? "catalog.marketEntryImportReused" : "catalog.marketEntryImportDone");
+    } catch (caught) {
+      if (!activeRef.current) return;
+      reportError(caught);
+    } finally {
+      if (activeRef.current) setMarketEntryBusy(null);
+    }
+  }, [client, pushToast]);
 
   const openStoreItem = useCallback((item: StoreItem) => {
     setDrawer("store");
@@ -891,8 +973,52 @@ export function CatalogView() {
         </button>
       </header>
 
-      {/* Segmented tabs */}
+      {/* Segmented tabs — the entry point for every catalog page. `sources`
+          (market management) and `imports` (import history) render below but
+          previously had no control that reached them: they were only linked
+          from a grid's empty state, so on a non-empty store the whole
+          marketplace-management surface was unreachable. */}
       <div className="market-tabs" role="tablist" aria-label={t("catalog.typeLabel")}>
+        <button
+          className={`market-mine ${tab === "store" ? "is-active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={tab === "store"}
+          onClick={() => { setTab("store"); }}
+        >
+          <Store size={15} strokeWidth={1.7} />
+          <span>{t("catalog.tabStore")}</span>
+        </button>
+        <button
+          className={`market-mine ${tab === "sources" ? "is-active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={tab === "sources"}
+          onClick={() => { setTab("sources"); }}
+        >
+          <Globe size={15} strokeWidth={1.7} />
+          <span>{t("catalog.tabSources")}</span>
+        </button>
+        <button
+          className={`market-mine ${tab === "imports" ? "is-active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={tab === "imports"}
+          onClick={() => { setTab("imports"); }}
+        >
+          <Upload size={15} strokeWidth={1.7} />
+          <span>{t("catalog.tabImports")}</span>
+        </button>
+        <button
+          className={`market-mine ${tab === "installed" ? "is-active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={tab === "installed"}
+          onClick={() => { setTab("installed"); }}
+        >
+          <Users size={15} strokeWidth={1.7} />
+          <span>{t("catalog.tabInstalled")}</span>
+        </button>
         {(tab === "store" || tab === "installed") && (
           <label className="market-search market-search-inline">
             <Search size={15} strokeWidth={1.7} />
@@ -904,14 +1030,6 @@ export function CatalogView() {
             />
           </label>
         )}
-        <button
-          className="market-mine"
-          type="button"
-          onClick={() => { setTab("installed"); }}
-        >
-          <Users size={15} strokeWidth={1.7} />
-          <span>{t("catalog.tabInstalled")}</span>
-        </button>
       </div>
 
       {error && (
@@ -995,7 +1113,7 @@ export function CatalogView() {
         {tab === "store" && (
           <MarketGrid
             loading={!client || storeItems === null}
-            empty={t("catalog.storeEmpty")}
+            empty={storePending ? t("catalog.storePending") : t("catalog.storeEmpty")}
             emptyAction={(
               <button className="market-empty-action" type="button" onClick={() => setTab("sources")}>
                 {t("catalog.emptyGoSources")}
@@ -1218,7 +1336,15 @@ export function CatalogView() {
 
               {markets === null && <p className="market-empty">{t("catalog.loadingMarkets")}</p>}
               {markets !== null && markets.length === 0 && (
-                <p className="market-empty">{t("catalog.noMarkets")}</p>
+                <p className="market-empty">
+                  {storePending ? t("catalog.storePending") : t("catalog.noMarkets")}
+                </p>
+              )}
+              {/* Partial catalog during the background warm-up (D-SDK-1 ①): the
+                  list is non-empty but the builtin markets may still be
+                  arriving. */}
+              {storePending && markets !== null && markets.length > 0 && (
+                <p className="market-pending-note">{t("catalog.storePending")}</p>
               )}
               {markets !== null && markets.length > 0 && (
                 <div className="market-list">
@@ -1251,6 +1377,15 @@ export function CatalogView() {
                       </span>
                     </div>
                     <div className="market-market-detail-actions">
+                      <button
+                        className={`secondary-button${marketDetail.auto_update ? " is-on" : ""}`}
+                        type="button"
+                        aria-pressed={marketDetail.auto_update}
+                        disabled={marketBusy}
+                        onClick={() => void toggleMarketAutoUpdate(marketDetail.marketplace_id, !marketDetail.auto_update)}
+                      >
+                        {marketDetail.auto_update ? t("catalog.marketAutoUpdateToggleOn") : t("catalog.marketAutoUpdateToggleOff")}
+                      </button>
                       <button className="secondary-button" type="button"
                         disabled={marketRefreshBusy === marketDetail.marketplace_id}
                         onClick={() => void refreshMarket(marketDetail.marketplace_id)}>
@@ -1259,17 +1394,38 @@ export function CatalogView() {
                           : t("catalog.marketRefresh")}
                       </button>
                       <button className="danger-button" type="button" disabled={marketBusy}
-                        onClick={() => void removeMarket(marketDetail.marketplace_id)}>
+                        onClick={() => setMarketRemoveFor(marketDetail.marketplace_id)}>
                         {t("catalog.marketRemove")}
                       </button>
                     </div>
                   </div>
+                  {/* W13: only the registry fields the wire actually carries —
+                      `revision` / last-checked are absent from the summary type
+                      (deviation D-W13-1). */}
+                  <dl className="market-meta">
+                    <MetaRow label={t("catalog.marketIdLabel")} value={marketDetail.marketplace_id} mono />
+                    <MetaRow
+                      label={t("catalog.marketEnabled")}
+                      value={marketDetail.enabled ? t("catalog.marketEnabledOn") : t("catalog.marketEnabledOff")}
+                    />
+                    <MetaRow label={t("catalog.marketEntriesLabel")} value={String(marketDetail.entry_count)} />
+                    <MetaRow label={t("catalog.marketAddedAt")} value={new Date(marketDetail.added_at).toLocaleString()} />
+                    <MetaRow label={t("catalog.marketRevision")} value={marketDetail.resolved_revision} mono />
+                    {/* `last_checked_at` is written by refresh only, so a freshly
+                        added market legitimately has none — show it explicitly
+                        rather than dropping the row silently. */}
+                    <MetaRow
+                      label={t("catalog.marketLastChecked")}
+                      value={marketDetail.last_checked_at ? new Date(marketDetail.last_checked_at).toLocaleString() : "—"}
+                    />
+                  </dl>
                   <div className="market-list">
                     {marketDetail.entries.map((entry) => {
                       const storeItem = (storeItems ?? []).find(
                         (item) => item.marketplace_id === marketDetail.marketplace_id && item.entry_name === entry.name,
                       );
                       const busy = storeInstallBusy === `${marketDetail.marketplace_id}/${entry.name}`;
+                      const entryBusy = marketEntryBusy === `${marketDetail.marketplace_id}/${entry.name}`;
                       const installed = storeItem?.installed ?? false;
                       return (
                         <div className="market-card market-entry-card" key={`${marketDetail.marketplace_id}/${entry.name}`}>
@@ -1281,9 +1437,8 @@ export function CatalogView() {
                                 {entry.description ?? entry.source}
                               </span>
                             </div>
-                            {installed ? (
-                              <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>
-                            ) : (
+                            {installed && <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>}
+                            {!installed && (
                               <button
                                 className="primary-button market-entry-import"
                                 type="button"
@@ -1293,12 +1448,62 @@ export function CatalogView() {
                                 {busy ? t("catalog.storeInstalling") : t("catalog.storeInstall")}
                               </button>
                             )}
+                            {/* W13: import-only — a provenance-linked snapshot
+                                without touching install state (`store/install-entry`
+                                above is the install path). */}
+                            <button
+                              className="secondary-button market-entry-import"
+                              type="button"
+                              disabled={entryBusy}
+                              onClick={() => void importMarketEntry(marketDetail.marketplace_id, entry.name)}
+                            >
+                              {entryBusy ? t("catalog.marketEntryImporting") : t("catalog.marketEntryImport")}
+                            </button>
                           </div>
                         </div>
                       );
                     })}
                   </div>
                 </div>
+              )}
+
+              {marketRemoveFor && (
+                <DialogShell
+                  onClose={() => setMarketRemoveFor(null)}
+                  labelledBy="market-remove-title"
+                  titleId="market-remove-title"
+                  title={t("catalog.marketRemoveTitle")}
+                >
+                  <p className="dialog-intro">
+                    {t("catalog.marketRemoveBody", { name: marketDetail?.name ?? marketRemoveFor })}
+                  </p>
+                  {(() => {
+                    // Cascade target list derived from the aggregated store: the
+                    // wire has no pre-removal snapshot projection (D-W13-1).
+                    const affected = (storeItems ?? []).filter(
+                      (item) => item.marketplace_id === marketRemoveFor && item.installed,
+                    );
+                    if (affected.length === 0) {
+                      return <p className="dialog-intro">{t("catalog.marketRemoveNone")}</p>;
+                    }
+                    return (
+                      <ul className="market-remove-list">
+                        <li className="market-remove-list-title">{t("catalog.marketRemoveSnapshotsLabel")}</li>
+                        {affected.map((item) => (
+                          <li key={item.id}>{item.entry_name ?? item.name}</li>
+                        ))}
+                      </ul>
+                    );
+                  })()}
+                  <div className="dialog-actions">
+                    <button className="quiet-button" type="button" onClick={() => setMarketRemoveFor(null)}>
+                      {t("common.cancel")}
+                    </button>
+                    <button className="danger-button" type="button" disabled={marketBusy} onClick={() => void confirmRemoveMarket()}>
+                      {marketBusy ? t("catalog.marketRemoving") : t("catalog.marketRemove")}
+                    </button>
+                  </div>
+                </DialogShell>
               )}
             </div>
           </div>

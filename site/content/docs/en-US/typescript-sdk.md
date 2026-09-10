@@ -24,6 +24,9 @@ bun add @flowy-agent-store/protocol
 
 All packages ship ESM + CJS (`exports` maps `import` / `require` / `types`); they work out of the box in Node and bundlers.
 
+> **Version status**: all three packages are `0.1.0-beta.*` pre-releases (the API is not frozen). Pin an exact version in production, e.g. `bun add @flowy-agent-store/sdk@0.1.0-beta.2`.
+> **Runtime**: Node.js **≥ 22** (relies on the global `WebSocket`) or Bun; the lower bound is declared by each package's `engines.node`.
+
 ---
 
 ## 2. Quick start (one-liner with the SDK)
@@ -147,6 +150,7 @@ export interface Transport {
   notify(method: string, params: unknown): void;     // fire-and-forget
   onNotification(listener: NotificationListener): () => void; // subscribe; returns unsubscribe
   close(): void;
+  onLifecycle?(listener: (state: "open" | "closed") => void): () => void; // optional channel lifecycle
 }
 ```
 
@@ -157,11 +161,20 @@ import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
 
 const transport = new WebSocketTransport(
   "ws://127.0.0.1:8787/api/app-server/ws",
-  { requestTimeoutMs: 30_000, token: "optional-bearer" } // token becomes ?token= in browsers
+  { requestTimeoutMs: 30_000, connectTimeoutMs: 10_000, token: "optional-bearer" } // token becomes ?token= in browsers
 );
 const client = new AppServerClient({ transport, client: { name: "my-app", version: "0.1.0" } });
 await client.connect(); // initialize handshake + version check
 ```
+
+`WebSocketTransport` implementation contract (A2 / T8):
+
+- **`connect()` is idempotent and concurrency-safe**: concurrent calls share one dial (no second socket is opened); after `connectTimeoutMs` (default 10s) without opening it rejects `TransportError(phase: "connect", retryable: true)` and closes that socket.
+- **`close()` is terminal cleanup**: it settles every pending request and any in-flight `connect()` (`TransportError(phase: "close")`) and clears the listeners registered through `onNotification`. So **after closing, a new `connect()` must re-register its listeners** (`AppServerClient` re-arms its notification bridge automatically; custom transports must do it themselves).
+- **Stale-connection isolation**: events arriving late from a replaced or closed socket are ignored and never touch the current connection.
+- **No auto-reconnect**: a dropped connection only fails pending requests with `TransportError(retryable: true)`; the reconnect policy belongs to the caller.
+- **Reconnect is observable (T8)**: `onLifecycle` reports `open` after every successful dial, and `closed` only when an **established** connection is lost (a failed first dial is not a disconnect, and neither is a caller-initiated `close()`). `closed → open` is one reconnect. These listeners **survive `close()`** — they exist to drive the reconnection.
+- **After a reconnect you must re-handshake and re-subscribe**: a new socket means the server-side subscriptions and the local `onNotification` listeners are gone, so the flow is `transport onLifecycle("open")` → `client.connect()` (re-runs the `initialize` handshake) → `rearm()` every live subscription.
 
 Bring your own transport by implementing the interface: an in-memory fake for tests, stdio for CLIs, Node WebSocket in Electron main — business code does not change.
 
@@ -183,6 +196,13 @@ Bring your own transport by implementing the interface: an in-memory fake for te
 | `importMarketplaceEntry(mkt, entry)` | `market/entry-import` | Import one entry (provenance-linked) |
 | `listStore()` | `store/list` | Unified catalog across marketplaces (with install state) |
 | `installStoreEntry(mkt, entry)` | `store/install-entry` | One-click install: import (if missing) + register |
+
+> ℹ️ **The first `listStore()` may come back empty or partial — by design, not an error**: the built-in default marketplaces register in the **background** (D-SDK-1 ①). The first `store/list` only kicks that off and then answers from whatever is registered *right now*; it never waits for the mirror.
+> Registration itself HTTP-mirrors each market source's whole tree (hundreds of skill dirs, thousands of assets), roughly **90s** on a fresh data dir — during which that call reports `items: 0`.
+> Measured (2026-09-10, fresh local data dir): `first store/list: 1ms items=0` → after 130s `store/list: 133ms items=438`, `market/list count=3`.
+> So **you do not need a larger `requestTimeoutMs` for the first call**; re-list after the warm-up for the full catalog (the WebUI has an explicit refresh). If a mirror is unreachable, that warm-up counts as incomplete and the next store/market call retries automatically.
+> To tell "no markets at all" from "still loading": `listStore()` (that is, `store/list`) now returns `markets_pending` — `true` means the builtin markets are still registering in the background and the catalog may be incomplete.
+> If you own a fixed `dataDir`, later calls on it short-circuit idempotently and do no network I/O.
 
 ### 4.4 Sub-clients
 
@@ -245,8 +265,11 @@ const sub = await client.conversations.follow(convId);
 sub.onEvent((event) => console.log("seq", event.sequence, event)); // deduped by sequence
 sub.onResync((reason) => console.log("resync required:", reason)); // catch-up hint after disconnects
 sub.lastSequence; // highest sequence seen
+await sub.rearm(); // after a reconnect: re-register + reset cursor + re-issue conversation/subscribe
 await sub.close(); // server side unsubscribe (closing the socket also works)
 ```
+
+> After `rearm()` you still have to backfill the outage window yourself: this subscription has no event-replay API, so re-fetch with `conversation/messages`. The reset cursor means later duplicates are the caller's to dedupe by `sequence`.
 
 #### `runs` — run lifecycle and live events
 
@@ -265,8 +288,11 @@ sub.onEvent((event) => console.log(event));       // best-effort events (lossy, 
 sub.onResync(({ run_ids, reason }) => …);         // subscription invalidated, replay required
 sub.onError((error) => …);                        // transport errors forwarded
 sub.lastSequence;
+const replayed = await sub.rearm();               // after a reconnect: reset cursor + re-subscribe + replay all
 await sub.close();
 ```
+
+> `rearm()` **replays the whole history** (the cursor reset is deliberate), so consumers must dedupe by `sequence`; its return value is the replayed batch. Call it only after the reconnect handshake (`initialize`) has completed.
 
 > Event delivery is best-effort: durability relies on `run/events` cursor replay, so Node consumers should dedupe and order themselves.
 
@@ -289,11 +315,11 @@ interface LaunchOptions extends SpawnOptions {
   client: ClientInfo;             // { name, version }
   capabilities?: ClientCapabilities;
   token?: string;                 // handed to WebSocketTransport
-  requestTimeoutMs?: number;      // default 30s
+  requestTimeoutMs?: number;      // default 30s (not enough for the first store/list — see the §4.3 warning)
 }
 
 interface LaunchedClient {
-  server: SpawnedServer;          // readiness/dataDir/close
+  server: SpawnedServer;          // readiness / dataDir / exited / close
   client: AppServerClient;        // already connected + initialized
   initializeResult: InitializeResult;
   close(): Promise<void>;         // unsubscribe → close transport → kill child → remove temp data-dir
@@ -309,6 +335,7 @@ interface LaunchedClient {
 | `parseReadinessLine(line)` | Parse one line; `null` when not the readiness line |
 | `ReadinessInfo` | `{ host, port, url, protocol_version, version, auth }` |
 | `assertProtocolCompatible(runtimeVersion)` | Throws on mismatch (both versions in the message) |
+| `SpawnExitInfo` | `{ code, signal }` — how the child exited (payload of `exited` / `onExit`) |
 
 `SpawnOptions`:
 
@@ -319,8 +346,13 @@ interface SpawnOptions {
   port?: number;           // default 0 = OS-assigned
   extraArgs?: string[];    // extra CLI args appended after managed ones
   readyTimeoutMs?: number; // default 120s (cold DB init)
+  env?: Record<string, string | undefined>; // merged over process.env
+  cwd?: string;            // child working directory; omitted ⇒ inherits the parent's
+  onExit?: (info: SpawnExitInfo) => void;   // called once when the child exits
 }
 ```
+
+`SpawnedServer.exited` is a `Promise<SpawnExitInfo>` that **never rejects**: it settles whenever the child ends, for any reason — the only entry point for observing a runtime crash.
 
 ### 5.3 Binary resolution
 
@@ -336,12 +368,16 @@ AGENT_STORE_BIN=/opt/flowy-agent-store/flowy-agent-store node your-app.mjs
 - **Data-dir exclusivity**: omit `dataDir` ⇒ auto `mkdtemp`, removed on `close()`; passing your own dir means you own it — the backend single-instance lock fails fast (`already in use by another running Flowy backend`).
 - **Version check**: readiness `protocol_version` mismatch kills the child and reports both versions.
 - **Readiness line**: a single stdout JSON line `{"agent_store":"listening","host":...,"port":...,"url":...,"protocol_version":...,"version":...,"auth":...}`; the SDK scans lines and ignores everything else (tracing shares stdout).
+- **stdout kept drained**: once the readiness line is parsed the SDK keeps reading and discarding the child's stdout (`readline.close()` pauses that stream, so reading must not stop there). Otherwise the runtime blocks forever once its logs fill the OS pipe buffer (~64KB) — long sessions (multi-turn runs, market-tree scans) then hang silently. Post-readiness output is only drained and dropped; this release exposes no log callback.
+- **`env` / `cwd` passthrough**: `env` is **merged over** the parent's `process.env` (not a replacement, so `PATH` etc. stay visible); omitting `cwd` inherits the parent working directory. Both go to `child_process.spawn` unchanged.
+- **Exit is observable**: `SpawnedServer.exited` (`{ code, signal }`) settles whenever the child ends, for **any** reason including a crash or a non-zero code, and `onExit` fires once alongside it. The SDK **never restarts** the runtime; restarting belongs to the caller of `launchClient`.
 
 ### 5.5 Errors and cleanup
 
 - Spawn failure: the error appends the **last 50 stderr lines** (`stderr tail:` section).
 - Timeout: after the default 120s it throws `timed out waiting for the runtime readiness line`.
 - Every failure path runs `child.kill()` → 2s grace → `SIGKILL`, and removes the auto-created data dir.
+- After readiness the promise is already settled: a later `exit` / `error` from the child no longer takes the failure path (it is not reported as a startup failure); such exits (crashes included) surface only through `SpawnedServer.exited` and `onExit`. The SDK never restarts the runtime, and lifetime is owned by the caller via `close()`.
 - Correct usage: `close()` in a `try/finally`; without it the temp dir leaks on process exit (no exit hook installed).
 
 ```ts

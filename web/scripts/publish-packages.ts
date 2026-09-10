@@ -105,16 +105,24 @@ if (!DRY_RUN) {
 }
 
 // 6. Publish (pack first so a tarball failure costs nothing).
+//    Order matters: `sdk.optionalDependencies` point at the runtime package, so
+//    the runtime must already exist on the registry when sdk goes live —
+//    otherwise an `npm i` landing in that window silently installs without a
+//    binary (npm only warns on a failed optional dependency).
 const jobs: Array<{ dir: string; name: string }> = [
   { dir: join(PACKAGES_DIR, "protocol"), name: "@flowy-agent-store/protocol" },
   { dir: join(PACKAGES_DIR, "client"), name: "@flowy-agent-store/client" },
-  { dir: join(PACKAGES_DIR, "sdk"), name: "@flowy-agent-store/sdk" },
   { dir: RUNTIME_PKG, name: `@flowy-agent-store/runtime-${PLATFORM}-${ARCH}` },
+  { dir: join(PACKAGES_DIR, "sdk"), name: "@flowy-agent-store/sdk" },
 ];
 for (const { dir, name } of jobs) {
-  const publishArgs = ["publish", "--access", "public", "--registry", REGISTRY];
-  if (!DRY_RUN) publishArgs.push("--tag", TAG);
+  // `--tag` is mandatory for prereleases even in a rehearsal, and `--dry-run`
+  // is what actually keeps one off the network — without it these packages get
+  // really published, and with no tag they would land on `latest`, pointing
+  // plain `npm i` at a prerelease.
+  const publishArgs = ["publish", "--access", "public", "--registry", REGISTRY, "--tag", TAG];
+  if (DRY_RUN) publishArgs.push("--dry-run");
   run("npm", publishArgs, dir);
-  console.log(`✓ published ${name}@${VERSION} (tag=${TAG})`);
+  console.log(`✓ ${DRY_RUN ? "packed" : "published"} ${name}@${VERSION} (tag=${TAG})`);
 }
-console.log(`\nALL PUBLISHED version=${VERSION} tag=${TAG} platform=${PLATFORM}-${ARCH}`);
+console.log(`\nALL ${DRY_RUN ? "PACKED (dry-run, nothing uploaded)" : "PUBLISHED"} version=${VERSION} tag=${TAG} platform=${PLATFORM}-${ARCH}`);

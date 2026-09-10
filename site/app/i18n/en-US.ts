@@ -110,7 +110,7 @@ const enUS = {
         },
         q2: {
           q: "Which platforms are supported?",
-          a: "The compatibility matrix covers macOS (Apple silicon / Intel), Windows x64 and Linux x64 / arm64. The current release channel ships Windows x64 builds first; other platforms follow as builds publish.",
+          a: "Only Windows x64 builds are published today; macOS (Apple silicon / Intel) and Linux (x64 / arm64) are not available yet and need a separate decision before they open up.",
         },
         q3: {
           q: "Do I need an account?",
@@ -128,14 +128,31 @@ const enUS = {
       s3: { value: "4", label: "Catalog kinds managed" },
       s4: { value: "2", label: "UI and doc languages" },
     },
-    marketStat: "resources in the market",
+    downloadTitle: "Download Flowy Agent Store",
+    downloadSubtitle: "Pick your platform, or browse every build on the downloads page.",
     download: {
+      primaryCta: "Download for {{os}}",
+      detectNote: "Platform detected from your current system",
+      allPlatforms: "All platforms",
       psTitle: "One-line PowerShell install (npm)",
       psHint:
         "Paste this line into PowerShell: installs the npm runtime package and adds agent-store to your user PATH (Node.js / npm required, no admin rights).",
       psView: "View the install script source",
+      manual: "Choose a platform manually",
+      releaseNote: "See the download center for older versions and checksums",
       copy: "Copy command",
+      copied: "Copied",
+      fallbackCta: "Go to releases",
+      unavailableNote: "Only Windows x64 is published; other platforms are not available yet.",
     },
+    platforms: {
+      macos: "macOS",
+      windows: "Windows",
+      linux: "Linux",
+      archAarch64: "Apple silicon",
+      archX8664: "Intel / x64",
+    },
+    marketStat: "resources in the market",
   },
   market: {
     title: "Resource Market",

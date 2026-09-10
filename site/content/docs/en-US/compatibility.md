@@ -2,17 +2,17 @@
 
 ## Platforms
 
-The single-file runtime covers the platforms below; binaries are distributed on the [download center](http://111.170.173.22:10014/downloads/) under per-target names.
+Only **Windows x64** builds are published today; every other platform is not available yet and needs a separate decision before it opens up. Binaries are distributed on the [download center](http://111.170.173.22:10014/downloads/) under per-target names.
 
 | OS | Architecture | Status |
 | --- | --- | --- |
-| macOS | Apple silicon (aarch64) | Supported |
-| macOS | Intel (x86_64) | Supported |
-| Windows | x86_64 | Supported |
-| Linux | x86_64 | Supported |
-| Linux | aarch64 | Supported |
+| Windows | x86_64 | Published |
+| macOS | Apple silicon (aarch64) | Not available |
+| macOS | Intel (x86_64) | Not available |
+| Linux | x86_64 | Not available |
+| Linux | aarch64 | Not available |
 
-> The download button detects your system automatically; all platforms are also available manually on the releases page.
+> The download button detects your system: only Windows x64 gets a direct link; other platforms are routed to the download center.
 
 ## Source formats
 

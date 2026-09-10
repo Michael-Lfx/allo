@@ -1,6 +1,7 @@
 # 插件规范（兼容层）
 
-> 状态：规范 v1（2026-09-09）。
+> 状态：**v1 冻结（2026-09-10，T21）**。冻结范围：字段表（§3）、组件映射（§4）、版本/溯源/幂等（§5）、权限与安全边界（§6）、依赖与冲突（§7），以及机器可校验形态（`docs/agent-store/schemas/plugin.schema.json` + `scripts/check-agent-store-market.mjs`）。
+> 已知偏差见 §10：**P2 已修**；**P1 / P3 / P4 为已接受的 v1 缺口**（v1.1 收口）。此后任何行为变更走 v1.1 增量或 v2，不静默修改本冻结版本。
 > **定位：本规范只定义「兼容层」。** 依 `16` §4 Q5 的决策——**先只做兼容层**——Agent Store **尚未定义原生插件格式**；此处规定的是「Agent Store 当前接受什么、如何归一化、边界在哪」，而非插件作者应当遵循的自有格式。
 > 字段级映射详表见 `02-codebuddy-workbuddy-import-spec.md`（本规范不重复，只固定必填/可选/默认与冲突规则）。
 > 代码事实来源：`crates/backend/nomifun-importer/`、`crates/backend/nomifun-extension/`、`crates/backend/nomifun-api-types/src/app_server.rs`。
@@ -71,7 +72,21 @@
 
 > **字段级唯一正文是 `02-codebuddy-workbuddy-import-spec.md` §4 / §5**（含每个字段的来源与保留清单）；本规范只固定**必填性、默认值与宽容规则**。
 
+> ⚠️ **`strict` 在 v1 未实现**：既不解析该字段，也没有「缺 `plugin.json` 即阻断」的路径（见 §10 P4）。
+
 **冲突规则**：市场条目字段与插件清单字段合并时逐项比对，冲突以**插件清单为准**并记录冲突（不静默覆盖）。
+
+**真实市场已出现、本规范未消费的字段（普查 2026-09-10，T20）**——下列字段在当前实现里**透传但不消费**（宽容解析接受，不参与归一化）。登记在此是为了让 v1 冻结的字段表与真实数据一致；若要真正消费其中某一项，按 v1.1 增量定义：
+
+| 字段 | 出现处 | 现状 |
+| --- | --- | --- |
+| `plugin` | experts 市场内 7 个插件清单 | 透传（未消费） |
+| `members` | 3 个专家团队的插件清单 | 透传（团队扩展以 `teamInfo` 为准） |
+| `license` / `homepage` / `repository` | 少量插件清单 | 透传（未消费） |
+| `distribution` | 1 个插件清单（`{channels, primaryChannel}`） | 透传（未消费） |
+| `settings` | 1 个插件清单（`{defaultAgent, channelManifest}`） | 透传（未消费） |
+
+> 复现：`node scripts/check-agent-store-market.mjs --census --market <name>=<dir>`（输出里 `?` 前缀即本表来源）。市场清单层面的同类字段（如 `owner`）登记在 `18` §11 D3/D7。
 
 ---
 
@@ -112,6 +127,8 @@
 - 权限声明与风险标签**不是沙箱**；不受信内容一律以「来源不可信」对待；
 - 敏感字段（API Key、Token 等）导入时**只建立 schema 与引用**，值由用户后续通过安全存储提供；文档与日志统一写作 `[REDACTED]`。
 
+> ⚠️ **v1 现状（T20 反向验证，2026-09-10）**：`userConfig` 路径符合本节（只建 schema、值写 `[REDACTED]`）；但 **MCP 连接器的 `env` 值会原样写入快照**——§10 登记为 **P1**，是 v1.1 的前置项（需要先有「安全存储注入」这条路才能真正占位化）。
+
 ---
 
 ## 7. 依赖与冲突
@@ -120,6 +137,8 @@
 - 版本使用 **SemVer 范围**；
 - 依赖不可满足时：阻断安装并给出缺失项，不做静默降级；
 - `strict=true` 且插件源缺 `plugin.json` → 阻断（见 `02` §11.1 阻断规则）。
+
+> ⚠️ **v1 现状（T20 反向验证，2026-09-10）**：v1 只**登记**依赖声明（数组与按 kind 分组两种形态均已归一化，见 §10 P2），**不解析 SemVer 范围、也不因依赖不可满足而阻断**（§10 P3）；`strict` 阻断同样未实现（§10 P4）。这三条统一在 v1.1 收口。
 
 ---
 
@@ -134,6 +153,13 @@
 
 按本规范 + `02`，能够**独立复现**一个可被 `market/add` → `market/refresh` → `store/list` → 安装 的插件包，且现有真实市场（experts / skills / connectors）逐条对照无例外。字段级细节以 `02` 为唯一正文。
 
+**机器可校验形式（D2 / T19，2026-09-10）**：`docs/agent-store/schemas/plugin.schema.json` 是本节的机器可读版本（唯一必填 `name`、宽容形态、`avatar` 相对路径约束）。复核方式：
+
+```bash
+node scripts/check-agent-store-market.mjs --market experts=<dir> [--market …]   # 三个真实市场应 0 error
+node scripts/check-agent-store-market.mjs --self-test                          # 非法样例必须被拒并给出字段级定位
+```
+
 ---
 
 ## 10. 已知偏差
@@ -142,6 +168,9 @@
 
 | # | 现象 | 证据 | 影响 | 待决 |
 | --- | --- | --- | --- | --- |
-| — | *当前无登记项* | — | — | — |
+| P1 | **MCP 连接器的 `env` 原样写入快照**（§6 要求敏感值只留引用） | `import.rs:1100-1112`：`config.env` 直接进 `transport.env` 并写入组件 payload；测试 `importer_tests.rs:435-439` 断言明文 `DEMO_TOKEN="demo-token"` 落库。（同 crate 的 `userConfig` 路径是合规的：`import.rs:627-662` 只告警并写 `[REDACTED]`） | API Key / Token 随快照持久化，违反 §6「导入时只建立 schema 与引用」 | ⏸ **建议 ② 改规范（记 v1 现状）+ 列 v1.1 前置**：① 值占位化依赖「用户自己的安全存储注入」这条路径，当前不存在——直接写 `[REDACTED]` 会让 MCP 服务器拿不到凭据而启动失败，是功能回归。**安全优先级最高** |
+| P2 | **数组形式的裸字符串依赖丢名** | 旧 `manifest.rs` 数组分支原样透传 → 消费端 `import.rs:667-670` 取 `name` 失败，回退 `dependency-<index>`；`version` / `marketplace` 也未解析 | 快照里的依赖成了无名条目，用户看不出依赖了什么 | ✅ **已修（2026-09-10，T20）**：新增 `normalize_dependency`（裸字符串 → `{"name": …}`），数组与按 kind 分组两种形态共用；单测 `bare_string_dependencies_keep_their_name`；`cargo test -p nomifun-importer --lib` **25 passed** |
+| P3 | **依赖的 SemVer 范围与「不可满足即阻断」未实现** | 全仓无 `semver` / `VersionReq` 解析；`import.rs:664-681` 只把依赖登记为组件，从不参与安装决策 | §7 的版本范围与阻断语义在 v1 只有「登记」这一半 | ⏸ **建议 ② 改规范（标 v1.1）**：§7 明确「v1 只登记并透传声明；满足性解析与阻断在 v1.1」；① 实现 SemVer 解析是独立特性 |
+| P4 | **`strict` 完全未实现** | `PluginManifest`（`manifest.rs:122+`）无 `strict` 字段，全仓无相关解析或阻断路径 | §3 字段表承诺的「`strict=true` 要求插件源自带 `plugin.json`」与 §7 的阻断规则（`02` §11.1）在 v1 无法兑现 | ⏸ **建议 ② 改规范（标 v1.1）**：§3 / §7 各加一句「v1 未实现 `strict` 阻断」；① 实现需打通导入期阻断路径（与 `MissingIdentity` 同级） |
 
 > 说明：`02` §8 的「自动更新默认值」偏差登记在 `18-marketplace-spec.zh.md` §11（属市场行为，不属插件格式）。
