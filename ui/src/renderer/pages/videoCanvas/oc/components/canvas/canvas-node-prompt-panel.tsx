@@ -18,6 +18,10 @@ import { CanvasChromeButton } from "./canvas-overlay";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { CanvasVideoSettingsPopover, type CanvasVideoSettingKey } from "./canvas-video-settings-popover";
 import { CanvasVideoPromptTools } from "./canvas-video-prompt-tools";
+import { listedRecipeIds, removeRecipeToken, stripRecipeTokens } from "@oc/lib/canvas/craft/tokens";
+import { mergeCraftAttachments } from "@oc/lib/canvas/craft/catalog";
+import { listedSkillIds, removeSkillToken, stripSkillTokens } from "@oc/lib/canvas/canvas-skill-mentions";
+import { CanvasCraftTokenChip, recipeAttachmentChip, skillAttachmentChip } from "./canvas-craft-token-chip";
 import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-picker";
 import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode } from "@oc/types/canvas";
@@ -36,9 +40,10 @@ type CanvasNodePromptPanelProps = {
     mentionReferences?: CanvasResourceReference[];
     onImageSettingsOpenChange?: (open: boolean) => void;
     workspaceMode?: CanvasWorkspaceMode;
+    onOpenLibrary?: () => void;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, onOpenLibrary }: CanvasNodePromptPanelProps) {
     useTranslation();
     const globalConfig = useEffectiveConfig();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -55,6 +60,9 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const hasVideoPromptTools = mode === "video" && videoFrameOptions.length > 0;
     const composerMinHeight = expanded ? 280 : 112;
     const composerHeight = Math.min(expanded ? 440 : 220, Math.max(composerMinHeight, Math.ceil(promptContentHeight + 12)));
+    const visiblePrompt = stripSkillTokens(stripRecipeTokens(prompt));
+    const recipeIds = listedRecipeIds(prompt);
+    const skillIds = listedSkillIds(prompt);
     const isSubmitDisabled = !isRunning && !prompt.trim();
     const canExpandPrompt = mode === "image" || mode === "video";
     const isPortraitTexture = mode === "image" && Boolean(node.metadata?.portraitTexture);
@@ -73,15 +81,19 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         setPresetOpen(false);
     }, [node.id]);
 
-    const updatePrompt = (value: string) => {
+    const commitPrompt = (value: string) => {
         setPrompt(value);
         onPromptChange(node.id, value);
-        if (/(^|\s)\/[\p{L}\p{N}_-]*$/u.test(value)) setPresetOpen(true);
+    };
+
+    const updateVisiblePrompt = (visible: string) => {
+        commitPrompt(mergeCraftAttachments(visible, listedRecipeIds(prompt), listedSkillIds(prompt)));
+        if (/(^|\s)\/[\p{L}\p{N}_-]*$/u.test(stripSkillTokens(stripRecipeTokens(visible)))) setPresetOpen(true);
     };
 
     const applyPreset = (preset: CanvasPromptPreset) => {
-        const withoutSlash = prompt.replace(/(^|\s)\/[\p{L}\p{N}_-]*$/u, "$1").trimEnd();
-        updatePrompt(withoutSlash ? `${withoutSlash}\n${preset.prompt}` : preset.prompt);
+        const withoutSlash = visiblePrompt.replace(/(^|\s)\/[\p{L}\p{N}_-]*$/u, "$1").trimEnd();
+        commitPrompt(mergeCraftAttachments(withoutSlash, [...recipeIds, preset.id], skillIds));
     };
 
     const submit = () => {
@@ -104,11 +116,34 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
             onWheel={(event) => event.stopPropagation()}
         >
             {videoTools}
+            {recipeIds.length || skillIds.length ? (
+                <div className="flex flex-wrap items-center gap-1.5 px-0.5 pb-1">
+                    {recipeIds.map((id) => (
+                        <CanvasCraftTokenChip
+                            key={`recipe:${id}`}
+                            chip={recipeAttachmentChip(id)}
+                            theme={theme}
+                            onRemove={() => commitPrompt(removeRecipeToken(prompt, id))}
+                        />
+                    ))}
+                    {skillIds.map((id) => {
+                        const reference = skillReferences.find((item) => item.skill?.skill_id === id);
+                        return (
+                            <CanvasCraftTokenChip
+                                key={`skill:${id}`}
+                                chip={skillAttachmentChip(id, reference?.title || reference?.label, reference?.previewUrl)}
+                                theme={theme}
+                                onRemove={() => commitPrompt(removeSkillToken(prompt, id))}
+                            />
+                        );
+                    })}
+                </div>
+            ) : null}
             <div className="canvas-composer-field overflow-hidden" style={{ height: composerHeight, background: theme.spatial.surface }}>
                 <CanvasResourceMentionTextarea
-                    value={prompt}
+                    value={visiblePrompt}
                     references={resolvedMentions}
-                    onChange={updatePrompt}
+                    onChange={updateVisiblePrompt}
                     containerClassName="min-h-0 h-full"
                     className="thin-scrollbar h-full w-full resize-none overflow-y-auto border-none bg-transparent px-2.5 py-2 text-[var(--fs-body)] leading-5 !outline-none placeholder:text-current placeholder:opacity-35"
                     style={{ color: theme.node.text }}
@@ -122,7 +157,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 {isPortraitTexture ? (
                     <CanvasPortraitTexturePopover value={node.metadata?.portraitTexture} placement="topLeft" onChange={(portraitTexture) => onConfigChange(node.id, { portraitTexture })} />
                 ) : (
-                    <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={presetOpen} onOpenChange={setPresetOpen} onSelect={applyPreset} compact />
+                    <CanvasPresetPicker mode={mode} open={presetOpen} onOpenChange={setPresetOpen} onSelect={applyPreset} onOpenLibrary={onOpenLibrary} compact />
                 )}
                 <div className="min-w-0 flex-1">
                     <ModelPicker

@@ -11,6 +11,8 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
 import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
+import { expandRecipeTokens } from "@oc/lib/canvas/craft/tokens";
+import { canvasVideoSessionProps } from "@oc/lib/canvas/craft/video-telemetry";
 import { modelPromptLengthError } from "@oc/lib/model-capabilities";
 import { generationFailureMetadata, logCanvasGenerationFailure } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
@@ -19,6 +21,7 @@ import type { GenerationTask } from "@oc/services/api/task-center";
 import { useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
 import { enrichPromptWithVimaxVoiceGuards } from "@renderer/pages/videoCanvas/lib/alloVimaxBridge";
+import { trackVideoSessionEvent } from "@renderer/utils/analytics/productFunnel";
 
 import { executeImageGeneration } from "./canvas-image-generation-executor";
 import { executeAudioGeneration, executeVideoGeneration } from "./canvas-media-generation-executors";
@@ -153,7 +156,7 @@ export function useCanvasGenerationExecutor({
                 return;
             }
 
-            const expandedPrompt = expandSkillMentions(rawGenerationContext.prompt, mergeSkillLists(addedSkills, collectCanvasSkills(nodesRef.current)));
+            const expandedPrompt = expandSkillMentions(expandRecipeTokens(rawGenerationContext.prompt), mergeSkillLists(addedSkills, collectCanvasSkills(nodesRef.current)));
             let effectivePrompt = expandedPrompt.trim();
             if (mode === "video") {
                 effectivePrompt = enrichPromptWithVimaxVoiceGuards(
@@ -268,14 +271,30 @@ export function useCanvasGenerationExecutor({
             };
 
             try {
+                if (mode === "video") {
+                    trackVideoSessionEvent("render_started", projectId, canvasVideoSessionProps(projectId, nodesRef.current, {
+                        video_model: generationConfig.model || null,
+                    }));
+                }
                 if (mode === "image") await executeImageGeneration(execution);
-                else if (mode === "video") await executeVideoGeneration(execution);
+                else if (mode === "video") {
+                    await executeVideoGeneration(execution);
+                    trackVideoSessionEvent("film_succeeded", projectId, canvasVideoSessionProps(projectId, nodesRef.current, {
+                        video_model: generationConfig.model || null,
+                    }));
+                }
                 else if (mode === "audio") await executeAudioGeneration(execution);
                 else await executeTextGeneration(execution);
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
                 logCanvasGenerationFailure("generate failed", error);
                 const failure = generationFailureMetadata(error, prompt);
+                if (mode === "video") {
+                    trackVideoSessionEvent("film_failed", projectId, canvasVideoSessionProps(projectId, nodesRef.current, {
+                        video_model: generationConfig.model || null,
+                        error_code: failure.generationErrorCode || "generation_failed",
+                    }));
+                }
                 if (options?.waitForTaskCapacity && isGenerationTaskCapacityError(error)) {
                     setNodes((current) => current.map((node) => {
                         if (node.id !== nodeId && !pendingNodeIds.includes(node.id)) return node;

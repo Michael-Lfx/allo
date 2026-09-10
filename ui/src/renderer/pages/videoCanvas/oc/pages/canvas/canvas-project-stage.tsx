@@ -12,6 +12,7 @@ import { CanvasFileDropOverlay } from "@oc/components/canvas/canvas-file-drop-ov
 import { CanvasToolbar } from "@oc/components/canvas/canvas-toolbar";
 import { getContextResourceNodes } from "@oc/lib/canvas/canvas-resource-references";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasToolMode, type CanvasWorkspaceMode, type Position, type ViewportTransform } from "@oc/types/canvas";
+import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { CanvasBackgroundMode, CanvasTheme } from "@oc/lib/canvas-theme";
 import type { CanvasAppearance } from "@oc/lib/canvas/canvas-appearance";
 import type { GenerationTask } from "@oc/services/api/task-center";
@@ -69,6 +70,8 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     openAssetsAtPosition: ReturnType<typeof useCanvasUpload>["openAssetsAtPosition"];
     openProjectAssets: (initialCategory?: string, position?: Position) => void;
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryOpen: Dispatch<SetStateAction<boolean>>;
+    setLibraryTab: Dispatch<SetStateAction<LibraryTab>>;
     renderModel: CanvasRenderModel;
     historyActions: CanvasHistoryActions;
     assistant: CanvasAssistantState;
@@ -159,6 +162,8 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         openAssetsAtPosition,
         openProjectAssets,
         setStylePickerOpen,
+        setLibraryOpen,
+        setLibraryTab,
         renderModel,
         historyActions,
         assistant,
@@ -322,6 +327,10 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onAddAudio={() => createNode(CanvasNodeType.Audio)}
                                     onAddText={() => createNode(CanvasNodeType.Text)}
                                     onChooseStyle={() => setStylePickerOpen(true)}
+                                    onOpenLibrary={() => {
+                                        setLibraryTab("recipe");
+                                        setLibraryOpen(true);
+                                    }}
                                     onAddScript={() => createNode(CanvasNodeType.Script)}
                                     onAddFrame={() => createNode(CanvasNodeType.Frame)}
                                     onAddFolder={createFolder}

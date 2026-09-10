@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import { AlertCircle, BookOpenCheck, Bookmark, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Download, RefreshCw, Replace, ScanSearch, Settings2, Square, Star, Type, Video } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { craftCover, PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/catalog";
+import { CanvasStyleCoverSwatch } from "@oc/components/canvas/canvas-style-cover";
 import { canvasNodeDisplayUrl } from "@oc/lib/canvas/canvas-media-id";
 import { canvasNodeVideoPreviewUrl } from "@oc/lib/canvas/canvas-media-preview";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -812,66 +814,23 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
 
 function SkillContent({ node, theme }: NodeContentRendererProps) {
     const skill = node.metadata?.skillSnapshot;
-    const tags = skill?.tags?.slice(0, 4) || [];
-    const template = skill?.template || node.metadata?.content || "";
+    const playbook = PLAYBOOK_BY_QUALIFIED.get(skill?.qualifiedId || node.metadata?.skillId || "");
+    const cover = skill?.coverUrl ? { ...craftCover(playbook?.coverLookId || "cinematic"), image: skill.coverUrl } : craftCover(playbook?.coverLookId || "cinematic");
+    const job = skill?.jobToBeDone || skill?.description || "";
+    const version = skill?.semver || (skill?.version ? `v${skill.version}` : "");
 
     return (
-        <div className="flex h-full w-full flex-col overflow-hidden p-4" style={{ color: theme.node.text }}>
-            <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                        <span className="grid size-8 shrink-0 place-items-center rounded-xl" style={{ background: `${theme.node.activeStroke}18`, color: theme.node.activeStroke }}>
-                            <BookOpenCheck className="size-4" />
-                        </span>
-                        <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold" title={skill?.name || node.title || canvasT("videoCanvas.node.skill", "技能")}>{skill?.name || node.title || canvasT("videoCanvas.node.skill", "技能")}</div>
-                            <div className="mt-0.5 flex items-center gap-1.5 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>
-                                <span>{skillCategoryLabel(skill?.category)}</span>
-                                <span>·</span>
-                                <span>{skillOutputModeLabel(skill?.outputMode)}</span>
-                                {skill?.version ? (
-                                    <>
-                                        <span>·</span>
-                                        <span>v{skill.version}</span>
-                                    </>
-                                ) : null}
-                            </div>
-                        </div>
-                    </div>
+        <div className="flex h-full w-full overflow-hidden" style={{ color: theme.node.text }}>
+            <CanvasStyleCoverSwatch cover={cover} className="h-full w-[42%] shrink-0" alt={skill?.name || node.title || canvasT("videoCanvas.node.skill", "技能")} />
+            <div className="flex min-w-0 flex-1 flex-col justify-center px-3 py-2">
+                <div className="truncate text-sm font-semibold" title={skill?.name || node.title}>{skill?.name || node.title || canvasT("videoCanvas.node.skill", "技能")}</div>
+                <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide" style={{ color: theme.node.muted }}>
+                    {canvasT("videoCanvas.craft.kindPlaybook", "手册")}{version ? ` · ${version}` : ""}
                 </div>
-            </div>
-
-            {skill?.description ? <div className="mt-3 line-clamp-2 text-xs leading-5" style={{ color: theme.node.muted }}>{skill.description}</div> : null}
-
-            <div className="thin-scrollbar mt-3 min-h-0 flex-1 overflow-hidden rounded-xl border px-3 py-2 text-xs leading-5" style={{ borderColor: theme.node.stroke, background: theme.node.panel, color: theme.node.text }}>
-                <div className="mb-1 font-semibold opacity-55">{canvasT("videoCanvas.nodeUi.template", "模板")}</div>
-                <div className="line-clamp-4 whitespace-pre-wrap break-words">{template || canvasT("videoCanvas.nodeUi.noSkillTemplate", "未配置技能模板")}</div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap gap-1.5">
-                {tags.length ? tags.map((tag) => (
-                    <span key={tag} className="rounded-md border px-1.5 py-0.5 text-[var(--fs-tiny)]" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
-                        {tag}
-                    </span>
-                )) : <span className="text-[var(--fs-label)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.nodeUi.skillConnectHint", "连接到图片、视频、音频或文本节点后生效")}</span>}
+                {job ? <div className="mt-1 line-clamp-3 text-[11px] leading-4" style={{ color: theme.node.muted }}>{job}</div> : null}
             </div>
         </div>
     );
-}
-
-function skillCategoryLabel(category?: string) {
-    if (category === "writing") return canvasT("videoCanvas.nodeUi.skillCatWriting", "剧情");
-    if (category === "storyboard") return canvasT("videoCanvas.nodeUi.skillCatStoryboard", "分镜");
-    if (category === "image") return canvasT("videoCanvas.nodeUi.skillCatImage", "生图");
-    if (category === "video") return canvasT("videoCanvas.nodeUi.skillCatVideo", "视频");
-    return canvasT("videoCanvas.nodeUi.skillCatGeneral", "通用");
-}
-
-function skillOutputModeLabel(mode?: string) {
-    if (mode === "json") return "JSON";
-    if (mode === "image_prompt") return canvasT("videoCanvas.nodeUi.skillModeImagePrompt", "生图提示词");
-    if (mode === "workflow") return canvasT("videoCanvas.nodeUi.skillModeWorkflow", "工作流");
-    return canvasT("videoCanvas.nodeUi.skillModeText", "文本");
 }
 
 function ResourceLabelBadge({ reference, theme }: { reference: CanvasResourceReference; theme: CanvasTheme }) {

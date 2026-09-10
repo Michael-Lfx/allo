@@ -46,6 +46,30 @@ const BUILTIN_SKILLS: &[(&str, &str)] = &[
         "short-drama",
         include_str!("../../skills/builtin/short-drama/SKILL.md"),
     ),
+    (
+        "character-bible",
+        include_str!("../../skills/builtin/character-bible/SKILL.md"),
+    ),
+    (
+        "scene-bible",
+        include_str!("../../skills/builtin/scene-bible/SKILL.md"),
+    ),
+    (
+        "script-to-board",
+        include_str!("../../skills/builtin/script-to-board/SKILL.md"),
+    ),
+    (
+        "replica-ref",
+        include_str!("../../skills/builtin/replica-ref/SKILL.md"),
+    ),
+    (
+        "multi-shot-cut",
+        include_str!("../../skills/builtin/multi-shot-cut/SKILL.md"),
+    ),
+    (
+        "tail-to-head",
+        include_str!("../../skills/builtin/tail-to-head/SKILL.md"),
+    ),
 ];
 
 /// Qualified id of the default director injected for idea-driven films when
@@ -71,9 +95,10 @@ mod tests {
     #[test]
     fn all_builtins_parse() {
         let skills = load_builtin_skills().unwrap();
-        assert_eq!(skills.len(), 10);
+        assert_eq!(skills.len(), 16);
         assert!(skills.iter().any(|s| s.name == "luxury-tvc"));
         assert!(skills.iter().any(|s| s.name == "product-demo"));
+        assert!(skills.iter().any(|s| s.name == "character-bible"));
         assert!(skills.iter().all(|s| s.compatible_modes.is_empty()));
     }
 

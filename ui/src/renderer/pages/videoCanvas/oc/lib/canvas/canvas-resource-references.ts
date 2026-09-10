@@ -5,6 +5,8 @@ import { canvasNodeDisplayUrl, rewriteCanvasDisplayUrl, usableCanvasSessionUrl }
 import { canvasNodeVideoPreviewUrl } from "@oc/lib/canvas/canvas-media-preview";
 import { getNodeResourceKind } from "@oc/lib/canvas/node-registry";
 import { skillFromCanvasNode } from "@oc/lib/canvas/canvas-skill-mentions";
+import { craftStillUrl } from "@oc/lib/canvas/craft/covers";
+import { PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/playbooks";
 import type { Skill } from "@oc/services/api/skills";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
 
@@ -134,6 +136,13 @@ function skillResourceText(node: CanvasNodeData) {
 
 /** Display src for mention chips and video frame thumbs. Never a dead blob or stale-port media URL. */
 export function canvasResourceNodePreviewUrl(node: CanvasNodeData): string {
+    if (node.type === CanvasNodeType.Skill) {
+        const cover = node.metadata?.skillSnapshot?.coverUrl;
+        if (cover) return rewriteCanvasDisplayUrl(cover) || usableCanvasSessionUrl(cover);
+        const skillId = node.metadata?.skillId || node.metadata?.skillSnapshot?.id || "";
+        const coverId = PLAYBOOK_BY_QUALIFIED.get(skillId)?.coverLookId;
+        return coverId ? craftStillUrl(coverId) : "";
+    }
     if (node.metadata?.workflowKind === "character") {
         return rewriteCanvasDisplayUrl(node.metadata.characterCoverUrl) || canvasNodeDisplayUrl(node) || usableCanvasSessionUrl(node.metadata.characterCoverUrl);
     }

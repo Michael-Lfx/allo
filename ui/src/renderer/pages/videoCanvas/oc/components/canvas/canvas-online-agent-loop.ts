@@ -11,7 +11,7 @@ import { compileCanvasRunOps, critiqueCanvasOutputs, inspectCanvasIntent, isCanv
 import { CREATION_INSPECT_TOOLS, inspectArgsForCreationTool } from "@oc/lib/canvas/creation-agent-intent";
 import { buildCanvasAgentObservation, CANVAS_AGENT_CODES, compactWriteToolData, observationPromptBlock } from "@oc/lib/canvas/canvas-agent-observation";
 import { waitCanvasAgentGeneration } from "@oc/lib/canvas/canvas-agent-wait";
-import { collectCanvasSkills } from "@oc/lib/canvas/canvas-skill-mentions";
+import { getAgentPlaybook, listAgentPlaybooks } from "@oc/lib/canvas/craft/agent-catalog";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { requestCanvasAgentTurn, type CanvasAgentInputMessage as ResponseInputMessage, type CanvasAgentToolCall as ResponseToolCall } from "@oc/lib/canvas/canvas-agent-llm";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
@@ -271,19 +271,18 @@ export function useCanvasOnlineAgentLoop({
             const expectedStateHash = typeof args.expectedStateHash === "string" ? args.expectedStateHash : "";
             if (canvasAgentStateHashBlocksWrite(expectedStateHash, buildCanvasAgentContext(current).stateHash, name, args)) return { ok: false, message: "画布状态已变化，请重新 canvas_inspect 后再写入。" };
             if (name === "canvas_list_skills") {
-                const skills = collectCanvasSkills(current.nodes);
-                const data = skills.map((skill) => ({ skillId: skill.skill_id, name: skill.skill_name, description: skill.description, tag: skill.tag }));
-                return { ok: true, message: data.length ? "已列出当前可用技能。" : "当前画布没有技能节点。", data };
+                const data = listAgentPlaybooks(current.nodes);
+                return { ok: true, message: data.length ? "已列出当前可用手册。" : "没有可用手册。", data };
             }
             if (name === "canvas_get_skill") {
                 const skillId = typeof args.skillId === "string" ? args.skillId : "";
-                const nameQuery = typeof args.name === "string" ? args.name.trim().toLocaleLowerCase() : "";
-                const skill = collectCanvasSkills(current.nodes).find((item) => item.skill_id === skillId || item.skill_name.toLocaleLowerCase() === nameQuery);
-                if (!skill) return { ok: false, message: "未找到画布技能，请先调用 canvas_list_skills。" };
+                const nameQuery = typeof args.name === "string" ? args.name : "";
+                const skill = getAgentPlaybook(current.nodes, skillId, nameQuery);
+                if (!skill) return { ok: false, message: "未找到手册，请先 canvas_list_skills。" };
                 return {
                     ok: true,
-                    message: `已按需加载技能「${skill.skill_name}」。`,
-                    data: { skillId: skill.skill_id, name: skill.skill_name, description: skill.description, instruction: skill.instruction || skill.description, version: skill.update_time },
+                    message: `已加载手册「${skill.name}」。`,
+                    data: { skillId: skill.skillId, name: skill.name, description: skill.description, instruction: skill.instruction, version: skill.version },
                 };
             }
             if (name === "canvas_inspect" || name === "canvas_get_state" || name === "canvas_get_context" || (CREATION_INSPECT_TOOLS as readonly string[]).includes(name)) {

@@ -63,11 +63,13 @@ import { useCanvasContainerSize, useCanvasStylePresetSync } from "./use-canvas-s
 import { useCanvasChromeEffects } from "./use-canvas-chrome-effects";
 import { CanvasProjectTopChrome } from "./canvas-project-top-chrome";
 import { CanvasProjectStage } from "./canvas-project-stage";
+import { CanvasProjectEmptyState } from "./canvas-project-empty-state";
 import { CanvasProjectAssistantColumn } from "./canvas-project-assistant-column";
 import { CanvasProjectOverlays } from "./canvas-project-overlays";
 import { CanvasProjectCanvasChrome } from "./canvas-project-chrome";
 import { CanvasProjectDialogs } from "./canvas-project-dialogs";
-import { CanvasProjectEmptyState } from "./canvas-project-empty-state";
+import { useCanvasCraftLibrary } from "./use-canvas-craft-library";
+import { CanvasLibrarySheet } from "@oc/components/canvas/canvas-library-sheet";
 import {
     CanvasNodeType,
     type CanvasAssistantSession,
@@ -172,6 +174,10 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         drawingNodeId,
         setDrawingNodeId,
         setStylePickerOpen,
+        libraryOpen,
+        setLibraryOpen,
+        libraryTab,
+        setLibraryTab,
         setInfoNodeId,
         scriptScrollTopById,
         directorNodeId,
@@ -572,6 +578,14 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         getCanvasCenter,
         setStylePickerOpen,
     });
+    const { applyRecipe, applyPlaybook, applyGraph, installHub } = useCanvasCraftLibrary({
+        ...canvasSetters,
+        ...canvasRefs,
+        getCanvasCenter,
+        setLibraryOpen,
+        setLibraryTab,
+        fitCanvasSelection,
+    });
     const { applyDirectorOutput, applyDirectorCameraGrid, createDirectorShot, openDirectorWorkbench, saveDirectorScene } = useCanvasDirector({
         ...canvasSetters,
         ...canvasRefs,
@@ -878,6 +892,11 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                 openAgent("online");
             }}
             onStartFreeform={() => updateProject(projectId, { starterMode: "freeform" })}
+            onApplyGraph={applyGraph}
+            onOpenLibrary={() => {
+                setLibraryTab("graph");
+                setLibraryOpen(true);
+            }}
         />
     );
     if (!projectLoaded) return <CanvasRefreshShell />;
@@ -929,6 +948,15 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         activeStylePresetId={activeStylePresetId}
                         selectCanvasStyle={selectCanvasStyle}
                         projectShare={projectShare}
+                    />
+                    <CanvasLibrarySheet
+                        open={libraryOpen}
+                        tab={libraryTab}
+                        onClose={() => setLibraryOpen(false)}
+                        onApplyRecipe={applyRecipe}
+                        onApplyPlaybook={(playbook) => void applyPlaybook(playbook)}
+                        onApplyGraph={applyGraph}
+                        onInstallHub={(skill) => void installHub(skill)}
                     />
                     <div className="relative flex min-h-0 min-w-0 flex-1">
                         <CanvasProjectStage

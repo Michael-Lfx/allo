@@ -138,6 +138,10 @@ export type CanvasSkillSnapshot = {
     outputContract: string;
     version: number;
     tags: string[];
+    qualifiedId?: string;
+    semver?: string;
+    coverUrl?: string;
+    jobToBeDone?: string;
 };
 
 export type CanvasNodeMetadata = {
@@ -285,6 +289,7 @@ export type CanvasNodeMetadata = {
     skillId?: string;
     skillVersion?: number;
     skillSnapshot?: CanvasSkillSnapshot;
+    projectPlaybook?: boolean;
     storyboard?: StoryboardData;
     storyboardShotDuration?: StoryboardShotDuration;
     storyboardShotCount?: StoryboardShotCount;

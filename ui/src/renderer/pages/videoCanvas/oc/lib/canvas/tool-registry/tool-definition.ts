@@ -39,6 +39,7 @@ export type ToolbarHandlers = {
     onAddFolder: () => void;
     onAddDrawing: () => void;
     onChooseStyle: () => void;
+    onOpenLibrary: () => void;
     onOpenDirector: () => void;
     /**
      * 扩展节点（Markdown / SVG / HTML / 全景 / 对比 / 图表 / 调色）统一走这一个入口。
@@ -123,12 +124,12 @@ export type ToolContext = {
 /** 添加节点菜单只依赖创建动作，避免右键菜单为工具栏状态补无意义字段。 */
 export type AddNodeMenuContext = {
     /**
-     * 已不再分流菜单。真实分叉是 compactCreateMenu（创作 IR 在场）。
+     * 已不再分流菜单。真实分叉是 compactCreateMenu（创作 IR 在场时隐藏加工类扩展节点）。
      * 字段保留以免二十余处调用方一起改；解析时忽略它。
      */
     workspaceMode?: CanvasWorkspaceMode;
     isProjectLinked: boolean;
-    /** 创作项目：主网格只留片原语，其余进「更多」。专业画布不传。 */
+    /** 创作项目：隐藏 Markdown/图表等加工节点。主网格片原语与专业画布相同。 */
     compactCreateMenu?: boolean;
     handlers: Pick<ToolbarHandlers,
         | "onAddText"
@@ -140,6 +141,7 @@ export type AddNodeMenuContext = {
         | "onAddFolder"
         | "onAddDrawing"
         | "onChooseStyle"
+        | "onOpenLibrary"
         | "onOpenDirector"
         | "onAddExtensionNode"
         | "onUpload"
@@ -177,7 +179,8 @@ export type ToolDefinition = {
 export type AddNodeMenuCommand = {
     id: string;
     label: string | (() => string);
-    icon: ReactNode;
+    /** 与 label 一样允许惰性解析，避免节点注册表尚未填完时把 icon 快照成 null。 */
+    icon: ReactNode | (() => ReactNode);
     badge?: string | (() => string);
     section: "node" | "extension" | "project" | "resource";
     defaultOrder: number;
@@ -185,10 +188,11 @@ export type AddNodeMenuCommand = {
     run: (ctx: AddNodeMenuContext) => void;
 };
 
-/** resolveAddNodeMenuCommands 解析后的命令（label/badge 已是具体字符串） */
-export type ResolvedAddNodeMenuCommand = Omit<AddNodeMenuCommand, "label" | "badge"> & {
+/** resolveAddNodeMenuCommands 解析后的命令（label/badge/icon 已是具体值） */
+export type ResolvedAddNodeMenuCommand = Omit<AddNodeMenuCommand, "label" | "badge" | "icon"> & {
     label: string;
     badge?: string;
+    icon: ReactNode;
 };
 
 /** 用户偏好——排序与显隐 */

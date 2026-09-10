@@ -34,6 +34,7 @@ export function CanvasToolbar({
     onAddAudio,
     onAddText,
     onChooseStyle,
+    onOpenLibrary,
     onAddScript,
     onAddFrame,
     onAddFolder,
@@ -69,6 +70,7 @@ export function CanvasToolbar({
     onAddAudio: () => void;
     onAddText: () => void;
     onChooseStyle: () => void;
+    onOpenLibrary: () => void;
     onAddScript: () => void;
     onAddFrame: () => void;
     onAddFolder: () => void;
@@ -140,6 +142,7 @@ export function CanvasToolbar({
         onAddFolder,
         onAddDrawing,
         onChooseStyle,
+        onOpenLibrary,
         onOpenDirector,
         onAddExtensionNode,
         onUpload,

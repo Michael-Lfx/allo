@@ -1,4 +1,5 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, ReactElement, ReactNode } from "react";
+import { cloneElement, isValidElement } from "react";
 import { useTranslation } from "react-i18next";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
@@ -28,27 +29,19 @@ export function CanvasCreateMenu({ commands, compactCreateMenu = false }: { comm
 
     return (
         <div>
-            {projectCommands.length ? (
-                <div className="mb-1.5 flex flex-wrap justify-end gap-0.5">
-                    {projectCommands.map((command) => (
-                        <button
-                            key={command.id}
-                            type="button"
-                            className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-medium outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8 [&_svg]:size-3"
-                            style={{ color: theme.node.muted, fontSize: "var(--fs-label)", "--tw-ring-color": theme.node.muted } as CSSProperties}
-                            title={command.label}
-                            onMouseDown={(event) => event.stopPropagation()}
-                            onClick={command.onClick}
-                        >
-                            {command.icon}
-                            <span className="whitespace-nowrap">{command.label}</span>
-                        </button>
-                    ))}
-                </div>
+            {nodeCommands.length ? (
+                <>
+                    <MenuSection title={canvasT("videoCanvas.menu.createNodes", "创作节点")} color={theme.node.muted} />
+                    <CanvasCreateCommandGrid commands={nodeCommands} variant="node" />
+                </>
             ) : null}
 
-            <MenuSection title={canvasT("videoCanvas.menu.createNodes", "创作节点")} color={theme.node.muted} />
-            <CanvasCreateCommandGrid commands={nodeCommands} variant="node" />
+            {projectCommands.length ? (
+                <>
+                    <MenuSection title={canvasT("videoCanvas.menu.workbench", "工作台")} color={theme.node.muted} spaced={Boolean(nodeCommands.length)} />
+                    <CanvasCreateCommandGrid commands={projectCommands} variant="resource" />
+                </>
+            ) : null}
 
             {extensionCommands.length ? (
                 <>
@@ -57,8 +50,12 @@ export function CanvasCreateMenu({ commands, compactCreateMenu = false }: { comm
                 </>
             ) : null}
 
-            <MenuSection title={canvasT("videoCanvas.menu.importResources", "导入资源")} color={theme.node.muted} spaced />
-            <CanvasCreateCommandGrid commands={resourceCommands} variant="resource" />
+            {resourceCommands.length ? (
+                <>
+                    <MenuSection title={canvasT("videoCanvas.menu.importResources", "导入资源")} color={theme.node.muted} spaced />
+                    <CanvasCreateCommandGrid commands={resourceCommands} variant="resource" />
+                </>
+            ) : null}
         </div>
     );
 }
@@ -86,14 +83,14 @@ function CanvasCreateCommandGrid({ commands, variant }: { commands: CanvasCreate
                     {variant === "node" ? (
                         <>
                             <span className="flex w-full min-w-0 items-center justify-between gap-1">
-                                <span className="grid size-4 shrink-0 place-items-center opacity-60 group-hover:opacity-100 [&_svg]:size-4">{command.icon}</span>
+                                <CreateCommandIcon icon={command.icon} />
                                 {command.badge ? <span className="shrink-0 font-medium leading-none" style={{ color: theme.node.muted, fontSize: "var(--fs-label)" }}>{command.badge}</span> : null}
                             </span>
                             <span className="block w-full overflow-hidden text-ellipsis whitespace-nowrap font-medium leading-none" style={{ fontSize: "var(--fs-label)" }}>{command.label}</span>
                         </>
                     ) : (
                         <>
-                            <span className="grid size-4 shrink-0 place-items-center opacity-60 group-hover:opacity-100 [&_svg]:size-3.5">{command.icon}</span>
+                            <CreateCommandIcon icon={command.icon} resource />
                             <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-medium leading-none" style={{ fontSize: "var(--fs-label)" }}>{command.label}</span>
                         </>
                     )}
@@ -101,6 +98,13 @@ function CanvasCreateCommandGrid({ commands, variant }: { commands: CanvasCreate
             ))}
         </div>
     );
+}
+
+function CreateCommandIcon({ icon, resource = false }: { icon: ReactNode; resource?: boolean }) {
+    const glyph = isValidElement(icon)
+        ? cloneElement(icon as ReactElement<{ size?: number; strokeWidth?: number }>, { size: resource ? 14 : 16, strokeWidth: 1.75 })
+        : icon;
+    return <span className={cn("canvas-create-command-icon", resource && "is-resource")}>{glyph}</span>;
 }
 
 function MenuSection({ title, color, spaced = false }: { title: string; color: string; spaced?: boolean }) {

@@ -56,6 +56,34 @@
     height: 14px;
 }
 
+.canvas-create-command-icon {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    place-items: center;
+    overflow: visible;
+    opacity: 0.72;
+}
+
+.group:hover .canvas-create-command-icon,
+.group:focus-visible .canvas-create-command-icon {
+    opacity: 1;
+}
+
+.canvas-create-command-icon svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+    overflow: visible;
+    stroke: currentColor;
+}
+
+.canvas-create-command-icon.is-resource svg {
+    width: 14px;
+    height: 14px;
+}
+
 .canvas-menu-row-detail {
     display: block;
     margin-top: 1px;
@@ -150,6 +178,46 @@
     min-width: 0;
     align-items: center;
     gap: 4px;
+}
+
+.canvas-craft-token-chip {
+    display: inline-flex;
+    max-width: 13rem;
+    height: 32px;
+    align-items: center;
+    gap: 7px;
+    overflow: hidden;
+    padding: 2px 4px 2px 2px;
+    border: 1px solid;
+    border-radius: 8px;
+    box-shadow: 0 0.5px 1px color-mix(in srgb, currentColor 10%, transparent);
+    user-select: none;
+}
+
+.canvas-craft-token-chip--inline {
+    margin: 0 3px;
+    vertical-align: middle;
+}
+
+.canvas-craft-token-chip-remove {
+    display: grid;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    place-items: center;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.4;
+    cursor: pointer;
+}
+
+.canvas-craft-token-chip-remove:hover,
+.canvas-craft-token-chip-remove:focus-visible {
+    opacity: 0.92;
+    background: color-mix(in srgb, currentColor 10%, transparent);
+    outline: none;
 }
 
 .canvas-send-token {

@@ -1,15 +1,18 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Search, WandSparkles } from "lucide-react";
+import { LayoutGrid, Search, WandSparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
-import { canvasThemes } from "@oc/lib/canvas-theme";
+import { CanvasStyleCoverSwatch } from "@oc/components/canvas/canvas-style-cover";
+import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { anchoredOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
+import { craftCover, craftText, recipesForMode, RECIPE_BY_ID, RECIPE_GROUPS, recipeMediaKind, type CraftRecipe } from "@oc/lib/canvas/craft/catalog";
+import { recipeToken } from "@oc/lib/canvas/craft/tokens";
+import { readCraftRecents, rememberCraftRecent } from "@oc/lib/canvas/craft/recents";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasGenerationMode } from "@oc/types/canvas";
-import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 
 export type CanvasPromptPreset = {
     id: string;
@@ -17,74 +20,23 @@ export type CanvasPromptPreset = {
     description: string;
     prompt: string;
     modes: CanvasGenerationMode[];
-    source: "builtin" | "skill";
+    source: "builtin";
 };
-
-const BUILTIN_PRESETS: CanvasPromptPreset[] = [
-    {
-        id: "character-sheet",
-        name: "角色设定图",
-        description: "正面、侧面、背面与表情参考，锁定角色一致性",
-        prompt: "生成角色设定图：保持同一角色身份、五官、发型、服装和体态一致，包含正面、侧面、背面和关键表情参考，背景简洁，便于后续镜头复用。",
-        modes: ["image"],
-        source: "builtin",
-    },
-    {
-        id: "multi-angle",
-        name: "多机位视角",
-        description: "围绕同一主体生成连续、可衔接的机位变化",
-        prompt: "围绕同一主体设计多机位画面，保持人物、服装、场景和光线一致，分别给出远景、全景、中景、近景、特写、侧面、背面和俯拍视角，镜头之间具有连续性。",
-        modes: ["image", "video"],
-        source: "builtin",
-    },
-    {
-        id: "next-shot",
-        name: "画面推演",
-        description: "推演当前画面的前后动作与镜头衔接",
-        prompt: "基于当前画面推演下一个连续镜头：保持角色和场景一致，明确主体接下来的动作、视线、环境变化、镜头运动和自然衔接方式，不要跳变构图或身份。",
-        modes: ["image", "video"],
-        source: "builtin",
-    },
-    {
-        id: "story-beats",
-        name: "连续镜头",
-        description: "将短剧情拆成可生成的连续镜头节拍",
-        prompt: "把这段内容拆成连续镜头节拍。每个镜头写清主体动作、景别、构图、机位、运镜、光线、情绪和与前后镜头的衔接，并保持角色、场景和道具一致。",
-        modes: ["text", "image", "video"],
-        source: "builtin",
-    },
-    {
-        id: "cinematic-light",
-        name: "电影光影优化",
-        description: "保留内容，优化真实光线、层次和融合感",
-        prompt: "保留主体身份、动作和原始构图，优化为真实电影摄影光线：明确主光方向、环境反射、阴影层次、肤色和背景融合，降低塑料感与过度锐化，不改变画面内容。",
-        modes: ["image", "video"],
-        source: "builtin",
-    },
-    {
-        id: "video-prompt",
-        name: "视频提示词优化",
-        description: "整理为模型更容易执行的时序化镜头指令",
-        prompt: "将当前要求改写为结构化视频提示词，按时间顺序描述开场画面、主体动作、镜头运动、环境变化、声音和结束画面；消除冲突指令，保留所有关键约束。",
-        modes: ["text", "video"],
-        source: "builtin",
-    },
-];
 
 export function CanvasPresetPicker({
     mode,
-    skillReferences = [],
     open,
     onOpenChange,
     onSelect,
+    onOpenLibrary,
     compact = false,
     dense = false,
 }: {
     mode: CanvasGenerationMode;
-    skillReferences?: CanvasResourceReference[];
     open?: boolean;
     onOpenChange?: (open: boolean) => void;
     onSelect: (preset: CanvasPromptPreset) => void;
+    onOpenLibrary?: () => void;
     compact?: boolean;
     dense?: boolean;
 }) {
@@ -102,27 +54,26 @@ export function CanvasPresetPicker({
     }, [onOpenChange]);
     const close = useCallback(() => setOpen(false), [setOpen]);
     const rect = useAnchoredOverlay(actualOpen, buttonRef, panelRef, close);
-    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 320, placement: "topLeft" }) : null;
-    const skillPresets = useMemo(() => {
-        return skillReferences.flatMap((reference): CanvasPromptPreset[] => {
-            if (!reference.skill) return [];
-            return [
-                {
-                    id: `skill:${reference.skill.skill_id}`,
-                    name: reference.skill.skill_name,
-                    description: reference.skill.description || reference.skill.instruction || canvasT("videoCanvas.preset.skillJoined", "已加入技能"),
-                    prompt: `@${reference.skill.skill_name} `,
-                    modes: ["text", "image", "video", "audio"],
-                    source: "skill",
-                },
-            ];
+    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 360, placement: "topLeft" }) : null;
+    const recipes = useMemo(() => recipesForMode(mode, query), [mode, query]);
+    const recents = useMemo(() => {
+        if (query.trim()) return [];
+        return readCraftRecents().flatMap((id) => {
+            const item = RECIPE_BY_ID.get(id);
+            return item && item.modes.includes(mode) ? [item] : [];
         });
-    }, [skillReferences]);
+    }, [mode, query, actualOpen]);
+    const recentIds = useMemo(() => new Set(recents.map((item) => item.id)), [recents]);
+    const grouped = useMemo(() => {
+        const rest = recents.length ? recipes.filter((item) => !recentIds.has(item.id)) : recipes;
+        return RECIPE_GROUPS.map((id) => ({ id, items: rest.filter((item) => item.group === id) })).filter((section) => section.items.length);
+    }, [recipes, recents, recentIds]);
 
-    const presets = useMemo(() => {
-        const normalized = query.trim().toLowerCase();
-        return [...BUILTIN_PRESETS.filter((preset) => preset.modes.includes(mode)), ...skillPresets].filter((preset) => !normalized || `${preset.name} ${preset.description}`.toLowerCase().includes(normalized));
-    }, [mode, query, skillPresets]);
+    const pick = (id: string, name: string, description: string) => {
+        rememberCraftRecent(id);
+        onSelect({ id, name, description, prompt: recipeToken(id), modes: [mode], source: "builtin" });
+        setOpen(false);
+    };
 
     return (
         <>
@@ -131,13 +82,13 @@ export function CanvasPresetPicker({
                 type="button"
                 className={`canvas-preset-picker-trigger canvas-chrome-token inline-flex shrink-0 items-center justify-center gap-1 ${compact ? "is-icon !px-0" : dense ? "px-1.5" : "px-2"}`}
                 style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}
-                title={canvasT("videoCanvas.preset.open", "打开提示词预设")}
-                aria-label={canvasT("videoCanvas.preset.open", "打开提示词预设")}
+                title={canvasT("videoCanvas.preset.open", "打开手法")}
+                aria-label={canvasT("videoCanvas.preset.open", "打开手法")}
                 aria-expanded={actualOpen}
                 onClick={() => setOpen(!actualOpen)}
             >
                 <WandSparkles className={dense ? "size-3" : "size-3.5"} />
-                {compact ? null : <span className="text-[var(--fs-tiny)] font-semibold">{canvasT("videoCanvas.preset.label", "预设")}</span>}
+                {compact ? null : <span className="text-[var(--fs-tiny)] font-semibold">{canvasT("videoCanvas.preset.label", "手法")}</span>}
             </button>
             {actualOpen && geometry
                 ? createPortal(
@@ -154,54 +105,63 @@ export function CanvasPresetPicker({
                             <input
                                 className="canvas-sheet-input h-7 flex-1 border-0 bg-transparent px-0"
                                 autoFocus
-                                placeholder={canvasT("videoCanvas.preset.searchPlaceholder", "搜索预设或已加入技能")}
+                                placeholder={canvasT("videoCanvas.preset.searchPlaceholder", "搜索手法")}
                                 value={query}
                                 onChange={(event) => setQuery(event.target.value)}
                             />
                         </label>
-                        <div className="thin-scrollbar mt-1 max-h-72 space-y-0.5 overflow-y-auto">
-                            {presets.length ? (
-                                presets.map((preset) => (
-                                    <button
-                                        key={preset.id}
-                                        type="button"
-                                        className="canvas-preset-picker-option"
-                                        onClick={() => {
-                                            onSelect(preset);
-                                            setOpen(false);
-                                        }}
-                                    >
-                                        <span className="canvas-preset-picker-option-icon" style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}>
-                                            <WandSparkles className="size-3.5" />
-                                        </span>
-                                        <span className="min-w-0 flex-1">
-                                            <span className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: theme.node.text }}>
-                                                <span className="truncate">{preset.name}</span>
-                                                <span className="shrink-0 text-[var(--fs-micro)] font-medium" style={{ color: theme.accent.primary }}>
-                                                    {preset.source === "skill" ? canvasT("videoCanvas.preset.badgeSkill", "技能") : canvasT("videoCanvas.preset.badgePreset", "预设")}
-                                                </span>
-                                            </span>
-                                            <span className="mt-0.5 block truncate text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
-                                                {preset.description}
-                                            </span>
-                                        </span>
-                                    </button>
-                                ))
-                            ) : (
-                                <div className="py-8 text-center text-xs" style={{ color: theme.node.muted }}>
-                                    {canvasT("videoCanvas.preset.noMatch", "没有匹配的预设")}
+                        <div className="thin-scrollbar mt-1 max-h-80 space-y-0.5 overflow-y-auto">
+                            {recents.length ? (
+                                <>
+                                    <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.preset.recent", "最近")}</div>
+                                    {recents.map((item) => (
+                                        <RecipeRow key={`recent-${item.id}`} theme={theme} item={item} onPick={() => pick(item.id, craftText(item.title), craftText(item.job))} />
+                                    ))}
+                                </>
+                            ) : null}
+                            {grouped.map((section) => (
+                                <div key={section.id}>
+                                    <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide" style={{ color: theme.node.muted }}>{canvasT(`videoCanvas.craft.group.${section.id}`, section.id)}</div>
+                                    {section.items.map((item) => (
+                                        <RecipeRow key={item.id} theme={theme} item={item} onPick={() => pick(item.id, craftText(item.title), craftText(item.job))} />
+                                    ))}
                                 </div>
-                            )}
-                            {!query.trim() && !skillPresets.length ? (
-                                <div className="mt-1 border-t px-2 py-2 text-[var(--fs-tiny)] leading-4" style={{ borderColor: theme.toolbar.border, color: theme.node.muted }}>
-                                    {canvasT("videoCanvas.preset.skillsHint", "画布上的技能节点会出现在这里（例如从首页带风格进入创作时）。")}
-                                </div>
+                            ))}
+                            {recipes.length === 0 ? (
+                                <div className="py-8 text-center text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.preset.noMatch", "没有匹配的手法")}</div>
                             ) : null}
                         </div>
+                        {onOpenLibrary ? (
+                            <button type="button" className="mt-1 flex w-full items-center justify-center gap-1 rounded-md px-2 py-1.5 text-[var(--fs-tiny)] font-medium" style={{ color: theme.accent.primary, background: theme.toolbar.itemHover }} onClick={() => { setOpen(false); onOpenLibrary(); }}>
+                                <LayoutGrid className="size-3.5" />
+                                {canvasT("videoCanvas.preset.openLibrary", "打开货架")}
+                            </button>
+                        ) : null}
                     </div>,
                     document.body,
                 )
                 : null}
         </>
+    );
+}
+
+function RecipeRow({ theme, item, onPick }: { theme: CanvasTheme; item: CraftRecipe; onPick: () => void }) {
+    const media = recipeMediaKind(item);
+    const mediaLabel = media === "image"
+        ? canvasT("videoCanvas.craft.badgeImageOnly", "图专")
+        : media === "video"
+            ? canvasT("videoCanvas.craft.badgeVideoOnly", "视专")
+            : canvasT("videoCanvas.craft.badgeBoth", "图·视");
+    return (
+        <button type="button" className="canvas-preset-picker-option" onClick={onPick}>
+            <CanvasStyleCoverSwatch cover={craftCover(item.coverLookId)} className="size-9 shrink-0 rounded-md" />
+            <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: theme.node.text }}>
+                    <span className="truncate">{craftText(item.title)}</span>
+                    <span className="shrink-0 text-[10px] font-medium" style={{ color: theme.node.muted }}>{mediaLabel}</span>
+                </span>
+                <span className="mt-0.5 block truncate text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>{craftText(item.job)}</span>
+            </span>
+        </button>
     );
 }

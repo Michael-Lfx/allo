@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, Bot, Clapperboard, Coins, Download, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Share2, Trash2, Undo2, Upload } from "lucide-react";
+import { ArrowLeft, BookOpen, Bot, Clapperboard, Coins, Download, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Share2, Trash2, Undo2, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { CanvasChromeButton, CanvasMenuRow, CanvasMenuSeparator, overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
@@ -40,6 +40,11 @@ type CanvasTopBarProps = {
     mediaPerformanceMode: CanvasMediaPerformanceMode;
     onMediaPerformanceModeChange: (mode: CanvasMediaPerformanceMode) => void;
     onOpenSearch: () => void;
+    onOpenLibrary?: () => void;
+    lookLabel?: string;
+    onOpenStyle?: () => void;
+    playbookLabel?: string;
+    onOpenPlaybook?: () => void;
     projectContext?: CanvasContextSummary & { projectId: string; projectName: string };
     onEnterFocusMode: () => void;
     shortDramaGuide?: { progress: CanvasShortDramaProgress; collapsed: boolean; onToggle: () => void };
@@ -71,6 +76,11 @@ export function CanvasTopBar({
     mediaPerformanceMode,
     onMediaPerformanceModeChange,
     onOpenSearch,
+    onOpenLibrary,
+    lookLabel,
+    onOpenStyle,
+    playbookLabel,
+    onOpenPlaybook,
     projectContext,
     onEnterFocusMode,
     shortDramaGuide,
@@ -197,6 +207,22 @@ export function CanvasTopBar({
                     <CanvasChromeButton className="is-icon hidden lg:inline-flex" style={{ color: theme.node.text }} onClick={onOpenSearch} aria-label={canvasT("videoCanvas.chrome.searchCanvasNodes", "搜索画布节点")} title={canvasT("videoCanvas.chrome.searchCanvasNodes", "搜索画布节点")}>
                         <Search className="size-3.5" />
                     </CanvasChromeButton>
+                    {onOpenLibrary ? (
+                        <CanvasChromeButton className="is-icon" style={{ color: theme.node.text }} onClick={onOpenLibrary} title={canvasT("videoCanvas.craft.title", "画布货架")} aria-label={canvasT("videoCanvas.craft.title", "画布货架")}>
+                            <BookOpen className="size-3.5" />
+                        </CanvasChromeButton>
+                    ) : null}
+                    {lookLabel && onOpenStyle ? (
+                        <CanvasChromeButton style={{ color: theme.node.text }} onClick={onOpenStyle} title={lookLabel}>
+                            <span className="max-w-[9rem] truncate">{lookLabel}</span>
+                        </CanvasChromeButton>
+                    ) : null}
+                    {playbookLabel && onOpenPlaybook ? (
+                        <CanvasChromeButton style={{ color: theme.node.text }} onClick={onOpenPlaybook} title={playbookLabel}>
+                            <BookOpen className="size-3.5" />
+                            <span className="max-w-[9rem] truncate">{playbookLabel}</span>
+                        </CanvasChromeButton>
+                    ) : null}
                     {compactAgentStatus ? <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} /> : null}
                     {user && creditsEnabled ? (
                         <Link
