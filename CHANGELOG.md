@@ -5,6 +5,15 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.3.0 - 2026-09-10
+
+- Canvas adds a craft-shelf handbook and a simpler create-node menu.
+- Bottom dock toolbar and toolbar settings are refined. Windows 11 keeps the webview loopback API reachable.
+
+## v1.2.9 - 2026-09-10
+
+- macOS cross-builds bundle ripgrep for the Tauri target architecture.
+
 ## v1.2.8 - 2026-09-09
 
 - Vimax cover generation, storyboard truncation, and missing scene reference images are fixed.
