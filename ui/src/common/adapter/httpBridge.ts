@@ -173,6 +173,25 @@ export function getBaseUrl(): string {
   return `http://127.0.0.1:${getBackendPort()}`;
 }
 
+/**
+ * Transport-level probe for startup recovery.
+ *
+ * `mode: 'no-cors'` makes the browser drop the non-safelisted trust header, so
+ * this stays a *simple* request: no CORS preflight, and no response header is
+ * required for it to resolve. A resolved (opaque) response therefore proves the
+ * socket and HTTP exchange work and that the original failure came from the
+ * CORS/preflight layer; a rejection means the webview never completed an
+ * exchange with the backend at all.
+ */
+export async function probeBackendTransport(): Promise<{ ok: boolean; detail?: string }> {
+  try {
+    await fetch(`${getBaseUrl()}/health`, { mode: 'no-cors', cache: 'no-store' });
+    return { ok: true };
+  } catch (error: unknown) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function getWsUrl(): string {
   if (isWebUiBrowserMode()) {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

@@ -39,7 +39,7 @@ import './styles/themes/index.css';
 import { configService } from '@/common/config/configService';
 import { application } from '@/common/adapter/ipcBridge';
 import * as ipcBridgeModule from '@/common/adapter/ipcBridge';
-import { isHandledAuthExpiredHttpError } from '@/common/adapter/httpBridge';
+import { getBaseUrl, isHandledAuthExpiredHttpError, probeBackendTransport } from '@/common/adapter/httpBridge';
 import { getBrowserStorageGeneration, setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
 configService.initialize().catch((err) => {
   console.error('Failed to initialize config:', err);
@@ -89,7 +89,7 @@ import { useCloudAuth } from './hooks/context/CloudAuthContext';
 import { ConversationHistoryProvider } from './hooks/context/ConversationHistoryContext';
 import HOC from './utils/ui/HOC';
 import { isDesktopShell } from './utils/platform';
-import { tauriOpenSupportLogsDir, tauriRelaunch } from '@/common/adapter/tauriShell';
+import { tauriOpenSupportLogsDir, tauriProbeBackendLoopback, tauriRelaunch } from '@/common/adapter/tauriShell';
 
 void startProductTelemetry();
 const SupportSurfaceProbe = React.lazy(() => import('./pages/test/SupportSurfaceProbe'));
@@ -139,8 +139,9 @@ const StartupRecoveryPanel: React.FC<{
   onOpenLogs: () => void;
   onSignOut: () => void;
   logsError: string | null;
+  diagnostics: string | null;
   desktopShell: boolean;
-}> = ({ error, onRetry, onOpenLogs, onSignOut, logsError, desktopShell }) => {
+}> = ({ error, onRetry, onOpenLogs, onSignOut, logsError, diagnostics, desktopShell }) => {
   const { t } = useTranslation();
   return (
     <div className='flex h-full min-h-100vh flex-col items-center justify-center gap-12px bg-[var(--color-bg-1)] px-24px'>
@@ -153,6 +154,11 @@ const StartupRecoveryPanel: React.FC<{
             <div className='max-w-640px break-all text-12px text-t-secondary'>
               {error.name}: {error.message}
             </div>
+            {diagnostics ? (
+              <div className='max-w-640px break-all text-12px text-t-secondary'>
+                {t('common.startupRecovery.diagnostics')}: {diagnostics}
+              </div>
+            ) : null}
             {logsError ? <div className='text-12px text-[rgb(var(--danger-6))]'>{logsError}</div> : null}
           </div>
         }
@@ -185,12 +191,44 @@ const Main = () => {
   const [configError, setConfigError] = useState<Error | null>(null);
   const [startupRetryToken, setStartupRetryToken] = useState(0);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [startupDiagnostics, setStartupDiagnostics] = useState<string | null>(null);
   const previousSessionRef = useRef<{
     local: boolean;
     cloud: boolean;
     localId?: string;
     cloudId?: string;
   }>({ local: false, cloud: false });
+
+  // Startup failed with "backend unreachable": probe both sides so the report
+  // names the faulting layer instead of the symptom. The host-process probe
+  // does not use the webview network stack.
+  useEffect(() => {
+    if (!configError) {
+      setStartupDiagnostics(null);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      const parts = [`endpoint=${getBaseUrl() || window.location.origin}`];
+      const transport = await probeBackendTransport();
+      parts.push(transport.ok ? 'webview=reachable' : `webview=blocked (${transport.detail ?? 'unknown'})`);
+      if (isDesktopShell()) {
+        try {
+          const native = await tauriProbeBackendLoopback();
+          const outcome = native.tcp_connect
+            ? `tcp ok, http ${native.http_status ?? 'none'}`
+            : 'tcp refused';
+          parts.push(`host=${outcome}${native.error ? ` (${native.error})` : ''}`);
+        } catch (error: unknown) {
+          parts.push(`host=probe failed (${error instanceof Error ? error.message : String(error)})`);
+        }
+      }
+      if (active) setStartupDiagnostics(parts.join(' · '));
+    })();
+    return () => {
+      active = false;
+    };
+  }, [configError]);
 
   useEffect(() => {
     const previous = previousSessionRef.current;
@@ -431,6 +469,7 @@ const Main = () => {
         onOpenLogs={() => void openSupportLogs()}
         onSignOut={() => void signOutFromStartup()}
         logsError={logsError}
+        diagnostics={startupDiagnostics}
         desktopShell={isDesktopShell()}
       />
     );

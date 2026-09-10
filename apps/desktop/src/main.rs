@@ -1141,43 +1141,82 @@ fn resolve_support_log_dir() -> PathBuf {
     default_data_dir().join("logs")
 }
 
-/// Force WebView2/Chromium (and process-level HTTP clients) to reach the
-/// embedded loopback backend directly.
-///
-/// Win11 Home installs in China commonly run Clash/V2Ray as a *system* proxy.
-/// WebView2 honors that proxy; when `127.0.0.1` is intercepted (bad
-/// ProxyOverride, or Clash "proxy localhost"), every desktop
-/// `fetch("http://127.0.0.1:<port>/api/...")` fails as TypeError "Failed to
-/// fetch" — which the renderer reports as `backend unreachable` on first
-/// `/api/system/info`, while "open logs" / "sign out" look dead because they
-/// also depend on that same HTTP path.
-///
-/// `--proxy-bypass-list` alone is a no-op for system-proxy mode (Chromium
-/// ignores it unless `--proxy-server` is also set). The desktop webview only
-/// talks to the in-process loopback backend; outbound cloud/provider traffic
-/// goes through that Rust backend (which has its own proxy config). Forcing
-/// `direct://` therefore unblocks the API without breaking cloud features.
-///
-/// Must run before the WebView2 environment is created. Prefer also applying
-/// [`webview_loopback_browser_args`] on each `WebviewWindowBuilder`.
-fn configure_webview_loopback_proxy_bypass() {
-    const LOOPBACK_NO_PROXY: &str = "127.0.0.1,localhost,::1";
-    let browser_args = webview_loopback_browser_args();
+#[derive(Debug, Clone, serde::Serialize)]
+struct BackendLoopbackProbe {
+    port: u16,
+    tcp_connect: bool,
+    http_status: Option<u16>,
+    error: Option<String>,
+}
 
-    match std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
-        Ok(existing) if existing.contains("proxy-server=direct://") => {}
-        Ok(existing) => {
-            let merged = format!("{} {}", existing.trim(), browser_args);
-            // SAFETY: called before Tauri creates the WebView2 environment or
-            // any worker threads that read this variable.
-            unsafe {
-                std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
-            }
+/// Probe the embedded backend from the *host process*, bypassing the webview
+/// network stack entirely.
+///
+/// When the renderer reports `backend unreachable (Failed to fetch)` there are
+/// two very different faults: the loopback listener is not serving, or the
+/// webview is blocked from reaching it (system proxy, security software,
+/// Chromium local-network gating). Only a native probe can tell them apart.
+#[tauri::command]
+fn probe_backend_loopback(server: tauri::State<'_, Arc<DesktopServer>>) -> BackendLoopbackProbe {
+    use std::io::{Read, Write};
+
+    let port = server.loopback_port();
+    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    let mut stream = match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(3)) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return BackendLoopbackProbe {
+                port,
+                tcp_connect: false,
+                http_status: None,
+                error: Some(format!("tcp connect failed: {error}")),
+            };
         }
-        Err(_) => unsafe {
-            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args);
-        },
+    };
+
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+    let request = format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    if let Err(error) = stream.write_all(request.as_bytes()) {
+        return BackendLoopbackProbe {
+            port,
+            tcp_connect: true,
+            http_status: None,
+            error: Some(format!("write failed: {error}")),
+        };
     }
+
+    let mut response = Vec::new();
+    if let Err(error) = stream.take(4096).read_to_end(&mut response) {
+        return BackendLoopbackProbe {
+            port,
+            tcp_connect: true,
+            http_status: None,
+            error: Some(format!("read failed: {error}")),
+        };
+    }
+
+    let head = String::from_utf8_lossy(&response);
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok());
+    BackendLoopbackProbe {
+        port,
+        tcp_connect: true,
+        http_status: status,
+        error: status.map_or_else(
+            || Some(format!("unparsable response head: {}", head.lines().next().unwrap_or_default())),
+            |_| None,
+        ),
+    }
+}
+
+/// Keep process-level HTTP clients (backend reqwest pools, CLI probes) off the
+/// system proxy for loopback targets. Runs before any worker thread reads the
+/// environment.
+fn configure_loopback_no_proxy() {
+    const LOOPBACK_NO_PROXY: &str = "127.0.0.1,localhost,::1";
 
     for key in ["NO_PROXY", "no_proxy"] {
         match std::env::var(key) {
@@ -1200,13 +1239,6 @@ fn configure_webview_loopback_proxy_bypass() {
             },
         }
     }
-}
-
-/// Browser args that keep the desktop webview off the system HTTP(S) proxy.
-/// Applied both via env (WebView2 environment creation) and per-window
-/// `additional_browser_args` so companion windows inherit the same policy.
-fn webview_loopback_browser_args() -> &'static str {
-    "--proxy-server=direct://"
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -2409,7 +2441,6 @@ fn complete_main_thread_setup(
             .min_inner_size(main_window_geometry.min_width, main_window_geometry.min_height)
             .prevent_overflow()
             .center()
-            .additional_browser_args(webview_loopback_browser_args())
             .initialization_script(&init_script);
     // macOS: Overlay makes the titlebar transparent + extends content under
     // it, but it does NOT hide the native title text. With the title still
@@ -2707,7 +2738,6 @@ fn reconcile_companion_windows(
                 .skip_taskbar(true)
                 .shadow(false)
                 .visible(false)
-                .additional_browser_args(webview_loopback_browser_args())
                 .initialization_script(&init_script);
         // Show the freshly-built window from here rather than relying SOLELY on
         // the companion page's self-show (applyWindowState): on a FIRST enable
@@ -2747,10 +2777,7 @@ fn main() -> std::process::ExitCode {
         return code;
     }
 
-    // Before WebView2/Chromium boots: keep loopback API traffic off the system
-    // proxy. Otherwise a Win11 Home Clash/V2Ray install turns every desktop
-    // fetch to `127.0.0.1` into "Failed to fetch" / backend unreachable.
-    configure_webview_loopback_proxy_bypass();
+    configure_loopback_no_proxy();
 
     // Env mutation + runtime init BEFORE Tauri builds its runtime/threads,
     // mirroring the nomicore bin's ordering. `default_data_dir` resolves the
@@ -3180,6 +3207,7 @@ fn main() -> std::process::ExitCode {
             meeting_tray::set_tray_labels,
             restart_application,
             open_support_logs_dir,
+            probe_backend_loopback,
             system_notify::show_os_notification_cmd,
             taskbar_badge::clear_attention_cmd,
             taskbar_badge::clear_attention_scope_cmd,

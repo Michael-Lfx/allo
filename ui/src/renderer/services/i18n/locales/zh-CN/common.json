@@ -60,7 +60,8 @@
     "description": "系统信息暂时无法读取。可以重试、打开支持日志，或重启应用。",
     "retrySystemInfo": "重试系统信息",
     "openLogs": "打开支持日志",
-    "restartApp": "重启应用"
+    "restartApp": "重启应用",
+    "diagnostics": "连接诊断"
   },
   "codeEditorErrorTitle": "代码编辑器加载失败",
   "codeEditorErrorDescription": "编辑器扩展发生异常，可以重试或关闭当前编辑器。",

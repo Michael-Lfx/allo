@@ -1047,6 +1047,7 @@ export type I18nKey =
   | 'common.siderSection.tools'
   | 'common.skills'
   | 'common.startupRecovery.description'
+  | 'common.startupRecovery.diagnostics'
   | 'common.startupRecovery.openLogs'
   | 'common.startupRecovery.restartApp'
   | 'common.startupRecovery.retrySystemInfo'

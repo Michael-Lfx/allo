@@ -115,6 +115,23 @@ export async function tauriOpenSupportLogsDir(): Promise<void> {
   await invoke('open_support_logs_dir');
 }
 
+export interface BackendLoopbackProbe {
+  port: number;
+  tcp_connect: boolean;
+  http_status: number | null;
+  error: string | null;
+}
+
+/**
+ * Ask the host process to hit the embedded backend over loopback. Runs outside
+ * the webview network stack, so it separates "backend is not serving" from
+ * "webview cannot reach the backend".
+ */
+export async function tauriProbeBackendLoopback(): Promise<BackendLoopbackProbe> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<BackendLoopbackProbe>('probe_backend_loopback');
+}
+
 /** OS directory paths (@tauri-apps/api/path). */
 export async function tauriGetPath(name: 'desktop' | 'home' | 'downloads'): Promise<string> {
   const path = await import('@tauri-apps/api/path');
