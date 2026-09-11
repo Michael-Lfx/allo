@@ -171,6 +171,26 @@ describe('product funnel', () => {
     expect(queued[0]?.module).toBe('platform');
   });
 
+  test('queues auth_completed, home_interactive, and non-video home_viewed as platform', () => {
+    resetFunnelForTests();
+    resetTelemetryOutboxForTests();
+    trackFunnelEvent('auth_completed', { method: 'email_otp' });
+    trackFunnelEvent('home_interactive', { source: 'guid' });
+    trackFunnelEvent('home_viewed', { feature: 'guid', source: 'guid' });
+    trackFunnelEvent('home_viewed', {
+      feature: 'video_generation',
+      mode: 'idea2video',
+      source: 'video',
+    });
+    const queued = listQueuedTelemetryEventsForTests();
+    expect(queued.map((event) => [event.name, event.module])).toEqual([
+      ['auth_completed', 'platform'],
+      ['home_interactive', 'platform'],
+      ['home_viewed', 'platform'],
+      ['home_viewed', 'video_generation'],
+    ]);
+  });
+
   test('trackFunnelEventOnce dedupes by stable id', () => {
     resetFunnelForTests();
     const first = trackFunnelEventOnce('update_applied', 'update:update_applied:1->2', {

@@ -67,6 +67,13 @@ import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJo
 // Components and utilities
 import AppLoader from './components/layout/AppLoader';
 import { maybeTrackRetention } from './utils/analytics/productFunnel';
+import {
+  markLaunchAuthReady,
+  markLaunchBootStarted,
+  markLaunchConfigReady,
+  markLaunchFailed,
+  markLaunchInteractive,
+} from './utils/analytics/launchTelemetry';
 import { maybeTrackUpdateApplied } from './utils/analytics/updateTelemetry';
 import {
   startProductTelemetry,
@@ -92,6 +99,7 @@ import { isDesktopShell } from './utils/platform';
 import { tauriOpenSupportLogsDir, tauriProbeBackendLoopback, tauriRelaunch } from '@/common/adapter/tauriShell';
 
 void startProductTelemetry();
+markLaunchBootStarted();
 const SupportSurfaceProbe = React.lazy(() => import('./pages/test/SupportSurfaceProbe'));
 
 const arcoLocales: Record<string, typeof enUS> = {
@@ -420,6 +428,38 @@ const Main = () => {
       window.removeEventListener('hashchange', onHashChange);
     };
   }, [configReady]);
+
+  useEffect(() => {
+    if (!ready) return;
+    markLaunchAuthReady({
+      status: status === 'authenticated' ? 'authenticated' : 'unauthenticated',
+    });
+    // Login is itself the first interactive surface; authenticated sessions still
+    // wait for configReady before the shell is usable.
+    if (status !== 'authenticated') {
+      markLaunchInteractive({ source: 'login' });
+    }
+  }, [ready, status]);
+
+  useEffect(() => {
+    if (!configReady || status !== 'authenticated') return;
+    markLaunchConfigReady();
+    // Defer one frame so AppLoader → router swap is painted before TTI.
+    let raf = 0;
+    raf = window.requestAnimationFrame(() => {
+      markLaunchInteractive({ source: 'shell' });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [configReady, status]);
+
+  useEffect(() => {
+    if (!configError) return;
+    markLaunchFailed({
+      phase: 'config',
+      error_code: 'startup_config_failed',
+      blocker: configError.name || 'Error',
+    });
+  }, [configError]);
 
   useEffect(() => {
     if (!ready || status !== 'authenticated') return;

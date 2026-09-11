@@ -26,6 +26,7 @@ const BATCH_SIZE = 50;
 const ALLOWED_PROPERTIES = new Set([
   'already_ready',
   'average_bps',
+  'blocker',
   'bytes_total',
   'bytes_transferred',
   'cdn_host',
@@ -44,6 +45,7 @@ const ALLOWED_PROPERTIES = new Set([
   'locale',
   'mode',
   'network_class',
+  'outcome',
   'peak_bps',
   'phase',
   'playbook_id',
@@ -53,9 +55,11 @@ const ALLOWED_PROPERTIES = new Set([
   'source',
   'status',
   'to_version',
+  'total_ms',
   'tz_offset_min',
   'video_model',
   'viewport',
+  'wait_ms',
   'workflow',
   'briefing_id',
   'research_depth',
@@ -71,6 +75,13 @@ const ALLOWED_PROPERTIES = new Set([
 
 const PLATFORM_EVENT_NAMES = new Set([
   'app_opened',
+  'app_launch_auth_ready',
+  'app_launch_config_ready',
+  'app_launch_interactive',
+  'app_launch_failed',
+  'app_launch_completed',
+  'auth_completed',
+  'home_interactive',
   'expert_package_install_failed',
   'update_check_completed',
   'update_prompt_shown',
@@ -143,6 +154,9 @@ function writeQueue(events: FirstPartyTelemetryEvent[]): void {
 
 function firstPartyModule(event: FunnelEvent): FirstPartyTelemetryEvent['module'] | null {
   if (PLATFORM_EVENT_NAMES.has(event.name)) return 'platform';
+  if (event.name === 'home_viewed') {
+    return event.props?.feature === 'video_generation' ? 'video_generation' : 'platform';
+  }
   if (event.props?.feature !== 'video_generation') return null;
   if (event.name === 'first_value_confirmed') return null;
   return 'video_generation';

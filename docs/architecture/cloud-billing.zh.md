@@ -70,7 +70,7 @@ PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使�
 | Flowy 云 | `POST {base}/claw/telemetry/events/batch` → Gin `/api/v1/telemetry/events/batch`；JWT `user_id` 强制覆盖 |
 | ViMax 终态 | `nomi-vimax` 仅在 **Render** 终态（成功/失败/取消）与关机 **Rendering** 中断时回调；`nomifun-vimax` spawn 上传，不阻塞管线。未登录云则跳过。Rust 侧目前**不读** UI opt-out |
 
-事件名闭集 18 个：漏斗 `home_viewed` … `film_succeeded` / `film_failed` / `film_cancelled`，资讯播报终态 `briefing_succeeded` / `briefing_failed` / `briefing_cancelled`，外加 `app_opened`（`module=platform`）。**资讯播报禁止发 `film_succeeded`。**
+事件名闭集含：视频漏斗 `home_viewed` … `film_succeeded` / `film_failed` / `film_cancelled`，资讯播报终态 `briefing_succeeded` / `briefing_failed` / `briefing_cancelled`，平台 `app_opened` / `auth_completed` / `home_interactive`、启动性能 `app_launch_*`、以及 OTA `update_*`。非视频的 `home_viewed`（如 guid/knowledge）记 `module=platform`；视频 `home_viewed` 仍为 `video_generation`。**资讯播报禁止发 `film_succeeded`。**
 
 **冻结口径（WAFC 分母）**
 
@@ -81,6 +81,7 @@ PostHog 仍是客户端双写（构建带 key 且用户未在「设置 → 使�
 - **film_d7_rate**：当前为窗口内成功，不是终身首次成功后的 D7
 - **publish_rate**：成片成功用户中已导出或 TV 发布
 - **DAU**：来自 `app_opened` 集市 `platform_dau`，不是 VG KPI 卡
+- **启动体验**：`app_launch_auth_ready` → `app_launch_config_ready` → `app_launch_interactive` / `app_launch_completed`（`total_ms` / `cold_start`）；失败走 `app_launch_failed`。启动热路径只记内存时间戳，funnel/outbox/HTTP 经 `scheduleDeferred`（≥2.5s + idle）再落盘上报
 
 **资讯播报另立口径（不并入 WAFC）**
 

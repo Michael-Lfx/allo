@@ -43,8 +43,15 @@ const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const MAX_GROWTH_EVENTS_PER_BATCH: usize = 50;
 const MAX_GROWTH_PROPERTIES: usize = 24;
-const TELEMETRY_EVENT_NAMES: [&str; 28] = [
+const TELEMETRY_EVENT_NAMES: [&str; 35] = [
     "app_opened",
+    "app_launch_auth_ready",
+    "app_launch_config_ready",
+    "app_launch_interactive",
+    "app_launch_failed",
+    "app_launch_completed",
+    "auth_completed",
+    "home_interactive",
     "home_viewed",
     "task_drafted",
     "task_accepted",
@@ -207,6 +214,13 @@ fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError>
     if let Some(module) = event.module.as_deref() {
         let expected = match event.name.as_str() {
             "app_opened"
+            | "app_launch_auth_ready"
+            | "app_launch_config_ready"
+            | "app_launch_interactive"
+            | "app_launch_failed"
+            | "app_launch_completed"
+            | "auth_completed"
+            | "home_interactive"
             | "expert_package_install_failed"
             | "update_check_completed"
             | "update_prompt_shown"
@@ -217,6 +231,18 @@ fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError>
             | "update_install_failed"
             | "update_install_blocked"
             | "update_applied" => "platform",
+            "home_viewed" => {
+                // Video home stays video_generation; guid/knowledge/etc. are platform UX.
+                let feature = event
+                    .properties
+                    .get("feature")
+                    .and_then(|value| value.as_str());
+                if feature == Some("video_generation") {
+                    "video_generation"
+                } else {
+                    "platform"
+                }
+            }
             _ => "video_generation",
         };
         if module != expected {
@@ -354,6 +380,54 @@ mod growth_tests {
         assert!(validate_video_growth_event(&event).is_ok());
 
         event.module = Some("video_generation".into());
+        assert!(validate_video_growth_event(&event).is_err());
+    }
+
+    #[test]
+    fn accepts_app_launch_pipeline_events_as_platform() {
+        for name in [
+            "app_launch_auth_ready",
+            "app_launch_config_ready",
+            "app_launch_interactive",
+            "app_launch_failed",
+            "app_launch_completed",
+            "auth_completed",
+            "home_interactive",
+        ] {
+            assert!(TELEMETRY_EVENT_NAMES.contains(&name), "{name}");
+            let mut event = event(name);
+            event.module = Some("platform".into());
+            event
+                .properties
+                .insert("duration_ms".into(), serde_json::json!(420));
+            event
+                .properties
+                .insert("cold_start".into(), serde_json::json!(true));
+            assert!(validate_video_growth_event(&event).is_ok(), "{name}");
+
+            event.module = Some("video_generation".into());
+            assert!(validate_video_growth_event(&event).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn home_viewed_module_follows_feature() {
+        let mut event = event("home_viewed");
+        event.module = Some("platform".into());
+        event
+            .properties
+            .insert("feature".into(), serde_json::json!("guid"));
+        assert!(validate_video_growth_event(&event).is_ok());
+
+        event.module = Some("video_generation".into());
+        assert!(validate_video_growth_event(&event).is_err());
+
+        event
+            .properties
+            .insert("feature".into(), serde_json::json!("video_generation"));
+        event.module = Some("video_generation".into());
+        assert!(validate_video_growth_event(&event).is_ok());
+        event.module = Some("platform".into());
         assert!(validate_video_growth_event(&event).is_err());
     }
 

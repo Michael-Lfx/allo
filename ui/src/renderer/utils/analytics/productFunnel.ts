@@ -53,7 +53,12 @@ export type FunnelEventName =
   | 'update_install_started'
   | 'update_install_failed'
   | 'update_install_blocked'
-  | 'update_applied';
+  | 'update_applied'
+  | 'app_launch_auth_ready'
+  | 'app_launch_config_ready'
+  | 'app_launch_interactive'
+  | 'app_launch_failed'
+  | 'app_launch_completed';
 
 export type FunnelEvent = {
   id: string;
@@ -247,6 +252,7 @@ export function resetFunnelForTests(): void {
     window.localStorage.removeItem(STORAGE_KEY);
     window.localStorage.removeItem(COHORT_KEY);
     window.sessionStorage?.removeItem('flowy.app_opened.v1');
+    window.sessionStorage?.removeItem('flowy.app_launch.boot.v1');
   } catch {
     // ignore
   }

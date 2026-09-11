@@ -68,6 +68,7 @@ import { findChatModelOption } from '@/renderer/utils/model/chatModelPicker';
 import { isImageAttachment } from '@/renderer/utils/file/imageAttachments';
 import { addRecentWorkspace } from '@/renderer/components/workspace';
 import { trackFunnelEvent, hasFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
+import { markLaunchInteractive } from '@/renderer/utils/analytics/launchTelemetry';
 import {
   resolveGuidReadiness,
   type GuidTaskIntentId,
@@ -101,6 +102,7 @@ const GuidPage: React.FC = () => {
     if (!hasFunnelEvent('home_interactive')) {
       trackFunnelEvent('home_interactive', { source: 'guid' });
     }
+    markLaunchInteractive({ source: 'guid' });
     trackFunnelEvent('home_viewed', { feature: 'guid', source: 'guid' });
   }, []);
 
