@@ -69,7 +69,9 @@ pub use acp::{
 };
 pub use app_server::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityStatus,
-    AppServerCompatibilityTriple, AppServerConnectorDetail, AppServerConnectorProbeResult,
+    AppServerCompatibilityTriple, AppServerConfigMemoryView, AppServerConfigProviderView,
+    AppServerConfigView,
+    AppServerConnectorDetail, AppServerConnectorProbeResult,
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerConnectorTool, AppServerImportComponent, AppServerImportDetail,
     AppServerImportRequest, AppServerImportResult, AppServerImportSourceKind,
@@ -77,11 +79,13 @@ pub use app_server::{
     AppServerInstallResult, AppServerInstallState, AppServerInstallStatus,
     AppServerLocalizedText,
     AppServerMarketplaceAddRequest, AppServerMarketplaceDetail, AppServerMarketplaceEntry,
+    AppServerMarketplaceEntrySnapshot,
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
     AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
     AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
+    AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillSummary,
+    AppServerStoreInstallResult,
     AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };
 pub use agent_build_extra::{

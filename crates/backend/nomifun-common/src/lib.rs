@@ -19,6 +19,7 @@ mod hooks;
 mod id;
 mod idempotency;
 pub mod managed_free_model;
+pub mod localized_variant;
 mod scoped_auth;
 mod pagination;
 pub mod paths;
@@ -93,6 +94,7 @@ pub use scoped_auth::{
     LoopbackCapabilityRenewalRequest,
     LoopbackSessionBinding, LoopbackSessionKind, unix_time_secs,
 };
+pub use localized_variant::{LocalizedVariant, collect_localized_variants};
 pub use pagination::PaginatedResult;
 pub use provider_lifecycle::{ProviderLifecycleBarrier, SharedProviderLifecycleBarrier};
 pub use provider_usage::{ProviderInUseDetails, ProviderUsage, ProviderUsageFeature};

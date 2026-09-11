@@ -215,19 +215,57 @@ pub fn clone_git(url: &str, staging: &Path) -> Result<(String, Repository), Stri
     Ok((hash, repo))
 }
 
-/// Download `url` (expected to be a marketplace.json) into `staging`, parsing
-/// and validating the manifest. Returns (revision marker, etag).
+/// The HTTP source's conditional-request validators, exactly as the server
+/// sent them.
 ///
-/// When `if_none_match` is provided, the request carries the conditional
-/// header; a `304 Not Modified` response maps to `ContentMissing` so callers
-/// can short-circuit without downloading the body again (documented freshness
-/// semantics: ETag/Last-Modified check before re-fetch).
+/// Kept **raw** on purpose (doc 18 D4 ①): the earlier code stored only their
+/// digest and then sent that digest as `If-None-Match`, which no server can
+/// match against its own ETag — so the 304 branch was unreachable in practice
+/// and every refresh re-downloaded the manifest just to compare digests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpValidators {
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+impl HttpValidators {
+    /// Rebuild validators from the values persisted on the marketplace row.
+    pub fn from_stored(etag: Option<&str>, last_modified: Option<&str>) -> Option<Self> {
+        if etag.is_none() && last_modified.is_none() {
+            return None;
+        }
+        Some(Self {
+            etag: etag.map(str::to_owned),
+            last_modified: last_modified.map(str::to_owned),
+        })
+    }
+
+    /// The `resolved_revision` marker for these validators.
+    ///
+    /// The rule is deliberately unchanged (ETag preferred, `Last-Modified` as
+    /// the fallback, `"http"` when the server sends neither) so the same
+    /// response keeps producing the same marker — switching to raw validators
+    /// must not make every URL market look "changed" exactly once.
+    pub fn marker(&self) -> String {
+        self.etag
+            .as_deref()
+            .or(self.last_modified.as_deref())
+            .map(|value| nomifun_importer::digest::sha256_hex(value.as_bytes()))
+            .unwrap_or_else(|| "http".to_owned())
+    }
+}
+
+/// Outcome of downloading a `url` marketplace manifest into `staging`.
+///
+/// A `304 Not Modified` response maps to [`HttpFetchOutcome::NotModified`] so
+/// the caller can short-circuit without re-reading the body (doc 18 §5.2).
 pub enum HttpFetchOutcome {
     /// Fresh content was downloaded and validated into `staging`.
     Fresh {
-        /// Revision marker (etag/last-modified digest or "http").
+        /// Revision marker (etag/last-modified digest, or `"http"`).
         revision: String,
-        etag: Option<String>,
+        /// The validators to persist for the next conditional request.
+        validators: HttpValidators,
     },
     /// Server answered `304 Not Modified` — caller keeps last-good.
     NotModified,
@@ -236,15 +274,20 @@ pub enum HttpFetchOutcome {
 pub async fn fetch_http_market(
     url: &str,
     staging: &Path,
-    if_none_match: Option<&str>,
+    validators: Option<&HttpValidators>,
 ) -> Result<HttpFetchOutcome, String> {
     // Same client contract as the listing probe / mirror (doc 18 §5.2 step 2:
     // UA + 15s). Building a second client here used to drop the timeout, so a
     // hung manifest server held the whole refresh open with no bound.
     let client = http_client()?;
     let mut request = client.get(url);
-    if let Some(etag) = if_none_match {
+    // A real conditional request (doc 18 D4 ①): the raw values the server sent
+    // last time, not their digest.
+    if let Some(etag) = validators.and_then(|value| value.etag.as_deref()) {
         request = request.header("if-none-match", etag);
+    }
+    if let Some(last_modified) = validators.and_then(|value| value.last_modified.as_deref()) {
+        request = request.header("if-modified-since", last_modified);
     }
     let response = request
         .send()
@@ -257,16 +300,19 @@ pub async fn fetch_http_market(
     if status != StatusCode::OK {
         return Err(format!("fetch {url}: HTTP {status}"));
     }
-    let etag = response
-        .headers()
-        .get("etag")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let last_modified = response
-        .headers()
-        .get("last-modified")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
+    // Read the headers before `text()` consumes the response.
+    let sent = HttpValidators {
+        etag: response
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+        last_modified: response
+            .headers()
+            .get("last-modified")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+    };
     let text = response
         .text()
         .await
@@ -275,12 +321,11 @@ pub async fn fetch_http_market(
     fs::create_dir_all(staging).map_err(|error| format!("create staging {}: {error}", staging.display()))?;
     fs::write(staging.join("marketplace.json"), text)
         .map_err(|error| format!("write manifest: {error}"))?;
-    let marker = etag
-        .as_deref()
-        .or(last_modified.as_deref())
-        .map(|value| nomifun_importer::digest::sha256_hex(value.as_bytes()))
-        .unwrap_or_else(|| "http".to_owned());
-    Ok(HttpFetchOutcome::Fresh { revision: marker, etag })
+    let revision = sent.marker();
+    Ok(HttpFetchOutcome::Fresh {
+        revision,
+        validators: sent,
+    })
 }
 
 fn validate_http_manifest(text: &str, url: &str) -> Result<(), String> {
@@ -324,6 +369,46 @@ pub fn promote(staging: &Path, live_root: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    /// D4 ① must not change the marker rule: identical response headers have to
+    /// keep producing the same `resolved_revision`, otherwise switching to raw
+    /// validators would make every URL market look "changed" exactly once.
+    #[test]
+    fn http_validators_keep_the_pre_existing_marker_rule() {
+        let etag_only = HttpValidators {
+            etag: Some("\"v1\"".into()),
+            last_modified: None,
+        };
+        assert_eq!(etag_only.marker(), nomifun_importer::digest::sha256_hex(b"\"v1\""));
+
+        // ETag wins over Last-Modified, exactly as before.
+        let both = HttpValidators {
+            etag: Some("\"v1\"".into()),
+            last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+        };
+        assert_eq!(both.marker(), etag_only.marker());
+
+        // Last-Modified is the fallback.
+        let last_modified_only = HttpValidators {
+            etag: None,
+            last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+        };
+        assert_eq!(
+            last_modified_only.marker(),
+            nomifun_importer::digest::sha256_hex(b"Wed, 21 Oct 2015 07:28:00 GMT")
+        );
+
+        // Neither header → the literal fallback, unchanged.
+        assert_eq!(HttpValidators::default().marker(), "http");
+    }
+
+    #[test]
+    fn stored_validators_rebuild_from_the_row_columns() {
+        assert!(HttpValidators::from_stored(None, None).is_none());
+        let restored = HttpValidators::from_stored(Some("\"abc\""), None).expect("an etag is enough");
+        assert_eq!(restored.etag.as_deref(), Some("\"abc\""));
+        assert_eq!(restored.last_modified, None);
+    }
 
     #[test]
     fn normalize_github_and_git_and_url() {
@@ -406,10 +491,14 @@ mod tests {
         let staging = temp.path().join("staging");
         let url = format!("http://{addr}/marketplace.json");
         let outcome = fetch_http_market(&url, &staging, None).await.unwrap();
-        let HttpFetchOutcome::Fresh { revision, etag } = outcome else {
+        let HttpFetchOutcome::Fresh {
+            revision,
+            validators,
+        } = outcome
+        else {
             panic!("expected fresh content");
         };
-        assert_eq!(etag.as_deref(), Some("\"abc-1\""));
+        assert_eq!(validators.etag.as_deref(), Some("\"abc-1\""));
         let new_revision = nomifun_importer::digest::sha256_hex("\"abc-1\"".as_bytes());
         assert_eq!(revision, new_revision);
         assert!(staging.join("marketplace.json").is_file());
@@ -435,10 +524,53 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let url = format!("{}/marketplace.json", mock.uri());
-        let outcome = fetch_http_market(&url, &temp.path().join("staging"), Some("\"abc-1\""))
+        // The stored validator is offered as-is (doc 18 D4 ①): this is the raw
+        // server ETag, not its digest — which is why the mock can match it.
+        let stored = HttpValidators {
+            etag: Some("\"abc-1\"".into()),
+            last_modified: None,
+        };
+        let outcome = fetch_http_market(&url, &temp.path().join("staging"), Some(&stored))
             .await
             .unwrap();
         assert!(matches!(outcome, HttpFetchOutcome::NotModified));
+    }
+
+    #[tokio::test]
+    async fn http_fetch_sends_if_modified_since_when_only_last_modified_is_known() {
+        // D4 ① second half: `Last-Modified` used to feed the digest only and was
+        // never sent as a conditional header, so this branch was unreachable.
+        let mock = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(
+                r#"{"name":"http-market","skills":[]}"#,
+            ))
+            .mount(&mock)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("{}/marketplace.json", mock.uri());
+        let stored = HttpValidators {
+            etag: None,
+            last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+        };
+        fetch_http_market(&url, &temp.path().join("staging"), Some(&stored))
+            .await
+            .unwrap();
+
+        // Assert on what actually went out: the stored `Last-Modified` must be
+        // offered as a conditional header.
+        let requests = mock
+            .received_requests()
+            .await
+            .expect("the mock records received requests");
+        let sent = requests
+            .first()
+            .expect("one request was made")
+            .headers
+            .get("if-modified-since")
+            .expect("If-Modified-Since must be sent");
+        assert_eq!(sent.to_str().unwrap(), "Wed, 21 Oct 2015 07:28:00 GMT");
     }
 
     #[tokio::test]

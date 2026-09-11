@@ -30,6 +30,8 @@ use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 /// A mock LLM provider that returns pre-configured responses in order.
 struct MockProvider {
     responses: Mutex<VecDeque<Result<Vec<LlmEvent>, ProviderError>>>,
+    /// Output-token ceiling carried by the last request observed
+    /// (`None` = the request omitted the ceiling; see `LlmRequest::max_tokens`).
     last_max_tokens: Mutex<Option<u32>>,
     last_messages: Mutex<Option<Vec<Message>>>,
 }
@@ -76,7 +78,9 @@ impl LlmProvider for MockProvider {
             .unwrap()
             .pop_front()
             .expect("MockProvider: no more responses queued");
-        *self.last_max_tokens.lock().unwrap() = Some(request.max_tokens);
+        // `LlmRequest::max_tokens` is already an `Option<u32>` ceiling
+        // (`None` = serializer omits it), so record it as sent — no extra `Some`.
+        *self.last_max_tokens.lock().unwrap() = request.max_tokens;
         *self.last_messages.lock().unwrap() = Some(request.messages.clone());
 
         match response {
@@ -701,7 +705,12 @@ async fn summary_output_cap_follows_context_window() {
     autocompact(&provider, &messages, "test-model", &config, &mut state)
         .await
         .expect("compact");
-    assert_eq!(*provider.last_max_tokens.lock().unwrap(), Some(4000));
+    // Ceiling follows the window via `window_output_unit` (window/8, capped at
+    // 20k), which replaced the old hard-coded `/32` scale capped at 4096 when
+    // output ceilings became capability-driven (`aac092873`): 128k => 16_000.
+    // The scale itself is unit-tested in `nomi-config`
+    // (`window_output_unit_scales_with_context_window`).
+    assert_eq!(*provider.last_max_tokens.lock().unwrap(), Some(16_000));
 }
 
 #[tokio::test]

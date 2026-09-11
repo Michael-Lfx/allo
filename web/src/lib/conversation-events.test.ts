@@ -63,3 +63,146 @@ describe("conversationStreamReducer", () => {
     expect(state.messages).toEqual([]);
   });
 });
+
+/**
+ * R31 / D-STREAM-2 ②：`turn_completed` 之后回合还没结束（服务端在等记忆蒸馏
+ * child，实测近 10 秒），忙态文案据此从「正在处理」升级为「正在收尾…」。
+ */
+describe("conversationStreamReducer · 收尾标记", () => {
+  function activity(kind: string, sequence = 1) {
+    return {
+      conversation_id: "c",
+      sequence,
+      event_type: "message.activity",
+      payload: { kind },
+    } as never;
+  }
+
+  it("把 turn_completed 降级成收尾标记，而不是塞进 transcript", () => {
+    let state: ConversationStreamState = { ...initialConversationStream, isProcessing: true };
+    state = conversationStreamReducer(state, { type: "event", event: activity("turn_completed") });
+    expect(state.wrapUp).toBe(true);
+    // 粒度不变：仍然是忙态，只是文案不同；噪声行不入 transcript。
+    expect(state.isProcessing).toBe(true);
+    expect(state.messages).toEqual([]);
+  });
+
+  it("其他生命周期心跳不会误置收尾标记", () => {
+    let state: ConversationStreamState = { ...initialConversationStream, isProcessing: true };
+    for (const kind of ["start", "finish", "error", "turn_started"]) {
+      state = conversationStreamReducer({ ...state, wrapUp: false }, { type: "event", event: activity(kind) });
+      expect(state.wrapUp).toBe(false);
+    }
+  });
+
+  it("回合真正结束（turn.status 非 running）会清掉标记", () => {
+    let state: ConversationStreamState = { ...initialConversationStream, isProcessing: true, wrapUp: true };
+    state = conversationStreamReducer(state, {
+      type: "event",
+      event: { conversation_id: "c", sequence: 2, event_type: "turn.status", payload: { status: "completed" } } as never,
+    });
+    expect(state.isProcessing).toBe(false);
+    expect(state.wrapUp).toBe(false);
+  });
+
+  it("重放里的 turn.status{running} 不会把已定的收尾标记打回「正在处理」", () => {
+    let state: ConversationStreamState = { ...initialConversationStream, isProcessing: true, wrapUp: true };
+    state = conversationStreamReducer(state, {
+      type: "event",
+      event: { conversation_id: "c", sequence: 3, event_type: "turn.status", payload: { status: "running" } } as never,
+    });
+    expect(state.wrapUp).toBe(true);
+  });
+
+  it("新回执 / 忙态结束 / reset 都会清掉标记", () => {
+    const base: ConversationStreamState = { ...initialConversationStream, isProcessing: true, wrapUp: true };
+    expect(conversationStreamReducer(base, { type: "setProcessing", isProcessing: false }).wrapUp).toBe(false);
+    expect(conversationStreamReducer(base, { type: "reset", messages: [] }).wrapUp).toBe(false);
+    expect(conversationStreamReducer(
+      { ...base, messages: [msg("p", 1, "user")] },
+      { type: "reconcilePending", pendingId: "p", messageId: "m", completed: false },
+    ).wrapUp).toBe(false);
+  });
+
+  it("可见的 activity 仍然进 transcript", () => {
+    let state: ConversationStreamState = { ...initialConversationStream, isProcessing: true };
+    state = conversationStreamReducer(state, { type: "event", event: activity("tips") });
+    expect(state.messages).toHaveLength(1);
+    expect(state.wrapUp).toBe(false);
+  });
+});
+
+/**
+ * W9（R14）：按 turn 的费用 / token。逐轮用量只随**实时** `turn_completed` 到达
+ * （服务端不持久化历史轮次），所以 reducer 只保留本轮，并且把「用量归属哪个模型」
+ * 钉在事件到达那一刻——用户之后换模型不会把旧轮次的金额按新费率重算。
+ */
+describe("conversationStreamReducer · 本轮用量", () => {
+  function completed(usage?: Record<string, number>, sequence = 1) {
+    return {
+      conversation_id: "c",
+      sequence,
+      event_type: "message.activity",
+      payload: usage ? { kind: "turn_completed", usage } : { kind: "turn_completed" },
+    } as never;
+  }
+
+  const snapshot = {
+    usage: { input_tokens: 9, output_tokens: 9, total_tokens: 18 },
+    modelKey: "old/model",
+  };
+
+  it("记下本轮 token 与接收时的模型键快照", () => {
+    let state: ConversationStreamState = { ...initialConversationStream, isProcessing: true };
+    state = conversationStreamReducer(
+      state,
+      { type: "event", event: completed({ input_tokens: 1_200, output_tokens: 340 }) },
+      { modelKey: "openai/gpt-5" },
+    );
+    expect(state.turnUsage).toEqual({
+      usage: { input_tokens: 1_200, output_tokens: 340, total_tokens: 1_540 },
+      modelKey: "openai/gpt-5",
+    });
+    // 仍是收尾标记，噪声行不入 transcript（R31 语义不变）。
+    expect(state.wrapUp).toBe(true);
+    expect(state.messages).toEqual([]);
+  });
+
+  it("本轮没上报用量就保持未知，不顶上一轮的数字", () => {
+    const state = conversationStreamReducer(
+      { ...initialConversationStream, turnUsage: snapshot },
+      { type: "event", event: completed() },
+      { modelKey: "openai/gpt-5" },
+    );
+    expect(state.turnUsage).toBeNull();
+  });
+
+  it("事件到达时不知道模型键，也照记 token（金额由消费方决定不显示）", () => {
+    const state = conversationStreamReducer(
+      initialConversationStream,
+      { type: "event", event: completed({ input_tokens: 10, output_tokens: 5 }) },
+    );
+    expect(state.turnUsage?.modelKey).toBeNull();
+    expect(state.turnUsage?.usage.total_tokens).toBe(15);
+  });
+
+  it("新一轮开始 / 换会话都清空本轮用量", () => {
+    const base: ConversationStreamState = { ...initialConversationStream, turnUsage: snapshot };
+    expect(conversationStreamReducer(base, { type: "appendPending", message: msg("p", 1) }).turnUsage).toBeNull();
+    expect(conversationStreamReducer(base, { type: "setProcessing", isProcessing: true }).turnUsage).toBeNull();
+    expect(conversationStreamReducer(base, { type: "reset", messages: [] }).turnUsage).toBeNull();
+  });
+
+  it("回执 completed:true 不会清掉刚到的本轮用量（它可能晚于事件）", () => {
+    const base: ConversationStreamState = { ...initialConversationStream, turnUsage: snapshot };
+    const late = conversationStreamReducer(base, { type: "reconcilePending", pendingId: "p", messageId: "m", completed: true });
+    expect(late.turnUsage).toEqual(snapshot);
+    const running = conversationStreamReducer(base, { type: "reconcilePending", pendingId: "p", messageId: "m", completed: false });
+    expect(running.turnUsage).toBeNull();
+  });
+
+  it("取消 / 忙态结束不会误清（只有新回合开始才清）", () => {
+    const base: ConversationStreamState = { ...initialConversationStream, turnUsage: snapshot };
+    expect(conversationStreamReducer(base, { type: "setProcessing", isProcessing: false }).turnUsage).toEqual(snapshot);
+  });
+});

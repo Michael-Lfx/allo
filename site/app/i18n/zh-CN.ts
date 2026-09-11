@@ -171,6 +171,8 @@ const zhCN = {
       cli: "命令行用法",
       pluginsMarket: "插件与市场",
       typescriptSdk: "TypeScript SDK",
+      upgrade: "升级与迁移",
+      changelog: "变更日志",
       configuration: "配置文件",
       architecture: "架构说明",
       compatibility: "兼容性矩阵",

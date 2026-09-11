@@ -156,9 +156,15 @@ pub fn resolve_skill_paths(app_resource_dir: &Path, data_dir: &Path) -> SkillPat
 // 正文以磁盘 SKILL.md 为事实源（companion store 的 companion_skills 表只存元数据）。
 // ---------------------------------------------------------------------------
 
-/// 技能归属范围：`Shared`（全员可用）或 `Companion(id)`（伙伴专属）。
+/// 技能归属范围。
+///
+/// - `User`：App Server 写面（W12）管理的用户技能，落
+///   `{user_skills_dir}/{name}/`——**与 [`delete_skill`] 的删除目标逐字一致**，
+///   也是 [`resolve_skill_source_path`] 的首选位置（用户技能按设计覆盖同名内置）。
+/// - `Shared`（伙伴链路全员可用）或 `Companion(id)`（伙伴专属）。
 #[derive(Debug, Clone)]
 pub enum SkillScope {
+    User,
     Shared,
     Companion(String),
 }
@@ -197,9 +203,132 @@ pub fn skill_dir_for(
             validate_filename(cid)?;
             drafts_root(paths).join(cid)
         }
+        (SkillScope::User, _) => paths.user_skills_dir.clone(),
         (SkillScope::Shared, _) => shared_skills_root(paths),
     };
     Ok(base.join(name))
+}
+
+/// 一份技能在磁盘上的归属类别（`16` R17 / W12 写面用）。
+///
+/// 只描述**布局事实**，不描述权限策略：`is_writable` 是写面唯一的可写判据，
+/// 分类依据是 [`SkillPaths`] 的根 + [`list_available_skills`] 给出的 location。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillOrigin {
+    /// `{user_skills_dir}/{name}/`——用户技能，App Server 写面唯一可写类别。
+    User,
+    /// `{user_skills_dir}/shared/{name}/`——伙伴链路的全员共享技能。
+    Shared,
+    /// `{user_skills_dir}/companion/{companion_id}/{name}/`——伙伴专属技能。
+    Companion,
+    /// `{user_skills_dir}/_drafts/{companion_id}/{name}/`——审阅暂存区。
+    Draft,
+    /// `{user_skills_dir}/agent-store/{snapshot_id}/{slug}/`——市场安装产物
+    /// （由 `nomifun-importer` 的 `InstallerService::materialize_skills` 写入）。
+    Marketplace,
+    /// `{builtin_skills_dir}/…`——内置语料（含 `auto-inject/`）。
+    Builtin,
+    /// 不属于以上任何根（外部目录、未知命名空间层级）。
+    Unmanaged,
+}
+
+impl SkillOrigin {
+    /// Wire / 文案用的稳定小写标识。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Shared => "shared",
+            Self::Companion => "companion",
+            Self::Draft => "draft",
+            Self::Marketplace => "marketplace",
+            Self::Builtin => "builtin",
+            Self::Unmanaged => "unmanaged",
+        }
+    }
+
+    /// 写面可写性：**只有** [`SkillOrigin::User`] 为真。这一条是「用户技能 vs
+    /// 市场安装产物 vs 内置」区分的唯一判据，读面（`writable` 字段）与写面
+    /// （归属门）必须同源。
+    pub fn is_writable(self) -> bool {
+        matches!(self, Self::User)
+    }
+
+    /// 写面拒绝只读来源时给出的原因（英文，与协议其余 message 一致）。
+    pub fn read_only_reason(self) -> Option<&'static str> {
+        match self {
+            Self::User => None,
+            Self::Shared => Some(
+                "shared skills are managed by the companion flow, not by the store write face",
+            ),
+            Self::Companion => Some(
+                "companion-scoped skills are managed by the companion flow, not by the store write face",
+            ),
+            Self::Draft => Some("draft skills are staged for review, not managed content"),
+            Self::Marketplace => Some(
+                "installed marketplace skills are read-only here; uninstall them through the \
+                 installer/marketplace chain (install/uninstall)",
+            ),
+            Self::Builtin => Some("built-in skills are read-only"),
+            Self::Unmanaged => Some("this skill is not in a managed user skill directory"),
+        }
+    }
+}
+
+/// Classify one catalog `location` (as emitted by [`list_available_skills`]) by
+/// its on-disk owner. Directory depth is what separates a user skill from the
+/// namespaced trees below it, so the first path segment decides the answer.
+pub fn skill_origin_of(paths: &SkillPaths, location: &Path) -> SkillOrigin {
+    if location.starts_with(&paths.builtin_skills_dir) {
+        return SkillOrigin::Builtin;
+    }
+    let Ok(relative) = location.strip_prefix(&paths.user_skills_dir) else {
+        return SkillOrigin::Unmanaged;
+    };
+    let mut segments = relative.components();
+    let Some(first) = segments.next() else {
+        // `location` *is* `user_skills_dir` — not a skill directory.
+        return SkillOrigin::Unmanaged;
+    };
+    if segments.next().is_none() {
+        // Flat `<name>/` directly under the root: the only writable class.
+        return SkillOrigin::User;
+    }
+    match first.as_os_str().to_string_lossy().as_ref() {
+        AGENT_STORE_MANAGED_SUBDIR => SkillOrigin::Marketplace,
+        "companion" => SkillOrigin::Companion,
+        "_drafts" => SkillOrigin::Draft,
+        "shared" => SkillOrigin::Shared,
+        // Unknown namespace under the user root: never writable, because the
+        // write face has no rule for who owns it.
+        _ => SkillOrigin::Unmanaged,
+    }
+}
+
+/// Whether the store write face (`16` R17 / W12) may manage this catalog entry.
+///
+/// Two conditions, both layout facts: the entry is a flat user-root skill
+/// ([`SkillOrigin::User`]) **and** its directory basename equals the public id.
+/// The second half matters because the id *is* the scan-reported
+/// frontmatter name: a directory whose basename disagrees would make
+/// [`delete_skill`] (which joins the id) remove the wrong path. The read face
+/// and the write face both call this, so `writable` on the wire cannot promise
+/// something the write face then refuses.
+pub fn is_writable_skill(paths: &SkillPaths, name: &str, location: &Path) -> bool {
+    skill_origin_of(paths, location).is_writable() && location == paths.user_skills_dir.join(name)
+}
+
+/// Resolve the `SKILL.md` path for a catalog `location`.
+///
+/// Built-in items point at the manifest file; user-root items point at the
+/// skill *directory* (`scan_skill_dirs` records directories). Reading the
+/// location directly therefore yields nothing for any user skill, so every
+/// reader must pass through here.
+pub fn skill_manifest_path(location: &Path) -> PathBuf {
+    if location.is_dir() {
+        location.join(SKILL_MANIFEST_FILE)
+    } else {
+        location.to_path_buf()
+    }
 }
 
 /// 起草一份技能所需的字段。`name`/`description` 必填，其余可选。
@@ -303,6 +432,247 @@ pub async fn copy_skill(
     let src = skill_dir_for(paths, from, name, false)?;
     let content = tokio::fs::read_to_string(src.join(SKILL_MANIFEST_FILE)).await?;
     write_skill(paths, to, false, name, &content).await
+}
+
+// ---------------------------------------------------------------------------
+// Field-level edit + directory copy (App Server skill write face, `16` R17)
+// ---------------------------------------------------------------------------
+
+/// A field-level patch of one `SKILL.md`。
+///
+/// `None` means "leave this field alone" — an edit made from a UI that only
+/// knows part of the document must not have to round-trip the whole file (and
+/// `skill/get` deliberately caps the body it exposes, so a full-document round
+/// trip is not even possible there). `Some("")` on an optional key removes that
+/// key; `name` is not patchable at all, because the public id **is** the
+/// frontmatter name.
+#[derive(Debug, Clone, Default)]
+pub struct SkillFieldPatch<'a> {
+    /// `description` — required by the frontmatter contract, so `Some("")` is
+    /// refused rather than written.
+    pub description: Option<&'a str>,
+    /// `when-to-use` (empty string removes the key).
+    pub when_to_use: Option<&'a str>,
+    /// `allowed-tools` (empty string removes the key).
+    pub allowed_tools: Option<&'a str>,
+    /// `paths` (empty string removes the key).
+    pub paths: Option<&'a str>,
+    /// Body below the frontmatter fence; `None` keeps the current one.
+    pub body: Option<&'a str>,
+}
+
+/// True when the patch names at least one field.
+impl SkillFieldPatch<'_> {
+    pub fn is_empty(&self) -> bool {
+        self.description.is_none()
+            && self.when_to_use.is_none()
+            && self.allowed_tools.is_none()
+            && self.paths.is_none()
+            && self.body.is_none()
+    }
+}
+
+/// Split a `SKILL.md` into (frontmatter body lines, document body after the
+/// closing fence). Same fence rule as [`parse_frontmatter_fields`]: the closing
+/// fence must sit on its own line.
+fn split_skill_md(content: &str) -> Option<(Vec<String>, String)> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+    let after_open = &trimmed[3..];
+    let close_idx = after_open.find("\n---")?;
+    // `after_open` still carries the rest of the opening fence line (`"\n"` for
+    // a well-formed document); it belongs to the fence, not to the fields, so it
+    // is stripped here and re-added by the composers below. Without this a
+    // rebuild would grow a blank line on every edit.
+    let raw_frontmatter = &after_open[..close_idx];
+    let frontmatter = raw_frontmatter.strip_prefix('\n').unwrap_or(raw_frontmatter);
+    let rest = &after_open[close_idx + 4..];
+    // Everything up to the first newline after the fence belongs to the fence
+    // line itself; the body starts after it.
+    let body = match rest.find('\n') {
+        Some(index) => &rest[index + 1..],
+        None => "",
+    };
+    Some((
+        frontmatter.lines().map(str::to_owned).collect(),
+        body.to_owned(),
+    ))
+}
+
+/// Apply a [`SkillFieldPatch`] to a `SKILL.md`, returning the merged document.
+///
+/// Byte preservation is the contract: untouched lines (including unknown keys,
+/// their order and any comments a user added) come out exactly as they went in,
+/// and the `name:` line is never rewritten. Pure function so the merge rules are
+/// testable without a filesystem.
+pub fn merge_skill_md(
+    current: &str,
+    patch: &SkillFieldPatch<'_>,
+) -> Result<String, ExtensionError> {
+    if patch.is_empty() {
+        return Err(ExtensionError::InvalidSkillPath(
+            "skill patch names no field".to_string(),
+        ));
+    }
+    if let Some(description) = patch.description {
+        if description.trim().is_empty() {
+            return Err(ExtensionError::InvalidSkillPath(
+                "skill description must not be empty".to_string(),
+            ));
+        }
+    }
+    let (mut lines, body) = split_skill_md(current).ok_or_else(|| {
+        ExtensionError::InvalidSkillPath("invalid frontmatter for skill patch".to_string())
+    })?;
+
+    for (key, value) in [
+        ("description", patch.description),
+        ("when-to-use", patch.when_to_use),
+        ("allowed-tools", patch.allowed_tools),
+        ("paths", patch.paths),
+    ] {
+        let Some(value) = value else { continue };
+        let existing = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with(&format!("{key}:")));
+        match (value.trim().is_empty(), existing) {
+            // Clearing an optional key removes its line; clearing `description`
+            // was refused above.
+            (true, Some(index)) => {
+                lines.remove(index);
+            }
+            (true, None) => {}
+            (false, Some(index)) => lines[index] = format!("{key}: {value}"),
+            (false, None) => lines.push(format!("{key}: {value}")),
+        }
+    }
+
+    let mut merged = String::from("---\n");
+    merged.push_str(&lines.join("\n"));
+    merged.push_str("\n---\n");
+    let body = patch.body.map(str::to_owned).unwrap_or(body);
+    merged.push_str(body.trim_end_matches('\n'));
+    merged.push('\n');
+    Ok(merged)
+}
+
+/// Field-level edit of an existing skill's `SKILL.md`（读现状 → 合并 → 复用
+/// [`write_skill`] 校验并落盘）。Reads through the same scope resolution as
+/// every other primitive, so the caller never names a path.
+pub async fn patch_skill(
+    paths: &SkillPaths,
+    scope: &SkillScope,
+    draft: bool,
+    name: &str,
+    patch: &SkillFieldPatch<'_>,
+) -> Result<(), ExtensionError> {
+    validate_filename(name)?;
+    let dir = skill_dir_for(paths, scope, name, draft)?;
+    let current = tokio::fs::read_to_string(dir.join(SKILL_MANIFEST_FILE)).await?;
+    let merged = merge_skill_md(&current, patch)?;
+    write_skill(paths, scope, draft, name, &merged).await
+}
+
+/// Recursively copy one skill **directory** into the user skills root under a
+/// new name, rewriting the copy's frontmatter `name:` to match.
+///
+/// Why a primitive of its own: [`copy_skill`] only copies a single `SKILL.md`
+/// between scopes under the *same* name, so it cannot express "derive my own
+/// skill from a built-in / marketplace one" — the case the write face needs.
+/// Contracts:
+/// - the target must be free (`{user_skills_dir}/{new_name}` must not exist) —
+///   this function never overwrites and never merges into an existing dir;
+/// - every source entry is copied as a real file or directory: a symlink
+///   anywhere in the tree is refused, so a copy can never pull bytes from
+///   outside the source tree, and the copy itself contains no links;
+/// - the source's `SKILL.md` is required (a directory without one is not a
+///   skill) and its `name:` line becomes `new_name`; every other byte and every
+///   support subdirectory (`references` / `templates` / `scripts` / …) is copied
+///   verbatim.
+pub async fn copy_skill_directory(
+    paths: &SkillPaths,
+    source_dir: &Path,
+    new_name: &str,
+) -> Result<PathBuf, ExtensionError> {
+    validate_filename(new_name)?;
+    let source_meta = tokio::fs::symlink_metadata(source_dir).await?;
+    if source_meta.file_type().is_symlink() || !source_meta.is_dir() {
+        return Err(ExtensionError::InvalidSkillPath(format!(
+            "skill source '{}' is not a real directory",
+            source_dir.display()
+        )));
+    }
+    let manifest = source_dir.join(SKILL_MANIFEST_FILE);
+    let manifest_meta = tokio::fs::symlink_metadata(&manifest).await?;
+    if manifest_meta.file_type().is_symlink() {
+        return Err(ExtensionError::PathTraversal(manifest.display().to_string()));
+    }
+    let content = tokio::fs::read_to_string(&manifest).await?;
+    let renamed = rename_frontmatter_name(&content, new_name)?;
+
+    let target = paths.user_skills_dir.join(new_name);
+    match tokio::fs::symlink_metadata(&target).await {
+        Ok(_) => {
+            return Err(ExtensionError::SkillExists(new_name.to_string()));
+        }
+        Err(_) => {}
+    }
+
+    // Depth-first copy over an explicit stack: entries are created parents
+    // first, and every entry is inspected with `symlink_metadata` (so a link is
+    // seen as a link instead of being followed).
+    let mut stack = vec![(source_dir.to_path_buf(), target.clone())];
+    while let Some((from, to)) = stack.pop() {
+        tokio::fs::create_dir_all(&to).await?;
+        let mut entries = tokio::fs::read_dir(&from).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            if file_type.is_symlink() {
+                return Err(ExtensionError::PathTraversal(
+                    entry.path().display().to_string(),
+                ));
+            }
+            let child_from = entry.path();
+            let child_to = to.join(entry.file_name());
+            if file_type.is_dir() {
+                stack.push((child_from, child_to));
+            } else if file_type.is_file() {
+                if child_from == manifest {
+                    tokio::fs::write(&child_to, &renamed).await?;
+                } else {
+                    tokio::fs::copy(&child_from, &child_to).await?;
+                }
+            } else {
+                return Err(ExtensionError::InvalidSkillPath(format!(
+                    "skill source '{}' holds an entry that is neither a file nor a directory",
+                    child_from.display()
+                )));
+            }
+        }
+    }
+    Ok(target)
+}
+
+/// Rewrite (or insert) the `name:` line of a `SKILL.md`'s frontmatter.
+fn rename_frontmatter_name(content: &str, new_name: &str) -> Result<String, ExtensionError> {
+    let (mut lines, body) = split_skill_md(content).ok_or_else(|| {
+        ExtensionError::InvalidSkillPath("invalid frontmatter for skill copy".to_string())
+    })?;
+    match lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("name:"))
+    {
+        Some(index) => lines[index] = format!("name: {new_name}"),
+        None => lines.insert(0, format!("name: {new_name}")),
+    }
+    let mut merged = String::from("---\n");
+    merged.push_str(&lines.join("\n"));
+    merged.push_str("\n---\n");
+    merged.push_str(body.trim_end_matches('\n'));
+    merged.push('\n');
+    Ok(merged)
 }
 
 // ---------------------------------------------------------------------------
@@ -2113,6 +2483,238 @@ mod tests {
         }
     }
 
+    // ---- Field-level edit + directory copy (`16` R17 write face, 2026-09-11) --
+
+    #[test]
+    fn field_patch_merges_only_the_named_fields() {
+        let current = "---\nname: demo\ndescription: old\ncustom-key: keep me\n---\n\nold body\n";
+        let patch = SkillFieldPatch {
+            description: Some("new"),
+            ..SkillFieldPatch::default()
+        };
+        let merged = merge_skill_md(current, &patch).expect("merge");
+        assert!(merged.contains("name: demo"), "{merged}");
+        assert!(merged.contains("description: new"), "{merged}");
+        assert!(merged.contains("custom-key: keep me"), "{merged}");
+        assert!(merged.contains("old body"), "{merged}");
+        assert_eq!(merged.matches("description:").count(), 1, "{merged}");
+
+        // The body is replaced only when it is named.
+        let patch = SkillFieldPatch {
+            body: Some("fresh body"),
+            ..SkillFieldPatch::default()
+        };
+        let merged = merge_skill_md(current, &patch).expect("merge");
+        assert!(merged.ends_with("fresh body\n"), "{merged}");
+        assert!(!merged.contains("old body"), "{merged}");
+        assert!(merged.contains("description: old"), "{merged}");
+
+        // A missing optional key is appended inside the fence, not after it.
+        let patch = SkillFieldPatch {
+            when_to_use: Some("when needed"),
+            ..SkillFieldPatch::default()
+        };
+        let merged = merge_skill_md(current, &patch).expect("merge");
+        assert!(merged.contains("custom-key: keep me\nwhen-to-use: when needed\n---\n"), "{merged}");
+
+        // Same-name merge leaves the document byte-identical.
+        let patch = SkillFieldPatch {
+            description: Some("old"),
+            ..SkillFieldPatch::default()
+        };
+        assert_eq!(merge_skill_md(current, &patch).expect("merge"), current);
+    }
+
+    #[test]
+    fn field_patch_clears_optional_keys_and_refuses_empty_required_ones() {
+        let current = "---\nname: demo\ndescription: d\nwhen-to-use: w\npaths: p\n---\n\nbody\n";
+        let patch = SkillFieldPatch {
+            when_to_use: Some(""),
+            paths: Some(""),
+            ..SkillFieldPatch::default()
+        };
+        let merged = merge_skill_md(current, &patch).expect("merge");
+        assert!(!merged.contains("when-to-use"), "{merged}");
+        assert!(!merged.contains("paths:"), "{merged}");
+        assert!(merged.contains("description: d"), "{merged}");
+
+        // `description` is required by the contract: an empty one is refused,
+        // not written, and the document is untouched.
+        let patch = SkillFieldPatch {
+            description: Some("   "),
+            ..SkillFieldPatch::default()
+        };
+        assert!(merge_skill_md(current, &patch).is_err());
+
+        // A patch that names nothing is refused too.
+        assert!(merge_skill_md(current, &SkillFieldPatch::default()).is_err());
+
+        // No frontmatter at all is a refusal, never a fabricated document.
+        let patch = SkillFieldPatch {
+            description: Some("new"),
+            ..SkillFieldPatch::default()
+        };
+        assert!(merge_skill_md("# just a heading\n", &patch).is_err());
+    }
+
+    #[tokio::test]
+    async fn patch_skill_edits_in_place_through_the_scope() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+        create_skill(
+            &paths,
+            &SkillScope::User,
+            false,
+            &SkillDraftInput {
+                name: "demo".into(),
+                description: "old".into(),
+                when_to_use: Some("w".into()),
+                allowed_tools: None,
+                paths: None,
+                body: "body".into(),
+            },
+        )
+        .await
+        .expect("create");
+
+        patch_skill(
+            &paths,
+            &SkillScope::User,
+            false,
+            "demo",
+            &SkillFieldPatch {
+                description: Some("new"),
+                when_to_use: Some(""),
+                ..SkillFieldPatch::default()
+            },
+        )
+        .await
+        .expect("patch");
+
+        let on_disk = tokio::fs::read_to_string(paths.user_skills_dir.join("demo").join(SKILL_MANIFEST_FILE))
+            .await
+            .expect("manifest");
+        assert!(on_disk.contains("name: demo"), "{on_disk}");
+        assert!(on_disk.contains("description: new"), "{on_disk}");
+        assert!(!on_disk.contains("when-to-use"), "{on_disk}");
+        assert!(on_disk.contains("body"), "{on_disk}");
+
+        // Patching a skill that does not exist is an IO error, not a creation.
+        assert!(patch_skill(
+            &paths,
+            &SkillScope::User,
+            false,
+            "ghost",
+            &SkillFieldPatch {
+                description: Some("x"),
+                ..SkillFieldPatch::default()
+            },
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn copy_skill_directory_carries_the_subtree_and_renames_the_copy() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+        let source = paths.builtin_skills_dir.join("origin");
+        create_skill(
+            &paths,
+            &SkillScope::User,
+            false,
+            &SkillDraftInput {
+                name: "origin".into(),
+                description: "d".into(),
+                when_to_use: None,
+                allowed_tools: None,
+                paths: None,
+                body: "origin body".into(),
+            },
+        )
+        .await
+        .expect("create");
+        // The primitive is fed a real directory: move the created skill into the
+        // built-in tree so the copy has a read-only source, then add support
+        // files to it.
+        tokio::fs::create_dir_all(&paths.builtin_skills_dir).await.expect("builtin root");
+        tokio::fs::rename(paths.user_skills_dir.join("origin"), &source)
+            .await
+            .expect("move to builtin");
+        tokio::fs::create_dir_all(source.join("references")).await.expect("references");
+        tokio::fs::write(source.join("references").join("notes.md"), "notes\n")
+            .await
+            .expect("support file");
+
+        let target = copy_skill_directory(&paths, &source, "derived")
+            .await
+            .expect("copy");
+        assert_eq!(target, paths.user_skills_dir.join("derived"));
+
+        let manifest = tokio::fs::read_to_string(target.join(SKILL_MANIFEST_FILE))
+            .await
+            .expect("copied manifest");
+        assert!(manifest.contains("name: derived"), "{manifest}");
+        assert!(!manifest.contains("name: origin"), "{manifest}");
+        assert!(manifest.contains("origin body"), "{manifest}");
+        assert_eq!(
+            tokio::fs::read_to_string(target.join("references").join("notes.md"))
+                .await
+                .expect("copied support file"),
+            "notes\n"
+        );
+        // The source is untouched and the copy is an independent tree.
+        assert_eq!(
+            tokio::fs::read_to_string(source.join(SKILL_MANIFEST_FILE))
+                .await
+                .expect("source manifest")
+                .contains("name: origin"),
+            true
+        );
+
+        // Same target again: refused, and the existing copy is not merged into.
+        assert!(matches!(
+            copy_skill_directory(&paths, &source, "derived").await,
+            Err(ExtensionError::SkillExists(_))
+        ));
+        // Junk / traversal target names never reach the filesystem.
+        for bad in ["../escape", "a/b", "C:evil", ""] {
+            assert!(
+                copy_skill_directory(&paths, &source, bad).await.is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        // A source that is not a directory (or does not exist) is refused.
+        assert!(copy_skill_directory(&paths, &paths.user_skills_dir.join("ghost"), "x")
+            .await
+            .is_err());
+        assert!(copy_skill_directory(&paths, &paths.user_skills_dir.join("derived"), "nested")
+            .await
+            .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn copy_skill_directory_refuses_symlinks_in_the_tree() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+        let source = tmp.path().join("linked-skill");
+        tokio::fs::create_dir_all(&source).await.expect("source");
+        tokio::fs::write(
+            source.join(SKILL_MANIFEST_FILE),
+            "---\nname: linked\ndescription: d\n---\n\nbody\n",
+        )
+        .await
+        .expect("manifest");
+        std::os::unix::fs::symlink("/etc/passwd", source.join("escape.md")).expect("symlink");
+
+        let error = copy_skill_directory(&paths, &source, "copied")
+            .await
+            .expect_err("a link in the tree must be refused");
+        assert!(matches!(error, ExtensionError::PathTraversal(_)), "{error:?}");
+        assert!(!paths.user_skills_dir.join("copied").exists());
+    }
+
     #[test]
     fn skill_dir_for_scopes_and_rejects_traversal() {
         let tmp = TempDir::new().unwrap();
@@ -2155,6 +2757,114 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn skill_origin_classifies_every_managed_layout() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+        let root = &paths.user_skills_dir;
+
+        // Flat `<name>/` under the user root is the one writable class.
+        assert_eq!(skill_origin_of(&paths, &root.join("weekly")), SkillOrigin::User);
+        assert!(is_writable_skill(&paths, "weekly", &root.join("weekly")));
+        // …but only when the directory basename equals the public id.
+        assert!(!is_writable_skill(&paths, "other-name", &root.join("weekly")));
+
+        assert_eq!(
+            skill_origin_of(&paths, &root.join("shared/fmt")),
+            SkillOrigin::Shared
+        );
+        assert_eq!(
+            skill_origin_of(&paths, &root.join("companion/c1/weekly")),
+            SkillOrigin::Companion
+        );
+        assert_eq!(
+            skill_origin_of(&paths, &root.join("_drafts/c1/weekly")),
+            SkillOrigin::Draft
+        );
+        assert_eq!(
+            skill_origin_of(&paths, &root.join("agent-store/0190f5fe-7c00-7a00-8000-000000000001/hello")),
+            SkillOrigin::Marketplace
+        );
+        // Nested trees are never writable, however deep they go — for *any*
+        // public id, not just one that happens to match the basename.
+        for location in [
+            root.join("shared/fmt"),
+            root.join("companion/c1/weekly"),
+            root.join("_drafts/c1/weekly"),
+            root.join("agent-store/snap/hello"),
+        ] {
+            assert!(
+                !skill_origin_of(&paths, &location).is_writable(),
+                "{}",
+                location.display()
+            );
+            assert!(!is_writable_skill(&paths, "fmt", &location));
+            assert!(!is_writable_skill(&paths, "weekly", &location));
+        }
+        // An unknown namespace under the user root, the root itself, and any
+        // path outside the managed roots are all unwritable.
+        assert_eq!(
+            skill_origin_of(&paths, &root.join("custom-ns/hello")),
+            SkillOrigin::Unmanaged
+        );
+        assert_eq!(skill_origin_of(&paths, root), SkillOrigin::Unmanaged);
+        assert_eq!(
+            skill_origin_of(&paths, &tmp.path().join("elsewhere/hello")),
+            SkillOrigin::Unmanaged
+        );
+
+        // Built-ins win the classification even though they live outside the
+        // user root, and they are read-only.
+        let builtin = paths.builtin_skills_dir.join("code-review/SKILL.md");
+        assert_eq!(skill_origin_of(&paths, &builtin), SkillOrigin::Builtin);
+        assert!(SkillOrigin::Builtin.read_only_reason().is_some());
+        assert!(SkillOrigin::User.read_only_reason().is_none());
+    }
+
+    #[test]
+    fn skill_manifest_path_resolves_a_scanned_directory_to_its_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("skills/weekly");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(SKILL_MANIFEST_FILE), "---\nname: weekly\n---\n").unwrap();
+
+        // Directories (every user-root skill) resolve to their SKILL.md…
+        assert_eq!(skill_manifest_path(&dir), dir.join(SKILL_MANIFEST_FILE));
+        // …while a path that already is the manifest is returned unchanged.
+        let manifest = dir.join(SKILL_MANIFEST_FILE);
+        assert_eq!(skill_manifest_path(&manifest), manifest);
+        // A path that does not exist is not silently turned into a manifest
+        // path: the reader keeps failing honestly.
+        let missing = tmp.path().join("skils/typo/SKILL.md");
+        assert_eq!(skill_manifest_path(&missing), missing);
+    }
+
+    #[tokio::test]
+    async fn user_scope_create_write_and_delete_share_one_directory() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+        let dir = skill_dir_for(&paths, &SkillScope::User, "weekly", false).unwrap();
+        assert_eq!(dir, paths.user_skills_dir.join("weekly"));
+
+        let input = SkillDraftInput {
+            name: "weekly".into(),
+            description: "weekly report".into(),
+            when_to_use: None,
+            allowed_tools: None,
+            paths: None,
+            body: "## steps".into(),
+        };
+        create_skill(&paths, &SkillScope::User, false, &input).await.unwrap();
+        let created = skill_origin_of(&paths, &dir);
+        assert_eq!(created, SkillOrigin::User);
+        assert!(is_writable_skill(&paths, "weekly", &dir));
+
+        // The delete primitive targets exactly that directory.
+        delete_skill(&paths, "weekly").await.unwrap();
+        assert!(!dir.exists());
+        assert!(delete_skill(&paths, "weekly").await.is_err());
     }
 
     #[tokio::test]

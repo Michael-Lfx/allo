@@ -231,15 +231,111 @@ export interface RunView {
 export type RunResult = RunView;
 export interface CancelRunInput { runId: string; expectedVersion: number; commandId?: string; idempotencyKey?: string }
 export interface SteerRunInput { runId: string; text: string; expectedVersion: number; commandId?: string; idempotencyKey?: string }
-export interface RunEvent { run_id: string; sequence: number; event_type: string; payload: Record<string, unknown> }
+export type AnswerDecisionInput = {
+  runId: string;
+  stepId: string;
+  attemptId: string;
+  answer: string;
+  /**
+   * The engine's three-way CAS tokens. They are mandatory: an answer that does
+   * not name the exact execution/step/attempt version it was written against is
+   * refused with a `Conflict` instead of being applied. `run/events` projects
+   * the current three onto every pending `approval.requested`, so a client
+   * echoes those rather than inventing versions.
+   */
+  expectedExecutionVersion: number;
+  expectedStepVersion: number;
+  expectedAttemptVersion: number;
+};
+/**
+ * One projected run event.
+ *
+ * `step_id` / `attempt_id` are present when the engine scoped the event to an
+ * attempt (notably `approval.requested`). A pending decision additionally
+ * carries the three CAS versions an accepted answer must echo; they are read
+ * from the authoritative rows when the event is projected, so an answer built
+ * from them races safely (a concurrent change turns it into a `Conflict`).
+ *
+ * There is deliberately no `always_allow` counterpart on the wire: answering a
+ * decision never widens a tool policy.
+ */
+export interface RunEvent {
+  run_id: string;
+  sequence: number;
+  event_type: string;
+  payload: Record<string, unknown>;
+  step_id?: string | null;
+  attempt_id?: string | null;
+  expected_execution_version?: number | null;
+  expected_step_version?: number | null;
+  expected_attempt_version?: number | null;
+}
 export interface RunEventsQuery { runId: string; afterSequence?: number; limit?: number }
 export interface RunSubscriptionParams { run_id: string }
+
+/**
+ * W4 / W6 (doc 16 R10/R11, resolves D-W6-1): the authoritative plan snapshot.
+ *
+ * `run/events` is an append-only log of markers — step titles, failure reasons
+ * and timings never appear there. This projection reads the engine's own rows,
+ * so each step exists once with its current facts. Internal participant ids are
+ * deliberately not on the wire: member attribution is `role` + `model`.
+ */
+export interface RunPlan {
+  run_id: string;
+  status: RunStatus;
+  version: number;
+  steps: RunPlanStep[];
+  dependencies: RunPlanDependency[];
+}
+export interface RunPlanStep {
+  step_id: string;
+  title: string;
+  kind: string;
+  status: string;
+  role?: string | null;
+  model?: string | null;
+  introduced_in_revision: number;
+  superseded_in_revision?: number | null;
+  created_at: number;
+  updated_at: number;
+  attempts: RunPlanAttempt[];
+}
+export interface RunPlanAttempt {
+  attempt_id: string;
+  attempt_no: number;
+  status: string;
+  trigger_reason: string;
+  role?: string | null;
+  model?: string | null;
+  question?: string | null;
+  error?: string | null;
+  output_summary?: string | null;
+  output_files: string[];
+  tokens?: number | null;
+  started_at?: number | null;
+  finished_at?: number | null;
+}
+export interface RunPlanDependency { blocker_step_id: string; blocked_step_id: string }
 
 export interface ProviderWithModel { provider_id: string; model: string; use_model?: string }
 export interface ConversationCreateInput { name?: string; model?: ProviderWithModel; workspaceId?: string; reasoningEffort?: string }
 export interface ConversationUpdateInput { name?: string; model?: ProviderWithModel; reasoningEffort?: string }
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
-export interface ConversationModelOption { name: string; display_name?: string | null; context_limit?: number | null }
+export interface ConversationModelOption {
+  name: string;
+  display_name?: string | null;
+  context_limit?: number | null;
+  /**
+   * models.dev catalog facts (W9 / R14). All of them are **absent** when the
+   * registry has no entry for this provider+model (an unmapped platform, e.g.
+   * the bundled `mimo`, never gets zeros standing in for "unknown").
+   */
+  cost_input?: number | null;
+  cost_output?: number | null;
+  catalog_context_window?: number | null;
+  supports_vision?: boolean | null;
+}
 export interface ProviderModelOption { name: string; models: ConversationModelOption[] }
 export interface ConversationModelSelection { provider: string; model: string }
 export interface ConversationModelOptions {
@@ -270,6 +366,21 @@ export interface ContextUsage {
   source: "measured" | string;
 }
 
+/**
+ * Per-turn token accounting for ONE completed turn (W9 / R14, additive).
+ *
+ * The runtime's own report (`TurnCompleted`), projected onto the conversation
+ * event stream — field names mirror the Run-side `TurnUsage` so one vocabulary
+ * covers both surfaces. It is **not** context occupancy: `ContextUsage` is a
+ * gauge (the last request's prompt size) and cannot express what one turn
+ * cost. Absent whenever the runtime reported nothing (never a zero).
+ */
+export interface TurnUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
 export interface ConversationDeleteResult {
   conversation_id: string;
   deleted: boolean;
@@ -297,10 +408,30 @@ export interface ConversationSendReceipt {
   result_error_code?: string | null;
   result_error_retryable?: boolean | null;
 }
+/**
+ * The closed set of conversation event kinds the server emits (`05` §4).
+ *
+ * Deliberately **not** widened with `| string` (doc `16` R1): the escape made
+ * the union collapse to `string`, so exhaustive switches and type guards were
+ * impossible. A newer server kind reaches a client as a runtime value the
+ * switch does not match — which is handled by falling through — and widening
+ * this union is the deliberate, reviewable act that changes the contract.
+ */
+export type ConversationEventType =
+  | "message.created"
+  | "message.delta"
+  | "message.thinking"
+  | "message.tips"
+  | "message.tool"
+  | "message.error"
+  | "message.activity"
+  | "turn.status"
+  | "context.usage";
+
 export interface ConversationEvent {
   conversation_id: string;
   sequence: number;
-  event_type: "message.created" | "message.delta" | "message.thinking" | "message.tips" | "message.tool" | "message.error" | "message.activity" | "turn.status" | "context.usage" | string;
+  event_type: ConversationEventType;
   payload: Record<string, unknown>;
 }
 export interface ConversationMessagesQuery { conversationId: string; page?: number; pageSize?: number; cursor?: string }
@@ -328,10 +459,37 @@ export interface SkillSummary {
   description?: string | null;
   version: string;
   source: string;
+  /**
+   * Finer on-disk owner than `source` (`16` R17 / W12): `user` | `shared` |
+   * `companion` | `draft` | `marketplace` | `builtin` | `unmanaged`.
+   *
+   * `source` alone cannot separate a user skill from an installed marketplace
+   * product — both are `custom`.
+   *
+   * Optional so a client compiled against this package keeps working against a
+   * host that predates the field; treat a missing value as "unknown owner".
+   */
+  origin?: SkillOrigin;
+  /**
+   * Whether the store's write face accepts `skill/update` / `skill/delete` for
+   * this skill — `origin === "user"` and the directory is the canonical one.
+   * Absent means unknown, so a UI must not offer a write action on `!== true`.
+   */
+  writable?: boolean;
   compatibility_status: CompatibilityStatus;
   enabled: boolean;
   required_connectors: string[];
 }
+
+/** Where a skill lives on the host (`SkillSummary.origin`). */
+export type SkillOrigin =
+  | "user"
+  | "shared"
+  | "companion"
+  | "draft"
+  | "marketplace"
+  | "builtin"
+  | "unmanaged";
 
 /** `skill/get` — the raw SKILL.md body and internal routing rules are never returned. */
 export interface SkillDetail extends SkillSummary {
@@ -539,6 +697,23 @@ export interface MarketplaceSummary {
   last_checked_at?: number | null;
 }
 
+/**
+ * Snapshot produced by importing this entry, plus how much of it is installed.
+ * Projected server-side on `market/get` (doc 16 D-W13-1 ①) so a client never
+ * has to re-derive "what would a cascade removal take out?" from the store
+ * listing.
+ */
+export interface MarketplaceEntrySnapshot {
+  snapshot_id: string;
+  name: string;
+  version: string;
+  status: string;
+  component_count: number;
+  /** Components installed from this snapshot; `0` = imported but untouched. */
+  installed_count: number;
+  imported_at: number;
+}
+
 export interface MarketplaceEntry {
   name: string;
   source_kind: string;
@@ -547,6 +722,15 @@ export interface MarketplaceEntry {
   description?: string | null;
   keywords: string[];
   category?: string | null;
+  /**
+   * Localized `<field>_<lang>` variants carried verbatim by the market
+   * manifest (`description_zh`, `name_en`, `tags_zh`, `legacy_tags_en`, …).
+   * Resolve with `pickEntryText` / `pickEntryTags` (doc 18 §4, D8=A);
+   * absent when the manifest declared none.
+   */
+  localized?: Record<string, string | string[]> | null;
+  /** Absent until the entry has been imported from this marketplace. */
+  snapshot?: MarketplaceEntrySnapshot | null;
 }
 
 export interface MarketplaceDetail extends MarketplaceSummary {

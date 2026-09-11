@@ -266,6 +266,10 @@ oauth2 = "5.0.0-rc.1"
 # NOTE: nomi-config uses toml 1.0; be-rs (nomifun-mcp/runtime) uses 0.8 which is
 # the workspace default. nomi-config pins 1.0 in its own manifest.
 toml = "0.8"
+# Comment/format-preserving TOML edits (`config/set` must rewrite one key and
+# leave the user's file — including comments — otherwise byte-identical).
+# 0.20 matches the version the `toml 0.8` chain already pulls in.
+toml_edit = "0.20"
 
 # --- Encoding / misc ---
 base64 = "0.22"

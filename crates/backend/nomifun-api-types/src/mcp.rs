@@ -636,9 +636,16 @@ mod tests {
 
     #[test]
     fn test_oauth_status_response() {
-        let resp = OAuthStatusResponse { authenticated: true };
+        let resp = OAuthStatusResponse {
+            authenticated: true,
+            state: oauth_state::AUTHENTICATED.into(),
+        };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["authenticated"], true);
+        // The stable state name is part of the wire contract (design doc §8):
+        // a client must be able to tell "authenticated" from "needs reauth"
+        // without guessing from the boolean.
+        assert_eq!(json["state"], oauth_state::AUTHENTICATED);
     }
 
     #[test]
@@ -646,10 +653,12 @@ mod tests {
         let resp = OAuthLoginResponse {
             success: false,
             error: Some("discovery failed".into()),
+            error_code: Some("pre_registered_client_required".into()),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["success"], false);
         assert_eq!(json["error"], "discovery failed");
+        assert_eq!(json["error_code"], "pre_registered_client_required");
     }
 
     // -- DetectedMcpServerResponse --------------------------------------------

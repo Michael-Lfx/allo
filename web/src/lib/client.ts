@@ -8,21 +8,26 @@
 
 import {
   AppServerClient as BaseClient,
+  HttpTransport,
   WebSocketTransport,
+  appServerErrorFromWire,
   type AppServerClientOptions as BaseOptions,
   type Transport,
 } from "@flowy-agent-store/client";
 import { TransportError } from "@flowy-agent-store/protocol";
-import { AppServerError } from "@flowy-agent-store/protocol";
 import {
   APP_SERVER_PROTOCOL_VERSION,
   type BrowseDirectoryResult,
   type FileMetadata,
+  type SkillDetail,
   type WorkspaceFlatFile,
   type WorkspaceRegistration,
 } from "@flowy-agent-store/protocol";
 
 export * from "@flowy-agent-store/client";
+// The skill write face addresses `skill/get`'s shape, so the store needs the
+// type re-exported here (it is imported for the helper signatures above).
+export type { SkillDetail } from "@flowy-agent-store/protocol";
 
 export interface AppServerClientOptions extends Omit<BaseOptions, "transport"> {
   /** Ready-made transport; defaults to a `WebSocketTransport` over `wsUrl`. */
@@ -45,6 +50,99 @@ interface ApiResponse<T> {
   success?: boolean;
   data?: T;
 }
+
+/**
+ * `config/get` / `config/set` view of the host's `~/.agent-store/config.toml`.
+ *
+ * Host management surface (`16` §6): the shape exists so the Web UI can render
+ * and write the provider default, and it deliberately has **no** field for an
+ * `api_key` or `base_url`, so a credential cannot reach the front end through
+ * this face.
+ */
+export interface AgentStoreConfigView {
+  /** The file exists on this host; a save creates it when it does not. */
+  exists: boolean;
+  /** Declared `default_model`; explicit `null` = none declared in the file. */
+  default_model: string | null;
+  /** `[providers.<name>]` tables as declared in the file. */
+  providers: AgentStoreConfigProvider[];
+  /**
+   * `[memory]` table; `null` when the file declares no such table (so the UI
+   * can say "not configured" instead of inventing "off"). Additive field.
+   */
+  memory: AgentStoreConfigMemory | null;
+}
+
+/** `[memory]` in the host settings file, as far as the wire exposes it. */
+export interface AgentStoreConfigMemory {
+  /** `null` = the table exists without the key (upstream default applies). */
+  distill_enabled: boolean | null;
+}
+
+/** One provider table from the file (never a registered-provider row). */
+export interface AgentStoreConfigProvider {
+  /** `[providers.<name>]` key — the left half of a `default_model`. */
+  name: string;
+  /** `enabled = false` in the file; `true` when the key is absent. */
+  enabled: boolean;
+  /** Model names declared for this provider in the file. */
+  models: string[];
+}
+
+/** The only keys `config/set` accepts (the server rejects anything else). */
+export interface AgentStoreConfigPatch {
+  default_model?: string;
+  /** Writes `[memory] distill_enabled` — the switch the host reads at startup. */
+  memory?: { distill_enabled: boolean };
+}
+
+/** `skill/create` — structured fields; the server assembles the frontmatter. */
+export interface SkillCreateInput {
+  /** Becomes the skill's public id and its directory name. */
+  name: string;
+  description: string;
+  when_to_use?: string;
+  allowed_tools?: string;
+  paths?: string;
+  body?: string;
+}
+
+/**
+ * `skill/update` — a field-level patch.
+ *
+ * An absent field is left alone (`undefined`, not empty string). An **empty
+ * string** on one of the optional keys clears that key; `description` may not
+ * be emptied (`invalid_request`). There is deliberately no `name`.
+ */
+export interface SkillUpdateInput {
+  skill_id: string;
+  description?: string;
+  when_to_use?: string;
+  allowed_tools?: string;
+  paths?: string;
+  /** Replaces the body wholesale — the read face never returned it, so an edit
+   * can only ever *replace* prose, not append to what it never saw. */
+  body?: string;
+}
+
+/** `skill/delete` — what the id resolves to after the delete. */
+export interface SkillDeleteResult {
+  skill_id: string;
+  deleted: boolean;
+  /** Present when the id now resolves to another origin (e.g. a built-in the
+   * user skill was shadowing); absent when nothing is visible there any more. */
+  revealed_origin?: SkillOriginWire | null;
+}
+
+/** On-disk owner of a skill, as the read face reports it. */
+export type SkillOriginWire =
+  | "user"
+  | "shared"
+  | "companion"
+  | "draft"
+  | "marketplace"
+  | "builtin"
+  | "unmanaged";
 
 /** Derive the HTTP helper base URL from the WebSocket URL. */
 function deriveHttpBaseUrl(wsUrl: string): string | undefined {
@@ -167,6 +265,65 @@ export class AppServerClient extends BaseClient {
   }
 
   /**
+   * Read the host's agent-store settings file (`config/get`).
+   *
+   * Provider/default-model configuration is **host management surface**, not a
+   * published SDK method (doc `16` §6: a third-party consumer has no business
+   * reading this host's provider config), so it lives here with the other
+   * Web-only helpers and rides the protocol transport directly. The result
+   * carries no credential by construction, and the file location is the host's
+   * own — no parameter can name a path.
+   */
+  async getAgentStoreConfig(): Promise<AgentStoreConfigView> {
+    return this.transport.request<AgentStoreConfigView>("config/get", {});
+  }
+
+  /**
+   * Write one whitelisted settings key (`config/set`) and return the file
+   * **re-read from disk**, so a caller never has to treat "request sent" as
+   * "value stored". `api_key` / `base_url` / arbitrary paths are not
+   * expressible in `AgentStoreConfigPatch`; the server answers `invalid_request`
+   * for anything outside the whitelist.
+   */
+  async setAgentStoreConfig(patch: AgentStoreConfigPatch): Promise<AgentStoreConfigView> {
+    return this.transport.request<AgentStoreConfigView>("config/set", patch);
+  }
+
+  /**
+   * Skill write face (`skill/create` · `skill/update` · `skill/delete` ·
+   * `skill/copy`, doc `16` R17 / W12).
+   *
+   * Same reasoning as `config/*`: a third-party consumer must not be able to
+   * write into this host's skill tree, so these are **wire-only** host
+   * management methods with no counterpart in the published client package and
+   * no HTTP binding. The Web UI is the host's own surface, so it calls them
+   * through these helpers.
+   *
+   * Every one of them answers with the **re-read** shape: `skill/create`,
+   * `skill/update` and `skill/copy` return `skill/get`'s view of the affected
+   * skill, `skill/delete` returns what the id now resolves to. No field names a
+   * path, and a name that would escape the user skills root is refused
+   * server-side.
+   */
+  async createSkill(input: SkillCreateInput): Promise<SkillDetail> {
+    return this.transport.request<SkillDetail>("skill/create", input);
+  }
+
+  /** Field-level edit: absent fields are left alone; `name` is not patchable. */
+  async updateSkill(input: SkillUpdateInput): Promise<SkillDetail> {
+    return this.transport.request<SkillDetail>("skill/update", input);
+  }
+
+  async deleteSkill(skillId: string): Promise<SkillDeleteResult> {
+    return this.transport.request<SkillDeleteResult>("skill/delete", { skill_id: skillId });
+  }
+
+  /** Derive a new **user** skill from any origin (read-only sources included). */
+  async copySkill(skillId: string, newName: string): Promise<SkillDetail> {
+    return this.transport.request<SkillDetail>("skill/copy", { skill_id: skillId, new_name: newName });
+  }
+
+  /**
    * POST to the server **root** file service. `/api/fs/*` is served outside the
    * `/api/app-server` prefix that `httpPost` targets, exactly like `/api/fs/browse`.
    */
@@ -187,30 +344,23 @@ export class AppServerClient extends BaseClient {
     return (await response.json()) as ApiResponse<T>;
   }
 
+  /**
+   * Ready connection id for **host-side** calls.
+   *
+   * The handshake itself now lives in the package
+   * (`@flowy-agent-store/client` `HttpTransport.openConnection`, doc 16 R2);
+   * what stays here is the reason the webui needs one outside `request()`:
+   * `/api/fs/*` is a host file service and `POST /workspaces` is an HTTP-only
+   * register route — neither is a protocol method (`05` §2.1.1).
+   */
   private async httpHandshake(): Promise<{ connectionId: string }> {
-    const response = await fetch(`${this.httpBaseUrl}/initialize`, {
-      method: "POST",
-      headers: this.httpHeaders(),
-      body: JSON.stringify({
-        protocol_version: APP_SERVER_PROTOCOL_VERSION,
-        client: this.clientInfo,
-        capabilities: this.capabilities,
-      }),
+    const transport = new HttpTransport({
+      baseUrl: this.httpBaseUrl ?? "",
+      token: this.token,
+      client: this.clientInfo,
+      capabilities: this.capabilities,
     });
-    const connectionId = response.headers.get(CONNECTION_HEADER);
-    if (!response.ok || !connectionId) {
-      throw await this.httpError(response);
-    }
-    // Complete the ready transition before any business call, exactly like
-    // the WebSocket lifecycle: initialize → initialized → ready.
-    const ready = await fetch(`${this.httpBaseUrl}/initialized`, {
-      method: "POST",
-      headers: this.httpHeaders(connectionId),
-    });
-    if (!ready.ok) {
-      throw await this.httpError(ready);
-    }
-    return { connectionId };
+    return { connectionId: await transport.openConnection() };
   }
 
   private async httpPost<T>(path: string, body: unknown, connectionId: string): Promise<T> {
@@ -250,27 +400,14 @@ export class AppServerClient extends BaseClient {
     return headers;
   }
 
+  /** Wire-error → SDK error, via the one shared mapping (doc 16 R2). */
   private async httpError(response: Response): Promise<unknown> {
-    interface HttpWireError {
-      code?: string;
-      message?: string;
-      retryable?: boolean;
-      details?: Record<string, unknown>;
-    }
-    let wire: HttpWireError | null = null;
+    let payload: unknown = null;
     try {
-      wire = (await response.json()) as HttpWireError;
+      payload = await response.json();
     } catch {
-      // fall through to a generic transport error
+      // fall through: a body-less failure becomes a transport error
     }
-    if (wire?.code) {
-      return new AppServerError({
-        code: wire.code,
-        message: wire.message ?? `http ${response.status}`,
-        retryable: wire.retryable ?? false,
-        details: wire.details ?? {},
-      });
-    }
-    return new TransportError("receive", `http ${response.status} from app-server`);
+    return appServerErrorFromWire(payload, response.status, "host file service");
   }
 }

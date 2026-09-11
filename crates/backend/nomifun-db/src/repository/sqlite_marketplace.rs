@@ -1,7 +1,9 @@
 use sqlx::SqlitePool;
 
 use crate::error::DbError;
-use crate::models::{MarketplaceEntry, PluginMarketplaceRow, PluginSnapshotRow};
+use crate::models::{
+    MarketplaceEntry, PluginMarketplaceRow, PluginSnapshotProvenanceRow, PluginSnapshotRow,
+};
 use crate::repository::marketplace::{IMarketplaceRepository, NewPluginMarketplace};
 
 /// SQLite-backed implementation of [`IMarketplaceRepository`].
@@ -136,6 +138,25 @@ impl IMarketplaceRepository for SqliteMarketplaceRepository {
         Ok(())
     }
 
+    async fn record_source_validators(
+        &self,
+        marketplace_id: &str,
+        source_etag: Option<&str>,
+        source_last_modified: Option<&str>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE plugin_marketplaces SET source_etag = ?, source_last_modified = ?, \
+             updated_at = ? WHERE marketplace_id = ? AND removed_at IS NULL",
+        )
+        .bind(source_etag)
+        .bind(source_last_modified)
+        .bind(nomifun_common::now_ms())
+        .bind(marketplace_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn set_auto_update(
         &self,
         marketplace_id: &str,
@@ -229,6 +250,27 @@ impl IMarketplaceRepository for SqliteMarketplaceRepository {
         Ok(rows)
     }
 
+    async fn list_snapshot_provenance_by_marketplace(
+        &self,
+        marketplace_id: &str,
+    ) -> Result<Vec<PluginSnapshotProvenanceRow>, DbError> {
+        let rows = sqlx::query_as::<_, PluginSnapshotProvenanceRow>(
+            "SELECT snapshots.*, \
+                    COUNT(components.id) AS component_count, \
+                    COALESCE(SUM(CASE WHEN components.installed = 1 THEN 1 ELSE 0 END), 0) AS installed_count \
+             FROM plugin_snapshots snapshots \
+             LEFT JOIN plugin_snapshot_components components \
+               ON components.snapshot_id = snapshots.snapshot_id \
+             WHERE snapshots.marketplace_id = ? \
+             GROUP BY snapshots.id \
+             ORDER BY snapshots.imported_at DESC, snapshots.id DESC",
+        )
+        .bind(marketplace_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     async fn clear_snapshot_provenance(&self, snapshot_id: &str) -> Result<(), DbError> {
         sqlx::query(
             "UPDATE plugin_snapshots SET marketplace_id = NULL, entry_name = NULL \
@@ -262,6 +304,7 @@ mod tests {
             description: Some(format!("{name} plugin")),
             keywords: vec!["demo".into()],
             category: Some("dev".into()),
+            localized: std::collections::BTreeMap::new(),
         }
     }
 
@@ -302,6 +345,45 @@ mod tests {
             source_revision: None,
             components: vec![],
         }
+    }
+
+    /// R28: localized variants survive the JSON round-trip through the
+    /// `plugin_marketplaces.entries_json` column, and a row written before
+    /// v1.1 (no `localized` key) still deserializes.
+    #[tokio::test]
+    async fn localized_variants_round_trip_through_entries_json() {
+        let (repo, _db) = setup().await;
+        let mut entry = sample_entry("pdf-toolkit");
+        entry.localized = std::collections::BTreeMap::from([
+            (
+                "description_zh".to_owned(),
+                nomifun_common::LocalizedVariant::Text("PDF 工具集".to_owned()),
+            ),
+            (
+                "tags_en".to_owned(),
+                nomifun_common::LocalizedVariant::List(vec!["documents".to_owned()]),
+            ),
+        ]);
+        let mut new_market = sample("skills", "/tmp/skills");
+        new_market.entries = vec![entry];
+        repo.insert_marketplace(new_market).await.unwrap();
+
+        let row = repo.get_marketplace("skills").await.unwrap().unwrap();
+        let stored = &row.entries()[0];
+        assert_eq!(
+            stored.localized.get("description_zh"),
+            Some(&nomifun_common::LocalizedVariant::Text("PDF 工具集".to_owned()))
+        );
+        assert_eq!(
+            stored.localized.get("tags_en"),
+            Some(&nomifun_common::LocalizedVariant::List(vec!["documents".to_owned()]))
+        );
+
+        // A pre-v1.1 row has no `localized` key at all — it must still parse.
+        let legacy: Vec<MarketplaceEntry> =
+            serde_json::from_str(r#"[{"name":"old","source_kind":"directory","source_uri":"./old","keywords":[]}]"#)
+                .unwrap();
+        assert!(legacy[0].localized.is_empty());
     }
 
     #[tokio::test]
@@ -456,6 +538,96 @@ mod tests {
         repo.clear_snapshot_provenance(&snap_a).await.unwrap();
         assert!(repo
             .list_snapshots_by_marketplace("company-tools")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_validators_round_trip_and_clear() {
+        let (repo, _db) = setup().await;
+        repo.insert_marketplace(sample("company-tools", "https://example.test/market.json"))
+            .await
+            .unwrap();
+
+        repo.record_source_validators(
+            "company-tools",
+            Some("\"abc\""),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT"),
+        )
+        .await
+        .unwrap();
+        let row = repo.get_marketplace("company-tools").await.unwrap().unwrap();
+        assert_eq!(row.source_etag.as_deref(), Some("\"abc\""));
+        assert_eq!(
+            row.source_last_modified.as_deref(),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT")
+        );
+
+        // A source that stops sending an ETag must clear the stale one rather
+        // than leave it on the row to be offered as `If-None-Match` forever.
+        repo.record_source_validators("company-tools", None, Some("Thu, 22 Oct 2015 07:28:00 GMT"))
+            .await
+            .unwrap();
+        let row = repo.get_marketplace("company-tools").await.unwrap().unwrap();
+        assert_eq!(row.source_etag, None);
+        assert_eq!(
+            row.source_last_modified.as_deref(),
+            Some("Thu, 22 Oct 2015 07:28:00 GMT")
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_provenance_reports_component_and_install_counts() {
+        let (repo, db) = setup().await;
+        let snapshot_repo = crate::repository::SqlitePluginSnapshotRepository::new(db.pool().clone());
+        repo.insert_marketplace(sample("company-tools", "/tmp/company-tools"))
+            .await
+            .unwrap();
+
+        let snap = nomifun_common::generate_id();
+        snapshot_repo
+            .insert_snapshot_with_components(snapshot_params(
+                &snap,
+                Some("company-tools"),
+                Some("formatter"),
+                "digest-c",
+            ))
+            .await
+            .unwrap();
+
+        // Two components, one installed. Written with raw SQL on purpose: the
+        // install *transition* has its own tests, and this one is about the
+        // aggregate `market/get` reads (component total + installed total).
+        for (component_id, installed) in [("wb-formatter-agent", 1), ("wb-formatter-skill", 0)] {
+            sqlx::query(
+                "INSERT INTO plugin_snapshot_components \
+                     (snapshot_id, component_id, kind, name, compatibility_json, payload_json, installed) \
+                 VALUES (?, ?, 'agent', ?, '{}', '{}', ?)",
+            )
+            .bind(&snap)
+            .bind(component_id)
+            .bind(component_id)
+            .bind(installed)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+
+        let rows = repo
+            .list_snapshot_provenance_by_marketplace("company-tools")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].snapshot.snapshot_id, snap);
+        assert_eq!(rows[0].snapshot.entry_name.as_deref(), Some("formatter"));
+        assert_eq!(rows[0].component_count, 2);
+        assert_eq!(rows[0].installed_count, 1);
+
+        // A marketplace with no snapshots yields nothing rather than an error —
+        // the projection must not invent provenance.
+        assert!(repo
+            .list_snapshot_provenance_by_marketplace("not-registered")
             .await
             .unwrap()
             .is_empty());

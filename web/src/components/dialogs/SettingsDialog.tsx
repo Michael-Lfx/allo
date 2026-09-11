@@ -1,58 +1,75 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Bot,
-  FlaskConical,
-  Layers,
-  Plug,
-  Settings as SettingsIcon,
-  SlidersHorizontal,
-  Sparkles,
-  User,
-} from "lucide-react";
+import { Brain, Plug, Settings as SettingsIcon } from "lucide-react";
 import { useAppStore } from "../../store/appStore";
 import { setLanguage } from "../../i18n";
 import { useTheme } from "../../ui/theme";
 import { DialogShell } from "./DialogShell";
+import { AgentSettingsSection } from "./AgentSettingsSection";
+import { ProviderSettingsSection } from "./ProviderSettingsSection";
 
-type SettingsSection = "general" | "agent" | "account" | "provider" | "plugin" | "advanced" | "lab" | "archived";
+/**
+ * Sections that render **real data** and therefore appear in the nav (`16` §6,
+ * R16).
+ *
+ * Five keys the dialog used to declare (`account` / `plugin` / `advanced` /
+ * `lab` / `archived`) are gone rather than left as empty shells: see
+ * `docs/agent-store/16-sdk-webui-site-priority-plan.zh.md` R16 for the
+ * per-section verdict and the unlock condition of each. Short version:
+ * - `account`: no account surface exists on this App Server (the connector
+ *   OAuth rows live in the catalog view).
+ * - `plugin`: the real marketplace/install face already exists (app-store page)
+ *   and has no settings semantics of its own yet.
+ * - `advanced` / `lab` / `archived`: no host setting, no feature flag, no
+ *   archive API to read or write.
+ *
+ * `agent` is back in the nav (**R16 A 档, 2026-09-11**): its one candidate
+ * switch `[memory] distill_enabled` is now genuinely consumed by the host
+ * (`apps/agent-store` reads it at startup and forwards it to
+ * `manager::nomi::distill::set_distill_host_override`) *and* is writable over
+ * `config/set`, so the section shows a value read back from the file instead of
+ * a switch with no consumer. The models/efforts facts it could have mirrored
+ * still have a single owner — the composer's ModelPicker — so the section only
+ * links there.
+ */
+export const SETTINGS_SECTIONS = ["general", "provider", "agent"] as const;
+
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 const SECTIONS: Array<{ key: SettingsSection; icon: React.ReactNode; labelKey: string }> = [
   { key: "general", icon: <SettingsIcon size={17} strokeWidth={1.7} />, labelKey: "settings.sectionGeneral" },
-  { key: "agent", icon: <Bot size={17} strokeWidth={1.7} />, labelKey: "settings.sectionAgent" },
-  { key: "account", icon: <User size={17} strokeWidth={1.7} />, labelKey: "settings.sectionAccount" },
   { key: "provider", icon: <Plug size={17} strokeWidth={1.7} />, labelKey: "settings.sectionProvider" },
-  { key: "plugin", icon: <Sparkles size={17} strokeWidth={1.7} />, labelKey: "settings.sectionPlugin" },
-  { key: "advanced", icon: <SlidersHorizontal size={17} strokeWidth={1.7} />, labelKey: "settings.sectionAdvanced" },
-  { key: "lab", icon: <FlaskConical size={17} strokeWidth={1.7} />, labelKey: "settings.sectionLab" },
-  { key: "archived", icon: <Layers size={17} strokeWidth={1.7} />, labelKey: "settings.sectionArchived" },
+  { key: "agent", icon: <Brain size={17} strokeWidth={1.7} />, labelKey: "settings.sectionAgent" },
 ];
 
+/** Dialog gate: the store owns whether it is open; the panel is pure props. */
 export function SettingsDialog() {
-  const { t, i18n } = useTranslation();
   const settingsOpen = useAppStore((s) => s.settingsOpen);
+  const closeSettings = useAppStore((s) => s.closeSettings);
+
+  if (!settingsOpen) return null;
+  return <SettingsPanel onClose={closeSettings} />;
+}
+
+/** The panel itself: nav + sections, driven by `onClose` only. */
+export function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const { t, i18n } = useTranslation();
   const wsUrl = useAppStore((s) => s.wsUrl);
   const token = useAppStore((s) => s.token);
-  const providerId = useAppStore((s) => s.providerId);
-  const model = useAppStore((s) => s.model);
   const phase = useAppStore((s) => s.phase);
   const connected = useAppStore((s) => s.phase === "online");
   const setWsUrl = useAppStore((s) => s.setWsUrl);
   const setToken = useAppStore((s) => s.setToken);
-  const setProviderId = useAppStore((s) => s.setProviderId);
-  const setModel = useAppStore((s) => s.setModel);
   const connect = useAppStore((s) => s.connect);
   const disconnect = useAppStore((s) => s.disconnect);
-  const closeSettings = useAppStore((s) => s.closeSettings);
 
-  const { theme, setTheme: setThemeValue, savedTheme } = useTheme();
+  const { theme, setTheme: setThemeValue } = useTheme();
   const [section, setSection] = useState<SettingsSection>("general");
 
-  if (!settingsOpen) return null;
   const lang = i18n.language === "en-US" ? "en-US" : "zh-CN";
 
   return (
-    <DialogShell onClose={closeSettings} labelledBy="settings-title" titleId="settings-title" title={t("settings.title")} width="wide">
+    <DialogShell onClose={onClose} labelledBy="settings-title" titleId="settings-title" title={t("settings.title")} width="wide">
       <div className="settings-layout">
         <nav className="settings-nav" aria-label={t("settings.sectionsLabel")}>
           {SECTIONS.map(({ key, icon, labelKey }) => (
@@ -111,20 +128,6 @@ export function SettingsDialog() {
                   </div>
                   <input className="settings-row-input" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="current-password" />
                 </div>
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <span className="settings-row-title">{t("settings.providerId")}</span>
-                    <span className="settings-row-desc">{t("settings.providerDesc")}</span>
-                  </div>
-                  <input className="settings-row-input" placeholder={t("settings.providerPlaceholder")} value={providerId} onChange={(event) => setProviderId(event.target.value)} spellCheck={false} />
-                </div>
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <span className="settings-row-title">{t("settings.modelName")}</span>
-                    <span className="settings-row-desc">{t("settings.modelDesc")}</span>
-                  </div>
-                  <input className="settings-row-input" placeholder={t("settings.modelPlaceholder")} value={model} onChange={(event) => setModel(event.target.value)} spellCheck={false} />
-                </div>
                 <div className="settings-row settings-row-status">
                   <div className="settings-row-text">
                     <span className="settings-row-title">{t("settings.connectionStatus")}</span>
@@ -139,12 +142,9 @@ export function SettingsDialog() {
             </>
           )}
 
-          {section !== "general" && (
-            <div className="settings-placeholder">
-              <h2 className="settings-group-title">{t(SECTIONS.find((s) => s.key === section)?.labelKey ?? "")}</h2>
-              <p className="settings-placeholder-text">{t("settings.comingSoon")}</p>
-            </div>
-          )}
+          {section === "provider" && <ProviderSettingsSection />}
+
+          {section === "agent" && <AgentSettingsSection />}
         </div>
       </div>
     </DialogShell>

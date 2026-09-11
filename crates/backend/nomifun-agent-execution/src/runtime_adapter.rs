@@ -3,13 +3,18 @@
 //! Agent Store Agents are execution presets. The actual runtime agent remains
 //! the external executor selected by allo (for example Claude Code or Codex).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use nomifun_api_types::{
-    AgentExecutionDetail, AgentExecutionEvent, CreateAgentExecutionRequest,
-    ExecutionModelPool, ExecutionModelRef, PlannedExecutionStep, ResolvedPresetSnapshot,
+    AgentExecutionDetail, AgentExecutionEvent, AnswerExecutionDecisionRequest,
+    CreateAgentExecutionRequest, ExecutionModelPool, ExecutionModelRef, PlannedExecutionStep,
+    ResolvedPresetSnapshot,
 };
-use nomifun_common::{AgentExecutionActor, AgentExecutionEventKind, AgentExecutionStatus, AppError};
+use nomifun_common::{
+    AgentExecutionActor, AgentExecutionEventKind, AgentExecutionStatus, AppError,
+    ExecutionAttemptStatus, ExecutionStepKind, ExecutionStepStatus,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -49,12 +54,103 @@ pub struct AgentRunResult {
     pub content_digest: Option<String>,
 }
 
+/// One projected run event on the App Server wire.
+///
+/// `step_id` / `attempt_id` are projected for events that the engine scopes to
+/// an attempt (notably `approval.requested`). A pending decision also carries
+/// the three CAS versions the answer must echo: the engine's
+/// `answer_decision` accepts nothing else, so the client cannot construct an
+/// accepted answer without them. They are projected from the authoritative
+/// rows at read time, which is exactly what the CAS compares against; any
+/// concurrent movement after that turns the answer into a `Conflict` instead of
+/// silently applying it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRunEvent {
     pub run_id: String,
     pub sequence: i64,
     pub event_type: String,
     pub payload: serde_json::Value,
+    #[serde(default)]
+    pub step_id: Option<String>,
+    #[serde(default)]
+    pub attempt_id: Option<String>,
+    #[serde(default)]
+    pub expected_execution_version: Option<i64>,
+    #[serde(default)]
+    pub expected_step_version: Option<i64>,
+    #[serde(default)]
+    pub expected_attempt_version: Option<i64>,
+}
+
+/// W4 / W6（D-W6-1）：计划的**权威快照**投影。
+///
+/// 与 `AgentRunEvent` 的分工：事件是追加式日志，只带标记（`change` / `status`），
+/// 步骤标题、失败原因、起止时间从来没上过 wire；这里是当前状态快照，直接投影引擎
+/// 的权威行，因此每步只有一份最新事实——不存在「同一事件被投递两次」的问题。
+///
+/// 不新增内部标识：步骤 / 尝试 id 本就在 `run/events` 与审批回答里公开（CAS 需要
+/// 它们），成员归属用 `role` + `model` 表达而**不**投影 participant_id /
+/// source_agent_id（沿用「没有公开映射的内部 id 不上 wire」的既有规则）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRunPlan {
+    pub run_id: String,
+    pub status: AgentRunStatus,
+    pub version: i64,
+    pub steps: Vec<AgentRunPlanStep>,
+    pub dependencies: Vec<AgentRunPlanDependency>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRunPlanStep {
+    pub step_id: String,
+    pub title: String,
+    pub kind: ExecutionStepKind,
+    pub status: ExecutionStepStatus,
+    /// 成员归属的人话表达（角色 / 模型），缺失即 `null`——不猜。
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub introduced_in_revision: i64,
+    #[serde(default)]
+    pub superseded_in_revision: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub attempts: Vec<AgentRunPlanAttempt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRunPlanAttempt {
+    pub attempt_id: String,
+    pub attempt_no: i64,
+    pub status: ExecutionAttemptStatus,
+    /// 引擎给出的重试原因（首次执行同样有值，语义是「为什么有这一次尝试」）。
+    pub trigger_reason: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub output_summary: Option<String>,
+    #[serde(default)]
+    pub output_files: Vec<String>,
+    #[serde(default)]
+    pub tokens: Option<i64>,
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRunPlanDependency {
+    pub blocker_step_id: String,
+    pub blocked_step_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +307,18 @@ impl AgentRuntimeAdapter {
         Ok(run_view(self.engine.get(owner_id, run_id).await?))
     }
 
+    /// W4 / W6（D-W6-1）：计划与步骤的权威快照。
+    ///
+    /// owner 作用域与 `get_run` 完全一致（同一个 `engine.get`）：不是 owner 的 run
+    /// 一律 `NotFound`，不透露存在性。
+    pub async fn plan(
+        &self,
+        owner_id: &str,
+        run_id: &str,
+    ) -> Result<AgentRunPlan, RuntimeAdapterError> {
+        Ok(run_plan(self.engine.get(owner_id, run_id).await?))
+    }
+
     pub async fn get_result(
         &self,
         owner_id: &str,
@@ -233,6 +341,8 @@ impl AgentRuntimeAdapter {
         })
     }
 
+    /// Replay persisted run events (owner-scoped) with the decision context the
+    /// client needs to answer a pending `approval.requested`.
     pub async fn list_events(
         &self,
         owner_id: &str,
@@ -240,12 +350,23 @@ impl AgentRuntimeAdapter {
         after_sequence: Option<i64>,
         limit: Option<i64>,
     ) -> Result<Vec<AgentRunEvent>, RuntimeAdapterError> {
-        Ok(self
+        let events = self
             .engine
             .events(owner_id, run_id, after_sequence, limit)
-            .await?
+            .await?;
+        // Only a decision request needs the CAS context; every other event stays
+        // a pure projection of its persisted row (no extra read).
+        let decision_context = if events
+            .iter()
+            .any(|event| event.event_type == AgentExecutionEventKind::DecisionRequested)
+        {
+            Some(DecisionContext::read(self.engine.as_ref(), owner_id, run_id).await?)
+        } else {
+            None
+        };
+        Ok(events
             .into_iter()
-            .map(event_view)
+            .map(|event| event_view(event, decision_context.as_ref()))
             .collect())
     }
 
@@ -331,6 +452,40 @@ impl AgentRuntimeAdapter {
             .map_err(RuntimeAdapterError::Runtime)?;
         Ok(self.get_run(owner_id, run_id).await?)
     }
+
+    /// Answer the pending decision of a `waiting_input` attempt.
+    ///
+    /// Straight owner-scoped pass-through to
+    /// [`AgentExecutionEngine::answer_decision`], which stays the single answer
+    /// entry point: it enforces the owner scope, the three-way CAS
+    /// (execution + step + attempt versions), the `WaitingInput`-only
+    /// precondition, a non-empty answer and canonical ids. This wrapper adds no
+    /// policy of its own and must never relax any of those checks.
+    ///
+    /// The desktop confirmation route's `always_allow` / approve-all flag has no
+    /// counterpart here on purpose: answering a decision never widens a tool
+    /// policy for the rest of the run.
+    pub async fn answer_decision(
+        &self,
+        owner_id: &str,
+        run_id: &str,
+        step_id: &str,
+        attempt_id: &str,
+        request: AnswerExecutionDecisionRequest,
+    ) -> Result<AgentRunView, RuntimeAdapterError> {
+        self.engine
+            .answer_decision(
+                owner_id,
+                &AgentExecutionActor::user(owner_id),
+                run_id,
+                step_id,
+                attempt_id,
+                request,
+            )
+            .await
+            .map_err(RuntimeAdapterError::Runtime)?;
+        Ok(self.get_run(owner_id, run_id).await?)
+    }
 }
 
 fn digest(snapshot_json: &str) -> String {
@@ -375,6 +530,95 @@ fn run_view(detail: AgentExecutionDetail) -> AgentRunView {
     }
 }
 
+/// Project the authoritative execution detail onto the plan snapshot (W4 / W6).
+///
+/// Ordering is the engine's own (`created_at`, then `step_id`): the plan view is
+/// a snapshot, not a log, so the UI can render it without replaying events.
+/// `output_files` are filtered through `is_public_relative_path` — the same
+/// guard `run_view` uses, so no absolute path reaches the wire as a side effect
+/// of this new projection.
+fn run_plan(detail: AgentExecutionDetail) -> AgentRunPlan {
+    let mut roles: HashMap<&str, (Option<String>, Option<String>)> = HashMap::new();
+    for participant in &detail.participants {
+        roles.insert(
+            participant.participant_id.as_str(),
+            (participant.role.clone(), participant.model.clone()),
+        );
+    }
+    let mut steps: Vec<AgentRunPlanStep> = detail
+        .steps
+        .iter()
+        .map(|step| {
+            let (role, model) = step
+                .assigned_participant_id
+                .as_deref()
+                .and_then(|id| roles.get(id).cloned())
+                .unwrap_or((step.role.clone(), None));
+            let mut attempts: Vec<AgentRunPlanAttempt> = detail
+                .attempts
+                .iter()
+                .filter(|attempt| attempt.step_id == step.step_id)
+                .map(|attempt| {
+                    let (attempt_role, attempt_model) = attempt
+                        .participant_id
+                        .as_deref()
+                        .and_then(|id| roles.get(id).cloned())
+                        .unwrap_or((role.clone(), model.clone()));
+                    AgentRunPlanAttempt {
+                        attempt_id: attempt.attempt_id.clone(),
+                        attempt_no: attempt.attempt_no,
+                        status: attempt.status,
+                        trigger_reason: attempt.trigger_reason.clone(),
+                        role: attempt_role,
+                        model: attempt_model,
+                        question: attempt.question.clone(),
+                        error: attempt.error.clone(),
+                        output_summary: attempt.output_summary.clone(),
+                        output_files: attempt
+                            .output_files
+                            .iter()
+                            .filter(|path| is_public_relative_path(path))
+                            .cloned()
+                            .collect(),
+                        tokens: attempt.tokens,
+                        started_at: attempt.started_at,
+                        finished_at: attempt.finished_at,
+                    }
+                })
+                .collect();
+            attempts.sort_by_key(|attempt| attempt.attempt_no);
+            AgentRunPlanStep {
+                step_id: step.step_id.clone(),
+                title: step.title.clone(),
+                kind: step.kind,
+                status: step.status,
+                role,
+                model,
+                introduced_in_revision: step.introduced_in_revision,
+                superseded_in_revision: step.superseded_in_revision,
+                created_at: step.created_at,
+                updated_at: step.updated_at,
+                attempts,
+            }
+        })
+        .collect();
+    steps.sort_by_key(|step| (step.created_at, step.step_id.clone()));
+    AgentRunPlan {
+        run_id: detail.execution.execution_id,
+        status: detail.execution.status.into(),
+        version: detail.execution.version,
+        steps,
+        dependencies: detail
+            .dependencies
+            .iter()
+            .map(|dependency| AgentRunPlanDependency {
+                blocker_step_id: dependency.blocker_step_id.clone(),
+                blocked_step_id: dependency.blocked_step_id.clone(),
+            })
+            .collect(),
+    }
+}
+
 fn is_public_relative_path(path: &str) -> bool {
     !path.trim().is_empty()
         && !path.starts_with('/')
@@ -389,7 +633,56 @@ fn is_recovery_blocked(runtime_state: &serde_json::Value) -> bool {
         .is_some_and(serde_json::Value::is_object)
 }
 
-fn event_view(event: AgentExecutionEvent) -> AgentRunEvent {
+/// Authoritative CAS context for the decision requests of one run.
+///
+/// Read once per `list_events` page instead of once per event. It carries the
+/// current version of every step/attempt, so a projected decision always offers
+/// the tokens the engine will accept right now.
+struct DecisionContext {
+    execution_version: i64,
+    step_versions: HashMap<String, i64>,
+    attempt_versions: HashMap<(String, String), i64>,
+}
+
+impl DecisionContext {
+    async fn read(
+        engine: &AgentExecutionEngine,
+        owner_id: &str,
+        run_id: &str,
+    ) -> Result<Self, RuntimeAdapterError> {
+        let detail = engine.detail(owner_id, run_id).await?;
+        Ok(Self {
+            execution_version: detail.execution.version,
+            step_versions: detail
+                .steps
+                .into_iter()
+                .map(|step| (step.step_id, step.version))
+                .collect(),
+            attempt_versions: detail
+                .attempts
+                .into_iter()
+                .map(|attempt| {
+                    (
+                        (attempt.step_id, attempt.attempt_id),
+                        attempt.version,
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    fn step_version(&self, step_id: &str) -> Option<i64> {
+        self.step_versions.get(step_id).copied()
+    }
+
+    fn attempt_version(&self, step_id: &str, attempt_id: &str) -> Option<i64> {
+        self.attempt_versions
+            .get(&(step_id.to_owned(), attempt_id.to_owned()))
+            .copied()
+    }
+}
+
+fn event_view(event: AgentExecutionEvent, decisions: Option<&DecisionContext>) -> AgentRunEvent {
     let event_type = match event.event_type {
         AgentExecutionEventKind::Created => "run.started",
         AgentExecutionEventKind::StatusChanged => "run.status_changed",
@@ -400,11 +693,29 @@ fn event_view(event: AgentExecutionEvent) -> AgentRunEvent {
         AgentExecutionEventKind::DecisionAnswered => "approval.responded",
         AgentExecutionEventKind::Deleted => "run.deleted",
     };
+    // The persisted event row already carries its step/attempt scope; the
+    // decision context adds the three CAS versions for the answer only.
+    let decision = match (event.event_type, decisions, event.step_id.as_deref()) {
+        (AgentExecutionEventKind::DecisionRequested, Some(context), Some(step_id)) => {
+            let attempt_id = event.attempt_id.as_deref();
+            Some((
+                context.execution_version,
+                context.step_version(step_id),
+                attempt_id.and_then(|attempt_id| context.attempt_version(step_id, attempt_id)),
+            ))
+        }
+        _ => None,
+    };
     AgentRunEvent {
         run_id: event.execution_id,
         sequence: event.sequence,
         event_type: event_type.into(),
         payload: event.payload,
+        step_id: event.step_id,
+        attempt_id: event.attempt_id,
+        expected_execution_version: decision.map(|(execution, _, _)| execution),
+        expected_step_version: decision.and_then(|(_, step, _)| step),
+        expected_attempt_version: decision.and_then(|(_, _, attempt)| attempt),
     }
 }
 

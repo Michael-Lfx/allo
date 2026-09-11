@@ -50,6 +50,7 @@ source = "http://111.170.173.22:10072/experts/.codebuddy-plugin/marketplace.json
 | `models` | `table` | 模型别名表 → `models` |
 | `default_marketplaces` | `table` | 启动自动注册的市场源表 → `default_marketplaces` |
 | `memory` | `table` | 会话结束后的记忆策略 → `memory`（见下） |
+| `marketplace` | `table` | 后台自动更新节奏 → `marketplace`（见下） |
 
 ## `providers`
 
@@ -117,6 +118,22 @@ distill_enabled = false
 
 > 优先级：环境变量 `NOMIFUN_MEMORY_DISTILL`（`0`/`false` 关、`1`/`true` 开）> 本文件的 `[memory].distill_enabled` > 上游默认（开）。不写 `[memory]` 段落时行为与以前完全一致。
 
+## `marketplace`
+
+后台**自动更新**节奏。开启后，运行时按该间隔在后台轮询市场源；**默认关闭**——不写 `[marketplace]` 段落就不会产生任何后台请求。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `auto_update_interval_hours` | `integer` | 两次轮询之间的小时数。不写或 `0` = 关闭；写了正整数才启用 |
+
+```toml
+# 每 6 小时在后台检查一次市场源（仅官方源；第三方源永不自动更新）
+[marketplace]
+auto_update_interval_hours = 6
+```
+
+> 两道闸同时成立才会真正拉取：① 该市场的「自动更新」开关为开；② 其源地址属于**官方镜像**。第三方源即使手动把开关打开也只保留标记，不会自动拉取。每次轮询仍走 `market/refresh` 的 revision / ETag 短路，内容未变时不会重新下载整棵树。
+
 ## 与 Kimi Code / Claude Code 配置的异同
 
 | 维度 | Agent Store | Kimi Code 等 |
@@ -126,6 +143,6 @@ distill_enabled = false
 | `default_model` | `"<provider>/<model>"` 别名 | 同构 |
 | 未知键 | 容忍，不报错 | 容忍 |
 | 环境变量后备 | **无**——凭证只从文件读取 | 部分工具有 `env` 子表/环境变量后备 |
-| Agent Store 专属 | `default_marketplaces`、`[memory]` | 无 |
+| Agent Store 专属 | `default_marketplaces`、`[memory]`、`[marketplace]` | 无 |
 
 如果你的配置里已经有 Kimi Code 或其他工具的 `[providers]`、`[models]` 段落，可以**直接复制**它们到 `~/.agent-store/config.toml` 使用（前提是该供应商走 OpenAI/Anthropic 兼容协议）；不相关的段落（`thinking`、`permission`、`hooks` 等）保留与否都不影响 Agent Store 解析。

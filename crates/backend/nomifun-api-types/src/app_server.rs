@@ -13,7 +13,9 @@
 //!   §5.1: `connected` is only reported when auth is ready AND the last probe
 //!   succeeded.
 
+use nomifun_common::LocalizedVariant;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Agent Store compatibility status (`10-public-contracts.md` §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +39,20 @@ pub struct AppServerSkillSummary {
     /// Importer provides real PluginSnapshot versions.
     pub version: String,
     pub source: String,
+    /// Finer on-disk owner than `source`: `user` | `shared` | `companion` |
+    /// `draft` | `marketplace` | `builtin` | `unmanaged` (`16` R17 / W12).
+    ///
+    /// `source` alone cannot separate a user skill from an installed
+    /// marketplace product — both are `custom`. This field is the fact the
+    /// write face enforces, not a heuristic the UI has to re-derive.
+    #[serde(default)]
+    pub origin: String,
+    /// `origin == "user"` — the single condition under which
+    /// `skill/update` / `skill/delete` are accepted. Kept on the wire so a UI
+    /// does not have to know the directory layout to decide whether to offer a
+    /// write action. Always serialized (like `enabled`).
+    #[serde(default)]
+    pub writable: bool,
     pub compatibility_status: AppServerCompatibilityStatus,
     pub enabled: bool,
     /// Always serialized (empty when no connectors are required) — consumers
@@ -57,6 +73,25 @@ pub struct AppServerSkillDetail {
     pub invocation_policy: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions_summary: Option<String>,
+}
+
+/// Result of `skill/delete` (`16` R17 / W12).
+///
+/// Deleting a user skill can *reveal* a skill that was shadowed by it: the
+/// public id is the skill name, so removing a user skill that carried a
+/// built-in's name makes the built-in addressable again. The server answers
+/// with what is visible under the id **after** the delete instead of letting a
+/// caller assume the id is gone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerSkillDeleteResult {
+    pub skill_id: String,
+    /// Always `true` on a successful response — the field exists so a caller
+    /// never has to treat "request sent" as "skill deleted".
+    pub deleted: bool,
+    /// `origin` of the skill now visible under `skill_id` (e.g. `builtin`), or
+    /// `null` when nothing resolves there any more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revealed_origin: Option<String>,
 }
 
 /// Agent Store Connector status (`08-flowy-web-integration.md` §5.1).
@@ -576,6 +611,24 @@ pub struct AppServerMarketplaceEntry {
     pub keywords: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Localized `<field>_<lang>` variants from the market manifest
+    /// (`description_zh` / `description_en`, `name_*`, `category_*`,
+    /// `tags_*`, `legacy_tags_*`, `examples_*`), transported verbatim.
+    ///
+    /// The fallback chain `{field}_{lang}` → `{field}` is resolved by the
+    /// reader, since only the client knows its UI language (doc `18` §4,
+    /// decision D8=A). `tags_{lang}` outranks `legacy_tags_{lang}` — that
+    /// ordering is part of the same decision and is applied client-side.
+    /// Absent when the manifest declared no variants, so the field is purely
+    /// additive on the wire.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub localized: BTreeMap<String, LocalizedVariant>,
+    /// Snapshot produced by importing this entry (`market/entry-import`), with
+    /// its install tally. Absent until the entry has been imported — the same
+    /// condition a cascade removal reports as "nothing to uninstall here"
+    /// (doc 16 D-W13-1 ①).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<AppServerMarketplaceEntrySnapshot>,
 }
 
 /// Snapshot provenance on an entry (what import/install produced).
@@ -586,6 +639,10 @@ pub struct AppServerMarketplaceEntrySnapshot {
     pub version: String,
     pub status: String,
     pub component_count: usize,
+    /// Components installed from this snapshot. `0` = imported but never
+    /// installed, so a cascade removal leaves this entry untouched.
+    #[serde(default)]
+    pub installed_count: usize,
     pub imported_at: i64,
 }
 
@@ -719,4 +776,60 @@ pub struct AppServerModelSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerModelList {
     pub items: Vec<AppServerModelSummary>,
+}
+
+/// One provider as **declared in `~/.agent-store/config.toml`** (`config/get`).
+///
+/// The same facts the config-only projection of `models/list` uses, and nothing
+/// else: no `api_key`, no `base_url`, no registered-Provider row. Credentials
+/// have no field here, so they cannot leak through a read of this shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerConfigProviderView {
+    /// `[providers.<name>]` key — the left half of a `default_model`.
+    pub name: String,
+    /// `enabled = false` in the file (`true` when the key is absent).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Model names declared under `[models."<name>/<model>"]`, sorted.
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `config/get` / `config/set` response: the host's agent-store settings file
+/// as a **read-back of what is actually on disk**.
+///
+/// The view is the write path's landing spot: `config/set` returns this shape
+/// re-read after the write, so a client can never mistake "request sent" for
+/// "value stored". `exists = false` with empty defaults is a normal answer on a
+/// host that has not created the file yet (never an error); an unreadable or
+/// unparseable file is an error rather than a fabricated default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerConfigView {
+    /// `~/.agent-store/config.toml` present on this host.
+    pub exists: bool,
+    /// Declared `default_model`, canonicalised. **Absent is reported as
+    /// explicit `null`**, not omitted: the client distinguishes "no default
+    /// declared" from "not loaded yet".
+    pub default_model: Option<String>,
+    /// Providers declared in the file, sorted by name.
+    #[serde(default)]
+    pub providers: Vec<AppServerConfigProviderView>,
+    /// `[memory]` — absent when the file declares no memory table at all, so a
+    /// client can tell "not configured" from "explicitly off" (`distill_enabled
+    /// = false`). Additive: hosts that never wrote the table keep answering
+    /// exactly what they answered before.
+    #[serde(default)]
+    pub memory: Option<AppServerConfigMemoryView>,
+}
+
+/// `[memory]` in the settings file, as far as the wire needs it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerConfigMemoryView {
+    /// `None` when the key is absent (upstream default: distillation ON).
+    #[serde(default)]
+    pub distill_enabled: Option<bool>,
 }

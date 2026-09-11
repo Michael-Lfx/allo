@@ -599,9 +599,20 @@ mod tests {
                     .to_string_lossy()
                     .replace('\\', "/")
                     .to_lowercase();
-                assert!(
-                    command == "npx" || command.ends_with("/npx") || command.ends_with("/npx.cmd"),
-                    "unexpected stdio command path: {command}",
+                // `resolve_command_path` resolves `npx` through the host PATH, so
+                // the resolved shape is host state: a bare name, an absolute path,
+                // and on Windows a shim extension that depends on which package
+                // manager installed it (`.cmd` from npm, `.exe` from a shim
+                // directory, ...). Assert the executable identity instead of one
+                // host's spelling, so the case stays host-independent.
+                let file_name = command.rsplit('/').next().unwrap_or(command.as_str());
+                let stem = [".cmd", ".exe", ".ps1", ".bat"]
+                    .iter()
+                    .find_map(|suffix| file_name.strip_suffix(suffix))
+                    .unwrap_or(file_name);
+                assert_eq!(
+                    stem, "npx",
+                    "unexpected stdio command path: {command} (host-resolved from `npx`)",
                 );
                 assert_eq!(
                     s.args,

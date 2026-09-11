@@ -56,6 +56,36 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for PluginSnapshotListRow {
     }
 }
 
+/// Marketplace-scoped provenance projection: the snapshot row plus how many of
+/// its components are installed.
+///
+/// `market/get` needs this to answer two client questions without a second
+/// round-trip — "does this entry have an imported snapshot?" and "is anything
+/// installed from it?" The second one *is* the impact set a cascade removal has
+/// to show **before** it runs, which is why it must come from the server rather
+/// than be re-derived from the aggregate store listing (doc 16 D-W13-1 ①).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginSnapshotProvenanceRow {
+    pub snapshot: PluginSnapshotRow,
+    pub component_count: i64,
+    /// Components with `installed = 1` (a `disabled` component still counts:
+    /// removal deletes its runtime artifacts too).
+    pub installed_count: i64,
+}
+
+impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for PluginSnapshotProvenanceRow {
+    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        let snapshot = PluginSnapshotRow::from_row(row)?;
+        let component_count: i64 = row.try_get("component_count")?;
+        let installed_count: i64 = row.try_get("installed_count")?;
+        Ok(Self {
+            snapshot,
+            component_count,
+            installed_count,
+        })
+    }
+}
+
 /// Row mapping for the `plugin_snapshot_components` table.
 ///
 /// One standardized definition produced by an import (Agent / Team / Skill /

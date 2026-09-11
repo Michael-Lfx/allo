@@ -99,6 +99,19 @@ if (entry) {
     "W13 import/list shows the new snapshot",
     imports.some((item) => item.snapshot_id === imported.snapshot_id),
   );
+
+  // R21: the pre-removal impact set is the server's own projection. `market/get`
+  // now carries each entry's snapshot plus its install tally, so the client no
+  // longer re-derives the cascade list from the aggregated store listing — and
+  // an import-only entry must still report `installed_count = 0`, i.e. the
+  // entry import genuinely left install state alone.
+  const afterImport = await client.getMarketplace(added.marketplace_id);
+  const projected = afterImport.entries.find((item) => item.name === entry.name)?.snapshot;
+  check(
+    "W13 market/get projects the entry snapshot (import-only keeps install state at 0)",
+    projected?.snapshot_id === imported.snapshot_id && projected?.installed_count === 0,
+    projected,
+  );
 }
 
 const removed = await client.removeMarketplace(added.marketplace_id, true);

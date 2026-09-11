@@ -6965,6 +6965,8 @@ dependencies = [
  "nomifun-common",
  "nomifun-conversation",
  "nomifun-db",
+ "nomifun-extension",
+ "nomifun-models-dev",
  "nomifun-preset",
  "nomifun-realtime",
  "nomifun-system",
@@ -6974,6 +6976,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "toml 0.8.2",
+ "toml_edit 0.20.2",
  "tower",
 ]
 

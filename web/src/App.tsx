@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 import { useAppStore } from "./store/appStore";
+import { ApprovalCard } from "./components/ApprovalCard";
 import { ArtifactPanel } from "./components/ArtifactPanel";
 import { CatalogView } from "./components/CatalogView";
 import { Composer } from "./components/Composer";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { MessageList } from "./components/MessageList";
+import { RunDetail } from "./components/RunDetail";
 import { LoadingOverlay } from "./components/LoadingOverlay";
 import { ToastHost } from "./components/ToastHost";
 import { Sidebar } from "./components/Sidebar";
@@ -101,6 +103,10 @@ export default function App() {
         <section className={`chat-main ${selectedConversationId === null ? "is-new" : ""}`}>
           {selectedConversationId !== null && <Topbar />}
           <MessageList />
+          {/* W6 Run 状态树（R11）与 W3 引导回执；无跟随时自行返回 null。 */}
+          <RunDetail />
+          {/* W2: the run's pending decision, answered in place above the composer. */}
+          <ApprovalCard />
           <Composer composerRef={composerRef} />
         </section>
       )}
