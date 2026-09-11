@@ -362,6 +362,16 @@ export interface ContextUsage {
   used_tokens: number;
   window_tokens: number;
   percent?: number | null;
+  /**
+   * W9 / R14 ③: the runtime's own per-turn report for the **most recent**
+   * completed turn, persisted server-side next to the gauge so a reloaded
+   * WebUI can still show last turn's tokens (and catalog-priced cost). Both are
+   * absent when the runtime reported nothing — never a `0` standing in for
+   * "unknown". They are not occupancy: `used_tokens` is the last request's
+   * prompt size and must never be substituted for these.
+   */
+  last_turn_input_tokens?: number | null;
+  last_turn_output_tokens?: number | null;
   updated_at: number;
   source: "measured" | string;
 }

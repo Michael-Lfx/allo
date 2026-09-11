@@ -910,13 +910,20 @@ pub trait IConversationRepository: Send + Sync {
     }
 
     /// Persist the server-measured context occupancy snapshot for an App
-    /// Server chat. One row per conversation; a fresh value replaces the old
-    /// snapshot. Observability only — failure must never fail a turn.
+    /// Server chat, together with the runtime's per-turn token report for the
+    /// turn that just finished. One row per conversation; a fresh value
+    /// replaces the old snapshot (the per-turn pair is therefore always the
+    /// **most recent** turn only). `None` on either per-turn side means "not
+    /// reported" and must be stored as SQL NULL, never coerced to `0` — an
+    /// unreported turn must not read back as a free one. Observability only —
+    /// failure must never fail a turn.
     async fn upsert_app_server_context_usage(
         &self,
         _conversation_id: &str,
         _context_tokens: i64,
         _window_tokens: i64,
+        _last_turn_input_tokens: Option<i64>,
+        _last_turn_output_tokens: Option<i64>,
         _updated_at: i64,
     ) -> Result<(), DbError> {
         Err(DbError::Init(

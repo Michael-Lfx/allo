@@ -6,6 +6,7 @@ import { mergeRunEvents, pendingApproval } from "../lib/approvals";
 import {
   conversationStreamReducer,
   initialConversationStream,
+  persistedTurnUsage,
   type ConversationStreamState,
   upsertConversation,
 } from "../lib/conversation-events";
@@ -820,6 +821,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
           loadingOlder: false,
         },
       }));
+      // W9（R14 ③）：重载 / 切会话后从**持久化**快照回填「上一轮」用量（`conversation/get`
+      // 的 `context_usage`），这样重载后仍显示上一轮 token 与金额（费率仍由 `turnCostUsd`
+      // 现算）。回合正在跑（`is_processing`）时不回填：那份数字属于上一轮，而界面此刻
+      // 说的是「本轮」，混起来就是拿旧值顶替本轮。回填在 `reset` 之后、订阅之前，
+      // 所以实时事件一到依旧以事件为准。
+      const restored = view.is_processing ? null : persistedTurnUsage(view.context_usage);
+      if (restored) get().dispatchStream({ type: "restoreTurnUsage", usage: restored });
 
       if (!follow || get().selectedConversationId !== conversationId) return;
       // `autoResync: false` on purpose (doc 16 R1/R18): the package still
@@ -875,6 +883,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
           loadingOlder: false,
         },
       }));
+      // W9（R14 ③）：断线重连的回填走同一口径——`conversation/get` 的持久化快照里
+      // 的「上一轮」token 重新填回空槽位（丢掉的实时状态就靠它恢复），回合仍在跑时不填。
+      const restored = view.is_processing ? null : persistedTurnUsage(view.context_usage);
+      if (restored) get().dispatchStream({ type: "restoreTurnUsage", usage: restored });
     } catch (caught) {
       set({ error: formatError(caught) });
     }

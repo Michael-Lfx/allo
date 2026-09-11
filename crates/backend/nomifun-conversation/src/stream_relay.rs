@@ -3400,10 +3400,13 @@ impl StreamRelay {
                                     .add_turn_tokens(&self.conversation_id, turn_tokens as i64);
                             }
                             // App Server chats persist the measured context occupancy
-                            // (last prompt tokens + effective window) so the WebUI can
-                            // render a real percentage across reloads. Never infer
-                            // tokens from text length; a missing report simply stays
-                            // "unknown" in the projection.
+                            // (last prompt tokens + effective window) and, in the same
+                            // row, the runtime's own per-turn token split, so the WebUI
+                            // can render a real percentage and last turn's cost across
+                            // reloads. Never infer tokens from text length; a missing
+                            // report simply stays "unknown" in the projection. The
+                            // trigger stays exactly what it was (占用或窗口有测量值才写)
+                            // — a turn that measured neither has no snapshot to refresh.
                             if self.app_server_chat
                                 && (metrics.context_tokens > 0 || metrics.context_window > 0)
                             {
@@ -6164,10 +6167,17 @@ impl StreamRelay {
     /// publish a `context.usage` user event. Best-effort observability: the
     /// repository write and the broadcast are isolated so a broken sink can
     /// never unwind the relay owner or delay turn completion.
+    ///
+    /// The same statement also refreshes the row's per-turn token pair (W9 /
+    /// R14 ③) from the identical `TurnCompleted` frame — that is what lets the
+    /// WebUI show the last turn's tokens (and catalog-priced cost) after a
+    /// reload. The gauge never stands in for it: occupancy is the last
+    /// request's prompt size, not what one turn cost.
     async fn persist_app_server_context_usage(
         &self,
         metrics: &nomifun_ai_agent::protocol::events::TurnCompletedEventData,
     ) {
+        let last_turn = Self::reported_turn_tokens(metrics);
         let updated_at = now_ms();
         if let Err(error) = self
             .repo
@@ -6175,6 +6185,8 @@ impl StreamRelay {
                 &self.conversation_id,
                 metrics.context_tokens.min(i64::MAX as u64) as i64,
                 metrics.context_window.min(i64::MAX as u64) as i64,
+                last_turn.map(|(input, _)| input),
+                last_turn.map(|(_, output)| output),
                 updated_at,
             )
             .await
@@ -6208,6 +6220,24 @@ impl StreamRelay {
                 "User event sink panicked while projecting context.usage"
             );
         }
+    }
+
+    /// Per-turn token pair from the runtime's own `TurnCompleted` report, or
+    /// `None` when the turn reported nothing usable (a zero/zero frame).
+    ///
+    /// `None` must reach the database as SQL NULL: a stored `0` would read back
+    /// as "this turn was free", which is exactly the fabrication the cost 口径
+    /// forbids, and the context gauge must never be borrowed to fill the gap.
+    fn reported_turn_tokens(
+        metrics: &nomifun_ai_agent::protocol::events::TurnCompletedEventData,
+    ) -> Option<(i64, i64)> {
+        if metrics.input_tokens == 0 && metrics.output_tokens == 0 {
+            return None;
+        }
+        Some((
+            metrics.input_tokens.min(i64::MAX as u64) as i64,
+            metrics.output_tokens.min(i64::MAX as u64) as i64,
+        ))
     }
 
     async fn try_derived_message_id(

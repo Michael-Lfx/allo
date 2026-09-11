@@ -3,9 +3,10 @@ import {
   conversationStreamReducer,
   initialConversationStream,
   mergeMessagesById,
+  persistedTurnUsage,
   type ConversationStreamState,
 } from "./conversation-events";
-import type { ConversationMessage } from "./protocol";
+import type { ContextUsage, ConversationMessage } from "./protocol";
 
 function msg(id: string, created_at: number, role: ConversationMessage["role"] = "user"): ConversationMessage {
   return { message_id: id, conversation_id: "c", role, content: id, message_type: "text", created_at };
@@ -204,5 +205,88 @@ describe("conversationStreamReducer · 本轮用量", () => {
   it("取消 / 忙态结束不会误清（只有新回合开始才清）", () => {
     const base: ConversationStreamState = { ...initialConversationStream, turnUsage: snapshot };
     expect(conversationStreamReducer(base, { type: "setProcessing", isProcessing: false }).turnUsage).toEqual(snapshot);
+  });
+});
+
+describe("persistedTurnUsage（R14 ③ 重载后回填「上一轮」）", () => {
+  const usage = (overrides: Partial<ContextUsage> = {}): ContextUsage => ({
+    used_tokens: 100_000,
+    window_tokens: 200_000,
+    percent: 50,
+    updated_at: 5,
+    source: "measured",
+    ...overrides,
+  });
+
+  it("两侧都在才算一份用量，总 token 由客户端只做加法", () => {
+    expect(persistedTurnUsage(usage({ last_turn_input_tokens: 1_200, last_turn_output_tokens: 340 })))
+      .toEqual({ input_tokens: 1_200, output_tokens: 340, total_tokens: 1_540 });
+  });
+
+  it("缺一侧 / 整段缺席都不给数字（不许用 0 站台）", () => {
+    expect(persistedTurnUsage(usage({ last_turn_output_tokens: 340 }))).toBeNull();
+    expect(persistedTurnUsage(usage({ last_turn_input_tokens: 1_200 }))).toBeNull();
+    expect(persistedTurnUsage(usage())).toBeNull();
+    expect(persistedTurnUsage(null)).toBeNull();
+    expect(persistedTurnUsage(undefined)).toBeNull();
+    // 显式 null（服务端 skip_serializing_if 之外的中间态）同样不当数字用。
+    expect(persistedTurnUsage(usage({ last_turn_input_tokens: null, last_turn_output_tokens: null }))).toBeNull();
+  });
+
+  it("两侧都为 0 = 运行时什么都没报，保持未知", () => {
+    expect(persistedTurnUsage(usage({ last_turn_input_tokens: 0, last_turn_output_tokens: 0 }))).toBeNull();
+  });
+
+  it("只报一侧的 0 是测量值，照常成对使用", () => {
+    expect(persistedTurnUsage(usage({ last_turn_input_tokens: 0, last_turn_output_tokens: 42 })))
+      .toEqual({ input_tokens: 0, output_tokens: 42, total_tokens: 42 });
+  });
+
+  it("上下文占用绝不冒充本轮 token（那一列是仪表读数）", () => {
+    // 占用 10 万也换不来一份「上一轮用量」：它只能显示百分比，不能当花费。
+    expect(persistedTurnUsage(usage())).toBeNull();
+  });
+
+  it("非法数值（负数 / 非有限）一律不采信", () => {
+    expect(persistedTurnUsage(usage({ last_turn_input_tokens: -1, last_turn_output_tokens: 5 }))).toBeNull();
+    expect(persistedTurnUsage(usage({ last_turn_input_tokens: Number.NaN, last_turn_output_tokens: 5 }))).toBeNull();
+    expect(persistedTurnUsage(usage({ last_turn_input_tokens: Number.POSITIVE_INFINITY, last_turn_output_tokens: 5 }))).toBeNull();
+  });
+});
+
+describe("restoreTurnUsage（R14 ③ 回填动作）", () => {
+  it("空槽位被持久化的上一轮填上，模型键取回填那一刻的会话上下文", () => {
+    const restored = conversationStreamReducer(
+      initialConversationStream,
+      { type: "restoreTurnUsage", usage: { input_tokens: 900, output_tokens: 30, total_tokens: 930 } },
+      { modelKey: "openai/gpt-5" },
+    );
+    expect(restored.turnUsage).toEqual({
+      usage: { input_tokens: 900, output_tokens: 30, total_tokens: 930 },
+      modelKey: "openai/gpt-5",
+    });
+  });
+
+  it("已经有本轮用量时不覆盖（回填的旧值只能填空位）", () => {
+    const live: ConversationStreamState = {
+      ...initialConversationStream,
+      turnUsage: { usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }, modelKey: "openai/gpt-5" },
+    };
+    const after = conversationStreamReducer(
+      live,
+      { type: "restoreTurnUsage", usage: { input_tokens: 900, output_tokens: 30, total_tokens: 930 } },
+      { modelKey: "anthropic/claude" },
+    );
+    expect(after).toBe(live);
+  });
+
+  it("回填之后新一轮开始照旧清空（它仍是「本轮」口径）", () => {
+    const restored = conversationStreamReducer(
+      initialConversationStream,
+      { type: "restoreTurnUsage", usage: { input_tokens: 900, output_tokens: 30, total_tokens: 930 } },
+      { modelKey: "openai/gpt-5" },
+    );
+    expect(conversationStreamReducer(restored, { type: "appendPending", message: msg("p", 1) }).turnUsage).toBeNull();
+    expect(conversationStreamReducer(restored, { type: "reset", messages: [] }).turnUsage).toBeNull();
   });
 });
