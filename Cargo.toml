@@ -149,6 +149,10 @@ bytes = "1"
 # loaded at all, `nomifun-robot` degrades to its energy VAD. Defaults are
 # narrowed: `tls-rustls` keeps the build off system OpenSSL, and `ndarray` is
 # dropped because the VAD reads tensors as plain slices.
+#
+# Windows pyke ORT prebuilts hard-link DirectML (`DMLCreateDevice1`). The NSIS
+# installer downloads Microsoft.AI.DirectML from nuget.org into $INSTDIR only
+# when the machine's DirectML lacks that export (see windows/nsis/installer.nsi).
 ort = { version = "2.0.0-rc.13", default-features = false, features = [
     "std",
     "tracing",

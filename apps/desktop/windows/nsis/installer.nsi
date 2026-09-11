@@ -1,6 +1,8 @@
 ; Flowy fork of tauri-cli v2.11.2 NSIS template.
-; Diff vs upstream: WebView2 section expands InstFiles details and prints
-; branded estimate / wait copy before the silent Microsoft bootstrapper.
+; Diff vs upstream:
+; - WebView2: expand InstFiles details + branded estimate/wait copy
+; - DirectML: if system/app DirectML lacks DMLCreateDevice1, download
+;   Microsoft.AI.DirectML from nuget.org into $INSTDIR (side-by-side with exe)
 ; Re-diff when upgrading @tauri-apps/cli.
 Unicode true
 ManifestDPIAware true
@@ -67,6 +69,11 @@ ${StrLoc}
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
 !define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER "{{start_menu_folder}}"
+; Side-by-side DirectML redist (ONNX Runtime / Silero VAD). Not bundled in the
+; installer payload — downloaded from nuget.org only when the machine lacks
+; DMLCreateDevice1 (common on Windows Server 2019 / older Win10).
+!define DIRECTML_VERSION "1.15.4"
+!define DIRECTML_NUGET_URL "https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/${DIRECTML_VERSION}"
 
 Var PassiveMode
 Var UpdateMode
@@ -520,6 +527,92 @@ Function .onInit
  !endif
 FunctionEnd
 
+; Returns 1 in $R9 if the given DirectML.dll path exports DMLCreateDevice1, else 0.
+!macro DirectMlHasCreateDevice1 PATH
+ StrCpy $R9 0
+ System::Call 'kernel32::LoadLibrary(t "${PATH}") i .r7'
+ ${If} $7 != 0
+  System::Call 'kernel32::GetProcAddress(i r7, t "DMLCreateDevice1") i .r8'
+  System::Call 'kernel32::FreeLibrary(i r7)'
+  ${If} $8 != 0
+   StrCpy $R9 1
+  ${EndIf}
+ ${EndIf}
+!macroend
+
+; Download Microsoft.AI.DirectML into $INSTDIR when the machine cannot satisfy
+; Flowy.exe's hard import of DMLCreateDevice1. Uses NSISdl (progress UI) + tar.
+!macro EnsureDirectMlRedist
+ SetDetailsView show
+ DetailPrint "$(directmlChecking)"
+
+ !insertmacro DirectMlHasCreateDevice1 "$INSTDIR\DirectML.dll"
+ ${If} $R9 == 1
+  DetailPrint "$(directmlAppOk)"
+  Goto ensure_directml_done
+ ${EndIf}
+
+ !insertmacro DirectMlHasCreateDevice1 "DirectML.dll"
+ ${If} $R9 == 1
+  DetailPrint "$(directmlSystemOk)"
+  Goto ensure_directml_done
+ ${EndIf}
+
+ DetailPrint "$(directmlNeedRedist)"
+ DetailPrint "$(directmlDownloading)"
+ DetailPrint "$(directmlDownloadEstimate)"
+ DetailPrint "$(directmlDownloadSource)"
+
+ Delete "$TEMP\flowy-DirectML.nupkg"
+ RMDir /r "$TEMP\flowy-directml-extract"
+ CreateDirectory "$TEMP\flowy-directml-extract"
+
+ NSISdl::download "${DIRECTML_NUGET_URL}" "$TEMP\flowy-DirectML.nupkg"
+ Pop $0
+ ${If} $0 != "success"
+  DetailPrint "$(directmlDownloadError)"
+  Abort "$(directmlAbortError)"
+ ${EndIf}
+ DetailPrint "$(directmlDownloadSuccess)"
+
+ DetailPrint "$(directmlExtracting)"
+ ExecWait `"$SYSDIR\tar.exe" -xf "$TEMP\flowy-DirectML.nupkg" -C "$TEMP\flowy-directml-extract"` $0
+ ${If} $0 != 0
+  DetailPrint "$(directmlExtractError)"
+  Abort "$(directmlAbortError)"
+ ${EndIf}
+
+ !if "${ARCH}" == "arm64"
+  StrCpy $R6 "$TEMP\flowy-directml-extract\bin\arm64-win\DirectML.dll"
+ !else
+  StrCpy $R6 "$TEMP\flowy-directml-extract\bin\x64-win\DirectML.dll"
+ !endif
+
+ ${IfNot} ${FileExists} "$R6"
+  DetailPrint "$(directmlMissingDllError)"
+  Abort "$(directmlAbortError)"
+ ${EndIf}
+
+ DetailPrint "$(directmlInstalling)"
+ CopyFiles /SILENT "$R6" "$INSTDIR\DirectML.dll"
+ ${IfNot} ${FileExists} "$INSTDIR\DirectML.dll"
+  DetailPrint "$(directmlInstallError)"
+  Abort "$(directmlAbortError)"
+ ${EndIf}
+
+ !insertmacro DirectMlHasCreateDevice1 "$INSTDIR\DirectML.dll"
+ ${If} $R9 != 1
+  DetailPrint "$(directmlVerifyError)"
+  Abort "$(directmlAbortError)"
+ ${EndIf}
+
+ DetailPrint "$(directmlInstallSuccess)"
+ Delete "$TEMP\flowy-DirectML.nupkg"
+ RMDir /r "$TEMP\flowy-directml-extract"
+
+ ensure_directml_done:
+!macroend
+
 Section EarlyChecks
  ; Abort silent installer if downgrades is disabled
  !if "${ALLOWDOWNGRADES}" == "false"
@@ -651,6 +744,11 @@ Section Install
 
  ; Copy main executable
  File "${MAINBINARYSRCPATH}"
+
+ ; DirectML redistributable (optional download). Flowy.exe hard-imports
+ ; DirectML.dll!DMLCreateDevice1; place a new enough DLL next to the exe when
+ ; the OS copy is missing or too old. Skip when already satisfied.
+ !insertmacro EnsureDirectMlRedist
 
  ; Copy resources
  {{#each resources_dirs}}
@@ -789,6 +887,7 @@ Section Uninstall
  ; Delete the app directory and its content from disk
  ; Copy main executable
  Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+ Delete "$INSTDIR\DirectML.dll"
 
  ; Delete resources
  {{#each resources}}
