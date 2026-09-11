@@ -9,6 +9,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
+import { getNodePanelPosition } from "@oc/lib/canvas/canvas-node-panel-position";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ConnectionHandle, type Position, type ViewportTransform } from "@oc/types/canvas";
 
@@ -90,16 +91,16 @@ export function CanvasSelectionToolbar({ anchorRef, containerRef, count, childre
     );
 }
 
-export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidth = 520, panelHeight = 420, children }: { node: CanvasNodeData; viewport: ViewportTransform; containerRef: RefObject<HTMLDivElement | null>; panelWidth?: number; panelHeight?: number; children: ReactNode }) {
+export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidth = 520, children }: { node: CanvasNodeData; viewport: ViewportTransform; containerRef: RefObject<HTMLDivElement | null>; panelWidth?: number; children: ReactNode }) {
     const panelRef = useRef<HTMLDivElement>(null);
-    const initialPosition = getNodePanelPosition(node, viewport, { width: containerRef.current?.clientWidth || 0, height: containerRef.current?.clientHeight || 0 }, panelWidth, panelHeight);
+    const initialPosition = getNodePanelPosition(node, viewport, { width: containerRef.current?.clientWidth || 0, height: containerRef.current?.clientHeight || 0 }, panelWidth);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
         const panel = panelRef.current;
         if (!container || !panel) return;
         const update = (nextViewport: ViewportTransform) => {
-            const position = getNodePanelPosition(node, nextViewport, { width: container.clientWidth, height: container.clientHeight }, panel.offsetWidth || panelWidth, panel.offsetHeight || panelHeight);
+            const position = getNodePanelPosition(node, nextViewport, { width: container.clientWidth, height: container.clientHeight }, panel.offsetWidth || panelWidth);
             panel.style.left = `${position.left}px`;
             panel.style.top = `${position.top}px`;
         };
@@ -112,7 +113,7 @@ export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidt
             resizeObserver.disconnect();
             unsubscribeViewport();
         };
-    }, [containerRef, node.height, node.id, node.position.x, node.position.y, node.width, panelHeight, panelWidth, viewport]);
+    }, [containerRef, node.height, node.id, node.position.x, node.position.y, node.width, panelWidth, viewport]);
 
     return (
         <div
@@ -195,23 +196,5 @@ function getConnectionMenuPosition(position: Position, viewport: ViewportTransfo
     return {
         left: clamp(screenX, gap, Math.max(gap, viewportSize.width - menuWidth - gap)),
         top: clamp(screenY, 72, Math.max(72, viewportSize.height - menuHeight - gap)),
-    };
-}
-
-function getNodePanelPosition(node: CanvasNodeData, viewport: ViewportTransform, viewportSize: { width: number; height: number }, panelWidth: number, panelHeight: number) {
-    const gap = 10;
-    const margin = 12;
-    const topBoundary = 72;
-    const nodeCenterX = viewport.x + (node.position.x + node.width / 2) * viewport.k;
-    const nodeTop = viewport.y + node.position.y * viewport.k;
-    const nodeBottom = viewport.y + (node.position.y + node.height) * viewport.k;
-    const maxLeft = Math.max(margin, viewportSize.width - panelWidth - margin);
-    const left = clamp(nodeCenterX - panelWidth / 2, margin, maxLeft);
-    const belowTop = nodeBottom + gap;
-    const aboveTop = nodeTop - panelHeight - gap;
-    const preferredTop = belowTop + panelHeight <= viewportSize.height - margin ? belowTop : aboveTop;
-    return {
-        left,
-        top: clamp(preferredTop, topBoundary, Math.max(topBoundary, viewportSize.height - panelHeight - margin)),
     };
 }

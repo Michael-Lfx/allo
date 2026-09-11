@@ -13,6 +13,7 @@ mod oss;
 mod response;
 mod campaign;
 mod skills;
+mod generation_templates;
 mod tv_show;
 mod types;
 

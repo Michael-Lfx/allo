@@ -227,9 +227,16 @@ function DockCommandButton({ command, mouseX, metrics, motionEnabled, showLabel 
         );
     }
 
+    const staticBox = { width: metrics.base, height: metrics.base };
+    const staticIcon = command.wide ? { height: metrics.icon } : { width: metrics.icon, height: metrics.icon };
+
     return (
         <CanvasHoverHint label={hint} disabled={command.disabled}>
-            <motion.span ref={ref} className={cn("relative block shrink-0", command.wide && "min-w-[var(--dock-precision-width)]")} style={{ width: itemSize, height: itemSize }}>
+            <motion.span
+                ref={ref}
+                className={cn("relative block shrink-0", command.wide && "min-w-[var(--dock-precision-width)]")}
+                style={motionEnabled ? { width: itemSize, height: itemSize } : staticBox}
+            >
                 {/* 放大项留在 Flex 流内，由布局推开邻项，保持 Aceternity Floating Dock 的空间关系。 */}
                 <motion.button
                     type="button"
@@ -242,7 +249,7 @@ function DockCommandButton({ command, mouseX, metrics, motionEnabled, showLabel 
                     transition={aceternityMotion.spring.dock}
                     onClick={command.onClick}
                 >
-                    <motion.span className={cn("grid place-items-center", command.wide && "w-full")} style={command.wide ? { height: iconSize } : { width: iconSize, height: iconSize }}>
+                    <motion.span className={cn("grid place-items-center", command.wide && "w-full")} style={motionEnabled ? (command.wide ? { height: iconSize } : { width: iconSize, height: iconSize }) : staticIcon}>
                         {command.icon}
                     </motion.span>
                 </motion.button>

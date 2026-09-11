@@ -20,6 +20,10 @@ describe("canvas project world layers isolation", () => {
         expect(/\bhoveredNodeId\b/.test(page)).toBe(false);
         expect(renderModel.includes("hoveredNodeId")).toBe(false);
         expect(renderModel.includes("relatedHighlight")).toBe(false);
+        expect(renderModel.includes("toolbarNodeId")).toBe(false);
+        const chrome = source("./canvas-project-chrome.tsx");
+        expect(chrome.includes("toolbarNodeId")).toBe(true);
+        expect(chrome.includes("useCanvasInteractionStore")).toBe(true);
         expect(renderModel.includes("buildCanvasSpatialIndex")).toBe(true);
         expect(renderModel.includes("CANVAS_MAX_RENDERED_CONNECTIONS")).toBe(true);
     });
@@ -35,5 +39,17 @@ describe("canvas project world layers isolation", () => {
         expect(page.includes("HideWhileSelectionBox")).toBe(true);
         expect(page.includes("onReplaceMedia={handleReplaceMedia}")).toBe(true);
         expect(page.includes("onReplaceMedia={(node) => handleUploadRequest(node.id)}")).toBe(false);
+    });
+
+    test("keeps the bottom dock in the stage and the node strip in canvas chrome", () => {
+        const stage = source("./canvas-project-stage.tsx");
+        const chrome = source("./canvas-project-chrome.tsx");
+        const toolbar = source("../../components/canvas/canvas-node-toolbar.tsx");
+        expect(stage.includes("<CanvasToolbar")).toBe(true);
+        expect(chrome.includes("<CanvasToolbar")).toBe(false);
+        expect(stage.includes("!focusMode || focusDockRevealed")).toBe(true);
+        expect(toolbar.includes("document.body")).toBe(true);
+        expect(toolbar.includes("readCanvasNodeToolbarAnchor")).toBe(true);
+        expect(toolbar.includes("resolveNodeDockPrimaryIds")).toBe(true);
     });
 });

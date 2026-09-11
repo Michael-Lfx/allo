@@ -8,6 +8,19 @@ type RectLike = {
     right?: number;
 };
 
+/** Viewport rect when `[data-node-id]` is not in the canvas container yet. */
+export function canvasNodeFallbackScreenRect(input: {
+    node: { position: { x: number; y: number }; width: number };
+    viewport: { x: number; y: number; k: number };
+    containerRect: { left: number; top: number };
+}): { left: number; top: number; width: number } {
+    return {
+        left: input.containerRect.left + input.viewport.x + input.node.position.x * input.viewport.k,
+        top: input.containerRect.top + input.viewport.y + input.node.position.y * input.viewport.k,
+        width: input.node.width * input.viewport.k,
+    };
+}
+
 /**
  * Places the node action bar in viewport coordinates so `-translate-y-full`
  * puts its bottom edge just above the node card, not above the external title.
@@ -30,4 +43,26 @@ export function computeCanvasNodeToolbarAnchor(input: {
     );
     const top = Math.round(input.nodeRect.top - gap);
     return { left, top };
+}
+
+/** Live screen-space anchor from the node DOM, or world-position fallback. */
+export function readCanvasNodeToolbarAnchor(input: {
+    node: { id: string; position: { x: number; y: number }; width: number };
+    viewport: { x: number; y: number; k: number };
+    container: HTMLElement;
+    toolbarWidth: number;
+}): { left: number; top: number } {
+    const containerRect = input.container.getBoundingClientRect();
+    const escapedId = typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(input.node.id)
+        : input.node.id.replace(/["\\]/g, "\\$&");
+    const element = input.container.querySelector<HTMLElement>(`[data-node-id="${escapedId}"]`);
+    const nodeRect = element
+        ? element.getBoundingClientRect()
+        : canvasNodeFallbackScreenRect({ node: input.node, viewport: input.viewport, containerRect });
+    return computeCanvasNodeToolbarAnchor({
+        nodeRect,
+        containerRect,
+        toolbarWidth: input.toolbarWidth,
+    });
 }

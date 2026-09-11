@@ -23,6 +23,7 @@ import { mergeCraftAttachments } from "@oc/lib/canvas/craft/catalog";
 import { listedSkillIds, removeSkillToken, stripSkillTokens } from "@oc/lib/canvas/canvas-skill-mentions";
 import { CanvasCraftTokenChip, recipeAttachmentChip, skillAttachmentChip } from "./canvas-craft-token-chip";
 import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-picker";
+import { CanvasTemplateSlotBar } from "./canvas-template-slot-bar";
 import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
@@ -41,9 +42,10 @@ type CanvasNodePromptPanelProps = {
     onImageSettingsOpenChange?: (open: boolean) => void;
     workspaceMode?: CanvasWorkspaceMode;
     onOpenLibrary?: () => void;
+    onOpenTemplates?: () => void;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, onOpenLibrary }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, onOpenLibrary, onOpenTemplates }: CanvasNodePromptPanelProps) {
     useTranslation();
     const globalConfig = useEffectiveConfig();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -116,6 +118,12 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
             onWheel={(event) => event.stopPropagation()}
         >
             {videoTools}
+            <CanvasTemplateSlotBar
+                theme={theme}
+                metadata={node.metadata}
+                model={config.model}
+                onChange={(patch) => onConfigChange(node.id, patch)}
+            />
             {recipeIds.length || skillIds.length ? (
                 <div className="flex flex-wrap items-center gap-1.5 px-0.5 pb-1">
                     {recipeIds.map((id) => (
@@ -154,6 +162,11 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
             </div>
 
             <div className="canvas-composer-footer">
+                {onOpenTemplates ? (
+                    <CanvasChromeButton className="h-7 px-2 text-[var(--fs-label)] font-medium" style={{ color: theme.accent.primary }} onClick={onOpenTemplates} title={canvasT("videoCanvas.craft.tabTemplate", "模板")} aria-label={canvasT("videoCanvas.craft.tabTemplate", "模板")}>
+                        {canvasT("videoCanvas.craft.tabTemplate", "模板")}
+                    </CanvasChromeButton>
+                ) : null}
                 {isPortraitTexture ? (
                     <CanvasPortraitTexturePopover value={node.metadata?.portraitTexture} placement="topLeft" onChange={(portraitTexture) => onConfigChange(node.id, { portraitTexture })} />
                 ) : (
@@ -238,9 +251,9 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
 }
 
 function promptPlaceholder(mode: CanvasNodeGenerationMode, hasImageContent: boolean, hasTextContent: boolean) {
-    if (mode === "video") return canvasT("videoCanvas.prompt.placeholderVideo", "描述要生成的视频内容");
+    if (mode === "video") return canvasT("videoCanvas.prompt.placeholderVideo", "描述画面，或选一个模板");
     if (mode === "audio") return canvasT("videoCanvas.prompt.placeholderAudio", "描述要生成的音频内容");
-    if (mode === "image") return hasImageContent ? canvasT("videoCanvas.prompt.placeholderImageRegen", "输入新提示词，重新生成当前图片") : canvasT("videoCanvas.prompt.placeholderImage", "描述要生成的图片内容");
+    if (mode === "image") return hasImageContent ? canvasT("videoCanvas.prompt.placeholderImageRegen", "输入新提示词，重新生成当前图片") : canvasT("videoCanvas.prompt.placeholderImage", "描述画面，或选一个模板");
     return hasTextContent ? canvasT("videoCanvas.prompt.placeholderTextEdit", "请输入你想要将本段文本修改成什么") : canvasT("videoCanvas.prompt.placeholderText", "请输入你想要生成的文本内容");
 }
 

@@ -29,7 +29,7 @@ export function CanvasLinkedProjectEmptyState({ projectName, hasChapter, onAddFi
     );
 }
 
-export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onStartFreeform, onUpload, onAddText, onAddScript, onApplyGraph, onOpenLibrary }: {
+export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onStartFreeform, onUpload, onAddText, onAddScript, onApplyGraph, onOpenLibrary, onOpenTemplates }: {
     onCreatePipeline: () => void;
     onOpenAgent: () => void;
     onStartFreeform: () => void;
@@ -38,16 +38,27 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onSt
     onAddScript: () => void;
     onApplyGraph?: (graphId: string) => void;
     onOpenLibrary?: () => void;
+    onOpenTemplates?: () => void;
 }) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const focusStyle = { "--tw-ring-color": theme.accent.primary } as CSSProperties;
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-20 pt-24">
-            <div className="pointer-events-auto w-full max-w-[760px]" data-canvas-no-zoom>
+            <div className="pointer-events-auto max-h-full w-full max-w-[760px] overflow-y-auto" data-canvas-no-zoom>
                 <div className="mb-4 text-center">
                     <h2 className="text-lg font-semibold">{canvasT("videoCanvas.empty.whereToStart", "从哪里开始？")}</h2>
                     <p className="mt-1 text-sm" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.whereToStartHint", "选择一条主路径，之后仍可随时切换。")}</p>
+                    {onOpenTemplates ? (
+                        <button
+                            type="button"
+                            className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-semibold outline-none transition hover:brightness-105 focus-visible:ring-2"
+                            style={{ background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text, ...focusStyle }}
+                            onClick={onOpenTemplates}
+                        >
+                            <Sparkles className="size-4" />{canvasT("videoCanvas.empty.startFromTemplate", "从模板开始")}
+                        </button>
+                    ) : null}
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
                     <PathCard
@@ -103,15 +114,18 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onSt
     );
 }
 
-export function CanvasFreeformEmptyState({ onUpload, onAddText, onApplyGraph, onOpenLibrary }: { onUpload: () => void; onAddText: () => void; onApplyGraph?: (graphId: string) => void; onOpenLibrary?: () => void }) {
+export function CanvasFreeformEmptyState({ onUpload, onAddText, onApplyGraph, onOpenLibrary, onOpenTemplates }: { onUpload: () => void; onAddText: () => void; onApplyGraph?: (graphId: string) => void; onOpenLibrary?: () => void; onOpenTemplates?: () => void }) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-20 pt-24">
-            <div className="pointer-events-auto w-full max-w-[760px]" data-canvas-no-zoom>
+            <div className="pointer-events-auto max-h-full w-full max-w-[760px] overflow-y-auto" data-canvas-no-zoom>
                 <div className="mx-auto max-w-[440px] rounded-lg border p-4 shadow-sm backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}>
                     <div className="text-center"><h2 className="text-base font-semibold">{canvasT("videoCanvas.empty.blankStart", "从空白画布开始")}</h2><p className="mt-1 text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.blankStartHint", "添加文本或导入已有素材。")}</p></div>
-                    <div className="mt-4 grid grid-cols-2 gap-2">
+                    {onOpenTemplates ? (
+                        <button type="button" onClick={onOpenTemplates} className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border text-sm font-semibold" style={{ borderColor: theme.node.stroke, background: theme.node.fill, color: theme.node.text }}><Sparkles className="size-4" />{canvasT("videoCanvas.empty.startFromTemplate", "从模板开始")}</button>
+                    ) : null}
+                    <div className={onOpenTemplates ? "mt-2 grid grid-cols-2 gap-2" : "mt-4 grid grid-cols-2 gap-2"}>
                         <button type="button" onClick={onAddText} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Type className="size-4" />{canvasT("videoCanvas.empty.newText", "新建文本")}</button>
                         <button type="button" onClick={onUpload} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Upload className="size-4" />{canvasT("videoCanvas.chrome.importMedia", "导入素材")}</button>
                     </div>

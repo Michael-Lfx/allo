@@ -13,7 +13,7 @@ export function useCanvasDialogState() {
     const [drawingNodeId, setDrawingNodeId] = useState<string | null>(null);
     const [stylePickerOpen, setStylePickerOpen] = useState(false);
     const [libraryOpen, setLibraryOpen] = useState(false);
-    const [libraryTab, setLibraryTab] = useState<LibraryTab>("recipe");
+    const [libraryTab, setLibraryTab] = useState<LibraryTab>("template");
     const [directorTemplateRequest, setDirectorTemplateRequest] = useState<{ position?: Position } | null>(null);
     const [projectAssetOpen, setProjectAssetOpen] = useState(false);
     const [projectAssetInitialCategory, setProjectAssetInitialCategory] = useState("all");

@@ -1,6 +1,6 @@
 import type { CanvasGenerationMode, CanvasNodeData, CanvasConnection, Position } from "@oc/types/canvas";
 
-export type LibraryTab = "recipe" | "playbook" | "graph" | "community";
+export type LibraryTab = "template" | "recipe" | "playbook" | "graph" | "community";
 export type CraftKind = "recipe" | "playbook" | "graph";
 export type RecipeGroup = "character" | "coverage" | "continuity" | "lighting" | "camera" | "craft";
 export type RecipeInput = "text" | "one-image" | "current" | "script" | "two-people";

@@ -9,6 +9,7 @@ import { resolveMediaUrl, type UploadedFile } from "@oc/services/file-storage";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@oc/services/image-storage";
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
+import { fireGenerationTemplateEvent } from "@oc/lib/canvas/generation-template/api";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata } from "@oc/types/canvas";
 
 export function generationTaskInput(task: GenerationTask) {
@@ -172,6 +173,9 @@ export async function applyGenerationTaskResultToNodes(nodes: CanvasNodeData[], 
     const node = findGenerationTaskNode(nodes, task, targetNodeId);
     if (!node) return { nodes, updated: false, nodeId: "", node: null };
     const updatedNode = await buildGenerationTaskNodeResult(node, task, nodes);
+    if (updatedNode.metadata?.status === "success") {
+        fireGenerationTemplateEvent(updatedNode.metadata.appliedTemplate?.id, "succeed");
+    }
     return {
         nodes: applySuccessfulVersionSelection(nodes, updatedNode),
         updated: true,

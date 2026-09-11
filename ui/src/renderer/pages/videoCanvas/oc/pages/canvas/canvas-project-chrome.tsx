@@ -6,6 +6,8 @@ import { CanvasZoomControls } from "@oc/components/canvas/canvas-zoom-controls";
 import { CanvasAssetTray } from "@oc/components/canvas/canvas-asset-tray";
 import { CanvasProjectContextMenu } from "./canvas-project-context-menu";
 import { HideWhileNodeDragging } from "./canvas-project-world-layers";
+import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
+import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ContextMenuState, type Position, type ViewportTransform } from "@oc/types/canvas";
 import type { LibraryTab } from "@oc/lib/canvas/craft/types";
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
@@ -187,7 +189,10 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { lastAgentChange, viewLastAgentChange, undoAgentOps, dismissLastAgentChange } = agentOps;
-    const { toolbarNode, contextMenuNode } = renderModel;
+    const { toolbarNode: selectedToolbarNode, contextMenuNode, nodeById } = renderModel;
+    const hoverToolbarNodeId = useCanvasInteractionStore((state) => state.toolbarNodeId);
+    const hoverToolbarNode = hoverToolbarNodeId ? nodeById.get(hoverToolbarNodeId) || null : null;
+    const toolbarNode = (hoverToolbarNode && !isFrameNode(hoverToolbarNode) ? hoverToolbarNode : null) || selectedToolbarNode;
     return (
         <>
                     {uploadStatus ? <CanvasUploadStatusToast status={uploadStatus} theme={theme} /> : null}
@@ -244,6 +249,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onToggleLocked={(node) => toggleNodeLocked(node.id)}
                         onSubtitles={(node) => setSubtitleNodeId(node.id)}
                         onTimeline={(node) => setTimelineNodeId(node.id)}
+                        onOpenDrawing={openDrawingNode}
                         onDelete={(node) => deleteNodes(new Set([node.id]))}
                     />
                     </HideWhileNodeDragging>
@@ -296,7 +302,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onAddFolder={(position) => createFolder(position)}
                         onChooseStyle={() => setStylePickerOpen(true)}
                         onOpenLibrary={() => {
-                            setLibraryTab("recipe");
+                            setLibraryTab("template");
                             setLibraryOpen(true);
                         }}
                         onOpenDirector={(position) => setDirectorTemplateRequest({ position })}

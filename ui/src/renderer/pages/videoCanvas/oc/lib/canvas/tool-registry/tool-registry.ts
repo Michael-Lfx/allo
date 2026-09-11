@@ -67,7 +67,9 @@ export function resolveToolbarTools(toolbar: ToolbarId, ctx: ToolContext, prefs:
     const applicableTools = allTools.filter((tool) => !tool.applicable || tool.applicable(ctx));
     const effectivePrefs = prefs ?? defaultToolbarPrefs(toolbar);
     const hiddenSet = new Set(effectivePrefs.hidden);
-    const visibleTools = applicableTools.filter((tool) => !hiddenSet.has(tool.id));
+    const visibleFromPrefs = applicableTools.filter((tool) => !hiddenSet.has(tool.id));
+    // 偏好把全部适用工具都藏掉时回退到默认可见，避免底栏只剩空胶囊。
+    const visibleTools = applicableTools.length > 0 && visibleFromPrefs.length === 0 ? applicableTools : visibleFromPrefs;
     const orderIndex = new Map(effectivePrefs.order.map((id, index) => [id, index]));
     return [...visibleTools].sort((a, b) => {
         const ai = orderIndex.has(a.id) ? orderIndex.get(a.id)! : Number.MAX_SAFE_INTEGER;

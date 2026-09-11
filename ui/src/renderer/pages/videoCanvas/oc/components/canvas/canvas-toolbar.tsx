@@ -161,7 +161,7 @@ export function CanvasToolbar({
         onNodeMaskEdit: () => {}, onNodeEmotion: () => {}, onNodePortraitTexture: () => {}, onNodeCrop: () => {}, onNodeSplit: () => {}, onNodeUpscale: () => {},
         onNodeSuperResolve: () => {}, onNodeAngle: () => {}, onNodeViewImage: () => {}, onNodeExtractVideoFrames: () => {}, onNodeReversePrompt: () => {},
         onNodeToggleFreeResize: () => {}, onNodeToggleLocked: () => {}, onNodeCopyPrompt: () => {},
-        onNodeSubtitles: () => {}, onNodeTimeline: () => {},
+        onNodeSubtitles: () => {}, onNodeTimeline: () => {}, onNodeOpenDrawing: () => {},
     } as ToolbarHandlers;
 
     const ctx: ToolContext = {
@@ -208,7 +208,7 @@ export function CanvasToolbar({
                 ) : null}
             </AnimatePresence>
 
-            <FloatingDock ref={dockRef} items={items} magnify={false} className="canvas-floating-dock pointer-events-auto max-w-full" style={canvasDockStyle(theme)} />
+            <FloatingDock ref={dockRef} items={items} magnify={false} className="canvas-floating-dock pointer-events-auto min-w-max" style={canvasDockStyle(theme)} />
 
             <AnimatePresence>
                 {appearanceOpen ? (

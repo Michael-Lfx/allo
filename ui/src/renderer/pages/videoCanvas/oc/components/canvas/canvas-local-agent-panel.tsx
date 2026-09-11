@@ -11,11 +11,14 @@ import { canvasThemes } from "@oc/lib/canvas-theme";
 import { createClientId } from "@oc/lib/client-id";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
+import { useConfigStore } from "@oc/stores/use-config-store";
 import { useCanvasAgentStore, type AgentChatItem, type AgentPendingToolCall, type AgentThreadSummary } from "@oc/stores/canvas/use-canvas-agent-store";
 import { canvasAgentPostconditionMessage, canvasAgentStateHashBlocksWrite, summarizeCanvasAgentOps, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
 import { buildCanvasAgentPlan } from "@oc/lib/canvas/canvas-agent-plan";
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@oc/lib/canvas/canvas-agent-context";
 import { getAgentPlaybook, listAgentPlaybooks } from "@oc/lib/canvas/craft/agent-catalog";
+import { listPublishedGenerationTemplatesForAgent, planGenerationTemplateTool } from "@oc/lib/canvas/generation-template/agent";
+import { fireGenerationTemplateEvent } from "@oc/lib/canvas/generation-template/api";
 import { isProjectAgentReadTool, isProjectAgentToolName, runProjectAgentTool } from "@oc/services/api/project-agent-tools";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCard, AgentWorkingMessage } from "./canvas-agent-chat-ui";
 import { compactCanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-snapshot-compact";
@@ -235,7 +238,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
     };
 
     const handleToolCall = async (endpoint: string, token: string, payload: AgentPendingToolCall) => {
-        if (confirmToolsRef.current && (payload.name === "canvas_apply_ops" || (isProjectAgentToolName(payload.name) && !isProjectAgentReadTool(payload.name)))) {
+        if (confirmToolsRef.current && (payload.name === "canvas_apply_ops" || payload.name === "canvas_apply_template" || (isProjectAgentToolName(payload.name) && !isProjectAgentReadTool(payload.name)))) {
             if (pendingToolRef.current) {
                 await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: canvasT(`${LA}.pendingToolBusy`, "仍有待确认的画布工具调用") });
                 return;
@@ -252,7 +255,8 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
 		try {
 			const input = (payload.input || {}) as Record<string, unknown>;
 			const projectToolName = isProjectAgentToolName(payload.name) ? payload.name : null;
-			setAgentState({ activity: payload.name === "canvas_apply_ops" ? canvasT(`${LA}.activityApplyingOps`, "执行画布操作") : projectToolName ? canvasT(`${LA}.activityProjectTool`, "执行项目工具") : canvasT(`${LA}.activityReadingCanvas`, "读取画布"), waiting: true });
+            const isCanvasWrite = payload.name === "canvas_apply_ops" || payload.name === "canvas_apply_template";
+			setAgentState({ activity: isCanvasWrite ? canvasT(`${LA}.activityApplyingOps`, "执行画布操作") : projectToolName ? canvasT(`${LA}.activityProjectTool`, "执行项目工具") : canvasT(`${LA}.activityReadingCanvas`, "读取画布"), waiting: true });
 			addEventLog(toolName(payload.name), payload, payload);
             if (payload.name === "canvas_apply_ops") {
                 const currentSnapshot = snapshotRef.current;
@@ -262,7 +266,34 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                 const validation = validateCanvasAgentOps(currentSnapshot, (input.ops || []) as CanvasAgentOp[]);
                 if (!validation.ok) throw new Error(`画布操作校验失败：${validation.issues.filter((item) => item.severity === "error").map((item) => item.message).join("；")}`);
             }
-            const result =
+            let result: unknown;
+            if (payload.name === "canvas_list_templates") {
+                result = await listPublishedGenerationTemplatesForAgent({
+                    keyword: typeof input.keyword === "string" ? input.keyword : "",
+                    nodeType: input.nodeType === "image" || input.nodeType === "video" ? input.nodeType : undefined,
+                });
+            } else if (payload.name === "canvas_apply_template") {
+                const currentSnapshot = snapshotRef.current;
+                if (typeof input.expectedRevision === "number" && input.expectedRevision !== (currentSnapshot.revision ?? 0)) throw new Error(`画布 revision 已从 ${input.expectedRevision} 变为 ${currentSnapshot.revision ?? 0}，请重新读取 canvas_get_context 后再执行写操作`);
+                const expectedStateHash = typeof input.expectedStateHash === "string" ? input.expectedStateHash : "";
+                if (canvasAgentStateHashBlocksWrite(expectedStateHash, buildCanvasAgentContext(currentSnapshot).stateHash, payload.name, input)) throw new Error("画布状态已变化，请重新读取 canvas_get_context 后再执行写操作。");
+                const planned = await planGenerationTemplateTool(input, currentSnapshot, useConfigStore.getState().config);
+                const validation = validateCanvasAgentOps(currentSnapshot, planned.ops);
+                if (!validation.ok) throw new Error(`画布操作校验失败：${validation.issues.filter((item) => item.severity === "error").map((item) => item.message).join("；")}`);
+                const next = onApplyOpsRef.current(planned.ops) as CanvasAgentSnapshot;
+                const verification = verifyCanvasAgentOps(currentSnapshot, next, planned.ops);
+                if (verification.ok) fireGenerationTemplateEvent(planned.templateId, "apply");
+                result = {
+                    ok: verification.ok,
+                    message: planned.compiled.degraded
+                        ? `已套用模板到节点 ${planned.targetId}（已降级：${planned.compiled.degradeReason || "model-fallback"}）。`
+                        : canvasAgentPostconditionMessage(verification),
+                    data: { verification, snapshot: next, targetId: planned.targetId, degraded: planned.compiled.degraded, degradeReason: planned.compiled.degradeReason },
+                    snapshot: next,
+                    ops: planned.ops,
+                };
+            } else {
+                result =
                 payload.name === "canvas_apply_ops"
                     ? (() => {
                           const before = snapshotRef.current;
@@ -304,13 +335,14 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                                           : projectToolName
                                             ? await runProjectAgentTool(projectToolName, input, snapshotRef.current.domainProjectId)
                                             : snapshotRef.current;
+            }
             await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, result });
-            if (payload.name === "canvas_apply_ops") void postState(endpoint, token, clientIdRef.current, ((result as { snapshot?: CanvasAgentSnapshot }).snapshot || snapshotRef.current) as CanvasAgentSnapshot);
+            if (isCanvasWrite) void postState(endpoint, token, clientIdRef.current, ((result as { snapshot?: CanvasAgentSnapshot }).snapshot || snapshotRef.current) as CanvasAgentSnapshot);
             setAgentState({ activity: canvasT(`${LA}.activityToolDone`, "工具完成"), waiting: true });
-            const applyResult = payload.name === "canvas_apply_ops" ? (result as { snapshot?: CanvasAgentSnapshot; message?: string }) : null;
-            const loggedResult = projectToolName || payload.name !== "canvas_apply_ops" ? result : compactCanvasAgentSnapshot((applyResult?.snapshot || result) as CanvasAgentSnapshot);
+            const applyResult = isCanvasWrite ? (result as { snapshot?: CanvasAgentSnapshot; message?: string; ops?: CanvasAgentOp[] }) : null;
+            const loggedResult = projectToolName || !isCanvasWrite ? result : compactCanvasAgentSnapshot((applyResult?.snapshot || result) as CanvasAgentSnapshot);
             addEventLog(canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), loggedResult, loggedResult);
-            addMessage({ role: "tool", title: canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), text: payload.name === "canvas_apply_ops" ? (applyResult?.message || summarizeCanvasAgentOps((input.ops || []) as CanvasAgentOp[]) || canvasT(`${LA}.canvasOp`, "画布操作")) : canvasT(`${LA}.completed`, "已完成"), detail: { requestId: payload.requestId, name: payload.name, input, result: loggedResult } });
+            addMessage({ role: "tool", title: canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), text: isCanvasWrite ? (applyResult?.message || summarizeCanvasAgentOps((applyResult?.ops || input.ops || []) as CanvasAgentOp[]) || canvasT(`${LA}.canvasOp`, "画布操作")) : canvasT(`${LA}.completed`, "已完成"), detail: { requestId: payload.requestId, name: payload.name, input, result: loggedResult } });
         } catch (error) {
             const message = formatCanvasUserError(error, canvasT(`${LA}.errorCanvasOpFailed`, "画布操作失败"));
             setAgentState({ activity: canvasT(`${LA}.activityToolFailed`, "工具失败"), waiting: false });

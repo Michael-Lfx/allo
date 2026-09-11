@@ -578,7 +578,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         getCanvasCenter,
         setStylePickerOpen,
     });
-    const { applyRecipe, applyPlaybook, applyGraph, installHub } = useCanvasCraftLibrary({
+    const { applyRecipe, applyPlaybook, applyGraph, installHub, applyTemplate, publishFromCanvas } = useCanvasCraftLibrary({
         ...canvasSetters,
         ...canvasRefs,
         getCanvasCenter,
@@ -897,6 +897,10 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                 setLibraryTab("graph");
                 setLibraryOpen(true);
             }}
+            onOpenTemplates={() => {
+                setLibraryTab("template");
+                setLibraryOpen(true);
+            }}
         />
     );
     if (!projectLoaded) return <CanvasRefreshShell />;
@@ -957,6 +961,9 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         onApplyPlaybook={(playbook) => void applyPlaybook(playbook)}
                         onApplyGraph={applyGraph}
                         onInstallHub={(skill) => void installHub(skill)}
+                        onApplyTemplate={(detail) => void applyTemplate(detail)}
+                        canPublishFromCanvas={nodes.some((node) => selectedNodeIds.has(node.id) && (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video) && node.metadata?.status === "success")}
+                        onPublishFromCanvas={() => void publishFromCanvas()}
                     />
                     <div className="relative flex min-h-0 min-w-0 flex-1">
                         <CanvasProjectStage

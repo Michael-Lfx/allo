@@ -23,6 +23,7 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/
 import { enrichPromptWithVimaxVoiceGuards } from "@renderer/pages/videoCanvas/lib/alloVimaxBridge";
 import { trackVideoSessionEvent } from "@renderer/utils/analytics/productFunnel";
 
+import { fireGenerationTemplateEvent } from "@oc/lib/canvas/generation-template/api";
 import { executeImageGeneration } from "./canvas-image-generation-executor";
 import { executeAudioGeneration, executeVideoGeneration } from "./canvas-media-generation-executors";
 import { executeTextGeneration } from "./canvas-text-generation-executor";
@@ -271,6 +272,7 @@ export function useCanvasGenerationExecutor({
             };
 
             try {
+                fireGenerationTemplateEvent(sourceNode?.metadata?.appliedTemplate?.id, "generate");
                 if (mode === "video") {
                     trackVideoSessionEvent("render_started", projectId, canvasVideoSessionProps(projectId, nodesRef.current, {
                         video_model: generationConfig.model || null,

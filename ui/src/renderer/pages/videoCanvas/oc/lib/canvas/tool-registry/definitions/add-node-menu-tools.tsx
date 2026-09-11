@@ -6,7 +6,6 @@ import { getNodeLabel } from "@oc/lib/canvas/node-registry";
 import { BUILTIN_NODE_ICONS } from "@oc/lib/canvas/node-registry/definitions/builtin-nodes";
 import { CanvasNodeType } from "@oc/types/canvas";
 
-import { registerAddNodeMenuCommands } from "../tool-registry";
 import type { AddNodeMenuCommand } from "../tool-definition";
 
 /** 真正创建节点的命令：文案走 i18n，图标用节点类型对应的 Lucide 组件。 */
@@ -36,7 +35,7 @@ function nodeTypeIcon(type: CanvasNodeType): ReactNode {
 export const addNodeMenuCommands: AddNodeMenuCommand[] = [
     // 工作台：打开面板/货架，不是往画布丢节点。
     { id: "style", label: () => canvasT("videoCanvas.toolbar.style", "项目画风"), icon: <Palette />, badge: () => canvasT("videoCanvas.toolbar.badgeBaseline", "基线"), section: "project", defaultOrder: 5, applicable: (ctx) => !ctx.isProjectLinked, run: (ctx) => ctx.handlers.onChooseStyle() },
-    { id: "library", label: () => canvasT("videoCanvas.toolbar.library", "货架"), icon: <BookOpen />, badge: () => canvasT("videoCanvas.toolbar.badgeCraft", "手法"), section: "project", defaultOrder: 6, run: (ctx) => ctx.handlers.onOpenLibrary() },
+    { id: "library", label: () => canvasT("videoCanvas.toolbar.library", "货架"), icon: <BookOpen />, badge: () => canvasT("videoCanvas.toolbar.badgeTemplate", "模板"), section: "project", defaultOrder: 6, run: (ctx) => ctx.handlers.onOpenLibrary() },
     { id: "director", label: () => canvasT("videoCanvas.toolbar.director", "导演台"), icon: <Layers3 />, badge: () => canvasT("videoCanvas.toolbar.badge3d", "3D"), section: "project", defaultOrder: 7, run: (ctx) => ctx.handlers.onOpenDirector() },
     // 创作节点只放会落到画布上的片原语。
     nodeCommand(CanvasNodeType.Script, { badge: () => canvasT("videoCanvas.toolbar.badgeCore", "核心"), defaultOrder: 10, run: (ctx) => ctx.handlers.onAddScript() }),
@@ -62,5 +61,3 @@ export const addNodeMenuCommands: AddNodeMenuCommand[] = [
     { id: "project-character", label: () => canvasT("videoCanvas.toolbar.addCharacter", "添加角色卡"), icon: <UserRound />, section: "resource", defaultOrder: 20, applicable: (ctx) => ctx.isProjectLinked, run: (ctx) => ctx.handlers.onOpenProjectCharacters() },
     { id: "assets", label: () => canvasT("videoCanvas.toolbar.assets", "素材空间"), icon: <Library />, section: "resource", defaultOrder: 30, run: (ctx) => ctx.handlers.onOpenMyAssets() },
 ];
-
-registerAddNodeMenuCommands(addNodeMenuCommands);

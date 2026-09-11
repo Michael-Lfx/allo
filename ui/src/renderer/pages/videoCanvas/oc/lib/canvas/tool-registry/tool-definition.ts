@@ -94,6 +94,7 @@ export type ToolbarHandlers = {
     onNodeCopyPrompt: (node: CanvasNodeData) => void;
     onNodeSubtitles: (node: CanvasNodeData) => void;
     onNodeTimeline: (node: CanvasNodeData) => void;
+    onNodeOpenDrawing: (node: CanvasNodeData) => void;
 };
 
 /** 工具运行时可见的上下文。工具定义通过纯函数读取状态 */

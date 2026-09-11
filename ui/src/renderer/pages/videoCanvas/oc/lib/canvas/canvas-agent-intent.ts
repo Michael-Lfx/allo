@@ -333,6 +333,7 @@ function summarizeGraph(snapshot: CanvasAgentSnapshot, observation: CanvasAgentO
             title: node.title,
             status: node.metadata?.status || "idle",
             prompt: String(node.metadata?.prompt || node.metadata?.composerContent || "").slice(0, 180),
+            appliedTemplateId: node.metadata?.appliedTemplate?.id,
         })),
         connections: snapshot.connections.map((connection) => ({
             from: canvasAgentShortId(connection.fromNodeId, aliases),

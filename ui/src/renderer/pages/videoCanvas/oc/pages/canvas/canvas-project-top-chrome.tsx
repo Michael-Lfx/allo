@@ -151,7 +151,7 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
                             onMediaPerformanceModeChange={setMediaPerformanceMode}
                             onOpenSearch={() => setNodeSearchOpen(true)}
                             onOpenLibrary={() => {
-                                setLibraryTab("recipe");
+                                setLibraryTab("template");
                                 setLibraryOpen(true);
                             }}
                             lookLabel={lookTitle}

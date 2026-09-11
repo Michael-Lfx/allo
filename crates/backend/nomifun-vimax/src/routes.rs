@@ -15,8 +15,8 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use nomi_vimax::CameoUpdate;
 use nomifun_api_types::{
-    ApiResponse, TvShowPublishSessionRequest, VimaxCloudSkillPublishLocalRequest,
-    VimaxSessionListResponse,
+    ApiResponse, GenerationTemplatePublishRequest, TvShowPublishSessionRequest,
+    VimaxCloudSkillPublishLocalRequest, VimaxSessionListResponse,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -137,6 +137,26 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route(
             "/api/vimax/skill-hub/{id}/unpublish",
             post(skill_hub_unpublish),
+        )
+        .route(
+            "/api/vimax/generation-templates",
+            get(generation_template_list),
+        )
+        .route(
+            "/api/vimax/generation-templates/mine",
+            get(generation_template_mine),
+        )
+        .route(
+            "/api/vimax/generation-templates/publish-from-canvas",
+            post(generation_template_publish_from_canvas),
+        )
+        .route(
+            "/api/vimax/generation-templates/{id}",
+            get(generation_template_detail),
+        )
+        .route(
+            "/api/vimax/generation-templates/{id}/events",
+            post(generation_template_event),
         )
         .route("/api/vimax/tv-show/list", get(tv_show_list))
         .route("/api/vimax/tv-show/mine", get(tv_show_mine))
@@ -1195,4 +1215,95 @@ fn skill_name_from_path(id: &str) -> Result<String, AppError> {
         return Ok(parsed.name);
     }
     Err(AppError::BadRequest(format!("invalid skill id: {id}")))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationTemplateListQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    keyword: Option<String>,
+    category: Option<String>,
+    origin: Option<String>,
+    sort: Option<String>,
+    node_type: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerationTemplateEventBody {
+    #[serde(rename = "type")]
+    event_type: String,
+}
+
+async fn generation_template_list(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    axum::extract::Query(query): axum::extract::Query<GenerationTemplateListQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::GenerationTemplateListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .generation_template_list(
+                query.page,
+                query.page_size,
+                query.keyword,
+                query.category,
+                query.origin,
+                query.sort,
+                query.node_type,
+            )
+            .await?,
+    )))
+}
+
+async fn generation_template_mine(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    axum::extract::Query(query): axum::extract::Query<GenerationTemplateListQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::GenerationTemplateListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .generation_template_mine(query.page, query.page_size, query.status)
+            .await?,
+    )))
+}
+
+async fn generation_template_detail(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::GenerationTemplateDetail>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.generation_template_detail(id).await?,
+    )))
+}
+
+async fn generation_template_event(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+    body: Result<Json<GenerationTemplateEventBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    state
+        .service
+        .generation_template_event(id, body.event_type)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn generation_template_publish_from_canvas(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<GenerationTemplatePublishRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<nomifun_api_types::GenerationTemplateDetail>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .generation_template_publish_from_canvas(body)
+            .await?,
+    )))
 }

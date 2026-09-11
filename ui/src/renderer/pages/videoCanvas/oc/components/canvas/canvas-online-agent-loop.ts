@@ -12,6 +12,8 @@ import { CREATION_INSPECT_TOOLS, inspectArgsForCreationTool } from "@oc/lib/canv
 import { buildCanvasAgentObservation, CANVAS_AGENT_CODES, compactWriteToolData, observationPromptBlock } from "@oc/lib/canvas/canvas-agent-observation";
 import { waitCanvasAgentGeneration } from "@oc/lib/canvas/canvas-agent-wait";
 import { getAgentPlaybook, listAgentPlaybooks } from "@oc/lib/canvas/craft/agent-catalog";
+import { listPublishedGenerationTemplatesForAgent, planGenerationTemplateTool } from "@oc/lib/canvas/generation-template/agent";
+import { fireGenerationTemplateEvent } from "@oc/lib/canvas/generation-template/api";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { requestCanvasAgentTurn, type CanvasAgentInputMessage as ResponseInputMessage, type CanvasAgentToolCall as ResponseToolCall } from "@oc/lib/canvas/canvas-agent-llm";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
@@ -273,6 +275,29 @@ export function useCanvasOnlineAgentLoop({
             if (name === "canvas_list_skills") {
                 const data = listAgentPlaybooks(current.nodes);
                 return { ok: true, message: data.length ? "已列出当前可用手册。" : "没有可用手册。", data };
+            }
+            if (name === "canvas_list_templates") {
+                const keyword = typeof args.keyword === "string" ? args.keyword : "";
+                const nodeType = args.nodeType === "image" || args.nodeType === "video" ? args.nodeType : undefined;
+                const data = await listPublishedGenerationTemplatesForAgent({ keyword, nodeType });
+                return { ok: true, message: data.list.length ? `已列出 ${data.list.length} 个生成模板。` : "没有可用的生成模板。", data };
+            }
+            if (name === "canvas_apply_template") {
+                const planned = await planGenerationTemplateTool(args, current, config);
+                const verification = executeOps(planned.ops);
+                verification.createdNodeIds.forEach((id) => {
+                    createdNodeIdsRef.current.add(id);
+                    inspectedNodeIdsRef.current.add(id);
+                });
+                rememberSnapshotNodes(snapshotRef.current, inspectedNodeIdsRef.current);
+                if (verification.ok !== false) fireGenerationTemplateEvent(planned.templateId, "apply");
+                return {
+                    ok: verification.ok !== false,
+                    message: planned.compiled.degraded
+                        ? `已套用模板到节点 ${planned.targetId}（已降级：${planned.compiled.degradeReason || "model-fallback"}）。`
+                        : `已套用模板到节点 ${planned.targetId}。`,
+                    data: { targetId: planned.targetId, degraded: planned.compiled.degraded, degradeReason: planned.compiled.degradeReason, verification },
+                };
             }
             if (name === "canvas_get_skill") {
                 const skillId = typeof args.skillId === "string" ? args.skillId : "";
