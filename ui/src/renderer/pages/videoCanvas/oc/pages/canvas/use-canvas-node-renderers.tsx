@@ -138,6 +138,10 @@ export function useCanvasNodeRenderers(input: CanvasNodeRenderersInput) {
                         setLibraryTab("recipe");
                         setLibraryOpen(true);
                     }}
+                    onOpenTemplates={() => {
+                        setLibraryTab("template");
+                        setLibraryOpen(true);
+                    }}
                 />
             ) : (
                 <CanvasNodePromptPanel
@@ -155,6 +159,10 @@ export function useCanvasNodeRenderers(input: CanvasNodeRenderersInput) {
                     }}
                     onOpenLibrary={() => {
                         setLibraryTab("recipe");
+                        setLibraryOpen(true);
+                    }}
+                    onOpenTemplates={() => {
+                        setLibraryTab("template");
                         setLibraryOpen(true);
                     }}
                 />

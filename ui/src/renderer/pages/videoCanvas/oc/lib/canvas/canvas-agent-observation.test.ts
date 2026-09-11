@@ -38,6 +38,7 @@ describe("canvas agent observation", () => {
         const text = observationPromptBlock(buildCanvasAgentObservation(snapshot()));
         expect(text).toContain("[画布观察]");
         expect(text).toContain(CANVAS_AGENT_CODES.GOAL_INCOMPLETE);
+        expect(text).toContain("模板：无");
         expect(text).toContain("NEW：");
     });
 

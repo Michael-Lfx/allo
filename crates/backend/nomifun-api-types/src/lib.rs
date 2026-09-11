@@ -14,6 +14,7 @@ mod cloud_im;
 mod campaign;
 mod tv_show;
 mod vimax_skill_hub;
+mod generation_template;
 mod vimax;
 mod briefing;
 mod confirmation;
@@ -151,6 +152,12 @@ pub use vimax_skill_hub::{
     VimaxCloudSkill, VimaxCloudSkillInstallResponse, VimaxCloudSkillLikeResponse,
     VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest,
     VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse, VimaxSkillAuthor,
+};
+pub use generation_template::{
+    GenerationTemplateAsset, GenerationTemplateAuthor, GenerationTemplateDetail,
+    GenerationTemplateEventRequest, GenerationTemplateListItem, GenerationTemplateListResponse,
+    GenerationTemplateModelIntent, GenerationTemplatePrompt, GenerationTemplatePublishRequest,
+    GenerationTemplateSlot, GenerationTemplateTarget,
 };
 pub use vimax::{VimaxSessionListResponse, VimaxSessionSummary};
 pub use briefing::{

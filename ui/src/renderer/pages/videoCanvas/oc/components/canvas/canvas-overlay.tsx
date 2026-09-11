@@ -277,9 +277,9 @@ export function CanvasSheet({
                             </div>
                         ) : null}
                     </div>
-                    <button type="button" className="canvas-chrome-token is-icon" aria-label={canvasT("videoCanvas.sheet.close", "关闭")} onClick={onClose}>
-                        <X className="size-3.5" />
-                    </button>
+                    <CanvasChromeButton className="is-icon shrink-0 self-start" aria-label={canvasT("videoCanvas.sheet.close", "关闭")} onClick={onClose}>
+                        <X className="block size-3.5" strokeWidth={2} />
+                    </CanvasChromeButton>
                 </header>
                 <div className="canvas-sheet-body thin-scrollbar">{children}</div>
                 {footer ? (

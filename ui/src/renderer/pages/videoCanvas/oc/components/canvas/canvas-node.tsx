@@ -937,6 +937,7 @@ function ImageNodeContent(props: NodeContentRendererProps) {
 
 function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchExpanded, batchOpening, batchRecovering, onToggleBatch }: NodeContentRendererProps) {
     const isCharacterReference = node.metadata?.workflowKind === "character" && node.metadata?.characterView === "multi";
+    const { openTemplates } = useCanvasNodeActions();
     const content = (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
             <div className="flex size-14 items-center justify-center rounded-2xl" style={{ background: theme.toolbar.activeBg }}>
@@ -948,6 +949,20 @@ function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchExpanded
                     <div className="mt-1 text-[var(--fs-tiny)] tracking-[0.12em] opacity-50">{canvasT("videoCanvas.nodeUi.multiViewPending", "多视角参考 · 待生成")}</div>
                 </div>
             ) : <span className="text-[var(--fs-tiny)] tracking-[0.18em] opacity-50">{canvasT("videoCanvas.nodeUi.emptyImage", "空图片节点")}</span>}
+            {openTemplates ? (
+                <button
+                    type="button"
+                    className="pointer-events-auto h-7 rounded-md px-2.5 text-[11px] font-medium"
+                    style={{ color: theme.accent.primary, background: theme.toolbar.itemHover }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        openTemplates();
+                    }}
+                >
+                    {canvasT("videoCanvas.empty.startFromTemplate", "从模板开始")}
+                </button>
+            ) : null}
         </div>
     );
     if (isBatchRoot)
@@ -957,6 +972,30 @@ function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchExpanded
             </BatchFrame>
         );
     return content;
+}
+
+function EmptyVideoContent({ theme }: { theme: CanvasTheme }) {
+    const { openTemplates } = useCanvasNodeActions();
+    return (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
+            <Video className="size-7 opacity-35" />
+            <span className="text-sm">{canvasT("videoCanvas.nodeUi.emptyVideo", "空视频节点")}</span>
+            {openTemplates ? (
+                <button
+                    type="button"
+                    className="pointer-events-auto h-7 rounded-md px-2.5 text-[11px] font-medium"
+                    style={{ color: theme.accent.primary, background: theme.toolbar.itemHover }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        openTemplates();
+                    }}
+                >
+                    {canvasT("videoCanvas.empty.startFromTemplate", "从模板开始")}
+                </button>
+            ) : null}
+        </div>
+    );
 }
 
 function VideoNodeContent({ node, theme, reduceMediaEffects, mediaActive = false, hydrateMediaPreview = false }: NodeContentRendererProps) {
@@ -984,10 +1023,7 @@ function VideoNodeContent({ node, theme, reduceMediaEffects, mediaActive = false
 
     if (!canvasNodeDisplayUrl(node))
         return (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
-                <Video className="size-7 opacity-35" />
-                <span className="text-sm">{canvasT("videoCanvas.nodeUi.emptyVideo", "空视频节点")}</span>
-            </div>
+            <EmptyVideoContent theme={theme} />
         );
     if (!mediaActive) return <InactiveVideoPreview node={node} theme={theme} hydrateMediaPreview={hydrateMediaPreview} />;
     if (!playbackUrl) {

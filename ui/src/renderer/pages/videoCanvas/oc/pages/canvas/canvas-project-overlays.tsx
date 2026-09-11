@@ -72,7 +72,7 @@ export function CanvasProjectOverlays(props: CanvasProjectOverlaysProps) {
     return (
         <>
                     {angleNode?.metadata?.content ? (
-                        <CanvasNodePanelOverlay node={angleNode} viewport={viewport} containerRef={containerRef} panelWidth={580} panelHeight={350}>
+                        <CanvasNodePanelOverlay node={angleNode} viewport={viewport} containerRef={containerRef} panelWidth={580}>
                             <CanvasNodeAnglePanel
                                 dataUrl={angleNode.metadata.content}
                                 onClose={() => setAngleNodeId(null)}

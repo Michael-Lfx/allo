@@ -16,7 +16,8 @@ use nomifun_api_types::{
     TvShowVideo, VideoGrowthEvent, VideoGrowthEventBatchRequest, VimaxCloudSkill,
     VimaxCloudSkillInstallResponse, VimaxCloudSkillLikeResponse, VimaxCloudSkillListResponse,
     VimaxCloudSkillPublishLocalRequest, VimaxCloudSkillPublishRequest,
-    VimaxCloudSkillPublishResponse, VimaxSessionSummary,
+    VimaxCloudSkillPublishResponse, VimaxSessionSummary, GenerationTemplateDetail,
+    GenerationTemplateListResponse, GenerationTemplatePublishRequest,
 };
 use nomifun_cloud::{CloudService, FlowyApiClient, ServerSession};
 use serde_json::json;
@@ -1080,6 +1081,75 @@ impl VimaxApiService {
         let (client, session) = self.flowy_client_and_session().await?;
         client
             .vimax_skill_delete(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_list(
+        &self,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        keyword: Option<String>,
+        category: Option<String>,
+        origin: Option<String>,
+        sort: Option<String>,
+        node_type: Option<String>,
+    ) -> Result<GenerationTemplateListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_list(
+                &session,
+                page,
+                page_size,
+                keyword.as_deref(),
+                category.as_deref(),
+                origin.as_deref(),
+                sort.as_deref(),
+                node_type.as_deref(),
+            )
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_mine(
+        &self,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        status: Option<String>,
+    ) -> Result<GenerationTemplateListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_mine(&session, page, page_size, status.as_deref())
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_detail(
+        &self,
+        id: i64,
+    ) -> Result<GenerationTemplateDetail, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_detail(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_event(&self, id: i64, event_type: String) -> Result<(), AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_event(&session, id, &event_type)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn generation_template_publish_from_canvas(
+        &self,
+        body: GenerationTemplatePublishRequest,
+    ) -> Result<GenerationTemplateDetail, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .generation_template_publish_from_canvas(&session, &body)
             .await
             .map_err(map_cloud_err)
     }

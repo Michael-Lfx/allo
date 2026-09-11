@@ -151,6 +151,18 @@ export type CanvasNodeMetadata = {
     prompt?: string;
     promptTemplateOperation?: string;
     promptTemplateVariables?: Record<string, string>;
+    appliedTemplate?: {
+        id: number;
+        slug?: string;
+        version: string;
+        appliedAt: string;
+        degraded: boolean;
+        degradeReason?: string;
+        remixOf?: number;
+        promptBody: string;
+        adapters?: Record<string, string>;
+        slots: Array<{ id: string; kind: string; label: string; required: boolean; default?: string; options?: string[] }>;
+    };
     status?: CanvasNodeStatus;
     locked?: boolean;
     errorDetails?: string;

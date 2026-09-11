@@ -18,17 +18,18 @@ type CanvasProjectEmptyStateProps = {
     onStartFreeform: () => void;
     onApplyGraph?: (graphId: string) => void;
     onOpenLibrary?: () => void;
+    onOpenTemplates?: () => void;
 };
 
 export function CanvasProjectEmptyState(props: CanvasProjectEmptyStateProps) {
-    const { shortDramaEnabled, currentProject, linkedProject, onUpload, onAddText, onAddScript, onAddChapter, onOpenAssets, onCreatePipeline, onOpenAgent, onStartFreeform, onApplyGraph, onOpenLibrary } = props;
+    const { shortDramaEnabled, currentProject, linkedProject, onUpload, onAddText, onAddScript, onAddChapter, onOpenAssets, onCreatePipeline, onOpenAgent, onStartFreeform, onApplyGraph, onOpenLibrary, onOpenTemplates } = props;
     const kind = resolveCanvasEmptyStateKind({
         nodeCount: 0,
         shortDramaEnabled,
         isProjectLinked: Boolean(currentProject?.projectId),
         starterMode: currentProject?.starterMode,
     });
-    if (kind === "freeform") return <CanvasFreeformEmptyState onUpload={onUpload} onAddText={onAddText} onApplyGraph={onApplyGraph} onOpenLibrary={onOpenLibrary} />;
+    if (kind === "freeform") return <CanvasFreeformEmptyState onUpload={onUpload} onAddText={onAddText} onApplyGraph={onApplyGraph} onOpenLibrary={onOpenLibrary} onOpenTemplates={onOpenTemplates} />;
     if (kind === "linked") {
         return (
             <CanvasLinkedProjectEmptyState
@@ -43,5 +44,5 @@ export function CanvasProjectEmptyState(props: CanvasProjectEmptyStateProps) {
             />
         );
     }
-    return <CanvasShortDramaEmptyState onCreatePipeline={onCreatePipeline} onOpenAgent={onOpenAgent} onStartFreeform={onStartFreeform} onUpload={onUpload} onAddText={onAddText} onAddScript={onAddScript} onApplyGraph={onApplyGraph} onOpenLibrary={onOpenLibrary} />;
+    return <CanvasShortDramaEmptyState onCreatePipeline={onCreatePipeline} onOpenAgent={onOpenAgent} onStartFreeform={onStartFreeform} onUpload={onUpload} onAddText={onAddText} onAddScript={onAddScript} onApplyGraph={onApplyGraph} onOpenLibrary={onOpenLibrary} onOpenTemplates={onOpenTemplates} />;
 }

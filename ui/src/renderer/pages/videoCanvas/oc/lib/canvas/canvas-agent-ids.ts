@@ -105,6 +105,7 @@ function nodeSignature(node: CanvasNodeData) {
         parentId: node.parentId,
         status: node.metadata?.status,
         prompt: node.metadata?.prompt || node.metadata?.composerContent,
+        appliedTemplateId: node.metadata?.appliedTemplate?.id,
         content: typeof node.metadata?.content === "string" ? node.metadata.content.slice(0, 80) : "",
         model: node.metadata?.model,
         taskId: node.metadata?.taskId,

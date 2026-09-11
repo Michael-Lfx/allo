@@ -2,7 +2,6 @@ import { BrushCleaning, Library, MousePointer2, Plus, Redo2, SlidersHorizontal, 
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 
-import { registerToolbarTools } from "../tool-registry";
 import type { ToolDefinition } from "../tool-definition";
 
 export const mainToolbarTools: ToolDefinition[] = [
@@ -131,5 +130,3 @@ export const mainToolbarTools: ToolDefinition[] = [
         run: (ctx) => ctx.handlers.onClear(),
     },
 ];
-
-registerToolbarTools(mainToolbarTools);

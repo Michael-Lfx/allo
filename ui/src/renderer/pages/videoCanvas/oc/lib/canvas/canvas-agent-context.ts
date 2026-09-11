@@ -279,6 +279,7 @@ function compactNode(node: CanvasNodeData, aliases?: CanvasAgentAliasMap, change
         status: String(metadata.status || "idle"),
         content: preview(metadata.content, 240),
         prompt: preview(metadata.prompt || metadata.composerContent, 300),
+        appliedTemplate: compactAppliedTemplate(metadata.appliedTemplate),
         generation: metadata.generationMode || metadata.workflowKind || metadata.taskId ? { mode: metadata.generationMode, model: metadata.model, workflowKind: metadata.workflowKind, workflowTitle: metadata.workflowTitle, taskId: metadata.taskId, status: metadata.taskStatus || metadata.status, progress: numberValue(metadata.taskProgress ?? metadata.progress), stage: metadata.taskStage, provider: metadata.taskProvider, errorCode: metadata.taskErrorCode || metadata.generationErrorCode } : undefined,
         storyboard: metadata.storyboard && typeof metadata.storyboard === "object" && Array.isArray((metadata.storyboard as { rows?: unknown[] }).rows)
             ? { rows: ((metadata.storyboard as { rows: Array<{ id?: string; plotDescription?: string }> }).rows || []).map((row) => ({ id: row.id, plot: preview(row.plotDescription, 80) })) }
@@ -290,6 +291,14 @@ function compactNode(node: CanvasNodeData, aliases?: CanvasAgentAliasMap, change
         asset: metadata.assetId || metadata.characterAssetId ? { assetId: metadata.assetId || metadata.characterAssetId, versionId: metadata.characterVersionId, category: metadata.assetCategory, tags: metadata.assetTags, characterName: metadata.characterName } : undefined,
         resource: resource ? { resourceId: resource.resourceId, storageKey: resource.storageKey, mimeType: resource.mimeType, bytes: resource.bytes, width: resource.width, height: resource.height, durationMs: resource.durationMs, ready: resource.ready } : undefined,
     };
+}
+
+function compactAppliedTemplate(value: unknown) {
+    if (!value || typeof value !== "object") return undefined;
+    const stamp = value as { id?: unknown; version?: unknown; degraded?: unknown };
+    const id = numberValue(stamp.id);
+    if (!id) return undefined;
+    return { id, version: stringValue(stamp.version), degraded: stamp.degraded === true };
 }
 
 function resourceFromNode(node: CanvasNodeData): CanvasAgentResource | null {

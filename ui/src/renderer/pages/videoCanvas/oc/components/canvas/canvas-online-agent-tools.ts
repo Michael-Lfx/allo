@@ -111,6 +111,7 @@ function toolDefinition(name: string, description: string, properties: Record<st
 export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     toolDefinition("canvas_list_skills", "列出画布手册：已放置的 Skill 节点 ∪ 16 本内置手册。只返回元数据。", {}),
     toolDefinition("canvas_get_skill", "按 skillId（builtin:name / hub:id）或名称加载手册正文。Look 只是视觉槽。未放置的内置手册也可读。", { skillId: { type: "string" }, name: { type: "string" } }),
+    toolDefinition("canvas_list_templates", "列出云端镜头生成模板（封面、任务、节点类型、预估积分）。套用前先选 id 再 canvas_apply_template。不是 Skill Hub 手册。", { keyword: { type: "string" }, nodeType: { type: "string", enum: ["image", "video"] } }),
     toolDefinition("storyboard_inspect", "读取现有 Script 分镜：镜头、缺口、主体引用。不要另起空分镜。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
     toolDefinition("storyboard_apply", "把镜头写进已有 Script 节点 rows。按 id 或 index 修补 plot/duration/prompts/stillRole；replace=true 时整表替换。禁止只为了分镜去 canvas_apply 新建 Script。", { shots: { type: "array", items: STORYBOARD_APPLY_SHOT_SCHEMA }, replace: { type: "boolean" } }, ["shots"]),
     toolDefinition("subject_inspect", "读取已标注主体（角色/场景/道具）及缺口。保持面孔与场景，不要另造替换身份。", {}),
@@ -131,6 +132,17 @@ export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
         "canvas_apply",
         "按你设计的节点和连线更新画布。第一次调用就必须包含 nodes（kind/title/prompt）和 edges；只传 description 不会改画布。同批新节点互相引用用 ref/referenceRefs/edges，已有画布节点用短 ID。编译器会补 @ 引用、把 3 张及以上关键帧编成多图参考、拟合时长。patches 改已有节点，deleteIds 删除。run=true 时同时提交生成（仍建议随后 canvas_run 等待）。不要手写底层 ops，不要套固定流水线。",
         APPLY_PROPERTIES,
+    ),
+    toolDefinition(
+        "canvas_apply_template",
+        "把镜头生成模板物化到画布：写入提示词和模型参数，并按合同创建参考图节点与合法 videoEditOperation（首尾帧存在时不会再混入 extra reference_image）。templateId 必填；可选 nodeId、slotValues。不要当成手册或固定影视流水线。",
+        {
+            templateId: { type: "number" },
+            id: { type: "number" },
+            nodeId: { type: "string" },
+            applyPolicy: { type: "string", enum: ["replace", "merge", "slot-fill"] },
+            slotValues: JSON_RECORD_SCHEMA,
+        },
     ),
     toolDefinition(
         "canvas_run",
@@ -155,6 +167,7 @@ export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
 ];
 
 export function onlineToolToOps(name: string, input: Record<string, unknown>, snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentOp[] {
+    if (name === "canvas_list_templates" || name === "canvas_apply_template") return [];
     if (name === "canvas_apply_ops") return requireOps(input.ops);
     if (name === "storyboard_apply") return compileStoryboardApplyOps(input, snapshot);
     if (name === "spec_apply") return compileSpecApplyOps(input, snapshot);
@@ -354,6 +367,8 @@ export function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: Canv
 function toolCallLabel(name: string) {
     if (name === "canvas_list_skills") return canvasT("videoCanvas.agent.tlListSkills", "列出技能");
     if (name === "canvas_get_skill") return canvasT("videoCanvas.agent.tlGetSkill", "加载技能");
+    if (name === "canvas_list_templates") return canvasT("videoCanvas.agent.tlListTemplates", "列出生成模板");
+    if (name === "canvas_apply_template") return canvasT("videoCanvas.agent.tlApplyTemplate", "套用生成模板");
     if (name === "storyboard_inspect") return canvasT("videoCanvas.agent.tlStoryboardInspect", "观察分镜");
     if (name === "storyboard_apply") return canvasT("videoCanvas.agent.tlStoryboardApply", "更新分镜");
     if (name === "subject_inspect") return canvasT("videoCanvas.agent.tlSubjectInspect", "观察主体");

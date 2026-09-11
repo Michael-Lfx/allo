@@ -185,6 +185,10 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                 if (node.type !== CanvasNodeType.ArtCritique) return;
                 setArtCritiqueNodeId(node.id);
             },
+            openTemplates: () => {
+                setLibraryTab("template");
+                setLibraryOpen(true);
+            },
             // 图片 onLoad 比例校正：经 onNodeResize 但 markManual:false，避免写成 manualSize。
             resizeNode: (nodeId: string, size: { width: number; height: number }) => {
                 const node = nodeById.get(nodeId);
@@ -196,7 +200,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                 }, { markManual: false });
             },
         }),
-        [nodeById, onNodeResize, setArtCritiqueNodeId, updateNodeMetadata],
+        [nodeById, onNodeResize, setArtCritiqueNodeId, setLibraryOpen, setLibraryTab, updateNodeMetadata],
     );
     return (
         <>

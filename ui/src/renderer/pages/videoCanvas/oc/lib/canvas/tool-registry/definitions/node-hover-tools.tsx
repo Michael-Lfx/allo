@@ -1,8 +1,7 @@
-import { Captions, Clapperboard, Download, FolderPlus, GalleryHorizontalEnd, Image as ImageIcon, Info, LoaderCircle, Lock, Maximize2, MessageSquare, Minus, Music2, Plus, RefreshCw, Settings2, Trash2, Unlock, Upload, UserRound, Video } from "lucide-react";
+import { Captions, Clapperboard, Download, FolderPlus, GalleryHorizontalEnd, Image as ImageIcon, Info, LoaderCircle, Lock, Maximize2, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Settings2, Trash2, Unlock, Upload, UserRound, Video } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@oc/lib/generation-error";
-import { registerToolbarTools } from "../tool-registry";
 import type { ToolContext, ToolDefinition } from "../tool-definition";
 import { CanvasNodeType } from "@oc/types/canvas";
 
@@ -12,6 +11,7 @@ function isVideo(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Vi
 function isAudio(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Audio; }
 function isText(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Text; }
 function isConfig(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Config; }
+function isDrawing(ctx: ToolContext) { return ctx.node?.type === CanvasNodeType.Drawing; }
 function hasImage(ctx: ToolContext) { return isImage(ctx) && Boolean(ctx.nodeMetadata?.content) && !isCharacterReference(ctx); }
 function hasVideo(ctx: ToolContext) { return isVideo(ctx) && Boolean(ctx.nodeMetadata?.content); }
 function hasAudio(ctx: ToolContext) { return isAudio(ctx) && Boolean(ctx.nodeMetadata?.content); }
@@ -147,6 +147,18 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         run: (ctx) => ctx.handlers.onNodeToggleDialog(ctx.node!),
     },
     {
+        id: "openDrawing",
+        toolbar: "node-hover",
+        category: "node-state",
+        label: () => canvasT("videoCanvas.menu.openDrawing", "打开绘图"),
+        displayLabel: () => canvasT("videoCanvas.menu.openDrawing", "打开绘图"),
+        icon: <Pencil className="size-3.5" />,
+        defaultVisible: true,
+        defaultOrder: 105,
+        applicable: isDrawing,
+        run: (ctx) => ctx.handlers.onNodeOpenDrawing(ctx.node!),
+    },
+    {
         id: "decreaseFont",
         toolbar: "node-hover",
         category: "node-state",
@@ -244,5 +256,3 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         run: (ctx) => ctx.handlers.onNodeToggleLocked(ctx.node!),
     },
 ];
-
-registerToolbarTools(nodeHoverToolbarTools);

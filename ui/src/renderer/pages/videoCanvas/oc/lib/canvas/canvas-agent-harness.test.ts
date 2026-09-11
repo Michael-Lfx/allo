@@ -16,6 +16,7 @@ describe("CanvasHarness", () => {
     expect([...CANVAS_AGENT_ADVERTISED_TOOLS]).toEqual([
       "canvas_list_skills",
       "canvas_get_skill",
+      "canvas_list_templates",
       "storyboard_inspect",
       "storyboard_apply",
       "subject_inspect",
@@ -25,17 +26,22 @@ describe("CanvasHarness", () => {
       "canvas_inspect",
       "canvas_propose",
       "canvas_apply",
+      "canvas_apply_template",
       "canvas_run",
       "canvas_critique",
       "canvas_repair",
     ]);
     expect(harness.advertiseTool("canvas_apply")).toBe(true);
+    expect(harness.advertiseTool("canvas_apply_template")).toBe(true);
+    expect(harness.advertiseTool("canvas_list_templates")).toBe(true);
     expect(harness.advertiseTool("storyboard_apply")).toBe(true);
     expect(harness.advertiseTool("canvas_apply_ops")).toBe(false);
     expect(harness.advertiseTool("Read")).toBe(false);
     expect(harness.isReadTool("canvas_inspect")).toBe(true);
     expect(harness.isReadTool("storyboard_inspect")).toBe(true);
+    expect(harness.isReadTool("canvas_list_templates")).toBe(true);
     expect(harness.isReadTool("canvas_apply")).toBe(false);
+    expect(harness.isReadTool("canvas_apply_template")).toBe(false);
     expect(harness.isReadTool("storyboard_apply")).toBe(false);
   });
 

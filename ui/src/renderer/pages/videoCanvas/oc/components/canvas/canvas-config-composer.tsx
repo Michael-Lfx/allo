@@ -17,6 +17,7 @@ import { skillToken } from "@oc/lib/canvas/canvas-skill-mentions";
 import { CanvasStyleCoverSwatch } from "./canvas-style-cover";
 import { createCraftAttachmentChipElement, recipeAttachmentChip, skillAttachmentChip } from "./canvas-craft-token-chip";
 import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-picker";
+import { CanvasTemplateSlotBar } from "./canvas-template-slot-bar";
 import type { CanvasGenerationMode, CanvasNodeMetadata, CanvasWorkspaceMode } from "@oc/types/canvas";
 
 type CanvasConfigComposerProps = {
@@ -30,6 +31,7 @@ type CanvasConfigComposerProps = {
     onClose: () => void;
     workspaceMode?: CanvasWorkspaceMode;
     onOpenLibrary?: () => void;
+    onOpenTemplates?: () => void;
 };
 
 type Token =
@@ -54,7 +56,7 @@ type ComposerCandidate =
 
 export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
-export function CanvasConfigComposer({ value, inputs, skillReferences = [], generationMode, metadata, onChange, onMetadataChange, onClose, onOpenLibrary }: CanvasConfigComposerProps) {
+export function CanvasConfigComposer({ value, inputs, skillReferences = [], generationMode, metadata, onChange, onMetadataChange, onClose, onOpenLibrary, onOpenTemplates }: CanvasConfigComposerProps) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const editorRef = useRef<HTMLDivElement>(null);
@@ -208,6 +210,11 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
                     <div className="truncate text-[var(--fs-label)] opacity-55">{canvasT("videoCanvas.config.assembleHint", "@ 引用已连接素材或已激活技能，发送前自动组装")}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                    {onOpenTemplates ? (
+                        <Button size="small" type="text" className="!h-7 !px-2 !text-[var(--fs-label)]" onClick={onOpenTemplates} style={{ color: theme.accent.primary }}>
+                            {canvasT("videoCanvas.craft.tabTemplate", "模板")}
+                        </Button>
+                    ) : null}
                     <CanvasPresetPicker mode={generationMode || "image"} open={presetOpen} onOpenChange={setPresetOpen} onSelect={insertPreset} onOpenLibrary={onOpenLibrary} />
                     <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
                 </div>
@@ -217,8 +224,16 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
                     <CanvasVideoPromptTools metadata={metadata} frameOptions={videoFrameOptions} onMetadataChange={onMetadataChange} />
                 </div>
             ) : null}
+            {onMetadataChange ? (
+                <CanvasTemplateSlotBar
+                    theme={theme}
+                    metadata={metadata}
+                    model={metadata?.model}
+                    onChange={onMetadataChange}
+                />
+            ) : null}
             <div className="relative rounded-lg border" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
-                {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{canvasT("videoCanvas.config.composerPlaceholder", "输入提示词，按 @ 引用连接素材或技能")}</div> : null}
+                {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{generationMode === "image" || generationMode === "video" ? canvasT("videoCanvas.config.composerPlaceholderTemplate", "描述画面，或选一个模板") : canvasT("videoCanvas.config.composerPlaceholder", "输入提示词，按 @ 引用连接素材或技能")}</div> : null}
                 <div
                     ref={editorRef}
                     contentEditable

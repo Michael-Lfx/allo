@@ -35,6 +35,7 @@ export type CanvasAgentObservation = {
     nodeCount: number;
     connectionCount: number;
     selected: string[];
+    templates: string[];
     queue: CanvasAgentQueueItem[];
     ready: CanvasAgentQueueItem[];
     failed: CanvasAgentQueueItem[];
@@ -68,6 +69,10 @@ export function buildCanvasAgentObservation(snapshot: CanvasAgentSnapshot, previ
         nodeCount: snapshot.nodes.length,
         connectionCount: snapshot.connections.length,
         selected: (snapshot.selectedNodeIds || []).map((id) => canvasAgentShortId(id, aliases)),
+        templates: snapshot.nodes.flatMap((node) => {
+            const id = node.metadata?.appliedTemplate?.id;
+            return id ? [`${canvasAgentShortId(node.id, aliases)}:${id}`] : [];
+        }),
         queue,
         ready,
         failed,
@@ -86,6 +91,7 @@ export function canvasGraphFingerprint(snapshot: CanvasAgentSnapshot) {
             ...node,
             metadata: {
                 prompt: String(node.metadata?.prompt || node.metadata?.composerContent || "").slice(0, 200),
+                appliedTemplateId: node.metadata?.appliedTemplate?.id,
                 content: String(node.metadata?.content || "").slice(0, 80),
                 videoStartFrameNodeId: node.metadata?.videoStartFrameNodeId,
                 videoEndFrameNodeId: node.metadata?.videoEndFrameNodeId,
@@ -100,6 +106,7 @@ export function observationPromptBlock(observation: CanvasAgentObservation) {
         "[画布观察]",
         `fingerprint=${observation.fingerprint} nodes=${observation.nodeCount} edges=${observation.connectionCount}`,
         observation.selected.length ? `选区：${observation.selected.join(", ")}` : "选区：无",
+        observation.templates.length ? `模板：${observation.templates.join("；")}` : "模板：无",
         observation.diff.new.length ? `NEW：${observation.diff.new.join("；")}` : "NEW：无",
         observation.diff.modified.length ? `MODIFIED：${observation.diff.modified.join("；")}` : "MODIFIED：无",
         observation.queue.length

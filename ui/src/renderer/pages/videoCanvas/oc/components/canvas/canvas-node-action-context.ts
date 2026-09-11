@@ -13,6 +13,7 @@ export type CanvasNodeActionContextValue = {
     /** 改节点宽高；图片首次量到真实尺寸后按比例校正节点用。 */
     resizeNode?: (nodeId: string, size: { width: number; height: number }) => void;
     openArtCritique?: (node: CanvasNodeData) => void;
+    openTemplates?: () => void;
 };
 
 export const CanvasNodeActionContext = createContext<CanvasNodeActionContextValue>({});

@@ -163,8 +163,10 @@ describe("tool call helpers", () => {
         expect(isWritableToolCall({ id: "1b", type: "function", function: { name: "canvas_propose", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "1c", type: "function", function: { name: "canvas_critique", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "1d", type: "function", function: { name: "storyboard_inspect", arguments: "{}" } })).toBe(false);
+        expect(isWritableToolCall({ id: "1e", type: "function", function: { name: "canvas_list_templates", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "2", type: "function", function: { name: "canvas_apply", arguments: "{}" } })).toBe(true);
         expect(isWritableToolCall({ id: "2b", type: "function", function: { name: "storyboard_apply", arguments: "{}" } })).toBe(true);
+        expect(isWritableToolCall({ id: "2c", type: "function", function: { name: "canvas_apply_template", arguments: "{}" } })).toBe(true);
         expect(isWritableToolCall({ id: "3", type: "function", function: { name: "canvas_run", arguments: "{}" } })).toBe(true);
     });
 
@@ -218,6 +220,7 @@ describe("ONLINE_AGENT_TOOLS", () => {
         expect(names).toEqual([
             "canvas_list_skills",
             "canvas_get_skill",
+            "canvas_list_templates",
             "storyboard_inspect",
             "storyboard_apply",
             "subject_inspect",
@@ -227,6 +230,7 @@ describe("ONLINE_AGENT_TOOLS", () => {
             "canvas_inspect",
             "canvas_propose",
             "canvas_apply",
+            "canvas_apply_template",
             "canvas_run",
             "canvas_critique",
             "canvas_repair",
@@ -245,6 +249,7 @@ describe("ONLINE_AGENT_PROMPT", () => {
         expect(ONLINE_AGENT_PROMPT).toContain("canvas_apply");
         expect(ONLINE_AGENT_PROMPT).toContain("storyboard_apply");
         expect(ONLINE_AGENT_PROMPT).toContain("自己根据用户目标设计图");
+        expect(ONLINE_AGENT_PROMPT).toContain("canvas_apply_template");
         expect(ONLINE_AGENT_PROMPT).not.toContain("首轮必须调用 canvas_get_context");
         expect(ONLINE_AGENT_PROMPT).not.toContain("必须使用 canvas_create_workflow");
         expect(ONLINE_AGENT_PROMPT).not.toContain("关键帧图 prompt 必须来自分镜行");
