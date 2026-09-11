@@ -4676,9 +4676,19 @@ impl IConversationRepository for SqliteConversationRepository {
         conversation_id: &str,
         context_tokens: i64,
         window_tokens: i64,
+        last_turn_input_tokens: Option<i64>,
+        last_turn_output_tokens: Option<i64>,
         updated_at: i64,
     ) -> Result<(), DbError> {
-        if conversation_id.trim().is_empty() || context_tokens < 0 || window_tokens < 0 {
+        // `None` stays NULL (not reported), so it is only the *reported* values
+        // that must be non-negative.
+        let negative_last_turn = last_turn_input_tokens.is_some_and(|value| value < 0)
+            || last_turn_output_tokens.is_some_and(|value| value < 0);
+        if conversation_id.trim().is_empty()
+            || context_tokens < 0
+            || window_tokens < 0
+            || negative_last_turn
+        {
             return Err(DbError::Conflict(
                 "App Server context usage requires a conversation id and non-negative token counts"
                     .to_owned(),
@@ -4686,16 +4696,21 @@ impl IConversationRepository for SqliteConversationRepository {
         }
         sqlx::query(
             "INSERT INTO app_server_context_usage \
-                 (conversation_id, context_tokens, window_tokens, updated_at) \
-             VALUES (?1, ?2, ?3, ?4) \
+                 (conversation_id, context_tokens, window_tokens, \
+                  last_turn_input_tokens, last_turn_output_tokens, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
              ON CONFLICT(conversation_id) DO UPDATE SET \
                  context_tokens = excluded.context_tokens, \
                  window_tokens = excluded.window_tokens, \
+                 last_turn_input_tokens = excluded.last_turn_input_tokens, \
+                 last_turn_output_tokens = excluded.last_turn_output_tokens, \
                  updated_at = excluded.updated_at",
         )
         .bind(conversation_id)
         .bind(context_tokens)
         .bind(window_tokens)
+        .bind(last_turn_input_tokens)
+        .bind(last_turn_output_tokens)
         .bind(updated_at)
         .execute(&self.pool)
         .await?;

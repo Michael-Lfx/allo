@@ -2827,12 +2827,23 @@ pub struct ConversationView {
 /// Measured context occupancy for one App Server chat. `percent` is computed
 /// server-side and clamped to 0..=100; it is `None` when the engine reported
 /// no effective window (`window_tokens == 0`).
+///
+/// `last_turn_input_tokens` / `last_turn_output_tokens` (W9 / R14 ③) are the
+/// runtime's own report for the most recent completed turn, read back from the
+/// durable snapshot so a reloaded WebUI can still render last turn's tokens and
+/// catalog-priced cost without replaying the event stream. Both stay off the
+/// wire entirely when the row has no value — an unreported turn must not arrive
+/// as `0`, and occupancy (`used_tokens`) is never substituted for them.
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextUsageView {
     pub used_tokens: i64,
     pub window_tokens: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_input_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_output_tokens: Option<i64>,
     pub updated_at: i64,
     pub source: &'static str,
 }
@@ -2846,6 +2857,8 @@ fn context_usage_view(row: nomifun_db::models::AppServerContextUsageRow) -> Cont
         used_tokens: row.context_tokens,
         window_tokens: row.window_tokens,
         percent,
+        last_turn_input_tokens: row.last_turn_input_tokens,
+        last_turn_output_tokens: row.last_turn_output_tokens,
         updated_at: row.updated_at,
         source: "measured",
     }
@@ -7372,6 +7385,8 @@ display_name = "MiMo V2.5 Free"
             conversation_id: "0190f5fe-7c00-7a00-8000-000000000099".to_owned(),
             context_tokens,
             window_tokens,
+            last_turn_input_tokens: None,
+            last_turn_output_tokens: None,
             updated_at: 123,
         };
         let normal = context_usage_view(row(100_000, 200_000));
@@ -7385,6 +7400,66 @@ display_name = "MiMo V2.5 Free"
         // A zero window means "unknown", never a fake percentage.
         let unknown = context_usage_view(row(500, 0));
         assert_eq!(unknown.percent, None);
+    }
+
+    /// W9 / R14 ③：`conversation/get` 的 `context_usage` 必须带上持久化的「上一轮」
+    /// token，重载后的 WebUI 才能显示上一轮用量与金额（不靠重放事件流）。
+    #[test]
+    fn context_usage_view_carries_the_persisted_last_turn_tokens() {
+        let projected = context_usage_view(nomifun_db::models::AppServerContextUsageRow {
+            id: 0,
+            conversation_id: "0190f5fe-7c00-7a00-8000-000000000099".to_owned(),
+            context_tokens: 100_000,
+            window_tokens: 200_000,
+            last_turn_input_tokens: Some(1_200),
+            last_turn_output_tokens: Some(340),
+            updated_at: 123,
+        });
+        assert_eq!(projected.last_turn_input_tokens, Some(1_200));
+        assert_eq!(projected.last_turn_output_tokens, Some(340));
+        let json = serde_json::to_value(&projected).expect("view serializes");
+        assert_eq!(json["last_turn_input_tokens"], 1_200);
+        assert_eq!(json["last_turn_output_tokens"], 340);
+
+        // A runtime-reported `0` is a measurement, not absence: it stays on the
+        // wire so the client can tell "reported zero" from "never reported".
+        let zero_input = context_usage_view(nomifun_db::models::AppServerContextUsageRow {
+            id: 0,
+            conversation_id: "0190f5fe-7c00-7a00-8000-000000000099".to_owned(),
+            context_tokens: 500,
+            window_tokens: 200_000,
+            last_turn_input_tokens: Some(0),
+            last_turn_output_tokens: Some(42),
+            updated_at: 123,
+        });
+        let zero_json = serde_json::to_value(&zero_input).expect("view serializes");
+        assert_eq!(zero_json["last_turn_input_tokens"], 0);
+        assert_eq!(zero_json["last_turn_output_tokens"], 42);
+    }
+
+    /// 未上报（库里是 NULL）时整对字段**不上 wire**：不显示 0，也绝不拿上下文占用
+    /// 顶替本轮 token（批 6 已定的金额口径）。
+    #[test]
+    fn context_usage_view_omits_unreported_last_turn_tokens_entirely() {
+        let projected = context_usage_view(nomifun_db::models::AppServerContextUsageRow {
+            id: 0,
+            conversation_id: "0190f5fe-7c00-7a00-8000-000000000099".to_owned(),
+            context_tokens: 100_000,
+            window_tokens: 200_000,
+            last_turn_input_tokens: None,
+            last_turn_output_tokens: None,
+            updated_at: 123,
+        });
+        assert_eq!(projected.last_turn_input_tokens, None);
+        let json = serde_json::to_value(&projected).expect("view serializes");
+        assert!(
+            json.get("last_turn_input_tokens").is_none(),
+            "absent key, not a zero: {json}"
+        );
+        assert!(json.get("last_turn_output_tokens").is_none(), "{json}");
+        // Occupancy stays occupancy — it never becomes the missing turn tokens.
+        assert_eq!(json["used_tokens"], 100_000);
+        assert_eq!(json["window_tokens"], 200_000);
     }
 
     #[tokio::test]

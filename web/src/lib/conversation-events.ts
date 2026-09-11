@@ -52,10 +52,12 @@ export type ConversationStreamState = {
    */
   wrapUp: boolean;
   /**
-   * W9（R14）：最近一次**本轮已完成**的 token 用量 + 模型键快照。
+   * W9（R14）：最近一次**已完成回合**的 token 用量 + 模型键快照。
    *
-   * 逐轮用量只存在于实时事件里（服务端不持久化历史轮次），所以这里刻意只保留
-   * 本轮：新一轮开始即清空，没有上报就是 `null`——绝不拿上一轮的数字顶替本轮。
+   * 数字有两个来源，同一条口径：实时 `turn_completed` 事件（本轮刚跑完），以及
+   * `conversation/get` 的 `context_usage` 里**持久化**的上一轮 token（重载 / 重连
+   * 后回填，见 `persistedTurnUsage`）。服务端只保留**最近一轮**，所以这里同样只
+   * 保留本轮：新一轮开始即清空，没有上报就是 `null`——绝不拿上一轮的数字顶替本轮。
    */
   turnUsage: TurnUsageSnapshot | null;
   /**
@@ -89,7 +91,13 @@ export type ConversationStreamAction =
   /** Send failed: keep the row, mark it. */
   | { type: "failPending"; pendingId: string }
   /** Turn state changed on its own (cancel, or an authoritative read). */
-  | { type: "setProcessing"; isProcessing: boolean };
+  | { type: "setProcessing"; isProcessing: boolean }
+  /**
+   * W9（R14 ③）: backfill the last completed turn's usage from the durable
+   * `conversation/get` projection after a reload / reconnect. Only fills an
+   * empty slot — a usage the realtime event already recorded is newer.
+   */
+  | { type: "restoreTurnUsage"; usage: TurnUsage };
 
 export const initialConversationStream: ConversationStreamState = {
   messages: [],
@@ -114,7 +122,8 @@ export function conversationStreamReducer(
         messages: action.messages,
         isProcessing: action.isProcessing ?? state.isProcessing,
         wrapUp: false,
-        // 换会话 / 重载历史：逐轮用量不持久化，旧值属于另一个会话，必须丢。
+        // 换会话 / 重载历史：旧值属于另一个会话（或属于重载前的那一份），必须丢；
+        // 持久化的「上一轮」由 `loadConversation` 在 reset 之后显式回填。
         turnUsage: null,
         historyCursor: null,
         hasMore: false,
@@ -159,7 +168,36 @@ export function conversationStreamReducer(
         wrapUp: action.isProcessing ? state.wrapUp : false,
         turnUsage: action.isProcessing ? null : state.turnUsage,
       };
+    case "restoreTurnUsage":
+      // W9（R14 ③）：只填**空**槽位。本轮已经从实时事件记下用量时，这份持久化的
+      // 旧值绝不覆盖它（它至少和这次回填一样新，而覆盖只会把新数字换成旧的）。
+      return state.turnUsage
+        ? state
+        : { ...state, turnUsage: { usage: action.usage, modelKey: context.modelKey } };
   }
+}
+
+/**
+ * W9（R14 ③）—— 把 `conversation/get` 的 `context_usage` 里**持久化**的「上一轮」
+ * token 还原成一份用量快照（重载 / 重连后回填，不靠重放事件流）。
+ *
+ * 只有**两侧都上报**才算一份可用量：缺一侧即整段不做——与服务端写入口径一致
+ * （未上报写 NULL，绝不写 0）。金额不在这里算：它沿用实时路径那套
+ * `turnCostUsd` / `costText`（费率与 token 两者都在才显示），所以这里不复制任何
+ * 费率逻辑。
+ *
+ * 上下文占用（`used_tokens` / `window_tokens`）是**仪表读数**（最近一次请求的
+ * prompt 大小），它永远不能顶替本轮 token。
+ */
+export function persistedTurnUsage(usage: ContextUsage | null | undefined): TurnUsage | null {
+  if (!usage) return null;
+  const input = usage.last_turn_input_tokens;
+  const output = usage.last_turn_output_tokens;
+  if (typeof input !== "number" || typeof output !== "number") return null;
+  if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return null;
+  // 两侧都是 0 = 运行时什么都没报（服务端也不会写这种行），保持「未知」。
+  if (input + output <= 0) return null;
+  return { input_tokens: input, output_tokens: output, total_tokens: input + output };
 }
 
 /**

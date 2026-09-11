@@ -1,0 +1,22 @@
+-- R14 / W9 ③: carry the LAST completed turn's token split next to the
+-- context gauge, so the WebUI can still show "上一轮 ↑X ↓Y · $Z" after a
+-- reload. The gauge (`context_tokens` / `window_tokens`, migration 051) is
+-- the last request's prompt occupancy and cannot express what one turn cost,
+-- so it can never stand in for these two.
+--
+-- Scope, deliberately narrow:
+--   * One row per conversation (the 051 table), so these two columns only ever
+--     describe the MOST RECENT turn. This is NOT a per-turn audit trail and
+--     cannot replay history: an older turn's split is overwritten, and replay
+--     would need its own table (out of scope).
+--   * No amount is stored. Cost is computed client-side from the models.dev
+--     catalog rates of the model that served the turn; a persisted amount
+--     would go stale the moment the catalog is updated.
+--   * Nullable, no default: NULL means "the runtime reported nothing for this
+--     turn" and must stay distinguishable from a reported `0` — an unreported
+--     turn must never arrive as a free turn (or as `$0`).
+--   * Both columns come from the same `TurnCompleted` frame
+--     (`input_tokens` / `output_tokens`), written in the same statement that
+--     refreshes the gauge, so one turn can never mix two sources.
+ALTER TABLE app_server_context_usage ADD COLUMN last_turn_input_tokens INTEGER CHECK (last_turn_input_tokens >= 0);
+ALTER TABLE app_server_context_usage ADD COLUMN last_turn_output_tokens INTEGER CHECK (last_turn_output_tokens >= 0);
