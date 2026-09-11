@@ -4,7 +4,7 @@
 > 日期：2026-08-26
 > 更新：2026-09-09 —— §9 快照内 TC-SDK-001 矛盾已消（改为 spawn + 回环 WS，与 `12` 非目标一致）；其余门禁结论未变
 > 适用范围：`docs/agent-store/` 中的 Agent Store 当前方案文档
-> 前置：`00-architecture-decision.md` 至 `agent-store-v1-test-cases.md`
+> 前置：`00-architecture-decision.md` 至各线规范内的「验收用例」章节（`02` §13 · `05` §14 · `06` §11 · `13` §10–§13 · `19` §9）
 
 ## 1. 发布结论等级
 
@@ -35,7 +35,7 @@ V1 的范围和延期能力以 `00-architecture-decision.md` 为准；公共状�
 
 ## 3. P0 发布门禁
 
-以下门禁任一失败，发布结论必须为 `blocked`：
+以下门禁任一失败，发布结论必须为 `blocked`；P0 线要求的用例编号集合见 `13-p0-execution-plan.md` §12：
 
 ### Gate 1：Runtime
 
@@ -48,7 +48,7 @@ V1 的范围和延期能力以 `00-architecture-decision.md` 为准；公共状�
 - Planning Context 只含 Leader 规划指令、脱敏成员能力摘要和 Team 策略，不含完整成员 Prompt 或凭据；
 - 每个 Step 使用其 Participant 自己的 Prompt Snapshot；
 - Planning Context 驱动的 planned DAG、依赖、局部并行、retry、replan 通过；
-- `agent-store-v1-test-cases.md` 中 TC-TEAM-001~008 全部 PASS；
+- `13-p0-execution-plan.md` §10 中 TC-TEAM-001~008 全部 PASS；
 - Runtime 重启后保留事件，并将未完成 Run 明确标记为不可恢复或需用户重新启动。
 
 ### Gate 2：Importer 与来源
@@ -64,11 +64,11 @@ V1 的范围和延期能力以 `00-architecture-decision.md` 为准；公共状�
 
 - initialize、AuthContext 和协议版本协商通过；
 - Catalog、Agent Run、Team Run、Event、Artifact、Approval API 通过；
-- stdio JSONL 和 WebSocket Transport 通过；
+- WebSocket Transport 通过（V1 交付不含 stdio，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 2）；
 - run/get 与 run_result 返回一致的持久化状态；尽力而为通知丢失不影响一致性；event 去重通过；
 - 幂等键不会重复创建 Run；
 - 错误使用稳定 code，不泄露敏感信息；
-- `agent-store-v1-test-cases.md` 中 TC-API-001~004、TC-SDK-001~003 全部 PASS；其中 team/run 必须验证 Planning Context 摘要和成员 Prompt 隔离。
+- `05-allo-app-server-protocol.md` §14 中 TC-API-001~004、TC-SDK-001~003 全部 PASS；其中 team/run 必须验证 Planning Context 摘要和成员 Prompt 隔离。
 
 ### Gate 4：Connector 与 OAuth
 
@@ -79,7 +79,7 @@ V1 的范围和延期能力以 `00-architecture-decision.md` 为准；公共状�
 - 401 只允许刷新并重试一次；
 - 刷新失败进入 `reauthorization_required`；
 - Connector Probe 通过后才能显示 `connected`；
-- `agent-store-v1-test-cases.md` 中 TC-CONN-001~002、TC-OAUTH-001~004 全部 PASS。
+- `06-connector-oauth-security.md` §11 中 TC-CONN-001~002、TC-OAUTH-001~004 全部 PASS。
 
 ### Gate 5：安全
 
@@ -216,16 +216,16 @@ restrictions
 
 ## 9. 当前准入判断
 
-本文档本身不替代实际测试。以下为截至 2026-08 迭代（Importer/Phase 1 落地后）的如实快照；更新前必须重新执行测试主表：
+本文档本身不替代实际测试。以下为截至 2026-08 迭代（Importer/Phase 1 落地后）的如实快照；更新前必须重新执行测试总索引列出的用例：
 
 ```text
 release_status: not-assessed（P0 未全过，仍等价 blocked；2026-09-04 增量快照）
 assessed_at: 2026-09-04（评估快照，非门禁结果）
 blocking_items:
-  - Gate 1（Runtime）：TC-RT-001 已通过（单 Agent 真实 Run，single-run-runtime-evidence.zh.md）；
+  - Gate 1（Runtime）：TC-RT-001 已通过（单 Agent 真实 Run，`13-p0-execution-plan.md` §14）；
     TC-RT-002/005/006/009/010 未执行
-  - Gate 4（Connector/OAuth：登录注入、401 刷新、重试、探针）：OAuth 运行证据已留存（mcp-oauth-runtime-evidence.zh.md），TC-CONN/TC-OAUTH 其余用例未全量执行
-  - Gate 2（Importer）：TC-IMP-001~009 已通过（importer-runtime-evidence.zh.md）；GitHub/Git/HTTP 市场源未实现
+  - Gate 4（Connector/OAuth：登录注入、401 刷新、重试、探针）：OAuth 运行证据已留存（`06-connector-oauth-security.md` §13），TC-CONN/TC-OAUTH 其余用例未全量执行
+  - Gate 2（Importer）：TC-IMP-001~009 已通过（`02-codebuddy-workbuddy-import-spec.md` §14）；GitHub/Git/HTTP 市场源未实现
   - Gate 3（App Server）：initialize/版本协商/store 与 run 查询一致已有真机实证（smoke --real + A1）；
     TC-API-002（幂等重放）/TC-API-004（公共 ID 隔离）未执行；TC-SDK-001 已修订为 spawn + 回环 WS，与 `12` 非目标一致（见 `13-p0-execution-plan.md`）
   - Gate 5（安全扫描与来源审核）：未执行

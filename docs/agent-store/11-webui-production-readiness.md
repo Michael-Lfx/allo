@@ -1,9 +1,9 @@
 # Allo WebUI 生产化补齐清单（Production Readiness）
 
-> 状态：规划中（未实施）
+> 状态：规划中（**清单原件**；各项当前状态见 `19-webui-codex-alignment.zh.md` §7 逐项对账，立项拆项见 `22-webui-productionization.zh.md`）
 > 日期：2026-08-26
 > 适用范围：`web/` 的 App Server 聊天 WebUI 及其协议消费面
-> 关联：`05-allo-app-server-protocol.md`、`web/README.md`、`09-release-readiness.md`
+> 关联：`05-allo-app-server-protocol.md`、`web/README.md`、`09-release-readiness.md`、`19-webui-codex-alignment.zh.md`、`22-webui-productionization.zh.md`
 > 前置：会话重命名/删除、按工作区分组、上下文占用、多行输入框等基础能力已落地。
 
 本文档记录让 Allo WebUI 达到“生产环境标准”仍需补齐的工作项。每一项都有背景、目标、验收要点和依赖，供后续按优先级排期。

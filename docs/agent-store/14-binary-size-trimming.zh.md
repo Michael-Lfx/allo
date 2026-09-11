@@ -213,9 +213,9 @@ media/vimax/canvas（视频画布！）三个 service 在 services.rs:3103-3115 
 3. **查证 qqbot**：agent-store 是否真需要任一渠道；若可零渠道，channel 框架整块进下一轮裁剪候选
 4. **查证 GatewayMcpConfig**：商店启动路径是否 Some（决定 gateway 51.3MB 可否进下一轮）
 5. **组合根手术决策**：依据 §2.5 实测 + §4.3 建议
-6. 全部改动未提交 git（含 §3 的 A+B 功能改动）
+6. 改动已入库：commit `720354a4d`（feat(agent-store): 二进制瘦身 feature gate（bedrock/silero-vad）+ run steer 通路 + init 子命令与内置市场 fallback）——含 §3 的 A+B 功能改动。
 
-## 6. 改动文件清单（未提交）
+## 6. 改动文件清单（已提交 `720354a4d`）
 
 | 文件 | 改动 |
 |---|---|

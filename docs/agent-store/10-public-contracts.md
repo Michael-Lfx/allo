@@ -1,6 +1,6 @@
 # Agent Store 公共契约索引
 
-> 状态：公共契约冻结（Phase 0）；实现待验证
+> 状态：公共契约基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；实现待验证
 > 日期：2026-08-26
 > 用途：跨文档共享的状态、事件、planning、认证、错误和幂等契约
 > 原则：只定义公共语义和序列化名称，不描述 allo 内部实现
@@ -23,8 +23,8 @@ Agent Store 的 Agent 是产品层定义，在 allo 中通过 Preset/`ResolvedPr
 | SDK | `07-typescript-sdk.md` |
 | Web/Flowy | `08-flowy-web-integration.md` |
 | 发布门禁 | `09-release-readiness.md` |
-| 排期 | `agent-store-v1-roadmap.md` |
-| 测试 | `agent-store-v1-test-cases.md` |
+| 排期 | `16-sdk-webui-site-priority-plan.zh.md` §6 / §7 |
+| 验收用例 | 按主题分散在规范正文内：`02` §13 · `05` §14 · `06` §11 · `13` §10–§13 · `19` §9 |
 
 冲突处理：跨文档枚举和字段以本文为准；对象语义以 `01` 为准；Runtime 细节以 `04` 为准；安全规则以 `06` 为准。
 
@@ -70,7 +70,7 @@ Event Log 是 allo 引擎内部的事实来源；V1 公共契约只承诺状态�
 
 ## 4. Team Planning
 
-V1 Team 采用模式 A：TeamRun 创建时由服务端创建 Leader Conversation 并绑定 Team 的 `AgentExecutionTemplate`；Leader 模型在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`，服务端据此构造 Planning Context 并调用内部 `Planner/LlmPlanProducer` 生成结构化 planned DAG（2026-09-10 修订，见 `agent-store-v1-roadmap.md` §10 决策 3）。`lead_agent_id` 表示规划角色，不必对应一个用户可见的独立 Conversation，但必须有一个承载工具调用的 Conversation/Attempt。
+V1 Team 采用模式 A：TeamRun 创建时由服务端创建 Leader Conversation 并绑定 Team 的 `AgentExecutionTemplate`；Leader 模型在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`，服务端据此构造 Planning Context 并调用内部 `Planner/LlmPlanProducer` 生成结构化 planned DAG（2026-09-10 修订，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3）。`lead_agent_id` 表示规划角色，不必对应一个用户可见的独立 Conversation，但必须有一个承载工具调用的 Conversation/Attempt。
 
 Planning Context 由以下部分组成：
 
@@ -122,7 +122,7 @@ DistributionStatus:
 
 ## 6. 认证、幂等与 Approval
 
-V1 默认本地认证：stdio 或 localhost WebSocket 由主进程建立 `LocalPrincipal` 和 `AuthContext`；Renderer 不自行声明身份。
+V1 默认本地认证：由主进程在 **localhost WebSocket** 上建立 `LocalPrincipal` 和 `AuthContext`（V1 不含 stdio，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 2）；Renderer 不自行声明身份。
 
 有副作用的 Command 关联：
 
@@ -166,7 +166,7 @@ internal_error
 ## 8. 变更规则
 
 1. 公共枚举和字段先修改本文；
-2. 同步 Protocol Schema、SDK 类型和测试主表；
+2. 同步 Protocol Schema、SDK 类型和测试用例（见测试总索引）；
 3. 其他文档只引用契约，不复制另一套枚举；
 4. 变更必须记录兼容影响和回归测试编号；
 5. 未经 Runtime/Protocol 测试验证的能力不得标记 `release-eligible`。

@@ -62,9 +62,9 @@ python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Code
 ## 7. 测试与验收
 
 - SDK 级 roundtrip（spawn 真实二进制 + 临时 data_dir）：`initialize → store/list → store/install-entry → agent/run → run/events → run/result` 全绿。
-  - 2026-09-04 进展：`agent/run → run/get → run/result → run/events` 子链已绿（TC-RT-001，见 `single-run-runtime-evidence.zh.md`）；
-    `store/install-entry` 产品路径未走（A1 用 import/install 直调），待补。
-- 与冻结文档 `07-typescript-sdk.md` 的差异：包名以本文为准（`@flowy-agent-store/sdk`；`07` 已于 2026-09-09 同步改名并加注）；
+  - 2026-09-04 进展：`agent/run → run/get → run/result → run/events` 子链已绿（TC-RT-001，见 `13-p0-execution-plan.md` §14）；
+    `store/install-entry` 产品路径当时未走（A1 用 import/install 直调）——**后已由 WP-2 四链路 live 经 SDK 公共面覆盖（`15-store-chain-and-protocol-vnext-plan.zh.md` §10，2026-09-09）**。
+- 与 `07-typescript-sdk.md`（现行正文）的差异：包名以本文为准（`@flowy-agent-store/sdk`；`07` 已于 2026-09-09 同步改名并加注）；
   `Transport` 必填、`exports` 直指 `dist` 等包边界结论同样以本文为准。
 - 双开冒烟：桌面端 + SDK 实例同机运行，无锁库、无跨 owner 数据串扰。
 - 远端 URL 被 SDK 明确拒绝；协议版本不匹配时报错信息包含两端版本号。

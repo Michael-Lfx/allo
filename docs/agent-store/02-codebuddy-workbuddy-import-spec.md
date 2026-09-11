@@ -8,7 +8,7 @@
 > 实现记录：V1 支持本地目录四类来源（`codebuddy-plugin` / `workbuddy-skill-market` /
 > `workbuddy-connector-market` / `workbuddy-cli-connector`）。导入流程、路径安全（§7/§11.1）、
 > 幂等与 digest 冲突（§9）、部分失败（§11.2）、凭据只建 Schema（§10）均已按本规范落地；
-> 验收结果见 `importer-runtime-evidence.zh.md`。
+> 验收结果见 `02-codebuddy-workbuddy-import-spec.md` §14。
 
 ## 1. 导入范围
 
@@ -278,3 +278,276 @@ not-installed ── install ──▶ installed ── disable ──▶ disabl
 4. 导入日志（警告清单：路径越界、变量未解析、字段被来源运行时忽略、依赖缺失）。
 
 验收案例：导入 `software-company` 插件后必须可见 5 个 Agent、1 个 Team、TeamInfo 解析成功、无未标记丢弃项。
+---
+
+## 13. 验收用例（TC-IMP / TC-INS）
+
+> 本节由 `agent-store-v1-test-cases.md` 原 §3 并入（2026-09-11 文档合并）；TC 编号与用例正文保持不变，内部分节号沿用原文。
+
+### 3. Importer 与 Catalog
+
+#### TC-IMP-001：导入有效 Plugin
+
+- 等级：P0
+- 前置：有效 Plugin manifest 和受控源目录
+- 操作：执行 Importer
+- 断言：生成不可变 PluginSnapshot、digest、来源和版本；状态为 `completed` 或 `completed-with-warnings`
+- 证据：snapshot_id、digest、definitions 数量、CompatibilityReport
+
+#### TC-IMP-002：导入 software-company
+
+- 等级：P0
+- 操作：导入包含 Team 扩展信息的插件
+- 断言：生成 5 个 AgentDefinition、1 个 AgentTeamDefinition；Lead 和 member IDs 正确；V1 可生成固定 Participant 配置
+- 证据：定义列表、成员关系、来源路径摘要、digest
+
+#### TC-IMP-003：agents 目录不自动生成 Team
+
+- 等级：P0
+- 操作：导入只有 `agents/`、没有明确 Team 配置的插件
+- 断言：只生成 AgentDefinition[]，不生成 AgentTeamDefinition
+
+#### TC-IMP-004：路径遍历阻断
+
+- 等级：P0
+- 操作：提供 `../`、绝对路径和快照外引用
+- 断言：导入状态为 `blocked`；不产生可运行定义；写入安全错误
+
+#### TC-IMP-005：符号链接逃逸阻断
+
+- 等级：P0
+- 操作：提供指向快照目录外的符号链接
+- 断言：拒绝安装或复制；无外部文件进入 Snapshot
+
+#### TC-IMP-006：digest 冲突阻断
+
+- 等级：P0
+- 操作：同一来源身份/版本提交不同内容 digest
+- 断言：状态为 `blocked` 或 `failed`；不得覆盖既有不可变 Snapshot
+
+#### TC-IMP-007：部分组件失败
+
+- 等级：P1
+- 操作：让单个 Skill 或 Command 文件无法解析
+- 断言：其他合法组件可导入；结果为 `completed-with-warnings`；失败组件有 CompatibilityReport 条目
+
+#### TC-IMP-008：高风险组件静态导入
+
+- 等级：P0
+- 操作：导入 Hook、bin、scripts、LSP
+- 断言：保存来源元数据和兼容性状态；导入过程不执行任意进程或脚本
+
+#### TC-IMP-009：凭据只生成 Schema
+
+- 等级：P0
+- 操作：导入含 userConfig/token schema 的插件
+- 断言：只生成 CredentialSchema/Binding 引用；真实值不进入 Snapshot、日志和公共响应
+
+#### TC-IMP-010：文件路径声明 + 对象形式依赖
+
+- 等级：P1
+- 操作：导入 manifest 以文件路径声明组件（`./agents/lead.md`）且 `dependencies` 为对象（`{"connectors":["x"]}`）的插件
+- 断言：文件被逐个导入为组件；对象依赖归一化为条目（带 `group` 标记）；不因形状差异发生 blocked
+
+#### TC-IMP-011：CLI 连接器目录
+
+- 等级：P1
+- 操作：导入 `connectors/<id>/`（`cli.json` + `skills/*/SKILL.md`）
+- 断言：生成 1 个 `connector` 组件（kind=cli，含 runtime/auth 摘要）与随附 `skills/` 全部 SkillDefinition；`cli.json` 缺名下以目录名为身份
+
+#### TC-IMP-012：市场格式兼容（CRLF / 宽松 YAML）
+
+- 等级：P1
+- 操作：导入含 CRLF 行尾 SKILL.md、以及含未加引号引号/内嵌 JSON 的非严格 frontmatter 的市场
+- 断言：CRLF 正常解析；非严格 YAML 回退到宽松行级解析（name/description 至少保留），不整篇丢弃
+
+#### TC-IMP-013：author 对象 + 字符串组件根
+
+- 等级：P1
+- 操作：导入 `author: {"name": "..."}` 且 `agents: "./agents/x.md"`（字符串而非数组）的插件
+- 断言：author 归一化为 `name <email>`；字符串组件根等价于单元素数组；同名 Agent+Skill 时 Skill 加 `-skill` 后缀消歧
+
+#### TC-IMP-014：单 Skill 目录
+
+- 等级：P1
+- 操作：以 `workbuddy-skill-market` 导入 `skills/<slug>/`（无 marketplace.json，根含 SKILL.md）
+- 断言：单技能可导入；身份 = 目录名；不因缺 marketplace.json 被 blocked
+
+#### TC-IMP-015：展示元数据保真（plugin.json 完整镜像）
+
+- 等级：P1
+- 操作：导入真实专家结构（`plugin.json` 携带 `displayName`/`profession`/
+  `displayDescription`/`tags`/`quickPrompts`/`defaultInitPrompt`/`avatar`/
+  `expertType`/`categoryId` + agent frontmatter 同名字段 + `avatars/*.png`）
+- 断言：
+  - 全部展示字段进入 agent payload（plugin.json 优先于 frontmatter）；
+  - `quickPrompts`/`tags` 双语数组完整保留（=WorkBuddy 专家卡「专家帮你做」）；
+  - 头像资产文件随快照拷贝（`avatars/expert.png` 在快照内）；
+  - `agent/get` 暴露 `display_name`/`profession`/`avatar_url`/`quick_prompts`；
+  - 资产端点：`GET /imports/{snapshot}/assets/avatars/expert.png` 返回
+    `image/png`；路径穿越/非白名单类型/非法 snapshot id → 4xx；prompt
+    文件（`SKILL.md`/`*.md`）永不被 serve
+
+#### TC-IMP-016：插件市场探测（`.codebuddy-plugin/marketplace.json`）
+
+- 等级：P1
+- 操作：以 `directory` 源添加真实 WorkBuddy 专家市场布局
+  （`market/.codebuddy-plugin/marketplace.json` 含 `plugins[]` +
+  `market/plugins/<id>/.codebuddy-plugin/plugin.json`）
+- 断言：探测到 1 个 plugin-market 市场；`market/get` 条目数 = `plugins[]` 数
+  （每个条目 source = `plugins/<id>`，描述来自清单）；缺 plugin.json 的
+  行被跳过；市场名取自清单 `name`
+
+#### TC-IMP-017：Store 聚合与一键安装
+
+- 等级：P1
+- 操作：`market/add`（专家市场）后 `store/list` →
+  `store/{market}/entries/{entry}/install` → 再 `store/list`
+- 断言：
+  - `store/list` 返回全部条目（含未导入的）；kind 正确（agent/team/skill/
+    connector）；`name`/`display_name`/`profession`/`quick_prompts`/`avatar_url`
+    保真；`installed=false`、`update_available=false`、`snapshot_id` 空；
+  - `store install-entry` 返回 `snapshot_id`/`version`/`installed_count>=1`，
+    `reused=false`；
+  - 再次 `store/list`：该条目 `installed=true`、`snapshot_id` 非空；
+  - 再次 `store install-entry`：`reused=true`（幂等）；
+  - store 资产端点：`GET /store/{market}/entries/{entry}/assets/{path}` 白名单
+    类型 200；穿越/非白名单 → 4xx
+
+#### TC-INS-001：安装注册到运行时
+
+- 等级：P1
+- 操作：导入 software-company 后执行 `install/run`
+- 断言：`installed_count > 0`；skill 物化到 `{skills}/agent-store/{snapshot_id}/{slug}/`；
+  agent/team 创建 Preset；connector upsert 进 `mcp_servers`；组件状态 `installed`
+
+#### TC-INS-002：禁用 / 启用 / 卸载状态机
+
+- 等级：P1
+- 操作：对已安装组件依次 `disable` → `enable` → `uninstall`
+- 断言：状态 `installed → disabled → installed → not-installed`；卸载后快照与组件行保留
+
+#### TC-INS-003：市场添加与条目发现
+
+- 等级：P1
+- 操作：`market/add`（directory 源，含 `.codebuddy-skill/marketplace.json` + `skills/`）
+- 断言：注册表行出现；`market/list` 返回 1 项；`market/get` 条目数 = 清单条目数；
+  同源重复添加幂等（不产生新行）
+- 注：非 directory 源返回 `bad_request`；不含任何清单/插件子目录的路径返回 `not_found`
+
+#### TC-INS-004：条目导入 + 级联卸载
+
+- 等级：P1
+- 操作：`market/get` → `entries/{entry}/import` → `install/run` → `market/remove`
+  （cascade=true）
+- 断言：条目导入复用导入管线并记录 provenance（不出现于公共响应）；安装成功；
+  remove 后已安装组件状态回到 `not-installed`（快照行保留于 history）；市场从
+  `market/list` 消失；二次 remove 返回 `not_found`
+
+#### TC-INS-005：Git 源获取与刷新（阶段 B）
+
+- 等级：P1
+- 操作：以 `git` 源添加市场（本地 bare repo 作 origin）→ `market/get` →
+  `market/refresh` 两次
+- 断言：add 同步克隆并渲染条目（相对路径解析完整树）；`refresh` 同 commit →
+  `changed=false`（no-op）；live 根存在于工作区市场目录；条目导入后快照携带
+  `resolved_revision` provenance
+
+#### TC-INS-006：HTTP 源清单校验与外部条目（阶段 B）
+
+- 等级：P1
+- 操作：以 `url` 源添加市场（本地 mock server 返回 marketplace.json）→ refresh
+- 断言：清单无 `name`/无条目数组 → add 返回错误；合法清单 → 条目可发现；
+  声明外部源（GitHub/NPM）条目标记 `source_kind=external`，导入返回 `bad_request`；
+  `refresh` 带 `If-None-Match`，`304`/相同 ETag → `changed=false`
+
+#### TC-INS-007：@Mention 解析与 run 注入（阶段 B 扩展）
+
+- 等级：P1
+- 操作：Composer `@` 菜单选中 agent/skill/connector → `agent/run` 携带
+  `mentions`（agent/skill/connector 三类）→ 观察
+- 断言：
+  - agent mention 解析为已安装 preset（未安装 → `agent_not_installed`；
+    多个 agent → `invalid_mentions`；与显式 `agent_id` 冲突 → `invalid_mentions`）；
+  - skill mention 冻结进 `included_skills`（run 上下文随 agent 挂载）；
+  - connector mention 追加 `mcp_server_ids`（未启用 → `connector_unavailable`）；
+  - `mentions` 缺省时行为与旧 `agent/run` 一致（向后兼容）；
+  - 任意用户 preset（`agent-store:` 前缀外）不能通过 `agent/run` 启动
+
+
+---
+
+## 14. 附录 · Importer 运行时验证证据
+
+> 本节由 `importer-runtime-evidence.zh.md` 整体并入（2026-09-11）。原文的时间戳与「历史实测快照，非契约」定性**保持不变**。
+
+
+> 日期：2026-08-26
+> 目标：`docs/agent-store/02-codebuddy-workbuddy-import-spec.md`（Importer 落地）与
+> `03-...-compatibility-matrix.md`（三态兼容推导），对齐本文 §13 的 TC-IMP-001~009
+> 状态：✅ 全部通过（`software-company` fixture：5 个 AgentDefinition + 1 个 AgentTeamDefinition）
+> 扩展：TC-IMP-010/011（文件路径声明+对象依赖；CLI 连接器目录）
+
+### 1. 实现范围
+
+| 组件 | 位置 | 内容 |
+|---|---|---|
+| 导入管线 | `crates/backend/nomifun-importer/`（新 crate） | manifest/frontmatter 解析、受控复制+sha256 树摘要、组件标准化、幂等与 digest 冲突、三态兼容推导 |
+| 快照目录层 | `crates/backend/nomifun-db`（migration 053） | `plugin_snapshots` + `plugin_snapshot_components`（v3 契约注册：PRODUCT_TABLES / UUIDv7 CHECK / LOGICAL_REFERENCES） |
+| 协议层 | `nomifun-api-types::app_server`、`nomifun-app-server` | `import/*`（HTTP）、`agent/list` `agent/get` `team/list` `team/get`（WS，05 §4.1/4.2）；`imports`/`agents`/`teams` capabilities |
+| 组成根 | `nomifun-app/src/app_server_importer.rs` + `routes.rs` | 注入 ImporterService + SQLite 仓储；缓存根 `{work_dir}/agent-store-imports/` |
+| WebUI | `web/`（CatalogView + protocol + agents/teams/imports 客户端） | 导入表单/结果三态报告/历史/组件详情；Agent/Team 目录 tab |
+
+### 2. 验收结果（TC-IMP-001~009）
+
+`crates/backend/nomifun-importer/tests/importer_tests.rs`，fixture 在 `tests/fixtures/`：
+
+| 用例 | 断言要点 | 结果 |
+|---|---|---|
+| TC-IMP-001 | 合法 plugin → 不可变 PluginSnapshot（digest/来源/版本），状态 `completed` | ✅ |
+| TC-IMP-002 | `software-company` → 5 AgentDefinition + 1 Team；lead/member 指向已导入 agent id；frontmatter 字段结构化保留 | ✅ |
+| TC-IMP-003 | 只有 `agents/` 无 teamInfo → 不生成 Team | ✅ |
+| TC-IMP-004 | `../`、绝对路径 → `blocked`，无入库/无物化目录，错误不含绝对来源路径 | ✅ |
+| TC-IMP-005 | 符号链接逃逸（unix）→ `blocked`，外部文件永不进入快照 | ✅ |
+| TC-IMP-006 | 相同 digest 重复导入 → `reused=true` 复用同一 snapshot；同身份不同 digest → `blocked` 不覆盖 | ✅ |
+| TC-IMP-007 | 单组件坏 frontmatter → `completed-with-warnings`，其余组件照常导入 | ✅ |
+| TC-IMP-008 | hooks/bin/scripts/lsp → 静态导入（`manual_review`/`static_only`），不执行 | ✅ |
+| TC-IMP-009 | userConfig 敏感字段 → 只生成 CredentialSchema；`[REDACTED]` 警告；值不进入 DB/日志/公共响应 | ✅ |
+| TC-IMP-010 | 组件以文件路径声明（`./agents/lead.md`）+ `dependencies` 对象形式 → 每个文件导入为组件；对象依赖归一化（带 `group`） | ✅ |
+| TC-IMP-011 | CLI 连接器目录（`cli.json` + `skills/*/SKILL.md`）→ 1 connector（kind=cli）+ 全部随附 SkillDefinition | ✅ |
+| TC-IMP-012 | CRLF 行尾 frontmatter + 非严格 YAML → CRLF 正常解析；非严格回退到宽松行级解析（name/description 存活） | ✅ |
+| TC-IMP-013 | `author` 对象 + 字符串组件根（`agents: "./agents/x.md"`）→ 归一化导入；同名 Agent+Skill 自动 `-skill` 消歧 | ✅ |
+| TC-IMP-014 | 单 Skill 目录（无 marketplace.json，根含 SKILL.md）→ 身份=目录名，可导入 | ✅ |
+
+另含市场来源用例：`workbuddy-skill-market` → 2 个 Skill（保留 `$ARGUMENTS`）；`workbuddy-connector-market` → 2 个 Connector；缺失清单 → `blocked`；来源目录不存在 → `ImportError::SourceNotFound`（HTTP 404 `import_source_not_found`）。
+
+真实市场目录验证（本机 `~/.workbuddy/`）：
+- `connectors-marketplace` 根（`workbuddy-connector-market`、193 个索引条目采样）→ `completed`，153/153 组件（中文 display name 用 ASCII `id` 生成组件 id）；
+- `skills-marketplace` 根（`workbuddy-skill-market`）→ `completed`，262/262 技能组件（含 CRLF 与宽松 YAML 文件）；
+- `plugins/marketplaces/experts|codebuddy-plugins-official|cb_teams_marketplace` 全部插件目录 → 0 blocked（`author` 对象、字符串组件根、同名 Agent+Skill 均兼容）；
+- 单 skill 目录（`skills/qcc-company` 等）→ 全部 `completed`。
+
+### 3. 自动化证据
+
+```text
+cargo test -p nomifun-importer（lib 16 项 + 集成 15 项）            ✅ 全过
+cargo test -p nomifun-app-server                                     ✅ 50 passed（含 agent/team/imports WS 与 HTTP impl 契约测试）
+cargo test -p nomifun-db --lib                                        ✅ 436 passed（含新增 plugin_snapshot 仓储 5 项）
+cargo test -p nomifun-app --test importer_e2e                         ✅ 真 app HTTP 全链路（init → import → history → detail → 幂等复用 → 404）
+cargo fmt --check（5 crate）                                          ✅ 无差异
+cargo clippy -p nomifun-importer --all-targets                        ✅ 本方案文件零警告
+bun run typecheck（web/）                                             ✅ 通过
+```
+
+### 4. 关键安全边界（已验证）
+
+- **零执行**：导入只读取与复制；`walk.rs` 拒绝一切符号链接；socket/fifo/设备文件视为敌意内容整体阻断；
+- **凭据**：userConfig 只生成字段 schema（`sensitive` 标记）；`default`/`value` 永不入库；错误与警告统一 `[REDACTED]`；materialized 目录是来源字节的不变镜像（供来源追溯），标准化定义与目录记录不含凭据值；
+- **路径**：清单路径必须 `./` 开头、拒绝 `..` 与绝对路径（`validate_relative_path`）；绝对来源路径只存 `source_uri`（内部追溯），不出现在公共协议（02 §9）。
+
+### 5. 已知边界（如实披露）
+
+- 市场来源仅本地目录；GitHub/Git/HTTP 市场源为 `compatible-with-adapter`，未实现；
+- 导入后**运行时激活**（Skill 加载、MCP 配置注入、Preset 绑定、TeamRun）属后续 Gate；`runtime_status` 一律 `not-verified`，UI 与协议如实显示；
+- 同插件不同版本导入会产生同 `component_id` 的目录条目（`agent/list` 按最新快照优先去重展示；`plugin_snapshot_components.component_id` 未注册为全局 UUIDv7 业务列，v3 契约按本地唯一处理）；
+- 插件级 Agent 的 `mcpServers`/`permissionMode` 记录 `ignored-by-source-runtime` 原因码，不映射为授权（02 §5.1）。

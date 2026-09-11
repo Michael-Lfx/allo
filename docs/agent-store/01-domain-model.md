@@ -1,6 +1,6 @@
 # Agent Store 领域模型
 
-> 状态：架构冻结（Phase 0）；领域模型待 Runtime 验证；发布阻断
+> 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；领域模型待 Runtime 验证；发布阻断
 > 日期：2026-08-26
 > 前置：`00-architecture-decision.md`
 > 口径：对象、字段与边界；区分「源码/文档已证实」「设计决策」「待验证」
@@ -115,7 +115,7 @@ AgentTeamDefinition
     → 事件、重试、replan
 ```
 
-TeamRun 的触发入口是 Leader 模型在自有 Conversation 内调用 `nomi_delegate(strategy=planned)`（2026-09-10 修订，见 `agent-store-v1-roadmap.md` §10 决策 3）。成员池、`max_parallel`、`routing_constraints` 与权限来自绑定的 `AgentExecutionTemplate` 和服务端策略，不接受模型输入。
+TeamRun 的触发入口是 Leader 模型在自有 Conversation 内调用 `nomi_delegate(strategy=planned)`（2026-09-10 修订，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3）。成员池、`max_parallel`、`routing_constraints` 与权限来自绑定的 `AgentExecutionTemplate` 和服务端策略，不接受模型输入。
 
 V1 不要求完整 Mailbox、成员自主认领、成员直连消息、长期成员会话和嵌套 Team。
 
@@ -333,7 +333,7 @@ V1 TeamRun 必须支持：
 - Step/Attempt 失败后的 retry 或 replan；
 - Team、Step、Attempt、Event、Artifact 的持久化。
 
-Leader 在此处是规划角色，不必对应一个用户可见的独立会话，但必须有一个承载工具调用的 Conversation/Attempt：TeamRun 创建时把 Team 的 `AgentExecutionTemplate` 绑定为该会话的 `execution_template_id`，Leader 通过调用 `nomi_delegate(strategy=planned)` 触发服务端 Planner 生成 DAG（2026-09-10 修订，见 `agent-store-v1-roadmap.md` §10 决策 3）。成员的完整 Prompt 只绑定到各自 Participant/Attempt；Planning Context 只允许包含满足规划所需的脱敏能力摘要。
+Leader 在此处是规划角色，不必对应一个用户可见的独立会话，但必须有一个承载工具调用的 Conversation/Attempt：TeamRun 创建时把 Team 的 `AgentExecutionTemplate` 绑定为该会话的 `execution_template_id`，Leader 通过调用 `nomi_delegate(strategy=planned)` 触发服务端 Planner 生成 DAG（2026-09-10 修订，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3）。成员的完整 Prompt 只绑定到各自 Participant/Attempt；Planning Context 只允许包含满足规划所需的脱敏能力摘要。
 V1 不要求 Mailbox、成员自主认领、成员直连消息、长期成员会话和嵌套 Team。
 
 ## 11. 兼容性状态

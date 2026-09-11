@@ -1,6 +1,6 @@
 # allo App Server Protocol 规格
 
-> 状态：架构冻结（Phase 0）；单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；Team 能力保持关闭；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
+> 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；Team 能力保持关闭；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
 > 日期：2026-08-26
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-allo-runtime-adapter.md`
 > 目标：建立 SDK、CLI、MCP、Web/Flowy 的唯一公共兼容边界
@@ -10,7 +10,7 @@
 ```text
 Agent Store（Catalog / 凭据 / 审批 / 策略等领域服务）
     ↓ 建立在
-Versioned App Server Protocol（唯一公共协议层）
+App Server Protocol v1（唯一公共协议层；发版前只有一个版本）
     ↓ 被
 TypeScript SDK / Python SDK / CLI / MCP Adapter / Web / Flowy 消费
 
@@ -34,8 +34,8 @@ TypeScript SDK / Python SDK / CLI / MCP Adapter / Web / Flowy 消费
 V1 先支持：
 
 ```text
-stdio JSONL：本地 CLI/SDK/子进程集成
-WebSocket：本地 Web/Flowy 实时集成
+WebSocket：本地 Web/Flowy 实时集成（V1 交付）
+stdio JSONL：本地 CLI/SDK/子进程集成（V2/deferred；V1 不纳入，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 2）
 ```
 
 后续可增加 HTTPS/远程部署，但不改变消息语义。
@@ -52,10 +52,25 @@ HTTP 一次性握手：每次调用独立 POST /initialize 取连接头 →
   POST /initialized → 业务调用 → 连接即失效
 ```
 
-`import/*`、`install/*`、`market/*`、`store/*`、`workspace/*` 两侧方法名
-一一对应（`market/remove` 的 `cascade`、auto-update 的 `enabled` 缺省为
-`true`，与 HTTP 的 query 缺省一致），共用同一实现；任一侧新增方法必须
-同时在另一侧落地。公开资产 `GET`（快照/store 头像）与 `/api/fs/browse`
+`import/*`、`install/*`、`market/*`、`store/*` 两侧方法名一一对应，共用同一
+实现（`market/remove` 的 `cascade`、`market/auto-update` 的 `enabled` 在
+HTTP 侧是 **body 字段**，缺省 `true`）；任一侧新增方法必须同时在另一侧落地。
+
+`workspace/*` **不是**一一对应，只有一项同名：
+
+| 方法 | WebSocket | HTTP |
+| --- | --- | --- |
+| `workspace/create` | `{path}` → 规范化并登记该目录，返回 `WorkspaceView` | **无对应路由** |
+| `workspace/list` | 当前 owner 的 active 工作区 | `GET /workspaces` |
+| `workspace/revoke` | `{workspace_id}` → 软注销 | `DELETE /workspaces/{workspace_id}` |
+| *（HTTP 独有）* | — | `POST /workspaces`：`workspace_register`，**无 body**，服务端分配 id，返回 `{id}`；用于 smoke/dev 脚本，不是 `workspace/create` |
+
+仅存在于 WebSocket 的方法（HTTP 无绑定，客户端须走 WS）：
+`initialize`、`initialized`、`conversation/model-options`、`conversation/update`、
+`conversation/subscribe`、`conversation/unsubscribe`、`run/subscribe`、
+`run/unsubscribe`、`agent/list`、`agent/get`、`team/list`、`team/get`。
+
+公开资产 `GET`（快照/store 头像）与 `/api/fs/browse`
 不是协议方法：前者是 `<img>` 直链（带不上连接头），后者是独立文件服务。
 
 ### 2.2 消息类型
@@ -153,7 +168,7 @@ Server Request   服务端向客户端请求审批/输入/确认
 
 `team_runtime=true` 仅表示 V1 最小 Team Runtime：固定成员、Planning Context、planned DAG、局部并行、retry/replan；不表示完整 Mailbox/成员直连能力。
 
-V1 默认使用本地可信进程模型：stdio 或 localhost WebSocket 由主进程建立 `LocalPrincipal`；Renderer 不直接构造 Principal，只能通过主进程/SDK 访问。未来支持远程调用时，必须增加独立认证流程，不得把本地 session reference 当作远程身份凭据。
+V1 默认使用本地可信进程模型：由主进程在 **localhost WebSocket** 上建立 `LocalPrincipal`（V1 不含 stdio，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 2）；Renderer 不直接构造 Principal，只能通过主进程/SDK 访问。未来支持远程调用时，必须增加独立认证流程，不得把本地 session reference 当作远程身份凭据。
 
 认证失败返回 `unauthenticated`、`invalid_issuer`、`invalid_audience` 或 `insufficient_scope`；未建立 AuthContext 的连接只能调用 `initialize` 和能力探测。
 
@@ -241,6 +256,9 @@ nested_team
 ```text
 skill/list
 skill/get
+skill/create     # 写面（R17 / W12），宿主管理面，见 §4.11
+skill/update
+skill/delete
 connector/list
 connector/get
 connector/status
@@ -555,6 +573,90 @@ HTTP GET /api/app-server/models
 边界：投影**不含** API key、base URL、健康状态等内部字段；`display_name`
 仅在 provider 配置了 `model_descriptions` 时出现。
 
+### 4.10 宿主设置文件（config/get · config/set，R16）
+
+provider / 默认模型配置属于**宿主管理面**（`16` §6）：这两个方法是 Web UI 设置
+对话框读写 `~/.agent-store/config.toml` 的唯一通道，**不进入 SDK 包**（第三方消
+费者没有读取或改写宿主 provider 配置的理由），也**没有 HTTP 绑定**。
+
+```text
+WS   config/get  {}
+WS   config/set  { "default_model": "<provider_key>/<model>" }
+```
+
+`config/get` 响应（`AppServerConfigView`）：
+
+```json
+{
+  "exists": true,
+  "default_model": "opencode/mimo-v2.5-free",
+  "providers": [
+    { "name": "opencode", "enabled": true, "models": ["laguna-s-2.1-free", "mimo-v2.5-free"] }
+  ]
+}
+```
+
+- 文件缺失是**正常答案**（`exists:false` + `default_model: null` + 空 providers），
+  不是错误；文件存在但读不动 / 解析失败返回 `config_unavailable`——不拿默认值把
+  「文件坏了」伪装成「文件没写」。
+- `default_model` 无声明时是显式 `null`，与「尚未读取」区分。
+- `providers` 是**文件里声明的事实**（config-only 投影，与 `models/list` 的 config
+  分支同源），不含 `api_key` / `base_url`，也不含已注册 provider 行。
+
+`config/set` 只接受白名单字段（当前仅 `default_model`）：请求里出现 `api_key` /
+`base_url` / 路径等**任何**其他键都是 `invalid_request`（不是静默忽略）；值为空、
+不含 `/`、或 provider key 不在 `[providers.<key>]` 中同样被拒——**运行时解析不了
+的默认值不写**（未声明的 *model* 允许，运行时按请求注册它）。
+
+写入是**最小改动**：只重写目标键，文件其余内容、注释与排版原样保留（`toml_edit`）；
+缺失的键插在文件头注释之后、第一个 `[table]` 之前（绝不落到某张表里），并以同目录
+临时文件 + `rename` 原子替换。响应是**写后重读**的 `AppServerConfigView`，客户端看到
+的落点就是磁盘上的内容，不存在「请求发出去了」当成「值存下来了」。
+
+作用域：与所有方法共用同一条 owner 闸门（连接 principal 的 `require_ready`：外部
+owner → `policy_denied`，未注册连接 → `not_found`），且**没有** owner / 路径参数可供
+越权；凭据永不进入 wire、日志或前端。
+
+---
+
+### 4.11 技能写面（skill/create · skill/update · skill/delete，R17 / W12）
+
+技能的创建 / 编辑 / 删除是**宿主管理面**（`16` §6 判断规则：第三方 SDK 消费者不应能往宿主的技能树里写文件），与 `config/*` 同口径：**仅 WebSocket**、**不进 SDK 包**、**无 HTTP 绑定**，Web UI 经自有 transport helper 调用。
+
+```text
+WS   skill/create  { "name": "…", "description": "…", "when_to_use"?, "allowed_tools"?, "paths"?, "body"? }
+WS   skill/update  { "skill_id": "…", "markdown": "<完整 SKILL.md>" }
+WS   skill/delete  { "skill_id": "…" }
+```
+
+`create` / `update` 的响应就是 `skill/get` 的 `AppServerSkillDetail`（**写后回读**：响应来自重新读取的目录，不是请求回显）；`delete` 响应是 `AppServerSkillDeleteResult`：
+
+```json
+{ "skill_id": "weekly-report", "deleted": true, "revealed_origin": "builtin" }
+```
+
+**归属与可写性**：公开 id ＝ 技能名（frontmatter `name`，回退目录名），不加来源前缀。`AppServerSkillSummary` 因此新增两个**增量**字段：`origin` ∈ `user|shared|companion|draft|marketplace|builtin|unmanaged`，`writable`（= `origin == "user"` **且**目录为规范用户位置）。`source` 取值不变（`builtin`/`extension`/`custom`）——市场安装产物与用户技能在 `source` 上都是 `custom`，靠 `origin` 区分。
+
+| 磁盘位置 | `origin` | 写面 |
+| --- | --- | --- |
+| `{builtin_skills_dir}/…`（含 `auto-inject/`） | `builtin` | 只读 |
+| `{user_skills_dir}/{name}/` | `user` | **可写（唯一）** |
+| `{user_skills_dir}/shared/{name}/` | `shared` | 只读（伙伴链路） |
+| `{user_skills_dir}/companion/{id}/{name}/` | `companion` | 只读（伙伴链路） |
+| `{user_skills_dir}/_drafts/{id}/{name}/` | `draft` | 只读（审阅暂存） |
+| `{user_skills_dir}/agent-store/{snapshot_id}/{slug}/` | `marketplace` | 只读（**卸载走 `install/uninstall`**） |
+
+规则：
+
+- **路径绝不由参数决定**：目标只能来自宿主侧 `SkillPaths` 的 `{user_skills_dir}/{name}`；名字只做白名单校验（非空、≤64 字符、无首尾空白、无控制字符、无 `.` / `..` / `/` / `\` / `:`）。
+- **不静默覆盖**：`create` 同名（用户 / 内置 / 市场产物 / 共享 / 伙伴）→ `conflict`，message 点明撞上的 origin 与出路；磁盘上已有同名目录但未被目录树收录（`SKILL.md` 缺失或非法）→ 同样 `conflict`，不合并写入。
+- **符号链接逃逸被拒**：目标目录或 `SKILL.md` 是链接 → `policy_denied`（`create` 走 `create_dir_all`、`update` 走 `write`，都会跟随链接）。
+- **写后回读**：`delete` 之后重新读该 id，把「删除后这里现在是哪一类来源」放进 `revealed_origin`——用户技能遮蔽同名内置技能时，删除会把它重新暴露出来。
+- 错误码沿用既有族：`invalid_request`（名字非法 / 未知字段 / 正文缺合法 frontmatter / 文档 `name` ≠ 被改 id）、`not_found`、`conflict`、`policy_denied`（只读来源、链接、非规范目录）。
+- **凭据门（R22）保持**：三个方法都是 `deny_unknown_fields`，出现 `api_key` / `env` / `token` 等任何其他键即 `invalid_request`；写面没有任何字段能表达路径或凭据。
+- 作用域：共用同一条 owner 闸门（`require_ready`）；宿主未接线写面 → `unsupported_operation`（不是静默 no-op）。
+- **未做（登记）**：`skill/copy` 与「编辑面的全量正文回读」，见 `16` R17 落地记录。
+
 ## 5. Thread 与 Run
 
 ### 5.1 Thread
@@ -593,10 +695,13 @@ agent/run
 team/run（延后）
 run/get
 run/result
+run/plan（已实现：计划与步骤的权威快照）
 run/cancel
+run/steer（已实现：注入口头引导）
 run/subscribe
 run/unsubscribe
 run/events（cursor 恢复）
+run/answer-decision（已实现：回答等待中的决策）
 run/pause
 run/resume
 run/retry
@@ -606,6 +711,22 @@ run/replan
 `run/subscribe` / `run/unsubscribe` 订阅或取消订阅单个 public Run 的实时事件流，请求均为 `{"run_id": "run_01..."}`。订阅要求该 Run 已存在且属于当前用户；取消订阅同样要求持有该用户自己的公共 mapping。订阅只影响尽力而为的通知推送，不影响持久化状态查询。
 
 `run/events` 支持 `{"run_id", "after_sequence", "limit"}` 游标读取，客户端用它追平断线期间遗漏的事件。
+
+`run/plan`（请求 `{"run_id"}`，返回 `AgentRunPlan`）是 **W4 / W6 的计划与步骤权威快照**，也是唯一带步骤**标题**、失败原因与起止时间的读取面——`run/events` 是追加式日志，只承载标记（`change` / `status`），从不携带标题或时间戳：
+
+- 形状：`{run_id, status, version, steps[], dependencies[]}`；每个 step 带 `step_id` / `title` / `kind` / `status` / `role` / `model` / `introduced_in_revision` / `superseded_in_revision` / `created_at` / `updated_at` / `attempts[]`；每个 attempt 带 `attempt_id` / `attempt_no` / `status` / `trigger_reason` / `role` / `model` / `question` / `error` / `output_summary` / `output_files` / `tokens` / `started_at` / `finished_at`。
+- owner 作用域与 `run/get` **完全一致**（同一个 `AgentExecutionEngine::get`）：不是 owner 的 Run 一律 `NotFound`，不透露存在性。
+- **不新增内部标识**：`step_id` / `attempt_id` 本就是 `run/events` 与 `run/answer-decision` 的既有公共面（CAS 需要）；成员归属用 `role` + `model` 表达，`participant_id` / `source_agent_id` 不上 wire；`output_files` 经既有的相对路径过滤，绝对路径同样不上 wire。
+- 快照与事件的关系是**互补**而非替代：事件给「发生过什么」（含引导 / 停止回合等副作用标记），快照给「现在是什么」；客户端不应从事件反推步骤标题或耗时。
+- HTTP 绑定：`GET /api/app-server/run/{run_id}/plan`（与 WS 臂共用 `get_run_plan_for_user`）。
+
+`run/answer-decision`（请求 `{run_id, step_id, attempt_id, answer, expected_execution_version, expected_step_version, expected_attempt_version}`，返回 `AgentRunView`）是当前 V1 的审批回答入口：
+
+- 它**直通** `AgentExecutionEngine::answer_decision` 这一唯一回答门——owner 作用域 + **三路 CAS**（execution/step/attempt 版本）+ **仅 `waiting_input` 的 attempt 接受** + `answer` 非空 + id 规范化；越权 `NotFound`、版本过期或非等待态 `Conflict`、空 answer / id 非法 `BadRequest`；
+- **参数不接受任何 approve-all 开关**（桌面侧 `POST /api/conversations/:id/confirmations/:callId/confirm` 的 `always_allow` 不进协议；`deny_unknown_fields`，带上即 `invalid_request`）；
+- `step_id` / `attempt_id` 与三个 CAS 版本来自 `run/events` 的 `approval.requested` 投影（`step_id`/`attempt_id` + 读取时从权威行取的三版本）。引擎的 `DecisionRequested` 事件 payload 只有 `{question, stop_turn_operation_id}`，`approval/request` + `approval/respond` 那套 Server Request 形状仍是目标设计（见本文件审批章节），V1 以本方法落地。
+
+`InitializeResult.capabilities.approvals` 跟随 runtime 位（无 runtime 的连接不宣告该能力，避免客户端等一个永远不会被接受的回答）。
 
 ### 5.2.1 Workspace
 
@@ -841,34 +962,18 @@ internal_error
 - `run/replan` 创建新 Plan Revision，不删除历史计划；
 - 服务端拒绝过期/重复的审批、Attempt 和状态迁移请求。
 
-## 12. V1 验收用例
-
-- `TC-AS-001`：initialize/initialized 能力协商（单 Agent 能力为 true，Team/Skill/MCP 等为 false）；
-- `TC-AS-002`：Catalog 方法返回 Agent/Team/Skill/Connector；
-- `TC-AS-003`：agent/run 返回异步 run receipt（public opaque run_id）；
-- `TC-AS-004`：team/run（延后实现，当前拒绝）；
-- `TC-AS-005`：状态查询与通知一致性——断线或丢通知后 run/get 恢复权威状态，按 sequence 去重，`run/events` 可追平；
-- `TC-AS-006`：取消、retry、replan 均产生规范事件；
-- `TC-AS-007`：Approval Server Request 可响应并完成二次策略校验（延后实现）；
-- `TC-AS-008`：Artifact 不允许任意路径读取（延后实现）；
-- `TC-AS-009`：SDK/CLI/Web 不调用内部 allo UI API；
-- `TC-AS-010`：错误和公共响应（含实时事件）不泄露凭据、内部 execution/session/step/attempt ID 或敏感路径；
-- `TC-AS-011`：workspace 注册只接受受控路径；revoked/foreign/路径逃逸一律 `workspace_denied`；
-- `TC-AS-012`：幂等收据跨进程重启仍可重放，key 冲突返回 `idempotency_conflict`；
-- `TC-AS-013`：WebSocket 事件推送按 owner 与订阅过滤，lag 时发送 `run/resync-required`。
-
-## 13. 持久化 Nomi 聊天（conversation/*）
+## 12. 持久化 Nomi 聊天（conversation/*）
 
 App Server 另提供面向单 Agent 持续对话的持久化聊天协议。它与 `agent/run` 的
 preset-backed 执行面相互独立：聊天直接复用 Allo 的 Conversation 持久化层
 （对话、消息、turn 收据、实时事件），模型选择默认来自本机
 `~/.agent-store/config.toml`。
 
-### 13.1 方法
+### 12.1 方法
 
 | 方法 | 说明 |
 | --- | --- |
-| `conversation/create` | 创建持久化 Nomi 对话；`model` / `reasoning_effort` 可省略（见 13.2） |
+| `conversation/create` | 创建持久化 Nomi 对话；`model` / `reasoning_effort` 可省略（见 12.2） |
 | `conversation/model-options` | 可选模型目录：config.toml 的 provider/模型/默认选择与思考等级词表（不含凭据） |
 | `conversation/update` | 更新名称、模型（`model`）或思考等级（`reasoning_effort`）；Nomi 运行时在下一次回复时生效 |
 | `conversation/list` | 该 owner 的 App Server 聊天列表（按 modified_at 倒序） |
@@ -920,7 +1025,7 @@ create 相同的模型解析（已注册 UUID 直通或 config.toml provider key
 }
 ```
 
-### 13.2 模型解析与 agent-store 配置
+### 12.2 模型解析与 agent-store 配置
 
 `model` 省略时，后端按以下顺序解析；显式给出时，`provider_id` 接受**已注册
 的 provider UUID**（原样使用）或 **config.toml 中 `[providers.<key>]` 的名字**
@@ -940,7 +1045,7 @@ provider 名幂等：同一 key 多次 create 复用同一 provider。未找到�
 `model` 显式给出时，已注册的 provider UUID 原样使用；未注册的
 provider_id 会按 config provider 名尝试解析。
 
-### 13.3 实时事件
+### 12.3 实时事件
 
 订阅后事件经 `conversation/event` 通知投递，`sequence` 为连接内单调递增：
 
@@ -966,7 +1071,7 @@ provider_id 会按 config provider 名尝试解析。
 投影，按 `message_id` 聚合，载荷只含公开的 `name` / `status`，不含 args /
 output / call_id）、`message.error`（终端错误，载荷只含
 公开的 `message` / `code` / `retryable`，绝不携带 incident/detail/路径等
-内部字段）、`message.activity`（其他状态活动）、`turn.status`
+内部字段）、`message.activity`（其他状态活动；`kind="turn_completed"` 时**additive** 带上本轮 token 用量 `payload.usage = { "input_tokens", "output_tokens", "total_tokens" }`——即运行时 `TurnCompleted` 的逐轮上报，运行时就**没上报**或只报了单侧时该键整段缺席，客户端据此保持「未知」而不是 0；其余运行时指标（cache 明细 / 上下文 gauge / breakdown / MoA / stop_reason）不进投影）、`turn.status`
 （`running` / `completed`）、`context.usage`（会话最新实测上下文占用，
 载荷为 `{ "context_usage": { "used_tokens", "window_tokens", "updated_at",
 "source": "measured" } }`；`used_tokens` 为最后一次 provider prompt 的
@@ -977,9 +1082,73 @@ occupancy gauge，`window_tokens` 为有效窗口，二者均为服务端在
 execution/session/attempt ID。事件流 lag 时发送
 `conversation/resync-required`，客户端用 `conversation/messages` 补拉。
 
-### 13.4 能力边界
+### 12.4 能力边界
 
 - 聊天会话使用 `DelegationPolicy::Disabled`，Team/Skill 自动注入和 MCP
   配置在创建与运行时两侧都被禁用（仅保留普通本地 Agent 工具）；
 - 创建会话时自动注册 owner 受控 workspace（`conversation/create` 无需
   先注册 workspace）；
+
+---
+
+## 13. V1 验收用例
+
+- `TC-AS-001`：initialize/initialized 能力协商（单 Agent 能力为 true，Team/Skill/MCP 等为 false）；
+- `TC-AS-002`：Catalog 方法返回 Agent/Team/Skill/Connector；
+- `TC-AS-003`：agent/run 返回异步 run receipt（public opaque run_id）；
+- `TC-AS-004`：team/run（延后实现，当前拒绝）；
+- `TC-AS-005`：状态查询与通知一致性——断线或丢通知后 run/get 恢复权威状态，按 sequence 去重，`run/events` 可追平；
+- `TC-AS-006`：取消、retry、replan 均产生规范事件；
+- `TC-AS-007`：Approval Server Request 可响应并完成二次策略校验（延后实现）；
+- `TC-AS-008`：Artifact 不允许任意路径读取（延后实现）；
+- `TC-AS-009`：SDK/CLI/Web 不调用内部 allo UI API；
+- `TC-AS-010`：错误和公共响应（含实时事件）不泄露凭据、内部 execution/session/step/attempt ID 或敏感路径；
+- `TC-AS-011`：workspace 注册只接受受控路径；revoked/foreign/路径逃逸一律 `workspace_denied`；
+- `TC-AS-012`：幂等收据跨进程重启仍可重放，key 冲突返回 `idempotency_conflict`；
+- `TC-AS-013`：WebSocket 事件推送按 owner 与订阅过滤，lag 时发送 `run/resync-required`。
+
+## 14. 验收用例正文（TC-API / TC-SDK）
+
+> 本节由 `agent-store-v1-test-cases.md` 原 §6 并入（2026-09-11 文档合并）；TC 编号与用例正文保持不变，内部分节号沿用原文。§13 是摘要索引，本节是逐条正文。
+
+### 6. App Server Protocol 与 SDK
+
+#### TC-API-001：初始化协商
+
+- 等级：P0
+- 断言：未 initialize 不能调用业务方法；协议不兼容返回明确错误；initialized 后才进入 ready
+
+#### TC-API-002：异步 receipt 与幂等
+
+- 等级：P0
+- 操作：重复提交相同 idempotency_key
+- 断言：不重复创建 Run；不同请求复用同 key 返回 `idempotency_conflict`
+
+#### TC-API-003：状态查询与通知一致性
+
+- 等级：P0
+- 操作：订阅通知并轮询 run/get；模拟连接中断后重连
+- 断言：run/get/run_result 始终返回权威持久化状态；通知丢失不造成状态不一致；展示层按 event_id 去重
+
+#### TC-API-004：公共 ID 隔离
+
+- 等级：P0
+- 断言：响应不包含 allo 内部 session、数据库或 provider 私有 ID
+
+#### TC-SDK-001：Node spawn + 回环 WS
+
+- 等级：P1
+- 操作：Node SDK 拉起 `agent-store` 独立二进制（`--port 0` + 临时 `--data-dir`），连回环 WS 建连
+- 断言：Node SDK 可完成 initialize、Catalog、Run、Event、Artifact 调用
+- 说明：stdio 传输列为 V2/deferred（`12-sdk-packaging.md` §2 非目标）；本用例不断言 stdio
+
+#### TC-SDK-002：Browser WebSocket
+
+- 等级：P1
+- 断言：Browser SDK 可连接、接收通知、断线重连后以状态查询恢复一致视图；不访问安全凭据存储
+
+#### TC-SDK-003：结构化错误
+
+- 等级：P1
+- 断言：SDK 使用稳定 error code，不依赖 message 文本；retryable 语义正确
+

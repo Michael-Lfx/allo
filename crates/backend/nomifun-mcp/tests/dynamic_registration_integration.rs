@@ -1,5 +1,5 @@
 //! RFC 7591 dynamic client registration + RFC 8414/9728 discovery acceptance
-//! tests (design doc `docs/agent-store/nomifun-mcp-oauth-dynamic-client-registration-design.md` §10).
+//! tests (design doc `docs/agent-store/06-connector-oauth-security.md` §14).
 //!
 //! Every test drives a local mock OAuth + MCP platform (axum) — no real
 //! services are contacted. Coverage:

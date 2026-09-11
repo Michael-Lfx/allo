@@ -1,8 +1,8 @@
 # Agent Store 工具注入取舍（Tool Injection Policy）
 
 > 状态：设计规格（2026-09-10）；**未实施**，本文不修改任何代码
-> 前置：`00-architecture-decision.md`、`04-allo-runtime-adapter.md`、`agent-store-v1-roadmap.md` §10 决策 3
-> 口径：本文只回答"哪些工具进入 Store 会话、为什么、用哪种机制表达"；不定义公共协议，不替代测试主表
+> 前置：`00-architecture-decision.md`、`04-allo-runtime-adapter.md`、`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3
+> 口径：本文只回答"哪些工具进入 Store 会话、为什么、用哪种机制表达"；不定义公共协议，不替代测试总索引
 > 术语：文中 **Store 会话** = App Server 创建的 Nomi 会话（当前 `create_app_server_nomi_chat`，以及后续 `team/run` 的 Leader 会话）
 
 ---
@@ -12,7 +12,7 @@
 1. **当前 Store 会话的工具面与需求反了**：Connector(MCP) 与绑定 Skill 被 `apply_app_server_chat_ceiling` 清掉，而桌面产品域工具（cron / meeting / computer / browser / knowledge / learning / media / companion / goal / requirement）全部保留。
 2. **保留基线**（仅 6 项）：文件与执行族（workspace 受限）、`Skill`、Connector(MCP) 工具、`ToolSearch`、审批流、`update_plan`。
 3. **必须关闭**：宿主控制类（`Computer`/`Browser`/`open`/`Lsp`）、产品域 sink 类、协作生命周期类（gateway `nomi_execution_*`）、gateway 其余能力、SSH 族。
-4. **特例**：`nomi_delegate` 必须**保留**，因为它是 Team 的计划触发入口（roadmap §10 决策 3）；但必须关闭 parallel-only 的 embedded 实现。
+4. **特例**：`nomi_delegate` 必须**保留**，因为它是 Team 的计划触发入口（`16` §7 决策 3）；但必须关闭 parallel-only 的 embedded 实现。
 5. **表达方式**：用「不接线 + Config flag」表达，**不要用** `builtin_allowlist` 白名单（会连带滤掉 Connector 工具）。
 
 ---
@@ -185,7 +185,7 @@ registry.retain_named(&allowed_tools)  // 安装持久注册策略并裁剪
 
 ## 7. Team 与 `nomi_delegate`（强制保留的特例）
 
-依据 `agent-store-v1-roadmap.md` §10 决策 3：Team Run 由 Leader 模型调用 `nomi_delegate(strategy=planned)` 触发。因此在 Store 会话里 **`nomi_delegate` 不是可选工具，而是 Team 的必需入口**。
+依据 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3：Team Run 由 Leader 模型调用 `nomi_delegate(strategy=planned)` 触发。因此在 Store 会话里 **`nomi_delegate` 不是可选工具，而是 Team 的必需入口**。
 
 但"保留 `nomi_delegate`"必须落到正确的实现上——仓库里有两个同名实现，能力完全不同：
 
@@ -216,7 +216,7 @@ registry.retain_named(&allowed_tools)  // 安装持久注册策略并裁剪
 |---|---|---|---|
 | 1 | 新增 `apply_agent_store_ceiling`：关 `Computer`/`Browser`/`open`/`Lsp`/web/plan-mode，不接 cron/meeting/knowledge/learning/media/companion/summon/requirement/goal 等 sink | `factory/nomi.rs` | §5、§6.1 |
 | 2 | Store 会话置 `install_embedded_agent_execution = false` | `factory/nomi.rs` | §7.1 |
-| 3 | 提供 in-process 的 planned delegate 入口（绑 `AgentExecutionEngine`），供 Leader 会话使用 | 待定：`nomifun-agent-execution` 或 App Server runtime wiring | roadmap §10 决策 3 |
+| 3 | 提供 in-process 的 planned delegate 入口（绑 `AgentExecutionEngine`），供 Leader 会话使用 | 待定：`nomifun-agent-execution` 或 App Server runtime wiring | `16` §7 决策 3 |
 | 4 | 为 `ToolsConfig` 增加工具级 disable（至少覆盖 `remember`） | `nomi-config/src/config.rs` + `bootstrap.rs` | §6.3 |
 | 5 | Store 会话保留 Connector 与绑定 Skill（不再走清空 skill/MCP 的 ceiling） | `nomifun-conversation` App Server 创建缝 | §5.1、§7.1 |
 | 6 | `team/run` handler | `nomifun-app-server` | roadmap Phase 2/3 |
@@ -243,5 +243,5 @@ registry.retain_named(&allowed_tools)  // 安装持久注册策略并裁剪
 - 领域模型（工具取舍的判定依据）：`01-domain-model.md`
 - Runtime Adapter 与 Team 触发链：`04-allo-runtime-adapter.md`
 - 公共契约（不改）：`10-public-contracts.md`
-- 决策记录（本文依据）：`agent-store-v1-roadmap.md` §10 决策 3
-- 测试主表：`agent-store-v1-test-cases.md`
+- 决策记录（本文依据）：`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3
+- 测试总索引：`agent-store-v1-test-cases.md`

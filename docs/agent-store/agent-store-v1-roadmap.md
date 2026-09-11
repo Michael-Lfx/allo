@@ -4,14 +4,15 @@
 > 日期：2026-08-26
 > 前置：`00-architecture-decision.md` 至 `08-flowy-web-integration.md`、`10-public-contracts.md`
 > 说明：阶段按两周迭代组织；具体排期须在 Spike 和实测后校准，不构成承诺
-> 进展：Phase 0 的 OAuth 注入实测已完成（`mcp-oauth-runtime-evidence.zh.md`）；
-> Phase 1 的 Importer 已落地（TC-IMP-001~009 通过，`importer-runtime-evidence.zh.md`）；
+> **文档合并（2026-09-11）**：本文阶段部分（§1–§6、§9）与决策记录（§10）已整体并入 `16-sdk-webui-site-priority-plan.zh.md` §6／§7（§7 是唯一决策记录位置）；本文件保留原文追溯，**正文不再更新**，一切以 `16` 为准。
+> 进展：Phase 0 的 OAuth 注入实测已完成（`06-connector-oauth-security.md` §13）；
+> Phase 1 的 Importer 已落地（TC-IMP-001~009 通过，`02-codebuddy-workbuddy-import-spec.md` §14）；
 > 安装模式与市场（Phase 2 提前落地）已完成（install/*、market/* 四类源、
 > @mention 解析与 run 注入 TC-INS-001~007）；
 > 2026-09-04：单 Agent 真实 Run 通过（TC-RT-001 planning→running→completed，mimo-v2.5 临时实例，
-> `single-run-runtime-evidence.zh.md`；附带修复 actor 落库 500）；
+> `13-p0-execution-plan.md` §14；附带修复 actor 落库 500）；
 > 其余 Runtime 门禁（TC-RT-002/005/006/009/010）与最小 TeamRun 尚未执行，排期仍待校准。
-> 2026-09-10：Team 触发方式修订为 Leader 模型调用 `nomi_delegate(strategy=planned)`（§10 决策 3），同步修订 `00`/`01`/`03`/`04`/`10` 与 TC-TEAM-001/002。
+> 2026-09-10：Team 触发方式修订为 Leader 模型调用 `nomi_delegate(strategy=planned)`（`16` §7 决策 3），同步修订 `00`/`01`/`03`/`04`/`10` 与 TC-TEAM-001/002。
 
 ## 1. V1 目标
 
@@ -69,7 +70,7 @@ V1 不要求：
 | Team | 固定成员、Leader Planning Context、planned DAG、局部并行、retry/replan |
 | Connector | 至少一个 MCP Connector、工具过滤、Probe |
 | OAuth | 标准 PKCE Loopback OAuth、存储、注入、刷新、重试 |
-| Protocol | Versioned App Server Protocol、WebSocket 绑定、状态查询（stdio 不纳入，见 §10 决策） |
+| Protocol | Versioned App Server Protocol、WebSocket 绑定、状态查询（stdio 不纳入，见 `16` §7 决策 2） |
 | SDK | TypeScript typed client、重连与状态同步、错误处理 |
 | Web | Catalog、Run、Plan/DAG、Timeline、Artifact、Approval、Connector 状态 |
 | 安全 | 凭据隔离、Tool Policy、审批、脱敏审计 |
@@ -336,7 +337,7 @@ Connector → OAuth → Probe
 
 ## 6. 测试与发布引用
 
-测试用例唯一主表是 `agent-store-v1-test-cases.md`，发布门禁唯一详细定义是 `09-release-readiness.md`。本路线图只定义阶段依赖，不复制测试正文或发布清单。
+测试用例总索引是 `agent-store-v1-test-cases.md`（§1/§2 公共口径 + §3 归属总表；`TC-*` 逐条正文归各归属文档），发布门禁唯一详细定义是 `09-release-readiness.md`。本路线图只定义阶段依赖，不复制测试正文或发布清单。
 
 阶段与测试映射：
 
@@ -350,7 +351,7 @@ Phase 5 → TC-WEB-*
 Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
 ```
 
-具体用例、输入、断言和证据要求统一维护在测试主表。
+具体用例、输入、断言和证据要求统一维护在测试总索引列出的各归属文档。
 
 完整文档地图与权威顺序见 `README.md`。
 
@@ -369,6 +370,8 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
 
 ## 10. 决策记录（2026-09-09 增补）
 
+> **本节现行正文已整体并入 `16-sdk-webui-site-priority-plan.zh.md` §7（唯一决策记录位置）；此处仅保留原文追溯，不再更新。**
+
 以下决策由用户拍板，作为后续实施依据，覆盖此前文档中的“待定/备选”表述；实施顺序见 `15-store-chain-and-protocol-vnext-plan.zh.md`。
 
 1. **二进制分发走 npm optionalDependencies**（2026-09-09）：按平台发布 `@flowy-agent-store/runtime-<platform>-<arch>` 包，作为 `@flowy-agent-store/sdk` 的 `optionalDependencies`；`resolveAppServerBin` 查找顺序 `bin` → `AGENT_STORE_BIN` → `require.resolve` 定位 platform 包内二进制 → PATH（详见 `12-sdk-packaging.md` §6）。否决 GitHub releases + checksum 下载缓存方案。
@@ -379,3 +382,12 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
    - 注册给 Leader 的必须是绑定真实 `AgentExecutionEngine`（具备持久化 Execution/Event/Attempt）的 planned 实现。仅支持 `strategy=parallel`、以同步无持久化方式投影的 embedded 实现（`nomi-agent::local_delegate_tool`）不得用于 Team Runtime；Store 会话必须关闭该实现，避免模型选中错误版本。
    - App Server 的公共 `run_id` 仍由 `AppServerRunMapping` 从内部 Execution 映射，模型不可见；Leader turn 产生的 Execution 通过 ConversationExecutionLink 反查。
    - 该决策把"Leader 必须有 Conversation/Attempt"从"暂不要求"变为"必须"（不必用户可见）。
+4. **正式发版前所有文档统一为「单一现行版本」，不设版本兼容框架**（2026-09-11）：适用范围＝协议 + SDK（`05`、`07`）、插件规范（`17`）、市场规范（`18`），以及全部计划 / 决策文档。
+   - **唯一冻结线是「正式发版」**：发版前这些文档均为**现行正文**，可自由调整；「冻结」一词在发版前退休。发版后才开始有版本语义（那时才可能出现 v2）。
+   - 因此不设：v1 / v1.1 / v2 的版本路径、迁移窗口、弃用窗口、向后兼容承诺、别名层、破坏性变更公告义务（针对规范文本）。
+   - **§10-2 被本记录取代的部分**：原写「V1 之后破坏性升级公共协议为 v2」不成立——`thread/turn/item` 词汇与概念对齐属**协议 v1 内部**调整，不是"下一版"。**目标不变**（概念模型对齐 Codex app-server、保留 `initialize` 与 `dispatch_connection_request` 唯一分发、stdio 维持排除、动工前先产出 Codex app-server 概念比对）。
+   - **`17` §8「届时本规范升级为 v2」是范围问题而非版本问题**：原生格式尚未定义，将来以**新增章节或独立文档**落地，兼容层降为导入源。
+   - **保留两条纪律**：① 任何变更走**显式修订 + 偏差登记**，不静默修改（原「不静默修改本冻结版本」的有效部分）；② **已发布 npm 包的版本号与 `changelog` 公告义务（D10=A）不变**——那是**发行机制**的版本，不是规范 / 协议的版本。
+   - **`PROTOCOL_VERSION` 不是版本号，而是契约指纹**（`nomifun-app-server/src/lib.rs:86`、`web/packages/protocol/src/protocol.ts:8`、`web/packages/client/src/http-transport.ts:43`）：任何 wire 改动（方法增删改名、现有 DTO 加字段、事件 payload 变化）都必须同步 bump 三处。**现状是坏的**：该常量自 `450d1037c` 设下后从未更新，期间已有 `config/get|set`、`skill/create|update|delete`、`run/plan`、`market/*`、`message.activity.usage` 等 wire 变更 → 当前握手对契约漂移**无保护**。
+   - **连带订正 D6 落地口径**：原「逃生口默认关（不破坏现有可安装性）」的前提是规范已发布；规范未发版、无既有消费者，故改为**阻断默认开 + 逃生口**（逃生口保留是因为它本身有产品价值，不是为兼容）。
+   - **本记录不改写历史证据页**：`13-p0-execution-plan.md` §14 / §15 / `agent-store-v1-test-cases.md` 里的「版本冻结」指的是**被安装 Agent 的版本冻结语义（TC-RT-002）**，与本记录无关，一字不动。
