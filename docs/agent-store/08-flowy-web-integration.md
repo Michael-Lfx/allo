@@ -1,6 +1,6 @@
 # Flowy / Agent Store Web 集成规格
 
-> 状态：架构冻结（Phase 0）；Web/Flowy 待实现验证；发布阻断
+> 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；Web/Flowy 待实现验证；发布阻断
 > 日期：2026-08-26
 > 前置：`05-allo-app-server-protocol.md`、`06-connector-oauth-security.md`、`07-typescript-sdk.md`、`10-public-contracts.md`
 > 目标：定义 Web/Flowy 如何通过 SDK 使用 Agent Store，不直接依赖 allo 内部实现
@@ -384,7 +384,7 @@ workspace_id
 Flowy/Electron 主进程负责：
 
 - 启动或连接本地 App Server；
-- 配置 WebSocket/stdio Transport；
+- 配置 WebSocket Transport（V1 不含 stdio，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 2）；
 - 处理 OAuth 打开浏览器与回调；
 - 访问操作系统安全存储；
 - 向 Renderer 暴露最小受控 API；
@@ -470,7 +470,7 @@ Workspace 不可用
 
 ## 11. 验收与实现顺序
 
-Web/Flowy 测试用例的唯一正文位于 `agent-store-v1-test-cases.md`，本文件只定义页面与主进程边界。实现顺序由路线图统一管理：
+Web/Flowy 测试用例的唯一正文位于 `19-webui-codex-alignment.zh.md` §9（TC-WEB / TC-SEC），本文件只定义页面与主进程边界。实现顺序由路线图统一管理：
 
 ```text
 SDK Provider → Catalog → Run Workspace → Plan/Timeline → Approval/Artifact → Connector 状态

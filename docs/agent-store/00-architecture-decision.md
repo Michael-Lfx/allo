@@ -1,8 +1,8 @@
 # Agent Store 总体架构决策
 
-> 状态：架构冻结（Phase 0）；Runtime 尚未验证；发布阻断
+> 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；部分结论已实证（详见 `README.md` 索引）；发布阻断
 > 日期：2026-08-26
-> 修订：2026-09-10 — Team 触发方式改为 Leader 模型调用 `nomi_delegate(strategy=planned)`（见 `agent-store-v1-roadmap.md` §10 决策 3）
+> 修订：2026-09-10 — Team 触发方式改为 Leader 模型调用 `nomi_delegate(strategy=planned)`（见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3）
 > 范围：Agent Store / Runtime Platform 的架构边界、组件职责与取舍决策
 > 口径：本文明确区分「源码/文档已证实」「设计决策」「待 Spike 验证」「暂不支持」四类结论
 
@@ -41,7 +41,7 @@ Agent Store Agent/AgentDefinition
 | AD-07 | V1 交付目标 | 完整功能核心（Agent/Team/Skill/Connector + App Server + SDK + Web/Flowy 集成），Team V1 限定为固定成员 + Leader Planning Context 驱动 planned DAG 的最小闭环 | 需求口径；当前产品范围决策 |
 | AD-08 | 企业级能力 | 多租户、HA、灾备、全量 Marketplace、签名安装、全部 OAuth 变体、运营后台、安全认证为 V1 明确非目标 | 范围控制 |
 | AD-09 | 凭据 | 凭据只存本地安全存储，定义/日志/前端状态只存引用；文档中一律 `[REDACTED]` | 安全要求 |
-| AD-10 | Agent Team 触发方式 | Leader 模型在自有 Conversation 内调用 `nomi_delegate(strategy=planned)` 触发服务端 Planner；成员池/并发/权限来自绑定的 `AgentExecutionTemplate` 与服务端策略，不接受模型输入 | 设计决策（2026-09-10）；`agent-store-v1-roadmap.md` §10 决策 3 |
+| AD-10 | Agent Team 触发方式 | Leader 模型在自有 Conversation 内调用 `nomi_delegate(strategy=planned)` 触发服务端 Planner；成员池/并发/权限来自绑定的 `AgentExecutionTemplate` 与服务端策略，不接受模型输入 | 设计决策（2026-09-10）；`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3 |
 
 ## 3. 总体架构
 
@@ -153,7 +153,7 @@ V1 暂不要求：
 - 成员长期独立会话生命周期；
 - 嵌套 Team。
 
-Team Runtime **依赖** `nomi_delegate(strategy=planned)` 作为计划生成入口（2026-09-10 修订，见 `agent-store-v1-roadmap.md` §10 决策 3）：`team/run` 由服务端创建 Leader Conversation 并绑定 Team 的 `AgentExecutionTemplate`，Leader 模型在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`，服务端据此构造 Planning Context 并调用内部 Planner 生成/物化 DAG。成员池、`max_parallel`、`routing_constraints` 与权限来自绑定的 Template 和服务端策略，不接受模型输入。
+Team Runtime **依赖** `nomi_delegate(strategy=planned)` 作为计划生成入口（2026-09-10 修订，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3）：`team/run` 由服务端创建 Leader Conversation 并绑定 Team 的 `AgentExecutionTemplate`，Leader 模型在该 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`，服务端据此构造 Planning Context 并调用内部 Planner 生成/物化 DAG。成员池、`max_parallel`、`routing_constraints` 与权限来自绑定的 Template 和服务端策略，不接受模型输入。
 
 顶层仍不得使用 `strategy=parallel` 代替 Team planned 流程；局部并行由已校验 DAG 中的独立 ready 步骤表达。
 
@@ -196,7 +196,7 @@ CompatibilityReport（compatible / compatible-with-adapter / manual-review / uns
 2. AgentDefinition → allo Preset/ResolvedPresetSnapshot 的桥接是否完整；实际 Runtime Agent/Driver 的运行注册链路另行核实；
 3. MCP OAuth 全链路：登录 → 凭据存储 → 请求时注入 → 401 刷新 → 一次重试，是否真实贯通（现状：登录/存储已有，注入需验证）；
 4. 固定 Template 绑定的 Planning Context + planned Planner 是否可按预期产出动态 DAG；
-5. 本地 App Server 传输（stdio JSONL / WebSocket）的稳定性，以及断线/重连后状态重对齐的行为。
+5. 本地 App Server 传输（WebSocket；stdio JSONL 为 V2/deferred、V1 不纳入）的稳定性，以及断线/重连后状态重对齐的行为。
 
 Spike 结论将回写本文档状态。
 
@@ -251,9 +251,9 @@ Run 事件 cursor 分页、断线追平和完整时间线重放
 - 兼容性矩阵见 `03-codebuddy-compatibility-matrix.md`；
 - 当前目录中的架构基线、实现规格、路线图和测试用例共同构成 Agent Store 当前方案，不再引用旧版主方案。
 
-## 10. Phase 0 冻结与验证边界
+## 10. Phase 0 基线与验证边界
 
-本文档及当前目录的公共契约在进入 Phase 0 时冻结。后续只有以下证据可以触发修改：
+本文档及当前目录的公共契约构成 Phase 0 的**现行基线**（发版前可改、非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。后续只有以下证据可以触发修改：
 
 ```text
 源码事实与文档不一致
@@ -261,10 +261,10 @@ Spike 验证失败
 测试发现公共契约缺口
 ```
 
-冻结不代表能力已经实现：
+基线不代表能力已经实现：
 
 ```text
-Architecture = frozen for Phase 0
+Architecture = baseline (pre-release, editable)
 Implementation = not yet verified
 Runtime readiness = not verified
 Release readiness = blocked

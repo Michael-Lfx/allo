@@ -1,8 +1,8 @@
 # Agent Store TypeScript SDK 规格
 
-> 状态：架构冻结（Phase 0）；SDK v1 基线；包主体已实现（见 `12-sdk-packaging.md`）
+> 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议与 SDK 在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；包主体已实现（见 `12-sdk-packaging.md`）
 > 日期：2026-08-26
-> 更新：2026-09-09 —— 包名 `@flowy-agent-store/node` → `@flowy-agent-store/sdk`（以 `12` 为准）；TC 引用对齐测试主表现有范围（001~003）；本文为协议 vNext 前的 v1 基线
+> 更新：2026-09-09 —— 包名 `@flowy-agent-store/node` → `@flowy-agent-store/sdk`（以 `12` 为准）；TC 引用对齐测试总索引现有范围（001~003）
 > 前置：`01-domain-model.md`、`05-allo-app-server-protocol.md`、`06-connector-oauth-security.md`、`10-public-contracts.md`
 > 目标：提供 App Server Protocol 的 typed client；SDK 不直接依赖 allo 内部实现
 
@@ -95,8 +95,8 @@ export interface Transport {
 V1 实现：
 
 ```text
-StdioTransport：Node.js/CLI
-WebSocketTransport：Electron/Web/Flowy
+WebSocketTransport：Electron/Web/Flowy（V1 交付）
+StdioTransport：Node.js/CLI（V2/deferred；V1 不纳入，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 2）
 ```
 
 浏览器 SDK 不直接实现 stdio，也不持有客户端 Secret。
@@ -291,7 +291,7 @@ stream.onEvent(event => dedupeByEventId(event, store)); // 通知触发刷新
 stream.onError(() => scheduleReconnect());             // 重连后重新拉取状态
 ```
 
-## 6.1 AgentRunHandle 与 TurnResult（REQ-PAR-04/05c）
+### 6.1 AgentRunHandle 与 TurnResult（REQ-PAR-04/05c）
 
 `launchRun(runClient, input)`（`@flowy-agent-store/client`）返回 `AgentRunHandle`：
 异步迭代实时事件（`for await ... of handle`），`handle.finished` 阻塞到终态
@@ -413,7 +413,7 @@ resource_version
 
 可负责：
 
-- 启动/连接 stdio App Server；
+- 启动/连接本地 App Server（V1 走回环 WebSocket；stdio 为 V2/deferred）；
 - 处理 OAuth 浏览器流程；
 - 访问安全凭据存储；
 - 向 Renderer 提供受控 RPC。
@@ -447,10 +447,10 @@ resource_version
 
 ## 11. 验收与实现顺序
 
-SDK 测试用例的唯一正文位于 `agent-store-v1-test-cases.md`，本文件只声明 SDK 范围。实现顺序由路线图统一管理：
+SDK 测试用例的唯一正文位于 `05-allo-app-server-protocol.md` §14（TC-SDK-001~003），本文件只声明 SDK 范围。实现顺序由路线图统一管理：
 
 ```text
 Protocol Schema → generated types → Transport → Clients → reconnect → React wrapper
 ```
 
-SDK 必须通过测试主表现有 SDK 用例 `TC-SDK-001` 至 `TC-SDK-003`（004~010 待补用例定义）；`TC-SDK-001` 已修订为 spawn + 回环 WS（见 `13-p0-execution-plan.md`）；不要在此处复制测试步骤。
+SDK 必须通过测试总索引登记的 SDK 用例 `TC-SDK-001` 至 `TC-SDK-003`（004~010 待补用例定义）；`TC-SDK-001` 已修订为 spawn + 回环 WS（见 `13-p0-execution-plan.md`）；不要在此处复制测试步骤。

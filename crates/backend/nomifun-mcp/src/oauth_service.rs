@@ -177,7 +177,7 @@ impl McpOAuthService {
     /// Attach a persistent client-registration repository (RFC 7591 identity
     /// store). Without it the service falls back to an in-process registry
     /// (fine for tests and single-process flows; identities do not survive a
-    /// restart — see `nomifun-mcp-oauth-dynamic-client-registration-design.md`).
+    /// restart — see `docs/agent-store/06-connector-oauth-security.md` §14).
     pub fn with_registration_repository(
         mut self,
         registration_repo: Arc<dyn IOAuthClientRegistrationRepository>,

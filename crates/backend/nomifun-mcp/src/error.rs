@@ -70,7 +70,7 @@ pub enum McpError {
 impl McpError {
     /// Stable client-facing code for OAuth flows (RFC 7591/8414/9728), or
     /// `None` for errors that carry no structured OAuth code. Mirrors the
-    /// codes defined in `docs/agent-store/nomifun-mcp-oauth-dynamic-client-registration-design.md` §6.2/§8.
+    /// codes defined in `docs/agent-store/06-connector-oauth-security.md` §14 (appendix C; §6.2/§8).
     pub fn oauth_error_code(&self) -> Option<&'static str> {
         match self {
             McpError::PreRegisteredClientRequired(_) => Some("pre_registered_client_required"),

@@ -1,6 +1,6 @@
 # allo Runtime Adapter 规格
 
-> 状态：架构冻结（Phase 0）；Runtime Adapter 待实现验证；发布阻断
+> 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；Runtime Adapter 单 Agent 已实证；发布阻断
 > 日期：2026-08-26
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`
 > 目标：定义 Agent Store 领域模型如何映射到 allo Runtime；allo 是唯一 Runtime，Adapter 只隔离内部实现
@@ -176,7 +176,7 @@ V1 不允许：
 
 ### 4.3 Planner 参数映射
 
-V1 Team 的 `planned` **由 Leader 模型经 `nomi_delegate(strategy=planned)` 触发**（2026-09-10 修订，见 `agent-store-v1-roadmap.md` §10 决策 3）。Runtime Adapter 的职责是：创建 Leader Conversation、把 Team 的 `AgentExecutionTemplate` 绑定为其 `execution_template_id`，并保证注册给 Leader 的 delegate 工具支持 `strategy=planned` 且绑定持久 `AgentExecutionEngine`。仅支持 `strategy=parallel`、同步且无持久化的 embedded 实现（`nomi-agent::local_delegate_tool`）不得出现在 Team 会话的工具面。
+V1 Team 的 `planned` **由 Leader 模型经 `nomi_delegate(strategy=planned)` 触发**（2026-09-10 修订，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3）。Runtime Adapter 的职责是：创建 Leader Conversation、把 Team 的 `AgentExecutionTemplate` 绑定为其 `execution_template_id`，并保证注册给 Leader 的 delegate 工具支持 `strategy=planned` 且绑定持久 `AgentExecutionEngine`。仅支持 `strategy=parallel`、同步且无持久化的 embedded 实现（`nomi-agent::local_delegate_tool`）不得出现在 Team 会话的工具面。
 
 Runtime Adapter 只允许向内部 Planner 传递经校验的规划参数；这些参数不是公共协议，也不是模型可见工具的 delegation 参数：
 
