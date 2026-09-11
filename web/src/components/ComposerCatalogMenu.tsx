@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AtSign, Bot, Plug, Search, Sparkles, Wrench, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../store/appStore";
+import { pickLocalized, useLocalizedLang } from "../ui/localize";
 import type { AgentSummary, ConnectorSummary, SkillSummary } from "../lib/protocol";
 
 type CatalogKind = "agents" | "skills" | "connectors";
@@ -23,6 +24,7 @@ export function ComposerCatalogMenu({
   onPick: (kind: CatalogKind, item: { id: string; name: string }) => void;
 }) {
   const { t } = useTranslation();
+  const lang = useLocalizedLang();
   const client = useAppStore((s) => s.client);
   const [items, setItems] = useState<Array<AgentSummary | SkillSummary | ConnectorSummary> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -99,7 +101,7 @@ export function ComposerCatalogMenu({
           const name = "name" in item ? item.name : "";
           const displayName =
             "display_name" in item && item.display_name
-              ? (item.display_name.zh || item.display_name.en || name)
+              ? pickLocalized(item.display_name, lang) || name
               : name;
           const desc =
             "description" in item && item.description ? item.description :

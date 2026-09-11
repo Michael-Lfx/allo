@@ -3,6 +3,7 @@ import { useClickAway } from "ahooks";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { ConversationModelOptions, ModelSummary, ReasoningEffort } from "../lib/protocol";
+import { capabilityLabels, contextWindowTokens, costRateText } from "../lib/model-facts";
 
 function effortLabel(t: (key: string) => string, effort: ReasoningEffort): string {
   const key = effort === "low" ? "modelPicker.effortLow"
@@ -22,6 +23,11 @@ interface PickerEntry {
   displayName: string;
   contextLimit?: number | null;
   isDefault: boolean;
+  // ── W9（R14）：models.dev 目录事实；目录没给就留空，界面不显示这一段。 ──
+  catalogContextWindow?: number | null;
+  costInput?: number | null;
+  costOutput?: number | null;
+  supportsVision?: boolean | null;
 }
 
 function buildEntries(
@@ -40,6 +46,10 @@ function buildEntries(
         name: model.name,
         displayName: model.display_name || model.name,
         contextLimit: model.context_limit,
+        catalogContextWindow: model.catalog_context_window,
+        costInput: model.cost_input,
+        costOutput: model.cost_output,
+        supportsVision: model.supports_vision,
         isDefault: false,
       });
     }
@@ -133,8 +143,12 @@ export function ModelPicker({
               {entry.isDefault && <span className="model-default-badge">{t("modelPicker.defaultBadge")}</span>}
               <span className="model-option-meta">
                 {entry.name}
-                {entry.contextLimit ? t("modelPicker.contextMeta", { k: Math.round(entry.contextLimit / 1000) }) : ""}
+                {contextWindowTokens(entry) ? t("modelPicker.contextMeta", { k: Math.round((contextWindowTokens(entry) ?? 0) / 1000) }) : ""}
+                {costRateText(entry) ? ` · ${costRateText(entry)}` : ""}
               </span>
+              {capabilityLabels(entry).map((label) => (
+                <span className="model-capability-badge" key={label}>{t(`modelPicker.capability.${label}`)}</span>
+              ))}
             </button>
           ))}
         </div>

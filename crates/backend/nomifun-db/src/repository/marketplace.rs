@@ -5,7 +5,9 @@
 //! and cleared here as well, so remove-cascade stays one module.
 
 use crate::error::DbError;
-use crate::models::{MarketplaceEntry, PluginMarketplaceRow, PluginSnapshotRow};
+use crate::models::{
+    MarketplaceEntry, PluginMarketplaceRow, PluginSnapshotProvenanceRow, PluginSnapshotRow,
+};
 
 /// Parameters for adding a marketplace registry row.
 #[derive(Debug, Clone)]
@@ -66,6 +68,17 @@ pub trait IMarketplaceRepository: Send + Sync {
         staging_root: &str,
     ) -> Result<(), DbError>;
 
+    /// Record the HTTP source's **raw** conditional-request validators
+    /// (doc 18 D4 ①) so the next refresh can send a real `If-None-Match` /
+    /// `If-Modified-Since`. `None` clears a validator — a source that stopped
+    /// sending an `ETag` must not keep offering the stale one.
+    async fn record_source_validators(
+        &self,
+        marketplace_id: &str,
+        source_etag: Option<&str>,
+        source_last_modified: Option<&str>,
+    ) -> Result<(), DbError>;
+
     /// Toggle auto-update for one marketplace.
     async fn set_auto_update(
         &self,
@@ -111,6 +124,16 @@ pub trait IMarketplaceRepository: Send + Sync {
         &self,
         marketplace_id: &str,
     ) -> Result<Vec<PluginSnapshotRow>, DbError>;
+
+    /// Same rows as [`Self::list_snapshots_by_marketplace`], plus the component
+    /// and installed-component tallies in one JOIN.
+    ///
+    /// `market/get` projects per-entry provenance from this, and a cascade
+    /// removal reports its impact set from the same shape — **before** it runs.
+    async fn list_snapshot_provenance_by_marketplace(
+        &self,
+        marketplace_id: &str,
+    ) -> Result<Vec<PluginSnapshotProvenanceRow>, DbError>;
 
     /// Clear provenance on a snapshot (the marketplace is gone / entry removed).
     async fn clear_snapshot_provenance(

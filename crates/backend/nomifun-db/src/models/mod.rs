@@ -91,7 +91,9 @@ pub use message::MessageRow;
 pub use oauth_client_registration::OAuthClientRegistrationRow;
 pub use oauth_token::OAuthTokenRow;
 pub use plugin_marketplace::{MarketplaceEntry, PluginMarketplaceRow};
-pub use plugin_snapshot::{PluginSnapshotComponentRow, PluginSnapshotListRow, PluginSnapshotRow};
+pub use plugin_snapshot::{
+    PluginSnapshotComponentRow, PluginSnapshotListRow, PluginSnapshotProvenanceRow, PluginSnapshotRow,
+};
 pub use provider::Provider;
 pub use provider_connection::{ProviderConnectionRow, UpsertProviderConnectionParams};
 pub use provider_model::{NewProviderModel, ProviderModelRow, ProviderModelUpdate};

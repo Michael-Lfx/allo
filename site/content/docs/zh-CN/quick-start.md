@@ -27,3 +27,4 @@ flowy-agent-store
 - 阅读 [命令行用法](/zh-CN/docs/cli) 了解完整命令。
 - 阅读 [架构说明](/zh-CN/docs/architecture) 理解 Runtime 与 App Server 协议的分层。
 - 阅读 [兼容性矩阵](/zh-CN/docs/compatibility) 确认你的平台与来源格式支持情况。
+- 自己写接入代码（Node / Electron / 浏览器）：阅读 [TypeScript SDK 使用指南](/zh-CN/docs/typescript-sdk)。**终端用户走安装包，开发者走 npm 包**——两条路径分工不同，互不替代。

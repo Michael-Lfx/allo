@@ -6,10 +6,16 @@
 //! redact each distilled entry (gate 2), and synchronously commit the small
 //! file update before the owning turn may publish its terminal event.
 //!
-//! Discipline: distillation is an exact child of the accepted turn. Every
-//! failure path still degrades silently (debug/warn log, never `emit_error`),
-//! but there is no detached task and therefore no provider call or filesystem
-//! mutation after the turn reaches `Finished`.
+//! Discipline (R30 / `21` D9=A): distillation is still an exact child of the
+//! accepted turn, but it is **spawned in the background** instead of awaited —
+//! the memory half is never allowed to delay the turn's terminal event
+//! ("回答完成" = "轮次结束"). The child is not detached from the turn's
+//! cancellation domain: it carries a clone of the turn's `CancellationToken`,
+//! so a stop/kill drops the provider future at its next await point exactly as
+//! the previous in-line `await_exact_turn_child` did (no provider call and no
+//! filesystem mutation can follow a cancellation). Every failure path still
+//! degrades silently (debug/warn log, never `emit_error`) and never masquerades
+//! as a failed model turn; no new event type or wire method is involved.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -88,17 +94,89 @@ fn distill_max_tokens(cfg: &Config) -> u32 {
     }
 }
 
-/// Run distillation as an exact child of one accepted turn. `true` means the
-/// child completed and the caller may proceed toward its terminal transition;
-/// `false` means cancellation won and the provider future was dropped before
-/// any later filesystem stage could start.
-pub(super) async fn run_distill_exact_turn(
-    cancel: &tokio_util::sync::CancellationToken,
+/// Spawn distillation as a background child of one accepted turn (R30 /
+/// `21` D9=A).
+///
+/// The owning turn's terminal event must not wait for this extra provider call:
+/// "回答完成" ＝ "轮次结束". The child is still bound to the *same* lifecycle —
+/// it carries a clone of the turn's `CancellationToken`, so a stop/kill that
+/// lands before or after the terminal event drops the provider future at its
+/// next await point, exactly as the previous in-line `await_exact_turn_child`
+/// did. No new cancellation mechanism, no new event type: a cancelled turn
+/// still leaves no provider call and no filesystem mutation behind.
+///
+/// Returns `false` when the token was already cancelled — nothing is spawned
+/// and the caller's cancel branch owns the terminal event.
+pub(super) fn spawn_distill_exact_turn(
+    cancel: tokio_util::sync::CancellationToken,
     cfg: Arc<Config>,
     dir: PathBuf,
     transcript: String,
 ) -> bool {
-    await_exact_turn_child(cancel, run_distill(cfg, dir, transcript)).await
+    if cancel.is_cancelled() {
+        // Pre-spawn judgment: a turn that is already cancelled must not create
+        // a child that cancellation would only have to kill again.
+        return false;
+    }
+    #[cfg(test)]
+    if let Some(child) = take_test_child(&dir) {
+        spawn_exact_turn_child(cancel, child);
+        return true;
+    }
+    spawn_exact_turn_child(cancel, run_distill(cfg, dir, transcript));
+    true
+}
+
+/// Spawn one exact-turn child into the background. The cancellation token is
+/// the only lifecycle handle it needs: cancelling it drops the child's future
+/// before any later apply stage can start, so a stopped turn never leaves a
+/// pending provider call or a late filesystem write behind. Failures inside the
+/// child are best-effort (its own debug/warn logs) and can never turn into a
+/// model-turn error.
+fn spawn_exact_turn_child(
+    cancel: tokio_util::sync::CancellationToken,
+    child: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    tokio::spawn(async move {
+        if !await_exact_turn_child(&cancel, child).await {
+            tracing::debug!("post-session distill child dropped by turn cancellation");
+        }
+    });
+}
+
+/// Test seam (R30): replace the spawned child for one memory directory so a test
+/// can hold the background distillation open and assert the turn's terminal
+/// event is published without waiting for it. Keyed by directory, so parallel
+/// tests using different workspaces cannot interfere. Absent from production
+/// builds.
+#[cfg(test)]
+pub(super) type TestDistillChild = Box<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+>;
+
+#[cfg(test)]
+static TEST_DISTILL_CHILDREN: std::sync::Mutex<Vec<(PathBuf, TestDistillChild)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(super) fn install_test_child(dir: &std::path::Path, child: TestDistillChild) {
+    TEST_DISTILL_CHILDREN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((dir.to_path_buf(), child));
+}
+
+#[cfg(test)]
+fn take_test_child(
+    dir: &std::path::Path,
+) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
+    let children = TEST_DISTILL_CHILDREN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    children
+        .iter()
+        .find(|(candidate, _)| candidate == dir)
+        .map(|(_, child)| child())
 }
 
 async fn await_exact_turn_child(
@@ -138,7 +216,14 @@ async fn run_distill(cfg: Arc<Config>, dir: PathBuf, transcript: String) {
                 Err(e) => tracing::debug!(error = %e, "distill output unparseable"),
             },
             Err(e) => {
-                tracing::debug!(error = %e, "distill provider call failed");
+                // Existing observability outlet only (tracing); no new event
+                // type, no `emit_error`. `warn` because R30 lets this failure
+                // land after the turn's terminal event, where it is otherwise
+                // invisible: the turn already reported success.
+                tracing::warn!(
+                    error = %e,
+                    "post-session distill provider call failed (best-effort: turn outcome unchanged)"
+                );
                 break; // provider failure: don't retry
             }
         }
@@ -161,8 +246,12 @@ async fn run_distill(cfg: Arc<Config>, dir: PathBuf, transcript: String) {
     // this future instead of `spawn_blocking`: dropping a JoinHandle cannot
     // cancel a started blocking closure, which previously allowed a late write
     // after cancellation/Finished. Once this section starts it has no await
-    // point, so the write completes before cancellation or terminal emission
-    // can be observed on this runtime thread.
+    // point, so a cancellation that lands during it cannot interleave, and the
+    // write completes on this runtime thread. Under R30 (`21` D9=A) this write
+    // may now land *after* the turn's terminal event — accepted: the memory
+    // snapshot is a side effect of a finished turn, not part of its terminal
+    // contract, and the transcript snapshot it was built from is still taken
+    // before the engine lock is released.
     match apply_distilled(&dir, &out) {
         Ok(n) if n > 0 => {
             tracing::info!(written = n, dir = %dir.display(), "session distilled to file-based memory")
@@ -176,6 +265,7 @@ async fn run_distill(cfg: Arc<Config>, dir: PathBuf, transcript: String) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     #[test]
     fn distill_enabled_reads_config_and_env() {
@@ -203,27 +293,167 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exact_turn_child_completes_before_terminal_and_runs_once() {
+    async fn spawned_child_does_not_block_the_caller() {
+        // R30 / `21` D9=A: the owning turn's terminal path returns as soon as the
+        // child is spawned, even while the child is still in flight. The ordering
+        // is asserted with channels, never with sleeps: the child cannot finish
+        // before the test releases it, and the release happens strictly after the
+        // caller has already moved on.
         let cancel = tokio_util::sync::CancellationToken::new();
         let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let child_runs = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
         let child_phases = Arc::clone(&phases);
-        let child_runs_ref = Arc::clone(&child_runs);
+        let child_entered = Arc::clone(&entered);
+        let child_release = Arc::clone(&release);
 
-        let completed = await_exact_turn_child(&cancel, async move {
-            child_runs_ref.fetch_add(1, Ordering::SeqCst);
-            child_phases.lock().unwrap().push("distill-apply");
-        })
-        .await;
-        assert!(completed);
-        phases.lock().unwrap().push("finish");
+        spawn_exact_turn_child(cancel, async move {
+            child_entered.add_permits(1);
+            let _ = child_release.acquire().await;
+            child_phases.lock().unwrap().push("child-finished");
+        });
+        phases.lock().unwrap().push("caller-after-spawn");
 
-        assert_eq!(child_runs.load(Ordering::SeqCst), 1);
+        tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+            .await
+            .expect("the spawned child must actually start")
+            .expect("entered semaphore stays open")
+            .forget();
         assert_eq!(
             phases.lock().unwrap().as_slice(),
-            ["distill-apply", "finish"],
-            "the terminal boundary must be strictly after the exact child"
+            ["caller-after-spawn"],
+            "the caller must not have waited for the child"
         );
+
+        release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while phases.lock().unwrap().len() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the background child must still run to completion in this lifecycle");
+        assert_eq!(
+            phases.lock().unwrap().as_slice(),
+            ["caller-after-spawn", "child-finished"],
+            "the caller's progress must precede the child's completion, not the other way round"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_token_never_starts_a_child() {
+        // Pre-spawn judgment (R30): a turn that is already cancelled starts no
+        // child at all — the caller's cancel branch owns the terminal event.
+        let dir = tempfile::tempdir().unwrap();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let hook_runs = Arc::clone(&runs);
+        install_test_child(
+            dir.path(),
+            Box::new(move || {
+                let hook_runs = Arc::clone(&hook_runs);
+                Box::pin(async move {
+                    hook_runs.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let spawned = spawn_distill_exact_turn(
+            cancel,
+            Arc::new(test_distill_config("http://127.0.0.1:1")),
+            dir.path().to_path_buf(),
+            "user: hello".into(),
+        );
+
+        assert!(
+            !spawned,
+            "an already-cancelled turn must not spawn a distillation child"
+        );
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 0, "no child may run");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "no child may write memory for a cancelled turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_spawned_child_leaves_no_late_effect() {
+        // The R30 window: cancellation may land after the turn already published
+        // its terminal event. The spawned child is bound to the same token, so it
+        // is dropped before its apply stage — a later release must have no effect.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let late_write = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let child_entered = Arc::clone(&entered);
+        let child_late_write = Arc::clone(&late_write);
+
+        spawn_exact_turn_child(cancel.clone(), async move {
+            child_entered.add_permits(1);
+            let _ = release_rx.await;
+            child_late_write.store(true, Ordering::SeqCst);
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+            .await
+            .expect("the spawned child must actually start")
+            .expect("entered semaphore stays open")
+            .forget();
+
+        cancel.cancel();
+        // Release *after* the cancellation: if the child had survived it, this
+        // would let it reach the apply stage and the flag would flip.
+        let _ = release_tx.send(());
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !late_write.load(Ordering::SeqCst),
+            "a cancelled turn must drop the spawned child before any apply stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_failure_returns_normally_and_writes_nothing() {
+        // Requirement: a distillation failure is best-effort and can never become
+        // a session error. `run_distill` returns `()` — the structural guarantee —
+        // and the provider failure path must simply return without touching disk.
+        // Port 1 is never served, so the provider call fails immediately.
+        let dir = tempfile::tempdir().unwrap();
+        run_distill(
+            Arc::new(test_distill_config("http://127.0.0.1:1")),
+            dir.path().to_path_buf(),
+            "user: hello\nassistant: hi".into(),
+        )
+        .await;
+
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "a failed distillation must not write memory files"
+        );
+    }
+
+    fn test_distill_config(base_url: &str) -> nomi_config::config::Config {
+        let mut config = nomi_config::config::Config::resolve(&nomi_config::config::CliArgs {
+            provider: Some("openai".into()),
+            api_key: Some("sk-test-key".into()),
+            base_url: Some(base_url.to_owned()),
+            model: Some("gpt-4o-mini".into()),
+            max_tokens: Some(512),
+            max_turns: Some(2),
+            system_prompt: None,
+            profile: None,
+            auto_approve: true,
+            project_dir: Some(PathBuf::from("/project")),
+        })
+        .expect("test config should resolve");
+        config.session.enabled = false;
+        config
     }
 
     #[tokio::test]

@@ -29,7 +29,22 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { formatError, isRetryableError } from "../lib/errors";
+import {
+  pickEntryTags,
+  pickEntryText,
+  pickLocalized,
+  pickLocalizedList,
+  useLocalizedLang,
+  type LocalizedLang,
+} from "../ui/localize";
 import { useAppStore } from "../store/appStore";
+import {
+  SkillWriteActionsView,
+  SkillWriteDialogs,
+  SkillWriteToolbarView,
+  originLabelI18nKey,
+  type SkillWriteMode,
+} from "./skills/SkillWriteSurface";
 import type {
   AgentDetail,
   AgentSummary,
@@ -166,14 +181,15 @@ function InitialBadge({ name, size = 40 }: { name: string; size?: number }) {
   );
 }
 
-/** Market display name for an agent (localized when present). */
-function agentDisplayName(agent: AgentSummary): string {
-  return agent.display_name?.zh || agent.display_name?.en || agent.name;
+/** Market display name for an agent (resolved by UI language, D8=A). */
+function agentDisplayName(agent: AgentSummary, lang: LocalizedLang): string {
+  return pickLocalized(agent.display_name, lang) || agent.name;
 }
 
 /** Badge with the agent avatar when declared, else the initial. */
 function AgentBadge({ agent, size = 40 }: { agent: AgentSummary; size?: number }) {
-  const name = agentDisplayName(agent);
+  const lang = useLocalizedLang();
+  const name = agentDisplayName(agent, lang);
   if (agent.avatar_url) {
     return (
       <img className="market-badge market-avatar" width={size} height={size} src={agent.avatar_url} alt={name} loading="lazy" />
@@ -185,7 +201,8 @@ function AgentBadge({ agent, size = 40 }: { agent: AgentSummary; size?: number }
 /** Store item tag strings (wire may omit empty arrays). */
 /** Store item badge: avatar when declared, else the initial. */
 function StoreBadge({ item, size = 40, rootUrl }: { item: StoreItem; size?: number; rootUrl?: string }) {
-  const name = item.display_name?.zh || item.display_name?.en || item.name;
+  const lang = useLocalizedLang();
+  const name = pickLocalized(item.display_name, lang) || item.name;
   const avatar = item.avatar_url
     ? item.avatar_url.startsWith("http://") || item.avatar_url.startsWith("https://")
       ? item.avatar_url
@@ -285,6 +302,7 @@ function CompatChips({ triple }: { triple: CompatibilityTriple }) {
 
 export function CatalogView() {
   const { t } = useTranslation();
+  const lang = useLocalizedLang();
   const client = useAppStore((s) => s.client);
   const capabilities = useAppStore((s) => s.client?.initializeInfo?.capabilities ?? null);
   const onBack = useAppStore((s) => s.toggleCatalog);
@@ -315,6 +333,8 @@ export function CatalogView() {
   // detail drawer
   const [drawer, setDrawer] = useState<PanelKind | null>(null);
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
+  /** Which skill write dialog is open (W12 / `16` R17); `null` = none. */
+  const [skillWrite, setSkillWrite] = useState<SkillWriteMode>(null);
   const [connectorDetail, setConnectorDetail] = useState<ConnectorDetail | null>(null);
   const [agentDetail, setAgentDetail] = useState<AgentDetail | null>(null);
   const [teamDetail, setTeamDetail] = useState<TeamDetail | null>(null);
@@ -690,7 +710,7 @@ export function CatalogView() {
     setMarketRefreshBusy(marketplaceId);
     setError(null);
     try {
-      await client.refreshMarketplace(marketplaceId);
+      const result = await client.refreshMarketplace(marketplaceId);
       const [list, detail] = await Promise.all([
         client.listMarketplaces(),
         client.getMarketplace(marketplaceId).catch(() => null),
@@ -698,13 +718,22 @@ export function CatalogView() {
       if (!activeRef.current) return;
       setMarkets(list);
       if (detail) setMarketDetail(detail);
+      // W8 余项: a refresh used to be visible only through `last_checked_at`.
+      pushToast(
+        "success",
+        result.changed ? "catalog.marketRefreshDone" : "catalog.marketRefreshUnchanged",
+        {
+          name: markets?.find((item) => item.marketplace_id === marketplaceId)?.name ?? marketplaceId,
+          count: result.entry_count,
+        },
+      );
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     } finally {
       if (activeRef.current) setMarketRefreshBusy(null);
     }
-  }, [client]);
+  }, [client, markets, pushToast]);
 
   const openMarket = useCallback(async (marketplaceId: string) => {
     if (!client) return;
@@ -746,6 +775,26 @@ export function CatalogView() {
       if (activeRef.current) setMarketBusy(false);
     }
   }, [client, marketRemoveFor]);
+
+  /**
+   * R21: open the cascade confirmation on a **fresh** `market/get`. The impact
+   * list is the server's pre-removal projection (per-entry snapshots) rather
+   * than a re-derivation over the aggregated store listing, so the detail has
+   * to be current before the user commits (`16` D-W13-1 ①).
+   */
+  const openRemoveDialog = useCallback(async (marketplaceId: string) => {
+    if (client) {
+      try {
+        const detail = await client.getMarketplace(marketplaceId);
+        if (!activeRef.current) return;
+        setMarketDetail(detail);
+      } catch {
+        // A failed refresh must not block the dialog — the user can still
+        // cancel, and the list falls back to the detail already on screen.
+      }
+    }
+    if (activeRef.current) setMarketRemoveFor(marketplaceId);
+  }, [client]);
 
   /** W13: flip `auto_update`, then read `market/list` back (no optimistic guess). */
   const toggleMarketAutoUpdate = useCallback(async (marketplaceId: string, enabled: boolean) => {
@@ -823,13 +872,19 @@ export function CatalogView() {
         );
         return refreshed ?? { ...current, installed: true, snapshot_id: result.snapshot_id, installed_version: result.version };
       });
+      // W8 余项: the install used to end silently unless the drawer stayed open.
+      pushToast(
+        "success",
+        result.reused ? "catalog.storeInstallReused" : "catalog.storeInstallDone",
+        { name: item.name },
+      );
     } catch (caught) {
       if (!activeRef.current) return;
       reportError(caught);
     } finally {
       if (activeRef.current) setStoreInstallBusy(null);
     }
-  }, [client]);
+  }, [client, pushToast]);
 
   const closeDrawer = useCallback(() => {
     setDrawer(null);
@@ -913,6 +968,9 @@ export function CatalogView() {
     const all = storeItems ?? [];
     const byKind = storeKind === "all" ? all : all.filter((item) => item.kind === storeKind);
     const needle = query.trim().toLowerCase();
+    // The search index deliberately keeps *both* languages (plus the
+    // baseline fields): a Chinese reader may still type an English term from
+    // the manifest. Only the rendered label is language-resolved (D8=A).
     const filtered = needle ? byKind.filter((item) => {
       const text = [
         item.name,
@@ -930,7 +988,10 @@ export function CatalogView() {
     }) : byKind;
     if (sortBy === "name") {
       return [...filtered].sort((a, b) =>
-        (a.display_name?.zh || a.display_name?.en || a.name).localeCompare(b.display_name?.zh || b.display_name?.en || b.name, "zh"),
+        (pickLocalized(a.display_name, lang) || a.name).localeCompare(
+          pickLocalized(b.display_name, lang) || b.name,
+          lang,
+        ),
       );
     }
     return filtered;
@@ -1137,20 +1198,19 @@ export function CatalogView() {
                   <div className="market-card-top">
                     <StoreBadge item={item} rootUrl={client?.serverRootUrl} />
                     <div className="market-card-main">
-                      <span className="market-card-title">{item.display_name?.zh || item.display_name?.en || item.name}</span>
-                      {item.profession?.zh || item.profession?.en ? (
-                        <span className="market-card-author">{item.profession?.zh || item.profession?.en}</span>
+                      <span className="market-card-title">{pickLocalized(item.display_name, lang) || item.name}</span>
+                      {pickLocalized(item.profession, lang) ? (
+                        <span className="market-card-author">{pickLocalized(item.profession, lang)}</span>
                       ) : null}
                     </div>
                   </div>
-                  {(item.display_description?.zh || item.display_description?.en || item.description) && (
-                    <span className="market-card-desc">{item.display_description?.zh || item.display_description?.en || item.description}</span>
+                  {(pickLocalized(item.display_description, lang) || item.description) && (
+                    <span className="market-card-desc">{pickLocalized(item.display_description, lang) || item.description}</span>
                   )}
                 </div>
                 <div className="market-card-foot">
                   <div className="market-tags">
-                    {(item.tags ?? []).slice(0, 3).map((tag) => {
-                      const text = tag.zh || tag.en || "";
+                    {pickLocalizedList(item.tags, lang).slice(0, 3).map((text) => {
                       return text ? <span className="market-tag" key={text}>{text}</span> : null;
                     })}
                   </div>
@@ -1166,29 +1226,56 @@ export function CatalogView() {
         )}
 
         {tab === "installed" && installedKind === "skills" && (
-          <MarketGrid
-            loading={!client || skills === null}
-            empty={t("catalog.noSkills")}
-            emptyAction={(
-              <button className="market-empty-action" type="button" onClick={() => setTab("store")}>
-                {t("catalog.emptyGoStore")}
-              </button>
-            )}
-            items={category === "all" ? visibleSkills : visibleSkills.filter((skill) => skill.source === category)}
-            renderItem={(skill) => (
-              <button className="market-card" type="button" key={skill.id} onClick={() => void openSkill(skill.id)}>
-                <div className="market-card-top">
-                  <InitialBadge name={skill.name} />
-                  <div className="market-card-main">
-                    <span className="market-card-title">{skill.name}</span>
-                    {skill.description && <span className="market-card-sub">{skill.description}</span>}
+          <>
+            <SkillWriteToolbarView onCreated={() => setSkillWrite({ kind: "create" })} />
+            <MarketGrid
+              loading={!client || skills === null}
+              empty={t("catalog.noSkills")}
+              emptyAction={
+                <button className="market-empty-action" type="button" onClick={() => setTab("store")}>
+                  {t("catalog.emptyGoStore")}
+                </button>
+              }
+              items={category === "all" ? visibleSkills : visibleSkills.filter((skill) => skill.source === category)}
+              renderItem={(skill) => (
+                // `div role="button"` rather than `<button>`: the row carries its
+                // own write actions (W12), and nesting buttons is invalid HTML.
+                <div
+                  className="market-card"
+                  role="button"
+                  tabIndex={0}
+                  key={skill.id}
+                  onClick={() => void openSkill(skill.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      void openSkill(skill.id);
+                    }
+                  }}
+                >
+                  <div className="market-card-top">
+                    <InitialBadge name={skill.name} />
+                    <div className="market-card-main">
+                      <span className="market-card-title">{skill.name}</span>
+                      {skill.description && <span className="market-card-sub">{skill.description}</span>}
+                    </div>
+                    {/* The origin badge is the host's own classification, so a
+                        user skill and a marketplace product never look alike
+                        (both are `source: custom`). */}
+                    <span className="market-tag">{t(originLabelI18nKey(skill.origin))}</span>
                   </div>
-                  <ChevronRight size={15} strokeWidth={1.7} className="market-card-arrow" />
+                  <Tags tags={[...(skill.required_connectors ?? [])]} />
+                  <SkillWriteActionsView
+                    skill={skill}
+                    busy={skillWrite !== null}
+                    onEdit={(id) => setSkillWrite({ kind: "edit", skill: { id, name: skill.name } })}
+                    onCopy={(id) => setSkillWrite({ kind: "copy", skill: { id, name: skill.name } })}
+                    onDelete={(id) => setSkillWrite({ kind: "delete", skill: { id, name: skill.name } })}
+                  />
                 </div>
-                <Tags tags={[skill.source, ...(skill.required_connectors ?? [])]} />
-              </button>
-            )}
-          />
+              )}
+            />
+          </>
         )}
 
         {tab === "installed" && installedKind === "connectors" && (
@@ -1232,7 +1319,7 @@ export function CatalogView() {
                 <div className="market-card-top">
                   <AgentBadge agent={agent} />
                   <div className="market-card-main">
-                    <span className="market-card-title">{agentDisplayName(agent)}</span>
+                    <span className="market-card-title">{agentDisplayName(agent, lang)}</span>
                     {agent.description && <span className="market-card-sub">{agent.description}</span>}
                   </div>
                   <ChevronRight size={15} strokeWidth={1.7} className="market-card-arrow" />
@@ -1284,7 +1371,7 @@ export function CatalogView() {
                   <div className="market-card-top">
                     <AgentBadge agent={agent} />
                     <div className="market-card-main">
-                      <span className="market-card-title">{agentDisplayName(agent)}</span>
+                      <span className="market-card-title">{agentDisplayName(agent, lang)}</span>
                       {agent.description && <span className="market-card-sub">{agent.description}</span>}
                     </div>
                     <ChevronRight size={15} strokeWidth={1.7} className="market-card-arrow" />
@@ -1394,7 +1481,7 @@ export function CatalogView() {
                           : t("catalog.marketRefresh")}
                       </button>
                       <button className="danger-button" type="button" disabled={marketBusy}
-                        onClick={() => setMarketRemoveFor(marketDetail.marketplace_id)}>
+                        onClick={() => void openRemoveDialog(marketDetail.marketplace_id)}>
                         {t("catalog.marketRemove")}
                       </button>
                     </div>
@@ -1426,16 +1513,36 @@ export function CatalogView() {
                       );
                       const busy = storeInstallBusy === `${marketDetail.marketplace_id}/${entry.name}`;
                       const entryBusy = marketEntryBusy === `${marketDetail.marketplace_id}/${entry.name}`;
-                      const installed = storeItem?.installed ?? false;
+                      // Install state comes from the server-projected entry
+                      // snapshot on `market/get` — the same source the cascade
+                      // dialog reads — instead of the aggregated store listing
+                      // (`16` D-W13-1 ①). `storeItem` is still needed for the
+                      // install *action*, which addresses the store entry.
+                      const installed = (entry.snapshot?.installed_count ?? 0) > 0;
+                      // R28 / D8=A: the manifest's `name_{lang}` /
+                      // `description_{lang}` variants fall back to the
+                      // baseline fields, resolved by the UI language.
+                      const entryName = pickEntryText(entry.localized, "name", lang, entry.name) ?? entry.name;
+                      const entryTags = pickEntryTags(entry.localized, lang) ?? entry.keywords ?? [];
                       return (
                         <div className="market-card market-entry-card" key={`${marketDetail.marketplace_id}/${entry.name}`}>
                           <div className="market-card-top">
-                            <InitialBadge name={entry.name} />
+                            <InitialBadge name={entryName} />
                             <div className="market-card-main">
-                              <span className="market-card-title">{entry.name}</span>
+                              <span className="market-card-title">{entryName}</span>
                               <span className="market-card-sub">
-                                {entry.description ?? entry.source}
+                                {pickEntryText(entry.localized, "description", lang, entry.description) ??
+                                  entry.source}
                               </span>
+                              {entryTags.length > 0 && (
+                                <span className="market-tags">
+                                  {entryTags.slice(0, 3).map((tag) => (
+                                    <span className="market-tag" key={tag}>
+                                      {tag}
+                                    </span>
+                                  ))}
+                                </span>
+                              )}
                             </div>
                             {installed && <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>}
                             {!installed && (
@@ -1478,10 +1585,13 @@ export function CatalogView() {
                     {t("catalog.marketRemoveBody", { name: marketDetail?.name ?? marketRemoveFor })}
                   </p>
                   {(() => {
-                    // Cascade target list derived from the aggregated store: the
-                    // wire has no pre-removal snapshot projection (D-W13-1).
-                    const affected = (storeItems ?? []).filter(
-                      (item) => item.marketplace_id === marketRemoveFor && item.installed,
+                    // Cascade target list is the server's pre-removal
+                    // projection — `market/get` entries carry
+                    // `snapshot.installed_count`, refreshed by
+                    // `openRemoveDialog` — instead of a re-derivation over the
+                    // aggregated store listing (R21).
+                    const affected = (marketDetail?.entries ?? []).filter(
+                      (entry) => (entry.snapshot?.installed_count ?? 0) > 0,
                     );
                     if (affected.length === 0) {
                       return <p className="dialog-intro">{t("catalog.marketRemoveNone")}</p>;
@@ -1489,8 +1599,8 @@ export function CatalogView() {
                     return (
                       <ul className="market-remove-list">
                         <li className="market-remove-list-title">{t("catalog.marketRemoveSnapshotsLabel")}</li>
-                        {affected.map((item) => (
-                          <li key={item.id}>{item.entry_name ?? item.name}</li>
+                        {affected.map((entry) => (
+                          <li key={entry.name}>{entry.name}</li>
                         ))}
                       </ul>
                     );
@@ -1582,6 +1692,24 @@ export function CatalogView() {
           </div>
         )}
       </div>
+
+      {/* Skill write face (W12 / `16` R17): create / edit / copy / delete.
+          Mounted once at the view level — the rows only open it. Every write
+          re-lists from the host afterwards (`reload`), so the list can never
+          show a result the server did not answer with. */}
+      <SkillWriteDialogs
+        client={client}
+        mode={skillWrite}
+        onChanged={reload}
+        onClose={() => setSkillWrite(null)}
+        loadDraft={async (skillId) => {
+          // The read face reports the description but deliberately never the
+          // full body, so the edit dialog can only prefill what it was given —
+          // and the body box stays empty unless the user replaces it.
+          const detail = await client?.skills.get(skillId);
+          return { description: detail?.description ?? "" };
+        }}
+      />
 
       {/* Detail drawer */}
       {drawer && (
@@ -1712,10 +1840,11 @@ function StoreDrawer({
   rootUrl?: string;
 }) {
   const { t } = useTranslation();
-  const name = item.display_name?.zh || item.display_name?.en || item.name;
-  const profession = item.profession?.zh || item.profession?.en;
-  const description = item.display_description?.zh || item.display_description?.en || item.description;
-  const tags = (item.tags ?? []).map((tag) => tag.zh ?? tag.en ?? "").filter(Boolean);
+  const lang = useLocalizedLang();
+  const name = pickLocalized(item.display_name, lang) || item.name;
+  const profession = pickLocalized(item.profession, lang);
+  const description = pickLocalized(item.display_description, lang) || item.description;
+  const tags = pickLocalizedList(item.tags, lang);
   const quickPrompts = item.quick_prompts ?? [];
   return (
     <div className="drawer-body">
@@ -1737,7 +1866,7 @@ function StoreDrawer({
           <h3>{t("catalog.agentQuickPrompts")}</h3>
           <ul>
             {quickPrompts.map((prompt, index) => (
-              <li key={index}>{prompt.zh || prompt.en}</li>
+              <li key={index}>{pickLocalized(prompt, lang)}</li>
             ))}
           </ul>
         </div>
@@ -1879,8 +2008,9 @@ function ConnectorDrawer({
 
 function AgentDrawer({ detail }: { detail: AgentDetail }) {
   const { t } = useTranslation();
-  const displayName = detail.display_name?.zh || detail.display_name?.en || detail.name;
-  const profession = detail.profession?.zh || detail.profession?.en;
+  const lang = useLocalizedLang();
+  const displayName = pickLocalized(detail.display_name, lang) || detail.name;
+  const profession = pickLocalized(detail.profession, lang);
   return (
     <div className="drawer-body">
       <div className="drawer-head">
@@ -1898,15 +2028,15 @@ function AgentDrawer({ detail }: { detail: AgentDetail }) {
           </div>
         </div>
       </div>
-      {(detail.display_description?.zh || detail.display_description?.en || detail.description) && (
-        <p className="drawer-desc">{detail.display_description?.zh || detail.display_description?.en || detail.description}</p>
+      {(pickLocalized(detail.display_description, lang) || detail.description) && (
+        <p className="drawer-desc">{pickLocalized(detail.display_description, lang) || detail.description}</p>
       )}
       {detail.quick_prompts && detail.quick_prompts.length > 0 && (
         <div className="drawer-quick-prompts">
           <h3>{t("catalog.agentQuickPrompts")}</h3>
           <ul>
             {detail.quick_prompts.map((prompt, index) => (
-              <li key={index}>{prompt.zh || prompt.en}</li>
+              <li key={index}>{pickLocalized(prompt, lang)}</li>
             ))}
           </ul>
         </div>

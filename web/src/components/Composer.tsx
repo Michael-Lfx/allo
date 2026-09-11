@@ -21,9 +21,21 @@ import { ContextIndicator } from "./ContextIndicator";
 import { ModelPicker } from "./ModelPicker";
 import { useTranslation } from "react-i18next";
 import { ComposerCatalogMenu } from "./ComposerCatalogMenu";
-import { CommandPalette, type PaletteItem, type PaletteItemKind } from "./CommandPalette";
+import { CommandPalette } from "./CommandPalette";
+import {
+  PALETTE_GROUP_KEYS,
+  commandPaletteRows,
+  filterPaletteItems,
+  type PaletteItem,
+  type PaletteItemKind,
+} from "../lib/palette-model";
 import { useAppStore, registerComposerFocus } from "../store/appStore";
-import { modelChipLabel } from "../ui/format";
+import { latestRunStatus, terminalRunStatus } from "../lib/run-notify";
+import { contextAdvice } from "../lib/context-advice";
+import { costRateText, costText, modelFactsFor, turnCostUsd } from "../lib/model-facts";
+import { steerAvailability } from "../lib/run-steer";
+import { formatTokens, modelChipLabel } from "../ui/format";
+import { pickLocalized, useLocalizedLang } from "../ui/localize";
 import type {
   AgentSummary,
   ConnectorSummary,
@@ -66,6 +78,7 @@ export function Composer(props: {
   const modelOptions = useAppStore((s) => s.modelOptions);
   const modelDirectory = useAppStore((s) => s.modelDirectory);
   const selectedModelKey = useAppStore((s) => s.selectedModelKey);
+  const streamTurnUsage = useAppStore((s) => s.stream.turnUsage);
   const selectedEffort = useAppStore((s) => s.selectedEffort);
   const hasConversation = useAppStore((s) => s.selectedConversationId !== null);
   const composerMenuOpen = useAppStore((s) => s.composerMenuOpen);
@@ -95,6 +108,20 @@ export function Composer(props: {
 
   const setComposerMentions = useAppStore((s) => s.setComposerMentions);
   const composerMentions = useAppStore((s) => s.composerMentions);
+  // W3 中断引导：有在跑的 Run 时，输入框切「引导输入」形态（Enter 走 run/steer，
+  // 不打断当前回合）；Run 到终态后 steerAvailability 变为 terminal，提交被拒。
+  const activeRunId = useAppStore((s) => s.activeRunId);
+  const runEvents = useAppStore((s) => s.runEvents);
+  const runSteerBusy = useAppStore((s) => s.runSteerBusy);
+  const runSteerError = useAppStore((s) => s.runSteerError);
+  const steerRun = useAppStore((s) => s.steerRun);
+  const steering =
+    steerAvailability({
+      hasRun: activeRunId !== null,
+      busy: runSteerBusy,
+      status: latestRunStatus(runEvents),
+      terminal: terminalRunStatus(runEvents) !== null,
+    }) === "available";
 
   /** Pick a catalog entry: record it as a structured mention and backfill the
    *  draft with `@name` so the user sees the reference (docs/agent-store/05
@@ -126,6 +153,11 @@ export function Composer(props: {
   const toggleCatalog = useAppStore((s) => s.toggleCatalog);
   const shareConversation = useAppStore((s) => s.shareConversation);
   const toggleArtifactPanel = useAppStore((s) => s.toggleArtifactPanel);
+  // W1b（R19）：会话动作并入同一面板——动作仍是原 store action（重命名/删除仍走既有
+  // 弹窗流程，不在面板里另建一套），面板只是入口之一。
+  const openRename = useAppStore((s) => s.openRename);
+  const requestDelete = useAppStore((s) => s.requestDelete);
+  const pushToast = useAppStore((s) => s.pushToast);
   const [palette, setPalette] = useState<{ mode: "command" | "mention"; start: number; active: number } | null>(null);
   const [catalogs, setCatalogs] = useState<{
     agents: AgentSummary[];
@@ -139,7 +171,9 @@ export function Composer(props: {
   /** `@name` token → structured mention, so token deletion is observable. */
   const mentionTokensRef = useRef(new Map<string, MentionRef>());
 
-  const localize = (text: LocalizedText | null | undefined): string => (text ? text.zh || text.en || "" : "");
+  // D8=A: localized display text resolves by the current UI language.
+  const lang = useLocalizedLang();
+  const localize = (text: LocalizedText | null | undefined): string => pickLocalized(text, lang);
 
   // Mention mode: load the three catalogs once per connection.
   useEffect(() => {
@@ -176,10 +210,10 @@ export function Composer(props: {
       for (const detail of details) {
         if (!detail) continue;
         const init = localize(detail.default_init_prompt);
-        if (init) items.push({ id: `init:${detail.id}`, kind: "prompt", label: init, hint: detail.name });
+        if (init) items.push({ id: `init:${detail.id}`, kind: "prompt", label: init, hint: detail.name, groupKey: PALETTE_GROUP_KEYS.prompt });
         (detail.quick_prompts ?? []).forEach((prompt, index) => {
           const text = localize(prompt);
-          if (text) items.push({ id: `qp:${detail.id}:${index}`, kind: "prompt", label: text, hint: detail.name });
+          if (text) items.push({ id: `qp:${detail.id}:${index}`, kind: "prompt", label: text, hint: detail.name, groupKey: PALETTE_GROUP_KEYS.prompt });
         });
       }
       setPalettePrompts(items);
@@ -233,36 +267,51 @@ export function Composer(props: {
 
   const paletteItems = useMemo<PaletteItem[]>(() => {
     if (!palette) return [];
-    const matches = (label: string) => !paletteQuery || label.toLowerCase().includes(paletteQuery);
+    const rowsFor = (kind: PaletteItemKind, list: Array<{ id: string; name: string }>): PaletteItem[] =>
+      list.map((row) => ({
+        id: row.id,
+        kind,
+        groupKey: PALETTE_GROUP_KEYS.mention,
+        label: localize((row as { display_name?: LocalizedText | null }).display_name) || row.name,
+      }));
     if (palette.mode === "command") {
       const actions: PaletteItem[] = [
-        { id: "newChat", kind: "action", label: t("palette.newChat") },
-        { id: "newChatFolder", kind: "action", label: t("palette.newChatFolder") },
-        { id: "store", kind: "action", label: t("palette.store") },
-        { id: "artifacts", kind: "action", label: t("palette.artifacts") },
-        { id: "settings", kind: "action", label: t("palette.settings") },
-        { id: "share", kind: "action", label: t("palette.share") },
+        { id: "newChat", kind: "action", label: t("palette.newChat"), actionId: "newChat", groupKey: PALETTE_GROUP_KEYS.command },
+        { id: "newChatFolder", kind: "action", label: t("palette.newChatFolder"), actionId: "newChatFolder", groupKey: PALETTE_GROUP_KEYS.command },
+        { id: "store", kind: "action", label: t("palette.store"), actionId: "store", groupKey: PALETTE_GROUP_KEYS.command },
+        { id: "artifacts", kind: "action", label: t("palette.artifacts"), actionId: "artifacts", groupKey: PALETTE_GROUP_KEYS.command },
+        { id: "settings", kind: "action", label: t("palette.settings"), actionId: "settings", groupKey: PALETTE_GROUP_KEYS.command },
+        { id: "share", kind: "action", label: t("palette.share"), actionId: "share", groupKey: PALETTE_GROUP_KEYS.command },
       ];
-      return [
-        ...actions.filter((item) => matches(item.label)),
-        ...palettePrompts.filter((item) => matches(item.label)),
-      ];
+      // W1b（R19）：会话动作与模型 / 思考等级并入同一列表；上下文在这里现算，避免
+      // 把 `currentConversation` / `currentModel` 的 memo 提到本 memo 之前。
+      const activeConversation = conversations.find((item) => item.conversation_id === selectedConversationId) ?? null;
+      const activeModel = activeConversation?.model ?? (providerId && model ? { provider_id: providerId, model } : null);
+      return filterPaletteItems(
+        commandPaletteRows(
+          {
+            hasConversation: selectedConversationId !== null,
+            models: modelDirectory,
+            selectedModelKey,
+            currentModel: activeModel,
+            currentEffort: selectedEffort,
+          },
+          t,
+          { actions, prompts: palettePrompts },
+        ),
+        paletteQuery,
+      );
     }
     if (!catalogs) return [];
-    const rows = (kind: PaletteItemKind, list: Array<{ id: string; name: string }>): PaletteItem[] =>
-      list
-        .map((row) => ({
-          id: row.id,
-          kind,
-          label: localize((row as { display_name?: LocalizedText | null }).display_name) || row.name,
-        }))
-        .filter((item) => matches(item.label));
-    return [
-      ...rows("agent", catalogs.agents),
-      ...rows("skill", catalogs.skills),
-      ...rows("connector", catalogs.connectors),
-    ];
-  }, [palette, paletteQuery, palettePrompts, catalogs, t]);
+    return filterPaletteItems(
+      [
+        ...rowsFor("agent", catalogs.agents),
+        ...rowsFor("skill", catalogs.skills),
+        ...rowsFor("connector", catalogs.connectors),
+      ],
+      paletteQuery,
+    );
+  }, [palette, paletteQuery, palettePrompts, catalogs, t, conversations, selectedConversationId, providerId, model, modelDirectory, selectedModelKey, selectedEffort]);
 
   /** Swap the typed `/query` or `@query` (trigger → caret) for `inserted`. */
   const replaceTrigger = (inserted: string) => {
@@ -279,6 +328,16 @@ export function Composer(props: {
       case "artifacts": toggleArtifactPanel(); break;
       case "settings": openSettings(); break;
       case "share": void shareConversation(); break;
+      // W1b（R19）：会话动作——重命名 / 删除仍走既有弹窗，面板只做入口。
+      case "session.rename": if (selectedConversationId) openRename(selectedConversationId); break;
+      case "session.delete": if (selectedConversationId) requestDelete(selectedConversationId); break;
+      case "session.share": void shareConversation(); break;
+      case "session.copyId":
+        if (selectedConversationId) {
+          void navigator.clipboard?.writeText(selectedConversationId);
+          pushToast("success", "palette.sessionIdCopied");
+        }
+        break;
       default: break;
     }
   };
@@ -286,10 +345,16 @@ export function Composer(props: {
   const pickPaletteItem = (item: PaletteItem) => {
     const current = palette;
     if (!current) return;
+    // 不可用的行（例如没有会话时的会话动作）即使被键盘选中也不执行。
+    if (item.disabled) return;
     if (current.mode === "command") {
-      replaceTrigger(item.kind === "action" ? "" : item.label);
+      const insertsText = item.kind === "prompt";
+      replaceTrigger(insertsText ? item.label : "");
       setPalette(null);
-      if (item.kind === "action") runPaletteAction(item.id);
+      if (insertsText) return;
+      if (item.kind === "action" || item.kind === "session") runPaletteAction(item.actionId ?? item.id);
+      else if (item.kind === "model" && item.modelKey) chooseModel(item.modelKey);
+      else if (item.kind === "effort") chooseEffort(item.effort ?? "");
       return;
     }
     const kind: MentionKind = item.kind === "agent" ? "agent" : item.kind === "skill" ? "skill" : "connector";
@@ -334,6 +399,36 @@ export function Composer(props: {
     () => currentConversation == null || !currentConversation.workspace_id ? null : workspaces.find((w) => w.workspace_id === currentConversation.workspace_id) ?? null,
     [currentConversation, workspaces],
   );
+
+  /** W9（R14）：上下文建议——按服务端测量值分级，未测量就不提示（不猜窗口）。 */
+  const contextAdviceNow = contextAdvice(currentConversation?.context_usage ?? null);
+
+  /**
+   * W9（R14）：本轮用量行。token 数字来自实时 `turn_completed` 事件，模型键是事件到达
+   * 那一刻的快照（用户之后换模型也不会把旧轮次的金额按新费率重算）。
+   *
+   * 金额只在**费率与 token 两者都在**时出现：目录没有该模型的价格就只显示 token，
+   * 整段不渲染金额——不拿 0 站台，更不拿上下文占用乘费率冒充本轮花费。
+   */
+  const turnUsageNow = useMemo(() => {
+    if (!streamTurnUsage) return null;
+    const { usage, modelKey: usageModelKey } = streamTurnUsage;
+    const facts = modelFactsFor(modelOptions, usageModelKey);
+    const rate = facts ? costRateText(facts) : null;
+    const amount = costText(turnCostUsd(facts, usage));
+    const tokens = t("context.turnUsage", {
+      input: formatTokens(usage.input_tokens),
+      output: formatTokens(usage.output_tokens),
+    });
+    return {
+      text: amount ? `${tokens} · ${amount}` : tokens,
+      title: amount !== null && rate !== null
+        ? t("context.turnUsageCost", { input: usage.input_tokens, output: usage.output_tokens, rate, cost: amount })
+        : usageModelKey
+          ? t("context.turnUsageNoRate", { input: usage.input_tokens, output: usage.output_tokens })
+          : t("context.turnUsageNoModel", { input: usage.input_tokens, output: usage.output_tokens }),
+    };
+  }, [streamTurnUsage, modelOptions, t]);
 
   /** Register this textarea so the store's send / create flows can refocus it
    *  after a conversation opens (they call `composerFocusRequest`). */
@@ -402,13 +497,19 @@ export function Composer(props: {
           }
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
-            void send();
+            void (steering ? steerRun(draft) : send());
           }
         }}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={() => { composingRef.current = false; }}
-        placeholder={connected ? t("composer.placeholderConnected") : t("composer.placeholderDisconnected")}
-        disabled={!connected || isSending || isProcessing}
+        placeholder={
+          !connected
+            ? t("composer.placeholderDisconnected")
+            : steering
+              ? t("composer.placeholderSteer")
+              : t("composer.placeholderConnected")
+        }
+        disabled={!connected || isSending || isProcessing || runSteerBusy}
         rows={3}
         aria-label="消息内容"
         aria-keyshortcuts="Enter"
@@ -455,6 +556,12 @@ export function Composer(props: {
           </div>
         </div>
         <div className="composer-footer-right">
+          {/* W9（R14）：本轮用量（token 恒显，金额仅在费率与 token 都在时显示）。 */}
+          {currentConversation && turnUsageNow && (
+            <span className="turn-usage" title={turnUsageNow.title} aria-label={turnUsageNow.title}>
+              {turnUsageNow.text}
+            </span>
+          )}
           {currentConversation && <ContextIndicator usage={currentConversation.context_usage ?? null} compact />}
           <div className="model-picker-wrap">
             <button className="model-chip" type="button" onClick={toggleModelPicker} onMouseDown={(event) => event.stopPropagation()} title={t("composer.modelPickerTitle")} aria-expanded={modelPickerOpen}>
@@ -478,11 +585,33 @@ export function Composer(props: {
           <button className="voice-button" type="button" aria-label={t("composer.voice")} title={t("composer.voice")}>
             <Mic size={17} strokeWidth={1.8} />
           </button>
-          <button className="send-button" type="button" onClick={() => void send()} disabled={!connected || !draft.trim() || isSending || isProcessing} aria-label={t("composer.send")}>
+          <button
+            className="send-button"
+            type="button"
+            onClick={() => void (steering ? steerRun(draft) : send())}
+            disabled={!connected || !draft.trim() || isSending || isProcessing || runSteerBusy}
+            aria-label={steering ? t("composer.steerSend") : t("composer.send")}
+            title={steering ? t("composer.steerSend") : t("composer.send")}
+          >
             <ArrowUp size={18} strokeWidth={2} />
           </button>
         </div>
       </div>
+      {/* W3: while a Run is live the composer is in steer mode; the hint states
+          that Enter goes to the run rather than starting a new turn. */}
+      {steering && <p className="composer-run-hint">{t("composer.steerHint")}</p>}
+      {/* W9（R14）：接近上限的建议。压缩不是协议能力，所以只建议「新建会话」。 */}
+      {contextAdviceNow?.level === "near" && (
+        <p className="composer-context-hint">
+          {t("common.contextNearLimit", { percent: contextAdviceNow.percent })}
+          <button className="quiet-button" type="button" onClick={() => void newChat()}>{t("sidebar.newChat")}</button>
+        </p>
+      )}
+      {runSteerError && (
+        <p className="composer-run-error" role="alert">
+          {t(runSteerError, { defaultValue: runSteerError })}
+        </p>
+      )}
     </div>
     {!hasConversation && (
     <div className={`composer-workspace ${workspacePickerOpen ? "is-open" : ""}`} ref={workspacePickerRef}>

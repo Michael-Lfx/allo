@@ -1853,7 +1853,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     input_tokens = agent_result.usage.input_tokens,
                     output_tokens = agent_result.usage.output_tokens,
                     ?stop_reason,
-                    "Nomi engine.execute_turn() completed; closing exact post-turn effects before Finish"
+                    "Nomi engine.execute_turn() completed; starting post-turn effects (R30: memory distillation is spawned, not awaited, so it no longer delays Finish)"
                 );
 
                 self.backend_output_sink.fail_active_tool_calls(&format!(
@@ -1962,7 +1962,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     }),
                 );
 
-                // —— Post-session memory distillation (exact turn child) ——
+                // —— Post-session memory distillation (background exact child) ——
                 // Eligibility gates, cheapest first:
                 //   1. host opt-in flag (token cost; default off)
                 //   2. this session distills at all (distill_dir set; companion
@@ -1970,11 +1970,23 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 //   3. run-time origin empty (cron/autowork/idmm turns excluded,
                 //      same rule as the collector's payload_origin red line)
                 // All satisfied → snapshot the just-saved transcript, release
-                // the engine lock, then await the complete provider+apply
-                // effect. Finish is forbidden until this child closes; stop
-                // drops the provider future before it can reach the synchronous
-                // apply stage. Distill failures remain best-effort and never
-                // masquerade as a failed model turn.
+                // the engine lock, then spawn the provider+apply child in the
+                // background (R30 / `21` D9=A: "回答完成" ＝ "轮次结束", so Finish
+                // is no longer forbidden until this child closes).
+                //
+                // Two invariants are deliberately preserved:
+                //   * the transcript snapshot is still taken *before* the engine
+                //     lock is released (order unchanged), and
+                //   * the child holds a clone of this turn's `turn_cancel`, so a
+                //     stop/kill that lands before or after the terminal event
+                //     drops the provider future before it can reach the
+                //     synchronous apply stage — no late provider call, no late
+                //     filesystem write (same `await_exact_turn_child` contract as
+                //     before, now enforced inside the spawned task).
+                // A turn already cancelled when this point is reached starts no
+                // child at all; the cancel branch below owns the terminal event.
+                // Distill failures remain best-effort (debug/warn logs only) and
+                // never masquerade as a failed model turn.
                 let origin_is_human = data
                     .origin
                     .as_deref()
@@ -2002,19 +2014,17 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     self.spawn_goal_persist(state);
                 }
 
-                let distill_completed = match distill_job {
-                    Some((cfg, dir, transcript)) => {
-                        super::distill::run_distill_exact_turn(
-                            &turn_cancel,
-                            cfg,
-                            dir,
-                            transcript,
-                        )
-                        .await
-                    }
-                    None => !turn_cancel.is_cancelled(),
-                };
-                if !distill_completed || turn_cancel.is_cancelled() {
+                if let Some((cfg, dir, transcript)) = distill_job {
+                    // `false` = the token was already cancelled; the cancel
+                    // branch below is then the terminal owner.
+                    let _spawned = super::distill::spawn_distill_exact_turn(
+                        turn_cancel.clone(),
+                        cfg,
+                        dir,
+                        transcript,
+                    );
+                }
+                if turn_cancel.is_cancelled() {
                     self.emit_observation_turn_end(
                         nomi_agent_trace::ExecutionStatus::Cancelled,
                         elapsed_ms,
@@ -4301,6 +4311,240 @@ mod tests {
         assert!(error.to_string().contains("Max output tokens"));
     }
 
+    // -- R30 (`21` D9=A): distillation is a background child -------------------
+
+    /// Install a distillation child the test holds open: it signals `entered`
+    /// when it starts and only completes after `release` receives a permit.
+    fn hold_distillation_child(
+        dir: &std::path::Path,
+        entered: &Arc<tokio::sync::Semaphore>,
+        release: &Arc<tokio::sync::Semaphore>,
+        completed: &Arc<AtomicUsize>,
+    ) {
+        let entered = Arc::clone(entered);
+        let release = Arc::clone(release);
+        let completed = Arc::clone(completed);
+        super::super::distill::install_test_child(
+            dir,
+            Box::new(move || {
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                let completed = Arc::clone(&completed);
+                Box::pin(async move {
+                    entered.add_permits(1);
+                    let _ = release.acquire().await;
+                    completed.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+        );
+    }
+
+    fn quiet_send_data(content: &str) -> SendMessageData {
+        SendMessageData {
+            content: content.into(),
+            msg_id: "msg-r30".into(),
+            source_message_id: None,
+            files: Vec::new(),
+            inject_skills: Vec::new(),
+            loaded_skill_snapshots: Vec::new(),
+            origin: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_does_not_wait_for_the_background_distillation_child() {
+        // R30 / `21` D9=A: "回答完成" ＝ "轮次结束". The turn's terminal event must be
+        // published while the distillation child is still in flight, and the child
+        // must then still complete inside the same lifecycle. Both facts are
+        // asserted with channels (child held open by the test) — never by timing.
+        let dir = tempfile::tempdir().unwrap();
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        hold_distillation_child(dir.path(), &entered, &release, &completed);
+
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta("the answer".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Default::default(),
+            },
+        ]]));
+        let mut agent = make_agent_with_provider(provider);
+        agent.distill_dir = Some(dir.path().to_path_buf());
+        assert!(
+            super::super::distill::distill_enabled(&agent.distill_cfg),
+            "this test needs the distillation gate ON; NOMIFUN_MEMORY_DISTILL must be unset"
+        );
+        let mut rx = agent.subscribe();
+
+        let send = tokio::spawn(async move {
+            let result = agent.send_message(quiet_send_data("remember this")).await;
+            (result, agent)
+        });
+
+        // The child is in flight before anything below is asserted.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            entered.acquire(),
+        )
+        .await
+        .expect("the distillation child must be spawned for an eligible turn")
+        .expect("entered semaphore stays open")
+        .forget();
+
+        // Nothing has released the child yet: a `Finish`-blocking turn would hang
+        // here instead of returning.
+        let (result, agent) = tokio::time::timeout(std::time::Duration::from_secs(5), send)
+            .await
+            .expect("the turn must not await the distillation child")
+            .expect("send task must not panic");
+        assert!(result.is_ok(), "turn must succeed: {result:?}");
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            0,
+            "the child must still be in flight when the turn already returned"
+        );
+        assert_eq!(agent.status(), Some(ConversationStatus::Finished));
+
+        let finish_reasons = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                AgentStreamEvent::Finish(data) => Some(data.stop_reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            finish_reasons,
+            vec![Some(TurnStopReason::EndTurn)],
+            "the terminal Finish must be published before distillation completes"
+        );
+
+        // The held child still runs to completion in the same lifecycle.
+        release.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while completed.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the background distillation child must complete after the terminal event");
+    }
+
+    #[tokio::test]
+    async fn cancelled_turn_never_starts_distillation_and_keeps_the_cancelled_terminal() {
+        // Cancellation semantics are unchanged by R30: a cancelled turn still
+        // terminates as `TurnStopReason::Cancelled` and leaves no distillation
+        // child behind (pre-spawn judgment).
+        let dir = tempfile::tempdir().unwrap();
+        let child_runs = Arc::new(AtomicUsize::new(0));
+        let hook_runs = Arc::clone(&child_runs);
+        super::super::distill::install_test_child(
+            dir.path(),
+            Box::new(move || {
+                let hook_runs = Arc::clone(&hook_runs);
+                Box::pin(async move {
+                    hook_runs.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+        );
+
+        let provider = Arc::new(BlockingProvider::new());
+        let mut agent = make_agent_with_provider(provider.clone());
+        agent.distill_dir = Some(dir.path().to_path_buf());
+        let agent = Arc::new(agent);
+        let mut rx = agent.subscribe();
+        let send = {
+            let agent = Arc::clone(&agent);
+            tokio::spawn(async move { agent.send_message(quiet_send_data("stop me")).await })
+        };
+        provider.called.acquire().await.unwrap().forget();
+
+        agent.cancel().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), send)
+            .await
+            .expect("cancellation must not wait for anything")
+            .expect("send task must not panic")
+            .expect("a cancelled turn still returns Ok");
+
+        assert_eq!(agent.status(), Some(ConversationStatus::Finished));
+        let finish_reasons = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                AgentStreamEvent::Finish(data) => Some(data.stop_reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            finish_reasons,
+            vec![Some(TurnStopReason::Cancelled)],
+            "a cancelled turn must still terminalize as Cancelled"
+        );
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            child_runs.load(Ordering::SeqCst),
+            0,
+            "a cancelled turn must not leave a distillation child running"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_distillation_never_turns_the_turn_into_an_error() {
+        // A child that returns without doing anything stands in for the real
+        // provider-failure path (`run_distill` returns `()` after a warn log).
+        // The turn must stay a successful EndTurn turn with no Error event.
+        let dir = tempfile::tempdir().unwrap();
+        let child_runs = Arc::new(AtomicUsize::new(0));
+        let hook_runs = Arc::clone(&child_runs);
+        super::super::distill::install_test_child(
+            dir.path(),
+            Box::new(move || {
+                let hook_runs = Arc::clone(&hook_runs);
+                Box::pin(async move {
+                    hook_runs.fetch_add(1, Ordering::SeqCst);
+                })
+            }),
+        );
+
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta("the answer".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Default::default(),
+            },
+        ]]));
+        let mut agent = make_agent_with_provider(provider);
+        agent.distill_dir = Some(dir.path().to_path_buf());
+        let mut rx = agent.subscribe();
+
+        agent
+            .send_message(quiet_send_data("distill me"))
+            .await
+            .expect("a best-effort distillation failure must not fail the send");
+
+        assert_eq!(agent.status(), Some(ConversationStatus::Finished));
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentStreamEvent::Finish(_))),
+            "the turn must still publish its Finish"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentStreamEvent::Error(_))),
+            "distillation is best-effort and must never surface as a session error"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while child_runs.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the gate was open, so the child must have run");
+    }
+
     fn make_agent_with_provider(provider: Arc<dyn LlmProvider>) -> NomiAgentManager {
         make_agent_with_provider_and_max_turns(provider, Some(10))
     }
@@ -4809,13 +5053,32 @@ mod tests {
             .iter()
             .find(|message| message.role == Role::User)
             .expect("provider request should contain the user message");
-        assert!(matches!(
-            &user.content[..],
-            [ContentBlock::Text { text }, ContentBlock::Image { media_type, data }]
-                if text == "What is shown?"
-                    && media_type == "image/png"
-                    && !data.is_empty()
-        ));
+        // The turn tail carries the shared `[Context]` block (date, plan, …) ahead
+        // of the user's own content, so the question is asserted by value instead
+        // of by position, and the attachment by its own block.
+        assert!(
+            user.content.iter().any(
+                |block| matches!(block, ContentBlock::Text { text } if text == "What is shown?")
+            ),
+            "the user question must reach the provider verbatim: {:?}",
+            user.content
+        );
+        let images = user
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image { media_type, data } => Some((media_type, data)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            images.len(),
+            1,
+            "the attached PNG must reach the provider as one image block: {:?}",
+            user.content
+        );
+        assert_eq!(images[0].0, "image/png");
+        assert!(!images[0].1.is_empty());
     }
 
     #[tokio::test]
@@ -5045,16 +5308,40 @@ mod tests {
                 },
                 LlmEvent::Error("malformed structured tool arguments".into()),
             ],
-            vec![LlmEvent::Done {
-                stop_reason: StopReason::MaxTokens,
-                usage: Default::default(),
-            }],
+            // The second turn's output ceiling truncates a `Write` call, so the
+            // restart happens inside the engine (`round.rs`) instead of in a
+            // host-side continue loop — that is the path which must not recover
+            // the failed call above.
+            vec![
+                LlmEvent::ToolUseTruncated {
+                    id: "cutoff-preview".into(),
+                    name: "Write".into(),
+                    argument_bytes: 8_192,
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::MaxTokens,
+                    usage: Default::default(),
+                },
+            ],
             vec![LlmEvent::Done {
                 stop_reason: StopReason::EndTurn,
                 usage: Default::default(),
             }],
         ]));
-        let agent = make_agent_with_provider(provider.clone());
+        let mut agent = make_agent_with_provider(provider.clone());
+        // `Write` must be advertised: it makes the scripted `LlmEvent::Error` —
+        // not an "unadvertised tool progress" violation — the cause of the first
+        // turn's failure, and the engine drops a truncation naming a tool the
+        // request never advertised, so without this the second turn would not
+        // restart at all.
+        assert!(
+            agent
+                .engine
+                .get_mut()
+                .registry_mut()
+                .register(Box::new(PreviewOnlyWriteTool)),
+            "Write must be advertised in the request that emits its progress"
+        );
         let mut rx = agent.subscribe();
 
         let first_result = agent
@@ -5068,7 +5355,14 @@ mod tests {
                 origin: None,
             })
             .await;
-        assert!(first_result.is_err());
+        let first_failure = format!(
+            "{:?}",
+            first_result.expect_err("a provider error must fail the turn")
+        );
+        assert!(
+            first_failure.contains("malformed structured tool arguments"),
+            "the turn must fail on the provider's own error: {first_failure}"
+        );
 
         let first_statuses = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -5106,6 +5400,8 @@ mod tests {
             !resurrected,
             "a later MaxTokens continuation must not recover a failed prior call"
         );
+        // One call for the failed turn, one for the truncated pass, one for the
+        // engine's restart pass.
         assert_eq!(provider.calls(), 3);
     }
 
@@ -5614,13 +5910,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_tokens_continuation_prompt_forbids_repeating_large_write() {
+    // The host-side auto-continue prompt was deleted (`cbe698ff2`): a
+    // ceiling-truncated tool call is now a resumable round INSIDE the engine
+    // (`crates/agent/nomi-agent/src/round.rs`), and a truncation is only
+    // evidence when the provider says so (`LlmEvent::ToolUseTruncated`). This
+    // keeps the original guarantees — the deleted draft is never resumed, and
+    // uncommitted provider progress never enters the frontend lifecycle.
+    async fn max_tokens_truncated_write_restarts_without_repeating_the_large_write() {
         let provider = Arc::new(ScriptedProvider::new(vec![
             vec![
                 LlmEvent::ToolUseDelta {
                     id: "call-large-write".into(),
                     name: "Write".into(),
                     input: None,
+                },
+                LlmEvent::ToolUseTruncated {
+                    id: "call-large-write".into(),
+                    name: "Write".into(),
+                    argument_bytes: 65_536,
                 },
                 LlmEvent::Done {
                     stop_reason: StopReason::MaxTokens,
@@ -5657,24 +5964,59 @@ mod tests {
             .unwrap();
 
         let requests = provider.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests.len(),
+            2,
+            "the engine must re-attempt the requirement inside this one turn"
+        );
+        // The restart re-states the ORIGINAL user requirement verbatim (the
+        // engine's own section says so, and deliberately does not restate it)
+        // instead of appending a host-authored "continue where you left off"
+        // prompt.
         let continuation_text = requests[1]
             .messages
             .iter()
             .rev()
             .find(|message| message.role == Role::User)
-            .and_then(|message| {
-                message.content.iter().find_map(|block| match block {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
+            .map(|message| {
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
             .expect("continuation request should contain a user text prompt");
 
-        assert!(continuation_text.contains("Do not call Write with a full large file in one call"));
-        assert!(continuation_text.contains("First create a small complete deliverable"));
-        assert!(continuation_text.contains("append or edit in chunks"));
-        assert!(continuation_text.contains("verify the target file exists"));
+        assert!(
+            continuation_text.contains("create a polished single page site"),
+            "the restart must restate the original requirement: {continuation_text}"
+        );
+        assert!(
+            !continuation_text.contains("continue where you left off"),
+            "the deleted host auto-continue prompt must not come back: {continuation_text}"
+        );
+        assert!(
+            continuation_text.contains("[resumable round 2/3]"),
+            "the second pass must be marked as a restart: {continuation_text}"
+        );
+        assert!(
+            continuation_text.contains("WHAT WAS CUT OFF:"),
+            "the truncated call must be carried into the restart: {continuation_text}"
+        );
+        assert!(
+            continuation_text.contains("Write (65536 bytes of arguments streamed, NOT executed)"),
+            "the cutoff entry must name the tool and its payload size: {continuation_text}"
+        );
+        assert!(
+            continuation_text.contains(
+                "Split any large file: write a small complete version first, then edit or append."
+            ),
+            "the large-write rule must survive the mechanism change: {continuation_text}"
+        );
 
         let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         let leaked_partial_call = events.iter().any(|event| {

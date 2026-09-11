@@ -7,6 +7,7 @@
 //! layer.
 
 use async_trait::async_trait;
+use std::path::Path;
 
 use nomifun_api_types::{
     AppServerCompatibilityStatus, AppServerConnectorDetail, AppServerConnectorProbeResult,
@@ -20,7 +21,9 @@ use nomifun_app_server::{
     ModelCatalogProvider, SkillCatalogProvider,
 };
 use nomifun_common::{AppError, McpServerStatus};
-use nomifun_extension::skill_service::{self, SkillListItem, SkillPaths, SkillSource};
+use nomifun_extension::skill_service::{
+    self, SkillListItem, SkillOrigin, SkillPaths, SkillSource,
+};
 use nomifun_mcp::{McpConfigService, McpConnectionTestService, McpOAuthService};
 
 // ---------------------------------------------------------------------------
@@ -49,7 +52,7 @@ impl AppServerSkillCatalog {
     }
 }
 
-fn skill_summary(item: SkillListItem) -> AppServerSkillSummary {
+fn skill_summary(item: SkillListItem, origin: SkillOrigin, writable: bool) -> AppServerSkillSummary {
     let (source, compatibility) = match item.source {
         SkillSource::Builtin => ("builtin", AppServerCompatibilityStatus::Compatible),
         SkillSource::Extension => ("extension", AppServerCompatibilityStatus::CompatibleWithAdapter),
@@ -64,6 +67,11 @@ fn skill_summary(item: SkillListItem) -> AppServerSkillSummary {
         description: if description.is_empty() { None } else { Some(description.to_owned()) },
         version: source.to_owned(),
         source: source.to_owned(),
+        // `source: custom` covers every unmanaged-root skill; `origin` is what
+        // separates a writable user skill from an installed marketplace
+        // product (both `custom`) and is the fact the write face enforces.
+        origin: origin.as_str().to_owned(),
+        writable,
         compatibility_status: compatibility,
         enabled: true,
         required_connectors: Vec::new(),
@@ -77,7 +85,12 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
             .list_items()
             .await?
             .into_iter()
-            .map(skill_summary)
+            .map(|item| {
+                let origin = skill_service::skill_origin_of(&self.paths, Path::new(&item.location));
+                let writable =
+                    skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
+                skill_summary(item, origin, writable)
+            })
             .collect())
     }
 
@@ -88,14 +101,23 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
             .into_iter()
             .find(|skill| skill.name == id)
             .ok_or_else(|| AppError::NotFound(format!("skill {id} not found")))?;
+        let origin = skill_service::skill_origin_of(&self.paths, Path::new(&item.location));
+        let writable =
+            skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
         // Public body is a bounded, trimmed summary. Internal routing rules,
         // credentials and the full raw Markdown stay behind the seam.
-        let instructions_summary = std::fs::read_to_string(&item.location)
-            .ok()
-            .map(|body| body.trim().chars().take(1200).collect::<String>())
-            .filter(|body| !body.is_empty());
+        //
+        // The location is a *directory* for every user-root skill
+        // (`scan_skill_dirs` records directories, built-ins record the
+        // manifest), so the manifest is resolved rather than assumed.
+        let instructions_summary = std::fs::read_to_string(
+            skill_service::skill_manifest_path(Path::new(&item.location)),
+        )
+        .ok()
+        .map(|body| body.trim().chars().take(1200).collect::<String>())
+        .filter(|body| !body.is_empty());
         Ok(AppServerSkillDetail {
-            summary: skill_summary(item),
+            summary: skill_summary(item, origin, writable),
             mode: "store-agent".into(),
             invocation_policy: "model-auto".into(),
             instructions_summary,
@@ -626,6 +648,117 @@ max_context_size = 1000000
         assert_eq!(list.items.len(), 1);
         // No DB provider and no config default → nothing flagged default.
         assert!(!list.items[0].is_default);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- Skill read face: origin / writable / bounded body (`16` R17) -------
+
+    /// Temp `SkillPaths` for the skill read face. Every root is inside a fresh
+    /// directory, so a real disk layout can be laid out per test.
+    fn temp_skill_paths() -> (std::path::PathBuf, SkillPaths) {
+        let dir = std::env::temp_dir().join(format!("allo-skill-read-{}", nomifun_common::generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp skill dir");
+        let paths = SkillPaths {
+            data_dir: dir.clone(),
+            user_skills_dir: dir.join("skills"),
+            cron_skills_dir: dir.join("cron/skills"),
+            builtin_skills_dir: dir.join("builtin-skills"),
+            builtin_rules_dir: dir.join("rules"),
+            preset_rules_dir: dir.join("preset-rules"),
+            preset_skills_dir: dir.join("preset-skills"),
+            catalog_roots: Default::default(),
+        };
+        (dir, paths)
+    }
+
+    fn write_manifest(dir: &std::path::Path, name: &str, description: &str, body: &str) {
+        std::fs::create_dir_all(dir).expect("skill dir");
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+        )
+        .expect("skill manifest");
+    }
+
+    /// The read face is what a UI keys its write buttons off, so the three
+    /// ownership classes the write face distinguishes must already be
+    /// distinguishable here — and the bounded body must stay bounded.
+    #[tokio::test]
+    async fn skill_read_face_reports_origin_and_writability_per_layout() {
+        let (dir, paths) = temp_skill_paths();
+        write_manifest(
+            &paths.builtin_skills_dir.join("builtin-skill"),
+            "builtin-skill",
+            "a built-in",
+            "builtin body",
+        );
+        write_manifest(
+            &paths
+                .user_skills_dir
+                .join("agent-store")
+                .join("0190f5fe-7c00-7a00-8000-000000000301")
+                .join("market-skill"),
+            "market-skill",
+            "an installed product",
+            "market body",
+        );
+        write_manifest(
+            &paths.user_skills_dir.join("shared").join("shared-skill"),
+            "shared-skill",
+            "a companion shared skill",
+            "shared body",
+        );
+        let long_body = "x".repeat(3000);
+        write_manifest(
+            &paths.user_skills_dir.join("user-skill"),
+            "user-skill",
+            "a user skill",
+            &long_body,
+        );
+
+        let catalog = AppServerSkillCatalog::new(paths.clone());
+        let listed = catalog.list().await.expect("list");
+        let by_name = |name: &str| {
+            listed
+                .iter()
+                .find(|skill| skill.name == name)
+                .unwrap_or_else(|| panic!("{name} must be listed: {:?}", listed.iter().map(|s| &s.name).collect::<Vec<_>>()))
+                .clone()
+        };
+
+        // Only the flat user-root skill is writable, and each class reports the
+        // owner it actually has — `source` alone calls three of these "custom".
+        let user = by_name("user-skill");
+        assert_eq!(user.source, "custom");
+        assert_eq!(user.origin, "user");
+        assert!(user.writable);
+        let market = by_name("market-skill");
+        assert_eq!(market.source, "custom");
+        assert_eq!(market.origin, "marketplace");
+        assert!(!market.writable);
+        let shared = by_name("shared-skill");
+        assert_eq!(shared.origin, "shared");
+        assert!(!shared.writable);
+        let builtin = by_name("builtin-skill");
+        assert_eq!(builtin.source, "builtin");
+        assert_eq!(builtin.origin, "builtin");
+        assert!(!builtin.writable);
+
+        // `skill/get` reads the manifest of a *user* skill, whose recorded
+        // location is a directory, and still bounds the body to 1200 chars.
+        let detail = catalog.get("user-skill").await.expect("get user skill");
+        assert_eq!(detail.summary.origin, "user");
+        assert!(detail.summary.writable);
+        let summary = detail.instructions_summary.expect("bounded summary");
+        assert_eq!(summary.chars().count(), 1200);
+        assert!(!summary.contains(&"x".repeat(1201)));
+        // The built-in path was already a manifest path and keeps working.
+        let builtin_detail = catalog.get("builtin-skill").await.expect("get builtin");
+        assert_eq!(
+            builtin_detail.instructions_summary.as_deref(),
+            Some("---\nname: builtin-skill\ndescription: a built-in\n---\n\nbuiltin body")
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -27,7 +27,8 @@ pub use engine::AgentExecutionEngine;
 pub use production::AgentExecutionEngineConfig;
 pub use routes::agent_execution_routes;
 pub use runtime_adapter::{
-    AgentRunEvent, AgentRunReceipt, AgentRunResult, AgentRunStatus, AgentRunSteerRequest,
+    AgentRunEvent, AgentRunPlan, AgentRunPlanAttempt, AgentRunPlanDependency, AgentRunPlanStep,
+    AgentRunReceipt, AgentRunResult, AgentRunStatus, AgentRunSteerRequest,
     AgentRunView, AgentRuntimeAdapter, PresetSnapshot, PresetSnapshotInput, RuntimeAdapterError,
 };
 pub use template_routes::agent_execution_template_routes;

@@ -18,6 +18,7 @@ export function MessageList() {
   const { t } = useTranslation();
   const messages = useAppStore((s) => s.stream.messages);
   const isProcessing = useAppStore((s) => s.stream.isProcessing);
+  const wrapUp = useAppStore((s) => s.stream.wrapUp);
   const hasMore = useAppStore((s) => s.stream.hasMore);
   const loadingOlder = useAppStore((s) => s.stream.loadingOlder);
   const loadOlderHistory = useAppStore((s) => s.loadOlderHistory);
@@ -29,12 +30,14 @@ export function MessageList() {
   const model = useAppStore((s) => s.model);
   const isNewConversation = useAppStore((s) => s.selectedConversationId === null);
   const error = useAppStore((s) => s.error);
+  const turnActionError = useAppStore((s) => s.turnActionError);
   const resyncNotice = useAppStore((s) => s.resyncNotice);
   const shareNotice = useAppStore((s) => s.shareNotice);
 
   const openSettings = useAppStore((s) => s.openSettings);
   const dismissError = useAppStore((s) => s.dismissError);
   const dismissResync = useAppStore((s) => s.dismissResync);
+  const dismissTurnActionError = useAppStore((s) => s.dismissTurnActionError);
 
   const currentModel = ((): ProviderWithModel | null => {
     const current = conversations.find((item) => item.conversation_id === selectedConversationId);
@@ -110,6 +113,21 @@ export function MessageList() {
   const virtualItems = virtualizer.getVirtualItems();
   const hasTranscript = messages.length > 0;
 
+  // W7（R12）：只有「最后一条用户轮次」可编辑、「最后一条正常助手回复」可重新生成
+  // ——错误行上的重试由错误卡自己提供，避免两个入口重复。
+  const lastUserIndex = (() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "user") return index;
+    }
+    return -1;
+  })();
+  const lastAssistantIndex = (() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "assistant" && messages[index].message_type !== "error") return index;
+    }
+    return -1;
+  })();
+
   return <div className={`chat-content ${selectedConversationId === null ? "is-empty" : ""}`}>
     <div ref={scrollerRef} className="message-scroller" role="log" aria-live="polite" aria-label={t("messageList.ariaLabel")} tabIndex={0}>
       {!connected ? (
@@ -136,8 +154,12 @@ export function MessageList() {
               }}
             >
               {virtualItem.index < messages.length
-                ? <MessageItem message={messages[virtualItem.index]} />
-                : <div className="assistant-thinking"><span /><span /><span /> {t("common.processing")}</div>}
+                ? <MessageItem
+                    message={messages[virtualItem.index]}
+                    isLastUserTurn={virtualItem.index === lastUserIndex}
+                    isLastAssistantTurn={virtualItem.index === lastAssistantIndex}
+                  />
+                : <div className="assistant-thinking"><span /><span /><span /> {t(wrapUp ? "common.wrappingUp" : "common.processing")}</div>}
             </div>
           ))}
         </div>
@@ -158,6 +180,13 @@ export function MessageList() {
           </div>
         );
       })()}
+      {turnActionError && (
+        <div className="chat-alert" role="alert">
+          <strong>{t("message.actionFailed")}</strong>
+          <span>{t(turnActionError, { defaultValue: turnActionError })}</span>
+          <button onClick={dismissTurnActionError} aria-label={t("common.closeError")}><X size={15} /></button>
+        </div>
+      )}
       {resyncNotice && <div className="resync-note" role="status"><span>{t("messageList.resynced", { reason: resyncNotice })}</span><button onClick={dismissResync}>{t("common.close")}</button></div>}
       {shareNotice && <div className="share-note" role="status"><Check aria-hidden="true" size={14} strokeWidth={2} /><span>{shareNotice === "copied" ? t("messageList.shareCopied") : t("messageList.shareLink", { url: shareNotice })}</span></div>}
     </div>

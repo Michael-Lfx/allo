@@ -27,3 +27,4 @@ Pick an Agent from the catalog and choose **Run**. The workbench submits a Run; 
 - Read [CLI usage](/en-US/docs/cli) for the full command set.
 - Read [Architecture](/en-US/docs/architecture) to understand the Runtime / App Server layering.
 - Read the [Compatibility matrix](/en-US/docs/compatibility) for platform and source support.
+- Writing your own integration (Node / Electron / browser): read the [TypeScript SDK guide](/en-US/docs/typescript-sdk). **End users take the installer, developers take the npm packages** — two distinct paths.

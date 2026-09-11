@@ -7,11 +7,13 @@ import { TransportError } from "@flowy-agent-store/protocol";
 import {
   type AgentRunInput,
   type AgentRunRequestWire,
+  type AnswerDecisionInput,
   type CancelRunInput,
   type SteerRunInput,
   type RunEventsQuery,
   type RunEvent,
   type RunReceipt,
+  type RunPlan,
   type RunResult,
   type RunSubscriptionParams,
   type RunView,
@@ -36,6 +38,15 @@ export class RunClient {
   /** Read the terminal result (fails until the run reaches a terminal state). */
   result(runId: string): Promise<RunResult> {
     return this.transport.request<RunResult>("run/result", { run_id: runId });
+  }
+
+  /**
+   * Read the authoritative plan / step snapshot (W4 / W6, resolves D-W6-1):
+   * titles, statuses, retries with their reason, errors and timings — none of
+   * which the append-only event log carries.
+   */
+  plan(runId: string): Promise<RunPlan> {
+    return this.transport.request<RunPlan>("run/plan", { run_id: runId });
   }
 
   /** Replay persisted events after a cursor. */
@@ -68,6 +79,27 @@ export class RunClient {
       expected_version: input.expectedVersion,
       command_id: input.commandId,
       idempotency_key: input.idempotencyKey,
+    });
+  }
+
+  /**
+   * Answer the pending decision of a `waiting_input` attempt.
+   *
+   * The three `expected*Version` tokens are mandatory CAS inputs, normally the
+   * ones projected on the pending `approval.requested` event. The server passes
+   * them straight to the engine's single answer gate, so a stale token is a
+   * `conflict`, never a silent overwrite. There is no `always_allow` here: the
+   * desktop confirmation route's approve-all flag is not part of this protocol.
+   */
+  answerDecision(input: AnswerDecisionInput): Promise<RunView> {
+    return this.transport.request<RunView>("run/answer-decision", {
+      run_id: input.runId,
+      step_id: input.stepId,
+      attempt_id: input.attemptId,
+      answer: input.answer,
+      expected_execution_version: input.expectedExecutionVersion,
+      expected_step_version: input.expectedStepVersion,
+      expected_attempt_version: input.expectedAttemptVersion,
     });
   }
 

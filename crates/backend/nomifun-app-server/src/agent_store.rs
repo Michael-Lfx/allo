@@ -61,6 +61,14 @@ pub struct AgentStoreConfig {
     /// ```
     #[serde(default)]
     pub memory: Option<AgentStoreMemory>,
+    /// `[marketplace]` — background auto-update cadence for this host.
+    ///
+    /// ```toml
+    /// [marketplace]
+    /// auto_update_interval_hours = 6   # omit to keep the sweep off entirely
+    /// ```
+    #[serde(default)]
+    pub marketplace: Option<AgentStoreMarketplaceSettings>,
 }
 
 /// `[memory]` in `~/.agent-store/config.toml`.
@@ -79,6 +87,28 @@ pub struct AgentStoreMemory {
     /// overrides whichever value lands here.
     #[serde(default)]
     pub distill_enabled: Option<bool>,
+}
+
+/// `[marketplace]` in `~/.agent-store/config.toml`.
+///
+/// The background auto-update sweep is **off unless a cadence is declared
+/// here**, and even then it only ever covers marketplaces whose source is one
+/// of the builtin official mirrors (`18` §7: V1 never auto-updates third-party
+/// sources). Both conditions are deliberate: the sweep re-downloads market
+/// trees, which is exactly the bandwidth that D-SDK-1 ④ is trying to shrink.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentStoreMarketplaceSettings {
+    /// Hours between sweeps. Absent or `0` keeps the scheduler off.
+    #[serde(default)]
+    pub auto_update_interval_hours: Option<u64>,
+}
+
+impl AgentStoreMarketplaceSettings {
+    /// `Some(hours)` only when a positive cadence was declared.
+    pub fn cadence(&self) -> Option<std::time::Duration> {
+        let hours = self.auto_update_interval_hours?;
+        (hours > 0).then(|| std::time::Duration::from_secs(hours.saturating_mul(3_600)))
+    }
 }
 
 /// One default marketplace source declared in `~/.agent-store/config.toml`.
@@ -142,7 +172,103 @@ impl AgentStoreConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
         let raw = std::fs::read_to_string(path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        toml::from_str(&raw).map_err(|error| format!("{}: {error}", path.display()))
+        Self::from_source(&raw).map_err(|error| format!("{}: {error}", path.display()))
+    }
+
+    /// Parse a config *source* (already-read file body). `load` is the
+    /// file-backed entry point; this one exists for the write path, which must
+    /// parse the exact text it is about to edit (`config/set`).
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        toml::from_str(source).map_err(|error| error.to_string())
+    }
+
+    /// Minimal-change rewrite of the whitelisted `default_model` key.
+    ///
+    /// `source` in, `source` out: every other key, every comment and the file's
+    /// original layout survive untouched (`toml_edit` is lossless by design), so
+    /// a settings save can never reformat or drop a hand-edited config. A key
+    /// that is not present yet is inserted as a **top-level** key — never
+    /// appended after a `[table]`, where it would silently become a member of
+    /// that table.
+    pub fn with_default_model(source: &str, value: &str) -> Result<String, String> {
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+
+        if let Some(existing) = document.get("default_model") {
+            // Only the value is re-rendered: the key's own indentation and its
+            // trailing comment survive with it.
+            let decor = existing.as_value().map(|value| value.decor().clone());
+            let mut item = toml_edit::value(value);
+            if let (Some(decor), Some(rendered)) = (decor, item.as_value_mut()) {
+                *rendered.decor_mut() = decor;
+            }
+            document["default_model"] = item;
+            return Ok(document.to_string());
+        }
+
+        // Missing key: insert it above the first real entry — after a leading
+        // file header comment, so that comment stays at the top. Appending
+        // would land the key inside whichever `[table]` came last, and the
+        // first lines of a file are top-level by construction.
+        let mut inserted = toml_edit::Document::new();
+        inserted["default_model"] = toml_edit::value(value);
+        let offset = source
+            .split_inclusive('\n')
+            .take_while(|line| {
+                let trimmed = line.trim();
+                trimmed.is_empty() || trimmed.starts_with('#')
+            })
+            .map(str::len)
+            .sum::<usize>();
+        Ok(format!("{}{}{}", &source[..offset], inserted, &source[offset..]))
+    }
+
+    /// Minimal-change rewrite of the whitelisted `[memory] distill_enabled` key.
+    ///
+    /// Same contract as [`Self::with_default_model`]: only the named key is
+    /// re-rendered, every sibling key inside `[memory]` (and the rest of the
+    /// file) survives byte-for-byte. The `[memory]` table itself is created
+    /// when absent **and** when present as the *implicit* form
+    /// (`memory.distill_enabled = …` written as a dotted key) — `toml_edit`
+    /// treats those as the same table, so the dotted form is upgraded in place
+    /// rather than duplicated.
+    ///
+    /// The value is the host's real switch: `apps/agent-store` reads
+    /// `[memory].distill_enabled` at startup and forwards it to
+    /// `manager::nomi::distill::set_distill_host_override`, so a write here
+    /// changes the next launch's behaviour (and the read view reports it back).
+    pub fn with_distill_enabled(source: &str, enabled: bool) -> Result<String, String> {
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+
+        if let Some(existing) = document.get("memory").and_then(|item| item.get("distill_enabled"))
+        {
+            let decor = existing.as_value().map(|value| value.decor().clone());
+            let mut item = toml_edit::value(enabled);
+            if let (Some(decor), Some(rendered)) = (decor, item.as_value_mut()) {
+                *rendered.decor_mut() = decor;
+            }
+            document["memory"]["distill_enabled"] = item;
+            return Ok(document.to_string());
+        }
+
+        // No `[memory]` table at all: append one. Unlike a top-level key, a
+        // table may safely be appended at the end of the file — and appending
+        // is the only lossless option, because inserting a table *above* an
+        // existing key would move that key into the new table.
+        if document.get("memory").is_none() {
+            let mut table = toml_edit::Table::new();
+            table.insert("distill_enabled", toml_edit::value(enabled));
+            document["memory"] = toml_edit::Item::Table(table);
+            return Ok(document.to_string());
+        }
+
+        // `[memory]` exists without the key: insert it as the table's last key,
+        // so the table's own header comment and its other keys stay put.
+        document["memory"]["distill_enabled"] = toml_edit::value(enabled);
+        Ok(document.to_string())
     }
 
     /// `load` flattened to `Option` for read-only catalog projections: a
@@ -261,6 +387,94 @@ impl AgentStoreConfig {
     }
 }
 
+/// The **write whitelist** for `~/.agent-store/config.toml` (`config/set`).
+///
+/// The whitelist *is* the security boundary, not a convenience list:
+///
+/// - `api_key` / `base_url` have no variant here, so a credential can never be
+///   written through this face, and an attempt is a hard `invalid_request`
+///   (`deny_unknown_fields`) instead of a silently dropped field;
+/// - there is no path / owner / arbitrary-key variant, so the method cannot be
+///   turned into an arbitrary-file writer;
+/// - a field that is absent from the request leaves the file untouched
+///   (宁缺毋滥): a patch only ever rewrites the keys it names.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentStoreConfigPatch {
+    /// `"<provider_key>/<model>"` — the host default the App Server falls back
+    /// to when a run/turn carries no explicit model.
+    #[serde(default)]
+    pub default_model: Option<String>,
+    /// `[memory]` — the host's post-answer distillation switch.
+    #[serde(default)]
+    pub memory: Option<AgentStoreMemoryPatch>,
+}
+
+/// Whitelisted `[memory]` subset of a `config/set` patch: the host-side session
+/// memory behaviour that `apps/agent-store` really consumes at startup.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentStoreMemoryPatch {
+    /// `Some(false)` turns post-answer distillation off on this host.
+    #[serde(default)]
+    pub distill_enabled: Option<bool>,
+}
+
+impl AgentStoreConfigPatch {
+    /// True when the request named at least one whitelisted key.
+    ///
+    /// A patch that names nothing is refused instead of answering 200 with an
+    /// unchanged file: "sent" must never be mistakable for "stored".
+    pub fn names_any_key(&self) -> bool {
+        self.default_model.is_some()
+            || self
+                .memory
+                .as_ref()
+                .is_some_and(|memory| memory.distill_enabled.is_some())
+    }
+}
+
+impl AgentStoreConfigPatch {
+    /// Validate the patch against the config it would be applied to and return
+    /// the canonical value to write.
+    ///
+    /// The provider key must exist as a `[providers.<key>]` table: that is what
+    /// `agent/run` resolution requires, so refusing it here keeps the host from
+    /// being handed a default that fails on the next run. An *undeclared model*
+    /// is deliberately accepted — the runtime registers the requested model on
+    /// the provider it already knows.
+    ///
+    /// Error messages are wire-visible and talk about the shape of the value
+    /// only; no credential is ever echoed.
+    pub fn validated_default_model(&self, config: &AgentStoreConfig) -> Result<String, String> {
+        let raw = self
+            .default_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "default_model must be a non-empty \"<provider>/<model>\" selection".to_owned()
+            })?;
+        if raw.chars().any(char::is_control) {
+            return Err("default_model must not contain control characters".to_owned());
+        }
+        let (provider, model) = raw
+            .split_once('/')
+            .ok_or_else(|| format!("default_model \"{raw}\" must be \"<provider>/<model>\""))?;
+        let (provider, model) = (provider.trim(), model.trim());
+        if provider.is_empty() || model.is_empty() {
+            return Err(format!("default_model \"{raw}\" must be \"<provider>/<model>\""));
+        }
+        if !config.providers.contains_key(provider) {
+            return Err(format!(
+                "no [providers.{provider}] entry in ~/.agent-store/config.toml: a default_model \
+                 the runtime cannot resolve is not written"
+            ));
+        }
+        Ok(format!("{provider}/{model}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +530,154 @@ reasoning_key = "reasoning_content"
         assert_eq!(names.get("mimo-v2.5-free").map(String::as_str), Some("MiMo V2.5 Free"));
     }
 
+    /// Hand-edited host config with comments in every position the write path
+    /// could destroy: a file-level comment, a trailing comment on the target
+    /// key and on an unrelated key.
+    const COMMENTED: &str = r#"# agent-store host config — hand edited, do not reformat
+default_model = "opencode/mimo-v2.5-free"   # current pick
+
+[providers.opencode]
+type = "openai"
+api_key = "«redacted:sk-…»"
+base_url = "https://opencode.ai/zen/v1"   # keep
+
+[models."opencode/mimo-v2.5-free"]
+provider = "opencode"
+model = "mimo-v2.5-free"
+"#;
+
+    #[test]
+    fn default_model_write_touches_only_the_target_key() {
+        let edited = AgentStoreConfig::with_default_model(COMMENTED, "opencode/laguna-s-2.1-free")
+            .expect("edit must succeed");
+
+        // Every comment, every other key and the layout survive.
+        assert!(edited.contains("# agent-store host config — hand edited, do not reformat"));
+        assert!(edited.contains("# current pick"));
+        assert!(edited.contains("base_url = \"https://opencode.ai/zen/v1\"   # keep"));
+        assert!(edited.contains("api_key = \"«redacted:sk-…»\""));
+        assert_eq!(edited.matches("default_model").count(), 1);
+
+        let parsed = AgentStoreConfig::from_source(&edited).expect("edited source must parse");
+        assert_eq!(parsed.default_model.as_deref(), Some("opencode/laguna-s-2.1-free"));
+        assert_eq!(parsed.providers.len(), 1);
+        assert_eq!(parsed.models_for_provider("opencode"), vec!["mimo-v2.5-free"]);
+    }
+
+    #[test]
+    fn default_model_write_inserts_a_top_level_key_when_absent() {
+        let source = "# host config\n[providers.opencode]\ntype = \"openai\"\n";
+        let edited = AgentStoreConfig::with_default_model(source, "opencode/mimo-v2.5-free")
+            .expect("edit must succeed");
+
+        // Inserted below the file header comment, above the first table, and
+        // nothing else moved.
+        assert_eq!(
+            edited,
+            "# host config\ndefault_model = \"opencode/mimo-v2.5-free\"\n[providers.opencode]\ntype = \"openai\"\n"
+        );
+
+        // Top level, not a late member of `[providers.opencode]`.
+        let parsed = AgentStoreConfig::from_source(&edited).expect("edited source must parse");
+        assert_eq!(parsed.default_model.as_deref(), Some("opencode/mimo-v2.5-free"));
+        assert!(parsed.providers.contains_key("opencode"));
+        // Writing the same value twice is stable (no key duplication).
+        assert_eq!(
+            AgentStoreConfig::with_default_model(&edited, "opencode/mimo-v2.5-free").unwrap(),
+            edited
+        );
+
+        // A file with no header comment gets the key as line 1.
+        let bare = AgentStoreConfig::with_default_model(
+            "[providers.octo]\ntype = \"openai\"\n",
+            "octo/coral",
+        )
+        .expect("edit must succeed");
+        assert_eq!(
+            bare,
+            "default_model = \"octo/coral\"\n[providers.octo]\ntype = \"openai\"\n"
+        );
+        assert_eq!(
+            AgentStoreConfig::from_source(&bare).unwrap().default_model.as_deref(),
+            Some("octo/coral")
+        );
+    }
+
+    #[test]
+    fn default_model_write_refuses_an_unparseable_file() {
+        let error = AgentStoreConfig::with_default_model("default_model = \"oops\n", "octo/coral")
+            .expect_err("invalid TOML must never be silently rewritten");
+        assert!(error.contains("not valid TOML"), "{error}");
+    }
+
+    #[test]
+    fn config_patch_whitelists_only_resolvable_default_models() {
+        let config = AgentStoreConfig::load_from_str(SAMPLE);
+
+        let patch = AgentStoreConfigPatch {
+            default_model: Some("  opencode/mimo-v2.5-free  ".to_owned()),
+            memory: None,
+        };
+        assert_eq!(
+            patch.validated_default_model(&config).unwrap(),
+            "opencode/mimo-v2.5-free"
+        );
+
+        // An undeclared *model* under a declared provider is resolvable: the
+        // runtime registers the requested model itself.
+        let patch = AgentStoreConfigPatch {
+            default_model: Some("opencode/never-heard-of-it".to_owned()),
+            memory: None,
+        };
+        assert_eq!(
+            patch.validated_default_model(&config).unwrap(),
+            "opencode/never-heard-of-it"
+        );
+
+        for bad in [
+            "",
+            "   ",
+            "opencode",
+            "/mimo-v2.5-free",
+            "opencode/",
+            "ghost/model",
+            "opencode/a\nb",
+        ] {
+            let patch = AgentStoreConfigPatch { default_model: Some(bad.to_owned()), memory: None };
+            assert!(patch.validated_default_model(&config).is_err(), "{bad:?} must be refused");
+        }
+
+        // No writable field at all: refused, never a silent no-op.
+        assert!(
+            AgentStoreConfigPatch { default_model: None, memory: None }
+                .validated_default_model(&config)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn config_patch_rejects_credentials_and_paths() {
+        // The request type is the boundary: an out-of-envelope key fails to
+        // parse instead of being silently ignored.
+        for body in [
+            r#"{"api_key":"sk-live-not-a-real-key"}"#,
+            r#"{"path":"/tmp/other.toml"}"#,
+            r#"{"owner":"someone-else"}"#,
+            r#"{"default_model":"opencode/mimo-v2.5-free","base_url":"http://evil"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<AgentStoreConfigPatch>(body).is_err(),
+                "{body} must be refused by the whitelist"
+            );
+        }
+
+        let ok: AgentStoreConfigPatch =
+            serde_json::from_str(r#"{"default_model":"opencode/mimo-v2.5-free"}"#)
+                .expect("whitelisted field");
+        assert_eq!(ok.default_model.as_deref(), Some("opencode/mimo-v2.5-free"));
+        assert!(serde_json::from_str::<AgentStoreConfigPatch>("{}").expect("empty patch").default_model.is_none());
+    }
+
     #[test]
     fn builtin_marketplaces_are_complete_and_resolvable() {
         let builtin = AgentStoreConfig::builtin_default_marketplaces();
@@ -363,6 +725,100 @@ base_url = "https://example.test/v1"
         assert_eq!(off.memory.and_then(|memory| memory.distill_enabled), Some(false));
         let on = AgentStoreConfig::load_from_str("[memory]\ndistill_enabled = true\n");
         assert_eq!(on.memory.and_then(|memory| memory.distill_enabled), Some(true));
+    }
+
+    #[test]
+    fn marketplace_cadence_is_off_unless_declared() {
+        use std::time::Duration;
+
+        // No `[marketplace]` table → no sweep at all.
+        let absent = AgentStoreConfig::load_from_str("default_model = \"octo/coral\"\n");
+        assert!(absent.marketplace.is_none());
+
+        // A table without a cadence stays off (the table alone is not consent).
+        let silent = AgentStoreConfig::load_from_str("[marketplace]\n");
+        assert_eq!(silent.marketplace.unwrap_or_default().cadence(), None);
+
+        // `0` reads as an explicit off, not as "every tick".
+        let zero =
+            AgentStoreConfig::load_from_str("[marketplace]\nauto_update_interval_hours = 0\n");
+        assert_eq!(zero.marketplace.unwrap_or_default().cadence(), None);
+
+        let six =
+            AgentStoreConfig::load_from_str("[marketplace]\nauto_update_interval_hours = 6\n");
+        assert_eq!(
+            six.marketplace.unwrap_or_default().cadence(),
+            Some(Duration::from_secs(6 * 3_600))
+        );
+    }
+
+    #[test]
+    fn distill_enabled_write_creates_updates_and_preserves_the_rest() {
+        // 1. No `[memory]` table at all → one is appended, nothing else moves.
+        let created = AgentStoreConfig::with_distill_enabled(
+            "# allo host config\ndefault_model = \"opencode/mimo-v2.5-free\"\n\n[providers.opencode]\ntype = \"openai\"\n",
+            false,
+        )
+        .expect("edit");
+        assert!(created.contains("[memory]"), "{created}");
+        assert!(created.contains("distill_enabled = false"), "{created}");
+        assert!(created.contains("# allo host config"), "{created}");
+        assert!(created.contains("default_model = \"opencode/mimo-v2.5-free\""), "{created}");
+        // The new table did not swallow the provider table's keys.
+        let reparsed = AgentStoreConfig::load_from_str(&created);
+        assert!(reparsed.providers.contains_key("opencode"));
+        assert_eq!(reparsed.memory.and_then(|m| m.distill_enabled), Some(false));
+
+        // 2. Existing key → only its value moves; the sibling survives.
+        let updated = AgentStoreConfig::with_distill_enabled(
+            "[memory]\ndistill_enabled = true\nother_flag = 1   # keep me\n",
+            false,
+        )
+        .expect("edit");
+        assert_eq!(updated.matches("distill_enabled").count(), 1, "{updated}");
+        assert!(updated.contains("distill_enabled = false"), "{updated}");
+        assert!(updated.contains("other_flag = 1   # keep me"), "{updated}");
+
+        // 3. Dotted form is the same table: upgraded in place, never duplicated.
+        let dotted =
+            AgentStoreConfig::with_distill_enabled("memory.distill_enabled = true\n", false)
+                .expect("edit");
+        assert_eq!(dotted.matches("distill_enabled").count(), 1, "{dotted}");
+        assert_eq!(
+            AgentStoreConfig::load_from_str(&dotted)
+                .memory
+                .and_then(|m| m.distill_enabled),
+            Some(false)
+        );
+
+        // 4. Unparseable input stays a refusal, never a silent overwrite.
+        assert!(AgentStoreConfig::with_distill_enabled("not = = toml\n", true).is_err());
+    }
+
+    #[test]
+    fn config_patch_names_a_key_only_when_one_is_actually_present() {
+        let empty: AgentStoreConfigPatch = serde_json::from_value(serde_json::json!({})).expect("empty");
+        assert!(!empty.names_any_key());
+
+        let model: AgentStoreConfigPatch =
+            serde_json::from_value(serde_json::json!({ "default_model": "octo/coral" })).expect("model");
+        assert!(model.names_any_key());
+
+        let memory: AgentStoreConfigPatch = serde_json::from_value(
+            serde_json::json!({ "memory": { "distill_enabled": false } }),
+        )
+        .expect("memory");
+        assert!(memory.names_any_key());
+
+        // An empty `[memory]` table names nothing, and credentials are refused
+        // at parse time (R22 gate: no write face accepts them).
+        let empty_memory: AgentStoreConfigPatch =
+            serde_json::from_value(serde_json::json!({ "memory": {} })).expect("empty memory");
+        assert!(!empty_memory.names_any_key());
+        assert!(serde_json::from_value::<AgentStoreConfigPatch>(
+            serde_json::json!({ "memory": { "api_key": "«redacted»" } })
+        )
+        .is_err());
     }
 
     impl AgentStoreConfig {

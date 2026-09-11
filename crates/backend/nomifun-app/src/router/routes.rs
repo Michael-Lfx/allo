@@ -1025,6 +1025,12 @@ pub fn create_router_with_all_state(
                     states.skill.skill_paths.clone(),
                 ),
             )),
+            // Skill write face (`skill/create|update|delete`, `16` R17 / W12).
+            // Same `SkillPaths` as the read catalog, so the id the write face
+            // resolves and the id `skill/get` serves can never disagree.
+            skill_writes: Some(Arc::new(nomifun_app_server::SkillAdmin::new(
+                states.skill.skill_paths.clone(),
+            ))),
             connectors: Some(Arc::new(
                 crate::app_server_catalog::AppServerConnectorCatalog::new(
                     states.mcp.config_service.clone(),
@@ -1115,6 +1121,10 @@ pub fn create_router_with_all_state(
     // request handlers.
     if tokio::runtime::Handle::try_current().is_ok() {
         nomifun_app_server::warm_default_marketplaces(&app_server_state);
+        // D7 ①: the auto-update sweep is off unless `[marketplace]
+        // auto_update_interval_hours` is declared, and even then only official
+        // sources are polled. Same runtime guard as the warm-up above.
+        nomifun_app_server::start_marketplace_auto_update(&app_server_state);
     }
     // Display assets (avatars / market icons) are referenced by plain
     // `<img>` tags and must not sit behind the owner auth middleware.

@@ -14,14 +14,15 @@ use nomifun_api_types::{
     AppServerConnectorSummary, AppServerImportDetail, AppServerImportRequest,
     AppServerImportResult, AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
-    AppServerMarketplaceEntry, AppServerMarketplaceRefreshResult,
+    AppServerMarketplaceEntry, AppServerMarketplaceEntrySnapshot, AppServerMarketplaceRefreshResult,
     AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
     AppServerModelList,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
     AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };
-use nomifun_common::AppError;
+use nomifun_common::{AppError, LocalizedVariant};
+use std::collections::BTreeMap;
 
 /// Read-side Skill catalog (`skill/list`, `skill/get`).
 #[async_trait]
@@ -119,6 +120,13 @@ pub trait MarketplaceProvider: Send + Sync {
         &self,
         marketplace_id: &str,
     ) -> Result<AppServerMarketplaceRefreshResult, AppError>;
+
+    /// Ids the background auto-update sweep may refresh.
+    ///
+    /// An internal seam rather than a wire method: eligibility has to look at
+    /// the source URI, which never crosses the public protocol (`18` §7). The
+    /// scheduler is the only caller (doc 21 D7 ①).
+    async fn auto_update_targets(&self) -> Result<Vec<String>, AppError>;
 
     /// Import one discovered entry (provenance links the snapshot back).
     async fn import_entry(
@@ -502,6 +510,24 @@ impl FakeMarketplaceProvider {
                         description: Some("Automatic code formatting".into()),
                         keywords: vec![],
                         category: None,
+                        // Provenance is part of the entry projection (doc 16
+                        // D-W13-1 ①). One imported entry and one untouched
+                        // entry, so both shapes stay exercised on the wire.
+                        // Localized manifest variants ride along verbatim
+                        // (doc 18 §4 / D8=A); the reader picks by UI language.
+                        localized: BTreeMap::from([(
+                            "description_zh".to_owned(),
+                            LocalizedVariant::Text("自动代码格式化".to_owned()),
+                        )]),
+                        snapshot: Some(AppServerMarketplaceEntrySnapshot {
+                            snapshot_id: "0190f5fe-7c00-7a00-8000-0000000000aa".into(),
+                            name: "formatter".into(),
+                            version: "2.1.0".into(),
+                            status: "completed".into(),
+                            component_count: 2,
+                            installed_count: 1,
+                            imported_at: 1,
+                        }),
                     },
                     AppServerMarketplaceEntry {
                         name: "deploy".into(),
@@ -511,6 +537,8 @@ impl FakeMarketplaceProvider {
                         description: None,
                         keywords: vec![],
                         category: None,
+                        localized: BTreeMap::new(),
+                        snapshot: None,
                     },
                 ],
             },
@@ -608,6 +636,12 @@ impl MarketplaceProvider for FakeMarketplaceProvider {
             entry_count: self.detail.entries.len(),
             warnings: vec![],
         })
+    }
+
+    async fn auto_update_targets(&self) -> Result<Vec<String>, AppError> {
+        // The fake models a local directory market, which is never an official
+        // mirror, so nothing is auto-updatable here.
+        Ok(Vec::new())
     }
 
     async fn import_entry(
@@ -804,6 +838,8 @@ mod tests {
             description: Some("a demo skill".into()),
             version: "builtin".into(),
             source: "builtin".into(),
+            origin: "builtin".into(),
+            writable: false,
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::Compatible,
             enabled: true,
             required_connectors: vec![],

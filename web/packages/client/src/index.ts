@@ -1,5 +1,6 @@
 /** `@flowy-agent-store/client` — transport-agnostic App Server client. */
 export * from "./transport";
+export * from "./http-transport";
 export * from "./client";
 export * from "./agents";
 export * from "./conversations";

@@ -179,6 +179,8 @@ const enUS = {
       cli: "CLI usage",
       pluginsMarket: "Plugins & Market",
       typescriptSdk: "TypeScript SDK",
+      upgrade: "Upgrade & migration",
+      changelog: "Changelog",
       configuration: "Configuration",
       architecture: "Architecture",
       compatibility: "Compatibility matrix",

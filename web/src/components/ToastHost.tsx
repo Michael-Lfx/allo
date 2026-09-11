@@ -12,6 +12,10 @@ function ToneIcon({ tone }: { tone: ToastTone }) {
 /**
  * Global transient notices (W8). Mounted once by `App`; entries are pushed
  * through `pushToast` and auto-dismiss after `TOAST_TTL_MS`.
+ *
+ * Per tab by design (D4=A): a second open tab keeps its own subscription and
+ * therefore its own toasts — only the global side effects are elected once, in
+ * `lib/global-effects.ts`.
  */
 export function ToastHost() {
   const { t } = useTranslation();
@@ -25,7 +29,7 @@ export function ToastHost() {
       {toasts.map((toast) => (
         <div key={toast.id} className={`toast toast-${toast.tone}`} role="status">
           <ToneIcon tone={toast.tone} />
-          <span className="toast-message">{t(toast.messageKey)}</span>
+          <span className="toast-message">{t(toast.messageKey, { ...(toast.params ?? {}) })}</span>
           <button
             className="icon-button toast-dismiss"
             type="button"

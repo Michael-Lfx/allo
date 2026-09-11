@@ -6,9 +6,13 @@
 
 pub mod agent_store;
 pub mod catalog;
+pub mod skill_admin;
 pub mod workspace_resolver;
 
-pub use agent_store::{AgentStoreConfig, AgentStoreMarketplace, AgentStoreModel, AgentStoreProvider};
+pub use agent_store::{
+    AgentStoreConfig, AgentStoreConfigPatch, AgentStoreMarketplace, AgentStoreModel,
+    AgentStoreProvider,
+};
 pub use catalog::{
     AgentCatalogProvider, ConnectorAuthProvider, ConnectorCatalogProvider, ImportProvider,
     InstallProvider, MarketplaceProvider, ModelCatalogProvider, SkillCatalogProvider,
@@ -17,6 +21,13 @@ pub use catalog::{
 pub use workspace_resolver::{
     FilesystemWorkspaceResolver, ResolvedWorkspace, WorkspaceResolver,
 };
+pub use skill_admin::{
+    SkillAdmin, SkillCreateRequest, SkillWriteProvider, validate_skill_name,
+};
+/// The field-level patch shape the skill write face accepts. Re-stated here
+/// because `WsSkillUpdate` turns its fields into one; it is not part of the
+/// published surface either way (WS-only host management face).
+use nomifun_extension::skill_service::SkillFieldPatch;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path as FsPath;
@@ -44,12 +55,14 @@ use axum::{
 };
 pub use nomifun_agent_execution::AgentRuntimeAdapter;
 use nomifun_agent_execution::{
-    AgentRunReceipt, AgentRunResult, AgentRunSteerRequest, AgentRunView,
+    AgentRunPlan, AgentRunReceipt, AgentRunResult, AgentRunSteerRequest, AgentRunView,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::{MessagePosition, MessageType, ProviderWithModel, UserId, generate_id};
 use nomifun_api_types::{
-    AppServerAgentDetail, AppServerAgentSummary, AppServerConnectorDetail,
+    AppServerAgentDetail, AppServerAgentSummary, AppServerConfigMemoryView,
+    AppServerConfigProviderView, AppServerConfigView,
+    AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
     AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
@@ -57,9 +70,11 @@ use nomifun_api_types::{
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
     AppServerMarketplaceSummary, AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
+    AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillSummary,
+    AppServerStoreInstallResult,
     AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
-    CreateProviderRequest, ListMessagesQuery, MessageResponse, PresetOverrides, PresetSource,
+    AnswerExecutionDecisionRequest, CreateProviderRequest, ListMessagesQuery, MessageResponse,
+    PresetOverrides, PresetSource,
     PresetTarget, SendMessageRequest,
 };
 use nomifun_conversation::{ConversationService, IdempotentMessageDelivery};
@@ -382,7 +397,13 @@ impl Capabilities {
             skills: availability.skills,
             connectors: availability.connectors,
             run_notifications: availability.runtime && availability.events,
-            approvals: false,
+            // Derived from the runtime, exactly like `run_notifications`: the
+            // approval answer path (`run/answer-decision`) rides the same
+            // runtime seam, so a connection without a runtime must not advertise
+            // a capability whose only method would answer
+            // `runtime_unavailable` (the client would wait for an answer that
+            // can never be accepted).
+            approvals: availability.runtime,
             artifacts: false,
             oauth: availability.oauth,
             imports: availability.imports,
@@ -431,6 +452,12 @@ impl AppServerError {
     fn with_details(mut self, details: serde_json::Value) -> Self {
         self.details = Some(details);
         self
+    }
+
+    /// Whether this error carries the shared `not_found` code. Used by the
+    /// skill write face to tell "the id is gone" from "the read failed".
+    fn is_not_found(&self) -> bool {
+        self.code == "not_found"
     }
 
     fn from_app_error(error: nomifun_common::AppError) -> Self {
@@ -788,6 +815,11 @@ pub struct AppServerRouterState {
     /// Agent Store Skill catalog provider. `None` keeps the `skills`
     /// capability off and returns `unsupported_operation` for `skill/*`.
     pub skills: Option<Arc<dyn SkillCatalogProvider>>,
+    /// Agent Store Skill write face (`skill/create|update|delete`, `16` R17).
+    /// `None` keeps the write methods off (`unsupported_operation`); the read
+    /// catalog stays available either way. Host management surface: no HTTP
+    /// binding and no counterpart in the published SDK package.
+    pub skill_writes: Option<Arc<dyn SkillWriteProvider>>,
     /// Agent Store Connector catalog provider. `None` keeps the `connectors`
     /// capability off and returns `unsupported_operation` for `connector/*`.
     pub connectors: Option<Arc<dyn ConnectorCatalogProvider>>,
@@ -836,6 +868,7 @@ impl Default for AppServerRouterState {
             provider_service: None,
             agent_store_config_path: None,
             skills: None,
+            skill_writes: None,
             connectors: None,
             connector_auth: None,
             imports: None,
@@ -871,9 +904,14 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route("/api/app-server/agent/run", post(agent_run))
         .route("/api/app-server/run/{run_id}", get(run_get))
         .route("/api/app-server/run/{run_id}/result", get(run_result))
+        .route("/api/app-server/run/{run_id}/plan", get(run_plan))
         .route("/api/app-server/run/{run_id}/events", get(run_events))
         .route("/api/app-server/run/{run_id}/cancel", post(run_cancel))
         .route("/api/app-server/run/{run_id}/steer", post(run_steer))
+        .route(
+            "/api/app-server/run/{run_id}/answer-decision",
+            post(run_answer_decision),
+        )
         // Agent Store Skill catalog
         .route("/api/app-server/skills", get(list_skills_route))
         .route("/api/app-server/skills/{skill_id}", get(get_skill_route))
@@ -1277,6 +1315,112 @@ async fn get_skill_impl(
     skill_catalog_provider(state)?.get(skill_id).await.map_err(AppServerError::from)
 }
 
+/// Write face seam (`skill/create|update|delete`). A host that wires the read
+/// catalog but not the write face answers `unsupported_operation` — never a
+/// silent no-op.
+fn skill_write_provider(state: &AppServerRouterState) -> Result<Arc<dyn SkillWriteProvider>, AppServerError> {
+    state.skill_writes.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "skill writes are not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+/// `skill/create`: validate the name, refuse to shadow an existing id, write
+/// through the provider, then answer with `skill/get`'s view of the new skill
+/// (read back from disk — never the request echoed).
+async fn execute_skill_create(
+    state: &AppServerRouterState,
+    params: WsSkillCreate,
+) -> Result<AppServerSkillDetail, AppServerError> {
+    let writes = skill_write_provider(state)?;
+    // Every answer below is produced by re-reading through the read catalog;
+    // without it a write could land on disk with no readable reply, so the read
+    // face is required *before* anything is touched.
+    skill_catalog_provider(state)?;
+    let name = params.name.clone();
+    validate_skill_name(&name).map_err(AppServerError::from)?;
+    writes
+        .create_skill(params.into_request())
+        .await
+        .map_err(AppServerError::from)?;
+    get_skill_impl(state, &name).await
+}
+
+/// `skill/update`: merge the named fields into a writable skill's `SKILL.md`,
+/// then re-read it through the read face.
+async fn execute_skill_update(
+    state: &AppServerRouterState,
+    params: WsSkillUpdate,
+) -> Result<AppServerSkillDetail, AppServerError> {
+    let writes = skill_write_provider(state)?;
+    skill_catalog_provider(state)?;
+    validate_skill_name(&params.skill_id).map_err(AppServerError::from)?;
+    if !params.names_any_field() {
+        return Err(AppServerError::new(
+            "invalid_request",
+            "skill/update needs at least one field to change",
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    writes
+        .update_skill(&params.skill_id, &params.field_patch())
+        .await
+        .map_err(AppServerError::from)?;
+    get_skill_impl(state, &params.skill_id).await
+}
+
+/// `skill/copy`: derive a new user skill from an existing one, then answer with
+/// `skill/get`'s view of the **new** skill (read back from disk).
+async fn execute_skill_copy(
+    state: &AppServerRouterState,
+    params: WsSkillCopy,
+) -> Result<AppServerSkillDetail, AppServerError> {
+    let writes = skill_write_provider(state)?;
+    skill_catalog_provider(state)?;
+    validate_skill_name(&params.skill_id).map_err(AppServerError::from)?;
+    validate_skill_name(&params.new_name).map_err(AppServerError::from)?;
+    writes
+        .copy_skill(&params.skill_id, &params.new_name)
+        .await
+        .map_err(AppServerError::from)?;
+    get_skill_impl(state, &params.new_name).await
+}
+
+/// `skill/delete`: delete a writable skill, then re-read the id so the caller
+/// learns what — if anything — is visible there afterwards (a user skill may
+/// have been shadowing a same-name built-in).
+async fn execute_skill_delete(
+    state: &AppServerRouterState,
+    params: WsSkillDelete,
+) -> Result<AppServerSkillDeleteResult, AppServerError> {
+    let writes = skill_write_provider(state)?;
+    skill_catalog_provider(state)?;
+    validate_skill_name(&params.skill_id).map_err(AppServerError::from)?;
+    writes
+        .delete_skill(&params.skill_id)
+        .await
+        .map_err(AppServerError::from)?;
+    let revealed_origin = match get_skill_impl(state, &params.skill_id).await {
+        Ok(detail) => Some(detail.summary.origin),
+        Err(error) if error.is_not_found() => None,
+        // The delete landed but its verification read failed. Answering
+        // "nothing is visible under this id" would be a claim this server did
+        // not verify, so the read error is surfaced instead. A client that
+        // retries the delete gets `not_found`, so no second delete can happen.
+        Err(error) => return Err(error),
+    };
+    Ok(AppServerSkillDeleteResult {
+        skill_id: params.skill_id,
+        deleted: true,
+        revealed_origin,
+    })
+}
+
 async fn list_connectors_impl(
     state: &AppServerRouterState,
 ) -> Result<Vec<AppServerConnectorSummary>, AppServerError> {
@@ -1604,6 +1748,59 @@ pub fn warm_default_marketplaces(state: &AppServerRouterState) {
         // caller-visible effect is the retry itself.)
         DEFAULT_MARKETPLACES_DONE.store(complete, Ordering::SeqCst);
         DEFAULT_MARKETPLACES_RUNNING.store(false, Ordering::SeqCst);
+    });
+}
+
+/// One auto-update sweep per process.
+static MARKETPLACES_AUTO_UPDATE_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The declared sweep cadence, or `None` when the host did not opt in.
+fn auto_update_cadence(state: &AppServerRouterState) -> Option<std::time::Duration> {
+    let config = AgentStoreConfig::load(state.agent_store_config_path.as_deref()?).ok()?;
+    config.marketplace?.cadence()
+}
+
+/// Start the background auto-update sweep for official marketplaces
+/// (doc 21 D7 ①).
+///
+/// Two gates, both deliberate:
+/// 1. `[marketplace] auto_update_interval_hours` must be present in the host
+///    config — the table alone is not consent, and `0` reads as off;
+/// 2. only marketplaces the provider reports as both `auto_update`-on **and**
+///    official are swept (`18` §7: V1 never polls third-party sources).
+///
+/// Every sweep goes through the ordinary `refresh` path, so the revision /
+/// ETag short-circuit in `18` §5.2 still decides whether anything is actually
+/// downloaded. A failing marketplace is skipped for that tick — never retried
+/// in a tight loop, which is what would turn a dead mirror into a hot loop.
+pub fn start_marketplace_auto_update(state: &AppServerRouterState) {
+    use std::sync::atomic::Ordering;
+    if MARKETPLACES_AUTO_UPDATE_STARTED.swap(true, Ordering::SeqCst) {
+        return; // already sweeping
+    }
+    let Some(cadence) = auto_update_cadence(state) else {
+        // Leave the guard clear: nothing to run, and a later caller with a
+        // config path still gets its chance.
+        MARKETPLACES_AUTO_UPDATE_STARTED.store(false, Ordering::SeqCst);
+        return;
+    };
+    let state = state.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(cadence);
+        // `interval` yields its first tick immediately; skip it so startup
+        // traffic stays with the warm-up rather than racing it.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let Ok(provider) = marketplace_provider(&state) else {
+                continue;
+            };
+            let targets = provider.auto_update_targets().await.unwrap_or_default();
+            for marketplace_id in targets {
+                let _ = provider.refresh(&marketplace_id).await;
+            }
+        }
     });
 }
 
@@ -2552,6 +2749,21 @@ pub struct ConversationModelOption {
     pub name: String,
     pub display_name: Option<String>,
     pub context_limit: Option<i64>,
+    // ── W9（R14）：models.dev 目录事实 ──────────────────────────────────────
+    // 只用**已缓存**的目录（`resolve_catalog_capabilities` 不触网）：没有条目
+    // （provider 未映射 / 模型不在目录里）就整组缺席，界面上不猜、不显示 0。
+    /// 每百万 token 输入价（USD）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_input: Option<f64>,
+    /// 每百万 token 输出价（USD）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_output: Option<f64>,
+    /// 目录里的上下文窗口（与配置里的 `context_limit` 是两个来源，故分开命名）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_context_window: Option<u64>,
+    /// 目录是否声明支持图片输入（发送前兼容性校验用得上，见 W10）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_vision: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2637,6 +2849,38 @@ fn context_usage_view(row: nomifun_db::models::AppServerContextUsageRow) -> Cont
         updated_at: row.updated_at,
         source: "measured",
     }
+}
+
+/// Additive per-turn token accounting for one completed turn (W9 / R14).
+///
+/// `input_tokens` / `output_tokens` are the runtime's own report for THIS turn
+/// (the `TurnCompleted` event the engine already emits), so the field names
+/// mirror the Run-side `TurnUsage` and one accounting vocabulary covers both
+/// surfaces. It is deliberately **not** derived from [`ContextUsageView`]:
+/// context occupancy is a gauge (the last request's prompt size) and cannot
+/// express what one turn cost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TurnUsageView {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// Project the runtime's `TurnCompleted` metrics onto the public per-turn
+/// usage. `None` — the key stays off the wire entirely — when the frame is
+/// missing either side or reported no tokens at all: an unreported turn must
+/// stay "unknown", never arrive as a zero that reads as "this turn was free".
+fn turn_usage_view(data: &serde_json::Value) -> Option<TurnUsageView> {
+    let input_tokens = data.get("input_tokens").and_then(serde_json::Value::as_u64)?;
+    let output_tokens = data.get("output_tokens").and_then(serde_json::Value::as_u64)?;
+    if input_tokens == 0 && output_tokens == 0 {
+        return None;
+    }
+    Some(TurnUsageView {
+        input_tokens,
+        output_tokens,
+        total_tokens: input_tokens.saturating_add(output_tokens),
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2888,6 +3132,37 @@ fn normalize_reasoning_effort(
     ))
 }
 
+/// models.dev catalog facts projected onto one directory entry (W9 / R14).
+///
+/// Reads the **cached** registry only — `resolve_catalog_capabilities` never
+/// fetches, so this cannot turn a model listing into a network call. An
+/// unmapped platform (`MergePolicy::Never`, e.g. the bundled `mimo` provider)
+/// or an unknown model yields [`CatalogFacts::default`] and the wire fields
+/// stay absent instead of being filled with zeros.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct CatalogFacts {
+    cost_input: Option<f64>,
+    cost_output: Option<f64>,
+    catalog_context_window: Option<u64>,
+    supports_vision: Option<bool>,
+}
+
+fn catalog_model_facts(
+    client: &nomifun_models_dev::ModelsDevClient,
+    provider: &str,
+    model: &str,
+) -> CatalogFacts {
+    match nomifun_models_dev::resolve_catalog_capabilities(client, provider, model) {
+        Some(capabilities) => CatalogFacts {
+            cost_input: capabilities.cost_input,
+            cost_output: capabilities.cost_output,
+            catalog_context_window: capabilities.context_window,
+            supports_vision: Some(capabilities.supports_vision),
+        },
+        None => CatalogFacts::default(),
+    }
+}
+
 /// Public model catalog for the chat UI: the configured providers/models from
 /// `~/.agent-store/config.toml` plus the default selection and the supported
 /// reasoning-effort vocabulary. Never exposes credentials.
@@ -2907,14 +3182,22 @@ fn conversation_model_options(state: &AppServerRouterState) -> ConversationModel
             names.sort();
             let display_names = config.display_names_for_provider(&provider_key);
             let context_limits = config.context_limits_for_provider(&provider_key);
+            let catalog = nomifun_models_dev::default_client();
             providers.push(ProviderModelOption {
-                name: provider_key,
+                name: provider_key.clone(),
                 models: names
                     .into_iter()
-                    .map(|name| ConversationModelOption {
-                        display_name: display_names.get(&name).cloned(),
-                        context_limit: context_limits.get(&name).copied(),
-                        name,
+                    .map(|name| {
+                        let facts = catalog_model_facts(&catalog, &provider_key, &name);
+                        ConversationModelOption {
+                            display_name: display_names.get(&name).cloned(),
+                            context_limit: context_limits.get(&name).copied(),
+                            cost_input: facts.cost_input,
+                            cost_output: facts.cost_output,
+                            catalog_context_window: facts.catalog_context_window,
+                            supports_vision: facts.supports_vision,
+                            name,
+                        }
                     })
                     .collect(),
             });
@@ -3048,6 +3331,180 @@ fn load_agent_store_config(
             StatusCode::INTERNAL_SERVER_ERROR,
             false,
         )
+    })
+}
+
+/// ---------------------------------------------------------------------------
+/// Host settings file: `config/get` · `config/set`
+/// ---------------------------------------------------------------------------
+///
+/// Provider / default-model configuration stays **host management surface**
+/// (`16` §6): the two methods are additive wire methods with no counterpart in
+/// the published client package, and the webui reaches them through its own
+/// host-only helpers. The boundaries that hold in both directions:
+///
+/// - the file's location comes from the host (`agent_store_config_path`, else
+///   `~/.agent-store/config.toml`) — no request can name a path;
+/// - credentials never cross: the read view has no `api_key` / `base_url` field
+///   and the write whitelist (`AgentStoreConfigPatch`) cannot express them;
+/// - the owner scope is the connection principal, checked by the dispatch arm
+///   (`require_ready`) before any of this runs, and there is no owner/path
+///   parameter that could widen it.
+
+fn config_unavailable(message: impl Into<String>) -> AppServerError {
+    AppServerError::new(
+        "config_unavailable",
+        message,
+        StatusCode::SERVICE_UNAVAILABLE,
+        false,
+    )
+}
+
+/// Resolve the host's config file location.
+fn agent_store_config_file(
+    state: &AppServerRouterState,
+) -> Result<std::path::PathBuf, AppServerError> {
+    state
+        .agent_store_config_path
+        .clone()
+        .or_else(AgentStoreConfig::default_path)
+        .ok_or_else(|| {
+            config_unavailable("no home directory to resolve ~/.agent-store/config.toml from")
+        })
+}
+
+/// Project the parsed file into its wire view. Sorted, credential-free, and no
+/// fact that is not actually in the file.
+fn config_view(config: &AgentStoreConfig, exists: bool) -> AppServerConfigView {
+    let mut names: Vec<&String> = config.providers.keys().collect();
+    names.sort();
+    let providers = names
+        .into_iter()
+        .map(|name| AppServerConfigProviderView {
+            name: name.clone(),
+            enabled: config.providers[name].enabled.unwrap_or(true),
+            models: config.models_for_provider(name),
+        })
+        .collect();
+    AppServerConfigView {
+        exists,
+        default_model: config
+            .default_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        providers,
+        // Absent table → `None` (a client must be able to tell "not configured"
+        // from "explicitly off"). A present table with no `distill_enabled` key
+        // still reports `Some { distill_enabled: None }` for the same reason.
+        memory: config.memory.as_ref().map(|memory| AppServerConfigMemoryView {
+            distill_enabled: memory.distill_enabled,
+        }),
+    }
+}
+
+/// `config/get`: the settings file as a wire view.
+///
+/// A **missing** file is a normal answer (`exists: false`, empty defaults) —
+/// never an error, never a fabricated default. An unreadable or unparseable
+/// file *is* an error: silently answering with defaults would hide a broken
+/// hand-edit behind a settings screen that looks healthy.
+fn execute_config_get(state: &AppServerRouterState) -> Result<AppServerConfigView, AppServerError> {
+    let path = agent_store_config_file(state)?;
+    match std::fs::read_to_string(&path) {
+        Ok(source) => {
+            let config = AgentStoreConfig::from_source(&source).map_err(|error| {
+                config_unavailable(format!("failed to read {}: {error}", path.display()))
+            })?;
+            Ok(config_view(&config, true))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(config_view(&AgentStoreConfig::default(), false))
+        }
+        Err(error) => Err(config_unavailable(format!(
+            "failed to read {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+/// `config/set`: validate the whitelisted patch, rewrite **only** the key it
+/// names (comments and every other key survive), then answer with the file
+/// re-read from disk — the caller sees the stored value, not an optimistic echo.
+fn execute_config_set(
+    state: &AppServerRouterState,
+    patch: AgentStoreConfigPatch,
+) -> Result<AppServerConfigView, AppServerError> {
+    let path = agent_store_config_file(state)?;
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        // A host that never created the file yet gets one; that is the whole
+        // point of the write path.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(config_unavailable(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )))
+        }
+    };
+
+    let parsed = AgentStoreConfig::from_source(&source)
+        .map_err(|error| config_unavailable(format!("failed to read {}: {error}", path.display())))?;
+    if !patch.names_any_key() {
+        return Err(AppServerError::new(
+            "invalid_request",
+            "config/set needs at least one whitelisted key (default_model, memory.distill_enabled)",
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    // Each named key is written through its own minimal-change edit, so a
+    // request that names two keys rewrites exactly those two and nothing else.
+    let mut edited = source.clone();
+    if patch.default_model.is_some() {
+        let value = patch.validated_default_model(&parsed).map_err(|message| {
+            AppServerError::new("invalid_request", message, StatusCode::BAD_REQUEST, false)
+        })?;
+        edited = AgentStoreConfig::with_default_model(&edited, &value)
+            .map_err(|error| config_unavailable(format!("failed to edit {}: {error}", path.display())))?;
+    }
+    if let Some(distill_enabled) = patch
+        .memory
+        .as_ref()
+        .and_then(|memory| memory.distill_enabled)
+    {
+        // The `[memory]` write is deliberately unconditional on parsing: the
+        // value is a bool, and the host really consumes it at startup
+        // (`apps/agent-store` → `set_distill_host_override`), so there is no
+        // "resolution will fail later" case to refuse here.
+        edited = AgentStoreConfig::with_distill_enabled(&edited, distill_enabled)
+            .map_err(|error| config_unavailable(format!("failed to edit {}: {error}", path.display())))?;
+    }
+    write_config_source(&path, &edited)?;
+    execute_config_get(state)
+}
+
+/// Minimal, atomic write: a sibling temp file replaces the target (`rename`
+/// overwrites on Windows too), so an interrupted save can never leave a
+/// half-written config file behind.
+fn write_config_source(path: &std::path::Path, source: &str) -> Result<(), AppServerError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            config_unavailable(format!(
+                "failed to create {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    let temp = path.with_extension("toml.tmp");
+    std::fs::write(&temp, source).map_err(|error| {
+        config_unavailable(format!("failed to write {}: {error}", temp.display()))
+    })?;
+    std::fs::rename(&temp, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        config_unavailable(format!("failed to write {}: {error}", path.display()))
     })
 }
 
@@ -3444,6 +3901,45 @@ async fn run_result(
     Ok(Json(result))
 }
 
+/// `GET /api/app-server/run/:run_id/plan` — the HTTP binding of the `run/plan`
+/// WS arm (W4 / W6, D-W6-1). Same executor, same owner scope, no extra policy.
+async fn run_plan(
+    State(state): State<AppServerRouterState>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<AgentRunPlan>, AppServerError> {
+    let connection_id = connection_id(&headers)?;
+    state.registry.require_ready(connection_id, &user.id)?;
+    let plan = get_run_plan_for_user(&state, &user, &run_id).await?;
+    Ok(Json(plan))
+}
+
+/// Shared by the HTTP handler and the WS arm: resolve the public run id inside
+/// the caller's owner scope, project the plan, then hand the **public** id back.
+async fn get_run_plan_for_user(
+    state: &AppServerRouterState,
+    user: &CurrentUser,
+    run_id: &str,
+) -> Result<AgentRunPlan, AppServerError> {
+    let runtime = state.runtime.as_ref().ok_or_else(|| {
+        AppServerError::new(
+            "runtime_unavailable",
+            "App Server runtime is unavailable",
+            StatusCode::SERVICE_UNAVAILABLE,
+            true,
+        )
+    })?;
+    let internal_run_id = resolve_internal_run_id(state, user.id.as_str(), run_id).await?;
+    let mut plan = runtime
+        .plan(user.id.as_str(), &internal_run_id)
+        .await
+        .map_err(AgentRuntimeAdapter::map_error)
+        .map_err(AppServerError::from)?;
+    plan.run_id = run_id.to_owned();
+    Ok(plan)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RunEventsQuery {
@@ -3514,6 +4010,45 @@ async fn run_steer(
     let _connection_id = connection_id(&headers)?;
     let Json(request) = body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
     let view = execute_steer_run(&state, &user, &run_id, request).await?;
+    Ok(Json(view))
+}
+
+/// `POST /api/app-server/run/:run_id/answer-decision` — the HTTP binding of the
+/// `run/answer-decision` WS arm. Same executor, same gate, no extra policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnswerDecisionRequest {
+    pub step_id: String,
+    pub attempt_id: String,
+    pub answer: String,
+    pub expected_execution_version: i64,
+    pub expected_step_version: i64,
+    pub expected_attempt_version: i64,
+}
+
+async fn run_answer_decision(
+    State(state): State<AppServerRouterState>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<AnswerDecisionRequest>, JsonRejection>,
+) -> Result<Json<AgentRunView>, AppServerError> {
+    let _connection_id = connection_id(&headers)?;
+    let Json(request) = body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    let view = execute_answer_decision(
+        &state,
+        &user,
+        &run_id,
+        &request.step_id,
+        &request.attempt_id,
+        AnswerExecutionDecisionRequest {
+            answer: request.answer,
+            expected_execution_version: request.expected_execution_version,
+            expected_step_version: request.expected_step_version,
+            expected_attempt_version: request.expected_attempt_version,
+        },
+    )
+    .await?;
     Ok(Json(view))
 }
 
@@ -3595,6 +4130,46 @@ async fn execute_steer_run(
     let internal_run_id = resolve_internal_run_id(state, user.id.as_str(), run_id).await?;
     let mut view = runtime
         .steer_run(user.id.as_str(), &internal_run_id, &request.text, request.expected_version)
+        .await
+        .map_err(AgentRuntimeAdapter::map_error)
+        .map_err(AppServerError::from)?;
+    view.run_id = run_id.to_owned();
+    Ok(view)
+}
+
+/// Answer a pending decision on one attempt of a public Run.
+///
+/// `runtime.answer_decision` is a straight pass-through to the engine's single
+/// answer gate (owner scope + three-way CAS + `WaitingInput` only + non-empty
+/// answer), so this function adds no policy: it only resolves the public
+/// `run_id` to the internal execution id inside the caller's owner scope. The
+/// desktop confirmation route's `always_allow` flag deliberately has no
+/// counterpart here.
+async fn execute_answer_decision(
+    state: &AppServerRouterState,
+    user: &CurrentUser,
+    run_id: &str,
+    step_id: &str,
+    attempt_id: &str,
+    request: AnswerExecutionDecisionRequest,
+) -> Result<AgentRunView, AppServerError> {
+    let runtime = state.runtime.as_ref().ok_or_else(|| {
+        AppServerError::new(
+            "runtime_unavailable",
+            "App Server runtime is unavailable",
+            StatusCode::SERVICE_UNAVAILABLE,
+            true,
+        )
+    })?;
+    let internal_run_id = resolve_internal_run_id(state, user.id.as_str(), run_id).await?;
+    let mut view = runtime
+        .answer_decision(
+            user.id.as_str(),
+            &internal_run_id,
+            step_id,
+            attempt_id,
+            request,
+        )
         .await
         .map_err(AgentRuntimeAdapter::map_error)
         .map_err(AppServerError::from)?;
@@ -4103,6 +4678,23 @@ fn project_conversation_notification(
                         "retryable": event.data.pointer("/data/retryable").cloned().unwrap_or(serde_json::Value::Null),
                     }),
                 ),
+                // W9（R14）：把运行时的逐轮用量带上 wire。引擎的 `TurnCompleted`
+                // 事件本来就带本轮的 `input_tokens` / `output_tokens`，此前在这个投影里
+                // 被降级成「活动标记」、载荷整段丢掉，于是客户端只有**会话级**占用
+                // （`context.usage`），算不出「本轮花了多少」。这里**原样**带上运行时已经
+                // 给出的用量（additive：缺一侧或整轮没上报就整段不出现），`kind` 与
+                // `message.activity` 关系不变——R31 的「收尾中」标记与降噪规则照旧。
+                "turn_completed" => {
+                    let payload = match turn_usage_view(&event.data["data"]) {
+                        Some(usage) => serde_json::json!({
+                            "message_id": message_id,
+                            "kind": kind,
+                            "usage": usage,
+                        }),
+                        None => serde_json::json!({ "message_id": message_id, "kind": kind }),
+                    };
+                    ("message.activity", payload)
+                }
                 _ => (
                     "message.activity",
                     serde_json::json!({ "message_id": message_id, "kind": kind }),
@@ -4516,6 +5108,20 @@ async fn dispatch_connection_request(
                 )
             })?))
         }
+        "run/plan" => {
+            // W4 / W6（D-W6-1）：计划与步骤的权威快照。与 `run/get` 同一条 owner
+            // 解析路径，HTTP 臂共用 `get_run_plan_for_user`。
+            let params = parse_ws_params::<WsRunQuery>(params)?;
+            let plan = ws_get_plan(state, connection, user, &params.run_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(plan).map_err(|error| {
+                AppServerError::new(
+                    "internal_error",
+                    format!("failed to encode run plan: {error}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    true,
+                )
+            })?))
+        }
         "run/events" => {
             let params = parse_ws_params::<WsRunEvents>(params)?;
             let events = ws_list_events(state, connection, user, params).await?;
@@ -4554,6 +5160,32 @@ async fn dispatch_connection_request(
                 AppServerError::new(
                     "internal_error",
                     format!("failed to encode steered run: {error}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    true,
+                )
+            })?))
+        }
+        "run/answer-decision" => {
+            let params = parse_ws_params::<WsAnswerDecision>(params)?;
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let view = execute_answer_decision(
+                state,
+                user,
+                &params.run_id,
+                &params.step_id,
+                &params.attempt_id,
+                AnswerExecutionDecisionRequest {
+                    answer: params.answer,
+                    expected_execution_version: params.expected_execution_version,
+                    expected_step_version: params.expected_step_version,
+                    expected_attempt_version: params.expected_attempt_version,
+                },
+            )
+            .await?;
+            Ok(ws_response(request_id, serde_json::to_value(view).map_err(|error| {
+                AppServerError::new(
+                    "internal_error",
+                    format!("failed to encode answered run: {error}"),
                     StatusCode::INTERNAL_SERVER_ERROR,
                     true,
                 )
@@ -4605,12 +5237,74 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode skill: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // ---------------- Skill write face (host management surface) ---------
+        // `16` R17 / W12: the store's own CRUD over *user* skills. WebSocket
+        // only and deliberately absent from the published SDK package — a
+        // third-party consumer must not be able to write files into this
+        // host's skill tree (`16` §6), same judgement as `config/*`. All three
+        // go through the same owner gate as every other method, take their
+        // root from the host (never from a parameter), and answer from a
+        // re-read of the catalog instead of echoing the request.
+        "skill/create" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSkillCreate>(params)?;
+            let skill = execute_skill_create(state, params).await?;
+            Ok(ws_response(request_id, serde_json::to_value(skill).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode skill: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "skill/update" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSkillUpdate>(params)?;
+            let skill = execute_skill_update(state, params).await?;
+            Ok(ws_response(request_id, serde_json::to_value(skill).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode skill: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "skill/delete" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSkillDelete>(params)?;
+            let result = execute_skill_delete(state, params).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode skill delete result: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "skill/copy" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSkillCopy>(params)?;
+            let skill = execute_skill_copy(state, params).await?;
+            Ok(ws_response(request_id, serde_json::to_value(skill).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode skill: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         // ---------------- Agent Store Connector catalog ----------------
         "connector/list" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let connectors = list_connectors_impl(state).await?;
             Ok(ws_response(request_id, serde_json::to_value(connectors).map_err(|error| {
                 AppServerError::new("internal_error", format!("failed to encode connectors: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        // ---------------- Host settings file (config/get · config/set) ---------
+        // Provider / default-model config is host management surface, not a
+        // third-party SDK capability (`16` §6): additive wire methods with no
+        // counterpart in the published client package. Both go through the same
+        // owner gate as every other method (`require_ready`), take their path
+        // from the host (never from a parameter) and cannot express a credential.
+        "config/get" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            parse_ws_params::<WsConfigQuery>(params)?;
+            let view = execute_config_get(state)?;
+            Ok(ws_response(request_id, serde_json::to_value(view).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode config view: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "config/set" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<AgentStoreConfigPatch>(params)?;
+            let view = execute_config_set(state, params)?;
+            Ok(ws_response(request_id, serde_json::to_value(view).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode config view: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
         // ---------------- Public model directory ----------------
@@ -4864,6 +5558,114 @@ struct WsSkillQuery {
     skill_id: String,
 }
 
+/// `skill/create` (`16` R17 / W12).
+///
+/// Structured fields, not raw Markdown: the extension primitive assembles the
+/// canonical frontmatter, so the stored document's `name` always equals the id
+/// it is addressed by. `deny_unknown_fields` is load-bearing — a request
+/// carrying `api_key` / `env` / `token` is `invalid_request` instead of being
+/// silently dropped (R22 keeps its credential gate), and no field can name a
+/// path.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsSkillCreate {
+    name: String,
+    description: String,
+    #[serde(default)]
+    when_to_use: Option<String>,
+    #[serde(default)]
+    allowed_tools: Option<String>,
+    #[serde(default)]
+    paths: Option<String>,
+    #[serde(default)]
+    body: String,
+}
+
+impl WsSkillCreate {
+    fn into_request(self) -> SkillCreateRequest {
+        SkillCreateRequest {
+            name: self.name,
+            description: self.description,
+            when_to_use: self.when_to_use,
+            allowed_tools: self.allowed_tools,
+            paths: self.paths,
+            body: self.body,
+        }
+    }
+}
+
+/// `skill/update`: a field-level edit of one writable skill.
+///
+/// Every field is optional and `None` means "leave it alone"; the server merges
+/// the named fields into the document it reads from disk. Two consequences are
+/// deliberate:
+/// - the caller never has to send the whole file, which matters because
+///   `skill/get` caps the body it exposes (a full-document round trip is not
+///   even possible through the read face);
+/// - `name` is not patchable — the public id *is* the frontmatter name, so
+///   renaming is not an edit (`skill/copy` derives a new skill instead).
+///
+/// `deny_unknown_fields`: `api_key` / `env` / `token` are `invalid_request`,
+/// never silently dropped (R22 keeps its gate).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsSkillUpdate {
+    skill_id: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    when_to_use: Option<String>,
+    #[serde(default)]
+    allowed_tools: Option<String>,
+    #[serde(default)]
+    paths: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+}
+
+impl WsSkillUpdate {
+    /// True when the request names at least one field to change. A patch that
+    /// names nothing is refused rather than answered with an unchanged skill.
+    fn names_any_field(&self) -> bool {
+        self.description.is_some()
+            || self.when_to_use.is_some()
+            || self.allowed_tools.is_some()
+            || self.paths.is_some()
+            || self.body.is_some()
+    }
+
+    fn field_patch(&self) -> SkillFieldPatch<'_> {
+        SkillFieldPatch {
+            description: self.description.as_deref(),
+            when_to_use: self.when_to_use.as_deref(),
+            allowed_tools: self.allowed_tools.as_deref(),
+            paths: self.paths.as_deref(),
+            body: self.body.as_deref(),
+        }
+    }
+}
+
+/// `skill/delete`: one writable skill id.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsSkillDelete {
+    skill_id: String,
+}
+
+/// `skill/copy`: derive a new user skill from an existing one.
+///
+/// The source may live in **any** origin (built-in, marketplace install, shared,
+/// companion, draft, user) — copying a read-only skill into the user root is the
+/// only way to make it editable, which is why this method exists. The target is
+/// always `{user_skills_dir}/{new_name}`: no field can name a path, and
+/// `new_name` must be free in every origin (`conflict` otherwise).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsSkillCopy {
+    skill_id: String,
+    new_name: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WsAgentQuery {
@@ -4894,6 +5696,13 @@ struct WsConnectorQuery {
 struct WsSnapshotQuery {
     snapshot_id: String,
 }
+
+/// `config/get` takes no parameters — `deny_unknown_fields` on an empty struct
+/// is what makes `{"path": "…"}` a hard `invalid_request` instead of a silently
+/// ignored field.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConfigQuery {}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -4990,6 +5799,25 @@ struct WsSteerRun {
     idempotency_key: Option<String>,
 }
 
+/// `run/answer-decision` params.
+///
+/// The three `expected_*_version` fields are the engine's CAS tokens, not a
+/// client-supplied convenience: `answer-decision` refuses to apply an answer
+/// once any of them moved. `deny_unknown_fields` is load-bearing here — a
+/// desktop-style `always_allow` / approve-all flag is not part of this method
+/// and must fail fast instead of being silently ignored.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsAnswerDecision {
+    run_id: String,
+    step_id: String,
+    attempt_id: String,
+    answer: String,
+    expected_execution_version: i64,
+    expected_step_version: i64,
+    expected_attempt_version: i64,
+}
+
 async fn ws_get_run(
     state: &AppServerRouterState,
     connection: &ConnectionState,
@@ -5008,6 +5836,18 @@ async fn ws_get_run(
         .map_err(AppServerError::from)?;
     view.run_id = run_id.to_owned();
     Ok(view)
+}
+
+async fn ws_get_plan(
+    state: &AppServerRouterState,
+    connection: &ConnectionState,
+    user: &CurrentUser,
+    run_id: &str,
+) -> Result<AgentRunPlan, AppServerError> {
+    state
+        .registry
+        .require_ready(connection.connection_id(), &user.id)?;
+    get_run_plan_for_user(state, user, run_id).await
 }
 
 async fn ws_get_result(
@@ -5191,9 +6031,172 @@ mod tests {
         assert!(!result.capabilities.skills);
         assert!(!result.capabilities.connectors);
         assert!(!result.capabilities.run_notifications);
-        assert!(!result.capabilities.approvals);
+        // Approvals are derived from the runtime (same seam as the answer path).
+        assert!(result.capabilities.approvals);
         assert!(!result.capabilities.artifacts);
         assert!(!result.capabilities.oauth);
+    }
+
+    #[test]
+    fn approvals_capability_follows_the_runtime_seam() {
+        // Only the runtime gates the answer path, so a runtime-less connection
+        // must not advertise it...
+        let mut without_runtime = ConnectionState::new(
+            LocalPrincipal::from_authenticated_user(UserId::new(), LocalTransport::Http),
+            false,
+        );
+        assert!(!without_runtime.initialize(request()).unwrap().capabilities.approvals);
+        let runtime_less_state = AppServerRouterState::default();
+        assert!(!CapabilityAvailability::from_state(&runtime_less_state).runtime);
+
+        // ...while every connection that owns one does, on both transports.
+        for transport in [LocalTransport::Http, LocalTransport::WebSocket] {
+            let mut state = ConnectionState::new(
+                LocalPrincipal::from_authenticated_user(UserId::new(), transport),
+                true,
+            );
+            assert!(
+                state.initialize(request()).unwrap().capabilities.approvals,
+                "approvals must follow the runtime on {transport:?}"
+            );
+        }
+    }
+
+    /// The `run/answer-decision` params are exactly the engine's answer contract:
+    /// three CAS tokens, no desktop-only switches, nothing optional.
+    #[test]
+    fn answer_decision_params_are_exactly_the_cas_contract() {
+        let canonical = serde_json::json!({
+            "run_id": "0190f5fe-7c00-7a00-8000-000000000010",
+            "step_id": "0190f5fe-7c00-7a00-8000-000000000011",
+            "attempt_id": "0190f5fe-7c00-7a00-8000-000000000012",
+            "answer": "approved",
+            "expected_execution_version": 4,
+            "expected_step_version": 5,
+            "expected_attempt_version": 6,
+        });
+        let parsed: WsAnswerDecision = serde_json::from_value(canonical.clone()).unwrap();
+        assert_eq!(parsed.step_id, "0190f5fe-7c00-7a00-8000-000000000011");
+        assert_eq!(parsed.expected_execution_version, 4);
+        assert_eq!(parsed.expected_step_version, 5);
+        assert_eq!(parsed.expected_attempt_version, 6);
+
+        let http_body = |mut body: serde_json::Value| {
+            body.as_object_mut().unwrap().remove("run_id");
+            body
+        };
+
+        // The desktop confirmation route's `always_allow` (and every other
+        // approve-all / CAS-skipping switch) is not part of this method. It must
+        // fail fast rather than be silently dropped on the floor.
+        for flag in ["always_allow", "approve_all", "yolo", "skip_cas", "confirmation_mode"] {
+            let mut ws = canonical.clone();
+            ws[flag] = serde_json::json!(true);
+            assert!(
+                serde_json::from_value::<WsAnswerDecision>(ws).is_err(),
+                "{flag} must be rejected by the run/answer-decision params"
+            );
+            let mut http = http_body(canonical.clone());
+            http[flag] = serde_json::json!(true);
+            assert!(
+                serde_json::from_value::<AnswerDecisionRequest>(http).is_err(),
+                "{flag} must be rejected by the HTTP binding"
+            );
+        }
+
+        // All three CAS tokens are mandatory — there is no "answer whatever is
+        // current" shortcut.
+        for missing in [
+            "expected_execution_version",
+            "expected_step_version",
+            "expected_attempt_version",
+        ] {
+            let mut ws = canonical.clone();
+            ws.as_object_mut().unwrap().remove(missing);
+            assert!(
+                serde_json::from_value::<WsAnswerDecision>(ws).is_err(),
+                "{missing} must be required by run/answer-decision"
+            );
+        }
+
+        // The HTTP body is the same contract minus the path parameter.
+        assert!(serde_json::from_value::<AnswerDecisionRequest>(http_body(canonical)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn run_answer_decision_requires_ready_then_a_runtime() {
+        let state = AppServerRouterState::default();
+        let user = CurrentUser {
+            id: UserId::new(),
+            username: "operator".into(),
+        };
+        let connection = state.registry.open(
+            LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
+            false,
+        );
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
+        let params = serde_json::json!({
+            "run_id": "run_01",
+            "step_id": "0190f5fe-7c00-7a00-8000-000000000011",
+            "attempt_id": "0190f5fe-7c00-7a00-8000-000000000012",
+            "answer": "approved",
+            "expected_execution_version": 1,
+            "expected_step_version": 1,
+            "expected_attempt_version": 1,
+        });
+        let request_id = Some(serde_json::json!("req-1"));
+
+        let error = dispatch_connection_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "run/answer-decision",
+            params.clone(),
+            request_id.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "not_initialized");
+
+        state
+            .registry
+            .initialize(connection.connection_id(), request())
+            .unwrap();
+        state
+            .registry
+            .mark_initialized(connection.connection_id(), &user.id)
+            .unwrap();
+        let error = dispatch_connection_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "run/answer-decision",
+            params.clone(),
+            request_id.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.code, "runtime_unavailable",
+            "the arm must refuse before resolving a public run id when no runtime backs it"
+        );
+
+        let mut with_desktop_flag = params;
+        with_desktop_flag["always_allow"] = serde_json::json!(true);
+        let error = dispatch_connection_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "run/answer-decision",
+            with_desktop_flag,
+            request_id,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_request");
     }
 
     #[test]
@@ -5209,7 +6212,7 @@ mod tests {
         assert!(!result.capabilities.teams);
         assert!(!result.capabilities.skills);
         assert!(!result.capabilities.connectors);
-        assert!(!result.capabilities.approvals);
+        assert!(result.capabilities.approvals);
     }
 
     #[test]
@@ -6002,6 +7005,118 @@ display_name = "MiMo V2.5 Free"
         assert!(notification["params"].get("turn_id").is_none());
     }
 
+    /// W9（R14）：本轮 token 用量随 `turn_completed` 到达客户端。引擎早就在事件里
+    /// 给了逐轮数字，此前被投影丢掉；这里钉住「原样带上、其余运行时指标仍留在
+    /// seam 后面」，因为客户端就是靠这三个数（配目录费率）算「本轮花了多少」。
+    #[test]
+    fn conversation_turn_completed_projection_carries_per_turn_usage() {
+        let conversation_id = "0190f5fe-7c00-7a00-8000-000000000009";
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions {
+            conversations: HashSet::from([conversation_id.to_owned()]),
+            ..Default::default()
+        }));
+        let event = WebSocketMessage::new("message.stream", serde_json::json!({
+            "conversation_id": conversation_id,
+            "msg_id": "0190f5fe-7c00-7a00-0000-000000000011",
+            "type": "turn_completed",
+            "data": {
+                "elapsed_ms": 15_178,
+                "input_tokens": 1_200,
+                "output_tokens": 340,
+                "cache_creation_tokens": 120,
+                "cache_read_tokens": 800,
+                "context_tokens": 8_000,
+                "context_window": 100_000,
+                "stop_reason": "end_turn",
+                "context_breakdown": { "conversation": 7_500 },
+                "moa": { "slots": [] },
+            },
+            "hidden": false,
+        }));
+
+        let notification = project_conversation_notification(&event, &subscriptions)
+            .expect("turn_completed stays public (R31 wrap-up marker)");
+        assert_eq!(notification["params"]["event_type"], "message.activity");
+        assert_eq!(notification["params"]["payload"]["kind"], "turn_completed");
+        assert_eq!(
+            notification["params"]["payload"]["usage"]["input_tokens"],
+            1_200
+        );
+        assert_eq!(
+            notification["params"]["payload"]["usage"]["output_tokens"],
+            340
+        );
+        assert_eq!(
+            notification["params"]["payload"]["usage"]["total_tokens"],
+            1_540
+        );
+        // The projection stays a seam: the remaining runtime metrics (cache
+        // detail, context gauge, breakdown, MoA slots, stop reason) are not
+        // relayed — the public payload carries the accounting, not the frame.
+        for field in [
+            "cache_creation_tokens",
+            "cache_read_tokens",
+            "context_tokens",
+            "context_window",
+            "context_breakdown",
+            "stop_reason",
+            "moa",
+            "elapsed_ms",
+        ] {
+            assert!(
+                notification["params"]["payload"].get(field).is_none(),
+                "{field} must stay behind the seam"
+            );
+        }
+    }
+
+    /// 没有可报的用量时**整段缺席**——不是 `usage: {0, 0}`，更不是拿上下文占用
+    /// 顶替。客户端据此保持「本轮未知」，永远不会把 0 当成「这一轮不花钱」。
+    #[test]
+    fn conversation_turn_completed_projection_omits_unreported_usage() {
+        let conversation_id = "0190f5fe-7c00-7a00-8000-000000000009";
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions {
+            conversations: HashSet::from([conversation_id.to_owned()]),
+            ..Default::default()
+        }));
+        let frame = |data: serde_json::Value| {
+            WebSocketMessage::new("message.stream", serde_json::json!({
+                "conversation_id": conversation_id,
+                "msg_id": "0190f5fe-7c00-7a00-0000-000000000011",
+                "type": "turn_completed",
+                "data": data,
+                "hidden": false,
+            }))
+        };
+
+        // ① 运行时一个 token 都没报（只有占用与耗时）。
+        let silent = frame(serde_json::json!({
+            "elapsed_ms": 42,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "context_tokens": 8_000,
+            "context_window": 100_000,
+        }));
+        // ② 只有单侧——半个账单不算账单。
+        let partial = frame(serde_json::json!({ "input_tokens": 1_200 }));
+        // ③ 极旧的帧，连 `data` 都没有。
+        let absent = WebSocketMessage::new("message.stream", serde_json::json!({
+            "conversation_id": conversation_id,
+            "msg_id": "0190f5fe-7c00-7a00-0000-000000000011",
+            "type": "turn_completed",
+        }));
+
+        for (label, event) in [("silent", silent), ("partial", partial), ("absent", absent)] {
+            let notification = project_conversation_notification(&event, &subscriptions)
+                .unwrap_or_else(|| panic!("{label}: turn_completed stays public"));
+            assert_eq!(notification["params"]["payload"]["kind"], "turn_completed");
+            assert!(
+                notification["params"]["payload"].get("usage").is_none(),
+                "{label}: unreported usage must stay off the wire"
+            );
+        }
+    }
+
     #[test]
     fn conversation_tips_projection_carries_only_public_tip_fields() {
         let conversation_id = "0190f5fe-7c00-7a00-8000-000000000009";
@@ -6119,6 +7234,77 @@ display_name = "MiMo V2.5 Free"
     }
 
     #[test]
+    fn catalog_model_facts_read_the_cached_registry_and_stay_absent_when_unknown() {
+        let client = nomifun_models_dev::ModelsDevClient::new(
+            "http://127.0.0.1:1/api.json",
+            std::env::temp_dir().join("nomifun-app-server-models-dev-facts-test.json"),
+            None,
+        );
+        client.seed_cache(serde_json::json!({
+            "anthropic": {
+                "name": "Anthropic",
+                "models": {
+                    "claude-sonnet-4-5": {
+                        "name": "Claude Sonnet 4.5",
+                        "attachment": true,
+                        "limit": { "context": 200000 },
+                        "cost": { "input": 3.0, "output": 15.0 }
+                    }
+                }
+            }
+        }));
+
+        let known = catalog_model_facts(&client, "anthropic", "claude-sonnet-4-5");
+        assert_eq!(known.cost_input, Some(3.0));
+        assert_eq!(known.cost_output, Some(15.0));
+        assert_eq!(known.catalog_context_window, Some(200_000));
+        assert_eq!(known.supports_vision, Some(true));
+
+        // An unknown model and an unmapped platform (`mimo` is `MergePolicy::Never`)
+        // both yield nothing — the UI must never receive a zero standing in for
+        // "unknown".
+        assert_eq!(
+            catalog_model_facts(&client, "anthropic", "does-not-exist"),
+            CatalogFacts::default()
+        );
+        assert_eq!(
+            catalog_model_facts(&client, "mimo", "claude-sonnet-4-5"),
+            CatalogFacts::default()
+        );
+
+        // Wire shape: absent facts stay off the wire (additive, no nulls).
+        let projected = ConversationModelOption {
+            name: "claude-sonnet-4-5".to_owned(),
+            display_name: None,
+            context_limit: None,
+            cost_input: known.cost_input,
+            cost_output: known.cost_output,
+            catalog_context_window: known.catalog_context_window,
+            supports_vision: known.supports_vision,
+        };
+        let value = serde_json::to_value(&projected).expect("serialize projected option");
+        assert_eq!(value["cost_input"], serde_json::json!(3.0));
+        assert_eq!(value["cost_output"], serde_json::json!(15.0));
+        assert_eq!(value["catalog_context_window"], serde_json::json!(200_000));
+        assert_eq!(value["supports_vision"], serde_json::json!(true));
+
+        let bare = ConversationModelOption {
+            name: "mimo-v2.5".to_owned(),
+            display_name: None,
+            context_limit: None,
+            cost_input: None,
+            cost_output: None,
+            catalog_context_window: None,
+            supports_vision: None,
+        };
+        let value = serde_json::to_value(&bare).expect("serialize bare option");
+        assert!(value.get("cost_input").is_none());
+        assert!(value.get("cost_output").is_none());
+        assert!(value.get("catalog_context_window").is_none());
+        assert!(value.get("supports_vision").is_none());
+    }
+
+    #[test]
     fn conversation_model_options_project_the_agent_store_catalog() {
         let dir = std::env::temp_dir().join(format!("allo-mo-test-{}", generate_id()));
         std::fs::create_dir_all(&dir).expect("temp config dir");
@@ -6220,6 +7406,16 @@ display_name = "MiMo V2.5 Free"
                 "conversation/delete",
                 serde_json::json!({ "conversation_id": "0190f5fe-7c00-7a00-8000-000000000099" }),
             ),
+            // Host settings file: the ready gate runs before any file access.
+            ("config/get", serde_json::json!({})),
+            ("config/set", serde_json::json!({ "default_model": "opencode/mimo-v2.5-free" })),
+            // Skill write face: the ready gate runs before any filesystem access.
+            ("skill/create", serde_json::json!({ "name": "demo", "description": "d", "body": "b" })),
+            (
+                "skill/update",
+                serde_json::json!({ "skill_id": "demo", "markdown": "---\nname: demo\ndescription: d\n---\n" }),
+            ),
+            ("skill/delete", serde_json::json!({ "skill_id": "demo" })),
         ] {
             let error = dispatch_connection_request(
                 &state,
@@ -6234,6 +7430,374 @@ display_name = "MiMo V2.5 Free"
             .unwrap_err();
             assert_eq!(error.code, "not_initialized", "{method} must require ready");
         }
+    }
+
+    // ---- Host settings file: `config/get` · `config/set` --------------------
+
+    /// Hand-edited host config: the write path must leave every line of this
+    /// alone except the one key it was asked to change.
+    const COMMENTED_CONFIG: &str = r#"# allo host config — do not reformat
+default_model = "opencode/mimo-v2.5-free"   # current pick
+
+[providers.opencode]
+type = "openai"
+api_key = "sk-live-must-never-reach-the-wire"
+base_url = "https://opencode.ai/zen/v1"
+
+[models."opencode/mimo-v2.5-free"]
+provider = "opencode"
+model = "mimo-v2.5-free"
+"#;
+
+    fn config_temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("allo-config-{label}-{}", generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp config dir");
+        dir
+    }
+
+    /// Ready connection whose host config path points at `path`.
+    fn config_dispatch_state(
+        path: &std::path::Path,
+    ) -> (AppServerRouterState, CurrentUser, ConnectionState, Arc<RwLock<WsSubscriptions>>) {
+        let state = AppServerRouterState {
+            agent_store_config_path: Some(path.to_path_buf()),
+            ..Default::default()
+        };
+        let user = CurrentUser { id: UserId::new(), username: "test-user".into() };
+        let connection = state.registry.open_with_capabilities(
+            LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
+            CapabilityAvailability::from_state(&state),
+        );
+        state
+            .registry
+            .initialize(connection.connection_id(), request())
+            .expect("initialize");
+        state
+            .registry
+            .mark_initialized(connection.connection_id(), &user.id)
+            .expect("initialized");
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
+        (state, user, connection, subscriptions)
+    }
+
+    /// Dispatch one method and unwrap the JSON-RPC envelope to its `result`.
+    async fn dispatch_config(
+        state: &AppServerRouterState,
+        connection: &ConnectionState,
+        user: &CurrentUser,
+        subscriptions: &Arc<RwLock<WsSubscriptions>>,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, AppServerError> {
+        dispatch_connection_request(
+            state,
+            connection,
+            user,
+            subscriptions,
+            method,
+            params,
+            Some(serde_json::json!("req-1")),
+        )
+        .await
+        .map(|response| response["result"].clone())
+    }
+
+    #[tokio::test]
+    async fn config_get_reads_the_host_file_without_credentials() {
+        let dir = config_temp_dir("get");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        let view = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+
+        assert_eq!(view["exists"], serde_json::json!(true));
+        assert_eq!(view["default_model"], serde_json::json!("opencode/mimo-v2.5-free"));
+        assert_eq!(view["providers"][0]["name"], serde_json::json!("opencode"));
+        assert_eq!(view["providers"][0]["enabled"], serde_json::json!(true));
+        assert_eq!(view["providers"][0]["models"], serde_json::json!(["mimo-v2.5-free"]));
+
+        // The file carries a credential; the wire view must not.
+        let encoded = view.to_string();
+        assert!(!encoded.contains("sk-live-must-never-reach-the-wire"), "{encoded}");
+        assert!(!encoded.contains("api_key"), "{encoded}");
+        assert!(!encoded.contains("base_url"), "{encoded}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_get_on_a_missing_file_answers_defaults_without_error() {
+        let dir = config_temp_dir("missing");
+        let path = dir.join("absent.toml");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        let view = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("a missing config file is not an error");
+        assert_eq!(view["exists"], serde_json::json!(false));
+        assert!(view["default_model"].is_null(), "absent must be an explicit null");
+        assert_eq!(view["providers"], serde_json::json!([]));
+
+        // A default the runtime could not resolve is refused, not written.
+        let error = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/set",
+            serde_json::json!({ "default_model": "opencode/fresh" }),
+        )
+        .await
+        .expect_err("no [providers.opencode] table to resolve against");
+        assert_eq!(error.code, "invalid_request");
+        assert!(!path.exists(), "a refused write must not create the file");
+
+        // Declaring the provider is what makes a default resolvable; the write
+        // then creates the file and answers with the file re-read.
+        std::fs::write(&path, "[providers.opencode]\ntype = \"openai\"\n").expect("temp config");
+        let view = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/set",
+            serde_json::json!({ "default_model": "opencode/fresh" }),
+        )
+        .await
+        .expect("config/set");
+        assert_eq!(view["exists"], serde_json::json!(true));
+        assert_eq!(view["default_model"], serde_json::json!("opencode/fresh"));
+        assert_eq!(view["providers"][0]["models"], serde_json::json!([]));
+        let on_disk = std::fs::read_to_string(&path).expect("config on disk");
+        assert!(on_disk.contains("default_model = \"opencode/fresh\""), "{on_disk}");
+        assert!(on_disk.contains("[providers.opencode]"), "{on_disk}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_set_toggles_the_memory_distill_switch_and_reads_it_back() {
+        let dir = config_temp_dir("memory");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        // A file without `[memory]` reports "not configured" — not `false`.
+        let before = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+        assert!(before["memory"].is_null(), "absent table must be null: {before}");
+
+        let view = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/set",
+            serde_json::json!({ "memory": { "distill_enabled": false } }),
+        )
+        .await
+        .expect("config/set");
+        assert_eq!(view["memory"]["distill_enabled"], serde_json::json!(false));
+
+        // The value really landed in the host file the launcher reads.
+        let on_disk = std::fs::read_to_string(&path).expect("config on disk");
+        assert!(on_disk.contains("[memory]"), "{on_disk}");
+        assert!(on_disk.contains("distill_enabled = false"), "{on_disk}");
+        // ...and everything else survived.
+        assert!(on_disk.contains("# allo host config — do not reformat"), "{on_disk}");
+        // Derived from the fixture rather than typed out: the credential line is
+        // asserted byte-for-byte without a secret ever entering this file.
+        let credential_line = COMMENTED_CONFIG
+            .lines()
+            .find(|line| line.starts_with("api_key"))
+            .expect("fixture carries a credential line");
+        assert!(on_disk.contains(credential_line), "{on_disk}");
+        assert!(on_disk.contains("[models.\"opencode/mimo-v2.5-free\"]"), "{on_disk}");
+        assert_eq!(on_disk.matches("distill_enabled").count(), 1, "{on_disk}");
+        assert!(!dir.join("config.toml.tmp").exists(), "temp file must not survive");
+
+        // Re-read agrees, and flipping it back is a second minimal write.
+        let again = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+        assert_eq!(again, view);
+
+        let flipped = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/set",
+            serde_json::json!({ "memory": { "distill_enabled": true } }),
+        )
+        .await
+        .expect("config/set");
+        assert_eq!(flipped["memory"]["distill_enabled"], serde_json::json!(true));
+        let on_disk = std::fs::read_to_string(&path).expect("config on disk");
+        assert_eq!(on_disk.matches("distill_enabled").count(), 1, "{on_disk}");
+        assert!(on_disk.contains("distill_enabled = true"), "{on_disk}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_set_takes_no_credential_fields_in_the_memory_patch() {
+        let dir = config_temp_dir("memory-credentials");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        for body in [
+            // Credential-shaped fields have no slot inside `[memory]` either.
+            serde_json::json!({ "memory": { "api_key": "«redacted:sk-…»" } }),
+            serde_json::json!({ "memory": { "env": { "TOKEN": "«redacted»" } } }),
+            serde_json::json!({ "memory": { "distill_enabled": false, "api_key": "«redacted:sk-…»" } }),
+            serde_json::json!({ "memory": { "distill_enabled": "false" } }),
+            serde_json::json!({ "memory": {} }),
+            serde_json::json!({ "memory": null }),
+        ] {
+            let error = dispatch_config(&state, &connection, &user, &subscriptions, "config/set", body.clone())
+                .await
+                .expect_err("must be refused");
+            assert_eq!(error.code, "invalid_request", "{body}");
+        }
+
+        // Nothing was written: a refused patch never creates `[memory]`.
+        assert_eq!(std::fs::read_to_string(&path).expect("config on disk"), COMMENTED_CONFIG);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_set_rewrites_only_the_target_key_and_preserves_comments() {
+        let dir = config_temp_dir("set");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        let view = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/set",
+            serde_json::json!({ "default_model": "opencode/other-model" }),
+        )
+        .await
+        .expect("config/set");
+        assert_eq!(view["default_model"], serde_json::json!("opencode/other-model"));
+
+        // On disk: only the target key moved. Comments, credentials, layout and
+        // the other tables are untouched, and no temp file is left behind.
+        let on_disk = std::fs::read_to_string(&path).expect("config on disk");
+        assert_eq!(on_disk.matches("default_model").count(), 1, "{on_disk}");
+        assert!(on_disk.contains("# allo host config — do not reformat"), "{on_disk}");
+        assert!(on_disk.contains("# current pick"), "{on_disk}");
+        assert!(on_disk.contains("api_key = \"sk-live-must-never-reach-the-wire\""), "{on_disk}");
+        assert!(on_disk.contains("base_url = \"https://opencode.ai/zen/v1\""), "{on_disk}");
+        assert!(on_disk.contains("[models.\"opencode/mimo-v2.5-free\"]"), "{on_disk}");
+        assert_eq!(on_disk.lines().count(), COMMENTED_CONFIG.lines().count(), "{on_disk}");
+        assert!(!dir.join("config.toml.tmp").exists(), "temp file must not survive");
+
+        // A second read agrees with the answer the write handed back.
+        let again = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+        assert_eq!(again, view);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_set_refuses_out_of_envelope_fields_and_values() {
+        let dir = config_temp_dir("refuse");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        for body in [
+            // Credentials / path / owner / endpoint have no slot in the patch.
+            serde_json::json!({ "api_key": "sk-live-write" }),
+            serde_json::json!({ "base_url": "http://evil.example" }),
+            serde_json::json!({ "path": "C:/elsewhere/config.toml" }),
+            serde_json::json!({ "owner": "someone-else" }),
+            serde_json::json!({ "default_model": "opencode/mimo-v2.5-free", "api_key": "sk-live-write" }),
+            // Values the runtime could not resolve.
+            serde_json::json!({ "default_model": "   " }),
+            serde_json::json!({ "default_model": "opencode" }),
+            serde_json::json!({ "default_model": "/mimo-v2.5-free" }),
+            serde_json::json!({ "default_model": "opencode/" }),
+            serde_json::json!({ "default_model": "ghost/model" }),
+            serde_json::json!({ "default_model": "opencode/line\nbreak" }),
+            // Nothing to write at all.
+            serde_json::json!({}),
+        ] {
+            let error = dispatch_config(&state, &connection, &user, &subscriptions, "config/set", body.clone())
+                .await
+                .expect_err("must be refused");
+            assert_eq!(error.code, "invalid_request", "{body}");
+        }
+
+        // The refusals left the file byte-identical.
+        assert_eq!(std::fs::read_to_string(&path).expect("config on disk"), COMMENTED_CONFIG);
+        assert!(!dir.join("config.toml.tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_methods_are_owner_scoped_and_take_no_path() {
+        let dir = config_temp_dir("scope");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        // A foreign owner's request can never reach this host's file: the same
+        // `require_ready` gate every other method goes through, and there is no
+        // owner parameter that could widen it.
+        let foreign = CurrentUser { id: UserId::new(), username: "someone-else".into() };
+        for (method, params) in [
+            ("config/get", serde_json::json!({})),
+            ("config/set", serde_json::json!({ "default_model": "opencode/mimo-v2.5-free" })),
+        ] {
+            let error = dispatch_config(&state, &connection, &foreign, &subscriptions, method, params)
+                .await
+                .expect_err("foreign owner must be refused");
+            assert_eq!(error.code, "policy_denied", "{method}");
+        }
+
+        // A connection this registry never issued is `not_found`, not a file
+        // read: the config face adds no new reachable surface.
+        let unknown = ConnectionState::new(
+            LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
+            true,
+        );
+        let error = dispatch_config(&state, &unknown, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect_err("unknown connection must be refused");
+        assert_eq!(error.code, "not_found");
+
+        // `config/get` takes no parameters: a path is a hard rejection.
+        let error = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/get",
+            serde_json::json!({ "path": "C:/elsewhere/config.toml" }),
+        )
+        .await
+        .expect_err("config/get must not accept a path");
+        assert_eq!(error.code, "invalid_request");
+
+        // And the host file is still exactly as it was.
+        assert_eq!(std::fs::read_to_string(&path).expect("config on disk"), COMMENTED_CONFIG);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -6256,7 +7820,7 @@ display_name = "MiMo V2.5 Free"
         assert!(result.capabilities.oauth);
         assert!(result.capabilities.run_notifications);
         assert!(!result.capabilities.teams);
-        assert!(!result.capabilities.approvals);
+        assert!(result.capabilities.approvals);
         assert!(!result.capabilities.artifacts);
     }
 
@@ -6267,6 +7831,8 @@ display_name = "MiMo V2.5 Free"
             description: Some("a demo skill".into()),
             version: "builtin".into(),
             source: "builtin".into(),
+            origin: "builtin".into(),
+            writable: false,
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::Compatible,
             enabled: true,
             required_connectors: vec![],
@@ -6622,6 +8188,18 @@ display_name = "MiMo V2.5 Free"
         let detail = market_get_impl(&state, "company-tools").await.unwrap();
         assert_eq!(detail.entries.len(), 2);
         assert_eq!(detail.entries[0].name, "formatter");
+        // Entry provenance is server-projected (doc 16 D-W13-1 ①): the imported
+        // entry carries its snapshot and install tally, and the untouched entry
+        // carries nothing — a cascade removal reads its impact set from exactly
+        // this, before it runs.
+        let imported = detail.entries[0]
+            .snapshot
+            .as_ref()
+            .expect("imported entry carries its snapshot");
+        assert_eq!(imported.snapshot_id, "0190f5fe-7c00-7a00-8000-0000000000aa");
+        assert_eq!(imported.component_count, 2);
+        assert_eq!(imported.installed_count, 1);
+        assert!(detail.entries[1].snapshot.is_none());
 
         let removed = market_remove_impl(&state, "company-tools", true).await.unwrap();
         assert_eq!(removed.snapshots, vec!["snap-demo"]);
@@ -6812,5 +8390,966 @@ display_name = "MiMo V2.5 Free"
         assert_eq!(denied.code, "unsupported_operation");
         let denied_agents = list_agents_impl(&bare).await.unwrap_err();
         assert_eq!(denied_agents.code, "unsupported_operation");
+    }
+
+    // ---- Skill write face: `skill/create` · `skill/update` · `skill/delete` --
+    //
+    // `SkillAdmin` is the production write provider (the host wires it with its
+    // own `SkillPaths`), so these tests exercise the real filesystem primitive
+    // through the real dispatch arm — a refusal is only "nothing was written"
+    // if the temp tree is still byte-identical afterwards, which is what every
+    // refusal test below asserts.
+
+    /// Isolated `SkillPaths` under the OS temp dir. `TMP` is deliberately not
+    /// touched: Rust's `temp_dir()` reads it and mutating it breaks every other
+    /// test in the process.
+    fn skill_temp_paths(label: &str) -> (std::path::PathBuf, nomifun_extension::skill_service::SkillPaths) {
+        let dir = std::env::temp_dir().join(format!("allo-skill-w12-{label}-{}", generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp skill root");
+        let paths = nomifun_extension::skill_service::SkillPaths {
+            data_dir: dir.clone(),
+            user_skills_dir: dir.join("skills"),
+            cron_skills_dir: dir.join("cron/skills"),
+            builtin_skills_dir: dir.join("builtin-skills"),
+            builtin_rules_dir: dir.join("rules"),
+            preset_rules_dir: dir.join("preset-rules"),
+            preset_skills_dir: dir.join("preset-skills"),
+            catalog_roots: Default::default(),
+        };
+        (dir, paths)
+    }
+
+    /// Write one `SKILL.md` (creating parents) — the on-disk fixtures these
+    /// tests classify (built-in, marketplace snapshot, shared, companion).
+    fn write_skill_manifest(dir: &std::path::Path, name: &str, description: &str, body: &str) {
+        std::fs::create_dir_all(dir).expect("skill dir");
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+        )
+        .expect("skill manifest");
+    }
+
+    /// Test stand-in for the host's read catalog (`AppServerSkillCatalog`): same
+    /// `skill_service::list_available_skills` source and the same id/origin
+    /// rules, so the write face's read-back is a real read. The host's own
+    /// projection (truncation included) is asserted in `nomifun-app`.
+    struct TempSkillCatalog {
+        paths: nomifun_extension::skill_service::SkillPaths,
+    }
+
+    #[async_trait::async_trait]
+    impl SkillCatalogProvider for TempSkillCatalog {
+        async fn list(&self) -> Result<Vec<AppServerSkillSummary>, nomifun_common::AppError> {
+            let items = nomifun_extension::skill_service::list_available_skills(&self.paths)
+                .await
+                .map_err(|error| nomifun_common::AppError::Internal(error.to_string()))?;
+            Ok(items
+                .into_iter()
+                .map(|item| {
+                    let location = FsPath::new(&item.location);
+                    let origin = nomifun_extension::skill_service::skill_origin_of(&self.paths, location);
+                    AppServerSkillSummary {
+                        id: item.name.clone(),
+                        name: item.name.clone(),
+                        description: Some(item.description.clone()).filter(|text| !text.trim().is_empty()),
+                        version: "custom".into(),
+                        source: "custom".into(),
+                        origin: origin.as_str().into(),
+                        writable: nomifun_extension::skill_service::is_writable_skill(
+                            &self.paths,
+                            &item.name,
+                            location,
+                        ),
+                        compatibility_status:
+                            nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+                        enabled: true,
+                        required_connectors: vec![],
+                    }
+                })
+                .collect())
+        }
+
+        async fn get(&self, id: &str) -> Result<AppServerSkillDetail, nomifun_common::AppError> {
+            let summary = self
+                .list()
+                .await?
+                .into_iter()
+                .find(|skill| skill.name == id)
+                .ok_or_else(|| nomifun_common::AppError::NotFound(format!("skill {id} not found")))?;
+            let location = nomifun_extension::skill_service::list_available_skills(&self.paths)
+                .await
+                .map_err(|error| nomifun_common::AppError::Internal(error.to_string()))?
+                .into_iter()
+                .find(|item| item.name == id)
+                .map(|item| item.location)
+                .expect("summary came from the same list");
+            let instructions_summary = std::fs::read_to_string(
+                nomifun_extension::skill_service::skill_manifest_path(FsPath::new(&location)),
+            )
+            .ok()
+            .map(|body| body.trim().chars().take(1200).collect::<String>())
+            .filter(|body| !body.is_empty());
+            Ok(AppServerSkillDetail {
+                summary,
+                mode: "store-agent".into(),
+                invocation_policy: "model-auto".into(),
+                instructions_summary,
+            })
+        }
+    }
+
+    /// Ready connection whose catalog and write face both point at `paths`.
+    fn skill_dispatch_state(
+        paths: nomifun_extension::skill_service::SkillPaths,
+    ) -> (AppServerRouterState, CurrentUser, ConnectionState, Arc<RwLock<WsSubscriptions>>) {
+        let state = AppServerRouterState {
+            skills: Some(Arc::new(TempSkillCatalog { paths: paths.clone() })),
+            skill_writes: Some(Arc::new(SkillAdmin::new(paths))),
+            ..Default::default()
+        };
+        let user = CurrentUser { id: UserId::new(), username: "test-user".into() };
+        let connection = state.registry.open_with_capabilities(
+            LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
+            CapabilityAvailability::from_state(&state),
+        );
+        state
+            .registry
+            .initialize(connection.connection_id(), request())
+            .expect("initialize");
+        state
+            .registry
+            .mark_initialized(connection.connection_id(), &user.id)
+            .expect("initialized");
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
+        (state, user, connection, subscriptions)
+    }
+
+    /// Dispatch one skill-write method and unwrap to its `result`.
+    async fn dispatch_skill_write(
+        state: &AppServerRouterState,
+        connection: &ConnectionState,
+        user: &CurrentUser,
+        subscriptions: &Arc<RwLock<WsSubscriptions>>,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, AppServerError> {
+        let response = dispatch_connection_request(
+            state,
+            connection,
+            user,
+            subscriptions,
+            method,
+            params,
+            Some(serde_json::json!("req-skill")),
+        )
+        .await?;
+        Ok(response["result"].clone())
+    }
+
+    fn json_skill_create(name: &str, description: &str, body: &str) -> serde_json::Value {
+        serde_json::json!({ "name": name, "description": description, "body": body })
+    }
+
+    #[tokio::test]
+    async fn skill_write_face_is_absent_until_the_host_wires_it() {
+        // Read catalog present, write face not wired: the four methods answer
+        // `unsupported_operation` instead of pretending anything was written.
+        let (_dir, paths) = skill_temp_paths("unwired");
+        let state = AppServerRouterState {
+            skills: Some(Arc::new(TempSkillCatalog { paths })),
+            ..Default::default()
+        };
+        let user = CurrentUser { id: UserId::new(), username: "test-user".into() };
+        let connection = state.registry.open_with_capabilities(
+            LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
+            CapabilityAvailability::from_state(&state),
+        );
+        state.registry.initialize(connection.connection_id(), request()).expect("initialize");
+        state
+            .registry
+            .mark_initialized(connection.connection_id(), &user.id)
+            .expect("initialized");
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
+
+        for (method, params) in [
+            ("skill/create", json_skill_create("demo", "d", "b")),
+            ("skill/update", serde_json::json!({ "skill_id": "demo", "description": "d" })),
+            ("skill/delete", serde_json::json!({ "skill_id": "demo" })),
+            ("skill/copy", serde_json::json!({ "skill_id": "demo", "new_name": "demo-copy" })),
+        ] {
+            let error = dispatch_skill_write(
+                &state,
+                &connection,
+                &user,
+                &subscriptions,
+                method,
+                params,
+            )
+            .await
+            .expect_err("unwired write face must refuse");
+            assert_eq!(error.code, "unsupported_operation", "{method}");
+        }
+    }
+
+    /// The write face answers by re-reading through the catalog, so a host that
+    /// wires *only* the write provider must be refused **before** anything
+    /// lands: otherwise a create could succeed on disk and still answer an
+    /// error, and a retry would then hit `conflict` on its own first attempt.
+    #[tokio::test]
+    async fn skill_write_refuses_before_writing_when_the_read_catalog_is_missing() {
+        let (dir, paths) = skill_temp_paths("write-only");
+        let state = AppServerRouterState {
+            skill_writes: Some(Arc::new(SkillAdmin::new(paths.clone()))),
+            ..Default::default()
+        };
+        let user = CurrentUser { id: UserId::new(), username: "test-user".into() };
+        let connection = state.registry.open_with_capabilities(
+            LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
+            CapabilityAvailability::from_state(&state),
+        );
+        state.registry.initialize(connection.connection_id(), request()).expect("initialize");
+        state
+            .registry
+            .mark_initialized(connection.connection_id(), &user.id)
+            .expect("initialized");
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
+
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/create",
+            json_skill_create("demo", "d", "b"),
+        )
+        .await
+        .expect_err("a write face without a read catalog must refuse");
+        assert_eq!(error.code, "unsupported_operation");
+        assert!(
+            !paths.user_skills_dir.exists(),
+            "a refused create must not have touched the skill root"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn skill_write_methods_are_owner_scoped_and_take_no_path() {
+        let (dir, paths) = skill_temp_paths("scope");
+        let (state, user, connection, subscriptions) = skill_dispatch_state(paths.clone());
+
+        // A foreign owner cannot reach this host's skill tree, and no parameter
+        // can name one: the gate runs before any filesystem access.
+        let foreign = CurrentUser { id: UserId::new(), username: "someone-else".into() };
+        for (method, params) in [
+            ("skill/create", json_skill_create("demo", "d", "b")),
+            ("skill/update", serde_json::json!({ "skill_id": "demo", "description": "d" })),
+            ("skill/delete", serde_json::json!({ "skill_id": "demo" })),
+            ("skill/copy", serde_json::json!({ "skill_id": "demo", "new_name": "demo-copy" })),
+        ] {
+            let error =
+                dispatch_skill_write(&state, &connection, &foreign, &subscriptions, method, params)
+                    .await
+                    .expect_err("foreign owner must be refused");
+            assert_eq!(error.code, "policy_denied", "{method}");
+        }
+
+        // An unknown connection is `not_found`, never a write.
+        let unknown = ConnectionState::new(
+            LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
+            true,
+        );
+        let error = dispatch_skill_write(
+            &state,
+            &unknown,
+            &user,
+            &subscriptions,
+            "skill/create",
+            json_skill_create("demo", "d", "b"),
+        )
+        .await
+        .expect_err("unknown connection must be refused");
+        assert_eq!(error.code, "not_found");
+
+        // Nothing exists on disk after every refused call.
+        assert!(!paths.user_skills_dir.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn skill_create_writes_then_reads_back_and_rejects_paths_and_credentials() {
+        let (dir, paths) = skill_temp_paths("create");
+        let (state, user, connection, subscriptions) = skill_dispatch_state(paths.clone());
+        let body = "## steps\n1. gather\n2. write";
+
+        let created = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/create",
+            json_skill_create("weekly-report", "weekly summary", body),
+        )
+        .await
+        .expect("skill/create");
+
+        // The answer is the catalog's view: the id the caller named, a writable
+        // user skill, and the body read back through `skill/get` (bounded).
+        assert_eq!(created["id"], "weekly-report");
+        assert_eq!(created["origin"], "user");
+        assert_eq!(created["writable"], true);
+        assert_eq!(created["source"], "custom");
+        let summary = created["instructions_summary"].as_str().expect("summary");
+        assert!(summary.contains("## steps"), "{summary}");
+        assert!(summary.len() <= 1200, "summary must stay bounded: {}", summary.len());
+
+        // …and the file is really there, at the canonical user location only.
+        let manifest = paths.user_skills_dir.join("weekly-report").join("SKILL.md");
+        let on_disk = std::fs::read_to_string(&manifest).expect("manifest on disk");
+        assert!(on_disk.contains("name: weekly-report"), "{on_disk}");
+        assert!(on_disk.contains("description: weekly summary"), "{on_disk}");
+        assert!(on_disk.contains(body), "{on_disk}");
+
+        // `skill/list` reports it as writable so a UI can offer the write action.
+        let listed = dispatch_connection_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/list",
+            serde_json::json!({}),
+            Some(serde_json::json!("req-list")),
+        )
+        .await
+        .expect("skill/list");
+        assert_eq!(listed["result"][0]["name"], "weekly-report");
+        assert_eq!(listed["result"][0]["writable"], true);
+        assert_eq!(listed["result"][0]["origin"], "user");
+
+        // A long body is truncated by the read face, never handed back whole.
+        let long = "x".repeat(3000);
+        dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/create",
+            json_skill_create("long-skill", "long body", &long),
+        )
+        .await
+        .expect("skill/create long");
+        let fetched = dispatch_connection_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/get",
+            serde_json::json!({ "skill_id": "long-skill" }),
+            Some(serde_json::json!("req-get")),
+        )
+        .await
+        .expect("skill/get");
+        let truncated = fetched["result"]["instructions_summary"].as_str().expect("summary");
+        assert_eq!(truncated.chars().count(), 1200);
+        assert!(!truncated.contains(&"x".repeat(1201)));
+
+        // Bad names: path traversal, separators, absolute paths, empty, dot
+        // names, control characters — all `invalid_request`, all with an
+        // unchanged user root.
+        let before: Vec<_> = std::fs::read_dir(&paths.user_skills_dir)
+            .expect("user root exists")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        for name in [
+            "../escape",
+            "a/b",
+            "a\\b",
+            "C:\\skills\\evil",
+            "/etc/passwd",
+            "",
+            ".",
+            "..",
+            "evil\u{7}name",
+            "trailing-space ",
+            &"x".repeat(65),
+        ] {
+            let error = dispatch_skill_write(
+                &state,
+                &connection,
+                &user,
+                &subscriptions,
+                "skill/create",
+                json_skill_create(name, "desc", "body"),
+            )
+            .await
+            .expect_err("bad name must be refused");
+            assert_eq!(error.code, "invalid_request", "name {name:?}");
+        }
+        let after: Vec<_> = std::fs::read_dir(&paths.user_skills_dir)
+            .expect("user root exists")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(before, after, "a refused name must not create anything");
+        assert!(!paths.data_dir.join("escape").exists());
+        assert!(!paths.data_dir.join("skills").join("a").exists());
+
+        // Credential-shaped fields are unknown fields: a hard rejection, not a
+        // silent drop (R22 keeps its gate).
+        for extra in ["api_key", "env", "token"] {
+            let mut params = json_skill_create("cred", "desc", "body");
+            params[extra] = serde_json::json!("secret-value");
+            let error = dispatch_skill_write(
+                &state,
+                &connection,
+                &user,
+                &subscriptions,
+                "skill/create",
+                params,
+            )
+            .await
+            .expect_err("credential field must be refused");
+            assert_eq!(error.code, "invalid_request", "{extra}");
+        }
+        assert!(!paths.user_skills_dir.join("cred").exists());
+        let mut update = serde_json::json!({
+            "skill_id": "weekly-report",
+            "markdown": "---\nname: weekly-report\ndescription: d\n---\n"
+        });
+        update["env"] = serde_json::json!({ "TOKEN": "x" });
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/update",
+            update,
+        )
+        .await
+        .expect_err("credential field must be refused");
+        assert_eq!(error.code, "invalid_request");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn skill_create_conflicts_with_every_existing_source() {
+        let (dir, paths) = skill_temp_paths("conflict");
+        // Same name from three different owners: built-in, an installed
+        // marketplace snapshot, and an existing user skill.
+        write_skill_manifest(&paths.builtin_skills_dir.join("builtin-name"), "builtin-name", "b", "b");
+        write_skill_manifest(
+            &paths
+                .user_skills_dir
+                .join("agent-store")
+                .join("0190f5fe-7c00-7a00-8000-000000000201")
+                .join("market-name"),
+            "market-name",
+            "m",
+            "m",
+        );
+        write_skill_manifest(&paths.user_skills_dir.join("user-name"), "user-name", "u", "u");
+        let (state, user, connection, subscriptions) = skill_dispatch_state(paths.clone());
+
+        for (name, expected_origin, hint) in [
+            ("builtin-name", "builtin", "read-only"),
+            ("market-name", "marketplace", "install/uninstall"),
+            ("user-name", "user", "skill/update"),
+        ] {
+            let error = dispatch_skill_write(
+                &state,
+                &connection,
+                &user,
+                &subscriptions,
+                "skill/create",
+                json_skill_create(name, "desc", "body"),
+            )
+            .await
+            .expect_err("existing name must conflict");
+            assert_eq!(error.code, "conflict", "{name}");
+            assert!(
+                error.message.contains(&format!("origin={expected_origin}")),
+                "{name}: {}",
+                error.message
+            );
+            assert!(error.message.contains(hint), "{name}: {}", error.message);
+        }
+
+        // No shadow copy was created for any of them.
+        assert!(!paths.user_skills_dir.join("builtin-name").exists());
+        assert!(!paths.user_skills_dir.join("market-name").exists());
+
+        // An on-disk directory the scanner does not report (no valid
+        // frontmatter) is still a conflict: `create` never merges into it.
+        std::fs::create_dir_all(paths.user_skills_dir.join("broken")).expect("broken dir");
+        std::fs::write(paths.user_skills_dir.join("broken").join("SKILL.md"), "not frontmatter")
+            .expect("broken manifest");
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/create",
+            json_skill_create("broken", "desc", "body"),
+        )
+        .await
+        .expect_err("uncatalogued directory must conflict");
+        assert_eq!(error.code, "conflict");
+        assert_eq!(
+            std::fs::read_to_string(paths.user_skills_dir.join("broken").join("SKILL.md"))
+                .expect("untouched manifest"),
+            "not frontmatter"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn skill_update_and_delete_only_touch_writable_user_skills() {
+        let (dir, paths) = skill_temp_paths("update-delete");
+        write_skill_manifest(&paths.builtin_skills_dir.join("builtin-name"), "builtin-name", "b", "b");
+        let market_dir = paths
+            .user_skills_dir
+            .join("agent-store")
+            .join("0190f5fe-7c00-7a00-8000-000000000202")
+            .join("market-name");
+        write_skill_manifest(&market_dir, "market-name", "m", "m");
+        let shared_dir = paths.user_skills_dir.join("shared").join("shared-name");
+        write_skill_manifest(&shared_dir, "shared-name", "s", "s");
+        write_skill_manifest(&paths.user_skills_dir.join("user-name"), "user-name", "u", "u");
+        let (state, user, connection, subscriptions) = skill_dispatch_state(paths.clone());
+
+        let update_body = |name: &str, description: &str| {
+            serde_json::json!({ "skill_id": name, "description": description })
+        };
+
+        // Read-only origins: `policy_denied`, each naming its own reason, and
+        // the bytes on disk are untouched.
+        for (name, reason) in [
+            ("builtin-name", "built-in skills are read-only"),
+            ("market-name", "uninstall them through the installer/marketplace chain"),
+            ("shared-name", "companion flow"),
+        ] {
+            let error = dispatch_skill_write(
+                &state,
+                &connection,
+                &user,
+                &subscriptions,
+                "skill/update",
+                update_body(name, "hijacked"),
+            )
+            .await
+            .expect_err("read-only origin must be refused");
+            assert_eq!(error.code, "policy_denied", "{name}");
+            assert!(error.message.contains(reason), "{name}: {}", error.message);
+        }
+        let market_before =
+            std::fs::read_to_string(market_dir.join("SKILL.md")).expect("market manifest");
+        let shared_before =
+            std::fs::read_to_string(shared_dir.join("SKILL.md")).expect("shared manifest");
+        assert!(!market_before.contains("hijacked"));
+        assert!(!shared_before.contains("hijacked"));
+
+        // An unknown id is `not_found`; a name whose directory disagrees with
+        // its frontmatter name is refused rather than guessed at.
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/update",
+            update_body("ghost", "x"),
+        )
+        .await
+        .expect_err("unknown skill");
+        assert_eq!(error.code, "not_found");
+        write_skill_manifest(&paths.user_skills_dir.join("dir-name"), "other-name", "o", "o");
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/update",
+            update_body("other-name", "x"),
+        )
+        .await
+        .expect_err("non-canonical layout");
+        assert_eq!(error.code, "policy_denied");
+        assert!(error.message.contains("disagrees"), "{}", error.message);
+
+        // The write face has no rename path any more, and the old whole-document
+        // shape is outside the envelope: `markdown` and `name` (and any other
+        // unknown key) are `invalid_request`, not a silent partial update.
+        for body in [
+            serde_json::json!({
+                "skill_id": "user-name",
+                "markdown": "---\nname: user-name\ndescription: d\n---\n",
+            }),
+            serde_json::json!({ "skill_id": "user-name", "name": "someone-else" }),
+            // Nothing named at all: refused instead of answering with an
+            // unchanged skill.
+            serde_json::json!({ "skill_id": "user-name" }),
+        ] {
+            let error = dispatch_skill_write(
+                &state,
+                &connection,
+                &user,
+                &subscriptions,
+                "skill/update",
+                body.clone(),
+            )
+            .await
+            .expect_err("out-of-envelope update");
+            assert_eq!(error.code, "invalid_request", "{body}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(paths.user_skills_dir.join("user-name").join("SKILL.md"))
+                .expect("untouched user manifest"),
+            "---\nname: user-name\ndescription: u\n---\n\nu\n"
+        );
+
+        // The writable one is updated, and the answer is the re-read document.
+        // Only the named field moves: frontmatter `name`, the body and the other
+        // keys of a hand-edited document survive a partial edit.
+        let updated = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/update",
+            update_body("user-name", "updated description"),
+        )
+        .await
+        .expect("skill/update");
+        assert_eq!(updated["id"], "user-name");
+        assert_eq!(updated["writable"], true);
+        assert_eq!(updated["description"], "updated description");
+        let after = std::fs::read_to_string(paths.user_skills_dir.join("user-name").join("SKILL.md"))
+            .expect("updated manifest");
+        assert!(after.contains("name: user-name"), "{after}");
+        assert!(after.contains("description: updated description"), "{after}");
+        assert!(after.contains("\nu\n") || after.ends_with("u\n"), "body survived: {after}");
+
+        // A second partial edit that names only `when-to-use` leaves the
+        // description it did not mention alone.
+        let added = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/update",
+            serde_json::json!({ "skill_id": "user-name", "when_to_use": "when the test runs" }),
+        )
+        .await
+        .expect("skill/update");
+        assert_eq!(added["description"], "updated description");
+        let after = std::fs::read_to_string(paths.user_skills_dir.join("user-name").join("SKILL.md"))
+            .expect("updated manifest");
+        assert!(after.contains("when-to-use: when the test runs"), "{after}");
+        assert!(after.contains("description: updated description"), "{after}");
+
+        // Clearing an optional key removes its line; clearing the required
+        // description is refused.
+        dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/update",
+            serde_json::json!({ "skill_id": "user-name", "when_to_use": "" }),
+        )
+        .await
+        .expect("clear when-to-use");
+        let after = std::fs::read_to_string(paths.user_skills_dir.join("user-name").join("SKILL.md"))
+            .expect("updated manifest");
+        assert!(!after.contains("when-to-use"), "{after}");
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/update",
+            serde_json::json!({ "skill_id": "user-name", "description": "   " }),
+        )
+        .await
+        .expect_err("empty description");
+        assert_eq!(error.code, "invalid_request");
+
+        // Delete removes the user skill and reports what the id now resolves to
+        // — nothing here, so `revealed_origin` is absent.
+        let deleted = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/delete",
+            serde_json::json!({ "skill_id": "user-name" }),
+        )
+        .await
+        .expect("skill/delete");
+        assert_eq!(deleted["skill_id"], "user-name");
+        assert_eq!(deleted["deleted"], true);
+        assert!(deleted.get("revealed_origin").is_none(), "{deleted}");
+        assert!(!paths.user_skills_dir.join("user-name").exists());
+
+        // The read-only trees are still exactly as they were, and deleting them
+        // answers `policy_denied` instead of emptying them.
+        for name in ["builtin-name", "market-name", "shared-name"] {
+            let error = dispatch_skill_write(
+                &state,
+                &connection,
+                &user,
+                &subscriptions,
+                "skill/delete",
+                serde_json::json!({ "skill_id": name }),
+            )
+            .await
+            .expect_err("read-only origin must be refused");
+            assert_eq!(error.code, "policy_denied", "{name}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(market_dir.join("SKILL.md")).expect("market manifest"),
+            market_before
+        );
+        assert_eq!(
+            std::fs::read_to_string(shared_dir.join("SKILL.md")).expect("shared manifest"),
+            shared_before
+        );
+        assert!(paths.builtin_skills_dir.join("builtin-name").join("SKILL.md").exists());
+
+        // Deleting again is `not_found` — no second delete, no guessing.
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/delete",
+            serde_json::json!({ "skill_id": "user-name" }),
+        )
+        .await
+        .expect_err("second delete");
+        assert_eq!(error.code, "not_found");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn skill_copy_derives_a_user_skill_from_any_origin() {
+        let (dir, paths) = skill_temp_paths("copy");
+        write_skill_manifest(&paths.builtin_skills_dir.join("builtin-name"), "builtin-name", "b", "b");
+        // A built-in with support files: the copy must carry the whole subtree,
+        // not just SKILL.md.
+        let support = paths.builtin_skills_dir.join("builtin-name").join("references");
+        std::fs::create_dir_all(&support).expect("support dir");
+        std::fs::write(support.join("guide.md"), "reference body\n").expect("support file");
+        let market_dir = paths
+            .user_skills_dir
+            .join("agent-store")
+            .join("0190f5fe-7c00-7a00-8000-000000000203")
+            .join("market-name");
+        write_skill_manifest(&market_dir, "market-name", "m", "m");
+        write_skill_manifest(&paths.user_skills_dir.join("user-name"), "user-name", "u", "u");
+        let (state, user, connection, subscriptions) = skill_dispatch_state(paths.clone());
+
+        // A read-only source is copyable — that is the point of the method — and
+        // the new skill is writable.
+        let copied = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/copy",
+            serde_json::json!({ "skill_id": "builtin-name", "new_name": "my-builtin" }),
+        )
+        .await
+        .expect("skill/copy");
+        assert_eq!(copied["id"], "my-builtin");
+        assert_eq!(copied["origin"], "user");
+        assert_eq!(copied["writable"], true);
+        assert_eq!(copied["description"], "b");
+
+        // The copy is a real directory with the rewritten identity and the
+        // source's support files.
+        let on_disk = std::fs::read_to_string(
+            paths.user_skills_dir.join("my-builtin").join("SKILL.md"),
+        )
+        .expect("copied manifest");
+        assert!(on_disk.contains("name: my-builtin"), "{on_disk}");
+        assert!(!on_disk.contains("name: builtin-name"), "{on_disk}");
+        assert_eq!(
+            std::fs::read_to_string(
+                paths.user_skills_dir.join("my-builtin").join("references").join("guide.md")
+            )
+            .expect("copied support file"),
+            "reference body\n"
+        );
+        // The source was not touched.
+        assert!(std::fs::read_to_string(paths.builtin_skills_dir.join("builtin-name").join("SKILL.md"))
+            .expect("builtin manifest")
+            .contains("name: builtin-name"));
+
+        // A marketplace install is a copyable source too, and the copy lands in
+        // the user root — never back into the snapshot.
+        let copied = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/copy",
+            serde_json::json!({ "skill_id": "market-name", "new_name": "my-market" }),
+        )
+        .await
+        .expect("skill/copy");
+        assert_eq!(copied["id"], "my-market");
+        assert!(paths.user_skills_dir.join("my-market").join("SKILL.md").exists());
+        assert!(!paths
+            .user_skills_dir
+            .join("agent-store")
+            .join("0190f5fe-7c00-7a00-8000-000000000203")
+            .join("my-market")
+            .exists());
+
+        // Conflicts: the target name is taken by an existing origin, and by an
+        // uncatalogued directory on disk.
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/copy",
+            serde_json::json!({ "skill_id": "user-name", "new_name": "builtin-name" }),
+        )
+        .await
+        .expect_err("existing target name must conflict");
+        assert_eq!(error.code, "conflict");
+        assert!(error.message.contains("origin=builtin"), "{}", error.message);
+
+        // Copying a skill onto itself is a malformed request, not a collision:
+        // the caller named the same skill twice.
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/copy",
+            serde_json::json!({ "skill_id": "user-name", "new_name": "user-name" }),
+        )
+        .await
+        .expect_err("copy onto itself must be refused");
+        assert_eq!(error.code, "invalid_request");
+        assert!(error.message.contains("new name"), "{}", error.message);
+        std::fs::create_dir_all(paths.user_skills_dir.join("broken")).expect("broken dir");
+        std::fs::write(paths.user_skills_dir.join("broken").join("SKILL.md"), "not frontmatter")
+            .expect("broken manifest");
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/copy",
+            serde_json::json!({ "skill_id": "user-name", "new_name": "broken" }),
+        )
+        .await
+        .expect_err("uncatalogued target directory must conflict");
+        assert_eq!(error.code, "conflict");
+
+        // Paths and junk never reach the filesystem, and an unknown source is
+        // `not_found` — the same gates as every other write.
+        for (skill_id, new_name, expected) in [
+            ("user-name", "../escape", "invalid_request"),
+            ("user-name", "a/b", "invalid_request"),
+            ("user-name", "", "invalid_request"),
+            ("ghost", "fresh-name", "not_found"),
+        ] {
+            let error = dispatch_skill_write(
+                &state,
+                &connection,
+                &user,
+                &subscriptions,
+                "skill/copy",
+                serde_json::json!({ "skill_id": skill_id, "new_name": new_name }),
+            )
+            .await
+            .expect_err("must be refused");
+            assert_eq!(error.code, expected, "{new_name}");
+        }
+        assert!(!paths.user_skills_dir.join("fresh-name").exists());
+        // No credential field is expressible here either (R22 gate).
+        let error = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/copy",
+            serde_json::json!({ "skill_id": "user-name", "new_name": "ok-name", "env": { "TOKEN": "x" } }),
+        )
+        .await
+        .expect_err("unknown field");
+        assert_eq!(error.code, "invalid_request");
+        assert!(!paths.user_skills_dir.join("ok-name").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn skill_delete_reports_the_builtin_it_unshadows() {
+        let (dir, paths) = skill_temp_paths("reveal");
+        // A user skill carrying a built-in's name: the read face prefers the
+        // user copy, so deleting it must hand the id back to the built-in.
+        write_skill_manifest(
+            &paths.builtin_skills_dir.join("code-review"),
+            "code-review",
+            "builtin review",
+            "b",
+        );
+        write_skill_manifest(
+            &paths.user_skills_dir.join("code-review"),
+            "code-review",
+            "my own review",
+            "u",
+        );
+        let (state, user, connection, subscriptions) = skill_dispatch_state(paths.clone());
+
+        let before = dispatch_connection_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/get",
+            serde_json::json!({ "skill_id": "code-review" }),
+            None,
+        )
+        .await
+        .expect("skill/get before");
+        assert_eq!(before["result"]["origin"], "user");
+        assert_eq!(before["result"]["writable"], true);
+
+        let deleted = dispatch_skill_write(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/delete",
+            serde_json::json!({ "skill_id": "code-review" }),
+        )
+        .await
+        .expect("skill/delete");
+        assert_eq!(deleted["revealed_origin"], "builtin");
+
+        let after = dispatch_connection_request(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "skill/get",
+            serde_json::json!({ "skill_id": "code-review" }),
+            None,
+        )
+        .await
+        .expect("skill/get after");
+        assert_eq!(after["result"]["origin"], "builtin");
+        assert_eq!(after["result"]["writable"], false);
+        assert!(paths.builtin_skills_dir.join("code-review").join("SKILL.md").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

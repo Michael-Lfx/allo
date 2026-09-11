@@ -1582,7 +1582,16 @@ pub(crate) fn resolve_nomi_url_and_compat(
 
     if is_full_url {
         let trimmed = raw_base_url.trim_end_matches('/');
-        compat.api_path = Some("/chat/completions".to_string());
+        // The configured URL already IS the request URL (`is_full_url` means
+        // "base_url is the complete endpoint" — the same rule
+        // `nomifun-api-types::dispatch_target` applies), so the path suffix must
+        // stay empty. `nomi-providers::openai` builds
+        // `format!("{base_url}{api_path}")`, so any non-empty suffix here appends
+        // a SECOND `/chat/completions` to a URL that already ends with one.
+        // Matches the openai-responses branch above, this function's own doc
+        // comment, and the `resolve_full_url_mode_*` tests / platform snapshot in
+        // this module.
+        compat.api_path = Some(String::new());
         return (Some(trimmed.to_owned()), compat);
     }
 

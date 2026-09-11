@@ -2798,7 +2798,7 @@ impl AgentExecutionEngine {
         Ok(self.detail(owner_id, execution_id).await?.execution)
     }
 
-    async fn detail(
+    pub(crate) async fn detail(
         &self,
         owner_id: &str,
         execution_id: &str,

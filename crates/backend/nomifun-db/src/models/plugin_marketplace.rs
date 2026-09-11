@@ -7,8 +7,9 @@
 //! adds provenance (`marketplace_id` / `entry_name` on snapshot rows) and the
 //! cascade-uninstall linkage.
 
-use nomifun_common::TimestampMs;
+use nomifun_common::{LocalizedVariant, TimestampMs};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// One discovered entry (discovery-layer projection, stored as JSON on the
 /// marketplace row so the entry catalog does not need its own table yet).
@@ -28,6 +29,14 @@ pub struct MarketplaceEntry {
     pub keywords: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Localized `<field>_<lang>` variants carried by the market manifest
+    /// (`description_zh` / `description_en`, `tags_zh` / `legacy_tags_en`, …),
+    /// passed through verbatim so each client can fall back by its own UI
+    /// language (doc `18` §4 / D8=A). Empty when the manifest declared none —
+    /// rows written before v1.1 deserialize to empty and fill in on the next
+    /// refresh.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub localized: BTreeMap<String, LocalizedVariant>,
 }
 
 /// Row mapping for `plugin_marketplaces`.
@@ -53,6 +62,13 @@ pub struct PluginMarketplaceRow {
     /// Resolved source revision (git commit hash / HTTP freshness marker);
     /// internal traceability only.
     pub resolved_revision: Option<String>,
+    /// The HTTP source's raw `ETag`, kept so `market/refresh` can send a real
+    /// `If-None-Match` (doc 18 D4 ①). Internal traceability only, `None` for
+    /// git / directory sources.
+    pub source_etag: Option<String>,
+    /// The HTTP source's raw `Last-Modified`, kept for `If-Modified-Since`.
+    /// Internal traceability only.
+    pub source_last_modified: Option<String>,
     /// Local materialization root for remote sources (staging + live);
     /// internal only; `None` for directory-source marketplaces.
     pub staging_root: Option<String>,

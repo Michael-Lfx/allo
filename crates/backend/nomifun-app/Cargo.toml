@@ -56,6 +56,13 @@ path = "tests/requirements_e2e.rs"
 name = "agent_execution_e2e"
 path = "tests/agent_execution_e2e.rs"
 
+# R8/W2 approval decision gate: adapter-level proof that `run/answer-decision`
+# is a transparent pass-through of the engine's single answer gate. Registered
+# explicitly because `autotests` is off.
+[[test]]
+name = "agent_execution_decision_e2e"
+path = "tests/agent_execution_decision_e2e.rs"
+
 [[test]]
 name = "autowork_idmm_cooperation_e2e"
 path = "tests/autowork_idmm_cooperation_e2e.rs"

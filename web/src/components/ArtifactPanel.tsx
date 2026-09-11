@@ -6,6 +6,7 @@ import { IconButton } from "./IconButton";
 import { Markdown } from "./Markdown";
 import { useAppStore } from "../store/appStore";
 import type { ArtifactPreview } from "../store/appStore";
+import { formatRelativeTime } from "../ui/format";
 
 /**
  * W5 artifact panel (doc 19 §3 W5).
@@ -45,6 +46,7 @@ export function ArtifactPanel() {
   const loading = useAppStore((s) => s.artifactsLoading);
   const error = useAppStore((s) => s.artifactsError);
   const preview = useAppStore((s) => s.artifactPreview);
+  const meta = useAppStore((s) => s.artifactsMeta);
   const selectedConversationId = useAppStore((s) => s.selectedConversationId);
   const close = useAppStore((s) => s.closeArtifactPanel);
   const refresh = useAppStore((s) => s.refreshArtifacts);
@@ -121,6 +123,17 @@ export function ArtifactPanel() {
                     <FileText aria-hidden="true" size={14} strokeWidth={1.7} />
                     <span className="artifact-row-name">{file.name}</span>
                     <span className="artifact-row-path">{file.relative_path}</span>
+                    {/* R20：size / MIME / mtime 来自宿主 `/api/fs/metadata`；
+                        查不到就整段不渲染（不摆空占位，也不猜）。 */}
+                    {meta[file.full_path] && (
+                      <span className="artifact-row-meta">
+                        {formatBytes(meta[file.full_path]!.size)}
+                        {" · "}
+                        {meta[file.full_path]!.type || t("artifact.unknownType")}
+                        {" · "}
+                        {formatRelativeTime(meta[file.full_path]!.last_modified)}
+                      </span>
+                    )}
                   </button>
                 </li>
               ))}
@@ -135,7 +148,13 @@ export function ArtifactPanel() {
                 {preview.name}
               </span>
               {preview.content !== null && (
-                <span className="artifact-preview-size">{formatBytes(new Blob([preview.content]).size)}</span>
+                <span className="artifact-preview-size">
+                  {/* R20：服务端元数据优先；拿不到才退回按文本长度估算（估算值只
+                      代表解码后的字符数，不是文件字节数）。 */}
+                  {meta[preview.path]
+                    ? `${formatBytes(meta[preview.path]!.size)} · ${meta[preview.path]!.type || t("artifact.unknownType")} · ${formatRelativeTime(meta[preview.path]!.last_modified)}`
+                    : formatBytes(new Blob([preview.content]).size)}
+                </span>
               )}
               <button
                 className="artifact-download"

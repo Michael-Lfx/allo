@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nomifun_common::AppError;
+use nomifun_common::{AppError, collect_localized_variants};
 use nomifun_db::{IMarketplaceRepository, MarketplaceEntry};
 
 use crate::market_source;
@@ -26,6 +26,9 @@ pub struct FetchedEntrySet {
     pub live_root: PathBuf,
     /// Resolved revision (git commit / freshness marker).
     pub revision: String,
+    /// The HTTP source's raw conditional-request validators, when it sent any
+    /// (doc 18 D4 ①). `None` for git sources.
+    pub validators: Option<market_source::HttpValidators>,
     /// Probed entries (relative sources inside the live root).
     pub entries: Vec<(MarketplaceEntry, String)>, // (entry, relative source)
 }
@@ -49,6 +52,9 @@ pub async fn fetch_remote(
     source: &str,
     marketplace_root: PathBuf,
     current_revision: Option<&str>,
+    // The raw validators persisted from the previous fetch (doc 18 D4 ①).
+    // `None` on a first fetch or for a source that never sent any.
+    current_validators: Option<&market_source::HttpValidators>,
 ) -> Result<RemoteFetchOutcome, AppError> {
     let normalized = market_source::normalize_source_url(source_kind, source)
         .map_err(AppError::BadRequest)?;
@@ -66,7 +72,7 @@ pub async fn fetch_remote(
 
     // Fetch into staging; validate the tree looks like a market after the
     // fetch (git clones the whole repo; http downloads the manifest only).
-    let (revision, manifest_only) = match source_kind {
+    let (revision, manifest_only, validators) = match source_kind {
         "github" | "git" => {
             let (hash, _repo) = market_source::clone_git(&normalized, &staging)
                 .map_err(|error| AppError::Internal(error))?;
@@ -82,12 +88,18 @@ pub async fn fetch_remote(
                 let _ = std::fs::remove_dir_all(&staging);
                 return Ok(RemoteFetchOutcome::Unchanged { revision: hash });
             }
-            (hash, false)
+            (hash, false, None)
         }
         "url" => {
-            let outcome = market_source::fetch_http_market(&normalized, &staging, current_revision)
-                .await
-                .map_err(|error| AppError::Internal(error))?;
+            // Real conditional request (doc 18 D4 ①): the raw validators, so a
+            // compliant server answers 304 instead of shipping the body.
+            let outcome = market_source::fetch_http_market(
+                &normalized,
+                &staging,
+                current_validators,
+            )
+            .await
+            .map_err(|error| AppError::Internal(error))?;
             match outcome {
                 market_source::HttpFetchOutcome::NotModified => {
                     let _ = std::fs::remove_dir_all(&staging);
@@ -95,10 +107,15 @@ pub async fn fetch_remote(
                         revision: current_revision.unwrap_or("http").to_owned(),
                     });
                 }
-                market_source::HttpFetchOutcome::Fresh { revision, .. } => {
+                market_source::HttpFetchOutcome::Fresh {
+                    revision,
+                    validators,
+                } => {
                     if current_revision == Some(revision.as_str()) {
                         // Same etag/last-modified marker: content unchanged;
                         // the freshly fetched body is discarded, last-good stays.
+                        // The marker is derived from the validators, so an equal
+                        // marker means an equal validator set — nothing to update.
                         let _ = std::fs::remove_dir_all(&staging);
                         return Ok(RemoteFetchOutcome::Unchanged { revision });
                     }
@@ -112,7 +129,7 @@ pub async fn fetch_remote(
                         market_source::mirror_http_tree(&normalized, &staging).await
                             .map_err(|error| AppError::Internal(error))?;
                     }
-                    (revision, !has_listing)
+                    (revision, !has_listing, Some(validators))
                 }
             }
         }
@@ -140,7 +157,12 @@ pub async fn fetch_remote(
     })?;
     staging_guard.disarm();
 
-    Ok(RemoteFetchOutcome::Fresh(FetchedEntrySet { live_root, revision, entries }))
+    Ok(RemoteFetchOutcome::Fresh(FetchedEntrySet {
+        live_root,
+        revision,
+        validators,
+        entries,
+    }))
 }
 
 /// RAII cleanup for a `fetch_remote` staging dir: removes it on Drop unless
@@ -216,6 +238,7 @@ fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, 
                         description: item.get("description").and_then(as_str).map(str::to_owned),
                         keywords: Vec::new(),
                         category: item.get("category").and_then(as_str).map(str::to_owned),
+                        localized: collect_localized_variants(item),
                     },
                     String::new(),
                 ));
@@ -235,6 +258,7 @@ fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, 
                         description: item.get("description").and_then(as_str).map(str::to_owned),
                         keywords: Vec::new(),
                         category: None,
+                        localized: collect_localized_variants(item),
                     },
                     String::new(),
                 ));
@@ -250,6 +274,7 @@ fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, 
                     description: item.get("description").and_then(as_str).map(str::to_owned),
                     keywords: Vec::new(),
                     category: item.get("category").and_then(as_str).map(str::to_owned),
+                    localized: collect_localized_variants(item),
                 },
                 relative,
             ));
@@ -281,6 +306,7 @@ fn scan_to_entries(
                     description: entry.description,
                     keywords: entry.keywords,
                     category: entry.category,
+                    localized: entry.localized,
                 },
                 relative,
             )
@@ -377,5 +403,16 @@ pub async fn register_remote(
         )
         .await
         .map_err(AppError::from)?;
+    // D4 ①: keep the validators so the next refresh can be conditional.
+    if let Some(validators) = fetched.validators.as_ref() {
+        markets
+            .record_source_validators(
+                marketplace_id,
+                validators.etag.as_deref(),
+                validators.last_modified.as_deref(),
+            )
+            .await
+            .map_err(AppError::from)?;
+    }
     Ok(())
 }

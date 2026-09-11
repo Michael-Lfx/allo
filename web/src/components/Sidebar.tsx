@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { useAppStore } from "../store/appStore";
+import { latestRunStatus, terminalRunStatus } from "../lib/run-notify";
 import { formatRelativeTime } from "../ui/format";
 import type { ConversationView, WorkspaceView } from "../lib/protocol";
 
@@ -79,6 +80,10 @@ export function Sidebar() {
   const conversations = useAppStore((s) => s.conversations);
   const workspaces = useAppStore((s) => s.workspaces);
   const selectedConversationId = useAppStore((s) => s.selectedConversationId);
+  // W6：被跟随的 Run 归哪个会话、是否还在跑——侧栏据此在该会话上标运行状态。
+  const runConversationId = useAppStore((s) => s.runConversationId);
+  const runActive = useAppStore((s) => s.activeRunId !== null && terminalRunStatus(s.runEvents) === null);
+  const runStatusLabel = useAppStore((s) => latestRunStatus(s.runEvents));
   const connected = useAppStore((s) => s.phase === "online");
   const capabilities = useAppStore((s) => s.client?.initializeInfo?.capabilities ?? null);
   const catalogEnabled = capabilities?.skills === true || capabilities?.connectors === true;
@@ -218,6 +223,13 @@ export function Sidebar() {
                           >
                             <span className="conversation-title">{thread.name || t("common.untitled")}</span>
                             {thread.is_processing && <span className="processing-dot" aria-label={t("common.processing")} />}
+                            {runActive && thread.conversation_id === runConversationId && (
+                              <span
+                                className="run-dot"
+                                aria-label={t("sidebar.runActive", { status: runStatusLabel ?? t("run.statusUnknown") })}
+                                title={t("sidebar.runActive", { status: runStatusLabel ?? t("run.statusUnknown") })}
+                              />
+                            )}
                             <span className="conversation-time">{formatRelativeTime(thread.modified_at)}</span>
                           </button>
                           <button className="conversation-more" type="button" aria-label={t("sidebar.moreActions")} title={t("sidebar.moreActions")} aria-expanded={openMenu?.where === "sidebar" && openMenu.id === thread.conversation_id} onClick={(event) => {

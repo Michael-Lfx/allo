@@ -52,6 +52,8 @@ export const DOC_ORDER: { slug: string; sectionKey: keyof DocSections }[] = [
   { slug: "cli", sectionKey: "cli" },
   { slug: "plugins-market", sectionKey: "pluginsMarket" },
   { slug: "typescript-sdk", sectionKey: "typescriptSdk" },
+  { slug: "upgrade", sectionKey: "upgrade" },
+  { slug: "changelog", sectionKey: "changelog" },
   { slug: "configuration", sectionKey: "configuration" },
   { slug: "architecture", sectionKey: "architecture" },
   { slug: "compatibility", sectionKey: "compatibility" },
@@ -62,6 +64,8 @@ export interface DocSections {
   cli: string;
   pluginsMarket: string;
   typescriptSdk: string;
+  upgrade: string;
+  changelog: string;
   configuration: string;
   architecture: string;
   compatibility: string;

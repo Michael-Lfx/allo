@@ -50,6 +50,7 @@ source = "http://111.170.173.22:10072/experts/.codebuddy-plugin/marketplace.json
 | `models` | `table` | Model alias table → `models` |
 | `default_marketplaces` | `table` | Marketplace sources auto-registered on startup → `default_marketplaces` |
 | `memory` | `table` | Post-session memory policy → `memory` (below) |
+| `marketplace` | `table` | Background auto-update cadence → `marketplace` (below) |
 
 ## `providers`
 
@@ -118,6 +119,23 @@ distill_enabled = false
 
 > Precedence: the `NOMIFUN_MEMORY_DISTILL` environment variable (`0`/`false` off, `1`/`true` on) > this file's `[memory].distill_enabled` > the upstream default (on). Without a `[memory]` section the behaviour is exactly what it was before.
 
+## `marketplace`
+
+Background **auto-update** cadence. When enabled, the runtime polls marketplace sources on this interval in the background; it is **off by default** — without a `[marketplace]` section no background request is ever made.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `auto_update_interval_hours` | `integer` | Hours between sweeps. Absent or `0` = off; a positive integer enables it |
+
+```toml
+# Check marketplace sources in the background every 6 hours (official sources
+# only; third-party sources are never auto-updated)
+[marketplace]
+auto_update_interval_hours = 6
+```
+
+> Both gates must hold before anything is fetched: ① the marketplace's auto-update toggle is on, and ② its source address is one of the **official mirrors**. A third-party source keeps its toggle for display but is never polled. Each sweep still goes through `market/refresh`'s revision / ETag short-circuit, so an unchanged source does not re-download the whole tree.
+
 ## Differences from Kimi Code / Claude Code configs
 
 | Dimension | Agent Store | Kimi Code etc. |
@@ -127,6 +145,6 @@ distill_enabled = false
 | `default_model` | `"<provider>/<model>"` alias | Same |
 | Unknown keys | Tolerated, no error | Tolerated |
 | Env fallback | **None** — credentials come from the file only | Some tools support `env`-subtables / env fallbacks |
-| Agent Store only | `default_marketplaces` | — |
+| Agent Store only | `default_marketplaces`, `[memory]`, `[marketplace]` | — |
 
 If your config already has `[providers]` / `[models]` sections from Kimi Code or another tool, you can **copy them directly** into `~/.agent-store/config.toml` (as long as the provider speaks an OpenAI/Anthropic-compatible protocol); unrelated sections (`thinking`, `permission`, `hooks`, …) can stay or go — Agent Store ignores them.

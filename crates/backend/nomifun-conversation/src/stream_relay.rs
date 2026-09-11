@@ -3412,7 +3412,22 @@ impl StreamRelay {
                             self.forward_to_websocket(&event);
                         }
                         _ => {
-                            self.forward_to_websocket(&event);
+                            // Never the shared turn id. That id is also this
+                            // turn's first thinking segment, and clients key
+                            // transcript items by `msg_id`, so an unenumerated
+                            // kind would overwrite it. `Tips` is the live
+                            // example: the client renders it (its noise set is
+                            // only start / finish / error / turn_started /
+                            // turn_completed) yet it has no arm above, so it
+                            // used to land here and take the turn id.
+                            //
+                            // Derive from the event's own kind, so one kind
+                            // keeps one row per turn and updates it in place
+                            // instead of colliding with unrelated records.
+                            let kind_id = self
+                                .derived_message_id("event", Self::event_kind(&event))
+                                .await;
+                            self.forward_to_websocket_with_msg_id(&kind_id, &event);
                         }
                     }
                 }

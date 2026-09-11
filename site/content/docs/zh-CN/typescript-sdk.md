@@ -10,6 +10,8 @@ Flowy Agent Store 提供三个配套的 TypeScript 包，让 Node.js / Electron 
 
 三个包按需组合：**只用类型**取 `protocol`；**连已运行的 App Server**（如桌面端已启动）取 `client` + 自建 `WebSocketTransport`；**自己拉起整个运行时**取 `sdk` 的 `launchClient`。
 
+> **本文面向开发者。** 终端用户不需要它——下载安装包并按[快速开始](/zh-CN/docs/quick-start)运行即可。两条路径分工明确：**终端用户 → 安装包 / `install.ps1`**；**开发者 → npm 包（本文）**。
+
 ---
 
 ## 1. 安装
@@ -24,7 +26,7 @@ bun add @flowy-agent-store/protocol
 
 包均发布为 ESM + CJS 双格式（`exports` 提供 `import` / `require` / `types`），Node 与打包器开箱即用。
 
-> **版本状态**：三个包当前均为 `0.1.0-beta.*` 预发布（API 尚未冻结）。生产接入请固定版本，如 `bun add @flowy-agent-store/sdk@0.1.0-beta.2`。
+> **版本状态**：三个包当前均为 `0.1.0-beta.*` 预发布（API 尚未冻结，beta 期间**不承诺向后兼容**）。生产接入请固定**确切版本**——本文与仓库当前对应 `0.1.0-beta.3`。注意不要依赖裸 `bun add`：注册表 `latest` 当前指向 `0.1.0-beta.2`，**不是**最新的 `0.1.0-beta.3`。dist-tag 语义、逐版本升级步骤与自查命令见[升级与迁移指引](/zh-CN/docs/upgrade)。
 > **运行环境**：Node.js **≥ 22**（依赖全局 `WebSocket`）或 Bun；版本下限由各包 `engines.node` 声明。
 
 ---
@@ -258,6 +260,8 @@ client.conversations.delete(id): Promise<{ conversation_id: string; deleted: boo
 await client.conversations.follow(id): Promise<ConversationSubscription>;
 ```
 
+`modelOptions()` 的每个模型条目除 `name` / `display_name` / `context_limit` 外，还可能带 **models.dev 目录事实**：`cost_input` / `cost_output`（每百万 token 的 USD 费率）、`catalog_context_window`、`supports_vision`。**目录没有对应条目时这些字段整个缺席**（provider 未被映射，或模型不在目录里）——调用方应把它们当作「不知道」，而不是 `false` 或 `0`。
+
 实时订阅对象：
 
 ```ts
@@ -408,7 +412,243 @@ console.log("connected:", client.ready);
 
 ---
 
-## 7. 下一步
+## 7. 逐方法 API 参考
+
+三个包的实际导出面与协议方法的对齐关系。协议方法名以 `05` 为准，此表不引入新方法。
+
+### 7.1 `AppServerClient` 顶层方法
+
+| 方法 | 参数 | 返回 | 协议方法 |
+| --- | --- | --- | --- |
+| `connect()` | — | `InitializeResult` | `initialize` → `initialized` |
+| `onNotification(listener)` | `(notification) => void` | 取消订阅函数 | —（服务端通知） |
+| `close()` | — | `void` | — |
+| `runImport(input)` | `ImportRequest` | `ImportResult` | `import/run` |
+| `listImports()` | — | `ImportSummary[]` | `import/list` |
+| `getImport(snapshotId)` | `string` | `ImportDetail` | `import/get` |
+| `runInstall(input)` | `InstallRequest` | `InstallResult` | `install/run` |
+| `getInstallStatus(snapshotId)` | `string` | `InstallStatus` | `install/status` |
+| `disableInstall(snapshotId, componentIds)` | `string, string[]` | `InstallStatus` | `install/disable` |
+| `enableInstall(snapshotId, componentIds)` | `string, string[]` | `InstallStatus` | `install/enable` |
+| `uninstallInstall(snapshotId, componentIds)` | `string, string[]` | `InstallStatus` | `install/uninstall` |
+| `addMarketplace(input)` | `MarketplaceAddRequest` | `MarketplaceSummary` | `market/add` |
+| `listMarketplaces()` | — | `MarketplaceSummary[]` | `market/list` |
+| `getMarketplace(marketplaceId)` | `string` | `MarketplaceDetail` | `market/get` |
+| `removeMarketplace(marketplaceId, cascade)` | `string, boolean` | `MarketplaceRemoveResult` | `market/remove` |
+| `setMarketplaceAutoUpdate(marketplaceId, enabled)` | `string, boolean` | `MarketplaceSummary` | `market/auto-update` |
+| `refreshMarketplace(marketplaceId)` | `string` | `MarketplaceRefreshResult` | `market/refresh` |
+| `importMarketplaceEntry(marketplaceId, entryName)` | `string, string` | `ImportResult` | `market/entry-import` |
+| `listStore()` | — | `StoreList` | `store/list` |
+| `installStoreEntry(marketplaceId, entryName)` | `string, string` | `StoreInstallResult` | `store/install-entry` |
+
+### 7.2 子客户端
+
+| 子客户端 | 方法 | 协议方法 |
+| --- | --- | --- |
+| `agents` | `list()` / `get(agentId)` | `agent/list` / `agent/get` |
+| `teams` | `list()` / `get(teamId)` | `team/list` / `team/get` |
+| `skills` | `list()` / `get(skillId)` | `skill/list` / `skill/get` |
+| `connectors` | `list()` / `get(id)` / `status(id)` / `test(id)` / `authStatus(id)` / `authStart(id)` / `logout(id)` | `connector/list` · `get` · `status` · `test` · `auth/status` · `auth/start` · `auth/logout` |
+| `conversations` | `create(input)` / `update(id, input)` / `modelOptions()` / `list(limit?)` / `get(id)` / `messages(query)` / `send(id, content, idempotencyKey)` / `cancel(id)` / `delete(id)` / `follow(id, options?)` | `conversation/*` 同名方法 |
+| `runs` | `agent(input)` / `get(id)` / `result(id)` / `events(query)` / `cancel(input)` / `steer(input)` / `answerDecision(input)` / `follow(id, options?)` | `agent/run` · `run/get` · `run/result` · `run/events` · `run/cancel` · `run/steer` · `run/answer-decision` |
+| `workspaces` | `list()` / `create(path)` / `revoke(id)` | `workspace/list` / `workspace/create` / `workspace/revoke` |
+| `models` | `list()` | `models/list` |
+
+### 7.3 HTTP 绑定
+
+HTTP 与 WebSocket 是同一套方法语义的两种绑定。包内 `httpRouteTable()` 返回**机器可读的路由表**（方法名 → 动词 + 路径 + 证据来源），文档不再手抄一份：
+
+```ts
+import { httpRouteTable } from "@flowy-agent-store/client";
+
+const routes = httpRouteTable();
+// { "market/remove": { verb: "POST", path: "/markets/:marketplace_id/remove", source: "…" }, … }
+```
+
+- 覆盖 **45 / 64** 个方法。HTTP 无绑定的 19 个方法：`initialize`、`initialized`、`workspace/create`、`conversation/model-options`、`conversation/update`、`conversation/subscribe`、`conversation/unsubscribe`、`run/subscribe`、`run/unsubscribe`、`agent/list`、`agent/get`、`team/list`、`team/get`、`config/get`、`config/set`、`skill/create`、`skill/update`、`skill/delete`、`skill/copy`。
+- `config/get` / `config/set`（宿主设置文件 `~/.agent-store/config.toml`）是**宿主管理面**（`16` §6）：只有 wire 方法，没有 HTTP 绑定，也**不在本包客户端内**——Web UI 自己经 transport 调用。契约见 `05` §4.10。
+- `skill/create` / `skill/update` / `skill/delete` / `skill/copy`（技能写面，`16` R17 / W12）同样按 `16` §6 判定为**宿主管理面**：第三方消费者不应能往宿主的技能树里写文件，因此只有 wire 方法、没有 HTTP 绑定，也不在本包客户端内。`skill/update` 是**字段级补丁**（只改点名的字段，`name` 不可改），`skill/copy` 从任意来源派生一份可写的用户技能。读面的 `SkillSummary` 新增 `origin` / `writable` 两个字段（增量），契约见 `05` §4.11。
+- **`HttpTransport` 是请求-响应面，不等价于 WebSocket**：`notify()` 抛错、`onNotification()` 返回空订阅。实时事件与订阅必须走 `WebSocketTransport`。
+- 每次调用独立握手（`initialize` → `initialized` → 业务调用）；`connect()` 是 no-op。宿主侧服务若需要就绪连接 id，用 `openConnection()`。
+- `/api/fs/*`（浏览 / 列表 / 读取 / 元数据）是宿主文件服务，不是协议方法，不在本包内。
+
+### 7.4 审批回答：`run/answer-decision`
+
+Agent 运行到需要人决策时会停下来，`run/events` 投影出 `approval.requested`，回答走 `runs.answerDecision(input)`：
+
+```ts
+const pending = (await client.runs.events({ runId })).find(
+  (event) => event.event_type === "approval.requested",
+);
+
+await client.runs.answerDecision({
+  runId,
+  stepId: pending.step_id!,                    // 事件投影的 attempt 作用域
+  attemptId: pending.attempt_id!,
+  answer: "批准，继续执行",
+  expectedExecutionVersion: pending.expected_execution_version!,  // 三个 CAS 版本
+  expectedStepVersion: pending.expected_step_version!,
+  expectedAttemptVersion: pending.expected_attempt_version!,
+});
+```
+
+- **三个 `expected*Version` 是必填的 CAS 令牌**，不是可选优化：服务端把它们直通引擎的唯一回答门，三个版本中任意一个已变化即返回 `conflict`，绝不静默覆盖。`run/events` 会在每条未回答的 `approval.requested` 上投影当前三个版本（读取时从权威行取），客户端照抄即可。
+- **只有 `waiting_input` 的 attempt 能被回答**；越权、已过期、非等待态一律拒绝（`NotFound` / `Conflict` / `BadRequest`）。
+- **没有 `always_allow`**：桌面端确认路由上的 approve-all 开关不属于本协议，方法参数是 `deny_unknown_fields`，带上它直接报 `invalid_request`。
+- `RunEvent` 的 `step_id` / `attempt_id` 只在引擎按 attempt 归属事件时出现（典型是 `approval.requested` / `approval.responded`）。
+
+## 8. 事件参考：`sequence` 与追平
+
+### 8.1 事件类型
+
+`ConversationEventType` 是**封闭联合**（`protocol.ts`），共 9 种：
+
+| 事件类型 | 含义 | 解码后 kind |
+| --- | --- | --- |
+| `message.created` | 新消息落库 | `message.created` |
+| `message.delta` | 正文增量（`replace` 为真时整体替换） | `message.delta` |
+| `message.thinking` | 思考段落增量 | `message.thinking` |
+| `message.tips` | 提示条（`tip_type`） | `message.tips` |
+| `message.tool` | 工具调用（running → completed 分帧） | `message.tool` |
+| `message.error` | 终止性错误（解码后带 `code` 与 `retryable`） | `message.error` |
+| `message.activity` | 活动条目（`kind` 决定渲染；`kind === "turn_completed"` 时带本轮 token 用量） | `message.activity` |
+| `turn.status` | 轮次忙闲（`status === "running"`） | `turn.status` |
+| `context.usage` | 上下文用量 | `context.usage` |
+
+服务端用两种拼写表示「思考」：`message.thinking` 与 `message.activity` 且 `kind === "thinking"`；`decodeConversationEvent` 把后者**归一化**为 `message.thinking`，调用方只需一条思考路径。未知类型落到 `unknown`（保留原始 `event_type`），不会被误判为已知识别类型。
+
+`message.activity` 且 `kind === "turn_completed"` 时会带**本轮** token 用量（`usage: { input_tokens, output_tokens, total_tokens }`，来自运行时的逐轮上报）；运行时就**没上报**、只报了单侧或两侧皆为 0 时该字段为 `null`——**「未知」不等于「不花钱」**，调用方不得拿上下文占用或 0 顶替。逐轮用量只随实时事件到达（服务端不持久化历史轮次），且字段名为 snake_case，与 Run 面的 `TurnUsage` 一致。
+
+`message.error` 除错误文本外还解码出 `code`（服务端错误码）与 `retryable`（**三态**：`true` / `false` / `null`——`null` 表示 wire 未提供，例如历史行，调用方不得把它当作 `false` 或 `true` 猜着用）。是否需要重试由调用方按这两项决定；`conversation/send` 的响应另带 `result_error_retryable`，两者一致。
+
+### 8.2 `sequence` 语义
+
+- `sequence` 是**单会话内单调自增且连续**的计数器（服务端按会话维护），不是全局序号。
+- 取消订阅后该计数器销毁；重新订阅从 `1` 开始，因此 `rearm()` 会把本地游标重置为 `0`。
+- 缺口判定：收到 `sequence > lastSeen + 1` 且 `lastSeen > 0` 即判定丢帧，订阅会发出 `onResync("gap")` 并触发追平。
+- 重复与乱序（`sequence <= lastSeen`）直接丢弃，不重复投递。
+
+### 8.3 追平（catch-up）
+
+会话与 Run 的追平载体不同：
+
+| 场景 | 服务端信号 | 追平手段 | 包内入口 |
+| --- | --- | --- | --- |
+| 会话 | `conversation/resync-required` | `conversation/messages` 重新拉取（V1 不提供会话事件回放） | `follow(..., { fetchMessages })` → `onBackfill` |
+| Run | `run/resync-required` | `run/events` 带 `after_sequence` 回放 | `follow()` 自动追平；`resync()` / `catchUp()` 手动 |
+
+会话订阅默认自动追平（`autoResync`），一次只跑一个取数请求（突发信号合并）；拉取到的新页经 `onBackfill` 交给上层。若上层自己持有分页游标，传 `autoResync: false` 并只监听 `onResync`，由上层做权威重载。
+
+在已 `connect()` 的 `client` 上（完整装配见 §10）：
+
+```ts
+const subscription = await client.conversations.follow(conversationId);
+subscription.onEvent((event) => {
+  const decoded = decodeConversationEvent(event);
+  if (decoded.kind === "message.delta") render(decoded.delta, decoded.replace);
+});
+subscription.onBackfill((snapshot) => resetTranscript(snapshot.messages));
+subscription.onError((error) => report(error));
+```
+
+## 9. 错误模型与重试
+
+四个错误类都从 `@flowy-agent-store/protocol` 导出，`retryable` 是稳定契约（不要按 `message` 分支）：
+
+| 类 | 出现场景 | `retryable` |
+| --- | --- | --- |
+| `AppServerError` | 服务端返回的业务错误；带 `code` / `request_id` / `details` | 由服务端 hint 决定 |
+| `TransportError` | 连接、发送、接收、关闭失败；带 `phase` | 由 `phase` 与调用方判定 |
+| `ProtocolError` | 报文不合规、版本不匹配、响应不符合预期；带 `kind` | 否 |
+| `RequestTimeoutError` | 请求超时；带 `method` / `timeoutMs` | 否 |
+
+`isRetryableError(error)` 统一判定是否需要重试；`formatError(error)` 给出唯一的人读文案。`withRetry(operation, options)` 按 `retryable` 指数退避（含抖动）：
+
+| 选项 | 默认 | 说明 |
+| --- | --- | --- |
+| `maxAttempts` | `3` | 含首次在内的总尝试次数 |
+| `baseDelayMs` | `500` | 首次退避 |
+| `maxDelayMs` | `8000` | 单次退避上限 |
+| `jitter` | `0.25` | 抖动比例，延迟落在 `[0.75×, 1.0×]` |
+| `onRetry` | — | 每次重试前回调 `{ attempt, delayMs, error }` |
+| `shouldRetry` | 协议 `retryable` | 自定义判定 |
+| `sleep` | `setTimeout` | 注入用（测试） |
+
+```ts
+import { withRetry } from "@flowy-agent-store/client";
+
+const view = await withRetry(() => client.runs.get(runId), {
+  maxAttempts: 4,
+  onRetry: ({ attempt, delayMs }) => log(`retry ${attempt} in ${delayMs}ms`),
+});
+```
+
+带 `idempotency_key` / `command_id` 的写操作可安全重放：App Server 对同键请求去重，不会重复执行。
+
+## 10. 示例集：Node / 浏览器 / Electron
+
+### 10.1 Node：一行拉起本地运行时
+
+```ts
+import { launchClient } from "@flowy-agent-store/sdk";
+
+const launched = await launchClient({ client: { name: "my-tool", version: "1.0.0" } });
+try {
+  const conversation = await launched.client.conversations.create({ name: "demo" });
+  const subscription = await launched.client.conversations.follow(conversation.conversation_id);
+  subscription.onEvent((event) => console.log(event.event_type));
+  await launched.client.conversations.send(conversation.conversation_id, "你好", crypto.randomUUID());
+} finally {
+  await launched.close();
+}
+```
+
+### 10.2 浏览器：只连已运行的服务端
+
+浏览器不 spawn 进程，只连 WebSocket；`WebSocketTransport` 通过 `?token=` 传凭据（浏览器 WebSocket 不能设自定义头）。
+
+```ts
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
+
+const transport = new WebSocketTransport("ws://127.0.0.1:8787/api/app-server/ws", { token });
+const client = new AppServerClient({ transport, client: { name: "web", version: "1.0.0" } });
+await client.connect();
+```
+
+### 10.3 Electron：主进程 spawn，渲染进程连回环
+
+主进程持二进制与数据目录；渲染进程只拿回环 URL 与 token。凭据放主进程（系统凭据存储），不要进渲染进程或配置明文。
+
+```ts
+import { spawnAppServer } from "@flowy-agent-store/sdk";
+
+const server = await spawnAppServer({ dataDir: app.getPath("userData") });
+win.webContents.send("app-server-ready", {
+  url: `ws://${server.readiness.host}:${server.readiness.port}/api/app-server/ws`,
+});
+app.on("before-quit", () => void server.close());
+```
+
+纯请求-响应场景（无实时事件）可用 `HttpTransport`；它不订阅通知，且每次调用独立握手。
+
+## 11. MCP 接入指南
+
+Agent Store 的官方 MCP 接入路径是**连接器描述文件**，不引入第二套格式：
+
+| 场景 | 声明位置 |
+| --- | --- |
+| 连接器市场条目 | `.codebuddy-connector/connectors.json` 的条目 |
+| 插件自带的 MCP server | 插件清单的 `mcpServers` 字段 |
+
+远程 HTTP/SSE 与本地 stdio 两种 server 都按清单原样描述；Agent Store 只做托管与工具命名空间代理，不执行连接器内容。凭据处理：
+
+- 敏感的配置项走 `userConfig` 的 schema 标记，值进操作系统凭据存储；
+- 不要把密钥写进 `env`：当前版本会把 `env` 明文写入快照（已登记为待修偏差），在修复前请用 `userConfig`。
+
+更多清单字段与示例见 [插件与市场](/zh-CN/docs/plugins-market)。
+
+## 12. 下一步
+
 
 - 协议方法语义全集：见仓库 `docs/agent-store/05-allo-app-server-protocol.md`。
 - 包实现与测试样例：`web/packages/{protocol,client,sdk}/src`（SDK 含 `spawn.test.ts`、`readiness.test.ts` 用例）。

@@ -14,6 +14,7 @@
 //! The adapter never executes content and never exposes the source URI; it
 //! only converts registry rows into public projections.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -21,11 +22,12 @@ use async_trait::async_trait;
 
 use nomifun_api_types::{
     AppServerImportResult, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
-    AppServerMarketplaceEntry, AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
+    AppServerMarketplaceEntry, AppServerMarketplaceEntrySnapshot,
+    AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
     AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
 };
 use nomifun_app_server::{InstallProvider, MarketplaceProvider};
-use nomifun_common::AppError;
+use nomifun_common::{AppError, LocalizedVariant, collect_localized_variants};
 use nomifun_db::{
     IMarketplaceRepository, MarketplaceEntry, NewPluginMarketplace, PluginMarketplaceRow,
 };
@@ -73,6 +75,10 @@ pub struct ScannedEntry {
     pub description: Option<String>,
     pub keywords: Vec<String>,
     pub category: Option<String>,
+    /// Localized `<field>_<lang>` variants from the manifest row, carried
+    /// through to the registry and the public projection (doc `18` §4 /
+    /// D8=A). The reader picks the language, never the server.
+    pub localized: BTreeMap<String, LocalizedVariant>,
 }
 
 /// Probe a local directory and derive its market kind + entries.
@@ -126,6 +132,7 @@ pub fn probe_directory(root: &Path) -> Result<(MarketKind, Vec<ScannedEntry>), A
                 description: None,
                 keywords: vec![],
                 category: None,
+                localized: BTreeMap::new(),
             });
         }
     }
@@ -154,6 +161,7 @@ fn scan_root_as_entry(root: &Path) -> ScannedEntry {
         description: None,
         keywords: vec![],
         category: None,
+        localized: BTreeMap::new(),
     }
 }
 
@@ -178,6 +186,7 @@ fn probe_connector_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
             description: item.get("description").and_then(|v| v.as_str()).map(str::to_owned),
             keywords: vec![],
             category: None,
+            localized: collect_localized_variants(item),
         });
     }
     Ok(entries)
@@ -230,6 +239,7 @@ fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {    l
                 .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default(),
             category: item.get("category").and_then(|v| v.as_str()).map(str::to_owned),
+            localized: collect_localized_variants(item),
         });
     }
     Ok(entries)
@@ -283,6 +293,7 @@ fn probe_plugin_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
                 .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default(),
             category: item.get("category").and_then(|v| v.as_str()).map(str::to_owned),
+            localized: collect_localized_variants(item),
         });
     }
     Ok(entries)
@@ -406,7 +417,10 @@ fn to_summary(row: &PluginMarketplaceRow) -> AppServerMarketplaceSummary {
     }
 }
 
-fn to_entry(entry: &MarketplaceEntry) -> AppServerMarketplaceEntry {
+fn to_entry(
+    entry: &MarketplaceEntry,
+    snapshot: Option<&AppServerMarketplaceEntrySnapshot>,
+) -> AppServerMarketplaceEntry {
     AppServerMarketplaceEntry {
         name: entry.name.clone(),
         source_kind: entry.source_kind.clone(),
@@ -415,6 +429,8 @@ fn to_entry(entry: &MarketplaceEntry) -> AppServerMarketplaceEntry {
         description: entry.description.clone(),
         keywords: entry.keywords.clone(),
         category: entry.category.clone(),
+        localized: entry.localized.clone(),
+        snapshot: snapshot.cloned(),
     }
 }
 
@@ -462,7 +478,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         if source_kind != "directory" {
             let mut root = self.market_root.clone();
             root.push(&marketplace_id);
-            let outcome = crate::market_fetch::fetch_remote(source_kind, &request.source, root.clone(), None)
+            let outcome = crate::market_fetch::fetch_remote(source_kind, &request.source, root.clone(), None, None)
                 .await?;
             let fetched = match outcome {
                 crate::market_fetch::RemoteFetchOutcome::Fresh(fetched) => fetched,
@@ -505,6 +521,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 description: entry.description,
                 keywords: entry.keywords,
                 category: entry.category,
+                localized: entry.localized,
             })
             .collect();
         // Display name: marketplace.json `name` when declared, else directory
@@ -565,9 +582,39 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 "marketplace {marketplace_id} was removed"
             )));
         }
+        // Provenance is projected here, not re-derived by the client from the
+        // aggregate store listing (doc 16 D-W13-1 ①): the removal confirmation
+        // needs "what would a cascade take out?" *before* it runs. Rows arrive
+        // newest-first, so the first snapshot seen per entry is the current one.
+        let provenance = self
+            .markets
+            .list_snapshot_provenance_by_marketplace(&row.marketplace_id)
+            .await
+            .map_err(AppError::from)?;
+        let mut snapshots: HashMap<String, AppServerMarketplaceEntrySnapshot> = HashMap::new();
+        for provenance_row in provenance {
+            let Some(entry_name) = provenance_row.snapshot.entry_name.clone() else {
+                continue;
+            };
+            snapshots.entry(entry_name).or_insert_with(|| {
+                AppServerMarketplaceEntrySnapshot {
+                    snapshot_id: provenance_row.snapshot.snapshot_id.clone(),
+                    name: provenance_row.snapshot.name.clone(),
+                    version: provenance_row.snapshot.version.clone(),
+                    status: provenance_row.snapshot.status.clone(),
+                    component_count: provenance_row.component_count.max(0) as usize,
+                    installed_count: provenance_row.installed_count.max(0) as usize,
+                    imported_at: provenance_row.snapshot.imported_at,
+                }
+            });
+        }
         Ok(AppServerMarketplaceDetail {
             summary: to_summary(&row),
-            entries: row.entries().iter().map(to_entry).collect(),
+            entries: row
+                .entries()
+                .iter()
+                .map(|entry| to_entry(entry, snapshots.get(&entry.name)))
+                .collect(),
         })
     }
 
@@ -705,6 +752,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                     description: entry.description,
                     keywords: entry.keywords,
                     category: entry.category,
+                    localized: entry.localized,
                 })
                 .collect();
             let content_digest = nomifun_importer::digest::tree_digest_of_dir(&root);
@@ -724,11 +772,18 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // Remote: fetch into a fresh staging, compare revisions.
         let mut root = self.market_root.clone();
         root.push(marketplace_id);
+        // D4 ①: offer the raw validators the source sent last time, so a
+        // compliant server can answer 304 instead of shipping the manifest.
+        let stored_validators = crate::market_source::HttpValidators::from_stored(
+            row.source_etag.as_deref(),
+            row.source_last_modified.as_deref(),
+        );
         let outcome = crate::market_fetch::fetch_remote(
             &source_kind,
             &row.source_uri,
             root.clone(),
             row.resolved_revision.as_deref(),
+            stored_validators.as_ref(),
         )
         .await?;
         let fetched = match outcome {
@@ -762,6 +817,19 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
             )
             .await
             .map_err(AppError::from)?;
+        // D4 ①: remember the validators for the next conditional request. A URL
+        // source always yields `Some`, so a server that stopped sending an ETag
+        // clears the stale one instead of leaving it to be offered forever.
+        if let Some(validators) = fetched.validators.as_ref() {
+            self.markets
+                .record_source_validators(
+                    marketplace_id,
+                    validators.etag.as_deref(),
+                    validators.last_modified.as_deref(),
+                )
+                .await
+                .map_err(AppError::from)?;
+        }
         Ok(AppServerMarketplaceRefreshResult {
             marketplace_id: marketplace_id.to_owned(),
             changed: true,
@@ -910,6 +978,36 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
             ".",
         ))
     }
+
+    /// Host-only seam for the background auto-update sweep (doc 21 D7 ①):
+    /// marketplace ids whose toggle is on **and** whose source is one of the
+    /// builtin official mirrors.
+    ///
+    /// Like `entry_dir` / `market_dir`, this is not a wire method — eligibility
+    /// has to look at the source URI, which never crosses the public protocol
+    /// (`18` §7). A third-party source keeps its `auto_update` flag for
+    /// display, but V1 never polls it.
+    async fn auto_update_targets(&self) -> Result<Vec<String>, AppError> {
+        let rows = self
+            .markets
+            .list_marketplaces()
+            .await
+            .map_err(AppError::from)?;
+        Ok(rows
+            .into_iter()
+            .filter(is_auto_update_eligible)
+            .map(|row| row.marketplace_id)
+            .collect())
+    }
+}
+
+/// The auto-update sweep predicate: still registered, toggle on, **and** the
+/// source is one of the builtin official mirrors. Split out from the query so
+/// the rule itself is testable without a database (doc 21 D7 ①).
+fn is_auto_update_eligible(row: &PluginMarketplaceRow) -> bool {
+    row.removed_at.is_none()
+        && row.auto_update == 1
+        && is_official_source(row.source_kind.as_str(), row.source_uri.as_str())
 }
 
 fn row_source_kind(row: &PluginMarketplaceRow) -> SourceKind {
@@ -946,6 +1044,68 @@ mod tests {
             !is_official_source("directory", "/tmp/company-tools"),
             "a local directory source must not be official"
         );
+    }
+
+    fn marketplace_row(source_kind: &str, source_uri: &str, auto_update: i64) -> PluginMarketplaceRow {
+        PluginMarketplaceRow {
+            id: 1,
+            marketplace_id: "market".into(),
+            name: "market".into(),
+            description: None,
+            source_kind: source_kind.into(),
+            source_uri: source_uri.into(),
+            owner_json: None,
+            version: None,
+            content_digest: None,
+            entries_json: "[]".into(),
+            auto_update,
+            enabled: 1,
+            last_checked_at: None,
+            resolved_revision: None,
+            source_etag: None,
+            source_last_modified: None,
+            staging_root: None,
+            added_at: 0,
+            updated_at: 0,
+            removed_at: None,
+        }
+    }
+
+    /// D7 ①: the sweep covers official mirrors only. A third-party source with
+    /// the toggle flipped on must still be skipped, and a removed row never
+    /// comes back through this path.
+    #[test]
+    fn auto_update_sweep_covers_official_mirrors_only() {
+        let (_, official_kind, official_source) =
+            nomifun_app_server::AgentStoreConfig::builtin_default_marketplaces()
+                .into_iter()
+                .next()
+                .expect("builtin mirrors are configured");
+
+        assert!(is_auto_update_eligible(&marketplace_row(
+            &official_kind,
+            &official_source,
+            1
+        )));
+
+        // Official but toggled off → not swept.
+        assert!(!is_auto_update_eligible(&marketplace_row(
+            &official_kind,
+            &official_source,
+            0
+        )));
+
+        // Third-party with the flag on → still not swept.
+        assert!(!is_auto_update_eligible(&marketplace_row(
+            "url",
+            "https://example.test/.codebuddy-plugin/marketplace.json",
+            1
+        )));
+
+        // A removed marketplace is never swept, even when it looks official.
+        let mut removed = marketplace_row(&official_kind, &official_source, 1);
+        removed.removed_at = Some(1);
+        assert!(!is_auto_update_eligible(&removed));
     }
 
     #[test]
@@ -1081,5 +1241,91 @@ mod tests {
         let (kind, _) = probe_directory(&dir).unwrap();
         assert_eq!(kind, MarketKind::PluginRoot);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R28 / D8=A: the market manifest's `<field>_<lang>` variants are carried
+    /// verbatim out of the probe, so the client can fall back by its own UI
+    /// language. `description` stays the baseline field.
+    #[test]
+    fn skill_market_probe_carries_localized_variants() {
+        let dir = std::env::temp_dir().join(format!("as-mkt-l10n-{}", nomifun_common::generate_id()));
+        write(
+            &dir.join(".codebuddy-skill/marketplace.json"),
+            r#"{
+                "name": "skills",
+                "skills": [
+                    {
+                        "name": "pdf-toolkit",
+                        "source": "pdf-toolkit",
+                        "description": "PDF helpers",
+                        "description_zh": "PDF 工具集",
+                        "description_en": "PDF toolkit",
+                        "tags_zh": ["文档"],
+                        "tags_en": ["documents"],
+                        "legacy_tags_zh": ["旧文档"],
+                        "examples_zh": ["合并 PDF"],
+                        "featured": 3
+                    }
+                ]
+            }"#,
+        );
+        write(&dir.join("skills/pdf-toolkit/SKILL.md"), "# pdf-toolkit");
+        let (kind, entries) = probe_directory(&dir).unwrap();
+        assert_eq!(kind, MarketKind::Skills);
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.description.as_deref(), Some("PDF helpers"));
+        assert_eq!(
+            entry.localized.get("description_zh"),
+            Some(&LocalizedVariant::Text("PDF 工具集".into()))
+        );
+        assert_eq!(
+            entry.localized.get("tags_en"),
+            Some(&LocalizedVariant::List(vec!["documents".into()]))
+        );
+        assert_eq!(
+            entry.localized.get("legacy_tags_zh"),
+            Some(&LocalizedVariant::List(vec!["旧文档".into()]))
+        );
+        assert_eq!(
+            entry.localized.get("examples_zh"),
+            Some(&LocalizedVariant::List(vec!["合并 PDF".into()]))
+        );
+        // Non-variant fields never leak into the projection (`featured` is a
+        // number, and the baseline `description`/`tags` are not `_zh`/`_en`).
+        assert_eq!(entry.localized.len(), 6);
+        assert!(!entry.localized.contains_key("description"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R28: the entry projection onto the wire keeps the variants (additive —
+    /// absent when the manifest declared none).
+    #[test]
+    fn entry_projection_carries_localized_variants() {
+        let entry = MarketplaceEntry {
+            name: "pdf-toolkit".into(),
+            source_kind: "directory".into(),
+            source_uri: "skills/pdf-toolkit".into(),
+            version: None,
+            description: Some("PDF helpers".into()),
+            keywords: vec![],
+            category: None,
+            localized: BTreeMap::from([(
+                "description_zh".to_owned(),
+                LocalizedVariant::Text("PDF 工具集".to_owned()),
+            )]),
+        };
+        let projected = to_entry(&entry, None);
+        assert_eq!(
+            projected.localized.get("description_zh"),
+            Some(&LocalizedVariant::Text("PDF 工具集".into()))
+        );
+        let wire = serde_json::to_value(&projected).expect("serialize");
+        assert_eq!(wire["localized"]["description_zh"], serde_json::json!("PDF 工具集"));
+
+        // No variants -> the key is omitted entirely (purely additive).
+        let bare = MarketplaceEntry { localized: BTreeMap::new(), ..entry };
+        let wire = serde_json::to_value(to_entry(&bare, None)).expect("serialize");
+        assert!(wire.get("localized").is_none(), "empty variants must not reach the wire");
     }
 }

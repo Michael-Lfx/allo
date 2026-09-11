@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { AppServerClient } from "../lib/client";
 import type { ConversationSubscription } from "../lib/conversations";
+import type { EventSubscription } from "../lib/runs";
+import { mergeRunEvents, pendingApproval } from "../lib/approvals";
 import {
   conversationStreamReducer,
   initialConversationStream,
@@ -9,7 +11,31 @@ import {
 } from "../lib/conversation-events";
 import { encodeHistoryCursor } from "../lib/history-cursor";
 import { formatError } from "../lib/errors";
+import { getGlobalEffectGate } from "../lib/global-effects.runtime";
+import {
+  RUN_TERMINAL_TONES,
+  RUN_TERMINAL_TOAST_KEYS,
+  currentTabVisibility,
+  isBackgroundRun,
+  isTerminalRunStatus,
+  latestRunStatus,
+  runTerminalNoticeKey,
+  terminalRunStatus,
+} from "../lib/run-notify";
+import {
+  STEER_ACCEPTED_KEY,
+  STEER_BLOCKED_KEYS,
+  isStaleRunWrite,
+  steerAvailability,
+} from "../lib/run-steer";
 import { modelKeyToSelection } from "../ui/format";
+import { modelKey, turnModelKey, validateModelSelection } from "../lib/model-facts";
+import {
+  TURN_ACTION_REFUSAL_KEYS,
+  TURN_ACTION_TOAST_KEYS,
+  resolveTurnAction,
+  type TurnActionRequest,
+} from "../lib/turn-actions";
 import type { ConnectionPhase } from "../ui/connection";
 import type { OpenMenu } from "../ui/menu";
 import type {
@@ -20,7 +46,10 @@ import type {
   ModelSummary,
   ProviderWithModel,
   ReasoningEffort,
+  RunEvent,
+  RunPlan,
   WorkspaceFlatFile,
+  FileMetadata,
   WorkspaceView,
 } from "../lib/protocol";
 
@@ -66,11 +95,122 @@ export interface Toast {
   tone: ToastTone;
   /** i18n key resolved by `ToastHost` (the store holds no translator). */
   messageKey: string;
+  /** Optional interpolation values forwarded to i18next by `ToastHost`. */
+  params?: Record<string, unknown>;
 }
 
 /** Identity of the live client's endpoint; a reconnect only reuses it when both parts match. */
 function endpointOf(wsUrl: string, token: string): string {
   return `${wsUrl.trim()}\n${token.trim()}`;
+}
+
+/**
+ * Run terminal statuses already announced *by this tab*.
+ *
+ * Module state, so it is per tab by construction: the ownership model of D4=A
+ * keeps every tab on its own subscription, and this set only stops one tab from
+ * re-announcing the same end of the same run (a catch-up replay re-delivers the
+ * status event).
+ */
+const announcedRunTerminals = new Set<string>();
+
+/**
+ * W7（R12）：本标签页里「哪个消息 id 用了哪个幂等键」。
+ *
+ * 只做重发用：`resend`（发送没拿到回执）必须复用原键，否则可能产生第二次执行。
+ * 刻意不落盘——刷新后无法复原，此时 `turn-actions.ts` 会**拒绝** resend，而不是
+ * 换一把新键偷偷重发。
+ */
+const sendKeys = new Map<string, string>();
+
+/** `submitTurn` 的最小 set 形状（store 内部既用对象也用 updater）。 */
+type StoreSet = (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void;
+
+/**
+ * W8 余项 — announce that the followed Run reached a terminal status.
+ *
+ * Two notices, deliberately split along the D4=A boundary:
+ *   - the toast goes through the landed toast channel and fires in *every* tab
+ *     that observes the end of the run (in-tab UI is not coordinated);
+ *   - the global reminder (desktop notification + sound) is only worth raising
+ *     when this tab is in the background, and `getGlobalEffectGate()` elects one
+ *     tab per browser profile so the profile is notified exactly once.
+ *
+ * A reminder that could not be delivered must never surface as an app error, so
+ * the emit is fire-and-forget.
+ */
+function announceRunTerminal(
+  runId: string,
+  events: RunEvent[],
+  pushToast: (tone: ToastTone, messageKey: string, params?: Record<string, unknown>) => void,
+): void {
+  const status = terminalRunStatus(events);
+  if (!status) return;
+  const key = runTerminalNoticeKey(runId, status);
+  if (announcedRunTerminals.has(key)) return;
+  announcedRunTerminals.add(key);
+
+  const messageKey = RUN_TERMINAL_TOAST_KEYS[status];
+  pushToast(RUN_TERMINAL_TONES[status], messageKey);
+
+  if (!isBackgroundRun(currentTabVisibility())) return;
+  void getGlobalEffectGate()
+    .emit({ key, kind: "run-reminder", titleKey: "notify.runTerminalTitle", messageKey })
+    .catch(() => undefined);
+}
+
+/**
+ * W7（R12）：发送一轮的编排只写一次——`send` / 重试 / 重新生成 / 编辑后重发四条路径
+ * 共用，免得各自的 `appendPending → reconcilePending` 漂移。
+ *
+ * 不回执就抛错（调用方决定怎么呈现）；服务端回执后把**原幂等键**记进 `sendKeys`，
+ * 只有「发送没拿到回执」的重发才允许复用（见 `turn-actions.ts` 的幂等策略）。
+ */
+async function submitTurn(
+  set: StoreSet,
+  get: () => AppState,
+  options: { conversationId: string; content: string; idempotencyKey: string },
+): Promise<void> {
+  const client = get().client;
+  if (!client) throw new Error("not connected");
+  const { conversationId, content, idempotencyKey } = options;
+  const pendingId = `pending:${idempotencyKey}`;
+  // 先记账再发请求：发送**失败**时这条 pending 行就是「重发」的目标，而复用它必须
+  // 拿到同一个键（`turn-actions.ts` 的 resend 分支）；等到回执再记就晚了。
+  sendKeys.set(pendingId, idempotencyKey);
+  get().dispatchStream({
+    type: "appendPending",
+    message: {
+      message_id: pendingId,
+      conversation_id: conversationId,
+      role: "user",
+      content,
+      message_type: "text",
+      status: "sending",
+      created_at: Date.now(),
+    },
+  });
+  try {
+    const receipt = await client.conversations.send(conversationId, content, idempotencyKey);
+    // Reconciliation lives in the reducer, next to the event merge it has
+    // to agree with (see `reconcilePending` there).
+    get().dispatchStream({
+      type: "reconcilePending",
+      pendingId,
+      messageId: receipt.message_id,
+      completed: receipt.completed,
+    });
+    sendKeys.set(pendingId, idempotencyKey);
+    sendKeys.set(receipt.message_id, idempotencyKey);
+    set((s) => ({
+      conversations: s.conversations.map((thread) => thread.conversation_id === conversationId
+        ? { ...thread, is_processing: !receipt.completed, modified_at: Date.now() }
+        : thread),
+    }));
+  } catch (caught) {
+    get().dispatchStream({ type: "failPending", pendingId });
+    throw caught;
+  }
 }
 
 type StoredSettings = {
@@ -147,6 +287,10 @@ export type AppState = {
   /** Structured `@` mentions picked in the composer catalog submenu. */
   composerMentions: MentionRef[] | null;
   isSending: boolean;
+  /** W7（R12）：正在重试 / 重发 / 重新生成 / 编辑重发的源消息 id（非空即禁用按钮）。 */
+  turnActionBusy: string | null;
+  /** 动作被拒或失败的原因（i18n key，或原始消息）。 */
+  turnActionError: string | null;
 
   // ── UI / view switches ────────────────────────────────────────────────
   settingsOpen: boolean;
@@ -166,6 +310,12 @@ export type AppState = {
   artifactsError: string | null;
   /** The file whose content/preview is open, if any. */
   artifactPreview: ArtifactPreview | null;
+  /**
+   * R20：产物列表的 size / MIME / mtime，按绝对路径索引（宿主 `/api/fs/metadata`）。
+   * `null` = 查不到（文件已删 / 服务端拒绝 / 离线）；**缺键**才是「尚未查询」，
+   * 故失败也要记账，避免对同一个坏路径反复发请求。
+   */
+  artifactsMeta: Record<string, FileMetadata | null>;
   error: string | null;
   resyncNotice: string | null;
   shareNotice: string | null;
@@ -211,17 +361,59 @@ export type AppState = {
    *  on the render path. */
   subscription: ConversationSubscription | null;
 
+  // ── Run approval surface (W2) / Run 状态树 (W6) / 引导输入 (W3) ────────
+  /** Public Run started from a composer `@agent` mention, if any. */
+  activeRunId: string | null;
+  /** 起这个 Run 的会话（`@agent` 起 Run 时若有会话）——侧栏用它标运行状态。 */
+  runConversationId: string | null;
+  /** Projected events of `activeRunId` (deduped by sequence). */
+  runEvents: RunEvent[];
+  /**
+   * W4：`activeRunId` 的计划 / 步骤**权威快照**（`run/plan`）。事件里没有步骤标题、
+   * 失败原因、起止时间，所以两棵树各管一半：事件树给「发生过什么」，快照给「现在
+   * 是什么」。读取失败留在 `runPlanError`（不弹错——事件树仍然可用）。
+   */
+  runPlan: RunPlan | null;
+  runPlanError: string | null;
+  runDecisionBusy: boolean;
+  /** Inline card error (conflict/stale read is actionable, not a toast). */
+  runDecisionError: string | null;
+  /** 引导输入（`run/steer`）在途 / 最近一次失败（i18n key 或原始消息）。 */
+  runSteerBusy: boolean;
+  runSteerError: string | null;
+  /** Live Run subscription. Imperative handle only, like `subscription`. */
+  runSubscription: EventSubscription | null;
+
   // ── Actions ───────────────────────────────────────────────────────────
   connect: () => Promise<void>;
   disconnect: () => void;
   /** Hide the disconnect banner without reconnecting. */
   dismissConnectionLost: () => void;
-  /** Push a transient notice (i18n key, resolved by `ToastHost`). */
-  pushToast: (tone: ToastTone, messageKey: string) => void;
+  /** Push a transient notice (i18n key + optional params, resolved by `ToastHost`). */
+  pushToast: (tone: ToastTone, messageKey: string, params?: Record<string, unknown>) => void;
   dismissToast: (id: string) => void;
   /** Re-read a transcript without touching its subscription (reconnect backfill). */
   refreshConversation: (conversationId: string) => Promise<void>;
   loadConversation: (conversationId: string, follow?: boolean) => Promise<void>;
+  /**
+   * Follow the Run started from a composer `@agent` mention (W2 approval card).
+   * `conversationId` is only the thread the mention was typed in (W6 sidebar mark).
+   */
+  followRun: (runId: string, conversationId?: string | null) => Promise<void>;
+  /**
+   * W4（`run/plan`，解 D-W6-1）：读取计划 / 步骤的权威快照。
+   *
+   * 与事件流的分工：事件是「发生过什么」的追加日志（只有标记），快照是「现在是什么」
+   * （标题、状态、成员归属、每次尝试的原因 / 错误 / 起止时间）。失败**不弹错**——
+   * 它只是 Run 面的增强信息，事件树本身仍然可用；但也不静默：错误留在 `runPlanError`。
+   */
+  loadRunPlan: (runId: string) => Promise<void>;
+  /** Answer the pending decision of the followed Run via `run/answer-decision`. */
+  answerRunDecision: (answer: string) => Promise<void>;
+  /** W3: inject steering text into the running Run (CAS read → steer). */
+  steerRun: (text: string) => Promise<void>;
+  /** Cancel the followed Run (`run/cancel` with the freshly read version). */
+  cancelRun: () => Promise<void>;
   loadOlderHistory: () => Promise<void>;
   selectConversation: (conversationId: string) => void;
   openCreatedConversation: (created: ConversationView) => Promise<void>;
@@ -231,6 +423,9 @@ export type AppState = {
   requestRevoke: (workspaceId: string) => void;
   confirmRevoke: () => Promise<void>;
   toggleWorkspaceOpen: (workspaceId: string) => void;
+  /** W7: retry / resend / regenerate / edit-and-resend one turn (R12). */
+  runTurnAction: (request: TurnActionRequest) => Promise<void>;
+  dismissTurnActionError: () => void;
   send: () => Promise<void>;
   shareConversation: () => Promise<void>;
   applyConversationUpdate: (patch: { model?: ProviderWithModel; reasoningEffort?: string }) => Promise<void>;
@@ -271,6 +466,8 @@ export type AppState = {
   closeArtifactPanel: () => void;
   /** Re-list the selected conversation's workspace files. */
   refreshArtifacts: () => Promise<void>;
+  /** R20：补齐产物列表的 size / MIME / mtime（省略 `paths` 即列表里未记账的全部）。 */
+  loadArtifactMetadata: (paths?: string[]) => Promise<void>;
   openArtifactPreview: (file: WorkspaceFlatFile) => Promise<void>;
   closeArtifactPreview: () => void;
   /** Append an artifact comment to the composer draft (AC-5: next-turn context). */
@@ -319,6 +516,12 @@ let detachLifecycle: (() => void) | null = null;
  * dismissed). The matching `open` fires mid-reconnect, before the `initialize`
  * handshake, so the banner is cleared by `connect()` once the session is
  * really back — together with the subscription rearm.
+ *
+ * Multi-tab ownership (docs/agent-store/21 §D4 = A): this module is loaded once
+ * per tab, so each tab owns its own `AppServerClient`, WS and subscription and
+ * renders its own toasts/banner — there is deliberately **no** single-writer
+ * election here. Only the effects that leave the tab are coordinated, in
+ * `lib/global-effects.ts`.
  */
 function attachLifecycle(client: AppServerClient, set: (partial: Partial<AppState>) => void): () => void {
   const detach = client.transport.onLifecycle?.((state) => {
@@ -346,6 +549,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   draft: "",
   isSending: false,
+  turnActionBusy: null,
+  turnActionError: null,
 
   /** Structured `@` mentions picked in the composer catalog submenu
    *  (docs/agent-store/05 §4.7). Cleared after send / draft reset. */
@@ -364,6 +569,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   artifactsLoading: false,
   artifactsError: null,
   artifactPreview: null,
+  artifactsMeta: {},
   error: null,
   resyncNotice: null,
   shareNotice: null,
@@ -397,6 +603,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   subscription: null,
 
+  activeRunId: null,
+  runConversationId: null,
+  runEvents: [],
+  runPlan: null,
+  runPlanError: null,
+  runDecisionBusy: false,
+  runDecisionError: null,
+  runSteerBusy: false,
+  runSteerError: null,
+  runSubscription: null,
+
   persistSettings: () => {
     const { wsUrl, providerId, model, selectedModelKey, selectedEffort } = get();
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -404,6 +621,174 @@ export const useAppStore = create<AppState>()((set, get) => ({
       modelKey: selectedModelKey ?? "",
       reasoningEffort: selectedEffort,
     }));
+  },
+
+  /**
+   * Follow one public Run: replay its events, then keep the live stream wired so
+   * a newly requested decision shows up as a card without a manual refresh.
+   * The run id comes from the `agent/run` receipt (*not* from a conversation);
+   * `conversationId` is the thread the mention was typed in (when there was
+   * one) and only feeds the sidebar's run marker (W6).
+   */
+  followRun: async (runId, conversationId = null) => {
+    const client = get().client;
+    if (!client) return;
+    void get().runSubscription?.close();
+    set({
+      activeRunId: runId,
+      runConversationId: conversationId,
+      runEvents: [],
+      runPlan: null,
+      runPlanError: null,
+      runDecisionBusy: false,
+      runDecisionError: null,
+      runSteerBusy: false,
+      runSteerError: null,
+      runSubscription: null,
+    });
+    try {
+      const history = await client.runs.events({ runId, limit: 200 });
+      set({ runEvents: mergeRunEvents([], history) });
+      announceRunTerminal(runId, get().runEvents, get().pushToast);
+      // W4：计划快照与事件流并行取——事件给「发生过什么」，快照给「现在是什么」
+      // （标题 / 状态 / 成员 / 每次尝试的原因与耗时，事件里没有这些）。
+      void get().loadRunPlan(runId);
+      const subscription = await client.runs.follow(runId);
+      subscription.onEvent((event) => {
+        set((state) => ({ runEvents: mergeRunEvents(state.runEvents, [event]) }));
+        announceRunTerminal(runId, get().runEvents, get().pushToast);
+      });
+      // A dropped live stream is recoverable through the card's own retry (the
+      // next answer re-reads the gate); it must not spam the global error slot.
+      subscription.onError(() => undefined);
+      set({ runSubscription: subscription });
+    } catch (caught) {
+      set({ error: formatError(caught) });
+    }
+  },
+
+  /**
+   * W4：读取计划快照。
+   *
+   * 只在**仍然是同一个 Run** 时落库——用户在请求在途时切走（或换了 Run），旧结果
+   * 会把新 Run 的计划覆盖成上一次的。失败记进 `runPlanError` 且保留旧快照：宁可
+   * 显示略旧的计划，也不要让整块待办闪空。
+   */
+  loadRunPlan: async (runId) => {
+    const client = get().client;
+    if (!client) return;
+    try {
+      const plan = await client.runs.plan(runId);
+      if (get().activeRunId !== runId) return;
+      set({ runPlan: plan, runPlanError: null });
+    } catch (caught) {
+      if (get().activeRunId !== runId) return;
+      set({ runPlanError: formatError(caught) });
+    }
+  },
+
+  /**
+   * Answer the pending decision of the followed Run.
+   *
+   * The CAS tokens come from the projected event, never from a local guess: a
+   * stale read is refused by the engine with `conflict`, which is surfaced in the
+   * card so the reviewer can re-read instead of silently approving something
+   * that already moved.
+   */
+  answerRunDecision: async (answer) => {
+    const { client, activeRunId, runEvents } = get();
+    const decision = pendingApproval(runEvents);
+    if (!client || !activeRunId || !decision) return;
+    set({ runDecisionBusy: true, runDecisionError: null });
+    try {
+      await client.runs.answerDecision({
+        runId: activeRunId,
+        stepId: decision.stepId,
+        attemptId: decision.attemptId,
+        answer,
+        expectedExecutionVersion: decision.expectedExecutionVersion,
+        expectedStepVersion: decision.expectedStepVersion,
+        expectedAttemptVersion: decision.expectedAttemptVersion,
+      });
+      // The answer's durable `approval.responded` closes the card through the
+      // subscription; re-read the page once so the card cannot linger if the
+      // live event was dropped.
+      const history = await client.runs.events({ runId: activeRunId, limit: 200 });
+      set({ runEvents: mergeRunEvents(get().runEvents, history) });
+      announceRunTerminal(activeRunId, get().runEvents, get().pushToast);
+      // 回答决策会让步骤/尝试前进，快照必须跟着走（否则待办还停在「等待确认」）。
+      void get().loadRunPlan(activeRunId);
+    } catch (caught) {
+      set({ runDecisionError: formatError(caught) });
+    } finally {
+      set({ runDecisionBusy: false });
+    }
+  },
+
+  /**
+   * W3 引导输入：把补充文本注入**正在运行**的 Run，不打断当前回合。
+   *
+   * 两步且顺序不可换：先从 `run/get` 读**服务端**的当前版本（CAS 令牌绝不本地
+   * 猜测），再带 `expectedVersion` 提交；版本已被并发改动 → 服务端 `conflict`
+   * → 这里回读事件补齐并明确告知「状态已变，请重试」，而不是硬重试。
+   *
+   * 终态 Run 的提交在**发请求之前**就被拒绝（`run-steer.ts` 的判定），避免制造
+   * 一个必然失败、还容易让人误以为「引导已生效」的请求。
+   */
+  steerRun: async (text) => {
+    const { client, activeRunId, runEvents, runSteerBusy } = get();
+    const content = text.trim();
+    if (!client || !activeRunId || !content || runSteerBusy) return;
+    const availability = steerAvailability({
+      hasRun: true,
+      busy: false,
+      status: latestRunStatus(runEvents),
+      terminal: terminalRunStatus(runEvents) !== null,
+    });
+    if (availability !== "available") {
+      set({ runSteerError: STEER_BLOCKED_KEYS[availability] });
+      return;
+    }
+    set({ runSteerBusy: true, runSteerError: null });
+    try {
+      const view = await client.runs.get(activeRunId);
+      await client.runs.steer({ runId: activeRunId, text: content, expectedVersion: view.version });
+      get().pushToast("success", STEER_ACCEPTED_KEY);
+    } catch (caught) {
+      if (isStaleRunWrite(caught)) {
+        // Stale read: the run moved. Re-read the authoritative events so the
+        // tree/status the user sees is current, then say why the steer failed.
+        const history = await client.runs.events({ runId: activeRunId, limit: 200 }).catch(() => []);
+        if (history.length > 0) {
+          set({ runEvents: mergeRunEvents(get().runEvents, history) });
+        }
+        set({ runSteerError: "run.steerStale" });
+      } else {
+        set({ runSteerError: formatError(caught) });
+      }
+    } finally {
+      set({ runSteerBusy: false });
+    }
+  },
+
+  /** Cancel the followed Run; the version is read fresh for the same CAS reason. */
+  cancelRun: async () => {
+    const { client, activeRunId } = get();
+    if (!client || !activeRunId) return;
+    try {
+      const view = await client.runs.get(activeRunId);
+      const cancelled = await client.runs.cancel({ runId: activeRunId, expectedVersion: view.version });
+      get().pushToast("success", "run.cancelRequested");
+      if (isTerminalRunStatus(cancelled.status)) {
+        const history = await client.runs.events({ runId: activeRunId, limit: 200 }).catch(() => []);
+        if (history.length > 0) {
+          set({ runEvents: mergeRunEvents(get().runEvents, history) });
+          announceRunTerminal(activeRunId, get().runEvents, get().pushToast);
+        }
+      }
+    } catch (caught) {
+      set({ error: formatError(caught) });
+    }
   },
 
   loadConversation: async (conversationId, follow = true) => {
@@ -437,7 +822,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
       }));
 
       if (!follow || get().selectedConversationId !== conversationId) return;
-      const subscription = await client.conversations.follow(conversationId);
+      // `autoResync: false` on purpose (doc 16 R1/R18): the package still
+      // detects sequence gaps and raises `onResync("gap")`, but this shell owns
+      // the authoritative reload — `loadConversation` re-reads the view
+      // (`is_processing`) plus the first page **and** its keyset cursor, which
+      // the package's transcript-only backfill cannot restore. A consumer
+      // without its own scroll state can leave auto catch-up on and use
+      // `onBackfill`.
+      const subscription = await client.conversations.follow(conversationId, { autoResync: false });
       if (get().selectedConversationId !== conversationId) {
         void subscription.close();
         return;
@@ -447,6 +839,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       subscription.onResync((reason) => {
         set({ resyncNotice: reason });
         void get().loadConversation(conversationId);
+      });
+      // Failures that used to vanish: a dropped socket during re-arm, or a
+      // catch-up fetch. Surface them instead of leaving the stream silently dead.
+      subscription.onError((error) => {
+        if (get().selectedConversationId === conversationId) set({ error: formatError(error) });
       });
     } catch (caught) {
       set({ error: formatError(caught) });
@@ -522,6 +919,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   selectConversation: (conversationId) => {
     set({ sidebarOpen: false });
+    // W7：切会话时清掉上一条会话的动作提示，避免把旧会话的失败原因挂到新会话上。
+    set({ turnActionBusy: null, turnActionError: null });
     get().dispatchStream({ type: "reset", messages: [] });
     void get().loadConversation(conversationId);
     set({ selectedConversationId: conversationId });
@@ -577,6 +976,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
         await get().subscription?.rearm();
         const currentId = get().selectedConversationId;
         if (currentId) void get().refreshConversation(currentId);
+        // 被跟随的 Run 也是一条订阅（W8 余项 / R13）：断线同样让服务端丢掉了它的
+        // `run/subscribe`，于是「断线窗口内进入终态的 Run」永远不会发出通知——恰恰
+        // 是后台提醒最该出现的场景。`rearm()` 会把已持久化的 Run 事件重新经实时监听
+        // 器回放，而通知按「run + 终态」幂等，故断线前已发过的那次不会重复发。
+        await get().runSubscription?.rearm();
         get().pushToast("success", "connection.restored");
         return;
       }
@@ -601,6 +1005,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
   disconnect: () => {
     void get().subscription?.close();
     set({ subscription: null });
+    void get().runSubscription?.close();
+    set({
+      runSubscription: null,
+      activeRunId: null,
+      runConversationId: null,
+      runEvents: [],
+      runDecisionError: null,
+      runSteerBusy: false,
+      runSteerError: null,
+    });
     detachLifecycle?.();
     detachLifecycle = null;
     get().client?.close();
@@ -741,6 +1155,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({ error: "providerModelPair" });
       return;
     }
+    // W9（R14）：发送前的模型兼容性校验——显式选中的模型必须在**已知**目录里
+    // （`models/list` ∪ 配置投影），否则现在就说清楚，而不是发出去等一个必然的失败。
+    // 目录还没加载完时 `validateModelSelection` 放行（把「没数据」当成「不存在」是错的）。
+    const unknownModel = validateModelSelection({
+      selectedKey: get().selectedModelKey,
+      directoryKeys: get().modelDirectory.map((entry) => modelKey(entry.provider_name, entry.model)),
+      optionKeys: (get().modelOptions?.providers ?? []).flatMap((provider) =>
+        provider.models.map((model) => modelKey(provider.name, model.name))),
+    });
+    if (unknownModel) {
+      set({ error: unknownModel });
+      return;
+    }
 
     set({ isSending: true, error: null, resyncNotice: null });
     const key = `chat-${crypto.randomUUID()}`;
@@ -751,12 +1178,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
     // through the store error/notice channel for now.
     if (composerMentions && composerMentions.some((m) => m.kind === "agent")) {
       try {
-        await client.runs.agent({
+        const receipt = await client.runs.agent({
           agentId: "",
           goal: content,
           mentions: composerMentions,
         });
         set({ composerMentions: null, draft: "" });
+        // Follow the Run so its decision requests surface as an approval card
+        // instead of dead-ending in the notice channel. The owning conversation
+        // (when there is one) rides along for the sidebar's run marker (W6).
+        await get().followRun(receipt.run_id, get().selectedConversationId);
       } catch (caught) {
         set({ error: formatError(caught) });
       } finally {
@@ -775,44 +1206,57 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
 
     const conversationId = selectedConversationId;
-    const pendingId = `pending:${key}`;
     get().dispatchStream({
       type: "appendPending",
-      message: {
-        message_id: pendingId,
-        conversation_id: conversationId,
-        role: "user",
-        content,
-        message_type: "text",
-        status: "sending",
-        created_at: Date.now(),
-      },
+      message: { message_id: `pending:${key}`, conversation_id: conversationId, role: "user", content, message_type: "text", status: "sending", created_at: Date.now() },
     });
     set({ draft: "" });
-
     try {
-      const receipt = await client.conversations.send(conversationId, content, key);
-      // Reconciliation lives in the reducer, next to the event merge it has
-      // to agree with (see `reconcilePending` there).
-      get().dispatchStream({
-        type: "reconcilePending",
-        pendingId,
-        messageId: receipt.message_id,
-        completed: receipt.completed,
-      });
-      set((s) => ({
-        conversations: s.conversations.map((thread) => thread.conversation_id === conversationId
-          ? { ...thread, is_processing: !receipt.completed, modified_at: Date.now() }
-          : thread),
-      }));
+      await submitTurn(set, get, { conversationId, content, idempotencyKey: key });
     } catch (caught) {
-      get().dispatchStream({ type: "failPending", pendingId });
       set({ error: formatError(caught) });
     } finally {
       set({ isSending: false });
       requestAnimationFrame(() => composerFocusRequest());
     }
   },
+
+  /**
+   * W7（R12）统一入口：重试 / 重发 / 重新生成 / 编辑后重发。
+   *
+   * 解析（含幂等键策略与拒绝口径）在 `lib/turn-actions.ts`；这里只负责取状态、
+   * 调 `submitTurn`、把「拒绝原因」或「已受理」呈现出来。**终态不可重试、缺原键、
+   * 空正文三种情形下不发请求**——安静地发一轮才是真正危险的（重复执行或假成功）。
+   */
+  runTurnAction: async (request) => {
+    const { client, selectedConversationId, stream, turnActionBusy } = get();
+    if (!client || !selectedConversationId || turnActionBusy) return;
+    const resolution = resolveTurnAction(
+      stream.messages,
+      request,
+      { rememberedKey: request.kind === "retry-entry" ? sendKeys.get(request.messageId) ?? null : null },
+    );
+    if (!resolution.ok) {
+      set({ turnActionError: TURN_ACTION_REFUSAL_KEYS[resolution.reason] });
+      return;
+    }
+    const plan = resolution.plan;
+    set({ turnActionBusy: plan.sourceMessageId, turnActionError: null });
+    try {
+      await submitTurn(set, get, {
+        conversationId: selectedConversationId,
+        content: plan.content,
+        idempotencyKey: plan.idempotency.key,
+      });
+      get().pushToast("success", TURN_ACTION_TOAST_KEYS[plan.kind]);
+    } catch (caught) {
+      set({ turnActionError: formatError(caught) });
+    } finally {
+      set({ turnActionBusy: null });
+    }
+  },
+
+  dismissTurnActionError: () => set({ turnActionError: null }),
 
   shareConversation: async () => {
     const { selectedConversationId } = get();
@@ -945,7 +1389,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   dispatchStream: (action) => {
-    set((s) => ({ stream: conversationStreamReducer(s.stream, action) }));
+    // W9（R14）：把「本轮用量归属哪个模型」钉在**事件到达的那一刻**——用户之后换模型
+    // 时，旧轮次已经记下的模型键不会跟着变，金额也就不会按新模型的费率被重算。
+    const { selectedModelKey, conversations, selectedConversationId } = get();
+    const conversation = conversations.find((item) => item.conversation_id === selectedConversationId);
+    const modelKeyNow = turnModelKey(selectedModelKey, conversation?.model ?? null);
+    set((s) => ({
+      stream: conversationStreamReducer(s.stream, action, { modelKey: modelKeyNow }),
+    }));
   },
 
   // ── UI setters ────────────────────────────────────────────────────────
@@ -984,9 +1435,41 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const files = await client.listWorkspaceFiles(root);
       set({ artifacts: files, artifactsLoading: false });
+      // R20：列表拿到后补齐 size / MIME / mtime。`/api/fs/list` 只回名字与路径，
+      // 元数据在另一个宿主端点上——补齐是**增强**，失败不影响列表本身。
+      void get().loadArtifactMetadata();
     } catch (caught) {
       set({ artifactsLoading: false, artifactsError: formatError(caught) });
     }
+  },
+  /**
+   * R20：为产物列表补齐元数据（`POST /api/fs/metadata`）。
+   *
+   * 只查未记账的路径（成功与失败都记账），并发上限 4——宿主是本地服务，小并发够用
+   * 也不会把事件循环打满。任何单条失败都降级成 `null`（界面显示占位），**不弹错、
+   * 不重试**：元数据是可选的展示信息，不该因为一个坏路径让整个面板报错。
+   */
+  loadArtifactMetadata: async (paths) => {
+    const client = get().client;
+    const root = get().artifactsRoot ?? undefined;
+    const targets = (paths ?? get().artifacts.map((file) => file.full_path))
+      .filter((path) => !(path in get().artifactsMeta));
+    if (!client || targets.length === 0) return;
+    const queue = [...targets];
+    const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+      for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+        let meta: FileMetadata | null = null;
+        try {
+          meta = await client.getFileMetadata(path, root);
+        } catch {
+          meta = null;
+        }
+        // 面板可能已经切到别的会话：过期的结果直接丢弃，不污染新列表。
+        if ((get().artifactsRoot ?? undefined) !== root) return;
+        set((state) => ({ artifactsMeta: { ...state.artifactsMeta, [path]: meta } }));
+      }
+    });
+    await Promise.all(workers);
   },
   openArtifactPreview: async (file) => {
     const client = get().client;
@@ -1019,9 +1502,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   dismissResync: () => set({ resyncNotice: null }),
   dismissShare: () => set({ shareNotice: null }),
   dismissConnectionLost: () => set({ connectionLost: false }),
-  pushToast: (tone, messageKey) => {
+  pushToast: (tone, messageKey, params) => {
     const id = crypto.randomUUID();
-    set((s) => ({ toasts: [...s.toasts, { id, tone, messageKey }] }));
+    set((s) => ({ toasts: [...s.toasts, { id, tone, messageKey, params }] }));
     // Transient by design: the layer must never accumulate stale notices.
     window.setTimeout(() => get().dismissToast(id), TOAST_TTL_MS);
   },
