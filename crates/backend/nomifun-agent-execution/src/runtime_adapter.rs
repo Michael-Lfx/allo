@@ -32,6 +32,21 @@ pub struct AgentRunReceipt {
     pub content_digest: String,
 }
 
+/// `team/run` receipt (`docs/agent-store/05` §5.2).
+///
+/// Deliberately **not** [`AgentRunReceipt`]: that shape carries the lead *preset*
+/// revision and content digest of a preset-backed single-Agent run. A Team Run has
+/// no lead preset — its authority is the Team's `AgentExecutionTemplate`, which is
+/// mutable authoring data rather than a frozen snapshot — so reusing that shape
+/// would force fabricated `preset_revision` / `content_digest` values onto the
+/// wire. What the caller gets is exactly what it can rely on: the opaque public run
+/// id and its current status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamRunReceipt {
+    pub run_id: String,
+    pub status: AgentRunStatus,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRunView {
     pub run_id: String,

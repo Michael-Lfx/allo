@@ -5,7 +5,7 @@
  * execution/session/step/attempt IDs never appear in this module.
  */
 
-export const APP_SERVER_PROTOCOL_VERSION = "2026-08-26";
+export const APP_SERVER_PROTOCOL_VERSION = "2026-09-12";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -217,6 +217,45 @@ export interface RunReceipt {
   version: number;
   preset_revision: number;
   content_digest: string;
+}
+
+/**
+ * `team/run` — Leader Conversation + planned delegation (docs/agent-store/05
+ * §5.2, `16` §7 决策 3).
+ *
+ * There is deliberately **no** `planning` field: member pool, concurrency
+ * ceiling, routing constraints and authority come from the bound Team template
+ * and server policy. The wire DTO is `deny_unknown_fields`, so sending one is
+ * `invalid_request` rather than a silently ignored parameter.
+ */
+export interface TeamRunInput {
+  teamId: string;
+  teamVersion?: string;
+  goal?: string;
+  input?: { text?: string } | Record<string, unknown>;
+  workspaceId?: string;
+  commandId?: string;
+  idempotencyKey?: string;
+}
+
+export interface TeamRunRequestWire {
+  team_id: string;
+  team_version?: string;
+  goal?: string;
+  input?: unknown;
+  workspace?: WorkspaceRef;
+  command_id?: string;
+  idempotency_key?: string;
+}
+
+/**
+ * Deliberately **not** `RunReceipt`: a Team Run has no lead preset to report a
+ * revision/digest for — its authority is the Team's mutable execution template.
+ * Only what the server can honestly answer is on the wire.
+ */
+export interface TeamRunReceipt {
+  run_id: string;
+  status: RunStatus;
 }
 
 export interface RunView {
@@ -911,4 +950,10 @@ export interface TeamDetail extends TeamSummary {
   routing_constraints: string[];
   workflow_limits: Record<string, unknown>;
   team_runtime_capabilities: string[];
+  /**
+   * MCP server ids this Team's own snapshot installed **and** left enabled on
+   * this host — the only Connector surface a Team Run may bind. Member Agents'
+   * `mcpServers` are recorded, not mapped to grants (docs/agent-store/02 §5.1).
+   */
+  connectors: string[];
 }

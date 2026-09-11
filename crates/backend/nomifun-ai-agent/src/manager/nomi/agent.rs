@@ -296,6 +296,42 @@ pub(crate) fn should_register_learning_generate_course(
     has_sink && !bases.is_empty()
 }
 
+/// Effective `config.tools.builtin_allowlist` from every layer that constrains
+/// it: the engine's own config (`global ∪ project`), the session-scoped list the
+/// factory computed, and the host's `[tools].enabled`.
+///
+/// **An empty layer means "no constraint", not "deny everything"** — that is the
+/// established meaning of `builtin_allowlist` (`空 = 不限制`), so empty layers are
+/// skipped rather than intersecting the result down to nothing. Only non-empty
+/// layers intersect.
+///
+/// The returned list is handed to `retain_named`, where an empty list is a
+/// **no-op**. So when at least one layer constrained the set and the
+/// intersection is empty, the caller must not write this (empty) value into
+/// `builtin_allowlist`; it sets `ToolsConfig::builtin_deny_all` instead, which
+/// bootstrap turns into an explicit deny-all. Callers should therefore derive
+/// both values from the same layer slice, as the manager does.
+pub(crate) fn intersect_allowlists(layers: &[Vec<String>]) -> Vec<String> {
+    let mut constrained = layers
+        .iter()
+        .filter(|layer| !layer.is_empty())
+        .map(|layer| {
+            let mut names = layer.clone();
+            names.sort();
+            names.dedup();
+            names
+        });
+
+    let Some(first) = constrained.next() else {
+        return Vec::new();
+    };
+    constrained.fold(first, |acc, layer| {
+        acc.into_iter()
+            .filter(|name| layer.contains(name))
+            .collect()
+    })
+}
+
 /// Tool name of the native knowledge write-back tool. Allow-listed past the
 /// approval gate (DIRECT/STAGED writes go to the user's own managed base, and
 /// companion/channel sessions have no confirmation UI), mirroring the companion
@@ -874,11 +910,41 @@ impl NomiAgentManager {
         if config_extra.browser_use {
             config.tools.browser.enabled = true;
         }
+        // 宿主级工具策略中由**引擎配置**承载的开关。它们在工厂里置没有用：
+        // `Config::resolve` 在这里才读 `%APPDATA%\nomi\config.toml` 与
+        // `<workspace>/.nomi.toml`，所以必须在 resolve 之后落。三个开关都只
+        // 有「关」这一方向（策略字段默认 true = 不干预）。
+        if !config_extra.tool_policy.web {
+            config.tools.web.enabled = false;
+        }
+        if !config_extra.tool_policy.plan {
+            config.plan.enabled = false;
+        }
+        if !config_extra.tool_policy.lsp {
+            // `Lsp` 只在 `lsp_servers` 非空时注册；清空是唯一的会话级关法。
+            config.tools.lsp_servers.clear();
+        }
         // Per-session 工具白名单（工厂已算好；bootstrap 的 retain_named
         // 会安装持久注册策略，后续 post-build / dynamic 工具也受同一策略约束）。
         // Embedded AgentExecution 的 host composition 不写入 ToolsConfig，
         // 而是在 bootstrap builder 上单独注入。
-        config.tools.builtin_allowlist = config_extra.allowed_tools.clone();
+        //
+        // 三层求交（「更严者胜」）：引擎配置（global∪project，可能来自用户
+        // config.toml）× 会话白名单（工厂算好的受限角色名单）× 宿主 [tools].enabled。
+        // **空层表示「不约束」而不是「全裁」**，因此不能用空列表去覆盖。
+        let allow_layers = [
+            config.tools.builtin_allowlist.clone(),
+            config_extra.allowed_tools.clone(),
+            config_extra.tool_policy.enabled.clone(),
+        ];
+        config.tools.builtin_allowlist = intersect_allowlists(&allow_layers);
+        // 若确有层在做限制、但求交为空（各层彼此不相容），必须**显式** deny-all：
+        // `builtin_allowlist` 的空值语义是「不限制」，直接传空会把最严变成最松。
+        config.tools.builtin_deny_all =
+            allow_layers.iter().any(|layer| !layer.is_empty())
+                && config.tools.builtin_allowlist.is_empty();
+        // 宿主减项：与白名单正交，交给 bootstrap 在注册后统一裁剪（含动态注册）。
+        config.tools.builtin_denylist = config_extra.tool_policy.disabled.clone();
         // 原生文件工具写根钳制（Write/Edit/ApplyPatch），按会话信任面由工厂解析：
         // 本地桌面 = None（不钳制，OS 用户全权，今日行为）；渠道/远程/对外 =
         // Some(workspace)（收窄到会话工作区）。仅在有非空值时覆盖，故桌面会话保留
@@ -1295,19 +1361,24 @@ impl NomiAgentManager {
             }
         }
 
-        let media_wired = nomi_media::wire_flowy_media(
-            engine.registry_mut(),
-            &gateway_config,
-            &gateway_data_dir,
-        );
-        if media_wired.has_image || media_wired.has_video {
-            debug!(
-                conversation_id = %conversation_id,
-                has_image = media_wired.has_image,
-                has_video = media_wired.has_video,
-                has_workflow = media_wired.has_workflow,
-                "Registered Flowy media generation tools"
+        // Host policy: the Flowy media family is the one domain that is neither a
+        // sink nor a tool name — it is wired from the host `config.toml` `[media]`
+        // table right here, so the domain switch has to gate it at this call.
+        if config_extra.tool_policy.domains.media {
+            let media_wired = nomi_media::wire_flowy_media(
+                engine.registry_mut(),
+                &gateway_config,
+                &gateway_data_dir,
             );
+            if media_wired.has_image || media_wired.has_video {
+                debug!(
+                    conversation_id = %conversation_id,
+                    has_image = media_wired.has_image,
+                    has_video = media_wired.has_video,
+                    has_workflow = media_wired.has_workflow,
+                    "Registered Flowy media generation tools"
+                );
+            }
         }
 
         if !is_resume && let Err(e) = engine.init_session(&provider_label, &workspace, Some(&conversation_id)) {
@@ -2642,6 +2713,27 @@ impl NomiAgentManager {
         reg.register(Box::new(CronListTool::new(sink.clone())));
         reg.register(Box::new(CronDeleteTool::new(sink)));
         debug!(conversation_id = %self.runtime.conversation_id(), "Registered cron native tools");
+    }
+
+    /// Register the host-backed `nomi_delegate` backed by `sink`. Same
+    /// post-construction slot as [`Self::register_cron_sink`]: the tool is
+    /// advertised from the first model request, and a session whose host never
+    /// installed a provider simply has no such tool.
+    ///
+    /// The registry's persistent policy still applies, so a session with a
+    /// narrowed allowlist (the model-only ceiling) never sees it.
+    pub async fn register_delegate_sink(
+        &self,
+        sink: Arc<dyn nomi_agent::host_delegate_tool::HostDelegateSink>,
+    ) {
+        let mut engine = self.engine.lock().await;
+        engine
+            .registry_mut()
+            .register(Box::new(nomi_agent::host_delegate_tool::HostDelegateTool::new(sink)));
+        debug!(
+            conversation_id = %self.runtime.conversation_id(),
+            "Registered host-backed nomi_delegate"
+        );
     }
 
     /// Register G3 meeting tools (`meeting.list` / `meeting.start` / …) backed by
@@ -3996,6 +4088,9 @@ mod tests {
                 "0190f5fe-7c00-7a00-8000-000000000001",
             )
             .unwrap(),
+            // Tests start from the permissive policy: the session-level switches
+            // below are the only thing under test.
+            tool_policy: nomifun_api_types::NomiToolPolicy::default(),
             provider: "anthropic".into(),
             api_key: "sk-test-key".into(),
             model: "claude-sonnet-4-20250514".into(),
@@ -4034,6 +4129,226 @@ mod tests {
             coding_protect_read: None,
             coding_micro_keep_recent: None,
         }
+    }
+
+    // ---- host tool policy (`20-tool-injection-policy.zh.md`) ----------------
+
+    /// Each layer that constrains the allowlist intersects; an empty layer means
+    /// "no constraint" (`空 = 不限制`), so it must not narrow the result to nothing.
+    #[test]
+    fn intersect_allowlists_skips_empty_layers_and_intersects_the_rest() {
+        // Nothing constrains → empty (= unrestricted for `retain_named`).
+        assert!(intersect_allowlists(&[]).is_empty());
+        assert!(intersect_allowlists(&[vec![], vec![], vec![]]).is_empty());
+
+        // A single non-empty layer is used verbatim (canonicalised).
+        assert_eq!(
+            intersect_allowlists(&[vec![], vec!["Read".into(), "Read".into()], vec![]]),
+            vec!["Read".to_owned()]
+        );
+
+        // Two non-empty layers intersect, regardless of position.
+        let session = vec!["Read".to_owned(), "Grep".to_owned(), "Bash".to_owned()];
+        let host = vec!["Grep".to_owned(), "Read".to_owned()];
+        assert_eq!(
+            intersect_allowlists(&[session.clone(), host.clone()]),
+            vec!["Grep".to_owned(), "Read".to_owned()]
+        );
+        assert_eq!(
+            intersect_allowlists(&[host, session]),
+            vec!["Grep".to_owned(), "Read".to_owned()]
+        );
+
+        // An empty *intersection* of constrained layers is reported as empty; the
+        // caller must turn that into an explicit deny-all (see the manager).
+        assert!(
+            intersect_allowlists(&[vec!["Read".into()], vec!["Grep".into()]]).is_empty(),
+            "disjoint constrained layers must not silently mean 'unrestricted'"
+        );
+    }
+
+    /// Build a manager with the given host policy and session allowlist, and read
+    /// back the provider-visible tool names.
+    async fn tool_names_for(
+        policy: nomifun_api_types::NomiToolPolicy,
+        allowed_tools: Vec<String>,
+    ) -> Vec<String> {
+        let mut config = make_test_config();
+        config.tool_policy = policy;
+        config.allowed_tools = allowed_tools;
+        let agent = NomiAgentManager::new(
+            "conv-tool-policy".into(),
+            "/project".into(),
+            config,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        agent.engine.lock().await.tool_names()
+    }
+
+    /// A1 + A4: adopting no policy must leave the tool surface exactly as it was,
+    /// and the switches must only ever subtract from it.
+    ///
+    /// Asserted as a *subset* relation plus specific absences: a host whose own
+    /// `%APPDATA%/nomi/config.toml` narrows the list further does not make this
+    /// test lie, while the absences still prove the policy took effect.
+    #[tokio::test]
+    async fn host_tool_policy_switches_only_subtract() {
+        use nomifun_api_types::NomiToolPolicy;
+
+        let baseline = tool_names_for(NomiToolPolicy::default(), Vec::new()).await;
+        for name in ["remember", "update_plan", "EnterPlanMode", "ExitPlanMode"] {
+            assert!(
+                baseline.iter().any(|registered| registered == name),
+                "precondition: `{name}` is registered when no policy is adopted: {baseline:?}"
+            );
+        }
+
+        let restricted = tool_names_for(
+            NomiToolPolicy {
+                web: false,
+                plan: false,
+                lsp: false,
+                disabled: vec!["remember".into(), "update_plan".into()],
+                ..NomiToolPolicy::default()
+            },
+            Vec::new(),
+        )
+        .await;
+
+        for name in &restricted {
+            assert!(
+                baseline.iter().any(|registered| registered == name),
+                "a restriction may never widen the tool surface: `{name}` appeared"
+            );
+        }
+        for removed in [
+            "remember",
+            "update_plan",
+            "EnterPlanMode",
+            "ExitPlanMode",
+            "WebSearch",
+            "WebExtract",
+        ] {
+            assert!(
+                !restricted.iter().any(|registered| registered == removed),
+                "`{removed}` must be gone under the policy: {restricted:?}"
+            );
+        }
+        // The load-bearing baseline tools survive: the policy subtracts, it does
+        // not replace an allowlist.
+        for kept in ["Read", "Write", "Edit", "Grep", "Glob", "Skill", "ToolSearch"] {
+            assert!(
+                restricted.iter().any(|registered| registered == kept),
+                "`{kept}` must survive a denylist-only policy: {restricted:?}"
+            );
+        }
+    }
+
+    /// Build a manager with explicit host composition, optionally registering a
+    /// host-backed delegate sink, and read back the provider-visible tool names.
+    async fn tool_names_with_composition(
+        install_embedded: bool,
+        delegate: Option<Arc<dyn crate::factory::delegate::HostDelegateSink>>,
+    ) -> Vec<String> {
+        let mut config = make_test_config();
+        config.install_embedded_agent_execution = install_embedded;
+        let agent = NomiAgentManager::new(
+            "conv-delegate-composition".into(),
+            "/project".into(),
+            config,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        if let Some(sink) = delegate {
+            agent.register_delegate_sink(sink).await;
+        }
+        agent.engine.lock().await.tool_names()
+    }
+
+    struct StubDelegateSink;
+
+    #[async_trait::async_trait]
+    impl crate::factory::delegate::HostDelegateSink for StubDelegateSink {
+        async fn plan(
+            &self,
+            _goal: &str,
+        ) -> Result<nomifun_common::AgentExecutionReceipt, String> {
+            Err("stub sink never plans".to_owned())
+        }
+    }
+
+    /// The two halves of the Store delegate composition must be switchable
+    /// independently, and the host-backed one must occupy the same tool name.
+    ///
+    /// This is the guard for the pair `--no-embedded-agent-execution` + a late
+    /// provider install: turning the embedded deployment off without the provider
+    /// would leave the session with no delegate at all, and keeping both would let
+    /// the model pick the non-durable one.
+    #[tokio::test]
+    async fn host_composition_switches_the_delegate_deployment() {
+        // 1. Default composition: the embedded (synchronous, parallel-only) one.
+        let embedded = tool_names_with_composition(true, None).await;
+        assert!(
+            embedded.iter().any(|name| name == "nomi_delegate"),
+            "the embedded deployment is registered by default: {embedded:?}"
+        );
+
+        // 2. A host that owns a durable facade turns it off: no delegate at all,
+        //    until the provider is installed.
+        let switched_off = tool_names_with_composition(false, None).await;
+        assert!(
+            !switched_off.iter().any(|name| name == "nomi_delegate"),
+            "the embedded deployment must be gone: {switched_off:?}"
+        );
+
+        // 3. ...and installing the provider puts the host-backed one back under the
+        //    same name, so the model sees one contract either way.
+        let host_backed =
+            tool_names_with_composition(false, Some(Arc::new(StubDelegateSink))).await;
+        assert!(
+            host_backed.iter().any(|name| name == "nomi_delegate"),
+            "the host-backed deployment must occupy the same tool name: {host_backed:?}"
+        );
+    }
+
+    /// A5: when every layer constrains and they disagree, the intersection is
+    /// empty — which `builtin_allowlist` cannot express (empty there means
+    /// "unrestricted"), so the manager must ask for an explicit deny-all.
+    #[tokio::test]
+    async fn incompatible_allowlist_layers_deny_everything() {        use nomifun_api_types::NomiToolPolicy;
+
+        let names = tool_names_for(
+            NomiToolPolicy {
+                enabled: vec!["Grep".into()],
+                ..NomiToolPolicy::default()
+            },
+            vec!["Read".into()],
+        )
+        .await;
+
+        assert!(
+            names.is_empty(),
+            "an empty intersection must deny every tool (not fall back to unrestricted): {names:?}"
+        );
     }
 
     struct ScriptedProvider {

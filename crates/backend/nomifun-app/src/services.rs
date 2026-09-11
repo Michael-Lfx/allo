@@ -1176,6 +1176,13 @@ pub struct AppServices {
     /// Explicit agent-store config path (or `None` in tests / when default
     /// default-marketplace auto-registration is disabled).
     pub agent_store_config_path: Option<PathBuf>,
+    /// Host-owned global tool policy, resolved **once at startup** from the
+    /// agent-store config file's `[tools]` table (`20-tool-injection-policy.zh.md`).
+    /// Per the file's own contract this is a launch-time policy: a later
+    /// `config/set` write takes effect on the next start, exactly like
+    /// `[memory].distill_enabled`. Every host that does not opt in carries
+    /// [`nomifun_api_types::NomiToolPolicy::default`], which constrains nothing.
+    pub tool_policy: nomifun_api_types::NomiToolPolicy,
     pub runtime_capabilities: RuntimeCapabilities,
     /// Authentication policy (single source of truth, replaces `local: bool`).
     pub auth_policy: AuthPolicy,
@@ -1262,6 +1269,13 @@ pub struct AppServices {
     #[cfg(feature = "browser-use")]
     _browser_lane_provider_slot:
         nomifun_ai_agent::BrowserLaneClientProviderSlot,
+    /// Late-wired host-backed `nomi_delegate` provider, shared with the already
+    /// built Agent factory. The Agent Execution facade does not exist yet when
+    /// the factory is built, so the composition root installs this afterwards
+    /// (`router::state::build_agent_execution_engine`). A host that never
+    /// installs one simply exposes no host-backed delegate.
+    pub delegate_sink_provider_slot:
+        nomifun_ai_agent::factory::delegate::DelegateSinkProviderSlot,
     /// Keeps the authenticated ACP browser loopback proxy alive. Its issuer is
     /// process-private; child runtimes receive only scoped capabilities.
     #[cfg(feature = "browser-use")]
@@ -1537,6 +1551,31 @@ impl std::error::Error for RetainedStartupCleanupError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.error.source()
     }
+}
+
+/// Resolve this host's global tool policy from the agent-store config file.
+///
+/// Two deliberate properties, both load-bearing:
+///
+/// - **Opt-in, not file-presence-driven.** `adopt` is a host decision
+///   (`--adopt-store-tool-policy`, set only by `apps/agent-store`), so the
+///   desktop and web hosts — which read the same file for providers and
+///   marketplaces — never let it narrow their sessions.
+/// - **Fail-open to the permissive default.** A missing or unparseable file, or
+///   no `[tools]` table, yields [`NomiToolPolicy::default`], which constrains
+///   nothing. A broken hand-edit must not be able to strip a host's tool surface.
+///
+/// Kept pure so the rule above is testable without booting a database.
+fn resolve_host_tool_policy(
+    adopt: bool,
+    path: Option<&std::path::Path>,
+) -> nomifun_api_types::NomiToolPolicy {
+    if !adopt {
+        return nomifun_api_types::NomiToolPolicy::default();
+    }
+    path.and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok)
+        .map(|stored| stored.tool_policy())
+        .unwrap_or_default()
 }
 
 impl AppServices {
@@ -2862,6 +2901,12 @@ impl AppServices {
         let browser_lane_provider_slot =
             nomifun_ai_agent::BrowserLaneClientProviderSlot::new();
 
+        // Host-backed `nomi_delegate`: created here because the Agent factory
+        // below is its first consumer, installed by
+        // `router::state::build_agent_execution_engine` once the facade exists.
+        let delegate_sink_provider_slot =
+            nomifun_ai_agent::factory::delegate::DelegateSinkProviderSlot::new();
+
         // SSH remote sessions: ONE process-level connection pool, built here
         // because the agent factory below is its first consumer and the host-book
         // routes plus the conversation-delete cascade must receive this very
@@ -2945,7 +2990,42 @@ impl AppServices {
             nomifun_ai_agent::ExtractCoordinatorBinding::LocalDefault,
         );
 
+        // Host-owned tool policy, read once at startup from the same agent-store
+        // config file (`[tools]`), mirroring `[memory]`. Only the dedicated
+        // Store host opts in: the desktop and web hosts read the same file for
+        // providers/marketplaces, and adopting its tool policy there would
+        // silently narrow their sessions too.
+        let tool_policy = resolve_host_tool_policy(
+            config.adopt_store_tool_policy,
+            config.agent_store_config_path.as_deref(),
+        );
+        if config.adopt_store_tool_policy {
+            // Syntactic problems are host-level and knowable now, so report them
+            // once here instead of on every session build. Whether an entry
+            // matches a *registered* tool depends on the session's wiring and is
+            // reported by the registry at bootstrap.
+            for warning in tool_policy.syntax_warnings() {
+                tracing::warn!(target: "agent_store_tools", "{warning}");
+            }
+            tracing::info!(
+                target: "agent_store_tools",
+                enabled = tool_policy.enabled.len(),
+                disabled = tool_policy.disabled.len(),
+                unrestricted = tool_policy.is_unrestricted(),
+                "agent-store [tools] policy adopted for this host"
+            );
+        }
+
         let factory = build_agent_factory(AgentFactoryDeps {
+            // Cloned: the same policy is kept on `AppServices` so the host's
+            // resolved policy is inspectable (doctor/logs) without rebuilding it.
+            tool_policy: tool_policy.clone(),
+            // Host composition: the desktop and web hosts install the embedded
+            // (synchronous) deployment; a host that owns the durable execution
+            // facade sets `--no-embedded-agent-execution`, so its sessions expose
+            // that facade instead (see `apps/agent-store`).
+            embedded_agent_execution: config.install_embedded_agent_execution,
+            delegate_sink_provider: Some(delegate_sink_provider_slot.clone()),
             authoritative_user_id: authoritative_user_id.clone(),
             search_provider,
             extract_coordinator,
@@ -3206,6 +3286,8 @@ impl AppServices {
             work_dir,
             work_dir_is_cli_override,
             agent_store_config_path: config.agent_store_config_path.clone(),
+            tool_policy,
+            delegate_sink_provider_slot,
             runtime_capabilities: capabilities.runtime_capabilities,
             auth_policy,
             local_trust_secret,
@@ -3528,8 +3610,7 @@ fn rewrite_legacy_speech_preference(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    #[cfg(feature = "browser-use")]
+    use std::sync::atomic::{AtomicUsize, Ordering};    #[cfg(feature = "browser-use")]
     use std::sync::atomic::AtomicBool;
     #[cfg(feature = "browser-use")]
     use std::time::Duration;
@@ -3548,6 +3629,55 @@ mod tests {
     };
     #[cfg(feature = "browser-use")]
     use tokio::sync::{Notify, Semaphore};
+
+    /// The desktop/web hosts share `~/.agent-store/config.toml` with the Store
+    /// host for providers and marketplaces. A `[tools]` table in that file must
+    /// therefore not narrow *their* sessions: only the host that opted in
+    /// (`apps/agent-store`) adopts it.
+    #[test]
+    fn tool_policy_is_adopted_only_by_the_host_that_opts_in() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[tools]\ndisabled = [\"remember\"]\ncomputer = false\n\n[tools.domains]\ncron = false\n",
+        )
+        .unwrap();
+
+        // Not opted in: the file is readable and does contain `[tools]`, but the
+        // host ignores it.
+        let ignored = resolve_host_tool_policy(false, Some(&path));
+        assert!(ignored.is_unrestricted(), "{ignored:?}");
+
+        // Opted in: the policy is adopted.
+        let adopted = resolve_host_tool_policy(true, Some(&path));
+        assert_eq!(adopted.disabled, vec!["remember".to_owned()]);
+        assert!(!adopted.computer);
+        assert!(!adopted.domains.cron);
+        assert!(adopted.domains.meeting, "undeclared switches stay on");
+        assert!(adopted.web, "undeclared switches stay on");
+    }
+
+    /// A broken or absent file must fall back to the permissive default rather
+    /// than stripping the host's tool surface (fail-open by design).
+    #[test]
+    fn tool_policy_fails_open_when_the_file_is_unusable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("absent.toml");
+        assert!(resolve_host_tool_policy(true, Some(&missing)).is_unrestricted());
+
+        let broken = dir.path().join("broken.toml");
+        std::fs::write(&broken, "not = = toml\n").unwrap();
+        assert!(resolve_host_tool_policy(true, Some(&broken)).is_unrestricted());
+
+        // No path at all (tests / hosts without the convention).
+        assert!(resolve_host_tool_policy(true, None).is_unrestricted());
+
+        // A file with no `[tools]` table is the pre-policy shape.
+        let plain = dir.path().join("plain.toml");
+        std::fs::write(&plain, "default_model = \"opencode/mimo\"\n").unwrap();
+        assert!(resolve_host_tool_policy(true, Some(&plain)).is_unrestricted());
+    }
 
     #[cfg(feature = "browser-use")]
     #[derive(Default)]

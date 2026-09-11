@@ -119,6 +119,28 @@ pub struct Cli {
     #[arg(long)]
     pub agent_store_config: Option<PathBuf>,
 
+    /// Adopt the agent-store config file's `[tools]` table as this host's
+    /// global tool policy (`20-tool-injection-policy.zh.md`).
+    ///
+    /// Deliberately **not** the default, and not a function of the config file
+    /// existing: the desktop and web hosts read the same
+    /// `~/.agent-store/config.toml` for providers and marketplaces, so adopting
+    /// its tool policy there would silently narrow *their* sessions too. Only
+    /// `apps/agent-store` (the dedicated Store host) turns this on.
+    #[arg(long, hide = true)]
+    pub adopt_store_tool_policy: bool,
+
+    /// Do **not** install the embedded (synchronous, parallel-only) Agent
+    /// execution deployment for this host's Nomi sessions.
+    ///
+    /// Set only by a host that owns a durable Agent Execution facade of its own
+    /// (`apps/agent-store`), which must expose that facade to its sessions
+    /// instead (`16` §7 决策 3). Host composition, never user configuration —
+    /// the same posture `check-agent-vocabulary.mjs` enforces for the config file.
+    /// Default `false`, i.e. every existing host keeps the embedded deployment.
+    #[arg(long, hide = true)]
+    pub no_embedded_agent_execution: bool,
+
     /// Directory for log files. Defaults to {data-dir}/logs/.
     #[arg(long)]
     pub log_dir: Option<PathBuf>,

@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use nomifun_api_types::NomiToolPolicy;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -77,6 +78,28 @@ pub struct AgentStoreConfig {
     /// ```
     #[serde(default)]
     pub import: Option<AgentStoreImport>,
+    /// `[tools]` — the host's global tool policy for every Nomi session it
+    /// builds (`20-tool-injection-policy.zh.md`). **Only the `agent-store` host
+    /// consumes this table**; the desktop and web hosts read the same file for
+    /// providers/marketplaces but never adopt the tool policy (see
+    /// `AppConfig::adopt_store_tool_policy`).
+    ///
+    /// ```toml
+    /// [tools]
+    /// enabled  = []                             # non-empty = only these tools
+    /// disabled = ["remember", "mcp__notion__*"] # subtracted after `enabled`
+    /// computer = false
+    ///
+    /// [tools.domains]
+    /// cron = false
+    /// ```
+    ///
+    /// Absent table = the permissive default (every family on, both lists
+    /// empty), i.e. exactly the behaviour before this table existed. The value
+    /// is the same typed policy the agent factory consumes, so the file shape
+    /// and the runtime shape cannot drift apart.
+    #[serde(default)]
+    pub tools: Option<NomiToolPolicy>,
     /// `[credentials]` — values for `secret:NAME` references (`17` §6 / `21`
     /// D5=C).
     ///
@@ -224,6 +247,15 @@ impl AgentStoreConfig {
         toml::from_str(source).map_err(|error| error.to_string())
     }
 
+    /// The host's tool policy, defaults filled in.
+    ///
+    /// A host that declares no `[tools]` table (or no config file at all) gets
+    /// [`NomiToolPolicy::default`], which constrains nothing — so adopting the
+    /// policy is safe even on a host that only ever wrote `default_model`.
+    pub fn tool_policy(&self) -> NomiToolPolicy {
+        self.tools.clone().unwrap_or_default()
+    }
+
     /// `[import].strict_dependencies` (`16` R23 / `17` §7).
     ///
     /// The registry passes this into `ExtensionRegistry::with_strict_dependencies`.
@@ -322,6 +354,88 @@ impl AgentStoreConfig {
         // `[memory]` exists without the key: insert it as the table's last key,
         // so the table's own header comment and its other keys stay put.
         document["memory"]["distill_enabled"] = toml_edit::value(enabled);
+        Ok(document.to_string())
+    }
+
+    /// Minimal-change rewrite of the whitelisted `[tools] enabled` /
+    /// `[tools] disabled` lists.
+    ///
+    /// Same contract as [`Self::with_distill_enabled`]: only the named keys are
+    /// re-rendered, so every sibling key, comment and the rest of the file
+    /// survive byte-for-byte. `[tools]` is created (appended as a table, which
+    /// is the only lossless option) when the file has no such table.
+    ///
+    /// Both lists are canonicalised here (trimmed, deduplicated, sorted), so the
+    /// file and the read view always agree on ordering and no caller can write a
+    /// non-canonical list.
+    pub fn with_tool_lists(
+        source: &str,
+        enabled: Option<&[String]>,
+        disabled: Option<&[String]>,
+    ) -> Result<String, String> {
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+        if enabled.is_none() && disabled.is_none() {
+            return Ok(document.to_string());
+        }
+        let enabled = enabled.map(canonical_patterns).transpose()?;
+        let disabled = disabled.map(canonical_patterns).transpose()?;
+        {
+            let table = ensure_table(&mut document, "tools", "[tools]")?;
+            if let Some(values) = enabled.as_deref() {
+                set_item_preserving_decor(table, "enabled", toml_edit::value(string_array(values)));
+            }
+            if let Some(values) = disabled.as_deref() {
+                set_item_preserving_decor(table, "disabled", toml_edit::value(string_array(values)));
+            }
+        }
+        Ok(document.to_string())
+    }
+
+    /// Minimal-change rewrite of one `[tools]` boolean switch.
+    ///
+    /// `key` must be a declared switch; anything else is refused rather than
+    /// written, so the write face cannot grow beyond its whitelist.
+    pub fn with_tool_switch(source: &str, key: &str, value: bool) -> Result<String, String> {
+        if !TOOL_SWITCH_KEYS.contains(&key) {
+            return Err(format!(
+                "`{key}` is not a [tools] switch (expected one of {})",
+                TOOL_SWITCH_KEYS.join(", ")
+            ));
+        }
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+        {
+            let table = ensure_table(&mut document, "tools", "[tools]")?;
+            set_item_preserving_decor(table, key, toml_edit::value(value));
+        }
+        Ok(document.to_string())
+    }
+
+    /// Minimal-change rewrite of one `[tools.domains]` boolean switch.
+    pub fn with_tool_domain(source: &str, key: &str, value: bool) -> Result<String, String> {
+        if !TOOL_DOMAIN_KEYS.contains(&key) {
+            return Err(format!(
+                "`{key}` is not a [tools.domains] switch (expected one of {})",
+                TOOL_DOMAIN_KEYS.join(", ")
+            ));
+        }
+        let mut document = source
+            .parse::<toml_edit::Document>()
+            .map_err(|error| format!("config.toml is not valid TOML: {error}"))?;
+        {
+            let table = ensure_table(&mut document, "tools", "[tools]")?;
+            if table.get("domains").is_none() {
+                table.insert("domains", toml_edit::Item::Table(toml_edit::Table::new()));
+            }
+            let domains = table
+                .get_mut("domains")
+                .and_then(toml_edit::Item::as_table_mut)
+                .ok_or_else(|| "[tools.domains] is not a table".to_owned())?;
+            set_item_preserving_decor(domains, key, toml_edit::value(value));
+        }
         Ok(document.to_string())
     }
 
@@ -441,6 +555,84 @@ impl AgentStoreConfig {
     }
 }
 
+/// The `[tools]` boolean switches, in a stable order (the `config/get` view and
+/// the write face agree on this list).
+const TOOL_SWITCH_KEYS: &[&str] = &["web", "computer", "browser", "plan", "lsp"];
+
+/// The `[tools.domains]` boolean switches, in a stable order.
+const TOOL_DOMAIN_KEYS: &[&str] = &[
+    "cron",
+    "meeting",
+    "knowledge",
+    "learning",
+    "media",
+    "companion",
+    "requirement",
+    "goal",
+];
+
+/// Borrow `[key]`, creating it as an empty table when absent.
+///
+/// A non-table value under the key (`tools = 1`) is a refusal rather than a
+/// silent overwrite of the user's file.
+fn ensure_table<'a>(
+    document: &'a mut toml_edit::Document,
+    key: &str,
+    what: &str,
+) -> Result<&'a mut toml_edit::Table, String> {
+    if document.get(key).is_none() {
+        document[key] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    document[key]
+        .as_table_mut()
+        .ok_or_else(|| format!("{what} is not a table"))
+}
+
+/// Replace `key` with `item` while keeping the key's own decor (the comments
+/// written above it) and the value's decor (indentation and trailing comment).
+///
+/// Assigning through the index is load-bearing: `Table::insert` would rebuild
+/// the `Key` from a plain string and silently drop the comment above the key.
+fn set_item_preserving_decor(table: &mut toml_edit::Table, key: &str, mut item: toml_edit::Item) {
+    if let Some(existing) = table.get(key)
+        && let (Some(decor), Some(rendered)) =
+            (existing.as_value().map(|value| value.decor().clone()), item.as_value_mut())
+    {
+        *rendered.decor_mut() = decor;
+    }
+    table[key] = item;
+}
+
+fn string_array(values: &[String]) -> toml_edit::Array {
+    let mut array = toml_edit::Array::new();
+    for value in values {
+        array.push(value.as_str());
+    }
+    array
+}
+
+/// Canonicalise a written pattern list: trimmed, empty entries dropped,
+/// deduplicated and sorted, so the file and the read view agree.
+///
+/// Control characters are refused: they cannot appear in a tool name and would
+/// only ever make the file unreadable.
+fn canonical_patterns(values: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::with_capacity(values.len());
+    for raw in values {
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if value.chars().any(char::is_control) {
+            return Err("tool patterns must not contain control characters".to_owned());
+        }
+        out.push(value.to_owned());
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 /// The **write whitelist** for `~/.agent-store/config.toml` (`config/set`).
 ///
 /// The whitelist *is* the security boundary, not a convenience list:
@@ -462,6 +654,125 @@ pub struct AgentStoreConfigPatch {
     /// `[memory]` — the host's post-answer distillation switch.
     #[serde(default)]
     pub memory: Option<AgentStoreMemoryPatch>,
+    /// `[tools]` — the host's global tool policy. Naming this table means the
+    /// caller may only ever **narrow** the tool surface: there is no field here
+    /// that turns a family back on against the engine's own configuration.
+    #[serde(default)]
+    pub tools: Option<AgentStoreToolsPatch>,
+}
+
+/// Whitelisted `[tools]` subset of a `config/set` patch.
+///
+/// Every field is `Option` so a patch rewrites exactly the keys it names
+/// (宁缺毋滥): an absent key leaves the file untouched, which is what lets two
+/// independent callers patch different switches without clobbering each other.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentStoreToolsPatch {
+    #[serde(default)]
+    pub enabled: Option<Vec<String>>,
+    #[serde(default)]
+    pub disabled: Option<Vec<String>>,
+    #[serde(default)]
+    pub web: Option<bool>,
+    #[serde(default)]
+    pub computer: Option<bool>,
+    #[serde(default)]
+    pub browser: Option<bool>,
+    #[serde(default)]
+    pub plan: Option<bool>,
+    #[serde(default)]
+    pub lsp: Option<bool>,
+    #[serde(default)]
+    pub domains: Option<AgentStoreToolDomainsPatch>,
+}
+
+/// Whitelisted `[tools.domains]` subset of a `config/set` patch.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentStoreToolDomainsPatch {
+    #[serde(default)]
+    pub cron: Option<bool>,
+    #[serde(default)]
+    pub meeting: Option<bool>,
+    #[serde(default)]
+    pub knowledge: Option<bool>,
+    #[serde(default)]
+    pub learning: Option<bool>,
+    #[serde(default)]
+    pub media: Option<bool>,
+    #[serde(default)]
+    pub companion: Option<bool>,
+    #[serde(default)]
+    pub requirement: Option<bool>,
+    #[serde(default)]
+    pub goal: Option<bool>,
+}
+
+impl AgentStoreToolsPatch {
+    /// True when the request named at least one `[tools]` key.
+    pub fn names_any_key(&self) -> bool {
+        self.enabled.is_some()
+            || self.disabled.is_some()
+            || self.switches().next().is_some()
+            || self.domain_switches().next().is_some()
+    }
+
+    /// The named `[tools]` boolean switches, in the canonical order.
+    fn switches(&self) -> impl Iterator<Item = (&'static str, bool)> {
+        TOOL_SWITCH_KEYS.iter().filter_map(|key| {
+            let value = match *key {
+                "web" => self.web,
+                "computer" => self.computer,
+                "browser" => self.browser,
+                "plan" => self.plan,
+                "lsp" => self.lsp,
+                _ => None,
+            };
+            value.map(|value| (*key, value))
+        })
+    }
+
+    /// The named `[tools.domains]` boolean switches, in the canonical order.
+    fn domain_switches(&self) -> impl Iterator<Item = (&'static str, bool)> {
+        let domains = self.domains.as_ref();
+        TOOL_DOMAIN_KEYS.iter().filter_map(move |key| {
+            let value = match *key {
+                "cron" => domains?.cron,
+                "meeting" => domains?.meeting,
+                "knowledge" => domains?.knowledge,
+                "learning" => domains?.learning,
+                "media" => domains?.media,
+                "companion" => domains?.companion,
+                "requirement" => domains?.requirement,
+                "goal" => domains?.goal,
+                _ => None,
+            };
+            value.map(|value| (*key, value))
+        })
+    }
+
+    /// Apply this patch to `source`, one minimal-change edit per named key.
+    ///
+    /// Nothing is written until the caller persists the result, so an error on a
+    /// later key cannot leave a half-written file behind.
+    pub fn apply_edits(&self, source: &str) -> Result<String, String> {
+        let mut edited = source.to_owned();
+        if self.enabled.is_some() || self.disabled.is_some() {
+            edited = AgentStoreConfig::with_tool_lists(
+                &edited,
+                self.enabled.as_deref(),
+                self.disabled.as_deref(),
+            )?;
+        }
+        for (key, value) in self.switches() {
+            edited = AgentStoreConfig::with_tool_switch(&edited, key, value)?;
+        }
+        for (key, value) in self.domain_switches() {
+            edited = AgentStoreConfig::with_tool_domain(&edited, key, value)?;
+        }
+        Ok(edited)
+    }
 }
 
 /// Whitelisted `[memory]` subset of a `config/set` patch: the host-side session
@@ -485,6 +796,10 @@ impl AgentStoreConfigPatch {
                 .memory
                 .as_ref()
                 .is_some_and(|memory| memory.distill_enabled.is_some())
+            || self
+                .tools
+                .as_ref()
+                .is_some_and(AgentStoreToolsPatch::names_any_key)
     }
 }
 
@@ -671,6 +986,7 @@ model = "mimo-v2.5-free"
         let patch = AgentStoreConfigPatch {
             default_model: Some("  opencode/mimo-v2.5-free  ".to_owned()),
             memory: None,
+            tools: None,
         };
         assert_eq!(
             patch.validated_default_model(&config).unwrap(),
@@ -682,6 +998,7 @@ model = "mimo-v2.5-free"
         let patch = AgentStoreConfigPatch {
             default_model: Some("opencode/never-heard-of-it".to_owned()),
             memory: None,
+            tools: None,
         };
         assert_eq!(
             patch.validated_default_model(&config).unwrap(),
@@ -697,15 +1014,23 @@ model = "mimo-v2.5-free"
             "ghost/model",
             "opencode/a\nb",
         ] {
-            let patch = AgentStoreConfigPatch { default_model: Some(bad.to_owned()), memory: None };
+            let patch = AgentStoreConfigPatch {
+                default_model: Some(bad.to_owned()),
+                memory: None,
+                tools: None,
+            };
             assert!(patch.validated_default_model(&config).is_err(), "{bad:?} must be refused");
         }
 
         // No writable field at all: refused, never a silent no-op.
         assert!(
-            AgentStoreConfigPatch { default_model: None, memory: None }
-                .validated_default_model(&config)
-                .is_err()
+            AgentStoreConfigPatch {
+                default_model: None,
+                memory: None,
+                tools: None,
+            }
+            .validated_default_model(&config)
+            .is_err()
         );
     }
 
@@ -914,6 +1239,189 @@ base_url = "https://example.test/v1"
             Some("s3cr3t")
         );
         assert_eq!(config.credentials.get("OTHER").map(String::as_str), Some("v"));
+    }
+
+    const TOOLS_SAMPLE: &str = r#"# host settings
+[tools]
+# the denylist is the only way to drop an always-registered tool
+disabled = ["remember"]  # trailing note
+computer = false
+
+[tools.domains]
+cron = false
+meeting = false
+
+[providers.opencode]
+type = "openai"
+"#;
+
+    #[test]
+    fn parses_tools_table_into_the_typed_policy() {
+        let config = AgentStoreConfig::load_from_str(TOOLS_SAMPLE);
+        let policy = config.tool_policy();
+
+        assert_eq!(policy.disabled, vec!["remember".to_owned()]);
+        assert!(!policy.computer, "declared switch must be read");
+        assert!(!policy.domains.cron && !policy.domains.meeting);
+        // Undeclared switches stay on: `[tools]` only ever narrows.
+        assert!(policy.web && policy.browser && policy.plan && policy.lsp);
+        assert!(policy.domains.knowledge && policy.domains.goal);
+        assert!(policy.enabled.is_empty());
+    }
+
+    #[test]
+    fn absent_tools_table_is_the_unrestricted_policy() {
+        // The pre-`[tools]` file shape must stay byte-for-byte equivalent.
+        let config = AgentStoreConfig::load_from_str(SAMPLE);
+        assert!(config.tools.is_none());
+        assert!(config.tool_policy().is_unrestricted());
+
+        let empty = AgentStoreConfig::load_from_str("");
+        assert!(empty.tools.is_none());
+        assert!(empty.tool_policy().is_unrestricted());
+    }
+
+    #[test]
+    fn with_tool_lists_touches_only_the_named_keys() {
+        // Deliberately unsorted input: the writer canonicalises it.
+        let edited = AgentStoreConfig::with_tool_lists(
+            TOOLS_SAMPLE,
+            None,
+            Some(&["update_plan".to_owned(), "remember".to_owned()]),
+        )
+        .expect("edit must succeed");
+
+        // The list is replaced (not appended to) and every comment survives —
+        // including the one written *above* the key, which owns the key's decor.
+        assert!(edited.contains("# host settings"), "{edited}");
+        assert!(edited.contains("# the denylist is the only way"), "{edited}");
+        assert!(edited.contains("# trailing note"), "{edited}");
+        assert!(edited.contains("update_plan"), "{edited}");
+        // Untouched siblings keep their values.
+        assert!(edited.contains("computer = false"), "{edited}");
+        assert!(edited.contains("cron = false"), "{edited}");
+        assert!(edited.contains("[providers.opencode]"), "{edited}");
+        // And the result still parses into the canonical policy.
+        let reparsed = AgentStoreConfig::load_from_str(&edited);
+        assert_eq!(
+            reparsed.tool_policy().disabled,
+            vec!["remember".to_owned(), "update_plan".to_owned()]
+        );
+    }
+
+    #[test]
+    fn with_tool_switch_creates_the_table_when_absent() {
+        let edited = AgentStoreConfig::with_tool_switch(SAMPLE, "lsp", false)
+            .expect("edit must succeed");
+        let reparsed = AgentStoreConfig::load_from_str(&edited);
+        assert!(!reparsed.tool_policy().lsp);
+        // Existing providers/models are untouched by the inserted table.
+        assert_eq!(
+            reparsed.default_selection(),
+            Some(("opencode".to_owned(), "mimo-v2.5-free".to_owned()))
+        );
+    }
+
+    #[test]
+    fn with_tool_domain_creates_the_nested_table_when_absent() {
+        let edited = AgentStoreConfig::with_tool_domain(SAMPLE, "media", false)
+            .expect("edit must succeed");
+        let reparsed = AgentStoreConfig::load_from_str(&edited);
+        assert!(!reparsed.tool_policy().domains.media);
+        assert!(reparsed.tool_policy().domains.cron);
+    }
+
+    #[test]
+    fn tool_writers_refuse_keys_outside_the_whitelist() {
+        assert!(AgentStoreConfig::with_tool_switch(SAMPLE, "credentials", false).is_err());
+        assert!(AgentStoreConfig::with_tool_domain(SAMPLE, "unknown", false).is_err());
+        // A non-table value under the key is a refusal, never an overwrite.
+        assert!(AgentStoreConfig::with_tool_switch("tools = 3\n", "web", false).is_err());
+        // Unparseable input stays a refusal.
+        assert!(AgentStoreConfig::with_tool_switch("not = = toml\n", "web", false).is_err());
+    }
+
+    #[test]
+    fn tools_patch_names_a_key_only_when_one_is_actually_present() {
+        let empty: AgentStoreConfigPatch = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!empty.names_any_key());
+
+        let empty_tools: AgentStoreConfigPatch =
+            serde_json::from_value(serde_json::json!({ "tools": {} })).unwrap();
+        assert!(
+            !empty_tools.names_any_key(),
+            "an empty [tools] table names nothing and must be refused like an empty [memory]"
+        );
+
+        let switch: AgentStoreConfigPatch =
+            serde_json::from_value(serde_json::json!({ "tools": { "computer": false } })).unwrap();
+        assert!(switch.names_any_key());
+
+        let domain: AgentStoreConfigPatch = serde_json::from_value(
+            serde_json::json!({ "tools": { "domains": { "cron": false } } }),
+        )
+        .unwrap();
+        assert!(domain.names_any_key());
+
+        let lists: AgentStoreConfigPatch = serde_json::from_value(
+            serde_json::json!({ "tools": { "enabled": [], "disabled": ["remember"] } }),
+        )
+        .unwrap();
+        assert!(lists.names_any_key());
+
+        // The write whitelist is the security boundary: an unknown key inside
+        // `[tools]` is a hard refusal, not a silently dropped field.
+        assert!(serde_json::from_value::<AgentStoreConfigPatch>(
+            serde_json::json!({ "tools": { "force_enable_everything": true } })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<AgentStoreConfigPatch>(
+            serde_json::json!({ "tools": { "domains": { "bogus": false } } })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn tools_patch_apply_edits_canonicalises_lists_and_applies_switches() {
+        let patch: AgentStoreConfigPatch = serde_json::from_value(serde_json::json!({
+            "tools": {
+                "disabled": [" update_plan ", "remember", "remember", ""],
+                "computer": false,
+                "domains": { "media": false }
+            }
+        }))
+        .unwrap();
+
+        let edited = patch
+            .tools
+            .as_ref()
+            .unwrap()
+            .apply_edits(TOOLS_SAMPLE)
+            .expect("edit must succeed");
+        let reparsed = AgentStoreConfig::load_from_str(&edited);
+        let policy = reparsed.tool_policy();
+
+        // Trimmed, deduplicated, sorted — and an explicit empty entry dropped.
+        assert_eq!(policy.disabled, vec!["remember", "update_plan"]);
+        assert!(!policy.computer);
+        assert!(!policy.domains.media);
+        assert!(!policy.domains.cron, "an unrelated domain edit must not reset siblings");
+    }
+
+    #[test]
+    fn tools_patch_refuses_control_characters_without_writing_anything() {
+        let patch: AgentStoreConfigPatch = serde_json::from_value(serde_json::json!({
+            "tools": { "disabled": ["bad\u{7}name"] }
+        }))
+        .unwrap();
+        assert!(
+            patch
+                .tools
+                .as_ref()
+                .unwrap()
+                .apply_edits(TOOLS_SAMPLE)
+                .is_err()
+        );
     }
 
     impl AgentStoreConfig {

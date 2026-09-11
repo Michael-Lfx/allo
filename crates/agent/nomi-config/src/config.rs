@@ -396,6 +396,22 @@ pub struct ToolsConfig {
     /// 空（默认）= 不限制。
     #[serde(default)]
     pub builtin_allowlist: Vec<String>,
+    /// 非空时：bootstrap 在 `builtin_allowlist` 之后**再减掉**命中的工具。
+    ///
+    /// 与白名单正交的减项：白名单是为「极小集合」设计的（空 = 全放行），表达不了
+    /// 「保留大多数、去掉少数」；且它会连带滤掉 MCP 代理工具。匹配规则见
+    /// `nomi_tools::registry`：内置名大小写敏感精确匹配，`mcp__` 前缀按 glob
+    /// （`mcp__<server>__*` 可整服务器关闭）。空（默认）= 不排除。
+    #[serde(default)]
+    pub builtin_denylist: Vec<String>,
+    /// **内部传输字段，不是用户配置**（`serde(skip)`，永远不会从文件读取）。
+    ///
+    /// 表示「白名单各层求交后为空」——即每一层都做了限制但彼此不相容。这件事
+    /// `builtin_allowlist` 本身表达不了：在那里空列表的含义是「不限制」，所以
+    /// 直接传空会**从最严变成最松**。manager 只在确实发生这种求交时置位，
+    /// bootstrap 据此显式 deny-all（`ToolRegistry::clear`）。
+    #[serde(skip)]
+    pub builtin_deny_all: bool,
 }
 
 /// One language-server entry for the `Lsp` tool (§3.3).
@@ -425,6 +441,8 @@ impl Default for ToolsConfig {
             delegation_token_budget: None,
             bash_sandbox: false,
             builtin_allowlist: Vec::new(),
+            builtin_denylist: Vec::new(),
+            builtin_deny_all: false,
         }
     }
 }
@@ -1271,6 +1289,15 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
             } else {
                 global.tools.builtin_allowlist
             },
+            // 减项取**并集**（更严者胜）：任一层列出的排除项都生效，项目层无法
+            // 通过"覆盖"把全局的排除撤掉。
+            builtin_denylist: [
+                global.tools.builtin_denylist,
+                project.tools.builtin_denylist,
+            ]
+            .concat(),
+            // 内部传输字段：不经用户配置，由 manager 在会话构建时置位。
+            builtin_deny_all: false,
         }
     } else {
         ToolsConfig {
@@ -1299,6 +1326,15 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
             } else {
                 global.tools.builtin_allowlist
             },
+            // 减项取**并集**（更严者胜）：任一层列出的排除项都生效，项目层无法
+            // 通过"覆盖"把全局的排除撤掉。
+            builtin_denylist: [
+                global.tools.builtin_denylist,
+                project.tools.builtin_denylist,
+            ]
+            .concat(),
+            // 内部传输字段：不经用户配置，由 manager 在会话构建时置位。
+            builtin_deny_all: false,
         }
     };
 
@@ -2823,9 +2859,40 @@ enabled = false
         );
     }
 
+    /// The allowlist keeps its historical "project overrides global" rule, but
+    /// the denylist is a *subtraction*: it unions, so a project layer can add
+    /// exclusions but can never lift one the global layer declared.
     #[test]
-    fn merge_file_cache_disabled_overrides_global() {
+    fn merge_unions_the_tool_denylist_and_never_lifts_an_exclusion() {
         let global = ConfigFile {
+            tools: crate::config::ToolsConfig {
+                builtin_allowlist: vec!["Read".to_owned()],
+                builtin_denylist: vec!["remember".to_owned()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let project = ConfigFile {
+            tools: crate::config::ToolsConfig {
+                builtin_allowlist: vec!["Grep".to_owned()],
+                builtin_denylist: vec!["update_plan".to_owned(), "remember".to_owned()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged = merge_config_files(global, project);
+        // Project allowlist wins (unchanged historical rule).
+        assert_eq!(merged.tools.builtin_allowlist, vec!["Grep".to_owned()]);
+        // Denylists union, and the global exclusion survives a project layer.
+        assert!(merged.tools.builtin_denylist.contains(&"remember".to_owned()));
+        assert!(merged.tools.builtin_denylist.contains(&"update_plan".to_owned()));
+        // The internal deny-all marker is never produced by merging files.
+        assert!(!merged.tools.builtin_deny_all);
+    }
+
+    #[test]
+    fn merge_file_cache_disabled_overrides_global() {        let global = ConfigFile {
             file_cache: FileCacheConfig {
                 enabled: true,
                 ..Default::default()
@@ -2913,14 +2980,20 @@ max_tokens = 1234
     fn tools_config_contains_no_user_selectable_host_composition() {
         let t = ToolsConfig::default();
         assert!(t.builtin_allowlist.is_empty(), "默认不限制工具");
+        assert!(t.builtin_denylist.is_empty(), "默认不排除任何工具");
+        assert!(!t.builtin_deny_all, "默认不是 deny-all（那是 manager 的内部标记）");
         assert!(t.web.enabled, "默认启用 web 搜索/提取工具");
         let serialized = serde_json::to_string(&t).unwrap();
         assert!(!serialized.contains("delegation_execution"));
         assert!(!serialized.contains("in_process_delegation"));
         assert!(!serialized.contains("in_process_spawn"));
+        // `builtin_deny_all` 是内部传输字段：既不进文件也不进序列化，用户无法把它
+        // 当作「关掉一切」的开关写进 config.toml。
+        assert!(!serialized.contains("builtin_deny_all"));
         // serde 缺字段也回落默认（旧 config 文件零回归）。
         let de: ToolsConfig = serde_json::from_str("{}").unwrap();
         assert!(de.builtin_allowlist.is_empty());
+        assert!(de.builtin_denylist.is_empty());
         assert!(de.web.enabled);
     }
 

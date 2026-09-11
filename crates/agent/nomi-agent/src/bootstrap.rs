@@ -1138,11 +1138,42 @@ impl AgentBootstrap {
         // 工具（含 MCP 代理）。放在全部注册之后、引擎构造之前；registry 会同步
         // 实时 deferred catalog，后续动态注册也能被搜索。ToolSearch 与旧顺序一致，
         // 始终保留；空 = 不限制（默认）。
-        let mut allowed_tools = self.config.tools.builtin_allowlist.clone();
-        if !allowed_tools.is_empty() && !allowed_tools.iter().any(|name| name == "ToolSearch") {
-            allowed_tools.push("ToolSearch".to_owned());
+        if self.config.tools.builtin_deny_all {
+            // 「白名单各层求交后为空」由 manager 显式标记：这一步无法用
+            // `retain_named(&[])` 表达——空列表在那里是 no-op（= 不限制），
+            // 直接传空会把「最严」变成「最松」。
+            registry.clear();
+        } else {
+            let mut allowed_tools = self.config.tools.builtin_allowlist.clone();
+            if !allowed_tools.is_empty() && !allowed_tools.iter().any(|name| name == "ToolSearch") {
+                allowed_tools.push("ToolSearch".to_owned());
+            }
+            registry.retain_named(&allowed_tools);
         }
-        registry.retain_named(&allowed_tools);
+        // 宿主减项（`[tools].disabled` / 引擎 `builtin_denylist`）：在白名单之后
+        // 应用，并且是**持久**注册策略，因此上面注册的、以及 build 之后动态注册的
+        // （cron / meeting / 域 sink / media）都绕不过它。空 = 不排除。
+        registry.deny_named(&self.config.tools.builtin_denylist);
+        // 诊断：白名单条目匹配不到任何已注册工具 = 它在**裁**工具而不是选工具，
+        // 属真实缺陷，告警；减项的 no-match 多为正常（宿主级清单会覆盖本会话未接线
+        // 的域），只记 debug。作用域说明：此处覆盖 bootstrap 注册的全部工具
+        // （内置族 / MCP 代理 / Skill / ToolSearch 等）；由 `[tools].domains` 单独
+        // 管辖的域 sink 工具在 build 之后才注册，不在此判定范围内。
+        for pattern in registry.unmatched_allow_patterns() {
+            tracing::warn!(
+                target: "nomi_agent",
+                pattern = %pattern,
+                "[tools] allowlist entry matched no registered tool; it removes tools \
+                 instead of selecting them"
+            );
+        }
+        for pattern in registry.unmatched_deny_patterns() {
+            tracing::debug!(
+                target: "nomi_agent",
+                pattern = %pattern,
+                "[tools] denylist entry matched no tool registered by bootstrap"
+            );
+        }
 
         let mut engine = if let Some(session) = self.resume_session {
             AgentEngine::resume_with_provider(

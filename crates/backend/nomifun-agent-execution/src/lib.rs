@@ -30,5 +30,6 @@ pub use runtime_adapter::{
     AgentRunEvent, AgentRunPlan, AgentRunPlanAttempt, AgentRunPlanDependency, AgentRunPlanStep,
     AgentRunReceipt, AgentRunResult, AgentRunStatus, AgentRunSteerRequest,
     AgentRunView, AgentRuntimeAdapter, PresetSnapshot, PresetSnapshotInput, RuntimeAdapterError,
+    TeamRunReceipt,
 };
 pub use template_routes::agent_execution_template_routes;

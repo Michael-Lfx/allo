@@ -34,6 +34,20 @@ pub struct AppConfig {
     /// tests rely on that (an injected `None` keeps the store free of the
     /// host user's personal sources).
     pub agent_store_config_path: Option<PathBuf>,
+    /// Adopt that file's `[tools]` table as this host's global tool policy.
+    ///
+    /// `false` on every host except `apps/agent-store`: the desktop and web
+    /// hosts read the same file for providers/marketplaces, and a tool policy is
+    /// a property of the *deployment*, not of the file being readable.
+    pub adopt_store_tool_policy: bool,
+    /// Whether this host installs the **embedded** (synchronous, parallel-only)
+    /// Agent execution deployment for its Nomi sessions.
+    ///
+    /// `true` (the historical behaviour) everywhere except a host that owns a
+    /// durable Agent Execution facade of its own — `apps/agent-store` — because
+    /// such a host must expose that facade instead of a non-durable shell
+    /// (`16` §7 决策 3). Host composition: never user configuration.
+    pub install_embedded_agent_execution: bool,
 }
 
 impl AppConfig {
@@ -88,6 +102,8 @@ impl Default for AppConfig {
             auth_policy: AuthPolicy::Required,
             local_trust_secret: None,
             agent_store_config_path: None,
+            adopt_store_tool_policy: false,
+            install_embedded_agent_execution: true,
         }
     }
 }

@@ -1,6 +1,7 @@
 pub mod acp_assembler;
 #[cfg(feature = "browser-use")]
 pub mod browser_lane;
+pub mod delegate;
 pub mod provider_config;
 
 mod acp;
@@ -21,7 +22,8 @@ use futures_util::FutureExt;
 use nomi_agent::companion_tools::{CompanionMemorySink, CompanionSkillSink};
 use nomi_agent::requirement_tools::RequirementSink;
 use nomifun_api_types::{
-    BrowserMcpConfig, ComputerMcpConfig, GatewayMcpConfig, OpenMcpConfig, RequirementMcpConfig,
+    BrowserMcpConfig, ComputerMcpConfig, GatewayMcpConfig, NomiToolPolicy, OpenMcpConfig,
+    RequirementMcpConfig,
 };
 use nomifun_common::{AgentType, AppError, ExecutionAuthority};
 use nomifun_db::{
@@ -122,6 +124,30 @@ pub struct AgentFactoryDeps {
     pub search_provider: nomi_agent::SearchProviderBinding,
     /// Explicit host-owned extract composition. Default is local-only.
     pub extract_coordinator: nomi_agent::ExtractCoordinatorBinding,
+    /// Host-owned global tool policy (`20-tool-injection-policy.zh.md`).
+    ///
+    /// Process-owned configuration, exactly like the two bindings above: it is
+    /// never read from conversation `extra`, so no request can forge it, and
+    /// every field can only ever *narrow* the tool surface. The default
+    /// ([`NomiToolPolicy::default`]) constrains nothing, so a host that does not
+    /// adopt an agent-store `[tools]` table behaves exactly as before.
+    pub tool_policy: NomiToolPolicy,
+    /// Whether this host installs the **embedded** (synchronous, parallel-only)
+    /// Agent execution deployment for its Nomi sessions.
+    ///
+    /// Host composition, never user configuration — the same posture
+    /// `check-agent-vocabulary.mjs` enforces for the config file. A dedicated host
+    /// that owns a durable execution facade sets this `false` so its sessions
+    /// expose that facade instead of a non-durable shell
+    /// (`16` §7 决策 3: 不得用于 Team Runtime).
+    pub embedded_agent_execution: bool,
+    /// Late-wired provider for host-backed `nomi_delegate` sinks.
+    ///
+    /// `None` (or a slot that was never installed) means this host has no durable
+    /// execution to delegate to, so no such tool is registered. Installed by the
+    /// composition root once its Agent Execution facade exists — the factory is
+    /// built first (see [`delegate::DelegateSinkProviderSlot`]).
+    pub delegate_sink_provider: Option<delegate::DelegateSinkProviderSlot>,
     pub skill_manager: Arc<AcpSkillManager>,
     pub remote_agent_repo: Arc<dyn IRemoteAgentRepository>,
     pub provider_repo: Arc<dyn IProviderRepository>,

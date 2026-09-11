@@ -1,54 +1,96 @@
-# Agent Store 工具注入取舍（Tool Injection Policy）
+# Agent Store 工具注入策略（Tool Injection Policy）
 
-> 状态：设计规格（2026-09-10）；**未实施**，本文不修改任何代码
-> 前置：`00-architecture-decision.md`、`04-allo-runtime-adapter.md`、`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3
-> 口径：本文只回答"哪些工具进入 Store 会话、为什么、用哪种机制表达"；不定义公共协议，不替代测试总索引
+> 状态：设计规格 + 落地记录（2026-09-11 重构并实施；Step 1–7 已落地，逐批记录见 §9.1／§9.2／§9.2.1／§9.2.2；**未覆盖项**亦在各批登记）
+> 本次重构：① 表达层由「工厂硬编码 ceiling」改为「宿主策略文件 `~/.agent-store/config.toml [tools]` + 极薄会话求交」；② 补 §2「三份 config.toml 哪份对工具面生效」——这是全部取舍的前提；③ 逐项取舍表新增「表达层」列，区分「可配置」与「只能写在代码里」；④ 订正 5 处与代码不符的机制描述（见 §7.6 勘误表）；⑤ `[tools]` 的命名与匹配规则对齐参考实现 Kimi Code CLI（§7.8，含必须保留的差异）
+> 参考实现：Kimi Code CLI 配置文件 §`tools` —— <https://www.kimi.com/code/docs/kimi-code-cli/configuration/config-files.html#tools>（`enabled` / `disabled`、MCP glob、三条 no-match 告警、执行前复核）。对齐点与差异见 §7.8
+> 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-allo-runtime-adapter.md`、`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3／决策 5、`21-open-decisions.zh.md` D3
+> 口径：本文只回答「哪些工具进入 Store 会话、在哪一层表达、为什么」；不定义公共协议，不替代测试总索引
 > 术语：文中 **Store 会话** = App Server 创建的 Nomi 会话（当前 `create_app_server_nomi_chat`，以及后续 `team/run` 的 Leader 会话）
 
 ---
 
 ## 1. 结论摘要
 
-1. **当前 Store 会话的工具面与需求反了**：Connector(MCP) 与绑定 Skill 被 `apply_app_server_chat_ceiling` 清掉，而桌面产品域工具（cron / meeting / computer / browser / knowledge / learning / media / companion / goal / requirement）全部保留。
-2. **保留基线**（仅 6 项）：文件与执行族（workspace 受限）、`Skill`、Connector(MCP) 工具、`ToolSearch`、审批流、`update_plan`。
-3. **必须关闭**：宿主控制类（`Computer`/`Browser`/`open`/`Lsp`）、产品域 sink 类、协作生命周期类（gateway `nomi_execution_*`）、gateway 其余能力、SSH 族。
-4. **特例**：`nomi_delegate` 必须**保留**，因为它是 Team 的计划触发入口（`16` §7 决策 3）；但必须关闭 parallel-only 的 embedded 实现。
-5. **表达方式**：用「不接线 + Config flag」表达，**不要用** `builtin_allowlist` 白名单（会连带滤掉 Connector 工具）。
+1. **表达层**：宿主策略走 `~/.agent-store/config.toml` 的 `[tools]`，**只做减项**；与引擎既有的 `%APPDATA%\nomi\config.toml`、`<workspace>/.nomi.toml` 取「更严者胜」（§2、§7.1）。
+2. **保留基线**（6 项）：文件与执行族（workspace 受限）、`Skill`、Connector(MCP) 工具、`ToolSearch`、审批流、`update_plan`。
+3. **必须关闭**：宿主控制类（`Computer`/`Browser`/`Lsp`）、产品域 sink 类、协作生命周期类（gateway `nomi_execution_*`）、gateway 其余能力、SSH 族（§6.3）。逐项给出表达层。
+4. **不可配置项**：`nomi_delegate` 的 embedded／platform 实现选择**必须留在宿主组装里**——配置层被 vocabulary 门禁显式禁止表达（§7.5）。`nomi_delegate` 本身**必须保留**（Team 计划入口，`16` §7 决策 3），但必须关掉 parallel-only 的 embedded 实现。
+5. **隔离前提**：本策略假定 **Store 以独立 host + 独立 data-dir 部署**。若与桌面/Web host 共用进程，宿主级策略会连带改变桌面会话工具面（§2.3）。
+6. **表达方式**：用「宿主策略 + Config flag + 不接线」表达，**不用** `builtin_allowlist` 白名单（会连带滤掉 Connector 工具，且它是为「极小集合」设计的，§7.2）。
 
 ---
 
-## 2. 注入链路回顾（改动前必读）
+## 2. 前置：三份 config.toml，哪份对工具面生效
+
+这一节是全部取舍的前提。仓库里同时存在三份配置文件，**只有一份既有产品写入路径、又能表达工具面**。
+
+### 2.1 事实
+
+| 文件 | 谁读 | 能控制工具面 | 证据 |
+|---|---|---|---|
+| `%APPDATA%\nomi\config.toml`（Linux `~/.config/nomi`） | Nomi 引擎 `Config::resolve` 的 global 段 | ✅ 原生 `[tools]` 就在这里生效 | `crates/agent/nomi-config/src/config.rs:960`（`global_config_path()`）、`:929-931`（`app_config_dir()`）、`:698-708`（`Config::resolve`） |
+| `<会话 workspace>/.nomi.toml` | 同上，project 段（`cli.project_dir` = 会话 workspace，由 `manager/nomi/agent.rs:801` 注入） | ✅ **已通**，零代码即可裁剪 | `crates/agent/nomi-config/src/config.rs:703-708` |
+| `~/.agent-store/config.toml` | 只有 `AgentStoreConfig` | ❌ **完全不通到引擎工具面**（今日只有 providers / memory / marketplace / import / credentials） | `crates/backend/nomifun-app-server/src/agent_store.rs:1`、`:36`、`:363-369` |
+
+两个关键推论：
+
+1. `global_config_path()` 只取 `dirs::config_dir()/nomi`，**既不看 `--data-dir` 也不看 host**。因此同一台机器上桌面 App 与独立 `agent-store serve` 共用同一份引擎全局 `[tools]`。
+2. `~/.agent-store/config.toml` 是 Store 唯一「自己的」配置文件，且已带 `config/set` 写白名单（`agent_store.rs:444-465`、`nomifun-app-server/src/lib.rs:3599`），是三者中**唯一有产品化下发路径**的一份。
+
+### 2.2 决策（`16` §7 决策 5）
+
+`[tools]` 挂在 `~/.agent-store/config.toml`，理由：
+
+- 与 `21` D3=B 已拍板的 `[approvals]`（「策略由 `~/.agent-store/config.toml` 的 `[approvals]` 声明」）**同一份文件、同一语义层**：宿主策略归宿主配置文件，`[tools]` 与 `[approvals]` 是兄弟段。
+- 只有它同时具备「表达宿主策略」的语义与「被产品写入/回读」的面（读面 `config_view`：`nomifun-app-server/src/lib.rs:3542`；写面 `AgentStoreConfigPatch`：`agent_store.rs:457`）。
+- 引擎全局那份没有产品写入面，只能手改，且与桌面会话共享；`<workspace>/.nomi.toml` 已通但配置散落在每个会话目录，不可集中管理——两者都保留为**可叠加的更严项**，不作为权威来源。
+
+### 2.3 隔离前提与残留的坑
+
+本策略的隔离性来自**部署形态**，不来自机制：
+
+- `apps/agent-store/src/main.rs:267-270` 指向 `~/.agent-store/config.toml` —— 独立 host，策略即 Store 策略，无隔离问题。
+- **但 `apps/web/src/main.rs:247-252` 指向同一份文件**，且 `nomifun-app/src/router/routes.rs:1138` 在两个 host 里都挂载了 `app_server_routes`。所以 `[tools]` 必须**只由 agent-store host 消费**，需要一枚宿主位（建议落在 `Cli`/`AppConfig`，由 `apps/agent-store` 置位；其他 host 读到该表也不采纳）。这是本路线唯一的残留风险点。
+
+---
+
+## 3. 注入链路回顾
 
 Store 会话走的是与桌面会话同一条链路，逐层如下。
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| L1 组装层 | `nomifun-ai-agent/src/factory/mod.rs` `AgentFactoryDeps` | 以 **sink / 配置对象**形式提供能力 |
+| L1 组装层 | `nomifun-ai-agent/src/factory/mod.rs:115` `AgentFactoryDeps` | 以 **sink / 配置对象**形式提供能力；唯一生产构造点 `nomifun-app/src/services.rs:2948` |
 | L2 工厂层 | `factory/nomi.rs::build` | authority 裁剪 + 能力解析，产出 `NomiResolvedConfig` + sink 参数 |
-| L3 管理层 | `manager/nomi/agent.rs::new_with_search_provider` | 落成 `Config`：`allow_list` / `builtin_allowlist` / `mcp.servers` |
+| L3 管理层 | `manager/nomi/agent.rs::new_with_search_provider` | `Config::resolve`（**这里才读 `[tools]`**）落成 `Config`：`allow_list` / `builtin_allowlist` / `mcp.servers` |
 | L4 引导层 | `nomi-agent/src/bootstrap.rs::build` | 填充 `ToolRegistry`（内置族 + MCP 代理 + `retain_named`） |
 | L5 动态层 | `manager/nomi/agent.rs` build 后 | `engine.registry_mut().register(...)` 补注册域工具 |
 | L6 约束层 | 运行时 | 注册策略 / 审批名单 / `write_root` / coding boundary |
 
-关键不变量：**能力即进程内对象**。`AgentFactoryDeps` 里的每个 `Option<Arc<dyn ...Sink>>` 为 `None` 就意味着"这个工具根本不会被创建"，不存在可被客户端 JSON 伪造的开关。
+关键不变量：**能力即进程内对象**。`AgentFactoryDeps` 里的每个 `Option<Arc<dyn ...Sink>>` 为 `None` 就意味着「这个工具根本不会被创建」，不存在可被客户端 JSON 伪造的开关。
 
-### 2.1 三个容易混淆的"名单"
+> **L3 是本次重构的关键定位**：`web.enabled` / `plan.enabled` / `lsp_servers` 由 L3 的 `Config::resolve` 决定，**不在 L2**。任何「在工厂里置 false」的写法都落不到这几个开关上（见 §7.6 勘误 ①）。
+
+### 3.1 四份「名单」
 
 | 名单 | 位置 | 语义 | 空值含义 |
 |---|---|---|---|
 | `config.tools.allow_list` | `nomi-config/src/config.rs` | **审批豁免**（免确认执行） | 用默认值 `["Read","Grep","Glob"]` |
-| `config.tools.builtin_allowlist` | 同上 | **注册白名单**（是否存在于 registry） | 空 = 不限制 |
-| `config.tools.skills.deny/allow` | 同上 | Skill 级权限，不是工具名单 | — |
+| `config.tools.builtin_allowlist` | 同上（`:398`） | **注册白名单**（是否存在于 registry） | 空 = 不限制 |
+| `config.tools.builtin_denylist` | **本文新增**（同结构） | **注册黑名单**（减项，对 bootstrap 之后注册同样生效） | 空 = 不排除 |
+| `config.tools.skills.deny/allow` | `config.rs:337-342` | Skill 级权限，不是工具名单 | — |
+
+生效集定义：`(allowlist 为空 ? 全放行 : allowlist) ∧ ¬denylist`。两者正交，必须同时保留。
 
 ---
 
-## 3. 两类"延迟"必须先分清
+## 4. 两类「延迟」必须先分清
 
-"延迟注入"在本仓库指两件不同的事，混用会导致错误的关闭方案。
+「延迟注入」在本仓库指两件不同的事，混用会导致错误的关闭方案。本节结论与关闭机制无关，故保持原样。
 
-### 3.1 时序延迟（post-build 注册）
+### 4.1 时序延迟（post-build 注册）
 
-`AgentBootstrap::build()` **之后**才注册的工具。它们受 bootstrap 中已安装的 `retain_named` **持久策略**约束。
+`AgentBootstrap::build()` **之后**才注册的工具。它们受 bootstrap 中已安装的 `retain_named` **持久策略**约束（`registry.rs:656`）。
 
 | 工具 | 注册点 | 条件 |
 |---|---|---|
@@ -59,12 +101,12 @@ Store 会话走的是与桌面会话同一条链路，逐层如下。
 | `knowledge_search` / `knowledge_read` | 同上 | 已挂知识库 |
 | `learning_generate_course` / `learning_course_status` | 同上 | owner + 已挂库 |
 | `knowledge_write` | 同上 | 回血开启 + 已挂库 |
-| 媒体生成族 | `nomi_media::wire_flowy_media` | flowy media 配置就绪 |
+| 媒体生成族 | `nomi_media::wire_flowy_media`（`manager/nomi/agent.rs:1298`） | 宿主 `config.toml` 的 `[media]` 就绪 |
 | `update_goal` | `set_goal` / `set_goal_state` | 有 goal |
-| `cron_create` / `cron_list` / `cron_delete` | `NomiAgentManager::register_cron_sink` | factory 层 `is_instance_owner` + 工厂存在 + owner_id |
-| `meeting.*`（12 个） | `register_meeting_sink` | 同上 |
+| `cron_create` / `cron_list` / `cron_delete` | `NomiAgentManager::register_cron_sink`（`agent.rs:2638`） | factory 层 `is_instance_owner` + 工厂存在 + owner_id |
+| `meeting.*`（12 个） | `register_meeting_sink`（`agent.rs:2649`） | 同上 |
 
-### 3.2 曝光延迟（`is_deferred()`）
+### 4.2 曝光延迟（`is_deferred()`）
 
 工具已进 registry，但给 provider 的 `ToolDef.deferred = true`，模型只看到名字桩，需 `ToolSearch` 激活后才拿到完整 schema。
 
@@ -80,13 +122,13 @@ Store 会话走的是与桌面会话同一条链路，逐层如下。
 
 > 结论：**`ToolSearch` 不可关闭**。MCP 默认延迟曝光，关掉它等于 Connector Catalog 全废。
 
-### 3.3 交叉
+### 4.3 交叉
 
-只有 MCP 系工具可能同时命中两类延迟。cron / meeting 属于"时序延迟 + 立即曝光"，这也解释了为什么 `register_meeting_sink` 需要额外调 `engine.allow_named_tools(MEETING_TOOL_NAMES)` 补审批豁免，而 MCP 走的是 deferred 激活路径。
+只有 MCP 系工具可能同时命中两类延迟。cron / meeting 属于「时序延迟 + 立即曝光」，这也解释了为什么 `register_meeting_sink` 需要额外调 `engine.allow_named_tools(MEETING_TOOL_NAMES)` 补审批豁免，而 MCP 走的是 deferred 激活路径。
 
 ---
 
-## 4. 取舍原则
+## 5. 取舍原则
 
 任何工具进入 Store 会话前，必须同时满足：
 
@@ -94,154 +136,349 @@ Store 会话走的是与桌面会话同一条链路，逐层如下。
 2. **不依赖 Desktop host 或产品 UI**（无客户端可响应的能力一律不注入）；
 3. **不与 App Server 协议职责重叠**（生命周期、审批、状态查询归协议，不归模型工具）。
 
----
-
-## 5. 逐项取舍表
-
-图例：**保留** = Store 会话必须注入；**条件** = 由 Definition/Template 声明开启，默认关；**关闭** = 不接线。
-
-### 5.1 保留（基线 6 项）
-
-| 工具 | 依据 | 约束 |
-|---|---|---|
-| `Read` / `Write` / `Edit` / `ApplyPatch` | `04` §4.2 `[Workspace Policy]`；Artifact 落在 workspace | `write_root = workspace`，禁止越界（`04` §4.1 校验 #6） |
-| `Bash` / `exec_command` / `write_stdin` | 工程型 Agent 的必需执行面 | 必须落在 `CapabilityPolicy.cwd_roots` 内。`roadmap` §2.2 的"任意 CLI/脚本执行"指宿主 Hook/脚本，不含 Agent 自身 shell |
-| `Grep` / `Glob` / `DirTree` | 只读导航 | — |
-| `Skill` | `roadmap` §2.1 Skill Catalog；`04` §4.2 `[Bound Skills]` | 只暴露 Definition 绑定的 Skill，不暴露宿主 auto-inject |
-| **Connector(MCP) 工具** | `roadmap` §2.1 Connector Catalog；`04` §2.2「工具名必须经命名空间和策略过滤」 | 按 Connector 过滤 + 策略交集 |
-| `ToolSearch` | MCP 默认 `deferred = true`，无它则 Connector schema 不可见 | 永不 deferred |
-| 审批（`Confirmation` / `approval.required`） | `04` §5.1 事件表 | 非工具，但必须保留接线 |
-| `update_plan` | 模型内生进度，无副作用、不写库 | 无条件注册，当前无 Config 开关 |
-
-`nomi_delegate` 见 §7——它是本表之外的强制特例。
-
-### 5.2 条件保留（默认关）
-
-| 工具 | 默认 | 理由 |
-|---|---|---|
-| `WebSearch` / `WebExtract` | 关 | `04` §4.2 工具面是 Connector 驱动；联网应由 Connector 表达。仅当 Definition 未绑定 web connector 时才考虑开 |
-| `remember` | 关 | V1 领域模型无跨 Run 记忆；Run/Attempt 持久化已独立。**注意：当前无法用 Config 关闭，见 §6.3** |
-| `EnterPlanMode` / `ExitPlanMode` | 关 | `plan_gate` 是 Execution 级策略；Team 计划由服务端 Planner 产出，模型自驱 plan mode 会与 `plan.created` 语义冲突 |
-
-### 5.3 关闭
-
-| 工具 / 能力面 | 理由 |
-|---|---|
-| `Computer` | 宿主桌面控制；Store 不是 Desktop host |
-| `Browser` + `open` bridge | 同上；依赖 `BrowserLaneClient` / Windows 启动器 |
-| `Lsp` | `roadmap` §2.2 非目标「完整 LSP Runtime」；仅配置了 `lsp_servers` 时才注册 |
-| `cron_*` | 产品域定时任务；调度归 App Server / Planner |
-| `meeting.*` | 产品域会议能力；Store 无客户端可响应 |
-| `companion_*` / summon | 产品域陪伴会话专属 |
-| `knowledge_*` | 知识库不在 Agent/Skill/Connector 模型内 |
-| `learning_*` | 课程生成，纯产品功能 |
-| 媒体生成族 | 依赖 `GatewayConfig.media`，Store 无此配置 |
-| `requirement_*` | AutoWork 任务板 |
-| `update_goal` | goal 循环；Store 的续跑模型是 Attempt |
-| gateway `nomi_execution_get` / `nomi_execution_update`（含 `request_user_decision`） | 与 App Server 协议职责重叠：`04` §5.1 已把审批建模为 Server Request；Team planned 由服务端 Planner 驱动 |
-| gateway 其余能力（`nomi_list_conversations` 等） | 产品宿主桥，Store 用自己的协议 |
-| SSH 工具族 | `ssh_host_id` 绑定是桌面产品能力 |
+判别新增：**表达层优先于机制**。能由宿主策略表达的，不要写成代码常量；只能由宿主组装决定的（如执行部署形态），不要试图做成配置——配置层看不懂它，也不该懂（§7.5）。**叠加只做「更严者胜」**：任何一层说关就是关，不存在「配置说开、Store 说关、结果开了」的路径。
 
 ---
 
-## 6. 关闭机制与坑
+## 6. 逐项取舍表
 
-### 6.1 可用的四种机制
+图例——**保留** = Store 会话必须注入；**条件** = 由 Definition/Template 声明开启，默认关；**关闭** = 不接线。
+「表达层」列：`host-config` = `~/.agent-store/config.toml [tools]`；`session` = 会话快照/求交；`code` = 宿主组装，不可配置。
+
+### 6.1 保留（基线）
+
+| 工具 | 依据 | 约束 | 表达层 |
+|---|---|---|---|
+| `Read` / `Write` / `Edit` / `ApplyPatch` | `04` §3.2 `[Workspace Policy]`；Artifact 落在 workspace | `write_root = workspace`，禁止越界（`04` §3.1 校验 #6） | `code`（无条件注册，靠 `write_root` 钳制） |
+| `Bash` / `exec_command` / `write_stdin` | 工程型 Agent 的必需执行面 | 必须落在 `CapabilityPolicy.cwd_roots` 内。`roadmap` §2.2 的「任意 CLI/脚本执行」指宿主 Hook/脚本，不含 Agent 自身 shell | `code` |
+| `Grep` / `Glob` / `DirTree` | 只读导航 | — | `code` |
+| `Skill` | `roadmap` §2.1 Skill Catalog；`04` §3.2 `[Bound Skills]` | 只暴露 Definition 绑定的 Skill，不暴露宿主 auto-inject | `session`（`extra.skills` 快照，§7.4） |
+| **Connector(MCP) 工具** | `roadmap` §2.1 Connector Catalog；`04` §3.1 校验 #4「Connector refs 已安装，工具策略可解析」 | 只暴露 Definition 绑定的 Connector（显式 id 栅栏，§7.3） | `session` |
+| `ToolSearch` | MCP 默认 `deferred = true`，无它则 Connector schema 不可见 | 永不 deferred；**不可关闭** | `code` |
+| 审批（`Confirmation` / `approval.required`） | `04` §5.1 统一事件；`05` §7「Approval 与 Server Request」；`21` D3=B | 非工具，但必须保留接线；策略归 `[approvals]`（未实施） | `host-config`（`[approvals]`） |
+| `update_plan` | 模型内生进度，无副作用、不写库 | 无条件注册（`bootstrap.rs:1117-1119`），今日无 Config 开关 | `code` + `[tools].deny` 可关（§7.4） |
+
+`nomi_delegate` 见 §8——它是本表之外的强制特例。
+
+### 6.2 条件保留（默认关）
+
+| 工具 | 默认 | 表达层 | 理由 |
+|---|---|---|---|
+| `WebSearch` / `WebExtract` | 关 | `[tools].web = false` | `04` §3.2 工具面是 Connector 驱动；联网应由 Connector 表达。仅当 Definition 未绑定 web connector 时才考虑开 |
+| `remember` | 关 | `[tools].deny = ["remember"]` | V1 领域模型无跨 Run 记忆；Run/Attempt 持久化已独立。**当前无任何开关，必须靠新增的减项关闭**（§7.4） |
+| `EnterPlanMode` / `ExitPlanMode` | 关 | `[tools].plan = false` | `plan_gate` 是 Execution 级策略；Team 计划由服务端 Planner 产出，模型自驱 plan mode 会与 `plan.created` 语义冲突 |
+
+### 6.3 关闭
+
+| 工具 / 能力面 | 表达层 | 理由 |
+|---|---|---|
+| `Computer` | `[tools].computer = false` | 宿主桌面控制；Store 不是 Desktop host |
+| `Browser` | `[tools].browser = false` | 同上；依赖 `BrowserLaneClient` |
+| `open` bridge | —（不适用） | 它是 ACP CLI 的 Windows 专用 stdio MCP（`nomifun-app/src/commands/open_stdio.rs:1-16`），Nomi Store 会话的工具面里本就不存在；此处仅作防御性登记 |
+| `Lsp` | `[tools].lsp = false` | `roadmap` §2.2 非目标「完整 LSP Runtime」；仅 `lsp_servers` 非空时注册（`bootstrap.rs:700-715`） |
+| `cron_*` | `[tools.domains].cron = false` | 产品域定时任务；调度归 App Server / Planner |
+| `meeting.*` | `[tools.domains].meeting = false` | 产品域会议能力；Store 无客户端可响应 |
+| `companion_*` / summon | `[tools.domains].companion = false` | 产品域陪伴会话专属 |
+| `knowledge_*` | `[tools.domains].knowledge = false` | 知识库不在 Agent/Skill/Connector 模型内 |
+| `learning_*` | `[tools.domains].learning = false` | 课程生成，纯产品功能 |
+| 媒体生成族 | `[tools.domains].media = false` | 依赖宿主 `config.toml` 的 `[media]`；Store 无此配置 |
+| `requirement_*` | `[tools.domains].requirement = false` | AutoWork 任务板 |
+| `update_goal` | `[tools.domains].goal = false` | goal 循环；Store 的续跑模型是 Attempt |
+| gateway `nomi_execution_get` / `nomi_execution_update`（含 `request_user_decision`） | `code` | 与 App Server 协议职责重叠：审批已建模为 Server Request（`05` §7；`10`「`approval/request` = Server Request」）；Team planned 由服务端 Planner 驱动 |
+| gateway 其余能力（`nomi_list_conversations` 等） | `code` | 产品宿主桥，Store 用自己的协议 |
+| SSH 工具族 | `code` | `ssh_host_id` 绑定是桌面产品能力；Store 会话的 `extra` 由 create seam 生成，不含该键（`service.rs:5924` 更新面亦不可写入） |
+
+---
+
+## 7. 表达机制与坑
+
+### 7.1 五种机制
 
 | 机制 | 适用工具 | 说明 |
 |---|---|---|
-| **Config flag** | `tools.web.enabled`、`tools.computer.enabled`、`tools.browser.enabled`、`plan.enabled` | 工厂在构造 `Config` 时置 `false` 即可 |
+| **宿主策略文件** `[tools]` | enabled / disabled / web / computer / browser / plan / lsp / domains | 只做减项；与引擎全局 `<project>/.nomi.toml` 求「更严者胜」（§2）。`enabled`/`disabled` 的命名与匹配规则对齐参考实现（§7.8） |
+| **会话快照/求交** | Connector、绑定 Skill | `extra.skills`、`selected_mcp_server_ids`（§7.3、§7.4） |
 | **不接线 sink** | knowledge / learning / media / companion / summon / requirement / goal | factory 传 `None` → 工具不注册 |
-| **factory `if` 守卫** | `cron_*`、`meeting.*` | 现有 `if is_instance_owner && let (Some(...), ...)` 增加 Store 判定 |
-| **`install_embedded_agent_execution`** | embedded `nomi_delegate` | 置 `false` |
-| **`gateway_mcp_config = None`** | gateway 全部能力 | Store 已有（`apply_app_server_chat_ceiling`） |
+| **factory `if` 守卫** | `cron_*`、`meeting.*` | 现有 `if is_instance_owner && let (Some(...), ...)` 增加 domains 判定 |
+| **宿主组装（不可配置）** | embedded `nomi_delegate`、`write_root`、gateway 面 | 由 `AgentFactoryDeps` / authority 决定，配置层不表达（§7.5） |
 
-### 6.2 不要用 `builtin_allowlist` 白名单
+推荐形态（扁平布尔，不复用引擎的 `[tools.computer]` 嵌套结构——那些带 `max_screenshot_edge` 之类引擎细节，不该出现在 Store 策略里）：
+
+```toml
+[tools]
+# 允许列表：非空时仅列出的工具可用；空数组或缺省 = 不约束（对应引擎 builtin_allowlist）
+enabled  = []
+# 禁止列表：在 enabled 之后应用，天然只收窄；对 bootstrap 之后动态注册的工具同样生效
+disabled = ["remember", "mcp__notion__*"]
+
+# 单项开关
+web = false
+computer = false
+browser = false
+plan = false
+lsp = false
+
+[tools.domains]       # 缺省全 true = 今日行为
+cron = false
+meeting = false
+knowledge = false
+learning = false
+media = false
+companion = false
+requirement = false
+goal = false
+```
+
+与引擎字段的落点映射（改错层就会失效，见 §7.6 ①②③）：
+
+| Store 策略 | 引擎落点 | 落在哪一层 |
+|---|---|---|
+| `[tools].enabled` 非空 | `config.tools.builtin_allowlist` | L3 manager |
+| `[tools].disabled` | **新增** `config.tools.builtin_denylist` → `registry.deny_named()` | L3 灌入 + L4 生效 |
+| `web` / `plan` / `lsp` | `config.tools.web.enabled` / `config.plan.enabled` / `config.tools.lsp_servers` | L3 manager |
+| `computer` / `browser` | `NomiBuildExtra.computer_use` / `browser_use = Some(false)` | L2 factory |
+| `[tools.domains]` | sink 接线与 cron/meeting 守卫（media 例外，在 manager） | L2 factory + L3 manager |
+
+### 7.2 必须有 `disabled` 减项，而不是复用白名单
 
 bootstrap 的注册顺序是 MCP 代理在前、`retain_named` 在后：
 
 ```text
-registry.register_mcp_tools(...)   // 注册 Connector 代理
+registry.register_mcp_tools(...)   // 注册 Connector 代理（bootstrap.rs:1129）
 ...
-registry.retain_named(&allowed_tools)  // 安装持久注册策略并裁剪
+registry.retain_named(&allowed_tools)  // 安装持久注册策略并裁剪（bootstrap.rs:1145）
 ```
 
-后果：白名单会把 **Connector 工具一起滤掉**，除非枚举 `mcp__<server>__<hash>` 这种 canonical 名——既不稳定也不可维护。
+白名单有三个问题，前两个是「能用但别扭」，第三个是致命的：
 
-另外，`retain_named` 会**持久化注册策略**，之后所有动态注册（cron / meeting / 域 sink）都受它约束，且只收窄不放宽。`apply_model_only_ceiling` 用 `["update_plan"]` 正是因为"空列表 = 全放行"——这套机制是为"极小集合"设计的，不适合"保留大多数、去掉少数"。
+1. **它会连带滤掉 Connector 代理工具**：未列名的 MCP 代理会被同样裁掉，调用方必须知道 canonical 命名规则才能表达。借助 glob（`mcp__<server>__*`，§7.7）可以解决，但这把「知道内部命名」变成了使用前提。
+2. **它的语义是为「极小集合」设计的**：空 = 全放行，所以只能表达「只要这几个」，不能表达「除了这几个都要」。`apply_model_only_ceiling` 用 `["update_plan"]` 正是这一语义的写照。
+3. **它表达不了本策略的实际需求**——「保留大多数、去掉少数」：目标集合是「基线若干项 + 全部绑定 Connector + 全部绑定 Skill + 上游未来新增项」，用白名单表达要逐一枚举，任何上游新增工具都会默认消失，且没有编译期或启动期信号。
 
-### 6.3 当前无开关的工具（唯一硬缺口）
+因此新增与它**正交**的 `disabled` 减项，两者叠加：
 
-| 工具 | 注册点 | 现状 |
+```text
+生效集 = (enabled 为空 ? 全放行 : enabled) ∧ ¬disabled
+```
+
+实现要点：`ToolRegistry` 持有一个持久 `disabled` 集合，`registration_policy_allows`（`registry.rs:407`）改为 `¬disabled ∧ policy.allows`，`retain_named` 既有的「只收窄、对后续注册生效」语义原样保留（`registry.rs:656`）——这样 post-build 注册的 cron / meeting / 域 sink 也绕不过同一个减项。
+
+### 7.3 Connector 必须走显式 id 栅栏
+
+`selected_mcp_server_ids` 为 `None` 的语义是**绑定全部 enabled 的非 builtin MCP server**（`service.rs:5360-5381`、`factory/nomi.rs:1658-1687`）。而 `create_app_server_nomi_chat`（`service.rs:4845`）今日根本不传这个键。
+
+所以「保留 Connector」**不能**靠删除 factory 的 `!is_app_server_chat` 守卫（`factory/nomi.rs:327`、`:339`）来实现——那会把宿主所有 MCP 泄进 Store 会话。正确做法：create seam 接受 Definition 绑定的 Connector id 列表，写 `selected_mcp_server_ids = Some(ids)`（**空数组也是硬栅栏**），再放守卫。**顺序上必须先落栅栏**。
+
+### 7.4 Skill 绑定发生在 conversation seam，不在 factory
+
+Skill 快照在 `create_inner` 冻结：`compute_initial_skills(auto_inject, preset_enabled, exclude_auto_inject)`，公式 `(auto_inject − exclude) ∪ preset_enabled`（`skill_snapshot.rs:9-21`）。App Server create 今日 `preset_id = None` 且全量 `exclude_auto_inject_skills` → `extra.skills = []`。
+
+所以「保留绑定 Skill」= 让 create seam 接受绑定名单并写 `preset_enabled_skills`（`preset` 优先级高于 `exclude`，见 `skill_snapshot.rs:17-19`）。factory 侧没有「清空 skill」的 ceiling，无需改。
+
+### 7.5 无开关项与不可配置项
+
+| 工具 | 现状 | 处置 |
 |---|---|---|
-| `update_plan` | `bootstrap.rs`（其注释写明 "Always registered (not deferred)"） | 无条件，无 Config 开关 |
-| `ToolSearch` | `bootstrap.rs` | 无条件 + `retain_named` 强制保留；**不应关闭** |
-| `Skill` | `bootstrap.rs` | 无条件；Skill 目录来自 workspace 扫描 |
-| `remember` | `bootstrap.rs`（`if let Some(mem_dir) = memory_dir`） | `auto_memory_dir` 实际恒为 `Some`，等同无条件 |
+| `update_plan` | `bootstrap.rs:1117-1119` 无条件注册，无 Config 开关 | `[tools].disabled` |
+| `ToolSearch` | 无条件 + `retain_named` 强制保留 | **不应关闭** |
+| `Skill` | 无条件；目录来自 workspace 扫描 | 由快照控制暴露面（§7.4） |
+| `remember` | `bootstrap.rs:723-724`（`if let Some(mem_dir)`），`memory_dir` 实际恒为 `Some` | `[tools].disabled` |
+| embedded `nomi_delegate` | `bootstrap.rs:952-954`，由 `install_embedded_agent_execution`（`:915`）决定 | **不可配置**，见下 |
 
-结论：若要关闭 `update_plan` / `remember`，需要给 `ToolsConfig` 增加一个**工具级 disable 列表**（与 `builtin_allowlist` 语义相反的减项），而不是复用白名单。`ToolsConfig` 目前**没有** denylist 字段。
+**为什么 embedded vs platform 不能做成配置**：`scripts/check-agent-vocabulary.mjs:342-358` 扫描 `ToolsConfig` 结构体块，禁止出现 `install_embedded_agent_execution` / `in_process_delegation` / `in_process_spawn` / `delegation_execution` 一类标识符；`nomi-config/src/config.rs:975-979` 还会把这三个历史键从配置文件里主动删除。执行部署形态是**嵌入宿主的决定**，不是用户配置。任何把它做成 `[tools]` 开关的方案都会同时踩到门禁与历史迁移。
+
+### 7.6 勘误（相对本文 2026-09-10 版）
+
+| # | 原表述 | 代码事实 | 影响 |
+|---|---|---|---|
+| ① | §6.1「工厂在构造 `Config` 时置 `false`」即可关 `tools.web.enabled` / `plan.enabled` | 工厂**不构造** `Config`；`Config::resolve` 在 `manager/nomi/agent.rs:804`，per-session 覆盖目前只对 computer/browser 做了（`:871-876`） | 改法必须落在 **L3 manager**，不是 L2 工厂 |
+| ② | §5.3 `Lsp`「仅配置了 `lsp_servers` 时才注册」 | 正确，但 `lsp_servers` 是宿主 `config.toml` 值（`config.rs:381`），**无会话开关** | 同 ①，需会话级覆盖 |
+| ③ | §6.1 媒体族用「不接线 sink」表达 | 媒体族不是 sink：`wire_flowy_media(registry, &gateway_config, …)` 在 `agent.rs:1298` **无条件**执行 | 须在 manager 加 domains 判定 |
+| ④ | §8#5「Store 会话保留 Connector」 | `None` = 全部 enabled MCP（§7.3） | 必须同时落显式 id 栅栏，否则泄露宿主全部 MCP |
+| ⑤ | §7.1「绑定 Skill 被清空（empty skill snapshot）」 | 清空在 conversation seam（§7.4），**不在** factory ceiling | 「保留 Skill」的改动点在 `service.rs`，不在 `factory/nomi.rs` |
+
+另有两处「防御性过度」已在本版归位：`open` bridge 不是 Nomi Store 会话的工具面（§6.3）；gateway 全关已达成（`factory/nomi.rs:310` 的 `platform_gateway_entitled` 已排除 app-server chat，`:175` 无条件置 `None`）。
+
+### 7.7 命名匹配与告警规则
+
+`enabled` / `disabled` 的条目如何匹配工具名：
+
+| 工具类别 | 匹配方式 | 例 |
+|---|---|---|
+| 内置工具 | **大小写敏感的精确匹配** | `Read`、`remember`、`update_plan` |
+| MCP 代理工具（Connector） | glob，且**只有 `mcp__` 命名空间下的通配符有意义** | `mcp__github__*` |
+
+我们的 canonical MCP 名形状（`nomi-mcp/src/tool_proxy.rs:27-36`、`:447-458`）：
+
+```text
+mcp__ {slug ≤ 42} __ {base32(sha256) 前 16 字符}      总长 ≤ 64
+slug = sanitize("{server_name}__{tool_name}") 截断
+```
+
+因为 slug 保留了 `{server}__` 前缀，`mcp__<server>__*` 是稳定可用的整服务器 glob——前提是 server 名本身没被截断吃掉（server 名 ≲ 40 字符时安全）。这也说明：`disabled` 能表达「禁掉整个 Connector」，而 §7.3 的 id 栅栏仍然是**另一件事**——栅栏决定「绑定了哪些 Connector」，`disabled` 决定「已绑定的里再关掉哪些」，两者不可互相替代。
+
+**三条「匹配不到任何工具」的写法必须在启动时告警**（照搬参考实现，§7.8）：
+
+1. `mcp__` 命名空间之外使用通配符：`enabled = ["*"]` 会关掉所有工具，`disabled = ["*"]` 什么也禁不掉——两者都不是字面直觉；
+2. 缺少工具段的 `mcp__` 字面量（如 `mcp__github`）：表达整个 server 必须写 `mcp__github__*`；
+3. 任何已注册或内置工具都没有的名字（含大小写不匹配）。
+
+**复用现成匹配器**：`nomi-config/src/hooks.rs:240` 的 `glob_match`（基于 `glob::Pattern`）已经在服务 hook 的 `tool_match`。实施时应把它提到共享位置供 `RegistrationPolicy` 复用，不要再写第二个 glob 实现。
+
+### 7.8 参考实现（Kimi Code CLI）
+
+本节的 `[tools]` 形态不是自创，与 Kimi Code CLI 的配置文件 §`tools` 对齐：<https://www.kimi.com/code/docs/kimi-code-cli/configuration/config-files.html#tools>。该实现了「全局工具开关」这一层，其语义要点：
+
+- `enabled`（全局允许列表，非空时仅列出的工具可用，省略或空数组均表示不约束）与 `disabled`（全局禁止列表，**在 `enabled` 之后应用**）；
+- **对所有会话中的每个 Agent 生效，并在 Agent 自身的 `tools` / `disallowedTools` 策略之上再取一次交集**；
+- 内置工具按名称精确匹配，MCP 工具用 glob；
+- 三条 no-match 告警（已在 §7.7 采纳）；
+- 该节「不仅决定模型能看到哪些工具，还会在执行前再次强制检查」；`[permission]` 是**独立**的一层，决定哪些操作需要审批。
+
+**一致点**：全局 ∩ Agent 级两层结构（对应我们的宿主策略 ∩ 会话/Definition 绑定）；`enabled` 空 = 不约束；可用性（`[tools]`）与审批（我们对应 `21` D3 的 `[approvals]`）分层，与 §3.1 的四份名单同构。
+
+**必须保留的差异**（照抄会错的地方）：
+
+1. **多一层产品域开关 `[tools.domains]`**。参考实现没有 cron / meeting / knowledge / learning / media / companion / requirement / goal 这类产品域 sink 工具，其工具面完全可由名字列表表达。我们不行：这些工具在 sink 不接线时**根本不存在**，把它们的名字写进 `disabled` 会被 §7.7 规则 3 判为无效条目；反之把它们写进 `enabled` 也只是空转。所以产品域必须用独立开关在接线处决定。
+2. **enforcement 点是注册期移除，比参考实现更强**：被 `disabled` 命中的工具不进 `ToolRegistry`（`registry.rs:656`/新增 `deny_named`），因此既不可见也不可调用，不存在「绕过广告过滤直接调用」的路径；代价是策略必须对 **post-build 动态注册**同样生效，这正是 §7.2 要求 `disabled` 具有持久集合语义的原因。
+3. **不引入第三种 Agent 级写法**：参考实现允许在 Agent 文件里写 `tools` / `disallowedTools`；我们的对应物是 Definition/Template 绑定（会话 `allowed_tools` + Connector/Skill 快照），不新增平行机制。
 
 ---
 
-## 7. Team 与 `nomi_delegate`（强制保留的特例）
+## 8. Team 与 `nomi_delegate`（强制保留的特例）
 
-依据 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 3：Team Run 由 Leader 模型调用 `nomi_delegate(strategy=planned)` 触发。因此在 Store 会话里 **`nomi_delegate` 不是可选工具，而是 Team 的必需入口**。
+依据 `16` §7 决策 3：Team Run 由 Leader 模型调用 `nomi_delegate(strategy=planned)` 触发。因此在 Store 会话里 **`nomi_delegate` 不是可选工具，而是 Team 的必需入口**。
 
-但"保留 `nomi_delegate`"必须落到正确的实现上——仓库里有两个同名实现，能力完全不同：
+但「保留 `nomi_delegate`」必须落到正确的实现上——仓库里有两个同名实现，能力完全不同：
 
 | 实现 | 位置 | `strategy` | 持久化 | 适用 |
 |---|---|---|---|---|
-| Platform Gateway 版 | `nomifun-gateway/src/caps_agent_execution.rs`（`DelegateParams::Planned`） | `planned` / `parallel` | ✅ 走 `AgentExecutionEngine`，落库 Run/Event/Attempt | **Team 必须用这个形态** |
-| embedded 版 | `nomi-agent/src/local_delegate_tool.rs` | **仅 `parallel`**（`ParallelDelegationStrategy` 只有一个变体） | ❌ 现场 `AgentExecutionId::new()`，`execute_fanout` 同步返回，无任何写入 | 仅适合 CLI/嵌入式宿主；**不得用于 Store / Team** |
+| Platform Gateway 版 | `nomifun-gateway/src/caps_agent_execution.rs`（`DelegateParams` `:147`、`delegate` `:751`） | `planned` / `parallel` | ✅ 走 `AgentExecutionEngine`，落库 Run/Event/Attempt | **Team 必须用这个形态** |
+| embedded 版 | `nomi-agent/src/local_delegate_tool.rs` | **仅 `parallel`** | ❌ 现场 `AgentExecutionId::new()`，`execute_fanout` 同步返回，无任何写入 | 仅适合 CLI/嵌入式宿主；**不得用于 Store / Team** |
 
-> 注意：这不等于"Store 要放开 Platform Gateway"。`nomi_delegate(planned)` 目前**恰好**只被 gateway caps 模块实现，但 App Server 本身不依赖 gateway——正确做法是在进程内提供一个绑定 `AgentExecutionEngine` 的等价入口（例如 App Server 侧可注入的 delegate 能力），而不是把 gateway 的 135 项能力整体放开。
+> 注意：这不等于「Store 要放开 Platform Gateway」。`nomi_delegate(planned)` 目前**恰好**只被 gateway caps 模块实现，但 App Server 本身不依赖 gateway——正确做法是在进程内提供一个绑定 `AgentExecutionEngine` 的等价入口（`AppServerRouterState.runtime: Option<AgentRuntimeAdapter>`（`nomifun-app-server/src/lib.rs:924-928`）已持有该 engine），而不是把 gateway 的 135 项能力整体放开。
 
-### 7.1 Store 会话当前的实际装配（错误组合）
+### 8.1 Store 会话当前的实际装配（错误组合）
 
 | 装配项 | 当前值 | 应有值 |
 |---|---|---|
-| `gateway_mcp_config` | `None`（被 `apply_app_server_chat_ceiling` 清掉） | `None`（Store 不用 gateway） |
-| `install_embedded_agent_execution` | `true`（`!has_platform_gateway && is_instance_owner`） | **`false`** |
+| `gateway_mcp_config` | `None`（`platform_gateway_entitled` 排除，`factory/nomi.rs:310`） | `None`（Store 不用 gateway） |
+| `install_embedded_agent_execution` | `true`（`!has_platform_gateway && is_instance_owner`，`:1500`） | **`false`**（由宿主组装决定，不可配置） |
 | planned 入口 | **不存在** | 必须存在（in-process，绑 engine） |
-| Connector(MCP) | **被清空** | 必须保留 |
-| 绑定 Skill | **被清空（empty skill snapshot）** | 必须保留 |
+| Connector(MCP) | **被清空**（ceiling + `!is_app_server_chat` 守卫） | 必须保留，且限定为 Definition 绑定的 id |
+| 绑定 Skill | **不存在**（空快照） | 必须保留 |
 
-即：模型拿到的是一个"只支持 parallel、且不落库"的壳，同时 Connector 与 Skill 都没了。
+即：模型拿到的是一个「只支持 parallel、且不落库」的壳，同时 Connector 与 Skill 都没了。
 
 ---
 
-## 8. 待实施差距清单（本文不落地）
+## 9. 实施步骤
 
-| # | 事项 | 涉及位置 | 关联 |
+按依赖排序；Step 1–3 是纯管道（缺省值 = 今日行为），Step 4–6 才是行为变更。
+
+| # | 事项 | 位置 | 状态／行为变化 |
 |---|---|---|---|
-| 1 | 新增 `apply_agent_store_ceiling`：关 `Computer`/`Browser`/`open`/`Lsp`/web/plan-mode，不接 cron/meeting/knowledge/learning/media/companion/summon/requirement/goal 等 sink | `factory/nomi.rs` | §5、§6.1 |
-| 2 | Store 会话置 `install_embedded_agent_execution = false` | `factory/nomi.rs` | §7.1 |
-| 3 | 提供 in-process 的 planned delegate 入口（绑 `AgentExecutionEngine`），供 Leader 会话使用 | 待定：`nomifun-agent-execution` 或 App Server runtime wiring | `16` §7 决策 3 |
-| 4 | 为 `ToolsConfig` 增加工具级 disable（至少覆盖 `remember`） | `nomi-config/src/config.rs` + `bootstrap.rs` | §6.3 |
-| 5 | Store 会话保留 Connector 与绑定 Skill（不再走清空 skill/MCP 的 ceiling） | `nomifun-conversation` App Server 创建缝 | §5.1、§7.1 |
-| 6 | `team/run` handler | `nomifun-app-server` | roadmap Phase 2/3 |
+| 1 | `NomiToolPolicy` DTO：`enabled` / `disabled` 双列表 + `web/computer/browser/plan/lsp` + `domains`，`Default` = 全开；`overlay()` 表达「更严者胜」；`syntax_warnings()` 出三类语法告警 | `nomifun-api-types/src/tool_policy.rs`（`app-server` 与 `ai-agent` 均已依赖，不新开 nomi-* 依赖） | ✅ 已落地（无行为变化） |
+| 2 | `AgentStoreConfig` 增 `[tools]`（文件形状直接复用 `NomiToolPolicy`，两者不可能漂移）→ `tool_policy()`；读面 `config_view`、写面 `AgentStoreConfigPatch.tools` + `with_tool_lists`/`with_tool_switch`/`with_tool_domain` 三个最小改写助手 | `nomifun-app-server/src/agent_store.rs`、`src/lib.rs`（`config_view` / `execute_config_set`） | ✅ 已落地（未配置即不变） |
+| 3 | 桥进工厂：`AgentFactoryDeps.tool_policy`；**启动读一次** → `AppServices.tool_policy`（`resolve_host_tool_policy`，纯函数可测）；宿主位 `--adopt-store-tool-policy`，仅 `apps/agent-store` 置位 | `factory/mod.rs`、`nomifun-app/src/services.rs`、`cli.rs` / `config.rs` / `bootstrap/environment.rs` | ✅ 已落地（无行为变化） |
+| 4 | 消费 policy：computer/browser 置 `Some(false)`；cron/meeting/listen 守卫与 requirement/knowledge/learning sink 加 domains 判定；companion/knowledge/goal 清 overrides（含 DB 恢复的 goal）；media 在 manager 跳过；web/plan/lsp 在 **manager** 落 `config.tools.*` | `factory/nomi.rs`（`apply_host_tool_policy`）、`manager/nomi/agent.rs` | ✅ 已落地（有行为变化） |
+| 5 | `builtin_denylist` 减项 + `builtin_deny_all` 内部标记；`ToolRegistry` 持久 `disabled` + `deny_named()` + 模式匹配（内置精确、`mcp__` glob）+ 两类 no-match 诊断；bootstrap 应用与告警 | `nomi-config/src/config.rs`、`nomi-tools/src/registry.rs`、`nomi-agent/src/bootstrap.rs` | ✅ 已落地（有行为变化） |
+| 6 | Connector／Skill 栅栏：create seam 收 `AppServerChatBindings`，写 `selected_mcp_server_ids`（空 = 硬栅栏）与 `preset_enabled_skills`；ceiling 由「清空 `mcp_server_ids`」改为「缺省补 `Some([])` 栅栏」并放开 Connector 行的读取 | `nomifun-conversation/src/service.rs`、`factory/nomi.rs` | ✅ 已落地（有行为变化） |
+| 7 | in-process planned delegate + `team/run`（`16` §7 决策 3） | 新 sink（绑 `AgentExecutionEngine`）+ `nomifun-app-server` 路由 | ✅ **已落地**：模型契约、宿主 sink 接缝、宿主组装开关、engine-backed provider、Store 关闭嵌入版、`team/run` 协议面与 Team 层委派放行（见 §9.2／§9.2.1／§9.2.2） |
+
+Step 7 单独成批：它引入新架构件（`nomi_types::Tool` 实现 + App Server runtime wiring），且必须保持 `Planner`/`Router`/`Scheduler`/`AttemptRunner` 私有（`check-agent-vocabulary.mjs:337-340`）。
+
+### 9.1 落地记录（2026-09-11）
+
+Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码注释与本文件相应章节登记：
+
+1. **白名单求交的空集陷阱（新机制 `builtin_deny_all`）**。manager 现在把引擎配置 × 会话白名单 × 宿主 `enabled` **求交**（原实现是会话层直接覆盖引擎层，破坏了「只收窄」不变量）。但 `builtin_allowlist` 的**空值语义是「不限制」**，所以「各层都有约束、彼此不相容」求交为空时，直接传空会把**最严变成最松**。为此 `ToolsConfig` 增一个 `#[serde(skip)]` 的内部标记 `builtin_deny_all`（永不从文件读取），bootstrap 据此显式 `ToolRegistry::clear()`。已由 `incompatible_allowlist_layers_deny_everything` 端到端锁定。
+2. **`mcp_server_ids` 的 `None` ≠ 空**。原 ceiling 把它置 `None`，而 `load_user_mcp_servers` 的 `None` 语义是「绑定宿主**全部** enabled MCP」——B6 保留 Connector 后这会变成泄露。现改为：缺省时补成 `Some(vec![])`（硬栅栏），**不覆盖**已绑定的 id。`session_mcp_servers`（桌面请求概念）仍由 ceiling 清空并保持 owner-only，未放开。
+3. **诊断作用域**。白名单 no-match = 告警（它在裁工具而不是选工具）；减项 no-match = debug（宿主级清单会合法地覆盖本会话未接线的域）。二者在 bootstrap 于注册后计算，因此只覆盖 bootstrap 注册的工具；由 `[tools].domains` 管辖的域 sink 在 build 之后注册，不在该判定范围内。为使减项的诊断不被自身生效动作掩盖，未匹配项在**应用减项的那一刻**快照（`disabled_unmatched`）。
+4. **生效时机**。`[tools]` 与 `[memory]` 同款：**启动读一次**，`config/set` 的写入下次启动生效；`config/get` 立即回读磁盘真实值。
+5. **create-time 输入不持久**。`exclude_auto_inject_skills` 与 `preset_enabled_skills` 在 create 时被消费进冻结的 `extra.skills`，**不会留在** stored extra 里；验证方式是断言 `extra.skills` 的最终内容（已由 `app_server_chat_binds_exactly_the_definition_connectors_and_skills` 覆盖，同时锁定 `app_server_chat` 标记必须持久——`list`/`get` 全靠它过滤）。
+6. **非 owner 会话会整体清空 extra**（`service.rs` 的 model-only 分支 `req.extra = json!({})`）。因此该 seam 的绑定只在 installation owner 身份下生效；测试必须用服务自身的 owner id。
+
+**验证读数**：`nomi-config` **210 passed / 0 failed**（1 ignored）；`nomi-agent` **747 / 0**；`nomifun-ai-agent --lib` **978 / 29 failed**（29 例全部是 Windows 上缺 `sh` 的 `cli_process`/`acp` 环境性失败，与本次改动无关）；`nomifun-app-server --lib` **115 / 0** 与 `config_set*` **6 / 0**；`nomifun-conversation --lib` **587 passed / 5 failed**（5 例为**既有基线红**，已用 `git stash` 在未改动基线上复现同样 5 例，分别落在 `effective_model` / `runtime_options` / `runtime_state` / `stream_relay`）；`web` **399 passed / 1 skipped**；`cargo check --workspace --tests` 通过（仅既有 warning）；`check:docs-sync` **9 页 0 drift**；`check:agent-vocabulary` 仍为**同样的 8 处既有基线红**（`orchestration` 措辞，均不在本次改动文件内，未新增）。
+
+### 9.2 Step 7 第一批：模型契约 + 宿主 sink 接缝（2026-09-11）
+
+已落地的部分（**不改变任何现有会话的工具面**，因为没有任何宿主安装 provider）：
+
+| 事项 | 位置 |
+|---|---|
+| `nomi_delegate` 的**计划式**模型契约：`{"strategy":"planned","goal":"…"}`，`deny_unknown_fields`；`max_parallel` / `plan_gate` / `adaptation_policy` / `work_dir` / `members` 一律**拒绝并点名**（`16` §7 决策 3「不接受模型输入」） | `crates/agent/nomi-agent/src/host_delegate_tool.rs`（`HostDelegateTool` + `HostDelegateSink`） |
+| 每个会话一个 sink（与 cron / meeting 同形），模型无法寻址其它会话 | 同上 + `NomiAgentManager::register_delegate_sink` |
+| 宿主组装开关：`AgentFactoryDeps.embedded_agent_execution` + `should_install_embedded_agent_execution` 第三个输入；CLI `--no-embedded-agent-execution` → `AppConfig.install_embedded_agent_execution`（**默认 true = 全仓保持今日行为**） | `factory/nomi.rs`、`nomifun-app/src/{cli,config,bootstrap/environment,services}.rs` |
+| 晚绑定槽 `DelegateSinkProviderSlot`（`OnceLock`，同 `BrowserLaneClientProviderSlot`）：`AppServices` 先建工厂、engine 后建，故由 composition root 安装；槽为空 = 该宿主没有可委派的持久执行面 → **不注册该工具** | `factory/delegate.rs`、`AppServices.delegate_sink_provider_slot` |
+
+**待做（Step 7 剩余）**：①在 `router::state::build_agent_execution_engine` 里实现并安装 engine-backed provider（planned：解析 leader 会话 → model pool → `create_from_conversation` / `create_from_template_for_conversation`，attempt 内则 `delegate_from_attempt` 追加）；②`apps/agent-store` 置 `no_embedded_agent_execution`（必须与①同批，否则会先拿走 Store 唯一的委派入口）；③`team/run` 路由 + Leader Conversation + `execution_template_id` 绑定 + Definition → `AppServerChatBindings`；④`apply_app_server_chat_ceiling` 目前无条件强制 `DelegationPolicy::Disabled`，Team 层需要显式决策如何放行（见 §9.1 第 6 条）。
+
+#### 9.2.1 第二批（2026-09-11）：provider 安装 + Store 关闭嵌入版
+
+**①②已落地**：
+
+| 事项 | 位置 |
+|---|---|
+| `EngineDelegateSinkProvider`：持 `Arc<AgentExecutionEngine>` + `ConversationService`，`sink_for(owner, conversation)` 给出该会话的 sink；`plan(goal)` = 取 leader 会话 → 拒 `DelegationPolicy::Disabled` → 若该会话已是某执行的 attempt 则 `delegate_from_attempt` 追加，否则按 `execution_template_id` 走 `create_from_template_for_conversation` / `create_from_conversation`；`plan_gate`/`adaptation_policy`/`max_parallel` 全部由宿主给定，**goal 是模型唯一的输入** | `crates/backend/nomifun-app/src/app_server_delegate.rs` |
+| 安装点：`build_agent_execution_engine` 在 engine 建好后 `install_engine_delegate_sink_provider(...)`；失败仅记 error（该 host 退回"没有 host-backed 委派"） | `nomifun-app/src/router/state.rs` |
+| Store host 关闭嵌入版：`cli.no_embedded_agent_execution = true`（与 `adopt_store_tool_policy` 同处） | `apps/agent-store/src/main.rs` |
+
+**实施中发现并修掉的一处真问题**：provider 是**进程级**安装的（`build_agent_execution_engine` 对所有 host 都跑），因此若只按"槽已安装"就去注册，桌面/Web host 会同时拥有嵌入版与 host-backed 版两个同名 `nomi_delegate` → 第二次注册被 `can_register_route` 判为重复路由而静默拒绝（只留 warning），语义含糊。现已把宿主组装结果提到一个局部变量，注册条件加上 **`!install_embedded_agent_execution`**，把"二选一、绝不同时"变成代码里的显式约束（也正是 `host_delegate_tool.rs` 模块注释所声明的）。
+
+**验证**：`host_composition_switches_the_delegate_deployment`（三态：默认=嵌入版在场 / 关闭后=缺席 / 关闭+provider=同名 host-backed 版回归）、`factory::delegate::tests`（空槽=无工具、二次安装=Conflict、克隆可见性）、`app_server_delegate::tests`（workspace/model pool/use_model/会话 id 校验 5 例）、`cargo check --workspace --tests` **0 error**、`check:agent-vocabulary` 仍是同样的 8 处既有基线红。
+
+**仍未覆盖**：工厂里"槽 → 注册"这段接线的端到端断言。原因是 `AgentRuntimeHandle` 没有公开的工具名查询接口（`AgentRuntimeHandle` 只有生命周期/模式类方法），集成测试无法读注册表；已用 manager 级三态测试 + `should_install_embedded_agent_execution` 单测覆盖其两侧，中间那两行由编译与单测约束。
+
+**③④待做**：`team/run`（公开协议新增，需同步 `05`/`07`/`10` 与 SDK 面、bump 指纹）与 Team 层的 `DelegationPolicy` 放行决策。
+
+#### 9.2.2 第三批（2026-09-11）：`team/run` + Team 层委派放行
+
+**③④已落地**：
+
+| 事项 | 位置 |
+|---|---|
+| ④**委派闸门从工厂 ceiling 移到受信任的建会话接缝**：`apply_app_server_chat_ceiling` 不再改写 `delegation_policy`——它是会话的一等类型化字段，层级由「哪个接缝创建了它」决定（`create_app_server_nomi_chat` 写 `Disabled`，Team 接缝写 `Automatic`）。伪造 `app_server_chat` 标记不能放大任何东西：该标记**只做减项**，而没有它的会话本来就带着自己的策略 | `factory/nomi.rs` |
+| ④**按部署选择委派提示**：同名 `nomi_delegate` 下有三种实现，提示必须描述**真正拥有这个名字的那个**。原先的判据是「有没有 gateway」，而 App Server 会话**永远没有** gateway（`platform_gateway_entitled` 显式排除 `is_app_server_chat`），于是 Team Leader 会拿到已注册但从不被提及的工具。新增 `DelegateDeployment`（Gateway / HostFacade / Embedded / None）与 planned-only 的 `HOST_DELEGATE_STANDARD_HINT`——宿主 facade 版**不能**复用 gateway 文案，后者教模型用 `strategy=parallel` 与 `nomi_execution_get`，而这两者在该部署下不存在 | `factory/nomi.rs` |
+| ④**Team 建会话接缝**：`AppServerTeamLeaderBindings` + `create_app_server_team_leader_chat`（与单 Agent 接缝共用私有实现，栅栏不可能漂移）；`Disabled` 的 Leader 与空 template 一律拒绝——「不能委派的 Leader」是自相矛盾 | `nomifun-conversation/src/service.rs` |
+| ③**Team Definition → 模板物化**：按 `context.agent_store_team_id` 复用；参与者模型优先取 preset 已解析模型、缺失才回退宿主默认模型（且**先解析 Leader 模型再物化**，让两者同源而非巧合）；`workflow_limits.max_parallel` 仅在正整数时生效；`routing_constraints` 等原文进 `context` | `nomifun-app-server/src/team_run.rs` |
+| ③**`team/run` 协议面**：DTO + handler + `POST /api/app-server/team/run` + WS `team/run` + `capabilities.team_runtime`（Team 目录 ∧ 执行 facade）；Leader Conversation → 一轮 turn → 用**新引擎 API** `execution_for_lead_conversation` 反查 `lead` link → 公共 `run_id` | 同上 + `nomifun-app-server/src/lib.rs`、`nomifun-agent-execution/src/engine.rs` |
+| ③**模板参与者模型不再被 Leader 会话模型顶替**：`plan_via_engine` 在模板分支传 `lead_model: None`。模板的 `sort_order = 0` 就是 Team Definition 的 lead；传会话模型会「用这个聊天恰好用着的模型」替换 Definition 权威，而且当它不在成员池里时 `promote_lead_model` 会直接拒绝整个运行 | `nomifun-app/src/app_server_delegate.rs` |
+| ③**Team 的 Connector 面**：`AppServerTeamDetail.connectors` = 该 Team **快照已安装且启用**的 Connector id。成员 Agent 的 `mcpServers` 按 `02` §5.1 只记录、不映射为授权，把它们当可绑定 id 会凭空发明导入从未建立的权限 | `nomifun-app/src/app_server_importer.rs`、`nomifun-api-types/src/app_server.rs` |
+
+**实施中的两处判断，登记在此**：
+
+1. **复用而非改写模板**。Team Definition 变化时不覆盖已存在的模板：模板是用户可编辑的作者数据，静默覆盖会丢掉人工调过的配置。要换版本由用户删除/重建模板（与桌面模板管理面同一契约）。查找窗口上限 200 行，超出则新建。
+2. **`TeamRunReceipt` 不是 `AgentRunReceipt`**。后者带 lead preset 的 `preset_revision` / `content_digest`，而 Team Run 没有 lead preset（权威是模板）。复用那个形状只能靠伪造值上 wire，所以 Team 收据只有 `{run_id, status}`。
+
+**验证**：`nomifun-ai-agent` factory **66 / 0**（含新增的 `exactly_one_delegate_deployment_owns_the_name`、`host_facade_delegation_hint_is_planned_only`、`host_facade_delegation_hint_respects_surface_and_policy`、`app_server_chat_ceiling_leaves_the_delegation_tier_untouched`）；`nomifun-conversation` 两个接缝测试 **2 / 0**（单 Agent 写 `Disabled`、Team 写 `Automatic` + 模板绑定 + 两类拒绝）；`nomifun-app-server` `team_run::tests` **5 / 0**；`cargo check --workspace --tests` **0 error**；`web` **399 passed / 1 skipped**（与基线一致；`45 / 64` → `46 / 65` 的方法计数漂移守卫已同步）；`check:docs-sync` 9 页 0 drift；`check:agent-vocabulary` 仍是同样的 8 处既有基线红。
+
+**仍未覆盖（诚实登记）**：`team/run` 的**端到端**断言（真实 Leader 模型调用委派工具 → 引擎物化 DAG）没有自动化测试。原因是它需要一个可编排的 LLM provider 注入完整 App Server 栈，仓库现有测试基座没有这一层。当前覆盖到的是：请求/收据形状、ceiling 读值、模板取用规则、Team 与单 Agent 两个接缝、模板参与者的引擎侧校验（既有 `nomifun-agent-execution` / `nomifun-db` 测试）。`team/run` 的编排本体（解析 → 栅栏 → 模板 → 会话 → 一轮 → 反查 → 映射）刻意保持为一条直线以便审阅。
 
 ---
 
-## 9. 验收关联
+## 10. 验收关联
 
 | 用例 | 关联点 |
 |---|---|
-| `TC-TEAM-001` | Leader Conversation 创建 + `execution_template_id` 绑定（§7） |
-| `TC-TEAM-002` | Leader 经 `nomi_delegate(strategy=planned)` 触发；实现选择断言（§7） |
-| `TC-RT-*` | 单 Agent Run 的工具面符合 §5.1 基线 |
-| `TC-CONN-*` | Connector 工具确实进入 Store 会话（当前被 ceiling 清空的回归点） |
-| `TC-SEC-*` | §5.3 关闭项不得出现在 Store 会话工具面 |
+| `TC-TEAM-001` | Leader Conversation 创建 + `execution_template_id` 绑定（§8） |
+| `TC-TEAM-002` | Leader 经 `nomi_delegate(strategy=planned)` 触发；实现选择断言（§8） |
+| `TC-RT-*` | 单 Agent Run 的工具面符合 §6.1 基线 |
+| `TC-CONN-*` | Connector 工具确实进入 Store 会话，且**只有绑定的那个**（§7.3） |
+| `TC-SEC-*` | §6.3 关闭项不得出现在 Store 会话工具面 |
 
 工具面的自动化断言建议以 **provider 可见工具名集合**为断言对象（`registry.tool_names()` / `to_tool_defs()`），而不是以配置字段为对象——配置正确但注册顺序变化仍可能改变实际工具面。
 
+现成断言模板：`manager/nomi/agent.rs:6076-6112`（`NomiAgentManager::new(...)` → `agent.engine.lock().await.tool_names()`）。建议三组断言：① 未配置 `[tools]` → 工具面与今日完全一致（防回归，最重要）；② 关 domains → 对应族全部消失，且 Connector 代理与 `ToolSearch` 仍在；③ `deny` 能关掉 `update_plan`（验证减项对无条件注册的工具同样生效）。
+
 ---
 
-## 10. 与其他文档的关系
+## 11. 与其他文档的关系
 
 - 架构边界与决策总表：`00-architecture-decision.md`
 - 领域模型（工具取舍的判定依据）：`01-domain-model.md`
 - Runtime Adapter 与 Team 触发链：`04-allo-runtime-adapter.md`
 - 公共契约（不改）：`10-public-contracts.md`
-- 决策记录（本文依据）：`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3
+- 决策记录（本文依据）：`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3（Team 触发）、§7 决策 5（工具策略权威来源）
+- 同源先例（同一份宿主配置文件的另一段）：`21-open-decisions.zh.md` D3=B（`[approvals]`）
 - 测试总索引：`agent-store-v1-test-cases.md`

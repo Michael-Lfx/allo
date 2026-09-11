@@ -454,6 +454,16 @@ pub struct AppServerTeamDetail {
     #[serde(default)]
     pub workflow_limits: serde_json::Value,
     pub team_runtime_capabilities: Vec<String>,
+    /// Canonical MCP server ids this Team's own snapshot installed and enabled on
+    /// this host — the only Connector surface a Team Run may bind (`20` §8.1).
+    ///
+    /// Deliberately *not* the member Agents' `mcpServers`: plugin-level Agents'
+    /// Connector declarations are recorded rather than mapped to grants
+    /// (`02` §5.1), so treating them as bindable ids would invent authority the
+    /// import never established. A snapshot-installed Connector, by contrast, is
+    /// an exact id the installer already validated.
+    #[serde(default)]
+    pub connectors: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -841,6 +851,14 @@ pub struct AppServerConfigView {
     /// exactly what they answered before.
     #[serde(default)]
     pub memory: Option<AppServerConfigMemoryView>,
+    /// `[tools]` — absent when the file declares no tools table at all.
+    ///
+    /// A present table is reported with its defaults filled in, so
+    /// `Some(policy)` with every switch `true` and both lists empty means "the
+    /// file declares `[tools]` but constrains nothing" — the same
+    /// absent-versus-explicit distinction the `memory` field makes.
+    #[serde(default)]
+    pub tools: Option<crate::NomiToolPolicy>,
 }
 
 /// `[memory]` in the settings file, as far as the wire needs it.

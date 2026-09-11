@@ -87,7 +87,7 @@ The single TypeScript source of truth for the wire contract: every request/respo
 
 | Export | Meaning |
 | --- | --- |
-| `APP_SERVER_PROTOCOL_VERSION` | Current protocol version string (e.g. `"2026-08-26"`); used in the handshake and SDK checks |
+| `APP_SERVER_PROTOCOL_VERSION` | Current protocol version string (e.g. `"2026-09-12"`); used in the handshake and SDK checks |
 | `InitializeRequest` / `InitializeResult` | Handshake request/response (incl. `protocol_version`, server info) |
 | `ClientInfo` / `ClientCapabilities` | Caller self-description |
 | `StoreList` / `StoreInstallResult` | Winget-style unified catalog |
@@ -279,6 +279,7 @@ await sub.close(); // server side unsubscribe (closing the socket also works)
 
 ```ts
 client.runs.agent(input: AgentRunInput): Promise<RunReceipt>; // async receipt, not the final result
+client.runs.team(input: TeamRunInput): Promise<TeamRunReceipt>; // team run: Leader conversation + planned delegation
 client.runs.get(runId): Promise<RunView>;                     // authoritative state
 client.runs.result(runId): Promise<RunResult>;                // resolves only at a terminal state
 client.runs.events({ runId, afterSequence, limit }): Promise<RunEvent[]>; // cursor replay
@@ -450,7 +451,7 @@ How the three packages' real exports line up with the protocol methods. Method n
 | `skills` | `list()` / `get(skillId)` | `skill/list` / `skill/get` |
 | `connectors` | `list()` / `get(id)` / `status(id)` / `test(id)` / `authStatus(id)` / `authStart(id)` / `logout(id)` | `connector/list` · `get` · `status` · `test` · `auth/status` · `auth/start` · `auth/logout` |
 | `conversations` | `create(input)` / `update(id, input)` / `modelOptions()` / `list(limit?)` / `get(id)` / `messages(query)` / `send(id, content, idempotencyKey)` / `cancel(id)` / `delete(id)` / `follow(id, options?)` | the same-named `conversation/*` methods |
-| `runs` | `agent(input)` / `get(id)` / `result(id)` / `events(query)` / `cancel(input)` / `steer(input)` / `answerDecision(input)` / `follow(id, options?)` | `agent/run` · `run/get` · `run/result` · `run/events` · `run/cancel` · `run/steer` · `run/answer-decision` |
+| `runs` | `agent(input)` / `team(input)` / `get(id)` / `result(id)` / `events(query)` / `cancel(input)` / `steer(input)` / `answerDecision(input)` / `follow(id, options?)` | `agent/run` · `team/run` · `run/get` · `run/result` · `run/events` · `run/cancel` · `run/steer` · `run/answer-decision` |
 | `workspaces` | `list()` / `create(path)` / `revoke(id)` | `workspace/list` / `workspace/create` / `workspace/revoke` |
 | `models` | `list()` | `models/list` |
 
@@ -465,7 +466,7 @@ const routes = httpRouteTable();
 // { "market/remove": { verb: "POST", path: "/markets/:marketplace_id/remove", source: "…" }, … }
 ```
 
-- Covers **45 / 64** methods. The 19 without an HTTP binding: `initialize`, `initialized`, `workspace/create`, `conversation/model-options`, `conversation/update`, `conversation/subscribe`, `conversation/unsubscribe`, `run/subscribe`, `run/unsubscribe`, `agent/list`, `agent/get`, `team/list`, `team/get`, `config/get`, `config/set`, `skill/create`, `skill/update`, `skill/delete`, `skill/copy`.
+- Covers **46 / 65** methods. The 19 without an HTTP binding: `initialize`, `initialized`, `workspace/create`, `conversation/model-options`, `conversation/update`, `conversation/subscribe`, `conversation/unsubscribe`, `run/subscribe`, `run/unsubscribe`, `agent/list`, `agent/get`, `team/list`, `team/get`, `config/get`, `config/set`, `skill/create`, `skill/update`, `skill/delete`, `skill/copy`.
 - `config/get` / `config/set` (the host settings file `~/.agent-store/config.toml`) are **host management surface** (`16` §6): wire methods with no HTTP binding, and deliberately **not part of this package's client** — the Web UI calls them through its own transport helpers. Contract in `05` §4.10.
 - `skill/create` / `skill/update` / `skill/delete` / `skill/copy` (the skill write face, `16` R17 / W12) are host management surface by the same `16` §6 judgement: a third-party consumer must not be able to write files into the host's skill tree, so they are wire-only, have no HTTP binding, and are not in this package. `skill/update` is a **field-level patch** (only the named fields move; `name` is not editable) and `skill/copy` derives a writable user skill from any origin. The read face's `SkillSummary` gains `origin` / `writable` (additive); contract in `05` §4.11.
 - **`HttpTransport` is the request/response binding and is not equivalent to WebSocket**: `notify()` throws and `onNotification()` returns a no-op unsubscribe. Live events and subscriptions require `WebSocketTransport`.

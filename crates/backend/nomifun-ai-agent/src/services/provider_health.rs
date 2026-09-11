@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -199,6 +199,8 @@ impl ProviderHealthCheckService {
         };
 
         Ok(NomiResolvedConfig {
+            // Provider probes never adopt a host tool policy.
+            tool_policy: nomifun_api_types::NomiToolPolicy::default(),
             provider_id: ProviderId::parse(&row.provider_id).map_err(|e| {
                 AppError::Internal(format!(
                     "provider row {} has an invalid provider id: {e}",
@@ -695,6 +697,8 @@ mod tests {
 
     fn test_chat_probe_config(session_directory: PathBuf) -> NomiResolvedConfig {
         NomiResolvedConfig {
+            // Provider probes never adopt a host tool policy.
+            tool_policy: nomifun_api_types::NomiToolPolicy::default(),
             provider_id: ProviderId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
             provider: "openai".to_owned(),
             api_key: "sk-test".to_owned(),
@@ -795,6 +799,8 @@ mod tests {
     #[test]
     fn openai_model_probe_is_used_for_custom_openai_compatible_configs() {
         let config = NomiResolvedConfig {
+            // Provider probes never adopt a host tool policy.
+            tool_policy: nomifun_api_types::NomiToolPolicy::default(),
             provider_id: ProviderId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
             provider: "openai".to_owned(),
             api_key: "sk-test".to_owned(),

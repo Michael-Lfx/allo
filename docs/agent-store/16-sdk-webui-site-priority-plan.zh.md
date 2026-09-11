@@ -1241,7 +1241,7 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
 
 ## 7. 决策记录（原 `agent-store-v1-roadmap.md` §10）
 
-> 本节由 `agent-store-v1-roadmap.md` §10 整体并入（2026-09-11 文档合并）。**这是本仓库 Agent Store 线唯一的决策记录位置**；此前文档中「见 `roadmap` §10」的引用现指向本节。原决策编号 1–4 保持不变：**1** 二进制分发 · **2** 协议词汇对齐（版本框架部分被 §7 决策 4 取代）· **3** Team Run 触发方式 · **4** 发版前单一版本与契约指纹。
+> 本节由 `agent-store-v1-roadmap.md` §10 整体并入（2026-09-11 文档合并）。**这是本仓库 Agent Store 线唯一的决策记录位置**；此前文档中「见 `roadmap` §10」的引用现指向本节。原决策编号 1–4 保持不变：**1** 二进制分发 · **2** 协议词汇对齐（版本框架部分被 §7 决策 4 取代）· **3** Team Run 触发方式 · **4** 发版前单一版本与契约指纹。**2026-09-11 新增决策 5**：Store 工具面的表达层。
 
 以下决策由用户拍板，作为后续实施依据，覆盖此前文档中的“待定/备选”表述；实施顺序见 `15-store-chain-and-protocol-vnext-plan.zh.md`。
 
@@ -1253,12 +1253,21 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
    - 注册给 Leader 的必须是绑定真实 `AgentExecutionEngine`（具备持久化 Execution/Event/Attempt）的 planned 实现。仅支持 `strategy=parallel`、以同步无持久化方式投影的 embedded 实现（`nomi-agent::local_delegate_tool`）不得用于 Team Runtime；Store 会话必须关闭该实现，避免模型选中错误版本。
    - App Server 的公共 `run_id` 仍由 `AppServerRunMapping` 从内部 Execution 映射，模型不可见；Leader turn 产生的 Execution 通过 ConversationExecutionLink 反查。
    - 该决策把"Leader 必须有 Conversation/Attempt"从"暂不要求"变为"必须"（不必用户可见）。
+   - **落地记录（2026-09-11）**：`team/run` 已按本决策实现，协议面与收据形状见 `05` §5.2；工具面表达层见 `20` §9.2.2。落地点与决策文本的两处**偏差登记**：① 请求里**没有** `planning` 块（`deny_unknown_fields` 直接拒绝），因为它与「成员池/并发不受模型输入」互斥；② Leader Conversation 建成真实 App Server 会话，因此**会**出现在 owner 的 `conversation/list`——「不必用户可见」是许可而非禁止，`13` TC-TEAM-002 中原「不创建用户可见 Leader Conversation」的措辞已随之作废。
 4. **正式发版前所有文档统一为「单一现行版本」，不设版本兼容框架**（2026-09-11）：适用范围＝协议 + SDK（`05`、`07`）、插件规范（`17`）、市场规范（`18`），以及全部计划 / 决策文档。
    - **唯一冻结线是「正式发版」**：发版前这些文档均为**现行正文**，可自由调整；「冻结」一词在发版前退休。发版后才开始有版本语义（那时才可能出现 v2）。
    - 因此不设：v1 / v1.1 / v2 的版本路径、迁移窗口、弃用窗口、向后兼容承诺、别名层、破坏性变更公告义务（针对规范文本）。
    - **决策 2 被本记录取代的部分**：原写「V1 之后破坏性升级公共协议为 v2」不成立——`thread/turn/item` 词汇与概念对齐属**协议 v1 内部**调整，不是"下一版"。**目标不变**（概念模型对齐 Codex app-server、保留 `initialize` 与 `dispatch_connection_request` 唯一分发、stdio 维持排除、动工前先产出 Codex app-server 概念比对）。
    - **`17` §8「届时本规范升级为 v2」是范围问题而非版本问题**：原生格式尚未定义，将来以**新增章节或独立文档**落地，兼容层降为导入源。
    - **保留两条纪律**：① 任何变更走**显式修订 + 偏差登记**，不静默修改（原「不静默修改本冻结版本」的有效部分）；② **已发布 npm 包的版本号与 `changelog` 公告义务（D10=A）不变**——那是**发行机制**的版本，不是规范 / 协议的版本。
-   - **`PROTOCOL_VERSION` 不是版本号，而是契约指纹**（`nomifun-app-server/src/lib.rs:86`、`web/packages/protocol/src/protocol.ts:8`、`web/packages/client/src/http-transport.ts:43`）：任何 wire 改动（方法增删改名、现有 DTO 加字段、事件 payload 变化）都必须同步 bump 三处。**现状是坏的**：该常量自 `450d1037c` 设下后从未更新，期间已有 `config/get|set`、`skill/create|update|delete`、`run/plan`、`market/*`、`message.activity.usage` 等 wire 变更 → 当前握手对契约漂移**无保护**。
+   - **`PROTOCOL_VERSION` 不是版本号，而是契约指纹**（`nomifun-app-server/src/lib.rs:94`、`web/packages/protocol/src/protocol.ts:8`、`web/packages/client/src/http-transport.ts:43`）：任何 wire 改动（方法增删改名、现有 DTO 加字段、事件 payload 变化）都必须同步 bump 三处。**该常量已于 2026-09-11 随 `config/get`·`config/set` 视图新增 `tools` 字段一并 bump**（`2026-08-26` → `2026-09-11`），**并于同日随 `team/run` + `team_runtime` 能力位 + `TeamDetail.connectors` bump 到 `2026-09-12`**（指纹要点是「与上一次不同」，同日第二次变更按次日戳记，不能因为日期相同就复用同一个值）。**实测落点比「三处」更广：8 处代码/夹具 + 2 处站点文档**——三个权威位置之外还有 `web/scripts/mock-server.ts`（mock 握手；客户端 `client.ts:131` 与 `sdk/src/spawn.ts:25` 做**严格相等**校验，漏改即 mock 流程与 spawn 校验失败）、`web/scripts/smoke.ts`（2 处）、`web/packages/sdk/src/readiness.test.ts`（2 处）。为根治该类漂移，两处 Rust e2e 夹具（`nomifun-app/tests/importer_e2e.rs`、`agent_execution_decision_e2e.rs`）与 SDK 的 `spawn.test.ts` 已改为**引用常量本身**（`nomifun_app_server::PROTOCOL_VERSION` / `APP_SERVER_PROTOCOL_VERSION`）而非复制字面量；`site/content/docs/{zh-CN,en-US}/typescript-sdk.md` 的示例串同步更新（`check:docs-sync` 9 页 0 drift）。另有一类**内容**漂移由 `web/packages/client/src/{http-transport,docs-drift}.test.ts` 守卫：路由表条目数与站点文档引用的「已映射/未映射」计数必须同时改（`team/run` 落地时由 `45 / 64` 改为 `46 / 65`）。
    - **连带订正 D6 落地口径**：原「逃生口默认关（不破坏现有可安装性）」的前提是规范已发布；规范未发版、无既有消费者，但按用户 2026-09-11 决定落地为**严格依赖检查默认关（`[import].strict_dependencies` 默认 `false`），保留现状行为**（逃生口保留是因为它本身有产品价值，不是为兼容）；原写「阻断默认开」已被同决定订正，见 §5.2 R23 / R24 行与 §5.3 落地记录。
    - **本记录不改写历史证据页**：`13-p0-execution-plan.md` §15 / `13-p0-execution-plan.md` §14 / `13-p0-execution-plan.md` / `agent-store-v1-test-cases.md` 里的「版本冻结」指的是**被安装 Agent 的版本冻结语义（TC-RT-002）**，与本记录无关，一字不动。
+5. **Store 会话工具面的表达层定为 `~/.agent-store/config.toml` 的 `[tools]`**（2026-09-11）：决策 3 解决「Team 怎么触发」，本决策解决「工具面在哪一层表达」。
+    - **只做减项、只取更严**：`[tools]` 表达的排除项与引擎既有的 `%APPDATA%\nomi\config.toml`（`crates/agent/nomi-config/src/config.rs:960`）及 `<会话 workspace>/.nomi.toml`（`:703-708`）取交集（bool 取 AND、deny 取并集），不做覆盖——不存在「引擎说开、Store 说关、结果开了」的路径。
+    - **权威来源选它的理由**：它与 `21` D3=B 已拍板的 `[approvals]` 同属一份宿主配置文件、同一语义层（宿主策略归宿主配置），且是三者中唯一既有「表达宿主策略」语义、又有产品读写面（`config_view` / `AgentStoreConfigPatch`）的一份。
+    - **隔离前提＝部署形态**：Store 以**独立 host + 独立 data-dir** 部署，宿主级策略即 Store 策略。**残留风险**：`apps/web/src/main.rs:247-252` 也指向同一份文件，因此 `[tools]` 必须由一枚宿主位限定只被 agent-store host 采纳。
+    - **不新增任何表达执行部署形态的配置**（embedded vs platform Agent Execution）：`scripts/check-agent-vocabulary.mjs:342-358` 禁止 `ToolsConfig` 出现该类标识符，`config.rs:975-979` 已主动删除三个历史键；该选择属宿主组装，沿用决策 3 的约束。
+    - **配套需要一个「减项」**：既有 `builtin_allowlist` 会连带滤掉 Connector 代理工具、且其语义（空 = 全放行）是为极小集合设计的，无法表达「保留大多数、去掉少数」；因此需为 `ToolsConfig`/`ToolRegistry` 增加注册黑名单（对 bootstrap 之后动态注册同样生效）。
+    - **命名与匹配规则对齐参考实现**：`[tools]` 的 `enabled`（非空才约束）/ `disabled`（在 `enabled` 之后应用）双列表、内置名精确匹配、MCP 用 `mcp__<server>__*` glob（我们的 canonical 名形如 `mcp__{slug≤42}__{hash16}`，故前缀 glob 稳定）、以及「匹配不到任何工具的三类写法启动告警」，对齐 Kimi Code CLI 配置文件 §`tools`（<https://www.kimi.com/code/docs/kimi-code-cli/configuration/config-files.html#tools>）。必须保留的差异（产品域开关 `[tools.domains]`、注册期移除强于广告过滤、不引入第三种 Agent 级写法）见 `20` §7.8。
+    - 逐项取舍表、机制勘误与实施步骤见 `20-tool-injection-policy.zh.md`（2026-09-11 重构：第 9 节 Step 1–7）。

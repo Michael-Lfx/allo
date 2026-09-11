@@ -62,6 +62,8 @@ use crate::service::{
     EditResubmitDeliveryState, PublicTurnDeliveryState, QuiescentOrphanReconciliation,
 };
 use crate::RepositoryExecutionConversationBoundary;
+use crate::AppServerChatBindings;
+use crate::AppServerTeamLeaderBindings;
 use crate::skill_resolver::{
     FixedSkillResolver, ResolvedAgentSkill, ResolvedSkillSnapshot, SkillResolver,
 };
@@ -17200,6 +17202,338 @@ async fn replace_skill_snapshot_repairs_non_object_extra() {
     let row = repo.get(&conv.conversation_id).await.unwrap().unwrap();
     let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
     assert_eq!(extra["skills"], json!(["pdf"]));
+}
+
+/// Minimal `IMcpServerRepository` for the App Server chat fence tests: only the
+/// by-id read the seam uses is implemented.
+struct MockMcpServerRepo {
+    rows: Vec<nomifun_db::models::McpServerRow>,
+}
+
+#[async_trait::async_trait]
+impl nomifun_db::IMcpServerRepository for MockMcpServerRepo {
+    async fn list(&self) -> Result<Vec<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        Ok(self.rows.clone())
+    }
+    async fn list_by_ids_any(
+        &self,
+        mcp_server_ids: &[String],
+    ) -> Result<Vec<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        Ok(self
+            .rows
+            .iter()
+            .filter(|row| mcp_server_ids.iter().any(|id| id == &row.mcp_server_id))
+            .cloned()
+            .collect())
+    }
+    async fn find_by_id(
+        &self,
+        mcp_server_id: &str,
+    ) -> Result<Option<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        Ok(self
+            .rows
+            .iter()
+            .find(|row| row.mcp_server_id == mcp_server_id)
+            .cloned())
+    }
+    async fn find_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        Ok(self.rows.iter().find(|row| row.name == name).cloned())
+    }
+    async fn create(
+        &self,
+        _params: nomifun_db::CreateMcpServerParams<'_>,
+    ) -> Result<nomifun_db::models::McpServerRow, nomifun_db::DbError> {
+        unimplemented!("not used by the App Server chat fence")
+    }
+    async fn update(
+        &self,
+        _mcp_server_id: &str,
+        _params: nomifun_db::UpdateMcpServerParams<'_>,
+    ) -> Result<nomifun_db::models::McpServerRow, nomifun_db::DbError> {
+        unimplemented!("not used by the App Server chat fence")
+    }
+    async fn delete(&self, _mcp_server_id: &str) -> Result<(), nomifun_db::DbError> {
+        unimplemented!("not used by the App Server chat fence")
+    }
+    async fn batch_upsert(
+        &self,
+        _servers: &[nomifun_db::CreateMcpServerParams<'_>],
+    ) -> Result<Vec<nomifun_db::models::McpServerRow>, nomifun_db::DbError> {
+        unimplemented!("not used by the App Server chat fence")
+    }
+    async fn update_status(
+        &self,
+        _mcp_server_id: &str,
+        _status: &str,
+        _last_connected: Option<nomifun_common::TimestampMs>,
+    ) -> Result<(), nomifun_db::DbError> {
+        unimplemented!("not used by the App Server chat fence")
+    }
+    async fn update_tools(
+        &self,
+        _mcp_server_id: &str,
+        _tools: Option<&str>,
+    ) -> Result<(), nomifun_db::DbError> {
+        unimplemented!("not used by the App Server chat fence")
+    }
+}
+
+fn mcp_row(id: &str, name: &str, builtin: bool) -> nomifun_db::models::McpServerRow {
+    nomifun_db::models::McpServerRow {
+        mcp_server_id: id.to_owned(),
+        name: name.to_owned(),
+        description: None,
+        enabled: true,
+        transport_type: "stdio".to_owned(),
+        transport_config: json!({ "command": "server" }).to_string(),
+        tools: None,
+        last_test_status: "connected".to_owned(),
+        last_connected: None,
+        original_json: None,
+        builtin,
+        deleted_at: None,
+        created_at: 1,
+        updated_at: 1,
+    }
+}
+
+/// The App Server chat seam binds **exactly** the Definition's Connectors and
+/// Skills. Two failure modes this pins down:
+///
+/// - a `None`/absent Connector selection would mean "every enabled MCP server on
+///   this host" (`load_user_mcp_servers` reads it that way), so an unbound chat
+///   must carry an explicit **empty** fence;
+/// - the host's auto-inject Skills must stay excluded while the Definition's own
+///   Skills are frozen in.
+#[tokio::test]
+async fn app_server_chat_binds_exactly_the_definition_connectors_and_skills() {
+    let bindable = "0190f5fe-7c00-7a00-8000-000000000123";
+    let other = "0190f5fe-7c00-7a00-8000-000000000124";
+    let builtin = "0190f5fe-7c00-7a00-8000-000000000125";
+
+    let (svc, _broadcaster, _repo, _runtime_registry) =
+        make_service_with_resolver(Arc::new(FixedSkillResolver {
+            names: vec!["host-auto-skill".into()],
+        }));
+    svc.with_mcp_server_repo(Arc::new(MockMcpServerRepo {
+        rows: vec![
+            mcp_row(bindable, "server-bound", false),
+            mcp_row(other, "server-other", false),
+            mcp_row(builtin, "server-builtin", true),
+        ],
+    }));
+
+    let workspace = std::env::temp_dir().join("app-server-chat-fence");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let model = ProviderWithModel {
+        provider_id: PROVIDER_ID_1.to_owned(),
+        model: "m1".to_owned(),
+        use_model: None,
+    };
+
+    // 1. A Definition that binds one Connector and one Skill.
+    let bound = svc
+        .create_app_server_nomi_chat(
+            TEST_USER_1,
+            Some("bound".to_owned()),
+            model.clone(),
+            workspace.to_string_lossy().into_owned(),
+            None,
+            None,
+            AppServerChatBindings {
+                connector_ids: vec![nomifun_api_types::McpServerId::parse(bindable).unwrap()],
+                skill_names: vec!["bound-skill".into()],
+            },
+        )
+        .await
+        .expect("create must succeed");
+
+    assert_eq!(
+        bound.extra["mcp_server_ids"],
+        json!([bindable]),
+        "only the bound Connector may be selected: {bound:?}"
+    );
+    assert_eq!(
+        bound.delegation_policy,
+        DelegationPolicy::Disabled,
+        "a single Agent Run is one Agent's turn: `nomi_delegate` must be refused"
+    );
+    assert!(
+        bound.execution_template_id.is_none(),
+        "a single Agent Run binds no Team template: {bound:?}"
+    );
+    // The trusted marker is what `is_app_server_chat` filters on for `list`/`get`;
+    // if it did not survive the create path the whole Store surface would be
+    // invisible, so pin it here.
+    assert_eq!(
+        bound.extra[crate::APP_SERVER_CHAT_EXTRA_KEY],
+        json!(true),
+        "the App Server chat marker must persist: {bound:?}"
+    );
+    assert_eq!(bound.extra["mcp_servers"], json!(["server-bound"]));
+    assert_eq!(
+        bound.extra["skills"],
+        json!(["bound-skill"]),
+        "the Definition's Skill is frozen in and the host auto-inject stays excluded"
+    );
+    // `exclude_auto_inject_skills` is a create-time input, consumed into the
+    // frozen snapshot (and therefore gone from the stored extra) — the evidence
+    // that it worked is that `host-auto-skill` is absent from `skills`.
+    assert!(
+        bound.extra.get("exclude_auto_inject_skills").is_none(),
+        "the transient exclusion list must not persist: {bound:?}"
+    );
+
+    // 2. A Definition that binds nothing: an explicit empty fence, never "all".
+    let unbound = svc
+        .create_app_server_nomi_chat(
+            TEST_USER_1,
+            Some("unbound".to_owned()),
+            model,
+            workspace.to_string_lossy().into_owned(),
+            None,
+            None,
+            AppServerChatBindings::default(),
+        )
+        .await
+        .expect("create must succeed");
+
+    assert_eq!(
+        unbound.extra["mcp_server_ids"],
+        json!([]),
+        "an unbound chat must bind no Connector: {unbound:?}"
+    );
+    assert_eq!(unbound.extra["mcp_servers"], json!([]));
+    assert_eq!(unbound.extra["skills"], json!([]));
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+/// The Team tier of the same seam (`16` §7 决策 3): identical fences, plus the
+/// binding that makes a Leader Conversation a Leader.
+///
+/// The delegation policy and the template id are the *Team* tier, and they are
+/// typed Conversation fields — not `extra`, which explicitly refuses those names
+/// (`reject_execution_policy_extra_keys`). A `Disabled` tier is contradictory for
+/// a Leader and must be refused rather than silently accepted.
+#[tokio::test]
+async fn app_server_team_leader_chat_binds_the_tier_and_the_template() {
+    let bindable = "0190f5fe-7c00-7a00-8000-000000000223";
+    let (svc, _broadcaster, _repo, _runtime_registry) = make_service_with_resolver(Arc::new(
+        FixedSkillResolver {
+            names: vec!["host-auto-skill".into()],
+        },
+    ));
+    svc.with_mcp_server_repo(Arc::new(MockMcpServerRepo {
+        rows: vec![mcp_row(bindable, "server-bound", false)],
+    }));
+
+    let workspace = std::env::temp_dir().join("app-server-team-leader-fence");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let model = ProviderWithModel {
+        provider_id: PROVIDER_ID_1.to_owned(),
+        model: "m1".to_owned(),
+        use_model: None,
+    };
+    let template_id = nomifun_common::AgentExecutionTemplateId::new().into_string();
+
+    let leader = svc
+        .create_app_server_team_leader_chat(
+            TEST_USER_1,
+            Some("team leader".to_owned()),
+            model.clone(),
+            workspace.to_string_lossy().into_owned(),
+            None,
+            None,
+            AppServerTeamLeaderBindings {
+                connector_ids: vec![nomifun_api_types::McpServerId::parse(bindable).unwrap()],
+                skill_names: vec!["team-skill".into()],
+                execution_template_id: format!("  {template_id}  "),
+                delegation_policy: DelegationPolicy::Automatic,
+            },
+        )
+        .await
+        .expect("create must succeed");
+
+    assert_eq!(
+        leader.extra[crate::APP_SERVER_CHAT_EXTRA_KEY],
+        json!(true),
+        "a Leader is still an App Server chat: {leader:?}"
+    );
+    assert_eq!(leader.extra["mcp_server_ids"], json!([bindable]));
+    assert_eq!(
+        leader.extra["skills"],
+        json!(["team-skill"]),
+        "the Team Definition's Skill is frozen in and the host auto-inject stays excluded"
+    );
+    assert_eq!(
+        leader.delegation_policy,
+        DelegationPolicy::Automatic,
+        "the Leader must be able to call nomi_delegate"
+    );
+    assert_eq!(
+        leader.execution_template_id.as_deref(),
+        Some(template_id.as_str()),
+        "the Team template is the Leader's member/limit authority: {leader:?}"
+    );
+    // The tier must live in the typed columns only. `extra` is the open bag the
+    // runtime also reads, so a copy there would be a second, forgeable source.
+    assert!(leader.extra.get("delegation_policy").is_none());
+    assert!(leader.extra.get("execution_template_id").is_none());
+
+    // A Leader that cannot delegate is a contradiction: `nomi_delegate` would be
+    // registered and then refuse every call, so reject at the seam.
+    let refused = svc
+        .create_app_server_team_leader_chat(
+            TEST_USER_1,
+            Some("inert leader".to_owned()),
+            model.clone(),
+            workspace.to_string_lossy().into_owned(),
+            None,
+            None,
+            AppServerTeamLeaderBindings {
+                connector_ids: Vec::new(),
+                skill_names: Vec::new(),
+                execution_template_id: template_id.clone(),
+                delegation_policy: DelegationPolicy::Disabled,
+            },
+        )
+        .await
+        .expect_err("a Team Leader with delegation disabled must be refused");
+    assert!(
+        refused.to_string().contains("must be allowed to delegate"),
+        "unexpected refusal: {refused}"
+    );
+
+    // Same for an empty/absent template: the member pool would have no source.
+    let no_template = svc
+        .create_app_server_team_leader_chat(
+            TEST_USER_1,
+            Some("unbound leader".to_owned()),
+            model,
+            workspace.to_string_lossy().into_owned(),
+            None,
+            None,
+            AppServerTeamLeaderBindings {
+                connector_ids: Vec::new(),
+                skill_names: Vec::new(),
+                execution_template_id: "   ".to_owned(),
+                delegation_policy: DelegationPolicy::Automatic,
+            },
+        )
+        .await
+        .expect_err("a Team Leader without a template must be refused");
+    assert!(
+        no_template
+            .to_string()
+            .contains("requires an execution_template_id"),
+        "unexpected refusal: {no_template}"
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace);
 }
 
 #[tokio::test]

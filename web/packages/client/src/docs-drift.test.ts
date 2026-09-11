@@ -15,9 +15,9 @@ const guide = (locale: "zh-CN" | "en-US") =>
  * checks zh/en structural parity — it cannot see content drift like this.
  */
 describe("developer guide ↔ code drift guard", () => {
-  it("quotes the same 45 / 64 split the route table has", () => {
+  it("quotes the same 46 / 65 split the route table has", () => {
     for (const locale of ["zh-CN", "en-US"] as const) {
-      expect(guide(locale), `${locale} must quote the current split`).toContain("45 / 64");
+      expect(guide(locale), `${locale} must quote the current split`).toContain("46 / 65");
     }
   });
 

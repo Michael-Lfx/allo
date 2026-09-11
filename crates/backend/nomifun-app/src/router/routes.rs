@@ -1095,6 +1095,9 @@ pub fn create_router_with_all_state(
                     plugin_snapshot_repository.clone(),
                 ),
             )),
+            // The same facade every other host surface uses: `team/run` materializes
+            // the Team template and reverse-maps the Leader's execution here.
+            engine: Some(states.agent_execution.clone()),
             // Winget-style unified store: aggregated items over all enabled
             // marketplaces with install state + one-click install.
             store: Some(Arc::new(

@@ -18,7 +18,6 @@ const DISPLAY_METADATA: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../nomifun-importer/tests/fixtures/display-metadata"
 );
-const PROTOCOL_VERSION: &str = "2026-08-26";
 
 fn bearer_json(
     method: &str,
@@ -66,7 +65,7 @@ async fn app_server_handshake(
             "POST",
             "/api/app-server/initialize",
             serde_json::json!({
-                "protocol_version": PROTOCOL_VERSION,
+                "protocol_version": nomifun_app_server::PROTOCOL_VERSION,
                 "client": { "name": "importer-e2e", "version": "1" },
                 "capabilities": {},
             }),

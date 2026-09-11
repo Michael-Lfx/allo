@@ -268,6 +268,18 @@ fn main() -> Result<ExitCode> {
         cli.agent_store_config =
             nomifun_app_server::agent_store::AgentStoreConfig::default_path();
     }
+    // This host *is* the Agent Store deployment, so it is the one host that
+    // adopts the config file's `[tools]` table as its global tool policy
+    // (`20-tool-injection-policy.zh.md`). The desktop and web hosts point at the
+    // same file for providers/marketplaces and deliberately leave this off.
+    cli.adopt_store_tool_policy = true;
+    // This host owns a durable Agent Execution facade, so its sessions must expose
+    // *that* as `nomi_delegate` instead of the embedded, synchronous,
+    // parallel-only deployment (`16` §7 决策 3). The provider for it is installed by
+    // `router::state::build_agent_execution_engine`, and the two must ship together:
+    // turning the embedded one off on its own would leave this host with no
+    // delegate at all.
+    cli.no_embedded_agent_execution = true;
 
     // Same ordering as every other host: runtime init + PATH enhancement
     // BEFORE any worker thread / tokio runtime exists.
