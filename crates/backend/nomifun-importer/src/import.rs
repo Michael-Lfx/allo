@@ -19,6 +19,7 @@ use nomifun_db::{
 use serde_json::json;
 
 use crate::compat;
+use crate::dependency::{CatalogIndex, DependencyProblem, check_dependencies};
 use crate::digest::tree_digest;
 use crate::frontmatter::{parse_agent, parse_skill, AgentDoc};
 use crate::manifest::{PluginManifest, validate_relative_path};
@@ -95,22 +96,85 @@ impl ImportRequest {
     }
 }
 
+/// Upper bound on how many snapshots feed the dependency catalog index
+/// (`dependency.rs`). Large enough for the real market sizes (hundreds of
+/// entries), bounded so the index stays a cheap per-import projection.
+const CATALOG_INDEX_LIMIT: u32 = 500;
+
 /// Importer entry point. `snapshot_root` is the versioned immutable cache
 /// root (e.g. `{work_dir}/agent-store-imports/`).
 #[derive(Clone)]
 pub struct ImporterService {
     snapshot_root: PathBuf,
     repo: Arc<dyn IPluginSnapshotRepository>,
+    /// `[import].strict_dependencies` (`17` §7 / `02` §11.1). Default **off**:
+    /// dependencies stay registration-only, exactly as before the switch
+    /// existed. When on, a dependency that declares a SemVer range but cannot be
+    /// resolved against the catalog blocks the import with the missing items.
+    strict_dependencies: bool,
 }
 
 impl ImporterService {
     pub fn new(snapshot_root: PathBuf, repo: Arc<dyn IPluginSnapshotRepository>) -> Self {
-        Self { snapshot_root, repo }
+        Self {
+            snapshot_root,
+            repo,
+            strict_dependencies: false,
+        }
+    }
+
+    /// Turn on `[import].strict_dependencies` (`17` §7).
+    ///
+    /// The host reads the key from `~/.agent-store/config.toml`
+    /// (`AgentStoreConfig::strict_dependencies`) — the same switch the extension
+    /// layer reads for its own dependency blocking, so one key governs both
+    /// halves of `16` R23.
+    pub fn with_strict_dependencies(mut self, strict_dependencies: bool) -> Self {
+        self.strict_dependencies = strict_dependencies;
+        self
     }
 
     /// The immutable snapshot cache root (`{work_dir}/agent-store-imports/`).
     pub fn snapshot_root(&self) -> &std::path::Path {
         &self.snapshot_root
+    }
+
+    /// Project the catalog into the name/version index the dependency decision
+    /// resolves against (`dependency.rs`, `17` §7).
+    ///
+    /// Two sources, deliberately different in what they can prove:
+    /// - **snapshot rows** contribute their name *and* version — a `plugins`
+    ///   dependency names a plugin, and that version is the real thing;
+    /// - **component rows** contribute the name only. Their `payload_json`
+    ///   version is the version of the plugin that shipped them, not the
+    ///   component's own, so comparing a range against it would be a guess.
+    ///
+    /// The current snapshot is absent by construction (it is not persisted
+    /// yet), so a plugin cannot satisfy its own dependency.
+    async fn dependency_catalog_index(&self) -> Result<CatalogIndex, ImportError> {
+        let mut index = CatalogIndex::new();
+        for kind in [
+            crate::models::KIND_AGENT,
+            crate::models::KIND_TEAM,
+            crate::models::KIND_SKILL,
+            crate::models::KIND_CONNECTOR,
+        ] {
+            let rows = self.repo.list_components_by_kind(kind).await.map_err(|error| {
+                ImportError::Internal(format!("dependency catalog lookup: {error}"))
+            })?;
+            for row in rows {
+                index.insert(&row.name, None);
+            }
+        }
+        let snapshots = self
+            .repo
+            .list_snapshots(CATALOG_INDEX_LIMIT)
+            .await
+            .map_err(|error| ImportError::Internal(format!("dependency catalog lookup: {error}")))?;
+        for row in snapshots {
+            index.insert(&row.snapshot.name, Some(row.snapshot.version.as_str()));
+        }
+        Ok(index)
     }
 
     pub async fn run_import(
@@ -130,7 +194,7 @@ impl ImporterService {
         let parsed = match crate::manifest::parse_manifest(&source, request.source_kind) {
             Ok(parsed) => parsed,
             Err(error) => {
-                return Ok(blocked_result(
+                return Ok(blocked_import_result(
                     request.source_kind,
                     None,
                     &[format!("清单解析失败：{error}")],
@@ -148,7 +212,7 @@ impl ImporterService {
             Ok(files) => files,
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&materialized);
-                return Ok(blocked_result(
+                return Ok(blocked_import_result(
                     request.source_kind,
                     Some((parsed.name().to_owned(), parsed.version().to_owned())),
                     &[error.to_string()],
@@ -172,6 +236,12 @@ impl ImporterService {
         };
         let mut builder = ComponentBuilder::new(parsed.version().to_owned());
         let mut agents: Vec<(String, AgentDoc)> = Vec::new();
+        // `dependencies` are consumed by the component builder, which only
+        // *registers* them; keep a copy for the optional decision below.
+        let declared_dependencies: Vec<serde_json::Value> = match &parsed {
+            crate::manifest::ParsedManifest::Plugin(manifest) => manifest.dependencies.clone(),
+            _ => Vec::new(),
+        };
         match (&parsed, request.source_kind) {
             (crate::manifest::ParsedManifest::Plugin(manifest), SourceKind::CodeBuddyPlugin) => {
                 build_plugin_components(&source, manifest, &meta, &mut builder, &mut agents);
@@ -206,7 +276,7 @@ impl ImporterService {
         // Path-safety violations anywhere block the whole snapshot (02 §11.1).
         if !builder.blocking_errors.is_empty() {
             let _ = std::fs::remove_dir_all(&materialized);
-            return Ok(blocked_result(
+            return Ok(blocked_import_result(
                 request.source_kind,
                 Some((meta.name.clone(), meta.declared_version.clone())),
                 &builder.blocking_errors,
@@ -254,7 +324,7 @@ impl ImporterService {
             }
             IdempotencyDecision::Conflict(existing) => {
                 let _ = std::fs::remove_dir_all(&materialized);
-                return Ok(blocked_result(
+                return Ok(blocked_import_result(
                     request.source_kind,
                     Some((meta.name.clone(), meta.declared_version.clone())),
                     &[format!(
@@ -264,6 +334,27 @@ impl ImporterService {
                 ));
             }
             IdempotencyDecision::New => {}
+        }
+
+        // 8b. dependency decision (`17` §7 / `02` §11.1). Opt-in: with
+        // `[import].strict_dependencies` off (the default) this is a no-op and
+        // dependencies stay registration-only, exactly as before. Runs *after*
+        // the idempotency decision on purpose: a reused snapshot is already
+        // stored, so refusing the re-import would take away something that
+        // exists without unblocking anything.
+        if self.strict_dependencies && !declared_dependencies.is_empty() {
+            let catalog = self.dependency_catalog_index().await?;
+            let problems = check_dependencies(&declared_dependencies, &catalog);
+            if !problems.is_empty() {
+                let _ = std::fs::remove_dir_all(&materialized);
+                let errors: Vec<String> =
+                    problems.iter().map(DependencyProblem::message).collect();
+                return Ok(blocked_import_result(
+                    request.source_kind,
+                    Some((meta.name.clone(), meta.declared_version.clone())),
+                    &errors,
+                ));
+            }
         }
 
         let status = if builder.errors.is_empty() && builder.warnings.is_empty() {
@@ -1097,11 +1188,13 @@ fn build_mcp_connector_components(
                     .collect()
             })
             .unwrap_or_default();
-        let env = config
-            .get("env")
-            .and_then(|value| value.as_object())
-            .cloned()
-            .unwrap_or_default();
+        // `17` §6 / `21` D5=C: a sensitive env **value** must never reach the
+        // snapshot. Keep the key (that is what the MCP server reads and what the
+        // user fills) and replace the value with a `secret:<KEY>` reference the
+        // spawn path resolves in memory from `~/.agent-store/config.toml
+        // [credentials]`. Rewriting here (not at registration) is what keeps the
+        // plaintext out of every stored artefact.
+        let env = rewrite_secret_env(config.get("env").and_then(|value| value.as_object()), builder);
         let transport = match (&url, &command) {
             (Some(url), _) => json!({ "type": "http", "url": url }),
             (None, Some(command)) => json!({
@@ -1223,9 +1316,16 @@ fn build_connector_components(
 // small helpers
 // ---------------------------------------------------------------------------
 
-fn is_sensitive_field(key: &str, schema_type: &str, schema: &serde_json::Value) -> bool {
+/// Does this **key name** read as a credential? (`17` §6). The same predicate
+/// classifies `userConfig` fields and `mcp.json` env keys, so a value is either
+/// redacted in both places or neither — no second, divergent heuristic.
+fn looks_sensitive_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
-    if ["api", "token", "secret", "password", "apikey"].iter().any(|part| lower.contains(part)) {
+    ["api", "token", "secret", "password", "apikey"].iter().any(|part| lower.contains(part))
+}
+
+fn is_sensitive_field(key: &str, schema_type: &str, schema: &serde_json::Value) -> bool {
+    if looks_sensitive_key(key) {
         return true;
     }
     if ["apikey", "secret", "token", "oauth", "password"]
@@ -1235,6 +1335,45 @@ fn is_sensitive_field(key: &str, schema_type: &str, schema: &serde_json::Value) 
         return true;
     }
     schema.get("sensitive").and_then(|value| value.as_bool()).unwrap_or(false)
+}
+
+/// Rewrite a `mcp.json` `env` object for the snapshot (`17` §6 / `21` D5=C).
+///
+/// A **sensitive** string value is replaced by a `secret:<KEY>` reference and
+/// never stored; the snapshot keeps the key name, which is what the spawn path
+/// later resolves and what the user must supply. Everything else — non-secret
+/// env such as `NODE_ENV`, non-string values, and a value that is already a
+/// `secret:` reference — passes through unchanged, so an ordinary connector
+/// keeps working without the user filling anything in.
+fn rewrite_secret_env(
+    env: Option<&serde_json::Map<String, serde_json::Value>>,
+    builder: &mut ComponentBuilder,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    let Some(env) = env else {
+        return out;
+    };
+    for (key, value) in env {
+        let rewritten = match value.as_str() {
+            Some(text)
+                if nomifun_common::secret_ref::parse_secret_ref(text).is_none()
+                    && looks_sensitive_key(key) =>
+            {
+                builder.warn(format!(
+                    "mcp.json env[{key}] 的值未导入（改为 {prefix}{key} 引用），\
+                     由用户经安全存储提供（17 §6）",
+                    prefix = nomifun_common::secret_ref::SECRET_PREFIX,
+                ));
+                serde_json::Value::String(format!(
+                    "{}{key}",
+                    nomifun_common::secret_ref::SECRET_PREFIX
+                ))
+            }
+            _ => value.clone(),
+        };
+        out.insert(key.clone(), rewritten);
+    }
+    out
 }
 
 /// Manifest-declared component roots: directories or individual files.
@@ -1370,7 +1509,14 @@ fn read_json_file(path: PathBuf, rel: &str, builder: &mut ComponentBuilder) -> O
     }
 }
 
-fn blocked_result(
+/// Build a `blocked` import result (`02` §11.1 — the whole snapshot is refused).
+///
+/// Public because the blocking rules do not all live in the importer: an
+/// entry-level rule (a marketplace entry declaring `strict=true` without its
+/// own `plugin.json`, `02` §8) is decided by the caller that knows the entry,
+/// and it must produce the identical result shape. A blocked import inserts no
+/// snapshot row — callers return this value without persisting anything.
+pub fn blocked_import_result(
     source_kind: SourceKind,
     identity: Option<(String, String)>,
     errors: &[String],

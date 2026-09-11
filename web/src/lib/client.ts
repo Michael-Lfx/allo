@@ -23,6 +23,7 @@ import {
   type WorkspaceFlatFile,
   type WorkspaceRegistration,
 } from "@flowy-agent-store/protocol";
+import type { FileChangeOperation, SnapshotCompare, SnapshotInfo } from "./artifact-changes";
 
 export * from "@flowy-agent-store/client";
 // The skill write face addresses `skill/get`'s shape, so the store needs the
@@ -262,6 +263,98 @@ export class AppServerClient extends BaseClient {
   async getFileMetadata(path: string, workspace?: string): Promise<FileMetadata | null> {
     const payload = await this.httpPostRoot<FileMetadata>("/api/fs/metadata", workspace ? { path, workspace } : { path });
     return payload.data ?? null;
+  }
+
+  /**
+   * R20b「接受 / 回退」的宿主面原语（`POST /api/fs/snapshot/*`，doc 19 §3 W5）。
+   *
+   * 与 `/api/fs/list` 同源——都是**宿主文件服务**，不是 App Server 协议。Artifact
+   * 协议（`artifact/list` / `artifact/get`）仍然延后（`05` §8 / TC-AS-008），所以
+   * 变更审查落在既有的 git 基线快照上：`compare` 出变更，`stage` = 接受，
+   * `discard` = 回退。`file_path` 一律传**相对路径**（服务端 `workdir.join(...)`）。
+   *
+   * 回调契约：`/api/fs/*` 的 `{ success, data }` 之外，非 2xx 直接抛错——`compare`
+   * 在「工作区未初始化」时抛 400，调用方据此先 `init` 一次（见 store 的
+   * `refreshArtifactChanges`）。
+   */
+
+  /** Track a workspace against a fresh baseline (`POST /api/fs/snapshot/init`). */
+  async snapshotInit(workspace: string): Promise<SnapshotInfo> {
+    const payload = await this.httpPostRoot<SnapshotInfo>("/api/fs/snapshot/init", { workspace });
+    if (!payload.data) throw new Error("snapshot/init returned no data");
+    return payload.data;
+  }
+
+  /** Changes against the baseline, split into pending (`unstaged`) and accepted (`staged`). */
+  async snapshotCompare(workspace: string): Promise<SnapshotCompare> {
+    const payload = await this.httpPostRoot<SnapshotCompare>("/api/fs/snapshot/compare", { workspace });
+    return payload.data ?? { staged: [], unstaged: [] };
+  }
+
+  /** Accept one change (`POST /api/fs/snapshot/stage`); file contents are untouched. */
+  async snapshotStageFile(workspace: string, filePath: string): Promise<void> {
+    await this.httpPostRoot<null>("/api/fs/snapshot/stage", { workspace, file_path: filePath });
+  }
+
+  /** Accept every pending change (`POST /api/fs/snapshot/stage-all`). */
+  async snapshotStageAll(workspace: string): Promise<void> {
+    await this.httpPostRoot<null>("/api/fs/snapshot/stage-all", { workspace });
+  }
+
+  /** Undo an acceptance without touching the file (`POST /api/fs/snapshot/unstage`). */
+  async snapshotUnstageFile(workspace: string, filePath: string): Promise<void> {
+    await this.httpPostRoot<null>("/api/fs/snapshot/unstage", { workspace, file_path: filePath });
+  }
+
+  /**
+   * Revert one change (`POST /api/fs/snapshot/discard`).
+   *
+   * `operation` must be the value `compare` reported — the server does not
+   * re-derive it. `create` deletes the new file; `modify` / `delete` restore it
+   * from the baseline.
+   */
+  async snapshotDiscardFile(workspace: string, filePath: string, operation: FileChangeOperation): Promise<void> {
+    await this.httpPostRoot<null>("/api/fs/snapshot/discard", { workspace, file_path: filePath, operation });
+  }
+
+  /**
+   * R15：把一份本地文件（粘贴 / 拖拽来的 `File`）写进**会话工作区**，返回落点的
+   * 绝对路径——正是附件载体（路径引用）需要的形态。
+   *
+   * 与 `/api/fs/upload` 的默认落点（宿主 tmp 沙箱）不同，这里带上 `workspace`：
+   * 发送路径只准入会话工作区内的真实文件，落 tmp 会得到一个必然被拒的路径。工作区
+   * 准入由服务端复用同一套 allowed-roots 校验（不是第二条路径权威）。
+   */
+  async uploadFileToWorkspace(workspace: string, file: File): Promise<string> {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    form.append("file_name", file.name);
+    form.append("workspace", workspace);
+    const payload = await this.httpPostRootForm<string>("/api/fs/upload", form);
+    if (!payload.data) throw new Error("upload returned no path");
+    return payload.data;
+  }
+
+  /**
+   * Multipart POST to the server **root** file service. `Content-Type` is left
+   * to the browser so the multipart boundary is correct — only the connection
+   * header is sent.
+   */
+  private async httpPostRootForm<T>(path: string, form: FormData): Promise<ApiResponse<T>> {
+    const base = this.serverRootUrl;
+    if (!base) {
+      throw new TransportError("send", "serverRootUrl is required for host file-service calls");
+    }
+    const { connectionId } = await this.httpHandshake();
+    const response = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { [CONNECTION_HEADER]: connectionId },
+      body: form,
+    });
+    if (!response.ok) {
+      throw await this.httpError(response);
+    }
+    return (await response.json()) as ApiResponse<T>;
   }
 
   /**

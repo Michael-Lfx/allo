@@ -63,11 +63,24 @@ export class ConversationClient {
     });
   }
 
-  send(conversationId: string, content: string, idempotencyKey: string): Promise<ConversationSendReceipt> {
+  /**
+   * R15（W10）：`attachments` 是**会话工作区内的绝对路径**（图片附件）。
+   *
+   * 缺省不传，保持老调用方的 wire 形状逐字不变；服务端只接受会话工作区内的真实
+   * 文件（越界 / 相对路径 / 不存在一律拒），具体准入见
+   * `nomifun-app-server` 的 `resolve_conversation_attachments`。
+   */
+  send(
+    conversationId: string,
+    content: string,
+    idempotencyKey: string,
+    attachments: string[] = [],
+  ): Promise<ConversationSendReceipt> {
     return this.transport.request<ConversationSendReceipt>("conversation/send", {
       conversation_id: conversationId,
       content,
       idempotency_key: idempotencyKey,
+      ...(attachments.length > 0 ? { attachments } : {}),
     });
   }
 

@@ -183,6 +183,16 @@ impl StoreProvider for AppServerStoreProvider {
                 );
                 let manifest = nomifun_importer::read_plugin_display(&source);
 
+                // `02` §8: a `strict=true` entry must ship its own
+                // `.codebuddy-plugin/plugin.json`. Checked against the live tree
+                // with the same predicate the import gate uses, so a listed item
+                // and an actual install can never disagree about whether it is
+                // installable.
+                let blocked_reason = crate::app_server_marketplace::strict_entry_block(
+                    entry.strict,
+                    source.join(".codebuddy-plugin/plugin.json").is_file(),
+                );
+
                 let kind = derive_kind(&source, &entry.source_kind, &manifest);
                 // Connector markets declare display metadata in their
                 // `connectors.json` index (id → name_zh/name_en/version);
@@ -297,6 +307,7 @@ impl StoreProvider for AppServerStoreProvider {
                     update_available,
                     snapshot_id,
                     installed_version,
+                    blocked_reason,
                 });
             }
         }
@@ -362,6 +373,22 @@ impl StoreProvider for AppServerStoreProvider {
                     .markets
                     .import_entry(marketplace_id, entry_name)
                     .await?;
+                if result.status == "blocked" {
+                    // `02` §11.1: the snapshot was refused (e.g. a `strict=true`
+                    // entry with no plugin.json of its own). Nothing was
+                    // persisted, so `snapshot_id` names no row — registering it
+                    // would install a phantom. Report the refusal instead.
+                    return Ok(AppServerStoreInstallResult {
+                        marketplace_id: marketplace_id.to_owned(),
+                        entry_name: entry_name.to_owned(),
+                        snapshot_id: result.snapshot_id,
+                        version: result.version,
+                        reused: false,
+                        installed_count: 0,
+                        warnings: result.warnings,
+                        errors: result.errors,
+                    });
+                }
                 result.snapshot_id
             }
         };

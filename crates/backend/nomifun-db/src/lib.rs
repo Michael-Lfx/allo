@@ -12,7 +12,9 @@ pub use database::{
     open_database_for_backup, validate_current_migration_lineage,
 };
 pub use error::DbError;
-pub use id_schema_contract::{validate_id_data_contract, validate_id_schema_contract};
+pub use id_schema_contract::{
+    NON_REFERENCE_ID_COLUMNS, validate_id_data_contract, validate_id_schema_contract,
+};
 pub use models::{
     AppServerIdempotencyReceiptRow, AppServerIdempotencyScope,
     AppServerRunMappingRow, NewAppServerIdempotencyReceipt,

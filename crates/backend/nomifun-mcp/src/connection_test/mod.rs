@@ -112,9 +112,21 @@ impl McpConnectionTestService {
         env: &HashMap<String, String>,
     ) -> McpConnectionTestResult {
         let program = resolve_stdio_command(command);
+        // `17` §6 / `21` D5=C: an imported env value is a `secret:NAME`
+        // reference, resolved here in memory against the host's credentials. A
+        // reference with no credential is dropped (fail-closed) and named in the
+        // log; the literal `secret:NAME` string is never handed to the child.
+        let resolved = nomifun_common::secret_ref::resolve_env(env);
+        if !resolved.missing.is_empty() {
+            warn!(
+                command = %command,
+                missing = ?resolved.missing,
+                "MCP stdio env has unresolved credential references; omitting them"
+            );
+        }
         let mut cmd = CmdBuilder::new(&program);
         cmd.args(args)
-            .envs(env.iter())
+            .envs(resolved.env.iter())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());

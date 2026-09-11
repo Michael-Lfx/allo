@@ -131,3 +131,24 @@ export function planStepAnchor(stepId: string): string {
 export function runStepAnchor(stepId: string): string {
   return `run-step-${stepId}`;
 }
+
+/**
+ * 滚动到锚点并高亮一瞬；**找到目标才返回 `true`**。
+ *
+ * 返回值是给「锚点可能还没渲染出来」的调用方用的（R20a 的产物归属跳转要等
+ * `run/plan` 落库后 `RunDetail` 才画出那一步），它们可以据此短重试。
+ * 没有 DOM 的环境（SSR / 单测）直接返回 `false`：不假装滚过。
+ */
+export function scrollToAnchor(anchor: string): boolean {
+  if (typeof document === "undefined" || typeof document.getElementById !== "function") return false;
+  const target = document.getElementById(anchor);
+  if (!target) return false;
+
+  target.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  target.classList?.add("is-jump-target");
+  // 高亮是纯视觉反馈：没有 window/setTimeout 的环境静默跳过。
+  if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+    window.setTimeout(() => target.classList?.remove("is-jump-target"), 1200);
+  }
+  return true;
+}

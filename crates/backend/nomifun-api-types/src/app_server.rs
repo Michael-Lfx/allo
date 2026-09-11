@@ -623,6 +623,17 @@ pub struct AppServerMarketplaceEntry {
     /// additive on the wire.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub localized: BTreeMap<String, LocalizedVariant>,
+    /// `strict` as declared by the **market entry** (`02` §8): `true` requires
+    /// the plugin source to carry its own `.codebuddy-plugin/plugin.json`.
+    /// Absent means `false` — the pre-existing behaviour.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
+    /// Why this entry cannot be imported (a `02` §11.1 blocking rule), when
+    /// discovery can already tell. Absent = importable as far as discovery
+    /// knows. An entry carrying one stays listed (an invisible entry cannot
+    /// explain itself) but is not installable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
     /// Snapshot produced by importing this entry (`market/entry-import`), with
     /// its install tally. Absent until the entry has been imported — the same
     /// condition a cascade removal reports as "nothing to uninstall here"
@@ -727,6 +738,12 @@ pub struct AppServerStoreItem {
     pub snapshot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed_version: Option<String>,
+    /// Why this item cannot be installed (a `02` §11.1 blocking rule), when the
+    /// projection can tell from the live source tree. Absent = installable.
+    /// The store still lists it (so the reason can be read) but the UI must not
+    /// offer install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 /// `store/list` response: the unified catalog over all enabled marketplaces.

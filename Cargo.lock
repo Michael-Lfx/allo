@@ -7478,6 +7478,7 @@ dependencies = [
  "nomifun-api-types",
  "nomifun-common",
  "nomifun-db",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

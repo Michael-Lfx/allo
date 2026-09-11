@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use tracing::{debug, warn};
 
-use crate::dependency::{DependencyValidationResult, validate_dependencies};
+use crate::dependency::{DependencyIssue, DependencyValidationResult, validate_dependencies};
 use crate::lifecycle::{HookKind, execute_hook, resolve_hook_path};
 use crate::loader::{ScanPath, filter_by_engine_compatibility, load_all};
 use crate::types::{ExtensionSource, ExtensionState, LoadedExtension};
@@ -58,6 +58,25 @@ pub(crate) fn load_and_validate(
     debug!(count = sorted.len(), "after dependency sort");
 
     (sorted, dep_result)
+}
+
+/// Extensions that must be **refused** when strict dependency blocking is on
+/// (`17` §7: 「依赖不可满足时：阻断安装并给出缺失项，不做静默降级」).
+///
+/// Only *unsatisfiable* declarations count — a missing dependency, or one whose
+/// version does not satisfy the declared range. Cycles are deliberately
+/// excluded: `dependency.rs` appends cyclic extensions best-effort by API-spec
+/// requirement, and turning the strict switch on does not overturn that.
+pub(crate) fn blocked_dependents(result: &DependencyValidationResult) -> BTreeSet<String> {
+    result
+        .issues
+        .iter()
+        .filter_map(|issue| match issue {
+            DependencyIssue::Missing { extension, .. }
+            | DependencyIssue::VersionMismatch { extension, .. } => Some(extension.clone()),
+            DependencyIssue::Circular { .. } => None,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -279,5 +298,75 @@ mod tests {
         assert_eq!(summary.display_name.as_deref(), Some("my-ext Display"));
         assert!(summary.enabled);
         assert_eq!(summary.source, ExtensionSource::Local);
+    }
+
+    // -- blocked_dependents ---------------------------------------------------
+
+    /// `make_test_ext` has no dependencies; the blocked-list tests need them.
+    fn make_dep_extension(name: &str, version: &str, deps: &[(&str, &str)]) -> LoadedExtension {
+        let mut ext = make_test_ext(name, true);
+        ext.manifest.version = version.to_owned();
+        ext.manifest.dependencies = deps
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        ext
+    }
+
+
+    #[test]
+    fn blocked_dependents_targets_missing_and_mismatch_only() {
+        let result = DependencyValidationResult {
+            valid: false,
+            issues: vec![
+                DependencyIssue::Missing {
+                    extension: "consumer".to_owned(),
+                    dependency: "gone".to_owned(),
+                    required: "^1.0.0".to_owned(),
+                },
+                DependencyIssue::VersionMismatch {
+                    extension: "pinned".to_owned(),
+                    dependency: "base".to_owned(),
+                    required: "^2.0.0".to_owned(),
+                    actual: "1.0.0".to_owned(),
+                },
+                DependencyIssue::Circular {
+                    cycle: vec!["a".to_owned(), "b".to_owned(), "a".to_owned()],
+                },
+            ],
+            load_order: Vec::new(),
+        };
+
+        assert_eq!(
+            blocked_dependents(&result),
+            BTreeSet::from(["consumer".to_owned(), "pinned".to_owned()]),
+            "cycles stay loadable; only unsatisfiable requirements block"
+        );
+    }
+
+    #[test]
+    fn blocked_dependents_is_empty_for_a_healthy_graph() {
+        let exts = vec![
+            make_dep_extension("base", "1.2.0", &[]),
+            make_dep_extension("consumer", "1.0.0", &[("base", "^1.0.0")]),
+        ];
+        let result = validate_dependencies(&exts);
+        assert!(result.valid);
+        assert!(blocked_dependents(&result).is_empty());
+    }
+
+    #[test]
+    fn blocked_dependents_uses_real_validation_and_spares_satisfied_dependents() {
+        let exts = vec![
+            make_dep_extension("base", "1.5.0", &[]),
+            make_dep_extension("missing-dep", "1.0.0", &[("gone", "^1.0.0")]),
+            make_dep_extension("bad-range", "1.0.0", &[("base", "^2.0.0")]),
+            make_dep_extension("fine", "1.0.0", &[("base", "^1.0.0")]),
+        ];
+        assert_eq!(
+            blocked_dependents(&validate_dependencies(&exts)),
+            BTreeSet::from(["missing-dep".to_owned(), "bad-range".to_owned()]),
+            "a dependent whose range is satisfied must not be blocked"
+        );
     }
 }

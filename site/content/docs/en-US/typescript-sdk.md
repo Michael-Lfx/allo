@@ -653,3 +653,236 @@ More manifest fields and examples: [Plugins and market](/en-US/docs/plugins-mark
 - Full method semantics: repo `docs/agent-store/05-allo-app-server-protocol.md`.
 - Implementation and test samples: `web/packages/{protocol,client,sdk}/src` (the sdk has `spawn.test.ts`, `readiness.test.ts`).
 - Browser-only helpers (asset `<img>` URLs, `/api/fs/browse`): implemented by the host app, not in these three packages.
+
+---
+
+## 13. Examples (end-to-end)
+
+This chapter consolidates the scattered fragments from earlier sections into complete, copy-pasteable scenarios. Every snippet assumes you already have a ready `client` from `launchClient` (or a hand-built `AppServerClient`), and uses `try/finally` to guarantee `close()`.
+
+> The real-time examples (session / Run `follow`) require `WebSocketTransport`; for pure request-response use `HttpTransport` (see §7.3).
+
+### 13.1 Launch / connect on three platforms
+
+**Node: launch the local runtime in one line** (the SDK handles spawn + loopback connect + handshake):
+
+```ts
+import { launchClient } from "@flowy-agent-store/sdk";
+
+const launched = await launchClient({ client: { name: "my-tool", version: "1.0.0" } });
+try {
+  const conversation = await launched.client.conversations.create({ name: "demo" });
+  const subscription = await launched.client.conversations.follow(conversation.conversation_id);
+  subscription.onEvent((event) => console.log(event.event_type));
+  await launched.client.conversations.send(conversation.conversation_id, "hello", crypto.randomUUID());
+} finally {
+  await launched.close(); // terminate the child process + remove the temp data-dir
+}
+```
+
+**Browser: connect to an already-running server only** (no spawning; credentials go via `?token=`):
+
+```ts
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
+
+const transport = new WebSocketTransport("ws://127.0.0.1:8787/api/app-server/ws", { token });
+const client = new AppServerClient({ transport, client: { name: "web", version: "1.0.0" } });
+await client.connect();
+```
+
+**Electron: spawn in the main process, connect over loopback in the renderer** (keep credentials in the main process, never the renderer):
+
+```ts
+import { spawnAppServer } from "@flowy-agent-store/sdk";
+
+const server = await spawnAppServer({ dataDir: app.getPath("userData") });
+win.webContents.send("app-server-ready", {
+  url: `ws://${server.readiness.host}:${server.readiness.port}/api/app-server/ws`,
+});
+app.on("before-quit", () => void server.close());
+```
+
+> **Full Electron integration (main / preload / renderer)**
+>
+> The snippet above is the minimal skeleton. In a real Electron app, keep "runtime launch and credentials" in the main process; the renderer only receives the loopback URL (and an optional token). Credentials (OAuth tokens, system keychain) must never reach the renderer or be written to plaintext config.
+
+**Main process `main.ts`** — spawn the runtime, hand the connection info to the renderer over IPC, and clean up on quit:
+
+```ts
+import { app, BrowserWindow, ipcMain } from "electron";
+import { spawnAppServer, type SpawnedServer } from "@flowy-agent-store/sdk";
+import { join } from "node:path";
+
+let server: SpawnedServer | null = null;
+
+async function startBackend() {
+  server = await spawnAppServer({
+    dataDir: join(app.getPath("userData"), "agent-store"),
+  });
+
+  // Loopback WS URL (under loopback, auth is usually disabled-local, no token needed)
+  const wsUrl = `ws://${server.readiness.host}:${server.readiness.port}/api/app-server/ws`;
+  const token = server.readiness.auth === "disabled-local" ? undefined : await getHostToken();
+
+  // The renderer pulls it on demand
+  ipcMain.handle("agent-store:get-connection", () => ({ url: wsUrl, token }));
+
+  // Crash visibility: log unexpected exits (the SDK does not auto-restart)
+  server.exited.then((info) => {
+    console.warn("agent-store runtime exited:", info.code, info.signal);
+  });
+}
+
+app.whenReady().then(startBackend);
+
+app.on("before-quit", async (event) => {
+  if (server) {
+    event.preventDefault(); // wait for cleanup before exiting
+    await server.close();
+    server = null;
+  }
+  app.exit();
+});
+```
+
+> `getHostToken()` is implemented by the host itself — only needed when the server requires a token (i.e. not `disabled-local`); the token is generated/obtained in the main process and never written to renderer-accessible plaintext.
+
+**Preload `preload.ts`** — safely expose to the renderer via `contextBridge` (don't expose the whole `ipcRenderer`):
+
+```ts
+import { contextBridge, ipcRenderer } from "electron";
+
+contextBridge.exposeInMainWorld("agentStore", {
+  getConnection: () => ipcRenderer.invoke("agent-store:get-connection"),
+});
+```
+
+**Renderer `renderer.ts`** — build `AppServerClient` and handshake once the URL arrives:
+
+```ts
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
+
+const { url, token } = await window.agentStore.getConnection();
+const transport = new WebSocketTransport(url, { token, requestTimeoutMs: 30_000 });
+const client = new AppServerClient({ transport, client: { name: "electron-ui", version: "1.0.0" } });
+await client.connect();
+
+// All sub-clients are now usable
+const catalog = await client.connectors.list();
+```
+
+> The renderer's `WebSocketTransport` `token` option is appended automatically as a `?token=` query parameter (browser / Electron WebSockets cannot set custom headers). For pure request-response use `HttpTransport`.
+
+### 13.2 Connector OAuth end-to-end
+
+Typical flow: `list` to get the `connectorId` → `authStart` to begin the browser flow → poll `authStatus` until `authenticated` → `logout` to revoke when done.
+
+```ts
+// 1) Get the connectorId from the catalog
+const catalog = await client.connectors.list();
+const github = catalog.find((c) => c.id === "github");
+if (!github) throw new Error("github connector not found in catalog");
+
+// 2) Check auth state first: skip authorization if already authenticated
+const before = await client.connectors.authStatus(github.id);
+if (before.state !== "authenticated") {
+  // 3) Start the host browser OAuth flow (returns immediately with started, non-blocking)
+  const started = await client.connectors.authStart(github.id);
+  if (started.state !== "started") {
+    throw new Error(started.error ?? "auth start failed");
+  }
+
+  // 4) Poll until authenticated (or timeout / reauthorization required)
+  const deadline = Date.now() + 5 * 60_000; // 5 minute grace period
+  let authenticated = false;
+  while (Date.now() < deadline) {
+    const status = await client.connectors.authStatus(github.id);
+    if (status.state === "authenticated") { authenticated = true; break; }
+    if (status.state === "reauthorization_required") {
+      throw new Error("reauthorization required");
+    }
+    await new Promise((r) => setTimeout(r, 1_500)); // 1.5s interval
+  }
+  if (!authenticated) throw new Error("oauth timed out");
+}
+
+// 5) After auth the connector status should be connected (auth ready + last probe succeeded)
+const status = await client.connectors.status(github.id);
+console.log(status.status);
+
+// 6) Revoke the token when done
+await client.connectors.logout(github.id);
+```
+
+> Note: `authStart` only returns `started`, it does **not** return an auth URL or token — the browser flow is owned by the trusted host, and the client only triggers and polls (see §4.4). stdio connectors do not support OAuth; the server returns `OAuth is not supported for stdio connectors`.
+
+### 13.3 Store browsing and installation
+
+```ts
+// List the unified catalog across all marketplaces (may be empty on first call; see markets_pending, §4.3)
+const store = await client.listStore();
+for (const item of store.items) {
+  console.log(item.marketplace_id, item.entry_name, item.kind, item.installed);
+}
+
+// One-click install: import if missing + register
+const receipt = await client.installStoreEntry("experts", "frontend-backend-experts");
+console.log("installed:", receipt.installed);
+
+// Marketplace source management
+const markets = await client.listMarketplaces();
+const added = await client.addMarketplace({ source: "https://example.com/market.json" });
+await client.refreshMarketplace(added.marketplace_id);
+await client.removeMarketplace(added.marketplace_id, /* cascade */ true);
+```
+
+### 13.4 Sessions and Runs
+
+**Session: create → send → receive in real time**
+
+```ts
+import { decodeConversationEvent } from "@flowy-agent-store/protocol";
+
+const conv = await client.conversations.create({ name: "demo" });
+const sub = await client.conversations.follow(conv.conversation_id);
+sub.onEvent((event) => {
+  const decoded = decodeConversationEvent(event);
+  if (decoded.kind === "message.delta") render(decoded.delta, decoded.replace);
+});
+sub.onBackfill((snapshot) => resetTranscript(snapshot.messages));
+sub.onError((error) => report(error));
+
+const receipt = await client.conversations.send(
+  conv.conversation_id,
+  "write me a REST API",
+  crypto.randomUUID(), // explicit idempotency key is required
+);
+```
+
+**Run: start → await result → handle approval**
+
+```ts
+const run = await client.runs.agent({
+  agentId: "frontend-backend-experts",
+  goal: "Generate a todo REST API",
+});
+const result = await client.runs.result(run.run_id); // only succeeds once terminal
+console.log(result.status);
+
+// If the Agent needs a human decision, follow live events and answer
+const sub = await client.runs.follow(run.run_id);
+sub.onEvent((event) => {
+  if (event.event_type !== "approval.requested") return;
+  client.runs.answerDecision({
+    runId: run.run_id,
+    stepId: event.step_id!,
+    attemptId: event.attempt_id!,
+    answer: "approve, continue",
+    expectedExecutionVersion: event.expected_execution_version!,
+    expectedStepVersion: event.expected_step_version!,
+    expectedAttemptVersion: event.expected_attempt_version!,
+  });
+});
+```
+
+> The three `expected*Version` fields of `answerDecision` are required CAS tokens; any change returns `conflict` (see §7.4). Write operations with an `idempotency_key` can be safely replayed.

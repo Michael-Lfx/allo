@@ -2380,6 +2380,25 @@ pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
 #[derive(Default)]
 struct CronServiceTickRef(std::sync::Mutex<Option<Arc<nomifun_cron::service::CronService>>>);
 
+/// `[import].strict_dependencies` (`16` R23 / `17` §7) as **this host** declares
+/// it.
+///
+/// One key governs both halves of R23 — the extension registry built here and
+/// the importer built in `routes.rs` — so the read lives in one place. The
+/// host-declared config path is the source (`AppServices::agent_store_config_path`),
+/// not the `~/.agent-store/config.toml` convention: tests inject `None` and must
+/// not inherit a developer's personal config file.
+///
+/// A missing/unreadable file, an absent `[import]` table or an explicit `false`
+/// all mean **off** — the pre-existing, warn-only behaviour.
+pub(crate) fn strict_dependencies_enabled(services: &AppServices) -> bool {
+    services
+        .agent_store_config_path
+        .as_deref()
+        .and_then(nomifun_app_server::AgentStoreConfig::load_ok)
+        .is_some_and(|config| config.strict_dependencies())
+}
+
 /// Build the default extension-related router states.
 ///
 /// Returns `(ExtensionRouterState, HubRouterState, SkillRouterState)`.
@@ -2389,7 +2408,12 @@ pub async fn build_extension_states(
     let skill_data_dir = services.data_dir.clone();
 
     let state_store = ExtensionStateStore::new(resolve_state_file_path(&skill_data_dir));
-    let registry = ExtensionRegistry::new(state_store, services.event_bus.clone(), services.app_version.clone());
+    // `[import].strict_dependencies` (`16` R23 / `17` §7): the same switch the
+    // importer reads (`strict_dependencies_enabled`), applied here at load time.
+    // Off by default → an unsatisfiable dependency only warns.
+    let strict_dependencies = strict_dependencies_enabled(services);
+    let registry = ExtensionRegistry::new(state_store, services.event_bus.clone(), services.app_version.clone())
+        .with_strict_dependencies(strict_dependencies);
 
     let hub_dir = resolve_install_target_dir_for_data_dir(&skill_data_dir);
     let index_manager = HubIndexManager::new(hub_dir, registry.clone());

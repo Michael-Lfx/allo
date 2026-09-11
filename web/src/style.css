@@ -471,6 +471,29 @@ button:disabled { cursor: default; opacity: .48; }
 .composer-workspace-item-check { flex: 0 0 auto; color: var(--green); }
 .composer-workspace-add { margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; }
 .composer-workspace-add .composer-workspace-item-name { color: var(--ink-strong); }
+
+/* ── R15（W10）附件：输入框上方的已选 chips + 工作区附件选择面板 ── */
+.composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.composer-attachment { display: inline-flex; max-width: 220px; min-height: 24px; align-items: center; gap: 4px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-raised); padding: 0 4px 0 9px; color: var(--ink-strong); font-size: 11.5px; }
+.composer-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-attachment-remove { display: grid; width: 18px; height: 18px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 999px; background: transparent; color: var(--muted); }
+.composer-attachment-remove:hover { background: var(--sidebar-hover); color: var(--ink-strong); }
+.composer-attach-wrap { position: relative; width: min(920px, calc(100% - 80px)); margin: 8px auto 0; }
+.composer-attach-pop { position: absolute; z-index: 8; bottom: calc(100% + 8px); left: 0; display: flex; max-height: 320px; min-width: 300px; max-width: min(460px, calc(100vw - 32px)); flex-direction: column; gap: 4px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 13px; background: var(--surface); padding: 8px; box-shadow: 0 12px 32px var(--shadow-pop), 0 2px 6px var(--shadow-solid); animation: menu-pop .12s ease; }
+.composer-attach-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 4px 4px; }
+.composer-attach-head > span:first-child { color: var(--ink-strong); font-size: 12.5px; font-weight: 600; }
+.composer-attach-count { color: var(--muted-light); font-size: 11px; }
+.composer-attach-empty, .composer-attach-note { margin: 4px; color: var(--muted); font-size: 11.5px; line-height: 1.6; }
+.composer-attach-list { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.composer-attach-item { display: flex; min-height: 32px; width: 100%; align-items: center; gap: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-strong); padding: 0 9px; font-size: 12.5px; text-align: left; }
+button.composer-attach-item:hover { background: var(--sidebar-hover); }
+button.composer-attach-item:disabled { opacity: .5; cursor: default; }
+.composer-attach-item svg { flex: 0 0 auto; color: var(--muted); }
+.composer-attach-item.is-disabled { cursor: default; opacity: .75; }
+.composer-attach-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-attach-reason { flex: 0 0 auto; color: var(--muted-light); font-size: 10.5px; }
+.composer-attach-done { min-height: 30px; margin-top: 2px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-raised); color: var(--ink-strong); font-size: 12px; }
+.composer-attach-done:hover { background: var(--sidebar-hover); }
 .composer-shell textarea { display: block; width: 100%; min-height: 76px; max-height: 35vh; resize: none; border: 0; outline: 0; background: transparent; color: var(--ink-strong); padding: 4px 4px 0; font-size: 15px; line-height: 1.55; }
 .composer-shell textarea::placeholder { color: var(--muted-light); }
 .composer-footer { display: flex; min-height: 34px; align-items: center; justify-content: space-between; gap: 7px; }
@@ -809,6 +832,9 @@ button:disabled { cursor: default; opacity: .48; }
 .market-tag.is-status.is-success { background: var(--green-soft); color: var(--green-deep); }
 .market-tag.is-status.is-warn { background: var(--amber-soft); color: var(--amber); }
 .market-tag.is-status.is-error { background: var(--destructive-soft); color: var(--destructive); }
+/* R24: an entry the server refuses (`02` §11.1) — listed so the reason is
+   readable, never offered for install. */
+.market-tag.is-blocked { background: var(--destructive-soft); color: var(--destructive); }
 
 /* status dot (small, non-decorative) */
 .status-dot { width: 8px; height: 8px; flex: 0 0 auto; margin-top: 4px; border-radius: 50%; background: var(--muted-faint); }
@@ -861,6 +887,11 @@ button:disabled { cursor: default; opacity: .48; }
 .market-store-float:disabled { cursor: wait; }
 .market-store-float.is-installed { background: var(--green-soft); color: var(--green-deep); }
 .market-store-float.is-installed:hover { background: var(--green); color: #fff; }
+/* R24: not a button — a status mark where the install action would be. It keeps
+   the inherited `:hover` from repainting it as if it were clickable. */
+.market-store-float.is-blocked { background: var(--destructive-soft); color: var(--destructive); cursor: default; }
+.market-store-float.is-blocked:hover { background: var(--destructive-soft); }
+.market-block-reason { margin: 0 0 12px; padding: 8px 10px; border-radius: 10px; background: var(--destructive-soft); color: var(--destructive); font-size: 12.5px; line-height: 1.6; }
 .is-spinning { animation: market-spin .9s linear infinite; }
 @keyframes market-spin { to { transform: rotate(360deg); } }
 
@@ -962,6 +993,11 @@ button:disabled { cursor: default; opacity: .48; }
 .artifact-row-path { grid-column: 2; overflow: hidden; color: var(--muted-light); font-family: var(--font-mono); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 /* R20：产物元数据行（size · MIME · mtime），只有查到才渲染。 */
 .artifact-row-meta { grid-column: 2; color: var(--muted); font-family: var(--font-mono); font-size: 10px; }
+/* R20a：产物行 + 归属标签（标签是兄弟节点，避免按钮嵌套按钮）。 */
+.artifact-item { display: flex; align-items: center; gap: 4px; }
+.artifact-item .artifact-row { flex: 1; min-width: 0; }
+.artifact-row-owner { display: inline-flex; max-width: 42%; flex: 0 0 auto; align-items: center; gap: 3px; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-soft); color: var(--muted); padding: 2px 7px; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-row-owner:hover { background: var(--surface-raised); color: var(--ink-strong); }
 .artifact-hint { margin: 10px 8px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .artifact-alert { margin: 10px 8px; border: 1px solid var(--destructive-border); border-radius: 8px; background: var(--destructive-soft); color: var(--destructive-text); padding: 8px 10px; font-size: 12px; overflow-wrap: anywhere; }
 .artifact-preview { display: flex; flex: 0 0 auto; max-height: 56%; flex-direction: column; border-top: 1px solid var(--border-strong); background: var(--surface-soft); }
@@ -978,6 +1014,24 @@ button:disabled { cursor: default; opacity: .48; }
 .artifact-comment-input:focus { border-color: var(--primary); }
 .artifact-comment-send { align-self: flex-end; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--ink); color: var(--on-accent); padding: 6px 11px; font-size: 12px; font-weight: 570; }
 .artifact-comment-send:disabled { opacity: .5; cursor: default; }
+/* R20b：变更审查（接受 / 回退，宿主快照服务 `/api/fs/snapshot/*`）。 */
+.artifact-tabs { display: flex; flex: 0 0 auto; gap: 4px; border-bottom: 1px solid var(--border); padding: 8px 12px 0; }
+.artifact-tab { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 6px 8px 7px; font-size: 12px; font-weight: 560; }
+.artifact-tab.is-active { border-bottom-color: var(--primary); color: var(--ink-strong); }
+.artifact-changes-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 8px 4px; color: var(--muted); font-size: 11px; font-weight: 620; letter-spacing: .02em; }
+.artifact-changes-all { border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--ink-strong); padding: 3px 8px; font-size: 11px; }
+.artifact-changes-all:hover:not(:disabled) { background: var(--surface-raised); }
+.artifact-changes-all:disabled { opacity: .5; cursor: default; }
+.artifact-change-row { display: flex; align-items: center; gap: 6px; border-radius: 8px; padding: 6px 9px; }
+.artifact-change-row:hover { background: var(--sidebar-hover); }
+.artifact-change-op { flex: 0 0 auto; border-radius: 5px; background: var(--surface-soft); color: var(--muted); padding: 1px 5px; font-size: 10px; font-weight: 600; }
+.artifact-change-op.is-create { background: var(--green-soft); color: var(--green-deep); }
+.artifact-change-op.is-delete { background: var(--destructive-soft); color: var(--destructive-text); }
+.artifact-change-path { flex: 1; min-width: 0; overflow: hidden; color: var(--ink-strong); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-change-action { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--ink-strong); padding: 3px 7px; font-size: 11px; }
+.artifact-change-action:hover:not(:disabled) { background: var(--surface-raised); }
+.artifact-change-action.is-revert { color: var(--destructive-text); }
+.artifact-change-action:disabled { opacity: .5; cursor: default; }
 
 /* ── W1 command palette (composer; doc 19 §3 W1) ── */
 .command-palette { position: absolute; z-index: 6; bottom: calc(100% - 10px); left: 50%; width: min(920px, calc(100% - 80px)); max-height: 320px; display: flex; transform: translateX(-50%); flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 14px 36px var(--shadow-pop); overflow: hidden; }

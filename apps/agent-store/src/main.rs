@@ -302,17 +302,29 @@ async fn serve(
         );
     }
 
+    // Read `~/.agent-store/config.toml` once: two host policies come from it.
+    let agent_store_config = cli
+        .agent_store_config
+        .as_deref()
+        .and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok);
+
+    // `[credentials]` back the `secret:NAME` references an imported MCP env
+    // carries (`17` §6 / `21` D5=C). Install them once, in-process, so every MCP
+    // spawn path resolves a reference to its value in memory. The values live in
+    // this process only: they are never written to a snapshot, a DB row or a log.
+    if let Some(config) = agent_store_config.as_ref() {
+        nomifun_common::secret_ref::set_credentials(config.credentials.clone());
+    }
+
     // Agent Store scenario: `[memory].distill_enabled` in
     // `~/.agent-store/config.toml` is this host's authoritative memory policy.
     // Session-end distillation is one extra model call awaited *before* the
     // turn's terminal `Finish`, so leaving it on shows up to clients as a
     // 6–15s "still processing" tail after the answer is already complete
     // (doc 16 / D-STREAM-2). Absent key = upstream default (ON).
-    if let Some(enabled) = cli
-        .agent_store_config
-        .as_deref()
-        .and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok)
-        .and_then(|config| config.memory)
+    if let Some(enabled) = agent_store_config
+        .as_ref()
+        .and_then(|config| config.memory.as_ref())
         .and_then(|memory| memory.distill_enabled)
     {
         nomifun_ai_agent::manager::nomi::distill::set_distill_host_override(Some(enabled));

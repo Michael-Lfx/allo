@@ -1,7 +1,8 @@
-# WebUI / App Server 生产化：立项页（未排期）
+# WebUI / App Server 生产化：立项页（A 组动工中）
 
 > 状态：**立项页（2026-09-11）**。本页只做两件事：把 `16` §5.2 里 R33 那一行（方向四 11 项 + WP-5 协议词汇与概念对齐）拆成**可验收条目**，并把「不做假保护」写成红线。
 > **本页不代表排期，也不含实现**：条目一律未开工；动工前先在本页登记范围与验收口径。
+> **2026-09-11 状态更新（用户指令「22 A 组」）**：**A 组（安全类）已授权动工**，起点＝**A2**（A1/A3 依赖它）。范围、验收口径与实现决策登记在 **§7**；V1（优先级信号）由该指令兑现。B / C / D 组仍未排期。
 > 相关：`16-sdk-webui-site-priority-plan.zh.md`（R33 行、§5.3「卡点处置四档」C 档判定）、`11-webui-production-readiness.md`、`15-store-chain-and-protocol-vnext-plan.zh.md`（WP-5）、`21-open-decisions.zh.md`。
 
 ---
@@ -121,3 +122,32 @@
 | **V2** | 4 条「未验证」取证 | 批量操作 / 只读标识 / 工作区重命名 / 无障碍 E2E 尚未取证（`16` R33 行只对前 7 项给了证据） | 按第 1 节口径补「零命中 / 半有」判定，取证完成后才可进入实现 |
 | **V3** | A4 / A5 的编号与设计归属 | `16` 引用了 A4「是否与 `06` 合并设计」与 A5「作用域与部署形态」；本页 A 组只落了 A1–A3 三条已实测主题 | 动工时对齐编号：若 A4 确指「认证与 `06` 合并设计」，需先读 `06` 定边界 |
 | **V4** | 部署形态与作用域 | 未定：单机宿主 / 局域网共享 / 公网，各自对 A 组的要求不同 | 先定部署形态，再定 A5 的作用域 |
+
+---
+
+## 7. A 组动工登记（2026-09-11，用户指令「22 A 组」）
+
+> 顺序：**A2 → A1 → A3**（A1「先知道『谁』，再决定『从哪来』」与 A3「按 owner 隔离配额」都依赖 A2 的身份模型）。本节按条目登记**范围 / 验收（可观察行为）/ 实现决策 / 边界**；B–D 组未动工，不改本节。V1（优先级信号）由本次用户指令兑现。
+
+### 7.1 A2 · 正式认证与令牌管理（动工中）
+
+**现状（实测，见 §1）**：连接身份＝明文 UUIDv7，存进程内 `HashMap`（`nomifun-app-server/src/lib.rs` 的 `AppServerRegistry`），**无有效期、无吊销、无签名**；错误码里**没有**区分「过期」与「无效」（`ConnectionNotFound` 现映射 `not_found` / 404）。宿主侧已有 `auth_middleware` + owner 闸门 + JWT 黑名单登出（`nomifun-auth`）；WS 关闭已调 `registry.close`。
+
+**范围（本轮交付）**：
+1. **令牌有效期（闲置 TTL + 滑窗续期）**：连接记录发放时间与到期时刻；默认 TTL = **12 小时**，每次成功使用续期；宿主可配（`None` = 关闭，回到不过期）。
+2. **错误码区分**：过期 → 新码 **`token_expired`**（401、`retryable=true`）；未知 / 已吊销 → **`unauthenticated`**（401）——把 `ConnectionNotFound` 的映射从 `not_found` / 404 更正为 `unauthenticated` / 401（`05` §3.1 原本就规定认证失败返回 `unauthenticated`）。
+3. **吊销立即生效**：新增 `revoke_principal(user_id)`；接到**宿主登出**（`nomifun-auth` 的 `logout_handler` 经一个 `SessionRevocationSink` hook）——登出后该 principal 的所有 App Server 连接（含已建立的 WS）**立刻**失效。WS socket 关闭仍即时移除连接（既有 `close`）。
+4. **令牌明文不入日志**：App Server 模块本身不打印连接 id / 令牌（现状 0 命中）；本轮不新增任何打印令牌的日志，并以测试钉住。
+
+**验收（可观察行为）**：
+- 注入极小 TTL 的连接在 TTL 过后调用业务方法 → `token_expired`（**不是** `not_found` / `unauthenticated`）；活跃连接每次调用后续期，不被误杀。
+- 未知 / 已 `close` / 已吊销的连接 → `unauthenticated`。
+- 登出该 principal 后，用其旧连接令牌再调用 → 立即 `unauthenticated`；其它 principal 的连接不受影响。
+- `capabilities` 与 owner 作用域**不变**：本轮只增强身份校验，不改任何方法的可见 / 可写范围。
+
+**边界（不做）**：不做多租户隔离、不做企业 SSO、不引入外部 IdP；不改 `require_ready` 的 owner 语义（同 principal 才通过）；不新增协议方法（登出沿用宿主既有 `/logout`）。
+
+**实现决策（按此执行）**：TTL 默认 **12h**（活跃连接滑窗续期，故不误杀长会话）；「吊销」触发＝**宿主登出**（唯一真实、可观察的吊销动作），不新造管理端点；`05` §10 错误码清单同步补 `unauthenticated` / `token_expired`。
+
+### 7.2 A1 · Origin / CSP / CSRF（待 A2）
+### 7.3 A3 · 配额 / 限流（待 A2）

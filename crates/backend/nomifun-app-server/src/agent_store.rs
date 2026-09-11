@@ -69,6 +69,48 @@ pub struct AgentStoreConfig {
     /// ```
     #[serde(default)]
     pub marketplace: Option<AgentStoreMarketplaceSettings>,
+    /// `[import]` — load/import-time strictness knobs.
+    ///
+    /// ```toml
+    /// [import]
+    /// strict_dependencies = true   # refuse extensions with unsatisfied deps
+    /// ```
+    #[serde(default)]
+    pub import: Option<AgentStoreImport>,
+    /// `[credentials]` — values for `secret:NAME` references (`17` §6 / `21`
+    /// D5=C).
+    ///
+    /// ```toml
+    /// [credentials]
+    /// DEMO_TOKEN = "…"   # fills `secret:DEMO_TOKEN` in an imported MCP env
+    /// ```
+    ///
+    /// **Hand-edited, never on the wire.** This table is deliberately absent
+    /// from both the read view (`config_view`, `config/get`) and the write
+    /// whitelist (`AgentStoreConfigPatch`, `config/set`), so a credential cannot
+    /// be read back or written through the protocol. It exists only so the host
+    /// can install the values in-process at startup ([`nomifun_common::
+    /// secret_ref::set_credentials`]); MCP spawn paths resolve references against
+    /// that in-memory map, and the values are never persisted.
+    #[serde(default)]
+    pub credentials: HashMap<String, String>,
+}
+
+/// `[import]` in `~/.agent-store/config.toml` (`16` R23 / `17` §7).
+///
+/// A hand-edited escape hatch — deliberately **not** on the `config/set`
+/// whitelist and not rendered in the settings dialog, because the registry
+/// reads it once at construction: a settings "switch" would imply a per-change
+/// effect that does not exist.
+///
+/// Default is **off**, which is byte-for-byte the pre-existing behaviour: an
+/// unsatisfiable dependency only warns.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentStoreImport {
+    /// `true` refuses extensions whose declared dependencies are missing or out
+    /// of range. Absent or `false` keeps the warn-only behaviour.
+    #[serde(default)]
+    pub strict_dependencies: Option<bool>,
 }
 
 /// `[memory]` in `~/.agent-store/config.toml`.
@@ -180,6 +222,18 @@ impl AgentStoreConfig {
     /// parse the exact text it is about to edit (`config/set`).
     pub fn from_source(source: &str) -> Result<Self, String> {
         toml::from_str(source).map_err(|error| error.to_string())
+    }
+
+    /// `[import].strict_dependencies` (`16` R23 / `17` §7).
+    ///
+    /// The registry passes this into `ExtensionRegistry::with_strict_dependencies`.
+    /// Default **off**: absent table, empty table and an explicit `false` all
+    /// return `false`, so the historical warn-only behaviour is the default.
+    pub fn strict_dependencies(&self) -> bool {
+        self.import
+            .as_ref()
+            .and_then(|import| import.strict_dependencies)
+            .unwrap_or(false)
     }
 
     /// Minimal-change rewrite of the whitelisted `default_model` key.
@@ -728,6 +782,25 @@ base_url = "https://example.test/v1"
     }
 
     #[test]
+    fn import_strict_dependencies_is_an_explicit_opt_in() {
+        // No `[import]` table → off (the historical warn-only behaviour).
+        let absent = AgentStoreConfig::load_from_str("default_model = \"octo/coral\"\n");
+        assert!(!absent.strict_dependencies());
+
+        // A table without the key stays off — the table alone is not consent.
+        let silent = AgentStoreConfig::load_from_str("[import]\n");
+        assert!(!silent.strict_dependencies());
+
+        let off = AgentStoreConfig::load_from_str("[import]\nstrict_dependencies = false\n");
+        assert!(!off.strict_dependencies());
+
+        // The switch the extension registry reads (`16` R23 / `17` §7).
+        let on = AgentStoreConfig::load_from_str("[import]\nstrict_dependencies = true\n");
+        assert!(on.strict_dependencies());
+        assert!(on.import.is_some());
+    }
+
+    #[test]
     fn marketplace_cadence_is_off_unless_declared() {
         use std::time::Duration;
 
@@ -819,6 +892,28 @@ base_url = "https://example.test/v1"
             serde_json::json!({ "memory": { "api_key": "«redacted»" } })
         )
         .is_err());
+
+        // `[credentials]` is likewise absent from the write whitelist: a patch
+        // cannot even name it, so the protocol has no way to write a credential.
+        assert!(serde_json::from_value::<AgentStoreConfigPatch>(
+            serde_json::json!({ "credentials": { "DEMO_TOKEN": "x" } })
+        )
+        .is_err());
+    }
+
+    /// R22 (`17` §6 / `21` D5=C): `[credentials]` parses into the plain map the
+    /// host installs in-process (`set_credentials`). Hand-edited, never on the
+    /// wire — the read view omits it and the write patch cannot name it.
+    #[test]
+    fn parses_credentials_table() {
+        let config = AgentStoreConfig::load_from_str(
+            "[credentials]\nDEMO_TOKEN = \"s3cr3t\"\nOTHER = \"v\"\n",
+        );
+        assert_eq!(
+            config.credentials.get("DEMO_TOKEN").map(String::as_str),
+            Some("s3cr3t")
+        );
+        assert_eq!(config.credentials.get("OTHER").map(String::as_str), Some("v"));
     }
 
     impl AgentStoreConfig {

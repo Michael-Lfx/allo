@@ -219,6 +219,11 @@ pub struct ConnectionState {
     context: Option<AuthContext>,
     availability: CapabilityAvailability,
     client_id: Option<String>,
+    /// Idle deadline for this connection token (`None` = never expires). Set by
+    /// the registry from its configured TTL and refreshed on each successful
+    /// use (`22` §7.1 A2), so the deadline bounds **inactivity**, not the
+    /// lifetime of an actively-used session.
+    expires_at: Option<std::time::Instant>,
 }
 
 impl ConnectionState {
@@ -251,6 +256,7 @@ impl ConnectionState {
             phase: ConnectionPhase::AwaitingInitialize,
             availability,
             client_id: None,
+            expires_at: None,
             context: Some(AuthContext::new(
                 principal,
                 vec!["catalog:read".into(), "run:read".into(), "run:write".into()],
@@ -274,6 +280,14 @@ impl ConnectionState {
         self.context
             .as_ref()
             .is_some_and(|context| context.principal.user_id() == user_id)
+    }
+
+    /// The principal id as a string, for principal-wide revocation (`22` §7.1
+    /// A2) where the caller holds an id string rather than a `UserId`.
+    fn principal_user_id(&self) -> Option<&str> {
+        self.context
+            .as_ref()
+            .map(|context| context.principal.user_id().as_str())
     }
 
     pub fn initialize(&mut self, request: InitializeRequest) -> Result<InitializeResult, ProtocolError> {
@@ -314,6 +328,16 @@ impl ConnectionState {
             return Err(ProtocolError::NotInitialized);
         }
         Ok(self.context.as_ref().expect("ready context exists"))
+    }
+
+    /// True when the token's idle deadline has passed (`22` §7.1 A2).
+    fn is_expired(&self, now: std::time::Instant) -> bool {
+        self.expires_at.is_some_and(|deadline| now >= deadline)
+    }
+
+    /// Reset the idle deadline to `ttl` from now (`None` = never expire).
+    fn touch(&mut self, ttl: Option<std::time::Duration>) {
+        self.expires_at = ttl.map(|ttl| std::time::Instant::now() + ttl);
     }
 }
 
@@ -429,6 +453,8 @@ pub enum ProtocolError {
     AlreadyInitialized,
     #[error("connection not found")]
     ConnectionNotFound,
+    #[error("connection token has expired")]
+    TokenExpired,
     #[error("connection principal does not match the authenticated caller")]
     PrincipalMismatch,
     #[error("idempotency key was already used for a different request")]
@@ -516,7 +542,26 @@ impl From<ProtocolError> for AppServerError {
                 Self::new("conflict", error.to_string(), StatusCode::CONFLICT, false)
             }
             ProtocolError::ConnectionNotFound => {
-                Self::new("not_found", error.to_string(), StatusCode::NOT_FOUND, false)
+                // An unknown, closed or revoked token is an **authentication**
+                // failure, not a missing resource: `05` §3.1 answers
+                // `unauthenticated`. (Before A2 this answered `not_found`/404,
+                // which conflated "no such connection" with "no such object".)
+                Self::new(
+                    "unauthenticated",
+                    error.to_string(),
+                    StatusCode::UNAUTHORIZED,
+                    false,
+                )
+            }
+            ProtocolError::TokenExpired => {
+                // Distinct from `unauthenticated` so a client can tell "expired,
+                // re-initialize" from "invalid": `22` §7.1 A2.
+                Self::new(
+                    "token_expired",
+                    "app-server connection token expired; re-initialize",
+                    StatusCode::UNAUTHORIZED,
+                    true,
+                )
             }
             ProtocolError::PrincipalMismatch => {
                 Self::new("policy_denied", error.to_string(), StatusCode::FORBIDDEN, false)
@@ -566,14 +611,43 @@ enum IdempotencyRecord {
     },
 }
 
-#[derive(Clone, Default)]
+/// Default idle lifetime of an App Server connection token (`22` §7.1 A2).
+///
+/// Active connections renew their deadline on every successful use, so this
+/// bounds **inactivity**: a token left unused for this long must be
+/// re-established. A host can override it (or disable expiry entirely with
+/// `with_connection_ttl(None)`), and tests inject a tiny value to force expiry.
+pub const DEFAULT_CONNECTION_TTL: std::time::Duration =
+    std::time::Duration::from_secs(12 * 60 * 60);
+
+#[derive(Clone)]
 pub struct AppServerRegistry {
     connections: Arc<RwLock<HashMap<String, ConnectionState>>>,
     idempotency: Arc<RwLock<HashMap<String, IdempotencyRecord>>>,
     idempotency_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Idle TTL for connection tokens; `None` disables expiry.
+    connection_ttl: Option<std::time::Duration>,
+}
+
+impl Default for AppServerRegistry {
+    fn default() -> Self {
+        Self {
+            connections: Arc::default(),
+            idempotency: Arc::default(),
+            idempotency_gate: Arc::default(),
+            connection_ttl: Some(DEFAULT_CONNECTION_TTL),
+        }
+    }
 }
 
 impl AppServerRegistry {
+    /// Override the connection-token idle TTL (`None` = never expire). Used by
+    /// the host to tune it and by tests to force expiry.
+    pub fn with_connection_ttl(mut self, ttl: Option<std::time::Duration>) -> Self {
+        self.connection_ttl = ttl;
+        self
+    }
+
     pub fn open(&self, principal: LocalPrincipal, runtime_available: bool) -> ConnectionState {
         self.open_with_events(principal, runtime_available, false)
     }
@@ -599,7 +673,8 @@ impl AppServerRegistry {
         principal: LocalPrincipal,
         availability: CapabilityAvailability,
     ) -> ConnectionState {
-        let state = ConnectionState::with_capabilities(principal, availability);
+        let mut state = ConnectionState::with_capabilities(principal, availability);
+        state.touch(self.connection_ttl);
         let connection_id = state.connection_id.clone();
         self.connections
             .write()
@@ -620,6 +695,9 @@ impl AppServerRegistry {
         let state = connections
             .get_mut(connection_id)
             .ok_or(ProtocolError::ConnectionNotFound)?;
+        if state.is_expired(std::time::Instant::now()) {
+            return Err(ProtocolError::TokenExpired);
+        }
         state.initialize(request)
     }
 
@@ -629,6 +707,32 @@ impl AppServerRegistry {
             .expect("App Server connection registry lock is not poisoned")
             .remove(connection_id)
             .is_some()
+    }
+
+    /// True while the token is present and unexpired. The WebSocket loop uses
+    /// this to end a socket whose token was revoked or has expired (`22` §7.1
+    /// A2) instead of continuing to serve it.
+    pub fn is_live(&self, connection_id: &str) -> bool {
+        let connections = self
+            .connections
+            .read()
+            .expect("App Server connection registry lock is not poisoned");
+        connections
+            .get(connection_id)
+            .is_some_and(|state| !state.is_expired(std::time::Instant::now()))
+    }
+
+    /// Revoke every connection token issued to `user_id`, returning how many
+    /// were dropped. Wired to the host's logout so a revoked session's App
+    /// Server tokens die immediately (`22` §7.1 A2).
+    pub fn revoke_principal(&self, user_id: &str) -> usize {
+        let mut connections = self
+            .connections
+            .write()
+            .expect("App Server connection registry lock is not poisoned");
+        let before = connections.len();
+        connections.retain(|_, state| state.principal_user_id() != Some(user_id));
+        before - connections.len()
     }
 
     pub fn mark_initialized(
@@ -643,6 +747,9 @@ impl AppServerRegistry {
         let state = connections
             .get_mut(connection_id)
             .ok_or(ProtocolError::ConnectionNotFound)?;
+        if state.is_expired(std::time::Instant::now()) {
+            return Err(ProtocolError::TokenExpired);
+        }
         if !state.belongs_to(user_id) {
             return Err(ProtocolError::PrincipalMismatch);
         }
@@ -769,17 +876,47 @@ impl AppServerRegistry {
         connection_id: &str,
         user_id: &UserId,
     ) -> Result<AuthContextView, ProtocolError> {
-        let connections = self
+        // Write lock: a successful call renews the idle deadline (`22` §7.1 A2),
+        // so an actively-used connection is never dropped mid-session.
+        let mut connections = self
             .connections
-            .read()
+            .write()
             .expect("App Server connection registry lock is not poisoned");
         let state = connections
-            .get(connection_id)
+            .get_mut(connection_id)
             .ok_or(ProtocolError::ConnectionNotFound)?;
+        if state.is_expired(std::time::Instant::now()) {
+            return Err(ProtocolError::TokenExpired);
+        }
         if !state.belongs_to(user_id) {
             return Err(ProtocolError::PrincipalMismatch);
         }
-        Ok(state.require_ready()?.view())
+        let view = state.require_ready()?.view();
+        state.touch(self.connection_ttl);
+        Ok(view)
+    }
+}
+
+/// Adapts [`AppServerRegistry`] to the [`nomifun_common::OnSessionRevoked`] hook
+/// so a host can wire `POST /logout` → connection-token revocation (`22` §7.1
+/// A2). Holds a clone of the same registry the router state uses, so a
+/// revocation here is visible to every in-flight request.
+pub struct AppServerSessionRevocation {
+    registry: AppServerRegistry,
+}
+
+impl AppServerSessionRevocation {
+    pub fn new(registry: AppServerRegistry) -> Self {
+        Self { registry }
+    }
+}
+
+#[async_trait::async_trait]
+impl nomifun_common::OnSessionRevoked for AppServerSessionRevocation {
+    async fn on_session_revoked(&self, user_id: &str) {
+        // Best-effort and infallible: a logout must never fail because a token
+        // could not be dropped (an undropped token is still bounded by its TTL).
+        let _ = self.registry.revoke_principal(user_id);
     }
 }
 
@@ -2790,7 +2927,21 @@ pub struct ConversationModelOptions {
 pub struct ConversationSendRequest {
     pub content: String,
     pub idempotency_key: String,
+    /// R15（W10）：本案会话工作区内的**绝对**文件路径（图片附件）。
+    ///
+    /// 载体＝**路径引用**（用户 2026-09-11 拍板）。准入在
+    /// `resolve_conversation_attachments`：必须是会话工作区内的真实文件，相对路径 /
+    /// 越界 / 不存在的引用一律拒绝。`#[serde(default)]` 保持纯加法——老客户端不传
+    /// 该字段时行为逐字不变（`files` 仍是空）。
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
+
+/// R15：单次发送允许的附件条数上限。
+///
+/// 与运行时自己的图片上限（`MAX_IMAGE_ATTACHMENTS = 10`）取同一个数：这里先拦一道
+/// 是为了**在碰文件系统之前**拒绝明显过量的请求，而不是替运行时做类型判定。
+const MAX_CONVERSATION_ATTACHMENTS: usize = 10;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -3708,10 +3859,15 @@ async fn send_conversation_message_for_user(
         ));
     }
     let service = conversation_service(state)?;
-    service
+    let conversation = service
         .get_app_server_chat(user.id.as_str(), conversation_id)
         .await
         .map_err(AppServerError::from)?;
+    // R15（W10）：附件准入在宿主这一层完成——运行时对 App Server 会话的
+    // `image_read_root` 是 `None`（不受限），所以边界不放这里就等于没有。
+    let files =
+        resolve_conversation_attachments(state, user, &conversation.extra, &request.attachments)
+            .await?;
     let delivery = service
         .send_message_with_idempotency_key(
             user.id.as_str(),
@@ -3719,7 +3875,7 @@ async fn send_conversation_message_for_user(
             &request.idempotency_key,
             SendMessageRequest {
                 content: request.content,
-                files: Vec::new(),
+                files,
                 inject_skills: Vec::new(),
                 hidden: false,
                 origin: None,
@@ -3730,6 +3886,116 @@ async fn send_conversation_message_for_user(
         .await
         .map_err(AppServerError::from)?;
     Ok(project_delivery(conversation_id, delivery))
+}
+
+/// R15（W10）附件准入：把客户端给的绝对路径收敛成「**本会话工作区内**的真实文件」。
+///
+/// 为什么边界必须在这里：运行时对 App Server 会话的 `image_read_root` 取的是
+/// `NomiBuildExtra.write_root`，而宿主没有设置它（`None` = 不受限）。也就是说
+/// 引擎不会替我们收紧——一个远程 WebUI 客户端如果能直接指定任意绝对路径，就能把
+/// 宿主上的文件读进模型上下文。所以规则只有一条：**canonicalize 之后必须仍在会话
+/// 工作区根之内、且目标是文件**；`..`、指向外部的符号链接、别的盘、相对路径、URL
+/// 一律拒绝，不做「尽力而为」的降级。
+///
+/// 返回的是**客户端原本给的字符串**（不是 canonical 形态）：Windows 的
+/// `canonicalize` 会带 `\\?\` 前缀，而运行时要求的是普通绝对路径；canonical 形态
+/// 只用来判界与去重。
+async fn resolve_conversation_attachments(
+    state: &AppServerRouterState,
+    user: &CurrentUser,
+    conversation_extra: &serde_json::Value,
+    attachments: &[String],
+) -> Result<Vec<String>, AppServerError> {
+    if attachments.is_empty() {
+        return Ok(Vec::new());
+    }
+    if attachments.len() > MAX_CONVERSATION_ATTACHMENTS {
+        return Err(attachment_rejection(format!(
+            "at most {MAX_CONVERSATION_ATTACHMENTS} attachments are allowed"
+        )));
+    }
+
+    let workspace_id = conversation_workspace_id(conversation_extra).ok_or_else(|| {
+        attachment_rejection(
+            "this conversation has no workspace, so attachments cannot be referenced".to_owned(),
+        )
+    })?;
+    let workspace =
+        resolve_workspace_for_run(state, user, Some(&WorkspaceRef { id: workspace_id }))
+            .await?
+            .ok_or_else(|| {
+                AppServerError::new(
+                    "workspace_denied",
+                    "workspace is not registered for this owner",
+                    StatusCode::FORBIDDEN,
+                    false,
+                )
+            })?;
+
+    let mut files: Vec<String> = Vec::new();
+    let mut seen: Vec<std::path::PathBuf> = Vec::new();
+    for reference in attachments {
+        let (accepted, canonical) = validate_attachment_path(workspace.path(), reference)?;
+        if seen.contains(&canonical) {
+            // 同一条路径给了两次只算一次（运行时也按 distinct 计数，这里先收敛，
+            // 免得把「重复」变成「超上限」）。
+            continue;
+        }
+        seen.push(canonical);
+        files.push(accepted);
+    }
+    Ok(files)
+}
+
+fn attachment_rejection(message: String) -> AppServerError {
+    AppServerError::new(
+        "invalid_request",
+        message,
+        StatusCode::BAD_REQUEST,
+        false,
+    )
+}
+
+/// 附件路径的准入判定（纯文件系统语义，直接单测）。
+///
+/// 成功返回 `(客户端给的路径, canonical 形态)`：canonical 用于判界与去重，原字符串
+/// 才上 wire。
+fn validate_attachment_path(
+    root: &std::path::Path,
+    reference: &str,
+) -> Result<(String, std::path::PathBuf), AppServerError> {
+    let trimmed = reference.trim();
+    if trimmed.is_empty() {
+        return Err(attachment_rejection(
+            "attachment paths must not be empty".to_owned(),
+        ));
+    }
+    let candidate = std::path::Path::new(trimmed);
+    if !candidate.is_absolute() {
+        return Err(attachment_rejection(format!(
+            "attachment must be an absolute path inside this conversation's workspace: {trimmed}"
+        )));
+    }
+    let canonical = std::fs::canonicalize(candidate).map_err(|_| {
+        attachment_rejection(format!("attachment could not be resolved: {trimmed}"))
+    })?;
+    if canonical == root || !canonical.starts_with(root) {
+        return Err(AppServerError::new(
+            "workspace_denied",
+            format!("attachment is outside this conversation's workspace: {trimmed}"),
+            StatusCode::FORBIDDEN,
+            false,
+        ));
+    }
+    let metadata = std::fs::metadata(&canonical).map_err(|_| {
+        attachment_rejection(format!("attachment could not be inspected: {trimmed}"))
+    })?;
+    if !metadata.is_file() {
+        return Err(attachment_rejection(format!(
+            "attachment is not a file: {trimmed}"
+        )));
+    }
+    Ok((trimmed.to_owned(), canonical))
 }
 
 async fn conversation_create(
@@ -4492,6 +4758,12 @@ async fn handle_websocket(socket: WebSocket, state: AppServerRouterState, user: 
             }
             continue;
         };
+        // A revoked or expired token ends the socket at its next frame (`22`
+        // §7.1 A2). Method dispatch would answer `unauthenticated` anyway; this
+        // also stops event delivery promptly.
+        if !state.registry.is_live(connection.connection_id()) {
+            break;
+        }
         let request: WsRequest = match serde_json::from_str(&text) {
             Ok(request) => request,
             Err(error) => {
@@ -5035,7 +5307,11 @@ async fn dispatch_connection_request(
                 state,
                 user,
                 &params.conversation_id,
-                ConversationSendRequest { content: params.content, idempotency_key: params.idempotency_key },
+                ConversationSendRequest {
+                    content: params.content,
+                    idempotency_key: params.idempotency_key,
+                    attachments: params.attachments,
+                },
             )
             .await?;
             Ok(ws_response(request_id, serde_json::to_value(receipt).map_err(|error| {
@@ -5765,6 +6041,9 @@ struct WsConversationSend {
     conversation_id: String,
     content: String,
     idempotency_key: String,
+    /// R15（W10）：会话工作区内的绝对路径附件（纯加法，缺省为空）。
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -6465,6 +6744,112 @@ mod tests {
             registry.mark_initialized(connection.connection_id(), &other),
             Err(ProtocolError::PrincipalMismatch)
         ));
+    }
+
+    // ---- A2 (`22` §7.1): connection-token TTL + principal revocation -------
+
+    /// An idle token past its TTL is refused with `token_expired` — a distinct
+    /// code from the `unauthenticated` an unknown/revoked token gets.
+    #[tokio::test]
+    async fn an_idle_connection_token_expires_with_a_distinct_code() {
+        let registry = AppServerRegistry::default()
+            .with_connection_ttl(Some(std::time::Duration::from_millis(100)));
+        let owner = UserId::new();
+        let connection = registry.open(
+            LocalPrincipal::from_authenticated_user(owner.clone(), LocalTransport::WebSocket),
+            true,
+        );
+        registry.initialize(connection.connection_id(), request()).unwrap();
+        registry.mark_initialized(connection.connection_id(), &owner).unwrap();
+        assert!(registry.require_ready(connection.connection_id(), &owner).is_ok());
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+        assert!(matches!(
+            registry.require_ready(connection.connection_id(), &owner),
+            Err(ProtocolError::TokenExpired)
+        ));
+        // The two wire codes stay distinct (`22` §7.1 A2 / `05` §10).
+        assert_eq!(
+            AppServerError::from(ProtocolError::TokenExpired).code,
+            "token_expired"
+        );
+        assert_eq!(
+            AppServerError::from(ProtocolError::ConnectionNotFound).code,
+            "unauthenticated"
+        );
+    }
+
+    /// Use renews the idle deadline, so an actively-used connection is not cut
+    /// off by its TTL.
+    #[tokio::test]
+    async fn a_used_connection_token_renews_its_deadline() {
+        let registry = AppServerRegistry::default()
+            .with_connection_ttl(Some(std::time::Duration::from_millis(400)));
+        let owner = UserId::new();
+        let connection = registry.open(
+            LocalPrincipal::from_authenticated_user(owner.clone(), LocalTransport::WebSocket),
+            true,
+        );
+        registry.initialize(connection.connection_id(), request()).unwrap();
+        registry.mark_initialized(connection.connection_id(), &owner).unwrap();
+
+        // Two uses spaced under the TTL: without renewal the second would be
+        // past the original (t0 + 400ms) deadline.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        assert!(registry.require_ready(connection.connection_id(), &owner).is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        assert!(registry.require_ready(connection.connection_id(), &owner).is_ok());
+    }
+
+    /// Revoking a principal drops only that principal's tokens, immediately.
+    #[test]
+    fn revoking_a_principal_invalidates_only_its_tokens() {
+        let registry = AppServerRegistry::default();
+        let owner = UserId::new();
+        let other = UserId::new();
+        let mut open_ready = |user: &UserId| {
+            let connection = registry.open(
+                LocalPrincipal::from_authenticated_user(user.to_owned(), LocalTransport::Http),
+                true,
+            );
+            registry.initialize(connection.connection_id(), request()).unwrap();
+            registry.mark_initialized(connection.connection_id(), user).unwrap();
+            assert!(registry.require_ready(connection.connection_id(), user).is_ok());
+            connection.connection_id().to_owned()
+        };
+        let owner_a = open_ready(&owner);
+        let owner_b = open_ready(&owner);
+        let other_c = open_ready(&other);
+        drop(open_ready);
+
+        assert_eq!(registry.revoke_principal(owner.as_str()), 2);
+        // Immediately dead for the revoked principal...
+        assert!(matches!(
+            registry.require_ready(&owner_a, &owner),
+            Err(ProtocolError::ConnectionNotFound)
+        ));
+        assert!(matches!(
+            registry.require_ready(&owner_b, &owner),
+            Err(ProtocolError::ConnectionNotFound)
+        ));
+        // ...and untouched for everyone else.
+        assert!(registry.require_ready(&other_c, &other).is_ok());
+    }
+
+    /// A host can turn expiry off entirely (`with_connection_ttl(None)`), which
+    /// is the pre-A2 behaviour.
+    #[test]
+    fn disabling_the_ttl_keeps_tokens_live() {
+        let registry = AppServerRegistry::default().with_connection_ttl(None);
+        let owner = UserId::new();
+        let connection = registry.open(
+            LocalPrincipal::from_authenticated_user(owner.clone(), LocalTransport::Http),
+            true,
+        );
+        registry.initialize(connection.connection_id(), request()).unwrap();
+        registry.mark_initialized(connection.connection_id(), &owner).unwrap();
+        assert!(registry.require_ready(connection.connection_id(), &owner).is_ok());
     }
 
     #[tokio::test]
@@ -7845,8 +8230,9 @@ model = "mimo-v2.5-free"
             assert_eq!(error.code, "policy_denied", "{method}");
         }
 
-        // A connection this registry never issued is `not_found`, not a file
-        // read: the config face adds no new reachable surface.
+        // A connection this registry never issued is an authentication failure
+        // (`22` §7.1 A2: `05` §3.1 answers `unauthenticated`), not a file read:
+        // the config face adds no new reachable surface.
         let unknown = ConnectionState::new(
             LocalPrincipal::from_authenticated_user(user.id.clone(), LocalTransport::WebSocket),
             true,
@@ -7854,7 +8240,7 @@ model = "mimo-v2.5-free"
         let error = dispatch_config(&state, &unknown, &user, &subscriptions, "config/get", serde_json::json!({}))
             .await
             .expect_err("unknown connection must be refused");
-        assert_eq!(error.code, "not_found");
+        assert_eq!(error.code, "unauthenticated");
 
         // `config/get` takes no parameters: a path is a hard rejection.
         let error = dispatch_config(
@@ -8744,7 +9130,7 @@ model = "mimo-v2.5-free"
         )
         .await
         .expect_err("unknown connection must be refused");
-        assert_eq!(error.code, "not_found");
+        assert_eq!(error.code, "unauthenticated");
 
         // Nothing exists on disk after every refused call.
         assert!(!paths.user_skills_dir.exists());
@@ -9426,5 +9812,91 @@ model = "mimo-v2.5-free"
         assert!(paths.builtin_skills_dir.join("code-review").join("SKILL.md").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- R15：附件准入（只许会话工作区内的绝对路径） -------------------------
+
+    /// 独立的临时目录：仓库没有 `tempfile` dev-dep，这里用系统临时目录 + 唯一名，
+    /// 测试自己清理。
+    fn attachment_temp_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("allo-attachments-{}", generate_id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::canonicalize(&dir).expect("canonical temp dir")
+    }
+
+    #[test]
+    fn attachment_paths_must_be_absolute_files_inside_the_workspace() {
+        let root = attachment_temp_dir();
+        let inside = root.join("shot.png");
+        std::fs::write(&inside, b"png-bytes").expect("write inside file");
+        std::fs::create_dir_all(root.join("nested")).expect("nested dir");
+
+        let outside = attachment_temp_dir();
+        let escaped = outside.join("secret.png");
+        std::fs::write(&escaped, b"secret").expect("write outside file");
+
+        // 工作区内的真实文件：接受，且返回的是**客户端给的字符串**（不是 canonical
+        // 形态——Windows 的 canonicalize 会带 `\\?\` 前缀，运行时不吃那个）。
+        let (accepted, canonical) = validate_attachment_path(&root, &inside.to_string_lossy())
+            .expect("an absolute file inside the workspace is accepted");
+        assert_eq!(accepted, inside.to_string_lossy());
+        assert_eq!(canonical, std::fs::canonicalize(&inside).unwrap());
+
+        let escape_via_dotdot = root
+            .join("..")
+            .join(outside.file_name().expect("outside dir name"))
+            .join("secret.png");
+        for rejected in [
+            "shot.png".to_owned(),                                 // 相对路径
+            "  ".to_owned(),                                       // 空
+            root.join("missing.png").to_string_lossy().into_owned(), // 不存在
+            root.join("nested").to_string_lossy().into_owned(),    // 目录不是文件
+            escaped.to_string_lossy().into_owned(),                // 工作区之外
+            escape_via_dotdot.to_string_lossy().into_owned(),      // `..` 逃逸
+        ] {
+            let error =
+                validate_attachment_path(&root, &rejected).expect_err("must be refused");
+            assert!(
+                matches!(error.code, "invalid_request" | "workspace_denied"),
+                "{rejected:?} must be refused, got {}",
+                error.code
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn ws_conversation_send_takes_attachments_additively() {
+        // 老客户端不传 `attachments`：行为逐字不变（空）。
+        let bare: WsConversationSend = serde_json::from_value(serde_json::json!({
+            "conversation_id": "c1",
+            "content": "hi",
+            "idempotency_key": "k1",
+        }))
+        .expect("clients that predate attachments keep working");
+        assert!(bare.attachments.is_empty());
+
+        let with: WsConversationSend = serde_json::from_value(serde_json::json!({
+            "conversation_id": "c1",
+            "content": "hi",
+            "idempotency_key": "k1",
+            "attachments": ["C:/ws/a.png"],
+        }))
+        .expect("attachments are additive");
+        assert_eq!(with.attachments, vec!["C:/ws/a.png".to_owned()]);
+
+        // `deny_unknown_fields` 仍然成立：写错字段名（例如历史上的 `files`）要被拒，
+        // 而不是静默丢掉附件。
+        assert!(
+            serde_json::from_value::<WsConversationSend>(serde_json::json!({
+                "conversation_id": "c1",
+                "content": "hi",
+                "idempotency_key": "k1",
+                "files": [],
+            }))
+            .is_err()
+        );
     }
 }

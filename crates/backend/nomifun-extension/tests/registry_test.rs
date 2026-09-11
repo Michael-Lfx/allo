@@ -406,3 +406,112 @@ async fn initialize_sets_flag() {
 
     assert!(registry.is_initialized().await);
 }
+
+// ---------------------------------------------------------------------------
+// `[import].strict_dependencies` (`16` R23 / `17` §7)
+// ---------------------------------------------------------------------------
+
+/// Write extension manifests that declare `dependencies`. The shared
+/// `write_fixtures` helper only writes identity fields, and a declared
+/// dependency is exactly what `17` §7 blocking keys off.
+fn write_dependency_fixtures(tmp: &TempDir, entries: &[(&str, &[(&str, &str)])]) -> Vec<ScanPath> {
+    let ext_dir = tmp.path().join("extensions");
+    std::fs::create_dir_all(&ext_dir).unwrap();
+
+    for (name, deps) in entries {
+        let dir = ext_dir.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dependencies: HashMap<&str, &str> = deps.iter().copied().collect();
+        let manifest = serde_json::json!({
+            "name": name,
+            "version": "1.0.0",
+            "dependencies": dependencies,
+        });
+        std::fs::write(
+            dir.join("nomi-extension.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    vec![ScanPath {
+        path: ext_dir,
+        source: ExtensionSource::Env,
+    }]
+}
+
+async fn load_names(registry: &ExtensionRegistry) -> Vec<String> {
+    let mut names: Vec<String> = registry
+        .get_loaded_extensions()
+        .await
+        .into_iter()
+        .map(|ext| ext.name)
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn strict_dependencies_off_keeps_unsatisfied_dependents() {
+    let tmp = TempDir::new().unwrap();
+    let scan_paths = write_dependency_fixtures(
+        &tmp,
+        &[("ext-a", &[("ext-missing", "^1.0.0")]), ("ext-b", &[])],
+    );
+    let store = ExtensionStateStore::new(tmp.path().join("states.json"));
+    let bus = Arc::new(BroadcastEventBus::new(16));
+
+    // No `with_strict_dependencies` call → the historical warn-only behaviour.
+    let registry = ExtensionRegistry::new(store, bus, "1.0.0".to_owned());
+    registry.initialize_with_scan_paths(scan_paths).await.unwrap();
+
+    assert_eq!(
+        load_names(&registry).await,
+        vec!["ext-a".to_owned(), "ext-b".to_owned()],
+        "default (off) must not drop an extension with a missing dependency"
+    );
+}
+
+#[tokio::test]
+async fn strict_dependencies_on_refuses_only_the_unsatisfied_dependent() {
+    let tmp = TempDir::new().unwrap();
+    let scan_paths = write_dependency_fixtures(
+        &tmp,
+        &[
+            ("ext-a", &[("ext-missing", "^1.0.0")]),
+            ("ext-b", &[]),
+            ("ext-c", &[("ext-b", "^1.0.0")]),
+        ],
+    );
+    let store = ExtensionStateStore::new(tmp.path().join("states.json"));
+    let bus = Arc::new(BroadcastEventBus::new(16));
+
+    let registry =
+        ExtensionRegistry::new(store, bus, "1.0.0".to_owned()).with_strict_dependencies(true);
+    registry.initialize_with_scan_paths(scan_paths).await.unwrap();
+
+    assert_eq!(
+        load_names(&registry).await,
+        vec!["ext-b".to_owned(), "ext-c".to_owned()],
+        "only the extension whose own dependency is unsatisfiable is refused"
+    );
+}
+
+#[tokio::test]
+async fn strict_dependencies_on_keeps_a_healthy_graph() {
+    let tmp = TempDir::new().unwrap();
+    let scan_paths =
+        write_dependency_fixtures(&tmp, &[("base", &[]), ("consumer", &[("base", "^1.0.0")])]);
+    let store = ExtensionStateStore::new(tmp.path().join("states.json"));
+    let bus = Arc::new(BroadcastEventBus::new(16));
+
+    let registry =
+        ExtensionRegistry::new(store, bus, "1.0.0".to_owned()).with_strict_dependencies(true);
+    registry.initialize_with_scan_paths(scan_paths).await.unwrap();
+
+    assert_eq!(
+        load_names(&registry).await,
+        vec!["base".to_owned(), "consumer".to_owned()],
+        "strict mode must not touch extensions whose ranges are satisfied"
+    );
+}

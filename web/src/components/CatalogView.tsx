@@ -236,6 +236,21 @@ function StoreInstallAction({
   onInstall: () => void;
 }) {
   const { t } = useTranslation();
+  // `02` §11.1: an entry the server already refuses (e.g. `strict=true` with no
+  // `plugin.json` of its own) stays listed so the reason is readable, but the
+  // install action must not be offered — it would be refused anyway.
+  if (item.blocked_reason) {
+    return (
+      <span
+        className="market-store-float is-blocked"
+        role="note"
+        title={item.blocked_reason}
+        aria-label={`${t("catalog.storeBlocked")}: ${item.blocked_reason}`}
+      >
+        <CircleAlert size={14} strokeWidth={1.7} />
+      </span>
+    );
+  }
   if (item.installed) {
     return (
       <button
@@ -1210,6 +1225,13 @@ export function CatalogView() {
                 </div>
                 <div className="market-card-foot">
                   <div className="market-tags">
+                    {/* `02` §11.1: stated on the card, not only in the drawer —
+                        the reason is why the install button is gone. */}
+                    {item.blocked_reason ? (
+                      <span className="market-tag is-blocked" title={item.blocked_reason}>
+                        {t("catalog.storeBlocked")}
+                      </span>
+                    ) : null}
                     {pickLocalizedList(item.tags, lang).slice(0, 3).map((text) => {
                       return text ? <span className="market-tag" key={text}>{text}</span> : null;
                     })}
@@ -1524,6 +1546,9 @@ export function CatalogView() {
                       // baseline fields, resolved by the UI language.
                       const entryName = pickEntryText(entry.localized, "name", lang, entry.name) ?? entry.name;
                       const entryTags = pickEntryTags(entry.localized, lang) ?? entry.keywords ?? [];
+                      // `02` §11.1: the entry is listed so the reason is
+                      // readable, but neither action can succeed.
+                      const blocked = entry.blocked_reason ?? null;
                       return (
                         <div className="market-card market-entry-card" key={`${marketDetail.marketplace_id}/${entry.name}`}>
                           <div className="market-card-top">
@@ -1544,12 +1569,18 @@ export function CatalogView() {
                                 </span>
                               )}
                             </div>
+                            {blocked && (
+                              <span className="market-tag is-blocked" title={blocked}>
+                                {t("catalog.storeBlocked")}
+                              </span>
+                            )}
                             {installed && <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>}
                             {!installed && (
                               <button
                                 className="primary-button market-entry-import"
                                 type="button"
-                                disabled={busy || !storeItem}
+                                disabled={busy || !storeItem || Boolean(blocked)}
+                                title={blocked ?? undefined}
                                 onClick={() => { if (storeItem) void runStoreInstall(storeItem); }}
                               >
                                 {busy ? t("catalog.storeInstalling") : t("catalog.storeInstall")}
@@ -1561,7 +1592,8 @@ export function CatalogView() {
                             <button
                               className="secondary-button market-entry-import"
                               type="button"
-                              disabled={entryBusy}
+                              disabled={entryBusy || Boolean(blocked)}
+                              title={blocked ?? undefined}
                               onClick={() => void importMarketEntry(marketDetail.marketplace_id, entry.name)}
                             >
                               {entryBusy ? t("catalog.marketEntryImporting") : t("catalog.marketEntryImport")}
@@ -1861,6 +1893,9 @@ function StoreDrawer({
         </div>
       </div>
       {description && <p className="drawer-desc">{description}</p>}
+      {/* `02` §11.1: stated in full, not just as a hover title — this is the
+          reason the install action is missing below. */}
+      {item.blocked_reason && <p className="market-block-reason">{item.blocked_reason}</p>}
       {quickPrompts.length > 0 && (
         <div className="drawer-quick-prompts">
           <h3>{t("catalog.agentQuickPrompts")}</h3>
@@ -1878,14 +1913,20 @@ function StoreDrawer({
         <MetaList label={t("catalog.fieldSkills")} values={tags} />
       </dl>
       <div className="drawer-actions">
-        {item.installed ? (
+        {item.blocked_reason ? (
+          // `02` §11.1: the server refuses this entry, so offering install
+          // would only reproduce the refusal.
+          <span className="market-tag is-blocked" title={item.blocked_reason}>
+            {t("catalog.storeBlocked")}
+          </span>
+        ) : item.installed ? (
           <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>
         ) : (
           <button className="primary-button" type="button" disabled={busy} onClick={onInstall}>
             {busy ? t("catalog.storeInstalling") : t("catalog.storeInstall")}
           </button>
         )}
-        {item.update_available && (
+        {!item.blocked_reason && item.update_available && (
           <button className="secondary-button" type="button" disabled={busy} onClick={onInstall}>
             {busy ? t("catalog.storeUpdating") : t("catalog.storeUpdate")}
           </button>

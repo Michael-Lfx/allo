@@ -51,7 +51,10 @@ async fn exact_legacy_preset_roots_gain_provider_identity_and_retired_roots_move
         .unwrap();
     }
 
-    migrate_to(&pool, 30).await;
+    // 重分类在**迁移 033**（`033_classify_legacy_provider_presets.sql`），不是 030
+    // （030 是 `ssh_hosts`）。原先写成 30，于是 033 根本没跑，断言只能看到未重分类的
+    // `custom` 与原 URL——**用例陈旧，不是迁移回归**。
+    migrate_to(&pool, 33).await;
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT platform, base_url FROM providers ORDER BY provider_id",
     )

@@ -22,6 +22,7 @@ import {
   planStepAnchor,
   planStepViews,
   runStepAnchor,
+  scrollToAnchor,
 } from "../lib/run-plan";
 import { shortId } from "../ui/format";
 import type { RunEvent, RunPlan } from "../lib/protocol";
@@ -86,15 +87,13 @@ export function RunSurface({
   const todos = planStepViews(plan);
   const progress = planProgress(todos);
 
-  /** 「与 W6 step 树互跳」：滚动到对侧的同一步骤锚点并高亮一瞬。 */
+  /**
+   * 「与 W6 step 树互跳」：滚动到对侧的同一步骤锚点并高亮一瞬。
+   * 实现抽到 `lib/run-plan.ts` 的 `scrollToAnchor`——R20a 的产物归属跳转
+   * 要走同一条路径（同一套锚点语义、同一套无 DOM 时的静默降级）。
+   */
   const jumpTo = (anchor: string) => {
-    const target = typeof document === "undefined" ? null : document.getElementById(anchor);
-    target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
-    target?.classList?.add("is-jump-target");
-    // 高亮是纯视觉反馈：没有 classList/window 的环境（SSR、测试）静默跳过。
-    if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
-      window.setTimeout(() => target?.classList?.remove("is-jump-target"), 1200);
-    }
+    scrollToAnchor(anchor);
   };
 
   return (
