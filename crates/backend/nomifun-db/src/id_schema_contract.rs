@@ -203,7 +203,13 @@ const UUIDV7_MANAGED_VALUE_COLUMNS: &[(&str, &str)] = &[("creation_tasks", "node
 /// `_id` columns that are identities, operation tokens, platform handles, or
 /// opaque remote handles rather than relational links. Every other physical
 /// `_id` column must be present in [`LOGICAL_REFERENCES`].
-const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
+///
+/// Exported because it is the **single source of truth** for this half of the
+/// contract: the schema test that used to assert "every `*_id` is TEXT" kept
+/// its own copy of the exception list and drifted from this one the moment a
+/// migration added `oauth_tokens.registration_id` (an INTEGER logical link).
+/// The test now reads this list instead of restating it.
+pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("acp_session", "acp_session_id"),
     ("app_server_idempotency_receipts", "client_id"),
     ("app_server_idempotency_receipts", "principal_id"),

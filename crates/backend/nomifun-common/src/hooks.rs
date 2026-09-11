@@ -39,6 +39,20 @@ pub trait OnTerminalDelete: Send + Sync {
     async fn on_terminal_deleted(&self, user_id: &str, terminal_id: &str);
 }
 
+/// Notified when a user's login session is revoked (`POST /logout`).
+///
+/// Lets the App Server drop the connection tokens it issued to that principal
+/// without `nomifun-auth` depending on `nomifun-app-server` (`22` §7.1 A2:
+/// "revocation takes effect immediately"). Implementations must not fail the
+/// logout: log inside the hook and return; a token that cannot be revoked here
+/// is still bounded by its TTL.
+#[async_trait]
+pub trait OnSessionRevoked: Send + Sync {
+    /// `user_id` is the verified session owner captured before the token was
+    /// blacklisted.
+    async fn on_session_revoked(&self, user_id: &str);
+}
+
 /// Creates a tracked requirement from an inbound channel message (the opt-in
 /// IM → requirement pipeline). Lets `nomifun-channel` file a message as a
 /// requirement without depending on `nomifun-requirement`; the concrete

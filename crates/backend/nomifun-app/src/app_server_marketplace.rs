@@ -79,6 +79,36 @@ pub struct ScannedEntry {
     /// through to the registry and the public projection (doc `18` §4 /
     /// D8=A). The reader picks the language, never the server.
     pub localized: BTreeMap<String, LocalizedVariant>,
+    /// The entry's declared `strict` (`02` §8); `false` when the row says
+    /// nothing (the pre-existing behaviour).
+    pub strict: bool,
+    /// Set when discovery already knows the entry cannot be imported.
+    pub blocked_reason: Option<String>,
+}
+
+/// `strict=true` requires the plugin source to carry **its own**
+/// `.codebuddy-plugin/plugin.json` (`02` §8 / §11.1; `17` §3 / §7).
+///
+/// Returns the blocking reason when the rule is violated, `None` otherwise.
+///
+/// `strict=false` deliberately returns `None` even when `plugin.json` is
+/// absent: the spec lets that entry *supplement or replace* the manifest, so
+/// absence is not by itself an error — implementing that substitution is the
+/// outstanding half of `17` §10 P5, and callers keep their existing behaviour
+/// for it (discovery skips such rows).
+///
+/// The reason never contains a filesystem path: source paths are internal
+/// traceability only (`02` §9), so the message names the entry instead. It is
+/// also just a sentence for humans — nothing parses it.
+pub(crate) fn strict_entry_block(strict: bool, plugin_json_present: bool) -> Option<String> {
+    if !strict || plugin_json_present {
+        return None;
+    }
+    Some(
+        "市场条目声明 strict=true，要求插件来源自带 .codebuddy-plugin/plugin.json，\
+         但该来源缺少此文件（02 §11.1 阻断规则）"
+            .to_owned(),
+    )
 }
 
 /// Probe a local directory and derive its market kind + entries.
@@ -133,6 +163,10 @@ pub fn probe_directory(root: &Path) -> Result<(MarketKind, Vec<ScannedEntry>), A
                 keywords: vec![],
                 category: None,
                 localized: BTreeMap::new(),
+                // A plain collection has no manifest row, hence no `strict`
+                // declaration to honour.
+                strict: false,
+                blocked_reason: None,
             });
         }
     }
@@ -162,6 +196,8 @@ fn scan_root_as_entry(root: &Path) -> ScannedEntry {
         keywords: vec![],
         category: None,
         localized: BTreeMap::new(),
+        strict: false,
+        blocked_reason: None,
     }
 }
 
@@ -187,6 +223,10 @@ fn probe_connector_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
             keywords: vec![],
             category: None,
             localized: collect_localized_variants(item),
+            // `strict` is a plugin-market field (`02` §8); connector rows do
+            // not declare it and are never gated by it.
+            strict: false,
+            blocked_reason: None,
         });
     }
     Ok(entries)
@@ -240,6 +280,10 @@ fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {    l
                 .unwrap_or_default(),
             category: item.get("category").and_then(|v| v.as_str()).map(str::to_owned),
             localized: collect_localized_variants(item),
+            // Skill rows declare no `strict` (`02` §8): the rule is about a
+            // plugin source carrying its own plugin.json.
+            strict: false,
+            blocked_reason: None,
         });
     }
     Ok(entries)
@@ -249,6 +293,13 @@ fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {    l
 /// row is an entry (real WorkBuddy expert markets, e.g.
 /// `marketplaces/experts/.codebuddy-plugin/marketplace.json` with
 /// `plugins: [{ name, source: ./plugins/<id>, description }]`).
+///
+/// Each row's `strict` (`02` §8) is read here. A row that declares
+/// `strict=true` while its source carries no `plugin.json` is **kept and
+/// marked** (`blocked_reason`) instead of silently disappearing: the spec
+/// says that combination blocks the install (`02` §11.1), and an invisible
+/// entry cannot explain that to anyone. Rows without `strict` keep the
+/// historical skip — see `strict_entry_block`.
 fn probe_plugin_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
     let text = std::fs::read_to_string(root.join(".codebuddy-plugin/marketplace.json"))
         .map_err(|error| AppError::Internal(format!("read plugin marketplace.json: {error}")))?;
@@ -278,9 +329,15 @@ fn probe_plugin_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
         } else {
             format!("plugins/{source}")
         };
+        let strict = item.get("strict").and_then(|v| v.as_bool()).unwrap_or(false);
         let resolved = root.join(&source);
-        if !resolved.join(".codebuddy-plugin/plugin.json").is_file() {
-            // Skip rows whose plugin directory is missing.
+        let plugin_json_present = resolved.join(".codebuddy-plugin/plugin.json").is_file();
+        let blocked_reason = strict_entry_block(strict, plugin_json_present);
+        if blocked_reason.is_none() && !plugin_json_present {
+            // `strict=false` row whose source has no plugin.json: the spec lets
+            // the entry supplement/replace the manifest, which is the
+            // unimplemented half of `17` §10 P5 — keep the historical skip
+            // instead of inventing a manifest from the row's fields.
             continue;
         }
         entries.push(ScannedEntry {
@@ -294,6 +351,8 @@ fn probe_plugin_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
                 .unwrap_or_default(),
             category: item.get("category").and_then(|v| v.as_str()).map(str::to_owned),
             localized: collect_localized_variants(item),
+            strict,
+            blocked_reason,
         });
     }
     Ok(entries)
@@ -430,6 +489,8 @@ fn to_entry(
         keywords: entry.keywords.clone(),
         category: entry.category.clone(),
         localized: entry.localized.clone(),
+        strict: entry.strict,
+        blocked_reason: entry.blocked_reason.clone(),
         snapshot: snapshot.cloned(),
     }
 }
@@ -522,6 +583,8 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 keywords: entry.keywords,
                 category: entry.category,
                 localized: entry.localized,
+                strict: entry.strict,
+                blocked_reason: entry.blocked_reason,
             })
             .collect();
         // Display name: marketplace.json `name` when declared, else directory
@@ -753,6 +816,8 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                     keywords: entry.keywords,
                     category: entry.category,
                     localized: entry.localized,
+                    strict: entry.strict,
+                    blocked_reason: entry.blocked_reason,
                 })
                 .collect();
             let content_digest = nomifun_importer::digest::tree_digest_of_dir(&root);
@@ -878,6 +943,31 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
             marketplace_id,
             &entry.source_uri,
         );
+
+        // `strict=true` refuses an entry whose source carries no plugin.json of
+        // its own (`02` §8 / §11.1). Re-evaluated against the real tree instead
+        // of trusting the stored projection: a directory market is a live view,
+        // so the file may have appeared since discovery. Blocked *before* the
+        // importer runs, so no snapshot row is produced — the same contract as
+        // the importer's own blocking path.
+        //
+        // Deliberately **before** the kind derivation below: the entry declares
+        // itself a plugin (`strict` only ever arrives `true` from a
+        // `.codebuddy-plugin/marketplace.json` row), so a source without a
+        // manifest must be refused rather than quietly reinterpreted as
+        // whatever its directory shape suggests (often a skill).
+        if let Some(reason) =
+            strict_entry_block(entry.strict, source.join(".codebuddy-plugin/plugin.json").is_file())
+        {
+            return Ok(nomifun_importer::blocked_import_result(
+                SourceKind::CodeBuddyPlugin,
+                Some((
+                    entry.name.clone(),
+                    entry.version.clone().unwrap_or_else(|| "0".into()),
+                )),
+                &[reason],
+            ));
+        }
 
         // Entry-level kind derivation: a skill sub-directory without its own
         // marketplace.json parses as a single-skill market; a connector
@@ -1314,6 +1404,8 @@ mod tests {
                 "description_zh".to_owned(),
                 LocalizedVariant::Text("PDF 工具集".to_owned()),
             )]),
+            strict: false,
+            blocked_reason: None,
         };
         let projected = to_entry(&entry, None);
         assert_eq!(
@@ -1327,5 +1419,97 @@ mod tests {
         let bare = MarketplaceEntry { localized: BTreeMap::new(), ..entry };
         let wire = serde_json::to_value(to_entry(&bare, None)).expect("serialize");
         assert!(wire.get("localized").is_none(), "empty variants must not reach the wire");
+    }
+
+    // -- `strict` / `blocked_reason` (R24, `02` §8 / §11.1) -------------------
+
+    /// The rule only ever fires for `strict=true` + a missing `plugin.json`
+    /// (`17` §7). Everything else must stay silently importable — in particular
+    /// `strict=false` without a manifest is **not** an error: the spec lets the
+    /// entry supply the manifest (the unimplemented half, `17` §10 P5).
+    #[test]
+    fn strict_entry_block_fires_only_for_strict_without_a_manifest() {
+        assert!(strict_entry_block(true, false).is_some(), "strict + no plugin.json blocks");
+        assert!(strict_entry_block(true, true).is_none(), "strict + plugin.json is fine");
+        assert!(strict_entry_block(false, false).is_none(), "non-strict is never blocked");
+        assert!(strict_entry_block(false, true).is_none());
+
+        // The reason must not leak a filesystem path (`02` §9).
+        let reason = strict_entry_block(true, false).expect("reason");
+        assert!(reason.contains("strict=true"), "{reason}");
+        assert!(reason.contains("plugin.json"), "{reason}");
+    }
+
+    /// A default entry keeps the wire unchanged: both keys stay absent
+    /// (purely additive), and a blocked one carries what the UI needs.
+    #[test]
+    fn entry_projection_omits_strict_fields_unless_declared() {
+        let plain = MarketplaceEntry {
+            name: "pdf-toolkit".into(),
+            source_kind: "directory".into(),
+            source_uri: "plugins/pdf-toolkit".into(),
+            version: None,
+            description: None,
+            keywords: vec![],
+            category: None,
+            localized: BTreeMap::new(),
+            strict: false,
+            blocked_reason: None,
+        };
+        let wire = serde_json::to_value(to_entry(&plain, None)).expect("serialize");
+        assert!(wire.get("strict").is_none(), "strict=false must not reach the wire");
+        assert!(wire.get("blocked_reason").is_none(), "no reason, no key");
+
+        let blocked = MarketplaceEntry {
+            strict: true,
+            blocked_reason: strict_entry_block(true, false),
+            ..plain
+        };
+        let wire = serde_json::to_value(to_entry(&blocked, None)).expect("serialize");
+        assert_eq!(wire["strict"], serde_json::json!(true));
+        assert!(
+            wire["blocked_reason"].as_str().is_some_and(|text| !text.is_empty()),
+            "{wire}"
+        );
+    }
+
+    /// Discovery keeps a `strict=true` row whose source has no `plugin.json`
+    /// instead of dropping it (§11.1 blocking is visible, not a silent skip),
+    /// and a non-strict row keeps the historical skip.
+    #[test]
+    fn probe_plugin_market_keeps_blocked_strict_rows_and_skips_the_rest() {
+        let dir = std::env::temp_dir().join(format!("as-mkt-strict-{}", nomifun_common::generate_id()));
+        write(
+            &dir.join(".codebuddy-plugin/marketplace.json"),
+            r#"{
+                "name": "expert-market",
+                "plugins": [
+                    { "name": "fine", "source": "./plugins/fine", "strict": true },
+                    { "name": "blocked", "source": "./plugins/blocked", "strict": true },
+                    { "name": "skipped", "source": "./plugins/skipped" }
+                ]
+            }"#,
+        );
+        // Only `fine` ships a plugin.json of its own; `blocked` declares
+        // `strict=true` without one; `skipped` declares nothing.
+        write(&dir.join("plugins/fine/.codebuddy-plugin/plugin.json"), r#"{ "name": "fine" }"#);
+
+        let (kind, entries) = probe_directory(&dir).unwrap();
+        assert_eq!(kind, MarketKind::PluginMarket);
+
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["fine", "blocked"], "the non-strict row stays skipped");
+
+        let fine = entries.iter().find(|entry| entry.name == "fine").unwrap();
+        assert!(fine.strict, "the declared flag is carried out of the probe");
+        assert!(fine.blocked_reason.is_none());
+
+        let blocked = entries.iter().find(|entry| entry.name == "blocked").unwrap();
+        assert!(blocked.strict);
+        assert!(
+            blocked.blocked_reason.as_deref().is_some_and(|reason| !reason.is_empty()),
+            "a kept-but-refused row must say why"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

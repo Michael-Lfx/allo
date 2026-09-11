@@ -7,6 +7,7 @@
 //! responses; source paths are internal traceability only.
 
 pub mod compat;
+pub mod dependency;
 pub mod digest;
 pub mod frontmatter;
 pub mod import;
@@ -16,7 +17,10 @@ pub mod models;
 pub mod registry;
 pub mod walk;
 
-pub use import::{ImportError, ImporterService, ImportRequest};
+pub use dependency::{
+    CatalogIndex, DeclaredDependency, DependencyProblem, check_dependencies,
+};
+pub use import::{ImportError, ImportRequest, ImporterService, blocked_import_result};
 pub use install::{
     InstallError, InstallerConfig, InstallerService, InstalledSkillLocation, MaterializeOutcome,
 };

@@ -37,6 +37,20 @@ pub struct MarketplaceEntry {
     /// refresh.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub localized: BTreeMap<String, LocalizedVariant>,
+    /// `strict` as declared by the **market entry** (`02` §8): `true` requires
+    /// the plugin source to carry its own `.codebuddy-plugin/plugin.json`;
+    /// `false` (the default, and what every row written before this field
+    /// deserializes to) lets the market entry supplement or replace the
+    /// manifest — see `17` §10 P5 for the half that is still unimplemented.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
+    /// Why this entry cannot be imported, when that is knowable at probe time
+    /// (`02` §11.1 blocking rules). `None` = importable as far as discovery can
+    /// tell. Today only the `strict` rule produces one. It is a *projection*:
+    /// the import path re-evaluates the rule against the real source tree
+    /// rather than trusting this stored value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 /// Row mapping for `plugin_marketplaces`.

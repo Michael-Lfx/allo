@@ -408,6 +408,14 @@ fn row_to_sdk_mcp_server(row: &McpServerRow) -> Result<McpServer, String> {
                 })
                 .unwrap_or_default();
             let env = json_string_entries(value.get("env"));
+            let (env, missing) = resolve_env_entries(env);
+            if !missing.is_empty() {
+                warn!(
+                    server_name = %row.name,
+                    missing = ?missing,
+                    "user_mcp: unresolved credential references; omitting them"
+                );
+            }
             Ok(build_stdio_server(&row.name, command, args, env))
         }
         "http" | "streamable_http" => {
@@ -435,6 +443,14 @@ fn session_server_to_sdk_mcp_server(server: &SessionMcpServer) -> Result<McpServ
                 return Err("stdio: missing command".to_owned());
             }
             let env = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let (env, missing) = resolve_env_entries(env);
+            if !missing.is_empty() {
+                warn!(
+                    server_name = %server.name,
+                    missing = ?missing,
+                    "user_mcp: unresolved credential references; omitting them"
+                );
+            }
             Ok(build_stdio_server(&server.name, command, args.clone(), env))
         }
         SessionMcpTransport::Http { url, headers }
@@ -471,6 +487,18 @@ fn json_string_entries(value: Option<&serde_json::Value>) -> Vec<(String, String
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Resolve `secret:NAME` references in stdio env entries (`17` §6 / `21`
+/// D5=C). Returns the entries to hand the SDK plus the **key names** of any
+/// reference with no matching credential — those are omitted (fail-closed),
+/// never injected as the literal `secret:NAME` string. Sorted for determinism.
+fn resolve_env_entries(entries: Vec<(String, String)>) -> (Vec<(String, String)>, Vec<String>) {
+    let map: std::collections::HashMap<String, String> = entries.into_iter().collect();
+    let resolved = nomifun_common::secret_ref::resolve_env(&map);
+    let mut entries: Vec<(String, String)> = resolved.env.into_iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    (entries, resolved.missing)
 }
 
 /// Sort entries by key for deterministic ordering across runs.
@@ -903,5 +931,36 @@ mod tests {
 
         let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
         assert!(servers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod secret_ref_env_tests {
+    use super::resolve_env_entries;
+
+    #[test]
+    fn plain_env_passes_through_sorted() {
+        let (env, missing) = resolve_env_entries(vec![
+            ("B".to_owned(), "2".to_owned()),
+            ("A".to_owned(), "1".to_owned()),
+        ]);
+        assert_eq!(
+            env,
+            vec![("A".to_owned(), "1".to_owned()), ("B".to_owned(), "2".to_owned())]
+        );
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn unresolved_reference_is_omitted_and_named() {
+        // No credentials are installed in this test process, so the reference
+        // cannot resolve: the variable is dropped and reported, never injected
+        // as the literal `secret:…` string (`17` §6 / `21` D5=C).
+        let (env, missing) = resolve_env_entries(vec![(
+            "TOKEN".to_owned(),
+            "secret:__NOMIFUN_TEST_UNSET__".to_owned(),
+        )]);
+        assert!(env.is_empty(), "unresolvable reference must not be injected: {env:?}");
+        assert_eq!(missing, vec!["TOKEN".to_owned()]);
     }
 }

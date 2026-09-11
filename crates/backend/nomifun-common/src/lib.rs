@@ -25,6 +25,7 @@ mod pagination;
 pub mod paths;
 pub mod provider_lifecycle;
 pub mod provider_usage;
+pub mod secret_ref;
 pub mod stage_direction;
 mod timestamp;
 mod types;
@@ -58,7 +59,7 @@ pub use error::{
 };
 pub use execution_authority::ExecutionAuthority;
 pub use fsname::sanitize_dir_segment;
-pub use hooks::{OnConversationDelete, OnTerminalDelete, RequirementCreator};
+pub use hooks::{OnConversationDelete, OnSessionRevoked, OnTerminalDelete, RequirementCreator};
 pub use id::{
     AgentExecutionAttemptId, AgentExecutionId, AgentExecutionParticipantId,
     AgentExecutionStepId, AgentExecutionTemplateId, AgentExecutionTemplateParticipantId,

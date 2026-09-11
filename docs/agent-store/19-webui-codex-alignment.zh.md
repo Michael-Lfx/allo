@@ -42,7 +42,7 @@ Codex app 的官方定位是「agent 指挥中心」：多项目侧栏 + 并行�
 | Codex 要素 | 我们的现状 | 缺口 | 归属 |
 | --- | --- | --- | --- |
 | 审批（审批卡、批准/拒绝） | ✅ 已解冻（2026-09-10，R8）：`capabilities.approvals` 派生自 runtime；`run/answer-decision` + 行内审批卡（三路 CAS，无 approve-all） | ✅ 已有 | W2 |
-| 产物 / 变更审查 | ⚠️ **原判断已修正（D-W5-1）**：`artifact/list` / `artifact/get` 在 `05` §8 标注**延后实现**（`capabilities.artifacts` 恒 `false`），TS 协议包无对应类型，`artifact.created` **不存在**；可用者是宿主面 `/api/fs/*` | 🟡 收敛交付（残留：按 Run 归属 / 接受 / 回退） | W5 |
+| 产物 / 变更审查 | ⚠️ **原判断已修正（D-W5-1）**：`artifact/list` / `artifact/get` 在 `05` §8 标注**延后实现**（`capabilities.artifacts` 恒 `false`），TS 协议包无对应类型，`artifact.created` **不存在**；可用者是宿主面 `/api/fs/*` | ✅ 收敛交付（**按 Run 归属**已由 R20a 交付 · **接受 / 回退**已由 R20b 用宿主 git 基线快照服务 `/api/fs/snapshot/*` 交付——两项**均未**引入 Artifact 协议，D-W5-1 消解） | W5 |
 | 中断与引导 | ✅ 已接（2026-09-10，W3/R9）：`run/steer` 由 composer 的「引导输入」形态驱动（Enter → `run/steer`，先读 `run/get` 版本再 CAS；终态在发请求前拒绝并说明）；`run/cancel` 在 Run 面头部 | ✅ 已有 | W3 |
 | 计划 / 待办 | `plan.created` / `plan.revised` 事件已定义（`01` §8）；事件只带 `change`/`intent`，**无步骤标题**——D-W6-1 已由 additive `run/plan` 结案（快照带 `title` / `status` / 成员 / 每次尝试的原因·错误·起止时间） | ✅ 已补（2026-09-11，W4/R10）：`run/plan` 快照投影 + `run-plan.ts` 纯层（11 例）+ `RunSurface`「计划与待办」块（标题/状态/成员/修订/尝试明细）+ 与 W6 事件树**双向锚点互跳**；快照缺失时明确提示且事件树不受影响 | W4 |
 | 重规划 | `run/replan` 已定义 | 🟡 待评估是否开放 | W4（后置） |
@@ -55,7 +55,7 @@ Codex app 的官方定位是「agent 指挥中心」：多项目侧栏 + 并行�
 | 用量 / 上下文 | `context.usage` 事件已有；`ContextIndicator` 显示 token 百分比 | ✅ 已补（2026-09-11，批 6）：模型条目带 models.dev 费率与目录窗口、选择器标注、发送前模型校验、≥80% 提示 + 新建对话、**按 turn 的 token 与估算金额**（`message.activity.usage` 走 additive 投影；费率与 token 都在才显示金额，缺席只显示 token；逐轮 usage 未持久化，仅实时轮次） | W9 |
 | 通知与后台任务 | ✅ 已有（2026-09-10，W8 + 批 3 R13）：`ToastHost` + 断线横幅 + 一键重连；D4=A 多标签选主（桌面通知 / 声音 / 后台 Run 提醒跨标签只触发一次，锁不可用时有确定性降级）；「安装 / 刷新完成」Toast 与「后台 Run 终态」Toast（后台时另发通知与声音，点通知把标签拉回前台）。见 §3 W8「进度」 | ✅ 已有 | W8 |
 | 会话工作流（重试/编辑/重新生成） | ✅ 已建（2026-09-10，W7/R12）：错误卡「重试」+ 可重试/不可重试徽标；最后一条用户消息行内编辑后作为新一轮发送（不覆写历史）；最后一条助手回复可「重新生成」；幂等键按「未回执 → 复用、已回执 → 新键」分开处理 | ✅ 已有 | W7 |
-| 附件输入 | 无（WP-7 剩余项） | 🔴 需协议加法 | W10 |
+| 附件输入 | ✅ **已全部落地（2026-09-11，R15）**：协议 additive `attachments`（路径引用）+ 宿主侧会话工作区准入 + 客户端前置校验 + 附件选择面板 + **拖拽 / 粘贴本地文件**（字节经 `/api/fs/upload` 的 `workspace` 落点写进**会话工作区**，再作为路径引用附件） | ✅ 已有 | W10 |
 | 设置分区 | 8 个分区仅 `general` 实现 | 🔴 需新建 | W11 |
 | worktree / Git / IDE 同步 / 浏览器 / 语音 / 终端 | — | ⚪ 非目标 | — |
 
@@ -100,8 +100,8 @@ Codex app 的官方定位是「agent 指挥中心」：多项目侧栏 + 并行�
 
 **W5 · 产物与变更面板**
 - 现状（⚠️ 2026-09-10 代码核实，修正原文）：`05` §8 定义了 `artifact/list` / `artifact/get`，但**明确标注延后实现**（`05`:152 与 `TC-AS-008`：`capabilities.artifacts` 恒 `false`，且规定「Artifact 不允许任意路径读取」）；TS 协议包与 `packages/client` **无**对应类型与子客户端，`artifact.created` 事件**不存在**。真实存在的是 `RunView.output_files`（`protocol.ts:204-213`）与 client 的 `TurnResult.output_files`（`turn-result.ts:97-112`），但 webui 不跟踪 run receipt、`ConversationEvent` 也不携带产物字段。
-- **范围收敛（2026-09-10 决策）**：本轮**不引入 Artifact 协议**（`16` 第 3 批边界「不碰协议」）。改用**宿主面文件服务**（`crates/backend/nomifun-file`：`/api/fs/list`、`/api/fs/read`、`/api/fs/metadata` 服务端均已有，webui 此前只接了 `browse`）按**会话 workspace** 交付产物列表 + 预览 + 下载；「按 Run 归属」与「接受 / 回退」登记为待 Artifact Phase（见 `16` 已知偏差 D-W5-1）。
-- **进度（2026-09-10）**：✅ 已落地「会话 workspace 产物面板」——`ArtifactPanel.tsx` + `appStore` 的 artifact 切片（`refreshArtifacts` / `openArtifactPreview` / `quoteArtifactIntoDraft`）+ `web/src/lib/client.ts` 的 `listWorkspaceFiles` / `readFileContent` / `getFileMetadata`（宿主面 `/api/fs/*`）+ 协议类型 `WorkspaceFlatFile` / `FileMetadata` + i18n `artifact` 分区 + `.artifact-*` 样式 + Topbar 入口。**未做**：按 Run 归属、接受 / 回退（待 Artifact Phase）；列表项不含 size / type / mtime——`/api/fs/list` 只返回 `name`/`full_path`/`relative_path`，要展示需逐文件调 `/api/fs/metadata`（当前只对预览项调用）。**补记（2026-09-11，批 3 R20）**：后半句已不成立——store 新增 `artifactsMeta` + `loadArtifactMetadata()`（并发 4、失败记 `null` 不重试、切会话丢弃过期结果），列表行与预览头已渲染真实 `size · MIME · mtime`，查不到就整段不渲染；预览头无元数据时才退回按文本长度估算。验证 `appStore.artifact-meta.test.ts` **5 passed**。「按 Run 归属」与「接受 / 回退」仍待 Artifact Phase（D-W5-1）。
+- **范围收敛（2026-09-10 决策）**：本轮**不引入 Artifact 协议**（`16` 第 3 批边界「不碰协议」）。改用**宿主面文件服务**（`crates/backend/nomifun-file`：`/api/fs/list`、`/api/fs/read`、`/api/fs/metadata` 服务端均已有，webui 此前只接了 `browse`）按**会话 workspace** 交付产物列表 + 预览 + 下载；「按 Run 归属」与「接受 / 回退」当时登记为待 Artifact Phase（见 `16` 已知偏差 D-W5-1）——**两项均已交付且未引入该协议**（R20a 客户端纯投影 / R20b 宿主快照服务，见 `16` §5.3「R20a / R20b 落地记录」）。
+- **进度（2026-09-10）**：✅ 已落地「会话 workspace 产物面板」——`ArtifactPanel.tsx` + `appStore` 的 artifact 切片（`refreshArtifacts` / `openArtifactPreview` / `quoteArtifactIntoDraft`）+ `web/src/lib/client.ts` 的 `listWorkspaceFiles` / `readFileContent` / `getFileMetadata`（宿主面 `/api/fs/*`）+ 协议类型 `WorkspaceFlatFile` / `FileMetadata` + i18n `artifact` 分区 + `.artifact-*` 样式 + Topbar 入口。**未做**：按 Run 归属、接受 / 回退（待 Artifact Phase）；列表项不含 size / type / mtime——`/api/fs/list` 只返回 `name`/`full_path`/`relative_path`，要展示需逐文件调 `/api/fs/metadata`（当前只对预览项调用）。**补记（2026-09-11，批 3 R20）**：后半句已不成立——store 新增 `artifactsMeta` + `loadArtifactMetadata()`（并发 4、失败记 `null` 不重试、切会话丢弃过期结果），列表行与预览头已渲染真实 `size · MIME · mtime`，查不到就整段不渲染；预览头无元数据时才退回按文本长度估算。验证 `appStore.artifact-meta.test.ts` **5 passed**。「按 Run 归属」与「接受 / 回退」仍待 Artifact Phase（D-W5-1）。**补记（2026-09-11，R20a）**：「按 Run 归属」**已交付**——**未**走宿主面文件服务那条建议路径（那会把通用文件端点耦合到 agent execution 的 DB 查询），改为 `web/src/lib/artifact-owners.ts` 的**客户端纯投影**：归属唯一来源是已加载的 `run/plan` 快照的 `attempt.output_files`，`ArtifactPanel` 有归属才渲染 `步骤 {{step}}` 药丸，点击 = 关抽屉 + 必要时 `followRun` + 滚到 `plan-step-*` 锚点（滚动逻辑与 RunDetail 共用 `scrollToAnchor`）。已知边界：只能归属**本会话加载过计划快照**的那些 Run。**补记（2026-09-11，R20b）**：「接受 / 回退」**已交付**——同样**未**引入 Artifact 协议，改用宿主已有的 **git 基线快照服务**（`POST /api/fs/snapshot/compare|stage|stage-all|unstage|discard`）：面板新增「文件 / 变更」页签，变更页分「待处理 / 已接受」两组，每行接受 / 回退 / 撤销接受 + 全部接受；`accept` = `stage`、`revert` = `discard`（`create` 删新文件、`modify`/`delete` 从基线恢复），快照被安全守卫拒绝的工作区显示后端 reason。完整记录见 `16` §5.3「R20a 落地记录」「R20b 落地记录」。
 - 范围：按会话与按 Run 两个视角的产物列表（名称 / 类型 / 大小 / 生成 step 归属 / 时间）；预览与下载；**行内评论**（对产物/变更的评论，供后续 turn 引用）；接受 / 回退（按文件或按块，具体粒度按 `artifact/get` 能力定）。
 - 验收：跑一次产出文件的 Run → 产物面板可见、可预览、可下载；评论能作为下一轮上下文引用；回退不影响历史 turn。
 - 备注：**不做 Git 集成**——接受/回退作用于产物本身，不产生 commit。
@@ -145,6 +145,7 @@ Codex app 的官方定位是「agent 指挥中心」：多项目侧栏 + 并行�
 - 范围：消息 content 的图片载体（**协议加法**，无需版本兼容设计）、后端 run/turn 处理、composer 拖拽/粘贴 UI、发送前与模型能力校验。
 - 验收：拖拽与粘贴图片 → 发送 → 模型实际收到；不支持的模型在发送前给出明确提示而非静默失败。
 - 依赖：需先定 content 模型；与协议**词汇对齐**的命名改动有交集，但**不依赖它**——载体选型单独拍板后即可做加法（见 `22-webui-productionization.zh.md` §5）。
+- **进度（2026-09-11，R15）**：🟡 **载体选型＝路径引用（用户拍板）并已落地主体**。① **协议**：`conversation/send` 新增可选 `attachments: string[]`（纯加法，HTTP 与 WS 同形，`deny_unknown_fields` 不变；契约见 `05` §12.1）。② **宿主准入**：服务端按 owner 作用域解析会话工作区，逐项 canonicalize 并要求仍在工作区内、且是文件；越界（`..` / 外部符号链接 / 别的盘）/ 相对路径 / URL / 不存在一律拒，单次上限 10。**边界必须在宿主**——运行时对 App Server 会话的 `image_read_root` 是 `None`（不受限），引擎不会替我们收紧。③ **客户端前置校验**：`web/src/lib/attachments.ts` 与运行时 `classify_extension` 逐条对齐（只支持 png/jpg/jpeg/webp；gif/bmp/tif/tiff/ico/avif/heic/heif/svg 说明原因；非图片不提供——运行时忽略它，模型看不到）。④ **UI**：`AttachmentPicker`（只列会话工作区文件，不可附的照样列出并说明原因）+ composer「添加文件」入口（原空占位）+ 输入框上方 chips；发送拿到回执才清空（失败保留可重发）；`@` 专家起 Run 带附件时**明确拒绝**而非静默丢弃。**补记（2026-09-11，R15 字节通道）——登记项已落地**：用户拍板开启字节通道后，`/api/fs/upload` 增加可选 `workspace` 落点（写进**会话工作区**、复用同一套 allowed-roots 准入，**不落** tmp），Composer 接上**粘贴**（`onPaste`）与**拖拽**（`onDragOver` / `onDrop`）——先落工作区拿回绝对路径，再走既有 `addComposerAttachments`；无工作区 / 非支持类型 / 上传失败均明确 toast。完整记录见 `16` §5.3「R15 落地记录」「R15 字节通道 · 落地记录」。
 
 **W11 · 设置 Dialog 补全**
 - 现状（R16 之前）：8 个分区仅 `general` 实现，其余 7 个是「即将推出」占位。
@@ -258,7 +259,7 @@ Codex app 的官方定位是「agent 指挥中心」：多项目侧栏 + 并行�
 | §5.3 模型健康 / 能力限制 | ❌ 未做 | W9 |
 | §6.1 正式 i18n | 🟡 `RunDetail` / `RunPanel` 硬编码英文 | W6 |
 | §6.2 Markdown / XSS 安全渲染 | ✅ 未启用 `rehype-raw` | 已满足 |
-| §6.3 附件上传 / 预览 | ❌ 未做 | W10 |
+| §6.3 附件上传 / 预览 | ✅ 已做（2026-09-11，R15：拖拽 / 粘贴 + 上传落会话工作区 + 路径引用附件） | W10 |
 | §6.4 无障碍与 E2E 回归 | ❌ 无 E2E | 方向四 · 待立项 |
 
 ---

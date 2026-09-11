@@ -15,7 +15,9 @@ import {
   Search,
   SlidersHorizontal,
   Wrench,
+  X,
 } from "lucide-react";
+import { AttachmentPicker } from "./AttachmentPicker";
 import { IconButton } from "./IconButton";
 import { ContextIndicator } from "./ContextIndicator";
 import { ModelPicker } from "./ModelPicker";
@@ -35,6 +37,7 @@ import { contextAdvice } from "../lib/context-advice";
 import { costRateText, costText, modelFactsFor, turnCostUsd } from "../lib/model-facts";
 import { steerAvailability } from "../lib/run-steer";
 import { formatTokens, modelChipLabel } from "../ui/format";
+import { attachmentName, classifyAttachment } from "../lib/attachments";
 import { pickLocalized, useLocalizedLang } from "../ui/localize";
 import type {
   AgentSummary,
@@ -105,6 +108,14 @@ export function Composer(props: {
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const workspacePickerRef = useRef<HTMLDivElement | null>(null);
   useClickAway(() => setWorkspacePickerOpen(false), workspacePickerRef, ["mousedown", "touchstart"]);
+
+  // R15（W10）：附件选择面板（只列会话工作区里的、运行时真能送进模型的图片）。
+  const [attachPickerOpen, setAttachPickerOpen] = useState(false);
+  const attachPickerRef = useRef<HTMLDivElement | null>(null);
+  useClickAway(() => setAttachPickerOpen(false), attachPickerRef, ["mousedown", "touchstart"]);
+  const composerAttachments = useAppStore((s) => s.composerAttachments);
+  const addComposerAttachments = useAppStore((s) => s.addComposerAttachments);
+  const removeComposerAttachment = useAppStore((s) => s.removeComposerAttachment);
 
   const setComposerMentions = useAppStore((s) => s.setComposerMentions);
   const composerMentions = useAppStore((s) => s.composerMentions);
@@ -400,6 +411,35 @@ export function Composer(props: {
     [currentConversation, workspaces],
   );
 
+  /**
+   * R15：粘贴 / 拖拽的本地文件 → 先落到**会话工作区**，再作为路径引用附件。
+   *
+   * 浏览器里 `File.path` 不存在（Electron 专有），没有「直接拿到绝对路径」这条路；
+   * 唯一的办法是把字节交给宿主写进工作区（`/api/fs/upload` + `workspace` 字段）再
+   * 拿回落点。无工作区、非支持类型、上传失败都**明确说明**，不静默丢弃。
+   */
+  const uploadLocalFiles = async (files: File[]) => {
+    if (files.length === 0) return;
+    const root = currentWorkspace?.canonical_path ?? null;
+    if (!client || !root) {
+      pushToast("error", "composer.attachNoWorkspace");
+      return;
+    }
+    const accepted: string[] = [];
+    for (const file of files) {
+      if (classifyAttachment(file.name).kind !== "supported") {
+        pushToast("error", "composer.attachRejectedFile");
+        continue;
+      }
+      try {
+        accepted.push(await client.uploadFileToWorkspace(root, file));
+      } catch {
+        pushToast("error", "composer.attachUploadFailed");
+      }
+    }
+    if (accepted.length > 0) addComposerAttachments(accepted);
+  };
+
   /** W9（R14）：上下文建议——按服务端测量值分级，未测量就不提示（不猜窗口）。 */
   const contextAdviceNow = contextAdvice(currentConversation?.context_usage ?? null);
 
@@ -452,9 +492,49 @@ export function Composer(props: {
   }, [draft, composerRef]);
 
   return <div className="composer-area">
-    <div className="composer-shell">
+    {/* R15：拖拽本地文件 → 落会话工作区 → 变成路径引用附件。只有带 Files 的
+        drag 才 preventDefault（否则会吞掉普通的文本拖拽）。 */}
+    <div
+      className="composer-shell"
+      onDragOver={(event) => {
+        if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+      }}
+      onDrop={(event) => {
+        const files = Array.from(event.dataTransfer?.files ?? []);
+        if (files.length === 0) return;
+        event.preventDefault();
+        void uploadLocalFiles(files);
+      }}
+    >
+      {/* R15（W10）：已选附件。载体是路径引用，发送时随 `conversation/send` 的
+          `attachments` 走；服务端只接受**会话工作区内**的真实文件。 */}
+      {composerAttachments.length > 0 && (
+        <div className="composer-attachments">
+          {composerAttachments.map((path) => (
+            <span className="composer-attachment" key={path} title={path}>
+              <span className="composer-attachment-name">{attachmentName(path)}</span>
+              <button
+                className="composer-attachment-remove"
+                type="button"
+                aria-label={t("composer.attachRemove", { name: attachmentName(path) })}
+                onClick={() => removeComposerAttachment(path)}
+              >
+                <X aria-hidden="true" size={12} strokeWidth={2} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {/* R15：粘贴图片 → 落会话工作区 → 变成路径引用附件。有文件就接管这次粘贴
+          （不然文本与图片可能同时进来）。 */}
       <textarea
         ref={composerRef}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData?.files ?? []);
+          if (files.length === 0) return;
+          event.preventDefault();
+          void uploadLocalFiles(files);
+        }}
         value={draft}
         onChange={(event) => {
           const next = event.target.value;
@@ -538,7 +618,9 @@ export function Composer(props: {
                   <input type="text" placeholder={t("composer.menuSearch")} aria-label={t("composer.menuSearch")} />
                 </div>
                 <div className="composer-menu-items">
-                  <button type="button" role="menuitem" className={catalogMenu === null ? "is-active" : ""} onClick={() => setCatalogMenu(null)}><FileText aria-hidden="true" size={17} /> <span>{t("composer.addFile")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
+                  {/* R15（W10）：原先是空占位，现在打开附件选择面板（附件只走
+                      普通聊天；`@agent` 起 Run 时会被明确拒绝而不是悄悄丢掉）。 */}
+                  <button type="button" role="menuitem" onClick={() => { closeComposerMenu(); setCatalogMenu(null); setAttachPickerOpen(true); }}><FileText aria-hidden="true" size={17} /> <span>{t("composer.addFile")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
                   <button type="button" role="menuitem" onClick={() => void newChat()}><Layers aria-hidden="true" size={17} /> <span>{t("composer.modeOption")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
                   <button type="button" role="menuitem" className={catalogMenu === "agents" ? "is-active" : ""} onClick={() => setCatalogMenu("agents")}><AtSign aria-hidden="true" size={17} /> <span>{t("composer.expert")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
                   <button type="button" role="menuitem" className={catalogMenu === "skills" ? "is-active" : ""} onClick={() => setCatalogMenu("skills")}><SlidersHorizontal aria-hidden="true" size={17} /> <span>{t("composer.skill")}</span> <ChevronRight aria-hidden="true" size={15} /></button>
@@ -613,6 +695,18 @@ export function Composer(props: {
         </p>
       )}
     </div>
+    {/* R15（W10）：附件选择面板。只列会话工作区里的文件——载体是路径引用，
+        服务端只收工作区内的真实文件，所以入口与准入是同一集合。 */}
+    {attachPickerOpen && (
+      <div className="composer-attach-wrap" ref={attachPickerRef}>
+        <AttachmentPicker
+          root={currentWorkspace?.canonical_path ?? null}
+          picked={composerAttachments}
+          onPick={addComposerAttachments}
+          onClose={() => setAttachPickerOpen(false)}
+        />
+      </div>
+    )}
     {!hasConversation && (
     <div className={`composer-workspace ${workspacePickerOpen ? "is-open" : ""}`} ref={workspacePickerRef}>
       <button className="composer-workspace-trigger" type="button" onClick={() => setWorkspacePickerOpen((v) => !v)} aria-expanded={workspacePickerOpen}>

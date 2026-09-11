@@ -17,6 +17,7 @@ use nomifun_api_types::{
 };
 use nomifun_common::AppError;
 use nomifun_common::constants::SESSION_MAX_AGE_SECONDS;
+use nomifun_common::OnSessionRevoked;
 use nomifun_db::{IUserRepository, models::User};
 
 use crate::extract::extract_token_from_headers;
@@ -37,6 +38,11 @@ pub struct AuthRouterState {
     pub user_repo: Arc<dyn IUserRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
+    /// Notified on `/logout` so other faces can drop the principal's credentials
+    /// (`22` §7.1 A2 — the host wires the App Server registry here so a logout
+    /// invalidates that principal's connection tokens immediately). `None` = no
+    /// fan-out, which is the default and the pre-A2 behaviour.
+    pub session_revocation: Option<Arc<dyn OnSessionRevoked>>,
 }
 
 fn into_public_user(user: User) -> Result<PublicUser, AppError> {
@@ -224,6 +230,14 @@ async fn login_handler(
 
 async fn logout_handler(State(state): State<AuthRouterState>, headers: HeaderMap) -> Result<Response, AppError> {
     if let Some(token) = extract_token_from_headers(&headers) {
+        // Fan the revocation out **before** blacklisting the session token. A
+        // token that cannot be decoded has nothing to revoke, and a failing sink
+        // must never turn a successful logout into an error (`22` §7.1 A2).
+        if let Some(sink) = state.session_revocation.as_ref()
+            && let Ok(payload) = state.jwt_service.verify(&token)
+        {
+            sink.on_session_revoked(payload.user_id.as_str()).await;
+        }
         state.jwt_service.blacklist_token(&token);
     }
 

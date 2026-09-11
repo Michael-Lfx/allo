@@ -111,7 +111,7 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
   "conversation/send": {
     verb: "POST",
     path: "/conversations/:conversation_id/messages",
-    body: ["content", "idempotency_key"],
+    body: ["content", "idempotency_key", "attachments"],
     source: "conversation_send() -> send_conversation_message_for_user (shared with the WS arm)",
   },
   "conversation/cancel": {

@@ -703,11 +703,18 @@ pub fn create_router_with_all_state(
         .ws_manager
         .ensure_heartbeat(ws_state.token_authenticator.clone());
 
+    // One registry shared by the App Server router and the logout revocation
+    // hook (`22` §7.1 A2): `POST /logout` drops that principal's App Server
+    // connection tokens immediately, and the same registry serves their calls.
+    let app_server_registry = nomifun_app_server::AppServerRegistry::default();
     let auth_state = AuthRouterState {
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         cookie_config: services.cookie_config.clone(),
         qr_token_store: services.qr_token_store.clone(),
+        session_revocation: Some(Arc::new(
+            nomifun_app_server::AppServerSessionRevocation::new(app_server_registry.clone()),
+        )),
     };
 
     let auth_mw_state = AuthState {
@@ -988,8 +995,17 @@ pub fn create_router_with_all_state(
             )),
         ),
     );
+    // `[import].strict_dependencies` (`16` R23 / `17` §7): one policy for every
+    // import path — the imports catalog, marketplace entries, and the store's
+    // one-click install. Built once here so the consumers cannot drift apart
+    // (and so the config file is read once, not per provider).
+    let importer = nomifun_importer::ImporterService::new(
+        import_root.clone(),
+        plugin_snapshot_repository.clone(),
+    )
+    .with_strict_dependencies(super::state::strict_dependencies_enabled(services));
     let app_server_state = AppServerRouterState {
-        registry: Default::default(),
+        registry: app_server_registry,
             runtime: Some(AgentRuntimeAdapter::new(states.agent_execution.clone())),
             conversation_service: Some(app_server_conversation.service.clone()),
             conversation_runtime_registry: Some(app_server_conversation.runtime_registry.clone()),
@@ -1049,10 +1065,7 @@ pub fn create_router_with_all_state(
             // cache; source paths stay internal.
             imports: Some(Arc::new(
                 crate::app_server_importer::AppServerImportProvider::new(
-                    nomifun_importer::ImporterService::new(
-                        import_root.clone(),
-                        plugin_snapshot_repository.clone(),
-                    ),
+                    importer.clone(),
                     plugin_snapshot_repository.clone(),
                 ),
             )),
@@ -1064,10 +1077,7 @@ pub fn create_router_with_all_state(
             // snapshot pipeline with provenance linkage.
             markets: Some(Arc::new(
                 crate::app_server_marketplace::AppServerMarketplaceProvider::new(
-                    nomifun_importer::ImporterService::new(
-                        import_root.clone(),
-                        plugin_snapshot_repository.clone(),
-                    ),
+                    importer.clone(),
                     Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
                         services.database.pool().clone(),
                     )),
@@ -1090,10 +1100,7 @@ pub fn create_router_with_all_state(
             store: Some(Arc::new(
                 crate::app_server_store::AppServerStoreProvider::new(
                     Arc::new(crate::app_server_marketplace::AppServerMarketplaceProvider::new(
-                        nomifun_importer::ImporterService::new(
-                            import_root.clone(),
-                            plugin_snapshot_repository.clone(),
-                        ),
+                        importer.clone(),
                         Arc::new(nomifun_db::SqliteMarketplaceRepository::new(
                             services.database.pool().clone(),
                         )),
@@ -1104,10 +1111,7 @@ pub fn create_router_with_all_state(
                         services.database.pool().clone(),
                     )),
                     plugin_snapshot_repository.clone(),
-                    nomifun_importer::ImporterService::new(
-                        import_root.clone(),
-                        plugin_snapshot_repository.clone(),
-                    ),
+                    importer.clone(),
                     installer,
                     services.work_dir.join("agent-store-markets"),
                 ),

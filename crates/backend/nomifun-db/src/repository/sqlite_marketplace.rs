@@ -305,6 +305,8 @@ mod tests {
             keywords: vec!["demo".into()],
             category: Some("dev".into()),
             localized: std::collections::BTreeMap::new(),
+            strict: false,
+            blocked_reason: None,
         }
     }
 

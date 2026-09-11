@@ -1,5 +1,5 @@
 use nomifun_common::{ConversationId, TerminalId, validate_uuidv7};
-use nomifun_db::{init_database_memory, validate_id_schema_contract};
+use nomifun_db::{NON_REFERENCE_ID_COLUMNS, init_database_memory, validate_id_schema_contract};
 use sqlx::Row;
 
 const BASELINE: &str = include_str!("../migrations/001_v3_baseline.sql");
@@ -128,7 +128,10 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     .await
     .expect("tables");
 
-    assert_eq!(tables.len(), 110);
+    // 数字跟着 schema 走：v3 baseline 110 张 + 后续迁移追加（`052` / `053` / `055`
+    // 共 4 张）＝ 114。它是一条**刻意显式**的契约（新增表时应当被刻意改一次），不是
+    // 从迁移里推出来的——所以坏掉时说明有人加了表而没更新契约，不是测试需要放宽。
+    assert_eq!(tables.len(), 114);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
@@ -254,11 +257,22 @@ async fn all_nontechnical_id_columns_are_text_and_only_id_is_a_technical_key() {
                 "{table}.{name} must not reintroduce a dual-key technical ID"
             );
             if name != "id" && name.ends_with("_id") {
-                assert_eq!(
-                    column.get::<String, _>("type").to_ascii_uppercase(),
-                    "TEXT",
-                    "{table}.{name} must be a logical/business ID, not an inter-table integer"
-                );
+                // 例外由 `nomifun_db::NON_REFERENCE_ID_COLUMNS` 统一定义（契约的单一
+                // 事实源）。本用例原先**自带一份副本**，迁移加上
+                // `oauth_tokens.registration_id`（INTEGER 逻辑链接，v3 只把 TEXT/UUID
+                // 建模为逻辑引用）之后，两份定义就开始打架——现在改为读同一张表。
+                let registered = NON_REFERENCE_ID_COLUMNS
+                    .iter()
+                    .any(|(registered_table, registered_column)| {
+                        *registered_table == table.as_str() && *registered_column == name.as_str()
+                    });
+                if !registered {
+                    assert_eq!(
+                        column.get::<String, _>("type").to_ascii_uppercase(),
+                        "TEXT",
+                        "{table}.{name} must be a logical/business ID, not an inter-table integer"
+                    );
+                }
                 assert_eq!(
                     column.get::<i64, _>("pk"),
                     0,

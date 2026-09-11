@@ -928,6 +928,8 @@ V1 错误码：
 
 ```text
 protocol_version_unsupported
+unauthenticated
+token_expired
 not_initialized
 invalid_request
 not_found
@@ -949,6 +951,8 @@ run_not_resumable
 cancelled
 internal_error
 ```
+
+`unauthenticated`（连接令牌未知 / 已关闭 / 已吊销）与 `token_expired`（令牌因闲置过期，`retryable=true`，客户端重新 `initialize` 即可）是 §3.1「认证失败」在 V1 的两种可观察形态，由 `22` §7.1 A2 落实并分开——过期**不**与无效混同。`invalid_issuer` / `invalid_audience` / `insufficient_scope`（§3.1 亦提及）在当前本地可信进程模型下没有产生点，待远程认证流程引入时再落地。
 
 错误信息不得包含 Token、API Key、完整环境变量或敏感路径。
 
@@ -979,10 +983,34 @@ preset-backed 执行面相互独立：聊天直接复用 Allo 的 Conversation �
 | `conversation/list` | 该 owner 的 App Server 聊天列表（按 modified_at 倒序） |
 | `conversation/get` | 单会话视图 |
 | `conversation/messages` | 分页历史（升序，`page_size` 1..=200）。响应体为 `{ "items": [...], "has_more": bool }`：`items` 为消息数组（升序），`has_more` 是服务端 keyset 算出的精确标志——还有更旧消息时为 `true`。客户端以 `cursor: ""` 取最新窗口，以最旧已加载消息的 `created_at:message_id` 翻更早页；"向上加载"应直接读 `has_more`，不要以"页是否装满"近似推断 |
-| `conversation/send` | 发送消息，必带 `idempotency_key` |
+| `conversation/send` | 发送消息，必带 `idempotency_key`；可选 `attachments`（见下） |
 | `conversation/cancel` | 停止当前 turn |
 | `conversation/delete` | 删除 App Server 会话（HTTP 为 `DELETE /api/app-server/conversations/:id`）；委托既有会话删除语义：运行中先按 stop/orphan fence 处理，保留的 execution transcript 拒绝删除，删除失败返回稳定错误码 |
 | `conversation/subscribe` / `conversation/unsubscribe` | 实时事件订阅 |
+
+`conversation/send` 请求体（HTTP 与 WS 同形）：
+
+```json
+{
+  "conversation_id": "<会话 id>",
+  "content": "消息正文",
+  "idempotency_key": "<客户端幂等键>",
+  "attachments": ["<会话工作区内的绝对路径>"]
+}
+```
+
+`attachments` 是 **R15（W10）** 的附件载体（**路径引用**，2026-09-11 用户拍板）：
+每一项必须是**本会话工作区内的真实文件**的绝对路径；服务端按 owner 作用域解析会话工作区后
+逐个 canonicalize，越界（`..`、指向外部的符号链接、别的盘）、相对路径、URL、不存在的路径
+一律拒绝（`invalid_request` / `workspace_denied`），**不做「尽力而为」的降级**。单次上限
+**10** 条（与运行时 `MAX_IMAGE_ATTACHMENTS` 同值），重复路径只算一条。字段是纯加法：
+不传即无附件，老客户端行为逐字不变；请求体仍是 `deny_unknown_fields`，写错字段（例如历史上
+的 `files`）会被拒，而不是静默丢弃附件。
+
+运行时只把 **PNG / JPEG / WebP** 送进模型；运行时显式拒绝的图片格式
+（gif / bmp / tif / tiff / ico / avif / heic / heif / svg）会报错，**非图片路径被忽略**
+（模型看不到它，客户端应在正文里给出路径）。客户端的前置校验口径与运行时逐条对齐，
+见 `web/src/lib/attachments.ts`。
 
 `conversation/create` 请求体：
 

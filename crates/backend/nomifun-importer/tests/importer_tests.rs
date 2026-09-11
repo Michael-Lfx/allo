@@ -422,7 +422,22 @@ async fn mcp_connector_import_preserves_stdio_args_and_env() {
         })
         .await
         .unwrap();
-    assert_eq!(result.status, "completed", "errors: {:?}", result.errors);
+    // Redacting the credential is a *warning*, not a clean import: the snapshot
+    // is intentionally incomplete until the user fills the `secret:DEMO_TOKEN`
+    // value, and the status must say so (`17` §6).
+    assert_eq!(
+        result.status, "completed-with-warnings",
+        "errors: {:?}",
+        result.errors
+    );
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("DEMO_TOKEN")),
+        "the redaction must name the key the user has to fill: {:?}",
+        result.warnings
+    );
     let components = repo.get_components(&result.snapshot_id).await.unwrap();
     let connector = components
         .iter()
@@ -436,7 +451,14 @@ async fn mcp_connector_import_preserves_stdio_args_and_env() {
         payload["transport"]["args"],
         serde_json::json!(["-y", "@demo/mcp-server", "--root", "C:/demo root"])
     );
-    assert_eq!(payload["transport"]["env"]["DEMO_TOKEN"], "demo-token");
+    // `17` §6 / `21` D5=C: a sensitive env value is never persisted — the
+    // snapshot keeps only a `secret:<KEY>` reference the spawn path resolves.
+    assert_eq!(payload["transport"]["env"]["DEMO_TOKEN"], "secret:DEMO_TOKEN");
+    assert!(
+        !connector.payload_json.contains("demo-token"),
+        "the plaintext credential must not appear anywhere in the stored snapshot: {}",
+        connector.payload_json
+    );
 }
 
 #[tokio::test]
@@ -748,4 +770,150 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
             .await,
         Err(nomifun_importer::ImportError::SourceNotFound)
     ));
+}
+
+// ---------------------------------------------------------------------------
+// `[import].strict_dependencies` — the import-layer half of R23 (`17` §7 /
+// `02` §11.1). Default off: dependencies stay registration-only.
+// ---------------------------------------------------------------------------
+
+/// A throwaway plugin declaring `dependencies` (`02` §8). The shared fixtures
+/// declare one too (`software-company` → `shared-helpers@1.0.0`), but a test
+/// needs control over the range.
+fn write_consumer_plugin(
+    temp: &tempfile::TempDir,
+    name: &str,
+    dependencies: &str,
+) -> PathBuf {
+    let root = temp.path().join(name);
+    std::fs::create_dir_all(root.join(".codebuddy-plugin")).unwrap();
+    std::fs::write(
+        root.join(".codebuddy-plugin/plugin.json"),
+        format!(r#"{{"name":"{name}","version":"1.0.0","dependencies":{dependencies}}}"#),
+    )
+    .unwrap();
+    root
+}
+
+/// Default (off): a version-bearing dependency that resolves to nothing is
+/// still just registered — byte-for-byte the pre-existing behaviour.
+#[tokio::test]
+async fn strict_dependencies_off_keeps_a_missing_dependency_importable() {
+    let (service, _temp, repo) = setup().await;
+    let result = service
+        .run_import(&ImportRequest::manual(
+            fixtures().join("software-company"),
+            SourceKind::CodeBuddyPlugin,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, "completed", "{:?}", result.errors);
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    assert_eq!(
+        count_kind(&components, "dependency"),
+        1,
+        "the dependency is still recorded as a component"
+    );
+}
+
+/// On: `17` §7's 「依赖不可满足时：阻断安装并给出缺失项」. The message names the
+/// dependency, says how to opt out, and never leaks the source path (`02` §9).
+#[tokio::test]
+async fn strict_dependencies_on_blocks_a_missing_dependency() {
+    let (service, _temp, repo) = setup().await;
+    let service = service.with_strict_dependencies(true);
+    let source = fixtures().join("software-company");
+    let result = service
+        .run_import(&ImportRequest::manual(source.clone(), SourceKind::CodeBuddyPlugin))
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, "blocked");
+    let joined = result.errors.join(" | ");
+    assert!(joined.contains("shared-helpers"), "must name the missing item: {joined}");
+    assert!(joined.contains("1.0.0"), "must repeat the declared range: {joined}");
+    assert!(joined.contains("strict_dependencies"), "must name the way out: {joined}");
+    assert!(
+        !joined.contains(&source.display().to_string()),
+        "a blocking reason must not expose the source path: {joined}"
+    );
+    assert!(
+        repo.list_snapshots(10).await.unwrap().is_empty(),
+        "a refused snapshot must not be recorded"
+    );
+}
+
+/// On + satisfiable: a range checked against the dependency plugin's own
+/// version, and a name known only as a component resolved by existence.
+#[tokio::test]
+async fn strict_dependencies_on_accepts_satisfied_targets() {
+    let (service, temp, repo) = setup().await;
+    // Import the dependency first: `software-company@1.2.0`.
+    let dependency = service
+        .run_import(&ImportRequest::manual(
+            fixtures().join("software-company"),
+            SourceKind::CodeBuddyPlugin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(dependency.status, "completed", "{:?}", dependency.errors);
+
+    // One component name from that snapshot, to exercise the existence-only
+    // path (component rows carry no trustworthy version of their own).
+    let components = repo.get_components(&dependency.snapshot_id).await.unwrap();
+    let component_name = components
+        .iter()
+        .find(|component| component.kind == "agent")
+        .expect("software-company ships agents")
+        .name
+        .clone();
+
+    let service = service.with_strict_dependencies(true);
+    let source = write_consumer_plugin(
+        &temp,
+        "consumer-satisfied",
+        &format!(
+            r#"[{{"name":"software-company","version":"^1.0.0"}},{{"name":"{component_name}","version":"^9.9.9"}}]"#
+        ),
+    );
+    let result = service
+        .run_import(&ImportRequest::manual(source, SourceKind::CodeBuddyPlugin))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.status, "completed",
+        "a satisfied range and a known component name must pass: {:?}",
+        result.errors
+    );
+}
+
+/// On + version mismatch: blocked, and the message reports what *is* available.
+#[tokio::test]
+async fn strict_dependencies_on_blocks_an_unsatisfied_range() {
+    let (service, temp, _repo) = setup().await;
+    service
+        .run_import(&ImportRequest::manual(
+            fixtures().join("software-company"),
+            SourceKind::CodeBuddyPlugin,
+        ))
+        .await
+        .unwrap();
+
+    let service = service.with_strict_dependencies(true);
+    let source = write_consumer_plugin(
+        &temp,
+        "consumer-mismatch",
+        r#"[{"name":"software-company","version":"^9.0.0"}]"#,
+    );
+    let result = service
+        .run_import(&ImportRequest::manual(source, SourceKind::CodeBuddyPlugin))
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, "blocked");
+    let joined = result.errors.join(" | ");
+    assert!(joined.contains("^9.0.0"), "must repeat the requirement: {joined}");
+    assert!(joined.contains("1.2.0"), "must report the available version: {joined}");
 }

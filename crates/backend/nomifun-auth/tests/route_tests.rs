@@ -28,6 +28,13 @@ async fn test_app() -> (Router, TestContext) {
 }
 
 async fn test_app_with_local(local: bool) -> (Router, TestContext) {
+    test_app_with_revocation(local, None).await
+}
+
+async fn test_app_with_revocation(
+    local: bool,
+    session_revocation: Option<Arc<dyn nomifun_common::OnSessionRevoked>>,
+) -> (Router, TestContext) {
     let db = init_database_memory().await.unwrap();
     let installation_owner = nomifun_db::installation_owner_id(db.pool()).await.unwrap();
     let user_repo = Arc::new(SqliteUserRepository::new(db.pool().clone())) as Arc<dyn IUserRepository>;
@@ -43,6 +50,7 @@ async fn test_app_with_local(local: bool) -> (Router, TestContext) {
         user_repo: user_repo.clone(),
         cookie_config,
         qr_token_store: qr_token_store.clone(),
+        session_revocation,
     };
 
     // Mirror `create_router`: the global trust middleware resolves local trust
@@ -307,6 +315,41 @@ async fn t5_1_logout_success() {
     let json = body_json(resp).await;
     assert_eq!(json["success"], true);
     assert_eq!(json["message"], "Logged out successfully");
+}
+
+/// A2 (`22` §7.1): `POST /logout` must fan the revocation out to other faces
+/// (the host wires the App Server registry here) exactly once, carrying the
+/// session owner's id. This is what makes "revocation takes effect
+/// immediately" true for App Server connection tokens.
+#[derive(Default)]
+struct RecordingRevocation {
+    users: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl nomifun_common::OnSessionRevoked for RecordingRevocation {
+    async fn on_session_revoked(&self, user_id: &str) {
+        self.users.lock().expect("lock").push(user_id.to_owned());
+    }
+}
+
+#[tokio::test]
+async fn t5_4_logout_fans_out_session_revocation() {
+    let sink = Arc::new(RecordingRevocation::default());
+    let (mut app, ctx) = test_app_with_revocation(false, Some(sink.clone())).await;
+    create_test_user(&ctx, "admin", "StrongP@ss1").await;
+    let (token, _) = login(&mut app, "admin", "StrongP@ss1").await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_post_with_token("/logout", "", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let recorded = sink.users.lock().expect("lock").clone();
+    assert_eq!(recorded.len(), 1, "logout must fan out exactly once: {recorded:?}");
+    assert!(!recorded[0].is_empty(), "the owner id must be carried");
 }
 
 #[tokio::test]

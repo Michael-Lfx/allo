@@ -1751,12 +1751,24 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
+            // `17` §6 / `21` D5=C: the persisted row holds `secret:NAME`
+            // references, never values. Resolve them in memory right before the
+            // child is spawned; a reference with no credential is omitted.
+            let env = nomifun_common::secret_ref::resolve_env(&env);
+            if !env.missing.is_empty() {
+                warn!(
+                    mcp_server_id = %row.mcp_server_id,
+                    server_name = %row.name,
+                    missing = ?env.missing,
+                    "user_mcp: unresolved credential references; omitting them"
+                );
+            }
 
             Ok(McpServerConfig {
                 transport: TransportType::Stdio,
                 command: Some(resolved_command),
                 args: Some(args),
-                env: Some(env),
+                env: Some(env.env),
                 url: None,
                 headers: None,
                 deferred: Some(false),
@@ -1827,11 +1839,21 @@ fn session_server_to_mcp_server_config(
             if command.is_empty() {
                 return Err("stdio: missing command".to_owned());
             }
+            // `17` §6 / `21` D5=C: resolve `secret:NAME` references from a
+            // session-carried snapshot just as for a persisted row.
+            let resolved = nomifun_common::secret_ref::resolve_env(env);
+            if !resolved.missing.is_empty() {
+                warn!(
+                    server_name = %server.name,
+                    missing = ?resolved.missing,
+                    "user_mcp: unresolved credential references; omitting them"
+                );
+            }
             Ok(McpServerConfig {
                 transport: TransportType::Stdio,
                 command: Some(resolve_stdio_command(command)),
                 args: Some(args.clone()),
-                env: Some(env.clone()),
+                env: Some(resolved.env),
                 url: None,
                 headers: None,
                 deferred: Some(false),

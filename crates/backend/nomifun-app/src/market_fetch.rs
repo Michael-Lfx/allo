@@ -222,6 +222,13 @@ fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, 
                 .unwrap_or("")
                 .trim_start_matches("./")
                 .to_owned();
+            // `strict` is a market-entry field (`02` §8), but the rule it
+            // carries is about a **plugin** source shipping its own
+            // `plugin.json` — a `skills[]` / `connectors[]` row that happens to
+            // declare it must not be refused for it. The directory prober
+            // pins `false` for those kinds for the same reason.
+            let strict = key_kind == "plugin"
+                && item.get("strict").and_then(|value| value.as_bool()).unwrap_or(false);
             // URL markets: only inlined/relative entries are resolvable.
             // A `source` that is itself an absolute URL or git reference is
             // recorded but flagged via a marker source kind.
@@ -239,6 +246,10 @@ fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, 
                         keywords: Vec::new(),
                         category: item.get("category").and_then(as_str).map(str::to_owned),
                         localized: collect_localized_variants(item),
+                        strict,
+                        // `source_kind = "external"` already says why this row
+                        // cannot be installed; no second reason needed.
+                        blocked_reason: None,
                     },
                     String::new(),
                 ));
@@ -259,11 +270,22 @@ fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, 
                         keywords: Vec::new(),
                         category: None,
                         localized: collect_localized_variants(item),
+                        strict,
+                        blocked_reason: None,
                     },
                     String::new(),
                 ));
                 continue;
             }
+            // A directory row is the only one whose `strict` claim can be
+            // checked here: the source is in the fetched tree.
+            let blocked_reason = crate::app_server_marketplace::strict_entry_block(
+                strict,
+                staging
+                    .join(&relative)
+                    .join(".codebuddy-plugin/plugin.json")
+                    .is_file(),
+            );
             let _ = index;
             entries.push((
                 MarketplaceEntry {
@@ -275,6 +297,8 @@ fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, 
                     keywords: Vec::new(),
                     category: item.get("category").and_then(as_str).map(str::to_owned),
                     localized: collect_localized_variants(item),
+                    strict,
+                    blocked_reason,
                 },
                 relative,
             ));
@@ -307,6 +331,8 @@ fn scan_to_entries(
                     keywords: entry.keywords,
                     category: entry.category,
                     localized: entry.localized,
+                    strict: entry.strict,
+                    blocked_reason: entry.blocked_reason,
                 },
                 relative,
             )

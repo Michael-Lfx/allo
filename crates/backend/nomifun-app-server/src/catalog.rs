@@ -519,6 +519,8 @@ impl FakeMarketplaceProvider {
                             "description_zh".to_owned(),
                             LocalizedVariant::Text("自动代码格式化".to_owned()),
                         )]),
+                        strict: false,
+                        blocked_reason: None,
                         snapshot: Some(AppServerMarketplaceEntrySnapshot {
                             snapshot_id: "0190f5fe-7c00-7a00-8000-0000000000aa".into(),
                             name: "formatter".into(),
@@ -538,6 +540,8 @@ impl FakeMarketplaceProvider {
                         keywords: vec![],
                         category: None,
                         localized: BTreeMap::new(),
+                        strict: false,
+                        blocked_reason: None,
                         snapshot: None,
                     },
                 ],
@@ -789,6 +793,7 @@ impl FakeStoreProvider {
                 update_available: false,
                 snapshot_id: None,
                 installed_version: None,
+                blocked_reason: None,
             }],
             install_result: AppServerStoreInstallResult {
                 marketplace_id: "company-tools".into(),

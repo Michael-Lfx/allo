@@ -4,6 +4,13 @@ import type { ConversationSubscription } from "../lib/conversations";
 import type { EventSubscription } from "../lib/runs";
 import { mergeRunEvents, pendingApproval } from "../lib/approvals";
 import {
+  collectArtifactOwners,
+  type ArtifactOwner,
+  type ArtifactOwnerIndex,
+} from "../lib/artifact-owners";
+import { MAX_ATTACHMENTS, classifyAttachment } from "../lib/attachments";
+import { planStepAnchor, scrollToAnchor } from "../lib/run-plan";
+import {
   conversationStreamReducer,
   initialConversationStream,
   persistedTurnUsage,
@@ -53,6 +60,14 @@ import type {
   FileMetadata,
   WorkspaceView,
 } from "../lib/protocol";
+import {
+  EMPTY_SNAPSHOT_COMPARE,
+  changeKey,
+  sortChanges,
+  type FileChangeInfo,
+  type SnapshotCompare,
+  type SnapshotInfo,
+} from "../lib/artifact-changes";
 
 const FALLBACK_WS_URL = "ws://127.0.0.1:8787/api/app-server/ws";
 /** Pre-fix hardcoded default. Used only to migrate stale persisted values. */
@@ -170,11 +185,11 @@ function announceRunTerminal(
 async function submitTurn(
   set: StoreSet,
   get: () => AppState,
-  options: { conversationId: string; content: string; idempotencyKey: string },
+  options: { conversationId: string; content: string; idempotencyKey: string; attachments?: string[] },
 ): Promise<void> {
   const client = get().client;
   if (!client) throw new Error("not connected");
-  const { conversationId, content, idempotencyKey } = options;
+  const { conversationId, content, idempotencyKey, attachments = [] } = options;
   const pendingId = `pending:${idempotencyKey}`;
   // 先记账再发请求：发送**失败**时这条 pending 行就是「重发」的目标，而复用它必须
   // 拿到同一个键（`turn-actions.ts` 的 resend 分支）；等到回执再记就晚了。
@@ -192,7 +207,7 @@ async function submitTurn(
     },
   });
   try {
-    const receipt = await client.conversations.send(conversationId, content, idempotencyKey);
+    const receipt = await client.conversations.send(conversationId, content, idempotencyKey, attachments);
     // Reconciliation lives in the reducer, next to the event merge it has
     // to agree with (see `reconcilePending` there).
     get().dispatchStream({
@@ -287,6 +302,13 @@ export type AppState = {
   draft: string;
   /** Structured `@` mentions picked in the composer catalog submenu. */
   composerMentions: MentionRef[] | null;
+  /**
+   * R15（W10）：本轮要随消息发送的附件（**会话工作区内的绝对路径**）。
+   *
+   * 只放**运行时真能送进模型**的图片类型（见 `lib/attachments.ts`）；已定序、已去重、
+   * 已按上限截断，所以发送时可以直接交给 `conversations.send`。
+   */
+  composerAttachments: string[];
   isSending: boolean;
   /** W7（R12）：正在重试 / 重发 / 重新生成 / 编辑重发的源消息 id（非空即禁用按钮）。 */
   turnActionBusy: string | null;
@@ -317,6 +339,29 @@ export type AppState = {
    * 故失败也要记账，避免对同一个坏路径反复发请求。
    */
   artifactsMeta: Record<string, FileMetadata | null>;
+  /**
+   * R20a：产物路径 → 所属 Run/Step（`lib/artifact-owners.ts` 的纯投影结果）。
+   *
+   * 按会话累积：`conversationId` 标明这份归属属于哪个会话，界面**只在它与
+   * `selectedConversationId` 一致时**使用（否则会把上一个会话的归属贴到新会话的
+   * 产物上）。唯一数据源是**已加载的 `run/plan` 快照**，没有第二条链路。
+   */
+  artifactOwners: ArtifactOwnerIndex;
+  /**
+   * R20b：工作区相对基线的变更（宿主 `/api/fs/snapshot/compare`）。「接受 / 回退」
+   * 作用于这些条目——`stage` 接受、`discard` 回退；后端原语是 `nomifun-file` 的
+   * git 基线快照服务，**不引入** Artifact 协议（`05` §8 / TC-AS-008）。
+   */
+  artifactChanges: SnapshotCompare;
+  artifactChangesLoading: boolean;
+  artifactChangesError: string | null;
+  /**
+   * 面板工作区的快照模式。`disabled` 时带 `reason`（盘符根 / 系统目录被安全守卫
+   * 拒绝跟踪）——此时没有可审查的变更，界面据实说明，不做禁用占位。
+   */
+  artifactSnapshot: SnapshotInfo | null;
+  /** 正在提交的变更（`changeKey`）；`"*"` 表示批量操作。用于禁用按钮并防重入。 */
+  artifactChangeBusy: string | null;
   error: string | null;
   resyncNotice: string | null;
   shareNotice: string | null;
@@ -450,6 +495,15 @@ export type AppState = {
   setModel: (value: string) => void;
   setDraft: (value: string) => void;
   setComposerMentions: (value: MentionRef[] | null) => void;
+  /**
+   * R15（W10）：加入附件（**只接受可送进模型的图片类型**，见 `lib/attachments.ts`）。
+   *
+   * 非支持类型**不静默丢弃也不发送**——调用方拿 `classifyAttachment` 先说明原因，
+   * 这里再兜一道：类型不符 / 超上限的路径一律不进列表。
+   */
+  addComposerAttachments: (paths: string[]) => void;
+  removeComposerAttachment: (path: string) => void;
+  clearComposerAttachments: () => void;
   setSidebarOpen: (value: boolean) => void;
   toggleSidebarCompact: () => void;
   toggleProjectOpen: () => void;
@@ -469,10 +523,24 @@ export type AppState = {
   refreshArtifacts: () => Promise<void>;
   /** R20：补齐产物列表的 size / MIME / mtime（省略 `paths` 即列表里未记账的全部）。 */
   loadArtifactMetadata: (paths?: string[]) => Promise<void>;
+  /**
+   * R20a：点产物行上的归属标签 → 关掉抽屉、必要时跟随那个 Run、滚到对应步骤。
+   */
+  focusArtifactOwner: (owner: ArtifactOwner) => Promise<void>;
   openArtifactPreview: (file: WorkspaceFlatFile) => Promise<void>;
   closeArtifactPreview: () => void;
   /** Append an artifact comment to the composer draft (AC-5: next-turn context). */
   quoteArtifactIntoDraft: (text: string) => void;
+  /** R20b：对比工作区与基线，得到待处理 / 已接受两组变更。 */
+  refreshArtifactChanges: () => Promise<void>;
+  /** R20b：接受一条变更（`stage`）；文件内容不变。 */
+  acceptArtifactChange: (change: FileChangeInfo) => Promise<void>;
+  /** R20b：回退一条变更（`discard`）——`create` 删新文件，`modify`/`delete` 从基线恢复。 */
+  revertArtifactChange: (change: FileChangeInfo) => Promise<void>;
+  /** R20b：接受全部待处理变更（`stage-all`）。 */
+  acceptAllArtifactChanges: () => Promise<void>;
+  /** R20b：撤销一次接受（`unstage`）；文件内容不变。 */
+  unstageArtifactChange: (change: FileChangeInfo) => Promise<void>;
   dismissError: () => void;
   dismissResync: () => void;
   dismissShare: () => void;
@@ -556,6 +624,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   /** Structured `@` mentions picked in the composer catalog submenu
    *  (docs/agent-store/05 §4.7). Cleared after send / draft reset. */
   composerMentions: null,
+  composerAttachments: [],
 
   settingsOpen: false,
   sidebarOpen: false,
@@ -571,6 +640,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   artifactsError: null,
   artifactPreview: null,
   artifactsMeta: {},
+  artifactOwners: { conversationId: null, byPath: {} },
+  artifactChanges: EMPTY_SNAPSHOT_COMPARE,
+  artifactChangesLoading: false,
+  artifactChangesError: null,
+  artifactSnapshot: null,
+  artifactChangeBusy: null,
   error: null,
   resyncNotice: null,
   shareNotice: null,
@@ -682,6 +757,21 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const plan = await client.runs.plan(runId);
       if (get().activeRunId !== runId) return;
       set({ runPlan: plan, runPlanError: null });
+      // R20a：把这次快照的产物归属并进当前会话的归属表。只在「这个 Run 起于当前
+      // 选中的会话」时记账——否则会把别处的产物归属贴到当前会话的列表上。
+      const conversationId = get().runConversationId;
+      if (conversationId && conversationId === get().selectedConversationId) {
+        const owners = collectArtifactOwners(plan, runId);
+        set((state) => ({
+          artifactOwners: {
+            conversationId,
+            byPath:
+              state.artifactOwners.conversationId === conversationId
+                ? { ...state.artifactOwners.byPath, ...owners }
+                : owners,
+          },
+        }));
+      }
     } catch (caught) {
       if (get().activeRunId !== runId) return;
       set({ runPlanError: formatError(caught) });
@@ -1158,7 +1248,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
    * through the same runtime seams (`agent/run` with structured `mentions`).
    */
   send: async () => {
-    const { client, draft, isSending, model, providerId, selectedConversationId, stream, composerMentions } = get();
+    const { client, draft, isSending, model, providerId, selectedConversationId, stream, composerMentions, composerAttachments } = get();
     const content = draft.trim();
     if (!client || !content || isSending || stream.isProcessing) return;
     const explicitProvider = providerId.trim();
@@ -1189,6 +1279,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     // conversation — the run is its own surface; the receipt is surfaced
     // through the store error/notice channel for now.
     if (composerMentions && composerMentions.some((m) => m.kind === "agent")) {
+      // R15：附件只走普通聊天（`conversation/send`）；`agent/run` 没有附件载体，
+      // 所以这里**拒绝并说明**，而不是把已经选好的附件悄悄丢掉。
+      if (composerAttachments.length > 0) {
+        set({ isSending: false, error: "composer.attachNotForRun" });
+        return;
+      }
       try {
         const receipt = await client.runs.agent({
           agentId: "",
@@ -1224,7 +1320,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
     set({ draft: "" });
     try {
-      await submitTurn(set, get, { conversationId, content, idempotencyKey: key });
+      await submitTurn(set, get, { conversationId, content, idempotencyKey: key, attachments: composerAttachments });
+      // R15：附件只在**拿到回执**后清空——发送失败时保留，用户可以直接重发
+      // （重发复用原幂等键，见 `turn-actions.ts`）。
+      if (composerAttachments.length > 0) set({ composerAttachments: [] });
     } catch (caught) {
       set({ error: formatError(caught) });
     } finally {
@@ -1420,6 +1519,27 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setModel: (value) => set({ model: value }),
   setDraft: (value) => set({ draft: value }),
   setComposerMentions: (value) => set({ composerMentions: value }),
+  /**
+   * R15（W10）：加入附件。去重、按上限截断，且**只收运行时支持的图片类型**——
+   * 别的类型在这里就不进列表（界面前置说明原因，见 `lib/attachments.ts`）。
+   */
+  addComposerAttachments: (paths) => {
+    set((state) => {
+      const accepted = paths
+        .map((path) => path.trim())
+        .filter((path) => path.length > 0)
+        .filter((path) => classifyAttachment(path).kind === "supported");
+      const next = [...state.composerAttachments];
+      for (const path of accepted) {
+        if (next.length >= MAX_ATTACHMENTS) break;
+        if (!next.includes(path)) next.push(path);
+      }
+      return next.length === state.composerAttachments.length ? {} : { composerAttachments: next };
+    });
+  },
+  removeComposerAttachment: (path) =>
+    set((state) => ({ composerAttachments: state.composerAttachments.filter((item) => item !== path) })),
+  clearComposerAttachments: () => set({ composerAttachments: [] }),
   setSidebarOpen: (value) => set({ sidebarOpen: value }),
   toggleSidebarCompact: () => set((s) => ({ sidebarCompact: !s.sidebarCompact })),
   toggleProjectOpen: () => set((s) => ({ projectOpen: !s.projectOpen })),
@@ -1482,6 +1602,143 @@ export const useAppStore = create<AppState>()((set, get) => ({
       }
     });
     await Promise.all(workers);
+  },
+  /**
+   * R20b：读取工作区变更（`compare`）。
+   *
+   * 顺序固定，不能反：先直接 `compare`——工作区已被跟踪时（agent 跑过 turn，会话
+   * 服务在回合开始已建过快照）这一步就够，且**不会**反复 `init` 推高引用计数。
+   * 只有 `compare` 抛「未初始化」（400）时才 `init` 一次建立基线，再 `compare`：
+   * 基线就是**此刻**的工作区，之后的改动才可见（这是后端原语的语义，前端收敛不了）。
+   *
+   * `init` 返回 `disabled`（盘符根 / 系统目录等被安全守卫拒绝跟踪）时保留 `reason`
+   * 并空态呈现——不能审查就说清为什么，不做假保护。
+   */
+  refreshArtifactChanges: async () => {
+    const client = get().client;
+    const root = get().artifactsRoot;
+    if (!client || !root) {
+      set({
+        artifactChanges: EMPTY_SNAPSHOT_COMPARE,
+        artifactChangesLoading: false,
+        artifactChangesError: null,
+        artifactSnapshot: null,
+      });
+      return;
+    }
+    set({ artifactChangesLoading: true, artifactChangesError: null, artifactSnapshot: null });
+    try {
+      let compare: SnapshotCompare;
+      try {
+        compare = await client.snapshotCompare(root);
+      } catch {
+        const info = await client.snapshotInit(root);
+        if (info.mode === "disabled") {
+          set({
+            artifactSnapshot: info,
+            artifactChanges: EMPTY_SNAPSHOT_COMPARE,
+            artifactChangesLoading: false,
+          });
+          return;
+        }
+        compare = await client.snapshotCompare(root);
+      }
+      // 面板可能已切到别的会话：过期结果直接丢弃，不污染新列表。
+      if ((get().artifactsRoot ?? null) !== root) return;
+      set({
+        artifactChanges: { staged: sortChanges(compare.staged), unstaged: sortChanges(compare.unstaged) },
+        artifactChangesLoading: false,
+      });
+    } catch (caught) {
+      set({ artifactChangesLoading: false, artifactChangesError: formatError(caught) });
+    }
+  },
+  /**
+   * R20b：接受一条变更（`stage`）。成功后重读 `compare`，把该条从「待处理」挪到
+   * 「已接受」——**以后端为准**，不在本地猜下一个状态。
+   */
+  acceptArtifactChange: async (change) => {
+    const client = get().client;
+    const root = get().artifactsRoot;
+    if (!client || !root || get().artifactChangeBusy !== null) return;
+    set({ artifactChangeBusy: changeKey(change), artifactChangesError: null });
+    try {
+      await client.snapshotStageFile(root, change.relative_path);
+      await get().refreshArtifactChanges();
+    } catch (caught) {
+      set({ artifactChangesError: formatError(caught) });
+    } finally {
+      set({ artifactChangeBusy: null });
+    }
+  },
+  /**
+   * R20b：回退一条变更（`discard`）。`operation` 原样回传 `compare` 给的值——服务端
+   * 按它决定「删新文件」还是「从基线恢复」，不重新推断。
+   */
+  revertArtifactChange: async (change) => {
+    const client = get().client;
+    const root = get().artifactsRoot;
+    if (!client || !root || get().artifactChangeBusy !== null) return;
+    set({ artifactChangeBusy: changeKey(change), artifactChangesError: null });
+    try {
+      await client.snapshotDiscardFile(root, change.relative_path, change.operation);
+      await get().refreshArtifactChanges();
+    } catch (caught) {
+      set({ artifactChangesError: formatError(caught) });
+    } finally {
+      set({ artifactChangeBusy: null });
+    }
+  },
+  /** R20b：接受全部待处理变更（`stage-all`），一次请求。 */
+  acceptAllArtifactChanges: async () => {
+    const client = get().client;
+    const root = get().artifactsRoot;
+    if (!client || !root || get().artifactChangeBusy !== null) return;
+    set({ artifactChangeBusy: "*", artifactChangesError: null });
+    try {
+      await client.snapshotStageAll(root);
+      await get().refreshArtifactChanges();
+    } catch (caught) {
+      set({ artifactChangesError: formatError(caught) });
+    } finally {
+      set({ artifactChangeBusy: null });
+    }
+  },
+  /** R20b：撤销一次接受（`unstage`）；文件内容不变，只把它挪回「待处理」。 */
+  unstageArtifactChange: async (change) => {
+    const client = get().client;
+    const root = get().artifactsRoot;
+    if (!client || !root || get().artifactChangeBusy !== null) return;
+    set({ artifactChangeBusy: changeKey(change), artifactChangesError: null });
+    try {
+      await client.snapshotUnstageFile(root, change.relative_path);
+      await get().refreshArtifactChanges();
+    } catch (caught) {
+      set({ artifactChangesError: formatError(caught) });
+    } finally {
+      set({ artifactChangeBusy: null });
+    }
+  },
+  /**
+   * R20a：归属标签的跳转。
+   *
+   * 三步，顺序不能换：先关抽屉（它是全屏遮罩，不关就看不到 Run 面）→ 必要时
+   * `followRun`（归属可能来自已经不是当前跟随的那个 Run）→ 滚到 `plan-step-*`
+   * 锚点。锚点要等 `run/plan` 落库后 `RunDetail` 才画出来，所以短重试，而不是
+   * 假定它已经在 DOM 里；没有 DOM 的环境（SSR / 单测）直接结束，不假装滚过。
+   */
+  focusArtifactOwner: async (owner) => {
+    const conversationId = get().artifactOwners.conversationId;
+    set({ artifactPanelOpen: false, artifactPreview: null });
+    if (get().activeRunId !== owner.runId) {
+      await get().followRun(owner.runId, conversationId);
+    }
+    // 没有真实 DOM（SSR / 单测桩）就直接结束：不假装滚过，也不空转重试。
+    if (typeof document === "undefined" || typeof document.getElementById !== "function") return;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      if (scrollToAnchor(planStepAnchor(owner.stepId))) return;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
   },
   openArtifactPreview: async (file) => {
     const client = get().client;

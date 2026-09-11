@@ -1342,3 +1342,159 @@ async fn importer_snapshot_asset_endpoint_serves_avatar_and_rejects_escape() {
         );
     }
 }
+
+/// R24 (`02` §8 / §11.1): an entry declaring `strict=true` must ship its own
+/// `plugin.json`. Discovery keeps it **and says why** instead of dropping it,
+/// the store lists it as uninstallable, and the import is refused.
+///
+/// The source here ships a `SKILL.md` but no manifest, so without the rule the
+/// import would happily succeed as a single-skill directory — the block is
+/// what actually changes the outcome, not a coincidental parse failure.
+#[tokio::test]
+async fn importer_market_strict_entry_is_listed_but_refused() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let market_root =
+        std::env::temp_dir().join(format!("as-strict-market-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(market_root.join(".codebuddy-plugin")).unwrap();
+    std::fs::write(
+        market_root.join(".codebuddy-plugin/marketplace.json"),
+        r#"{
+            "name": "strict-experts",
+            "version": "0.1.0",
+            "plugins": [
+                { "name": "strict-expert", "source": "./plugins/strict-expert", "strict": true },
+                { "name": "loose-expert", "source": "./plugins/loose-expert" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    // `strict-expert` ships a usable SKILL.md but no plugin.json of its own.
+    std::fs::create_dir_all(market_root.join("plugins/strict-expert")).unwrap();
+    std::fs::write(
+        market_root.join("plugins/strict-expert/SKILL.md"),
+        "---\nname: strict-expert\ndescription: Strict\n---\n\nBody.\n",
+    )
+    .unwrap();
+    // `loose-expert` declares no `strict` and ships no manifest either: the
+    // spec lets such an entry *supply* the manifest, which is not implemented
+    // yet (`17` §10 P5), so it keeps the historical behaviour — undiscovered.
+    std::fs::create_dir_all(market_root.join("plugins/loose-expert")).unwrap();
+
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({
+                "source_kind": "directory",
+                "source": market_root.to_string_lossy(),
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "market add must succeed: {}", body_json(add).await);
+    let added = body_json(add).await;
+    assert_eq!(added["entry_count"], 1, "only the strict row survives discovery: {added}");
+    let marketplace_id = added["marketplace_id"].as_str().unwrap().to_owned();
+
+    // `market/get` names the rule instead of hiding the entry.
+    let get = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/markets/{marketplace_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    let detail = body_json(get).await;
+    let entries = detail["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{detail}");
+    assert_eq!(entries[0]["name"], "strict-expert");
+    assert_eq!(entries[0]["strict"], true, "{detail}");
+    let reason = entries[0]["blocked_reason"].as_str().expect("blocked entry must say why");
+    assert!(reason.contains("strict=true"), "{reason}");
+
+    // The store lists it (so the reason is readable) but marks it uninstallable.
+    let store = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/store", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert_eq!(store.status(), StatusCode::OK);
+    let store_json = body_json(store).await;
+    let item = store_json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["entry_name"] == "strict-expert")
+        .expect("a discoverable entry stays in the store");
+    assert!(
+        item["blocked_reason"].as_str().is_some_and(|text| !text.is_empty()),
+        "{item}"
+    );
+
+    // Import is refused, and the reason never leaks the on-disk source path
+    // (`02` §9: source paths are internal traceability only).
+    let import = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/markets/{marketplace_id}/entries/strict-expert/import"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(import.status(), StatusCode::OK, "a refusal is a result, not a transport error");
+    let blocked = body_json(import).await;
+    assert_eq!(blocked["status"], "blocked", "{blocked}");
+    assert_eq!(blocked["reused"], false, "{blocked}");
+    let errors = blocked["errors"].as_array().unwrap();
+    assert!(!errors.is_empty(), "{blocked}");
+    let source_path = market_root.to_string_lossy().to_string();
+    assert!(
+        !errors.iter().any(|error| error.as_str().is_some_and(|text| text.contains(&source_path))),
+        "the blocking reason must not expose the source path: {blocked}"
+    );
+
+    // A blocked import persists nothing: no snapshot row appears in history.
+    let history = app
+        .clone()
+        .oneshot(bearer_get("/api/app-server/imports", &token, &csrf, &connection_id))
+        .await
+        .unwrap();
+    assert!(
+        body_json(history).await.as_array().unwrap().is_empty(),
+        "a refused snapshot must not be recorded"
+    );
+
+    // The store's one-click install must refuse too, rather than registering a
+    // phantom snapshot id.
+    let install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/store/{marketplace_id}/entries/strict-expert/install"),
+            serde_json::json!({}),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install.status(), StatusCode::OK, "install must report, not 500");
+    let installed = body_json(install).await;
+    assert_eq!(installed["installed_count"], 0, "{installed}");
+    assert!(!installed["errors"].as_array().unwrap().is_empty(), "{installed}");
+}

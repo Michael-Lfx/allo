@@ -739,6 +739,16 @@ export interface MarketplaceEntry {
    * absent when the manifest declared none.
    */
   localized?: Record<string, string | string[]> | null;
+  /**
+   * The entry's declared `strict` (doc `02` §8): `true` requires the plugin
+   * source to carry its own `.codebuddy-plugin/plugin.json`. Absent = `false`.
+   */
+  strict?: boolean | null;
+  /**
+   * Why this entry cannot be imported (doc `02` §11.1), when discovery can
+   * already tell. Present = listed for transparency, but not installable.
+   */
+  blocked_reason?: string | null;
   /** Absent until the entry has been imported from this marketplace. */
   snapshot?: MarketplaceEntrySnapshot | null;
 }
@@ -796,6 +806,12 @@ export interface StoreItem {
   update_available: boolean;
   snapshot_id?: string | null;
   installed_version?: string | null;
+  /**
+   * Why this item cannot be installed (doc `02` §11.1), re-derived from the
+   * live source tree. Present = the item stays listed so the reason can be
+   * read, but install must not be offered.
+   */
+  blocked_reason?: string | null;
 }
 
 export interface StoreList {

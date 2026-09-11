@@ -236,6 +236,11 @@ struct UploadMultipartFields {
     file_name: Option<String>,
     dispo_file_name: Option<String>,
     conversation_id: Option<String>,
+    /// R15: when set, the bytes land **inside this workspace** instead of the
+    /// host tmp sandbox. The attachment carrier is a path reference and the
+    /// send path only admits files inside the conversation workspace, so a
+    /// pasted / dropped file needs a home there — a tmp path would be refused.
+    workspace: Option<String>,
 }
 
 /// Strip any directory component from a file name and reject empty results.
@@ -256,6 +261,7 @@ async fn extract_upload_multipart(mut multipart: Multipart) -> Result<UploadMult
     let mut file_name: Option<String> = None;
     let mut dispo_file_name: Option<String> = None;
     let mut conversation_id: Option<String> = None;
+    let mut workspace: Option<String> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -296,6 +302,16 @@ async fn extract_upload_multipart(mut multipart: Multipart) -> Result<UploadMult
                     conversation_id = Some(trimmed.to_owned());
                 }
             }
+            "workspace" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("failed to read workspace: {e}")))?;
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    workspace = Some(trimmed.to_owned());
+                }
+            }
             _ => {}
         }
     }
@@ -307,11 +323,13 @@ async fn extract_upload_multipart(mut multipart: Multipart) -> Result<UploadMult
         file_name,
         dispo_file_name,
         conversation_id,
+        workspace,
     })
 }
 
 async fn upload_file(
     State(state): State<FileRouterState>,
+    Extension(user): Extension<CurrentUser>,
     multipart: Multipart,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
     let fields = extract_upload_multipart(multipart).await?;
@@ -320,11 +338,54 @@ async fn upload_file(
         AppError::BadRequest("missing file name: provide 'file_name' or a multipart filename".to_owned())
     })?;
 
+    // R15: a pasted / dropped file must land **inside the conversation
+    // workspace**. The attachment carrier is a path reference and the send path
+    // only admits files inside that workspace, so the tmp sandbox (the default
+    // branch below) would hand back a path the send path refuses. The write
+    // reuses the file service's own workspace admission (allowed roots in
+    // `write_file_impl`), so this is not a second path authority.
+    if let Some(workspace) = fields.workspace.as_deref() {
+        let target = std::path::Path::new(workspace).join(&file_name);
+        let target = unique_upload_target(&target.to_string_lossy());
+        state
+            .file_service
+            .write_file(&user.id, &target, &fields.file_data, workspace)
+            .await?;
+        return Ok(Json(ApiResponse::ok(target)));
+    }
+
     let path = state
         .file_service
         .create_upload_file(&file_name, &fields.file_data, fields.conversation_id.as_deref())
         .await?;
     Ok(Json(ApiResponse::ok(path)))
+}
+
+/// Append `(n)` before the extension until the path does not exist, mirroring
+/// the tmp uploader's collision behaviour so a paste / drop can never clobber
+/// an existing workspace file. The check-then-write window is accepted: uploads
+/// are user-initiated, and the alternative (no suffix) is silent data loss.
+fn unique_upload_target(path: &str) -> String {
+    let candidate = std::path::Path::new(path);
+    if !candidate.exists() {
+        return path.to_owned();
+    }
+    let parent = candidate.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let stem = candidate
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = candidate
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for counter in 2..=1000u32 {
+        let next = parent.join(format!("{stem}({counter}){ext}"));
+        if !next.exists() {
+            return next.to_string_lossy().into_owned();
+        }
+    }
+    path.to_owned()
 }
 
 async fn get_image_base64(
@@ -629,6 +690,23 @@ mod tests {
         assert_eq!(r.name, "lib.rs");
         assert_eq!(r.full_path, "/ws/src/lib.rs");
         assert_eq!(r.relative_path, "src/lib.rs");
+    }
+
+    #[test]
+    fn unique_upload_target_avoids_clobbering() {
+        let dir = tempfile::tempdir().unwrap();
+        let free = dir.path().join("new.png");
+        assert_eq!(unique_upload_target(&free.to_string_lossy()), free.to_string_lossy());
+
+        let taken = dir.path().join("taken.png");
+        std::fs::write(&taken, b"x").unwrap();
+        let next = unique_upload_target(&taken.to_string_lossy());
+        assert!(next.ends_with("taken(2).png"), "got {next}");
+        assert!(!std::path::Path::new(&next).exists());
+
+        std::fs::write(dir.path().join("taken(2).png"), b"y").unwrap();
+        let third = unique_upload_target(&taken.to_string_lossy());
+        assert!(third.ends_with("taken(3).png"), "got {third}");
     }
 
     #[test]

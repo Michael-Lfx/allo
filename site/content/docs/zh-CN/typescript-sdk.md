@@ -653,3 +653,236 @@ Agent Store 的官方 MCP 接入路径是**连接器描述文件**，不引入�
 - 协议方法语义全集：见仓库 `docs/agent-store/05-allo-app-server-protocol.md`。
 - 包实现与测试样例：`web/packages/{protocol,client,sdk}/src`（SDK 含 `spawn.test.ts`、`readiness.test.ts` 用例）。
 - 浏览器专属辅助（资产 `<img>` URL、`/api/fs/browse`）：宿主 app 实现，不在三包内。
+
+---
+
+## 13. 示例（端到端实战）
+
+本章把前几节分散的片段整合为可直接复制运行的完整场景。所有片段都假设已通过 `launchClient`（或自建 `AppServerClient`）拿到就绪的 `client`，且用 `try/finally` 保证 `close()`。
+
+> 实时事件类示例（会话 / Run 的 `follow`）依赖 `WebSocketTransport`；纯请求-响应场景可用 `HttpTransport`（见 §7.3）。
+
+### 13.1 三端拉起 / 连接
+
+**Node：一行拉起本地运行时**（SDK 负责 spawn + 回环建连 + 握手）：
+
+```ts
+import { launchClient } from "@flowy-agent-store/sdk";
+
+const launched = await launchClient({ client: { name: "my-tool", version: "1.0.0" } });
+try {
+  const conversation = await launched.client.conversations.create({ name: "demo" });
+  const subscription = await launched.client.conversations.follow(conversation.conversation_id);
+  subscription.onEvent((event) => console.log(event.event_type));
+  await launched.client.conversations.send(conversation.conversation_id, "你好", crypto.randomUUID());
+} finally {
+  await launched.close(); // 终止子进程 + 删除临时 data-dir
+}
+```
+
+**浏览器：只连已运行的服务端**（不 spawn 进程；凭据走 `?token=`）：
+
+```ts
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
+
+const transport = new WebSocketTransport("ws://127.0.0.1:8787/api/app-server/ws", { token });
+const client = new AppServerClient({ transport, client: { name: "web", version: "1.0.0" } });
+await client.connect();
+```
+
+**Electron：主进程 spawn，渲染进程连回环**（凭据留主进程，不进渲染进程）：
+
+```ts
+import { spawnAppServer } from "@flowy-agent-store/sdk";
+
+const server = await spawnAppServer({ dataDir: app.getPath("userData") });
+win.webContents.send("app-server-ready", {
+  url: `ws://${server.readiness.host}:${server.readiness.port}/api/app-server/ws`,
+});
+app.on("before-quit", () => void server.close());
+```
+
+> **Electron 完整接入（主进程 / 预加载 / 渲染进程）**
+>
+> 上面是最小骨架。真实 Electron 应用要把「运行时拉起与凭据」留在主进程，渲染进程只拿到回环 URL（和可选的 token）。凭据（OAuth 令牌、系统凭据存储）永远不要进渲染进程或配置文件明文。
+
+**主进程 `main.ts`** — spawn 运行时、经 IPC 把连接信息交给渲染进程、退出时清理：
+
+```ts
+import { app, BrowserWindow, ipcMain } from "electron";
+import { spawnAppServer, type SpawnedServer } from "@flowy-agent-store/sdk";
+import { join } from "node:path";
+
+let server: SpawnedServer | null = null;
+
+async function startBackend() {
+  server = await spawnAppServer({
+    dataDir: join(app.getPath("userData"), "agent-store"),
+  });
+
+  // 回环 WS 地址（loopback 下 auth 通常为 disabled-local，无需 token）
+  const wsUrl = `ws://${server.readiness.host}:${server.readiness.port}/api/app-server/ws`;
+  const token = server.readiness.auth === "disabled-local" ? undefined : await getHostToken();
+
+  // 渲染进程主动来取
+  ipcMain.handle("agent-store:get-connection", () => ({ url: wsUrl, token }));
+
+  // 崩溃可见：进程意外退出时记日志（SDK 不自动重启）
+  server.exited.then((info) => {
+    console.warn("agent-store runtime exited:", info.code, info.signal);
+  });
+}
+
+app.whenReady().then(startBackend);
+
+app.on("before-quit", async (event) => {
+  if (server) {
+    event.preventDefault(); // 先等清理完成再退出
+    await server.close();
+    server = null;
+  }
+  app.exit();
+});
+```
+
+> `getHostToken()` 由宿主自己实现——只有服务端要求 token（非 `disabled-local`）时才需要；token 由主进程生成 / 获取，绝不写入渲染进程可访问的明文。
+
+**预加载 `preload.ts`** — 用 `contextBridge` 安全地暴露给渲染进程（不暴露整个 `ipcRenderer`）：
+
+```ts
+import { contextBridge, ipcRenderer } from "electron";
+
+contextBridge.exposeInMainWorld("agentStore", {
+  getConnection: () => ipcRenderer.invoke("agent-store:get-connection"),
+});
+```
+
+**渲染进程 `renderer.ts`** — 拿到 URL 后自建 `AppServerClient` 并握手：
+
+```ts
+import { AppServerClient, WebSocketTransport } from "@flowy-agent-store/client";
+
+const { url, token } = await window.agentStore.getConnection();
+const transport = new WebSocketTransport(url, { token, requestTimeoutMs: 30_000 });
+const client = new AppServerClient({ transport, client: { name: "electron-ui", version: "1.0.0" } });
+await client.connect();
+
+// 之后即可使用全部子客户端
+const catalog = await client.connectors.list();
+```
+
+> 渲染进程走 `WebSocketTransport` 的 `token` 选项会被自动追加为 `?token=` 查询参数（浏览器 / Electron 的 WebSocket 不能设自定义头）。纯请求-响应场景可用 `HttpTransport`。
+
+### 13.2 Connector OAuth 全流程
+
+典型链路：`list` 取 `connectorId` → `authStart` 发起浏览器流 → 轮询 `authStatus` 至 `authenticated` → 用完 `logout` 吊销。
+
+```ts
+// 1) 从目录取得 connectorId
+const catalog = await client.connectors.list();
+const github = catalog.find((c) => c.id === "github");
+if (!github) throw new Error("github connector not found in catalog");
+
+// 2) 先看认证态：已认证则可跳过授权
+const before = await client.connectors.authStatus(github.id);
+if (before.state !== "authenticated") {
+  // 3) 发起宿主浏览器 OAuth 流（立即返回 started，不阻塞）
+  const started = await client.connectors.authStart(github.id);
+  if (started.state !== "started") {
+    throw new Error(started.error ?? "auth start failed");
+  }
+
+  // 4) 轮询直到 authenticated（或超时 / 需要重新授权）
+  const deadline = Date.now() + 5 * 60_000; // 5 分钟宽限
+  let authenticated = false;
+  while (Date.now() < deadline) {
+    const status = await client.connectors.authStatus(github.id);
+    if (status.state === "authenticated") { authenticated = true; break; }
+    if (status.state === "reauthorization_required") {
+      throw new Error("reauthorization required");
+    }
+    await new Promise((r) => setTimeout(r, 1_500)); // 1.5s 间隔
+  }
+  if (!authenticated) throw new Error("oauth timed out");
+}
+
+// 5) 授权后连接器状态应为 connected（认证就绪 + 最近探测成功）
+const status = await client.connectors.status(github.id);
+console.log(status.status);
+
+// 6) 用完吊销令牌
+await client.connectors.logout(github.id);
+```
+
+> 注意：`authStart` 只返回 `started`，**不返回授权 URL 或 token**——浏览器流程由可信宿主持有，客户端只触发与轮询（见 §4.4）。stdio 类型连接器不支持 OAuth，服务端会报 `OAuth is not supported for stdio connectors`。
+
+### 13.3 Store 浏览与安装
+
+```ts
+// 列出全市场统一目录（首次可能为空，含 markets_pending 标志，见 §4.3）
+const store = await client.listStore();
+for (const item of store.items) {
+  console.log(item.marketplace_id, item.entry_name, item.kind, item.installed);
+}
+
+// 一键安装：缺导入就导入 + 注册
+const receipt = await client.installStoreEntry("experts", "frontend-backend-experts");
+console.log("installed:", receipt.installed);
+
+// 市场源管理
+const markets = await client.listMarketplaces();
+const added = await client.addMarketplace({ source: "https://example.com/market.json" });
+await client.refreshMarketplace(added.marketplace_id);
+await client.removeMarketplace(added.marketplace_id, /* cascade */ true);
+```
+
+### 13.4 会话与 Run 实战
+
+**会话：创建 → 发送 → 实时接收**
+
+```ts
+import { decodeConversationEvent } from "@flowy-agent-store/protocol";
+
+const conv = await client.conversations.create({ name: "demo" });
+const sub = await client.conversations.follow(conv.conversation_id);
+sub.onEvent((event) => {
+  const decoded = decodeConversationEvent(event);
+  if (decoded.kind === "message.delta") render(decoded.delta, decoded.replace);
+});
+sub.onBackfill((snapshot) => resetTranscript(snapshot.messages));
+sub.onError((error) => report(error));
+
+const receipt = await client.conversations.send(
+  conv.conversation_id,
+  "帮我写个 REST API",
+  crypto.randomUUID(), // 必须显式幂等键
+);
+```
+
+**Run：发起 → 等待结果 → 处理审批**
+
+```ts
+const run = await client.runs.agent({
+  agentId: "frontend-backend-experts",
+  goal: "Generate a todo REST API",
+});
+const result = await client.runs.result(run.run_id); // 终态后才成功
+console.log(result.status);
+
+// 若 Agent 需要人决策，follow 实时事件并回答
+const sub = await client.runs.follow(run.run_id);
+sub.onEvent((event) => {
+  if (event.event_type !== "approval.requested") return;
+  client.runs.answerDecision({
+    runId: run.run_id,
+    stepId: event.step_id!,
+    attemptId: event.attempt_id!,
+    answer: "批准，继续执行",
+    expectedExecutionVersion: event.expected_execution_version!,
+    expectedStepVersion: event.expected_step_version!,
+    expectedAttemptVersion: event.expected_attempt_version!,
+  });
+});
+```
+
+> `answerDecision` 的三个 `expected*Version` 是必填 CAS 令牌，任一变化即返回 `conflict`（见 §7.4）。带 `idempotency_key` 的写操作可安全重放。

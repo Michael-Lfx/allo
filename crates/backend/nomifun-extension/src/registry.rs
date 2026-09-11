@@ -9,11 +9,13 @@ use serde_json::json;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use crate::dependency::DependencyValidationResult;
 use crate::error::ExtensionError;
 use crate::lifecycle::{HookKind, execute_hook, needs_install_hook, resolve_hook_path};
 use crate::loader::{ScanPath, resolve_scan_paths};
 use crate::registry_helpers::{
-    build_state_map, load_and_validate, merge_persisted_states, run_deactivation_hooks, to_summary,
+    blocked_dependents, build_state_map, load_and_validate, merge_persisted_states, run_deactivation_hooks,
+    to_summary,
 };
 use crate::resolvers::{resolve_all_contributions, resolve_i18n_for_all};
 use crate::state::ExtensionStateStore;
@@ -42,6 +44,11 @@ pub struct ExtensionRegistry {
     state_store: ExtensionStateStore,
     broadcaster: Arc<dyn EventBroadcaster>,
     app_version: String,
+    /// `[import].strict_dependencies` (`17` §7 / `16` R23). Default **off**:
+    /// dependency problems only warn, exactly as before the switch existed.
+    /// When on, an extension whose declared dependencies cannot be satisfied is
+    /// not loaded at all.
+    strict_dependencies: bool,
 }
 
 struct RegistryInner {
@@ -72,7 +79,60 @@ impl ExtensionRegistry {
             state_store,
             broadcaster,
             app_version,
+            strict_dependencies: false,
         }
+    }
+
+    /// Turn on `[import].strict_dependencies` (`17` §7): an extension whose
+    /// declared dependencies are missing or out of range is **refused** instead
+    /// of loaded with a warning.
+    ///
+    /// Default is **off** so every host that does not opt in keeps the exact
+    /// pre-existing behaviour. The host reads the key from
+    /// `~/.agent-store/config.toml` (`AgentStoreConfig::strict_dependencies`)
+    /// and passes it here.
+    pub fn with_strict_dependencies(mut self, strict_dependencies: bool) -> Self {
+        self.strict_dependencies = strict_dependencies;
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dependency policy
+// ---------------------------------------------------------------------------
+
+impl ExtensionRegistry {
+    /// Apply the strict-dependency policy to a freshly loaded set.
+    ///
+    /// Refuses only the **dependent** extensions whose own requirements cannot
+    /// be satisfied — their claim about the environment is unverifiable, so
+    /// loading them would be a silent downgrade (`17` §7). Everything else
+    /// (including cyclic extensions, which the API spec says to still attempt)
+    /// loads as before.
+    fn apply_dependency_policy(
+        &self,
+        extensions: Vec<LoadedExtension>,
+        dep_result: &DependencyValidationResult,
+    ) -> Vec<LoadedExtension> {
+        if !self.strict_dependencies || dep_result.valid {
+            return extensions;
+        }
+
+        let blocked = blocked_dependents(dep_result);
+        if blocked.is_empty() {
+            return extensions;
+        }
+
+        warn!(
+            blocked = blocked.len(),
+            names = ?blocked,
+            "strict_dependencies is on: refusing extensions with unsatisfied dependencies"
+        );
+
+        extensions
+            .into_iter()
+            .filter(|ext| !blocked.contains(&ext.manifest.name))
+            .collect()
     }
 }
 
@@ -109,6 +169,11 @@ impl ExtensionRegistry {
 
         // 1-3. Load, filter, validate (all sync/blocking).
         let (extensions, dep_result) = load_and_validate(&scan_paths, &self.app_version);
+
+        // 3b. `[import].strict_dependencies` (`17` §7). Off by default; when on,
+        // an unsatisfiable dependency refuses the dependent instead of only
+        // warning. Cycles are unaffected (see `apply_dependency_policy`).
+        let extensions = self.apply_dependency_policy(extensions, &dep_result);
 
         // 4. Merge persisted states.
         let persisted = self.state_store.load().await?;
@@ -163,7 +228,8 @@ impl ExtensionRegistry {
         run_deactivation_hooks(&current_exts).await;
 
         // 3. Reload pipeline (same as initialize but reuses existing scan paths).
-        let (extensions, _dep_result) = load_and_validate(&scan_paths, &self.app_version);
+        let (extensions, dep_result) = load_and_validate(&scan_paths, &self.app_version);
+        let extensions = self.apply_dependency_policy(extensions, &dep_result);
 
         // Use in-memory state (not file) to preserve pending writes that
         // haven't been flushed yet by the debounce timer.
