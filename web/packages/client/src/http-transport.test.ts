@@ -226,7 +226,7 @@ describe("HttpTransport · shared surface (doc 16 R2)", () => {
 
 describe("HttpTransport · doc drift guard (site docs §7.3)", () => {
   /**
-   * The developer guide states "covers 45 / 64 methods" and lists the 19
+   * The developer guide states "covers 46 / 65 methods" and lists the 19
    * without an HTTP binding. Both numbers live in prose and in this table, so
    * mapping a new method (or dropping one) must fail this test and force the
    * guide to be updated in the same change.
@@ -262,9 +262,9 @@ describe("HttpTransport · doc drift guard (site docs §7.3)", () => {
     "skill/copy",
   ];
 
-  it("keeps the documented 45-mapped / 19-unmapped split", () => {
+  it("keeps the documented 46-mapped / 19-unmapped split", () => {
     const table = httpRouteTable();
-    expect(Object.keys(table)).toHaveLength(45);
+    expect(Object.keys(table)).toHaveLength(46);
     expect(DOCUMENTED_UNMAPPED).toHaveLength(19);
     for (const method of DOCUMENTED_UNMAPPED) {
       expect(Object.keys(table), `${method} must stay unmapped`).not.toContain(method);

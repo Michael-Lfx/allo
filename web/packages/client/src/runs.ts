@@ -18,6 +18,9 @@ import {
   type RunSubscriptionParams,
   type RunView,
   type ServerNotification,
+  type TeamRunInput,
+  type TeamRunReceipt,
+  type TeamRunRequestWire,
 } from "@flowy-agent-store/protocol";
 import { type JsonRpcEventNotification } from "@flowy-agent-store/protocol";
 import type { Transport } from "./transport";
@@ -28,6 +31,19 @@ export class RunClient {
   /** Start an Agent run and return its asynchronous receipt. */
   agent(input: AgentRunInput): Promise<RunReceipt> {
     return this.transport.request<RunReceipt>("agent/run", toWire(input));
+  }
+
+  /**
+   * Start a Team run (`16` §7 决策 3): the server creates the Leader
+   * Conversation, materializes/binds the Team's execution template and returns
+   * the public run id of the execution the Leader started.
+   *
+   * The receipt is `TeamRunReceipt`, not `RunReceipt` — a Team Run has no lead
+   * preset revision/digest to report. Member pool and concurrency limits are not
+   * inputs; sending `planning` is rejected as `invalid_request`.
+   */
+  team(input: TeamRunInput): Promise<TeamRunReceipt> {
+    return this.transport.request<TeamRunReceipt>("team/run", toTeamWire(input));
   }
 
   /** Read the authoritative run state. */
@@ -401,5 +417,17 @@ function toWire(input: AgentRunInput): AgentRunRequestWire {
     command_id: input.commandId,
     idempotency_key: input.idempotencyKey,
     mentions: input.mentions,
+  };
+}
+
+function toTeamWire(input: TeamRunInput): TeamRunRequestWire {
+  return {
+    team_id: input.teamId,
+    team_version: input.teamVersion,
+    goal: input.goal,
+    input: input.input,
+    workspace: input.workspaceId ? { id: input.workspaceId } : undefined,
+    command_id: input.commandId,
+    idempotency_key: input.idempotencyKey,
   };
 }

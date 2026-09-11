@@ -267,25 +267,63 @@ impl DeferredToolState {
 
 enum RegistrationPolicy {
     Unrestricted,
-    Allow(BTreeSet<String>),
+    Allow(Vec<String>),
     DenyAll,
+}
+
+/// The reserved prefix for MCP proxy tool names (`nomi-mcp::tool_proxy`).
+const MCP_TOOL_PREFIX: &str = "mcp__";
+
+/// Whether a policy entry selects `display_name`.
+///
+/// Two rules, matching the reference implementation this mirrors:
+/// builtin names are compared **exactly and case-sensitively**; only entries in
+/// the `mcp__` namespace are globs (`mcp__github__*` for a whole server).
+///
+/// The asymmetry is deliberate and gives two useful behaviours for free:
+/// a bare wildcard outside `mcp__` (`enabled = ["*"]`) matches no builtin name,
+/// so as an allowlist it removes every tool; as a denylist it subtracts nothing.
+/// Both are surprising enough that [`ToolRegistry::unmatched_allow_patterns`]
+/// exists so callers can warn about them.
+fn tool_name_matches(pattern: &str, display_name: &str) -> bool {
+    if pattern.starts_with(MCP_TOOL_PREFIX) {
+        glob::Pattern::new(pattern)
+            .map(|parsed| parsed.matches(display_name))
+            .unwrap_or(false)
+    } else {
+        pattern == display_name
+    }
+}
+
+fn matches_any(patterns: &[String], display_name: &str) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| tool_name_matches(pattern, display_name))
 }
 
 impl RegistrationPolicy {
     fn allows(&self, display_name: &str) -> bool {
         match self {
             Self::Unrestricted => true,
-            Self::Allow(names) => names.contains(display_name),
+            Self::Allow(patterns) => matches_any(patterns, display_name),
             Self::DenyAll => false,
         }
     }
 
     /// Registration authority is monotonic for the lifetime of a registry:
     /// later filters may narrow an existing allowlist but never widen it.
-    fn retain(&mut self, requested: BTreeSet<String>) {
+    ///
+    /// Repeated calls therefore intersect the layers (an empty request is a
+    /// no-op, so "no constraint" is not the same as "constrain to nothing").
+    /// An intersection that comes out empty leaves `Allow(vec![])`, which denies
+    /// every tool — the caller that needs to *express* that state to the engine
+    /// goes through `ToolsConfig::builtin_deny_all`.
+    fn retain(&mut self, requested: Vec<String>) {
         match self {
             Self::Unrestricted => *self = Self::Allow(requested),
-            Self::Allow(existing) => existing.retain(|name| requested.contains(name)),
+            Self::Allow(existing) => {
+                existing.retain(|pattern| requested.contains(pattern));
+            }
             Self::DenyAll => {}
         }
     }
@@ -296,6 +334,17 @@ pub struct ToolRegistry {
     input_contracts: BTreeMap<String, ToolInputContract>,
     deferred_state: DeferredToolState,
     registration_policy: RegistrationPolicy,
+    /// Persistent subtraction list, applied *after* the allowlist and to every
+    /// later registration as well. Ordered and duplicated as configured so the
+    /// unmatched-pattern diagnostics stay stable.
+    disabled: Vec<String>,
+    /// Denylist entries that matched nothing **at the moment the list was
+    /// applied**.
+    ///
+    /// Snapshotted there rather than computed on demand: applying the list
+    /// removes exactly the tools a working entry matched, so a live check would
+    /// report every *successful* entry as unmatched too.
+    disabled_unmatched: Vec<String>,
 }
 
 /// The exact schema advertised for a registered route and its compiled
@@ -319,6 +368,8 @@ impl ToolRegistry {
             input_contracts: BTreeMap::new(),
             deferred_state: DeferredToolState::default(),
             registration_policy: RegistrationPolicy::Unrestricted,
+            disabled: Vec::new(),
+            disabled_unmatched: Vec::new(),
         }
     }
 
@@ -405,6 +456,16 @@ impl ToolRegistry {
     }
 
     fn registration_policy_allows(&self, name: &str) -> bool {
+        // Subtractive first: a denylisted name is refused even if the allowlist
+        // would admit it, so the two layers compose as `allow ∧ ¬deny`.
+        if matches_any(&self.disabled, name) {
+            tracing::warn!(
+                target: "nomi_tools",
+                tool = %name,
+                "rejecting tool registration on the registry's persistent deny list"
+            );
+            return false;
+        }
         if self.registration_policy.allows(name) {
             return true;
         }
@@ -658,7 +719,7 @@ impl ToolRegistry {
             return;
         }
         self.registration_policy
-            .retain(allowed.iter().cloned().collect());
+            .retain(allowed.to_vec());
         let policy = &self.registration_policy;
         self.tools.retain(|tool| policy.allows(tool.name()));
         let retained_names: BTreeSet<String> =
@@ -666,6 +727,80 @@ impl ToolRegistry {
         self.input_contracts
             .retain(|name, _| retained_names.contains(name));
         self.deferred_state.retain_definitions(&retained_names);
+    }
+
+    /// Subtract `denied` from the registry and persist the subtraction for every
+    /// later registration.
+    ///
+    /// This is the counterpart of [`Self::retain_named`] and the reason it exists:
+    /// an allowlist can only say "just these", which forces callers of a
+    /// keep-most-drop-few policy to enumerate everything (and to enumerate MCP
+    /// proxies by canonical name). A denylist says the actual intent and stays
+    /// orthogonal to the allowlist.
+    ///
+    /// An empty slice is a no-op, matching `retain_named`, so an absent
+    /// configuration changes nothing. Repeated calls accumulate: the list only
+    /// ever grows, and later registrations are checked against all of it.
+    pub fn deny_named(&mut self, denied: &[String]) {
+        if denied.is_empty() {
+            return;
+        }
+        // Snapshot before subtracting: afterwards every entry that did its job
+        // has had its tools removed and would look unmatched.
+        self.disabled_unmatched.extend(
+            denied
+                .iter()
+                .filter(|pattern| {
+                    !self
+                        .tools
+                        .iter()
+                        .any(|tool| tool_name_matches(pattern, tool.name()))
+                })
+                .cloned(),
+        );
+        self.disabled.extend(denied.iter().cloned());
+        self.tools
+            .retain(|tool| !matches_any(&self.disabled, tool.name()));
+        let retained_names: BTreeSet<String> =
+            self.tools.iter().map(|tool| tool.name().to_owned()).collect();
+        self.input_contracts
+            .retain(|name, _| retained_names.contains(name));
+        self.deferred_state.retain_definitions(&retained_names);
+    }
+
+    /// Allowlist entries that matched no registered tool.
+    ///
+    /// A non-match here is a real defect — the entry is *removing* tools instead
+    /// of selecting them — so callers warn about it. The comparable denylist
+    /// diagnostic is [`Self::unmatched_deny_patterns`].
+    pub fn unmatched_allow_patterns(&self) -> Vec<String> {
+        let RegistrationPolicy::Allow(patterns) = &self.registration_policy else {
+            return Vec::new();
+        };
+        patterns
+            .iter()
+            .filter(|pattern| {
+                !self
+                    .tools
+                    .iter()
+                    .any(|tool| tool_name_matches(pattern, tool.name()))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Denylist entries that matched no tool **when the list was applied**.
+    ///
+    /// Unlike the allowlist case this is usually *not* a defect: a host-wide
+    /// denylist legitimately names tools that a given session never wires (cron
+    /// without a cron sink, `remember` with memory off), and tools wired after
+    /// bootstrap are not visible to this snapshot either. Callers log it at
+    /// debug level rather than warning.
+    pub fn unmatched_deny_patterns(&self) -> Vec<String> {
+        let mut patterns = self.disabled_unmatched.clone();
+        patterns.sort();
+        patterns.dedup();
+        patterns
     }
 }
 
@@ -1672,6 +1807,50 @@ mod tests {
         })
     }
 
+    /// Stand-in for an MCP proxy: only a tool that *declares* the reserved
+    /// `mcp__` prefix may register under it (`RESERVED_PROVIDER_NAME_PREFIXES`),
+    /// so a plain `MockTool` cannot be used to exercise `mcp__…` policies.
+    struct McpProxyMockTool {
+        name: String,
+    }
+
+    #[async_trait]
+    impl Tool for McpProxyMockTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn description(&self) -> &str {
+            "mcp proxy fixture"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn reserved_provider_name_prefix(&self) -> Option<&'static str> {
+            Some("mcp__")
+        }
+
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+
+        async fn execute(&self, _input: serde_json::Value) -> ToolResult {
+            ToolResult::text("ok")
+        }
+
+        fn category(&self) -> ToolCategory {
+            ToolCategory::Info
+        }
+    }
+
+    fn mcp_proxy(server_and_tool: &str) -> Box<McpProxyMockTool> {
+        Box::new(McpProxyMockTool {
+            name: format!("mcp__{server_and_tool}__ABCDEFGHIJKLMNOP"),
+        })
+    }
+
     fn make_tool_with_category(
         name: &str,
         description: &str,
@@ -2381,8 +2560,154 @@ mod tests {
         assert!(defs.is_empty());
     }
 
-    // --- retain_named (per-node tool whitelist) tests ---
+    // --- deny_named (subtractive tool policy) tests ---
 
+    /// Builtin names match exactly and case-sensitively; only `mcp__` entries
+    /// are globs. The two surprising reference-implementation behaviours fall
+    /// out of this rule rather than being special-cased.
+    #[test]
+    fn policy_entries_match_exactly_except_in_the_mcp_namespace() {
+        assert!(tool_name_matches("Read", "Read"));
+        assert!(!tool_name_matches("read", "Read"), "builtin names are case-sensitive");
+        assert!(!tool_name_matches("Rea", "Read"), "no prefix matching for builtins");
+        assert!(
+            !tool_name_matches("*", "Read"),
+            "a bare wildcard is not a glob outside mcp__, so it selects nothing"
+        );
+
+        let proxy = "mcp__github__list_issues__ABCDEFGHIJKLMNOP";
+        assert!(tool_name_matches("mcp__github__*", proxy));
+        assert!(tool_name_matches("mcp__*", proxy));
+        assert!(!tool_name_matches("mcp__notion__*", proxy));
+        assert!(
+            !tool_name_matches("mcp__github", proxy),
+            "an mcp__ name without a tool segment can never match"
+        );
+        assert!(
+            !tool_name_matches("mcp__[", proxy),
+            "an unparseable glob fails closed (matches nothing)"
+        );
+    }
+
+    #[test]
+    fn deny_named_removes_and_empty_is_noop() {
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool("Read", "read"));
+        registry.register(make_tool("remember", "memory"));
+        registry.register(make_tool("update_plan", "plan"));
+
+        // 空 denylist = 不排除（默认，零回归）。
+        registry.deny_named(&[]);
+        assert_eq!(registry.tool_names().len(), 3);
+
+        registry.deny_named(&["remember".to_string()]);
+        assert!(registry.get("remember").is_none());
+        assert!(registry.get("Read").is_some());
+        assert!(registry.get("update_plan").is_some());
+    }
+
+    /// The whole point of a *persistent* subtraction: tools registered after the
+    /// policy was installed (cron / meeting / domain sinks / media) are held to
+    /// it too, so a product-domain family cannot slip back in post-build.
+    #[test]
+    fn deny_named_persists_for_late_registration() {
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool("Read", "read"));
+
+        registry.deny_named(&["cron_create".to_string(), "mcp__notion__*".to_string()]);
+        assert!(!registry.register(make_tool("cron_create", "late cron")));
+        assert!(
+            !registry.register(mcp_proxy("notion__search")),
+            "an mcp__ glob in the denylist must also cover later registrations"
+        );
+        assert!(registry.register(make_tool("cron_list", "not denied")));
+        assert!(registry.register(mcp_proxy("github__list_issues")));
+        assert!(registry.get("Read").is_some());
+    }
+
+    /// Allowlist and denylist compose as `allow ∧ ¬deny`; the order in which the
+    /// caller applies them cannot change the result.
+    #[test]
+    fn allow_and_deny_layers_compose_in_either_order() {
+        let build = |deny_first: bool| {
+            let mut registry = ToolRegistry::new();
+            for name in ["Read", "Grep", "Glob", "Bash"] {
+                registry.register(make_tool(name, name));
+            }
+            let allowed = ["Read".to_string(), "Grep".to_string(), "Glob".to_string()];
+            let denied = ["Glob".to_string()];
+            if deny_first {
+                registry.deny_named(&denied);
+                registry.retain_named(&allowed);
+            } else {
+                registry.retain_named(&allowed);
+                registry.deny_named(&denied);
+            }
+            registry.tool_names()
+        };
+
+        let mut expected = vec!["Grep".to_string(), "Read".to_string()];
+        expected.sort();
+        let mut deny_first = build(true);
+        let mut allow_first = build(false);
+        deny_first.sort();
+        allow_first.sort();
+        assert_eq!(deny_first, expected);
+        assert_eq!(allow_first, expected);
+    }
+
+    /// An allowlist whose layers intersect to nothing leaves an empty `Allow`,
+    /// which denies everything. Expressing that *to the engine* is what
+    /// `ToolsConfig::builtin_deny_all` is for — an empty allowlist would read as
+    /// "no restriction" instead.
+    #[test]
+    fn intersect_to_empty_denies_everything_instead_of_unrestricting() {
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool("Read", "read"));
+        registry.register(make_tool("Write", "write"));
+
+        registry.retain_named(&["Read".to_string()]);
+        registry.retain_named(&["Write".to_string()]);
+        assert!(
+            registry.get("Read").is_none() && registry.get("Write").is_none(),
+            "an emptied intersection must keep denying, not fall back to unrestricted"
+        );
+        // ...and it stays closed for later registrations.
+        assert!(!registry.register(make_tool("Read", "late")));
+    }
+
+    #[test]
+    fn unmatched_patterns_are_reported_for_both_lists() {
+        // Denylist: the glob matches a registered proxy, the plain name does not.
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool("Read", "read"));
+        let proxy = registry
+            .register(mcp_proxy("github__list_issues"))
+            .then(|| "mcp__github__list_issues__ABCDEFGHIJKLMNOP".to_owned())
+            .expect("the proxy must register under its reserved prefix");
+        registry.deny_named(&["remember".to_string(), "mcp__github__*".to_string()]);
+
+        assert!(registry.get(&proxy).is_none(), "the glob must subtract the proxy");
+        assert_eq!(
+            registry.unmatched_deny_patterns(),
+            vec!["remember".to_string()],
+            "a denylist entry for a tool this session never wired is reported, not an error — \
+             and an entry that did its job must NOT be reported"
+        );
+
+        // Allowlist: diagnostics are computed against what is registered, so a
+        // typo is reported as selecting nothing.
+        let mut allow_registry = ToolRegistry::new();
+        allow_registry.register(make_tool("Read", "read"));
+        allow_registry.retain_named(&["Read".to_string(), "Typo".to_string()]);
+        assert_eq!(
+            allow_registry.unmatched_allow_patterns(),
+            vec!["Typo".to_string()]
+        );
+        assert!(allow_registry.get("Read").is_some());
+    }
+
+    // --- retain_named (per-node tool whitelist) tests ---
     #[test]
     fn retain_named_keeps_only_allowed_and_empty_is_noop() {
         let mut registry = ToolRegistry::new();

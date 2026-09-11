@@ -6,7 +6,7 @@ use nomi_agent::session::{Session, SessionManager};
 use nomi_config::config::{CliArgs, Config, McpServerConfig, TransportType};
 use nomifun_api_types::{
     GatewayMcpConfig, HealthStatus, McpServerId, ModelHealthStatus, ModelTask, ModelTrait,
-    NomiBuildExtra, SessionMcpServer, SessionMcpTransport,
+    NomiBuildExtra, NomiToolPolicy, SessionMcpServer, SessionMcpTransport,
 };
 use nomifun_common::{
     AppError, DelegationPolicy, ExecutionAuthority, LoopbackCapabilityLease,
@@ -67,12 +67,68 @@ fn apply_model_only_ceiling(overrides: &mut NomiBuildExtra) {
 /// integration host. Keep ordinary local Agent tools available while removing
 /// every dynamic Team/Skill/MCP path before any process-owned gateway or
 /// repository-backed server configuration is considered.
+///
+/// This ceiling deliberately does **not** touch `delegation_policy`. Delegation is
+/// a first-class typed Conversation field, and the tier a Store chat runs on is
+/// decided by *which trusted seam created it*: `create_app_server_nomi_chat`
+/// writes `Disabled` (a single Agent Run gets no `nomi_delegate`), while
+/// `create_app_server_team_leader_chat` writes the Team tier. Clamping it here
+/// would make every Store chat structurally unable to delegate — including the
+/// Team Leader, whose entire purpose is to call `nomi_delegate(strategy=planned)`
+/// (`16` §7 决策 3). Forging the `app_server_chat` marker cannot widen anything
+/// either: the marker only ever subtracts, and a Conversation *without* it keeps
+/// whatever policy its own row carries.
 fn apply_app_server_chat_ceiling(overrides: &mut NomiBuildExtra) {
     overrides.gateway_mcp_config = None;
-    overrides.mcp_server_ids = None;
+    // Connectors are fenced by **explicit id**, never by an absent key: `None`
+    // means "every enabled MCP server on this host" to `load_user_mcp_servers`.
+    // The trusted create seam always writes `extra.mcp_server_ids` (possibly
+    // empty), so this only backstops a legacy/malformed row — and it must not
+    // wipe the fence when the Definition did bind Connectors.
+    if overrides.mcp_server_ids.is_none() {
+        overrides.mcp_server_ids = Some(Vec::new());
+    }
     overrides.session_mcp_servers.clear();
     overrides.summon = None;
-    overrides.delegation_policy = DelegationPolicy::Disabled;
+}
+
+/// Apply the host's global tool policy on top of whatever the session asked for.
+///
+/// This is the *only* place the policy subtracts from a session, and it runs
+/// unconditionally: every field can only narrow, so it composes safely with both
+/// the App Server ceiling above and the secondary-principal model-only ceiling
+/// below (order between them cannot matter).
+///
+/// Deliberately split from `[tools]`-driven switches the *engine* owns:
+/// `web` / `plan` / `lsp` are read from `Config::resolve` in the manager, so
+/// they are applied there, not here (see `NomiResolvedConfig::tool_policy`).
+fn apply_host_tool_policy(overrides: &mut NomiBuildExtra, policy: &NomiToolPolicy) {
+    if !policy.computer {
+        overrides.computer_use = Some(false);
+    }
+    if !policy.browser {
+        overrides.browser_use = Some(false);
+    }
+    // Companion sessions own memory/skill tools and a persona prompt; without
+    // the domain there is no companion binding to host.
+    if !policy.domains.companion {
+        overrides.companion = false;
+        overrides.companion_id = None;
+        overrides.summon = None;
+    }
+    // Knowledge mounts drive both the retrieval tools and the system-prompt
+    // section, so clearing the mounts is what actually removes the surface
+    // (a `None` sink alone would leave `knowledge_search` visible).
+    if !policy.domains.knowledge {
+        overrides.knowledge_mounts.clear();
+        overrides.knowledge_writeback = false;
+        overrides.knowledge_channel_write_enabled = false;
+    }
+    // Goals come from conversation config/DB; both the fresh spec and the
+    // restore snapshot must go, or `update_goal` stays registered.
+    if !policy.domains.goal {
+        overrides.goal = None;
+    }
 }
 
 fn retarget_resumed_session(session: &mut Session, provider: &str, model: &str) -> bool {
@@ -168,6 +224,10 @@ pub(super) async fn build(
     if is_app_server_chat {
         apply_app_server_chat_ceiling(&mut overrides);
     }
+    // Host policy is applied after the session's own request so it can only ever
+    // subtract from it, and before every capability-resolution site below so the
+    // cleared fields actually change what gets wired.
+    apply_host_tool_policy(&mut overrides, &deps.tool_policy);
 
     // Gateway entitlement is derived from the immutable principal, never from
     // persisted/open JSON. Process-owned config is injected only after the
@@ -322,9 +382,35 @@ pub(super) async fn build(
     }
     let has_platform_gateway = overrides.gateway_mcp_config.is_some();
 
+    // Host composition is decided once per session: either the embedded
+    // (synchronous, parallel-only) deployment or the host's durable facade owns the
+    // `nomi_delegate` name — never both, since a second registration under the same
+    // name is rejected as a duplicate route. Computed here (not just before the
+    // registration below) because the *prompt* must describe whichever deployment
+    // actually owns the name, and the prompt is assembled a few lines down.
+    let install_embedded_agent_execution = should_install_embedded_agent_execution(
+        has_platform_gateway,
+        is_instance_owner,
+        deps.embedded_agent_execution,
+    );
+    let delegate_deployment = delegate_deployment(
+        has_platform_gateway,
+        install_embedded_agent_execution,
+        is_instance_owner
+            && deps
+                .delegate_sink_provider
+                .as_ref()
+                .and_then(|slot| slot.get())
+                .is_some(),
+    );
+
     let (mut extra_mcp_servers, loopback_capability_leases) =
         resolve_mcp_servers(&overrides, &ctx.conversation_id);
-    if is_instance_owner && !is_app_server_chat && let Some(repo) = deps.mcp_server_repo.as_ref() {
+    // Connector rows load for App Server chats too, but strictly by the id fence
+    // the ceiling above established: an App Server chat with no bound Connector
+    // carries `Some(vec![])`, so this selects nothing. Session-scoped servers
+    // (a desktop-request concept) stay owner-only and are cleared by the ceiling.
+    if is_instance_owner && let Some(repo) = deps.mcp_server_repo.as_ref() {
         for (name, config) in load_user_mcp_servers(
             repo.as_ref(),
             overrides.mcp_server_ids.as_deref(),
@@ -387,19 +473,37 @@ pub(super) async fn build(
         knowledge_write_enabled,
     );
 
-    // 持久委派提示：对普通桌面会话按 typed delegation policy 塑形，指导 Agent 在
-    // 合适场景使用统一 `nomi_delegate` 并在执行画布呈现。该策略只影响提示，不授予
-    // 工具能力或改变审批模式。伙伴、渠道/远程和对外服务走各自受限能力面。
-    let delegation_hint_available = should_inject_delegation_hint(
-        has_platform_gateway,
-        overrides.companion,
-        overrides.channel_platform.is_some(),
-    );
-    overrides.system_prompt = compose_delegation_hint(
-        overrides.system_prompt.take(),
-        delegation_hint_available,
-        overrides.delegation_policy,
-    );
+    // 持久委派提示：**必须描述实际拥有 `nomi_delegate` 这个名字的那个部署**。
+    // 同一个名字下有三种实现，能力完全不同（见 `DelegateDeployment`）：Gateway
+    // 版有 planned + parallel + `nomi_execution_get`；宿主自有持久 facade 版
+    // **只有 planned**（`host_delegate_tool.rs` 的 schema 直接拒绝其它字段）；
+    // 嵌入式版只支持 parallel、不落库，且它自己用工具描述向模型表达。所以这里按
+    // 部署挑提示，而不是按「有没有 gateway」挑——App Server（Store）会话永远没有
+    // gateway，但仍可能有宿主 facade 版，Team 的 Leader 完全依赖它。该策略只影响
+    // 提示，不授予工具能力或改变审批模式。
+    let delegation_hint = match delegate_deployment {
+        DelegateDeployment::Gateway => compose_delegation_hint(
+            overrides.system_prompt.take(),
+            should_inject_delegation_hint(
+                has_platform_gateway,
+                overrides.companion,
+                overrides.channel_platform.is_some(),
+            ),
+            overrides.delegation_policy,
+        ),
+        DelegateDeployment::HostFacade => compose_host_delegation_hint(
+            overrides.system_prompt.take(),
+            should_inject_delegation_hint(
+                true,
+                overrides.companion,
+                overrides.channel_platform.is_some(),
+            ),
+            overrides.delegation_policy,
+        ),
+        // Embedded describes itself; `None` has nothing to describe.
+        DelegateDeployment::Embedded | DelegateDeployment::None => overrides.system_prompt.take(),
+    };
+    overrides.system_prompt = delegation_hint;
 
     // Every native Nomi session — regular desktop chat, companion, IM
     // Channel Agent — must think AND reply in the
@@ -761,6 +865,14 @@ pub(super) async fn build(
                 None => None,
             },
         };
+    // Host policy: with the goal domain off, a persisted active row must not
+    // re-arm the loop either (the fresh spec was already cleared above), or
+    // `update_goal` would stay registered through the restore path.
+    let goal_resume_state = if deps.tool_policy.domains.goal {
+        goal_resume_state
+    } else {
+        None
+    };
 
     let output_ceiling = fields.output_limit;
     let reasoning_effort = resolve_session_reasoning_effort(
@@ -768,6 +880,8 @@ pub(super) async fn build(
         fields.compat_overrides.effort_levels.as_deref(),
     );
 
+    // Host composition was decided once near the top of this function (it also
+    // shapes the delegation prompt); nothing recomputes it here.
     let config = NomiResolvedConfig {
         // provider_id was validated as a canonical UUID just above.
         provider_id: ProviderId::parse(&model_selection.provider_id).expect(
@@ -839,12 +953,11 @@ pub(super) async fn build(
         // Platform Gateway owns persistent AgentExecution; secondary users
         // cannot install host execution. Only trusted no-gateway standalone
         // sessions receive the embedded adapter.
-        install_embedded_agent_execution: should_install_embedded_agent_execution(
-            has_platform_gateway,
-            is_instance_owner,
-        ),
+        install_embedded_agent_execution,
         // Per-session 工具白名单（受限角色的 Agent attempt；普通会话恒空）。
         allowed_tools: overrides.allowed_tools.clone(),
+        // 宿主级工具策略（agent-store `[tools]`；未采纳的宿主为 permissive 默认值）。
+        tool_policy: deps.tool_policy.clone(),
         // 原生文件工具写根：本地桌面全权（None），渠道会话收窄到工作区。
         // Coding profile forces workspace containment when write_root would
         // otherwise be None (local desktop unrestricted).
@@ -899,7 +1012,7 @@ pub(super) async fn build(
     // backend learning service. Owner-authority only, same posture as the
     // knowledge retrieval sinks above; the manager further gates registration
     // on mounted bases.
-    let learning_course_sink = is_instance_owner
+    let learning_course_sink = (is_instance_owner && deps.tool_policy.domains.learning)
         .then(|| deps.learning_course.clone())
         .flatten();
 
@@ -979,13 +1092,17 @@ pub(super) async fn build(
         ctx.workspace,
         config,
         resume_session,
-        is_instance_owner.then(|| deps.requirement_sink.clone()).flatten(),
+        (is_instance_owner && deps.tool_policy.domains.requirement)
+            .then(|| deps.requirement_sink.clone())
+            .flatten(),
         if is_instance_owner && overrides.companion {
             deps.companion_sink.clone()
         } else {
             None
         },
-        is_instance_owner.then(|| deps.knowledge_retrieval.clone()).flatten(),
+        (is_instance_owner && deps.tool_policy.domains.knowledge)
+            .then(|| deps.knowledge_retrieval.clone())
+            .flatten(),
         knowledge_kb_ids,
         knowledge_prelude,
         knowledge_writeback_sink,
@@ -1023,6 +1140,7 @@ pub(super) async fn build(
     // secondary principal's model-only ceiling. Register them only for the
     // installation owner, after the manager has been assembled.
     if is_instance_owner
+        && deps.tool_policy.domains.cron
         && let (Some(make_sink), Some(owner_id)) =
         (deps.cron_sink_factory.as_ref(), owner_id_for_cron.as_deref())
     {
@@ -1031,6 +1149,7 @@ pub(super) async fn build(
             .await;
     }
     if is_instance_owner
+        && deps.tool_policy.domains.meeting
         && let (Some(make_sink), Some(owner_id)) =
         (deps.meeting_sink_factory.as_ref(), owner_id_for_cron.as_deref())
     {
@@ -1039,10 +1158,29 @@ pub(super) async fn build(
             .await;
     }
     if is_instance_owner
+        && deps.tool_policy.domains.meeting
         && let Some(make_listen) = deps.meeting_listen_context_factory.as_ref()
     {
         agent
             .register_meeting_listen_context(make_listen(&conv_id_for_cron))
+            .await;
+    }
+    // Host-backed `nomi_delegate` (`16` §7 决策 3): the host owns a durable Agent
+    // execution facade, so its leader sessions delegate through that. Registered
+    // only when this session did **not** get the embedded deployment — one tool
+    // name, one owner. A slot that was never installed (or a host without one)
+    // registers nothing, which is the same shape as cron/meeting above.
+    if is_instance_owner
+        && !install_embedded_agent_execution
+        && let (Some(provider), Some(owner_id)) = (
+            deps.delegate_sink_provider
+                .as_ref()
+                .and_then(|slot| slot.get()),
+            owner_id_for_cron.as_deref(),
+        )
+    {
+        agent
+            .register_delegate_sink(provider.sink_for(owner_id, &conv_id_for_cron))
             .await;
     }
     // Per-turn background review (optimization 2): register the default
@@ -1462,11 +1600,56 @@ pub(crate) const DELEGATION_PREFER_PARALLEL_HINT: &str = "本会话偏好并行�
 /// WebUI 未授信、对外服务被钳制关网关等）。伙伴、渠道/远程和对外服务
 /// 都走各自的受限能力面，故一并排除。
 pub(crate) fn should_inject_delegation_hint(
-    has_gateway: bool,
+    has_durable_delegation: bool,
     is_companion: bool,
     is_channel: bool,
 ) -> bool {
-    has_gateway && !is_companion && !is_channel
+    has_durable_delegation && !is_companion && !is_channel
+}
+
+/// Which implementation owns the `nomi_delegate` tool name in this session.
+///
+/// One name, three contracts — and they are not interchangeable:
+///
+/// - [`DelegateDeployment::Gateway`] is Platform Gateway's capability surface
+///   (`planned` + `parallel` + `nomi_execution_get` reads);
+/// - [`DelegateDeployment::HostFacade`] is the host's **own** durable execution
+///   facade (`nomifun-app::app_server_delegate`, `16` §7 决策 3). Its tool schema
+///   accepts only `{strategy: "planned", goal}`;
+/// - [`DelegateDeployment::Embedded`] is the in-process engine delegate
+///   (`nomi_agent::local_delegate_tool`): `parallel` only, no persistence.
+///
+/// The distinction matters because the *prompt* must not advertise a capability
+/// the session does not have. A Store session never has the Gateway (the App
+/// Server ceiling clears `gateway_mcp_config`), so gating the hint on "has
+/// gateway" alone would leave the Team Leader with `nomi_delegate` registered and
+/// no idea it exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DelegateDeployment {
+    Gateway,
+    HostFacade,
+    Embedded,
+    None,
+}
+
+/// Exactly one deployment owns the name; this is the single place that decides
+/// which. `host_facade_available` must already include the owner check and the
+/// "embedded is off" half of the one-or-the-other rule, because the registration
+/// site below re-derives it the same way.
+pub(crate) fn delegate_deployment(
+    has_platform_gateway: bool,
+    install_embedded: bool,
+    host_facade_available: bool,
+) -> DelegateDeployment {
+    if has_platform_gateway {
+        DelegateDeployment::Gateway
+    } else if install_embedded {
+        DelegateDeployment::Embedded
+    } else if host_facade_available {
+        DelegateDeployment::HostFacade
+    } else {
+        DelegateDeployment::None
+    }
 }
 
 /// Append typed persistent-delegation guidance without replacing preset,
@@ -1493,15 +1676,45 @@ pub(crate) fn compose_delegation_hint(
     })
 }
 
+/// Planned-only guidance for a host whose `nomi_delegate` is its own durable
+/// execution facade ([`DelegateDeployment::HostFacade`]).
+///
+/// It deliberately does **not** reuse [`DELEGATION_STANDARD_HINT`]: that text
+/// teaches `strategy=parallel` and `nomi_execution_get`, and this deployment has
+/// neither. Advertising them would produce tool calls rejected by the schema.
+pub(crate) const HOST_DELEGATE_STANDARD_HINT: &str = "需要成体系拆解的复杂、多步目标时，用 `nomi_delegate(strategy=\"planned\", goal=\"…\")` 把目标交给宿主规划：宿主会基于绑定的 Team 模板生成依赖 DAG，并让成员 Agent 分工执行。这个入口只接受 `goal`——成员、并发上限、规划与重规划策略都由宿主与服务端决定，不要尝试在调用里指定它们。发出调用后立刻结束本轮，不要轮询等待，也不要重复调用；规划与执行结果会由宿主写回本会话。简单或单步问题直接作答，无需委派。";
+
+/// Append the host-facade delegation guidance without replacing preset, persona
+/// or knowledge context. Unavailable surfaces and [`DelegationPolicy::Disabled`]
+/// preserve `base` unchanged (same contract as [`compose_delegation_hint`]).
+pub(crate) fn compose_host_delegation_hint(
+    base: Option<String>,
+    available: bool,
+    policy: DelegationPolicy,
+) -> Option<String> {
+    if !available || policy == DelegationPolicy::Disabled {
+        return base;
+    }
+    Some(match base {
+        Some(existing) if !existing.is_empty() => {
+            format!("{existing}\n\n{HOST_DELEGATE_STANDARD_HINT}")
+        }
+        _ => HOST_DELEGATE_STANDARD_HINT.to_owned(),
+    })
+}
+
 /// Backend-authoritative host composition gate. It is intentionally derived
-/// from resolved runtime authority rather than user configuration: Platform
-/// Gateway owns persistent AgentExecution, and untrusted identities never
-/// receive an embedded host execution surface.
+/// from resolved runtime authority plus the host's own composition decision
+/// rather than user configuration: Platform Gateway owns durable Agent
+/// execution, a dedicated host that owns its own execution facade opts out
+/// (`AgentFactoryDeps::embedded_agent_execution`), and untrusted identities
+/// never receive an embedded host execution surface.
 pub(crate) fn should_install_embedded_agent_execution(
     has_platform_gateway: bool,
     is_instance_owner: bool,
+    host_allows_embedded: bool,
 ) -> bool {
-    !has_platform_gateway && is_instance_owner
+    host_allows_embedded && !has_platform_gateway && is_instance_owner
 }
 
 /// 原生文件工具（Write/Edit/ApplyPatch）的写根钳制解析（纯函数，可单测）。与
@@ -2134,10 +2347,12 @@ mod tests {
     }
 
     #[test]
-    fn app_server_chat_ceiling_removes_all_mcp_and_summon_configuration() {
+    fn app_server_chat_ceiling_clears_integrations_and_normalises_the_connector_fence() {
         let mcp_server_id = McpServerId::new();
         let mut overrides = NomiBuildExtra {
-            mcp_server_ids: Some(vec![mcp_server_id.clone()]),
+            // Absent on purpose: the ceiling must turn it into an explicit empty
+            // fence, because `None` would bind every enabled host MCP server.
+            mcp_server_ids: None,
             session_mcp_servers: vec![SessionMcpServer {
                 mcp_server_id,
                 name: "test-mcp".into(),
@@ -2160,15 +2375,175 @@ mod tests {
         apply_app_server_chat_ceiling(&mut overrides);
 
         assert!(overrides.gateway_mcp_config.is_none());
-        assert!(overrides.mcp_server_ids.is_none());
+        // The fence, not `None`: `None` would mean "bind every enabled host MCP
+        // server" (see `load_user_mcp_servers`), which is the opposite of intent.
+        assert_eq!(
+            overrides.mcp_server_ids,
+            Some(Vec::new()),
+            "an App Server chat with no bound Connector must bind none, not all"
+        );
         assert!(overrides.session_mcp_servers.is_empty());
         assert!(overrides.summon.is_none());
-        assert_eq!(overrides.delegation_policy, DelegationPolicy::Disabled);
+        assert_eq!(
+            overrides.delegation_policy,
+            DelegationPolicy::Automatic,
+            "the ceiling must not clamp the Conversation's own typed delegation tier"
+        );
+    }
+
+    /// The delegation tier is the create seam's decision, never the ceiling's:
+    /// whether a Store chat may delegate is already fully expressed by the
+    /// Conversation row the trusted seam wrote, and the ceiling must leave it
+    /// alone in *both* directions.
+    #[test]
+    fn app_server_chat_ceiling_leaves_the_delegation_tier_untouched() {
+        let mut disabled = NomiBuildExtra {
+            delegation_policy: DelegationPolicy::Disabled,
+            ..Default::default()
+        };
+        apply_app_server_chat_ceiling(&mut disabled);
+        assert_eq!(disabled.delegation_policy, DelegationPolicy::Disabled);
+
+        let mut prefer_parallel = NomiBuildExtra {
+            delegation_policy: DelegationPolicy::PreferParallel,
+            ..Default::default()
+        };
+        apply_app_server_chat_ceiling(&mut prefer_parallel);
+        assert_eq!(
+            prefer_parallel.delegation_policy,
+            DelegationPolicy::PreferParallel,
+            "a Team Leader tier must survive the ceiling"
+        );
+    }
+
+    /// Definition-bound Connectors must survive the ceiling: it may only add the
+    /// empty fence when the key is absent, never overwrite a real binding.
+    #[test]
+    fn app_server_chat_ceiling_keeps_bound_connectors() {
+        let bound = McpServerId::new();
+        let mut overrides = NomiBuildExtra {
+            mcp_server_ids: Some(vec![bound.clone()]),
+            ..Default::default()
+        };
+
+        apply_app_server_chat_ceiling(&mut overrides);
+
+        assert_eq!(overrides.mcp_server_ids, Some(vec![bound]));
+    }
+
+    /// A session that opts into everything the host policy is able to remove.
+    fn fully_opted_in_session() -> NomiBuildExtra {
+        NomiBuildExtra {
+            computer_use: Some(true),
+            browser_use: Some(true),
+            companion: true,
+            companion_id: Some("0190f5fe-7c00-7a00-8abc-012345678969".into()),
+            summon: Some(nomifun_api_types::SummonConfig {
+                companion_id: "0190f5fe-7c00-7a00-8abc-012345678969".into(),
+                memory_ids: vec![],
+                skill_exclusions: vec![],
+                summoned_at: 1,
+            }),
+            knowledge_mounts: vec![nomifun_api_types::KnowledgeMountInfo {
+                knowledge_base_id: nomifun_common::KnowledgeBaseId::new(),
+                name: "test knowledge".into(),
+                description: "mount".into(),
+                rel_path: ".flowy/knowledge/test".into(),
+                toc: Vec::new(),
+                summary: None,
+                live_sources: Vec::new(),
+            }],
+            knowledge_writeback: true,
+            knowledge_channel_write_enabled: true,
+            goal: Some(nomifun_api_types::NomiGoalSpec {
+                objective: "finish the task".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn secondary_nomi_session_is_model_only() {
-        let mcp_server_id = McpServerId::new();
+    fn permissive_host_policy_changes_nothing() {
+        let mut overrides = fully_opted_in_session();
+        apply_host_tool_policy(&mut overrides, &NomiToolPolicy::default());
+
+        assert_eq!(overrides.computer_use, Some(true));
+        assert_eq!(overrides.browser_use, Some(true));
+        assert!(overrides.companion && overrides.companion_id.is_some());
+        assert!(overrides.summon.is_some());
+        assert_eq!(overrides.knowledge_mounts.len(), 1);
+        assert!(overrides.knowledge_writeback && overrides.knowledge_channel_write_enabled);
+        assert!(overrides.goal.is_some());
+    }
+
+    /// The host policy subtracts exactly the families it names and leaves every
+    /// other opt-in alone — it is not a ceiling that resets the session.
+    #[test]
+    fn host_tool_policy_subtracts_only_the_named_families() {
+        use nomifun_api_types::NomiToolDomains;
+
+        let mut overrides = fully_opted_in_session();
+        apply_host_tool_policy(
+            &mut overrides,
+            &NomiToolPolicy {
+                computer: false,
+                browser: false,
+                domains: NomiToolDomains {
+                    companion: false,
+                    knowledge: false,
+                    goal: false,
+                    // Deliberately left on: these must survive untouched.
+                    cron: true,
+                    meeting: true,
+                    learning: true,
+                    media: true,
+                    requirement: true,
+                },
+                ..NomiToolPolicy::default()
+            },
+        );
+
+        // `Some(false)` (not `None`) is what defeats the coding-profile branch in
+        // the computer/browser resolution further down.
+        assert_eq!(overrides.computer_use, Some(false));
+        assert_eq!(overrides.browser_use, Some(false));
+        assert!(
+            !overrides.companion && overrides.companion_id.is_none(),
+            "without the companion domain there is no binding to host"
+        );
+        assert!(overrides.summon.is_none());
+        assert!(overrides.knowledge_mounts.is_empty());
+        assert!(!overrides.knowledge_writeback && !overrides.knowledge_channel_write_enabled);
+        assert!(overrides.goal.is_none());
+    }
+
+    /// `web` / `plan` / `lsp` are deliberately *not* handled here: the engine owns
+    /// them through its own config file, and the manager applies them after
+    /// `Config::resolve`. Turning them off in the policy must not touch the
+    /// session's build extra.
+    #[test]
+    fn engine_owned_switches_are_left_to_the_manager() {
+        let mut overrides = fully_opted_in_session();
+        let before = overrides.clone();
+        apply_host_tool_policy(
+            &mut overrides,
+            &NomiToolPolicy {
+                web: false,
+                plan: false,
+                lsp: false,
+                ..NomiToolPolicy::default()
+            },
+        );
+
+        assert_eq!(overrides.computer_use, before.computer_use);
+        assert_eq!(overrides.browser_use, before.browser_use);
+        assert_eq!(overrides.companion, before.companion);
+        assert_eq!(overrides.goal.is_some(), before.goal.is_some());
+    }
+
+    #[test]
+    fn secondary_nomi_session_is_model_only() {        let mcp_server_id = McpServerId::new();
         let mut overrides = NomiBuildExtra {
             computer_use: Some(true),
             browser_use: Some(true),
@@ -2836,9 +3211,12 @@ mod tests {
 
     #[test]
     fn embedded_agent_execution_requires_trusted_no_gateway_host() {
-        assert!(should_install_embedded_agent_execution(false, true));
-        assert!(!should_install_embedded_agent_execution(true, true));
-        assert!(!should_install_embedded_agent_execution(false, false));
+        assert!(should_install_embedded_agent_execution(false, true, true));
+        assert!(!should_install_embedded_agent_execution(true, true, true));
+        assert!(!should_install_embedded_agent_execution(false, false, true));
+        // A host that owns its own durable execution facade opts out even when it
+        // is the installation owner and runs no gateway.
+        assert!(!should_install_embedded_agent_execution(false, true, false));
     }
 
     #[test]
@@ -2903,6 +3281,67 @@ mod tests {
         assert_eq!(
             super::compose_delegation_hint(base.clone(), true, DelegationPolicy::Disabled),
             base
+        );
+    }
+
+    /// One tool name, exactly one owner, and the precedence is the registration
+    /// precedence: Gateway wins, then the embedded engine, then the host facade.
+    #[test]
+    fn exactly_one_delegate_deployment_owns_the_name() {
+        assert_eq!(
+            delegate_deployment(true, false, true),
+            DelegateDeployment::Gateway,
+            "the Gateway owns the name whenever it is wired"
+        );
+        assert_eq!(delegate_deployment(false, true, true), DelegateDeployment::Embedded);
+        assert_eq!(
+            delegate_deployment(false, false, true),
+            DelegateDeployment::HostFacade
+        );
+        assert_eq!(delegate_deployment(false, false, false), DelegateDeployment::None);
+    }
+
+    /// The facade hint must describe the facade, not Platform Gateway: this
+    /// deployment rejects `strategy=parallel` and has no `nomi_execution_get`.
+    #[test]
+    fn host_facade_delegation_hint_is_planned_only() {
+        let out = compose_host_delegation_hint(
+            Some("基础提示".to_string()),
+            true,
+            DelegationPolicy::Automatic,
+        )
+        .unwrap();
+        assert!(out.starts_with("基础提示"), "preset context must survive");
+        assert!(out.contains("nomi_delegate"));
+        assert!(out.contains("planned"));
+        assert!(
+            !out.contains("strategy=parallel"),
+            "the facade schema rejects parallel: {out}"
+        );
+        assert!(
+            !out.contains("nomi_execution_get"),
+            "this deployment exposes no execution reads: {out}"
+        );
+    }
+
+    #[test]
+    fn host_facade_delegation_hint_respects_surface_and_policy() {
+        let base = Some("仅基础".to_string());
+        for policy in [DelegationPolicy::Automatic, DelegationPolicy::PreferParallel] {
+            assert_eq!(
+                compose_host_delegation_hint(base.clone(), false, policy),
+                base,
+                "companion / channel surfaces get no delegation hint"
+            );
+        }
+        assert_eq!(
+            compose_host_delegation_hint(base.clone(), true, DelegationPolicy::Disabled),
+            base,
+            "a Disabled tier has no delegate to describe"
+        );
+        assert_eq!(
+            compose_host_delegation_hint(None, true, DelegationPolicy::Automatic),
+            Some(super::HOST_DELEGATE_STANDARD_HINT.to_owned())
         );
     }
 

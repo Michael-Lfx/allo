@@ -368,7 +368,56 @@ impl TeamCatalogProvider for AppServerTeamCatalog {
             .into_iter()
             .find(|row| row.component_id == id)
             .ok_or_else(|| AppError::NotFound(format!("team {id} not found")))?;
-        Ok(team_detail(&row))
+        let connectors = self.installed_connectors(&row.snapshot_id).await?;
+        Ok(team_detail(&row, connectors))
+    }
+}
+
+impl AppServerTeamCatalog {
+    /// The Connectors this Team's snapshot installed and left enabled.
+    ///
+    /// Read through `list_installation_state` (the same projection the installer
+    /// writes) rather than the snapshot's declared component list, so a
+    /// Connector that was uninstalled, disabled, or never registered on this host
+    /// cannot be bound by `team/run` — "declared in a manifest" is not authority.
+    async fn installed_connectors(&self, snapshot_id: &str) -> Result<Vec<String>, AppError> {
+        let mut connectors = Vec::new();
+        for row in self
+            .repo
+            .list_installation_state(Some(snapshot_id))
+            .await
+            .map_err(AppError::from)?
+        {
+            if row.kind != "connector" || row.installed != 1 || row.disabled != 0 {
+                continue;
+            }
+            let Some(server_id) = row
+                .runtime_ref
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                .and_then(|value| {
+                    value
+                        .get("mcp_server_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+            else {
+                // The installer records this ref when it registers the MCP server.
+                // A missing/malformed one means the component claims to be
+                // installed without a bindable id; skipping is the only safe
+                // reading, but it must not be silent.
+                tracing::warn!(
+                    snapshot_id,
+                    component_id = %row.component_id,
+                    "installed connector component has no readable mcp_server_id; not bindable"
+                );
+                continue;
+            };
+            if !connectors.contains(&server_id) {
+                connectors.push(server_id);
+            }
+        }
+        Ok(connectors)
     }
 }
 
@@ -387,7 +436,7 @@ fn team_summary(row: &PluginSnapshotComponentRow) -> AppServerTeamSummary {
     }
 }
 
-fn team_detail(row: &PluginSnapshotComponentRow) -> AppServerTeamDetail {
+fn team_detail(row: &PluginSnapshotComponentRow, connectors: Vec<String>) -> AppServerTeamDetail {
     let value = payload(row);
     AppServerTeamDetail {
         summary: team_summary(row),
@@ -398,5 +447,6 @@ fn team_detail(row: &PluginSnapshotComponentRow) -> AppServerTeamDetail {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({})),
         team_runtime_capabilities: string_array(&value, "team_runtime_capabilities"),
+        connectors,
     }
 }

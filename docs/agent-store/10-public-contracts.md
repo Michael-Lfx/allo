@@ -1,7 +1,7 @@
 # Agent Store 公共契约索引
 
 > 状态：公共契约基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；实现待验证
-> 日期：2026-08-26
+> 日期：2026-09-11
 > 用途：跨文档共享的状态、事件、planning、认证、错误和幂等契约
 > 原则：只定义公共语义和序列化名称，不描述 allo 内部实现
 
@@ -83,7 +83,7 @@ Leader Preset 的规划指令
 
 成员的完整 persona、Skill、Connector、Tool Policy 和凭据引用不进入共享 Planning Context；它们在 TeamRun 创建时分别冻结到各成员的 Participant/ResolvedPresetSnapshot 中。Planning Context 是本次运行的派生输入，可记录 `planning_context_digest` 用于审计和复现，但不是新的产品定义对象。
 
-公共 JSON：
+**Planning 参数不是公共请求字段**（2026-09-11 订正，`16` §7 决策 3）：成员池、`max_parallel`、`routing_constraints` 与权限一律取自绑定的 `AgentExecutionTemplate` 与服务端策略，因此 `team/run` 的请求里**没有** `planning` 块，带上即 `invalid_request`（`deny_unknown_fields`）。下面这份 JSON 描述的是**模板与执行聚合的内部/管理面**形状（桌面模板 CRUD 与 `run/plan` 投影使用），不是 `team/run` 的入参：
 
 ```json
 {
@@ -94,7 +94,7 @@ Leader Preset 的规划指令
 }
 ```
 
-TypeScript 映射：
+TypeScript 映射（模板管理面，非 `TeamRunInput`）：
 
 ```ts
 interface PlanningOptions {
@@ -157,6 +157,16 @@ approval_expired | approval_already_resolved | unsupported_operation
 recovery_required | credential_unavailable | reauthorization_required
 import_source_not_found | import_blocked | import_failed
 internal_error
+```
+
+Team Run 专有（`team/run` 启动阶段，2026-09-11）：
+
+```text
+version_mismatch          # team_version 与已安装版本不一致
+agent_not_installed       # 成员 AgentDefinition 尚未安装（无 preset）
+team_member_model_unbound # 成员 preset 未绑定模型且宿主无可用 provider
+connector_unavailable     # Team 绑定的 Connector 已被禁用
+team_run_not_started      # Leader 那一轮没有发起任何执行（错误信息带 Leader 会话 id）
 ```
 
 `import_source_not_found`：`import/run` 的本地来源目录不存在或不可读（HTTP 404，对应 `NotFound`）；`import_blocked` / `import_failed`：快照因路径安全、清单身份缺失或 digest 冲突而阻断，或导入器内部失败。阻断原因以结构化 `ImportResult.errors` 返回，错误文本只含清单相对值与原因码，**不得包含绝对来源路径或凭据**（02 §9）。

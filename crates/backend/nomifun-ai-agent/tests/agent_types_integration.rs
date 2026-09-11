@@ -1,4 +1,4 @@
-﻿//! Integration tests for agent type implementations and auxiliary features.
+//! Integration tests for agent type implementations and auxiliary features.
 //!
 //! These tests validate:
 //! - Each agent manager implements AgentRuntimeControl correctly
@@ -98,6 +98,8 @@ impl MockAgentRuntime for TypedMockAgent {}
 
 fn make_nomi_config() -> NomiResolvedConfig {
     NomiResolvedConfig {
+        // Tests use the permissive host policy: no tool surface is subtracted.
+        tool_policy: nomifun_api_types::NomiToolPolicy::default(),
         provider_id: nomifun_common::ProviderId::parse("0190f5fe-7c00-7a00-8000-000000000001")
             .unwrap(),
         provider: "anthropic".into(),

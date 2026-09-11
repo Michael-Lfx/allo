@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use nomifun_api_types::NomiToolPolicy;
 use nomifun_common::{
     AgentType, ConversationId, DelegationPolicy, ProviderId, ProviderWithModel, UserId,
 };
@@ -311,6 +312,14 @@ pub struct NomiResolvedConfig {
     /// Per-session 工具白名单（空 = 不限制），源自 `NomiBuildExtra.allowed_tools`，
     /// 由 manager 灌进 `config.tools.builtin_allowlist`。
     pub allowed_tools: Vec<String>,
+    /// 宿主级工具策略（agent-store 的 `[tools]`），由 `AgentFactoryDeps` 注入。
+    ///
+    /// 它是**宿主策略而非会话输入**：不走 `NomiBuildExtra`（客户端 JSON），且每个
+    /// 字段只能收窄。manager 在 `Config::resolve` 之后用它落会话级开关
+    /// (`web`/`plan`/`lsp`)、`builtin_denylist`，并决定 media 是否接线；
+    /// 默认值（[`NomiToolPolicy::default`]）不约束任何东西，故未采纳该策略的
+    /// 宿主行为与之前完全一致。
+    pub tool_policy: NomiToolPolicy,
     /// 原生文件工具（Write/Edit/ApplyPatch）的写根钳制，按会话**信任面**解析：
     /// 本地桌面（`Private` 且非渠道）= `None`（OS 用户全权，不钳制，今日行为）；
     /// 渠道 / 远程 / 对外 = `Some(workspace)`（收窄到会话工作区，堵住对外面过度开放）。

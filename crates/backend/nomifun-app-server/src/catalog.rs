@@ -724,6 +724,9 @@ impl AgentCatalogProvider for FakeAgentCatalog {
 /// In-memory Team catalog fake (05 §4.2 shapes).
 pub struct FakeTeamCatalog {
     pub teams: Vec<AppServerTeamSummary>,
+    /// Connectors this fake's snapshots "installed". Empty by default: a Team
+    /// with no snapshot-installed Connector binds none, which is the common case.
+    pub connectors: Vec<String>,
 }
 
 #[async_trait]
@@ -754,6 +757,7 @@ impl TeamCatalogProvider for FakeTeamCatalog {
                 "events".into(),
                 "artifacts".into(),
             ],
+            connectors: self.connectors.clone(),
         })
     }
 }

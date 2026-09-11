@@ -877,6 +877,41 @@ impl AgentExecutionEngine {
         Ok(execution)
     }
 
+    /// Resolve the aggregate a **lead** Conversation owns.
+    ///
+    /// The mirror of [`Self::execution_for_attempt_conversation`], and the only
+    /// door `team/run` has to the execution its Leader created: the public
+    /// protocol never sees an internal execution id that the client did not
+    /// already hold, so the run receipt has to be derived from the binding the
+    /// server itself wrote (`16` §7 决策 3).
+    ///
+    /// Only `active` lead links count. A soft-deleted or superseded relation is
+    /// transcription provenance, not "this conversation currently leads that
+    /// aggregate", and an attempt relation must never resolve here — an attempt
+    /// transcript that could masquerade as a lead would let a second aggregate be
+    /// addressed through a step's conversation.
+    pub async fn execution_for_lead_conversation(
+        &self,
+        owner_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        canonical_id::<ConversationId>("conversation_id", conversation_id)?;
+        let mut links = self
+            .repository
+            .resolve_conversation_link(owner_id, conversation_id)
+            .await?
+            .into_iter()
+            .filter(|link| link.relation == "lead" && link.active)
+            .map(|link| link.execution_id);
+        let execution = links.next();
+        if links.next().is_some() {
+            return Err(AppError::Internal(
+                "conversation leads multiple active executions".to_owned(),
+            ));
+        }
+        Ok(execution)
+    }
+
     /// Append delegated work to the aggregate that owns the calling Attempt.
     /// The repository re-validates the active link, caller Step/Attempt
     /// generations and private recursion depth in the same transaction. No

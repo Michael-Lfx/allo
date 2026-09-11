@@ -40,7 +40,6 @@ const PROVIDER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000013";
 const SOURCE_AGENT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000114";
 /// A valid id that is deliberately *not* the installation owner.
 const FOREIGN_OWNER: &str = "0190f5fe-7c00-7a00-8000-0000000000f0";
-const PROTOCOL_VERSION: &str = "2026-08-26";
 
 // ── HTTP: capability advertisement ─────────────────────────────────────────
 
@@ -76,7 +75,7 @@ async fn initialize_advertises_approvals_when_the_runtime_is_present() {
         .oneshot(bearer_json(
             "/api/app-server/initialize",
             serde_json::json!({
-                "protocol_version": PROTOCOL_VERSION,
+                "protocol_version": nomifun_app_server::PROTOCOL_VERSION,
                 "client": { "name": "approval-e2e", "version": "1" },
                 "capabilities": {},
             }),

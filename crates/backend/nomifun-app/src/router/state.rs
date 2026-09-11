@@ -1623,7 +1623,9 @@ pub fn build_agent_execution_engine(
         provider_model_repository,
         preset_service,
         realtime: services.event_bus.clone(),
-        conversation,
+        // Cloned: the same service is handed to the host-backed delegate provider
+        // below, so a leader conversation is resolved through the identical path.
+        conversation: conversation.clone(),
         runtime_registry: services.agent_runtime_registry.clone(),
         encryption_key: services.encryption_key,
         workspace_root: services.work_dir.clone(),
@@ -1635,6 +1637,19 @@ pub fn build_agent_execution_engine(
                 tracing::error!(%error, "Agent Execution recovery failed");
             }
         });
+    }
+    // Late-wire the host-backed `nomi_delegate` provider now that the facade
+    // exists: the Agent factory was built before this point, and a host that opts
+    // out of the embedded deployment has no other delegate to expose. A host whose
+    // sessions should not delegate at all simply never installs one.
+    if let Err(error) = crate::app_server_delegate::install_engine_delegate_sink_provider(
+        &services.delegate_sink_provider_slot,
+        engine.clone(),
+        conversation,
+    ) {
+        // Non-fatal: the host keeps every other capability and simply exposes no
+        // host-backed delegate (the embedded deployment may still cover it).
+        tracing::error!(%error, "host-backed nomi_delegate provider was not installed");
     }
     engine
 }

@@ -8,7 +8,7 @@ Vendored `flowy-agent-store.exe` (Agent Store App Server runtime, win32-x64) for
 and `resolveAppServerBin` finds the binary via `require.resolve`.
 
 Version-locked with the SDK: `runtime@X` pairs with `sdk@X` (protocol
-`2026-08-26`). Install both explicitly if you use `--no-optional`:
+`2026-09-11`). Install both explicitly if you use `--no-optional`:
 
 ```sh
 npm i @flowy-agent-store/sdk @flowy-agent-store/runtime-win32-x64

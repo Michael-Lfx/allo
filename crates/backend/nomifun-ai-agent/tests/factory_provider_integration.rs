@@ -96,6 +96,10 @@ fn make_factory_with_summon(
         authoritative_user_id: Arc::from(TEST_OWNER_ID),
         search_provider: nomi_agent::SearchProviderBinding::DefaultDdg,
         extract_coordinator: nomi_agent::ExtractCoordinatorBinding::LocalDefault,
+        tool_policy: nomifun_api_types::NomiToolPolicy::default(),
+        // Test hosts keep the embedded deployment and own no durable facade.
+        embedded_agent_execution: true,
+        delegate_sink_provider: None,
         cron_sink_factory: None,
         meeting_sink_factory: None,
         meeting_listen_context_factory: None,

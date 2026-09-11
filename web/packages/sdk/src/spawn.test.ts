@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { APP_SERVER_PROTOCOL_VERSION } from "@flowy-agent-store/protocol";
 import { launchClient } from "./index";
 
 /**
@@ -17,7 +18,9 @@ const BIN = process.env["AGENT_STORE_E2E_BIN"];
       client: { name: "node-e2e", version: "0.1.0" },
     });
     try {
-      expect(session.initializeResult.protocol_version).toBe("2026-08-26");
+      // The runtime binary and the SDK must agree on the contract fingerprint;
+      // compare against the constant so the two can never drift apart silently.
+      expect(session.initializeResult.protocol_version).toBe(APP_SERVER_PROTOCOL_VERSION);
       const store = await session.client.listStore();
       expect(Array.isArray(store.items)).toBe(true);
       expect(existsSync(session.server.dataDir)).toBe(true);

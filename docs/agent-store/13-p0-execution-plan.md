@@ -219,13 +219,15 @@ PAR 与 A 无文件冲突，可并行。
 - 等级：P0
 - 操作：启动 software-company TeamRun
 - 断言：生成固定 Participant 池和 AgentExecutionTemplate；成员来自 TeamDefinition，不由模型任意新增；Leader 和每个成员分别绑定各自 Preset/ResolvedPresetSnapshot，成员 Prompt 不被合并到 Leader Prompt；TeamRun 创建时服务端创建 Leader Conversation，并把该 AgentExecutionTemplate 绑定为其 `execution_template_id`
+- 断言（物化规则，2026-09-11）：模板按 `context.agent_store_team_id` 复用（同一 Team 反复启动不新增模板行）；参与者模型优先取各自 preset 已解析的模型、缺失时才回退到宿主默认模型（Store preset 默认不绑定模型）；`workflow_limits.max_parallel` 仅在是正整数时成为并发上限；Team Definition 的 `routing_constraints` / `planner_policy` / `team_runtime_capabilities` 以原文进入模板 `context`（不翻译成结构化的 `capability`/`constraints`，避免凭空发明语义）
 
 #### TC-TEAM-002：Leader 经 `nomi_delegate(strategy=planned)` 触发 planned DAG
 
 - 等级：P0
 - 操作：提交 Team goal
-- 断言：Leader 在其 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`；服务端据此构造 Planning Context（Leader Preset 规划指令 + Team 目标 + 脱敏成员能力摘要 + Team 策略），由内部 Planner 生成 Plan；Plan 经过依赖、成员路由、并发和策略校验后才物化 Step；成员池与并发上限取自绑定的 Template，不接受模型参数；不创建用户可见的 Leader Conversation
+- 断言：Leader 在其 Conversation 的 turn 内调用 `nomi_delegate(strategy=planned, goal=…)`；服务端据此构造 Planning Context（Leader Preset 规划指令 + Team 目标 + 脱敏成员能力摘要 + Team 策略），由内部 Planner 生成 Plan；Plan 经过依赖、成员路由、并发和策略校验后才物化 Step；成员池与并发上限取自绑定的 Template，不接受模型参数
 - 断言（实现选择）：注册给 Leader 的 delegate 工具必须支持 `strategy=planned` 且绑定持久 `AgentExecutionEngine`；仅支持 `strategy=parallel` 的同步 embedded 实现不得出现在 Team 会话工具面；以 `strategy=parallel` 替代 planned 流程的顶层调用被拒绝
+- Leader Conversation 的可见性（2026-09-11 订正）：`16` §7 决策 3 的原文是 Leader「**必须**有 Conversation/Attempt（**不必**用户可见）」——是许可而非禁止。本实现把它建成一个真实的 App Server 会话（`app_server_chat` 标记 + `execution_template_id` 绑定 + `delegation_policy = automatic`），因此它会出现在该 owner 的 `conversation/list` 里，用户可以看到 Leader 的规划轮次并继续对话。`team/run` 的 receipt 只返回公共 `run_id`，不返回 Leader 会话 id；客户端要定位它需自己按 `conversation/list` 过滤。原先「不创建用户可见的 Leader Conversation」的措辞是决策 3 修订前的遗留断言，已作废
 
 #### TC-TEAM-003：依赖调度
 

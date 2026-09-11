@@ -1,7 +1,7 @@
 # allo App Server Protocol 规格
 
-> 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；Team 能力保持关闭；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 日期：2026-08-26
+> 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
+> 日期：2026-09-11
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-allo-runtime-adapter.md`
 > 目标：建立 SDK、CLI、MCP、Web/Flowy 的唯一公共兼容边界
 
@@ -122,7 +122,7 @@ Server Request   服务端向客户端请求审批/输入/确认
 {
   "method": "initialize",
   "params": {
-    "protocol_version": "2026-08-26",
+    "protocol_version": "2026-09-11",
     "client": {"name": "agent-store-cli", "version": "0.1.0"},
     "auth": {
       "mode": "local-session",
@@ -142,7 +142,7 @@ Server Request   服务端向客户端请求审批/输入/确认
 
 ```json
 {
-  "protocol_version": "2026-08-26",
+  "protocol_version": "2026-09-11",
   "server": {"name": "allo-agent-store", "version": "0.1.0"},
   "auth_context": {
     "principal_id": "principal_01...",
@@ -692,7 +692,7 @@ Run → Step → Attempt → Artifact
 
 ```text
 agent/run
-team/run（延后）
+team/run（已实现：Leader Conversation + planned 委派）
 run/get
 run/result
 run/plan（已实现：计划与步骤的权威快照）
@@ -768,17 +768,27 @@ WS   workspace/revoke             移除（注销）owner 的一个 workspace
   "team_version": "1.0.0",
   "goal": "完成目标",
   "workspace": {"id": "ws_01..."},
-  "planning": {
-    "mode": "planned",
-    "adaptation_policy": "adaptive",
-    "plan_gate": "automatic",
-    "max_parallel": 4
-  },
   "idempotency_key": "client-op-02"
 }
 ```
 
-Team 运行参数不能突破 TeamDefinition、调用方和 Runtime 的限制；服务端计算有效值的最小交集。
+**没有 `planning` 块**：`16` §7 决策 3 撤销了「由客户端/模型指定 planning 参数」的写法。成员池、`max_parallel`、`routing_constraints` 与权限一律取自绑定的 Team 模板与服务端策略，服务端计算有效值的最小交集。请求 DTO 是 `deny_unknown_fields`，带 `planning` / `members` / `max_parallel` 之类字段一律 `invalid_request`——**拒绝**而不是静默忽略，否则客户端会以为自己设的参数生效了。
+
+`team/run` 的执行链（同一决策）：
+
+1. 按 `team_id`（可选 `team_version`，不一致直接 `version_mismatch`）解析 TeamDefinition 与其成员 AgentDefinition；
+2. 把成员的 preset + 各自 Skill 物化成该 Team 的 `AgentExecutionTemplate`（已存在则复用；`workflow_limits.max_parallel` 只在是正整数时作为并发上限），并绑定为该会话的 `execution_template_id`；
+3. 服务端创建 **Leader Conversation**（`conversation/create` 同族的 App Server 会话，`delegation_policy = automatic`），Connector 栅栏＝该 Team 快照**已安装且启用**的 Connector id，Skill 快照＝Lead AgentDefinition 的 Skill；
+4. 把 `goal` 作为 Leader 的第一轮 turn 发出。Leader 在这一轮里调用 `nomi_delegate(strategy="planned", goal=…)` 并结束 turn；它只能给 `goal`，并发/审批/重规划策略由宿主给定；
+5. 服务端从该会话的 `lead` execution link 反查 Leader 创建的执行，映射成公共 `run_id` 后返回 receipt。
+
+因此 `team/run` 的 **receipt 形状与 `agent/run` 不同**：Team Run 没有 lead preset，其权威是 Team 的模板，所以返回 `{run_id, status}`（`TeamRunReceipt`），不带 `preset_revision` / `content_digest`——那两个字段属于 `agent/run` 的冻结 preset 快照，填进 Team Run 只能是伪造值。
+
+`team/run` 的**等待边界**：它等待的是 Leader 的那一轮 turn（本轮只做「调用一次委派工具并结束」，规划与成员工作都在引擎里异步进行），**不等**整个 Team Run 完成，与 `05` §5.2「不阻塞等待长任务完成」一致。
+
+稳定错误码：`invalid_request`（goal 缺失/带 planning 块）、`version_mismatch`、`agent_not_installed`（成员未安装）、`team_member_model_unbound`（成员 preset 既无模型、宿主也没有可用 provider）、`connector_unavailable`（Team 绑定的 Connector 被禁用）、`team_run_not_started`（Leader 那一轮没有发起任何执行——错误信息带上 Leader 会话 id，便于人工继续）、`runtime_unavailable`、`unsupported_operation`。
+
+能力协商：`InitializeResult.capabilities.team_runtime` 为 `Team 目录 ∨ 执行 facade` 同时在场时才为 `true`。
 
 所有 Run 启动方法返回异步 receipt：
 
@@ -1112,8 +1122,13 @@ execution/session/attempt ID。事件流 lag 时发送
 
 ### 12.4 能力边界
 
-- 聊天会话使用 `DelegationPolicy::Disabled`，Team/Skill 自动注入和 MCP
-  配置在创建与运行时两侧都被禁用（仅保留普通本地 Agent 工具）；
+- `conversation/create`（单 Agent 聊天）使用 `DelegationPolicy::Disabled`：一轮
+  单 Agent 对话没有 `nomi_delegate`。**Team 层是唯一的例外**，且它由
+  `team/run` 自己的接缝创建（`delegation_policy = automatic` +
+  `execution_template_id`），客户端无法在 `conversation/create` 上申请它；
+- Skill 自动注入与进程级 MCP 配置在创建与运行时两侧都被禁用：会话只看到
+  Definition 显式绑定的 Connector（按 id 的栅栏，空 = 一个都不绑）与 Skill 快照
+  （仅保留普通本地 Agent 工具）；
 - 创建会话时自动注册 owner 受控 workspace（`conversation/create` 无需
   先注册 workspace）；
 
@@ -1124,7 +1139,7 @@ execution/session/attempt ID。事件流 lag 时发送
 - `TC-AS-001`：initialize/initialized 能力协商（单 Agent 能力为 true，Team/Skill/MCP 等为 false）；
 - `TC-AS-002`：Catalog 方法返回 Agent/Team/Skill/Connector；
 - `TC-AS-003`：agent/run 返回异步 run receipt（public opaque run_id）；
-- `TC-AS-004`：team/run（延后实现，当前拒绝）；
+- `TC-AS-004`：team/run 创建 Leader Conversation 并以公共 opaque run_id 返回其发起的执行（`16` §7 决策 3）；
 - `TC-AS-005`：状态查询与通知一致性——断线或丢通知后 run/get 恢复权威状态，按 sequence 去重，`run/events` 可追平；
 - `TC-AS-006`：取消、retry、replan 均产生规范事件；
 - `TC-AS-007`：Approval Server Request 可响应并完成二次策略校验（延后实现）；

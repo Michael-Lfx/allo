@@ -15,6 +15,7 @@ pub mod meeting_tools;
 pub mod memory_tools;
 pub mod engine;
 pub mod goal;
+pub mod host_delegate_tool;
 pub mod knowledge_tools;
 pub mod learning_tools;
 pub mod loop_guard;

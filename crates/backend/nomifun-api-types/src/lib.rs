@@ -52,6 +52,7 @@ mod session_observation;
 mod system;
 mod mcp_bridge;
 mod terminal;
+mod tool_policy;
 mod webhook;
 mod websocket;
 
@@ -354,6 +355,7 @@ pub use terminal::{
     CreateTerminalRequest, TerminalExitEvent, TerminalInputRequest, TerminalOutputEvent,
     TerminalRemovedPayload, TerminalResizeRequest, TerminalSessionResponse, UpdateTerminalRequest,
 };
+pub use tool_policy::{NomiToolDomains, NomiToolPolicy};
 pub use webhook::{
     CreateWebhookRequest, TagBinding, TagBindings, TagSetting, UpdateWebhookRequest,
     UpsertTagSettingRequest, Webhook, WebhookId, WebhookPlatform,

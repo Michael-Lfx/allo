@@ -7,7 +7,10 @@
 pub mod agent_store;
 pub mod catalog;
 pub mod skill_admin;
+mod team_run;
 pub mod workspace_resolver;
+
+pub use team_run::TeamRunRequest;
 
 pub use agent_store::{
     AgentStoreConfig, AgentStoreConfigPatch, AgentStoreMarketplace, AgentStoreModel,
@@ -55,7 +58,8 @@ use axum::{
 };
 pub use nomifun_agent_execution::AgentRuntimeAdapter;
 use nomifun_agent_execution::{
-    AgentRunPlan, AgentRunReceipt, AgentRunResult, AgentRunSteerRequest, AgentRunView,
+    AgentExecutionEngine, AgentRunPlan, AgentRunReceipt, AgentRunResult, AgentRunSteerRequest,
+    AgentRunView, TeamRunReceipt,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::{MessagePosition, MessageType, ProviderWithModel, UserId, generate_id};
@@ -87,7 +91,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 /// App Server wire protocol version, negotiated by `initialize`.
-pub const PROTOCOL_VERSION: &str = "2026-08-26";
+pub const PROTOCOL_VERSION: &str = "2026-09-12";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +193,11 @@ pub struct CapabilityAvailability {
     pub marketplaces: bool,
     pub agents: bool,
     pub teams: bool,
+    /// `team/run` readiness: the Team catalog *and* the execution facade. Both are
+    /// required (one resolves the Definition, the other materializes/runs it), so
+    /// advertising the capability off either half would promise a method whose only
+    /// answer is `unsupported_operation`.
+    pub team_runtime: bool,
     pub store: bool,
     pub models: bool,
 }
@@ -206,6 +215,7 @@ impl CapabilityAvailability {
             marketplaces: state.markets.is_some(),
             agents: state.agent_catalog.is_some(),
             teams: state.team_catalog.is_some(),
+            team_runtime: state.team_catalog.is_some() && state.engine.is_some(),
             store: state.store.is_some(),
             models: state.models.is_some(),
         }
@@ -417,7 +427,7 @@ impl Capabilities {
         Self {
             agents: availability.runtime || availability.agents,
             teams: availability.teams,
-            team_runtime: false,
+            team_runtime: availability.team_runtime,
             skills: availability.skills,
             connectors: availability.connectors,
             run_notifications: availability.runtime && availability.events,
@@ -604,6 +614,13 @@ enum IdempotencyRecord {
     AgentRun {
         fingerprint: String,
         receipt: AgentRunReceipt,
+    },
+    /// `team/run` receipts are a distinct shape on purpose (no lead preset), so
+    /// they get their own record rather than being coerced into an
+    /// `AgentRunReceipt` with fabricated preset metadata.
+    TeamRun {
+        fingerprint: String,
+        receipt: TeamRunReceipt,
     },
     Cancel {
         fingerprint: String,
@@ -796,9 +813,56 @@ impl AppServerRegistry {
             Some(IdempotencyRecord::AgentRun { fingerprint: existing_fingerprint, receipt })
                 if existing_fingerprint == fingerprint => Ok(Some(receipt.clone())),
             Some(IdempotencyRecord::AgentRun { .. })
+            | Some(IdempotencyRecord::TeamRun { .. })
             | Some(IdempotencyRecord::Cancel { .. }) => Err(ProtocolError::IdempotencyConflict),
             None => Ok(None),
         }
+    }
+
+    /// Same contract as [`Self::existing_idempotent_run`] for the `team/run` scope.
+    pub fn existing_idempotent_team_run(
+        &self,
+        scope: &str,
+        fingerprint: &str,
+    ) -> Result<Option<TeamRunReceipt>, ProtocolError> {
+        let records = self
+            .idempotency
+            .read()
+            .expect("App Server idempotency registry lock is not poisoned");
+        match records.get(scope) {
+            Some(IdempotencyRecord::TeamRun { fingerprint: existing_fingerprint, receipt })
+                if existing_fingerprint == fingerprint => Ok(Some(receipt.clone())),
+            Some(IdempotencyRecord::AgentRun { .. })
+            | Some(IdempotencyRecord::TeamRun { .. })
+            | Some(IdempotencyRecord::Cancel { .. }) => Err(ProtocolError::IdempotencyConflict),
+            None => Ok(None),
+        }
+    }
+
+    pub fn remember_idempotent_team_run(
+        &self,
+        scope: &str,
+        fingerprint: String,
+        receipt: TeamRunReceipt,
+    ) -> Result<TeamRunReceipt, ProtocolError> {
+        let mut records = self
+            .idempotency
+            .write()
+            .expect("App Server idempotency registry lock is not poisoned");
+        if let Some(existing) = records.get(scope) {
+            return match existing {
+                IdempotencyRecord::TeamRun { fingerprint: existing_fingerprint, receipt }
+                    if existing_fingerprint == &fingerprint => Ok(receipt.clone()),
+                IdempotencyRecord::AgentRun { .. }
+                | IdempotencyRecord::TeamRun { .. }
+                | IdempotencyRecord::Cancel { .. } => Err(ProtocolError::IdempotencyConflict),
+            };
+        }
+        records.insert(
+            scope.to_owned(),
+            IdempotencyRecord::TeamRun { fingerprint, receipt: receipt.clone() },
+        );
+        Ok(receipt)
     }
 
     pub fn remember_idempotent_run(
@@ -815,9 +879,9 @@ impl AppServerRegistry {
             return match existing {
                 IdempotencyRecord::AgentRun { fingerprint: existing_fingerprint, receipt }
                     if existing_fingerprint == &fingerprint => Ok(receipt.clone()),
-                IdempotencyRecord::AgentRun { .. } | IdempotencyRecord::Cancel { .. } => {
-                    Err(ProtocolError::IdempotencyConflict)
-                }
+                IdempotencyRecord::AgentRun { .. }
+                | IdempotencyRecord::TeamRun { .. }
+                | IdempotencyRecord::Cancel { .. } => Err(ProtocolError::IdempotencyConflict),
             };
         }
         records.insert(
@@ -840,6 +904,7 @@ impl AppServerRegistry {
             Some(IdempotencyRecord::Cancel { fingerprint: existing_fingerprint, view })
                 if existing_fingerprint == fingerprint => Ok(Some(view.clone())),
             Some(IdempotencyRecord::AgentRun { .. })
+            | Some(IdempotencyRecord::TeamRun { .. })
             | Some(IdempotencyRecord::Cancel { .. }) => Err(ProtocolError::IdempotencyConflict),
             None => Ok(None),
         }
@@ -859,7 +924,9 @@ impl AppServerRegistry {
             return match existing {
                 IdempotencyRecord::Cancel { fingerprint: existing_fingerprint, view }
                     if existing_fingerprint == &fingerprint => Ok(view.clone()),
-                IdempotencyRecord::AgentRun { .. } | IdempotencyRecord::Cancel { .. } => {
+                IdempotencyRecord::AgentRun { .. }
+                | IdempotencyRecord::TeamRun { .. }
+                | IdempotencyRecord::Cancel { .. } => {
                     Err(ProtocolError::IdempotencyConflict)
                 }
             };
@@ -976,6 +1043,15 @@ pub struct AppServerRouterState {
     pub agent_catalog: Option<Arc<dyn AgentCatalogProvider>>,
     /// Agent Store Team catalog (05 §4.2). `None` keeps `teams` off.
     pub team_catalog: Option<Arc<dyn TeamCatalogProvider>>,
+    /// The single Agent Execution facade (`16` §7 决策 3).
+    ///
+    /// `team/run` needs more than the [`AgentRuntimeAdapter`] projection: it
+    /// materializes a Team's `AgentExecutionTemplate` and resolves the aggregate a
+    /// Leader Conversation created. Both are engine operations, and deliberately
+    /// not part of the run *projection* the adapter owns. `None` keeps `team/run`
+    /// off (`runtime_unavailable`) while `agent/run` keeps working through
+    /// `runtime`.
+    pub engine: Option<Arc<AgentExecutionEngine>>,
     /// Unified store catalog (winget-style): aggregated items over all enabled
     /// marketplaces with install state + one-click install. `None` keeps the
     /// `store` capability off.
@@ -1013,6 +1089,7 @@ impl Default for AppServerRouterState {
             markets: None,
             agent_catalog: None,
             team_catalog: None,
+            engine: None,
             store: None,
             models: None,
             snapshot_assets_root: None,
@@ -1039,6 +1116,7 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         )
         .route("/api/app-server/conversations/{conversation_id}/cancel", post(conversation_cancel))
         .route("/api/app-server/agent/run", post(agent_run))
+        .route("/api/app-server/team/run", post(team_run))
         .route("/api/app-server/run/{run_id}", get(run_get))
         .route("/api/app-server/run/{run_id}/result", get(run_result))
         .route("/api/app-server/run/{run_id}/plan", get(run_plan))
@@ -2553,6 +2631,81 @@ async fn agent_run(
     Ok(Json(receipt))
 }
 
+/// `team/run` (`docs/agent-store/05` §5.2, `16` §7 决策 3).
+///
+/// The HTTP arm mirrors `agent_run` exactly — same connection readiness gate, same
+/// idempotency scope shape, one method name difference — because a Team Run is the
+/// same kind of side effect (one durable run) with a different trigger.
+async fn team_run(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<TeamRunRequest>, JsonRejection>,
+) -> Result<Json<TeamRunReceipt>, AppServerError> {
+    let connection_id = connection_id(&headers)?;
+    let (principal_id, client_id) =
+        state.registry.ready_idempotency_context(connection_id, &user.id)?;
+    let Json(request) = body.map_err(|error| nomifun_common::AppError::BadRequest(error.to_string()))?;
+    let receipt = execute_team_run(&state, &user, &principal_id, &client_id, request).await?;
+    Ok(Json(receipt))
+}
+
+/// Idempotent wrapper around [`team_run::execute_team_run`].
+///
+/// Kept structurally identical to `execute_agent_run`: the key is scoped
+/// `principal + client + method + key`, the fingerprint excludes the key itself,
+/// and only a *successful* run is remembered — a refusal (uninstalled member,
+/// disabled Connector, Leader that never delegated) is re-attempted rather than
+/// replayed, so a caller that fixes the cause is not stuck with a cached error.
+async fn execute_team_run(
+    state: &AppServerRouterState,
+    user: &CurrentUser,
+    _principal_id: &str,
+    client_id: &str,
+    request: TeamRunRequest,
+) -> Result<TeamRunReceipt, AppServerError> {
+    let fingerprint_request = TeamRunRequest {
+        idempotency_key: None,
+        ..request.clone()
+    };
+    let fingerprint = request_fingerprint(&fingerprint_request)?;
+    let scope = request.idempotency_key.as_ref().map(|key| AppServerIdempotencyScope {
+        principal_id: user.id.as_str().to_owned(),
+        client_id: client_id.to_owned(),
+        method: "team/run".to_owned(),
+        idempotency_key: key.clone(),
+    });
+    let _idempotency_guard = if scope.is_some() {
+        Some(state.registry.idempotency_lock().await)
+    } else {
+        None
+    };
+    if let Some(scope) = scope.as_ref() {
+        if let Some(repository) = state.idempotency.as_ref() {
+            if let Some(receipt) =
+                load_idempotent_response::<TeamRunReceipt>(repository, scope, &fingerprint).await?
+            {
+                return Ok(receipt);
+            }
+        } else if let Some(receipt) =
+            state.registry.existing_idempotent_team_run(&scope_key(scope), &fingerprint)?
+        {
+            return Ok(receipt);
+        }
+    }
+
+    let receipt = team_run::execute_team_run(state, user, request).await?;
+    if let Some(scope) = scope {
+        if let Some(repository) = state.idempotency.as_ref() {
+            return commit_idempotent_response(repository, scope, fingerprint, &receipt).await;
+        }
+        return Ok(state
+            .registry
+            .remember_idempotent_team_run(&scope_key(&scope), fingerprint, receipt)?);
+    }
+    Ok(receipt)
+}
+
 async fn execute_agent_run(
     state: &AppServerRouterState,
     user: &CurrentUser,
@@ -2929,7 +3082,7 @@ pub struct ConversationSendRequest {
     pub idempotency_key: String,
     /// R15（W10）：本案会话工作区内的**绝对**文件路径（图片附件）。
     ///
-    /// 载体＝**路径引用**（用户 2026-09-11 拍板）。准入在
+    /// 载体＝**路径引用**（用户 2026-09-12 拍板）。准入在
     /// `resolve_conversation_attachments`：必须是会话工作区内的真实文件，相对路径 /
     /// 越界 / 不存在的引用一律拒绝。`#[serde(default)]` 保持纯加法——老客户端不传
     /// 该字段时行为逐字不变（`files` 仍是空）。
@@ -3265,6 +3418,10 @@ async fn create_conversation_for_user(
             workspace.path().to_string_lossy().into_owned(),
             Some(workspace_id),
             reasoning_effort,
+            // No Definition-bound Connector/Skill surface yet: an empty fence is
+            // "bind nothing", which is the pre-existing behaviour. The Definition
+            // path (team/run) fills these in.
+            nomifun_conversation::AppServerChatBindings::default(),
         )
         .await
         .map_err(AppServerError::from)?;
@@ -3565,6 +3722,10 @@ fn config_view(config: &AgentStoreConfig, exists: bool) -> AppServerConfigView {
         memory: config.memory.as_ref().map(|memory| AppServerConfigMemoryView {
             distill_enabled: memory.distill_enabled,
         }),
+        // Same absent/present distinction for `[tools]`: a present table is
+        // reported with its defaults filled in, so `Some(all-on)` means "the
+        // file declares `[tools]` but constrains nothing".
+        tools: config.tools.clone(),
     }
 }
 
@@ -3619,7 +3780,7 @@ fn execute_config_set(
     if !patch.names_any_key() {
         return Err(AppServerError::new(
             "invalid_request",
-            "config/set needs at least one whitelisted key (default_model, memory.distill_enabled)",
+            "config/set needs at least one whitelisted key (default_model, memory.distill_enabled, tools.*)",
             StatusCode::BAD_REQUEST,
             false,
         ));
@@ -3645,6 +3806,16 @@ fn execute_config_set(
         // "resolution will fail later" case to refuse here.
         edited = AgentStoreConfig::with_distill_enabled(&edited, distill_enabled)
             .map_err(|error| config_unavailable(format!("failed to edit {}: {error}", path.display())))?;
+    }
+    if let Some(tools) = patch.tools.as_ref() {
+        // The `[tools]` write is likewise unconditional on parsing: every field
+        // is a bool or a validated pattern list, so there is no "resolution will
+        // fail later" case to refuse here. The policy is read at startup, so a
+        // write here changes the next launch's tool surface (and the read view
+        // reports it back immediately).
+        edited = tools.apply_edits(&edited).map_err(|error| {
+            AppServerError::new("invalid_request", error, StatusCode::BAD_REQUEST, false)
+        })?;
     }
     write_config_source(&path, &edited)?;
     execute_config_get(state)
@@ -5367,6 +5538,22 @@ async fn dispatch_connection_request(
                     AppServerError::new(
                         "internal_error",
                         format!("failed to encode run receipt: {error}"),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        true,
+                    )
+                })?,
+            ))
+        }
+        "team/run" => {
+            let (principal_id, client_id) = state.registry.ready_idempotency_context(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<TeamRunRequest>(params)?;
+            let receipt = execute_team_run(state, user, &principal_id, &client_id, params).await?;
+            Ok(ws_response(
+                request_id,
+                serde_json::to_value(receipt).map_err(|error| {
+                    AppServerError::new(
+                        "internal_error",
+                        format!("failed to encode team run receipt: {error}"),
                         StatusCode::INTERNAL_SERVER_ERROR,
                         true,
                     )
@@ -8105,6 +8292,122 @@ model = "mimo-v2.5-free"
     }
 
     #[tokio::test]
+    async fn config_set_writes_the_tool_policy_and_reads_it_back() {
+        let dir = config_temp_dir("tools");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        // A file without `[tools]` reports "not configured" — never a fabricated
+        // all-on policy, so a client can tell "absent" from "declared".
+        let before = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+        assert!(before["tools"].is_null(), "absent table must be null: {before}");
+
+        let view = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/set",
+            serde_json::json!({
+                "tools": {
+                    "disabled": ["update_plan", "remember"],
+                    "computer": false,
+                    "domains": { "cron": false }
+                }
+            }),
+        )
+        .await
+        .expect("config/set");
+        // Canonical order in the read-back, and untouched switches stay on.
+        assert_eq!(view["tools"]["disabled"], serde_json::json!(["remember", "update_plan"]));
+        assert_eq!(view["tools"]["computer"], serde_json::json!(false));
+        assert_eq!(view["tools"]["browser"], serde_json::json!(true));
+        assert_eq!(view["tools"]["domains"]["cron"], serde_json::json!(false));
+        assert_eq!(view["tools"]["domains"]["media"], serde_json::json!(true));
+
+        // The value really landed in the host file the launcher reads, and
+        // everything else survived byte-for-byte.
+        let on_disk = std::fs::read_to_string(&path).expect("config on disk");
+        assert!(on_disk.contains("[tools]"), "{on_disk}");
+        assert!(on_disk.contains("[tools.domains]"), "{on_disk}");
+        assert!(on_disk.contains("disabled = [\"remember\", \"update_plan\"]"), "{on_disk}");
+        assert!(on_disk.contains("computer = false"), "{on_disk}");
+        assert!(on_disk.contains("cron = false"), "{on_disk}");
+        assert!(on_disk.contains("# allo host config — do not reformat"), "{on_disk}");
+        assert!(on_disk.contains("[models.\"opencode/mimo-v2.5-free\"]"), "{on_disk}");
+        let credential_line = COMMENTED_CONFIG
+            .lines()
+            .find(|line| line.starts_with("api_key"))
+            .expect("fixture carries a credential line");
+        assert!(on_disk.contains(credential_line), "{on_disk}");
+        assert_eq!(on_disk.matches("[tools]").count(), 1, "{on_disk}");
+        assert_eq!(on_disk.matches("disabled").count(), 1, "{on_disk}");
+        assert!(!dir.join("config.toml.tmp").exists(), "temp file must not survive");
+
+        // Re-read agrees without a second write.
+        let again = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+        assert_eq!(again, view);
+
+        // A second, narrower patch rewrites only what it names.
+        let narrowed = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/set",
+            serde_json::json!({ "tools": { "disabled": ["remember"] } }),
+        )
+        .await
+        .expect("config/set");
+        assert_eq!(narrowed["tools"]["disabled"], serde_json::json!(["remember"]));
+        assert_eq!(narrowed["tools"]["computer"], serde_json::json!(false));
+        assert_eq!(narrowed["tools"]["domains"]["cron"], serde_json::json!(false));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_set_refuses_tool_patches_outside_the_whitelist() {
+        let dir = config_temp_dir("tools-refused");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        for body in [
+            // An empty `[tools]` table names nothing: "sent" must never be
+            // mistakable for "stored".
+            serde_json::json!({ "tools": {} }),
+            serde_json::json!({ "tools": null }),
+            // The write whitelist is the boundary: unknown keys are hard
+            // refusals, not silently dropped fields.
+            serde_json::json!({ "tools": { "force_enable_everything": true } }),
+            serde_json::json!({ "tools": { "domains": { "bogus": false } } }),
+            serde_json::json!({ "tools": { "credentials": { "TOKEN": "x" } } }),
+            // Wrong value shapes.
+            serde_json::json!({ "tools": { "disabled": "remember" } }),
+            serde_json::json!({ "tools": { "computer": "false" } }),
+            serde_json::json!({ "tools": { "disabled": ["bad\u{7}name"] } }),
+        ] {
+            let error = dispatch_config(&state, &connection, &user, &subscriptions, "config/set", body.clone())
+                .await
+                .expect_err("must be refused");
+            assert_eq!(error.code, "invalid_request", "{body}");
+        }
+
+        // Nothing was written: a refused patch never creates `[tools]`.
+        let on_disk = std::fs::read_to_string(&path).expect("config on disk");
+        assert!(!on_disk.contains("[tools]"), "{on_disk}");
+        assert!(!on_disk.contains("bad"), "{on_disk}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn config_set_takes_no_credential_fields_in_the_memory_patch() {
         let dir = config_temp_dir("memory-credentials");
         let path = dir.join("config.toml");
@@ -8749,6 +9052,7 @@ model = "mimo-v2.5-free"
             })),
             team_catalog: Some(Arc::new(crate::catalog::FakeTeamCatalog {
                 teams: vec![sample_team_summary()],
+                connectors: vec![],
             })),
             ..Default::default()
         };

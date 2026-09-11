@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "2026-08-26";
+const PROTOCOL_VERSION = "2026-09-12";
 
 type Verb = "GET" | "POST" | "DELETE";
 
@@ -125,6 +125,12 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
     verb: "POST",
     path: "/agent/run",
     source: "agent_run() -> same request/receipt as the `agent/run` arm",
+  },
+  "team/run": {
+    verb: "POST",
+    path: "/team/run",
+    source:
+      "team_run() -> execute_team_run() (same as the WS arm); Leader Conversation + planned delegation, `TeamRunReceipt`",
   },
   "run/get": { verb: "GET", path: "/run/:run_id", source: "run_get()" },
   "run/result": { verb: "GET", path: "/run/:run_id/result", source: "run_result()" },

@@ -156,11 +156,11 @@ interface AgentClient {
 interface TeamClient {
   list(input?: ListInput): Promise<Page<TeamSummary>>;
   get(id: TeamId, version?: string): Promise<TeamDetail>;
-  run(input: TeamRunInput): Promise<RunReceipt>;
+  run(input: TeamRunInput): Promise<TeamRunReceipt>;
 }
 ```
 
-`TeamDetail.teamRuntimeCapabilities` 必须由服务端返回，SDK 不自行推断完整 Team 能力。Team 详情中的 Leader 是规划角色；单次 TeamRun 的 `planningContextDigest` 只从 Run 查询结果读取，不混入静态 Team 定义。
+`TeamDetail.teamRuntimeCapabilities` 必须由服务端返回，SDK 不自行推断完整 Team 能力。Team 详情中的 Leader 是规划角色；单次 TeamRun 的 `planningContextDigest` 只从 Run 查询结果读取，不混入静态 Team 定义。`TeamDetail` 另带 `connectors`：该 Team 快照在本机**已安装且启用**的 Connector id 列表——它是 Team Run 唯一可绑定的 Connector 面（成员 Agent 的 `mcpServers` 按 `02` §5.1 只记录、不映射为授权）。
 
 ### 4.2 Skill 与 Connector
 
@@ -210,7 +210,7 @@ authorization URL
 ```ts
 interface RunClient {
   agent(input: AgentRunInput): Promise<RunReceipt>;
-  team(input: TeamRunInput): Promise<RunReceipt>;
+  team(input: TeamRunInput): Promise<TeamRunReceipt>;
   get(id: RunId): Promise<RunDetail>;
   result(id: RunId): Promise<RunResult>;
   cancel(id: RunId): Promise<CancelReceipt>;
@@ -241,12 +241,6 @@ interface TeamRunInput {
   teamVersion?: string;
   goal: string;
   workspaceId?: WorkspaceId;
-  planning?: {
-    mode?: "planned";
-    adaptationPolicy?: "fixed" | "adaptive";
-    planGate?: "automatic" | "approval";
-    maxParallel?: number;
-  };
   idempotencyKey: string;
 }
 
@@ -259,6 +253,12 @@ interface ApprovalResponseInput {
 ```
 
 服务端仍然对所有参数进行安全策略裁剪，客户端参数不是最终授权。
+
+`TeamRunInput` **没有** `planning` 字段：`16` §7 决策 3 规定成员池、并发上限、
+`routing_constraints` 与权限取自绑定的 Team 模板与服务端策略。协议侧是
+`deny_unknown_fields`，带上 `planning` 会得到 `invalid_request`。反过来，
+`run.team(...)` 的 receipt 只保证 `{ runId, status }`（Team Run 没有 lead preset，
+不带 `presetRevision` / `contentDigest`）；`agent(...)` 的 receipt 仍然带这两个字段。
 
 ## 6. EventStreamClient
 
