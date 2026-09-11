@@ -30,8 +30,17 @@
     ],
     "windows": {
       "webviewInstallMode": {
-        "type": "downloadBootstrapper",
+        "type": "embedBootstrapper",
         "silent": true
+      },
+      "nsis": {
+        "template": "windows/nsis/installer.nsi",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false,
+        "customLanguageFiles": {
+          "English": "windows/nsis/English.nsh",
+          "SimpChinese": "windows/nsis/SimpChinese.nsh"
+        }
       }
     }
   },
