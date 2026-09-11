@@ -5,6 +5,14 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.3.2 - 2026-09-11
+
+- Video generation adds a blank-canvas entry and outer connect rails for wiring nodes from outside the card.
+
+## v1.3.1 - 2026-09-10
+
+- Desktop surfaces startup diagnostics when the local backend is unreachable.
+
 ## v1.3.0 - 2026-09-10
 
 - Canvas adds a craft-shelf handbook and a simpler create-node menu.
