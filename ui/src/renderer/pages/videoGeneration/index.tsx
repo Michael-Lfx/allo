@@ -534,6 +534,42 @@ const VideoGenerationListPage: React.FC = () => {
     [creating, logout, message, navigate, t]
   );
 
+  const handleCreateBlankCanvas = useCallback(async () => {
+    if (creating) return;
+    setCreating(true);
+    prefetchCanvasWorkspace();
+    const title = t('videoGeneration.create.gallery.untitled', {
+      defaultValue: '未命名画布',
+    });
+    try {
+      const id = await createServerBackedCanvasProject(title);
+      rememberVideoGenerationCanvas(id, title);
+      trackFunnelEvent('task_accepted', {
+        feature: 'video_generation',
+        mode: 'creation',
+        workflow: 'canvas',
+        session_id: id,
+        project_id: id,
+        source: 'blank_canvas',
+      });
+      navigate(videoCanvasProjectPath(id));
+    } catch (cause) {
+      if (isInvalidCloudSessionError(cause)) {
+        await logout();
+        navigate('/cloud-login');
+        return;
+      }
+      message.error(
+        t('videoGeneration.create.gallery.createFailed', {
+          error: cause instanceof Error ? cause.message : String(cause),
+          defaultValue: '创建失败：{{error}}',
+        })
+      );
+    } finally {
+      setCreating(false);
+    }
+  }, [creating, logout, message, navigate, t]);
+
   /**
    * Clip generation mode: prompt + optional refs → Canvas video generation task
    * → dedicated clip result page.
@@ -942,6 +978,7 @@ const VideoGenerationListPage: React.FC = () => {
           onSubmitCreation={(draft) => void handleCreateCanvas(draft)}
           onSubmitGenerate={(draft) => void handleCreateGenerate(draft)}
           onSubmitBriefing={(draft) => void handleCreateBriefing(draft)}
+          onCreateBlankCanvas={() => void handleCreateBlankCanvas()}
         />
 
         <section className='flex flex-col gap-12px'>

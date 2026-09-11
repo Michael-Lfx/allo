@@ -9534,6 +9534,7 @@ export type I18nKey =
   | 'videoGeneration.create.action.gallery.subtitle'
   | 'videoGeneration.create.action.gallery.title'
   | 'videoGeneration.create.advanced'
+  | 'videoGeneration.create.blankCanvas'
   | 'videoGeneration.create.cameo.add'
   | 'videoGeneration.create.cameo.defaultName'
   | 'videoGeneration.create.cameo.descPlaceholder'
