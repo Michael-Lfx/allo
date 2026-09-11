@@ -20,7 +20,7 @@ import {
   Star,
   VideoOne,
 } from '@icon-park/react';
-import { ArrowUp, ChevronDown } from 'lucide-react';
+import { ArrowUp, ChevronDown, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
@@ -62,6 +62,7 @@ import {
 } from '../durationBounds';
 import {
   prefetchCanvasAssistantPanel,
+  prefetchCanvasWorkspace,
   prefetchGenerationPreferencesPanel,
   prefetchLookStyleMenu,
   prefetchVerticalSkillMenu,
@@ -139,6 +140,7 @@ interface VideoHomeComposerProps {
   onSubmitCreation: (draft: VideoCreateDraft) => void;
   onSubmitGenerate: (draft: VideoCreateDraft) => void;
   onSubmitBriefing: (draft: VideoCreateDraft) => void;
+  onCreateBlankCanvas: () => void;
 }
 
 const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
@@ -149,6 +151,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   onSubmitCreation,
   onSubmitGenerate,
   onSubmitBriefing,
+  onCreateBlankCanvas,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -689,6 +692,12 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         : mode === 'briefing'
           ? t('videoGeneration.create.generateBriefing', { defaultValue: '开始资讯播报' })
           : t('videoGeneration.create.enterCanvas', { defaultValue: '发给画布 Agent' });
+  const blankCanvasLabel = t('videoGeneration.create.blankCanvas', {
+    defaultValue: '空白画布',
+  });
+  const blankCanvasTitle = t('videoGeneration.create.gallery.createBlank', {
+    defaultValue: '新建空白画布',
+  });
 
   return (
     <section className={styles.hero}>
@@ -1048,28 +1057,44 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
               </ComposerAnchoredOverlay>
             ) : null}
           </div>
-          <button
-            type='button'
-            data-button-shape='circle'
-            data-video-home-submit=''
-            className='canvas-send-token'
-            disabled={submitDisabled}
-            style={{
-              background: submitDisabled ? theme.toolbar.itemHover : theme.node.activeStroke,
-              color: submitDisabled ? theme.node.faint : theme.canvas.background,
-            }}
-            onMouseEnter={() => {
-              if (mode === 'creation') prefetchCanvasAssistantPanel();
-            }}
-            onFocus={() => {
-              if (mode === 'creation') prefetchCanvasAssistantPanel();
-            }}
-            onClick={submit}
-            aria-label={submitLabel}
-            title={submitLabel}
-          >
-            {loading ? <span className={styles.submitSpinner} /> : <ArrowUp className='size-3' />}
-          </button>
+          <div className={styles.toolbarRight}>
+            {mode === 'creation' ? (
+              <CanvasChromeButton
+                data-video-home-blank-canvas=''
+                disabled={loading}
+                title={blankCanvasTitle}
+                aria-label={blankCanvasTitle}
+                onMouseEnter={prefetchCanvasWorkspace}
+                onFocus={prefetchCanvasWorkspace}
+                onClick={onCreateBlankCanvas}
+              >
+                <Plus className='size-3.5' />
+                <span className={styles.toolbarModeLabel}>{blankCanvasLabel}</span>
+              </CanvasChromeButton>
+            ) : null}
+            <button
+              type='button'
+              data-button-shape='circle'
+              data-video-home-submit=''
+              className='canvas-send-token'
+              disabled={submitDisabled}
+              style={{
+                background: submitDisabled ? theme.toolbar.itemHover : theme.node.activeStroke,
+                color: submitDisabled ? theme.node.faint : theme.canvas.background,
+              }}
+              onMouseEnter={() => {
+                if (mode === 'creation') prefetchCanvasAssistantPanel();
+              }}
+              onFocus={() => {
+                if (mode === 'creation') prefetchCanvasAssistantPanel();
+              }}
+              onClick={submit}
+              aria-label={submitLabel}
+              title={submitLabel}
+            >
+              {loading ? <span className={styles.submitSpinner} /> : <ArrowUp className='size-3' />}
+            </button>
+          </div>
         </div>
       </div>
       {mode === 'agent' && draft.cameos.length > 0 ? (

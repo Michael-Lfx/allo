@@ -39,11 +39,14 @@ describe("video canvas project entry chunk", () => {
         expect(chainSource.includes('from "@oc/components/canvas/canvas-script-node"')).toBe(true);
     });
 
-    test("canvas node connection rails are a mid-side crosshair hit zone", () => {
+    test("canvas node connection rails are an outer-side crosshair hit zone", () => {
         const nodeSource = source("./oc/components/canvas/canvas-node.tsx");
         expect(nodeSource.includes("function ConnectionSideRail")).toBe(true);
         expect(nodeSource.includes("cursor-crosshair")).toBe(true);
+        expect(nodeSource.includes('right: "100%"')).toBe(true);
+        expect(nodeSource.includes('left: "100%"')).toBe(true);
         expect(nodeSource.includes("absolute inset-y-0")).toBe(false);
+        expect(nodeSource.includes('left: "calc(-12px')).toBe(false);
         expect(nodeSource.includes("<Plus")).toBe(false);
     });
 

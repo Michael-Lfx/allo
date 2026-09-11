@@ -227,6 +227,7 @@
     "generateTitle": "Video generation",
     "generateFailed": "Failed to start video generation",
     "enterCanvas": "Send to canvas Agent",
+    "blankCanvas": "Blank canvas",
     "customize": "Customize generation preferences",
     "modelRequired": "A planning model is required before generating.",
     "modelRequiredAction": "A video model is required before generating.",

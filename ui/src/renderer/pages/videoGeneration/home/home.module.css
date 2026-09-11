@@ -768,6 +768,14 @@
   gap: 4px;
 }
 
+.toolbarRight {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
 .toolbarButton {
   display: inline-flex;
   min-height: 34px;

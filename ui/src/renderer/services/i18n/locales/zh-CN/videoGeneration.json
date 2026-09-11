@@ -227,6 +227,7 @@
     "generateTitle": "视频生成",
     "generateFailed": "视频生成创建失败",
     "enterCanvas": "发给画布 Agent",
+    "blankCanvas": "空白画布",
     "customize": "自定义生成偏好",
     "modelRequired": "生成前需要可用的规划模型。",
     "modelRequiredAction": "生成前需要选择视频模型。",

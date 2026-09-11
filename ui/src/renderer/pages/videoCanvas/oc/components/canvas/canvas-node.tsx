@@ -1460,15 +1460,14 @@ function ConnectionSideRail({ side, onPointerDown }: { side: "left" | "right"; o
     return (
         <button
             type="button"
+            data-canvas-connection-rail={side}
             className="absolute z-[var(--node-z-overlay)] cursor-crosshair touch-none bg-transparent outline-none"
             style={{
                 top: "50%",
                 transform: "translateY(-50%)",
                 width: "calc(28px * var(--canvas-live-inverse-scale, 1))",
                 height: "clamp(calc(80px * var(--canvas-live-inverse-scale, 1)), 46%, calc(168px * var(--canvas-live-inverse-scale, 1)))",
-                ...(side === "left"
-                    ? { left: "calc(-12px * var(--canvas-live-inverse-scale, 1))" }
-                    : { right: "calc(-12px * var(--canvas-live-inverse-scale, 1))" }),
+                ...(side === "left" ? { right: "100%" } : { left: "100%" }),
             }}
             onPointerDown={beginConnect}
             aria-label={`${side === "left" ? canvasT("videoCanvas.nodeUi.handleInput", "输入") : canvasT("videoCanvas.nodeUi.handleOutput", "输出")}${canvasT("videoCanvas.nodeUi.handleHint", "连接点，出现十字光标后拖动连线")}`}
