@@ -97,6 +97,7 @@ fn make_factory_with_summon(
         search_provider: nomi_agent::SearchProviderBinding::DefaultDdg,
         extract_coordinator: nomi_agent::ExtractCoordinatorBinding::LocalDefault,
         tool_policy: nomifun_api_types::NomiToolPolicy::default(),
+        mcp_declarations: nomifun_api_types::NomiMcpDeclarations::default(),
         // Test hosts keep the embedded deployment and own no durable facade.
         embedded_agent_execution: true,
         delegate_sink_provider: None,

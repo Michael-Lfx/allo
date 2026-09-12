@@ -273,6 +273,10 @@ fn main() -> Result<ExitCode> {
     // (`20-tool-injection-policy.zh.md`). The desktop and web hosts point at the
     // same file for providers/marketplaces and deliberately leave this off.
     cli.adopt_store_tool_policy = true;
+    // Same host ownership for the MCP declaration file: `~/.agent-store/mcp.json`
+    // (`20` §7.9 / `21` D14). The declarations are read once at startup and
+    // merged into every session this host builds.
+    cli.adopt_store_mcp_declarations = true;
     // This host owns a durable Agent Execution facade, so its sessions must expose
     // *that* as `nomi_delegate` instead of the embedded, synchronous,
     // parallel-only deployment (`16` §7 决策 3). The provider for it is installed by

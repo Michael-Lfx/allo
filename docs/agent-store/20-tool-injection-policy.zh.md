@@ -345,6 +345,34 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 
 ---
 
+### 7.9 参考实现（Kimi Code CLI）：`mcp.json` 声明 MCP
+
+§7.8 是**能不能用**这一层（工具面的收窄）；MCP server **从哪来**是另一层。参考实现把它放在 `mcp.json`：<https://www.kimi.com/code/docs/kimi-code-cli/customization/mcp.html>
+
+- 两层文件：`~/.kimi-code/mcp.json`（跨项目）+ 工作目录下的 `.kimi-code/mcp.json`（只对当前仓库），同名条目**项目级覆盖用户级**；
+- `mcpServers.<name>`：含 `command` → stdio；含 `url` 且未写 `transport` → HTTP；`transport:"sse"` → 旧式 SSE；
+- 可选字段：`env` / `cwd`（stdio）、`headers` / `bearerTokenEnvVar`（HTTP·SSE）、`enabled`、`startupTimeoutMs`、`toolTimeoutMs`、`enabledTools`、`disabledTools`；
+- 工具名 `mcp__<server>__<tool>`，权限规则用 `*` / `**` 通配（与 §7.8 同一命名空间）；
+- **改动只对新会话生效**：编辑或新增的 server 不注册进已打开的会话；从配置里删掉的 server 在已开会话中显示 `removed`，工具仍可见但调用失败；
+- 项目级 stdio 条目会在会话启动时执行本地命令，因此有工作区信任提示。
+
+**Agent Store 的对齐与差异**（决策见 `21` D14）：
+
+| 维度 | 对齐 | 必须保留的差异 |
+|---|---|---|
+| 文件与 schema | `~/.agent-store/mcp.json`，`mcpServers` 同名同形，三类传输判定规则一致 | **只做用户级**：项目级整体不做（Store 是常驻服务端、无交互式信任面，`21` D14 ③=C） |
+| 可选字段 | `args` / `env` / `url` / `headers` / `enabled` / `toolTimeoutMs` 支持 | `cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools` 及**未知字段**一律**拒绝该条目**并点名——静默忽略会改变用户声明的安全语义（`enabledTools` 被忽略 = 用户以为排除掉的工具仍可调用）；`toolTimeoutMs` 映射到引擎既有的**单一** `request_timeout_secs`，不存在 startup / tool 两分 |
+| 工具命名与权限 | 同一 `mcp__` 命名空间，直接复用 `[tools]` 的 glob 语义（§7.8） | 不引入第三种工具级写法：整组关闭就是 `[tools] disabled = ["mcp__<key>__*"]`，不为 `enabledTools` / `disabledTools` 另开平行机制 |
+| 生效时机 | 「只对新会话生效」天然满足（每会话构建时读盘、落内存） | 没有 `removed` 墓碑态：删除后新会话直接看不到，已开会话也没有可见标记（登记为未做） |
+| 来源优先级 | 参考实现是 项目级 > 用户级 | 我们是 **`mcp.json` > `mcp_servers` DB 行**；请求级绑定（`resolve_mcp_servers`）保持既有优先级排在声明之前 |
+| 凭据 | `env` 支持 `secret:NAME` 引用 + `config.toml [credentials]`（比参考实现更强） | 明文值只存在于用户自己的文件里；不进备份 / 快照 / DB（因为不投影进 DB，见下） |
+
+**为什么声明不投影进 `mcp_servers` 表**（`21` D14 ②=C）：投影会让声明文件与导入器 / UI **争同一行**（`McpConfigService::add_server` 是按名 upsert），并引入「文件删了、DB 行还在」的 GC 问题。代价是可见性收窄——文件声明的 server 不进 `connector/*` 目录、不可被 preset `mcp_server_ids` 引用、没有持久化的 `last_test_status` / `tools`。这条边界与实现同批登记，升级为投影时需逐条重写。
+
+**server key 的校验规则（有推导）**：引擎的 provider 可见工具名是 `mcp__` + `sanitize(server__tool)` 截断 + `__` + 16 位摘要，总长上限 64（`nomi-mcp/src/tool_proxy.rs:27-36,447-478`），故 slug 预算 = `64 - 4 - 2 - 16 = 42`；要求 server 自带的分隔符完整存活 → **key 长度 ≤ 40**（保守上界：前缀匹配本身容忍略多一点，取 40 是为了让规则不依赖「分隔符恰好被截断」这种巧合；该上界由跨 crate 测试 `declaration_keys_stay_addressable_by_a_whole_server_pattern` 对 1..=40 全部长度逐个钉住）。又因 `sanitize_display_slug` 会把非 `[A-Za-z0-9_-]` 字节替换为 `_` 并 `trim_matches('_')`，key 必须匹配 `^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$`，否则用户写的 glob 与真实工具名对不上。两条都在解析期硬拒绝并给出可操作错误。
+
+---
+
 ## 8. Team 与 `nomi_delegate`（强制保留的特例）
 
 依据 `16` §7 决策 3：Team Run 由 Leader 模型调用 `nomi_delegate(strategy=planned)` 触发。因此在 Store 会话里 **`nomi_delegate` 不是可选工具，而是 Team 的必需入口**。
@@ -385,6 +413,7 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 | 5 | `builtin_denylist` 减项 + `builtin_deny_all` 内部标记；`ToolRegistry` 持久 `disabled` + `deny_named()` + 模式匹配（内置精确、`mcp__` glob）+ 两类 no-match 诊断；bootstrap 应用与告警 | `nomi-config/src/config.rs`、`nomi-tools/src/registry.rs`、`nomi-agent/src/bootstrap.rs` | ✅ 已落地（有行为变化） |
 | 6 | Connector／Skill 栅栏：create seam 收 `AppServerChatBindings`，写 `selected_mcp_server_ids`（空 = 硬栅栏）与 `preset_enabled_skills`；ceiling 由「清空 `mcp_server_ids`」改为「缺省补 `Some([])` 栅栏」并放开 Connector 行的读取 | `nomifun-conversation/src/service.rs`、`factory/nomi.rs` | ✅ 已落地（有行为变化） |
 | 7 | in-process planned delegate + `team/run`（`16` §7 决策 3） | 新 sink（绑 `AgentExecutionEngine`）+ `nomifun-app-server` 路由 | ✅ **已落地**：模型契约、宿主 sink 接缝、宿主组装开关、engine-backed provider、Store 关闭嵌入版、`team/run` 协议面与 Team 层委派放行（见 §9.2／§9.2.1／§9.2.2） |
+| 8 | MCP 声明文件接入（`21` D14）：`~/.agent-store/mcp.json` 的用户级 `mcpServers` → 宿主**启动读一次** → 会话构建时并入 `extra_mcp_servers`（**声明优先于 DB 行**），不投影进 `mcp_servers` 表；`[tools]` 仍在最后求交；宿主位 `--adopt-store-mcp-declarations` 仅 `apps/agent-store` 置位 | `nomifun-api-types/src/mcp_declarations.rs`（新）、`nomifun-app/src/services.rs`（`resolve_host_mcp_declarations`）、`nomifun-ai-agent/src/factory/nomi.rs`、`nomifun-app-server/src/lib.rs`（`config/get` 读面） | ✅ **已落地**（规格见 §7.9，落地记录与验证读数见 §9.3；协议指纹 bump 到 `2026-09-13`） |
 
 Step 7 单独成批：它引入新架构件（`nomi_types::Tool` 实现 + App Server runtime wiring），且必须保持 `Planner`/`Router`/`Scheduler`/`AttemptRunner` 私有（`check-agent-vocabulary.mjs:337-340`）。
 
@@ -454,6 +483,38 @@ Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码
 **验证**：`nomifun-ai-agent` factory **66 / 0**（含新增的 `exactly_one_delegate_deployment_owns_the_name`、`host_facade_delegation_hint_is_planned_only`、`host_facade_delegation_hint_respects_surface_and_policy`、`app_server_chat_ceiling_leaves_the_delegation_tier_untouched`）；`nomifun-conversation` 两个接缝测试 **2 / 0**（单 Agent 写 `Disabled`、Team 写 `Automatic` + 模板绑定 + 两类拒绝）；`nomifun-app-server` `team_run::tests` **5 / 0**；`cargo check --workspace --tests` **0 error**；`web` **399 passed / 1 skipped**（与基线一致；`45 / 64` → `46 / 65` 的方法计数漂移守卫已同步）；`check:docs-sync` 9 页 0 drift；`check:agent-vocabulary` 仍是同样的 8 处既有基线红。
 
 **仍未覆盖（诚实登记）**：`team/run` 的**端到端**断言（真实 Leader 模型调用委派工具 → 引擎物化 DAG）没有自动化测试。原因是它需要一个可编排的 LLM provider 注入完整 App Server 栈，仓库现有测试基座没有这一层。当前覆盖到的是：请求/收据形状、ceiling 读值、模板取用规则、Team 与单 Agent 两个接缝、模板参与者的引擎侧校验（既有 `nomifun-agent-execution` / `nomifun-db` 测试）。`team/run` 的编排本体（解析 → 栅栏 → 模板 → 会话 → 一轮 → 反查 → 映射）刻意保持为一条直线以便审阅。
+
+#### 9.3 第四批（2026-09-12）：MCP 声明文件（`21` D14）
+
+**Step 8 已落地**：
+
+| 事项 | 位置 |
+|---|---|
+| 类型与解析：`NomiMcpDeclarations::parse`，**file 级 fail-open + entry 级 fail-closed**；三类传输判定（`command` → stdio；`url` 无 `transport` → http；`transport:"sse"` → sse）；`toolTimeoutMs` 向上取整到秒（`1..=600000`）；五个「参考实现有、本宿主不支持」的字段（`cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools`）与任何未知字段**拒绝该条目并点名**；server key 长度 ≤ 40 且限 `[A-Za-z0-9_-]`（§7.9 的推导） | `nomifun-api-types/src/mcp_declarations.rs`（新） |
+| 宿主位与解析：`AppConfig.adopt_store_mcp_declarations` / `--adopt-store-mcp-declarations`；`resolve_host_mcp_declarations`（纯函数，缺失/损坏 → **零声明** + 可报告原因）；声明文件取 `config.toml` 的**同级** `mcp.json`；只有 `apps/agent-store` 置位；启动一次性日志（`target: agent_store_mcp`，含 `declared/enabled/refused`） | `nomifun-app/src/{cli,config,services,bootstrap/environment}.rs`、`apps/agent-store/src/main.rs` |
+| 会话注入：`merge_host_declared_mcp_servers` 插在 `resolve_mcp_servers` **之后**、`mcp_servers` 行循环**之前**——该循环是 `entry().or_insert(...)`（先到先得），于是优先级自然成为 **请求级绑定 > `mcp.json` > DB 行**；`env` 与 `headers` 都过 `secret_ref::resolve_env`；`deferred = Some(false)` 与 DB 行一致；**`is_instance_owner` 门控**与 DB 行同款 | `nomifun-ai-agent/src/factory/nomi.rs`、`factory/mod.rs` |
+| 读面：`AppServerConfigView.mcp { exists, servers[{name,transport,enabled}], rejected[{name,reason}], error }`，只读、**不在 `config/set` 白名单**（声明文件只能手写）；`config/set` 的写后重读天然带上它 | `nomifun-api-types/src/app_server.rs`、`nomifun-app-server/src/lib.rs` |
+| 协议指纹：`2026-09-12` → **`2026-09-13`**（8 处代码/夹具 + 2 处站点文档；方法计数不变，`46 / 65` 守卫未动） | 见 `16` §7 决策 4 |
+
+**实施中的三处判断，登记在此**：
+
+1. **声明也做 owner 门控**。stdio 声明＝让会话执行本地进程，远程声明可携带凭据——两者都属「安装级执行权限」，故与 DB 行一样只在 installation owner 身份下生效（`docs/architecture/data-and-storage.zh.md` §安装级执行权限）。这与「不受 `mcp_server_ids` 围栏约束」不矛盾：那道围栏管的是「快照/preset 授予了什么」，而声明的授予者是宿主操作者本身（对应 `21` D14 的「有意行为」）。
+2. **读面必须有 `error`**。整份文件解析失败时回 `exists:true` + 空列表 + `error`，否则「文件写坏了」与「文件是空的」在界面上完全一样。
+3. **`headers` 也解析 `secret:NAME`，DB 行不解析**。因为 `bearerTokenEnvVar` 被拒后文档把 header 凭据指向 `secret:NAME`，声明路径必须真的支持它；而 DB 行路径（`row_to_mcp_server_config`）只对 stdio `env` 解析、对 `headers` 不解析。这是**既有实现的不一致，本次未改**，如实登记以便后续收敛。
+
+**验证读数**：`nomifun-api-types --lib` **680 / 0**（新增 19 例）；`nomifun-app-server --lib` **123 / 0**（新增 3 例）；`nomifun-app --lib` **313 / 1**（唯一失败是既有基线红 `commands::stdio_common::tests::at_most_once_retries_undelivered_connection_failures`，本会话早前已用 `git stash` 在未改动基线上复现同一断言）；`nomifun-ai-agent --lib` **990 / 29 failed**（29 例全为 Windows 缺 `sh` 的环境性失败：`capability::cli_process` ×22、`manager::acp` ×6、`factory::construction_guard` ×1；本次新增 5 例全绿）；`web` **399 passed / 1 skipped**（与基线一致）；`check:docs-sync` **9 页 0 drift**；`check:agent-vocabulary` **同样的 8 处既有基线红**（无新增）。
+
+**真二进制端到端（12/12 通过）**：`cargo build -p agent-store` 后以临时 HOME + 临时 data-dir 启动真实 `agent-store.exe`（`--port 0`），用原生 WS 走 `initialize` → `initialized` → `config/get`：① 合法 `mcp.json`（stdio + http + `enabled:false` + `cwd` 反例）→ `exists:true`、按 key 排序的三条 server（传输与 `enabled` 保真）、`bad` 一条被拒且原因点名 `cwd`，启动日志 `declared=3 enabled=2 refused=1` + 逐条 warn；② 坏 JSON → `exists:true` + 空列表 + `error`，启动日志 `could not be parsed … declaring no MCP servers`；③ 无文件 → `mcp: null`，日志 `declared=0`。三种情况下 `config/get` 的响应里都**不出现**任何凭据值（`[credentials]` 的值与 provider key）。
+
+**仍未覆盖（诚实登记）**：**「声明的 server 真的出现在会话工具面里、且能被 `[tools] disabled = ["mcp__<key>__*"]` 关掉」没有端到端断言**——它需要一个可编排的 LLM provider 注入完整会话，与 §9.2.2 的 `team/run` 缺口同源。当前覆盖的是：解析与全部校验规则（19 例）、宿主管线与双 flag 门控（2 例）、factory 注入/优先级/owner 门控/空声明（4 例）、**跨 crate 命名契约**（`declaration_keys_stay_addressable_by_a_whole_server_pattern` 对 1..=40 每个 key 长度逐个验证 `mcp__<key>__*` 命中引擎真实 canonical 工具名）、读面（3 例），以及上面 ①②③ 的真实二进制闭环。
+
+**有意未做（本批范围外，均已登记）**：
+
+1. **项目级 `<workspace>/.agent-store/mcp.json`**——路径约定已写进 §7.9，实现**不读**（`21` D14 ③=C：Store 是常驻服务端、无交互式信任面）。
+2. **投影进 `mcp_servers` 表**（`connector/*` 可见、可被 preset 引用、持久化 `last_test_status`/`tools`）——`21` D14 ②=C 定为后续可选开关，未排期；升级时需重写本节的可见性边界。
+3. **引擎侧字段**：`cwd`、server 级 `enabledTools`/`disabledTools`、`startupTimeoutMs`（以及与 `toolTimeoutMs` 分开的两段超时）——需要改 `nomi-config::McpServerConfig` + `nomi-mcp`，回归面涉及 alias/`deferred`/`context_usage`；本批以「逐条目拒绝并点名」替代静默忽略。
+4. **热更新墓碑态**（参考实现的 `removed`）——我们天然是「新会话才生效」，但删除后已开会话没有可见标记。
+5. **WebUI 设置页的 MCP 分区渲染**——读面（`config/get.mcp`）已就绪，UI 渲染未做。
 
 ---
 

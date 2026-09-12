@@ -5,8 +5,9 @@ use std::sync::Arc;
 use nomi_agent::session::{Session, SessionManager};
 use nomi_config::config::{CliArgs, Config, McpServerConfig, TransportType};
 use nomifun_api_types::{
-    GatewayMcpConfig, HealthStatus, McpServerId, ModelHealthStatus, ModelTask, ModelTrait,
-    NomiBuildExtra, NomiToolPolicy, SessionMcpServer, SessionMcpTransport,
+    GatewayMcpConfig, HealthStatus, McpServerId, McpTransport, ModelHealthStatus, ModelTask,
+    ModelTrait, NomiBuildExtra, NomiMcpDeclarations, NomiToolPolicy, SessionMcpServer,
+    SessionMcpTransport,
 };
 use nomifun_common::{
     AppError, DelegationPolicy, ExecutionAuthority, LoopbackCapabilityLease,
@@ -406,6 +407,16 @@ pub(super) async fn build(
 
     let (mut extra_mcp_servers, loopback_capability_leases) =
         resolve_mcp_servers(&overrides, &ctx.conversation_id);
+    // Host-declared servers load next, before the `mcp_servers` rows below, so a
+    // declaration wins a name collision against an imported row (that loop is
+    // first-writer-wins) while a request-level binding still outranks both.
+    // Owner-gated exactly like those rows: a declaration is a host capability.
+    merge_host_declared_mcp_servers(
+        &mut extra_mcp_servers,
+        &deps.mcp_declarations,
+        &ctx.conversation_id,
+        is_instance_owner,
+    );
     // Connector rows load for App Server chats too, but strictly by the id fence
     // the ceiling above established: an App Server chat with no bound Connector
     // carries `Some(vec![])`, so this selects nothing. Session-scoped servers
@@ -1935,6 +1946,121 @@ async fn load_user_mcp_servers(
     servers
 }
 
+/// Merge the host's `mcp.json` declarations into this session's extra servers
+/// (`20` §7.9 / `21` D14).
+///
+/// Called **before** the `mcp_servers` rows load, because that loop uses
+/// `entry().or_insert()` (first writer wins): the declaration file is the
+/// operator's explicit intent, while a row is usually the residue of an import.
+/// A name a request-level binding already took is left alone — that caller asked
+/// for *that* server on this run.
+///
+/// `secret:NAME` references resolve here, at session build time, so a credential
+/// installed in-process is honoured exactly as it is for a row. HTTP headers are
+/// resolved too: the declaration contract points header credentials at
+/// `secret:NAME` (`20` §7.9), and a literal value simply passes through.
+///
+/// Returns early unless `is_instance_owner`: a declaration is a **host
+/// capability** — a stdio server runs a local process and a remote one can carry
+/// credentials — and a non-owner principal only ever gets a plain Nomi
+/// conversation (see `docs/architecture/data-and-storage.zh.md` §安装级执行权限).
+fn merge_host_declared_mcp_servers(
+    extra_mcp_servers: &mut HashMap<String, McpServerConfig>,
+    declarations: &NomiMcpDeclarations,
+    conversation_id: &str,
+    is_instance_owner: bool,
+) {
+    if !is_instance_owner {
+        return;
+    }
+    for declared in declarations.enabled_servers() {
+        if extra_mcp_servers.contains_key(&declared.name) {
+            continue;
+        }
+        let config = match &declared.transport {
+            McpTransport::Stdio { command, args, env } => {
+                let resolved = nomifun_common::secret_ref::resolve_env(env);
+                report_missing_credentials(
+                    conversation_id,
+                    &declared.name,
+                    "env",
+                    &resolved.missing,
+                );
+                McpServerConfig {
+                    transport: TransportType::Stdio,
+                    command: Some(command.clone()),
+                    args: Some(args.clone()),
+                    env: Some(resolved.env),
+                    url: None,
+                    headers: None,
+                    // Eager schemas, matching how a `mcp_servers` row is mapped.
+                    deferred: Some(false),
+                    request_timeout_secs: declared.request_timeout_secs,
+                }
+            }
+            McpTransport::Sse { url, headers } => {
+                let resolved = nomifun_common::secret_ref::resolve_env(headers);
+                report_missing_credentials(
+                    conversation_id,
+                    &declared.name,
+                    "headers",
+                    &resolved.missing,
+                );
+                McpServerConfig {
+                    transport: TransportType::Sse,
+                    command: None,
+                    args: None,
+                    env: None,
+                    url: Some(url.clone()),
+                    headers: Some(resolved.env),
+                    deferred: Some(false),
+                    request_timeout_secs: declared.request_timeout_secs,
+                }
+            }
+            McpTransport::Http { url, headers } => {
+                let resolved = nomifun_common::secret_ref::resolve_env(headers);
+                report_missing_credentials(
+                    conversation_id,
+                    &declared.name,
+                    "headers",
+                    &resolved.missing,
+                );
+                McpServerConfig {
+                    transport: TransportType::StreamableHttp,
+                    command: None,
+                    args: None,
+                    env: None,
+                    url: Some(url.clone()),
+                    headers: Some(resolved.env),
+                    deferred: Some(false),
+                    request_timeout_secs: declared.request_timeout_secs,
+                }
+            }
+        };
+        extra_mcp_servers.insert(declared.name.clone(), config);
+    }
+}
+
+/// The name of an unresolved reference is not a secret, so it is safe to log;
+/// the value never was available. The variable is omitted rather than sent as
+/// the literal `secret:NAME`.
+fn report_missing_credentials(
+    conversation_id: &str,
+    server_name: &str,
+    field: &str,
+    missing: &[String],
+) {
+    if !missing.is_empty() {
+        warn!(
+            conversation_id,
+            server_name,
+            field,
+            missing = ?missing,
+            "host_mcp: unresolved credential references; omitting them"
+        );
+    }
+}
+
 fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, String> {
     let value: serde_json::Value = serde_json::from_str(&row.transport_config)
         .map_err(|e| format!("invalid transport_config JSON: {e}"))?;
@@ -3117,6 +3243,170 @@ mod tests {
             server.env.as_ref().and_then(|env| env.get("TOKEN")),
             Some(&"abc".to_owned())
         );
+    }
+
+    fn declarations_from(source: &str) -> NomiMcpDeclarations {
+        let declarations = NomiMcpDeclarations::parse(source).expect("declarations must parse");
+        assert!(
+            declarations.rejected.is_empty(),
+            "unexpected rejections: {:?}",
+            declarations.rejected
+        );
+        declarations
+    }
+
+    /// `~/.agent-store/mcp.json` entries reach a session with every transport
+    /// mapped, the per-server timeout applied and disabled entries left out.
+    #[test]
+    fn host_declarations_reach_the_session_and_map_every_transport() {
+        let declarations = declarations_from(
+            r#"{ "mcpServers": {
+                 "filesystem": { "command": "npx", "args": ["-y", "srv"], "env": { "TOKEN": "literal" }, "toolTimeoutMs": 2500 },
+                 "linear": { "url": "https://x/mcp", "headers": { "X-Tenant": "acme" } },
+                 "legacy": { "transport": "sse", "url": "https://x/sse" },
+                 "off": { "command": "never", "enabled": false }
+               } }"#,
+        );
+
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(&mut servers, &declarations, "conv-decl", true);
+
+        assert_eq!(
+            servers.len(),
+            3,
+            "the disabled entry must not be merged: {servers:?}"
+        );
+        assert!(!servers.contains_key("off"));
+
+        let filesystem = &servers["filesystem"];
+        assert_eq!(filesystem.transport, TransportType::Stdio);
+        assert_eq!(filesystem.command.as_deref(), Some("npx"));
+        assert_eq!(
+            filesystem.args.as_deref(),
+            Some(&["-y".to_owned(), "srv".to_owned()][..])
+        );
+        // A literal value passes through the `secret:` resolver untouched.
+        assert_eq!(
+            filesystem
+                .env
+                .as_ref()
+                .and_then(|env| env.get("TOKEN"))
+                .map(String::as_str),
+            Some("literal")
+        );
+        // 2500ms rounds up to the engine's whole-second granularity.
+        assert_eq!(filesystem.request_timeout_secs, Some(3));
+        assert_eq!(filesystem.deferred, Some(false));
+
+        assert_eq!(servers["linear"].transport, TransportType::StreamableHttp);
+        assert_eq!(servers["linear"].url.as_deref(), Some("https://x/mcp"));
+        assert_eq!(
+            servers["linear"]
+                .headers
+                .as_ref()
+                .and_then(|headers| headers.get("X-Tenant"))
+                .map(String::as_str),
+            Some("acme")
+        );
+        assert_eq!(servers["legacy"].transport, TransportType::Sse);
+    }
+
+    /// The declaration merge never clobbers a name that is already taken. In the
+    /// factory that name is either a request-level binding (merged before it) or
+    /// a `mcp_servers` row is *skipped* by the same rule — declarations are
+    /// merged first and that loop is `entry().or_insert(...)`.
+    ///
+    /// The two steps are mirrored here because the ordering lives at the call
+    /// site; the end-to-end shape is covered by the real-binary run recorded in
+    /// `docs/agent-store/20-tool-injection-policy.zh.md` §9.3.
+    #[test]
+    fn host_declarations_never_clobber_a_name_that_is_already_taken() {
+        let declarations =
+            declarations_from(r#"{ "mcpServers": { "shared": { "command": "from-file" } } }"#);
+
+        // (1) Request-level binding first: the declared server must not replace it.
+        let mut bound = HashMap::from([(
+            "shared".to_owned(),
+            McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some("from-request".into()),
+                args: None,
+                env: None,
+                url: None,
+                headers: None,
+                deferred: Some(false),
+                request_timeout_secs: None,
+            },
+        )]);
+        merge_host_declared_mcp_servers(&mut bound, &declarations, "conv-bound", true);
+        assert_eq!(bound["shared"].command.as_deref(), Some("from-request"));
+
+        // (2) Declarations first, then a repo row via the production rule: the
+        // declaration owns the name, so the row cannot overwrite it.
+        let mut merged = HashMap::new();
+        merge_host_declared_mcp_servers(&mut merged, &declarations, "conv-row", true);
+        merged.entry("shared".to_owned()).or_insert(McpServerConfig {
+            transport: TransportType::Stdio,
+            command: Some("from-row".into()),
+            args: None,
+            env: None,
+            url: None,
+            headers: None,
+            deferred: Some(false),
+            request_timeout_secs: None,
+        });
+        assert_eq!(merged["shared"].command.as_deref(), Some("from-file"));
+    }
+
+    /// A declaration is a host capability (a stdio server runs a local process),
+    /// so a non-owner principal must not receive one — the same gate the
+    /// `mcp_servers` rows already sit behind.
+    #[test]
+    fn host_declarations_are_owner_gated() {
+        let declarations =
+            declarations_from(r#"{ "mcpServers": { "filesystem": { "command": "npx" } } }"#);
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(&mut servers, &declarations, "conv-secondary", false);
+        assert!(servers.is_empty(), "{servers:?}");
+    }
+
+    /// The default (a host that never opted in, or a `mcp.json` that is absent
+    /// or broken) declares nothing and therefore changes nothing.
+    #[test]
+    fn empty_declarations_are_a_no_op() {
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(
+            &mut servers,
+            &NomiMcpDeclarations::default(),
+            "conv-empty",
+            true,
+        );
+        assert!(servers.is_empty());
+    }
+
+    /// The §7.9 key rules (length + charset) exist so that a user's whole-server
+    /// pattern `mcp__<key>__*` really addresses **every** tool of a declared
+    /// server. This is the cross-crate half of that promise: the pattern is
+    /// matched against the engine's real canonical tool name, for every accepted
+    /// key length and for tool names long enough to force slug truncation.
+    #[test]
+    fn declaration_keys_stay_addressable_by_a_whole_server_pattern() {
+        use nomifun_api_types::MAX_DECLARATION_KEY_LEN;
+
+        for length in 1..=MAX_DECLARATION_KEY_LEN {
+            let key = "k".repeat(length);
+            let pattern = format!("mcp__{key}__");
+            for tool in [
+                "read",
+                "a_very_long_tool_name_that_will_definitely_be_truncated_by_the_slug_budget",
+            ] {
+                let canonical = nomi_mcp::tool_proxy::canonical_mcp_display_name(&key, tool);
+                assert!(
+                    canonical.starts_with(&pattern),
+                    "`mcp__{key}__*` must match {canonical} (key length {length})"
+                );
+            }
+        }
     }
 
     #[test]

@@ -64,7 +64,8 @@ use nomifun_agent_execution::{
 use nomifun_auth::CurrentUser;
 use nomifun_common::{MessagePosition, MessageType, ProviderWithModel, UserId, generate_id};
 use nomifun_api_types::{
-    AppServerAgentDetail, AppServerAgentSummary, AppServerConfigMemoryView,
+    AppServerAgentDetail, AppServerAgentSummary, AppServerConfigMcpRejectionView,
+    AppServerConfigMcpServerView, AppServerConfigMcpView, AppServerConfigMemoryView,
     AppServerConfigProviderView, AppServerConfigView,
     AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
@@ -91,7 +92,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 /// App Server wire protocol version, negotiated by `initialize`.
-pub const PROTOCOL_VERSION: &str = "2026-09-12";
+pub const PROTOCOL_VERSION: &str = "2026-09-13";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3696,7 +3697,15 @@ fn agent_store_config_file(
 
 /// Project the parsed file into its wire view. Sorted, credential-free, and no
 /// fact that is not actually in the file.
-fn config_view(config: &AgentStoreConfig, exists: bool) -> AppServerConfigView {
+///
+/// `mcp` is the projection of the **sibling** `mcp.json` (`20` §7.9 / `21` D14),
+/// resolved by [`mcp_declaration_view`] from the same config path so a host
+/// pointed at a custom directory reports the pair it actually reads.
+fn config_view(
+    config: &AgentStoreConfig,
+    exists: bool,
+    mcp: Option<AppServerConfigMcpView>,
+) -> AppServerConfigView {
     let mut names: Vec<&String> = config.providers.keys().collect();
     names.sort();
     let providers = names
@@ -3726,7 +3735,54 @@ fn config_view(config: &AgentStoreConfig, exists: bool) -> AppServerConfigView {
         // reported with its defaults filled in, so `Some(all-on)` means "the
         // file declares `[tools]` but constrains nothing".
         tools: config.tools.clone(),
+        mcp,
     }
+}
+
+/// Read the `mcp.json` sibling of `config_path` into its read view.
+///
+/// `None` means the file is absent **or unreadable**: the settings surface must
+/// not fail because a declaration file is broken, and a broken file declares
+/// nothing anyway. A present-but-unparseable file projects to
+/// `Some { exists: true, .. }` with empty lists rather than an error, so the
+/// settings screen stays reachable while the startup log carries the reason.
+fn mcp_declaration_view(config_path: &std::path::Path) -> Option<AppServerConfigMcpView> {
+    let path = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join("mcp.json");
+    let source = std::fs::read_to_string(&path).ok()?;
+    let (servers, rejected, error) = match nomifun_api_types::NomiMcpDeclarations::parse(&source) {
+        Ok(declarations) => (
+            declarations
+                .servers
+                .iter()
+                .map(|server| AppServerConfigMcpServerView {
+                    name: server.name.clone(),
+                    transport: server.transport_kind().to_owned(),
+                    enabled: server.enabled,
+                })
+                .collect(),
+            declarations
+                .rejected
+                .iter()
+                .map(|rejection| AppServerConfigMcpRejectionView {
+                    name: rejection.name.clone(),
+                    reason: rejection.reason.clone(),
+                })
+                .collect(),
+            None,
+        ),
+        // A file-level failure is surfaced rather than swallowed: an empty list
+        // with no reason is indistinguishable from "the file declares nothing".
+        Err(error) => (Vec::new(), Vec::new(), Some(error)),
+    };
+    Some(AppServerConfigMcpView {
+        exists: true,
+        servers,
+        rejected,
+        error,
+    })
 }
 
 /// `config/get`: the settings file as a wire view.
@@ -3737,15 +3793,16 @@ fn config_view(config: &AgentStoreConfig, exists: bool) -> AppServerConfigView {
 /// hand-edit behind a settings screen that looks healthy.
 fn execute_config_get(state: &AppServerRouterState) -> Result<AppServerConfigView, AppServerError> {
     let path = agent_store_config_file(state)?;
+    let mcp = mcp_declaration_view(&path);
     match std::fs::read_to_string(&path) {
         Ok(source) => {
             let config = AgentStoreConfig::from_source(&source).map_err(|error| {
                 config_unavailable(format!("failed to read {}: {error}", path.display()))
             })?;
-            Ok(config_view(&config, true))
+            Ok(config_view(&config, true, mcp))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(config_view(&AgentStoreConfig::default(), false))
+            Ok(config_view(&AgentStoreConfig::default(), false, mcp))
         }
         Err(error) => Err(config_unavailable(format!(
             "failed to read {}: {error}",
@@ -8171,6 +8228,111 @@ model = "mimo-v2.5-free"
         assert!(!encoded.contains("sk-live-must-never-reach-the-wire"), "{encoded}");
         assert!(!encoded.contains("api_key"), "{encoded}");
         assert!(!encoded.contains("base_url"), "{encoded}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `~/.agent-store/mcp.json` is projected read-only next to the settings
+    /// file: accepted entries, per-entry refusals with reasons, and **no
+    /// credential values** (`20` §7.9 / `21` D14).
+    #[tokio::test]
+    async fn config_get_projects_mcp_declarations_and_refusals() {
+        let dir = config_temp_dir("mcp-view");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        std::fs::write(
+            dir.join("mcp.json"),
+            r#"{ "mcpServers": {
+                 "linear": { "url": "https://mcp.linear.app/mcp", "headers": { "Authorization": "Bearer sk-mcp-must-never-reach-the-wire" } },
+                 "filesystem": { "command": "npx", "args": ["-y", "srv"], "env": { "TOKEN": "sk-mcp-env-must-never-reach-the-wire" } },
+                 "off": { "command": "never", "enabled": false },
+                 "bad": { "command": "npx", "cwd": "/tmp" }
+               } }"#,
+        )
+        .expect("temp mcp file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        let view = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+
+        assert_eq!(view["mcp"]["exists"], serde_json::json!(true));
+        // Sorted by key, transports labelled, `enabled` reported as declared.
+        assert_eq!(view["mcp"]["servers"][0]["name"], serde_json::json!("filesystem"));
+        assert_eq!(view["mcp"]["servers"][0]["transport"], serde_json::json!("stdio"));
+        assert_eq!(view["mcp"]["servers"][0]["enabled"], serde_json::json!(true));
+        assert_eq!(view["mcp"]["servers"][1]["name"], serde_json::json!("linear"));
+        assert_eq!(view["mcp"]["servers"][1]["transport"], serde_json::json!("http"));
+        assert_eq!(view["mcp"]["servers"][2]["name"], serde_json::json!("off"));
+        assert_eq!(view["mcp"]["servers"][2]["enabled"], serde_json::json!(false));
+
+        // A refused entry names itself and says why.
+        assert_eq!(view["mcp"]["rejected"][0]["name"], serde_json::json!("bad"));
+        let reason = view["mcp"]["rejected"][0]["reason"].as_str().unwrap_or_default();
+        assert!(reason.contains("`cwd`"), "{reason}");
+        assert!(view["mcp"].get("error").is_none(), "{view}");
+
+        // Credential values have no field on the wire, in env or in headers.
+        let encoded = view.to_string();
+        assert!(!encoded.contains("sk-mcp-must-never-reach-the-wire"), "{encoded}");
+        assert!(!encoded.contains("sk-mcp-env-must-never-reach-the-wire"), "{encoded}");
+        assert!(!encoded.contains("Authorization"), "{encoded}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No declaration file, a broken one, and no config file at all each answer
+    /// without an error — and a broken file reports why instead of looking empty.
+    #[tokio::test]
+    async fn config_get_reports_mcp_absence_and_breakage() {
+        let dir = config_temp_dir("mcp-absent");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        let view = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+        assert_eq!(view["mcp"], serde_json::Value::Null, "{view}");
+
+        std::fs::write(dir.join("mcp.json"), "{ not json").expect("temp broken mcp file");
+        let view = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+            .await
+            .expect("config/get");
+        assert_eq!(view["mcp"]["exists"], serde_json::json!(true));
+        assert_eq!(view["mcp"]["servers"], serde_json::json!([]));
+        let error = view["mcp"]["error"].as_str().unwrap_or_default();
+        assert!(error.contains("JSON"), "{view}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `config/set` answers with the same read-back, so a declaration file is
+    /// reported even on a write that only touched `config.toml`.
+    #[tokio::test]
+    async fn config_set_reads_the_mcp_projection_back() {
+        let dir = config_temp_dir("mcp-set");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, COMMENTED_CONFIG).expect("temp config file");
+        std::fs::write(
+            dir.join("mcp.json"),
+            r#"{ "mcpServers": { "filesystem": { "command": "npx" } } }"#,
+        )
+        .expect("temp mcp file");
+        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+
+        let view = dispatch_config(
+            &state,
+            &connection,
+            &user,
+            &subscriptions,
+            "config/set",
+            serde_json::json!({ "memory": { "distill_enabled": false } }),
+        )
+        .await
+        .expect("config/set");
+
+        assert_eq!(view["mcp"]["servers"][0]["name"], serde_json::json!("filesystem"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

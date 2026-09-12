@@ -22,8 +22,8 @@ use futures_util::FutureExt;
 use nomi_agent::companion_tools::{CompanionMemorySink, CompanionSkillSink};
 use nomi_agent::requirement_tools::RequirementSink;
 use nomifun_api_types::{
-    BrowserMcpConfig, ComputerMcpConfig, GatewayMcpConfig, NomiToolPolicy, OpenMcpConfig,
-    RequirementMcpConfig,
+    BrowserMcpConfig, ComputerMcpConfig, GatewayMcpConfig, NomiMcpDeclarations, NomiToolPolicy,
+    OpenMcpConfig, RequirementMcpConfig,
 };
 use nomifun_common::{AgentType, AppError, ExecutionAuthority};
 use nomifun_db::{
@@ -132,6 +132,16 @@ pub struct AgentFactoryDeps {
     /// ([`NomiToolPolicy::default`]) constrains nothing, so a host that does not
     /// adopt an agent-store `[tools]` table behaves exactly as before.
     pub tool_policy: NomiToolPolicy,
+    /// Host-owned MCP server declarations (`~/.agent-store/mcp.json`,
+    /// `20` §7.9 / `21` D14).
+    ///
+    /// Process-owned configuration, exactly like `tool_policy`: read from the
+    /// host's own file, never from conversation `extra`, so no request can forge
+    /// a declaration. It widens the *sources* of the MCP tool surface but not the
+    /// *policy* over it — the host `[tools]` denylist is applied last. The
+    /// default (empty) declares nothing, so a host that does not opt in behaves
+    /// exactly as before.
+    pub mcp_declarations: NomiMcpDeclarations,
     /// Whether this host installs the **embedded** (synchronous, parallel-only)
     /// Agent execution deployment for its Nomi sessions.
     ///

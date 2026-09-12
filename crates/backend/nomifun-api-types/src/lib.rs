@@ -29,6 +29,7 @@ mod knowledge;
 mod lifecycle;
 mod managed_model;
 mod mcp;
+mod mcp_declarations;
 pub mod dispatch_target;
 mod media;
 pub mod model_capability;
@@ -70,7 +71,8 @@ pub use acp::{
 };
 pub use app_server::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityStatus,
-    AppServerCompatibilityTriple, AppServerConfigMemoryView, AppServerConfigProviderView,
+    AppServerCompatibilityTriple, AppServerConfigMcpRejectionView, AppServerConfigMcpServerView,
+    AppServerConfigMcpView, AppServerConfigMemoryView, AppServerConfigProviderView,
     AppServerConfigView,
     AppServerConnectorDetail, AppServerConnectorProbeResult,
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
@@ -251,6 +253,10 @@ pub use mcp::{
     OAuthStatusResponse, TestMcpConnectionRequest, UpdateMcpServerRequest,
 };
 pub use mcp::oauth_state;
+pub use mcp_declarations::{
+    MAX_DECLARATION_KEY_LEN, MAX_TOOL_TIMEOUT_MS, MIN_TOOL_TIMEOUT_MS, NomiMcpDeclarationRejection,
+    NomiMcpDeclarations, ResolvedNomiMcpServer,
+};
 pub use media::{
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,
     MediaModelListResponse, MediaModelOption, MediaSettingsResponse, MediaTurnCreditUsage,
