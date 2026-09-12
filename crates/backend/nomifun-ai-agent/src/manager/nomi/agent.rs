@@ -4176,6 +4176,12 @@ mod tests {
         let mut config = make_test_config();
         config.tool_policy = policy;
         config.allowed_tools = allowed_tools;
+        tool_names_for_config(config).await
+    }
+
+    /// Same, from a fully prepared config (used by the MCP declaration test,
+    /// which needs to set `extra_mcp_servers` as well).
+    async fn tool_names_for_config(config: NomiResolvedConfig) -> Vec<String> {
         let agent = NomiAgentManager::new(
             "conv-tool-policy".into(),
             "/project".into(),
@@ -4193,6 +4199,138 @@ mod tests {
         .await
         .unwrap();
         agent.engine.lock().await.tool_names()
+    }
+
+    /// The MCP declaration path asserted at **session level**: a server declared
+    /// in `~/.agent-store/mcp.json` really reaches the provider-visible tool
+    /// surface, and the host `[tools]` denylist can still take the whole server
+    /// away (`20` §7.9 / `21` D14).
+    ///
+    /// The server is a wiremock Streamable-HTTP MCP endpoint, so this covers the
+    /// real connect → `tools/list` → registry path without spawning a child
+    /// process and without needing a model.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn declared_mcp_servers_reach_the_session_tool_surface() {
+        use nomifun_api_types::{NomiMcpDeclarations, NomiToolPolicy};
+
+        /// Minimal MCP endpoint: answers `initialize` and `tools/list`, echoing
+        /// the request id so the engine's own id sequence is not assumed.
+        struct McpEndpoint;
+        impl wiremock::Respond for McpEndpoint {
+            fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+                let body = String::from_utf8_lossy(&request.body);
+                let id = body
+                    .split("\"id\":")
+                    .nth(1)
+                    .and_then(|rest| {
+                        rest.trim_start()
+                            .split(|character: char| !character.is_ascii_digit())
+                            .next()
+                    })
+                    .and_then(|digits| digits.parse::<u64>().ok())
+                    .unwrap_or(1);
+                if body.contains("\"initialize\"") {
+                    return wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "protocolVersion": "2025-03-26", "capabilities": { "tools": {} } }
+                    }));
+                }
+                if body.contains("notifications/initialized") {
+                    return wiremock::ResponseTemplate::new(200).set_body_string("");
+                }
+                if body.contains("tools/list") {
+                    return wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "tools": [{
+                            "name": "ping",
+                            "description": "health probe",
+                            "inputSchema": { "type": "object", "properties": {} }
+                        }] }
+                    }));
+                }
+                wiremock::ResponseTemplate::new(200).set_body_string("")
+            }
+        }
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/mcp"))
+            .respond_with(McpEndpoint)
+            .mount(&server)
+            .await;
+
+        let declaration = |entry: &str| {
+            NomiMcpDeclarations::parse(&format!(
+                r#"{{ "mcpServers": {{ "declared": {} }} }}"#,
+                entry.replace("URL", &format!("{}/mcp", server.uri()))
+            ))
+            .expect("declaration file must parse")
+        };
+        // The real merge, not a copy of it: this is the seam the factory uses.
+        let merged = |declarations: &NomiMcpDeclarations| {
+            let mut servers = std::collections::HashMap::new();
+            crate::factory::nomi::merge_host_declared_mcp_servers(
+                &mut servers,
+                declarations,
+                "conv-declared",
+                true,
+            );
+            servers
+        };
+
+        // 1. The declared server's tool is on the surface under its canonical
+        //    `mcp__<server>__…` name.
+        let declared = declaration(r#"{ "url": "URL" }"#);
+        let servers = merged(&declared);
+        assert_eq!(servers.len(), 1, "{servers:?}");
+        let mut config = make_test_config();
+        config.extra_mcp_servers = servers;
+        let names = tool_names_for_config(config).await;
+        assert!(
+            names.iter().any(|name| name.starts_with("mcp__declared__")),
+            "a declared server must reach the session tool surface: {names:?}"
+        );
+
+        // 2. `[tools]` is still the last word: the whole server goes away.
+        let mut config = make_test_config();
+        config.tool_policy = NomiToolPolicy {
+            disabled: vec!["mcp__declared__*".to_owned()],
+            ..NomiToolPolicy::default()
+        };
+        config.extra_mcp_servers = merged(&declared);
+        let names = tool_names_for_config(config).await;
+        assert!(
+            !names.iter().any(|name| name.starts_with("mcp__declared__")),
+            "the host denylist must remove the whole declared server: {names:?}"
+        );
+
+        // 3. `enabled: false` declares the server without connecting to it.
+        let disabled = declaration(r#"{ "url": "URL", "enabled": false }"#);
+        assert!(
+            merged(&disabled).is_empty(),
+            "a disabled declaration must not merge"
+        );
+
+        // 4. Non-vacuity + the owner gate, at session level: the same file in a
+        //    non-owner session produces no such tool at all. Without this the
+        //    first assertion could pass for the wrong reason.
+        let mut servers = std::collections::HashMap::new();
+        crate::factory::nomi::merge_host_declared_mcp_servers(
+            &mut servers,
+            &declared,
+            "conv-secondary",
+            false,
+        );
+        assert!(servers.is_empty(), "{servers:?}");
+        let mut config = make_test_config();
+        config.extra_mcp_servers = servers;
+        let names = tool_names_for_config(config).await;
+        assert!(
+            !names.iter().any(|name| name.starts_with("mcp__declared__")),
+            "a non-owner session must not receive host declarations: {names:?}"
+        );
     }
 
     /// A1 + A4: adopting no policy must leave the tool surface exactly as it was,

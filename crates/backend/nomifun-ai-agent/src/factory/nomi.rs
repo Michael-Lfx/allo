@@ -1964,7 +1964,10 @@ async fn load_user_mcp_servers(
 /// capability** — a stdio server runs a local process and a remote one can carry
 /// credentials — and a non-owner principal only ever gets a plain Nomi
 /// conversation (see `docs/architecture/data-and-storage.zh.md` §安装级执行权限).
-fn merge_host_declared_mcp_servers(
+///
+/// `pub(crate)` so the manager-level session test can drive the real merge
+/// instead of a copy of it (`manager::nomi::agent::tests`).
+pub(crate) fn merge_host_declared_mcp_servers(
     extra_mcp_servers: &mut HashMap<String, McpServerConfig>,
     declarations: &NomiMcpDeclarations,
     conversation_id: &str,
