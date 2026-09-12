@@ -616,7 +616,8 @@ FunctionEnd
  StrCpy $R4 1
  ${If} ${FileExists} "$R5"
   DetailPrint "$(directmlDownloadViaCurl)"
-  ExecWait '"$R5" -L --fail --show-error --connect-timeout 60 --max-time 600 -o "$TEMP\flowy-DirectML.nupkg" "${DIRECTML_NUGET_URL}"' $0
+  ; NSIS only accepts " or ` as string delimiters — single quotes split args.
+  ExecWait `"$R5" -L --fail --show-error --connect-timeout 60 --max-time 600 -o "$TEMP\flowy-DirectML.nupkg" "${DIRECTML_NUGET_URL}"` $0
   ${If} $0 == 0
    StrCpy $R4 0
   ${Else}
@@ -626,7 +627,7 @@ FunctionEnd
 
  ${If} $R4 != 0
   DetailPrint "$(directmlDownloadViaPowershell)"
-  ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri ''${DIRECTML_NUGET_URL}'' -OutFile ''$TEMP\flowy-DirectML.nupkg''; exit 0 } catch { Write-Error $$_; exit 1 }"' $0
+  ExecWait `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri '${DIRECTML_NUGET_URL}' -OutFile '$TEMP\flowy-DirectML.nupkg'; exit 0 } catch { Write-Error $$_; exit 1 }"` $0
   ${If} $0 != 0
    DetailPrint "$(directmlDownloadError)"
    Abort "$(directmlAbortError)"
@@ -644,7 +645,7 @@ FunctionEnd
  ${IfNot} ${FileExists} "$R5"
   StrCpy $R5 "$SYSDIR\tar.exe"
  ${EndIf}
- ExecWait '"$R5" -xf "$TEMP\flowy-DirectML.nupkg" -C "$TEMP\flowy-directml-extract"' $0
+ ExecWait `"$R5" -xf "$TEMP\flowy-DirectML.nupkg" -C "$TEMP\flowy-directml-extract"` $0
  ${If} $0 != 0
   DetailPrint "$(directmlExtractError)"
   Abort "$(directmlAbortError)"
