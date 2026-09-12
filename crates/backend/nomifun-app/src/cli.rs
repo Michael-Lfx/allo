@@ -130,6 +130,16 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub adopt_store_tool_policy: bool,
 
+    /// Adopt `~/.agent-store/mcp.json` as this host's MCP server declaration
+    /// file (the user-level `mcpServers` object; `20` §7.9 / `21` D14).
+    ///
+    /// Same posture as `--adopt-store-tool-policy`: the desktop and web hosts
+    /// point at the same agent-store directory, so reading declarations there
+    /// would silently add MCP servers to *their* sessions too. Only
+    /// `apps/agent-store` (the dedicated Store host) turns this on.
+    #[arg(long, hide = true)]
+    pub adopt_store_mcp_declarations: bool,
+
     /// Do **not** install the embedded (synchronous, parallel-only) Agent
     /// execution deployment for this host's Nomi sessions.
     ///

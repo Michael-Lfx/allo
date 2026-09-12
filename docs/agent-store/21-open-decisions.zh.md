@@ -24,6 +24,7 @@
 | **D11** | 协议增量批准 | A 全部（additive 优先）/ B 只批准 additive / C 全不批 | **A** | R12、R15、R17、R20、R21、R25 | **A** ✅（R17 的 `skill/create\|update\|delete` 已于 2026-09-11 批 4 按 additive 落地：WS-only、不进 SDK 包、无 HTTP 绑定；未新增第 4 个方法——`skill/copy` 与编辑面所需的 `skill/source` 都需新拍板，见 `16` R17 落地记录） |
 | **D12** | 数据源口径（3 项子决策） | 见 §D12 | **A** | R5、R8、R14 | **A** ✅ |
 | **D13** | 卡点处置四档（2026-09-11 卡点审查后定执行顺序；**同日 C 档二次复核改判**） | A 全做（R17 三动词 UI + R16 `agent` 开关 + 措辞订正）→ B 全做（R17 编辑字段级 patch + 复制原语 + R14 加列迁移）→ D（R22 两步同批）→ C **按性质分别处置**（原写「维持不动，仅 R33 开立项页」）：R23/R24 → 已批准待排期；R20 → 拆 R20a 可做 / R20b 等待；R15 → 载体选型独立拍板；R33 → 立项页已建；R6① → 改判为产品取舍 | **按此顺序** | R6①、R14、R15、R16、R17、R20、R22、R23 / R24、R33 | **已批准并执行（2026-09-11，用户指令）** ✅——判定与逐条依据见 `16` §5.3「卡点处置四档」。**改判说明**：C 档原「维持不动」的表述被复核推翻——它把**排期**误写成**决策阻塞**（R23/R24 的 `21` D6=A 早已批准）、把**可做部分**一起挂死（R20 归属/R15 载体的数据其实已具备）、把**不存在的守卫面风险**当阻塞理由（R6①，docs 全文已内联进 bundle）、且**唯一承诺动作未兑现**（R33 立项页当时并不存在）。改判只改定性与解锁条件，「未做」这一事实不变 | **执行结果（2026-09-11，本会话）**：**A 档全部完成**（R17 三动词 WebUI + R16 `agent` 分区开关 + 措辞订正）；**B 档 ①② 完成**（`skill/update` 服务端字段级合并、`skill/copy` + 目录级复制原语，含 UI），**B 档 ③ R14 ✅ 已完成（2026-09-11 R14 轮）**（新迁移两列 + 写入点 / 仓储 / 读回投影 / 前端重载回填全链路；验收＝重载后仍显示上一轮 token 与金额，真实读数见 `16` §5.3「R14 逐轮 usage 持久化 · 落地记录」）；**D 档 R22 已完成（2026-09-11）**（两步同批落地：值不入快照 + 启动按引用注入，见 §D5「落地情况」）；**C 档立项页已兑现**（`22-webui-productionization.zh.md`，四组 + 验收 + 假保护红线 + §6 V1–V4）。真实读数：`nomifun-app-server --lib` **94/0**、`nomifun-extension --lib` **444/0/5 ignored**、`cargo check --tests --workspace` **exit 0**、`web test` **347 passed/1 skipped**、`typecheck`/`build` 均 exit 0；明细见 `16` §5.3「A / B 档与 C 档立项页 · 本轮落地记录」。（**2026-09-11 R14 轮追加的 B 档 ③ 真实读数**：`nomifun-db --test app_server_context_usage_repository` **5 passed / 0 failed**、`nomifun-app-server --lib` **96 / 0**（+2 例）、`nomifun-extension --lib` **444 / 0 / 5 ignored**、`cargo check --tests --workspace` **exit 0**、`web test` **362 passed / 1 skipped**、`typecheck` / `build` 均 exit 0、client 两文件 **19 passed**；明细见 `16` §5.3「R14 逐轮 usage 持久化 · 落地记录」。**同轮发现既有基线红（非本项、已证伪归属、未修）**：`cargo test -p nomifun-db` 整包在 `tests/id_schema_contract.rs` 有 2 例失败——表数硬编码 `110` 实际 **114**；`oauth_tokens.registration_id` 期望 TEXT 实际 **INTEGER**（出自迁移 `052`），把 `058` 移出迁移目录重跑同样失败） |
+| **D14** | MCP 声明文件的接入路径（Kimi 式 `mcp.json`） | ① 载体：A `~/.agent-store/mcp.json`（Kimi 同名同形）/ B `config.toml [mcp.servers]` / C 两者；② 落点与冲突：A 纯内存注入、同名文件优先 / B 投影成 `mcp_servers` 行 / C 先 A 后 B 可选；③ 项目级：A 只允许 http·sse / B 默认全允许 / C 整体不做 | ①**A** ②**C** ③**C** | 无（新增能力，不阻塞既有 R） | **①A ②C ③C** ✅（2026-09-12 用户拍板；规格见 `20` §7.9，落地见 `20` §9 第 8 行与 §9.3） |
 
 > **拍板记录（2026-09-10，用户回复「全部按建议」）**。随之生效的附加默认值：
 > - **D3**：未配置 `[approvals]` 时**完全放行**（对现有行为零影响），只有被显式列出的工具才走审批。
@@ -204,6 +205,30 @@
 | **费用展示**（R14） | A 用 models.dev catalog 定价，无价则只显示 token / B 自维护定价表 / C 不做费用 | **A**（已有实现基础：`MoaSlotPrice`，需补普通 turn 的取价路径）（批 6 追加：费率与**逐轮 token** 都在时还算「本轮金额」，token 取自 App Server 对 `turn_completed` 的 additive 投影，见 `16` R14 ⑥） |
 | **工具风险分级**（R8） | A 由 `config.toml [approvals]` 声明 / B 内置按类别分级 / C 不做 | **A**（与 D3=B 配套；选 C 则 D3 只能选 A） |
 | **MCP 官方接入路径**（R5） | A 以现有 `.codebuddy-connector` + `mcpServers` 为官方推荐并写进文档 / B 等原生格式定义后再写 | **A**（不写就只能是我编，文档宁缺勿编） |
+
+---
+
+## D14 · MCP 声明文件的接入路径（Kimi 式 `mcp.json`）
+
+**背景**：`D12` 已把「MCP 官方接入路径」定为 **A ＝ 现有 `.codebuddy-connector` + `mcpServers`**，即**市场 / 快照分发**。该路径的前提是 server 已经被打包进市场条目或插件，**没有**「本机自己写一个 server 就能用」的入口。参考实现 Kimi Code CLI 提供了后者：`~/.kimi-code/mcp.json`（用户级，跨项目）+ `<cwd>/.kimi-code/mcp.json`（项目级，只对当前仓库），schema 为 `{"mcpServers": {…}}`，详见 <https://www.kimi.com/code/docs/kimi-code-cli/customization/mcp.html>。
+
+**本决策不取代 `D12`**：市场仍是**分发**路径，宿主文件是**本机自定义**路径，两者并存。
+
+| 子项 | 选项 | ⭐ 建议 | 结果 |
+| --- | --- | --- | --- |
+| **① 载体** | A `~/.agent-store/mcp.json`（Kimi 同名同形，schema 直接复用仓库既有的 `mcpServers` 解析资产：导入器 / 市场解析 / 终端注入三处已在用）／ B `~/.agent-store/config.toml [mcp.servers]`（TOML，复用引擎既有 `McpConfig` 形状、与 `[tools]`/`[credentials]` 同文件）／ C 两者都支持 | **A**（可与 Kimi / Claude Code 的 `mcp.json` 互相复制；项目级层有地方放；`config.toml` 保持「策略 + 凭据」语义） | **A** ✅ |
+| **② 落点与冲突** | A 纯内存注入、不进 DB；同名时文件优先于 DB 行 ／ B 投影成 `mcp_servers` 行（`original_json` 标 provenance + 启动 reconcile + 消失则软删）／ C 先 A，B 作为后续可选开关 | **C**（先拿到可用闭环，同时保留升级路径） | **C** ✅（先 A；B **未排期**） |
+| **③ 项目级** | A 默认只允许 http·sse，stdio 需在 `config.toml` 显式打开 ／ B 默认全允许（对齐 Kimi 的 `Trust this folder` 默认值）／ C 整体不做，只做用户级 | **C** | **C** ✅ |
+
+**③ 选 C 的理由（安全）**：Store 是**常驻服务端**，会为任意已注册 workspace 构建会话，且**没有** Kimi 那样的交互式信任弹窗面。若默认全允许，任何 clone 下来的仓库里塞一个 `command` 就等于让服务端执行本地命令。选 C 后这条攻击面直接不存在；将来要开，A 是默认口径。（`<workspace>/.agent-store/mcp.json` 的位置约定已在 `20` §7.9 写明为**预留、未启用**，实现不读它。）
+
+**② 的可见性边界（必须与实现一起读）**：不投影进 DB 意味着文件声明的 server **不出现在** `connector/list|get` 目录、**不可被** preset `mcp_server_ids` 引用、**没有**持久化的 `last_test_status` / `tools`。换来的是：声明文件与导入器 / UI **不争**同一行所有权（`McpConfigService::add_server` 是按名 upsert），也不存在「文件删了、DB 行还在」的 GC 问题。升级到 B 时这些边界需要逐条重写。
+
+**安全口径（与 `06` 划清边界）**：因为不投影，`mcp.json` 里的明文 `env` / `headers` 值只存在于**用户自己的文件**里——**不进** data-dir 备份、**不进**快照、**不进** DB 行。本方案**不声称**它被加密或托管；需要集中保管就走 `secret:NAME` 引用 + `config.toml [credentials]`（`D5=C` / `17` §6）。
+
+**来源优先级**（写进 `05`）：请求级绑定（`resolve_mcp_servers`，既有语义不动）→ **`mcp.json` 声明** → `mcp_servers` DB 行 → 会话快照 server。`[tools]` 永远**最后**求交，声明不能绕过任何策略层。
+
+**有意行为**：声明是**宿主级能力**（与 `[tools]` / `[credentials]` 同性质），因此 App Server 会话即使 `mcp_server_ids = Some(vec![])` 也会拿到它。理由：那道围栏约束的是「快照 / preset 授予了什么」，不是「宿主操作者在自己机器上声明了什么」——操作者就是信任根。唯一收窄手段是 `[tools]`。
 
 ---
 

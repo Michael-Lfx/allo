@@ -351,6 +351,33 @@ state: "not-installed" | "installed" | "disabled"
 - 文档化状态机：`not-installed → installed → disabled →（enable）installed`；
   卸载任意时刻可用。
 
+#### 4.5.1 MCP server 的来源与优先级（`21` D14）
+
+本机可以自己声明 MCP server，不必先经过市场 / 快照安装。宿主读 `~/.agent-store/mcp.json`
+（用户级，`{"mcpServers": {…}}`，与 Kimi Code CLI **同名同形**；**项目级
+`<workspace>/.agent-store/mcp.json` 预留但未启用**）。schema、字段取舍与 server key
+校验规则见 `20` §7.9。
+
+一次会话构建时，MCP server 的合并优先级（从强到弱）：
+
+1. **请求级绑定**（`resolve_mcp_servers`：宿主请求 / 网关配置携带的 server）——既有语义不变；
+2. **`mcp.json` 声明**——文件里声明的 server；
+3. **`mcp_servers` DB 行**——快照 / 市场导入或 Allo UI 注册的 Connector，仍受本会话
+   Connector id 栅栏的约束（见上表）；
+4. 会话快照 server（owner-only；App Server 会话不合并这一类）。
+
+`[tools]` 的 `enabled` / `disabled` 永远**最后**求交，因此声明不能扩大任何既有收窄。
+
+两条必须知道的边界：
+
+- **可见性**：文件声明的 server **不在** `connector/*` 目录里、**不可被** preset 的
+  `mcp_server_ids` 引用、**没有**持久化的 `last_test_status` / `tools`，`connector/test`
+  也不覆盖它——它不投影进 `mcp_servers` 表（`21` D14 ②=C）。唯一读面是 `config/get`
+  的 `mcp` 段（§4.10）。
+- **作用域**：声明是**宿主级能力**，与 `[tools]` / `[credentials]` 同性质——App Server
+  会话即使没有绑定任何 Connector 也会拿到它。那道栅栏约束的是「快照 / preset 授予了
+  什么」，不是「宿主操作者在自己的机器上声明了什么」。
+
 ### 4.6 Marketplace（市场源，roadmap Phase 2）
 
 市场（Marketplace）是**软件源**（类似 winget source）：按 `github` / `git` /
@@ -592,7 +619,17 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
   "default_model": "opencode/mimo-v2.5-free",
   "providers": [
     { "name": "opencode", "enabled": true, "models": ["laguna-s-2.1-free", "mimo-v2.5-free"] }
-  ]
+  ],
+  "mcp": {
+    "exists": true,
+    "servers": [
+      { "name": "filesystem", "transport": "stdio", "enabled": true },
+      { "name": "linear", "transport": "http", "enabled": true }
+    ],
+    "rejected": [
+      { "name": "with-cwd", "reason": "`cwd` is not supported (…) — remove it to load this server" }
+    ]
+  }
 }
 ```
 
@@ -602,6 +639,13 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
 - `default_model` 无声明时是显式 `null`，与「尚未读取」区分。
 - `providers` 是**文件里声明的事实**（config-only 投影，与 `models/list` 的 config
   分支同源），不含 `api_key` / `base_url`，也不含已注册 provider 行。
+- `mcp` 是 `~/.agent-store/mcp.json` 的**只读投影**（§4.5.1）：`servers` 是按 key 排序的
+  已接受条目（`transport` ∈ `stdio|http|sse`），`rejected` 是逐条目拒绝的原因（不支持的
+  字段、非法 key、结构冲突），`error` 则是**整份文件**读不成声明时的原因（JSON 非法、
+  顶层不是对象）——没有它，一个写坏的文件与一个空文件在界面上完全一样。`mcp.json` 缺失时
+  该字段是显式 `null`；文件存在但读不动时 `exists:true` + 空列表 + `error`。`env` /
+  `headers` 的**值**（含明文凭据）永不进入此视图，只有 key 名会。该文件**不在**
+  `config/set` 的白名单里——它只能由用户手写，`config/set` 只负责把写完后的投影读回来。
 
 `config/set` 只接受白名单字段（当前仅 `default_model`）：请求里出现 `api_key` /
 `base_url` / 路径等**任何**其他键都是 `invalid_request`（不是静默忽略）；值为空、

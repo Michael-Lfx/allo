@@ -40,6 +40,14 @@ pub struct AppConfig {
     /// hosts read the same file for providers/marketplaces, and a tool policy is
     /// a property of the *deployment*, not of the file being readable.
     pub adopt_store_tool_policy: bool,
+    /// Adopt that directory's `mcp.json` as this host's MCP server declaration
+    /// file (`20` §7.9 / `21` D14).
+    ///
+    /// Resolved as the sibling of `agent_store_config_path`, so a host that
+    /// points at a custom config file gets a matching declaration file. `false`
+    /// on every host except `apps/agent-store`, for the same reason as
+    /// `adopt_store_tool_policy`: readability is not ownership.
+    pub adopt_store_mcp_declarations: bool,
     /// Whether this host installs the **embedded** (synchronous, parallel-only)
     /// Agent execution deployment for its Nomi sessions.
     ///
@@ -103,6 +111,7 @@ impl Default for AppConfig {
             local_trust_secret: None,
             agent_store_config_path: None,
             adopt_store_tool_policy: false,
+            adopt_store_mcp_declarations: false,
             install_embedded_agent_execution: true,
         }
     }

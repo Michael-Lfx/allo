@@ -859,6 +859,56 @@ pub struct AppServerConfigView {
     /// absent-versus-explicit distinction the `memory` field makes.
     #[serde(default)]
     pub tools: Option<crate::NomiToolPolicy>,
+    /// `~/.agent-store/mcp.json` — the host's MCP server declarations (`20` §7.9
+    /// / `21` D14), projected read-only.
+    ///
+    /// Absent when the file does not exist (or the host cannot resolve it), so a
+    /// client can tell "no declarations" from "declared nothing". This is the
+    /// **only** read surface for a declared server: declarations deliberately do
+    /// not become `mcp_servers` rows, so they never appear in `connector/*`.
+    /// Credential *values* have no field here — only key names ever cross.
+    #[serde(default)]
+    pub mcp: Option<AppServerConfigMcpView>,
+}
+
+/// The `mcp.json` projection inside [`AppServerConfigView`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerConfigMcpView {
+    /// The declaration file is present on this host.
+    pub exists: bool,
+    /// Accepted entries, ordered by server key.
+    #[serde(default)]
+    pub servers: Vec<AppServerConfigMcpServerView>,
+    /// Entries this host refused, with the reason the user has to fix. Refused
+    /// entries are reported rather than silently dropped: a `disabledTools` a
+    /// user believes is in force is a security problem, not a cosmetic one.
+    #[serde(default)]
+    pub rejected: Vec<AppServerConfigMcpRejectionView>,
+    /// Why the whole file was unreadable as declarations (invalid JSON, wrong
+    /// top level) — reported instead of quietly answering "nothing declared",
+    /// which would look identical to an empty file. Omitted when the file
+    /// parsed; entries that were refused individually appear in `rejected`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One accepted entry of `mcp.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerConfigMcpServerView {
+    /// The `mcpServers` key, i.e. the `<server>` segment of `mcp__<server>__*`.
+    pub name: String,
+    /// `stdio` | `http` | `sse`.
+    pub transport: String,
+    /// `enabled = false` keeps the entry declared but out of every session.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// One refused entry of `mcp.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerConfigMcpRejectionView {
+    pub name: String,
+    pub reason: String,
 }
 
 /// `[memory]` in the settings file, as far as the wire needs it.

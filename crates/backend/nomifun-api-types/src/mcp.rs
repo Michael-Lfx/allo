@@ -12,7 +12,7 @@ pub use nomifun_common::McpServerId;
 /// MCP server transport configuration (tagged union).
 ///
 /// `http` represents Streamable HTTP (the MCP standard); `sse` is legacy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum McpTransport {
     #[serde(rename = "stdio")]

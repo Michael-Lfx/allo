@@ -1183,6 +1183,11 @@ pub struct AppServices {
     /// `[memory].distill_enabled`. Every host that does not opt in carries
     /// [`nomifun_api_types::NomiToolPolicy::default`], which constrains nothing.
     pub tool_policy: nomifun_api_types::NomiToolPolicy,
+    /// Host-owned MCP server declarations, resolved **once at startup** from
+    /// `mcp.json` next to the agent-store config file (`20` §7.9 / `21` D14).
+    /// Same launch-time contract as `tool_policy`; every host that does not opt
+    /// in carries the empty default, which declares nothing.
+    pub mcp_declarations: nomifun_api_types::NomiMcpDeclarations,
     pub runtime_capabilities: RuntimeCapabilities,
     /// Authentication policy (single source of truth, replaces `local: bool`).
     pub auth_policy: AuthPolicy,
@@ -1576,6 +1581,78 @@ fn resolve_host_tool_policy(
     path.and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok)
         .map(|stored| stored.tool_policy())
         .unwrap_or_default()
+}
+
+/// Resolve this host's MCP server declarations from `mcp.json`.
+///
+/// The declaration file is the **sibling** of the resolved agent-store config
+/// file, so a host pointed at a custom `config.toml` gets a matching `mcp.json`
+/// and tests can inject both at once. Same two load-bearing properties as the
+/// tool policy above, with one addition:
+///
+/// - **Opt-in, not file-presence-driven** (`--adopt-store-mcp-declarations`, set
+///   only by `apps/agent-store`);
+/// - **fail-open to *nothing declared*.** A missing or unparseable file, or a
+///   rejected entry, yields fewer servers — never a widened tool surface, and
+///   never a change to any existing behaviour. The reasons are returned so the
+///   host can report them once at startup instead of on every session build.
+///
+/// Kept pure so the rule above is testable without booting a database.
+fn resolve_host_mcp_declarations(
+    adopt: bool,
+    config_path: Option<&std::path::Path>,
+) -> (nomifun_api_types::NomiMcpDeclarations, Vec<String>) {
+    if !adopt {
+        return (nomifun_api_types::NomiMcpDeclarations::default(), Vec::new());
+    }
+    let Some(path) = config_path.map(declaration_file_for_config) else {
+        return (nomifun_api_types::NomiMcpDeclarations::default(), Vec::new());
+    };
+    let mut warnings = Vec::new();
+    if !path.is_file() {
+        // Absent is the normal state for a host that never declared a server.
+        return (nomifun_api_types::NomiMcpDeclarations::default(), warnings);
+    }
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => {
+            warnings.push(format!(
+                "{} is unreadable ({error}); declaring no MCP servers",
+                path.display()
+            ));
+            return (nomifun_api_types::NomiMcpDeclarations::default(), warnings);
+        }
+    };
+    match nomifun_api_types::NomiMcpDeclarations::parse(&source) {
+        Ok(declarations) => {
+            for rejection in &declarations.rejected {
+                warnings.push(format!(
+                    "{}: mcpServers.{} was refused: {}",
+                    path.display(),
+                    rejection.name,
+                    rejection.reason
+                ));
+            }
+            (declarations, warnings)
+        }
+        Err(error) => {
+            warnings.push(format!(
+                "{} could not be parsed ({error}); declaring no MCP servers",
+                path.display()
+            ));
+            (nomifun_api_types::NomiMcpDeclarations::default(), warnings)
+        }
+    }
+}
+
+/// `mcp.json` lives next to the resolved `config.toml` (`~/.agent-store/mcp.json`
+/// by convention). The file with no parent (`config.toml` relative) resolves to
+/// a relative `mcp.json`, which is still the sibling a caller would expect.
+fn declaration_file_for_config(config_path: &std::path::Path) -> std::path::PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join("mcp.json")
 }
 
 impl AppServices {
@@ -3016,10 +3093,34 @@ impl AppServices {
             );
         }
 
+        // Host-owned MCP server declarations, read once at startup from
+        // `mcp.json` next to the same config file (`20` §7.9 / `21` D14). Same
+        // host gating as `[tools]`, and the same "report once here" posture:
+        // whether a declared server actually connects is per-session work.
+        let (mcp_declarations, declaration_warnings) = resolve_host_mcp_declarations(
+            config.adopt_store_mcp_declarations,
+            config.agent_store_config_path.as_deref(),
+        );
+        if config.adopt_store_mcp_declarations {
+            for warning in &declaration_warnings {
+                tracing::warn!(target: "agent_store_mcp", "{warning}");
+            }
+            tracing::info!(
+                target: "agent_store_mcp",
+                declared = mcp_declarations.servers.len(),
+                enabled = mcp_declarations.enabled_servers().count(),
+                refused = mcp_declarations.rejected.len(),
+                "agent-store mcp.json declarations adopted for this host"
+            );
+        }
+
         let factory = build_agent_factory(AgentFactoryDeps {
             // Cloned: the same policy is kept on `AppServices` so the host's
             // resolved policy is inspectable (doctor/logs) without rebuilding it.
             tool_policy: tool_policy.clone(),
+            // Same deal for the declarations: the factory consumes one clone and
+            // `AppServices` keeps the other for read views / diagnostics.
+            mcp_declarations: mcp_declarations.clone(),
             // Host composition: the desktop and web hosts install the embedded
             // (synchronous) deployment; a host that owns the durable execution
             // facade sets `--no-embedded-agent-execution`, so its sessions expose
@@ -3287,6 +3388,7 @@ impl AppServices {
             work_dir_is_cli_override,
             agent_store_config_path: config.agent_store_config_path.clone(),
             tool_policy,
+            mcp_declarations,
             delegate_sink_provider_slot,
             runtime_capabilities: capabilities.runtime_capabilities,
             auth_policy,
@@ -3677,6 +3779,76 @@ mod tests {
         let plain = dir.path().join("plain.toml");
         std::fs::write(&plain, "default_model = \"opencode/mimo\"\n").unwrap();
         assert!(resolve_host_tool_policy(true, Some(&plain)).is_unrestricted());
+    }
+
+    /// Same ownership rule for the MCP declaration file: it is read only by the
+    /// host that opted in, and it is resolved as the sibling of the config file.
+    #[test]
+    fn mcp_declarations_are_adopted_only_by_the_host_that_opts_in() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_model = \"opencode/mimo\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("mcp.json"),
+            r#"{ "mcpServers": { "filesystem": { "command": "npx", "args": ["-y", "srv"] } } }"#,
+        )
+        .unwrap();
+
+        // Not opted in: the sibling is readable, and still ignored.
+        let (ignored, warnings) = resolve_host_mcp_declarations(false, Some(&path));
+        assert!(ignored.is_empty(), "{ignored:?}");
+        assert!(warnings.is_empty(), "an ignored file must not warn: {warnings:?}");
+
+        // Opted in: the declaration is adopted.
+        let (adopted, warnings) = resolve_host_mcp_declarations(true, Some(&path));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(adopted.servers.len(), 1);
+        assert_eq!(adopted.enabled_servers().count(), 1);
+        assert_eq!(adopted.servers[0].name, "filesystem");
+        assert_eq!(adopted.servers[0].transport_kind(), "stdio");
+    }
+
+    /// A broken file, a bad entry or no file at all must declare **nothing**
+    /// (never a widened surface, never a change to existing behaviour), and the
+    /// reason must be reportable once at startup.
+    #[test]
+    fn mcp_declarations_fail_open_to_nothing_declared() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+
+        // Absent file: the normal state, and not a warning.
+        let (absent, warnings) = resolve_host_mcp_declarations(true, Some(&config));
+        assert!(absent.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // Unparseable file: nothing declared, one actionable warning.
+        std::fs::write(dir.path().join("mcp.json"), "{ not json").unwrap();
+        let (broken, warnings) = resolve_host_mcp_declarations(true, Some(&config));
+        assert!(broken.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("mcp.json"), "{warnings:?}");
+
+        // A rejected entry keeps its siblings and reports only itself.
+        std::fs::write(
+            dir.path().join("mcp.json"),
+            r#"{ "mcpServers": {
+                 "good": { "command": "npx" },
+                 "bad":  { "command": "npx", "cwd": "/tmp" }
+               } }"#,
+        )
+        .unwrap();
+        let (mixed, warnings) = resolve_host_mcp_declarations(true, Some(&config));
+        assert_eq!(mixed.servers.len(), 1);
+        assert_eq!(mixed.servers[0].name, "good");
+        assert_eq!(mixed.rejected.len(), 1);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("bad") && warnings[0].contains("`cwd`"), "{warnings:?}");
+
+        // No path at all (tests / hosts without the convention).
+        let (none, warnings) = resolve_host_mcp_declarations(true, None);
+        assert!(none.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[cfg(feature = "browser-use")]
