@@ -502,11 +502,18 @@ Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码
 2. **读面必须有 `error`**。整份文件解析失败时回 `exists:true` + 空列表 + `error`，否则「文件写坏了」与「文件是空的」在界面上完全一样。
 3. **`headers` 也解析 `secret:NAME`，DB 行不解析**。因为 `bearerTokenEnvVar` 被拒后文档把 header 凭据指向 `secret:NAME`，声明路径必须真的支持它；而 DB 行路径（`row_to_mcp_server_config`）只对 stdio `env` 解析、对 `headers` 不解析。这是**既有实现的不一致，本次未改**，如实登记以便后续收敛。
 
-**验证读数**：`nomifun-api-types --lib` **680 / 0**（新增 19 例）；`nomifun-app-server --lib` **123 / 0**（新增 3 例）；`nomifun-app --lib` **313 / 1**（唯一失败是既有基线红 `commands::stdio_common::tests::at_most_once_retries_undelivered_connection_failures`，本会话早前已用 `git stash` 在未改动基线上复现同一断言）；`nomifun-ai-agent --lib` **990 / 29 failed**（29 例全为 Windows 缺 `sh` 的环境性失败：`capability::cli_process` ×22、`manager::acp` ×6、`factory::construction_guard` ×1；本次新增 5 例全绿）；`web` **399 passed / 1 skipped**（与基线一致）；`check:docs-sync` **9 页 0 drift**；`check:agent-vocabulary` **同样的 8 处既有基线红**（无新增）。
+**验证读数**：`nomifun-api-types --lib` **680 / 0**（新增 19 例）；`nomifun-app-server --lib` **123 / 0**（新增 3 例）；`nomifun-app --lib` **313 / 1**（唯一失败是既有基线红 `commands::stdio_common::tests::at_most_once_retries_undelivered_connection_failures`，本会话早前已用 `git stash` 在未改动基线上复现同一断言）；`nomifun-ai-agent --lib` **992 / 29 failed**（29 例全为 Windows 缺 `sh` 的环境性失败，分布与上一轮完全一致：`capability::cli_process` ×22、`manager::acp` ×6、`factory::construction_guard` ×1；本次新增 6 例全绿）；`web` **399 passed / 1 skipped**（与基线一致）；`check:docs-sync` **9 页 0 drift**；`check:agent-vocabulary` **同样的 8 处既有基线红**（无新增）。
 
 **真二进制端到端（12/12 通过）**：`cargo build -p agent-store` 后以临时 HOME + 临时 data-dir 启动真实 `agent-store.exe`（`--port 0`），用原生 WS 走 `initialize` → `initialized` → `config/get`：① 合法 `mcp.json`（stdio + http + `enabled:false` + `cwd` 反例）→ `exists:true`、按 key 排序的三条 server（传输与 `enabled` 保真）、`bad` 一条被拒且原因点名 `cwd`，启动日志 `declared=3 enabled=2 refused=1` + 逐条 warn；② 坏 JSON → `exists:true` + 空列表 + `error`，启动日志 `could not be parsed … declaring no MCP servers`；③ 无文件 → `mcp: null`，日志 `declared=0`。三种情况下 `config/get` 的响应里都**不出现**任何凭据值（`[credentials]` 的值与 provider key）。
 
-**仍未覆盖（诚实登记）**：**「声明的 server 真的出现在会话工具面里、且能被 `[tools] disabled = ["mcp__<key>__*"]` 关掉」没有端到端断言**——它需要一个可编排的 LLM provider 注入完整会话，与 §9.2.2 的 `team/run` 缺口同源。当前覆盖的是：解析与全部校验规则（19 例）、宿主管线与双 flag 门控（2 例）、factory 注入/优先级/owner 门控/空声明（4 例）、**跨 crate 命名契约**（`declaration_keys_stay_addressable_by_a_whole_server_pattern` 对 1..=40 每个 key 长度逐个验证 `mcp__<key>__*` 命中引擎真实 canonical 工具名）、读面（3 例），以及上面 ①②③ 的真实二进制闭环。
+**会话级端到端（第四批补，2026-09-12）**：`declared_mcp_servers_reach_the_session_tool_surface`（`manager/nomi/agent.rs` tests）——用 wiremock 起一个 Streamable HTTP 的 MCP 端点，走**真实的声明合并**（`merge_host_declared_mcp_servers`，为此把它放宽到 `pub(crate)`）→ `NomiResolvedConfig.extra_mcp_servers` → 真实 `NomiAgentManager` → `tool_names()`，四条断言一次跑通：
+
+1. 声明的 server 的工具**真的出现在** provider 可见工具面（canonical `mcp__declared__…`）；
+2. 同会话 `[tools] disabled = ["mcp__declared__*"]` 把它**整组拿掉**（把「`[tools]` 是最后一道」从文档变成断言）；
+3. `enabled: false` 的声明**不合并**（不连、不注册）；
+4. 同一份声明在**非 owner 会话**里一个工具都不出现——这条同时把 owner 门控钉在会话级，并证明第 1 条不是空洞通过（合并被跳过时该前缀恰不存在）。
+
+**仍未覆盖（诚实登记）**：只剩**跨进程 App Server + 真实模型**那一层——「SDK 驱动 `agent/run`，由真实 provider 流式返回的工具列表里出现声明的 server」。它需要一个可编排的 LLM provider 注入完整 App Server 栈，与 §9.2.2 的 `team/run` 缺口同源。其余各层均已有断言：解析与全部校验规则（19 例）、宿主管线与双 flag 门控（2 例）、factory 注入/优先级/owner 门控/空声明（4 例）、**跨 crate 命名契约**（`declaration_keys_stay_addressable_by_a_whole_server_pattern` 对 1..=40 每个 key 长度逐个验证 `mcp__<key>__*` 命中引擎真实 canonical 工具名）、**会话级工具面（4 条断言）**、读面（3 例），以及上面 ①②③ 的真实二进制闭环。
 
 **有意未做（本批范围外，均已登记）**：
 
