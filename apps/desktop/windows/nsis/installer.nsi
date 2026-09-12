@@ -1,8 +1,9 @@
 ; Flowy fork of tauri-cli v2.11.2 NSIS template.
 ; Diff vs upstream:
 ; - WebView2: expand InstFiles details + branded estimate/wait copy
-; - DirectML: if system/app DirectML lacks DMLCreateDevice1, download
+; - DirectML: detect DMLCreateDevice1 / file version; if missing, download
 ;   Microsoft.AI.DirectML from nuget.org into $INSTDIR (side-by-side with exe)
+;   via curl/PowerShell (not NSISdl — TLS timeouts on nuget.org).
 ; Re-diff when upgrading @tauri-apps/cli.
 Unicode true
 ManifestDPIAware true
@@ -527,12 +528,34 @@ Function .onInit
  !endif
 FunctionEnd
 
-; Returns 1 in $R9 if the given DirectML.dll path exports DMLCreateDevice1, else 0.
+; Returns 1 in $R9 if PATH's PE file version is >= DirectML 1.1 (DMLCreateDevice1).
+; Works for both 32/64-bit DLLs because it only reads the version resource — unlike
+; LoadLibrary, which cannot load an x64 DLL into the (usually x86) NSIS process.
+!macro DirectMlFileVersionOk PATH
+ StrCpy $R9 0
+ ${If} ${FileExists} "${PATH}"
+  GetDLLVersion "${PATH}" $R0 $R1
+  ; $R0 = major<<16 | minor
+  IntOp $R2 $R0 / 65536
+  IntOp $R3 $R0 & 65535
+  ${If} $R2 > 1
+   StrCpy $R9 1
+  ${ElseIf} $R2 = 1
+   ${If} $R3 >= 1
+    StrCpy $R9 1
+   ${EndIf}
+  ${EndIf}
+ ${EndIf}
+!macroend
+
+; Returns 1 in $R9 if LoadLibrary(PATH) exports DMLCreateDevice1.
+; GetProcAddress's symbol name MUST be ANSI (`m`), not TCHAR (`t`) — Unicode NSIS
+; would otherwise pass a wchar string and always miss the export.
 !macro DirectMlHasCreateDevice1 PATH
  StrCpy $R9 0
  System::Call 'kernel32::LoadLibrary(t "${PATH}") i .r7'
  ${If} $7 != 0
-  System::Call 'kernel32::GetProcAddress(i r7, t "DMLCreateDevice1") i .r8'
+  System::Call 'kernel32::GetProcAddress(i r7, m "DMLCreateDevice1") i .r8'
   System::Call 'kernel32::FreeLibrary(i r7)'
   ${If} $8 != 0
    StrCpy $R9 1
@@ -541,18 +564,35 @@ FunctionEnd
 !macroend
 
 ; Download Microsoft.AI.DirectML into $INSTDIR when the machine cannot satisfy
-; Flowy.exe's hard import of DMLCreateDevice1. Uses NSISdl (progress UI) + tar.
+; Flowy.exe's hard import of DMLCreateDevice1. Prefer curl/PowerShell over NSISdl
+; (NSISdl often hits "Timed out on connecting" against modern nuget.org TLS).
 !macro EnsureDirectMlRedist
  SetDetailsView show
  DetailPrint "$(directmlChecking)"
 
- !insertmacro DirectMlHasCreateDevice1 "$INSTDIR\DirectML.dll"
+ ; 1) App-local side-by-side copy (may be x64; use version resource, not LoadLibrary)
+ !insertmacro DirectMlFileVersionOk "$INSTDIR\DirectML.dll"
  ${If} $R9 == 1
   DetailPrint "$(directmlAppOk)"
   Goto ensure_directml_done
  ${EndIf}
 
+ ; 2) Same-bitness DirectML visible to this installer process (SysWOW64 on x86 NSIS)
  !insertmacro DirectMlHasCreateDevice1 "DirectML.dll"
+ ${If} $R9 == 1
+  DetailPrint "$(directmlSystemOk)"
+  Goto ensure_directml_done
+ ${EndIf}
+
+ ; 3) Real System32 via Sysnative (x86 NSIS on x64 OS cannot LoadLibrary it)
+ !insertmacro DirectMlFileVersionOk "$WINDIR\Sysnative\DirectML.dll"
+ ${If} $R9 == 1
+  DetailPrint "$(directmlSystemOk)"
+  Goto ensure_directml_done
+ ${EndIf}
+
+ ; 4) Fallback: native $SYSDIR (x64 NSIS, or pure 32-bit OS)
+ !insertmacro DirectMlFileVersionOk "$SYSDIR\DirectML.dll"
  ${If} $R9 == 1
   DetailPrint "$(directmlSystemOk)"
   Goto ensure_directml_done
@@ -567,16 +607,44 @@ FunctionEnd
  RMDir /r "$TEMP\flowy-directml-extract"
  CreateDirectory "$TEMP\flowy-directml-extract"
 
- NSISdl::download "${DIRECTML_NUGET_URL}" "$TEMP\flowy-DirectML.nupkg"
- Pop $0
- ${If} $0 != "success"
+ ; Prefer 64-bit system curl (TLS 1.2+) via Sysnative when the installer is x86.
+ StrCpy $R5 "$WINDIR\Sysnative\curl.exe"
+ ${IfNot} ${FileExists} "$R5"
+  StrCpy $R5 "$SYSDIR\curl.exe"
+ ${EndIf}
+
+ StrCpy $R4 1
+ ${If} ${FileExists} "$R5"
+  DetailPrint "$(directmlDownloadViaCurl)"
+  ExecWait '"$R5" -L --fail --show-error --connect-timeout 60 --max-time 600 -o "$TEMP\flowy-DirectML.nupkg" "${DIRECTML_NUGET_URL}"' $0
+  ${If} $0 == 0
+   StrCpy $R4 0
+  ${Else}
+   DetailPrint "$(directmlCurlFailed)"
+  ${EndIf}
+ ${EndIf}
+
+ ${If} $R4 != 0
+  DetailPrint "$(directmlDownloadViaPowershell)"
+  ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri ''${DIRECTML_NUGET_URL}'' -OutFile ''$TEMP\flowy-DirectML.nupkg''; exit 0 } catch { Write-Error $$_; exit 1 }"' $0
+  ${If} $0 != 0
+   DetailPrint "$(directmlDownloadError)"
+   Abort "$(directmlAbortError)"
+  ${EndIf}
+ ${EndIf}
+
+ ${IfNot} ${FileExists} "$TEMP\flowy-DirectML.nupkg"
   DetailPrint "$(directmlDownloadError)"
   Abort "$(directmlAbortError)"
  ${EndIf}
  DetailPrint "$(directmlDownloadSuccess)"
 
  DetailPrint "$(directmlExtracting)"
- ExecWait `"$SYSDIR\tar.exe" -xf "$TEMP\flowy-DirectML.nupkg" -C "$TEMP\flowy-directml-extract"` $0
+ StrCpy $R5 "$WINDIR\Sysnative\tar.exe"
+ ${IfNot} ${FileExists} "$R5"
+  StrCpy $R5 "$SYSDIR\tar.exe"
+ ${EndIf}
+ ExecWait '"$R5" -xf "$TEMP\flowy-DirectML.nupkg" -C "$TEMP\flowy-directml-extract"' $0
  ${If} $0 != 0
   DetailPrint "$(directmlExtractError)"
   Abort "$(directmlAbortError)"
@@ -600,7 +668,8 @@ FunctionEnd
   Abort "$(directmlAbortError)"
  ${EndIf}
 
- !insertmacro DirectMlHasCreateDevice1 "$INSTDIR\DirectML.dll"
+ ; Cannot LoadLibrary an x64 DLL from x86 NSIS — trust version resource instead.
+ !insertmacro DirectMlFileVersionOk "$INSTDIR\DirectML.dll"
  ${If} $R9 != 1
   DetailPrint "$(directmlVerifyError)"
   Abort "$(directmlAbortError)"
