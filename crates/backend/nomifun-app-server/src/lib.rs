@@ -2800,6 +2800,17 @@ async fn execute_agent_run(
     apply_mentions(state, &mut resolved_preset_id, &mut overrides, &request.mentions).await?;
     let preset = preset_service.get(&resolved_preset_id).await?;
     validate_agent_store_preset_source(preset.source, preset.source_key.as_deref(), Some(&preset.name))?;
+    // A Preset that `install/disable` switched off must be named as such.
+    // `resolve` refuses it too, but with a generic message; the code is what a
+    // client branches on, and "you turned this off" is not "this is broken".
+    if !preset.enabled {
+        return Err(AppServerError::new(
+            "preset_disabled",
+            format!("preset {resolved_preset_id} is disabled"),
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
     let mut snapshot = preset_service
         .resolve(
             &resolved_preset_id,

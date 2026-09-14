@@ -175,6 +175,30 @@ async fn participant_input(
             false,
         ));
     };
+    // A member switched off by `install/disable` must be named as such. The
+    // `resolve` below refuses a disabled Preset, but only with a generic
+    // message; the code is what a client branches on, and "switched off" is not
+    // "broken". Same treatment as `agent_not_installed` above.
+    //
+    // This is the backstop: `resolve_team_members` already refuses a disabled
+    // member up front, because this path is only reached while a template is
+    // being materialized and would miss a member disabled after the first run.
+    let enabled = presets
+        .get(preset_id)
+        .await
+        .map_err(AppServerError::from)?
+        .enabled;
+    if !enabled {
+        return Err(AppServerError::new(
+            "agent_disabled",
+            format!(
+                "team member {} is disabled; enable it before starting the team",
+                definition.summary.id
+            ),
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
     let snapshot: ResolvedPresetSnapshot = presets
         .resolve(preset_id, nomifun_api_types::PresetTarget::ExecutionStep, None, PresetOverrides::default())
         .await
@@ -365,6 +389,50 @@ async fn resolve_team_members(
             .map_err(AppServerError::from)?;
         seen.push(member.summary.id.clone());
         members.push((member.summary.name.clone(), member));
+    }
+
+    // Every participant must be switched on before anything else is decided.
+    // This runs on *every* Team Run, whereas the equivalent check while
+    // materializing the template only ever fires on the first one —
+    // `ensure_team_template` reuses an existing template, so a member disabled
+    // afterwards would otherwise be accepted silently.
+    let presets = state.preset_service.as_ref().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "App Server Preset service is unavailable",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })?;
+    for (_, definition) in &members {
+        let preset_id = definition
+            .summary
+            .preset_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppServerError::new(
+                    "agent_not_installed",
+                    format!(
+                        "team member {} is not installed; run install/* before starting the team",
+                        definition.summary.id
+                    ),
+                    StatusCode::BAD_REQUEST,
+                    false,
+                )
+            })?;
+        if !presets.get(preset_id).await.map_err(AppServerError::from)?.enabled {
+            return Err(AppServerError::new(
+                "agent_disabled",
+                format!(
+                    "team member {} is disabled; enable it before starting the team",
+                    definition.summary.id
+                ),
+                StatusCode::BAD_REQUEST,
+                false,
+            ));
+        }
     }
     Ok((team, members))
 }

@@ -722,6 +722,126 @@ async fn importer_disable_moves_runtime_state_for_connector_and_expert() {
     );
 }
 
+/// A disabled expert must be refused by name. `PresetService::resolve` already
+/// refuses a disabled Preset, but with a generic message; the wire code is what
+/// a client branches on, and "you switched this off" is not "this is broken".
+#[tokio::test]
+async fn importer_disabled_agent_is_named_in_run_refusals() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/imports",
+            serde_json::json!({
+                "source_path": SOFTWARE_COMPANY,
+                "source_kind": "codebuddy-plugin",
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let result = body_json(run).await;
+    let snapshot_id = result["snapshot_id"].as_str().unwrap().to_owned();
+    let install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/installs",
+            serde_json::json!({ "snapshot_id": snapshot_id }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install.status(), StatusCode::OK);
+
+    let status = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/installs/{snapshot_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    let status_json = body_json(status).await;
+    let components = status_json["components"].as_array().unwrap();
+    let agent_ids: Vec<String> = components
+        .iter()
+        .filter(|component| component["kind"] == "agent")
+        .map(|component| component["id"].as_str().unwrap().to_owned())
+        .collect();
+    let team_id = components
+        .iter()
+        .find(|component| component["kind"] == "team")
+        .map(|component| component["id"].as_str().unwrap().to_owned())
+        .expect("software-company ships a team");
+    assert!(!agent_ids.is_empty(), "software-company ships agents");
+
+    // Disable every agent, so whichever one leads the team is off too.
+    let disable = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/installs/{snapshot_id}/disable"),
+            serde_json::json!({ "component_ids": agent_ids }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(disable.status(), StatusCode::OK, "disable must succeed");
+
+    let agent_run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/agent/run",
+            serde_json::json!({
+                "agent_id": "",
+                "goal": "summarize",
+                "mentions": [{ "kind": "agent", "id": "wb-software-company-software-architect" }],
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let agent_body = body_json(agent_run).await;
+    assert_eq!(
+        agent_body["code"], "preset_disabled",
+        "agent/run must name a disabled Preset instead of a generic resolve failure: {agent_body}"
+    );
+
+    let team_run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/team/run",
+            serde_json::json!({ "team_id": team_id, "goal": "ship the release" }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let team_body = body_json(team_run).await;
+    assert_eq!(
+        team_body["code"], "agent_disabled",
+        "team/run must name a disabled member instead of a generic resolve failure: {team_body}"
+    );
+}
+
 /// An empty component list must not read as "uninstall the whole snapshot":
 /// the call sites always pass an explicit selection, and a wipe is not
 /// something either of them could recover from.
