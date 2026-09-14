@@ -29,6 +29,10 @@
       "group": "check",
       "desc": "Enforce AgentExecution as the only active collaboration aggregate and permit only exact migration fences."
     },
+    "check:windows-console-hide": {
+      "group": "check",
+      "desc": "Keep agent tool spawns (git/LSP/ffmpeg) and Windows shell transport from flashing console windows."
+    },
     "check:codemirror-runtime": {
       "group": "check",
       "desc": "Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package."

@@ -15,6 +15,17 @@ use tokio::process::Command;
 use crate::assets::persist_bytes;
 use crate::progress::report_media_progress;
 
+/// Spawn ffmpeg/ffprobe without flashing a console on Windows GUI hosts.
+fn media_command(bin: impl AsRef<Path>) -> Command {
+    let mut cmd = Command::new(bin.as_ref());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Per-model maximum seconds for a single generation request.
 pub fn max_clip_duration_for_model(model: &str) -> u32 {
     if nomifun_cloud::is_wan3_model(model) {
@@ -261,7 +272,7 @@ fn ffprobe_executable(ffmpeg: &Path) -> PathBuf {
 
 async fn probe_video_duration_secs(video_path: &Path, ffmpeg: &Path) -> Option<f64> {
     let ffprobe = ffprobe_executable(ffmpeg);
-    let output = Command::new(&ffprobe)
+    let output = media_command(&ffprobe)
         .args([
             "-v",
             "error",
@@ -444,7 +455,7 @@ async fn convert_png_to_jpeg(png_path: &Path, jpg_path: &Path) -> Result<(), Too
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("create frame dir: {e}")))?;
     }
-    let output = Command::new(&ffmpeg)
+    let output = media_command(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(png_path)
         .args(["-q:v", "4", "-y"])
@@ -468,7 +479,7 @@ async fn run_ffmpeg_frame_extract(
     ffmpeg: &Path,
     args: &[std::ffi::OsString],
 ) -> Result<(), ToolError> {
-    let output = Command::new(ffmpeg)
+    let output = media_command(ffmpeg)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -546,7 +557,7 @@ pub async fn require_segment_anchor_image_url(
             video_path.display()
         )));
     }
-    let output = Command::new(&ffmpeg)
+    let output = media_command(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-ss", "0", "-i"])
         .arg(video_path)
         .args(["-vframes", "1", "-q:v", "4", "-y"])
@@ -776,7 +787,7 @@ async fn run_ffmpeg_concat(
     ffmpeg: &Path,
     args: &[std::ffi::OsString],
 ) -> Result<(), ToolError> {
-    let output = Command::new(ffmpeg)
+    let output = media_command(ffmpeg)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

@@ -21,9 +21,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// needing a clock or RNG (both unavailable / nondeterministic).
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Spawn `git` without flashing a console on Windows GUI hosts.
+fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// True if `root` is inside a git working tree.
 pub fn is_git_repo(root: &Path) -> bool {
-    Command::new("git")
+    git_command()
         .arg("-C")
         .arg(root)
         .args(["rev-parse", "--is-inside-work-tree"])
@@ -94,7 +106,7 @@ impl WorktreeBaseline {
         let dir_name = format!(".nomi-worktree-{}-{}", std::process::id(), seq);
         let path = self.inner.worktrees_dir.join(dir_name);
 
-        let out = Command::new("git")
+        let out = git_command()
             .arg("--git-dir")
             .arg(&self.inner.git_dir)
             .args(["worktree", "add", "--detach"])
@@ -162,7 +174,7 @@ impl Worktree {
             .canonicalize()
             .map_err(|error| format!("could not canonicalize repository common dir: {error}"))?;
 
-        let output = Command::new("git")
+        let output = git_command()
             .arg("-C")
             .arg(&repository)
             .args(["worktree", "list", "--porcelain"])
@@ -236,7 +248,7 @@ impl Worktree {
     /// Capture all changes made in the worktree (new + modified files) as a
     /// unified diff. Stages everything first so untracked files are included.
     pub fn capture_diff(&self) -> Result<String, String> {
-        let add = Command::new("git")
+        let add = git_command()
             .arg("-C")
             .arg(&self.path)
             .args(["add", "-A"])
@@ -245,7 +257,7 @@ impl Worktree {
         if !add.status.success() {
             return Err(format!("git add failed: {}", String::from_utf8_lossy(&add.stderr).trim()));
         }
-        let diff = Command::new("git")
+        let diff = git_command()
             .arg("-C")
             .arg(&self.path)
             .args([
@@ -273,7 +285,7 @@ fn initialize_private_repository(git_dir: &Path, source_root: &Path) -> Result<(
         &["rev-parse", "--show-object-format"],
         "resolve Git object format",
     )?;
-    let init = Command::new("git")
+    let init = git_command()
         .args(["init", "--bare", "--quiet"])
         .arg(format!("--object-format={object_format}"))
         .arg(git_dir)
@@ -312,7 +324,7 @@ fn project_snapshot_git_semantics(git_dir: &Path, source_root: &Path) -> Result<
         "precomposeunicode|protecthfs|protectntfs|sparsecheckout|",
         "sparsecheckoutcone)|filter\\.)"
     );
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(source_root)
         .args(["config", "--null", "--get-regexp", pattern])
@@ -356,7 +368,7 @@ fn project_snapshot_git_semantics(git_dir: &Path, source_root: &Path) -> Result<
 }
 
 fn set_private_config(git_dir: &Path, key: &str, value: &str) -> Result<(), String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--git-dir")
         .arg(git_dir)
         .args(["config", "--local", "--replace-all", key, value])
@@ -402,7 +414,7 @@ fn freeze_config_path(
     key: &str,
     destination_name: &str,
 ) -> Result<(), String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(source_root)
         .args(["config", "--path", "--get", key])
@@ -438,7 +450,7 @@ fn capture_source_snapshot(git_dir: &Path, source_root: &Path) -> Result<String,
     let private_index = git_dir.join("index");
     let tree = capture_stable_source_tree(git_dir, source_root, &private_index)?;
 
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--git-dir")
         .arg(git_dir)
         .args(["commit-tree", tree.trim()])
@@ -554,7 +566,7 @@ fn reset_private_index(
 }
 
 fn source_untracked_paths(source_root: &Path) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(source_root)
         .args(["ls-files", "--others", "--exclude-standard", "-z"])
@@ -570,7 +582,7 @@ fn source_untracked_paths(source_root: &Path) -> Result<Vec<u8>, String> {
 }
 
 fn materialize_private_snapshot(git_dir: &Path, revision: &str) -> Result<(), String> {
-    let update_ref = Command::new("git")
+    let update_ref = git_command()
         .arg("--git-dir")
         .arg(git_dir)
         .args(["update-ref", "refs/nomi/baseline", revision])
@@ -582,7 +594,7 @@ fn materialize_private_snapshot(git_dir: &Path, revision: &str) -> Result<(), St
             String::from_utf8_lossy(&update_ref.stderr).trim()
         ));
     }
-    let repack = Command::new("git")
+    let repack = git_command()
         .arg("--git-dir")
         .arg(git_dir)
         .args(["repack", "-a", "-d", "--quiet"])
@@ -601,7 +613,7 @@ fn materialize_private_snapshot(git_dir: &Path, revision: &str) -> Result<(), St
             alternates.display()
         )
     })?;
-    let verify = Command::new("git")
+    let verify = git_command()
         .arg("--git-dir")
         .arg(git_dir)
         .args(["cat-file", "-e"])
@@ -667,7 +679,7 @@ fn git_in_private_repository(
     arguments: &[&str],
     operation: &str,
 ) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--git-dir")
         .arg(git_dir)
         .arg("--work-tree")
@@ -695,7 +707,7 @@ fn git_in_private_repository_with_input(
     input: &[u8],
     operation: &str,
 ) -> Result<(), String> {
-    let mut child = Command::new("git")
+    let mut child = git_command()
         .arg("--git-dir")
         .arg(git_dir)
         .arg("--work-tree")
@@ -727,7 +739,7 @@ fn git_in_private_repository_with_input(
 }
 
 fn git_text(cwd: &Path, arguments: &[&str], operation: &str) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(cwd)
         .args(arguments)
@@ -749,7 +761,7 @@ fn git_text(cwd: &Path, arguments: &[&str], operation: &str) -> Result<String, S
 }
 
 fn git_path(cwd: &Path, argument: &str) -> Result<PathBuf, String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(cwd)
         .args(["rev-parse", "--path-format=absolute", argument])
@@ -814,7 +826,7 @@ impl Drop for Worktree {
             .worktree_admin
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let _ = Command::new("git")
+        let _ = git_command()
             .arg("--git-dir")
             .arg(&self.baseline.inner.git_dir)
             .args(["worktree", "remove", "--force"])
@@ -828,12 +840,12 @@ mod tests {
     use super::*;
 
     fn git(args: &[&str], cwd: &Path) {
-        let out = Command::new("git").arg("-C").arg(cwd).args(args).output().unwrap();
+        let out = git_command().arg("-C").arg(cwd).args(args).output().unwrap();
         assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
     }
 
     fn git_stdout(args: &[&str], cwd: &Path) -> String {
-        let output = Command::new("git")
+        let output = git_command()
             .arg("-C")
             .arg(cwd)
             .args(args)
@@ -1156,7 +1168,7 @@ mod tests {
         git(&["update-index", "--split-index"], repo.path());
         let linked_parent = tempfile::tempdir().unwrap();
         let linked = linked_parent.path().join("linked");
-        let output = Command::new("git")
+        let output = git_command()
             .arg("-C")
             .arg(repo.path())
             .args(["worktree", "add", "--detach"])
@@ -1217,7 +1229,7 @@ mod tests {
             "private objects and indexes must be removed with the baseline"
         );
         // And git no longer lists it.
-        let list = Command::new("git").arg("-C").arg(repo.path()).args(["worktree", "list"]).output().unwrap();
+        let list = git_command().arg("-C").arg(repo.path()).args(["worktree", "list"]).output().unwrap();
         let listing = String::from_utf8_lossy(&list.stdout);
         assert!(!listing.contains(path.to_string_lossy().as_ref()), "git must not still list the worktree");
     }
@@ -1228,7 +1240,7 @@ mod tests {
         let wt = Worktree::create(repo.path()).expect("create");
         let registered_path = wt.path().to_path_buf();
 
-        let remove = Command::new("git")
+        let remove = git_command()
             .arg("--git-dir")
             .arg(&wt.baseline.inner.git_dir)
             .args(["worktree", "remove", "--force"])
