@@ -25,7 +25,9 @@ import { useTranslation } from "react-i18next";
 
 import type { AgentStoreConfigView } from "../../lib/client";
 import { useAppStore } from "../../store/appStore";
+import type { ConfigMessage } from "../../store/settingsConfig";
 import { configFileCounts, defaultModelOptions, useSettingsConfig } from "../../store/settingsConfig";
+import { ConfigMessageText } from "./ConfigMessage";
 
 export interface ProviderSettingsViewProps {
   /** Host view of the config file; `null` = nothing read (yet, or at all). */
@@ -33,11 +35,11 @@ export interface ProviderSettingsViewProps {
   /** Working value of the select (seeded from `view.default_model`). */
   draft: string | null;
   loading: boolean;
-  /** Read failure (i18n key or the server's own `code: message`). */
-  error: string | null;
+  /** Read failure: our i18n key or the host's own prose (`ConfigMessage`). */
+  error: ConfigMessage | null;
   saving: boolean;
   /** Write failure, shown next to the control. */
-  saveError: string | null;
+  saveError: ConfigMessage | null;
   /** Value the host confirmed on the last successful save. */
   savedValue: string | null;
   onSelect: (value: string) => void;
@@ -81,11 +83,11 @@ export function ProviderSettingsView({
             <span className="settings-row-desc">{t("settings.defaultModelDesc")}</span>
             {error ? (
               <span className="settings-row-note is-error" role="alert">
-                {t(error)}
+                <ConfigMessageText message={error} />
               </span>
             ) : saveError ? (
               <span className="settings-row-note is-error" role="alert">
-                {t(saveError)}
+                <ConfigMessageText message={saveError} />
               </span>
             ) : options.length === 0 && !loading ? (
               <span className="settings-row-note">{t("settings.providerNoProviders")}</span>

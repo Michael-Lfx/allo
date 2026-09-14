@@ -596,7 +596,14 @@
 - 前端：设置 nav **三→四**（`general / provider / agent / mcp`），新增 `McpSettingsSection.tsx`（纯 props 的 `McpSettingsView` + store/client 接线，与另两个分区同构）；渲染文件级 `error`、逐条 `rejected` 的**原文原因**、已接受条目（`name` + `transport` + 启用态）与计数。
 - **只读是刻意的**：`config/set` 没有该文件的键（`05` §4.10）——声明可以启动本地命令（stdio），所以它保持「宿主操作者手写」的形态，设置页不提供编辑；视图里也没有任何写控件（渲染测试断言不含 `<input>` / `<select>` / 「保存」）。
 - **未扩读面（与 `20` §9.4 的预告相反，这是好事）**：当时预告「渲染时大概会加 `cwd` / 过滤条目数，届时要一起算指纹」——实际**不需要**：`rejected` 的原因已经把出问题的**具体字段**点名（如 `` `headers` only applies to a remote server ``），比多一个 `cwd` 字段更有用。故本次**零协议变更**、指纹未动。
-- 前端渲染坑（本项踩到并修掉，值得记住）：**服务端散文不能过 `t()`**——`mcp.json is not valid JSON: …` 会被 i18next 按 `.` / `:` 当 key 切分，只渲染出冒号后半段（`expected value at line 1 column 1`）。`mcp.error` 与 `rejection.reason` 现在直接作为 React 子节点渲染（React 自身转义）。另两处既有分区仍走 `t(error)`，它们的服务端消息恰好不含「点 + 冒号」组合所以没暴露——**未改**，登记在此。
+- 前端渲染坑（本项踩到并修掉，值得记住）：**服务端散文不能过 `t()`**。当时写的解释是「i18next 按 `.` / `:` 当 key 切分」，**这个解释不准确**，2026-09-13 追查后确认的真实规则是 i18next 的 `looksLikeObjectPath`（`i18next/dist/esm/i18next.js:144`）：只有「含冒号 **且** 第一个点之前没有空格/逗号/问号/叹号/分号」的字符串才被当成 `namespace:key`，返回时只留冒号后半段。所以 `mcp.json is not valid JSON: …`（首个点前的 `mcp` 无空格）中招，而 `config_unavailable: failed to read config.toml`（首个点在 `config.toml`，其前的 `config_unavailable: failed to read config` 有空格）**原样返回**——「`code: message` 形状所以安全」只是碰巧成立，真正的雷是**以文件名 / 带点 token 开头的消息**，而这恰好是配置文件类错误的常见形状。`mcp.error` 与 `rejection.reason` 已直接作为 React 子节点渲染（React 自身转义）。
+
+**R16 追加 · 消息渲染（`ConfigMessage`）→ 已完成（2026-09-13）**
+
+- 上一条登记的「另两处既有分区仍走 `t(error)`——未改」**已收口**：`store/settingsConfig` 的三个错误字段（`error` / `saveError` / `memoryError`）由 `string` 改为判别式联合 `ConfigMessage = { kind: "i18n"; key } | { kind: "server"; text }`，标签在**产生处**打上（`i18nMessage` / `hostMessage`），渲染集中在新增 `web/src/components/dialogs/ConfigMessage.tsx` 的 `ConfigMessageText`——服务端散文因此**根本不进 i18next**，不可能再被截断，也不可能恰好命中某条翻译键。
+- 为什么不用更便宜的改法（已实测）：`t(text, { nsSeparator: false })` 确实能止住截断，但它是**全局**关掉命名空间切分，同一字段里那个真正的 i18n key 仍要走同一次查表——消息若恰好等于某条翻译路径，就会渲染成别人的句子（实测 `{nsSeparator:false}` 下点号键照常解析）。两个 kind 需要**相反**的处理，一个字符串字段服务不了两者，这正是把 kind 变成值的一部分的理由。
+- 验证：`store/settingsConfig.test.ts` 改为对**标签**断言（`{kind:"server",text:…}` / `{kind:"i18n",key:…}`）；`SettingsDialog.render.test.tsx` 新增 2 例——① `mcp.json is not valid JSON: expected value at line 1 column 1` 与 `config.toml is not valid TOML: expected a table` 必须**整句**出现；② `{kind:"i18n"}` 的键仍须翻译（不得显示原始 key）。**红-绿证据**：把 `ConfigMessageText` 临时改回 `t(kind === "i18n" ? key : text)` 后重跑，17 例中**恰好新增的那 1 例红**（其余 16 例全绿，含两条 `config_unavailable` 用例——与上面的规则一致），改回后两个文件 **30/30 绿**。
+- 未改（登记）：`store/skillAdmin.ts` 的 `error` 与 `SkillWriteSurface.tsx` 的三处 `t(error)` 是同一形状的另一处；`appStore` 的各类 `*Error`（同为 `formatError` 产物）也未逐一核。本次**未动**（不在批准范围内）。
 
 **A 档 ③ · 卡点措辞订正 → 已完成**（R16 假卡点、R22 前提、R15 措辞；R23/R24 由同日二次复核进一步订正，见上文）
 

@@ -11,16 +11,55 @@
  *
  * Failure policy: a failed read leaves `view` null (nothing is fabricated) and
  * a failed save leaves the loaded view untouched (no optimistic echo), so the
- * UI can never display a value the host does not actually hold. Errors carry
- * either an i18n key (local validation) or the server's own `code: message`
- * string, exactly like `appStore.error`, and the component renders both through
- * `t()`.
+ * UI can never display a value the host does not actually hold.
+ *
+ * Errors are a `ConfigMessage`, never a bare string. A message is either one of
+ * our own i18n keys or the host's own prose, and the two need **opposite**
+ * treatment — one string field cannot serve both, which is why the tag is part
+ * of the value:
+ *
+ * - `t()` on the host's prose silently destroys it. i18next treats a
+ *   colon-bearing string that `looksLikeObjectPath` — its first dot comes before
+ *   its first space, the tell of a message that starts with a file name — as
+ *   `namespace:key`, and returns only the half after the colon. The host's own
+ *   `mcp.json is not valid JSON: expected value at line 1 column 1` therefore
+ *   rendered as `" expected value at line 1 column 1"`: cause gone, stray
+ *   leading space kept.
+ * - `{ nsSeparator: false }` is the cheaper fix and was rejected: it silences
+ *   the split, but the string still goes through i18next's lookup, so prose that
+ *   happens to equal a translation path renders as somebody else's sentence.
+ *   Two kinds of text need **opposite** handling, and one string field cannot
+ *   say which is which — hence the tag.
+ *
+ * Tagging at the source (here) is what makes the host's prose unreachable from
+ * i18next altogether: `ConfigMessageText` renders `server` text as a plain
+ * string and never looks it up.
  */
 
 import { create } from "zustand";
 
 import type { AgentStoreConfigPatch, AgentStoreConfigView } from "../lib/client";
 import { formatError } from "../lib/errors";
+
+/**
+ * A message this store wants shown, tagged with who wrote it.
+ *
+ * `i18n` is a key of ours and must be translated; `server` is the host's own
+ * prose and must be shown verbatim (see the module doc for what `t()` does to
+ * it). The tag is set where the message is created, so no component has to
+ * guess and no rendering path can get it wrong by default.
+ */
+export type ConfigMessage = { kind: "i18n"; key: string } | { kind: "server"; text: string };
+
+/** One of our own translation keys (local validation / offline states). */
+function i18nMessage(key: string): ConfigMessage {
+  return { kind: "i18n", key };
+}
+
+/** The host's own prose, via the shared `formatError` spelling. */
+function hostMessage(caught: unknown): ConfigMessage {
+  return { kind: "server", text: formatError(caught) };
+}
 
 /** The two host-only calls this store needs (the WebUI client satisfies it). */
 export interface AgentStoreConfigClient {
@@ -80,19 +119,19 @@ export interface SettingsConfigState {
   /** Last view returned by the host; `null` = not read (or the read failed). */
   view: AgentStoreConfigView | null;
   loading: boolean;
-  /** Read failure, i18n key or server message. Never a fabricated default. */
-  error: string | null;
+  /** Read failure, i18n key or the host's prose. Never a fabricated default. */
+  error: ConfigMessage | null;
   /** Working value of the select; seeded from the server's `default_model`. */
   draft: string | null;
   saving: boolean;
   /** Write failure (or local pre-condition), rendered next to the control. */
-  saveError: string | null;
+  saveError: ConfigMessage | null;
   /** `default_model` the host confirmed on the last successful save. */
   savedValue: string | null;
   /** `[memory] distill_enabled` write in flight. */
   memorySaving: boolean;
-  /** Write failure for the memory switch (i18n key or server message). */
-  memoryError: string | null;
+  /** Write failure for the memory switch (i18n key or the host's prose). */
+  memoryError: ConfigMessage | null;
   /** `[memory] distill_enabled` the host confirmed on the last save. */
   memorySavedValue: boolean | null;
 
@@ -122,7 +161,7 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
         view: null,
         draft: null,
         loading: false,
-        error: "settings.providerOffline",
+        error: i18nMessage("settings.providerOffline"),
         saveError: null,
         savedValue: null,
       });
@@ -144,7 +183,7 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
         view: null,
         draft: null,
         loading: false,
-        error: formatError(caught),
+        error: hostMessage(caught),
         savedValue: null,
       });
     }
@@ -157,11 +196,11 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
     if (saving) return;
     const value = (draft ?? "").trim();
     if (!value) {
-      set({ saveError: "settings.providerSaveNeedsValue" });
+      set({ saveError: i18nMessage("settings.providerSaveNeedsValue") });
       return;
     }
     if (!client) {
-      set({ saveError: "settings.providerOffline" });
+      set({ saveError: i18nMessage("settings.providerOffline") });
       return;
     }
     set({ saving: true, saveError: null });
@@ -179,7 +218,7 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
       });
     } catch (caught) {
       // Nothing is written optimistically: the previous view stands.
-      set({ saving: false, saveError: formatError(caught) });
+      set({ saving: false, saveError: hostMessage(caught) });
     }
   },
 
@@ -196,7 +235,7 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
     const { memorySaving } = get();
     if (memorySaving) return;
     if (!client) {
-      set({ memoryError: "settings.providerOffline" });
+      set({ memoryError: i18nMessage("settings.providerOffline") });
       return;
     }
     set({ memorySaving: true, memoryError: null });
@@ -210,7 +249,7 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
         memorySavedValue: view.memory?.distill_enabled ?? null,
       });
     } catch (caught) {
-      set({ memorySaving: false, memoryError: formatError(caught) });
+      set({ memorySaving: false, memoryError: hostMessage(caught) });
     }
   },
 }));

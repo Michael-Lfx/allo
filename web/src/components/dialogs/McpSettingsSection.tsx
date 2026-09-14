@@ -33,14 +33,16 @@ import { useTranslation } from "react-i18next";
 
 import type { AgentStoreConfigView } from "../../lib/client";
 import { useAppStore } from "../../store/appStore";
+import type { ConfigMessage } from "../../store/settingsConfig";
 import { useSettingsConfig } from "../../store/settingsConfig";
+import { ConfigMessageText } from "./ConfigMessage";
 
 export interface McpSettingsViewProps {
   /** Host view of the config file; `null` = nothing read (yet, or at all). */
   view: AgentStoreConfigView | null;
   loading: boolean;
-  /** Read failure (i18n key or the server's own `code: message`). */
-  error: string | null;
+  /** Read failure: our i18n key or the host's own prose (`ConfigMessage`). */
+  error: ConfigMessage | null;
   onRetry: () => void;
 }
 
@@ -76,7 +78,7 @@ export function McpSettingsView({ view, loading, error, onRetry }: McpSettingsVi
             <span className="settings-row-desc">{t("settings.mcpFileDesc")}</span>
             {error ? (
               <span className="settings-row-note is-error" role="alert">
-                {t(error)}
+                <ConfigMessageText message={error} />
               </span>
             ) : mcp?.error ? (
               // Rendered **without** `t()`: this is the parser's own prose, not
