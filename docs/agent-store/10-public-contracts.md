@@ -159,14 +159,22 @@ import_source_not_found | import_blocked | import_failed
 internal_error
 ```
 
-Team Run 专有（`team/run` 启动阶段，2026-09-11）：
+Team Run 专有（`team/run` 启动阶段，2026-09-11；`agent_disabled` 2026-09-15 加入）：
 
 ```text
 version_mismatch          # team_version 与已安装版本不一致
 agent_not_installed       # 成员 AgentDefinition 尚未安装（无 preset）
+agent_disabled            # 成员 preset 被禁用（错误信息点名该成员，2026-09-15）
 team_member_model_unbound # 成员 preset 未绑定模型且宿主无可用 provider
 connector_unavailable     # Team 绑定的 Connector 已被禁用
 team_run_not_started      # Leader 那一轮没有发起任何执行（错误信息带 Leader 会话 id）
+```
+
+单 Agent Run 专有（`agent/run` 启动阶段，2026-09-15）：
+
+```text
+preset_disabled           # 解析出的目标 Preset 处于 disabled 状态
+agent_not_installed       # 目标 AgentDefinition 尚未安装（无 preset）
 ```
 
 `import_source_not_found`：`import/run` 的本地来源目录不存在或不可读（HTTP 404，对应 `NotFound`）；`import_blocked` / `import_failed`：快照因路径安全、清单身份缺失或 digest 冲突而阻断，或导入器内部失败。阻断原因以结构化 `ImportResult.errors` 返回，错误文本只含清单相对值与原因码，**不得包含绝对来源路径或凭据**（02 §9）。

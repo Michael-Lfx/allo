@@ -3,6 +3,7 @@
 > 状态：发布门禁已定义；当前结论 blocked（评估快照见 §9）
 > 日期：2026-08-26
 > 更新：2026-09-09 —— §9 快照内 TC-SDK-001 矛盾已消（改为 spawn + 回环 WS，与 `12` 非目标一致）；其余门禁结论未变
+> 更新：2026-09-15 —— §9 改为**显式声明为带日期的评估快照**；订正「GitHub/Git/HTTP 市场源未实现」（Phase B 已实现，但 P0 门禁仍未执行）；登记本批安装器改动**不改变**任何门禁结论（P0 未执行项原样保留）
 > 适用范围：`docs/agent-store/` 中的 Agent Store 当前方案文档
 > 前置：`00-architecture-decision.md` 至各线规范内的「验收用例」章节（`02` §13 · `05` §14 · `06` §11 · `13` §10–§13 · `19` §9）
 
@@ -216,20 +217,33 @@ restrictions
 
 ## 9. 当前准入判断
 
+> **本节是一份带日期的评估快照（assessment snapshot），不是门禁结果。** 下面的
+> `assessed_at` 是这份快照**最后一次被重新评估**的日期；其中的结论只在该日期成立，
+> 更新它之前必须重新执行测试总索引列出的用例。文中出现的「已通过」是**当时**的
+> 证据读数，不代表今天的 HEAD。
+
 本文档本身不替代实际测试。以下为截至 2026-08 迭代（Importer/Phase 1 落地后）的如实快照；更新前必须重新执行测试总索引列出的用例：
 
 ```text
 release_status: not-assessed（P0 未全过，仍等价 blocked；2026-09-04 增量快照）
-assessed_at: 2026-09-04（评估快照，非门禁结果）
+assessed_at: 2026-09-04（评估快照，非门禁结果；2026-09-15 只补了一条事实订正与一条本批登记，未重跑门禁）
 blocking_items:
   - Gate 1（Runtime）：TC-RT-001 已通过（单 Agent 真实 Run，`13-p0-execution-plan.md` §14）；
     TC-RT-002/005/006/009/010 未执行
   - Gate 4（Connector/OAuth：登录注入、401 刷新、重试、探针）：OAuth 运行证据已留存（`06-connector-oauth-security.md` §13），TC-CONN/TC-OAUTH 其余用例未全量执行
-  - Gate 2（Importer）：TC-IMP-001~009 已通过（`02-codebuddy-workbuddy-import-spec.md` §14）；GitHub/Git/HTTP 市场源未实现
+  - Gate 2（Importer）：TC-IMP-001~009 已通过（`02-codebuddy-workbuddy-import-spec.md` §14）；
+    GitHub/Git/HTTP 市场源**已实现**（Phase B：`market_source.rs` 的 git2 浅克隆 /
+    `reqwest` 条件抓取 + `market_fetch.rs` 的 staging→promote）；但 P0 门禁**未执行**
+    （本项仍 open）
   - Gate 3（App Server）：initialize/版本协商/store 与 run 查询一致已有真机实证（smoke --real + A1）；
     TC-API-002（幂等重放）/TC-API-004（公共 ID 隔离）未执行；TC-SDK-001 已修订为 spawn + 回环 WS，与 `12` 非目标一致（见 `13-p0-execution-plan.md`）
   - Gate 5（安全扫描与来源审核）：未执行
   - V1 默认不启用：Hook/LSP/bin/scripts 执行、跨市场依赖
+  - 2026-09-15（本批）**不改变**上面的门禁结论：安装器五动词改为真正释放 /
+    移动运行时产物并回报结构化 `outcomes`、`store/install-entry` 版本感知、
+    指纹 bump 到 `2026-09-15`——这些是**能力实现**，不是**门禁证据**。
+    对应的 P0 门禁（TC-API-002 / TC-API-004、TC-CONN、TC-OAUTH、Gate 5）
+    **仍未执行**，`release_status` 仍为 `not-assessed`
 ```
 
 签署清单（上文 §8）仍全部未勾选；只有 P0 测试全部通过、凭据安全检查通过、来源审核完成后才能标记 `ready`。

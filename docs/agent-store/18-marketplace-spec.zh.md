@@ -251,6 +251,33 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 - 幂等：重复 `market/add` 同一源不产生重复注册；相同内容重复导入返回已有快照；
 - 协议面细节以 `05-allo-app-server-protocol.md` 为唯一正文。
 
+### 9.1 Store 一键安装的版本语义（2026-09-15）
+
+`store/install-entry` 是 `market/entry-import` + `install/run` 的合成面，其版本
+判定已收敛到**一个共享 helper**（`entry_live_version`），`store/list` 的
+`update_available` 与本方法共用它，因此目录与安装器不可能各说一套：
+
+- 条目**已安装** → no-op（`reused=true`）。在这里重新导入等于把「安装」变成一次
+  **隐藏的升级**；
+- 条目**未安装**且快照版本 == 市场当前版本 → 装该快照；
+- 条目**未安装**且版本不同（前进或回滚）→ 经 `market/entry-import` **重新导入**
+  并装新快照；旧快照保持不可变、历史保留。
+
+**wire 上没有更新动词**（`store/update-entry` 不存在），所以客户端唯一的升级
+路径是「卸载，再安装一次」；`install_entry` 的版本感知正是让这条路径**真的能**
+取到新版本。这与 §7 的自动更新扫掠职责不同：**扫掠只刷新「索引」——它从不更新
+已安装的快照**（§9.2）。
+
+### 9.2 自动更新扫掠的边界（2026-09-15 订正）
+
+`auto_update` 的后台扫掠**已实现**（§7 表、2026-09-10 批 1 / R27）：宿主
+`config.toml` 声明 `[marketplace] auto_update_interval_hours` 后按该间隔轮询，
+**不声明即关闭**，且只对**官方镜像**源生效（第三方源永不自动拉取，§11 D1）。
+
+必须写明的边界：**扫掠只刷新索引/投影**（重新获取清单、重建条目投影，仍走 §5 的
+条件请求短路），**绝不改动任何已安装快照**——升级已安装条目始终是用户的显式动作
+（§9.1 的「卸载再安装」）。
+
 ---
 
 ## 10. 非目标与演进
@@ -267,7 +294,7 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 
 | # | 现象 | 证据 | 影响 | 待决 |
 | --- | --- | --- | --- | --- |
-| D1 | **`auto_update` 默认值与文档不符** | `02` §8 称「官方市场默认开启、第三方默认关闭」；`market/add` 恒写入 `auto_update: false`（`app_server_marketplace.rs:527`），不存在官方/第三方区分 | 第三方无法预期自动更新行为；webui 的 auto-update 开关语义不明（W13） | ✅ **已定（2026-09-10）：采纳 ①**——改实现以区分官方/第三方（官方默认开、第三方默认关，V1 不自动更新第三方来源）；`02` §8 表述不动 ✅ **已修（2026-09-10，T14）**：新增 `is_official_source()`（`nomifun-app/src/app_server_marketplace.rs`，与 `AgentStoreConfig::builtin_default_marketplaces()` 同一事实源），`market/add` 的 directory 分支与 `register_remote`（远程源）都改用该默认值；「官方」按**源地址**判定（`source_kind` + `source` 落在 `builtin_default_marketplaces()` 集合内），**不按「由谁声明」判定**：`config.toml [default_marketplaces]` 里指向**其它地址**的源自成第三方（不默认自动更新），而本机 config 声明的三个源正指向官方镜像地址，故按官方处理。实测（重建二进制）：三个官方源 `auto_update=true`，本地第三方 `directory` 市场 `false`。Rust 单测 `official_sources_are_the_builtin_public_mirror` + `cargo check -p nomifun-app --tests` 通过。**注意：当前尚无自动更新后台任务（roadmap 明确留待后续），本项只修默认标记语义** |
+| D1 | **`auto_update` 默认值与文档不符** | `02` §8 称「官方市场默认开启、第三方默认关闭」；`market/add` 恒写入 `auto_update: false`（`app_server_marketplace.rs:527`），不存在官方/第三方区分 | 第三方无法预期自动更新行为；webui 的 auto-update 开关语义不明（W13） | ✅ **已定（2026-09-10）：采纳 ①**——改实现以区分官方/第三方（官方默认开、第三方默认关，V1 不自动更新第三方来源）；`02` §8 表述不动 ✅ **已修（2026-09-10，T14）**：新增 `is_official_source()`（`nomifun-app/src/app_server_marketplace.rs`，与 `AgentStoreConfig::builtin_default_marketplaces()` 同一事实源），`market/add` 的 directory 分支与 `register_remote`（远程源）都改用该默认值；「官方」按**源地址**判定（`source_kind` + `source` 落在 `builtin_default_marketplaces()` 集合内），**不按「由谁声明」判定**：`config.toml [default_marketplaces]` 里指向**其它地址**的源自成第三方（不默认自动更新），而本机 config 声明的三个源正指向官方镜像地址，故按官方处理。实测（重建二进制）：三个官方源 `auto_update=true`，本地第三方 `directory` 市场 `false`。Rust 单测 `official_sources_are_the_builtin_public_mirror` + `cargo check -p nomifun-app --tests` 通过。~~注意：当前尚无自动更新后台任务~~ → **订正（2026-09-15）：后台任务已实现（2026-09-10，批 1 / R27，见 §7 表与 §9.2）**；本项当初只修默认标记语义，自动更新本体已另行落地。它与「给用户更新已装条目」无关：**扫掠只刷新索引，绝不更新已安装快照**（§9.2） |
 | D2 | **两套 `content_digest` 算法** | `tree_digest`（导入）vs `simple_tree_digest`（目录刷新），见 §5.4 | 同一内容在两条路径下摘要不同，跨路径比对不可行 | ✅ **已定（2026-09-10，用户拍板）：采纳 ①——统一为一套算法**。实现：`tree_digest` 内部排序；新增目录入口 `tree_digest_of_dir(root)`（`nomifun-importer/src/digest.rs`），`app_server_marketplace.rs` 的两处调用改走它，`simple_tree_digest` / `collect_files` 已删除（§5.4 已改写）。验证：`cargo check -p nomifun-app -p nomifun-importer --tests` exit 0；`cargo test -p nomifun-importer --lib digest` **4 passed**（含「两条路径摘要一致」新用例）。迁移：目录源市场首次刷新会因摘要变化重建一次投影 |
 | D3 | **清单 `owner` 字段本规范未定义，真实数据是对象** | 真实 `skills` 与 `connectors` 市场的 `owner` 为 `{name, email}`（CodeBuddy），而 `17` §3 只固定了 `author`（`string \| {name, email}`），§3 又把清单字段整体让给 `02` §8 | 机器校验若把 `owner` 当字符串，会把两个真实市场判错（T19 首轮即发生，被自检/真实市场跑检验出） | ✅ **已处理（2026-09-10，T19）**：`docs/agent-store/schemas/marketplace.schema.json` 按 `author` 同形接受 `owner`；规范正文不改（该字段归 `02` §8），仅记此观察项 |
 | D4 | **清单条件请求的取值不是服务器原始 `ETag`，且从不发送 `If-Modified-Since`** | `market/refresh` 把存库的 `resolved_revision`（= `sha256_hex(etag \| last-modified)`，`market_source.rs:278-282`）当作 `if-none-match` 发出（`market_fetch.rs:88` → `market_source.rs:246-248`）；`Last-Modified` 只参与摘要计算，从未用于条件请求 | 对真实服务器 304 分支不可达 → §5.2 声称的「条件请求短路」在 v1 实际由 revision 摘要比对兜底。**功能结果一致**（清单未变仍判 `Unchanged`、不重镜像），代价是每次刷新多下载一次清单 | ✅ **已实现（2026-09-10，批 1 / R26）**：新增迁移 `057_marketplace_source_validators.sql` 持久化**原始** `source_etag` / `source_last_modified`（内部可追溯字段，与 `resolved_revision` 同级、不上协议）；`fetch_http_market` 改发真条件头（有 ETag 发 `If-None-Match`、有 Last-Modified 发 `If-Modified-Since`），刷新成功后写回。`resolved_revision` 的标记规则**保持不变**（ETag 优先 → Last-Modified 兜底 → `http`），因此升级**不会**让任何 URL 市场「看起来变了一次」。验证：`nomifun-db --lib marketplace` **9 passed**（写入 / 清除回读）、`nomifun-app --lib market_source` **10 passed**（304 条件请求、`If-Modified-Since` 实际发出、标记规则回归） |

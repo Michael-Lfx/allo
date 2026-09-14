@@ -1,7 +1,7 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 日期：2026-09-11
+> 日期：2026-09-15（2026-09-15：安装器五动词**真正释放/移动运行时产物**并回报结构化 `outcomes`；协议指纹 `2026-09-14` → `2026-09-15`，无方法增删）
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-allo-runtime-adapter.md`
 > 目标：建立 SDK、CLI、MCP、Web/Flowy 的唯一公共兼容边界
 
@@ -327,13 +327,29 @@ POST /api/app-server/installs/{snapshot_id}/uninstall # install/uninstall（快�
 { "snapshot_id": "<已导入快照 id>" }
 ```
 
+`install/disable` / `install/enable` / `install/uninstall` 的请求体另带
+**非空且显式**的组件列表：
+
+```text
+{ "snapshot_id": "<已导入快照 id>", "component_ids": ["<组件 id>", …] }
+```
+
+空的 `component_ids` 一律 `invalid_request`——早期实现里空切片会被读成
+「卸载整个快照」，那是「不点名就动全量」的写法；现在三个动词都必须点名。
+
 `install/status` 响应（`AppServerInstallStatus`）：
 
 ```text
 snapshot_id
 components[] { id / kind / name / state / runtime_location / preset_id }
 state: "not-installed" | "installed" | "disabled"
+outcomes[] { component_id / kind / action / ok / code? / message? }   # 见下
+errors[]                                                             # 人读失败摘要
 ```
+
+`outcomes` / `errors` 只在**变更类**动词（`uninstall` / `disable` / `enable`）
+上非空：它们描述「本次变更对每个组件做了什么」。纯 `install/status` **读取**
+返回两者为空——它报告状态，不报告某次变更的结果。
 
 运行时注册映射：
 
@@ -346,8 +362,38 @@ state: "not-installed" | "installed" | "disabled"
 规则：
 
 - 安装只复制/注册，**不执行**任何内容（02 §10）；凭据值永不进入安装状态列；
-- `uninstall` 移除运行时产物并清除组件安装状态，**快照与组件行保留**（历史可追溯）；
-- `enable`/`disable` 只翻转 `disabled` 位（运行时产物保留）；
+- **`install/run` 幂等/可重入**：同一 `snapshot_id` 调两次**不产生第二个
+  Preset**——复用组件 `runtime_ref` / `preset_id` 列里记下的那个 Preset id。
+  它**刻意不按显示名认领** Preset：两个快照合法地可以声明同名，按名匹配会
+  把别人的 Preset 抢过来。记录里的 Preset 被手工删掉时**重建**一个。
+  对**被禁用过的**组件重新安装会同时把运行时侧重新启用（
+  `mark_components_installed` 清除 `disabled`，运行时必须跟着回来，否则记录
+  会声称「已启用」而运行时仍是关的）；
+- **`uninstall` 真正释放运行时产物**，按 kind 分派：`skill` →
+  删物化目录 `{skills_root}/agent-store/<snapshot_id>/<slug>/`（是该快照最后
+  一个 skill 时连带剪掉快照根）；`agent` / `team` → `PresetService::delete`
+  删 Preset；`connector` → 按**记录下来的 id**（绝不按名）删 `mcp_servers` 行。
+  顺序是**先释放、后清记录**，且**只清那些真的释放成功的组件**；快照与组件行
+  永远保留（历史可追溯）；
+- `uninstall` 是**可重入**的：产物本就不在了算**成功**，不是失败；
+- **释放失败即保留 `installed=1`**，记录也不清——失败因此可重试，且指向残留
+  产物的指针不会丢。Uninstall 绝不声称删掉了它其实留在盘上的东西；
+- **路径安全**：记录下来的位置必须是**单个路径段**，托管路径上任何一处符号
+  链接一律拒绝；
+- **`enable`/`disable` 真的移动运行时状态**（不再只写插件自己的标志位——那样
+  写的 `disabled` 运行时侧**没人读**）：`connector` → **置**（set，不是 toggle）
+  `mcp_servers.enabled`——toggle 表达不了「把它关掉」这个幂等请求，重试会把
+  它又打开；`agent` / `team` → 置 Preset 的 `enabled` 标志（运行路径无需改动：
+  `PresetService::resolve` 本就拒绝 disabled 的 Preset）；
+- **`skill` 例外（已文档化）**：技能语料是普通目录、**没有启用态**，所以
+  `disable` 对 skill 只是**目录标记**，对运行时无任何效果——outcome 报
+  `action: "marked"` + `code: "skill_disable_flag_only"`。要把技能从运行时
+  移除，唯一路径是 `uninstall`；
+- 记录里的标志位**只对运行时状态真的动了的组件翻转**——否则目录又会声称一个
+  运行时从未进入的状态；
+- **已记录的不对称**：新注册的 connector 起始就是 `mcp_servers.enabled = false`
+  （安装器既有的默认值），因此刚装完时插件标志与 MCP 标志**合法地不一致**；
+  是 `install/enable` 把它打开的；
 - 文档化状态机：`not-installed → installed → disabled →（enable）installed`；
   卸载任意时刻可用。
 
@@ -381,6 +427,49 @@ server 级的 `enabledTools` / `disabledTools` 在**注册之前**裁剪（`20` 
 - **作用域**：声明是**宿主级能力**，与 `[tools]` / `[credentials]` 同性质——App Server
   会话即使没有绑定任何 Connector 也会拿到它。那道栅栏约束的是「快照 / preset 授予了
   什么」，不是「宿主操作者在自己的机器上声明了什么」。
+
+#### 4.5.2 结构化结果（`outcomes`，2026-09-15 加入）
+
+`AppServerInstallOutcome { component_id, kind, action, ok, code?, message? }`：
+
+- `action` ∈ `created | reused | enabled | disabled | marked | removed | skipped | failed`
+  （`marked` 即上面 skill 的标记态）；
+- `ok: false` **只在请求的状态没有达到时**出现；组件**本就处于**请求状态时报
+  `ok: true`；
+- `code` 是**稳定的文档化 token**（下表是**闭集**）；`message` 给人读，
+  **没有任何东西解析它**——这个字段存在的意义就是调用方不必去匹配散文。
+
+| code | 出处 | 含义 |
+|---|---|---|
+| `source_component_unmatched` | 服务端 | 快照里找不到该组件 |
+| `preset_lookup_failed` | 服务端 | 查 Preset 失败 |
+| `preset_create_failed` | 服务端 | 建 Preset 失败 |
+| `preset_state_failed` | 服务端 | 置 Preset `enabled` 失败 |
+| `preset_delete_failed` | 服务端 | 删 Preset 失败 |
+| `skill_remove_failed` | 服务端 | 删技能物化目录失败 |
+| `connector_register_failed` | 服务端 | 注册 `mcp_servers` 失败 |
+| `connector_state_failed` | 服务端 | 置 `mcp_servers.enabled` 失败 |
+| `connector_delete_failed` | 服务端 | 删 `mcp_servers` 行失败 |
+| `connector_name_collision` | 服务端 | 同名 connector 冲突 |
+| `cli_connector_unsupported` | 服务端 | CLI 连接器不支持该操作 |
+| `component_kind_unsupported` | 服务端 | 组件 kind 不支持 |
+| `component_ref_invalid` | 服务端 | 组件引用非法（含路径安全判定） |
+| `component_not_installed` | 服务端 | 组件未安装，无从操作 |
+| `skill_disable_flag_only` | 服务端 | skill 的 `disable` 只是目录标记（见上） |
+| `ready_timeout` | **SDK 客户端** | `store` 子客户端就绪检查超时 |
+| `authorization_required` | **SDK 客户端** | 就绪检查撞上需人工完成的 OAuth |
+
+后两者由 SDK 的 `store` 子客户端在**客户端侧**产生（`07` §4.3），不是服务端
+返回的。
+
+`AppServerInstallResult`（`install/run` 的响应）同样新增 `outcomes`；它的
+`errors` 数组现在**真的**携带失败（不再恒为 `vec![]`）。
+`AppServerStoreInstallResult`（`store/install-entry`）也从安装器**转发**
+`outcomes`，因此一键商店安装与直接 `install/run` 一样可分支判断（§4.7）。
+
+全部为**纯加法**：**没有新增或删除任何方法**，`46 / 65` 的映射/未映射计数
+守卫不变。协议指纹随之 `2026-09-14` → **`2026-09-15`**（现有 DTO 加字段即
+wire 变更；规则仍是「指纹必须与上一个不同」，同日第二次变更取次日戳）。
 
 ### 4.6 Marketplace（市场源，roadmap Phase 2）
 
@@ -523,9 +612,16 @@ items[] {
   jpeg/webp/gif）；
 - `installed` 由 `marketplace_id + entry_name` provenance 查快照，再查组件
   `installed=1`；`update_available` = 快照版本 ≠ 条目版本；
-- `store/install-entry` 幂等：已有 provenance 且组件已装 → 直接返回
-  `reused=true`；否则 `market import_entry`（或快照复用）→ `install/run`
-  注册，返回 `{ snapshot_id, version, installed_count, errors[] }`；
+- `store/install-entry` 幂等且**版本感知**：wire 上**没有**更新动词
+  （`store/update-entry` 不存在），所以客户端唯一的升级路径就是「卸载，再安装
+  一次」。因此：条目**已安装** → 仍是 no-op（`reused=true`）——在这里重新导入
+  等于把「安装」变成一次隐藏的升级；条目**未安装**且快照版本 == 市场当前版本
+  → 装那个快照；条目**未安装**且版本不同（前进或回滚）→ 经
+  `market/entry-import` **重新导入**并装新快照，旧快照保持不可变、历史保留。
+  版本推导收敛为**一个共享 helper**（`entry_live_version`），`store/list` 与
+  `install_entry` 共用，目录与安装器因此不可能各说一套。响应
+  `{ snapshot_id, version, installed_count, outcomes[], errors[] }`——`outcomes`
+  从安装器转发（§4.5.2），一键商店安装与直接 `install/run` 一样可分支判断；
 - store 资产端点与快照资产端点同一 MIME 白名单与路径穿越校验；**不要求
   App Server 连接头**（`<img>` 标签无法携带，头像/图标是公开展示内容）：
   先按条目目录（`entry_dir`，plugin.json `avatar`）解析，缺失时回退市场根
@@ -819,6 +915,12 @@ WS   workspace/revoke             移除（注销）owner 的一个 workspace
 }
 ```
 
+`agent/run` 的稳定错误码：`invalid_request`、`version_mismatch`、
+`agent_not_installed`、**`preset_disabled`**（解析出的目标 Preset 处于 disabled
+状态——`install/disable` 真的关掉了运行时，所以运行在这里被拒，且给出**稳定
+码**而不是一句泛化消息）、`connector_unavailable`、`runtime_unavailable`、
+`unsupported_operation`。
+
 `team/run` V1 示例：
 
 ```json
@@ -845,7 +947,9 @@ WS   workspace/revoke             移除（注销）owner 的一个 workspace
 
 `team/run` 的**等待边界**：它等待的是 Leader 的那一轮 turn（本轮只做「调用一次委派工具并结束」，规划与成员工作都在引擎里异步进行），**不等**整个 Team Run 完成，与 `05` §5.2「不阻塞等待长任务完成」一致。
 
-稳定错误码：`invalid_request`（goal 缺失/带 planning 块）、`version_mismatch`、`agent_not_installed`（成员未安装）、`team_member_model_unbound`（成员 preset 既无模型、宿主也没有可用 provider）、`connector_unavailable`（Team 绑定的 Connector 被禁用）、`team_run_not_started`（Leader 那一轮没有发起任何执行——错误信息带上 Leader 会话 id，便于人工继续）、`runtime_unavailable`、`unsupported_operation`。
+稳定错误码：`invalid_request`（goal 缺失/带 planning 块）、`version_mismatch`、`agent_not_installed`（成员未安装）、**`agent_disabled`**（**点名**那个成员：其 Preset 被 disabled，被禁用的专家不再只是「跑了没反应」）、`team_member_model_unbound`（成员 preset 既无模型、宿主也没有可用 provider）、`connector_unavailable`（Team 绑定的 Connector 被禁用）、`team_run_not_started`（Leader 那一轮没有发起任何执行——错误信息带上 Leader 会话 id，便于人工继续）、`runtime_unavailable`、`unsupported_operation`。
+
+成员检查的**时机是被刻意选定的**：`team/run` 在**每一次运行**都先于 Connector 栅栏、在 `resolve_team_members` 里把**每个**参与者查一遍（同一遍里同时报 `agent_not_installed` 与被禁用的 `agent_disabled`），**不**放在模板物化阶段——`ensure_team_template` 会复用既有模板，检查埋在那里只会在**第一次** Team Run 触发。
 
 能力协商：`InitializeResult.capabilities.team_runtime` 为 `Team 目录 ∨ 执行 facade` 同时在场时才为 `true`。
 

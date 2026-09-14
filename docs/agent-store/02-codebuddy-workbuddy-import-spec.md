@@ -425,13 +425,34 @@ not-installed ── install ──▶ installed ── disable ──▶ disabl
 - 等级：P1
 - 操作：导入 software-company 后执行 `install/run`
 - 断言：`installed_count > 0`；skill 物化到 `{skills}/agent-store/{snapshot_id}/{slug}/`；
-  agent/team 创建 Preset；connector upsert 进 `mcp_servers`；组件状态 `installed`
+  agent/team 创建 Preset；connector upsert 进 `mcp_servers`；组件状态 `installed`；
+  `outcomes` 逐组件回报（`action` ∈ `created|reused|…`）
+- **幂等断言（2026-09-15）**：对同一 `snapshot_id` **再跑一次 `install/run`**——
+  不产生第二个 Preset（复用组件 `runtime_ref`/`preset_id` 记下的 id，不按显示名
+  认领）；两次调用的组件状态一致
 
-#### TC-INS-002：禁用 / 启用 / 卸载状态机
+#### TC-INS-002：禁用 / 启用 / 卸载状态机（2026-09-15 起含真实产物回收）
 
 - 等级：P1
-- 操作：对已安装组件依次 `disable` → `enable` → `uninstall`
-- 断言：状态 `installed → disabled → installed → not-installed`；卸载后快照与组件行保留
+- 操作：对已安装组件依次 `disable` → `enable` → `uninstall`（三者均带
+  **非空**的 `component_ids`）
+- 断言：状态 `installed → disabled → installed → not-installed`；卸载后快照与
+  组件行保留
+- **运行时状态真的移动**：`disable` 后 `mcp_servers.enabled` 被**置** false
+  （不是翻转）、agent/team 的 Preset `enabled` 被置 false；`enable` 后二者复位。
+  `disable`/`enable` 的 outcome 只对运行时状态真的动了的组件翻转标志位
+- **skill 例外**：skill 的 `disable` 只翻目录标记，outcome 报
+  `action: "marked"` + `code: "skill_disable_flag_only"`
+- **产物释放断言**：`uninstall` 后 skill 的物化目录
+  `{skills_root}/agent-store/<snapshot_id>/<slug>/` 被删除（是该快照最后一个
+  skill 时快照根一并剪掉）、agent/team 的 Preset 被 `PresetService::delete`
+  删除、connector 的 `mcp_servers` 行按**记录 id**删除
+- **可重入断言**：对同一个 `component_ids` 再卸载一次——产物本就不在算
+  **成功**（`ok: true`），不是失败。**原「卸载后产物仍在盘上」的行为已废除**
+- **失败可重试断言**：构造某个组件释放失败时，该组件**保留 `installed=1`**、
+  记录不清（outcome `ok: false` + 稳定 `code`），因此重试仍能指回残留产物
+- **空列表断言**：`component_ids: []` → `invalid_request`（不再被读成「卸载整个
+  快照」）
 
 #### TC-INS-003：市场添加与条目发现
 
@@ -449,6 +470,13 @@ not-installed ── install ──▶ installed ── disable ──▶ disabl
 - 断言：条目导入复用导入管线并记录 provenance（不出现于公共响应）；安装成功；
   remove 后已安装组件状态回到 `not-installed`（快照行保留于 history）；市场从
   `market/list` 消失；二次 remove 返回 `not_found`
+- **级联真的清理（2026-09-15）**：`market/remove` 的 `cascade=true` **复用
+  `install/uninstall` 的同一套释放语义**，因此上面的「回到 `not-installed`」
+  必须同时成立为「产物真的没了」——skill 物化目录被删、Preset 被删、
+  `mcp_servers` 行被删。**原「级联只翻状态位、产物留在盘上」的行为已废除**
+- remove 结果里的 `uninstalled_components` **只计真的到达 `not-installed` 的
+  组件**：释放失败的组件既不在计数里，也仍保持 `installed=1`（与
+  `install/uninstall` 同口径）
 
 #### TC-INS-005：Git 源获取与刷新（阶段 B）
 
@@ -479,6 +507,24 @@ not-installed ── install ──▶ installed ── disable ──▶ disabl
   - connector mention 追加 `mcp_server_ids`（未启用 → `connector_unavailable`）；
   - `mentions` 缺省时行为与旧 `agent/run` 一致（向后兼容）；
   - 任意用户 preset（`agent-store:` 前缀外）不能通过 `agent/run` 启动
+
+#### TC-INS-008：`store/install-entry` 的版本感知（2026-09-15）
+
+- 等级：P1
+- 操作：`store/install-entry` 装一条目 → 提升市场条目版本 → `store/list` →
+  `uninstall` 该条目 → 再次 `store/install-entry`
+- 断言：
+  - wire 上**不存在**更新动词（`store/update-entry` 不存在），客户端唯一的升级
+    路径就是「卸载，再安装一次」；
+  - 条目**已安装**时再调 `install-entry` 仍是 no-op（`reused=true`）——在这里
+    重新导入等于把「安装」变成一次隐藏的升级；
+  - **卸载后**再 `install-entry`：快照版本与市场当前版本不同 → 经
+    `market/entry-import` **重新导入**并装**新**快照；旧快照保持不可变、
+    历史保留（前进与回滚同一路径）；
+  - `store/list` 的 `update_available` 与 `install_entry` 的版本判定来自
+    **同一个**共享 helper（`entry_live_version`），目录与安装器不会互相矛盾；
+  - `install-entry` 的响应带 `outcomes`（§4.5.2），一键商店安装与直接
+    `install/run` 一样可分支判断
 
 
 ---
