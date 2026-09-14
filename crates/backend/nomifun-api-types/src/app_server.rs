@@ -876,6 +876,22 @@ pub struct AppServerConfigView {
 pub struct AppServerConfigMcpView {
     /// The declaration file is present on this host.
     pub exists: bool,
+    /// Whether **this host** actually feeds the file into agent sessions, as the
+    /// launcher reported it at startup (`--adopt-store-mcp-declarations`, `20`
+    /// §7.9).
+    ///
+    /// Three states on purpose: `Some(..)` is the host's own answer, `None` means
+    /// the host did not report one (a build older than this field). A plain
+    /// `false` for "did not report" would turn "I cannot tell" into "this file is
+    /// inert here" — and `apps/agent-store` has been adopting declarations since
+    /// before this field existed, so that lie is reachable during a version skew.
+    ///
+    /// `exists: true, adopted: Some(false)` is the pair this field exists for:
+    /// the file is real and parses cleanly, and still changes nothing on the host
+    /// serving this screen. `servers` / `rejected` describe the **file**; this
+    /// one describes the **host**, and without it the two are indistinguishable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted: Option<bool>,
     /// Accepted entries, ordered by server key.
     #[serde(default)]
     pub servers: Vec<AppServerConfigMcpServerView>,

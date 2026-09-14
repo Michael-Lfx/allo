@@ -232,6 +232,8 @@
 
 **字段覆盖面（2026-09-13 补齐）**：参考实现文档里的九个可选字段现已**全部支持**（`env` / `cwd` / `headers` / `bearerTokenEnvVar` / `enabled` / `startupTimeoutMs` / `toolTimeoutMs` / `enabledTools` / `disabledTools`），逐字段落点见 `20` §7.9.1。唯一的有界差异是两个超时的上限（参考实现允许 `2147483647` ms，我们按引擎自己的界卡在 `600000` ms 并**拒绝**越界值）——这是主动取舍而非兼容性遗漏，理由见 `20` §7.9.1。server 级 `enabledTools` / `disabledTools` 在**注册之前**裁剪（`20` §7.9.2），因此不改变本决策的任何边界：声明仍不绕过宿主 `[tools]`，`[tools]` 仍是最后一道。
 
+**读面补 `adopted`（2026-09-14）**：`config/get.mcp` 新增 `adopted`，把「宿主是否真的采用这份声明」摆到读面上（`20` §9.5）。这不是新增决策，而是把本决策 ②「A 纯内存注入」那条**宿主位**（`--adopt-store-mcp-declarations`）变成客户端可读的事实——在此之前，一台没有置位的宿主（如 `nomifun-web`）与一台把每条都注入的宿主，在设置页上渲染完全一样。三态：`true` / `false` / 缺席（宿主未上报），缺席不折叠成 `false`（`apps/agent-store` 在该字段存在之前就已采用声明）。协议指纹随之 bump 到 `2026-09-14`。
+
 ---
 
 ## 附 · 拍板后的连续推进顺序（无需再问）

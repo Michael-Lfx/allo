@@ -626,6 +626,7 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
   ],
   "mcp": {
     "exists": true,
+    "adopted": true,
     "servers": [
       { "name": "filesystem", "transport": "stdio", "enabled": true },
       { "name": "linear", "transport": "http", "enabled": true }
@@ -653,6 +654,13 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
   `transport` / `enabled`）。该文件**不在** `config/set` 的白名单里——它只能由用户手写，
   `config/set` 只负责把写完后的投影读回来；WebUI 设置页的 `mcp` 分区就是这段投影的
   **只读**渲染（含逐条 `rejected` 原因），页面上没有任何写控件。
+- **`adopted` 描述宿主，不描述文件**（2026-09-14 加入，指纹随之 bump 到 `2026-09-14`）：
+  `servers` / `rejected` / `error` 都只说这份**文件**里有什么，而读盘是无条件的——宿主没开
+  `--adopt-store-mcp-declarations` 时也照样投影。于是「宿主根本不读这份文件」与「宿主把
+  每条都注入了会话」在只读渲染下**完全一样**，`adopted` 就是为这一对存在的。
+  **三态**：`true` / `false` 是宿主自己的回答，字段**缺席**表示宿主没上报（比该字段更旧的
+  构建）——不折叠成 `false`，因为 `apps/agent-store` 在该字段存在之前就已采用声明，折叠
+  会把「不知道」写成「没采用」。`exists:true, adopted:false` 是合法且有意义的组合。
 
 `config/set` 只接受白名单字段（当前仅 `default_model`）：请求里出现 `api_key` /
 `base_url` / 路径等**任何**其他键都是 `invalid_request`（不是静默忽略）；值为空、

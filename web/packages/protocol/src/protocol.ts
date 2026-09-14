@@ -5,7 +5,7 @@
  * execution/session/step/attempt IDs never appear in this module.
  */
 
-export const APP_SERVER_PROTOCOL_VERSION = "2026-09-13";
+export const APP_SERVER_PROTOCOL_VERSION = "2026-09-14";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";

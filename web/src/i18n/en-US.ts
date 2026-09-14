@@ -501,7 +501,11 @@ const enUS: Resources = {
     mcpGroup: "MCP servers",
     mcpFileTitle: "Declaration file ~/.agent-store/mcp.json",
     mcpFileDesc:
-      "Read-only: MCP servers are written by hand in that file and settings never writes it. This page reflects the file only, not whether this host adopts it",
+      "Read-only: MCP servers are written by hand in that file and settings never writes it",
+    mcpAdoptionTitle: "Does this host use it",
+    mcpAdopted: "In use: new sessions inject the servers above (still bounded by the host's [tools])",
+    mcpNotAdopted: "Not used: this host does not read this file, so none of the servers above reach a session",
+    mcpAdoptionUnknown: "Unknown: the host did not report this (older build)",
     mcpLoading: "Reading the declaration file…",
     mcpFileMissing: "No ~/.agent-store/mcp.json — nothing declares an MCP server",
     mcpNoServers: "The file declares no mcpServers entry yet",

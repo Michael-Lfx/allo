@@ -92,7 +92,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 /// App Server wire protocol version, negotiated by `initialize`.
-pub const PROTOCOL_VERSION: &str = "2026-09-13";
+pub const PROTOCOL_VERSION: &str = "2026-09-14";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1017,6 +1017,14 @@ pub struct AppServerRouterState {
     /// Optional override for the agent-store config location. `None` resolves
     /// `~/.agent-store/config.toml` on every request.
     pub agent_store_config_path: Option<std::path::PathBuf>,
+    /// Whether this host feeds `~/.agent-store/mcp.json` into agent sessions
+    /// (`--adopt-store-mcp-declarations`, `20` §7.9), as reported by the launcher.
+    /// `None` = the launcher did not say, which `config/get` answers as "unknown"
+    /// rather than as "not adopted" ([`AppServerConfigMcpView::adopted`]).
+    ///
+    /// A host fact, not a file fact: `agent_store_config_path` says where the
+    /// file is read from, this says whether it is read at all.
+    pub adopt_store_mcp_declarations: Option<bool>,
     /// Agent Store Skill catalog provider. `None` keeps the `skills`
     /// capability off and returns `unsupported_operation` for `skill/*`.
     pub skills: Option<Arc<dyn SkillCatalogProvider>>,
@@ -1081,6 +1089,7 @@ impl Default for AppServerRouterState {
             event_bus: None,
             provider_service: None,
             agent_store_config_path: None,
+            adopt_store_mcp_declarations: None,
             skills: None,
             skill_writes: None,
             connectors: None,
@@ -3746,7 +3755,15 @@ fn config_view(
 /// nothing anyway. A present-but-unparseable file projects to
 /// `Some { exists: true, .. }` with empty lists rather than an error, so the
 /// settings screen stays reachable while the startup log carries the reason.
-fn mcp_declaration_view(config_path: &std::path::Path) -> Option<AppServerConfigMcpView> {
+///
+/// `adopted` is the host's own answer ([`AppServerRouterState::adopt_store_mcp_declarations`])
+/// and is carried through untouched: this function reports the file, the state
+/// reports whether the host uses it, and a client needs both to avoid reading
+/// "declared here" as "in force here".
+fn mcp_declaration_view(
+    config_path: &std::path::Path,
+    adopted: Option<bool>,
+) -> Option<AppServerConfigMcpView> {
     let path = config_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new(""))
@@ -3779,6 +3796,7 @@ fn mcp_declaration_view(config_path: &std::path::Path) -> Option<AppServerConfig
     };
     Some(AppServerConfigMcpView {
         exists: true,
+        adopted,
         servers,
         rejected,
         error,
@@ -3793,7 +3811,7 @@ fn mcp_declaration_view(config_path: &std::path::Path) -> Option<AppServerConfig
 /// hand-edit behind a settings screen that looks healthy.
 fn execute_config_get(state: &AppServerRouterState) -> Result<AppServerConfigView, AppServerError> {
     let path = agent_store_config_file(state)?;
-    let mcp = mcp_declaration_view(&path);
+    let mcp = mcp_declaration_view(&path, state.adopt_store_mcp_declarations);
     match std::fs::read_to_string(&path) {
         Ok(source) => {
             let config = AgentStoreConfig::from_source(&source).map_err(|error| {
@@ -8250,7 +8268,7 @@ model = "mimo-v2.5-free"
                } }"#,
         )
         .expect("temp mcp file");
-        let (state, user, connection, subscriptions) = config_dispatch_state(&path);
+        let (mut state, user, connection, subscriptions) = config_dispatch_state(&path);
 
         let view = dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
             .await
@@ -8292,6 +8310,30 @@ model = "mimo-v2.5-free"
         ] {
             assert!(!encoded.contains(absent), "{absent} reached the wire: {encoded}");
         }
+
+        // The host's adoption answer rides along, and its **absence** stays absent
+        // on the wire: "the launcher did not say" is a state of its own, and
+        // collapsing it to `false` would misreport an adopting host built before
+        // this field existed.
+        assert!(view["mcp"].get("adopted").is_none(), "{view}");
+
+        // `adopted: false` with a perfectly good file is the pair the field
+        // exists for: `servers` describes the **file**, `adopted` the **host**,
+        // and without it this host's screen looks like one that injects them.
+        state.adopt_store_mcp_declarations = Some(false);
+        let inert =
+            dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+                .await
+                .expect("config/get");
+        assert_eq!(inert["mcp"]["adopted"], serde_json::json!(false));
+        assert_eq!(inert["mcp"]["servers"][0]["name"], serde_json::json!("filesystem"));
+
+        state.adopt_store_mcp_declarations = Some(true);
+        let used =
+            dispatch_config(&state, &connection, &user, &subscriptions, "config/get", serde_json::json!({}))
+                .await
+                .expect("config/get");
+        assert_eq!(used["mcp"]["adopted"], serde_json::json!(true));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

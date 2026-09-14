@@ -462,6 +462,7 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 | 7 | in-process planned delegate + `team/run`（`16` §7 决策 3） | 新 sink（绑 `AgentExecutionEngine`）+ `nomifun-app-server` 路由 | ✅ **已落地**：模型契约、宿主 sink 接缝、宿主组装开关、engine-backed provider、Store 关闭嵌入版、`team/run` 协议面与 Team 层委派放行（见 §9.2／§9.2.1／§9.2.2） |
 | 8 | MCP 声明文件接入（`21` D14）：`~/.agent-store/mcp.json` 的用户级 `mcpServers` → 宿主**启动读一次** → 会话构建时并入 `extra_mcp_servers`（**声明优先于 DB 行**），不投影进 `mcp_servers` 表；`[tools]` 仍在最后求交；宿主位 `--adopt-store-mcp-declarations` 仅 `apps/agent-store` 置位 | `nomifun-api-types/src/mcp_declarations.rs`（新）、`nomifun-app/src/services.rs`（`resolve_host_mcp_declarations`）、`nomifun-ai-agent/src/factory/nomi.rs`、`nomifun-app-server/src/lib.rs`（`config/get` 读面） | ✅ **已落地**（规格见 §7.9，落地记录与验证读数见 §9.3；协议指纹 bump 到 `2026-09-13`） |
 | 9 | 声明文件补齐参考实现的**全部**可选字段（`cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools`），并把 `headers` 的 `secret:NAME` 语义在三条装配路径上收敛为一个函数 | `nomifun-api-types/src/mcp_declarations.rs`、`nomi-config/src/config.rs`、`nomi-mcp/src/{tool_proxy,manager,transport/stdio}.rs`、`nomifun-ai-agent/src/factory/nomi.rs`、`nomifun-app/src/services.rs`、`nomifun-common/src/secret_ref.rs` | ✅ **已落地**（规格见 §7.9.1–§7.9.3，落地记录见 §9.4；**无协议变更**，指纹保持 `2026-09-13`） |
+| 10 | 读面补 `adopted`：让设置页能区分「文件里声明了」与「本宿主真的在用」（`servers` 描述文件，`adopted` 描述宿主） | `nomifun-api-types/src/app_server.rs`、`nomifun-app-server/src/lib.rs`、`nomifun-app/src/{services,router/routes}.rs`、`web/src/{lib/client.ts,components/dialogs/McpSettingsSection.tsx}` | ✅ **已落地**（2026-09-14，规格与判断见 §9.5；协议指纹 bump 到 `2026-09-14`） |
 
 Step 7 单独成批：它引入新架构件（`nomi_types::Tool` 实现 + App Server runtime wiring），且必须保持 `Planner`/`Router`/`Scheduler`/`AttemptRunner` 私有（`check-agent-vocabulary.mjs:337-340`）。
 
@@ -584,7 +585,7 @@ Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码
 | 宿主映射与凭据：三种传输映射新字段；`apply_bearer_token` 把 `bearerTokenEnvVar` 落成 `Authorization: Bearer …`；**三条路径**（声明 / DB 行 / 会话快照）统一走 `resolve_header_secrets` | `nomifun-ai-agent/src/factory/nomi.rs` |
 | 凭据查表：新增 `secret_ref::lookup` / `lookup_with`，让「按名字取凭据」与 `secret:NAME` 引用共用同一条优先级（`[credentials]` 优先、进程环境兜底），不在调用点重写一遍 | `nomifun-common/src/secret_ref.rs` |
 | 宿主读盘：`cwd` 在读盘时相对声明文件目录解析成绝对路径；启动日志（`target: agent_store_mcp`）除 `declared/enabled/refused` 外，逐条 debug 打出 transport / cwd / 两个过滤条目数 / bearer 名 / 两段超时——「声明了什么」是单点事实（一次启动一次），「连上了没有」才是每会话的事 | `nomifun-app/src/services.rs` |
-| 协议面：**无变更**。读面仍是 `mcp { exists, servers[{name,transport,enabled}], rejected, error }`，指纹保持 `2026-09-13` | —— |
+| 协议面：**无变更**。读面仍是 `mcp { exists, servers[{name,transport,enabled}], rejected, error }`，指纹保持 `2026-09-13`（`adopted` 见 §9.5，宿主事实的补位） | —— |
 
 **三处判断，登记在此**：
 
@@ -607,6 +608,30 @@ Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码
 3. **`disabledTools` 覆盖 MCP resources / prompts**——见 §7.9.2 的已知边界（它们在我们这里变成 skill，不是工具）。
 4. **热更新墓碑态**（参考实现的 `removed`）——不变。
 5. ~~**WebUI 设置页的 MCP 分区渲染**~~ → **已完成（2026-09-13）**：设置 nav 三→四，新增 `mcp` 分区（`web/src/components/dialogs/McpSettingsSection.tsx`），只读渲染 `config/get.mcp`（文件级 `error`、逐条 `rejected` 原因、已接受条目与计数），页面上没有任何写控件。**未扩读面**：`rejected` 的原因已经点名出问题的具体字段，比再加 `cwd` / 过滤条目数更有用，所以本次**零协议变更**（指纹未动）。渲染细节与踩到的 i18n 坑见 `16` §5.3 的 R16 追记。
+
+---
+
+#### 9.5 第六批（2026-09-14）：读面补 `adopted`（宿主是否采用）+ 指纹 bump
+
+**为什么加这个字段**：`config/get.mcp` 的 `servers` / `rejected` / `error` 描述的都是**文件**，没有一个字段描述**宿主**。而 `mcp_declaration_view` 是**无条件读盘**的——它不检查宿主有没有开 `--adopt-store-mcp-declarations`。于是「宿主根本不读这份文件」（`nomifun-web` 默认位，或任何没开这个开关的宿主）与「宿主把每一条都注入了会话」，在设置页上**渲染完全一样**。这是第四批只读分区落地时就登记的产品边界（`16` §5.3：面板当时只能写「不代表宿主是否采用它」），本次用一次协议增量收口。
+
+| 事项 | 位置 |
+|---|---|
+| 契约：`AppServerConfigMcpView` 增 `adopted: Option<bool>`（`#[serde(default, skip_serializing_if = "Option::is_none")]`） | `nomifun-api-types/src/app_server.rs` |
+| 宿主位：`AppServerRouterState.adopt_store_mcp_declarations: Option<bool>`——**宿主事实**而非文件事实（`agent_store_config_path` 说从哪读，它说读不读） | `nomifun-app-server/src/lib.rs` |
+| 传递：`AppServices` 保留**原始开关**；读面由 `mcp_declaration_view(path, adopted)` 原样带出 | `nomifun-app/src/{services,router/routes}.rs` |
+| 前端：`AgentStoreConfigMcp.adopted?: boolean`；设置页新增一行「本宿主是否使用它」，三态文案 | `web/src/lib/client.ts`、`web/src/components/dialogs/McpSettingsSection.tsx` |
+| 指纹：`2026-09-13` → **`2026-09-14`**（8 处代码/夹具 + 2 处站点文档；仍无方法增删，`46 / 65` 计数守卫未动） | 见 `16` §7 决策 4 |
+
+**三处判断，登记在此**：
+
+1. **三态而非两态**。`apps/agent-store` 在这个字段存在**之前**就已经在采用声明了。若把「宿主没上报」折叠成 `false`，一个「比 UI 旧、但明明在采用」的宿主会被这一行说成「未使用」——把不知道说成了否定答案。所以 `None` 是独立的一态、界面单独一句文案。与 `mcp: Option<..>`（无文件 ≠ 空文件）、`distill_enabled: null`（未配置 ≠ 关闭）是同一条口径。
+2. **放 state，不放进程级全局**。抄 `marketplaces_warming` 那套 `static AtomicBool` 能省掉 state 与 `AppServices` 两处字段，但读面测试就只能建在共享可变全局上，并行测试按线程交错即互相污染。`AppServerRouterState` 已有 `impl Default` 且所有测试点都走 `..Default::default()`，所以新字段**零测试改动**——3 行的代价换掉一类不确定性，值得。
+3. **不能用已解析的 `mcp_declarations` 反推开关**。「采用了、但文件里什么都没声明」与「压根没看这份文件」解析结果都是空声明，而只有前者让这份文件在这台宿主上有意义。故 `AppServices` 同时保留原始 `bool` 开关。
+
+**验证读数**：`nomifun-app-server --lib` 的 `config_get_projects_mcp_declarations_and_refusals` 新增三段断言——① `adopted` **缺席**时必须不在 wire 上（`serde_json` 的 `get("adopted").is_none()`，证明 `skip_serializing_if` 生效、三态没有被 `null` 抹平成两态）；② `Some(false)` + 一份完全正常的文件 → `adopted=false` 而 `servers` 照常投影（这正是「文件里有、宿主不用」那一对）；③ `Some(true)` → `adopted=true`。`cargo check -p nomifun-api-types -p nomifun-app-server -p nomifun-app --tests` **0 error**；`cargo test -p nomifun-app-server --lib mcp` **3 / 0**；`web`（`bun run test`）**407 passed / 1 skipped**（新增 1 例三态渲染断言：`false` 说「未使用」、`true` 说「使用中」、缺席说「无法判断」，且三者互不串台）；指纹 10 处全部同步（`web` 侧 `client.ts` 严格相等校验与 `sdk/src/spawn.ts` 的握手校验即在测试里，漏改会红）。
+
+**仍未覆盖**：真二进制端到端里未重跑「`adopted` 是否真的随宿主开关变化」——那需要分别以 `agent-store`（强制置位）与另一个不置位的宿主启动一次并对比 `config/get`。单测覆盖了从 state 到 wire 的整段投影，缺口只在「宿主 CLI 开关 → state」这一段的一行赋值上，由 `routes.rs` 那一行 + `cargo check` 兜住。
 
 ---
 
