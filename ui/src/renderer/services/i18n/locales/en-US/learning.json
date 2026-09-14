@@ -234,6 +234,8 @@
   "back": "Back to courses",
   "progress": "Progress",
   "lessons": "lessons",
+  "contentWidthToWide": "Switch to wide layout",
+  "contentWidthToStandard": "Switch to standard layout",
   "outline": "Outline",
   "prevLesson": "Previous",
   "nextLesson": "Next",
@@ -348,6 +350,8 @@
     "diagnosticLimitHint": "Maximum questions sampled per knowledge diagnostic",
     "dailyCheckinGoal": "Daily check-in goal",
     "dailyCheckinGoalHint": "Cards planned per day; the day counts as done once reached or the queue is cleared (0 = clear the queue only, default 15)",
+    "wideContent": "Wide layout",
+    "wideContentHint": "Off keeps the centered content column (1200px for the course list and the outline workspace, 1400px for the learning graph). On fills the page, turns the lesson reading area into a full-width bordered panel, and widens the prose column to about 1040px. All three learning views share this setting.",
     "saved": "Saved"
   },
   "learningGraphBeta": "Beta",

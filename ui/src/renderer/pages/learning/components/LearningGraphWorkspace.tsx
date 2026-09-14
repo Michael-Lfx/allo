@@ -8,6 +8,7 @@ import { Alert, Button, Empty, Modal, Spin, Tag, Typography } from '@arco-design
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { lessonStatusTagColors, prereqLockedIds } from '../model';
+import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
 import type {
   Activity,
@@ -19,6 +20,7 @@ import type {
 } from '../types';
 import { LessonBlock } from './LessonStudy';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
+import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import GraphDagView from './GraphDagView';
 
 const { Text, Title, Paragraph } = Typography;
@@ -50,6 +52,7 @@ const LearningGraphWorkspace: React.FC<{
 }) => {
   const { t } = useTranslation();
   const model = useLearningAutogenModel();
+  const { wide: wideContent } = useWideContentLayout();
   const graph = detail.graph;
 
   // 学习图课程只有一个隐含模块；课时的完整视图（含 activities）从这里取，
@@ -166,7 +169,9 @@ const LearningGraphWorkspace: React.FC<{
 
   return (
     <div className='app-page-shell h-full w-full box-border overflow-y-auto'>
-      <div className='mx-auto flex h-full w-full flex-col gap-10px md:max-w-1400px'>
+      <div
+        className={`mx-auto flex h-full w-full flex-col gap-10px ${contentColumnWidth(wideContent, STANDARD_GRAPH_MAX_WIDTH)}`}
+      >
       {/* 头部：返回 + 标题/Beta + 学习目标 + 模型选择（对齐传统课程工作区） */}
       <Button type='text' className='self-start !px-0' onClick={onBack}>
         {t('learning.back')}
@@ -185,11 +190,14 @@ const LearningGraphWorkspace: React.FC<{
             <Paragraph className='!mb-0 !mt-4px text-t-secondary'>{graph.goal}</Paragraph>
           )}
         </div>
-        <LearningModelSelector
-          choice={model.choice}
-          onChange={(choice) => void model.setChoice(choice)}
-          size='small'
-        />
+        <div className='flex shrink-0 items-center gap-8px'>
+          <ContentWidthToggle />
+          <LearningModelSelector
+            choice={model.choice}
+            onChange={(choice) => void model.setChoice(choice)}
+            size='small'
+          />
+        </div>
       </div>
 
       {/* 主从布局：左=继续学习就绪集导航，右=选中节点的课时学习区 */}

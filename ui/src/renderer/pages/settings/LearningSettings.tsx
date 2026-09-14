@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, InputNumber, Slider } from '@arco-design/web-react';
+import { Button, Input, InputNumber, Slider, Switch } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
+import { useWideContentLayout } from '@/renderer/pages/learning/components/ContentWidthToggle';
 import {
   SettingsControlGroup,
   SettingsList,
@@ -23,6 +24,9 @@ const LearningSettings: React.FC = () => {
   const [reviewSessionLimit, setReviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit, setDiagnosticLimit] = useConfig('learning.diagnosticLimit');
   const [dailyCheckinGoal, setDailyCheckinGoal] = useConfig('learning.dailyCheckinGoal');
+  // 内容宽度偏好与学习页头部按钮共用同一条读写路径（同一个键、同一套归一化），
+  // 避免两个入口写出两种存档形态。
+  const { wide: wideContent, setWide: setWideContent } = useWideContentLayout();
 
   const [parametersDraft, setParametersDraft] = useState('');
 
@@ -57,6 +61,13 @@ const LearningSettings: React.FC = () => {
           description={t('learning.settings.description')}
         />
         <SettingsList>
+            <PreferenceRow
+              label={t('learning.settings.wideContent')}
+              description={t('learning.settings.wideContentHint')}
+              controlLayout='field'
+            >
+              <Switch checked={wideContent} onChange={(value) => void setWideContent(value)} />
+            </PreferenceRow>
             <PreferenceRow
               label={t('learning.settings.desiredRetention')}
               description={t('learning.settings.desiredRetentionHint')}

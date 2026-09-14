@@ -234,6 +234,8 @@
   "back": "返回课程",
   "progress": "进度",
   "lessons": "课时",
+  "contentWidthToWide": "切换到满宽布局",
+  "contentWidthToStandard": "切换到标准布局",
   "outline": "大纲",
   "prevLesson": "上一课",
   "nextLesson": "下一课",
@@ -348,6 +350,8 @@
     "diagnosticLimitHint": "单次知识诊断抽取的题目上限",
     "dailyCheckinGoal": "每日打卡目标",
     "dailyCheckinGoalHint": "每天计划复习的卡片数；达标或清空队列即完成当日打卡（0 表示仅清空队列，默认 15）",
+    "wideContent": "满宽布局",
+    "wideContentHint": "关闭时内容列居中限宽（课程列表与大纲工作区 1200px、学习图 1400px）；开启后内容撑满页面，课时阅读区变成占满整行的边框面板，正文行宽放宽到约 1040px。三个学习视图共用这一设置。",
     "saved": "已保存"
   },
   "learningGraphBeta": "Beta",
