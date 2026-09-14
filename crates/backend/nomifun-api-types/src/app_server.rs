@@ -825,6 +825,11 @@ pub struct AppServerStoreInstallResult {
     pub installed_count: usize,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
+    /// Per-component outcome, forwarded from the installer's own report so a
+    /// store install is as branchable as a direct `install/run`. Absent from a
+    /// host that predates the field — read it as "no detail available".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes: Vec<AppServerInstallOutcome>,
 }
 
 /// One model in the public catalog (`models/list`). The projection carries

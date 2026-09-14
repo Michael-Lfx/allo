@@ -1222,6 +1222,21 @@ async fn importer_store_install_entry_picks_up_a_new_version() {
         "a new version is a new immutable snapshot; the old one keeps its history"
     );
     assert!(upgraded["installed_count"].as_u64().unwrap() > 0, "{upgraded}");
+    // `store/install-entry` forwards the installer's per-component report, so a
+    // one-click store install is as branchable as a direct `install/run`.
+    let upgraded_outcomes = upgraded["outcomes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("store install must forward per-component outcomes: {upgraded}"));
+    assert!(!upgraded_outcomes.is_empty(), "{upgraded}");
+    assert!(
+        upgraded_outcomes.iter().all(|outcome| outcome["ok"] == true),
+        "the upgrade must not fail a component: {upgraded}"
+    );
+    let forwarded = upgraded_outcomes
+        .iter()
+        .find(|outcome| outcome["kind"] == "agent")
+        .expect("the forwarded report must cover the agent component");
+    assert_eq!(forwarded["action"], "created", "{forwarded}");
 
     let settled_item = store_item(app.clone(), &token, &csrf, &connection_id, "team-tools").await;
     assert_eq!(settled_item["installed"], true, "{settled_item}");

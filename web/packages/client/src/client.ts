@@ -37,6 +37,7 @@ import { ConversationClient } from "./conversations";
 import { ConnectorClient } from "./connectors";
 import { RunClient } from "./runs";
 import { SkillClient } from "./skills";
+import { StoreClient, type StoreClientOptions } from "./store";
 import { TeamClient } from "./teams";
 import { ModelClient } from "./models";
 import { WorkspaceClient } from "./workspaces";
@@ -47,6 +48,8 @@ export interface AppServerClientOptions {
   transport: Transport;
   client: ClientInfo;
   capabilities?: ClientCapabilities;
+  /** Readiness tuning for the `store` sub-client (`store.install`). */
+  store?: StoreClientOptions;
 }
 
 export class AppServerClient {
@@ -67,6 +70,12 @@ export class AppServerClient {
   readonly teams: TeamClient;
   /** Public model directory (`models/list`, REQ-PAR-05b). */
   readonly models: ModelClient;
+  /**
+   * Agent Store lifecycle as one state machine: search → install (wait until
+   * usable) → enable/disable → uninstall. Composes the flat methods below; it
+   * adds no wire surface.
+   */
+  readonly store: StoreClient;
   readonly clientInfo: ClientInfo;
   readonly capabilities?: ClientCapabilities;
 
@@ -87,6 +96,7 @@ export class AppServerClient {
     this.agents = new AgentClient(this.transport);
     this.teams = new TeamClient(this.transport);
     this.models = new ModelClient(this.transport);
+    this.store = new StoreClient(this, options.store);
     this.bridgeNotifications();
   }
 

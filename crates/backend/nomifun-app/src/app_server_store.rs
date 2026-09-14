@@ -406,6 +406,9 @@ impl StoreProvider for AppServerStoreProvider {
                         installed_count: 0,
                         warnings: vec!["entry already installed".into()],
                         errors: vec![],
+                        // Nothing was attempted, so there is no per-component
+                        // detail to report.
+                        outcomes: vec![],
                     });
                 }
                 if row.version == live {
@@ -430,6 +433,8 @@ impl StoreProvider for AppServerStoreProvider {
                             installed_count: 0,
                             warnings: result.warnings,
                             errors: result.errors,
+                            // The import was refused, so nothing was registered.
+                            outcomes: vec![],
                         });
                     }
                     result.snapshot_id
@@ -455,6 +460,8 @@ impl StoreProvider for AppServerStoreProvider {
                         installed_count: 0,
                         warnings: result.warnings,
                         errors: result.errors,
+                        // The import was refused, so nothing was registered.
+                        outcomes: vec![],
                     });
                 }
                 result.snapshot_id
@@ -478,6 +485,7 @@ impl StoreProvider for AppServerStoreProvider {
             installed_count: install_result.installed_count,
             warnings: install_result.warnings,
             errors: install_result.errors,
+            outcomes: install_result.outcomes,
         })
     }
 }
