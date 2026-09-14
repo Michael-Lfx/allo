@@ -92,7 +92,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 /// App Server wire protocol version, negotiated by `initialize`.
-pub const PROTOCOL_VERSION: &str = "2026-09-14";
+pub const PROTOCOL_VERSION: &str = "2026-09-15";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

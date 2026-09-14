@@ -5,7 +5,7 @@
  * execution/session/step/attempt IDs never appear in this module.
  */
 
-export const APP_SERVER_PROTOCOL_VERSION = "2026-09-14";
+export const APP_SERVER_PROTOCOL_VERSION = "2026-09-15";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -709,11 +709,49 @@ export interface InstallResult {
   skipped: string[];
   warnings: string[];
   errors: string[];
+  /** Per-component outcome. Absent on a host that predates the field — read a
+   *  missing value as "no detail available", never as "nothing ran". */
+  outcomes?: InstallOutcome[];
 }
 
 export interface InstallStatus {
   snapshot_id: string;
   components: InstallComponent[];
+  /** Per-component outcome of the mutation that produced this projection
+   *  (`install/uninstall` · `install/disable` · `install/enable`). Empty for a
+   *  plain `install/status` read. */
+  outcomes?: InstallOutcome[];
+  /** Human-readable failures; mirrors the `ok: false` outcomes. */
+  errors?: string[];
+}
+
+/** What happened to one component during install / uninstall / enable / disable. */
+export type InstallOutcomeAction =
+  | "created"
+  | "reused"
+  | "enabled"
+  | "disabled"
+  /** The flag moved but the runtime did not: the documented `skill` case, since
+   *  the skill corpus has no enable state (docs `05` §4.5). */
+  | "marked"
+  | "removed"
+  | "skipped"
+  | "failed";
+
+export interface InstallOutcome {
+  component_id: string;
+  kind: string;
+  action: InstallOutcomeAction;
+  /** `false` only when the requested state was **not** reached. A component
+   *  that was already in the requested state reports `ok: true`. */
+  ok: boolean;
+  /**
+   * Stable, documented token to branch on (`docs/agent-store/05` §4.5 lists the
+   * closed set). `message` is for humans and nothing parses it — the field
+   * exists so callers never have to match on prose.
+   */
+  code?: string;
+  message?: string;
 }
 
 // ---------------------------------------------------------------------------

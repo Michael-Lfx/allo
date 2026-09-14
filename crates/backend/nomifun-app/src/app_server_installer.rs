@@ -17,8 +17,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use nomifun_api_types::{
-    AppServerInstallComponent, AppServerInstallRequest, AppServerInstallResult,
-    AppServerInstallState, AppServerInstallStatus,
+    AppServerInstallComponent, AppServerInstallOutcome, AppServerInstallRequest,
+    AppServerInstallResult, AppServerInstallState, AppServerInstallStatus,
 };
 use nomifun_app_server::InstallProvider;
 use nomifun_common::AppError;
@@ -281,6 +281,7 @@ impl AppServerInstallProvider {
             .await
             .map_err(AppError::from)?;
         let mut moved: Vec<String> = Vec::new();
+        let mut outcomes: Vec<AppServerInstallOutcome> = Vec::new();
         for row in rows
             .iter()
             .filter(|row| component_ids.iter().any(|id| id == &row.component_id))
@@ -293,16 +294,60 @@ impl AppServerInstallProvider {
                     component_id = %row.component_id,
                     "ignoring enable/disable for a component that is not installed"
                 );
+                outcomes.push(skipped_outcome(
+                    &row.component_id,
+                    &row.kind,
+                    "component_not_installed",
+                    "component is not installed; there is no runtime state to move",
+                ));
                 continue;
             }
+            let runtime_type = runtime_ref(row)
+                .and_then(|runtime| {
+                    runtime.get("type").and_then(|value| value.as_str()).map(str::to_owned)
+                })
+                .unwrap_or_default();
             match set_component_runtime_enabled(&*self.presets, &*self.mcp, row, enabled).await {
-                Ok(()) => moved.push(row.component_id.clone()),
-                Err(error) => tracing::warn!(
-                    snapshot_id,
-                    component_id = %row.component_id,
-                    %error,
-                    "could not move the runtime state; leaving the recorded flag alone"
-                ),
+                Ok(()) => {
+                    moved.push(row.component_id.clone());
+                    // A skill has no runtime state to move, so the flag stays a
+                    // catalogue marker and the outcome says so rather than
+                    // implying the skill stopped (or started) being usable.
+                    if runtime_type == "skill" {
+                        outcomes.push(AppServerInstallOutcome {
+                            component_id: row.component_id.clone(),
+                            kind: row.kind.clone(),
+                            action: "marked".to_owned(),
+                            ok: true,
+                            code: Some("skill_disable_flag_only".to_owned()),
+                            message: Some(if enabled {
+                                "the skill corpus has no enable state; this clears a catalogue \
+                                 marker only — the skill was never unavailable"
+                                    .to_owned()
+                            } else {
+                                "the skill corpus has no enable state; this is a catalogue marker \
+                                 only — uninstall to remove the skill from the runtime"
+                                    .to_owned()
+                            }),
+                        });
+                    } else {
+                        outcomes.push(ok_outcome(
+                            &row.component_id,
+                            &row.kind,
+                            if enabled { "enabled" } else { "disabled" },
+                        ));
+                    }
+                }
+                Err(failure) => {
+                    tracing::warn!(
+                        snapshot_id,
+                        component_id = %row.component_id,
+                        code = failure.code,
+                        message = %failure.message,
+                        "could not move the runtime state; leaving the recorded flag alone"
+                    );
+                    outcomes.push(failed_outcome(&row.component_id, &row.kind, &failure));
+                }
             }
         }
         if !moved.is_empty() {
@@ -312,7 +357,10 @@ impl AppServerInstallProvider {
                 .await
                 .map_err(AppError::from)?;
         }
-        self.status(snapshot_id).await
+        let mut status = self.status(snapshot_id).await?;
+        status.errors = outcome_errors(&outcomes);
+        status.outcomes = outcomes;
+        Ok(status)
     }
 }
 
@@ -330,6 +378,7 @@ impl InstallProvider for AppServerInstallProvider {
         let components = self.repo.get_components(&snapshot_id).await.map_err(AppError::from)?;
         let mut skipped = Vec::new();
         let mut warnings = Vec::new();
+        let mut outcomes: Vec<AppServerInstallOutcome> = Vec::new();
 
         // What this snapshot already registered on this host. Install is
         // re-entrant, so every kind consults this before creating anything:
@@ -389,7 +438,18 @@ impl InstallProvider for AppServerInstallProvider {
                     location: location.location.display().to_string(),
                     mcp_server_id: None,
                 }),
-                None => skipped.push(format!("skill:{}", location.slug)),
+                None => {
+                    // The snapshot materialized a skill that no component row
+                    // claims. It is on disk but unregistered and therefore
+                    // unremovable through `install/uninstall` — say so.
+                    skipped.push(format!("skill:{}", location.slug));
+                    outcomes.push(skipped_outcome(
+                        &format!("skill:{}", location.slug),
+                        "skill",
+                        "source_component_unmatched",
+                        "materialized skill has no matching component row in the snapshot",
+                    ));
+                }
             }
         }
 
@@ -417,6 +477,7 @@ impl InstallProvider for AppServerInstallProvider {
                             location: preset_id.to_owned(),
                             mcp_server_id: None,
                         });
+                        outcomes.push(ok_outcome(&component.component_id, &component.kind, "reused"));
                         continue;
                     }
                     // The user deleted the Preset by hand: recreate it below
@@ -428,6 +489,11 @@ impl InstallProvider for AppServerInstallProvider {
                             component.component_id
                         ));
                         skipped.push(component.component_id.clone());
+                        outcomes.push(failed_outcome(
+                            &component.component_id,
+                            &component.kind,
+                            &ComponentFailure::new("preset_lookup_failed", error.to_string()),
+                        ));
                         continue;
                     }
                 }
@@ -447,15 +513,23 @@ impl InstallProvider for AppServerInstallProvider {
                 )
                 .await
             {
-                Ok(preset_id) => pending.push(Pending {
-                    component_id: component.component_id.clone(),
-                    runtime_type: "preset",
-                    location: preset_id.clone(),
-                    mcp_server_id: None,
-                }),
+                Ok(preset_id) => {
+                    pending.push(Pending {
+                        component_id: component.component_id.clone(),
+                        runtime_type: "preset",
+                        location: preset_id.clone(),
+                        mcp_server_id: None,
+                    });
+                    outcomes.push(ok_outcome(&component.component_id, &component.kind, "created"));
+                }
                 Err(error) => {
                     warnings.push(format!("preset create failed for {}: {error}", component.component_id));
                     skipped.push(component.component_id.clone());
+                    outcomes.push(failed_outcome(
+                        &component.component_id,
+                        &component.kind,
+                        &ComponentFailure::new("preset_create_failed", error.to_string()),
+                    ));
                 }
             }
         }
@@ -479,19 +553,61 @@ impl InstallProvider for AppServerInstallProvider {
                     component.component_id
                 ));
                 skipped.push(component.component_id.clone());
+                outcomes.push(skipped_outcome(
+                    &component.component_id,
+                    &component.kind,
+                    "cli_connector_unsupported",
+                    "CLI connectors are not registered as MCP servers in V1",
+                ));
                 continue;
             }
             let transport_json = connector_transport(&payload);
+            let recorded_server_id = installed_state
+                .get(&component.component_id)
+                .and_then(|row| runtime_ref(row))
+                .and_then(|runtime| {
+                    runtime_ref_field(&runtime, "mcp_server_id").map(str::to_owned)
+                });
             match self.mcp.upsert(&component.name, &transport_json).await {
-                Ok(server_id) => pending.push(Pending {
-                    component_id: component.component_id.clone(),
-                    runtime_type: "connector",
-                    location: component.name.clone(),
-                    mcp_server_id: Some(server_id.clone()),
-                }),
+                Ok(server_id) => {
+                    pending.push(Pending {
+                        component_id: component.component_id.clone(),
+                        runtime_type: "connector",
+                        location: component.name.clone(),
+                        mcp_server_id: Some(server_id.clone()),
+                    });
+                    // Upserting by name is the documented behaviour, but if the
+                    // name already belonged to a *different* server row this
+                    // overwrote it — observable, not silent.
+                    match recorded_server_id.as_deref() {
+                        Some(previous) if previous != server_id => outcomes.push(
+                            AppServerInstallOutcome {
+                                component_id: component.component_id.clone(),
+                                kind: component.kind.clone(),
+                                action: "created".to_owned(),
+                                ok: true,
+                                code: Some("connector_name_collision".to_owned()),
+                                message: Some(format!(
+                                    "the connector name was already registered as server {previous}; \
+                                     it is now {server_id}"
+                                )),
+                            },
+                        ),
+                        _ => outcomes.push(ok_outcome(
+                            &component.component_id,
+                            &component.kind,
+                            "created",
+                        )),
+                    }
+                }
                 Err(error) => {
                     warnings.push(format!("connector register failed for {}: {error}", component.component_id));
                     skipped.push(component.component_id.clone());
+                    outcomes.push(failed_outcome(
+                        &component.component_id,
+                        &component.kind,
+                        &ComponentFailure::new("connector_register_failed", error.to_string()),
+                    ));
                 }
             }
         }
@@ -520,12 +636,13 @@ impl InstallProvider for AppServerInstallProvider {
             };
             match set_component_runtime_enabled(&*self.presets, &*self.mcp, row, true).await {
                 Ok(()) => kept.push(entry),
-                Err(error) => {
+                Err(failure) => {
                     warnings.push(format!(
-                        "component {} stays disabled: it could not be re-enabled at runtime: {error}",
-                        entry.component_id
+                        "component {} stays disabled: it could not be re-enabled at runtime: {}",
+                        entry.component_id, failure.message
                     ));
                     skipped.push(entry.component_id.clone());
+                    outcomes.push(failed_outcome(&entry.component_id, &row.kind, &failure));
                 }
             }
         }
@@ -551,6 +668,7 @@ impl InstallProvider for AppServerInstallProvider {
         }
         warnings.dedup();
         skipped.dedup();
+        let errors = outcome_errors(&outcomes);
         Ok(AppServerInstallResult {
             snapshot_id,
             name: snapshot.name,
@@ -558,7 +676,8 @@ impl InstallProvider for AppServerInstallProvider {
             installed_count,
             skipped,
             warnings,
-            errors: vec![],
+            errors,
+            outcomes,
         })
     }
 
@@ -599,23 +718,25 @@ impl InstallProvider for AppServerInstallProvider {
         // release failed would erase the only pointer to an artifact still on
         // disk, turning a recoverable failure into a permanent orphan.
         let mut released: Vec<String> = Vec::new();
-        let mut failures: Vec<String> = Vec::new();
+        let mut outcomes: Vec<AppServerInstallOutcome> = Vec::new();
         for row in rows
             .iter()
             .filter(|row| component_ids.iter().any(|id| id == &row.component_id))
         {
             match release_component(&self.installer, &*self.presets, &*self.mcp, row).await {
-                Ok(()) => released.push(row.component_id.clone()),
-                Err(error) => {
-                    // Reported to the operator now; the structured per-component
-                    // outcome on the wire is the follow-up.
+                Ok(()) => {
+                    released.push(row.component_id.clone());
+                    outcomes.push(ok_outcome(&row.component_id, &row.kind, "removed"));
+                }
+                Err(failure) => {
                     tracing::warn!(
                         snapshot_id,
                         component_id = %row.component_id,
-                        %error,
+                        code = failure.code,
+                        message = %failure.message,
                         "uninstall could not release a component; keeping its install record"
                     );
-                    failures.push(format!("{}: {error}", row.component_id));
+                    outcomes.push(failed_outcome(&row.component_id, &row.kind, &failure));
                 }
             }
         }
@@ -623,16 +744,93 @@ impl InstallProvider for AppServerInstallProvider {
             let ids: Vec<&str> = released.iter().map(String::as_str).collect();
             self.repo.clear_components_installed(&ids).await.map_err(AppError::from)?;
         }
-        if !failures.is_empty() {
-            tracing::warn!(snapshot_id, ?failures, "uninstall finished with components left installed");
+        let errors = outcome_errors(&outcomes);
+        if !errors.is_empty() {
+            tracing::warn!(snapshot_id, ?errors, "uninstall finished with components left installed");
         }
-        self.status(snapshot_id).await
+        let mut status = self.status(snapshot_id).await?;
+        status.outcomes = outcomes;
+        status.errors = errors;
+        Ok(status)
     }
 }
 
 // ---------------------------------------------------------------------------
 // projections / helpers
 // ---------------------------------------------------------------------------
+
+/// Why one component's runtime step failed, with the code that reaches the wire.
+///
+/// A stable code is the point: prose messages are for humans and nothing parses
+/// them, so a caller must be able to branch without matching on English text.
+struct ComponentFailure {
+    code: &'static str,
+    message: String,
+}
+
+impl ComponentFailure {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+
+    /// A component whose record is missing the reference needed to act on it.
+    fn bad_ref(component_id: &str, detail: &str) -> Self {
+        Self::new(
+            "component_ref_invalid",
+            format!("component {component_id} {detail}"),
+        )
+    }
+}
+
+fn ok_outcome(component_id: &str, kind: &str, action: &str) -> AppServerInstallOutcome {
+    AppServerInstallOutcome {
+        component_id: component_id.to_owned(),
+        kind: kind.to_owned(),
+        action: action.to_owned(),
+        ok: true,
+        code: None,
+        message: None,
+    }
+}
+
+fn skipped_outcome(
+    component_id: &str,
+    kind: &str,
+    code: &str,
+    message: impl Into<String>,
+) -> AppServerInstallOutcome {
+    AppServerInstallOutcome {
+        component_id: component_id.to_owned(),
+        kind: kind.to_owned(),
+        action: "skipped".to_owned(),
+        ok: false,
+        code: Some(code.to_owned()),
+        message: Some(message.into()),
+    }
+}
+
+fn failed_outcome(component_id: &str, kind: &str, failure: &ComponentFailure) -> AppServerInstallOutcome {
+    AppServerInstallOutcome {
+        component_id: component_id.to_owned(),
+        kind: kind.to_owned(),
+        action: "failed".to_owned(),
+        ok: false,
+        code: Some(failure.code.to_owned()),
+        message: Some(failure.message.clone()),
+    }
+}
+
+/// The `ok: false` outcomes, as human-readable lines for the `errors` field.
+fn outcome_errors(outcomes: &[AppServerInstallOutcome]) -> Vec<String> {
+    outcomes
+        .iter()
+        .filter(|outcome| !outcome.ok)
+        .map(|outcome| match outcome.code.as_deref() {
+            Some(code) => format!("{}: {code}", outcome.component_id),
+            None => outcome.component_id.clone(),
+        })
+        .collect()
+}
 
 /// The parsed `runtime_ref` of a component, when it is readable.
 fn runtime_ref(row: &nomifun_db::PluginSnapshotComponentRow) -> Option<serde_json::Value> {
@@ -663,62 +861,55 @@ async fn release_component(
     presets: &dyn PresetRegistrar,
     mcp: &dyn McpRegistrar,
     row: &nomifun_db::PluginSnapshotComponentRow,
-) -> Result<(), AppError> {
+) -> Result<(), ComponentFailure> {
     if row.installed != 1 {
         // Never registered, or already released: nothing to take out.
         return Ok(());
     }
     let Some(runtime) = runtime_ref(row) else {
-        return Err(AppError::Internal(format!(
-            "component {} is recorded as installed without a readable runtime_ref",
-            row.component_id
-        )));
+        return Err(ComponentFailure::bad_ref(
+            &row.component_id,
+            "is recorded as installed without a readable runtime_ref",
+        ));
     };
     match runtime.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
         "skill" => {
             let location = runtime_ref_field(&runtime, "location").ok_or_else(|| {
-                AppError::Internal(format!(
-                    "skill component {} has no recorded location",
-                    row.component_id
-                ))
+                ComponentFailure::bad_ref(&row.component_id, "has no recorded location")
             })?;
             let slug = std::path::Path::new(location)
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| {
-                    AppError::Internal(format!(
-                        "skill component {} has an unusable recorded location",
-                        row.component_id
-                    ))
+                    ComponentFailure::bad_ref(&row.component_id, "has an unusable recorded location")
                 })?;
             // `false` (already gone) is success: uninstall is re-entrant.
             installer
                 .remove_materialized(&row.snapshot_id, slug)
                 .map(|_removed| ())
-                .map_err(|error| AppError::Internal(error.to_string()))
+                .map_err(|error| ComponentFailure::new("skill_remove_failed", error.to_string()))
         }
         "preset" => {
             let preset_id = recorded_preset_id(Some(row)).ok_or_else(|| {
-                AppError::Internal(format!(
-                    "preset component {} has no recorded preset id",
-                    row.component_id
-                ))
+                ComponentFailure::bad_ref(&row.component_id, "has no recorded preset id")
             })?;
-            presets.delete_preset(preset_id).await
+            presets
+                .delete_preset(preset_id)
+                .await
+                .map_err(|error| ComponentFailure::new("preset_delete_failed", error.to_string()))
         }
         "connector" => {
             let server_id = runtime_ref_field(&runtime, "mcp_server_id").ok_or_else(|| {
-                AppError::Internal(format!(
-                    "connector component {} has no recorded mcp_server_id",
-                    row.component_id
-                ))
+                ComponentFailure::bad_ref(&row.component_id, "has no recorded mcp_server_id")
             })?;
-            mcp.remove(server_id).await
+            mcp.remove(server_id)
+                .await
+                .map_err(|error| ComponentFailure::new("connector_delete_failed", error.to_string()))
         }
-        other => Err(AppError::Internal(format!(
-            "cannot release runtime type {other:?} for component {}",
-            row.component_id
-        ))),
+        other => Err(ComponentFailure::new(
+            "component_kind_unsupported",
+            format!("cannot release runtime type {other:?} for component {}", row.component_id),
+        )),
     }
 }
 
@@ -733,38 +924,40 @@ async fn set_component_runtime_enabled(
     mcp: &dyn McpRegistrar,
     row: &nomifun_db::PluginSnapshotComponentRow,
     enabled: bool,
-) -> Result<(), AppError> {
+) -> Result<(), ComponentFailure> {
     let Some(runtime) = runtime_ref(row) else {
-        return Err(AppError::Internal(format!(
-            "component {} is recorded as installed without a readable runtime_ref",
-            row.component_id
-        )));
+        return Err(ComponentFailure::bad_ref(
+            &row.component_id,
+            "is recorded as installed without a readable runtime_ref",
+        ));
     };
     match runtime.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
         // Catalogue marker only — see the doc comment above.
         "skill" => Ok(()),
         "preset" => {
             let preset_id = recorded_preset_id(Some(row)).ok_or_else(|| {
-                AppError::Internal(format!(
-                    "preset component {} has no recorded preset id",
-                    row.component_id
-                ))
+                ComponentFailure::bad_ref(&row.component_id, "has no recorded preset id")
             })?;
-            presets.set_preset_enabled(preset_id, enabled).await
+            presets
+                .set_preset_enabled(preset_id, enabled)
+                .await
+                .map_err(|error| ComponentFailure::new("preset_state_failed", error.to_string()))
         }
         "connector" => {
             let server_id = runtime_ref_field(&runtime, "mcp_server_id").ok_or_else(|| {
-                AppError::Internal(format!(
-                    "connector component {} has no recorded mcp_server_id",
-                    row.component_id
-                ))
+                ComponentFailure::bad_ref(&row.component_id, "has no recorded mcp_server_id")
             })?;
-            mcp.set_enabled(server_id, enabled).await
+            mcp.set_enabled(server_id, enabled)
+                .await
+                .map_err(|error| ComponentFailure::new("connector_state_failed", error.to_string()))
         }
-        other => Err(AppError::Internal(format!(
-            "cannot set the runtime enabled state of type {other:?} for component {}",
-            row.component_id
-        ))),
+        other => Err(ComponentFailure::new(
+            "component_kind_unsupported",
+            format!(
+                "cannot set the runtime enabled state of type {other:?} for component {}",
+                row.component_id
+            ),
+        )),
     }
 }
 
@@ -796,6 +989,10 @@ fn project_status(snapshot_id: String, rows: &[nomifun_db::PluginSnapshotCompone
                 }
             })
             .collect(),
+        // A plain status read reports state, not a mutation's outcome; the
+        // callers that mutate fill these in.
+        outcomes: Vec::new(),
+        errors: Vec::new(),
     }
 }
 

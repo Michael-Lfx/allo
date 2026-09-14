@@ -59,6 +59,11 @@ pub struct AppServerSkillSummary {
     /// treat this as a stable list, never an optional field.
     #[serde(default)]
     pub required_connectors: Vec<String>,
+    /// Marketplace icon URL (`/api/app-server/store/{mkt}/entries/{e}/assets/…`)
+    /// for a product installed from a marketplace. `None` for builtin/user
+    /// skills or markets that ship no icon for this entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 /// Public Skill detail: summary fields plus execution metadata. The raw
@@ -148,6 +153,10 @@ pub struct AppServerConnectorSummary {
     pub auth_mode: String,
     pub enabled: bool,
     pub status: AppServerConnectorStatus,
+    /// Marketplace icon URL for a connector installed from a marketplace.
+    /// `None` for builtin hosts or markets that ship no icon for this entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 /// Public Connector detail: summary fields plus tools and auth state.
@@ -516,6 +525,31 @@ pub struct AppServerInstallComponent {
     pub preset_id: Option<String>,
 }
 
+/// What happened to one component during install / uninstall / enable / disable.
+///
+/// `code` is a **stable, documented** token a client branches on
+/// (`docs/agent-store/05` §4.5 lists the closed set). `message` is for humans
+/// and nothing parses it — the whole point of the field is to stop callers from
+/// matching on prose.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerInstallOutcome {
+    pub component_id: String,
+    pub kind: String,
+    /// `created` | `reused` | `enabled` | `disabled` | `marked` | `removed` |
+    /// `skipped` | `failed`.
+    ///
+    /// `marked` is the documented skill case: the flag moved but the runtime did
+    /// not, because the skill corpus has no enable state (`05` §4.5).
+    pub action: String,
+    /// `false` only when the requested state was **not** reached. A component
+    /// that was already in the requested state reports `ok: true`.
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 /// `install/run` result (one snapshot installation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerInstallResult {
@@ -531,6 +565,10 @@ pub struct AppServerInstallResult {
     pub warnings: Vec<String>,
     #[serde(default)]
     pub errors: Vec<String>,
+    /// Per-component outcome. Absent from a host that predates the field —
+    /// treat a missing value as "no detail available", never as "nothing ran".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes: Vec<AppServerInstallOutcome>,
 }
 
 /// Install state projection for one snapshot (or empty when not installed).
@@ -538,6 +576,13 @@ pub struct AppServerInstallResult {
 pub struct AppServerInstallStatus {
     pub snapshot_id: String,
     pub components: Vec<AppServerInstallComponent>,
+    /// Per-component outcome of the mutation that produced this projection
+    /// (`uninstall` / `disable` / `enable`). Empty for a plain status read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes: Vec<AppServerInstallOutcome>,
+    /// Human-readable failures; mirrors the `ok: false` outcomes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
