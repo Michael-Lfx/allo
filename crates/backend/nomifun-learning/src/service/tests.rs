@@ -1965,7 +1965,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(view.summary, "## 已有内容");
     }
 
-// ==== review log & due-ness gate（迁移 051，ADR-0005 同批）====
+// ==== review log & due-ness gate（迁移 052，ADR-0005 同批）====
 
 /// 全部日志行，按写入序：(source, rating, rating_source)。
 async fn review_log_rows(service: &LearningService) -> Vec<(String, i64, String)> {

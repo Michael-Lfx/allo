@@ -15,7 +15,7 @@
 
 | | learnhub | allo |
 |---|---|---|
-| 形态 | dsh 插件，TS 引擎 `src/engine/`（~11.8k 行），Obsidian Vault 为唯一事实源、无数据库（`learnhub-plugin:README.md:24-42`） | `crates/backend/nomifun-learning/`（Rust），SQLite（sqlx），迁移族 015→050（`allo:docs/architecture/learning.zh.md:75-81`） |
+| 形态 | dsh 插件，TS 引擎 `src/engine/`（~11.8k 行），Obsidian Vault 为唯一事实源、无数据库（`learnhub-plugin:README.md:24-42`） | `crates/backend/nomifun-learning/`（Rust），SQLite（sqlx），迁移族 015→052（`allo:docs/architecture/learning.zh.md:75-81`） |
 | 调度 | ts-fsrs，日粒度（`enable_short_term=false`、无 fuzz，`learnhub-plugin:src/engine/srs.ts:24-41`） | fsrs crate 6（fsrs-rs），日粒度 + 本地 02:00 翻日 + 亚日重学步（`allo:crates/backend/nomifun-learning/src/scheduler.rs:99-160`） |
 | 评分模型 | 题目即卡：作答对错直接推进该题 FSRS（`learnhub-plugin:README.md:116-126`） | 同构：review_item = 一道客观题一张卡（`allo:.../service/review.rs:83-85`） |
 | 词汇 | `learnhub-plugin:CONTEXT.md`（38 词条） | 根目录 `CONTEXT.md` 自述「术语体系继承自 learnhub-plugin、两边词汇保持同源」；差异以 allo 为准（`allo:CONTEXT.md:3`） |
@@ -115,27 +115,27 @@
 | 笔记源卡（C1） | **没有**。最接近的是自建题（可挂概念）与知识库本体（nomifun-knowledge），无「注册文档为复习源」 | `allo:.../review.rs:816-878` |
 | Anki 通道 | **没有** | — |
 | 交互节 / practice 节点 | **裁决暂缓**（DB CHECK 不含 interactive，扩型需再迁移） | `allo:docs/adr/0002:84-87` |
-| skipped 节点态 / 归档 / edit-pending / tags / 9 题型 / teaching_style | **已有** | `allo:migrations/048:55-88`、`043`、`044`、`036`、`049:60-63,145-146` |
+| skipped 节点态 / 归档 / edit-pending / tags / 9 题型 / teaching_style | **已有** | `allo:migrations/048:55-88`、`043`、`044`、`036`、`050:60-63,145-146` |
 | vault 无 DB / Missing-Broken 文件语义 | **不适用**（SQLite + CHECK 约束承担类似契约） | `allo:migrations/015` 全文件 CHECK 约束风格 |
 
 ## 4. 迁移项评估表
 
-价值 = 对学习效果的提升潜力；成本构成 = 数据模型/迁移 SQL + 后端逻辑 + 前端 + i18n。迁移编号续接点：当前迁移末位为 050（`allo:migrations/050_learning_section_visual.sql`），新迁移从 051 起 append-only。
+价值 = 对学习效果的提升潜力；成本构成 = 数据模型/迁移 SQL + 后端逻辑 + 前端 + i18n。迁移编号续接点：当前迁移末位为 052（`allo:migrations/052_learning_review_log.sql`），新迁移从 053 起 append-only。
 
 | 候选迁移项 | 价值 | 成本 | 依赖前置 | 建议阶段 |
 |---|---|---|---|---|
-| M1 逐次复习日志（051 新表 `learning_review_log`：9 字段对齐 learnhub ReviewRec，另加 review_day 复用 02:00 翻日） | 高（一切诚实度度量与个人化的数据地基；不落地则 M2/M3 永远缺数据） | S-M：SQL 一张 append-only 表；`rate_review`/`answer_review`/`rate_custom_review`/`answer_custom_review` 各加一次 INSERT；种卡处落 synthetic 行；前端零改动 | 无 | Phase 0 |
+| M1 逐次复习日志（052 新表 `learning_review_log`：9 字段对齐 learnhub ReviewRec，另加 review_day 复用 02:00 翻日） | 高（一切诚实度度量与个人化的数据地基；不落地则 M2/M3 永远缺数据） | S-M：SQL 一张 append-only 表；`rate_review`/`answer_review`/`rate_custom_review`/`answer_custom_review` 各加一次 INSERT；种卡处落 synthetic 行；前端零改动 | 无 | Phase 0 |
 | M2 一卡一日一推进门 | 高（防刷 + 让 CONTEXT.md 声明成真；learnhub 还靠它保证 True Retention「每卡每天取第一条」口径成立） | S：`rate_review`/`answer_review`/custom 通道加 `last_reviewed_at ≥ 本复习日起点` 检查（`review_day_start_utc` 现成，`allo:scheduler.rs:43-53`）；补 i18n 提示 | 无（建议与 M1 同迁移） | Phase 0 |
 | M3 True Retention + 预测对照 + 遗忘曲线 + 负载预报（统计端点 + 统计页面板） | 高（调度预测与实际一致的唯一诚实度仪表；learnhub 四面板全是纯聚合函数可直接照抄口径） | M：后端聚合模块（照 `learnhub-plugin:src/engine/memory.ts` 口径翻译成 Rust）；一条 `/api/learning/stats/memory` 路由；前端统计区 + zh/en i18n | M1（要数据） | Phase 1 |
 | M4 复习队列 R 分档排序 | 高（learnhub 自评「Arc A 里唯一不用等任何前置、可直接立项」的首选项，`learnhub-plugin:docs/research/2026-09-big-directions.md:44-52`） | S-M：`due_reviews` 逐行用 `fsrs::current_retrievability` 算 R 后内存排序；响应带 r 字段；前端 ReviewSession 可选展示预测回忆率 + i18n | 无 | Phase 1 |
 | M5 Forgot 5 秒回忆门 | 中-高（防「以申报代替回忆」，保住 Forgot 通道的证据价值；成本极低） | S：ReviewSession 卡面计时 + 按钮禁用态 + i18n（注意 `learning.json` 正在被修改，落地时续接） | 无 | Phase 1 |
 | M6 Mastery 派生化（课时级读侧派生 = 0.7·min(1,S/60)+0.3·EMA，保留 `learning_mastery_states` 作 EMA 证据源，新增派生视图而非改语义） | 中-高（解决「全对首学即满 mastery」的失真；但涉及 0.8 阈值消费方与 UI 口径，需要一次领域对齐——learnhub 为此专门立 ADR-0007 并付出「LessonView 头部数字变低」的沟通成本） | M：后端派生函数 + lesson 详情/课程视图换算；前端 tooltip 语义更新 + i18n；不迁移表 | M1（要稳定度快照）或直接读 review_items.stability | Phase 1-2 |
 | M7 FSRS 参数优化器（从 M1 日志重训 21 参，评估不优不写回，写回 `learning.fsrsParameters` 偏好） | 中-高（个人化上限；但冷启动要 ≥400 条真实日志，短期无感） | M：后端命令式端点（手动触发），fsrs-rs `compute_parameters` + `evaluate` 现成；无前端（或统计页加按钮 + i18n） | M1（≥400 条） | Phase 2（依赖数据积累，可提前合入代码） |
-| M8 学习图节点 difficulty/bloom + Complexity Tier 折叠 + Jump/R12 审计 | 中（生成弹性与图质量；allo 现行「大纲自声明档位 + 质检门」刚稳定，动输入信号有回归风险，ADR-0002:104-105 明确「若护栏误判增多再考虑」） | M-L：052 迁移给 `learning_lessons`（或 graph_meta）加 difficulty/bloom 列；lg_* 工具契约与提示词、scope 契约、audit 新检查、前端图卡展示 + i18n 全链路 | 建议先观察现行档位门误判率 | Phase 2 |
+| M8 学习图节点 difficulty/bloom + Complexity Tier 折叠 + Jump/R12 审计 | 中（生成弹性与图质量；allo 现行「大纲自声明档位 + 质检门」刚稳定，动输入信号有回归风险，ADR-0002:104-105 明确「若护栏误判增多再考虑」） | M-L：053 迁移给 `learning_lessons`（或 graph_meta）加 difficulty/bloom 列；lg_* 工具契约与提示词、scope 契约、audit 新检查、前端图卡展示 + i18n 全链路 | 建议先观察现行档位门误判率 | Phase 2 |
 | M9 R 软闸推荐（gateAdvice：前置 R 衰减 → 建议项 + 理由文案 + 直达复习入口） | 中-高（把「学完即永久通过」的布尔前置升级为遗忘感知；软闸不拦人，符合 allo 现有 skipped/回跳自由度） | M：学习图视图加 advice 字段（复用 M4 的 R 计算 + `learning_graph_prerequisites`）；前端 DAG/列表琥珀提示 + i18n | M4 | Phase 2 |
 | M10 内容诊断归因 R1/R2 → 重写建议事件 | 中（错题数据回流内容质量；learnhub 证据是工程合理性而非学习科学效应） | M：后端从 `learning_attempts`/`learning_review_log` 聚合节级信号；附在课时/课程视图；前端LessonStudy 入口已就绪 | M1 更准（lapses 按日去重），但 attempts 也可起步 | Phase 2 |
-| M11 JOL 预测-校准 | 中（学习科学纯度最高、成本最低的自主项；+8.9% RCT 证据见 `learnhub-plugin:docs/research/2026-09-big-directions.md:159`） | S-M：052/053 给 `learning_attempts`/`learning_review_log` 加 `predicted` 列（老记录 null 兼容）；复习流 UI 三点一档（可全局关）+ i18n；校准曲线挂 M3 统计页 | M1、M3 | Phase 3 |
-| M12 XP 时间账本 + 乱猜惩罚 + streak/ETA | 中（动机与规划面；learnhub 定位「记录系统」非核心，且 XP 与调度解耦做得很干净可整体照搬） | M-L：attempts 加 elapsed_ms；新账本表或复用 checkins/journal 式流水（052/053 append-only）；课时完成 settle 对账；前端统计/目标/ETA + i18n（体量最大的一块前端） | 无硬依赖，但建议排在调度面之后 | Phase 3 |
+| M11 JOL 预测-校准 | 中（学习科学纯度最高、成本最低的自主项；+8.9% RCT 证据见 `learnhub-plugin:docs/research/2026-09-big-directions.md:159`） | S-M：053/054 给 `learning_attempts`/`learning_review_log` 加 `predicted` 列（老记录 null 兼容）；复习流 UI 三点一档（可全局关）+ i18n；校准曲线挂 M3 统计页 | M1、M3 | Phase 3 |
+| M12 XP 时间账本 + 乱猜惩罚 + streak/ETA | 中（动机与规划面；learnhub 定位「记录系统」非核心，且 XP 与调度解耦做得很干净可整体照搬） | M-L：attempts 加 elapsed_ms；新账本表或复用 checkins/journal 式流水（053/054 append-only）；课时完成 settle 对账；前端统计/目标/ETA + i18n（体量最大的一块前端） | 无硬依赖，但建议排在调度面之后 | Phase 3 |
 | M13 Today Pin + 推荐理由 | 中（自主所有权，成本低） | S：新表或偏好 JSON；推荐接口加覆盖层；前端「今天学它」+ i18n | 建议在 M9 之后（理由文案同源） | Phase 3 |
 | M14 难度带 + A1 会话内自适应 + 只读教练 | 中 | M：纯规则层可照抄 `adaptive.ts`/`coach.ts`；会话方持有状态；i18n | M4（难度标尺同源） | Phase 3 |
 | M15 enc 边 + struggle 定向回补 | 中（差异化大，但 learnhub 自己承认全库 enc=0 的覆盖缺口，`learnhub-plugin:docs/adr/0008`） | L：kind='enc' 语义 + 权重落 `extra_json`（表已预留）；生成管线产出 enc 候选；struggle 判定与回补建议 | M8（要有 difficulty/bloom 生态）、M9 | Phase 3 / 远期 |
@@ -146,12 +146,12 @@
 
 原则：先立「诚实的数据地基」（没有日志一切度量免谈），再做「消费数据的调度与统计」，再上「学习者自主与账本」；每阶段都是 append-only 迁移、可独立发布、后一阶段消费前一阶段的产出。
 
-### Phase 0 —— 数据地基（一次迁移 051，几乎无 UI）
+### Phase 0 —— 数据地基（一次迁移 052，几乎无 UI）
 
-1. **051 迁移（append-only 新表）**：`learning_review_log`，列对齐 learnhub ReviewRec 9 字段 + `review_day`（`user_id, source('course'|'custom'), item_id, rating(1-4), rating_source('auto'|'self'|'synthetic'), elapsed_days, stability_before, difficulty_before, r_pred, review_day, created_at`；出处 `learnhub-plugin:src/engine/types.ts:149-166`）。不修改既有表。
+1. **052 迁移（append-only 新表）**：`learning_review_log`，列对齐 learnhub ReviewRec 9 字段 + `review_day`（`user_id, source('course'|'custom'), item_id, rating(1-4), rating_source('auto'|'self'|'synthetic'), elapsed_days, stability_before, difficulty_before, r_pred, review_day, created_at`；出处 `learnhub-plugin:src/engine/types.ts:149-166`）。不修改既有表。
 2. **写入点收口**：`rate_review`/`answer_review`（auto/self）、custom 两通道、`seed_lesson_review_items` 落 synthetic 锚点行——对齐 learnhub「synthetic 不是真实作答、统计与训练一律排除」（`learnhub-plugin:docs/adr/0012`）。
 3. **一卡一日门**（M2）：在复习流四处推进入口加当日检查，语义对齐 advance.ts 的 `alreadyAdvanced`（`learnhub-plugin:src/engine/advance.ts:23-26`）；同时兑现 `allo:CONTEXT.md` 已声明的「一题一天只推进一次调度」。
-4. **attempts 加 `elapsed_ms`**（可与 051 同迁移 append 列）：为乱猜判定与未来 XP 铺路。
+4. **attempts 加 `elapsed_ms`**（可与 052 同迁移 append 列）：为乱猜判定与未来 XP 铺路。
 
 为什么先做：M3/M4/M7/M11 全部悬在 M1 上；门禁不动数据模型、风险最小；且这一步修复的是「CONTEXT.md 声明与代码不符」的现存裂缝。
 
@@ -167,7 +167,7 @@
 ### Phase 2 —— 图感知调度与内容回流
 
 1. **R 软闸推荐**（M9）：学习图视图 recommended 附 advice（弱前置 + R + 到期题数 + 理由），软语义不拦截；文案口径对照 `learnhub-plugin:src/engine/sessions.ts:364-391`。
-2. **节点 difficulty/bloom + 折叠档位 + Jump/R12 审计**（M8）：052 append 列；触发条件建议以 ADR-0002:104-105 的预设为准（护栏误判增多才动）。
+2. **节点 difficulty/bloom + 折叠档位 + Jump/R12 审计**（M8）：053 append 列；触发条件建议以 ADR-0002:104-105 的预设为准（护栏误判增多才动）。
 3. **内容诊断 R1/R2**（M10）：节级作答聚合 → 课时视图 diagnostic 建议 → 接既有单节重写管线（`allo:docs/architecture/learning.zh.md:50-52`）。
 4. **FSRS 参数优化器**（M7）：代码可先合入，手动触发端点 + 「评估不优不写回」门禁（照 `learnhub-plugin:src/engine/optimize.ts` 的 in-sample 对照协议）；生效依赖 Phase 0 日志积累 ≥400 条。
 
@@ -175,7 +175,7 @@
 
 ### Phase 3 —— 学习者自主与账本
 
-1. **JOL 预测-校准**（M11）：053 加 `predicted` 列；抽查逻辑照 `jol.ts`（默认 1/3、可关）。
+1. **JOL 预测-校准**（M11）：054 加 `predicted` 列；抽查逻辑照 `jol.ts`（默认 1/3、可关）。
 2. **XP 时间账本**（M12）：定价 = est×k、完成 settle 锁定、乱猜负分、streak/ETA；账本表 append-only；前端体量最大，单独立项。
 3. **Today Pin / 难度带 / 教练**（M13/M14）。
 4. **enc + struggle 回补**（M15）远期起步。
@@ -201,20 +201,20 @@
 1. **allo CONTEXT.md 的两处声明与代码不符**（「一题一天只推进一次调度」「Forgot 受主动回忆门控」）：我的依据是 grep 未见实现 + ReviewSession 组件无计时逻辑；未跑行为测试逐路径确认（例如是否存在其他中间层拦截）。
 2. **learnhub Project/Habit/Receipts「无实现」结论**基于文件名与全文本 grep 无命中；未逐一阅读 `src/index.ts`（2942 行门面）全部工具注册，不排除存在未命名一致的入口（低概率，标注未验证）。
 3. **fsrs-rs 6.6.1 `compute_parameters` 的调用面**（输入形状是否要求 FSRSItem 前缀展开、win 平台可用性）只核对了导出符号与文档注释，未实际编译验证；learnhub 侧的经验（binding 的「每卡每天第一条、首复习 delta_t=0」契约，`learnhub-plugin:src/engine/optimize.ts:9-14`）在 Rust 侧是否同构需要 spike。
-4. **迁移编号续接点**：撰写时工作区仅 learning.json i18n 三文件有未提交改动（`git status`），未发现 >050 的未落盘迁移草稿；若分支上他人并行加迁移，编号需在实施时重新对齐。
+4. **迁移编号续接点**：撰写时工作区仅 learning.json i18n 三文件有未提交改动（`git status`），未发现 >051 的未落盘迁移草稿；若分支上他人并行加迁移，编号需在实施时重新对齐。
 5. learnhub 引用行号以 2026-09-09 工作区快照为准，learnhub 仓库亦在活跃开发中，行号会漂移。
 
 ## 8. 主要出处索引
 
 - learnhub：`README.md`（数据主权 24-42 / 工具面 44-52 / 面板 54-63 / 评分模型 116-126 / XP 预算制 128-143）；`CONTEXT.md` 全文；`docs/adr/0001`～`0018`；`docs/design/2026-09-learning-expansion-requirements.md`；`docs/research/2026-09-big-directions.md`（§3 Arc A / §7 Arc E / §8 决策先行 / §9 反模式）；`docs/research/2026-09-node-content-quality.md`；`src/engine/{advance,srs,xp,params,sessions,index,memory,complexity,jol,adaptive,attribution,coach,goals,explain,optimize,note-source,anki,learner-cards,question-bank,grading,quality,audit,types}.ts`
-- allo：`CONTEXT.md`；`docs/architecture/learning.zh.md`；`docs/adr/0002-lesson-sections-and-generation-pipeline.md`（含两轮追加决策）；`crates/backend/nomifun-learning/src/{scheduler.rs,models.rs,routes.rs}` 与 `src/service/{review,progress,checkin,course,learning_graph}.rs`；`crates/backend/nomifun-db/migrations/{015,029,036,037,039,040,042,043,044,048,049,050}_*.sql`；`ui/src/renderer/pages/learning/{model.ts,components/ReviewSession.tsx}`；`Cargo.toml:221`（fsrs = "6"）；git 提交 d88570c5e / 5641b435d / 888883e8f / ccf4fcca6
+- allo：`CONTEXT.md`；`docs/architecture/learning.zh.md`；`docs/adr/0002-lesson-sections-and-generation-pipeline.md`（含两轮追加决策）；`crates/backend/nomifun-learning/src/{scheduler.rs,models.rs,routes.rs}` 与 `src/service/{review,progress,checkin,course,learning_graph}.rs`；`crates/backend/nomifun-db/migrations/{015,029,036,037,039,040,042,043,044,048,050,051,052}_*.sql`；`ui/src/renderer/pages/learning/{model.ts,components/ReviewSession.tsx}`；`Cargo.toml:221`（fsrs = "6"）；git 提交 d88570c5e / 5641b435d / 888883e8f / ccf4fcca6
 
 ## 9. 拷问后修订（2026-09-09，grill 会话定案）
 
 Phase 0/1 逐项拷问后定案，以下与上文冲突处**以本节为准**：
 
 - **M2「一卡一日门」修订为「到期门」**：allo 调度器保留亚日重学步（`scheduler.rs`：Again 卡同日数分钟后重新到期，最短 1 分钟），字面的「一卡一日一推进」会拦下合法重学推进、且被拦的卡停在过期 due 上无限重现。定案：**推进仅当 `due_at ≤ now`**；未到期的重复作答（过期 UI/双击/双端并发）照记 attempt，不推进、不落日志。门不再依赖日志查询；日志退回纯统计职责。learnhub 之所以能用字面日门，因其禁用了短期调度（`enable_short_term=false`）——这是两边的正式语义分叉，词汇表「差异处以本文件为准」兜底。`CONTEXT.md` Review Queue 词条已同步改写。
-- **M1 定案**：仅真实推进落日志（9 字段 + `review_day` 学习日 02:00 口径）；Forgot 记 rating=1 + auto；synthetic 种卡落日志、标 synthetic、不构成推进；051 单迁移打包 `learning_attempts.elapsed_ms`（可空；前端简单墙钟，可见性不感知）。
+- **M1 定案**：仅真实推进落日志（9 字段 + `review_day` 学习日 02:00 口径）；Forgot 记 rating=1 + auto；synthetic 种卡落日志、标 synthetic、不构成推进；052 单迁移打包 `learning_attempts.elapsed_ms`（可空；前端简单墙钟，可见性不感知）。
 - **M4 定案**：照抄 learnhub 规格——R 五百分点分桶升序、档内难度升序（先易后难）、`due_at`→`review_item_id` 兜底；`due_reviews` 响应逐行带 `r`；前端卡片披露预测回忆率（zh/en i18n）。decay 参数来源实施前先做 fsrs-rs 编译 spike。
 - **M5 定案**：Forgot 申报门固定 5 秒常量，仅复习流按钮，无设置项。
 - **M3 定案**：`/api/learning/stats/memory` 四面板（负载预报/状态分布/True Retention+预测对照/遗忘曲线）一次到位；前端面板与 `CheckinPanel` 并列。

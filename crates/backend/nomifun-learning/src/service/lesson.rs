@@ -47,7 +47,7 @@ impl LearningService {
     }
 
     /// 引擎生成课时内容：存在仍存活的草稿（上次会话失败/超时留下，TTL
-    /// 1 小时内）时续跑而非从零重建（兑现迁移 049 的断点续跑承诺），否则
+    /// 1 小时内）时续跑而非从零重建（兑现迁移 050 的断点续跑承诺），否则
     /// 全新生成。传统与学习图两条课时路径共用。
     async fn generate_or_resume_lesson(
         &self,
@@ -583,11 +583,11 @@ impl LearningService {
         Ok((prerequisite_path, upcoming_nodes, forbidden_concepts, nodes.len()))
     }
 
-    /// 单节重写（迁移 050/ADR-0002 的节级操作语义）：只重写一节正文并原
+    /// 单节重写（迁移 051/ADR-0002 的节级操作语义）：只重写一节正文并原
     /// 地更新（version+1），其他节与题目不动，summary 由全部节重新拼装。
     /// 走确定性单节管线（生成 + 定位修复 + 节级质检门 + visual 降级兜底）
     /// ——单节没有规划需求，agent 循环的多步自主价值用不上，一次有界调用
-    /// 更省更稳。承诺事实源是节表里落库的 `visual` 声明（迁移 050）。
+    /// 更省更稳。承诺事实源是节表里落库的 `visual` 声明（迁移 051）。
     pub async fn rewrite_lesson_section(
         &self,
         user_id: &UserId,

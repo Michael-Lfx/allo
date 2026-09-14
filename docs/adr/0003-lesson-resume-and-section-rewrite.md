@@ -6,7 +6,7 @@ Date: 2026-09-08
 
 ## Context
 
-迁移 049 的注释承诺了节状态（pending/ready/failed）"支持断点续跑与单节重写"，但服务层
+迁移 050 的注释承诺了节状态（pending/ready/failed）"支持断点续跑与单节重写"，但服务层
 两者皆无：
 
 - **续跑**：课时内容循环（`lesson_content_loop`）没有 resume 入口——生成失败或超时后
@@ -40,7 +40,7 @@ agent 循环（生成循环 + 审计门驱动的修复循环），续跑必须�
   见但无损正确性。
 - 草稿存储带 1 小时 TTL（惰性清扫，patch 刷新活跃时间），与学习图草稿对齐；发布
   成功即清除草稿与映射。
-- 迁移 049 的注释承诺由此兑现，注释无需修改。
+- 迁移 050 的注释承诺由此兑现，注释无需修改。
 
 **单节重写（Rewrite）**：
 
@@ -48,7 +48,7 @@ agent 循环（生成循环 + 审计门驱动的修复循环），续跑必须�
   + visual 降级兜底），不走 agent 循环——单节没有规划需求（节清单已在节表），门禁
   全是确定性校验，循环的多步自主价值用不上，一次有界调用更省更稳。这与"生成走
   loop、修补走管线"的 learnhub 分工哲学一致。
-- 迁移 050（append-only）：`learning_lesson_sections` 增加 `visual TEXT NOT NULL
+- 迁移 051（append-only）：`learning_lesson_sections` 增加 `visual TEXT NOT NULL
   DEFAULT ''`；生成落库时写入声明。`''` 为历史行的"未声明"，质检按保守口径（要求
   任意可视化块）处理，不改写历史数据。`SectionView` 同步暴露 `visual`。
 - 新路由 `POST /api/learning/lessons/{id}/sections/{key}/rewrite`：原地更新目标节

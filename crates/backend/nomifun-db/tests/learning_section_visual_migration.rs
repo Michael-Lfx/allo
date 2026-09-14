@@ -5,14 +5,14 @@ const CUSTOM_QUESTIONS: &str = include_str!("../migrations/029_learning_custom_q
 const FILL_IN_BLANK: &str = include_str!("../migrations/038_learning_fill_in_blank.sql");
 const ARCHIVE: &str = include_str!("../migrations/043_learning_archive.sql");
 const EDIT_PENDING: &str = include_str!("../migrations/044_learning_edit_pending.sql");
-const SECTIONS: &str = include_str!("../migrations/049_learning_sections_and_question_kinds.sql");
-const MIGRATION: &str = include_str!("../migrations/050_learning_section_visual.sql");
+const SECTIONS: &str = include_str!("../migrations/050_learning_sections_and_question_kinds.sql");
+const MIGRATION: &str = include_str!("../migrations/051_learning_section_visual.sql");
 
 const COURSE_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const LESSON_A: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
 const MODULE_ID: &str = "0190f5fe-7c00-7a00-8abc-01234567890a";
 
-/// 015 建基线 → 演进到 049 前的形状 → 建 049 节表 → 打 050（visual 列）。
+/// 015 建基线 → 演进到 050 前的形状 → 建 050 节表 → 打 051（visual 列）。
 async fn setup() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     for sql in [BASELINE, CUSTOM_QUESTIONS, FILL_IN_BLANK, ARCHIVE, EDIT_PENDING, SECTIONS, MIGRATION] {
@@ -50,7 +50,7 @@ async fn seed_course_and_lesson(pool: &SqlitePool) {
     .unwrap();
 }
 
-/// 050 之后新写入的节行必须能显式携带 visual 声明，且能原样读回——
+/// 051 之后新写入的节行必须能显式携带 visual 声明，且能原样读回——
 /// 单节重写按原声明兑现承诺。
 #[tokio::test]
 async fn sections_carry_the_declared_visual() {
@@ -75,7 +75,7 @@ async fn sections_carry_the_declared_visual() {
     assert_eq!(visual, "示意图");
 }
 
-/// 历史 049 行（无 visual 值）在 050 后读出 DEFAULT ''——读取端把空串
+/// 历史 050 行（无 visual 值）在 051 后读出 DEFAULT ''——读取端把空串
 /// 当「未声明」按保守口径处理，不改写历史数据。
 #[tokio::test]
 async fn legacy_rows_default_to_an_empty_visual() {
@@ -94,7 +94,7 @@ async fn legacy_rows_default_to_an_empty_visual() {
     .await
     .unwrap();
 
-    // 打 050：历史行拿到 DEFAULT ''。
+    // 打 051：历史行拿到 DEFAULT ''。
     sqlx::query(MIGRATION).execute(&pool).await.unwrap();
 
     let visual: String =
