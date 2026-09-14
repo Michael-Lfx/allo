@@ -18,7 +18,7 @@ use crate::models::{
     GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
     LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
     RepairFigureResponse, ResumeLearningGraphRequest, SetTagsRequest, SubmitAttemptRequest,
-    UpdateLessonProgressRequest, UpdateQuestionRequest,
+    UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -61,6 +61,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/lessons/{id}/sections/{section_key}/rewrite",
             post(rewrite_lesson_section),
+        )
+        .route(
+            "/api/learning/lessons/{id}/sections/{section_key}/body",
+            put(update_lesson_section_body),
         )
         .route(
             "/api/learning/lessons/{id}/activities",
@@ -296,6 +300,22 @@ async fn rewrite_lesson_section(
             .await?,
     )))
 }
+
+async fn update_lesson_section_body(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, section_key)): Path<(String, String)>,
+    Json(request): Json<UpdateLessonSectionBodyRequest>,
+) -> Result<Json<ApiResponse<crate::models::LessonView>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .update_lesson_section_body(&user.id, &id, &section_key, &request)
+            .await?,
+    )))
+}
+
 async fn create_lesson_activity(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,

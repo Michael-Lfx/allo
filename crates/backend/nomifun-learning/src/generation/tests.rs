@@ -1,6 +1,8 @@
     use super::activities::validate_lesson_activities;
     use super::completer::complete_with_timeout;
-    use super::lesson::{build_activities_prompt, validate_lesson_document};
+    use super::lesson::{
+        build_activities_prompt, build_section_rewrite_prompt, validate_lesson_document,
+    };
     use super::parser::{strip_code_fences, strip_markdown_fences};
     use super::*;
     use crate::models::{SectionOutline, validate_section_outline, ComplexityTier, SectionKind, SectionPack};
@@ -862,3 +864,43 @@
         );
     }
 
+
+/// 学习建议只在其存在时进入重写提示词（ADR-0007），且永远在末行
+/// "Write this section's body now." 之前。
+#[test]
+fn section_rewrite_prompt_carries_learner_feedback() {
+    let planned = SectionPack {
+        section_key: "s1".into(),
+        kind: SectionKind::Concept,
+        title: "概念一".into(),
+        points: String::new(),
+        visual: "公式".into(),
+        body_md: String::new(),
+    };
+    let manifest = vec![SectionPack {
+        section_key: "s1".into(),
+        kind: SectionKind::Concept,
+        title: "概念一".into(),
+        points: String::new(),
+        visual: "公式".into(),
+        body_md: String::new(),
+    }];
+    let base = build_section_rewrite_prompt(
+        "Course", "Lesson", "purpose", &planned, 0, &manifest, None, None, None, "",
+        ComplexityTier::Mid, None,
+    );
+    let with_feedback = build_section_rewrite_prompt(
+        "Course", "Lesson", "purpose", &planned, 0, &manifest, None, None, None, "",
+        ComplexityTier::Mid, Some("  多举一个日常例子  "),
+    );
+    assert!(!base.contains("学习者修改意见"));
+    assert!(with_feedback.contains("## 学习者修改意见"));
+    assert!(with_feedback.contains("多举一个日常例子"));
+    assert!(with_feedback.ends_with("Write this section's body now."));
+    // 空白建议与无建议等价：不得产生空的意见块。
+    let blank = build_section_rewrite_prompt(
+        "Course", "Lesson", "purpose", &planned, 0, &manifest, None, None, None, "",
+        ComplexityTier::Mid, Some("   "),
+    );
+    assert!(!blank.contains("学习者修改意见"));
+}

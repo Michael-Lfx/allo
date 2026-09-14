@@ -163,6 +163,17 @@ pub struct GenerateLessonRequest {
     pub provider_id: Option<ProviderId>,
     #[serde(default)]
     pub model: Option<String>,
+    /// 自由文本学习建议（ADR-0007）：单节重写时可选携带，为空即与既有
+    /// 失败节重写行为一致（同分布重生成）。
+    #[serde(default)]
+    pub feedback: Option<String>,
+}
+
+/// 手动编辑节正文（ADR-0007）：仅覆盖 `body_md`，version+1、status 保持
+/// 'ready'，不记录编辑来源。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateLessonSectionBodyRequest {
+    pub body_md: String,
 }
 
 /// A lesson figure that failed to render, sent back for AI repair. `language`

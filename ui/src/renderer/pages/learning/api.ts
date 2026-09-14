@@ -25,6 +25,7 @@ import type {
   SetTagsRequest,
   SubmitAttemptRequest,
   UpdateQuestionRequest,
+  UpdateSectionBodyRequest,
 } from './types';
 
 const BASE = '/api/learning';
@@ -70,11 +71,19 @@ export const learningApi = {
   generateLesson: (id: string, request: GenerateLessonRequest = {}) =>
     httpRequest<Lesson>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/generate`, request),
   // 单节重写（ADR-0003）：确定性单节管线，返回重写后的最新课时详情
-  //（其余节与题目不动）；旧课时（无节清单）返回 400。
+  //（其余节与题目不动）；旧课时（无节清单）返回 400。feedback 为可选
+  // 学习建议（ADR-0007），为空即同分布重生成。
   rewriteLessonSection: (id: string, sectionKey: string, request: GenerateLessonRequest = {}) =>
     httpRequest<Lesson>(
       'POST',
       `${BASE}/lessons/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionKey)}/rewrite`,
+      request
+    ),
+  // 手动编辑节正文（ADR-0007）：仅覆盖 body_md，返回编辑后的最新课时详情
+  updateLessonSectionBody: (id: string, sectionKey: string, request: UpdateSectionBodyRequest) =>
+    httpRequest<Lesson>(
+      'PUT',
+      `${BASE}/lessons/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionKey)}/body`,
       request
     ),
   createLessonActivity: (lessonId: string, request: CreateLessonActivityRequest) =>
