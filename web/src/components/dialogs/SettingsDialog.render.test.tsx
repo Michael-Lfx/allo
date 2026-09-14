@@ -12,7 +12,10 @@ import type { AgentStoreConfigView } from "../../lib/client";
  * - the nav is exactly the sections that render real data — the empty shells
  *   and the "coming soon" placeholder are gone (§6「不做假开关」);
  * - the provider section renders the host's own view (value, file state, facts);
- * - a failed read/save is visible in place and never rendered as success.
+ * - a failed read/save is visible in place and never rendered as success;
+ * - the host's own prose survives rendering verbatim while our own keys still
+ *   translate — the `ConfigMessage` split (see `store/settingsConfig.ts` for
+ *   what `t()` does to a message that starts with a file name).
  *
  * `../../i18n` must be imported so react-i18next has an initialised instance.
  */
@@ -150,7 +153,10 @@ describe("SettingsDialog sections (W11 / R16)", () => {
   it("shows a failed save instead of pretending it worked", () => {
     const html = renderProvider({
       draft: "ghost/model",
-      saveError: "invalid_request: no [providers.ghost] entry in ~/.agent-store/config.toml",
+      saveError: {
+        kind: "server",
+        text: "invalid_request: no [providers.ghost] entry in ~/.agent-store/config.toml",
+      },
     });
 
     expect(html).toContain("no [providers.ghost] entry");
@@ -161,13 +167,40 @@ describe("SettingsDialog sections (W11 / R16)", () => {
     const html = renderProvider({
       view: null,
       draft: null,
-      error: "config_unavailable: failed to read config.toml",
+      error: { kind: "server", text: "config_unavailable: failed to read config.toml" },
     });
 
     expect(html).toContain("config_unavailable");
     expect(html).toContain("重试");
     // No editable value at all while the read failed.
     expect(html).not.toContain("<select");
+  });
+
+  it("shows the host's own prose whole, not the half after its first colon", () => {
+    // The regression this file could not see before: i18next reads a
+    // colon-bearing string that "looks like an object path" (no space before the
+    // first dot) as `namespace:key` and returns the key half only — which is the
+    // shape of every message that names a file first. Both strings below are the
+    // host's real wording (`mcp.json`'s parser error is on the wire verbatim);
+    // rendered through `t()` they came back as `" expected value at line 1
+    // column 1"` and `" expected a table"`.
+    const read = renderProvider({
+      error: { kind: "server", text: "mcp.json is not valid JSON: expected value at line 1 column 1" },
+    });
+    expect(read).toContain("mcp.json is not valid JSON: expected value at line 1 column 1");
+
+    const saved = renderProvider({
+      saveError: { kind: "server", text: "config.toml is not valid TOML: expected a table" },
+    });
+    expect(saved).toContain("config.toml is not valid TOML: expected a table");
+  });
+
+  it("still translates the messages that really are ours", () => {
+    // The other half of the union: a key must keep resolving (the same string
+    // handed to the `server` branch would be shown as the raw key instead).
+    const offline = renderProvider({ error: { kind: "i18n", key: "settings.providerOffline" } });
+    expect(offline).toContain("尚未连接 App Server");
+    expect(offline).not.toContain("settings.providerOffline");
   });
 
   it("confirms a save with the value the host read back", () => {
@@ -202,7 +235,7 @@ describe("SettingsDialog sections (W11 / R16)", () => {
 
   it("shows a failed memory write instead of pretending it worked", () => {
     const html = renderAgent({
-      saveError: "config_unavailable: failed to write config.toml",
+      saveError: { kind: "server", text: "config_unavailable: failed to write config.toml" },
     });
 
     expect(html).toContain("保存失败");
@@ -211,7 +244,7 @@ describe("SettingsDialog sections (W11 / R16)", () => {
   });
 
   it("shows a failed read with a retry and no switch state", () => {
-    const html = renderAgent({ view: null, error: "config_unavailable: failed to read config.toml" });
+    const html = renderAgent({ view: null, error: { kind: "server", text: "config_unavailable: failed to read config.toml" } });
 
     expect(html).toContain("config_unavailable");
     expect(html).toContain("重试");
@@ -309,7 +342,10 @@ describe("SettingsDialog sections (W11 / R16)", () => {
   });
 
   it("shows a failed read with a retry and no declaration state", () => {
-    const html = renderMcp({ view: null, error: "config_unavailable: failed to read config.toml" });
+    const html = renderMcp({
+      view: null,
+      error: { kind: "server", text: "config_unavailable: failed to read config.toml" },
+    });
 
     expect(html).toContain("config_unavailable");
     expect(html).toContain("重试");

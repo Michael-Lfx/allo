@@ -29,17 +29,19 @@ import { useTranslation } from "react-i18next";
 
 import type { AgentStoreConfigView } from "../../lib/client";
 import { useAppStore } from "../../store/appStore";
+import type { ConfigMessage } from "../../store/settingsConfig";
 import { useSettingsConfig } from "../../store/settingsConfig";
+import { ConfigMessageText } from "./ConfigMessage";
 
 export interface AgentSettingsViewProps {
   /** Host view of the config file; `null` = nothing read (yet, or at all). */
   view: AgentStoreConfigView | null;
   loading: boolean;
-  /** Read failure (i18n key or the server's own `code: message`). */
-  error: string | null;
+  /** Read failure: our i18n key or the host's own prose (`ConfigMessage`). */
+  error: ConfigMessage | null;
   saving: boolean;
   /** Write failure, shown next to the switch. */
-  saveError: string | null;
+  saveError: ConfigMessage | null;
   /** Value the host confirmed on the last successful write. */
   savedValue: boolean | null;
   onSelect: (enabled: boolean) => void;
@@ -85,11 +87,11 @@ export function AgentSettingsView({
             <span className="settings-row-desc">{t("settings.distillDesc")}</span>
             {error ? (
               <span className="settings-row-note is-error" role="alert">
-                {t(error)}
+                <ConfigMessageText message={error} />
               </span>
             ) : saveError ? (
               <span className="settings-row-note is-error" role="alert">
-                {t("settings.distillSaveFailed")}: {t(saveError)}
+                {t("settings.distillSaveFailed")}: <ConfigMessageText message={saveError} />
               </span>
             ) : savedValue !== null ? (
               <span className="settings-row-note" role="status">

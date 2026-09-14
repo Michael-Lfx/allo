@@ -94,7 +94,9 @@ describe("settingsConfig store (W11 / R16)", () => {
     const state = useSettingsConfig.getState();
     expect(state.view).toBeNull();
     expect(state.draft).toBeNull();
-    expect(state.error).toContain("config_unavailable");
+    // Tagged as the host's prose, text unchanged: the tag is what keeps it out
+    // of `t()` and therefore out of i18next's `namespace:key` split.
+    expect(state.error).toEqual({ kind: "server", text: "config_unavailable: failed to read config.toml" });
   });
 
   it("is honest about being offline instead of showing an empty file", async () => {
@@ -102,7 +104,7 @@ describe("settingsConfig store (W11 / R16)", () => {
 
     const state = useSettingsConfig.getState();
     expect(state.view).toBeNull();
-    expect(state.error).toBe("settings.providerOffline");
+    expect(state.error).toEqual({ kind: "i18n", key: "settings.providerOffline" });
   });
 
   it("saves exactly the whitelisted field and lands on the host's re-read", async () => {
@@ -137,7 +139,10 @@ describe("settingsConfig store (W11 / R16)", () => {
     await useSettingsConfig.getState().save(client);
 
     const state = useSettingsConfig.getState();
-    expect(state.saveError).toContain("no [providers.ghost] entry");
+    expect(state.saveError).toEqual({
+      kind: "server",
+      text: "invalid_request: no [providers.ghost] entry in ~/.agent-store/config.toml",
+    });
     // Nothing was written optimistically: the last confirmed value stands.
     expect(state.view?.default_model).toBe("opencode/mimo-v2.5-free");
     expect(state.savedValue).toBeNull();
@@ -152,7 +157,10 @@ describe("settingsConfig store (W11 / R16)", () => {
     await useSettingsConfig.getState().save(client);
 
     expect(writes).toHaveLength(0);
-    expect(useSettingsConfig.getState().saveError).toBe("settings.providerSaveNeedsValue");
+    expect(useSettingsConfig.getState().saveError).toEqual({
+      kind: "i18n",
+      key: "settings.providerSaveNeedsValue",
+    });
   });
 
   // ---- `[memory] distill_enabled` (R16 A 档) -------------------------------
@@ -191,7 +199,7 @@ describe("settingsConfig store (W11 / R16)", () => {
     await useSettingsConfig.getState().setDistill(client, true);
 
     const state = useSettingsConfig.getState();
-    expect(state.memoryError).toContain("config_unavailable");
+    expect(state.memoryError).toEqual({ kind: "server", text: "config_unavailable: failed to write config.toml" });
     // No optimistic flip: the value the host confirmed is still `false`.
     expect(state.view?.memory?.distill_enabled).toBe(false);
     expect(state.memorySavedValue).toBeNull();
@@ -202,7 +210,7 @@ describe("settingsConfig store (W11 / R16)", () => {
     await useSettingsConfig.getState().setDistill(null, true);
 
     const state = useSettingsConfig.getState();
-    expect(state.memoryError).toBe("settings.providerOffline");
+    expect(state.memoryError).toEqual({ kind: "i18n", key: "settings.providerOffline" });
     expect(state.view).toBeNull();
     expect(state.memorySavedValue).toBeNull();
   });
