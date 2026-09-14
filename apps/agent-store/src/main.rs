@@ -40,6 +40,7 @@ use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use clap::{Parser, Subcommand};
+use nomifun_shell::ISystemOpener;
 
 /// `agent-store init` — first-run configuration wizard.
 mod init;
@@ -436,7 +437,11 @@ async fn serve(
     );
     if !args.no_open {
         // Best-effort: opening the browser must never crash a headless run.
-        if let Err(error) = open::that_detached(&url) {
+        // Routed through the shell crate's opener instead of calling `open`
+        // directly: that file is the reviewed hand-off seam
+        // (`check-process-runtime-boundary.mjs`), so this app holds no
+        // privileged primitive of its own.
+        if let Err(error) = nomifun_shell::DefaultSystemOpener.open_detached(&url) {
             tracing::warn!(%url, error = %error, "failed to open the default browser");
         }
     }

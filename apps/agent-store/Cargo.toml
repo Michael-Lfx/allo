@@ -47,7 +47,9 @@ anyhow.workspace = true
 clap.workspace = true
 
 # Embedded Agent Store Web UI (web/dist, gated by `static-webui`) + MIME +
-# browser open.
+# the reviewed OS hand-off seam for opening the browser (`nomifun-shell`'s
+# opener is on `check-process-runtime-boundary.mjs`'s allowlist; this app does
+# not depend on `open` directly).
 rust-embed.workspace = true
 mime_guess.workspace = true
-open.workspace = true
+nomifun-shell.workspace = true
