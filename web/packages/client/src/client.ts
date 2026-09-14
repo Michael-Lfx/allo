@@ -189,7 +189,14 @@ export class AppServerClient {
     return this.transport.request<InstallStatus>("install/status", { snapshot_id: snapshotId });
   }
 
-  /** Disable installed components (runtime artifacts stay). */
+  /**
+   * Disable installed components.
+   *
+   * The runtime state moves with the flag — a connector's MCP server is switched
+   * off, an expert's Preset is disabled — while the artifacts stay on disk. A
+   * skill is the documented exception: the corpus has no enable state, so it
+   * reports `skill_disable_flag_only` and the flag stays a catalogue marker.
+   */
   async disableInstall(snapshotId: string, componentIds: string[]): Promise<InstallStatus> {
     return this.transport.request<InstallStatus>("install/disable", {
       snapshot_id: snapshotId,
