@@ -245,6 +245,21 @@ client.connectors.logout(connectorId: string): Promise<void>;                // 
 
 > Tokens never pass through this package: the OAuth browser flow is owned by the trusted host; clients only trigger and poll.
 
+#### `store` — store lifecycle (acquire / install / use / disable / uninstall)
+
+```ts
+client.store.list(): Promise<StoreItem[]>;
+client.store.search(query: string, filter?: { kind?: StoreItemKind }): Promise<StoreItem[]>;
+client.store.installed(): Promise<StoreItem[]>;
+client.store.checkUpdates(): Promise<StoreItem[]>;                 // installed AND update_available
+client.store.updateHint(item): "none" | "uninstall_reinstall" | "unknown";
+client.store.install(item, opts?: { waitForReady?, timeoutMs?, signal? }): Promise<StoreOperationOutcome>;
+client.store.setEnabled(item, enabled: boolean, opts?: { componentIds? }): Promise<StoreOperationOutcome>;
+client.store.uninstall(item, opts?: { componentIds? }): Promise<StoreOperationOutcome>;
+```
+
+> It adds **no wire method**: it only composes the flat top-level methods into one state machine (`search → install → … → uninstall`). `install` defaults to `waitForReady: true` — a skill is usable once copied, a connector is not: it is registered `disabled` by documented default, so readiness enables it before probing. A readiness timeout **never discards the install** (you get the successful install plus `readyIssue: "ready_timeout"`); a connector needing authorization returns `authorization_required` immediately. `outcome.components` is the server's per-component detail (`action` / `ok` / a stable `code`) passed through **verbatim**; failures are never swallowed.
+
 #### `conversations` — persistent conversations
 
 ```ts
@@ -450,6 +465,7 @@ How the three packages' real exports line up with the protocol methods. Method n
 | `teams` | `list()` / `get(teamId)` | `team/list` / `team/get` |
 | `skills` | `list()` / `get(skillId)` | `skill/list` / `skill/get` |
 | `connectors` | `list()` / `get(id)` / `status(id)` / `test(id)` / `authStatus(id)` / `authStart(id)` / `logout(id)` | `connector/list` · `get` · `status` · `test` · `auth/status` · `auth/start` · `auth/logout` |
+| `store` | `list()` / `search(query, filter?)` / `installed()` / `checkUpdates()` / `updateHint(item)` / `install(item, opts?)` / `setEnabled(item, enabled, opts?)` / `uninstall(item, opts?)` | composed methods, no wire method of their own: `store/list` · `store/install-entry` · `install/run` · `install/status` · `install/disable` · `install/enable` · `install/uninstall` |
 | `conversations` | `create(input)` / `update(id, input)` / `modelOptions()` / `list(limit?)` / `get(id)` / `messages(query)` / `send(id, content, idempotencyKey)` / `cancel(id)` / `delete(id)` / `follow(id, options?)` | the same-named `conversation/*` methods |
 | `runs` | `agent(input)` / `team(input)` / `get(id)` / `result(id)` / `events(query)` / `cancel(input)` / `steer(input)` / `answerDecision(input)` / `follow(id, options?)` | `agent/run` · `team/run` · `run/get` · `run/result` · `run/events` · `run/cancel` · `run/steer` · `run/answer-decision` |
 | `workspaces` | `list()` / `create(path)` / `revoke(id)` | `workspace/list` / `workspace/create` / `workspace/revoke` |

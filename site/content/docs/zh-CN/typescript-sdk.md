@@ -245,6 +245,21 @@ client.connectors.logout(connectorId: string): Promise<void>;                // 
 
 > Token 永不经过此包：OAuth 浏览器流由可信宿主持有，客户端只触发与轮询。
 
+#### `store` — 商店生命周期（获取 / 安装 / 使用 / 禁用 / 卸载）
+
+```ts
+client.store.list(): Promise<StoreItem[]>;
+client.store.search(query: string, filter?: { kind?: StoreItemKind }): Promise<StoreItem[]>;
+client.store.installed(): Promise<StoreItem[]>;
+client.store.checkUpdates(): Promise<StoreItem[]>;                 // installed 且 update_available
+client.store.updateHint(item): "none" | "uninstall_reinstall" | "unknown";
+client.store.install(item, opts?: { waitForReady?, timeoutMs?, signal? }): Promise<StoreOperationOutcome>;
+client.store.setEnabled(item, enabled: boolean, opts?: { componentIds? }): Promise<StoreOperationOutcome>;
+client.store.uninstall(item, opts?: { componentIds? }): Promise<StoreOperationOutcome>;
+```
+
+> 它**不新增任何 wire 方法**，只把顶层平方法编排成一条状态机（`search → install → … → uninstall`）。`install` 默认 `waitForReady: true`：技能拷完即可用，连接器不然——注册出来是 `disabled` 的既定默认，所以就先 enable 再探针。就绪超时**不丢安装结果**（返回成功的安装 + `readyIssue: "ready_timeout"`）；需要授权的连接器立刻返回 `authorization_required`。`outcome.components` 是服务端逐组件明细（`action` / `ok` / 稳定 `code`）的**原样透传**，失败不会被吞。
+
 #### `conversations` — 持久会话
 
 ```ts
@@ -450,6 +465,7 @@ console.log("connected:", client.ready);
 | `teams` | `list()` / `get(teamId)` | `team/list` / `team/get` |
 | `skills` | `list()` / `get(skillId)` | `skill/list` / `skill/get` |
 | `connectors` | `list()` / `get(id)` / `status(id)` / `test(id)` / `authStatus(id)` / `authStart(id)` / `logout(id)` | `connector/list` · `get` · `status` · `test` · `auth/status` · `auth/start` · `auth/logout` |
+| `store` | `list()` / `search(query, filter?)` / `installed()` / `checkUpdates()` / `updateHint(item)` / `install(item, opts?)` / `setEnabled(item, enabled, opts?)` / `uninstall(item, opts?)` | 组合方法，无独立 wire 方法：`store/list` · `store/install-entry` · `install/run` · `install/status` · `install/disable` · `install/enable` · `install/uninstall` |
 | `conversations` | `create(input)` / `update(id, input)` / `modelOptions()` / `list(limit?)` / `get(id)` / `messages(query)` / `send(id, content, idempotencyKey)` / `cancel(id)` / `delete(id)` / `follow(id, options?)` | `conversation/*` 同名方法 |
 | `runs` | `agent(input)` / `team(input)` / `get(id)` / `result(id)` / `events(query)` / `cancel(input)` / `steer(input)` / `answerDecision(input)` / `follow(id, options?)` | `agent/run` · `team/run` · `run/get` · `run/result` · `run/events` · `run/cancel` · `run/steer` · `run/answer-decision` |
 | `workspaces` | `list()` / `create(path)` / `revoke(id)` | `workspace/list` / `workspace/create` / `workspace/revoke` |
