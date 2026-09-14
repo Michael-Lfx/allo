@@ -266,8 +266,9 @@ const enUS: Resources = {
     storeInstalling: "Installing…",
     storeInstalled: "Installed",
     storeBlocked: "Not installable",
-    storeUpdate: "Update",
-    storeUpdating: "Updating…",
+    storeUpdate: "Update available",
+    storeUpdateNote:
+      "There is no in-place update yet: uninstall and install again to pick up the version the marketplace offers.",
     storeFromMarket: "Source: {{market}}",
     storeOpenDetail: "View details",
     storeSnapInstalled: "Installed components: {{count}}",
@@ -623,6 +624,11 @@ const enUS: Resources = {
     ignore: "Not now",
     restored: "Reconnected",
     restoreFailed: "Reconnect failed",
+  },
+  connectionGate: {
+    title: "Connect to App Server",
+    intro: "Allo's conversations, models and expert capabilities all come from the App Server. Connect to start chatting.",
+    later: "Set up later",
   },
   palette: {
     commandTitle: "Commands",

@@ -199,16 +199,24 @@ function AgentBadge({ agent, size = 40 }: { agent: AgentSummary; size?: number }
 }
 
 /** Store item tag strings (wire may omit empty arrays). */
-/** Store item badge: avatar when declared, else the initial. */
-function StoreBadge({ item, size = 40, rootUrl }: { item: StoreItem; size?: number; rootUrl?: string }) {
-  const lang = useLocalizedLang();
-  const name = pickLocalized(item.display_name, lang) || item.name;
-  const avatar = item.avatar_url
-    ? item.avatar_url.startsWith("http://") || item.avatar_url.startsWith("https://")
-      ? item.avatar_url
+/** Badge from an absolute/relative avatar URL, else the initial letter. */
+function AvatarBadge({
+  name,
+  avatarUrl,
+  size = 40,
+  rootUrl,
+}: {
+  name: string;
+  avatarUrl?: string | null;
+  size?: number;
+  rootUrl?: string;
+}) {
+  const avatar = avatarUrl
+    ? avatarUrl.startsWith("http://") || avatarUrl.startsWith("https://")
+      ? avatarUrl
       : rootUrl
-        ? `${rootUrl}${item.avatar_url.startsWith("/") ? "" : "/"}${item.avatar_url}`
-        : item.avatar_url
+        ? `${rootUrl}${avatarUrl.startsWith("/") ? "" : "/"}${avatarUrl}`
+        : avatarUrl
     : null;
   if (avatar) {
     return (
@@ -223,6 +231,13 @@ function StoreBadge({ item, size = 40, rootUrl }: { item: StoreItem; size?: numb
     );
   }
   return <InitialBadge name={name} size={size} />;
+}
+
+/** Store item badge: avatar when declared, else the initial. */
+function StoreBadge({ item, size = 40, rootUrl }: { item: StoreItem; size?: number; rootUrl?: string }) {
+  const lang = useLocalizedLang();
+  const name = pickLocalized(item.display_name, lang) || item.name;
+  return <AvatarBadge name={name} avatarUrl={item.avatar_url} size={size} rootUrl={rootUrl} />;
 }
 
 /** Install / installed / update action attached to a store card. */
@@ -252,17 +267,20 @@ function StoreInstallAction({
     );
   }
   if (item.installed) {
+    // A note, never a control. Clicking an installed item only ever re-ran
+    // `store/install-entry`, which is a documented no-op for an installed entry
+    // — and for a pending update it was worse: re-importing would have been a
+    // hidden upgrade. `16` §6: no shell control that does nothing when pressed.
+    const pendingUpdate = item.update_available;
     return (
-      <button
+      <span
         className="market-store-float is-installed"
-        type="button"
-        disabled={busy}
-        onClick={onInstall}
-        title={item.update_available ? t("catalog.storeUpdate") : t("catalog.storeInstalled")}
-        aria-label={item.update_available ? t("catalog.storeUpdate") : t("catalog.storeInstalled")}
+        role="note"
+        title={pendingUpdate ? t("catalog.storeUpdate") : t("catalog.storeInstalled")}
+        aria-label={pendingUpdate ? t("catalog.storeUpdate") : t("catalog.storeInstalled")}
       >
-        {item.update_available ? <RefreshCw size={14} strokeWidth={1.7} /> : <Check size={14} strokeWidth={2} />}
-      </button>
+        {pendingUpdate ? <RefreshCw size={14} strokeWidth={1.7} /> : <Check size={14} strokeWidth={2} />}
+      </span>
     );
   }
   return (
@@ -1276,7 +1294,7 @@ export function CatalogView() {
                   }}
                 >
                   <div className="market-card-top">
-                    <InitialBadge name={skill.name} />
+                    <AvatarBadge name={skill.name} avatarUrl={skill.avatar_url} rootUrl={client?.serverRootUrl} />
                     <div className="market-card-main">
                       <span className="market-card-title">{skill.name}</span>
                       {skill.description && <span className="market-card-sub">{skill.description}</span>}
@@ -1313,7 +1331,7 @@ export function CatalogView() {
             renderItem={(connector) => (
               <button className="market-card" type="button" key={connector.id} onClick={() => void openConnector(connector.id)}>
                 <div className="market-card-top">
-                  <InitialBadge name={connector.name} />
+                  <AvatarBadge name={connector.name} avatarUrl={connector.avatar_url} rootUrl={client?.serverRootUrl} />
                   <div className="market-card-main">
                     <span className="market-card-title">{connector.name}</span>
                     <span className="market-card-sub">{connector.transport_summary}</span>
@@ -1926,10 +1944,18 @@ function StoreDrawer({
             {busy ? t("catalog.storeInstalling") : t("catalog.storeInstall")}
           </button>
         )}
-        {!item.blocked_reason && item.update_available && (
-          <button className="secondary-button" type="button" disabled={busy} onClick={onInstall}>
-            {busy ? t("catalog.storeUpdating") : t("catalog.storeUpdate")}
-          </button>
+        {!item.blocked_reason && item.installed && item.update_available && (
+          // There is no update verb on the wire (`store/update-entry` does not
+          // exist). This used to be a button that called install, which returns
+          // `reused` for an installed entry — a control that did nothing. The
+          // note states the path that does work: release it, install again, and
+          // the version-aware re-import picks up what the marketplace offers.
+          <>
+            <span className="market-tag is-status is-warn" title={t("catalog.storeUpdate")}>
+              {t("catalog.storeUpdate")}
+            </span>
+            <span className="settings-row-note">{t("catalog.storeUpdateNote")}</span>
+          </>
         )}
         {result && (
           <span className="market-tag is-status is-success">

@@ -267,8 +267,8 @@ const zhCN = {
     storeInstalling: "安装中…",
     storeInstalled: "已安装",
     storeBlocked: "不可安装",
-    storeUpdate: "更新",
-    storeUpdating: "更新中…",
+    storeUpdate: "有新版本可用",
+    storeUpdateNote: "当前版本没有原地升级：先卸载再安装，即可取到市场里的新版本。",
     storeFromMarket: "来源：{{market}}",
     storeOpenDetail: "查看详情",
     storeSnapInstalled: "已安装组件：{{count}}",
@@ -624,6 +624,11 @@ const zhCN = {
     ignore: "稍后再说",
     restored: "已重新连接",
     restoreFailed: "重新连接失败",
+  },
+  connectionGate: {
+    title: "连接 App Server",
+    intro: "Allo 的会话、模型与专家能力都由 App Server 提供，连接后才能开始对话。",
+    later: "稍后配置",
   },
   palette: {
     commandTitle: "命令",
