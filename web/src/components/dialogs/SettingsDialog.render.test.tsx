@@ -33,6 +33,7 @@ const [
   { SETTINGS_SECTIONS, SettingsPanel },
   { ProviderSettingsView },
   { AgentSettingsView },
+  { McpSettingsView },
   { default: i18n },
 ] = await Promise.all([
   import("react-dom/server"),
@@ -40,6 +41,7 @@ const [
   import("./SettingsDialog"),
   import("./ProviderSettingsSection"),
   import("./AgentSettingsSection"),
+  import("./McpSettingsSection"),
   import("../../i18n"),
 ]);
 await i18n.changeLanguage("zh-CN");
@@ -49,6 +51,7 @@ const VIEW: AgentStoreConfigView = {
   default_model: "opencode/mimo-v2.5-free",
   providers: [{ name: "opencode", enabled: true, models: ["mimo-v2.5-free", "laguna-s-2.1-free"] }],
   memory: null,
+  mcp: null,
 };
 
 const noop = () => {};
@@ -87,17 +90,31 @@ function renderProvider(patch: Partial<Parameters<typeof ProviderSettingsView>[0
   );
 }
 
+function renderMcp(patch: Partial<Parameters<typeof McpSettingsView>[0]> = {}): string {
+  return renderToStaticMarkup(
+    createElement(McpSettingsView, {
+      view: VIEW,
+      loading: false,
+      error: null,
+      onRetry: noop,
+      ...patch,
+    }),
+  );
+}
+
 describe("SettingsDialog sections (W11 / R16)", () => {
   it("offers only the sections that have real data behind them", () => {
     // The nav is exactly the sections that read/write something real.
-    // `agent` joined them once its switch became host-consumed *and* writable.
-    expect([...SETTINGS_SECTIONS]).toEqual(["general", "provider", "agent"]);
+    // `agent` joined them once its switch became host-consumed *and* writable;
+    // `mcp` joined as a read-only projection of `~/.agent-store/mcp.json`.
+    expect([...SETTINGS_SECTIONS]).toEqual(["general", "provider", "agent", "mcp"]);
 
     const html = renderToStaticMarkup(createElement(SettingsPanel, { onClose: noop }));
 
     expect(html).toContain("通用");
     expect(html).toContain("供应商");
     expect(html).toContain("智能体");
+    expect(html).toContain("MCP");
     // The empty shells are gone, and with them the "coming soon" placeholder.
     for (const gone of ["账户", "插件", "实验室", "已归档", "该设置项暂未开放"]) {
       expect(html).not.toContain(gone);
@@ -121,7 +138,10 @@ describe("SettingsDialog sections (W11 / R16)", () => {
   });
 
   it("reports a missing config file as missing", () => {
-    const html = renderProvider({ view: { exists: false, default_model: null, providers: [], memory: null }, draft: null });
+    const html = renderProvider({
+      view: { exists: false, default_model: null, providers: [], memory: null, mcp: null },
+      draft: null,
+    });
 
     expect(html).toContain("尚未创建 ~/.agent-store/config.toml，保存时会写入");
     expect(html).toContain("配置文件里还没有 [providers.*] 声明");
@@ -197,5 +217,102 @@ describe("SettingsDialog sections (W11 / R16)", () => {
     expect(html).toContain("重试");
     // The state line is the error, not an invented "off".
     expect(html).not.toContain("已关闭");
+  });
+
+  // ---- `mcp` section (read-only projection, 2026-09-13) -------------------
+
+  it("renders the declared servers and the file's own counts", () => {
+    const html = renderMcp({
+      view: {
+        ...VIEW,
+        mcp: {
+          exists: true,
+          servers: [
+            { name: "filesystem", transport: "stdio", enabled: true },
+            { name: "legacy", transport: "sse", enabled: false },
+          ],
+          rejected: [],
+        },
+      },
+    });
+
+    expect(html).toContain("声明文件 ~/.agent-store/mcp.json");
+    expect(html).toContain("已声明 2 个 server（1 个已启用 · 0 条被拒绝）");
+    expect(html).toContain("filesystem");
+    expect(html).toContain("stdio · 已启用");
+    expect(html).toContain("legacy");
+    expect(html).toContain("sse · 已禁用");
+
+    // Read-only by construction: the file is hand-written, so this section has
+    // no control that could write it back.
+    expect(html).not.toContain("<input");
+    expect(html).not.toContain("<select");
+    expect(html).not.toContain("保存");
+  });
+
+  it("distinguishes 'no declaration file' from 'a file that declares nothing'", () => {
+    const missing = renderMcp();
+    expect(missing).toContain("没有 ~/.agent-store/mcp.json");
+    expect(missing).not.toContain("文件里还没有 mcpServers 声明");
+
+    const empty = renderMcp({ view: { ...VIEW, mcp: { exists: true, servers: [], rejected: [] } } });
+    expect(empty).toContain("文件里还没有 mcpServers 声明");
+    expect(empty).not.toContain("没有 ~/.agent-store/mcp.json");
+  });
+
+  it("shows the parser's own reason for every refused entry", () => {
+    const html = renderMcp({
+      view: {
+        ...VIEW,
+        mcp: {
+          exists: true,
+          servers: [],
+          rejected: [
+            {
+              name: "bad",
+              reason: "`headers` only applies to a remote server, but this entry is a stdio server (`command`)",
+            },
+            {
+              name: "slow",
+              reason: "`toolTimeoutMs` must be between 1 and 600000 milliseconds, got 3600000",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(html).toContain("被拒绝的条目");
+    expect(html).toContain("bad");
+    expect(html).toContain("`headers` only applies to a remote server");
+    expect(html).toContain("slow");
+    expect(html).toContain("`toolTimeoutMs` must be between 1 and 600000");
+    expect(html).toContain("已声明 0 个 server（0 个已启用 · 2 条被拒绝）");
+  });
+
+  it("reports a broken declaration file instead of an empty one", () => {
+    const html = renderMcp({
+      view: {
+        ...VIEW,
+        mcp: {
+          exists: true,
+          servers: [],
+          rejected: [],
+          error: "mcp.json is not valid JSON: expected value at line 1 column 1",
+        },
+      },
+    });
+
+    expect(html).toContain("mcp.json is not valid JSON");
+    // A file the host could not read must never look like a file that declares
+    // nothing — that is the whole reason the wire carries `error`.
+    expect(html).not.toContain("文件里还没有 mcpServers 声明");
+  });
+
+  it("shows a failed read with a retry and no declaration state", () => {
+    const html = renderMcp({ view: null, error: "config_unavailable: failed to read config.toml" });
+
+    expect(html).toContain("config_unavailable");
+    expect(html).toContain("重试");
+    expect(html).not.toContain("没有 ~/.agent-store/mcp.json");
   });
 });

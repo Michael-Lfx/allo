@@ -72,6 +72,57 @@ export interface AgentStoreConfigView {
    * can say "not configured" instead of inventing "off"). Additive field.
    */
   memory: AgentStoreConfigMemory | null;
+  /**
+   * `~/.agent-store/mcp.json` as the host read it (`20` §7.9 / `21` D14);
+   * `null` when there is no readable declaration file. Additive field, and the
+   * **only** read surface for a declared server: declarations never become
+   * `mcp_servers` rows, so they do not appear in `connector/*`.
+   */
+  mcp: AgentStoreConfigMcp | null;
+}
+
+/** One `mcpServers` entry the host accepted. */
+export interface AgentStoreConfigMcpServer {
+  /** The `mcpServers` key — the `<server>` segment of `mcp__<server>__*`. */
+  name: string;
+  /** `stdio` | `http` | `sse` (already a label, not a discriminant to branch on). */
+  transport: string;
+  /** `enabled = false` keeps the entry declared but out of every session. */
+  enabled: boolean;
+}
+
+/** One `mcpServers` entry the host refused, and why. */
+export interface AgentStoreConfigMcpRejection {
+  name: string;
+  /**
+   * The parser's own reason ("a field on the wrong transport", "an out-of-range
+   * timeout", …). Server-authored prose, not an i18n key.
+   */
+  reason: string;
+}
+
+/**
+ * The `mcp.json` projection. A refusal is reported rather than silently
+ * dropped: an ignored `enabledTools` would leave tools the user believes
+ * excluded still callable, which is why this half has to be visible.
+ */
+export interface AgentStoreConfigMcp {
+  /**
+   * The declaration file is present. The host only sends this view after it has
+   * read the file, so this is `true` whenever `mcp` is not `null`; it is kept
+   * because the wire carries it, not because a branch should read it.
+   */
+  exists: boolean;
+  /** Accepted entries, ordered by server key. Never a credential value. */
+  servers: AgentStoreConfigMcpServer[];
+  /** Refused entries, with the reason the user has to fix. */
+  rejected: AgentStoreConfigMcpRejection[];
+  /**
+   * Why the **whole file** could not be read as declarations (invalid JSON,
+   * wrong top level). Omitted when the file parsed — without it a broken file
+   * and an empty one look the same.
+   */
+  error?: string;
 }
 
 /** `[memory]` in the host settings file, as far as the wire exposes it. */
