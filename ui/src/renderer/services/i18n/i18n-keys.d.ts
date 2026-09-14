@@ -729,6 +729,7 @@ export type I18nKey =
   | 'cloudLogin.legal.and'
   | 'cloudLogin.legal.privacy'
   | 'cloudLogin.legal.terms'
+  | 'cloudLogin.login.autoRegisterHint'
   | 'cloudLogin.login.changeEmail'
   | 'cloudLogin.login.codeSent'
   | 'cloudLogin.login.continue'

@@ -335,6 +335,7 @@ const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout,
                   onBlur={() => setEmailTouched(true)}
                   disabled={flow.busy}
                   required
+                  hint={emailError ? undefined : t('cloudLogin.login.autoRegisterHint')}
                   error={emailError}
                 />
               ) : (
@@ -419,9 +420,8 @@ const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout,
                   loading={flow.busy}
                   loadingLabel={t('cloudLogin.login.sendingCode')}
                   disabled={!validEmail || flow.cooldown > 0}
-                  icon={<span>→</span>}
                 >
-                  {validEmail ? t('cloudLogin.login.sendCodeArrow') : t('cloudLogin.login.emailBeforeSend')}
+                  {t('cloudLogin.login.sendCodeArrow')}
                 </AuthPrimaryButton>
               )}
             </div>

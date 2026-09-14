@@ -7,7 +7,7 @@
   "brandFlow": "Intent → Work → Result",
   "brandMeta": "Cloud workspace · Traceable execution",
   "welcomeTitle": "Your first result starts here",
-  "welcomeDesc": "One email code gets your workspace ready for the first task",
+  "welcomeDesc": "Enter your email, get a code, and you’re in",
   "accountSubtitle": "You're signed in — continue to the app",
   "account": {
     "signedIn": "Signed in"
@@ -20,6 +20,7 @@
     "emailLabel": "Email address",
     "emailPlaceholder": "you@example.com",
     "emailInvalid": "Enter a valid email address",
+    "autoRegisterHint": "New users will be registered automatically",
     "emailBeforeSend": "Enter an email to send a code",
     "sendCodeArrow": "Send code",
     "starting": "Preparing…",
