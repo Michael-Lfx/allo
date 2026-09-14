@@ -25,6 +25,7 @@ httpdate.workspace    = true
 futures.workspace     = true
 sha2.workspace        = true
 base64.workspace      = true
+glob.workspace        = true
 
 
 [features]

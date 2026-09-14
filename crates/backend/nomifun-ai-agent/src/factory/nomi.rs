@@ -1980,6 +1980,9 @@ pub(crate) fn merge_host_declared_mcp_servers(
         if extra_mcp_servers.contains_key(&declared.name) {
             continue;
         }
+        let startup_timeout_secs = declared.startup_timeout_secs;
+        let enabled_tools = declared.enabled_tools.clone();
+        let disabled_tools = declared.disabled_tools.clone();
         let config = match &declared.transport {
             McpTransport::Stdio { command, args, env } => {
                 let resolved = nomifun_common::secret_ref::resolve_env(env);
@@ -1999,15 +2002,20 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     // Eager schemas, matching how a `mcp_servers` row is mapped.
                     deferred: Some(false),
                     request_timeout_secs: declared.request_timeout_secs,
+                    startup_timeout_secs,
+                    // Already absolute: the host resolved it against the
+                    // declaration file when the file was loaded.
+                    cwd: declared.cwd.clone(),
+                    enabled_tools,
+                    disabled_tools,
                 }
             }
             McpTransport::Sse { url, headers } => {
-                let resolved = nomifun_common::secret_ref::resolve_env(headers);
-                report_missing_credentials(
+                let headers = declared_remote_headers(
                     conversation_id,
                     &declared.name,
-                    "headers",
-                    &resolved.missing,
+                    headers,
+                    declared.bearer_token_env_var.as_deref(),
                 );
                 McpServerConfig {
                     transport: TransportType::Sse,
@@ -2015,18 +2023,21 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     args: None,
                     env: None,
                     url: Some(url.clone()),
-                    headers: Some(resolved.env),
+                    headers: Some(headers),
                     deferred: Some(false),
                     request_timeout_secs: declared.request_timeout_secs,
+                    startup_timeout_secs,
+                    cwd: None,
+                    enabled_tools,
+                    disabled_tools,
                 }
             }
             McpTransport::Http { url, headers } => {
-                let resolved = nomifun_common::secret_ref::resolve_env(headers);
-                report_missing_credentials(
+                let headers = declared_remote_headers(
                     conversation_id,
                     &declared.name,
-                    "headers",
-                    &resolved.missing,
+                    headers,
+                    declared.bearer_token_env_var.as_deref(),
                 );
                 McpServerConfig {
                     transport: TransportType::StreamableHttp,
@@ -2034,14 +2045,145 @@ pub(crate) fn merge_host_declared_mcp_servers(
                     args: None,
                     env: None,
                     url: Some(url.clone()),
-                    headers: Some(resolved.env),
+                    headers: Some(headers),
                     deferred: Some(false),
                     request_timeout_secs: declared.request_timeout_secs,
+                    startup_timeout_secs,
+                    cwd: None,
+                    enabled_tools,
+                    disabled_tools,
                 }
             }
         };
         extra_mcp_servers.insert(declared.name.clone(), config);
     }
+}
+
+/// The header map a declared remote server connects with: `secret:<NAME>`
+/// references resolved in memory, then the optional `bearerTokenEnvVar` turned
+/// into an `Authorization` header.
+fn declared_remote_headers(
+    conversation_id: &str,
+    server_name: &str,
+    headers: &HashMap<String, String>,
+    bearer_token_env_var: Option<&str>,
+) -> HashMap<String, String> {
+    let mut headers = resolve_header_secrets(Some(conversation_id), server_name, headers);
+    if bearer_token_env_var.is_some() {
+        // Cloned only when a bearer token was actually declared; the
+        // `resolve_header_secrets` call above already clones the same map once.
+        let credentials = nomifun_common::secret_ref::credentials();
+        apply_bearer_token(
+            conversation_id,
+            server_name,
+            bearer_token_env_var,
+            &mut headers,
+            &credentials,
+        );
+    }
+    headers
+}
+
+/// Turn `bearerTokenEnvVar` into `Authorization: Bearer <value>`.
+///
+/// The field names the variable rather than carrying the token, so the token is
+/// still never persisted — the same rule as `secret:<NAME>`, with the lookup
+/// precedence owned by `nomifun_common::secret_ref` (`config.toml [credentials]`
+/// first, process environment as the fallback).
+///
+/// An explicitly declared `Authorization` header wins, because the declaration
+/// said so literally. A name that resolves to nothing omits the header and says
+/// which name failed — never a literal `Bearer <name>` and never an empty value.
+///
+/// The credential map is a parameter rather than a global read so both rules are
+/// assertable without mutating the process-wide store.
+fn apply_bearer_token(
+    conversation_id: &str,
+    server_name: &str,
+    bearer_token_env_var: Option<&str>,
+    headers: &mut HashMap<String, String>,
+    credentials: &HashMap<String, String>,
+) {
+    let Some(name) = bearer_token_env_var else {
+        return;
+    };
+    if headers.contains_key("Authorization") {
+        warn!(
+            conversation_id,
+            server_name,
+            env_var = name,
+            "host_mcp: declaration sets both `headers.Authorization` and \
+             `bearerTokenEnvVar`; the explicit header wins"
+        );
+        return;
+    }
+    match nomifun_common::secret_ref::lookup_with(name, credentials) {
+        Some(token) => {
+            headers.insert("Authorization".to_owned(), format!("Bearer {token}"));
+        }
+        None => {
+            warn!(
+                conversation_id,
+                server_name,
+                env_var = name,
+                "host_mcp: `bearerTokenEnvVar` names a variable that is neither in \
+                 `[credentials]` nor in the process environment; sending no Authorization header"
+            );
+        }
+    }
+}
+
+/// Resolve `secret:<NAME>` references in a header map exactly as the env map is
+/// resolved, and report the shapes that *look* like a reference but are not one.
+///
+/// The DB-row and session-snapshot paths used to hand headers to the engine
+/// verbatim while resolving `env`, so a reference written into a header — the
+/// natural way to supply a bearer token without persisting it — was sent as the
+/// literal text and authentication failed with no local signal. All three paths
+/// (DB row, session snapshot, `mcp.json` declaration) now go through here.
+///
+/// A reference has to be the **whole** value (`secret_ref::parse_secret_ref`),
+/// so `Authorization: Bearer secret:TOKEN` is not one; that shape is the likeliest
+/// mistake and is therefore named in a warning. The header *name* is logged, never
+/// the value.
+fn resolve_header_secrets(
+    conversation_id: Option<&str>,
+    server_name: &str,
+    headers: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let resolved = nomifun_common::secret_ref::resolve_env(headers);
+    if !resolved.missing.is_empty() {
+        match conversation_id {
+            Some(conversation_id) => {
+                report_missing_credentials(
+                    conversation_id,
+                    server_name,
+                    "headers",
+                    &resolved.missing,
+                );
+            }
+            None => warn!(
+                server_name,
+                field = "headers",
+                missing = ?resolved.missing,
+                "host_mcp: unresolved credential references; omitting them"
+            ),
+        }
+    }
+    for (name, value) in headers {
+        let is_a_reference =
+            nomifun_common::secret_ref::parse_secret_ref(value).is_some();
+        if !is_a_reference && value.contains(nomifun_common::secret_ref::SECRET_PREFIX) {
+            warn!(
+                server_name,
+                header = %name,
+                "host_mcp: a header value contains `secret:` but is not exactly a \
+                 `secret:<NAME>` reference, so it is sent literally; use the whole value as the \
+                 reference, or `bearerTokenEnvVar` for an `Authorization: Bearer <token>` header"
+            );
+        }
+    }
+    resolved.env
 }
 
 /// The name of an unresolved reference is not a secret, so it is safe to log;
@@ -2115,6 +2257,10 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 headers: None,
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         "http" | "streamable_http" => {
@@ -2131,6 +2277,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
+            let headers = resolve_header_secrets(None, &row.name, &headers);
 
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
@@ -2141,6 +2288,10 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         "sse" => {
@@ -2157,6 +2308,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
+            let headers = resolve_header_secrets(None, &row.name, &headers);
 
             Ok(McpServerConfig {
                 transport: TransportType::Sse,
@@ -2167,6 +2319,10 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         other => Err(format!("unsupported transport_type: {other}")),
@@ -2200,51 +2356,70 @@ fn session_server_to_mcp_server_config(
                 headers: None,
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         SessionMcpTransport::Http { url, headers } => {
             if url.is_empty() {
                 return Err("http: missing url".to_owned());
             }
+            let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
                 command: None,
                 args: None,
                 env: None,
                 url: Some(url.clone()),
-                headers: Some(headers.clone()),
+                headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         SessionMcpTransport::Sse { url, headers } => {
             if url.is_empty() {
                 return Err("sse: missing url".to_owned());
             }
+            let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::Sse,
                 command: None,
                 args: None,
                 env: None,
                 url: Some(url.clone()),
-                headers: Some(headers.clone()),
+                headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
         SessionMcpTransport::StreamableHttp { url, headers } => {
             if url.is_empty() {
                 return Err("streamable_http: missing url".to_owned());
             }
+            let headers = resolve_header_secrets(None, &server.name, headers);
             Ok(McpServerConfig {
                 transport: TransportType::StreamableHttp,
                 command: None,
                 args: None,
                 env: None,
                 url: Some(url.clone()),
-                headers: Some(headers.clone()),
+                headers: Some(headers),
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             })
         }
     }
@@ -2389,6 +2564,10 @@ fn gateway_mcp_to_config(
         headers: None,
         deferred: Some(true),
         request_timeout_secs: None,
+        startup_timeout_secs: None,
+        cwd: None,
+        enabled_tools: None,
+        disabled_tools: None,
     };
 
     Some((
@@ -3213,6 +3392,10 @@ mod tests {
                 headers: None,
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         )]);
 
@@ -3314,6 +3497,175 @@ mod tests {
         assert_eq!(servers["legacy"].transport, TransportType::Sse);
     }
 
+    /// A declared entry's stdio extras and tool filters reach the engine config
+    /// verbatim, so the engine stays the single place they take effect: `cwd` for
+    /// the child process, the filters inside `nomi-mcp`'s registration.
+    #[test]
+    fn declared_extras_reach_the_engine_config() {
+        let declarations = declarations_from(
+            r#"{ "mcpServers": {
+                 "filesystem": {
+                   "command": "npx",
+                   "cwd": "/srv/data",
+                   "startupTimeoutMs": 5000,
+                   "enabledTools": ["read_file"],
+                   "disabledTools": ["write_file"]
+                 },
+                 "linear": { "url": "https://x/mcp" }
+               } }"#,
+        );
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(&mut servers, &declarations, "conv-extras", true);
+
+        let filesystem = &servers["filesystem"];
+        assert_eq!(filesystem.cwd.as_deref(), Some("/srv/data"));
+        assert_eq!(filesystem.startup_timeout_secs, Some(5));
+        assert_eq!(filesystem.enabled_tools, Some(vec!["read_file".to_owned()]));
+        assert_eq!(filesystem.disabled_tools, Some(vec!["write_file".to_owned()]));
+
+        // The remote entry declares none of them, and gains none by accident.
+        let linear = &servers["linear"];
+        assert!(linear.cwd.is_none());
+        assert!(linear.enabled_tools.is_none());
+        assert!(linear.disabled_tools.is_none());
+        assert!(linear.startup_timeout_secs.is_none());
+    }
+
+    /// `bearerTokenEnvVar` names a credential instead of carrying it, and becomes
+    /// a real `Authorization: Bearer …` header — with an explicit header winning
+    /// and an unresolvable name omitting the header rather than inventing one.
+    #[test]
+    fn bearer_token_env_var_becomes_an_authorization_header() {
+        let credentials = HashMap::from([("GITHUB_TOKEN".to_owned(), "s3cr3t".to_owned())]);
+
+        let mut headers = HashMap::new();
+        apply_bearer_token(
+            "conv-bearer",
+            "linear",
+            Some("GITHUB_TOKEN"),
+            &mut headers,
+            &credentials,
+        );
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer s3cr3t")
+        );
+
+        // A declared `Authorization` header wins: the declaration said so literally.
+        let mut headers = HashMap::from([("Authorization".to_owned(), "Basic abc".to_owned())]);
+        apply_bearer_token(
+            "conv-bearer",
+            "linear",
+            Some("GITHUB_TOKEN"),
+            &mut headers,
+            &credentials,
+        );
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Basic abc")
+        );
+
+        // A name with no value omits the header — never a literal `Bearer <name>`.
+        let mut headers = HashMap::new();
+        apply_bearer_token(
+            "conv-bearer",
+            "linear",
+            Some("__NOMIFUN_DEFINITELY_UNSET__"),
+            &mut headers,
+            &credentials,
+        );
+        assert!(headers.is_empty(), "{headers:?}");
+
+        let mut headers = HashMap::new();
+        apply_bearer_token("conv-bearer", "linear", None, &mut headers, &credentials);
+        assert!(headers.is_empty(), "{headers:?}");
+    }
+
+    /// Every path that builds an engine config resolves `secret:<NAME>` in
+    /// **headers**, not only in `env`. A reference written into a header used to be
+    /// forwarded verbatim from a DB row or a session snapshot, so the literal text
+    /// was sent and the remote end answered 401 with nothing local to explain it.
+    #[test]
+    fn a_header_reference_resolves_on_every_path() {
+        let declarations = declarations_from(
+            r#"{ "mcpServers": {
+                 "linear": { "url": "https://x/mcp", "headers": {
+                   "Authorization": "secret:__NOMIFUN_DEFINITELY_UNSET__",
+                   "X-Tenant": "acme"
+                 } }
+               } }"#,
+        );
+        let mut servers = HashMap::new();
+        merge_host_declared_mcp_servers(&mut servers, &declarations, "conv-headers", true);
+        let headers = servers["linear"].headers.as_ref().expect("headers");
+        assert!(
+            !headers.contains_key("Authorization"),
+            "an unresolvable reference is omitted, never sent literally: {headers:?}"
+        );
+        assert_eq!(headers.get("X-Tenant").map(String::as_str), Some("acme"));
+
+        // The session-snapshot path calls this same helper.
+        let resolved = resolve_header_secrets(
+            None,
+            "linear",
+            &HashMap::from([(
+                "Authorization".to_owned(),
+                "secret:__NOMIFUN_DEFINITELY_UNSET__".to_owned(),
+            )]),
+        );
+        assert!(resolved.is_empty(), "{resolved:?}");
+
+        // `Bearer secret:X` is *not* a whole-value reference, so it is forwarded
+        // and only warned about — the shape a user is likeliest to write, and the
+        // reason that warning exists.
+        let resolved = resolve_header_secrets(
+            None,
+            "linear",
+            &HashMap::from([("Authorization".to_owned(), "Bearer secret:X".to_owned())]),
+        );
+        assert_eq!(
+            resolved.get("Authorization").map(String::as_str),
+            Some("Bearer secret:X")
+        );
+    }
+
+    /// A persisted `mcp_servers` row is not a weaker path than a declaration: it
+    /// goes through the same header resolution.
+    #[test]
+    fn a_persisted_row_resolves_its_headers_too() {
+        let row = McpServerRow {
+            mcp_server_id: "0192f000-0000-7000-8000-000000000000".to_owned(),
+            name: "linear".to_owned(),
+            description: None,
+            enabled: true,
+            transport_type: "http".to_owned(),
+            transport_config: serde_json::json!({
+                "url": "https://x/mcp",
+                "headers": {
+                    "X-Tenant": "acme",
+                    "Authorization": "secret:__NOMIFUN_DEFINITELY_UNSET__"
+                }
+            })
+            .to_string(),
+            tools: None,
+            last_test_status: "disconnected".to_owned(),
+            last_connected: None,
+            original_json: None,
+            builtin: false,
+            deleted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        let config = row_to_mcp_server_config(&row).expect("row must map");
+        let headers = config.headers.as_ref().expect("headers");
+        assert!(
+            !headers.contains_key("Authorization"),
+            "the row path resolves references instead of forwarding them: {headers:?}"
+        );
+        assert_eq!(headers.get("X-Tenant").map(String::as_str), Some("acme"));
+    }
+
     /// The declaration merge never clobbers a name that is already taken. In the
     /// factory that name is either a request-level binding (merged before it) or
     /// a `mcp_servers` row is *skipped* by the same rule — declarations are
@@ -3339,6 +3691,10 @@ mod tests {
                 headers: None,
                 deferred: Some(false),
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         )]);
         merge_host_declared_mcp_servers(&mut bound, &declarations, "conv-bound", true);
@@ -3357,6 +3713,10 @@ mod tests {
             headers: None,
             deferred: Some(false),
             request_timeout_secs: None,
+            startup_timeout_secs: None,
+            cwd: None,
+            enabled_tools: None,
+            disabled_tools: None,
         });
         assert_eq!(merged["shared"].command.as_deref(), Some("from-file"));
     }

@@ -409,6 +409,10 @@ mod tests {
                 headers: None,
                 deferred: None,
                 request_timeout_secs: None,
+                startup_timeout_secs: None,
+                cwd: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         );
         isolate_eval_config(&mut config, dir.path(), Some(6));

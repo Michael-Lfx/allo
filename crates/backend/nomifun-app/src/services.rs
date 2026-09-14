@@ -1624,7 +1624,14 @@ fn resolve_host_mcp_declarations(
         }
     };
     match nomifun_api_types::NomiMcpDeclarations::parse(&source) {
-        Ok(declarations) => {
+        Ok(mut declarations) => {
+            // A declared `cwd` is relative to **this file**, not to whatever
+            // directory the host happened to be started from: the same
+            // declaration must not mean two directories on two launches. The
+            // engine therefore only ever receives an absolute path.
+            declarations.resolve_cwd_relative_to(
+                &path.parent().map(std::path::Path::to_path_buf).unwrap_or_default(),
+            );
             for rejection in &declarations.rejected {
                 warnings.push(format!(
                     "{}: mcpServers.{} was refused: {}",
@@ -3112,6 +3119,27 @@ impl AppServices {
                 refused = mcp_declarations.rejected.len(),
                 "agent-store mcp.json declarations adopted for this host"
             );
+            // Once per boot, not once per session: whether a declared server
+            // connects is per-session work, but *what was declared* — the
+            // directory a stdio child will run in, how many tools each filter
+            // admits, and whether a credential is named at all — is a single
+            // fact. A surprising `cwd` is otherwise invisible until the child
+            // misbehaves.
+            for server in mcp_declarations.servers.iter() {
+                tracing::debug!(
+                    target: "agent_store_mcp",
+                    server = %server.name,
+                    transport = server.transport_kind(),
+                    enabled = server.enabled,
+                    cwd = ?server.cwd,
+                    enabled_tools = server.enabled_tools.as_ref().map(Vec::len),
+                    disabled_tools = server.disabled_tools.as_ref().map(Vec::len),
+                    bearer_token_env_var = ?server.bearer_token_env_var,
+                    request_timeout_secs = ?server.request_timeout_secs,
+                    startup_timeout_secs = ?server.startup_timeout_secs,
+                    "agent-store declared MCP server"
+                );
+            }
         }
 
         let factory = build_agent_factory(AgentFactoryDeps {
@@ -3808,6 +3836,54 @@ mod tests {
         assert_eq!(adopted.servers[0].transport_kind(), "stdio");
     }
 
+    /// A declared `cwd` is resolved against the directory holding `mcp.json`, not
+    /// against the host's own working directory: one file has to mean one
+    /// directory on every launch, and the engine only ever receives an absolute
+    /// path (it is applied to the child process at spawn).
+    #[test]
+    fn declared_cwd_is_resolved_against_the_declaration_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        let absolute = std::env::temp_dir().join("mcp-absolute-cwd");
+        std::fs::write(
+            dir.path().join("mcp.json"),
+            serde_json::json!({
+                "mcpServers": {
+                    "relative": { "command": "npx", "cwd": "servers/fs" },
+                    "absolute": { "command": "npx", "cwd": absolute.to_string_lossy() }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (declarations, warnings) = resolve_host_mcp_declarations(true, Some(&config));
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let cwd = |name: &str| {
+            declarations
+                .servers
+                .iter()
+                .find(|server| server.name == name)
+                .expect("server must be present")
+                .cwd
+                .clone()
+        };
+        let expected_relative = dir.path().join("servers/fs").to_string_lossy().into_owned();
+        assert_eq!(
+            cwd("relative").as_deref(),
+            Some(expected_relative.as_str()),
+            "a relative cwd belongs to the declaration file"
+        );
+        let expected_absolute = absolute.to_string_lossy().into_owned();
+        assert_eq!(
+            cwd("absolute").as_deref(),
+            Some(expected_absolute.as_str()),
+            "an absolute cwd is kept verbatim"
+        );
+    }
+
     /// A broken file, a bad entry or no file at all must declare **nothing**
     /// (never a widened surface, never a change to existing behaviour), and the
     /// reason must be reportable once at startup.
@@ -3834,7 +3910,7 @@ mod tests {
             dir.path().join("mcp.json"),
             r#"{ "mcpServers": {
                  "good": { "command": "npx" },
-                 "bad":  { "command": "npx", "cwd": "/tmp" }
+                 "bad":  { "command": "npx", "headers": { "X": "1" } }
                } }"#,
         )
         .unwrap();
@@ -3843,7 +3919,10 @@ mod tests {
         assert_eq!(mixed.servers[0].name, "good");
         assert_eq!(mixed.rejected.len(), 1);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("bad") && warnings[0].contains("`cwd`"), "{warnings:?}");
+        assert!(
+            warnings[0].contains("bad") && warnings[0].contains("`headers`"),
+            "{warnings:?}"
+        );
 
         // No path at all (tests / hosts without the convention).
         let (none, warnings) = resolve_host_mcp_declarations(true, None);

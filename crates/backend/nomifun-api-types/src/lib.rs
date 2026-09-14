@@ -254,8 +254,8 @@ pub use mcp::{
 };
 pub use mcp::oauth_state;
 pub use mcp_declarations::{
-    MAX_DECLARATION_KEY_LEN, MAX_TOOL_TIMEOUT_MS, MIN_TOOL_TIMEOUT_MS, NomiMcpDeclarationRejection,
-    NomiMcpDeclarations, ResolvedNomiMcpServer,
+    MAX_DECLARATION_KEY_LEN, MAX_STARTUP_TIMEOUT_MS, MAX_TOOL_TIMEOUT_MS, MIN_STARTUP_TIMEOUT_MS,
+    MIN_TOOL_TIMEOUT_MS, NomiMcpDeclarationRejection, NomiMcpDeclarations, ResolvedNomiMcpServer,
 };
 pub use media::{
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,

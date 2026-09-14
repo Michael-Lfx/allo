@@ -355,8 +355,10 @@ state: "not-installed" | "installed" | "disabled"
 
 本机可以自己声明 MCP server，不必先经过市场 / 快照安装。宿主读 `~/.agent-store/mcp.json`
 （用户级，`{"mcpServers": {…}}`，与 Kimi Code CLI **同名同形**；**项目级
-`<workspace>/.agent-store/mcp.json` 预留但未启用**）。schema、字段取舍与 server key
-校验规则见 `20` §7.9。
+`<workspace>/.agent-store/mcp.json` 预留但未启用**）。参考实现文档里的可选字段**全部支持**
+（`env` / `cwd` / `headers` / `bearerTokenEnvVar` / `enabled` / `startupTimeoutMs` /
+`toolTimeoutMs` / `enabledTools` / `disabledTools`），schema、逐字段落点与 server key 校验
+规则见 `20` §7.9／§7.9.1。
 
 一次会话构建时，MCP server 的合并优先级（从强到弱）：
 
@@ -367,6 +369,8 @@ state: "not-installed" | "installed" | "disabled"
 4. 会话快照 server（owner-only；App Server 会话不合并这一类）。
 
 `[tools]` 的 `enabled` / `disabled` 永远**最后**求交，因此声明不能扩大任何既有收窄。
+server 级的 `enabledTools` / `disabledTools` 在**注册之前**裁剪（`20` §7.9.2），所以它只
+决定「这个 server 贡献哪些工具」，既不改变上面这条优先级，也不改变 `[tools]` 的最后一道地位。
 
 两条必须知道的边界：
 
@@ -640,12 +644,14 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
 - `providers` 是**文件里声明的事实**（config-only 投影，与 `models/list` 的 config
   分支同源），不含 `api_key` / `base_url`，也不含已注册 provider 行。
 - `mcp` 是 `~/.agent-store/mcp.json` 的**只读投影**（§4.5.1）：`servers` 是按 key 排序的
-  已接受条目（`transport` ∈ `stdio|http|sse`），`rejected` 是逐条目拒绝的原因（不支持的
-  字段、非法 key、结构冲突），`error` 则是**整份文件**读不成声明时的原因（JSON 非法、
-  顶层不是对象）——没有它，一个写坏的文件与一个空文件在界面上完全一样。`mcp.json` 缺失时
-  该字段是显式 `null`；文件存在但读不动时 `exists:true` + 空列表 + `error`。`env` /
-  `headers` 的**值**（含明文凭据）永不进入此视图，只有 key 名会。该文件**不在**
-  `config/set` 的白名单里——它只能由用户手写，`config/set` 只负责把写完后的投影读回来。
+  已接受条目（`transport` ∈ `stdio|http|sse`），`rejected` 是逐条目拒绝的原因（**未知**
+  字段、放错传输的字段、超时越界、非法 key、结构冲突），`error` 则是**整份文件**读不成
+  声明时的原因（JSON 非法、顶层不是对象）——没有它，一个写坏的文件与一个空文件在界面上
+  完全一样。`mcp.json` 缺失时该字段是显式 `null`；文件存在但读不动时 `exists:true` + 空
+  列表 + `error`。`env` / `headers` 的**值**（含明文凭据）永不进入此视图，只有 key 名会；
+  声明的 `cwd`、`bearerTokenEnvVar` 与工具过滤条目同样**不上 wire**（视图只报 `name` /
+  `transport` / `enabled`）。该文件**不在** `config/set` 的白名单里——它只能由用户手写，
+  `config/set` 只负责把写完后的投影读回来。
 
 `config/set` 只接受白名单字段（当前仅 `default_model`）：请求里出现 `api_key` /
 `base_url` / 路径等**任何**其他键都是 `invalid_request`（不是静默忽略）；值为空、

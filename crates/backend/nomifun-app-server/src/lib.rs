@@ -8243,10 +8243,10 @@ model = "mimo-v2.5-free"
         std::fs::write(
             dir.join("mcp.json"),
             r#"{ "mcpServers": {
-                 "linear": { "url": "https://mcp.linear.app/mcp", "headers": { "Authorization": "Bearer sk-mcp-must-never-reach-the-wire" } },
-                 "filesystem": { "command": "npx", "args": ["-y", "srv"], "env": { "TOKEN": "sk-mcp-env-must-never-reach-the-wire" } },
+                 "linear": { "url": "https://mcp.linear.app/mcp", "headers": { "Authorization": "Bearer sk-mcp-must-never-reach-the-wire" }, "bearerTokenEnvVar": "GITHUB_TOKEN" },
+                 "filesystem": { "command": "npx", "args": ["-y", "srv"], "env": { "TOKEN": "sk-mcp-env-must-never-reach-the-wire" }, "cwd": "/srv/fs-declared", "enabledTools": ["read_file"], "disabledTools": ["write_file"] },
                  "off": { "command": "never", "enabled": false },
-                 "bad": { "command": "npx", "cwd": "/tmp" }
+                 "bad": { "command": "npx", "headers": { "X-Tenant": "acme" } }
                } }"#,
         )
         .expect("temp mcp file");
@@ -8266,10 +8266,12 @@ model = "mimo-v2.5-free"
         assert_eq!(view["mcp"]["servers"][2]["name"], serde_json::json!("off"));
         assert_eq!(view["mcp"]["servers"][2]["enabled"], serde_json::json!(false));
 
-        // A refused entry names itself and says why.
+        // A refused entry names itself and says why. `headers` on a stdio entry
+        // is structurally wrong for any version of the file, which is why it is
+        // the counterexample here rather than a field we might later support.
         assert_eq!(view["mcp"]["rejected"][0]["name"], serde_json::json!("bad"));
         let reason = view["mcp"]["rejected"][0]["reason"].as_str().unwrap_or_default();
-        assert!(reason.contains("`cwd`"), "{reason}");
+        assert!(reason.contains("`headers`"), "{reason}");
         assert!(view["mcp"].get("error").is_none(), "{view}");
 
         // Credential values have no field on the wire, in env or in headers.
@@ -8277,6 +8279,19 @@ model = "mimo-v2.5-free"
         assert!(!encoded.contains("sk-mcp-must-never-reach-the-wire"), "{encoded}");
         assert!(!encoded.contains("sk-mcp-env-must-never-reach-the-wire"), "{encoded}");
         assert!(!encoded.contains("Authorization"), "{encoded}");
+
+        // Nor do the fields that only steer the engine: the view is
+        // `name` / `transport` / `enabled` plus the refusal reasons (`05` §4.10).
+        // Asserted on the *values*, so a future projection has to be a deliberate
+        // change rather than an accident of adding a field to the view struct.
+        for absent in [
+            "/srv/fs-declared",
+            "read_file",
+            "write_file",
+            "GITHUB_TOKEN",
+        ] {
+            assert!(!encoded.contains(absent), "{absent} reached the wire: {encoded}");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
