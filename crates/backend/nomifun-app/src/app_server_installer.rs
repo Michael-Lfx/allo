@@ -43,6 +43,10 @@ pub trait McpRegistrar: Send + Sync {
     /// never by name: a name-keyed delete could remove a server the user added
     /// themselves that happens to collide.
     async fn remove(&self, server_id: &str) -> Result<(), AppError>;
+
+    /// Enable or disable a registered MCP server. Idempotent: unlike a toggle,
+    /// repeating the call leaves the requested state in place.
+    async fn set_enabled(&self, server_id: &str, enabled: bool) -> Result<(), AppError>;
 }
 
 /// Preset creation seam (the production adapter wraps
@@ -77,6 +81,13 @@ pub trait PresetRegistrar: Send + Sync {
     /// Only ever called with the id recorded for the component. A Preset that
     /// is already gone is not an error — uninstall is re-entrant.
     async fn delete_preset(&self, preset_id: &str) -> Result<(), AppError>;
+
+    /// Enable or disable a Preset this installer created. Idempotent.
+    ///
+    /// Disabling here is what makes `install/disable` real for an expert: the
+    /// run paths resolve through `PresetService`, which refuses a disabled
+    /// Preset, so no run-path change is needed for the flag to bite.
+    async fn set_preset_enabled(&self, preset_id: &str, enabled: bool) -> Result<(), AppError>;
 }
 
 /// Production MCP registrar over `nomifun_mcp::McpConfigService`.
@@ -116,6 +127,16 @@ impl McpRegistrar for AppServerMcpRegistrar {
         // `From<McpError> for AppError` preserves — the uninstall path reads
         // that as "already released".
         self.config.delete_server(&parsed).await.map_err(AppError::from)?;
+        Ok(())
+    }
+
+    async fn set_enabled(&self, server_id: &str, enabled: bool) -> Result<(), AppError> {
+        let parsed = nomifun_api_types::McpServerId::parse(server_id)
+            .map_err(|error| AppError::BadRequest(format!("invalid connector id: {error}")))?;
+        self.config
+            .set_server_enabled(&parsed, enabled)
+            .await
+            .map_err(AppError::from)?;
         Ok(())
     }
 }
@@ -191,6 +212,19 @@ impl PresetRegistrar for AppServerPresetRegistrar {
             other => other,
         }
     }
+
+    async fn set_preset_enabled(&self, preset_id: &str, enabled: bool) -> Result<(), AppError> {
+        self.service
+            .set_state(
+                preset_id,
+                nomifun_api_types::SetPresetStateRequest {
+                    enabled: Some(enabled),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 /// Composition-root Installer. Owns the runtime seams; the InstallerService in
@@ -213,6 +247,72 @@ impl AppServerInstallProvider {
     ) -> Self {
         let installer = InstallerService::new(InstallerConfig { snapshot_root, skills_root });
         Self { installer, repo, presets, mcp }
+    }
+
+    /// Flip the recorded flag *and* the runtime state it is supposed to mean.
+    ///
+    /// Before this, a disable only wrote `plugin_snapshot_components.disabled`,
+    /// which nothing on the runtime side reads: a "disabled" connector stayed
+    /// enabled in `mcp_servers`, and a "disabled" expert still ran. The flag and
+    /// the runtime now move together.
+    ///
+    /// The flag only flips for components whose runtime state actually moved.
+    /// Flipping it regardless would put the catalogue back in the business of
+    /// claiming a state the runtime never entered — the same defect being fixed
+    /// here, one layer up.
+    ///
+    /// `skill` is the documented exception: the skill corpus is plain
+    /// directories with no state to flip, so for a skill the flag stays a
+    /// catalogue marker (see `05` §4.5), and it is reported as such on the wire.
+    async fn set_components_runtime_enabled(
+        &self,
+        snapshot_id: &str,
+        component_ids: &[String],
+        enabled: bool,
+    ) -> Result<AppServerInstallStatus, AppError> {
+        if component_ids.is_empty() {
+            return Err(AppError::BadRequest(
+                "install/disable and install/enable require explicit component ids".into(),
+            ));
+        }
+        let rows = self
+            .repo
+            .list_installation_state(Some(snapshot_id))
+            .await
+            .map_err(AppError::from)?;
+        let mut moved: Vec<String> = Vec::new();
+        for row in rows
+            .iter()
+            .filter(|row| component_ids.iter().any(|id| id == &row.component_id))
+        {
+            if row.installed != 1 {
+                // Nothing is registered, so there is no runtime state to move and
+                // the flag would describe nothing.
+                tracing::warn!(
+                    snapshot_id,
+                    component_id = %row.component_id,
+                    "ignoring enable/disable for a component that is not installed"
+                );
+                continue;
+            }
+            match set_component_runtime_enabled(&*self.presets, &*self.mcp, row, enabled).await {
+                Ok(()) => moved.push(row.component_id.clone()),
+                Err(error) => tracing::warn!(
+                    snapshot_id,
+                    component_id = %row.component_id,
+                    %error,
+                    "could not move the runtime state; leaving the recorded flag alone"
+                ),
+            }
+        }
+        if !moved.is_empty() {
+            let ids: Vec<&str> = moved.iter().map(String::as_str).collect();
+            self.repo
+                .set_components_disabled(&ids, !enabled)
+                .await
+                .map_err(AppError::from)?;
+        }
+        self.status(snapshot_id).await
     }
 }
 
@@ -396,6 +496,41 @@ impl InstallProvider for AppServerInstallProvider {
             }
         }
 
+        // Re-installing a component the user had disabled must bring the runtime
+        // back with it. `mark_components_installed` clears `disabled`, so
+        // without this a row would read "enabled" while the Preset / MCP server
+        // it refers to is still off — the same catalogue-vs-runtime split the
+        // enable/disable path exists to prevent.
+        //
+        // A component that cannot be re-enabled is dropped from `pending`, so
+        // its record keeps saying `disabled` and stays consistent with the
+        // runtime instead of the two drifting apart.
+        let mut kept: Vec<Pending> = Vec::with_capacity(pending.len());
+        for entry in pending {
+            let was_disabled = installed_state
+                .get(&entry.component_id)
+                .is_some_and(|row| row.installed == 1 && row.disabled == 1);
+            if !was_disabled {
+                kept.push(entry);
+                continue;
+            }
+            let Some(row) = installed_state.get(&entry.component_id) else {
+                kept.push(entry);
+                continue;
+            };
+            match set_component_runtime_enabled(&*self.presets, &*self.mcp, row, true).await {
+                Ok(()) => kept.push(entry),
+                Err(error) => {
+                    warnings.push(format!(
+                        "component {} stays disabled: it could not be re-enabled at runtime: {error}",
+                        entry.component_id
+                    ));
+                    skipped.push(entry.component_id.clone());
+                }
+            }
+        }
+        let pending = kept;
+
         // One scope: build borrowed refs from the owned pending list.
         let refs: Vec<ComponentRuntimeRef<'_>> = pending
             .iter()
@@ -437,15 +572,11 @@ impl InstallProvider for AppServerInstallProvider {
     }
 
     async fn disable(&self, snapshot_id: &str, component_ids: &[String]) -> Result<AppServerInstallStatus, AppError> {
-        let ids: Vec<&str> = component_ids.iter().map(String::as_str).collect();
-        self.repo.set_components_disabled(&ids, true).await.map_err(AppError::from)?;
-        self.status(snapshot_id).await
+        self.set_components_runtime_enabled(snapshot_id, component_ids, false).await
     }
 
     async fn enable(&self, snapshot_id: &str, component_ids: &[String]) -> Result<AppServerInstallStatus, AppError> {
-        let ids: Vec<&str> = component_ids.iter().map(String::as_str).collect();
-        self.repo.set_components_disabled(&ids, false).await.map_err(AppError::from)?;
-        self.status(snapshot_id).await
+        self.set_components_runtime_enabled(snapshot_id, component_ids, true).await
     }
 
     async fn uninstall(&self, snapshot_id: &str, component_ids: &[String]) -> Result<AppServerInstallStatus, AppError> {
@@ -503,6 +634,21 @@ impl InstallProvider for AppServerInstallProvider {
 // projections / helpers
 // ---------------------------------------------------------------------------
 
+/// The parsed `runtime_ref` of a component, when it is readable.
+fn runtime_ref(row: &nomifun_db::PluginSnapshotComponentRow) -> Option<serde_json::Value> {
+    row.runtime_ref
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+}
+
+/// One non-empty string field of a parsed `runtime_ref`.
+fn runtime_ref_field<'a>(runtime: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    runtime
+        .get(key)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+}
+
 /// Release everything one installed component owns at runtime.
 ///
 /// The recorded `runtime_ref` is the authority for *what* exists. A row that is
@@ -522,11 +668,7 @@ async fn release_component(
         // Never registered, or already released: nothing to take out.
         return Ok(());
     }
-    let Some(runtime) = row
-        .runtime_ref
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-    else {
+    let Some(runtime) = runtime_ref(row) else {
         return Err(AppError::Internal(format!(
             "component {} is recorded as installed without a readable runtime_ref",
             row.component_id
@@ -534,16 +676,12 @@ async fn release_component(
     };
     match runtime.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
         "skill" => {
-            let location = runtime
-                .get("location")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    AppError::Internal(format!(
-                        "skill component {} has no recorded location",
-                        row.component_id
-                    ))
-                })?;
+            let location = runtime_ref_field(&runtime, "location").ok_or_else(|| {
+                AppError::Internal(format!(
+                    "skill component {} has no recorded location",
+                    row.component_id
+                ))
+            })?;
             let slug = std::path::Path::new(location)
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -569,20 +707,62 @@ async fn release_component(
             presets.delete_preset(preset_id).await
         }
         "connector" => {
-            let server_id = runtime
-                .get("mcp_server_id")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    AppError::Internal(format!(
-                        "connector component {} has no recorded mcp_server_id",
-                        row.component_id
-                    ))
-                })?;
+            let server_id = runtime_ref_field(&runtime, "mcp_server_id").ok_or_else(|| {
+                AppError::Internal(format!(
+                    "connector component {} has no recorded mcp_server_id",
+                    row.component_id
+                ))
+            })?;
             mcp.remove(server_id).await
         }
         other => Err(AppError::Internal(format!(
             "cannot release runtime type {other:?} for component {}",
+            row.component_id
+        ))),
+    }
+}
+
+/// Move the runtime state a component's enable/disable flag is supposed to mean.
+///
+/// `skill` is deliberately a no-op: the skill corpus is plain directories with
+/// no state to flip, so for a skill the flag stays a catalogue marker
+/// (`05-allo-app-server-protocol.md` §4.5). Everything else must actually move,
+/// or the catalogue would claim a state the runtime never entered.
+async fn set_component_runtime_enabled(
+    presets: &dyn PresetRegistrar,
+    mcp: &dyn McpRegistrar,
+    row: &nomifun_db::PluginSnapshotComponentRow,
+    enabled: bool,
+) -> Result<(), AppError> {
+    let Some(runtime) = runtime_ref(row) else {
+        return Err(AppError::Internal(format!(
+            "component {} is recorded as installed without a readable runtime_ref",
+            row.component_id
+        )));
+    };
+    match runtime.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
+        // Catalogue marker only — see the doc comment above.
+        "skill" => Ok(()),
+        "preset" => {
+            let preset_id = recorded_preset_id(Some(row)).ok_or_else(|| {
+                AppError::Internal(format!(
+                    "preset component {} has no recorded preset id",
+                    row.component_id
+                ))
+            })?;
+            presets.set_preset_enabled(preset_id, enabled).await
+        }
+        "connector" => {
+            let server_id = runtime_ref_field(&runtime, "mcp_server_id").ok_or_else(|| {
+                AppError::Internal(format!(
+                    "connector component {} has no recorded mcp_server_id",
+                    row.component_id
+                ))
+            })?;
+            mcp.set_enabled(server_id, enabled).await
+        }
+        other => Err(AppError::Internal(format!(
+            "cannot set the runtime enabled state of type {other:?} for component {}",
             row.component_id
         ))),
     }
