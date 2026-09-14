@@ -36,6 +36,13 @@ const NOMI_RUNTIME_AGENT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000114";
 pub trait McpRegistrar: Send + Sync {
     /// Upsert an MCP server config by name; returns the server id.
     async fn upsert(&self, name: &str, transport_json: &str) -> Result<String, AppError>;
+
+    /// Remove an MCP server this installer registered.
+    ///
+    /// Only ever called with the id recorded in the component's `runtime_ref`,
+    /// never by name: a name-keyed delete could remove a server the user added
+    /// themselves that happens to collide.
+    async fn remove(&self, server_id: &str) -> Result<(), AppError>;
 }
 
 /// Preset creation seam (the production adapter wraps
@@ -64,6 +71,12 @@ pub trait PresetRegistrar: Send + Sync {
     /// `NotFound` answers `false` (the user deleted it by hand; recreate), any
     /// other failure is reported so the caller can surface it.
     async fn preset_exists(&self, preset_id: &str) -> Result<bool, AppError>;
+
+    /// Delete a Preset this installer created (uninstall).
+    ///
+    /// Only ever called with the id recorded for the component. A Preset that
+    /// is already gone is not an error — uninstall is re-entrant.
+    async fn delete_preset(&self, preset_id: &str) -> Result<(), AppError>;
 }
 
 /// Production MCP registrar over `nomifun_mcp::McpConfigService`.
@@ -94,6 +107,16 @@ impl McpRegistrar for AppServerMcpRegistrar {
             .await
             .map_err(|error| AppError::Internal(format!("mcp upsert: {error}")))?;
         Ok(response.mcp_server_id.to_string())
+    }
+
+    async fn remove(&self, server_id: &str) -> Result<(), AppError> {
+        let parsed = nomifun_api_types::McpServerId::parse(server_id)
+            .map_err(|error| AppError::BadRequest(format!("invalid connector id: {error}")))?;
+        // `delete_server` reports a missing row as `McpError::NotFound`, which
+        // `From<McpError> for AppError` preserves — the uninstall path reads
+        // that as "already released".
+        self.config.delete_server(&parsed).await.map_err(AppError::from)?;
+        Ok(())
     }
 }
 
@@ -158,6 +181,14 @@ impl PresetRegistrar for AppServerPresetRegistrar {
             Ok(_) => Ok(true),
             Err(AppError::NotFound(_)) => Ok(false),
             Err(error) => Err(error),
+        }
+    }
+
+    async fn delete_preset(&self, preset_id: &str) -> Result<(), AppError> {
+        match self.service.delete(preset_id).await {
+            // Already gone: the state the caller asked for.
+            Err(AppError::NotFound(_)) => Ok(()),
+            other => other,
         }
     }
 }
@@ -418,8 +449,52 @@ impl InstallProvider for AppServerInstallProvider {
     }
 
     async fn uninstall(&self, snapshot_id: &str, component_ids: &[String]) -> Result<AppServerInstallStatus, AppError> {
-        let ids: Vec<&str> = component_ids.iter().map(String::as_str).collect();
-        self.repo.clear_components_installed(&ids).await.map_err(AppError::from)?;
+        // An empty list would read as "uninstall the whole snapshot" while the
+        // call sites pass an explicit selection; refusing is the only reading
+        // that cannot surprise either of them.
+        if component_ids.is_empty() {
+            return Err(AppError::BadRequest(
+                "uninstall requires explicit component ids".into(),
+            ));
+        }
+        let rows = self
+            .repo
+            .list_installation_state(Some(snapshot_id))
+            .await
+            .map_err(AppError::from)?;
+
+        // Release the runtime artifacts first, then clear the record — and only
+        // for the components that actually came out. Clearing a row whose
+        // release failed would erase the only pointer to an artifact still on
+        // disk, turning a recoverable failure into a permanent orphan.
+        let mut released: Vec<String> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+        for row in rows
+            .iter()
+            .filter(|row| component_ids.iter().any(|id| id == &row.component_id))
+        {
+            match release_component(&self.installer, &*self.presets, &*self.mcp, row).await {
+                Ok(()) => released.push(row.component_id.clone()),
+                Err(error) => {
+                    // Reported to the operator now; the structured per-component
+                    // outcome on the wire is the follow-up.
+                    tracing::warn!(
+                        snapshot_id,
+                        component_id = %row.component_id,
+                        %error,
+                        "uninstall could not release a component; keeping its install record"
+                    );
+                    failures.push(format!("{}: {error}", row.component_id));
+                }
+            }
+        }
+        if !released.is_empty() {
+            let ids: Vec<&str> = released.iter().map(String::as_str).collect();
+            self.repo.clear_components_installed(&ids).await.map_err(AppError::from)?;
+        }
+        if !failures.is_empty() {
+            tracing::warn!(snapshot_id, ?failures, "uninstall finished with components left installed");
+        }
         self.status(snapshot_id).await
     }
 }
@@ -427,6 +502,91 @@ impl InstallProvider for AppServerInstallProvider {
 // ---------------------------------------------------------------------------
 // projections / helpers
 // ---------------------------------------------------------------------------
+
+/// Release everything one installed component owns at runtime.
+///
+/// The recorded `runtime_ref` is the authority for *what* exists. A row that is
+/// `installed == 1` but carries no readable ref is a defect, not a no-op: it is
+/// refused rather than cleared, because clearing it would drop the only pointer
+/// to an artifact that is still on disk.
+///
+/// Deleting by recorded id (never by name) is what keeps uninstall from taking
+/// out content the user added themselves under a colliding name.
+async fn release_component(
+    installer: &InstallerService,
+    presets: &dyn PresetRegistrar,
+    mcp: &dyn McpRegistrar,
+    row: &nomifun_db::PluginSnapshotComponentRow,
+) -> Result<(), AppError> {
+    if row.installed != 1 {
+        // Never registered, or already released: nothing to take out.
+        return Ok(());
+    }
+    let Some(runtime) = row
+        .runtime_ref
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+    else {
+        return Err(AppError::Internal(format!(
+            "component {} is recorded as installed without a readable runtime_ref",
+            row.component_id
+        )));
+    };
+    match runtime.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
+        "skill" => {
+            let location = runtime
+                .get("location")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "skill component {} has no recorded location",
+                        row.component_id
+                    ))
+                })?;
+            let slug = std::path::Path::new(location)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "skill component {} has an unusable recorded location",
+                        row.component_id
+                    ))
+                })?;
+            // `false` (already gone) is success: uninstall is re-entrant.
+            installer
+                .remove_materialized(&row.snapshot_id, slug)
+                .map(|_removed| ())
+                .map_err(|error| AppError::Internal(error.to_string()))
+        }
+        "preset" => {
+            let preset_id = recorded_preset_id(Some(row)).ok_or_else(|| {
+                AppError::Internal(format!(
+                    "preset component {} has no recorded preset id",
+                    row.component_id
+                ))
+            })?;
+            presets.delete_preset(preset_id).await
+        }
+        "connector" => {
+            let server_id = runtime
+                .get("mcp_server_id")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "connector component {} has no recorded mcp_server_id",
+                        row.component_id
+                    ))
+                })?;
+            mcp.remove(server_id).await
+        }
+        other => Err(AppError::Internal(format!(
+            "cannot release runtime type {other:?} for component {}",
+            row.component_id
+        ))),
+    }
+}
 
 fn project_status(snapshot_id: String, rows: &[nomifun_db::PluginSnapshotComponentRow]) -> AppServerInstallStatus {
     AppServerInstallStatus {
