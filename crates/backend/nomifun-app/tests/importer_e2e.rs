@@ -143,6 +143,36 @@ async fn mcp_server_names(app: axum::Router, token: &str) -> Vec<String> {
     names
 }
 
+/// The runtime `enabled` state of one Preset, by name.
+async fn preset_enabled(app: axum::Router, token: &str, name: &str) -> Option<bool> {
+    let presets = app
+        .oneshot(get_with_token("/api/presets", token))
+        .await
+        .unwrap();
+    let presets_json = body_json(presets).await;
+    presets_json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|preset| preset["name"] == name)
+        .and_then(|preset| preset["enabled"].as_bool())
+}
+
+/// The runtime `enabled` state of one MCP server, by name.
+async fn mcp_server_enabled(app: axum::Router, token: &str, name: &str) -> Option<bool> {
+    let servers = app
+        .oneshot(get_with_token("/api/mcp/servers", token))
+        .await
+        .unwrap();
+    let servers_json = body_json(servers).await;
+    servers_json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|server| server["name"] == name)
+        .and_then(|server| server["enabled"].as_bool())
+}
+
 #[tokio::test]
 async fn importer_end_to_end_imports_software_company() {
     let (mut app, services) = build_app().await;
@@ -460,6 +490,235 @@ async fn importer_install_registers_components_into_runtime() {
         !managed_snapshot_root.exists(),
         "the emptied managed snapshot root must not be left behind: {}",
         managed_snapshot_root.display()
+    );
+}
+
+/// Disabling a component must move the runtime state it names — not just a
+/// database column that no run path reads. For an expert that means the Preset
+/// (which every run resolves through), for a connector the MCP server's own
+/// `enabled` flag. A skill is the documented exception: the corpus is plain
+/// directories with no state to flip, so its flag stays a catalogue marker and
+/// its artifact stays on disk.
+///
+/// Re-installing a disabled component must also bring the runtime back, because
+/// `mark_components_installed` clears `disabled` — otherwise the record would
+/// read "enabled" over a runtime that is still off.
+#[tokio::test]
+async fn importer_disable_moves_runtime_state_for_connector_and_expert() {
+    async fn install(app: axum::Router, token: &str, csrf: &str, connection_id: &str, snapshot_id: &str) {
+        let response = app
+            .oneshot(bearer_json(
+                "POST",
+                "/api/app-server/installs",
+                serde_json::json!({ "snapshot_id": snapshot_id }),
+                token,
+                csrf,
+                Some(connection_id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "install must succeed");
+    }
+
+    async fn toggle(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        snapshot_id: &str,
+        verb: &str,
+        component_ids: &[String],
+    ) -> serde_json::Value {
+        let response = app
+            .oneshot(bearer_json(
+                "POST",
+                &format!("/api/app-server/installs/{snapshot_id}/{verb}"),
+                serde_json::json!({ "component_ids": component_ids }),
+                token,
+                csrf,
+                Some(connection_id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{verb} must succeed");
+        body_json(response).await
+    }
+
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/imports",
+            serde_json::json!({
+                "source_path": SOFTWARE_COMPANY,
+                "source_kind": "codebuddy-plugin",
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let result = body_json(run).await;
+    let snapshot_id = result["snapshot_id"].as_str().unwrap().to_owned();
+    install(app.clone(), &token, &csrf, &connection_id, &snapshot_id).await;
+
+    let status = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/installs/{snapshot_id}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    let status_json = body_json(status).await;
+    let components = status_json["components"].as_array().unwrap();
+    let by_kind = |kind: &str| {
+        components
+            .iter()
+            .find(|component| component["kind"] == kind)
+            .unwrap_or_else(|| panic!("snapshot must expose a {kind} component: {status_json}"))
+    };
+    let expert = by_kind("agent");
+    let connector = by_kind("connector");
+    let skill = by_kind("skill");
+    let expert_id = expert["id"].as_str().unwrap().to_owned();
+    let connector_id = connector["id"].as_str().unwrap().to_owned();
+    let skill_id = skill["id"].as_str().unwrap().to_owned();
+    let preset_name = format!("agent-store: {}", expert["name"].as_str().unwrap());
+    let server_name = connector["name"].as_str().unwrap().to_owned();
+
+    assert_eq!(
+        preset_enabled(app.clone(), &token, &preset_name).await,
+        Some(true),
+        "a freshly installed expert Preset starts enabled"
+    );
+    // A freshly registered MCP server starts *disabled*: that is the installer's
+    // documented default (an installed connector is one you have not switched on
+    // yet). So the plugin flag and the MCP flag legitimately disagree right
+    // after install — which is exactly why `install/enable` has to reach the MCP
+    // row, and that is what this test pins next.
+    assert_eq!(
+        mcp_server_enabled(app.clone(), &token, &server_name).await,
+        Some(false),
+        "a freshly registered connector keeps the documented disabled default"
+    );
+
+    // `install/enable` must switch the MCP server on. Before this, enable only
+    // cleared a database column and the connector stayed dark.
+    toggle(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &snapshot_id,
+        "enable",
+        &[connector_id.clone()],
+    )
+    .await;
+    assert_eq!(
+        mcp_server_enabled(app.clone(), &token, &server_name).await,
+        Some(true),
+        "install/enable must turn the MCP server on"
+    );
+
+    let disabled_ids = vec![expert_id.clone(), connector_id.clone(), skill_id.clone()];
+    let disabled = toggle(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &snapshot_id,
+        "disable",
+        &disabled_ids,
+    )
+    .await;
+    for component in disabled["components"].as_array().unwrap() {
+        if disabled_ids.contains(&component["id"].as_str().unwrap().to_owned()) {
+            assert_eq!(component["state"], "disabled", "{component}");
+        }
+    }
+
+    assert_eq!(
+        preset_enabled(app.clone(), &token, &preset_name).await,
+        Some(false),
+        "disabling an expert must disable the Preset every run resolves through"
+    );
+    assert_eq!(
+        mcp_server_enabled(app.clone(), &token, &server_name).await,
+        Some(false),
+        "disabling a connector must disable the MCP server itself"
+    );
+    // The connector row still exists — disabled, not deleted.
+    assert!(
+        mcp_server_names(app.clone(), &token).await.contains(&server_name),
+        "disable must keep the MCP server registration, only turn it off"
+    );
+    // The skill's flag is a marker: the artifact stays on disk.
+    let managed = services
+        .skill_paths
+        .user_skills_dir
+        .join("agent-store")
+        .join(&snapshot_id)
+        .join("release-notes")
+        .join("SKILL.md");
+    assert!(
+        managed.is_file(),
+        "disabling a skill is a catalogue marker, so its artifact must remain: {}",
+        managed.display()
+    );
+
+    let enabled_ids = vec![expert_id.clone(), connector_id.clone()];
+    toggle(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &snapshot_id,
+        "enable",
+        &enabled_ids,
+    )
+    .await;
+    assert_eq!(
+        preset_enabled(app.clone(), &token, &preset_name).await,
+        Some(true),
+        "enable must restore the Preset"
+    );
+    assert_eq!(
+        mcp_server_enabled(app.clone(), &token, &server_name).await,
+        Some(true),
+        "enable must restore the MCP server"
+    );
+
+    // Re-installing over a disabled component must bring the runtime back with
+    // the flag: `mark_components_installed` clears `disabled`.
+    toggle(
+        app.clone(),
+        &token,
+        &csrf,
+        &connection_id,
+        &snapshot_id,
+        "disable",
+        &enabled_ids,
+    )
+    .await;
+    assert_eq!(preset_enabled(app.clone(), &token, &preset_name).await, Some(false));
+    install(app.clone(), &token, &csrf, &connection_id, &snapshot_id).await;
+    assert_eq!(
+        preset_enabled(app.clone(), &token, &preset_name).await,
+        Some(true),
+        "re-install must re-enable the Preset, not just clear the flag"
+    );
+    assert_eq!(
+        mcp_server_enabled(app.clone(), &token, &server_name).await,
+        Some(true),
+        "re-install must re-enable the MCP server, not just clear the flag"
     );
 }
 

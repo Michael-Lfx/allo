@@ -164,6 +164,35 @@ impl McpConfigService {
         Ok(server.into_response())
     }
 
+    /// Set the enabled state of an MCP server explicitly.
+    ///
+    /// `toggle_server` flips whatever is there, so it cannot express an
+    /// idempotent "this server is disabled": a retried call would silently
+    /// re-enable it. A caller that owns a desired state (the Agent Store
+    /// installer, whose `install/disable` and `install/enable` are idempotent)
+    /// needs a setter. Already being in the requested state is a no-op.
+    pub async fn set_server_enabled(
+        &self,
+        mcp_server_id: &McpServerId,
+        enabled: bool,
+    ) -> Result<McpServerResponse, McpError> {
+        let row = self
+            .repo
+            .find_by_id(mcp_server_id.as_str())
+            .await?
+            .ok_or_else(|| McpError::NotFound(mcp_server_id.to_string()))?;
+        if row.enabled == enabled {
+            return Ok(McpServer::from_row(row)?.into_response());
+        }
+        let params = UpdateMcpServerParams {
+            enabled: Some(enabled),
+            ..Default::default()
+        };
+        let updated = self.repo.update(mcp_server_id.as_str(), params).await?;
+        let server = McpServer::from_row(updated)?;
+        Ok(server.into_response())
+    }
+
     /// Batch import MCP servers (upsert by name).
     ///
     /// Each server is processed individually: existing names are updated,
