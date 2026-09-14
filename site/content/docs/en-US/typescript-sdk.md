@@ -87,7 +87,7 @@ The single TypeScript source of truth for the wire contract: every request/respo
 
 | Export | Meaning |
 | --- | --- |
-| `APP_SERVER_PROTOCOL_VERSION` | Current protocol version string (e.g. `"2026-09-13"`); used in the handshake and SDK checks |
+| `APP_SERVER_PROTOCOL_VERSION` | Current protocol version string (e.g. `"2026-09-14"`); used in the handshake and SDK checks |
 | `InitializeRequest` / `InitializeResult` | Handshake request/response (incl. `protocol_version`, server info) |
 | `ClientInfo` / `ClientCapabilities` | Caller self-description |
 | `StoreList` / `StoreInstallResult` | Winget-style unified catalog |

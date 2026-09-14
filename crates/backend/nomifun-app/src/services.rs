@@ -1183,6 +1183,14 @@ pub struct AppServices {
     /// `[memory].distill_enabled`. Every host that does not opt in carries
     /// [`nomifun_api_types::NomiToolPolicy::default`], which constrains nothing.
     pub tool_policy: nomifun_api_types::NomiToolPolicy,
+    /// The raw `--adopt-store-mcp-declarations` flag the resolved
+    /// `mcp_declarations` below came from.
+    ///
+    /// Kept as the flag rather than re-derived from `mcp_declarations`: "adopted
+    /// a file that declares nothing" and "never looked at the file" both resolve
+    /// to nothing declared, but only one of them makes the declaration file
+    /// meaningful on this host.
+    pub adopt_store_mcp_declarations: bool,
     /// Host-owned MCP server declarations, resolved **once at startup** from
     /// `mcp.json` next to the agent-store config file (`20` §7.9 / `21` D14).
     /// Same launch-time contract as `tool_policy`; every host that does not opt
@@ -3415,6 +3423,7 @@ impl AppServices {
             work_dir,
             work_dir_is_cli_override,
             agent_store_config_path: config.agent_store_config_path.clone(),
+            adopt_store_mcp_declarations: config.adopt_store_mcp_declarations,
             tool_policy,
             mcp_declarations,
             delegate_sink_provider_slot,

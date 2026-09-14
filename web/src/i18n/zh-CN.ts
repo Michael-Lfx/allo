@@ -502,7 +502,11 @@ const zhCN = {
     mcpGroup: "MCP 服务器",
     mcpFileTitle: "声明文件 ~/.agent-store/mcp.json",
     mcpFileDesc:
-      "只读：MCP server 只能手写该文件，设置里不提供编辑；此页只反映文件内容，不代表宿主是否采用它",
+      "只读：MCP server 只能手写该文件，设置里不提供编辑",
+    mcpAdoptionTitle: "本宿主是否使用它",
+    mcpAdopted: "使用中：新会话会注入上面这些 server（仍受宿主 [tools] 约束）",
+    mcpNotAdopted: "未使用：本宿主不读这份声明，上面列出的 server 不会进入任何会话",
+    mcpAdoptionUnknown: "无法判断：宿主没有上报这项信息（构建版本较旧）",
     mcpLoading: "正在读取声明文件…",
     mcpFileMissing: "没有 ~/.agent-store/mcp.json，当前没有任何声明的 MCP server",
     mcpNoServers: "文件里还没有 mcpServers 声明",

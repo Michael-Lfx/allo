@@ -351,4 +351,32 @@ describe("SettingsDialog sections (W11 / R16)", () => {
     expect(html).toContain("重试");
     expect(html).not.toContain("没有 ~/.agent-store/mcp.json");
   });
+
+  it("says whether this host actually uses the file, and never guesses", () => {
+    const declared = [{ name: "filesystem", transport: "stdio", enabled: true }];
+
+    // The pair the field exists for: the file is real and parses cleanly, and
+    // this host still does not read it. Without the row this screen is identical
+    // to one whose servers are being injected.
+    const inert = renderMcp({
+      view: { ...VIEW, mcp: { exists: true, adopted: false, servers: declared, rejected: [] } },
+    });
+    expect(inert).toContain("未使用：本宿主不读这份声明");
+    expect(inert).not.toContain("使用中：");
+    expect(inert).toContain("filesystem");
+
+    const used = renderMcp({
+      view: { ...VIEW, mcp: { exists: true, adopted: true, servers: declared, rejected: [] } },
+    });
+    expect(used).toContain("使用中：");
+    expect(used).not.toContain("未使用：");
+
+    // A host that did not report is its own answer — not "not adopted".
+    const silent = renderMcp({
+      view: { ...VIEW, mcp: { exists: true, servers: declared, rejected: [] } },
+    });
+    expect(silent).toContain("无法判断：");
+    expect(silent).not.toContain("未使用：");
+    expect(silent).not.toContain("使用中：");
+  });
 });

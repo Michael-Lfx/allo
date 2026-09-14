@@ -1032,6 +1032,9 @@ pub fn create_router_with_all_state(
                 ),
             )),
             agent_store_config_path: services.agent_store_config_path.clone(),
+            // The host's own answer to "do you use `mcp.json`?" — the settings
+            // screen has to be able to say "declared here, inert here".
+            adopt_store_mcp_declarations: Some(services.adopt_store_mcp_declarations),
             // Agent Store Skill/Connector catalog over the system services.
             // `None` keeps the capabilities off and yields
             // `unsupported_operation` on the protocol surface; production

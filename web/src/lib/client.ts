@@ -113,6 +113,13 @@ export interface AgentStoreConfigMcp {
    * because the wire carries it, not because a branch should read it.
    */
   exists: boolean;
+  /**
+   * Whether **this host** feeds the file into agent sessions, as the launcher
+   * reported at startup. Omitted when the host did not say — `undefined` is
+   * "cannot tell", which is not the same answer as `false` ("this host does not
+   * read the file"). `servers` describes the file; this describes the host.
+   */
+  adopted?: boolean;
   /** Accepted entries, ordered by server key. Never a credential value. */
   servers: AgentStoreConfigMcpServer[];
   /** Refused entries, with the reason the user has to fix. */

@@ -23,6 +23,12 @@
  * credential value and no declared `cwd`/tool-filter content ever reaches the
  * front end (`05` §4.10), so this section cannot leak one.
  *
+ * One row is about the **host** rather than the file: `mcp.adopted` says whether
+ * the running host feeds the file into sessions at all. Without it a host that
+ * ignores the file entirely renders identically to one that injects every entry,
+ * because `servers` / `rejected` describe the file either way. Absent
+ * (`undefined`) is reported as its own state, never as "not adopted".
+ *
  * Markup reuses the dialog's existing classes (`settings-group-title`,
  * `settings-card`, `settings-row*`, `quiet-button`) — no new CSS, same look as
  * the other sections.
@@ -55,6 +61,18 @@ export function McpSettingsView({ view, loading, error, onRetry }: McpSettingsVi
   const rejected = mcp?.rejected ?? [];
   const enabledCount = servers.filter((server) => server.enabled).length;
   const empty = mcp !== null && servers.length === 0 && rejected.length === 0;
+
+  // Host fact, not file fact: everything else on this page describes the file,
+  // and `adopted` is the only thing that says whether the file does anything
+  // here. `undefined` is its own answer (the host did not report one) and is
+  // never rendered as "not adopted".
+  const adopted = mcp?.adopted;
+  const adoption =
+    adopted === true
+      ? t("settings.mcpAdopted")
+      : adopted === false
+        ? t("settings.mcpNotAdopted")
+        : t("settings.mcpAdoptionUnknown");
 
   const status = loading
     ? t("settings.mcpLoading")
@@ -100,6 +118,14 @@ export function McpSettingsView({ view, loading, error, onRetry }: McpSettingsVi
             </div>
           ) : null}
         </div>
+        {mcp !== null ? (
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <span className="settings-row-title">{t("settings.mcpAdoptionTitle")}</span>
+              <span className="settings-row-desc">{adoption}</span>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {servers.length > 0 ? (
