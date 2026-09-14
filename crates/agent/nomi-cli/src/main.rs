@@ -433,6 +433,13 @@ fn to_mcp_server_config(
         headers,
         deferred: Some(false),
         request_timeout_secs: None,
+        // The engine's `AddMcpServer` request carries no filter or cwd field, so
+        // a server added at runtime has none — declarations (which do) are read
+        // from `mcp.json` at bootstrap, not through this path.
+        startup_timeout_secs: None,
+        cwd: None,
+        enabled_tools: None,
+        disabled_tools: None,
     })
 }
 

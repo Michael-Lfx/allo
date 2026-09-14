@@ -71,6 +71,36 @@ pub struct McpServerConfig {
     /// default; deployments that run deliberately long MCP tools can opt in to
     /// a larger bounded value per server.
     pub request_timeout_secs: Option<u64>,
+    /// Maximum wall-clock time for connecting this server: spawn, the
+    /// `initialize` handshake and `tools/list`. An absent value uses the
+    /// engine's fixed 30-second default.
+    ///
+    /// Per-server because a cold `npx` download can legitimately take longer
+    /// than an already-warm endpoint; bounded because a hung handshake blocks
+    /// the whole Agent bootstrap.
+    pub startup_timeout_secs: Option<u64>,
+    /// Working directory for a stdio server's child process. `None` inherits
+    /// the host's own working directory.
+    ///
+    /// Absolute in practice: the host resolves a declared relative `cwd`
+    /// against the declaration file before handing the config over, so the same
+    /// declaration cannot mean two directories on two launches.
+    pub cwd: Option<String>,
+    /// Per-server tool allowlist. When present, only a tool of this server that
+    /// matches at least one entry is registered.
+    ///
+    /// Entries in the `mcp__` namespace are globs matched against the raw origin
+    /// `mcp__<server>__<tool>` **and** the canonical provider name; every other
+    /// entry is a glob matched against the tool's original (server-local) name.
+    /// `None` = no allowlist. Enforced in `nomi-mcp`'s registration, i.e. the
+    /// tool never enters the registry, its deferred catalog, or the context
+    /// accounting.
+    pub enabled_tools: Option<Vec<String>>,
+    /// Per-server tool blocklist, applied **after** [`Self::enabled_tools`].
+    ///
+    /// Matching is identical to the allowlist, and a pattern present in both
+    /// lists excludes. `None` = no blocklist.
+    pub disabled_tools: Option<Vec<String>>,
 }
 
 /// Collection of MCP server configurations

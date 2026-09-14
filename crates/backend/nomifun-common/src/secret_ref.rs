@@ -69,6 +69,25 @@ pub fn credentials() -> HashMap<String, String> {
         .clone()
 }
 
+/// Look up a credential **by name** — the non-reference half of
+/// [`resolve_value_with`].
+///
+/// Needed where a declaration names the variable instead of carrying a
+/// `secret:NAME` reference (`mcp.json`'s `bearerTokenEnvVar`), so that the
+/// precedence lives here once rather than being restated at each call site.
+pub fn lookup(name: &str) -> Option<String> {
+    lookup_with(name, &credentials())
+}
+
+/// [`lookup`] against an explicit credential map (pure; for tests and for
+/// callers that already hold a snapshot).
+pub fn lookup_with(name: &str, credentials: &HashMap<String, String>) -> Option<String> {
+    credentials
+        .get(name)
+        .cloned()
+        .or_else(|| std::env::var(name).ok())
+}
+
 /// Resolve one env value against an explicit credential map plus the process
 /// environment — the pure, testable half of [`resolve_env`].
 ///
@@ -84,10 +103,7 @@ pub fn resolve_value_with(
 ) -> Option<String> {
     match parse_secret_ref(value) {
         None => Some(value.to_owned()),
-        Some(name) => credentials
-            .get(name)
-            .cloned()
-            .or_else(|| std::env::var(name).ok()),
+        Some(name) => lookup_with(name, credentials),
     }
 }
 
@@ -198,6 +214,27 @@ mod tests {
         assert_eq!(
             resolve_value_with("secret:K", &creds(&[("K", "config")])),
             Some("config".to_owned())
+        );
+    }
+
+    #[test]
+    fn lookup_by_name_shares_the_reference_precedence() {
+        // `bearerTokenEnvVar` names a variable instead of writing a reference, so
+        // it must resolve through the same ladder — otherwise one credential
+        // would have two meanings depending on which field named it.
+        assert_eq!(
+            lookup_with("K", &creds(&[("K", "config")])),
+            Some("config".to_owned())
+        );
+        assert_eq!(
+            lookup_with("__NOMIFUN_DEFINITELY_UNSET__", &HashMap::new()),
+            None
+        );
+        // A name is used verbatim, never re-parsed as a reference.
+        assert_eq!(
+            lookup_with("secret:K", &creds(&[("K", "config")])),
+            None,
+            "the name is a lookup key, not a nested reference"
         );
     }
 }

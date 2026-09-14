@@ -1,6 +1,6 @@
 # Agent Store 文档索引
 
-> 最后核对：2026-09-12（**`21` D14 + `20` §7.9/§9.3：Agent Store 支持 Kimi 式 `~/.agent-store/mcp.json` 声明 MCP（用户级、纯内存注入、不投影进 `mcp_servers`），协议指纹 bump 到 `2026-09-13`**；上一轮 2026-09-11：新增 `22-webui-productionization.zh.md`；`16` C 档二次复核改判；**版本框架订正：发版前只有一个版本，统一称 v1，见 `16` §7 决策 4**；引用/口径统一 + 证据与 `TC-*` 正文并入编号文档；**`20` 重构：工具面表达层定为 `~/.agent-store/config.toml [tools]`，新增 `16` §7 决策 5**；**`20` Step 7 全部落地：`team/run` + Team 层委派放行，协议指纹 bump 到 `2026-09-12`**）
+> 最后核对：2026-09-13（**`20` §7.9.1–§7.9.3/§9.4：`~/.agent-store/mcp.json` 补齐参考实现文档里的全部可选字段（`cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools`）并把 `headers` 的 `secret:NAME` 语义在三条装配路径收敛为一个函数；server 级工具过滤在注册**之前**裁剪；**无协议变更**，指纹保持 `2026-09-13`**；上一轮 2026-09-12：**`21` D14 + `20` §7.9/§9.3：Agent Store 支持 Kimi 式 `~/.agent-store/mcp.json` 声明 MCP（用户级、纯内存注入、不投影进 `mcp_servers`），协议指纹 bump 到 `2026-09-13`**；再上一轮 2026-09-11：新增 `22-webui-productionization.zh.md`；`16` C 档二次复核改判；**版本框架订正：发版前只有一个版本，统一称 v1，见 `16` §7 决策 4**；引用/口径统一 + 证据与 `TC-*` 正文并入编号文档；**`20` 重构：工具面表达层定为 `~/.agent-store/config.toml [tools]`，新增 `16` §7 决策 5**；**`20` Step 7 全部落地：`team/run` + Team 层委派放行，协议指纹 bump 到 `2026-09-12`**）
 > 用途：本目录文档的地图、权威顺序与状态图例。新会话/新成员先读本文，再按需深入。
 > 维护约定：新增文档编号顺延（当前到 `22`）；状态变更时同步更新本索引与文档头部“更新”行；公共契约变更先写 `16-sdk-webui-site-priority-plan.zh.md` §7（决策记录），再改基线文档。
 
@@ -70,7 +70,7 @@
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | `06-connector-oauth-security.md` §14 | MCP OAuth 动态客户端注册设计 | ✅ 已实现 |
-| `20-tool-injection-policy.zh.md` | **Store 会话工具注入策略**：三份 config.toml 哪份对工具面生效、逐项取舍（含「可配置 vs 只能写在代码里」表达层）、两类延迟、表达机制与坑、`nomi_delegate` 特例、实施步骤 Step 1–8 + §9.1 落地记录 + §9.2 Step 7 三批 + §9.3 MCP 声明文件 | ✅ Step 1–8 已落地（2026-09-11：`team/run` + Team 层委派放行；2026-09-12：`~/.agent-store/mcp.json` 声明 MCP，见 §7.9/§9.3；两处端到端断言缺口分别登记在 §9.2.2 与 §9.3） |
+| `20-tool-injection-policy.zh.md` | **Store 会话工具注入策略**：三份 config.toml 哪份对工具面生效、逐项取舍（含「可配置 vs 只能写在代码里」表达层）、两类延迟、表达机制与坑、`nomi_delegate` 特例、实施步骤 Step 1–9 + §9.1 落地记录 + §9.2 Step 7 三批 + §9.3 MCP 声明文件 + §9.4 可选字段全量支持 | ✅ Step 1–9 已落地（2026-09-11：`team/run` + Team 层委派放行；2026-09-12：`~/.agent-store/mcp.json` 声明 MCP，见 §7.9/§9.3；2026-09-13：补齐全部可选字段 + `headers` 收敛，见 §7.9.1–§7.9.3/§9.4；两处端到端断言缺口分别登记在 §9.2.2 与 §9.3/§9.4） |
 
 ## 阅读顺序建议
 

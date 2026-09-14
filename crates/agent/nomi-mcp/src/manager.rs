@@ -101,11 +101,12 @@ pub type TestMcpServerWithTools<'a> = (
     Box<dyn super::transport::McpTransport>,
 );
 
-/// Timeout for connecting + initializing a single MCP server (transport spawn,
-/// `initialize` handshake, `tools/list`). Without it, a server that starts but
-/// never answers the handshake would hang the entire Agent bootstrap — and thus
-/// any Conversation that injects that server — indefinitely, with no error
-/// surfaced to the user.
+/// Default timeout for connecting + initializing a single MCP server (transport
+/// spawn, `initialize` handshake, `tools/list`), used when a server does not
+/// declare `startupTimeoutMs`. Without it, a server that starts but never
+/// answers the handshake would hang the entire Agent bootstrap — and thus any
+/// Conversation that injects that server — indefinitely, with no error surfaced
+/// to the user.
 const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A coding-tool call may need to run a formatter, test suite, or a short
 /// repository search. Ninety seconds is long enough for that common path but
@@ -114,6 +115,12 @@ const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 const MCP_MIN_REQUEST_TIMEOUT_SECS: u64 = 1;
 const MCP_MAX_REQUEST_TIMEOUT_SECS: u64 = 600;
+/// Bounds on a declared `startupTimeoutMs`. A cold `npx`/`uvx` download may
+/// legitimately need more than the 30-second default, so the declared value
+/// wins; the ceiling exists because this budget is spent *before* the Agent has
+/// anything to do, so an unbounded one is an unbounded stall.
+const MCP_MIN_STARTUP_TIMEOUT_SECS: u64 = 1;
+const MCP_MAX_STARTUP_TIMEOUT_SECS: u64 = 600;
 const MCP_MAX_RESOURCE_URI_LEN: usize = 4096;
 const MCP_MAX_DATA_RESOURCE_URI_LEN: usize = (20 * 1024 * 1024 * 4 / 3) + 1024;
 const MCP_MAX_RESOURCE_NAME_LEN: usize = 512;
@@ -138,6 +145,24 @@ fn request_timeout_for(config: &McpServerConfig) -> Result<Duration, McpError> {
         }
         Some(seconds) => Err(McpError::InitFailed(format!(
             "MCP request_timeout_secs must be between {MCP_MIN_REQUEST_TIMEOUT_SECS} and {MCP_MAX_REQUEST_TIMEOUT_SECS}, got {seconds}"
+        ))),
+    }
+}
+
+/// Connect handshake budget for one server.
+///
+/// Absent uses [`MCP_CONNECT_TIMEOUT`]; a declared value is honoured within its
+/// bound. Out of range is an **error**, not a clamp: the declaration is the
+/// user's only statement of intent, so silently connecting with a different
+/// timeout turns "this server never connects" into an unexplainable report.
+fn startup_timeout_for(config: &McpServerConfig) -> Result<Duration, McpError> {
+    match config.startup_timeout_secs {
+        None => Ok(MCP_CONNECT_TIMEOUT),
+        Some(seconds @ MCP_MIN_STARTUP_TIMEOUT_SECS..=MCP_MAX_STARTUP_TIMEOUT_SECS) => {
+            Ok(Duration::from_secs(seconds))
+        }
+        Some(seconds) => Err(McpError::InitFailed(format!(
+            "MCP startup_timeout_secs must be between {MCP_MIN_STARTUP_TIMEOUT_SECS} and {MCP_MAX_STARTUP_TIMEOUT_SECS}, got {seconds}"
         ))),
     }
 }
@@ -225,12 +250,27 @@ impl McpManager {
         }
 
         for (name, config) in configs {
+            // Resolved before the cleanup registry is created: a server with an
+            // unusable budget is never spawned at all, so there is nothing to
+            // clean up for it.
+            let startup_timeout = match startup_timeout_for(config) {
+                Ok(timeout) => timeout,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "nomi_mcp",
+                        server = %name,
+                        error = %error,
+                        "mcp server declares an unusable startup timeout; not connecting to it"
+                    );
+                    continue;
+                }
+            };
             let cleanup_registry = ConnectionCleanupRegistry::new();
             if matches!(config.transport, TransportType::Stdio) {
                 stdio_cleanup_registries.push(Arc::clone(&cleanup_registry));
             }
             match tokio::time::timeout(
-                MCP_CONNECT_TIMEOUT,
+                startup_timeout,
                 Self::connect_server(name, config, cleanup_registry.clone()),
             )
             .await
@@ -249,7 +289,7 @@ impl McpManager {
                 Err(_) => {
                     // Non-fatal: a hung handshake must not block the other
                     // servers or the agent bootstrap. Skip this server.
-                    tracing::warn!(target: "nomi_mcp", server = %name, timeout_secs = MCP_CONNECT_TIMEOUT.as_secs(), "mcp server connection timed out");
+                    tracing::warn!(target: "nomi_mcp", server = %name, timeout_secs = startup_timeout.as_secs(), "mcp server connection timed out");
                     if let Err(cleanup_error) = cleanup_registry.wait_all().await {
                         tracing::error!(target: "nomi_mcp", server = %name, error = %cleanup_error, "timed-out MCP construction did not close exactly");
                     }
@@ -289,6 +329,7 @@ impl McpManager {
                         command,
                         args,
                         env,
+                        config.cwd.as_ref().map(std::path::PathBuf::from),
                         init_params,
                         cleanup_registry,
                     )

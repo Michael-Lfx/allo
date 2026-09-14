@@ -319,10 +319,145 @@ impl Tool for McpToolProxy {
     }
 }
 
+/// A per-server tool filter, built from `McpServerConfig`.
+///
+/// The filter is applied **before** a proxy is constructed, so a filtered-out
+/// tool never enters the registry: it cannot be called, cannot be found by
+/// `ToolSearch`, and never contributes to the context accounting. Filtering
+/// after registration would have to unpick each of those three, and the
+/// registry's own allow/deny policy (`nomi-tools`) is global, so it cannot
+/// express "these tools of *this* server".
+#[derive(Debug, Clone, Copy, Default)]
+pub struct McpToolFilter<'a> {
+    enabled: Option<&'a [String]>,
+    disabled: Option<&'a [String]>,
+}
+
+impl<'a> McpToolFilter<'a> {
+    pub fn from_config(config: &'a McpServerConfig) -> Self {
+        Self {
+            enabled: config.enabled_tools.as_deref(),
+            disabled: config.disabled_tools.as_deref(),
+        }
+    }
+
+    /// True when no list can exclude anything — the common case, and the reason
+    /// an absent filter costs nothing.
+    pub fn is_unrestricted(&self) -> bool {
+        self.enabled.is_none() && self.disabled.is_none()
+    }
+
+    /// Whether one tool of `server_name` survives this filter.
+    ///
+    /// `enabled` is applied first and `disabled` second, so an entry present in
+    /// both lists excludes — the reading that makes a blocklist mean what it
+    /// says.
+    ///
+    /// Matching rules, chosen to accept both readings of the reference
+    /// implementation's `enabledTools`/`disabledTools` (its documentation names
+    /// the field "tool allowlist" without fixing whether an entry is a bare tool
+    /// name or a `mcp__<server>__<tool>` name):
+    ///
+    /// - an entry starting with `mcp__` is a glob tested against the raw origin
+    ///   `mcp__<server>__<tool>` (byte-for-byte what the reference names) **and**
+    ///   against Nomi's canonical provider name `mcp__<server>__<tool>__<hash>`,
+    ///   so a declaration works whether it was written for the reference tool
+    ///   names or copied from a Nomi tool list;
+    /// - every other entry is a glob tested against the tool's original,
+    ///   server-local name.
+    ///
+    /// `*` therefore means "everything this server offers" in both branches. That
+    /// deliberately differs from the registry's `[tools]` policy, where a bare
+    /// `*` selects nothing: that rule protects a *global* namespace, while this
+    /// filter is already scoped to one server.
+    ///
+    /// An unparseable glob selects nothing, matching the registry's fail-closed
+    /// treatment of a malformed pattern.
+    pub fn selects(&self, server_name: &str, original_name: &str) -> bool {
+        if let Some(entries) = self.enabled
+            && !entries
+                .iter()
+                .any(|entry| filter_entry_matches(entry, server_name, original_name))
+        {
+            return false;
+        }
+        if let Some(entries) = self.disabled
+            && entries
+                .iter()
+                .any(|entry| filter_entry_matches(entry, server_name, original_name))
+        {
+            return false;
+        }
+        true
+    }
+
+    /// What this filter did to one server's advertised tools.
+    pub fn report(&self, server_name: &str, advertised: &[String]) -> McpFilterReport {
+        let unmatched = |entries: Option<&[String]>| -> Vec<String> {
+            entries
+                .unwrap_or_default()
+                .iter()
+                .filter(|entry| {
+                    !advertised
+                        .iter()
+                        .any(|tool| filter_entry_matches(entry, server_name, tool))
+                })
+                .cloned()
+                .collect()
+        };
+        let survived = advertised
+            .iter()
+            .filter(|tool| self.selects(server_name, tool))
+            .count();
+        McpFilterReport {
+            unmatched_enabled: unmatched(self.enabled),
+            unmatched_disabled: unmatched(self.disabled),
+            // Only meaningful when an allowlist was actually declared: without
+            // one, "no tools survived" is a server problem, not a filter problem.
+            allowed_nothing: self.enabled.is_some() && survived == 0,
+        }
+    }
+}
+
+/// Diagnostic for one server's filter.
+///
+/// The two lists are reported separately because their mismatches mean opposite
+/// things: an unmatched **allowlist** entry is a defect — it removes tools
+/// instead of selecting them, which is exactly how a typo in `enabledTools`
+/// silently yields no tools at all — while an unmatched **blocklist** entry is
+/// usually normal (a shared pattern list covering several servers).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct McpFilterReport {
+    pub unmatched_enabled: Vec<String>,
+    pub unmatched_disabled: Vec<String>,
+    /// An allowlist was declared and rejected every tool the server advertised.
+    pub allowed_nothing: bool,
+}
+
+/// Whether one filter entry selects `original_name` on `server_name`.
+fn filter_entry_matches(entry: &str, server_name: &str, original_name: &str) -> bool {
+    if entry.starts_with(MCP_PROVIDER_NAME_PREFIX) {
+        let origin = format!("{MCP_PROVIDER_NAME_PREFIX}{server_name}__{original_name}");
+        return glob_matches(entry, &origin)
+            || glob_matches(entry, &canonical_mcp_display_name(server_name, original_name));
+    }
+    glob_matches(entry, original_name)
+}
+
+/// Glob match for a filter entry; an unparseable pattern selects nothing.
+fn glob_matches(pattern: &str, name: &str) -> bool {
+    glob::Pattern::new(pattern)
+        .map(|parsed| parsed.matches(name))
+        .unwrap_or(false)
+}
+
 /// Register all MCP tools under origin-stable canonical provider names.
 ///
 /// Each tool's deferred flag is read from the server's config:
 /// `McpServerConfig::deferred` — defaults to `true` when absent.
+///
+/// A server's `enabled_tools`/`disabled_tools` are applied here, so the tool
+/// surface a provider sees is decided before any registry policy runs.
 pub fn register_mcp_tools(
     registry: &mut nomi_tools::registry::ToolRegistry,
     manager: &Arc<McpManager>,
@@ -338,10 +473,44 @@ pub fn register_mcp_tools(
 
     for (server_name, mut tool_defs) in registrations {
         tool_defs.sort_by(|left, right| left.name.cmp(&right.name));
-        let deferred = server_configs
-            .get(&server_name)
-            .and_then(|c| c.deferred)
-            .unwrap_or(true);
+        let config = server_configs.get(&server_name);
+        let filter = config.map(McpToolFilter::from_config).unwrap_or_default();
+        if !filter.is_unrestricted() {
+            let advertised: Vec<String> =
+                tool_defs.iter().map(|tool| tool.name.clone()).collect();
+            let report = filter.report(&server_name, &advertised);
+            tool_defs.retain(|tool| filter.selects(&server_name, &tool.name));
+            // An allowlist entry that matched nothing is removing tools instead
+            // of selecting them — the one filter mistake that is otherwise
+            // silent, because the result (no such tool) looks the same as a
+            // server that never had it.
+            if !report.unmatched_enabled.is_empty() {
+                tracing::warn!(
+                    target: "nomi_mcp",
+                    server = %server_name,
+                    unmatched = ?report.unmatched_enabled,
+                    "declared `enabledTools` entries match no tool this server advertises"
+                );
+            }
+            if report.allowed_nothing {
+                tracing::warn!(
+                    target: "nomi_mcp",
+                    server = %server_name,
+                    advertised = advertised.len(),
+                    "declared `enabledTools` excluded every tool this server advertises; \
+                     the server stays connected but contributes no tools"
+                );
+            }
+            if !report.unmatched_disabled.is_empty() {
+                tracing::debug!(
+                    target: "nomi_mcp",
+                    server = %server_name,
+                    unmatched = ?report.unmatched_disabled,
+                    "declared `disabledTools` entries match no tool this server advertises"
+                );
+            }
+        }
+        let deferred = config.and_then(|c| c.deferred).unwrap_or(true);
         let proxies: Vec<Box<dyn Tool>> = tool_defs
             .into_iter()
             .map(|tool_def| {
@@ -386,6 +555,12 @@ pub enum McpToolRegistrationError {
 /// Register tools from a single newly-connected MCP server and return the
 /// accepted original-to-provider name mapping for `McpReady` metadata.
 /// Uses the same origin-stable naming as `register_mcp_tools`.
+///
+/// No tool filter is applied, because there is nowhere for one to come from: this
+/// path serves the engine's runtime `AddMcpServer` request, whose parameters
+/// carry a transport and its credentials but no `enabledTools`/`disabledTools`.
+/// Declarations (which do carry them) are read from `mcp.json` at bootstrap and
+/// reach the registry through [`register_mcp_tools`].
 pub fn register_single_server_tools(
     registry: &mut nomi_tools::registry::ToolRegistry,
     manager: &Arc<McpManager>,
@@ -703,6 +878,10 @@ mod tests {
             headers: None,
             deferred,
             request_timeout_secs: None,
+            startup_timeout_secs: None,
+            cwd: None,
+            enabled_tools: None,
+            disabled_tools: None,
         }
     }
 
@@ -817,6 +996,141 @@ mod tests {
         // No tools registered because manager has no tools, but the logic
         // is tested via the deferred default path. Test with a real config below.
         assert!(registry.tool_names().is_empty());
+    }
+
+    /// A server config carrying a declared tool filter; `None` = no list.
+    fn server_config_with_filter(
+        enabled: Option<&[&str]>,
+        disabled: Option<&[&str]>,
+    ) -> McpServerConfig {
+        let to_owned = |entries: Option<&[&str]>| {
+            entries.map(|entries| entries.iter().map(|entry| (*entry).to_owned()).collect())
+        };
+        let mut config = make_server_config(Some(false));
+        config.enabled_tools = to_owned(enabled);
+        config.disabled_tools = to_owned(disabled);
+        config
+    }
+
+    /// The declared filter decides the tool surface **before** registration, so a
+    /// filtered tool is absent from the registry entirely — not merely hidden from
+    /// the provider. That is what keeps the deferred catalog and the context
+    /// accounting correct without any extra bookkeeping.
+    #[test]
+    fn declared_tool_filters_decide_the_registered_surface() {
+        let manager = manager_with_server_tool_names("demo", &["read_file", "write_file", "list_dir"]);
+        let mut configs = HashMap::new();
+        configs.insert(
+            "demo".to_owned(),
+            server_config_with_filter(Some(&["read_file", "list_dir"]), None),
+        );
+        let mut registry = nomi_tools::registry::ToolRegistry::new();
+        register_mcp_tools(&mut registry, &manager, &configs);
+
+        let mut expected = vec![
+            canonical_mcp_display_name("demo", "read_file"),
+            canonical_mcp_display_name("demo", "list_dir"),
+        ];
+        expected.sort();
+        let mut actual = registry.tool_names();
+        actual.sort();
+        assert_eq!(actual, expected);
+        assert!(
+            registry
+                .get(&canonical_mcp_display_name("demo", "write_file"))
+                .is_none(),
+            "a filtered tool must not be reachable, not merely unadvertised"
+        );
+    }
+
+    #[test]
+    fn disabled_tools_subtract_after_the_allowlist() {
+        let manager = manager_with_server_tool_names("demo", &["read_file", "write_file"]);
+        let mut configs = HashMap::new();
+        configs.insert(
+            "demo".to_owned(),
+            server_config_with_filter(Some(&["*"]), Some(&["write_file"])),
+        );
+        let mut registry = nomi_tools::registry::ToolRegistry::new();
+        register_mcp_tools(&mut registry, &manager, &configs);
+
+        assert_eq!(
+            registry.tool_names(),
+            vec![canonical_mcp_display_name("demo", "read_file")],
+            "a bare `*` selects everything this server offers, and the blocklist still subtracts"
+        );
+
+        // The same entry in both lists excludes: the blocklist is applied second.
+        configs.insert(
+            "demo".to_owned(),
+            server_config_with_filter(Some(&["read_file"]), Some(&["read_file"])),
+        );
+        let mut registry = nomi_tools::registry::ToolRegistry::new();
+        register_mcp_tools(&mut registry, &manager, &configs);
+        assert!(registry.tool_names().is_empty());
+    }
+
+    #[test]
+    fn a_reference_style_pattern_matches_the_raw_origin_or_the_canonical_name() {
+        let manager = manager_with_tool("demo", "read_file");
+        let canonical = canonical_mcp_display_name("demo", "read_file");
+
+        // The plain form is what the reference implementation documents; the
+        // canonical form is what Nomi's own tool list contains. Both have to work,
+        // because a declaration is copied from either place.
+        for entry in ["mcp__demo__read_file", "mcp__demo__*", canonical.as_str()] {
+            let mut configs = HashMap::new();
+            configs.insert(
+                "demo".to_owned(),
+                server_config_with_filter(Some(&[entry]), None),
+            );
+            let mut registry = nomi_tools::registry::ToolRegistry::new();
+            register_mcp_tools(&mut registry, &manager, &configs);
+            assert_eq!(
+                registry.tool_names(),
+                vec![canonical.clone()],
+                "entry {entry:?} must select the tool"
+            );
+        }
+
+        // A pattern naming another server's namespace selects nothing.
+        let mut configs = HashMap::new();
+        configs.insert(
+            "demo".to_owned(),
+            server_config_with_filter(Some(&["mcp__other__read_file"]), None),
+        );
+        let mut registry = nomi_tools::registry::ToolRegistry::new();
+        register_mcp_tools(&mut registry, &manager, &configs);
+        assert!(registry.tool_names().is_empty());
+    }
+
+    #[test]
+    fn an_allowlist_entry_that_matches_nothing_is_reported_as_removing_everything() {
+        let config = server_config_with_filter(Some(&["reed_file"]), None);
+        let filter = McpToolFilter::from_config(&config);
+        let report = filter.report("demo", &["read_file".to_owned()]);
+
+        assert_eq!(report.unmatched_enabled, vec!["reed_file".to_owned()]);
+        assert!(report.unmatched_disabled.is_empty());
+        assert!(
+            report.allowed_nothing,
+            "a typo has to be visible as 'no tools', not indistinguishable from a server \
+             that never offered the tool"
+        );
+        assert!(!filter.selects("demo", "read_file"));
+    }
+
+    #[test]
+    fn an_absent_filter_is_unrestricted_and_reports_nothing() {
+        let config = make_server_config(Some(false));
+        let filter = McpToolFilter::from_config(&config);
+
+        assert!(filter.is_unrestricted());
+        assert!(filter.selects("demo", "anything"));
+        assert_eq!(
+            filter.report("demo", &["anything".to_owned()]),
+            McpFilterReport::default()
+        );
     }
 
     #[test]

@@ -253,6 +253,10 @@ fn make_mcp_config(url: &str, headers: HashMap<String, String>) -> McpServerConf
         headers: Some(headers),
         deferred: Some(false),
         request_timeout_secs: Some(30),
+        startup_timeout_secs: None,
+        cwd: None,
+        enabled_tools: None,
+        disabled_tools: None,
     }
 }
 

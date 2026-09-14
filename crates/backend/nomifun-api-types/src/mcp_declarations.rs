@@ -14,15 +14,21 @@
 //! never the *policy* over it — the host `[tools]` denylist stays the last layer
 //! applied (`20` §7.9).
 //!
-//! Three deliberate differences from the reference implementation are enforced
-//! here rather than only documented:
+//! Every optional field the reference implementation documents is honoured
+//! (`env`, `cwd`, `headers`, `bearerTokenEnvVar`, `enabled`, `startupTimeoutMs`,
+//! `toolTimeoutMs`, `enabledTools`, `disabledTools`), so a copied `mcp.json`
+//! loads unchanged — with one bounded exception: a timeout above
+//! [`MAX_TOOL_TIMEOUT_MS`] is refused here although the reference implementation
+//! permits it (see that constant).
 //!
-//! - fields this host cannot honour (`cwd`, `bearerTokenEnvVar`,
-//!   `startupTimeoutMs`, `enabledTools`, `disabledTools`) and any unknown field
-//!   **reject their own entry** instead of being silently ignored — ignoring
-//!   `enabledTools` would leave tools the user believed excluded callable;
-//! - a field that does not apply to the chosen transport (`headers` on a stdio
-//!   entry, `args`/`env` on a remote entry) is rejected for the same reason;
+//! Three deliberate differences are enforced here rather than only documented:
+//!
+//! - any unknown field **rejects its own entry** instead of being silently
+//!   ignored — ignoring `enabledTools` would leave tools the user believed
+//!   excluded callable;
+//! - a field that does not apply to the chosen transport (`headers` or
+//!   `bearerTokenEnvVar` on a stdio entry, `args`/`env`/`cwd` on a remote entry)
+//!   is rejected for the same reason;
 //! - the project-level `<workspace>/.agent-store/mcp.json` layer is **not** read
 //!   (the path is reserved, not implemented).
 //!
@@ -31,6 +37,7 @@
 //! entry rejects only itself so one typo cannot disable every server.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -58,33 +65,31 @@ pub const MIN_TOOL_TIMEOUT_MS: u64 = 1;
 
 /// Maximum accepted `toolTimeoutMs` — the engine rejects a per-server request
 /// timeout above 600 seconds (`nomi-mcp/src/manager.rs`).
+///
+/// This is the one place a copied `mcp.json` can still be refused: the reference
+/// implementation permits up to `2147483647` ms. The bound is deliberate — a
+/// lost MCP response has to become an actionable tool error rather than an Agent
+/// turn that runs for hours — so an out-of-range value is **reported, not
+/// clamped**.
 pub const MAX_TOOL_TIMEOUT_MS: u64 = 600_000;
 
-/// Fields the reference implementation supports and this host deliberately does
-/// not, paired with what to use instead. Named so a rejection can say *why*
-/// instead of only *that*.
-const UNSUPPORTED_FIELDS: &[(&str, &str)] = &[
-    (
-        "cwd",
-        "a stdio server always inherits the session working directory, so a per-server `cwd` is not supported",
-    ),
-    (
-        "bearerTokenEnvVar",
-        "use `headers` with a `secret:<NAME>` reference plus `[credentials]` in `config.toml` instead",
-    ),
-    (
-        "startupTimeoutMs",
-        "the MCP connect handshake timeout is fixed (30s) and not configurable",
-    ),
-    (
-        "enabledTools",
-        "narrow tools through the host `[tools]` policy (`disabled = [\"mcp__<key>__*\"]`) instead",
-    ),
-    (
-        "disabledTools",
-        "narrow tools through the host `[tools]` policy (`disabled = [\"mcp__<key>__*\"]`) instead",
-    ),
-];
+/// Minimum accepted `startupTimeoutMs`; zero is refused, mirroring
+/// [`MIN_TOOL_TIMEOUT_MS`].
+pub const MIN_STARTUP_TIMEOUT_MS: u64 = 1;
+
+/// Maximum accepted `startupTimeoutMs` — the same ceiling as a tool call.
+///
+/// The connect timeout covers spawning the child, the `initialize` handshake and
+/// `tools/list`. A hang there blocks the whole Agent bootstrap, and the engine's
+/// own default is 30 seconds (`MCP_CONNECT_TIMEOUT`), so a larger declared value
+/// is honoured but bounded rather than unbounded.
+pub const MAX_STARTUP_TIMEOUT_MS: u64 = 600_000;
+
+/// The accepted entry fields, appended to serde's unknown-field message: serde
+/// says which key it did not expect, never which keys exist.
+const ACCEPTED_FIELDS: &str = "`command`, `args`, `env`, `cwd`, `url`, `headers`, \
+     `bearerTokenEnvVar`, `transport`, `enabled`, `startupTimeoutMs`, `toolTimeoutMs`, \
+     `enabledTools`, `disabledTools`";
 
 /// The raw file: `mcpServers` is kept as per-entry JSON so one bad entry cannot
 /// invalidate the whole file.
@@ -116,6 +121,25 @@ struct RawServer {
     enabled: Option<bool>,
     #[serde(default)]
     tool_timeout_ms: Option<u64>,
+    // --- reference-implementation optional fields, all honoured ---
+    /// stdio: the child's working directory. Stored as declared; the host
+    /// resolves a relative path against the declaration file's directory.
+    #[serde(default)]
+    cwd: Option<String>,
+    /// remote: name of an environment variable (or `config.toml [credentials]`
+    /// entry) holding the bearer token. Never reaches the engine — the host
+    /// turns it into an `Authorization` header.
+    #[serde(default)]
+    bearer_token_env_var: Option<String>,
+    /// all transports: connect handshake timeout.
+    #[serde(default)]
+    startup_timeout_ms: Option<u64>,
+    /// all transports: per-server tool allowlist.
+    #[serde(default)]
+    enabled_tools: Option<Vec<String>>,
+    /// all transports: per-server tool blocklist, applied after the allowlist.
+    #[serde(default)]
+    disabled_tools: Option<Vec<String>>,
 }
 
 /// A declaration that was read and accepted.
@@ -130,6 +154,23 @@ pub struct ResolvedNomiMcpServer {
     /// Mirrors the engine's per-server request timeout; see
     /// [`MAX_TOOL_TIMEOUT_MS`]. `None` leaves the engine's own default in place.
     pub request_timeout_secs: Option<u64>,
+    /// `cwd` for a stdio server, as declared — possibly relative. The host calls
+    /// [`NomiMcpDeclarations::resolve_cwd_relative_to`] before handing it to the
+    /// engine so one file cannot mean two directories on two launches.
+    pub cwd: Option<String>,
+    /// `bearerTokenEnvVar` for a remote server. Resolved by the host into an
+    /// `Authorization: Bearer <value>` header; the engine never sees this field.
+    pub bearer_token_env_var: Option<String>,
+    /// Mirrors the engine's connect handshake timeout; see
+    /// [`MAX_STARTUP_TIMEOUT_MS`]. `None` leaves the engine's own 30s default.
+    pub startup_timeout_secs: Option<u64>,
+    /// `enabledTools`: when present, only a matching tool of this server is
+    /// registered. `None` = no allowlist.
+    pub enabled_tools: Option<Vec<String>>,
+    /// `disabledTools`: a matching tool of this server is never registered.
+    /// Applied **after** `enabled_tools`, so a pattern in both lists excludes.
+    /// `None` = no blocklist.
+    pub disabled_tools: Option<Vec<String>>,
 }
 
 impl ResolvedNomiMcpServer {
@@ -198,21 +239,47 @@ impl NomiMcpDeclarations {
     pub fn enabled_servers(&self) -> impl Iterator<Item = &ResolvedNomiMcpServer> {
         self.servers.iter().filter(|server| server.enabled)
     }
+
+    /// Resolve every declared `cwd` against the directory holding `mcp.json`.
+    ///
+    /// `cwd` is relative **to the declaration file**, by definition: the same
+    /// file is loaded by hosts started from arbitrary working directories, so
+    /// resolving against the process CWD would make one file mean two different
+    /// directories on two launches. An absolute path is kept verbatim.
+    ///
+    /// A path that is not valid UTF-8 is replaced lossily rather than dropped:
+    /// the child spawn then reports a real error against a real path instead of
+    /// the entry silently running in the wrong directory.
+    pub fn resolve_cwd_relative_to(&mut self, directory: &Path) {
+        for server in &mut self.servers {
+            let Some(cwd) = server.cwd.as_deref() else {
+                continue;
+            };
+            let path = Path::new(cwd);
+            if path.is_absolute() {
+                continue;
+            }
+            server.cwd = Some(directory.join(path).to_string_lossy().into_owned());
+        }
+    }
 }
 
 fn resolve_entry(name: &str, value: serde_json::Value) -> Result<ResolvedNomiMcpServer, String> {
     validate_key(name)?;
 
     let raw: RawServer = serde_json::from_value(value).map_err(|error| explain(&error))?;
-    if let Some(timeout) = raw.tool_timeout_ms
-        && !(MIN_TOOL_TIMEOUT_MS..=MAX_TOOL_TIMEOUT_MS).contains(&timeout)
-    {
-        return Err(format!(
-            "`toolTimeoutMs` must be between {MIN_TOOL_TIMEOUT_MS} and {MAX_TOOL_TIMEOUT_MS} \
-             milliseconds, got {timeout}"
-        ));
-    }
-    let request_timeout_secs = raw.tool_timeout_ms.map(|ms| ms.div_ceil(1_000));
+    let startup_timeout_secs = whole_seconds(
+        "startupTimeoutMs",
+        raw.startup_timeout_ms,
+        MIN_STARTUP_TIMEOUT_MS,
+        MAX_STARTUP_TIMEOUT_MS,
+    )?;
+    let request_timeout_secs = whole_seconds(
+        "toolTimeoutMs",
+        raw.tool_timeout_ms,
+        MIN_TOOL_TIMEOUT_MS,
+        MAX_TOOL_TIMEOUT_MS,
+    )?;
 
     let RawServer {
         command,
@@ -223,13 +290,22 @@ fn resolve_entry(name: &str, value: serde_json::Value) -> Result<ResolvedNomiMcp
         transport,
         enabled,
         tool_timeout_ms: _,
+        cwd,
+        bearer_token_env_var,
+        startup_timeout_ms: _,
+        enabled_tools,
+        disabled_tools,
     } = raw;
     let command = trim_non_empty(command);
     let url = trim_non_empty(url);
+    let cwd = trim_non_empty(cwd);
+    let bearer_token_env_var = trim_non_empty(bearer_token_env_var);
+    let enabled_tools = normalise_tool_filter("enabledTools", enabled_tools)?;
+    let disabled_tools = normalise_tool_filter("disabledTools", disabled_tools)?;
 
     let transport = match (command, url, transport.as_deref()) {
         (Some(command), None, None) => {
-            reject_remote_only_fields(&headers, "a stdio server (`command`)")?;
+            reject_remote_only_fields(&headers, &bearer_token_env_var, "a stdio server (`command`)")?;
             McpTransport::Stdio {
                 command,
                 args: args.unwrap_or_default(),
@@ -237,14 +313,14 @@ fn resolve_entry(name: &str, value: serde_json::Value) -> Result<ResolvedNomiMcp
             }
         }
         (None, Some(url), None) => {
-            reject_stdio_only_fields(&args, &env, "a remote server (`url`)")?;
+            reject_stdio_only_fields(&args, &env, &cwd, "a remote server (`url`)")?;
             McpTransport::Http {
                 url,
                 headers: to_map(headers),
             }
         }
         (None, Some(url), Some("sse")) => {
-            reject_stdio_only_fields(&args, &env, "a remote server (`url`)")?;
+            reject_stdio_only_fields(&args, &env, &cwd, "a remote server (`url`)")?;
             McpTransport::Sse {
                 url,
                 headers: to_map(headers),
@@ -279,15 +355,76 @@ fn resolve_entry(name: &str, value: serde_json::Value) -> Result<ResolvedNomiMcp
         transport,
         enabled: enabled.unwrap_or(true),
         request_timeout_secs,
+        cwd,
+        bearer_token_env_var,
+        startup_timeout_secs,
+        enabled_tools,
+        disabled_tools,
     })
+}
+
+/// Convert a reference-implementation millisecond timeout into the engine's
+/// whole-second granularity, refusing values outside the engine's own bound.
+///
+/// A sub-second value is rounded **up**, so a declaration never gets less time
+/// than it asked for; an absent value stays absent so the engine default applies;
+/// an out-of-range value is an error rather than a silent clamp, because the
+/// declaration file is the user's only statement of intent.
+fn whole_seconds(
+    field: &str,
+    milliseconds: Option<u64>,
+    min: u64,
+    max: u64,
+) -> Result<Option<u64>, String> {
+    let Some(milliseconds) = milliseconds else {
+        return Ok(None);
+    };
+    if !(min..=max).contains(&milliseconds) {
+        return Err(format!(
+            "`{field}` must be between {min} and {max} milliseconds, got {milliseconds}"
+        ));
+    }
+    Ok(Some(milliseconds.div_ceil(1_000)))
+}
+
+/// Normalise a per-server tool filter: trim every entry, refuse a blank one (it
+/// could never name a tool), collapse duplicates, and read an **empty** list as
+/// "no filter" so `"enabledTools": []` cannot mean "no tools".
+fn normalise_tool_filter(
+    field: &str,
+    values: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(values) = values else {
+        return Ok(None);
+    };
+    let mut normalised: Vec<String> = Vec::with_capacity(values.len());
+    for value in values {
+        let value = value.trim().to_owned();
+        if value.is_empty() {
+            return Err(format!("`{field}` must not contain an empty entry"));
+        }
+        if !normalised.contains(&value) {
+            normalised.push(value);
+        }
+    }
+    if normalised.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(normalised))
 }
 
 fn reject_remote_only_fields(
     headers: &Option<BTreeMap<String, String>>,
+    bearer_token_env_var: &Option<String>,
     what: &str,
 ) -> Result<(), String> {
     if headers.as_ref().is_some_and(|values| !values.is_empty()) {
         return Err(format!("`headers` only applies to a remote server, but this entry is {what}"));
+    }
+    if bearer_token_env_var.is_some() {
+        return Err(format!(
+            "`bearerTokenEnvVar` only applies to a remote server, but this entry is {what}"
+        ));
     }
     Ok(())
 }
@@ -295,6 +432,7 @@ fn reject_remote_only_fields(
 fn reject_stdio_only_fields(
     args: &Option<Vec<String>>,
     env: &Option<BTreeMap<String, String>>,
+    cwd: &Option<String>,
     what: &str,
 ) -> Result<(), String> {
     if args.as_ref().is_some_and(|values| !values.is_empty()) {
@@ -302,6 +440,9 @@ fn reject_stdio_only_fields(
     }
     if env.as_ref().is_some_and(|values| !values.is_empty()) {
         return Err(format!("`env` only applies to a stdio server, but this entry is {what}"));
+    }
+    if cwd.is_some() {
+        return Err(format!("`cwd` only applies to a stdio server, but this entry is {what}"));
     }
     Ok(())
 }
@@ -344,19 +485,12 @@ fn validate_key(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Turn a strict-entry deserialization error into something actionable: the
-/// reference implementation's optional fields are the likeliest surprise, so
-/// they get a named explanation instead of serde's field list.
+/// Turn a strict-entry deserialization error into something actionable: serde
+/// names the key it did not expect but never the keys that exist.
 fn explain(error: &serde_json::Error) -> String {
     let message = error.to_string();
     if message.contains("unknown field") {
-        for (field, explanation) in UNSUPPORTED_FIELDS {
-            if message.contains(&format!("`{field}`")) {
-                return format!(
-                    "`{field}` is not supported: {explanation} — remove it to load this server"
-                );
-            }
-        }
+        return format!("{message} — accepted fields are {ACCEPTED_FIELDS}");
     }
     message
 }
@@ -453,12 +587,15 @@ mod tests {
         };
         assert_eq!(args.len(), 3);
         assert_eq!(env.get("TOKEN").map(String::as_str), Some("secret:T"));
-        assert!(
-            declarations
-                .servers
-                .iter()
-                .all(|server| server.enabled && server.request_timeout_secs.is_none())
-        );
+        assert!(declarations.servers.iter().all(|server| {
+            server.enabled
+                && server.request_timeout_secs.is_none()
+                && server.startup_timeout_secs.is_none()
+                && server.cwd.is_none()
+                && server.bearer_token_env_var.is_none()
+                && server.enabled_tools.is_none()
+                && server.disabled_tools.is_none()
+        }));
 
         // Entries are ordered by key, so read views are stable.
         let names: Vec<&str> = declarations.servers.iter().map(|s| s.name.as_str()).collect();
@@ -527,40 +664,155 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_reference_fields_are_rejected_by_name() {
-        let cases = [
-            ("cwd", r#"{ "command": "npx", "cwd": "/tmp" }"#),
-            (
-                "bearerTokenEnvVar",
-                r#"{ "url": "https://x/mcp", "bearerTokenEnvVar": "T" }"#,
-            ),
-            (
-                "startupTimeoutMs",
-                r#"{ "command": "npx", "startupTimeoutMs": 5000 }"#,
-            ),
-            (
-                "enabledTools",
-                r#"{ "command": "npx", "enabledTools": ["read"] }"#,
-            ),
-            (
-                "disabledTools",
-                r#"{ "command": "npx", "disabledTools": ["write"] }"#,
-            ),
-        ];
-        for (field, body) in cases {
+    fn every_reference_optional_field_is_accepted() {
+        // The whole documented field set of the reference implementation has to
+        // load unchanged — this is the "copy your `mcp.json` over" contract.
+        let stdio = only(
+            r#"{ "mcpServers": { "a": {
+                 "command": "npx",
+                 "args": ["-y", "srv"],
+                 "env": { "TOKEN": "secret:T" },
+                 "cwd": "/srv/data",
+                 "startupTimeoutMs": 5000,
+                 "toolTimeoutMs": 2500,
+                 "enabledTools": ["read", "mcp__a__search"],
+                 "disabledTools": ["write"],
+                 "enabled": true
+               } } }"#,
+        );
+        assert_eq!(stdio.cwd.as_deref(), Some("/srv/data"));
+        assert_eq!(stdio.startup_timeout_secs, Some(5));
+        assert_eq!(stdio.request_timeout_secs, Some(3));
+        assert_eq!(
+            stdio.enabled_tools,
+            Some(vec!["read".to_owned(), "mcp__a__search".to_owned()])
+        );
+        assert_eq!(stdio.disabled_tools, Some(vec!["write".to_owned()]));
+        assert!(stdio.bearer_token_env_var.is_none());
+
+        let remote = only(
+            r#"{ "mcpServers": { "a": {
+                 "url": "https://x/mcp",
+                 "headers": { "X-Tenant": "acme" },
+                 "bearerTokenEnvVar": "GITHUB_TOKEN"
+               } } }"#,
+        );
+        assert_eq!(remote.bearer_token_env_var.as_deref(), Some("GITHUB_TOKEN"));
+        assert!(remote.cwd.is_none());
+    }
+
+    #[test]
+    fn cwd_and_bearer_token_env_var_are_transport_scoped() {
+        let cwd_on_remote = rejection("a", r#"{ "url": "https://x/mcp", "cwd": "/tmp" }"#);
+        assert!(
+            cwd_on_remote.contains("`cwd`") && cwd_on_remote.contains("stdio"),
+            "{cwd_on_remote}"
+        );
+
+        let bearer_on_stdio = rejection("a", r#"{ "command": "npx", "bearerTokenEnvVar": "T" }"#);
+        assert!(bearer_on_stdio.contains("`bearerTokenEnvVar`"), "{bearer_on_stdio}");
+
+        // A blank value declares nothing, so it is not a misplaced field.
+        assert_eq!(
+            only(r#"{ "mcpServers": { "a": { "url": "https://x/mcp", "cwd": "   " } } }"#)
+                .transport_kind(),
+            "http"
+        );
+    }
+
+    #[test]
+    fn startup_timeout_maps_to_whole_seconds_and_is_bounded() {
+        for (ms, expected) in [(1_000_u64, 1_u64), (500, 1), (30_000, 30), (600_000, 600)] {
+            let body = format!(r#"{{ "command": "x", "startupTimeoutMs": {ms} }}"#);
+            assert_eq!(
+                only(&source_for("a", &body)).startup_timeout_secs,
+                Some(expected),
+                "ms={ms}"
+            );
+        }
+
+        for ms in [0_u64, 600_001] {
+            let body = format!(r#"{{ "command": "x", "startupTimeoutMs": {ms} }}"#);
+            let reason = rejection("a", &body);
+            assert!(reason.contains("startupTimeoutMs"), "ms={ms}: {reason}");
+        }
+
+        assert_eq!(
+            only(r#"{ "mcpServers": { "a": { "command": "x" } } }"#).startup_timeout_secs,
+            None
+        );
+    }
+
+    #[test]
+    fn tool_filters_are_normalised_and_an_empty_list_is_no_filter() {
+        let entry = only(
+            r#"{ "mcpServers": { "a": {
+                 "command": "x",
+                 "enabledTools": [" read ", "read", "write"],
+                 "disabledTools": []
+               } } }"#,
+        );
+        assert_eq!(
+            entry.enabled_tools,
+            Some(vec!["read".to_owned(), "write".to_owned()]),
+            "entries are trimmed and duplicates collapse"
+        );
+        assert!(entry.disabled_tools.is_none(), "an empty list is not 'no tools'");
+
+        for body in [
+            r#"{ "command": "x", "enabledTools": [""] }"#,
+            r#"{ "command": "x", "enabledTools": ["  "] }"#,
+            r#"{ "command": "x", "disabledTools": [""] }"#,
+        ] {
             let reason = rejection("a", body);
-            assert!(reason.contains(&format!("`{field}`")), "{field}: {reason}");
-            assert!(reason.contains("not supported"), "{field}: {reason}");
-            // The reason has to be actionable, not just a refusal.
-            assert!(reason.contains("remove it"), "{field}: {reason}");
+            assert!(reason.contains("empty entry"), "{body}: {reason}");
         }
     }
 
     #[test]
-    fn an_unknown_field_is_rejected_and_named() {
+    fn cwd_is_resolved_against_the_declaration_file_only_when_relative() {
+        let base = std::env::temp_dir().join("agent-store");
+        let absolute = std::env::temp_dir().join("elsewhere");
+        let source = format!(
+            r#"{{ "mcpServers": {{
+                 "rel":  {{ "command": "x", "cwd": "servers/rel" }},
+                 "abs":  {{ "command": "y", "cwd": {absolute:?} }},
+                 "none": {{ "command": "z" }}
+               }} }}"#,
+            absolute = absolute.to_string_lossy(),
+        );
+        let mut declarations = accepted(&source);
+        declarations.resolve_cwd_relative_to(&base);
+
+        let cwd = |name: &str| {
+            declarations
+                .servers
+                .iter()
+                .find(|server| server.name == name)
+                .expect("server must be present")
+                .cwd
+                .clone()
+        };
+        assert_eq!(
+            cwd("rel").as_deref(),
+            Some(base.join("servers/rel").to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            cwd("abs").as_deref(),
+            Some(absolute.to_string_lossy().as_ref()),
+            "an absolute path is never rewritten"
+        );
+        assert!(cwd("none").is_none());
+    }
+
+    #[test]
+    fn an_unknown_field_is_rejected_and_named_with_the_accepted_set() {
         let reason = rejection("a", r#"{ "command": "npx", "mystery": 1 }"#);
         assert!(reason.contains("unknown field"), "{reason}");
         assert!(reason.contains("mystery"), "{reason}");
+        // serde names the key it did not expect, never the keys that exist.
+        assert!(reason.contains("accepted fields are"), "{reason}");
+        assert!(reason.contains("`enabledTools`"), "{reason}");
     }
 
     #[test]
@@ -667,7 +919,7 @@ mod tests {
         let declarations = NomiMcpDeclarations::parse(
             r#"{ "mcpServers": {
                  "good":  { "command": "npx" },
-                 "bad":   { "command": "npx", "cwd": "/tmp" },
+                 "bad":   { "command": "npx", "headers": { "X": "1" } },
                  "also":  { "url": "https://x/mcp" }
                } }"#,
         )
@@ -677,7 +929,7 @@ mod tests {
         assert_eq!(names, ["also", "good"]);
         assert_eq!(declarations.rejected.len(), 1);
         assert_eq!(declarations.rejected[0].name, "bad");
-        assert!(declarations.rejected[0].reason.contains("`cwd`"));
+        assert!(declarations.rejected[0].reason.contains("`headers`"));
     }
 
     #[test]

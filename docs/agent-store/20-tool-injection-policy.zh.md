@@ -361,8 +361,8 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 | 维度 | 对齐 | 必须保留的差异 |
 |---|---|---|
 | 文件与 schema | `~/.agent-store/mcp.json`，`mcpServers` 同名同形，三类传输判定规则一致 | **只做用户级**：项目级整体不做（Store 是常驻服务端、无交互式信任面，`21` D14 ③=C） |
-| 可选字段 | `args` / `env` / `url` / `headers` / `enabled` / `toolTimeoutMs` 支持 | `cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools` 及**未知字段**一律**拒绝该条目**并点名——静默忽略会改变用户声明的安全语义（`enabledTools` 被忽略 = 用户以为排除掉的工具仍可调用）；`toolTimeoutMs` 映射到引擎既有的**单一** `request_timeout_secs`，不存在 startup / tool 两分 |
-| 工具命名与权限 | 同一 `mcp__` 命名空间，直接复用 `[tools]` 的 glob 语义（§7.8） | 不引入第三种工具级写法：整组关闭就是 `[tools] disabled = ["mcp__<key>__*"]`，不为 `enabledTools` / `disabledTools` 另开平行机制 |
+| 可选字段 | 参考实现文档里的九个字段**全部支持**（`env` / `cwd` / `headers` / `bearerTokenEnvVar` / `enabled` / `startupTimeoutMs` / `toolTimeoutMs` / `enabledTools` / `disabledTools`，落点见 §7.9.1） | **唯一的有界差异**：两个超时参考实现允许到 `2147483647` ms，我们按引擎自己的上界卡在 `≤ 600000` ms 并**拒绝**越界值（不夹取、不静默改小）；**未知字段**仍**拒绝该条目**并点名——静默忽略会改变用户声明的安全语义（`enabledTools` 被忽略 = 用户以为排除掉的工具仍可调用） |
+| 工具命名与权限 | 同一 `mcp__` 命名空间；server 级 `enabledTools` / `disabledTools` 在**注册之前**裁剪（§7.9.2），宿主 `[tools]` 仍在最后求交 | 不引入第三种工具级写法：整组关闭既可以写在声明里（`disabledTools: ["mcp__<key>__*"]`），也可以写在宿主 `[tools] disabled = ["mcp__<key>__*"]`——后者是全局策略，前者只作用于本 server |
 | 生效时机 | 「只对新会话生效」天然满足（每会话构建时读盘、落内存） | 没有 `removed` 墓碑态：删除后新会话直接看不到，已开会话也没有可见标记（登记为未做） |
 | 来源优先级 | 参考实现是 项目级 > 用户级 | 我们是 **`mcp.json` > `mcp_servers` DB 行**；请求级绑定（`resolve_mcp_servers`）保持既有优先级排在声明之前 |
 | 凭据 | `env` 支持 `secret:NAME` 引用 + `config.toml [credentials]`（比参考实现更强） | 明文值只存在于用户自己的文件里；不进备份 / 快照 / DB（因为不投影进 DB，见下） |
@@ -370,6 +370,53 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 **为什么声明不投影进 `mcp_servers` 表**（`21` D14 ②=C）：投影会让声明文件与导入器 / UI **争同一行**（`McpConfigService::add_server` 是按名 upsert），并引入「文件删了、DB 行还在」的 GC 问题。代价是可见性收窄——文件声明的 server 不进 `connector/*` 目录、不可被 preset `mcp_server_ids` 引用、没有持久化的 `last_test_status` / `tools`。这条边界与实现同批登记，升级为投影时需逐条重写。
 
 **server key 的校验规则（有推导）**：引擎的 provider 可见工具名是 `mcp__` + `sanitize(server__tool)` 截断 + `__` + 16 位摘要，总长上限 64（`nomi-mcp/src/tool_proxy.rs:27-36,447-478`），故 slug 预算 = `64 - 4 - 2 - 16 = 42`；要求 server 自带的分隔符完整存活 → **key 长度 ≤ 40**（保守上界：前缀匹配本身容忍略多一点，取 40 是为了让规则不依赖「分隔符恰好被截断」这种巧合；该上界由跨 crate 测试 `declaration_keys_stay_addressable_by_a_whole_server_pattern` 对 1..=40 全部长度逐个钉住）。又因 `sanitize_display_slug` 会把非 `[A-Za-z0-9_-]` 字节替换为 `_` 并 `trim_matches('_')`，key 必须匹配 `^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$`，否则用户写的 glob 与真实工具名对不上。两条都在解析期硬拒绝并给出可操作错误。
+
+#### 7.9.1 参考实现可选字段的落点，与唯一的有界差异
+
+| 字段 | 落点 | 行为 |
+|---|---|---|
+| `cwd` | `nomifun-app/src/services.rs` 读盘时**相对声明文件所在目录**解析成绝对路径 → `McpServerConfig.cwd` → `nomi-mcp` 的 `SpawnSpec.cwd` → `ChildProcessBuilder::current_dir` | 只换**子进程**目录，宿主目录不变。相对路径必须相对**声明文件**：同一个 `mcp.json` 会被从任意启动目录加载，相对宿主进程 CWD 会让一份文件在不同启动下含义不同。`cwd` 进 `SpawnSpec`，故 respawn 落在同一目录 |
+| `bearerTokenEnvVar` | `factory/nomi.rs` 的 `apply_bearer_token`，**在宿主侧解析**，引擎根本看不到这个字段 | 名字（不是值）→ `secret_ref` 查表（`[credentials]` 优先、进程环境兜底）→ `Authorization: Bearer <value>`；显式 `headers.Authorization` 优先（声明是逐字写的）；查不到就**不发这个 header** 并告警，绝不下发 `Bearer <name>` |
+| `startupTimeoutMs` | `McpServerConfig.startup_timeout_secs` → `nomi-mcp/src/manager.rs` 的 `startup_timeout_for` | 覆盖连接握手预算（spawn + `initialize` + `tools/list`）的 30s 默认值；越界在**连接之前**拒绝该 server 并告警，不夹取 |
+| `toolTimeoutMs` | `McpServerConfig.request_timeout_secs`（既有字段，未变） | 单次 JSON-RPC 调用的整段墙钟预算 |
+| `enabledTools` / `disabledTools` | `McpServerConfig.{enabled_tools,disabled_tools}` → `nomi-mcp/src/tool_proxy.rs` 的 `McpToolFilter`，**在 `register_mcp_tools` 构造 proxy 之前**裁剪 | 见 §7.9.2 |
+
+**唯一的有界差异**：`startupTimeoutMs` / `toolTimeoutMs` 参考实现允许 `1..=2147483647` ms，我们按引擎自己的上界（`MCP_MAX_REQUEST_TIMEOUT_SECS` / `MCP_MAX_STARTUP_TIMEOUT_SECS = 600`）卡在 `≤ 600000` ms，**越界即拒绝该条目**。为什么不夹取：一个挂死的 MCP 调用会把整个 agent turn 拖住一小时，这是我们主动不要的能力；而声明文件是用户唯一的意图表达，静默改小会让「这个 server 从来不返回」无法归因。代价是**「把参考实现的 `mcp.json` 原样拷过来」在这里可能失败**——但失败信息会点名具体字段与合法区间，不是静默降级。
+
+#### 7.9.2 `enabledTools` / `disabledTools`：裁剪点选在注册源头
+
+**裁剪点不在注册表策略层，而在注册源头**——这是这批改动成本的关键。`register_mcp_tools`（`nomi-mcp/src/tool_proxy.rs`）本来就已经拿到 `server_configs`，在构造 proxy **之前** `retain` 即可，于是三个回归面全部**由构造自动正确**，一行都不用改：
+
+| 面 | 为什么自动正确 |
+|---|---|
+| 工具名 / alias | canonical 名的摘要取自 `server__tool` **身份**，存活工具一个字都不变，不存在重命名或哈希漂移 |
+| `deferred` 与 `ToolSearch` | deferred catalog 由 `register_batch` 喂入；被裁掉的工具从未进入，搜索自然找不到——这正是白名单语义 |
+| `context_usage` | `classify_tool` 按 `mcp__` 前缀对**实际发出的** `ToolDef` 分桶，工具少则 `mcp_and_dynamic_tools` 自动变小 |
+
+反过来，先注册再裁是行不通的：注册表的 `retain_named` / `deny_named` 是**注册表全局**策略，A server 声明白名单会连带砍掉 B server 的工具，per-server 语义在那里根本表达不出来。
+
+**匹配规则（超集，兼容两种读法）**：参考实现只写「工具白名单 / 黑名单：`string[]`」，没写条目是裸工具名还是 `mcp__<server>__<tool>` 全名，两种读法都成立，所以两种都收：
+
+1. 条目以 `mcp__` 开头 → 当 glob，先匹配**原始来源名** `mcp__<server>__<tool>`（逐字对应参考实现的命名），再匹配我们的 canonical 名 `mcp__<server>__<tool>__<hash>`（从 Nomi 工具列表拷来的写法因此也能命中）；
+2. 其余条目 → 当 glob 匹配该 server 的**原始工具名**（`read_file` 这种 server 局部名）；
+3. `*` 在两条分支里都表示「这个 server 的全部工具」。
+
+第 3 条**故意与 `[tools]` 的策略不同**：`nomi-tools` 里 `mcp__` 之外的裸 `*` 是刻意「不匹配任何东西」的（`registry.rs` 的 `tool_name_matches`），那条规则保护的是**全局**名字空间；而这里的匹配已被限定在一个 server 内，`*` 只可能读作「本 server 全部」。`enabledTools` 先应用、`disabledTools` 后应用，同一模式同时出现在两个列表里 = 排除。glob 解析失败一律**不匹配**（与注册表同样的 fail-closed）。
+
+**两条诊断**（否则「被裁到空」与「这个 server 本来就没这个工具」在界面上完全一样）：
+
+- 白名单条目一个都没命中 → warn 点名 server 与该条目（它是**在裁工具而不是选工具**，几乎总是笔误）；
+- 白名单把该 server 的全部工具裁光 → warn 点名 server 与它声称提供的工具数；server 仍然连接（`tools/list` 之前不可能知道工具名），只是不贡献任何工具。黑名单未命中只记 debug——共享的减项清单覆盖多个 server 是正常用法。
+
+**已知边界（有意）**：`disabledTools` 只管**工具**。MCP resources 走 `nomi-skills` 变成 skill，不是工具，因此「禁掉危险工具」不会阻止该 server 的 resource 变成 skill 注入提示词。参考实现是连 resources / prompts 一起过滤的（<https://github.com/HKUDS/nanobot/pull/4524>），我们暂不对齐。
+
+**动态注册没有过滤面（有意）**：引擎运行时的 `AddMcpServer` 只带传输与凭据，没有 `enabledTools` / `disabledTools` 字段，所以 `register_single_server_tools` 不接过滤参数——这是「没有来源」，不是「忽略了来源」。声明（有这两个字段）走 bootstrap 的 `register_mcp_tools`。
+
+#### 7.9.3 `headers` 与 `env` 的 `secret:NAME` 语义已收敛
+
+第四批拒绝了 `bearerTokenEnvVar` 并把 header 凭据指向 `secret:NAME`，于是**声明路径**必须真的解析 header 里的引用；但 DB 行（`row_to_mcp_server_config`）与会话快照路径当时只解析 `env`，把 `headers` 原样下发。这个不一致是**静默的**：写到 header 里的引用会被当字面量发出去，远端 401，本地没有任何线索。
+
+本批把三条路径统一走 `resolve_header_secrets`（`factory/nomi.rs`）：按整值引用解析（`secret_ref::parse_secret_ref` 是**整值**精确匹配），解析不到的条目**丢弃并点名**，普通值原样透传。另外补一条针对最常见误写的告警：值里**含** `secret:` 但**不是**整值引用（典型 `Authorization: Bearer secret:TOKEN`）会原样发出，故 warn 出 server 名与 header 名——**只记 header 名，不记值**。这个形状的正确写法是 `bearerTokenEnvVar`，或把 `Bearer ` 前缀放进凭据值本身。
 
 ---
 
@@ -414,6 +461,7 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 | 6 | Connector／Skill 栅栏：create seam 收 `AppServerChatBindings`，写 `selected_mcp_server_ids`（空 = 硬栅栏）与 `preset_enabled_skills`；ceiling 由「清空 `mcp_server_ids`」改为「缺省补 `Some([])` 栅栏」并放开 Connector 行的读取 | `nomifun-conversation/src/service.rs`、`factory/nomi.rs` | ✅ 已落地（有行为变化） |
 | 7 | in-process planned delegate + `team/run`（`16` §7 决策 3） | 新 sink（绑 `AgentExecutionEngine`）+ `nomifun-app-server` 路由 | ✅ **已落地**：模型契约、宿主 sink 接缝、宿主组装开关、engine-backed provider、Store 关闭嵌入版、`team/run` 协议面与 Team 层委派放行（见 §9.2／§9.2.1／§9.2.2） |
 | 8 | MCP 声明文件接入（`21` D14）：`~/.agent-store/mcp.json` 的用户级 `mcpServers` → 宿主**启动读一次** → 会话构建时并入 `extra_mcp_servers`（**声明优先于 DB 行**），不投影进 `mcp_servers` 表；`[tools]` 仍在最后求交；宿主位 `--adopt-store-mcp-declarations` 仅 `apps/agent-store` 置位 | `nomifun-api-types/src/mcp_declarations.rs`（新）、`nomifun-app/src/services.rs`（`resolve_host_mcp_declarations`）、`nomifun-ai-agent/src/factory/nomi.rs`、`nomifun-app-server/src/lib.rs`（`config/get` 读面） | ✅ **已落地**（规格见 §7.9，落地记录与验证读数见 §9.3；协议指纹 bump 到 `2026-09-13`） |
+| 9 | 声明文件补齐参考实现的**全部**可选字段（`cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools`），并把 `headers` 的 `secret:NAME` 语义在三条装配路径上收敛为一个函数 | `nomifun-api-types/src/mcp_declarations.rs`、`nomi-config/src/config.rs`、`nomi-mcp/src/{tool_proxy,manager,transport/stdio}.rs`、`nomifun-ai-agent/src/factory/nomi.rs`、`nomifun-app/src/services.rs`、`nomifun-common/src/secret_ref.rs` | ✅ **已落地**（规格见 §7.9.1–§7.9.3，落地记录见 §9.4；**无协议变更**，指纹保持 `2026-09-13`） |
 
 Step 7 单独成批：它引入新架构件（`nomi_types::Tool` 实现 + App Server runtime wiring），且必须保持 `Planner`/`Router`/`Scheduler`/`AttemptRunner` 私有（`check-agent-vocabulary.mjs:337-340`）。
 
@@ -500,7 +548,7 @@ Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码
 
 1. **声明也做 owner 门控**。stdio 声明＝让会话执行本地进程，远程声明可携带凭据——两者都属「安装级执行权限」，故与 DB 行一样只在 installation owner 身份下生效（`docs/architecture/data-and-storage.zh.md` §安装级执行权限）。这与「不受 `mcp_server_ids` 围栏约束」不矛盾：那道围栏管的是「快照/preset 授予了什么」，而声明的授予者是宿主操作者本身（对应 `21` D14 的「有意行为」）。
 2. **读面必须有 `error`**。整份文件解析失败时回 `exists:true` + 空列表 + `error`，否则「文件写坏了」与「文件是空的」在界面上完全一样。
-3. **`headers` 也解析 `secret:NAME`，DB 行不解析**。因为 `bearerTokenEnvVar` 被拒后文档把 header 凭据指向 `secret:NAME`，声明路径必须真的支持它；而 DB 行路径（`row_to_mcp_server_config`）只对 stdio `env` 解析、对 `headers` 不解析。这是**既有实现的不一致，本次未改**，如实登记以便后续收敛。
+3. **`headers` 也解析 `secret:NAME`，DB 行不解析**。因为 `bearerTokenEnvVar` 被拒后文档把 header 凭据指向 `secret:NAME`，声明路径必须真的支持它；而 DB 行路径（`row_to_mcp_server_config`）只对 stdio `env` 解析、对 `headers` 不解析。这是**既有实现的不一致，本批未改**——**已于 §9.4 收敛**：三条路径统一走 `resolve_header_secrets`。
 
 **验证读数**：`nomifun-api-types --lib` **680 / 0**（新增 19 例）；`nomifun-app-server --lib` **123 / 0**（新增 3 例）；`nomifun-app --lib` **313 / 1**（唯一失败是既有基线红 `commands::stdio_common::tests::at_most_once_retries_undelivered_connection_failures`，本会话早前已用 `git stash` 在未改动基线上复现同一断言）；`nomifun-ai-agent --lib` **992 / 29 failed**（29 例全为 Windows 缺 `sh` 的环境性失败，分布与上一轮完全一致：`capability::cli_process` ×22、`manager::acp` ×6、`factory::construction_guard` ×1；本次新增 6 例全绿）；`web` **399 passed / 1 skipped**（与基线一致）；`check:docs-sync` **9 页 0 drift**；`check:agent-vocabulary` **同样的 8 处既有基线红**（无新增）。
 
@@ -522,6 +570,43 @@ Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码
 3. **引擎侧字段**：`cwd`、server 级 `enabledTools`/`disabledTools`、`startupTimeoutMs`（以及与 `toolTimeoutMs` 分开的两段超时）——需要改 `nomi-config::McpServerConfig` + `nomi-mcp`，回归面涉及 alias/`deferred`/`context_usage`；本批以「逐条目拒绝并点名」替代静默忽略。
 4. **热更新墓碑态**（参考实现的 `removed`）——我们天然是「新会话才生效」，但删除后已开会话没有可见标记。
 5. **WebUI 设置页的 MCP 分区渲染**——读面（`config/get.mcp`）已就绪，UI 渲染未做。
+
+#### 9.4 第五批（2026-09-13）：五个可选字段全量支持 + `headers` 收敛
+
+**已落地**：
+
+| 事项 | 位置 |
+|---|---|
+| 解析层：`cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools` 全部接受并做类型化校验；`UNSUPPORTED_FIELDS` 退役，未知字段的报错改为附带**可接受字段清单**；两个超时共用 `whole_seconds`（向上取整到秒 + 区间硬校验，不夹取）；过滤条目 trim / 去重 / 拒绝空串，空数组读作「不过滤」；新增 `resolve_cwd_relative_to` | `nomifun-api-types/src/mcp_declarations.rs` |
+| 引擎契约：`McpServerConfig` 增 `startup_timeout_secs` / `cwd` / `enabled_tools` / `disabled_tools`（16 处构造点全部**显式**补 `None`，不用 `..Default::default()`：`TransportType::default()` 是 `Stdio`，把它藏进默认值等于给「忘了写 transport」留后门） | `nomi-config/src/config.rs` 及各构造点 |
+| 过滤与命名：`McpToolFilter` + `filter_entry_matches` + `glob_matches` + `McpFilterReport`；`register_mcp_tools` 在构造 proxy **之前**裁剪并出两类告警；`register_single_server_tools` 明确「没有过滤来源」（§7.9.2） | `nomi-mcp/src/tool_proxy.rs` |
+| 连接：`startup_timeout_for` 取代固定 30s（越界在连接**之前**拒绝该 server 并告警）；`SpawnSpec.cwd` + `spawn_with_cleanup_registry` 透传 + `ChildProcessBuilder::current_dir`（respawn 复用 `SpawnSpec`，天然同目录） | `nomi-mcp/src/manager.rs`、`transport/stdio.rs` |
+| 宿主映射与凭据：三种传输映射新字段；`apply_bearer_token` 把 `bearerTokenEnvVar` 落成 `Authorization: Bearer …`；**三条路径**（声明 / DB 行 / 会话快照）统一走 `resolve_header_secrets` | `nomifun-ai-agent/src/factory/nomi.rs` |
+| 凭据查表：新增 `secret_ref::lookup` / `lookup_with`，让「按名字取凭据」与 `secret:NAME` 引用共用同一条优先级（`[credentials]` 优先、进程环境兜底），不在调用点重写一遍 | `nomifun-common/src/secret_ref.rs` |
+| 宿主读盘：`cwd` 在读盘时相对声明文件目录解析成绝对路径；启动日志（`target: agent_store_mcp`）除 `declared/enabled/refused` 外，逐条 debug 打出 transport / cwd / 两个过滤条目数 / bearer 名 / 两段超时——「声明了什么」是单点事实（一次启动一次），「连上了没有」才是每会话的事 | `nomifun-app/src/services.rs` |
+| 协议面：**无变更**。读面仍是 `mcp { exists, servers[{name,transport,enabled}], rejected, error }`，指纹保持 `2026-09-13` | —— |
+
+**三处判断，登记在此**：
+
+1. **超集匹配，而不是在两种读法里二选一**。参考实现文档没有定义 `enabledTools` 条目的形态，两种读法都成立，所以两种都收（§7.9.2）。代价是匹配规则比单一读法更容易被误读；收益是「拷过来就能用」在这件事上真的成立。规则与理由写在 `McpToolFilter::selects` 的文档注释里，并由「原始来源名 / canonical 名 / `*` / 跨 server 不误命中」四条断言钉住。
+2. **`bearerTokenEnvVar` 在宿主侧解析，引擎不新增字段**。它本质是「`Authorization: Bearer <凭据>`」的语法糖；做成引擎字段只会让引擎多一个与 `headers` 语义重叠的概念，而宿主解析还能天然复用 `secret_ref` 的查表优先级。
+3. **§9.3 第 3 条判断作废**：当时登记的「声明路径解析 headers、DB 行不解析」的不一致，已在 §7.9.3 收敛为三条路径同一个函数。这是修正不是回退——`env` 与 `headers` 现在语义一致。
+
+**验证读数**：`nomifun-api-types --lib` **684 / 0**（§9.3 的 680 → 净 +4：替换 2 例、新增 6 例）；`nomi-mcp --lib` **127 / 0**（新增 5 例）；`nomifun-common --lib` **229 / 0**（新增 1 例）；`nomifun-ai-agent --lib` **996 / 29 failed**（§9.3 的 992 → 新增 4 例全绿；29 例仍是那批 Windows 缺 `sh` 的**环境性**失败，分布逐一同前：`capability::cli_process` ×22、`manager::acp` ×6、`factory::construction_guard` ×1）；`nomifun-app --lib` **314 / 1**（新增 1 例宿主级 `cwd` 解析断言；唯一失败仍是既有基线红 `commands::stdio_common::tests::at_most_once_retries_undelivered_connection_failures`）；`nomifun-app-server --lib` **123 / 0**；`cargo check --workspace --tests` **0 error**；`web`（`bun run test`，vitest）**399 passed / 1 skipped**；`check:docs-sync` **9 页 0 drift**；改动文件 `rustfmt --edition 2024 --check` 干净、CRLF 扫描 0（`nomifun-common/src/secret_ref.rs` 的**工作树**原本是 CRLF 而 blob 是 LF——`git status` 看不见这类差异——本次顺手归一成 LF，diff 仍是 41/4）；`check:agent-vocabulary` 仍是**同样的 8 处既有基线红**。
+
+**既有基线红（本批未引入、未修，均已核验归属）**：`bun run check` 在 `ui` typecheck / `check:i18n` / `check:button-layout-contract` / `check:dead-css` 处红，`check:process-runtime-boundary` 在 `apps/agent-store/src/main.rs:439` 红（该行出自 `a135d0a3b`，2026-09-04）。证据是 `git status --porcelain -- ui/ apps/` **为空**：这些门的输入与 HEAD 逐字节相同，而本批只改了 `crates/` 与 `docs/`，未动 `ui/`、未动 `apps/`。
+
+**真二进制端到端（19/19 通过，2026-09-13）**：以临时 HOME（`USERPROFILE`）+ 临时 data-dir 启动真实 `agent-store.exe`，走 `/api/app-server/ws` 的 `initialize` → `initialized` → `config/get`（注意不是 `/ws`——那是另一条 realtime 通道，连上去会静默无响应）。写入一份**把参考实现文档字段全用上**的 `mcp.json`（stdio 带 `cwd` / `startupTimeoutMs` / `toolTimeoutMs` / `enabledTools` / `disabledTools`；http 带 `headers` + `bearerTokenEnvVar`；sse；`enabled:false`；外加两条反例：stdio 上放 `headers`、`toolTimeoutMs: 3600000`）→ `exists:true`、按 key 排序的四条已接受条目（传输与 `enabled` 保真）、两条被拒且原因分别点名 `` `headers` `` 与 `` `toolTimeoutMs` ``、无文件级 `error`，启动日志 `declared=4 enabled=3 refused=2`；响应里**不出现** `[credentials]` 的值、`env` 的值、声明的 `cwd`、过滤条目——即视图仍只报 `name` / `transport` / `enabled`。**一处取不到**：宿主逐条 debug 日志（解析后的绝对 `cwd`、过滤条目数）在这个二进制里读不到——`agent-store` 有自己的小 CLI 且**不转发** `--log-level`——所以那一半由单测兜住（`nomifun-api-types` 的 `cwd_is_resolved_against_the_declaration_file_only_when_relative` 与 `nomifun-app` 的 `declared_cwd_is_resolved_against_the_declaration_file`）。
+
+**仍未覆盖（诚实登记，与 §9.3 同一条缺口）**：跨进程 App Server + 真实模型那一层。本批新增的断言覆盖：解析与全部校验（含边界值 `0` / `600001`）、`cwd` 的「相对文件 / 绝对原样」两分支、过滤的超集匹配与裁空诊断、`bearerTokenEnvVar` 的三种结局（解析成功 / 显式 header 优先 / 查不到则不发）、`headers` 引用的三路径一致 + `Bearer secret:X` 的告警形状，以及**引擎侧真实裁剪**（`register_mcp_tools` 跑完后 `registry.get(canonical)` 为 `None`——工具确实不在注册表里，不只是「未被广告」）。**没有**新增的：需要真实子进程的 `cwd` 端到端（Windows 上 stdio 测试本就缺 `sh`，同 §9.3 的环境性限制）、以及真实模型驱动的一整条链路。
+
+**有意未做（更新后）**：
+
+1. **项目级 `<workspace>/.agent-store/mcp.json`**——不变（`21` D14 ③=C）。
+2. **投影进 `mcp_servers` 表**——不变（`21` D14 ②=C）。
+3. **`disabledTools` 覆盖 MCP resources / prompts**——见 §7.9.2 的已知边界（它们在我们这里变成 skill，不是工具）。
+4. **热更新墓碑态**（参考实现的 `removed`）——不变。
+5. **WebUI 设置页的 MCP 分区渲染**——读面已就绪；真做渲染时大概会想展示过滤条目与 `rejected`，那会引入一次读面变更（可能加 `cwd` / 过滤条目数），届时要一起算指纹。
 
 ---
 
