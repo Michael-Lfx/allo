@@ -11,6 +11,9 @@ use super::voice_profile_generator::canonical_tts_voice;
 
 const VOICE_REF_VIEW: &str = "voice_ref";
 const DEFAULT_TTS_VOICE: &str = "Cherry";
+/// Cache suffix for the shorter phonetic samples. Duration caps are model-specific
+/// and applied at video submit (Wan 3.0 only), not by rewriting these wavs.
+const VOICE_REF_CACHE_VER: &str = "_s4";
 
 pub struct VoiceReferenceGenerator {
     services: FlowyVimaxServices,
@@ -51,7 +54,9 @@ impl VoiceReferenceGenerator {
             let cache_tag = instruct_cache_tag(&instruct);
             // Cache key includes TTS id + instruct hash so a new bible does not
             // reuse a Cherry wav baked under the old unversioned name.
-            let wav_path = char_dir.join(format!("{id_safe}_voice_ref_{tts_voice}{cache_tag}.wav"));
+            let wav_path = char_dir.join(format!(
+                "{id_safe}_voice_ref_{tts_voice}{cache_tag}{VOICE_REF_CACHE_VER}.wav"
+            ));
             if crate::media_local::is_usable_audio_file(&wav_path) {
                 register_voice_ref(registry, ch, &wav_path);
                 continue;
@@ -113,14 +118,16 @@ impl VoiceReferenceGenerator {
             }
             crate::media_local::write_audio_bytes_atomic(&wav_path, &bytes).await?;
             let _ = write_text_artifact(
-                &char_dir.join(format!("{id_safe}_voice_ref_{tts_voice}{cache_tag}_sample.txt")),
+                &char_dir.join(format!(
+                    "{id_safe}_voice_ref_{tts_voice}{cache_tag}{VOICE_REF_CACHE_VER}_sample.txt"
+                )),
                 &sample_text,
             )
             .await;
             if let Some(instruct) = instruct.as_deref() {
                 let _ = write_text_artifact(
                     &char_dir.join(format!(
-                        "{id_safe}_voice_ref_{tts_voice}{cache_tag}_instruct.txt"
+                        "{id_safe}_voice_ref_{tts_voice}{cache_tag}{VOICE_REF_CACHE_VER}_instruct.txt"
                     )),
                     instruct,
                 )
@@ -303,14 +310,14 @@ fn voice_reference_sample_line(ch: &CharacterInScene) -> String {
             .is_some_and(|s| s.chars().any(is_cjk_char));
     if cjk {
         if child {
-            "妈妈，今天风有点大，我们先回家吧。".into()
+            "妈妈，我们回家吧。".into()
         } else {
-            "今晚别等我。这件事我已经想清楚了，我们把话说开。".into()
+            "今晚别等我，我们把话说开。".into()
         }
     } else if child {
-        "Mom, the wind is strong. Let's go home first.".into()
+        "Mom, let's go home.".into()
     } else {
-        "Don't wait up tonight. I already made up my mind — let's talk this through.".into()
+        "Don't wait up. Let's talk this through.".into()
     }
 }
 

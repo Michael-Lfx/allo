@@ -43,7 +43,6 @@ import {
   publishSessionToTvShow,
   renderSession,
   materializeSessionToCanvas,
-  writeArtifactText,
   listCameos,
   uploadCameo,
   updateSessionTitle,
@@ -59,11 +58,7 @@ import StoryboardBoard from './components/StoryboardBoard';
 import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceActionAssets from './components/WorkspaceActionAssets';
 import type { VideoCreateDraft } from './home/types';
-import type { StoryboardScene, StoryboardSceneSave } from './artifactPresentation';
-import {
-  findStoryboardPath,
-  patchShotDescriptionsInArtifact,
-} from './artifactPresentation';
+import { findStoryboardPath } from './artifactPresentation';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
@@ -181,7 +176,6 @@ const WorkspacePage: React.FC = () => {
 
   const [planning, setPlanning] = useState(false);
   const [rendering, setRendering] = useState(false);
-  const [revising, setRevising] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -807,57 +801,6 @@ const WorkspacePage: React.FC = () => {
     message,
     t,
   ]);
-
-  const handleSaveSceneDescriptions = useCallback(
-    async (scene: StoryboardScene, descriptions: StoryboardSceneSave) => {
-      if (!sessionId) return;
-      const targetPath =
-        scene.storyboardPath ||
-        (scene.sceneRoot
-          ? `${scene.sceneRoot.replace(/\\/g, '/')}/storyboard.json`
-          : '') ||
-        scene.revisionPath;
-      if (!targetPath) {
-        message.warning(
-          t('videoGeneration.studio.storyboard.visualSaveMissing', {
-            defaultValue: '找不到可保存的分镜文件',
-          })
-        );
-        return;
-      }
-      setRevising(true);
-      try {
-        const current = await getArtifact(sessionId, targetPath);
-        const patched = patchShotDescriptionsInArtifact(current.text, scene, {
-          visualDescription: descriptions.visualDescription ?? '',
-          audioDescription: descriptions.audioDescription,
-        });
-        await writeArtifactText(sessionId, targetPath, patched);
-        message.success(
-          t('videoGeneration.studio.storyboard.visualSaveOk', {
-            defaultValue: '画面描述已保存',
-          })
-        );
-        confirmFirstValue({
-          feature: 'video_generation',
-          source: 'storyboard_revision',
-          session_id: sessionId,
-        });
-        void refreshArtifacts();
-        setPreviewEpoch((n) => n + 1);
-      } catch (e) {
-        message.error(
-          `${t('videoGeneration.studio.storyboard.visualSaveFailed', {
-            defaultValue: '保存画面描述失败',
-          })}: ${e instanceof Error ? e.message : String(e)}`
-        );
-        throw e;
-      } finally {
-        setRevising(false);
-      }
-    },
-    [sessionId, message, t, refreshArtifacts]
-  );
 
   const handleRender = useCallback(async () => {
     if (!sessionId) return;
@@ -1628,22 +1571,16 @@ const WorkspacePage: React.FC = () => {
                 <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.storyboard.hint', {
                     defaultValue:
-                      '胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。',
+                      '胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。如需修改镜头，请打开到 Canvas 精调。',
                   })}
                 </p>
               </div>
-              <Tag size='small' color='arcoblue'>
-                {t('videoGeneration.studio.storyboard.editable', { defaultValue: '可编辑' })}
-              </Tag>
             </div>
             <StoryboardBoard
               sessionId={sessionId}
               artifacts={artifacts}
-              disabled={busy}
-              revising={revising}
               focusSceneId={focusSceneId}
               onFocusScene={setFocusSceneId}
-              onSaveSceneDescriptions={handleSaveSceneDescriptions}
               onShotCount={setStoryboardShotCount}
             />
           </section>

@@ -220,7 +220,7 @@ function wan3VideoCapability(): VideoCapabilityConfig {
             maxVideoDurationSeconds: 30,
             maxAudios: 3,
             maxAudioBytes: 15 * 1024 * 1024,
-            maxAudioDurationSeconds: 30,
+            maxAudioDurationSeconds: 15,
         },
         duration: {
             selection: "range",

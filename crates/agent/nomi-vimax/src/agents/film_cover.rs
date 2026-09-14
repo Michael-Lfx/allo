@@ -341,6 +341,9 @@ fn collect_cover_candidates(film_dir: &Path) -> Vec<(PathBuf, String)> {
         if name == COVER_FILENAME {
             continue;
         }
+        if super::world_assets::is_world_vision_thumb(path) {
+            continue;
+        }
         if !is_usable_image_file(path) {
             continue;
         }
@@ -536,6 +539,27 @@ mod tests {
         assert!(c.iter().any(|(_, k)| k == "prop"));
         assert!(!c.iter().any(|(p, _)| {
             p.file_name().and_then(|s| s.to_str()) == Some(COVER_FILENAME)
+        }));
+    }
+
+    #[test]
+    fn collect_skips_vision_thumb_sidecars() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("environments/0_ROOM")).unwrap();
+        std::fs::create_dir_all(root.join("props/0_KEY")).unwrap();
+        write_png(&root.join("environments/0_ROOM/ROOM_environment_plate.png"));
+        write_png(&root.join("environments/0_ROOM/ROOM_environment_plate.vision_thumb.jpg"));
+        write_png(&root.join("props/0_KEY/KEY_prop.png"));
+        write_png(&root.join("props/0_KEY/KEY_prop.vision_thumb.jpg"));
+        let c = collect_cover_candidates(root);
+        assert_eq!(c.iter().filter(|(_, k)| k == "environment").count(), 1);
+        assert_eq!(c.iter().filter(|(_, k)| k == "prop").count(), 1);
+        assert!(c.iter().all(|(p, _)| {
+            !p.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .contains("vision_thumb")
         }));
     }
 

@@ -711,6 +711,8 @@
       "videoTitle": "Video model call failed",
       "videoChannelHint": "Video channels were unavailable while generating shot clips. Switch the video model and resume.",
       "videoHint": "Check that the video model is available. Artifacts were kept — you can resume from checkpoint.",
+      "refAudioDurationTitle": "Reference audio is longer than 15 seconds",
+      "refAudioDurationHint": "Wan 3.0 caps combined character reference audio at 15 seconds (other video models have their own limits). Resume from checkpoint — the client trims voice refs for Wan 3.0 only. If it still fails, open the shot in Canvas.",
       "copyrightTitle": "Clip failed copyright review",
       "copyrightHint": "The generated picture may involve copyright-restricted content, so this shot was not produced. Change the storyboard wording or references, then resume from checkpoint — finished clips will not be billed again.",
       "privacyTitle": "Reference image failed content review",
@@ -771,7 +773,7 @@
     "technicalDetailsBadge": "Review first",
     "storyboard": {
       "title": "Storyboard",
-      "hint": "Swipe the filmstrip. The shot list after planning is the render list — film generation will not add scenes.",
+      "hint": "Swipe the filmstrip. The shot list after planning is the render list — film generation will not add scenes. To edit a shot, open it in Canvas.",
       "shotCount": "{{count}} shots",
       "shotNumberOf": "Shot {{number}} / {{total}}",
       "editable": "Editable",

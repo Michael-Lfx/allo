@@ -529,6 +529,11 @@ pub(crate) fn map_model_err(
         || lower.contains("may contain real person")
     {
         "Input frame/reference was flagged as a real-person likeness. The client auto-locates content[N], swaps faces to an AI face (or erases face details), and retries; if it still fails, use a more illustrated style and resume."
+    } else if lower.contains("reference_audio")
+        && (lower.contains("exceeds max")
+            || (lower.contains("total duration") && lower.contains("15")))
+    {
+        "Wan 3.0 caps combined reference_audio at 15s. Voice refs are trimmed for Wan 3.0 only; extra speakers are dropped. Resume from checkpoint, or open the shot in Canvas."
     } else if lower.contains("reference_audio cannot be the only")
         || (lower.contains("reference_audio") && lower.contains("only reference"))
     {

@@ -4,6 +4,7 @@ import {
     CONTENT_MODERATION_MESSAGE,
     COPYRIGHT_RESTRICTION_MESSAGE,
     REFERENCE_IMAGE_MODERATION_MESSAGE,
+    REF_AUDIO_DURATION_MESSAGE,
     generationErrorMessage,
     generationFailureMetadata,
     isContentModerationError,
@@ -58,5 +59,11 @@ describe("generation-error", () => {
         expect(isContentModerationError(COPYRIGHT_RESTRICTION_MESSAGE)).toBe(true);
         expect(isContentModerationError(CONTENT_MODERATION_MESSAGE)).toBe(true);
         expect(generationErrorMessage(COPYRIGHT_RESTRICTION_MESSAGE)).toBe(COPYRIGHT_RESTRICTION_MESSAGE);
+    });
+
+    test("maps wan3 reference_audio duration cap to a friendly message", () => {
+        const raw = "video generation failed: InvalidParameter: reference_audio total duration 15.6s exceeds max 15s";
+        expect(generationErrorMessage(raw)).toBe(REF_AUDIO_DURATION_MESSAGE);
+        expect(generationErrorMessage(raw)).not.toContain("网络异常");
     });
 });

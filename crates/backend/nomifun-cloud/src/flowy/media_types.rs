@@ -128,7 +128,11 @@ impl VideoTaskRecord {
         if let Some(detail) = result.get("error").and_then(format_provider_error_node) {
             return Some(detail);
         }
-        let code = json_nonempty_str(result.get("error_code"));
+        if let Some(detail) = result.get("output").and_then(format_provider_error_node) {
+            return Some(detail);
+        }
+        let code = json_nonempty_str(result.get("error_code"))
+            .or_else(|| json_nonempty_str(result.get("code")));
         let message = json_nonempty_str(result.get("error_message"))
             .or_else(|| json_nonempty_str(result.get("message")));
         if let Some(formatted) = format_provider_code_message(code, message) {
@@ -822,6 +826,23 @@ mod tests {
             .failure_detail()
             .unwrap()
             .starts_with("OutputVideoSensitiveContentDetected.PolicyViolation:"));
+    }
+
+    #[test]
+    fn failure_detail_reads_dashscope_output_envelope() {
+        let rec = record(json!({
+            "output": {
+                "code": "InvalidParameter",
+                "message": "reference_audio total duration 15.6s exceeds max 15s",
+                "task_status": "FAILED"
+            },
+            "request_id": "c06a7b4d-5c98-904e-b0a9-7deeee641ae0",
+            "task_status": "FAILED"
+        }));
+        assert_eq!(
+            rec.failure_detail().as_deref(),
+            Some("InvalidParameter: reference_audio total duration 15.6s exceeds max 15s")
+        );
     }
 
     #[test]

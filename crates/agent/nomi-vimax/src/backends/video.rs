@@ -17,7 +17,8 @@ use nomifun_cloud::{
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local::{
-    image_magic_kind, is_usable_video_file, load_return_last_frame_url, scrub_unusable_video,
+    image_magic_kind, is_usable_audio_file, is_usable_video_file, load_return_last_frame_url,
+    probe_media_duration_secs, scrub_unusable_video, trim_audio_to_max_secs,
     write_image_bytes_atomic, write_return_last_frame_url, write_video_bytes_atomic,
 };
 
@@ -329,15 +330,17 @@ impl VimaxVideo for FlowyVideo {
         // Seedance: reference_audio cannot be the only reference input — need ≥1
         // image or reference_video. Pure T2V must omit voice refs.
         let has_visual_ref = !images.is_empty() || reference_video_url.is_some();
-        let usable_audios: Vec<&Path> = ref_audios
-            .iter()
-            .copied()
-            .filter(|path| crate::media_local::is_usable_audio_file(path))
-            .take(3)
-            .collect();
-        if !usable_audios.is_empty() {
+        let capped_audios = cap_reference_audio_paths(ref_audios, is_wan3).await;
+        if !capped_audios.is_empty() && capped_audios.len() < ref_audios.len() {
+            local_frame_notes.push(format!(
+                "reference_audio_budget_{}_of_{}",
+                capped_audios.len(),
+                ref_audios.len()
+            ));
+        }
+        if !capped_audios.is_empty() {
             if has_visual_ref {
-                for path in usable_audios {
+                for path in &capped_audios {
                     local_frame_notes.push(format!(
                         "reference_audio←{}",
                         path.file_name()
@@ -483,8 +486,71 @@ impl VimaxVideo for FlowyVideo {
             other => other,
         };
 
-        let record = match first {
+        let mut record = match first {
             Ok(r) => r,
+            Err(e)
+                if is_ref_audio_duration_limit_err(&e)
+                    && !params.reference_audio_urls_merged().is_empty() =>
+            {
+                let mut last_err = e;
+                loop {
+                    if !drop_last_reference_audio(&mut params) {
+                        if self.is_cancelled() {
+                            return Err(VimaxError::Cancelled);
+                        }
+                        return Err(map_model_err(
+                            "video",
+                            Some(model_for_err.as_str()),
+                            "video_generate_drop_ref_audio_duration",
+                            last_err,
+                        ));
+                    }
+                    tracing::warn!(
+                        model = %model_for_err,
+                        remaining = params.reference_audio_urls_merged().len(),
+                        error = %last_err,
+                        "Wan 3.0 reference_audio total duration over 15s; retrying with one fewer clip"
+                    );
+                    local_frame_notes.push("reference_audio_dropped_wan3_over_15s".into());
+                    log_video_create_params(&params, &local_frame_notes, out_path);
+                    if self.is_cancelled() {
+                        return Err(VimaxError::Cancelled);
+                    }
+                    if is_usable_video_file(out_path) {
+                        return Ok(());
+                    }
+                    match self
+                        .services
+                        .api
+                        .generate_video_with_timeout_and_progress_cancellable(
+                            &self.services.session,
+                            params.to_json(),
+                            timeout,
+                            self.poll_progress_hook(),
+                            should_cancel.clone(),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(r) => break r,
+                        Err(e2) if is_ref_audio_duration_limit_err(&e2) => {
+                            last_err = e2;
+                            continue;
+                        }
+                        Err(e2) => {
+                            if self.is_cancelled() {
+                                return Err(VimaxError::Cancelled);
+                            }
+                            return Err(map_model_err(
+                                "video",
+                                Some(model_for_err.as_str()),
+                                "video_generate_drop_ref_audio_duration",
+                                e2,
+                            ));
+                        }
+                    }
+                }
+            }
             Err(e)
                 if is_seedance
                     && is_seedance_audio_only_ref_err(&e)
@@ -568,7 +634,7 @@ impl VimaxVideo for FlowyVideo {
                             error = %e2,
                             "Seedance still rejected captions; retrying with generate_audio=false"
                         );
-                        let mut silent = params;
+                        let mut silent = params.clone();
                         silent.generate_audio = Some(false);
                         log_video_create_params(&silent, &local_frame_notes, out_path);
                         if self.is_cancelled() {
@@ -584,7 +650,7 @@ impl VimaxVideo for FlowyVideo {
                                 silent.to_json(),
                                 timeout,
                                 self.poll_progress_hook(),
-                                should_cancel,
+                                should_cancel.clone(),
                                 None,
                             )
                             .await
@@ -626,6 +692,52 @@ impl VimaxVideo for FlowyVideo {
             }
         };
 
+        while is_ref_audio_duration_limit_record(&record)
+            && drop_last_reference_audio(&mut params)
+        {
+            tracing::warn!(
+                model = %model_for_err,
+                remaining = params.reference_audio_urls_merged().len(),
+                detail = %video_task_failure_message(&record),
+                "Wan 3.0 reference_audio total duration over 15s; retrying with one fewer clip"
+            );
+            local_frame_notes.push("reference_audio_dropped_wan3_over_15s".into());
+            log_video_create_params(&params, &local_frame_notes, out_path);
+            if self.is_cancelled() {
+                return Err(VimaxError::Cancelled);
+            }
+            if is_usable_video_file(out_path) {
+                return Ok(());
+            }
+            match self
+                .services
+                .api
+                .generate_video_with_timeout_and_progress_cancellable(
+                    &self.services.session,
+                    params.to_json(),
+                    timeout,
+                    self.poll_progress_hook(),
+                    should_cancel.clone(),
+                    None,
+                )
+                .await
+            {
+                Ok(r) => record = r,
+                Err(e) if is_ref_audio_duration_limit_err(&e) => continue,
+                Err(e) => {
+                    if self.is_cancelled() {
+                        return Err(VimaxError::Cancelled);
+                    }
+                    return Err(map_model_err(
+                        "video",
+                        Some(model_for_err.as_str()),
+                        "video_generate_drop_ref_audio_duration",
+                        e,
+                    ));
+                }
+            }
+        }
+
         if self.is_cancelled() {
             return Err(VimaxError::Cancelled);
         }
@@ -634,9 +746,16 @@ impl VimaxVideo for FlowyVideo {
             if record.is_success() {
                 VimaxError::Video("video task succeeded but no video_url".into())
             } else {
-                // Surface the upstream failure reason (e.g. InputTextSensitiveContentDetected)
-                // instead of a misleading success message.
-                VimaxError::Video(video_task_failure_message(&record))
+                let raw = video_task_failure_message(&record);
+                if is_ref_audio_duration_limit_text(&raw) {
+                    VimaxError::Video(format!(
+                        "{raw}\nHint: Wan 3.0 caps combined reference_audio at 15s. Voice refs are trimmed for Wan only; extra speakers are dropped. Resume from checkpoint, or open the shot in Canvas."
+                    ))
+                } else {
+                    // Surface the upstream failure reason (e.g. InputTextSensitiveContentDetected)
+                    // instead of a misleading success message.
+                    VimaxError::Video(raw)
+                }
             }
         })?;
 
@@ -678,6 +797,97 @@ impl VimaxVideo for FlowyVideo {
 
         Ok(())
     }
+}
+
+/// Shared slot count (Wan 3.0 / Seedance both accept up to 3 `reference_audio`).
+const REF_AUDIO_MAX_CLIPS: usize = 3;
+/// Wan 3.0 only: Σ `reference_audio` duration must stay under 15s.
+const WAN3_VOICE_REF_MAX_SECS: f64 = 4.0;
+const WAN3_REF_AUDIO_TOTAL_BUDGET_SECS: f64 = 14.5;
+
+fn count_refs_within_budget(durations: &[f64], max_count: usize, max_total: f64) -> usize {
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    for &d in durations.iter().take(max_count) {
+        let d = if d.is_finite() && d > 0.0 { d } else { 0.0 };
+        if n > 0 && sum + d > max_total {
+            break;
+        }
+        sum += d;
+        n += 1;
+    }
+    n
+}
+
+async fn cap_reference_audio_paths(paths: &[&Path], wan3_duration_budget: bool) -> Vec<PathBuf> {
+    let mut kept: Vec<(PathBuf, f64)> = Vec::new();
+    for path in paths
+        .iter()
+        .copied()
+        .filter(|path| is_usable_audio_file(path))
+        .take(REF_AUDIO_MAX_CLIPS)
+    {
+        if wan3_duration_budget {
+            let _ = trim_audio_to_max_secs(path, WAN3_VOICE_REF_MAX_SECS).await;
+        }
+        let dur = if wan3_duration_budget {
+            probe_media_duration_secs(path)
+                .await
+                .filter(|d| d.is_finite() && *d > 0.0)
+                .unwrap_or(WAN3_VOICE_REF_MAX_SECS)
+        } else {
+            0.0
+        };
+        kept.push((path.to_path_buf(), dur));
+    }
+    if !wan3_duration_budget {
+        return kept.into_iter().map(|(p, _)| p).collect();
+    }
+    let durs: Vec<f64> = kept.iter().map(|(_, d)| *d).collect();
+    let n = count_refs_within_budget(
+        &durs,
+        REF_AUDIO_MAX_CLIPS,
+        WAN3_REF_AUDIO_TOTAL_BUDGET_SECS,
+    );
+    kept.truncate(n);
+    kept.into_iter().map(|(p, _)| p).collect()
+}
+
+fn is_ref_audio_duration_limit_text(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("reference_audio")
+        && (lower.contains("exceeds max")
+            || (lower.contains("total duration") && lower.contains("15")))
+}
+
+fn is_ref_audio_duration_limit_err(err: &nomifun_cloud::ServerClientError) -> bool {
+    is_ref_audio_duration_limit_text(&err.to_string())
+}
+
+fn is_ref_audio_duration_limit_record(record: &VideoTaskRecord) -> bool {
+    if record
+        .failure_detail()
+        .is_some_and(|d| is_ref_audio_duration_limit_text(&d))
+    {
+        return true;
+    }
+    is_ref_audio_duration_limit_text(&video_task_failure_message(record))
+        || record
+            .result
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok())
+            .is_some_and(|s| is_ref_audio_duration_limit_text(&s))
+}
+
+fn drop_last_reference_audio(params: &mut VideoCreateParams) -> bool {
+    let mut urls = params.reference_audio_urls_merged();
+    if urls.is_empty() {
+        return false;
+    }
+    urls.pop();
+    params.reference_audio_url = None;
+    params.reference_audio_urls = urls;
+    true
 }
 
 /// Seedance 2.0 audio path requires usable dialogue/SFX captions in the prompt.
@@ -921,6 +1131,37 @@ reference_audio cannot be the only reference input. Request id: abc)"
             msg: "InputTextSensitiveContentDetected".into(),
         };
         assert!(!is_stale_ref_image_url_err(&safety));
+    }
+
+    #[test]
+    fn count_refs_within_budget_keeps_prefix_under_15s() {
+        assert_eq!(
+            count_refs_within_budget(&[5.2, 5.2, 5.2], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            2
+        );
+        assert_eq!(
+            count_refs_within_budget(&[4.0, 4.0, 4.0], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            3
+        );
+        assert_eq!(
+            count_refs_within_budget(&[16.0], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            1
+        );
+    }
+
+    #[test]
+    fn detects_reference_audio_duration_limit() {
+        let err = ServerClientError::Api {
+            code: 400,
+            msg: "InvalidParameter: reference_audio total duration 15.6s exceeds max 15s".into(),
+        };
+        assert!(is_ref_audio_duration_limit_err(&err));
+        assert!(is_ref_audio_duration_limit_text(
+            "video generation failed: InvalidParameter: reference_audio total duration 15.6s exceeds max 15s"
+        ));
+        assert!(!is_ref_audio_duration_limit_text(
+            "reference_audio cannot be the only reference input"
+        ));
     }
 
     #[tokio::test]

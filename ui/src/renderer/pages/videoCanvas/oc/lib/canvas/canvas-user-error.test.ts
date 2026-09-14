@@ -31,4 +31,8 @@ describe("formatCanvasUserError", () => {
     expect(formatCanvasUserError("Internal error: video generation failed: API error 500: Model call failed. Please try again later: invalid last_frame")).toContain("invalid last_frame");
     expect(formatCanvasUserError("Internal error: video generation failed: API error 500: Model call failed. Please try again later: invalid last_frame")).not.toContain("网络异常");
   });
+
+  test("maps wan3 reference_audio duration cap", () => {
+    expect(formatCanvasUserError("InvalidParameter: reference_audio total duration 15.6s exceeds max 15s")).toContain("15 秒");
+  });
 });
