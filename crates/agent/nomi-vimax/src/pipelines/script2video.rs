@@ -27,7 +27,7 @@ use super::cameo_bind::{
 use super::privacy_face::{
     ensure_ai_sanitized_privacy_face, ensure_seedance_privacy_face,
     is_seedance_privacy_image_err_text, next_privacy_tier_for_path,
-    parse_seedance_flagged_content_index, preflight_video_ref_privacy, privacy_repair_targets,
+    parse_seedance_flagged_content_index, privacy_repair_targets,
     PrivacyFaceOutcome, PrivacyFaceTier,
 };
 use super::{
@@ -1221,12 +1221,10 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             "video multi-ref R2V binding"
         );
 
-        preflight_video_ref_privacy(
-            self.backends.image.as_ref(),
-            Some(Arc::clone(&self.backends.chat)),
-            &ref_paths,
-        )
-        .await?;
+        // Do not vision-preflight refs here (including previous-shot last frames).
+        // Face inspection/repair runs only after the video model returns a
+        // real-person privacy reject — see the retry loop below. Cameo plates
+        // are sanitized at bind. Idea / script / novel all share this path.
 
         let first_err = match self
             .backends

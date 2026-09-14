@@ -362,6 +362,11 @@ fn has_seedance_privacy_at_least_soft(path: &Path) -> bool {
     read_marker_tier(&marker, &raw_fp).is_some()
 }
 
+/// Skip policy for a hypothetical pre-submit privacy pass.
+///
+/// Render does not call this; tests pin last-frame / cameo skip rules so a
+/// future caller cannot accidentally vision-scan continuity stills.
+#[allow(dead_code)]
 pub(crate) fn should_preflight_video_ref(path: &Path) -> bool {
     if is_cameo_identity_plate(path) {
         return false;
@@ -375,8 +380,11 @@ pub(crate) fn should_preflight_video_ref(path: &Path) -> bool {
     if has_seedance_privacy_at_least_soft(path) {
         return false;
     }
+    // AI last-frame stills: never rewrite before submit. They are already model
+    // output; a vision pass between shots wastes a call and can break match-cuts.
+    // Repair remains available after a real-person privacy reject (`privacy_repair_targets`).
     if is_continuity_ref(path) {
-        return true;
+        return false;
     }
     is_likely_face_bearing_ref(path)
 }
@@ -402,11 +410,18 @@ fn write_no_real_face_marker(path: &Path) {
     );
 }
 
-/// Soft-tier privacy pass on refs before the first video create (and per-shot refs).
+/// Soft-tier privacy pass on refs before a video create.
+///
+/// Render (`generate_video_for_shot`) must **not** call this: shot video
+/// generation submits first and only inspects/repairs faces after the video
+/// model returns a real-person privacy reject. Continuity last-frame stills
+/// (`video_last_frame.png`) are skipped even if a caller invokes this helper.
+/// Cameo identity plates are sanitized at bind.
 ///
 /// Only photographic / live-action human faces are rewritten. Animals, anime,
 /// CGI, and other stylized plates stay as the user uploaded them. Without a
 /// vision `chat` backend the pass is skipped — never img2img blindly.
+#[allow(dead_code)]
 pub(crate) async fn preflight_video_ref_privacy(
     image: &dyn VimaxImage,
     chat: Option<Arc<dyn VimaxChat>>,
@@ -804,11 +819,13 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
     }
 
     #[test]
-    fn preflight_includes_continuity_without_marker() {
+    fn preflight_skips_continuity_last_frame() {
         let dir = tempfile::tempdir().unwrap();
         let frame = dir.path().join("video_last_frame.png");
         std::fs::write(&frame, b"png").unwrap();
-        assert!(should_preflight_video_ref(&frame));
+        assert!(!should_preflight_video_ref(&frame));
+        // After a model privacy reject, last frames stay eligible for repair.
+        assert!(is_likely_face_bearing_ref(&frame));
     }
 
     fn write_test_png(path: &Path) {
@@ -859,17 +876,17 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let frame = dir.path().join("video_last_frame.png");
-        write_test_png(&frame);
+        let portrait = dir.path().join("three_view.png");
+        write_test_png(&portrait);
         let calls = Arc::new(AtomicUsize::new(0));
         let image = CountingImage(Arc::clone(&calls));
-        preflight_video_ref_privacy(&image, None, &[frame.as_path()])
+        preflight_video_ref_privacy(&image, None, &[portrait.as_path()])
             .await
             .unwrap();
         assert_eq!(
             calls.load(Ordering::SeqCst),
             0,
-            "without a real-face vision gate, preflight must not rewrite continuity/animal plates"
+            "without a real-face vision gate, preflight must not rewrite face-bearing plates"
         );
     }
 
