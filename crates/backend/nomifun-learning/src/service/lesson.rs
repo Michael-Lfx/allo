@@ -736,6 +736,7 @@ impl LearningService {
             grounding_refs,
             &forbidden,
             crate::models::ComplexityTier::Mid,
+            request.feedback.as_deref(),
         )
         .await
         .map_err(|error| {
@@ -752,6 +753,64 @@ impl LearningService {
             }));
         }
         self.persist_rewritten_section(lesson_id, section_key, &body).await?;
+
+        let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
+        self.lesson_view(lesson_id, enrollment.as_ref()).await
+    }
+
+    /// 手动编辑节正文（ADR-0007）：仅覆盖 `body_md`（version+1，status 保持
+    /// 'ready'，summary 由全部节重新拼装），不记录编辑来源。练习节不开放
+    /// （题目是一等实体，编辑其指令性正文意义有限）；failed 节没有正文，
+    /// 走既有 AI 重写路径而非手写。
+    pub async fn update_lesson_section_body(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        section_key: &str,
+        request: &crate::models::UpdateLessonSectionBodyRequest,
+    ) -> Result<LessonView, AppError> {
+        let row = sqlx::query(
+            "SELECT l.content_generated, m.course_id FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        if row.try_get::<i64, _>("content_generated").map_err(internal)? == 0 {
+            return Err(AppError::Conflict(
+                "lesson content has not been generated yet".into(),
+            ));
+        }
+
+        let sections = self.lesson_sections(lesson_id).await?;
+        let current = sections
+            .iter()
+            .find(|section| section.section_key == section_key)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("section {section_key} in lesson {lesson_id}"))
+            })?;
+        if current.kind == crate::models::SectionKind::Practice {
+            return Err(AppError::Conflict(
+                "practice sections cannot be edited manually".into(),
+            ));
+        }
+        if current.body_md.trim().is_empty() {
+            return Err(AppError::Conflict(
+                "section has no body yet; use the rewrite path instead".into(),
+            ));
+        }
+        if request.body_md.trim().is_empty() {
+            return Err(AppError::UnprocessableEntity(
+                "body_md must not be empty".into(),
+            ));
+        }
+
+        self.persist_rewritten_section(lesson_id, section_key, &request.body_md)
+            .await?;
 
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
@@ -852,9 +911,10 @@ impl LearningService {
             .map(|body| body.trim())
             .collect::<Vec<_>>()
             .join("\n\n");
-        sqlx::query("UPDATE learning_lessons SET summary = ?, updated_at = ? WHERE lesson_id = ?")
+        // learning_lessons 没有 updated_at 列（迁移 015/040 均未引入），
+        // 只同步 summary 本身。
+        sqlx::query("UPDATE learning_lessons SET summary = ? WHERE lesson_id = ?")
             .bind(&summary)
-            .bind(now)
             .bind(lesson_id.as_str())
             .execute(&mut *transaction)
             .await

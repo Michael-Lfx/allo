@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 课时学习面：节 stepper（练习节步进门禁）、逐题练习轮、单节重写入口、
  * 课时块与原文面板——普通课程与学习图课程共用。决策逻辑在 model.ts，
  * 本文件只做组合与展示；从 CourseWorkspace 拆出，工作区壳只管布局导航。
@@ -6,6 +6,8 @@
 import {
   Alert,
   Button,
+  Input,
+  Modal,
   Spin,
   Steps,
   Tag,
@@ -18,6 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
 import { AppMessage as Message } from '@/renderer/components/notifications';
+import MarkdownEditor from '@renderer/pages/conversation/Preview/components/editors/MarkdownEditor';
 import Markdown from '@renderer/components/Markdown';
 import { learningApi } from '../api';
 import {
@@ -285,6 +288,110 @@ function PracticeRound({
   );
 }
 
+/** AI 建议重写对话框（ADR-0007）：可选输入学习建议后重生成节正文；
+ * 留空即同分布重生成。提交由父级执行，成功（promise resolve）即关闭。 */
+function SectionRewriteDialog({
+  section,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  section: Section;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (feedback: string) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [feedback, setFeedback] = useState('');
+  return (
+    <Modal
+      title={t('learning.sectionRewriteDialogTitle')}
+      visible
+      style={{ width: 560 }}
+      footer={null}
+      closable={!submitting}
+      maskClosable={!submitting}
+      onCancel={onClose}
+    >
+      <div className='flex flex-col gap-12px'>
+        <Text type='secondary' className='text-12px'>
+          {t('learning.sectionRewriteDialogHint', { title: section.title })}
+        </Text>
+        <div>
+          <div className='mb-6px font-500'>{t('learning.sectionRewriteFeedbackLabel')}</div>
+          <Input.TextArea
+            value={feedback}
+            onChange={setFeedback}
+            placeholder={t('learning.sectionRewriteFeedbackPlaceholder')}
+            maxLength={2000}
+            showWordLimit
+            autoSize={{ minRows: 4, maxRows: 8 }}
+            disabled={submitting}
+          />
+        </div>
+        <div className='flex justify-end gap-8px'>
+          <Button disabled={submitting} onClick={onClose}>
+            {t('learning.sectionDialogCancel')}
+          </Button>
+          <Button type='primary' loading={submitting} onClick={() => void onSubmit(feedback)}>
+            {t('learning.sectionRewriteConfirm')}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** 手动编辑节正文对话框（ADR-0007）：CodeMirror Markdown 编辑器，仅改正文。 */
+function SectionEditDialog({
+  section,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  section: Section;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (bodyMd: string) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [body, setBody] = useState(section.body_md);
+  const empty = body.trim().length === 0;
+  return (
+    <Modal
+      title={t('learning.sectionEditDialogTitle')}
+      visible
+      style={{ width: 760 }}
+      footer={null}
+      closable={!submitting}
+      maskClosable={!submitting}
+      onCancel={onClose}
+    >
+      <div className='flex flex-col gap-12px'>
+        <Text type='secondary' className='text-12px'>
+          {t('learning.sectionEditDialogHint')}
+        </Text>
+        <div className='h-[50vh] overflow-hidden rounded-8px border border-solid border-[var(--color-border-2)]'>
+          <MarkdownEditor value={body} onChange={setBody} readOnly={submitting} />
+        </div>
+        <div className='flex justify-end gap-8px'>
+          <Button disabled={submitting} onClick={onClose}>
+            {t('learning.sectionDialogCancel')}
+          </Button>
+          <Button
+            type='primary'
+            loading={submitting}
+            disabled={empty}
+            onClick={() => void onSubmit(body)}
+          >
+            {t('learning.sectionEditConfirm')}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /** 分节交付的一步：节正文 + 该节绑定的练习题。综合题（无节绑定）收进
  * 末尾的额外一步，不与单节内容混排。 */
 function SectionedLessonBody({
@@ -293,7 +400,9 @@ function SectionedLessonBody({
   attemptResults,
   onAttempt,
   onRewriteSection,
-  rewritingKey,
+  onSuggestRewriteSection,
+  onEditSection,
+  sectionBusyKey,
 }: {
   lesson: Lesson;
   busyId: string | null;
@@ -301,7 +410,11 @@ function SectionedLessonBody({
   onAttempt: (activity: Activity, response: unknown) => void;
   /** 单节重写（ADR-0003）：失败节原地重生成，成功后以返回的最新详情整体替换 */
   onRewriteSection?: (section: Section) => void;
-  rewritingKey?: string | null;
+  /** AI 建议重写（ADR-0007）：有正文的内容节打开建议对话框 */
+  onSuggestRewriteSection?: (section: Section) => void;
+  /** 手动编辑（ADR-0007）：有正文的内容节打开编辑对话框 */
+  onEditSection?: (section: Section) => void;
+  sectionBusyKey?: string | null;
 }) {
   const { t } = useTranslation();
   const sections = lesson.sections;
@@ -383,7 +496,7 @@ function SectionedLessonBody({
                       <Button
                         size='mini'
                         type='primary'
-                        loading={rewritingKey === step.section.section_key}
+                        loading={sectionBusyKey === step.section.section_key}
                         onClick={() => {
                           if (step.section) onRewriteSection(step.section);
                         }}
@@ -399,6 +512,31 @@ function SectionedLessonBody({
               <Text type='secondary' className='text-12px'>
                 {t('learning.sectionStatusPending')}
               </Text>
+            )}
+            {step.section.body_md && (onSuggestRewriteSection || onEditSection) && (
+              <div className='flex items-center justify-end gap-8px'>
+                {onSuggestRewriteSection && (
+                  <Button
+                    size='mini'
+                    loading={sectionBusyKey === step.section.section_key}
+                    onClick={() => {
+                      if (step.section) onSuggestRewriteSection(step.section);
+                    }}
+                  >
+                    {t('learning.sectionRewriteAi')}
+                  </Button>
+                )}
+                {onEditSection && (
+                  <Button
+                    size='mini'
+                    onClick={() => {
+                      if (step.section) onEditSection(step.section);
+                    }}
+                  >
+                    {t('learning.sectionEdit')}
+                  </Button>
+                )}
+              </div>
             )}
             {step.section.body_md ? <Markdown>{step.section.body_md}</Markdown> : null}
             {!hasPractice && sectionActivities(step.section).length > 0 && (
@@ -492,7 +630,11 @@ export function LessonBlock({
   const { choice: modelChoice } = useLearningAutogenModel();
   const [addQuestionOpen, setAddQuestionOpen] = useState(false);
   // 单节重写进行中的节 key（ADR-0003 前端面：失败节原地重生成）
-  const [rewritingKey, setRewritingKey] = useState<string | null>(null);
+  const [sectionBusyKey, setsectionBusyKey] = useState<string | null>(null);
+  // AI 建议重写（ADR-0007）：待重写的节（对话框数据源）
+  const [rewriteDialogSection, setRewriteDialogSection] = useState<Section | null>(null);
+  // 手动编辑（ADR-0007）：待编辑的节（对话框数据源）
+  const [editDialogSection, setEditDialogSection] = useState<Section | null>(null);
   // 目录视图不带节正文（体积）：打开已生成课时时按需拉详情，拿到
   // sections 才走节 stepper；旧课时无节则双读回退整页 summary。
   const [detailLesson, setDetailLesson] = useState<Lesson | null>(null);
@@ -536,20 +678,39 @@ export function LessonBlock({
     });
   }, [lesson.id, t]);
   // 单节重写：一次有界调用（确定性管线），返回的最新课时详情整体替换
-  // 本地详情（sections 随之更新），无需整页刷新。
-  const rewriteSection = async (section: Section) => {
-    setRewritingKey(section.section_key);
+  // 本地详情（sections 随之更新），无需整页刷新。feedback 为可选学习
+  // 建议（ADR-0007），留空即同分布重生成。
+  const rewriteSection = async (section: Section, feedback?: string) => {
+    setsectionBusyKey(section.section_key);
     try {
       const updated = await learningApi.rewriteLessonSection(current.id, section.section_key, {
         provider_id: modelChoice?.provider_id,
         model: modelChoice?.model,
+        feedback: feedback?.trim() ? feedback.trim() : undefined,
       });
       setDetailLesson(updated);
       Message.success(t('learning.sectionRewriteDone'));
+      setRewriteDialogSection(null);
     } catch (rewriteError) {
       Message.error(rewriteError instanceof Error ? rewriteError.message : t('learning.actionFailed'));
     } finally {
-      setRewritingKey(null);
+      setsectionBusyKey(null);
+    }
+  };
+  // 手动编辑节正文（ADR-0007）：PUT body_md，返回的最新课时详情整体替换
+  const editSectionBody = async (section: Section, bodyMd: string) => {
+    setsectionBusyKey(section.section_key);
+    try {
+      const updated = await learningApi.updateLessonSectionBody(current.id, section.section_key, {
+        body_md: bodyMd,
+      });
+      setDetailLesson(updated);
+      Message.success(t('learning.sectionEditDone'));
+      setEditDialogSection(null);
+    } catch (editError) {
+      Message.error(editError instanceof Error ? editError.message : t('learning.actionFailed'));
+    } finally {
+      setsectionBusyKey(null);
     }
   };
   if (!lesson.generated) {
@@ -586,14 +747,34 @@ export function LessonBlock({
         <LessonSourcePanel knowledgeBaseId={sourceKbId} source={current.source} />
       )}
       {current.sections.length > 0 ? (
-        <SectionedLessonBody
-          lesson={current}
-          busyId={busyId}
-          attemptResults={attemptResults}
-          onAttempt={onAttempt}
-          onRewriteSection={(section) => void rewriteSection(section)}
-          rewritingKey={rewritingKey}
-        />
+        <>
+          <SectionedLessonBody
+            lesson={current}
+            busyId={busyId}
+            attemptResults={attemptResults}
+            onAttempt={onAttempt}
+            onRewriteSection={(section) => void rewriteSection(section)}
+            onSuggestRewriteSection={(section) => setRewriteDialogSection(section)}
+            onEditSection={(section) => setEditDialogSection(section)}
+            sectionBusyKey={sectionBusyKey}
+          />
+          {rewriteDialogSection && (
+            <SectionRewriteDialog
+              section={rewriteDialogSection}
+              submitting={sectionBusyKey === rewriteDialogSection.section_key}
+              onClose={() => setRewriteDialogSection(null)}
+              onSubmit={(feedback) => rewriteSection(rewriteDialogSection, feedback)}
+            />
+          )}
+          {editDialogSection && (
+            <SectionEditDialog
+              section={editDialogSection}
+              submitting={sectionBusyKey === editDialogSection.section_key}
+              onClose={() => setEditDialogSection(null)}
+              onSubmit={(bodyMd) => editSectionBody(editDialogSection, bodyMd)}
+            />
+          )}
+        </>
       ) : (
         <>
           {current.summary && <Markdown>{current.summary}</Markdown>}

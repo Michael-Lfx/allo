@@ -431,6 +431,7 @@ pub(crate) async fn rewrite_section_body(
     grounding: Option<(&str, &str)>,
     forbidden: &str,
     tier: ComplexityTier,
+    feedback: Option<&str>,
 ) -> Result<(String, bool), String> {
     let build = |degraded: bool| {
         let mut prompt = build_section_rewrite_prompt(
@@ -445,6 +446,7 @@ pub(crate) async fn rewrite_section_body(
             grounding,
             forbidden,
             tier,
+            feedback,
         );
         if degraded {
             prompt.push_str(
@@ -500,7 +502,7 @@ pub(crate) async fn rewrite_section_body(
 /// 课程/课时坐标与 grounded 上下文由调用方以纯字符串传入（传统课时传
 /// 引用摘录与概念黑名单，学习图节点传前置/后续段落与下游禁止清单）。
 #[allow(clippy::too_many_arguments)]
-fn build_section_rewrite_prompt(
+pub(super) fn build_section_rewrite_prompt(
     course_title: &str,
     lesson_title: &str,
     lesson_purpose: &str,
@@ -512,6 +514,7 @@ fn build_section_rewrite_prompt(
     grounding: Option<(&str, &str)>,
     forbidden: &str,
     tier: ComplexityTier,
+    feedback: Option<&str>,
 ) -> String {
     let mut prompt = format!(
         "Course: {}\nLesson: {} — {}\n\n## 本节任务（重写这一节）\n\n- 节 id：{}\n- 节标题：{}\n- 节类型：{}\n- 本节要点：{}\n- 本节计划的可视化：{}（承诺兑现制：质检门按此声明逐项检查交付）\n- 本节文字预算（仅正文，公式/图表/可视化块不占）：约 {} 字\n- 位置：第 {}/{} 节\n",
@@ -570,6 +573,14 @@ fn build_section_rewrite_prompt(
                 text.trim()
             ));
         }
+    }
+    if let Some(feedback) = feedback.map(str::trim).filter(|feedback| !feedback.is_empty()) {
+        let feedback: String = feedback.chars().take(2000).collect();
+        prompt.push_str(&format!(
+            "\n## 学习者修改意见（本轮重写最高优先级）\n\n学习者看过当前正文后提出如下要求：\n\n{feedback}\n\n\
+             按意见重写本节；节任务、要点、可视化承诺与文字预算仍然有效，上面的 \
+             grounding/禁止约束不得违反。\n"
+        ));
     }
     prompt.push_str("\nWrite this section's body now.");
     prompt

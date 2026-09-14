@@ -54,10 +54,17 @@ export interface LearningGraphGenerationStatus {
   elapsed_secs: number | null;
 }
 
-/** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传 */
+/** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
+ * feedback 是单节重写的可选学习建议（ADR-0007），为空即同分布重生成。 */
 export interface GenerateLessonRequest {
   provider_id?: string;
   model?: string;
+  feedback?: string;
+}
+
+/** 手动编辑节正文请求（ADR-0007）：仅覆盖 body_md */
+export interface UpdateSectionBodyRequest {
+  body_md: string;
 }
 
 export interface CourseSummary {

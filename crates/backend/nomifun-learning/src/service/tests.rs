@@ -1926,6 +1926,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let request = GenerateLessonRequest {
             provider_id: None,
             model: None,
+            feedback: None,
         };
 
         // 无引擎：图节点生成被拒，且不落任何内容。
@@ -2429,4 +2430,159 @@ async fn memory_stats_aggregates_retention_calibration_and_load() {
     };
     assert!(bucket("new") >= 1);
     assert!(bucket("young") + bucket("mature") + bucket("master") >= 1);
+}
+
+/// 手动编辑节正文测试的种子：一条 traditional 课程（content_generated=1）
+/// + 两节已 ready 的内容节 + 一节 practice 节 + 学习者注册。
+async fn seed_sectioned_lesson(
+    service: &LearningService,
+    user_id: &UserId,
+) -> (String, String) {
+    let now = now_ms();
+    let course_id = LearningCourseId::new().into_string();
+    let module_id = LearningModuleId::new().into_string();
+    let lesson_id = LearningLessonId::new().into_string();
+    let enrollment_id = LearningEnrollmentId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, created_at, updated_at) \
+         VALUES (?, 'Edit test course', '', 'general', 1, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, 'Module', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, position, purpose, estimated_minutes, \
+          content_generated) \
+         VALUES (?, ?, 'Lesson', 'body one\n\nbody two', 0, '', 10, 1)",
+    )
+    .bind(&lesson_id)
+    .bind(&module_id)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    for (key, kind, title, position) in [
+        ("s1", "concept", "Concept one", 0),
+        ("s2", "concept", "Concept two", 1),
+        ("s3", "practice", "Practice", 2),
+    ] {
+        let body = if kind == "practice" {
+            String::new()
+        } else {
+            format!("body {key}")
+        };
+        sqlx::query(
+            "INSERT INTO learning_lesson_sections \
+             (section_key, lesson_id, kind, title, points, visual, body_md, status, version, \
+              position, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, '', '', ?, 'ready', 1, ?, ?, ?)",
+        )
+        .bind(key)
+        .bind(&lesson_id)
+        .bind(kind)
+        .bind(title)
+        .bind(body)
+        .bind(position)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO learning_enrollments \
+         (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&enrollment_id)
+    .bind(user_id.as_str())
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    (course_id, lesson_id)
+}
+
+#[tokio::test]
+async fn manual_section_edit_updates_body_version_and_summary() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (_course_id, lesson_id) = seed_sectioned_lesson(&service, &owner).await;
+    let lesson_id = LearningLessonId::parse(&lesson_id).unwrap();
+    let request = crate::models::UpdateLessonSectionBodyRequest {
+        body_md: "edited body".into(),
+    };
+    let view = service
+        .update_lesson_section_body(&owner, &lesson_id, "s1", &request)
+        .await
+        .unwrap_or_else(|error| panic!("update failed: {error}"));
+    let section = view
+        .sections
+        .iter()
+        .find(|section| section.section_key == "s1")
+        .unwrap();
+    assert_eq!(section.body_md, "edited body");
+    assert_eq!(section.status, "ready", "manual edit keeps the section ready");
+    assert_eq!(section.version, 2, "manual edit bumps the section version");
+    // summary 由全部节重新拼装：编辑后的正文进入，其他节不动。
+    assert!(view.summary.contains("edited body"));
+    assert!(view.summary.contains("body s2"));
+    assert!(!view.summary.contains("body s1"), "old body is replaced");
+}
+
+#[tokio::test]
+async fn manual_section_edit_rejects_practice_blank_and_unknown() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (_course_id, lesson_id) = seed_sectioned_lesson(&service, &owner).await;
+    let lesson_id = LearningLessonId::parse(&lesson_id).unwrap();
+    // 练习节不开放手动编辑（题目是一等实体）。
+    let practice = service
+        .update_lesson_section_body(
+            &owner,
+            &lesson_id,
+            "s3",
+            &crate::models::UpdateLessonSectionBodyRequest {
+                body_md: "nope".into(),
+            },
+        )
+        .await;
+    assert!(matches!(practice, Err(AppError::Conflict(_))));
+    // 空正文拒绝（清空走不了这条路径）。
+    let blank = service
+        .update_lesson_section_body(
+            &owner,
+            &lesson_id,
+            "s1",
+            &crate::models::UpdateLessonSectionBodyRequest {
+                body_md: "   ".into(),
+            },
+        )
+        .await;
+    assert!(matches!(blank, Err(AppError::UnprocessableEntity(_))));
+    // 未知节 404。
+    let unknown = service
+        .update_lesson_section_body(
+            &owner,
+            &lesson_id,
+            "s99",
+            &crate::models::UpdateLessonSectionBodyRequest {
+                body_md: "nope".into(),
+            },
+        )
+        .await;
+    assert!(matches!(unknown, Err(AppError::NotFound(_))));
 }
