@@ -8,7 +8,7 @@
 > 进展：Phase 0 的 OAuth 注入实测已完成（`06-connector-oauth-security.md` §13）；
 > Phase 1 的 Importer 已落地（TC-IMP-001~009 通过，`02-codebuddy-workbuddy-import-spec.md` §14）；
 > 安装模式与市场（Phase 2 提前落地）已完成（install/*、market/* 四类源、
-> @mention 解析与 run 注入 TC-INS-001~007）；
+> @mention 解析与 run 注入 TC-INS-001~007；2026-09-15 追加 `TC-INS-008`（`store/install-entry` 版本感知））；
 > 2026-09-04：单 Agent 真实 Run 通过（TC-RT-001 planning→running→completed，mimo-v2.5 临时实例，
 > `13-p0-execution-plan.md` §14；附带修复 actor 落库 500）；
 > 其余 Runtime 门禁（TC-RT-002/005/006/009/010）与最小 TeamRun 尚未执行，排期仍待校准。

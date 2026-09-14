@@ -3,6 +3,7 @@
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议与 SDK 在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；包主体已实现（见 `12-sdk-packaging.md`）
 > 日期：2026-08-26
 > 更新：2026-09-09 —— 包名 `@flowy-agent-store/node` → `@flowy-agent-store/sdk`（以 `12` 为准）；TC 引用对齐测试总索引现有范围（001~003）
+> 更新：2026-09-15 —— 新增 §6.3：安装五动词经 SDK 可达（`AppServerClient` 扁平方法 + `.store` 子客户端状态机）；非目标补「不发明更新动词」与「宿主管理面只给类型、不给 typed method（可发现性/稳定性边界，非访问边界）」
 > 前置：`01-domain-model.md`、`05-allo-app-server-protocol.md`、`06-connector-oauth-security.md`、`10-public-contracts.md`
 > 目标：提供 App Server Protocol 的 typed client；SDK 不直接依赖 allo 内部实现
 
@@ -30,7 +31,21 @@ SDK 不负责：
 - 直接访问 allo REST、WebSocket 或数据库；
 - 保存真实 OAuth Token；
 - 执行本地任意命令；
-- 绕过 App Server 的 Tool Policy、Approval 和权限校验。
+- 绕过 App Server 的 Tool Policy、Approval 和权限校验；
+- **发明 wire 上不存在的动词**：安装面**没有更新动词**（不存在
+  `store/update-entry` / `install/update`）。一个待更新条目只被呈现为
+  `store/list` 的 `update_available` **标志**，加上一句显式的「先卸载、再安装
+  一次」提示（`StoreClient.updateHint()` 返回 `uninstall_reinstall`）；
+  `install()` 对**已安装**条目是 no-op（`reused=true`），绝不偷偷升级。
+  store 层永远不会因为看到一个「有新版本」的标志就自行拼一个更新动作；
+- **为宿主管理面提供 typed method**：六个方法（`config/get` · `config/set` ·
+  `skill/create` · `skill/update` · `skill/delete` · `skill/copy`）的**类型**
+  在 `@flowy-agent-store/protocol` 里，但 `@flowy-agent-store/client` **刻意
+  不给**它们 typed method——这是**可发现性 / 稳定性边界**，**不是访问边界**：
+  transport 是公开的，服务端按**磁盘上的 origin** 判定可写性（`05` §4.11），
+  所以真想要的人可以走 `transport.request`。不给的原因只有一个——这六个方法是
+  协议里**最易变**的一批（跟着宿主配置文件与技能目录走），beta 期不承诺向后
+  兼容（`16` D10=A）。
 
 ## 2. 包结构
 
@@ -78,6 +93,8 @@ RunClient
 EventStreamClient
 ArtifactClient
 ApprovalClient
+StoreClient            # 安装面状态机（§6.3）
+ConversationClient     # 持久化多轮会话（§6.2）
 ```
 
 ### 2.3 Transport
@@ -339,6 +356,73 @@ await handle.close();    // 退订
 缺省幂等键 `crypto.randomUUID()`；`open`（新建+订阅）与 `attach`（订阅既有）两种绑定。
 webui 现有私有 reducer（`web/src/lib/conversation-events.ts`）为 UI 状态层，
 切到同一句柄属后续（见 `15` WP-4 / WP-7）。
+
+### 6.3 安装面：五动词与 `store` 子客户端
+
+**五个安装动词都可从 SDK 到达**（`05` §4.5）：`install/run` · `install/status` ·
+`install/disable` · `install/enable` · `install/uninstall`。SDK 把它们暴露成
+**两层**：
+
+**① `AppServerClient` 上的扁平方法（与 wire 一一对应）**：
+
+```ts
+runInstall(input: InstallRequest): Promise<InstallResult>          // install/run
+getInstallStatus(snapshotId: string): Promise<InstallStatus>       // install/status
+disableInstall(snapshotId: string, componentIds: string[]): Promise<InstallStatus>
+enableInstall(snapshotId: string, componentIds: string[]): Promise<InstallStatus>
+uninstallInstall(snapshotId: string, componentIds: string[]): Promise<InstallStatus>
+installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>
+```
+
+后三者的 `componentIds` **必须非空**——服务端对空列表返回 `invalid_request`
+（`05` §4.5）。
+
+**② `.store` 子客户端（把五动词编排成一条状态机）**：
+`launchClient(...)`（`@flowy-agent-store/sdk`）返回的 `client` 带
+`readonly store: StoreClient`（`@flowy-agent-store/client`）。它回答的是调用方
+**真正**想问的问题——「把这个商店条目装上，并在它可用时告诉我」——而**不新增
+任何 wire 方法**：全部由上面这些既有方法组合而成。
+
+```ts
+client.store.list(): Promise<StoreItem[]>
+client.store.search(query, { kind? }): Promise<StoreItem[]>
+client.store.installed(): Promise<StoreItem[]>
+client.store.checkUpdates(): Promise<StoreItem[]>        // installed && update_available
+client.store.updateHint(item): "none" | "uninstall_reinstall" | "unknown"
+client.store.install(item, { waitForReady?, timeoutMs?, signal? }): Promise<StoreOperationOutcome>
+client.store.uninstall(item, { componentIds? }): Promise<StoreOperationOutcome>
+client.store.setEnabled(item, enabled, { componentIds? }): Promise<StoreOperationOutcome>
+```
+
+两条它自我约束的规则（`store.ts` 模块注释原文）：
+
+- **绝不上报服务端没上报过的状态**：`components` 是 `InstallOutcome[]` 的
+  **逐字透传**，就绪判定是**另一个**字段——「服务端判某个组件失败」与「客户端
+  等超时了」永远不会被混为一谈；
+- **绝不掩盖已文档化的不对称**：connector 是**以 disabled 注册**的（安装器既有
+  默认值），所以 `waitForReady` 会先 `install/enable` 再探测；需要授权的
+  connector 立即返回 `authorization_required`，不烧完超时。
+
+`StoreOperationOutcome`：
+
+```ts
+snapshotId: string | null;
+reused: boolean;
+components: InstallOutcome[];   // 服务端逐组件结果，逐字
+ok: boolean;                    // errors 为空 且 每个 component.ok
+ready?: boolean;                // 未做就绪检查时 undefined
+readyIssue?: "ready_timeout" | "authorization_required";   // 客户端侧产生
+readyComponentId?: string;
+```
+
+**超时不等于安装失败**：`ready_timeout` 会连同**成功的安装**一起返回
+（`ready:false` + `readyIssue` + 点名组件），一个慢 connector 永远不会被说成
+「安装失败」。客户端侧的三个可分支错误码是 `not_installed` / `item_blocked` /
+`aborted`；服务端失败以 `outcomes` 到达（`code` 闭集见 `05` §4.5.2），**客户端
+不翻译服务端的 `code`**。
+
+> 兼容口径：`outcomes` 是 additive 字段。**更旧的宿主**不返回它——缺值读作
+> 「没有细节可给」，**绝不**读作「什么都没跑」。
 
 ## 7. 错误模型
 
