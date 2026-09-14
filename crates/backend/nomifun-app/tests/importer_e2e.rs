@@ -333,6 +333,27 @@ async fn importer_install_registers_components_into_runtime() {
         install_json["installed_count"].as_u64().unwrap() > 0,
         "at least skills/agents/connectors must be registered: {install_json}"
     );
+    // Every component report is branchable: a stable code and an action, with
+    // `errors` finally carrying the failures instead of always being empty.
+    let install_outcomes = install_json["outcomes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("install must report per-component outcomes: {install_json}"));
+    assert!(!install_outcomes.is_empty(), "{install_json}");
+    for outcome in install_outcomes {
+        assert!(
+            outcome["action"].as_str().is_some_and(|action| !action.is_empty()),
+            "every outcome must name what happened: {outcome}"
+        );
+        assert_eq!(
+            outcome["ok"], true,
+            "a first install of this fixture must not fail a component: {outcome}"
+        );
+    }
+    assert_eq!(
+        install_json["errors"].as_array().unwrap().len(),
+        0,
+        "a clean install must not report errors: {install_json}"
+    );
 
     // B3: the installed expert Preset must carry the Agent Markdown body as
     // its instructions (persona); an empty prompt would silently drop it.
@@ -424,6 +445,15 @@ async fn importer_install_registers_components_into_runtime() {
         .find(|component| component["id"] == skill_id)
         .unwrap();
     assert_eq!(uninstalled_skill["state"], "not-installed");
+    let uninstall_outcomes = uninstalled["outcomes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("uninstall must report outcomes: {uninstalled}"));
+    let skill_removal = uninstall_outcomes
+        .iter()
+        .find(|outcome| outcome["component_id"] == skill_id.as_str())
+        .unwrap_or_else(|| panic!("no outcome for the skill: {uninstalled}"));
+    assert_eq!(skill_removal["action"], "removed", "{skill_removal}");
+    assert_eq!(skill_removal["ok"], true, "{skill_removal}");
 
     let managed_snapshot_root = services
         .skill_paths
@@ -644,6 +674,24 @@ async fn importer_disable_moves_runtime_state_for_connector_and_expert() {
             assert_eq!(component["state"], "disabled", "{component}");
         }
     }
+
+    // The wire must say what actually happened per component, including that the
+    // skill's flag is a marker rather than a runtime switch.
+    let outcome_for = |payload: &serde_json::Value, id: &str| -> serde_json::Value {
+        payload["outcomes"]
+            .as_array()
+            .unwrap_or_else(|| panic!("mutation must report outcomes: {payload}"))
+            .iter()
+            .find(|outcome| outcome["component_id"] == id)
+            .unwrap_or_else(|| panic!("no outcome for {id}: {payload}"))
+            .clone()
+    };
+    let skill_outcome = outcome_for(&disabled, &skill_id);
+    assert_eq!(skill_outcome["action"], "marked", "{skill_outcome}");
+    assert_eq!(skill_outcome["code"], "skill_disable_flag_only", "{skill_outcome}");
+    assert_eq!(skill_outcome["ok"], true, "{skill_outcome}");
+    assert_eq!(outcome_for(&disabled, &expert_id)["action"], "disabled");
+    assert_eq!(outcome_for(&disabled, &connector_id)["action"], "disabled");
 
     assert_eq!(
         preset_enabled(app.clone(), &token, &preset_name).await,
@@ -978,6 +1026,25 @@ async fn importer_install_is_reentrant_for_agent_and_team_presets() {
     assert_eq!(
         after_second, after_first,
         "a retried install must reuse the recorded Presets instead of creating duplicates"
+    );
+
+    // The wire says so too: the retry's per-component outcomes must report
+    // reuse, not a fresh creation. A caller has no other way to tell.
+    let outcomes = second["outcomes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("install must report per-component outcomes: {second}"));
+    let reused: Vec<&str> = outcomes
+        .iter()
+        .filter(|outcome| outcome["action"] == "reused")
+        .filter_map(|outcome| outcome["kind"].as_str())
+        .collect();
+    assert!(
+        reused.contains(&"agent") && reused.contains(&"team"),
+        "the retry must report the agent and team Presets as reused: {second}"
+    );
+    assert!(
+        outcomes.iter().all(|outcome| outcome["ok"].as_bool().unwrap_or(false)),
+        "a retried install must not report any failed component: {second}"
     );
 }
 

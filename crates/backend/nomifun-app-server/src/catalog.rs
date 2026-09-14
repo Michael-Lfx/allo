@@ -422,8 +422,14 @@ impl FakeInstallProvider {
                 skipped: vec![],
                 warnings: vec![],
                 errors: vec![],
+                outcomes: vec![],
             },
-            status: AppServerInstallStatus { snapshot_id: "snap-demo".into(), components: vec![] },
+            status: AppServerInstallStatus {
+                snapshot_id: "snap-demo".into(),
+                components: vec![],
+                outcomes: vec![],
+                errors: vec![],
+            },
         }
     }
 }

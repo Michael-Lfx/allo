@@ -87,7 +87,7 @@ try {
 
 | 导出 | 说明 |
 | --- | --- |
-| `APP_SERVER_PROTOCOL_VERSION` | 当前协议版本字符串（如 `"2026-09-14"`），握手与 SDK 校验用 |
+| `APP_SERVER_PROTOCOL_VERSION` | 当前协议版本字符串（如 `"2026-09-15"`），握手与 SDK 校验用 |
 | `InitializeRequest` / `InitializeResult` | 握手请求/响应（含 `protocol_version`、`server` 信息） |
 | `ClientInfo` / `ClientCapabilities` | 连接方自述 |
 | `StoreList` / `StoreInstallResult` | winget 式统一目录 |
