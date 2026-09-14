@@ -5,6 +5,7 @@ import { Alert, Button, Empty, Input, Modal, Spin, Tabs, Tag, Typography } from 
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
+import ContentWidthToggle, { useWideContentLayout } from './components/ContentWidthToggle';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
 import { CourseGenerationPill } from './components/CourseGenerationPill';
 import { CourseWorkspace } from './components/CourseWorkspace';
@@ -15,6 +16,7 @@ import { useCheckinStatus } from './hooks/useCheckinStatus';
 import { useCourseCreation } from './hooks/useCourseCreation';
 import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
+import { contentColumnWidth, STANDARD_LIST_MAX_WIDTH } from './layout';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
 import { errorMessage, loadStoredReviewFilters } from './utils';
 
@@ -71,6 +73,8 @@ const LearningPage: React.FC = () => {
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   // 学习页统一的 AI 模型偏好：反思题评分、课程生成、任务重试均使用该选择
   const learningModel = useLearningAutogenModel();
+  // 内容宽度偏好：三个渲染面（列表 / 大纲工作区 / 学习图）共用同一个键
+  const { wide: wideContent } = useWideContentLayout();
 
   const initialLoaded = useRef(false);
   const load = useCallback(async () => {
@@ -278,7 +282,9 @@ const LearningPage: React.FC = () => {
 
   return (
     <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
-      <div className='mx-auto flex w-full md:max-w-1200px flex-col gap-20px'>
+      <div
+        className={`mx-auto flex w-full flex-col gap-20px ${contentColumnWidth(wideContent, STANDARD_LIST_MAX_WIDTH)}`}
+      >
         <div className='flex flex-wrap items-start justify-between gap-16px'>
           <div>
             <Title heading={3} className='!m-0'>
@@ -287,6 +293,7 @@ const LearningPage: React.FC = () => {
             <Text type='secondary'>{t('learning.subtitle')}</Text>
           </div>
           <div className='flex flex-wrap items-center gap-8px'>
+            <ContentWidthToggle />
             <div className='flex items-center gap-8px'>
               <Text>{t('learning.model')}</Text>
               <LearningModelSelector

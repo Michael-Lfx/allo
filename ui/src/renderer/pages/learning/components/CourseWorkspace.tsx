@@ -22,6 +22,15 @@ import type {
   Section,
 } from '../types';
 import { allConceptsMastered, lessonStatusTagColors } from '../model';
+import {
+  contentColumnWidth,
+  outlineWidthClass,
+  readingPanelClass,
+  STANDARD_LIST_MAX_WIDTH,
+  STANDARD_READING_MAX_WIDTH,
+  WIDE_READING_MAX_WIDTH,
+} from '../layout';
+import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import { LessonBlock } from './LessonStudy';
 import { statusLabel } from '../utils';
@@ -51,6 +60,7 @@ export function CourseWorkspace({
   const navigate = useNavigate();
   // 反思题评分使用学习页统一的模型偏好，详情页内可直接切换
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
+  const { wide: wideContent } = useWideContentLayout();
   const { course } = detail;
   const flatLessons = useMemo(
     () => detail.modules.flatMap((module) => module.lessons),
@@ -111,7 +121,9 @@ export function CourseWorkspace({
   const conceptsMastered = allConceptsMastered(detail.concepts);
   return (
     <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
-      <div className='mx-auto flex w-full md:max-w-1200px flex-col gap-18px'>
+      <div
+        className={`mx-auto flex w-full flex-col gap-18px ${contentColumnWidth(wideContent, STANDARD_LIST_MAX_WIDTH)}`}
+      >
         <div>
           <Button type='text' onClick={onBack}>
             {t('learning.back')}
@@ -125,6 +137,7 @@ export function CourseWorkspace({
             </div>
             {/* 打开课程详情即自动加入，无显式「加入课程」步骤 */}
             <div className='flex shrink-0 items-center gap-8px'>
+              <ContentWidthToggle />
               <LearningModelSelector
                 choice={modelChoice}
                 onChange={(choice) => void setModelChoice(choice)}
@@ -167,7 +180,9 @@ export function CourseWorkspace({
 
         {/* 左侧独立大纲 + 右侧仅显示当前选中课时内容 */}
         <div className='flex flex-col gap-18px lg:flex-row lg:items-start'>
-          <aside className='flex w-full shrink-0 flex-col rd-10px border border-solid border-[var(--color-border-2)] p-12px lg:sticky lg:top-16px lg:max-h-[calc(100vh-160px)] lg:w-264px lg:overflow-y-auto'>
+          <aside
+            className={`flex w-full shrink-0 flex-col rd-10px border border-solid border-[var(--color-border-2)] p-12px lg:sticky lg:top-16px lg:max-h-[calc(100vh-160px)] lg:overflow-y-auto ${outlineWidthClass(wideContent)}`}
+          >
             <div className='mb-8px flex items-baseline justify-between gap-8px'>
               <span className='font-600'>{t('learning.outline')}</span>
               <span className='text-12px text-t-tertiary'>
@@ -226,73 +241,81 @@ export function CourseWorkspace({
             })}
           </aside>
 
-          {/* 正文可读性：右栏默认约 918px 行宽（≈57 汉字/行）超出连续阅读舒适区，
-              限宽 760px（≈47 字/行）居中；Markdown 正文不传字号 props——ShadowView
-              以 `* { font-size/line-height }` 钉死 shadow 内排版（默认 16px/28px 阅读档），
+          {/* 正文可读性：行宽按连续阅读标准限宽居中——标准布局 760px（≈47 汉字/行），
+              满宽布局放宽到 1040px（≈65 汉字/行）。满宽布局下多出来的余宽由外层
+              边框面板承担，而不是继续拉长文字行：页面左右看不出大片留白，同时
+              长文不跳行。Markdown 正文不传字号 props——ShadowView 以
+              `* { font-size/line-height }` 钉死 shadow 内排版（默认 16px/28px 阅读档），
               外层 className 穿透无效，且显式传值会切到紧凑段距的消息档，反而更差 */}
-          <section className='mx-auto flex w-full min-w-0 max-w-760px flex-1 flex-col gap-14px'>
-            {selectedLesson && (
-              <>
-                <div>
-                  {selectedModule && (
-                    <Text type='secondary' className='text-12px'>
-                      {t('learning.lessons')} · {selectedModule.position + 1}. {selectedModule.title}
-                    </Text>
-                  )}
-                  <Title heading={4} className='!m-0 !mt-2px'>
-                    {lessonNumbers.get(selectedLesson.id)}. {selectedLesson.title}
-                  </Title>
-                </div>
-                <LessonBlock
-                  lesson={selectedLesson}
-                  sourceKbId={course.source_kb_id}
-                  busyId={busyId}
-                  attemptResults={attemptResults}
-                  onProgress={onProgress}
-                  onAttempt={onAttempt}
-                  onGenerate={(target) => onGenerate(target, flatLessons)}
-                  onRefresh={onRefresh}
-                />
-                <div className='flex items-center justify-between gap-12px'>
-                  <Button
-                    disabled={!prevLesson}
-                    onClick={() => prevLesson && setSelectedLessonId(prevLesson.id)}
-                  >
-                    <span className='flex items-center gap-4px'>
-                      <IconLeft />
-                      {t('learning.prevLesson')}
-                    </span>
-                  </Button>
-                  <Button
-                    disabled={!nextLesson}
-                    onClick={() => nextLesson && setSelectedLessonId(nextLesson.id)}
-                  >
-                    <span className='flex items-center gap-4px'>
-                      {t('learning.nextLesson')}
-                      <IconRight />
-                    </span>
-                  </Button>
-                </div>
-              </>
-            )}
-            <Card title={t('learning.concepts')}>
-              <div className='grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-10px'>
-                {detail.concepts.map((concept) => (
-                  <div
-                    key={concept.id}
-                    className='rounded-10px border border-solid border-[var(--color-border-2)] p-12px'
-                  >
-                    <div className='mb-6px font-600'>{concept.title}</div>
-                    {concept.mastery === null ? (
-                      <Text type='secondary'>{t('learning.masteryUnknown')}</Text>
-                    ) : (
-                      <Progress percent={Math.round(concept.mastery * 100)} size='small' />
+          <div className={readingPanelClass(wideContent)}>
+            <section
+              className={`mx-auto flex w-full min-w-0 flex-col gap-14px ${
+                wideContent ? WIDE_READING_MAX_WIDTH : STANDARD_READING_MAX_WIDTH
+              }`}
+            >
+              {selectedLesson && (
+                <>
+                  <div>
+                    {selectedModule && (
+                      <Text type='secondary' className='text-12px'>
+                        {t('learning.lessons')} · {selectedModule.position + 1}. {selectedModule.title}
+                      </Text>
                     )}
+                    <Title heading={4} className='!m-0 !mt-2px'>
+                      {lessonNumbers.get(selectedLesson.id)}. {selectedLesson.title}
+                    </Title>
                   </div>
-                ))}
-              </div>
-            </Card>
-          </section>
+                  <LessonBlock
+                    lesson={selectedLesson}
+                    sourceKbId={course.source_kb_id}
+                    busyId={busyId}
+                    attemptResults={attemptResults}
+                    onProgress={onProgress}
+                    onAttempt={onAttempt}
+                    onGenerate={(target) => onGenerate(target, flatLessons)}
+                    onRefresh={onRefresh}
+                  />
+                  <div className='flex items-center justify-between gap-12px'>
+                    <Button
+                      disabled={!prevLesson}
+                      onClick={() => prevLesson && setSelectedLessonId(prevLesson.id)}
+                    >
+                      <span className='flex items-center gap-4px'>
+                        <IconLeft />
+                        {t('learning.prevLesson')}
+                      </span>
+                    </Button>
+                    <Button
+                      disabled={!nextLesson}
+                      onClick={() => nextLesson && setSelectedLessonId(nextLesson.id)}
+                    >
+                      <span className='flex items-center gap-4px'>
+                        {t('learning.nextLesson')}
+                        <IconRight />
+                      </span>
+                    </Button>
+                  </div>
+                </>
+              )}
+              <Card title={t('learning.concepts')}>
+                <div className='grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-10px'>
+                  {detail.concepts.map((concept) => (
+                    <div
+                      key={concept.id}
+                      className='rounded-10px border border-solid border-[var(--color-border-2)] p-12px'
+                    >
+                      <div className='mb-6px font-600'>{concept.title}</div>
+                      {concept.mastery === null ? (
+                        <Text type='secondary'>{t('learning.masteryUnknown')}</Text>
+                      ) : (
+                        <Progress percent={Math.round(concept.mastery * 100)} size='small' />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </section>
+          </div>
         </div>
       </div>
     </div>

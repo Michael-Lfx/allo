@@ -178,6 +178,10 @@ export type ConfigKeyMap = {
   // course generation, job retry). Absent = the backend falls back to its
   // own default completer model.
   'learning.autogenModel': { provider_id: ProviderId; model: string } | undefined;
+  // 学习模块的内容宽度偏好：true = 满宽布局（内容列不再限宽，课时阅读区变成
+  // 占满整行的边框面板），false/absent = 标准布局（沿用各面原有的居中限宽）。
+  // 纯客户端排版偏好，后端不读取；除 true 外的任何值都按标准布局渲染。
+  'learning.wideContent': boolean | undefined;
   // Default provider+model for live agent evals. Absent = backend default completer.
   'eval.autogenModel': { provider_id: ProviderId; model: string } | undefined;
   // Global MoA (Mixture-of-Agents) defaults for new sessions, stored as a
