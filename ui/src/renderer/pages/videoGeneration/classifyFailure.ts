@@ -9,6 +9,7 @@ import {
   isContentPolicyRejection,
   isCopyrightRestriction,
   isReferenceImageModeration,
+  isRefAudioDurationLimit,
   extractProviderErrorCode,
   extractProviderErrorMessage,
 } from './providerError';
@@ -94,6 +95,21 @@ export function classifyFailure(
 
   const providerMessage = extractProviderErrorMessage(error) ?? undefined;
   const errorCode = extractProviderErrorCode(error) ?? undefined;
+
+  if (isRefAudioDurationLimit(error)) {
+    return {
+      kind: 'video',
+      title: t('videoGeneration.workspace.failure.refAudioDurationTitle', {
+        defaultValue: '参考音频总时长超限',
+      }),
+      hint: t('videoGeneration.workspace.failure.refAudioDurationHint', {
+        defaultValue:
+          'Wan 3.0 要求角色参考音频合计不超过 15 秒（其他视频模型各自有不同限制）。请从断点继续；系统会仅对 Wan 3.0 自动截短角色参考音。若仍失败，可打开到 Canvas 精调。',
+      }),
+      errorCode,
+      providerMessage,
+    };
+  }
 
   if (isContentPolicyRejection(error)) {
     if (isCopyrightRestriction(error)) {

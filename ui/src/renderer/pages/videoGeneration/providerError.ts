@@ -89,6 +89,15 @@ export function isReferenceImageModeration(blob: string): boolean {
   );
 }
 
+export function isRefAudioDurationLimit(blob: string): boolean {
+  const lower = blob.toLowerCase();
+  return (
+    lower.includes('reference_audio') &&
+    (lower.includes('exceeds max') ||
+      (lower.includes('total duration') && lower.includes('15')))
+  );
+}
+
 export function isContentPolicyRejection(blob: string): boolean {
   const lower = blob.toLowerCase();
   return (

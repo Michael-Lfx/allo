@@ -45,4 +45,16 @@ describe('classifyFailure', () => {
     expect(result.errorCode).toBe('OutputVideoSensitiveContentDetected.PolicyViolation');
     expect(result.providerMessage).toContain('copyright restrictions');
   });
+
+  test('wan3 reference_audio duration cap is a dedicated video failure', () => {
+    const result = classifyFailure(
+      'video generation failed: InvalidParameter: reference_audio total duration 15.6s exceeds max 15s',
+      'video_poll',
+      [{ stage: 'video_poll', message: '', at: 'a' }],
+      t
+    );
+    expect(result.kind).toBe('video');
+    expect(result.title).toBe('参考音频总时长超限');
+    expect(result.hint).toContain('15');
+  });
 });

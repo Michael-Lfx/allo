@@ -75,6 +75,8 @@ describe("video model reference capabilities", () => {
         expect(profile.video?.defaultResolution).toBe("720P");
         expect(profile.video?.generateAudio.supported).toBe(true);
         expect(profile.video?.operations).toContain("extend");
+        expect(profile.video?.references.maxAudioDurationSeconds).toBe(15);
+        expect(profile.video?.references.maxAudios).toBe(3);
     });
 
     test("generic video models default to reference-video capacity", () => {

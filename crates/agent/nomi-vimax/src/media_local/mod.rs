@@ -405,6 +405,99 @@ pub async fn probe_media_duration_secs(path: &Path) -> Option<f64> {
     probe_duration_secs(&ffmpeg, path).await
 }
 
+/// Rewrite `path` in place as a prefix clip when it is longer than `max_secs`.
+///
+/// Used by Wan 3.0 submit to keep Σ `reference_audio` under 15s. Probe or
+/// ffmpeg failure leaves the original file (callers must still drop extras).
+pub async fn trim_audio_to_max_secs(path: &Path, max_secs: f64) -> bool {
+    if max_secs <= 0.0 || !is_usable_audio_file(path) {
+        return false;
+    }
+    let Some(dur) = probe_media_duration_secs(path).await else {
+        return false;
+    };
+    if !dur.is_finite() || dur <= max_secs + 0.05 {
+        return false;
+    }
+    let ffmpeg = match ensure_ffmpeg_ready().await {
+        Ok(bin) => bin,
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "ffmpeg unavailable; leaving long voice ref untrimmed"
+            );
+            return false;
+        }
+    };
+    let part = {
+        let mut s = path.as_os_str().to_owned();
+        s.push(".trim.part");
+        PathBuf::from(s)
+    };
+    let input = path.to_string_lossy().into_owned();
+    let output = part.to_string_lossy().into_owned();
+    let limit = format!("{max_secs:.3}");
+    let copy_args = vec![
+        "-y".into(),
+        "-i".into(),
+        input.clone(),
+        "-t".into(),
+        limit.clone(),
+        "-c".into(),
+        "copy".into(),
+        output.clone(),
+    ];
+    let copied = match run_ffmpeg_owned_capture(&ffmpeg, &copy_args).await {
+        Ok((ok, _)) => ok && is_usable_audio_file(&part),
+        Err(_) => false,
+    };
+    if !copied {
+        let encode_args = vec![
+            "-y".into(),
+            "-i".into(),
+            input,
+            "-t".into(),
+            limit,
+            "-vn".into(),
+            "-c:a".into(),
+            "pcm_s16le".into(),
+            output,
+        ];
+        match run_ffmpeg_owned_capture(&ffmpeg, &encode_args).await {
+            Ok((ok, _)) if ok && is_usable_audio_file(&part) => {}
+            Ok((_, err)) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    stderr = %err,
+                    "ffmpeg could not trim voice ref; leaving original"
+                );
+                let _ = tokio::fs::remove_file(&part).await;
+                return false;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "ffmpeg could not trim voice ref; leaving original"
+                );
+                let _ = tokio::fs::remove_file(&part).await;
+                return false;
+            }
+        }
+    }
+    if let Err(err) = tokio::fs::rename(&part, path).await {
+        tracing::warn!(
+            path = %path.display(),
+            error = %err,
+            "could not replace voice ref with trimmed clip"
+        );
+        let _ = tokio::fs::remove_file(&part).await;
+        return false;
+    }
+    true
+}
+
 /// Probe the first video stream size.
 pub async fn probe_media_video_size(path: &Path) -> Option<(u32, u32)> {
     let ffmpeg = ensure_ffmpeg_ready().await.ok()?;

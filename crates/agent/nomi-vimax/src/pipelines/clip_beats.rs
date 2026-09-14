@@ -69,17 +69,22 @@ pub(crate) fn pack_scene_briefs_with(
     let mut out: Vec<ShotBriefDescription> = Vec::with_capacity(briefs.len());
     let mut run: Vec<ShotBriefDescription> = Vec::new();
     let mut run_need = 0u32;
+    let mut run_speakers: HashSet<String> = HashSet::new();
 
     for brief in briefs {
         let need = brief_need_secs(bounds, &brief);
+        let shot_speakers = named_dialogue_speakers(&brief_audio_blob(&brief));
         let joins = run.last().is_some_and(|prev| {
             can_pack_briefs(prev, &brief, run_need, need, bounds, &opts)
+                && can_join_voice_ref_speakers(&run_speakers, &shot_speakers)
         });
         if !joins {
             flush_briefs(&mut out, std::mem::take(&mut run));
             run_need = 0;
+            run_speakers.clear();
         }
         run_need += need;
+        run_speakers.extend(shot_speakers);
         run.push(brief);
     }
     flush_briefs(&mut out, run);
@@ -420,17 +425,22 @@ pub(crate) fn pack_scene_clips(
     let mut out: Vec<ShotDescription> = Vec::with_capacity(shots.len());
     let mut run: Vec<ShotDescription> = Vec::new();
     let mut run_need = 0u32;
+    let mut run_speakers: HashSet<String> = HashSet::new();
 
     for shot in shots {
         let need = beat_need_secs(bounds, &shot.variation_type, &shot);
+        let shot_speakers = named_dialogue_speakers(&shot_audio_blob(&shot));
         let joins = run.last().is_some_and(|prev| {
             can_pack_onto(prev, &shot, run_need, need, bounds)
+                && can_join_voice_ref_speakers(&run_speakers, &shot_speakers)
         });
         if !joins {
             flush(&mut out, std::mem::take(&mut run));
             run_need = 0;
+            run_speakers.clear();
         }
         run_need += need;
+        run_speakers.extend(shot_speakers);
         run.push(shot);
     }
     flush(&mut out, run);
@@ -503,6 +513,132 @@ fn can_pack_briefs(
         );
     }
     run_need + need <= bounds.max_secs()
+}
+
+/// Wan 3.0 / Seedance bind one TTS wav per named speaker (max 3 slots).
+/// Combined-duration caps (Wan 3.0 Σ ≤ 15s) are enforced at video submit.
+/// Packing a fourth unique speaker into the same clip overflows the slot count.
+const MAX_PACKED_VOICE_REF_SPEAKERS: usize = 3;
+
+fn can_join_voice_ref_speakers(run: &HashSet<String>, next: &HashSet<String>) -> bool {
+    if next.is_empty() {
+        return true;
+    }
+    run.union(next).count() <= MAX_PACKED_VOICE_REF_SPEAKERS
+}
+
+fn brief_audio_blob(brief: &ShotBriefDescription) -> String {
+    let mut parts = Vec::new();
+    if let Some(audio) = brief
+        .audio_desc
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(audio);
+    }
+    for beat in &brief.beats {
+        if let Some(audio) = beat
+            .audio_desc
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            parts.push(audio);
+        }
+    }
+    parts.join(" ")
+}
+
+fn shot_audio_blob(shot: &ShotDescription) -> String {
+    let mut parts = Vec::new();
+    if let Some(audio) = shot
+        .audio_desc
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(audio);
+    }
+    for beat in &shot.beats {
+        if let Some(audio) = beat
+            .audio_desc
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            parts.push(audio);
+        }
+    }
+    parts.join(" ")
+}
+
+/// Named storyboard lines (`李薇：「…」` / `Alice: "…"`).
+fn named_dialogue_speakers(blob: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for (byte, ch) in blob.char_indices() {
+        if !matches!(ch, '「' | '"' | '“') {
+            continue;
+        }
+        if let Some(name) = speaker_name_before_quote(blob, byte) {
+            names.insert(name);
+        }
+    }
+    names
+}
+
+fn speaker_name_before_quote(blob: &str, quote_byte: usize) -> Option<String> {
+    let prefix = blob.get(..quote_byte)?;
+    let chars: Vec<char> = prefix.chars().collect();
+    let mut i = chars.len();
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    if i == 0 || !matches!(chars[i - 1], ':' | '：') {
+        return None;
+    }
+    i -= 1;
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    if i > 0 && chars[i - 1] == '道' {
+        i -= 1;
+        if i > 0 && chars[i - 1] == '说' {
+            i -= 1;
+        }
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+    } else if i > 0 && chars[i - 1] == '说' {
+        i -= 1;
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+    }
+    let end = i;
+    let mut start = i;
+    let mut taken = 0u32;
+    while start > 0 && is_packed_speaker_name_char(chars[start - 1]) && taken < 12 {
+        start -= 1;
+        taken += 1;
+    }
+    if taken == 0 {
+        return None;
+    }
+    let name: String = chars[start..end].iter().collect::<String>();
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn is_packed_speaker_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(ch as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
+        || ch == '_'
+        || ch == '-'
 }
 
 fn crosses_split(
@@ -1211,6 +1347,8 @@ mod tests {
 
     /// Window of the models integrated today (Seedance 2.0, MiniMax-H3 ⊂ 4–15s).
     const SEEDANCE: ClipBounds = ClipBounds::new(5, 15);
+    /// Wan 3.0 video window (2–30s) — duration alone would swallow four short lines.
+    const WAN3: ClipBounds = ClipBounds::new(2, 30);
 
     fn shot(idx: i32, cam_idx: i32, motion: &str, audio: Option<&str>) -> ShotDescription {
         ShotDescription {
@@ -1652,6 +1790,46 @@ mod tests {
         assert_eq!(once.len(), twice.len());
         assert_eq!(once[0].beats.len(), twice[0].beats.len());
         assert_eq!(once[0].idx, twice[0].idx);
+    }
+
+    #[test]
+    fn named_dialogue_speakers_parse_storyboard_lines() {
+        let names = named_dialogue_speakers("李薇：「走。」阿琳：「等。」 Alice: \"wait.\"");
+        assert!(names.contains("李薇"), "{names:?}");
+        assert!(names.contains("阿琳"), "{names:?}");
+        assert!(names.contains("Alice"), "{names:?}");
+    }
+
+    #[test]
+    fn packing_stops_before_a_fourth_named_speaker() {
+        let briefs = vec![
+            brief(0, 0, "a", Some("李薇：「走。」")),
+            brief(1, 0, "b", Some("阿琳：「等。」")),
+            brief(2, 0, "c", Some("赵无极：「听。」")),
+            brief(3, 0, "d", Some("林尘：「看。」")),
+        ];
+        let packed = pack_scene_briefs(WAN3, briefs);
+        assert!(
+            packed.len() >= 2,
+            "4 named speakers must not share one Wan clip: {packed:?}"
+        );
+        let first_speakers = named_dialogue_speakers(&brief_audio_blob(&packed[0]));
+        assert!(
+            first_speakers.len() <= MAX_PACKED_VOICE_REF_SPEAKERS,
+            "{first_speakers:?}"
+        );
+    }
+
+    #[test]
+    fn three_named_speakers_can_still_pack_on_wan_window() {
+        let briefs = vec![
+            brief(0, 0, "a", Some("李薇：「走。」")),
+            brief(1, 0, "b", Some("阿琳：「等。」")),
+            brief(2, 0, "c", Some("赵无极：「听。」")),
+        ];
+        let packed = pack_scene_briefs(WAN3, briefs);
+        assert_eq!(packed.len(), 1);
+        assert!(packed[0].is_merged());
     }
 
     #[test]

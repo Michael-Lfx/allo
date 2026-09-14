@@ -49,6 +49,16 @@ fn form_urlencode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+fn available_models_claw_path(category: i32, app: &str) -> String {
+    let mut path = format!("/api/v2/model/availableListClaw?category={category}");
+    let app = app.trim();
+    if !app.is_empty() {
+        path.push_str("&app=");
+        path.push_str(&form_urlencode(app));
+    }
+    path
+}
+
 /// Client for Flowy user account, credits, and device APIs.
 pub struct FlowyApiClient {
     transport: HttpTransport,
@@ -302,7 +312,7 @@ impl FlowyApiClient {
         category: Option<i32>,
     ) -> Result<AvailableModelsClaw, ServerClientError> {
         let category = category.unwrap_or(1);
-        let path = format!("/api/v2/model/availableListClaw?category={category}");
+        let path = available_models_claw_path(category, &self.config.app);
         self.get_data(&path, Some(session)).await
     }
 
@@ -503,6 +513,7 @@ mod api_tests {
         Mock::given(method("GET"))
             .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "1"))
+            .and(query_param("app", "flowymes"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"auto":[{"id":"AIPC-auto-balance","name":"平衡","extra":"{\"input\":[\"text\"],\"tools\":true,\"context_window\":500000}","category":1}],"cloud":[{"id":"AIPC-glm-5","name":"GLM 5","extra":"{\"reasoning\":true,\"reasoning_effort\":[\"low\",\"high\"],\"max_tokens\":16384}","category":1}]}}"#,
             ))
@@ -530,5 +541,21 @@ mod api_tests {
         assert!(extra.reasoning);
         assert_eq!(extra.reasoning_effort, vec!["low", "high"]);
         assert_eq!(extra.reasoning_effort_levels(), Some(vec!["low".into(), "high".into()]));
+    }
+
+    #[test]
+    fn available_models_claw_path_appends_app_query() {
+        assert_eq!(
+            available_models_claw_path(1, "flowymes"),
+            "/api/v2/model/availableListClaw?category=1&app=flowymes"
+        );
+        assert_eq!(
+            available_models_claw_path(4, " flowymes "),
+            "/api/v2/model/availableListClaw?category=4&app=flowymes"
+        );
+        assert_eq!(
+            available_models_claw_path(6, ""),
+            "/api/v2/model/availableListClaw?category=6"
+        );
     }
 }

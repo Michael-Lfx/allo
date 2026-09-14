@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use futures::FutureExt;
@@ -222,6 +223,8 @@ impl WorldAssetsPlanner {
         style_lock_token: &str,
     ) -> VimaxResult<WorldAssetRegistry> {
         tokio::fs::create_dir_all(film_root).await?;
+        // Leftovers from older builds (or a vision check that returned before unlink).
+        sweep_world_vision_thumbs(film_root);
         let spec_path = film_root.join("world_assets.json");
         let registry_path = film_root.join("world_assets_registry.json");
         let lock_path = film_root.join("world_assets_cameo_lock.txt");
@@ -294,6 +297,7 @@ impl WorldAssetsPlanner {
         let prop_root = film_root.join("props");
         tokio::fs::create_dir_all(&env_root).await?;
         tokio::fs::create_dir_all(&prop_root).await?;
+        sweep_world_vision_thumbs(film_root);
 
         let mut env_map = registry.remove("environments").unwrap_or_default();
         let mut prop_map = registry.remove("props").unwrap_or_default();
@@ -436,9 +440,17 @@ impl WorldAssetsPlanner {
                     Ok::<_, VimaxError>(())
                 });
             }
-            while let Some(joined) = set.join_next().await {
-                joined.map_err(|e| VimaxError::msg(format!("world plate join: {e}")))??;
+            let gen_result = async {
+                while let Some(joined) = set.join_next().await {
+                    joined.map_err(|e| VimaxError::msg(format!("world plate join: {e}")))??;
+                }
+                Ok::<_, VimaxError>(())
             }
+            .await;
+            sweep_world_vision_thumbs(film_root);
+            gen_result?;
+        } else {
+            sweep_world_vision_thumbs(film_root);
         }
 
         // Phase C — register plates (skip ones already in the registry) with the
@@ -488,6 +500,7 @@ impl WorldAssetsPlanner {
         if !style_lock_token.is_empty() {
             crate::session::write_text_artifact(&lock_path, style_lock_token).await?;
         }
+        sweep_world_vision_thumbs(film_root);
         Ok(registry)
     }
 
@@ -601,6 +614,8 @@ or framed photo of people."
 
     async fn plate_has_people(&self, path: &Path) -> bool {
         // Vision check only needs a thumbnail — full 2K plates bloat multimodal payloads.
+        // Write it under the OS temp dir, never next to the plate (a failed check
+        // used to leave `*.vision_thumb.jpg` beside every env/prop PNG).
         let vision_path = match downsample_for_vision(path).await {
             Ok(p) => p,
             Err(err) => {
@@ -608,12 +623,20 @@ or framed photo of people."
                 path.to_path_buf()
             }
         };
+        let has_people = self.inspect_plate_people(&vision_path).await;
+        if vision_path != path {
+            let _ = tokio::fs::remove_file(&vision_path).await;
+        }
+        has_people
+    }
+
+    async fn inspect_plate_people(&self, vision_path: &Path) -> bool {
         let raw = match self
             .chat
             .complete_vision(
                 "You are a strict image inspector. Reply with exactly YES or NO.",
                 "Does this image contain any human, person, face, crowd, silhouette of a person, hand, or body part? YES or NO only.",
-                &[vision_path.as_path()],
+                &[vision_path],
             )
             .await
         {
@@ -623,9 +646,6 @@ or framed photo of people."
                 return false;
             }
         };
-        if vision_path != path {
-            let _ = tokio::fs::remove_file(&vision_path).await;
-        }
         let upper = raw.trim().to_ascii_uppercase();
         let trimmed = raw.trim();
         if upper.starts_with("NO")
@@ -641,13 +661,19 @@ or framed photo of people."
     }
 }
 
+static VISION_THUMB_SEQ: AtomicU64 = AtomicU64::new(0);
+
 async fn downsample_for_vision(path: &Path) -> VimaxResult<PathBuf> {
     let bytes = tokio::fs::read(path).await?;
     let img = image::load_from_memory(&bytes).map_err(|e| {
         VimaxError::Media(format!("decode plate for vision {}: {e}", path.display()))
     })?;
     let thumb = img.thumbnail(768, 768);
-    let out = path.with_extension("vision_thumb.jpg");
+    let seq = VISION_THUMB_SEQ.fetch_add(1, Ordering::Relaxed);
+    let out = std::env::temp_dir().join(format!(
+        "vimax_world_vision_{}_{seq}.jpg",
+        std::process::id()
+    ));
     let thumb_path = out.clone();
     tokio::task::spawn_blocking(move || {
         thumb
@@ -657,6 +683,40 @@ async fn downsample_for_vision(path: &Path) -> VimaxResult<PathBuf> {
     .await
     .map_err(|e| VimaxError::Media(format!("vision thumb join: {e}")))??;
     Ok(thumb_path)
+}
+
+/// Leftover inspection JPEG next to a world plate (`foo_prop.vision_thumb.jpg`).
+pub(crate) fn is_world_vision_thumb(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n.to_ascii_lowercase().contains("vision_thumb"))
+}
+
+/// Remove inspection sidecars left in `environments/` / `props/` from older builds
+/// (or a cancelled people-check). Not part of the published bible.
+fn sweep_world_vision_thumbs(film_root: &Path) {
+    for group in ["environments", "props"] {
+        let root = film_root.join(group);
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let Ok(files) = std::fs::read_dir(&path) else {
+                    continue;
+                };
+                for file in files.flatten() {
+                    let file = file.path();
+                    if is_world_vision_thumb(&file) {
+                        let _ = std::fs::remove_file(&file);
+                    }
+                }
+            } else if is_world_vision_thumb(&path) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 }
 
 async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
@@ -1234,9 +1294,9 @@ fn match_tokens(blob: &str) -> Vec<String> {
 mod tests {
     use super::{
         WorldAssetsSpec, bind_location_ids, environment_plate_prompt, first_scene_slugline,
-        is_look_plate_path, is_people_centric_prop, is_safe_world_style_ref, prop_plate_prompt,
-        rank_world_pairs_for_frame, resolve_environment_plate, select_environment_plate,
-        strip_people_mentions,
+        is_look_plate_path, is_people_centric_prop, is_safe_world_style_ref, is_world_vision_thumb,
+        prop_plate_prompt, rank_world_pairs_for_frame, resolve_environment_plate,
+        select_environment_plate, strip_people_mentions, sweep_world_vision_thumbs,
     };
     use std::path::{Path, PathBuf};
 
@@ -1257,6 +1317,42 @@ mod tests {
         assert!(is_people_centric_prop("全家福合照", "墙上的照片"));
         assert!(is_people_centric_prop("Family portrait", "framed photo"));
         assert!(!is_people_centric_prop("红伞", "油纸伞，无人物"));
+    }
+
+    #[test]
+    fn world_vision_thumb_names() {
+        assert!(is_world_vision_thumb(Path::new(
+            "莎草纸文书卷_prop.vision_thumb.jpg"
+        )));
+        assert!(is_world_vision_thumb(Path::new(
+            "INT_神殿文书大厅_-_日_environment_plate.vision_thumb.jpg"
+        )));
+        assert!(!is_world_vision_thumb(Path::new("莎草纸文书卷_prop.png")));
+        assert!(!is_world_vision_thumb(Path::new(
+            "INT_神殿文书大厅_-_日_environment_plate.png"
+        )));
+    }
+
+    #[test]
+    fn sweep_removes_leftover_vision_thumbs_not_plates() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join("environments/2_INT");
+        let prop = dir.path().join("props/0_doc");
+        std::fs::create_dir_all(&env).unwrap();
+        std::fs::create_dir_all(&prop).unwrap();
+        let plate = env.join("INT_environment_plate.png");
+        let thumb = env.join("INT_environment_plate.vision_thumb.jpg");
+        let prop_png = prop.join("doc_prop.png");
+        let prop_thumb = prop.join("doc_prop.vision_thumb.jpg");
+        std::fs::write(&plate, b"png").unwrap();
+        std::fs::write(&thumb, b"jpg").unwrap();
+        std::fs::write(&prop_png, b"png").unwrap();
+        std::fs::write(&prop_thumb, b"jpg").unwrap();
+        sweep_world_vision_thumbs(dir.path());
+        assert!(plate.is_file());
+        assert!(prop_png.is_file());
+        assert!(!thumb.exists());
+        assert!(!prop_thumb.exists());
     }
 
     #[test]

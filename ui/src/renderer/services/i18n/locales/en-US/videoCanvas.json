@@ -2227,6 +2227,7 @@
     "busy": "The service is busy. Please try again later.",
     "authFailed": "Generation service authentication failed. Check the channel configuration.",
     "urlUnavailable": "Generation service endpoint is unavailable. Check the channel configuration.",
+    "refAudioDuration": "Combined reference audio cannot exceed 15 seconds. Shorten or drop character voice refs and retry.",
     "failed": "Generation failed. Please try again later."
   },
   "userError": {

@@ -711,6 +711,8 @@
       "videoTitle": "视频模型调用失败",
       "videoChannelHint": "生成镜头成片时视频通道不可用。请更换「视频模型」后点击「从断点继续」。",
       "videoHint": "请检查视频模型是否可用。已保留现场，可点击「从断点继续」。",
+      "refAudioDurationTitle": "参考音频总时长超限",
+      "refAudioDurationHint": "Wan 3.0 要求角色参考音频合计不超过 15 秒（其他视频模型各自有不同限制）。请从断点继续；系统会仅对 Wan 3.0 自动截短角色参考音。若仍失败，可打开到 Canvas 精调。",
       "copyrightTitle": "成片未通过版权审核",
       "copyrightHint": "生成画面可能涉及版权受限内容，该镜头未生成成功。请修改分镜描述或参考素材后，点击「从断点继续」；已成功的片段不会重复扣费。",
       "privacyTitle": "参考图未通过内容审核",
@@ -771,7 +773,7 @@
     "technicalDetailsBadge": "建议先检查",
     "storyboard": {
       "title": "故事分镜",
-      "hint": "胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。",
+      "hint": "胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。如需修改镜头，请打开到 Canvas 精调。",
       "shotCount": "共 {{count}} 个镜头",
       "shotNumberOf": "镜头 {{number}} / {{total}}",
       "editable": "可编辑",
