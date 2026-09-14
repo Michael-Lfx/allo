@@ -17,11 +17,37 @@ import {
 import { TransportError } from "@flowy-agent-store/protocol";
 import {
   APP_SERVER_PROTOCOL_VERSION,
+  type AgentStoreConfigPatch,
+  type AgentStoreConfigView,
   type BrowseDirectoryResult,
   type FileMetadata,
+  type SkillCreateInput,
+  type SkillDeleteResult,
   type SkillDetail,
+  type SkillUpdateInput,
   type WorkspaceFlatFile,
   type WorkspaceRegistration,
+} from "@flowy-agent-store/protocol";
+
+/**
+ * The host-management shapes this file's helpers speak.
+ *
+ * They are declared in `@flowy-agent-store/protocol` (the wire contract's single
+ * source of truth) and re-exported here so callers that already import from
+ * this module keep working. See that package for why the *methods* for them are
+ * deliberately absent from the published client while the *types* are not.
+ */
+export type {
+  AgentStoreConfigMcp,
+  AgentStoreConfigMcpRejection,
+  AgentStoreConfigMcpServer,
+  AgentStoreConfigMemory,
+  AgentStoreConfigPatch,
+  AgentStoreConfigProvider,
+  AgentStoreConfigView,
+  SkillCreateInput,
+  SkillDeleteResult,
+  SkillUpdateInput,
 } from "@flowy-agent-store/protocol";
 import type { FileChangeOperation, SnapshotCompare, SnapshotInfo } from "./artifact-changes";
 
@@ -29,7 +55,6 @@ export * from "@flowy-agent-store/client";
 // The skill write face addresses `skill/get`'s shape, so the store needs the
 // type re-exported here (it is imported for the helper signatures above).
 export type { SkillDetail } from "@flowy-agent-store/protocol";
-
 export interface AppServerClientOptions extends Omit<BaseOptions, "transport"> {
   /** Ready-made transport; defaults to a `WebSocketTransport` over `wsUrl`. */
   transport?: Transport;
@@ -60,149 +85,6 @@ interface ApiResponse<T> {
  * `api_key` or `base_url`, so a credential cannot reach the front end through
  * this face.
  */
-export interface AgentStoreConfigView {
-  /** The file exists on this host; a save creates it when it does not. */
-  exists: boolean;
-  /** Declared `default_model`; explicit `null` = none declared in the file. */
-  default_model: string | null;
-  /** `[providers.<name>]` tables as declared in the file. */
-  providers: AgentStoreConfigProvider[];
-  /**
-   * `[memory]` table; `null` when the file declares no such table (so the UI
-   * can say "not configured" instead of inventing "off"). Additive field.
-   */
-  memory: AgentStoreConfigMemory | null;
-  /**
-   * `~/.agent-store/mcp.json` as the host read it (`20` §7.9 / `21` D14);
-   * `null` when there is no readable declaration file. Additive field, and the
-   * **only** read surface for a declared server: declarations never become
-   * `mcp_servers` rows, so they do not appear in `connector/*`.
-   */
-  mcp: AgentStoreConfigMcp | null;
-}
-
-/** One `mcpServers` entry the host accepted. */
-export interface AgentStoreConfigMcpServer {
-  /** The `mcpServers` key — the `<server>` segment of `mcp__<server>__*`. */
-  name: string;
-  /** `stdio` | `http` | `sse` (already a label, not a discriminant to branch on). */
-  transport: string;
-  /** `enabled = false` keeps the entry declared but out of every session. */
-  enabled: boolean;
-}
-
-/** One `mcpServers` entry the host refused, and why. */
-export interface AgentStoreConfigMcpRejection {
-  name: string;
-  /**
-   * The parser's own reason ("a field on the wrong transport", "an out-of-range
-   * timeout", …). Server-authored prose, not an i18n key.
-   */
-  reason: string;
-}
-
-/**
- * The `mcp.json` projection. A refusal is reported rather than silently
- * dropped: an ignored `enabledTools` would leave tools the user believes
- * excluded still callable, which is why this half has to be visible.
- */
-export interface AgentStoreConfigMcp {
-  /**
-   * The declaration file is present. The host only sends this view after it has
-   * read the file, so this is `true` whenever `mcp` is not `null`; it is kept
-   * because the wire carries it, not because a branch should read it.
-   */
-  exists: boolean;
-  /**
-   * Whether **this host** feeds the file into agent sessions, as the launcher
-   * reported at startup. Omitted when the host did not say — `undefined` is
-   * "cannot tell", which is not the same answer as `false` ("this host does not
-   * read the file"). `servers` describes the file; this describes the host.
-   */
-  adopted?: boolean;
-  /** Accepted entries, ordered by server key. Never a credential value. */
-  servers: AgentStoreConfigMcpServer[];
-  /** Refused entries, with the reason the user has to fix. */
-  rejected: AgentStoreConfigMcpRejection[];
-  /**
-   * Why the **whole file** could not be read as declarations (invalid JSON,
-   * wrong top level). Omitted when the file parsed — without it a broken file
-   * and an empty one look the same.
-   */
-  error?: string;
-}
-
-/** `[memory]` in the host settings file, as far as the wire exposes it. */
-export interface AgentStoreConfigMemory {
-  /** `null` = the table exists without the key (upstream default applies). */
-  distill_enabled: boolean | null;
-}
-
-/** One provider table from the file (never a registered-provider row). */
-export interface AgentStoreConfigProvider {
-  /** `[providers.<name>]` key — the left half of a `default_model`. */
-  name: string;
-  /** `enabled = false` in the file; `true` when the key is absent. */
-  enabled: boolean;
-  /** Model names declared for this provider in the file. */
-  models: string[];
-}
-
-/** The only keys `config/set` accepts (the server rejects anything else). */
-export interface AgentStoreConfigPatch {
-  default_model?: string;
-  /** Writes `[memory] distill_enabled` — the switch the host reads at startup. */
-  memory?: { distill_enabled: boolean };
-}
-
-/** `skill/create` — structured fields; the server assembles the frontmatter. */
-export interface SkillCreateInput {
-  /** Becomes the skill's public id and its directory name. */
-  name: string;
-  description: string;
-  when_to_use?: string;
-  allowed_tools?: string;
-  paths?: string;
-  body?: string;
-}
-
-/**
- * `skill/update` — a field-level patch.
- *
- * An absent field is left alone (`undefined`, not empty string). An **empty
- * string** on one of the optional keys clears that key; `description` may not
- * be emptied (`invalid_request`). There is deliberately no `name`.
- */
-export interface SkillUpdateInput {
-  skill_id: string;
-  description?: string;
-  when_to_use?: string;
-  allowed_tools?: string;
-  paths?: string;
-  /** Replaces the body wholesale — the read face never returned it, so an edit
-   * can only ever *replace* prose, not append to what it never saw. */
-  body?: string;
-}
-
-/** `skill/delete` — what the id resolves to after the delete. */
-export interface SkillDeleteResult {
-  skill_id: string;
-  deleted: boolean;
-  /** Present when the id now resolves to another origin (e.g. a built-in the
-   * user skill was shadowing); absent when nothing is visible there any more. */
-  revealed_origin?: SkillOriginWire | null;
-}
-
-/** On-disk owner of a skill, as the read face reports it. */
-export type SkillOriginWire =
-  | "user"
-  | "shared"
-  | "companion"
-  | "draft"
-  | "marketplace"
-  | "builtin"
-  | "unmanaged";
-
 /** Derive the HTTP helper base URL from the WebSocket URL. */
 function deriveHttpBaseUrl(wsUrl: string): string | undefined {
   try {
@@ -418,12 +300,14 @@ export class AppServerClient extends BaseClient {
   /**
    * Read the host's agent-store settings file (`config/get`).
    *
-   * Provider/default-model configuration is **host management surface**, not a
-   * published SDK method (doc `16` §6: a third-party consumer has no business
-   * reading this host's provider config), so it lives here with the other
-   * Web-only helpers and rides the protocol transport directly. The result
-   * carries no credential by construction, and the file location is the host's
-   * own — no parameter can name a path.
+   * Host management surface, kept off the published SDK's method face because it
+   * is volatile (it tracks this host's own settings file) and because the client
+   * package cannot tell a runtime it spawned from one it merely dialled. That
+   * is a **discoverability** boundary, not an access one: `transport` is public,
+   * so a consumer could reach these methods anyway, and the server is what
+   * actually enforces anything. The result carries no credential by
+   * construction, and the file location is the host's own — no parameter can
+   * name a path.
    */
   async getAgentStoreConfig(): Promise<AgentStoreConfigView> {
     return this.transport.request<AgentStoreConfigView>("config/get", {});
@@ -444,10 +328,12 @@ export class AppServerClient extends BaseClient {
    * Skill write face (`skill/create` · `skill/update` · `skill/delete` ·
    * `skill/copy`, doc `16` R17 / W12).
    *
-   * Same reasoning as `config/*`: a third-party consumer must not be able to
-   * write into this host's skill tree, so these are **wire-only** host
-   * management methods with no counterpart in the published client package and
-   * no HTTP binding. The Web UI is the host's own surface, so it calls them
+   * Same reasoning as `config/*` — volatile, and host-scoped — so these are
+   * wire-only host management methods with no counterpart in the published
+   * client package and no HTTP binding. They are **reachable** regardless (the
+   * transport is public and the server gates on the on-disk origin, not on the
+   * caller), which is why the shapes live in `@flowy-agent-store/protocol`
+   * rather than here. The Web UI is the host's own surface, so it calls them
    * through these helpers.
    *
    * Every one of them answers with the **re-read** shape: `skill/create`,

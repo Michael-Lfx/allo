@@ -20,13 +20,9 @@ import { useEffect, useState } from "react";
 import { Copy, Pencil, Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import type { SkillSummary } from "@flowy-agent-store/protocol";
+import type { SkillOrigin, SkillSummary } from "@flowy-agent-store/protocol";
 import { DialogShell } from "../dialogs/DialogShell";
-import type {
-  SkillCreateInput,
-  SkillOriginWire,
-  SkillUpdateInput,
-} from "../../lib/client";
+import type { SkillCreateInput, SkillUpdateInput } from "../../lib/client";
 import { useSkillAdmin } from "../../store/skillAdmin";
 import type { SkillAdminClient } from "../../store/skillAdmin";
 
@@ -37,7 +33,7 @@ import type { SkillAdminClient } from "../../store/skillAdmin";
  * A missing/unknown origin is *not* writable either: an older host that predates
  * the field must not make the UI offer a write it cannot justify.
  */
-export function readOnlyReasonI18nKey(origin: SkillOriginWire | undefined): string {
+export function readOnlyReasonI18nKey(origin: SkillOrigin | undefined): string {
   switch (origin) {
     case "builtin":
       return "skills.reasonBuiltin";
@@ -57,7 +53,7 @@ export function readOnlyReasonI18nKey(origin: SkillOriginWire | undefined): stri
 }
 
 /** Origin label key for the badge on every row. */
-export function originLabelI18nKey(origin: SkillOriginWire | undefined): string {
+export function originLabelI18nKey(origin: SkillOrigin | undefined): string {
   switch (origin) {
     case "user":
       return "skills.originUser";

@@ -553,6 +553,172 @@ export interface SkillDetail extends SkillSummary {
   instructions_summary?: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Host-management faces (docs/agent-store/16 R16 / R17, 05 §4.11)
+// ---------------------------------------------------------------------------
+
+/**
+ * Request/response shapes for the six **host-management** methods:
+ * `config/get` · `config/set` · `skill/create` · `skill/update` ·
+ * `skill/delete` · `skill/copy`.
+ *
+ * They live here because this package is the wire contract's single source of
+ * truth: a method that exists on the wire has a shape, and a caller that speaks
+ * the protocol must be able to type-check it whether or not the curated
+ * `@flowy-agent-store/client` surface offers a typed method for it. Declaring
+ * them only in the host app made that claim false.
+ *
+ * **Not a stability promise.** These are the most volatile methods in the
+ * protocol — they track the host's own settings file and its skills directory,
+ * and are the ones most likely to change without notice during beta
+ * (`16` D10=A: no backward-compatibility promise before release). The client
+ * package deliberately ships no typed method for them; call them through
+ * `transport.request` if you need them, and expect churn. What is *not* the
+ * reason is access control: `transport` is public and the server enforces
+ * writability from the on-disk origin, so this is a discoverability boundary,
+ * not a security one.
+ */
+
+/**
+ * `config/get` / `config/set` view of the host's `~/.agent-store/config.toml`.
+ *
+ * Never carries a credential: the file's `[providers.<name>]` tables hold
+ * `api_key` or `base_url`, so a credential cannot reach the front end through
+ * this face.
+ */
+export interface AgentStoreConfigView {
+  /** The file exists on this host; a save creates it when it does not. */
+  exists: boolean;
+  /** Declared `default_model`; explicit `null` = none declared in the file. */
+  default_model: string | null;
+  /** `[providers.<name>]` tables as declared in the file. */
+  providers: AgentStoreConfigProvider[];
+  /**
+   * `[memory]` table; `null` when the file declares no such table (so the UI
+   * can say "not configured" instead of inventing "off"). Additive field.
+   */
+  memory: AgentStoreConfigMemory | null;
+  /**
+   * `~/.agent-store/mcp.json` as the host read it (`20` §7.9 / `21` D14);
+   * `null` when there is no readable declaration file. Additive field, and the
+   * **only** read surface for a declared server: declarations never become
+   * `mcp_servers` rows, so they do not appear in `connector/*`.
+   */
+  mcp: AgentStoreConfigMcp | null;
+}
+
+/** One `mcpServers` entry the host accepted. */
+export interface AgentStoreConfigMcpServer {
+  /** The `mcpServers` key — the `<server>` segment of `mcp__<server>__*`. */
+  name: string;
+  /** `stdio` | `http` | `sse` (already a label, not a discriminant to branch on). */
+  transport: string;
+  /** `enabled = false` keeps the entry declared but out of every session. */
+  enabled: boolean;
+}
+
+/** One `mcpServers` entry the host refused, and why. */
+export interface AgentStoreConfigMcpRejection {
+  name: string;
+  /**
+   * The parser's own reason ("a field on the wrong transport", "an out-of-range
+   * timeout", …). Server-authored prose, not an i18n key.
+   */
+  reason: string;
+}
+
+/**
+ * The `mcp.json` projection. A refusal is reported rather than silently
+ * dropped: an ignored `enabledTools` would leave tools the user believes
+ * excluded still callable, which is why this half has to be visible.
+ */
+export interface AgentStoreConfigMcp {
+  /**
+   * The declaration file is present. The host only sends this view after it has
+   * read the file, so this is `true` whenever `mcp` is not `null`; it is kept
+   * because the wire carries it, not because a branch should read it.
+   */
+  exists: boolean;
+  /**
+   * Whether **this host** feeds the file into agent sessions, as the launcher
+   * reported at startup. Omitted when the host did not say — `undefined` is
+   * "cannot tell", which is not the same answer as `false` ("this host does not
+   * read the file"). `servers` describes the file; this describes the host.
+   */
+  adopted?: boolean;
+  /** Accepted entries, ordered by server key. Never a credential value. */
+  servers: AgentStoreConfigMcpServer[];
+  /** Refused entries, with the reason the user has to fix. */
+  rejected: AgentStoreConfigMcpRejection[];
+  /**
+   * Why the **whole file** could not be read as declarations (invalid JSON,
+   * wrong top level). Omitted when the file parsed — without it a broken file
+   * and an empty one look the same.
+   */
+  error?: string;
+}
+
+/** `[memory]` in the host settings file, as far as the wire exposes it. */
+export interface AgentStoreConfigMemory {
+  /** `null` = the table exists without the key (upstream default applies). */
+  distill_enabled: boolean | null;
+}
+
+/** One provider table from the file (never a registered-provider row). */
+export interface AgentStoreConfigProvider {
+  /** `[providers.<name>]` key — the left half of a `default_model`. */
+  name: string;
+  /** `enabled = false` in the file; `true` when the key is absent. */
+  enabled: boolean;
+  /** Model names declared for this provider in the file. */
+  models: string[];
+}
+
+/** The only keys `config/set` accepts (the server rejects anything else). */
+export interface AgentStoreConfigPatch {
+  default_model?: string;
+  /** Writes `[memory] distill_enabled` — the switch the host reads at startup. */
+  memory?: { distill_enabled: boolean };
+}
+
+/** `skill/create` — structured fields; the server assembles the frontmatter. */
+export interface SkillCreateInput {
+  /** Becomes the skill's public id and its directory name. */
+  name: string;
+  description: string;
+  when_to_use?: string;
+  allowed_tools?: string;
+  paths?: string;
+  body?: string;
+}
+
+/**
+ * `skill/update` — a field-level patch.
+ *
+ * An absent field is left alone (`undefined`, not empty string). An **empty
+ * string** on one of the optional keys clears that key; `description` may not
+ * be emptied (`invalid_request`). There is deliberately no `name`.
+ */
+export interface SkillUpdateInput {
+  skill_id: string;
+  description?: string;
+  when_to_use?: string;
+  allowed_tools?: string;
+  paths?: string;
+  /** Replaces the body wholesale — the read face never returned it, so an edit
+   * can only ever *replace* prose, not append to what it never saw. */
+  body?: string;
+}
+
+/** `skill/delete` — what the id resolves to after the delete. */
+export interface SkillDeleteResult {
+  skill_id: string;
+  deleted: boolean;
+  /** Present when the id now resolves to another origin (e.g. a built-in the
+   * user skill was shadowing); absent when nothing is visible there any more. */
+  revealed_origin?: SkillOrigin | null;
+}
+
 export type ConnectorStatus =
   | "installed"
   | "configured"
