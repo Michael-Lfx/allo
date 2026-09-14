@@ -43,6 +43,9 @@ pub struct PipelineBackends {
     /// Clip window of the session's video model. Planning sizes every shot inside
     /// it, so a model change also changes shot lengths.
     pub clip: ClipBounds,
+    /// Unique named speakers one generated file can bind as `reference_audio`.
+    /// `0` means the model has no voice-ref slots (do not split on speaker count).
+    pub max_reference_audio: usize,
     /// When cancelled, pipelines stop before the next video API call.
     pub cancel: Option<CancellationToken>,
 }

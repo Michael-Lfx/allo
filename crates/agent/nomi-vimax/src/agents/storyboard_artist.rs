@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::backends::VimaxChat;
 use crate::clip_bounds::ClipBounds;
 use crate::domain::{CharacterInScene, ShotBriefDescription, ShotDescription};
-use crate::error::{VimaxError, VimaxResult};
+use crate::error::VimaxResult;
 use crate::json_util::complete_and_parse_llm_json;
 
 use super::formats;
@@ -15,11 +15,22 @@ pub struct StoryboardArtist {
     /// Clip window of the session's video model — every duration rule in the
     /// prompts is sized from it instead of naming one vendor's numbers.
     clip: ClipBounds,
+    /// Unique named speakers one generated file can bind as `reference_audio`.
+    max_voice_refs: usize,
 }
 
 impl StoryboardArtist {
     pub fn new(chat: Arc<dyn VimaxChat>, clip: ClipBounds) -> Self {
-        Self { chat, clip }
+        Self {
+            chat,
+            clip,
+            max_voice_refs: 3,
+        }
+    }
+
+    pub fn with_voice_ref_slots(mut self, max_voice_refs: usize) -> Self {
+        self.max_voice_refs = max_voice_refs;
+        self
     }
 
     pub async fn design_storyboard(
@@ -38,14 +49,18 @@ impl StoryboardArtist {
         let system = include_str!(
             "../../prompts/storyboard_artist__system_prompt_template_design_storyboard.txt"
         )
-        .replace("{format_instructions}", &formats::storyboard(self.clip))
+        .replace("{format_instructions}", &formats::storyboard(self.clip, self.max_voice_refs))
         .replace(
             "{clip_duration_rules}",
             &crate::planning::clip_length_rules(self.clip),
         )
         .replace(
             "{speech_budget}",
-            &crate::planning::speech_budget_line(self.clip),
+            &format!(
+                "{}\n{}",
+                crate::planning::speech_budget_line(self.clip),
+                crate::planning::voice_ref_slot_rules(self.max_voice_refs)
+            ),
         );
         let user = include_str!(
             "../../prompts/storyboard_artist__human_prompt_template_design_storyboard.txt"
@@ -76,22 +91,25 @@ impl StoryboardArtist {
 It is INCOMPLETE — these SCRIPT-locked lines never appear:\n- {}\n\n\
 Rewrite a COMPLETE storyboard of THIS SCRIPT only. Cover every location, reversal, \
 and closing line already in <SCRIPT>. You MAY add rows so those events are filmed. \
+If more uniquely named people speak than voice-ref slots allow, add another row — \
+keep EVERY script line (never drop or paraphrase dialogue). \
 Do NOT invent episodes, characters, or punchlines that are not in SCRIPT. \
-Do NOT pad filler holds. Pack related beats into the same row when speech still fits.",
+Do NOT pad filler holds. Pack related beats into the same row when speakers and speech still fit.",
                 serde_json::to_string_pretty(&rows).unwrap_or_default(),
                 coverage.join("\n- ")
             );
             let repaired: Resp =
                 complete_and_parse_llm_json(self.chat.as_ref(), &system, &repair_user).await?;
-            let remaining =
-                crate::drama::lint_script_promise_coverage(script, &repaired.storyboard);
+            let mut repaired_rows = repaired.storyboard;
+            let remaining = crate::drama::lint_script_promise_coverage(script, &repaired_rows);
             if !remaining.is_empty() {
-                return Err(VimaxError::Llm(format!(
-                    "分镜未覆盖剧本已锁定的收束/台词: {}",
-                    remaining.join("; ")
-                )));
+                tracing::warn!(
+                    remaining = remaining.len(),
+                    "storyboard coverage repair still missing spoken lines; stitching them onto the last row"
+                );
+                crate::drama::ensure_script_promise_lines(script, &mut repaired_rows);
             }
-            rows = repaired.storyboard;
+            rows = repaired_rows;
         }
 
         let issues = crate::drama::lint_storyboard_performance(&rows);

@@ -54,7 +54,8 @@ pub struct Script2VideoPipeline {
 impl Script2VideoPipeline {
     pub fn new(backends: PipelineBackends, working_dir: PathBuf) -> Self {
         let character_extractor = CharacterExtractor::new(Arc::clone(&backends.chat));
-        let storyboard = StoryboardArtist::new(Arc::clone(&backends.chat), backends.clip);
+        let storyboard = StoryboardArtist::new(Arc::clone(&backends.chat), backends.clip)
+            .with_voice_ref_slots(backends.max_reference_audio);
         Self {
             backends,
             working_dir,
@@ -628,6 +629,7 @@ impl Script2VideoPipeline {
             super::clip_beats::PackOpts {
                 policy: spec.pack_policy,
                 split_needles,
+                max_voice_ref_speakers: self.backends.max_reference_audio,
             },
             max_shots,
             spec.over_budget,
@@ -1177,7 +1179,13 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
         let film_root = resolve_film_root(&self.working_dir);
         // Voice clips invite invented speech on silent shots; only bind when this beat talks.
         let audio_ref_pairs = if shot_has_spoken_dialogue(shot) {
-            shot_speaker_voice_refs(shot, characters, registry, &film_root)
+            shot_speaker_voice_refs(
+                shot,
+                characters,
+                registry,
+                &film_root,
+                self.backends.max_reference_audio,
+            )
         } else {
             Vec::new()
         };
@@ -2522,7 +2530,15 @@ fn render_lens_audio(
         split_dialogue_and_sfx(&mined)
     };
     let line = trim_audio_brackets(&line);
+    let (line, peeled_sfx) = super::clip_beats::peel_trailing_stage_sfx(&line);
     let mut sfx = trim_audio_brackets(&sfx);
+    if !peeled_sfx.is_empty() {
+        sfx = if sfx.is_empty() {
+            peeled_sfx
+        } else {
+            format!("{sfx} {peeled_sfx}")
+        };
+    }
     if line.is_empty() && sfx.is_empty() && emit_bgm && !essential_only {
         sfx = if looks_cjk(visual) || looks_cjk(motion) {
             "环境底噪与画面同步的拟音".into()
@@ -2594,9 +2610,13 @@ fn i2v_motion_prompt(
         parts.push(audio_ref_clause);
     }
     if has_dialogue {
+        // Floor of 4 keeps text locks for speakers who did not get a wav slot;
+        // Wan can bind 5, so grow with the bound list.
+        let lock_cap = audio_bound_speakers.len().max(4);
         let lock = character_voice_lock_clause(
             characters,
             &speaker_idxs_for_shot(shot, characters),
+            lock_cap,
         );
         if !lock.is_empty() {
             parts.push(lock);
@@ -2623,6 +2643,15 @@ fn i2v_motion_prompt(
 
     let mut bgm_emitted = false;
     for (i, lens) in lenses.iter().enumerate() {
+        let emit_bgm = !bgm_emitted;
+        let (line, sfx) = render_lens_audio(
+            lens.audio.as_deref(),
+            &lens.visual,
+            &lens.visual,
+            scene_bgm,
+            false,
+            emit_bgm,
+        );
         let mut block = String::new();
         if lenses.len() > 1 {
             block.push_str(&format!("{}{}", shot_lbl, i + 1));
@@ -2635,22 +2664,25 @@ fn i2v_motion_prompt(
         if !lens.visual.trim().is_empty() {
             block.push_str(scene_lbl);
             block.push_str(lens.visual.trim());
+            if !line.is_empty() && !visual_has_speech_cue(lens.visual.trim()) {
+                let v = lens.visual.trim();
+                if !v.ends_with(['。', '.', '！', '!', '？', '?']) {
+                    block.push('。');
+                }
+                block.push_str(if cjk { "开口。" } else { " Mouth opens to speak." });
+            }
             block.push('\n');
         }
-        let emit_bgm = !bgm_emitted;
-        let (line, sfx) = render_lens_audio(
-            lens.audio.as_deref(),
-            &lens.visual,
-            &lens.visual,
-            scene_bgm,
-            false,
-            emit_bgm,
-        );
         if !line.is_empty() {
+            let inline = super::clip_beats::format_inline_spoken(&line);
             block.push_str(line_lbl);
-            block.push('{');
-            block.push_str(&line);
-            block.push('}');
+            if inline.is_empty() {
+                block.push('{');
+                block.push_str(&line);
+                block.push('}');
+            } else {
+                block.push_str(&inline);
+            }
             block.push('\n');
             bgm_emitted |= emit_bgm && !sfx.is_empty();
         }
@@ -2674,6 +2706,15 @@ fn i2v_motion_prompt(
     parts.join("\n")
 }
 
+fn visual_has_speech_cue(visual: &str) -> bool {
+    const CJK: &[&str] = &["开口", "说话", "说道", "念出", "喊道", "口型"];
+    if CJK.iter().any(|n| visual.contains(n)) {
+        return true;
+    }
+    let lower = visual.to_ascii_lowercase();
+    lower.contains("speaks") || lower.contains("speaking") || lower.contains("mouth open")
+}
+
 fn audio_ref_binding_clause(bound: &[&str], use_voice_audio_ref: bool) -> String {
     if !use_voice_audio_ref {
         return String::new();
@@ -2695,17 +2736,21 @@ fn audio_ref_binding_clause(bound: &[&str], use_voice_audio_ref: bool) -> String
     bits.join(". ")
 }
 
-/// Up to 3 Seedance `reference_audio` slots, speakers in audio first then vis.
+/// Up to `max_slots` `reference_audio` clips, speakers in audio first then vis.
 fn shot_speaker_voice_refs(
     shot: &ShotDescription,
     characters: &[CharacterInScene],
     registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
     film_root: &Path,
+    max_slots: usize,
 ) -> Vec<(String, PathBuf)> {
+    if max_slots == 0 {
+        return Vec::new();
+    }
     let idxs = speaker_idxs_for_shot(shot, characters);
     let mut out = Vec::new();
     let mut push = |ch: &CharacterInScene| {
-        if out.len() >= 3 {
+        if out.len() >= max_slots {
             return;
         }
         if out.iter().any(|(n, _)| n == &ch.identifier_in_scene) {
@@ -2993,11 +3038,16 @@ fn speaker_idxs_for_shot(shot: &ShotDescription, characters: &[CharacterInScene]
 
 /// Compact SPEAKER LOCK so Seedance keeps the same speaker card on every shot,
 /// including characters already bound as `@AudioN`.
-fn character_voice_lock_clause(characters: &[CharacterInScene], idxs: &[i32]) -> String {
+fn character_voice_lock_clause(
+    characters: &[CharacterInScene],
+    idxs: &[i32],
+    max_locks: usize,
+) -> String {
     let mut parts = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let cap = max_locks.max(1);
     for &ci in idxs {
-        if parts.len() >= 4 {
+        if parts.len() >= cap {
             break;
         }
         let Some(ch) = characters.iter().find(|c| c.idx == ci) else {
@@ -3914,6 +3964,63 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             "dialogue lives in the lens, not a trailing dump: {prompt}"
         );
         assert!(!prompt.contains("Throughout:"), "{prompt}");
+    }
+
+    #[test]
+    fn cut_to_prompt_interleaves_dialogue_per_lens_and_peels_bgm() {
+        let mut s = shot(0, 0);
+        s.visual_desc = "近景 <罗子君>正面。CUT TO <陈俊生>近景。CUT TO <唐晶>侧脸围观。".into();
+        s.audio_desc = Some(
+            "罗子君：「……陈俊生。」陈俊生：「不是我！我没点！」唐晶：「你别装了。」\
+凌玲：「卡片上写得很清楚。」贺建军：「大家冷静。」康总：「把监控调出来。」\
+弹幕刷屏；BGM:低音铺底"
+                .into(),
+        );
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            15,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(prompt.contains("镜头1"), "{prompt}");
+        assert!(prompt.contains("镜头2"), "{prompt}");
+        assert!(prompt.contains("镜头3"), "{prompt}");
+        let line1 = prompt
+            .split("镜头2")
+            .next()
+            .unwrap_or("");
+        assert!(line1.contains("……陈俊生"), "lens 1 must speak first: {prompt}");
+        assert!(
+            !line1.contains("不是我"),
+            "陈俊生's line must not dump into lens 1: {prompt}"
+        );
+        assert!(prompt.contains("不是我"), "{prompt}");
+        assert!(prompt.contains("卡片上写得很清楚"), "{prompt}");
+        assert!(prompt.contains("把监控调出来"), "{prompt}");
+        let dialogue_lines: String = prompt
+            .lines()
+            .filter(|l| l.contains("台词：") || l.contains("Line: "))
+            .collect();
+        assert!(
+            !dialogue_lines.to_ascii_lowercase().contains("bgm")
+                && !dialogue_lines.contains("低音铺底")
+                && !dialogue_lines.contains("弹幕"),
+            "BGM/弹幕 belong in 音效, not {{台词}}: {prompt}"
+        );
+        assert!(
+            prompt.contains("音效：") || prompt.contains("SFX: "),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("开口"),
+            "speaking lenses need a mouth-open cue: {prompt}"
+        );
     }
 
     #[test]

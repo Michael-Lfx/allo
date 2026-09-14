@@ -576,6 +576,7 @@ fn extract_quoted_promises(script: &str) -> Vec<String> {
             _ => None,
         };
         if let Some(end_ch) = closer {
+            let open_at = i;
             i += 1;
             let start = i;
             while i < chars.len() && chars[i] != end_ch {
@@ -586,7 +587,7 @@ fn extract_quoted_promises(script: &str) -> Vec<String> {
             }
             let quote: String = chars[start..i].iter().collect();
             let quote = quote.trim();
-            if is_locked_script_line(quote) {
+            if is_locked_script_line(quote) && quote_is_spoken_dialogue(&chars, open_at) {
                 out.push(quote.to_string());
             }
             i += 1;
@@ -595,6 +596,121 @@ fn extract_quoted_promises(script: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+/// Only named-speaker / speech-verb lines are promises. Scare-quoted terms in
+/// prose (`在「千年的时间尺度」上`) and on-screen cards are not spoken plot.
+fn quote_is_spoken_dialogue(chars: &[char], open_at: usize) -> bool {
+    let mut j = open_at;
+    while j > 0 && chars[j - 1].is_whitespace() {
+        j -= 1;
+    }
+    if j == 0 {
+        return false;
+    }
+    let prefix: String = chars[..j].iter().collect();
+    let line_start = prefix.rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_prefix = prefix[line_start..].trim_end();
+    if citation_hedge(line_prefix) {
+        return false;
+    }
+    if let Some(speaker) = speaker_before_colon(line_prefix) {
+        return !is_on_screen_caption_speaker(&speaker);
+    }
+    SPEECH_VERBS.iter().any(|verb| line_prefix.ends_with(verb))
+}
+
+fn speaker_before_colon(line_prefix: &str) -> Option<String> {
+    let trimmed = line_prefix.trim_end();
+    if !trimmed.ends_with('：') && !trimmed.ends_with(':') {
+        return None;
+    }
+    let stem = trimmed
+        .strip_suffix('：')
+        .or_else(|| trimmed.strip_suffix(':'))
+        .unwrap_or(trimmed);
+    let speaker = stem
+        .rsplit(|ch: char| ch.is_whitespace() || matches!(ch, '，' | ',' | '。' | ';' | '；'))
+        .next()
+        .unwrap_or("")
+        .trim();
+    let len = speaker.chars().count();
+    if (1..=12).contains(&len) {
+        Some(speaker.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_on_screen_caption_speaker(speaker: &str) -> bool {
+    const CAPTIONS: &[&str] = &[
+        "字幕", "标题", "黑屏", "卡片", "花字", "片名", "片头", "片尾", "角标", "提词",
+        "打出", "一张", "一幕", "闪回",
+    ];
+    CAPTIONS
+        .iter()
+        .any(|cap| speaker == *cap || speaker.ends_with(cap))
+}
+
+fn citation_hedge(line_prefix: &str) -> bool {
+    const HEDGES: &[&str] = &[
+        "所谓的",
+        "正所谓",
+        "俗话说",
+        "所谓",
+        "称为",
+        "名为",
+        "叫作",
+        "叫做",
+        "这种",
+        "那种",
+        "传说",
+        "据说",
+        "听说",
+        "如同",
+        "像是",
+    ];
+    let t = line_prefix.trim_end_matches(['：', ':', ' ']);
+    HEDGES.iter().any(|h| t.ends_with(h))
+}
+
+const SPEECH_VERBS: &[&str] = &[
+    "怒怼", "回怼", "宣读", "说道", "问道", "喊道", "叫道", "念道", "骂道", "吼道", "答道",
+    "回道", "嘲道", "笑道", "哭道", "唱道", "低语", "开口", "说", "问", "喊", "叫", "念", "骂",
+    "吼", "唱", "怼",
+];
+
+/// Last-resort: keep every still-missing spoken line on the closing row so a
+/// paraphrase cannot abort planning. Prefer LLM repair; this only runs after it.
+pub fn ensure_script_promise_lines(script: &str, rows: &mut Vec<ShotBriefDescription>) {
+    if rows.is_empty() {
+        return;
+    }
+    let blob = board_blob(rows);
+    let mut extra = String::new();
+    let mut seen = HashSet::new();
+    for quote in extract_quoted_promises(script) {
+        if !seen.insert(quote.clone()) || quote_covered_in(&blob, &quote) {
+            continue;
+        }
+        extra.push_str("「");
+        extra.push_str(&quote);
+        extra.push('」');
+    }
+    if extra.is_empty() {
+        return;
+    }
+    let last = rows.last_mut().expect("len checked");
+    match &mut last.audio_desc {
+        Some(audio) if !audio.contains(extra.trim()) => {
+            if !audio.is_empty() && !audio.ends_with(char::is_whitespace) {
+                audio.push(' ');
+            }
+            audio.push_str(&extra);
+        }
+        Some(_) => {}
+        None => last.audio_desc = Some(extra),
+    }
 }
 
 fn is_cjk(ch: char) -> bool {
@@ -621,7 +737,11 @@ fn looks_like_title_card(quote: &str) -> bool {
         return false;
     }
     const SPEECH: &[char] = &['吧', '么', '吗', '呢', '嘛', '呀', '啊', '哦', '哼', '我', '你', '您'];
-    !quote.chars().any(|c| SPEECH.contains(&c))
+    const IMPERATIVE: &[char] = &['把', '别', '请', '让', '给'];
+    if quote.chars().any(|c| SPEECH.contains(&c) || IMPERATIVE.contains(&c)) {
+        return false;
+    }
+    true
 }
 
 fn quote_match_payload(quote: &str) -> &str {
@@ -1150,6 +1270,46 @@ mod tests {
             cam_idx: 0,
         }];
         assert!(lint_script_promise_coverage(script, &[row]).is_empty());
+    }
+
+    #[test]
+    fn script_promise_ignores_prose_term_quotes() {
+        let script = "完整剧本成片模式。星舰在「千年的时间尺度」上只是一瞬，镜头切到舱内。\n字幕：「千年的时间尺度」\n所谓「时间尺度」不过是旁白里的修辞。";
+        let rows = vec![brief("近景，星舰掠过星云，舱内指示灯闪烁")];
+        assert!(
+            lint_script_promise_coverage(script, &rows).is_empty(),
+            "scare-quoted terms and caption cards must not abort storyboard coverage"
+        );
+    }
+
+    #[test]
+    fn script_promise_still_locks_named_speaker_and_speech_verb_lines() {
+        let script = "李薇：「把监控调出来」\n司机把手机支在仪表台上，对着镜头怒怼：「吃俩桃你不噎得慌么」";
+        let rows = vec![brief("李薇伸手按向键盘")];
+        let issues = lint_script_promise_coverage(script, &rows);
+        assert!(
+            issues.iter().any(|i| i.contains("把监控调出来")),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.contains("吃俩桃你不噎得慌么")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn script_promise_stitch_keeps_missing_spoken_line() {
+        let script = "李薇：「把监控调出来」";
+        let mut rows = vec![brief("李薇伸手按向键盘")];
+        ensure_script_promise_lines(script, &mut rows);
+        assert!(lint_script_promise_coverage(script, &rows).is_empty());
+        assert!(
+            rows[0]
+                .audio_desc
+                .as_deref()
+                .unwrap_or("")
+                .contains("把监控调出来")
+        );
     }
 
     fn brief(visual: &str) -> ShotBriefDescription {

@@ -26,6 +26,14 @@ const SPEECH_LEAD_SECS: u32 = 1;
 /// Tail seconds after the last spoken syllable so audio is not cut mid-breath.
 /// Keep short: reaction/action should fill the landing, not empty hold.
 const SPEECH_TAIL_SECS: u32 = 1;
+/// One `…` / `...` beat. Spoken payload drops CJK ellipsis from the char
+/// count, so without this the pause is free and the clip ends on the last word.
+const SPEECH_ELLIPSIS_SECS: f32 = 0.4;
+const SPEECH_PAUSE_MAX_SECS: f32 = 2.0;
+/// Visual sentences that must play *before* the line (blast the gate, then
+/// speak). The first clause can share the speech lead-in; extras cannot.
+const VISUAL_PREAMBLE_SECS_PER_CLAUSE: u32 = 2;
+const VISUAL_PREAMBLE_MAX_SECS: u32 = 6;
 /// A spoken beat needs a lead-in, the line, and a landing. Budget compression
 /// must never push dialogue below this even when the model accepts shorter clips.
 const DIALOGUE_FLOOR_SECS: u32 = 5;
@@ -978,6 +986,40 @@ or shorten — never rush (吞字)."
     )
 }
 
+/// How many uniquely named speakers may share one generated file.
+///
+/// `0` means the model has no `reference_audio` cap — still split for 吞字,
+/// never drop a script line.
+pub fn voice_ref_slot_rules(max_speakers: usize) -> String {
+    if max_speakers == 0 {
+        return "This video model has no reference_audio speaker cap. Still SPLIT a row when \
+spoken payload cannot finish inside the clip window. Never drop, paraphrase, or skip a script line."
+            .into();
+    }
+    format!(
+        "VOICE-REF SLOTS (hard): this model binds at most {max_speakers} reference_audio clip(s) \
+per generated file. A storyboard row may have at most {max_speakers} uniquely NAMED speaking \
+characters (e.g. 李薇：「…」 / Alice: \"…\"). Silent on-screen people do not count. If more people \
+speak, emit ANOTHER row in story order and keep EVERY line — never drop, summarize, or merge \
+distinct script lines to squeeze them in. Reverse / insert / push-in of the SAME speakers stays \
+in one row as CUT TO (continuity). Pack related beats into one row when speakers AND speech still \
+fit; split only to protect voice identity / lip-sync or to avoid 吞字."
+    )
+}
+
+/// Spoken seconds implied by `audio_desc`, including lead-in and tail.
+/// Not clamped to the model window — callers use this to decide whether to split.
+pub fn unclamped_speech_need_secs(audio_desc: Option<&str>) -> u32 {
+    let speech = estimate_speech_secs(audio_desc.unwrap_or(""));
+    if speech == 0 {
+        0
+    } else {
+        speech
+            .saturating_add(SPEECH_LEAD_SECS)
+            .saturating_add(SPEECH_TAIL_SECS)
+    }
+}
+
 /// Clip-length rules for the planning prompts (storyboard + shot decompose).
 ///
 /// Planning runs **before** the renderer allocates clip lengths from the scene
@@ -1485,8 +1527,53 @@ pub fn estimate_speech_secs(audio_desc: &str) -> u32 {
     } else {
         en_words as f32 / SPEECH_EN_WORDS_PER_SEC
     };
+    let pause_secs = speech_pause_secs(&spoken);
     // Mixed lines: take the sum (both streams rarely overlap).
-    (cjk_secs + en_secs).ceil() as u32
+    (cjk_secs + en_secs + pause_secs).ceil() as u32
+}
+
+/// Dramatic holds written as ellipsis. `…` is not a CJK speech char, so a line
+/// like `千年了……本座` would otherwise price the same as `千年了本座`.
+fn speech_pause_secs(spoken: &str) -> f32 {
+    let chars: Vec<char> = spoken.chars().collect();
+    let mut i = 0;
+    let mut pause = 0.0f32;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '.' {
+            let mut n = 0u32;
+            while i < chars.len() && chars[i] == '.' {
+                n += 1;
+                i += 1;
+            }
+            if n >= 3 {
+                pause += SPEECH_ELLIPSIS_SECS * (n as f32 / 3.0);
+            }
+            continue;
+        }
+        if ch == '。' {
+            let mut n = 0u32;
+            while i < chars.len() && chars[i] == '。' {
+                n += 1;
+                i += 1;
+            }
+            if n >= 3 {
+                pause += SPEECH_ELLIPSIS_SECS * (n as f32 / 3.0);
+            }
+            continue;
+        }
+        if ch == '…' || ch == '⋯' {
+            let mut n = 0u32;
+            while i < chars.len() && (chars[i] == '…' || chars[i] == '⋯') {
+                n += 1;
+                i += 1;
+            }
+            pause += SPEECH_ELLIPSIS_SECS * n as f32;
+            continue;
+        }
+        i += 1;
+    }
+    pause.min(SPEECH_PAUSE_MAX_SECS)
 }
 
 /// Prefer dialogue inside 「」 / “” / "" / `{…}`. Unquoted ambient/BGM/SFX is not speech.
@@ -1587,10 +1674,13 @@ pub(crate) fn is_cjk_speech_char(ch: char) -> bool {
 
 /// Content-aware duration for one shot, clamped to the selected model's window.
 ///
-/// Spoken audio (language-aware) sets the floor when present. Visual variation
-/// adds a little headroom for continuous camera moves — not for verbose
-/// `motion_desc` prose. Caps at the beat length ([`ClipBounds::preferred_max_secs`])
-/// unless speech itself needs more (up to [`ClipBounds::max_secs`]).
+/// Spoken audio (language-aware) sets the floor when present. A multi-clause
+/// visual that must finish *then* the line (gate blast → step out → fly →
+/// speak) adds sequential preamble — `max(speech, visual)` would otherwise
+/// starve the words. Visual variation still adds a little headroom for
+/// continuous camera moves — not for verbose `motion_desc` prose. Caps at the
+/// beat length ([`ClipBounds::preferred_max_secs`]) unless speech itself needs
+/// more (up to [`ClipBounds::max_secs`]).
 pub fn estimate_shot_need_secs(
     bounds: ClipBounds,
     audio_desc: Option<&str>,
@@ -1619,13 +1709,86 @@ pub fn estimate_shot_need_secs(
         _ => 0,
     };
     let visual_need = bounds.saturating_add_within(bounds.min_secs(), visual_extra);
+    let sequential = if speech_need > 0 {
+        visual_preamble_secs(motion_desc)
+    } else {
+        0
+    };
+    let body = if speech_need > 0 {
+        speech_need.saturating_add(sequential)
+    } else {
+        visual_need
+    };
     let beat_cap = bounds.preferred_max_secs();
-    let combined = bounds.clamp_secs(speech_need.max(visual_need));
+    let combined = bounds.clamp_secs(body.max(visual_need));
     if speech_need > beat_cap {
         combined
     } else {
         combined.min(beat_cap)
     }
+}
+
+/// Prefer the storyboard 画面 when it is a real brief; keep camera motion when
+/// `visual_desc` is a short stub (tests / empty decompose).
+pub(crate) fn shot_need_visual<'a>(visual: &'a str, motion: &'a str) -> &'a str {
+    let v = visual.trim();
+    let m = motion.trim();
+    if v.is_empty() {
+        return m;
+    }
+    if m.is_empty() {
+        return v;
+    }
+    if v.chars().count() >= 12 && v.chars().count() >= m.chars().count() {
+        v
+    } else {
+        m
+    }
+}
+
+/// Extra seconds for action clauses that cannot overlap the spoken line.
+///
+/// One clause (a CU + 开口) shares the speech lead-in. Extra `。` / CUT TO
+/// beats (天雷 → 踏出 → 御剑 → 开口) play first, then the words.
+fn visual_preamble_secs(visual: &str) -> u32 {
+    let clauses = visual_action_clause_count(visual);
+    clauses
+        .saturating_sub(1)
+        .saturating_mul(VISUAL_PREAMBLE_SECS_PER_CLAUSE)
+        .min(VISUAL_PREAMBLE_MAX_SECS)
+}
+
+fn visual_action_clause_count(visual: &str) -> u32 {
+    let t = visual.trim();
+    if t.is_empty() {
+        return 0;
+    }
+    let normalized = t
+        .replace("CUT TO", "。")
+        .replace("Cut To", "。")
+        .replace("cut to", "。");
+    let mut n = 0u32;
+    for part in normalized.split(|c: char| {
+        matches!(c, '。' | '！' | '？' | '!' | '?' | '；' | ';')
+    }) {
+        let part = part.trim();
+        if part.is_empty() || is_visual_speech_cue_only(part) {
+            continue;
+        }
+        n += 1;
+    }
+    n.max(1)
+}
+
+fn is_visual_speech_cue_only(part: &str) -> bool {
+    let t = part
+        .trim()
+        .trim_end_matches(['。', '.', '！', '!', '？', '?', '，', ','])
+        .trim();
+    matches!(
+        t,
+        "开口" | "说话" | "说道" | "念出" | "喊道" | "口型" | "开口说话" | "opens mouth"
+    ) || ((t.ends_with("开口") || t.ends_with("说话")) && t.chars().count() <= 4)
 }
 
 /// True when text carries spoken lines (quotes / dialogue verbs) rather than
@@ -2269,6 +2432,30 @@ eleven twelve thirteen fourteen";
             "small",
         );
         assert_eq!(en_need, 5);
+    }
+
+    #[test]
+    fn ellipsis_pause_is_not_free() {
+        let with = estimate_speech_secs("{千年了……本座终于突破至大乘期}");
+        let without = estimate_speech_secs("{千年了本座终于突破至大乘期}");
+        assert!(with > without, "with={with} without={without}");
+    }
+
+    #[test]
+    fn action_then_dialogue_is_sequential_not_overlapping() {
+        // The Wan 3.0 6s clip that swallowed 「千年了……」: spectacle must play
+        // *then* the line. Speech-only CU of the same quote stays near the floor.
+        let visual = "仰拍:乌云翻涌如墨,九道天雷接连劈下,后山禁地石门轰然炸裂,碎石裹着烟尘向外飞溅。\
+烟尘中,一只白底云纹长靴踏出,<玄霄老祖>白衣胜雪、长发如墨垂至腰际,缓缓睁眼,背负青鞘长剑立于碎石之上。\
+他抬手,四周灵气化作肉眼可见的细密光流朝他掌心汇聚,随后足尖一点,御剑而起,化作一道流光射向山巅。开口。";
+        let audio = "玄霄老祖开口 {千年了……本座,终于突破至大乘期。}";
+        let wan = ClipBounds::new(2, 30);
+        let need = estimate_shot_need_secs(wan, Some(audio), visual, "small");
+        let cu = estimate_shot_need_secs(wan, Some(audio), "近景开口", "small");
+        assert!(need >= 10, "need={need}");
+        assert!(need <= wan.preferred_max_secs(), "need={need}");
+        assert!(cu <= 8, "cu={cu}");
+        assert!(need > cu, "need={need} cu={cu}");
     }
 
     #[test]

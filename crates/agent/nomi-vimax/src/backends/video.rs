@@ -330,7 +330,8 @@ impl VimaxVideo for FlowyVideo {
         // Seedance: reference_audio cannot be the only reference input — need ≥1
         // image or reference_video. Pure T2V must omit voice refs.
         let has_visual_ref = !images.is_empty() || reference_video_url.is_some();
-        let capped_audios = cap_reference_audio_paths(ref_audios, is_wan3).await;
+        let max_audio = crate::video_quality::max_reference_audio(&model);
+        let capped_audios = cap_reference_audio_paths(ref_audios, is_wan3, max_audio).await;
         if !capped_audios.is_empty() && capped_audios.len() < ref_audios.len() {
             local_frame_notes.push(format!(
                 "reference_audio_budget_{}_of_{}",
@@ -799,9 +800,8 @@ impl VimaxVideo for FlowyVideo {
     }
 }
 
-/// Shared slot count (Wan 3.0 / Seedance both accept up to 3 `reference_audio`).
-const REF_AUDIO_MAX_CLIPS: usize = 3;
 /// Wan 3.0 only: Σ `reference_audio` duration must stay under 15s.
+/// Per-clip trim is `min(4s, 14.5 / n)` so five Wan slots still fit the budget.
 const WAN3_VOICE_REF_MAX_SECS: f64 = 4.0;
 const WAN3_REF_AUDIO_TOTAL_BUDGET_SECS: f64 = 14.5;
 
@@ -819,36 +819,39 @@ fn count_refs_within_budget(durations: &[f64], max_count: usize, max_total: f64)
     n
 }
 
-async fn cap_reference_audio_paths(paths: &[&Path], wan3_duration_budget: bool) -> Vec<PathBuf> {
-    let mut kept: Vec<(PathBuf, f64)> = Vec::new();
-    for path in paths
+async fn cap_reference_audio_paths(
+    paths: &[&Path],
+    wan3_duration_budget: bool,
+    max_count: usize,
+) -> Vec<PathBuf> {
+    if max_count == 0 {
+        return Vec::new();
+    }
+    let candidates: Vec<&Path> = paths
         .iter()
         .copied()
         .filter(|path| is_usable_audio_file(path))
-        .take(REF_AUDIO_MAX_CLIPS)
-    {
-        if wan3_duration_budget {
-            let _ = trim_audio_to_max_secs(path, WAN3_VOICE_REF_MAX_SECS).await;
-        }
-        let dur = if wan3_duration_budget {
-            probe_media_duration_secs(path)
-                .await
-                .filter(|d| d.is_finite() && *d > 0.0)
-                .unwrap_or(WAN3_VOICE_REF_MAX_SECS)
-        } else {
-            0.0
-        };
-        kept.push((path.to_path_buf(), dur));
+        .take(max_count)
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
     }
     if !wan3_duration_budget {
-        return kept.into_iter().map(|(p, _)| p).collect();
+        return candidates.into_iter().map(Path::to_path_buf).collect();
+    }
+    let n = candidates.len().max(1);
+    let per = (WAN3_REF_AUDIO_TOTAL_BUDGET_SECS / n as f64).min(WAN3_VOICE_REF_MAX_SECS);
+    let mut kept: Vec<(PathBuf, f64)> = Vec::new();
+    for path in candidates {
+        let _ = trim_audio_to_max_secs(path, per).await;
+        let dur = probe_media_duration_secs(path)
+            .await
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .unwrap_or(per);
+        kept.push((path.to_path_buf(), dur));
     }
     let durs: Vec<f64> = kept.iter().map(|(_, d)| *d).collect();
-    let n = count_refs_within_budget(
-        &durs,
-        REF_AUDIO_MAX_CLIPS,
-        WAN3_REF_AUDIO_TOTAL_BUDGET_SECS,
-    );
+    let n = count_refs_within_budget(&durs, max_count, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS);
     kept.truncate(n);
     kept.into_iter().map(|(p, _)| p).collect()
 }
@@ -1146,6 +1149,10 @@ reference_audio cannot be the only reference input. Request id: abc)"
         assert_eq!(
             count_refs_within_budget(&[16.0], 3, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
             1
+        );
+        assert_eq!(
+            count_refs_within_budget(&[2.9, 2.9, 2.9, 2.9, 2.9], 5, WAN3_REF_AUDIO_TOTAL_BUDGET_SECS),
+            5
         );
     }
 

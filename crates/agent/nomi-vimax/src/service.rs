@@ -1118,9 +1118,11 @@ impl VimaxService {
         let resolution = resolve_resolution_for_session(record, &flowy.media);
         // Resolve from the configured id (not the catalog) so planning stays
         // synchronous; an unknown id falls back to the universally safe window.
-        let clip = crate::video_quality::clip_bounds_for_model(
-            video.as_deref().unwrap_or(flowy.media.video.model.trim()),
-        );
+        let model_id = video
+            .as_deref()
+            .unwrap_or(flowy.media.video.model.trim());
+        let clip = crate::video_quality::clip_bounds_for_model(model_id);
+        let max_reference_audio = crate::video_quality::max_reference_audio(model_id);
         Ok(PipelineBackends {
             chat: Arc::new(flowy.chat_with_model(llm)),
             // Portraits / prop plates use default Seedream 2K. Environment volume
@@ -1137,6 +1139,7 @@ impl VimaxService {
             flowy: Some(flowy.clone()),
             image_model: image,
             clip,
+            max_reference_audio,
             cancel,
         })
     }

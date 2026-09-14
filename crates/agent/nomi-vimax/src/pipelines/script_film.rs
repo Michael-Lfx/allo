@@ -469,7 +469,12 @@ impl ScriptFilmPipeline {
         while let Some(joined) = set.join_next().await {
             joined.map_err(|e| crate::error::VimaxError::msg(e.to_string()))??;
         }
-        super::film_coverage::apply_film_coverage(&self.working_dir, self.backends.clip).await?;
+        super::film_coverage::apply_film_coverage(
+            &self.working_dir,
+            self.backends.clip,
+            self.backends.max_reference_audio,
+        )
+        .await?;
 
         let synopsis = format!("{corpus}\n{user_requirement}");
         let cover_aspect = crate::aspect::load_aspect_from_dir(&self.working_dir).await;

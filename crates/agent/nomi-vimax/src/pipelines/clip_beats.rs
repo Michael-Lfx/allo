@@ -41,11 +41,26 @@ use crate::clip_bounds::ClipBounds;
 use crate::domain::{ShotBeat, ShotBriefBeat, ShotBriefDescription, ShotDescription};
 use crate::skills::{OverBudget, PackPolicy};
 
+/// Default `reference_audio` speaker cap (Seedance 2.0 / unknown models).
+pub(crate) const DEFAULT_MAX_VOICE_REF_SPEAKERS: usize = 3;
+
 /// Packing knobs from the active DirectorSpec plus drama-engine split tokens.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct PackOpts {
     pub policy: PackPolicy,
     pub split_needles: Vec<String>,
+    /// Unique named speakers one generated file can bind. `0` = no cap.
+    pub max_voice_ref_speakers: usize,
+}
+
+impl Default for PackOpts {
+    fn default() -> Self {
+        Self {
+            policy: PackPolicy::default(),
+            split_needles: Vec::new(),
+            max_voice_ref_speakers: DEFAULT_MAX_VOICE_REF_SPEAKERS,
+        }
+    }
 }
 
 /// Pack maximal runs of adjacent **storyboard rows** into single clips.
@@ -76,7 +91,11 @@ pub(crate) fn pack_scene_briefs_with(
         let shot_speakers = named_dialogue_speakers(&brief_audio_blob(&brief));
         let joins = run.last().is_some_and(|prev| {
             can_pack_briefs(prev, &brief, run_need, need, bounds, &opts)
-                && can_join_voice_ref_speakers(&run_speakers, &shot_speakers)
+                && can_join_voice_ref_speakers(
+                    &run_speakers,
+                    &shot_speakers,
+                    opts.max_voice_ref_speakers,
+                )
         });
         if !joins {
             flush_briefs(&mut out, std::mem::take(&mut run));
@@ -88,6 +107,7 @@ pub(crate) fn pack_scene_briefs_with(
         run.push(brief);
     }
     flush_briefs(&mut out, run);
+    let mut out = split_overflow_briefs(bounds, out, opts.max_voice_ref_speakers);
     reindex_briefs(&mut out);
     out
 }
@@ -101,11 +121,17 @@ pub(crate) fn pack_briefs_for_publish(
     max_shots: Option<usize>,
     over_budget: OverBudget,
 ) -> Vec<ShotBriefDescription> {
-    let packed = pack_scene_briefs_with(bounds, briefs, opts);
-    match max_shots.filter(|&n| n > 0) {
+    let packed = pack_scene_briefs_with(bounds, briefs, opts.clone());
+    let budgeted = match max_shots.filter(|&n| n > 0) {
         Some(max) => apply_shot_budget(packed, max, over_budget),
         None => packed,
-    }
+    };
+    // Folding overflow back into the last clip can recreate a speaker/speech
+    // overflow. Split again so every script line still has a home, even if the
+    // film then has more clips than the duration quota.
+    let mut out = split_overflow_briefs(bounds, budgeted, opts.max_voice_ref_speakers);
+    reindex_briefs(&mut out);
+    out
 }
 
 /// After packing: fold overflow into the last kept clip, extend, or truncate.
@@ -432,7 +458,11 @@ pub(crate) fn pack_scene_clips(
         let shot_speakers = named_dialogue_speakers(&shot_audio_blob(&shot));
         let joins = run.last().is_some_and(|prev| {
             can_pack_onto(prev, &shot, run_need, need, bounds)
-                && can_join_voice_ref_speakers(&run_speakers, &shot_speakers)
+                && can_join_voice_ref_speakers(
+                    &run_speakers,
+                    &shot_speakers,
+                    DEFAULT_MAX_VOICE_REF_SPEAKERS,
+                )
         });
         if !joins {
             flush(&mut out, std::mem::take(&mut run));
@@ -515,76 +545,61 @@ fn can_pack_briefs(
     run_need + need <= bounds.max_secs()
 }
 
-/// Wan 3.0 / Seedance bind one TTS wav per named speaker (max 3 slots).
-/// Combined-duration caps (Wan 3.0 Σ ≤ 15s) are enforced at video submit.
-/// Packing a fourth unique speaker into the same clip overflows the slot count.
-const MAX_PACKED_VOICE_REF_SPEAKERS: usize = 3;
-
-fn can_join_voice_ref_speakers(run: &HashSet<String>, next: &HashSet<String>) -> bool {
-    if next.is_empty() {
+/// `max == 0` means the model has no voice-ref slots — speaker count is not a
+/// reason to start a new file. Combined-duration caps (Wan 3.0 Σ ≤ 15s) are
+/// still enforced at video submit.
+fn can_join_voice_ref_speakers(
+    run: &HashSet<String>,
+    next: &HashSet<String>,
+    max: usize,
+) -> bool {
+    if max == 0 || next.is_empty() {
         return true;
     }
-    run.union(next).count() <= MAX_PACKED_VOICE_REF_SPEAKERS
+    run.union(next).count() <= max
 }
 
 fn brief_audio_blob(brief: &ShotBriefDescription) -> String {
-    let mut parts = Vec::new();
-    if let Some(audio) = brief
+    let beat_audio = join_distinct(
+        brief.beats.iter().filter_map(|beat| beat.audio_desc.as_deref()),
+        " ",
+    );
+    if !beat_audio.is_empty() {
+        return beat_audio;
+    }
+    brief
         .audio_desc
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    {
-        parts.push(audio);
-    }
-    for beat in &brief.beats {
-        if let Some(audio) = beat
-            .audio_desc
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            parts.push(audio);
-        }
-    }
-    parts.join(" ")
+        .unwrap_or("")
+        .to_string()
 }
 
 fn shot_audio_blob(shot: &ShotDescription) -> String {
-    let mut parts = Vec::new();
-    if let Some(audio) = shot
-        .audio_desc
+    let beat_audio = join_distinct(
+        shot.beats.iter().filter_map(|beat| beat.audio_desc.as_deref()),
+        " ",
+    );
+    if !beat_audio.is_empty() {
+        return beat_audio;
+    }
+    shot.audio_desc
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    {
-        parts.push(audio);
-    }
-    for beat in &shot.beats {
-        if let Some(audio) = beat
-            .audio_desc
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            parts.push(audio);
-        }
-    }
-    parts.join(" ")
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Named storyboard lines (`李薇：「…」` / `Alice: "…"`).
 fn named_dialogue_speakers(blob: &str) -> HashSet<String> {
-    let mut names = HashSet::new();
-    for (byte, ch) in blob.char_indices() {
-        if !matches!(ch, '「' | '"' | '“') {
-            continue;
-        }
-        if let Some(name) = speaker_name_before_quote(blob, byte) {
-            names.insert(name);
-        }
-    }
-    names
+    parse_spoken_turns(blob)
+        .0
+        .into_iter()
+        .filter(|turn| !turn.speaker.is_empty())
+        .map(|turn| turn.speaker)
+        .collect()
 }
 
 fn speaker_name_before_quote(blob: &str, quote_byte: usize) -> Option<String> {
@@ -639,6 +654,704 @@ fn is_packed_speaker_name_char(ch: char) -> bool {
         || matches!(ch as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
         || ch == '_'
         || ch == '-'
+}
+
+static CUT_SPLIT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:；\s*然后切到新机位：|然后切到新机位：|；\s*CUT TO[:：]?\s*|CUT TO[:：]?\s*|切到新机位[，,:：]?)",
+    )
+    .expect("cut-split regex")
+});
+
+#[derive(Debug, Clone)]
+struct SpokenTurn {
+    speaker: String,
+    text: String,
+}
+
+/// Split a planner visual on in-file camera cuts. One part if there is no cut.
+pub(crate) fn split_visual_on_cuts(visual: &str) -> Vec<String> {
+    let t = visual.trim();
+    if t.is_empty() {
+        return Vec::new();
+    }
+    let parts: Vec<String> = CUT_SPLIT
+        .split(t)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if parts.len() >= 2 {
+        parts
+    } else {
+        vec![t.to_string()]
+    }
+}
+
+/// Move stage-direction / BGM prose that sits after the last spoken quote
+/// out of the dialogue span so it is not vocalized.
+pub(crate) fn peel_trailing_stage_sfx(raw: &str) -> (String, String) {
+    let t = raw.trim();
+    if t.is_empty() {
+        return (String::new(), String::new());
+    }
+    let closers = ['」', '”', '"', '}'];
+    let mut last_end: Option<usize> = None;
+    let mut i = 0;
+    let chars: Vec<char> = t.chars().collect();
+    while i < chars.len() {
+        if closers.contains(&chars[i]) {
+            let start = t
+                .char_indices()
+                .nth(i)
+                .map(|(b, _)| b)
+                .unwrap_or(t.len());
+            last_end = Some(start + chars[i].len_utf8());
+        }
+        i += 1;
+    }
+    let Some(end) = last_end else {
+        return (t.to_string(), String::new());
+    };
+    let rest = t[end..].trim();
+    if rest.is_empty()
+        || rest.contains('「')
+        || rest.contains('“')
+        || rest.contains('{')
+        || rest.contains('"')
+    {
+        return (t.to_string(), String::new());
+    }
+    let line = t[..end].trim().to_string();
+    let sfx = rest
+        .trim_start_matches(['；', ';', '，', ',', '。', '.', ' '])
+        .trim()
+        .to_string();
+    (line, sfx)
+}
+
+/// Per-turn `{payload}` so each spoken line sits next to its speaker, not one
+/// dumped `{all lines + BGM}` blob.
+pub(crate) fn format_inline_spoken(audio: &str) -> String {
+    let (turns, _) = parse_spoken_turns(audio);
+    if turns.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for turn in turns {
+        let payloads = quoted_payloads(&turn.text);
+        let payload = if payloads.is_empty() {
+            turn.text.trim().to_string()
+        } else {
+            payloads.join("")
+        };
+        if payload.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        if !turn.speaker.is_empty() {
+            out.push_str(&turn.speaker);
+            out.push_str("开口 ");
+        }
+        out.push('{');
+        out.push_str(&payload);
+        out.push('}');
+    }
+    out
+}
+
+fn parse_spoken_turns(audio: &str) -> (Vec<SpokenTurn>, String) {
+    let (line, trailing) = peel_trailing_stage_sfx(audio);
+    let mut turns = Vec::new();
+    let mut i = 0;
+    let bytes = line.as_bytes();
+    while i < bytes.len() {
+        let rest = &line[i..];
+        let Some(rel) = find_dialogue_quote_rel(rest) else {
+            break;
+        };
+        let quote_at = i + rel;
+        let speaker = speaker_name_before_quote(&line, quote_at).unwrap_or_default();
+        let start = speaker_span_start(&line, quote_at);
+        let close = matching_quote_end(&line, quote_at).unwrap_or(line.len());
+        let text = line[start..close].trim().to_string();
+        if !text.is_empty() {
+            turns.push(SpokenTurn { speaker, text });
+        }
+        i = close;
+    }
+    if turns.is_empty() && !line.trim().is_empty() && crate::planning::text_looks_like_dialogue(&line)
+    {
+        turns.push(SpokenTurn {
+            speaker: String::new(),
+            text: line.trim().to_string(),
+        });
+    }
+    (turns, trailing)
+}
+
+fn find_dialogue_quote_rel(s: &str) -> Option<usize> {
+    s.find(['「', '“', '"', '{'])
+}
+
+fn matching_quote_end(s: &str, open_at: usize) -> Option<usize> {
+    let open = s[open_at..].chars().next()?;
+    let close = match open {
+        '「' => '」',
+        '“' => '”',
+        '"' => '"',
+        '{' => '}',
+        _ => return None,
+    };
+    let after = open_at + open.len_utf8();
+    let rel = s[after..].find(close)?;
+    Some(after + rel + close.len_utf8())
+}
+
+fn speaker_span_start(blob: &str, quote_byte: usize) -> usize {
+    if speaker_name_before_quote(blob, quote_byte).is_none() {
+        return quote_byte;
+    }
+    let prefix = &blob[..quote_byte];
+    let chars: Vec<(usize, char)> = prefix.char_indices().collect();
+    let mut i = chars.len();
+    while i > 0 && chars[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    if i == 0 {
+        return 0;
+    }
+    // skip : / 说 / 道
+    if matches!(chars[i - 1].1, ':' | '：') {
+        i -= 1;
+    }
+    while i > 0 && chars[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    if i > 0 && chars[i - 1].1 == '道' {
+        i -= 1;
+        if i > 0 && chars[i - 1].1 == '说' {
+            i -= 1;
+        }
+        while i > 0 && chars[i - 1].1.is_whitespace() {
+            i -= 1;
+        }
+    } else if i > 0 && chars[i - 1].1 == '说' {
+        i -= 1;
+        while i > 0 && chars[i - 1].1.is_whitespace() {
+            i -= 1;
+        }
+    }
+    let mut start = i;
+    let mut taken = 0u32;
+    while start > 0 && is_packed_speaker_name_char(chars[start - 1].1) && taken < 12 {
+        start -= 1;
+        taken += 1;
+    }
+    if taken == 0 {
+        quote_byte
+    } else {
+        chars[start].0
+    }
+}
+
+fn lens_mentions_speaker(visual: &str, speaker: &str) -> bool {
+    let speaker = speaker.trim();
+    if speaker.is_empty() {
+        return false;
+    }
+    if visual.contains(speaker) {
+        return true;
+    }
+    for name in bracket_names(visual) {
+        if speaker.contains(&name) || name.contains(speaker) {
+            return true;
+        }
+    }
+    let chars: Vec<char> = speaker.chars().collect();
+    let max = chars.len().min(4);
+    if max < 2 {
+        return false;
+    }
+    for len in (2..=max).rev() {
+        let prefix: String = chars[..len].iter().collect();
+        if visual.contains(&prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+fn bracket_names(visual: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = visual;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+        let name = rest[..end].trim();
+        if name.chars().count() >= 2 {
+            out.push(name.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+    out
+}
+
+fn quoted_payloads(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let close = match chars[i] {
+            '「' => Some('」'),
+            '“' => Some('”'),
+            '"' => Some('"'),
+            '{' => Some('}'),
+            _ => None,
+        };
+        if let Some(close) = close {
+            i += 1;
+            let start = i;
+            while i < chars.len() && chars[i] != close {
+                i += 1;
+            }
+            if i > start {
+                out.push(chars[start..i].iter().collect());
+            }
+            if i < chars.len() {
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// One visual beat the video prompt should play, in order.
+///
+/// Seconds never belong in the prompt: this is prose plus optional per-beat
+/// audio, and a flag when the camera changes inside the generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromptLens {
+    pub visual: String,
+    pub audio: Option<String>,
+    pub cut: bool,
+}
+
+fn assign_turns_to_lenses(lenses: &mut [PromptLens], audio: &str) {
+    if lenses.is_empty() {
+        return;
+    }
+    let (turns, trailing_sfx) = parse_spoken_turns(audio);
+    if turns.is_empty() && trailing_sfx.is_empty() {
+        if !audio.trim().is_empty() {
+            lenses[0].audio = Some(audio.trim().to_string());
+        }
+        return;
+    }
+    let mut buckets: Vec<Vec<String>> = vec![Vec::new(); lenses.len()];
+    let last = lenses.len() - 1;
+    let mut i = 0usize;
+    for turn in &turns {
+        let mut j = None;
+        for k in i..lenses.len() {
+            if lens_mentions_speaker(&lenses[k].visual, &turn.speaker) {
+                j = Some(k);
+                break;
+            }
+        }
+        // Unmatched stays on the current lens (never dropped). Jumping to
+        // `last` would park early lines after later cuts.
+        let j = j.unwrap_or(i.min(last));
+        buckets[j].push(turn.text.clone());
+        i = j;
+    }
+    for (idx, bucket) in buckets.into_iter().enumerate() {
+        if !bucket.is_empty() {
+            lenses[idx].audio = Some(bucket.join(" "));
+        }
+    }
+    if !trailing_sfx.is_empty() {
+        let dest = lenses.last_mut().expect("len checked");
+        match &mut dest.audio {
+            Some(a) => {
+                a.push(' ');
+                a.push_str(&trailing_sfx);
+            }
+            None => dest.audio = Some(trailing_sfx),
+        }
+    }
+}
+
+fn ensure_quotes_survive(lenses: &mut [PromptLens], parent_audio: &str) {
+    if lenses.is_empty() {
+        return;
+    }
+    let parent_quotes = quoted_payloads(parent_audio);
+    if parent_quotes.is_empty() {
+        return;
+    }
+    let mut have = String::new();
+    for lens in lenses.iter() {
+        have.push_str(lens.audio.as_deref().unwrap_or(""));
+        have.push(' ');
+    }
+    let mut missing = Vec::new();
+    for q in parent_quotes {
+        if q.trim().is_empty() {
+            continue;
+        }
+        if !have.contains(&q) {
+            missing.push(q);
+        }
+    }
+    if missing.is_empty() {
+        return;
+    }
+    let extra = missing.join(" ");
+    let dest = lenses.last_mut().expect("len checked");
+    match &mut dest.audio {
+        Some(a) => {
+            a.push(' ');
+            a.push_str(&extra);
+        }
+        None => dest.audio = Some(extra),
+    }
+}
+
+fn bind_audio_to_lenses(lenses: &mut [PromptLens], parent_audio: Option<&str>) {
+    let parent = parent_audio.unwrap_or("").trim();
+    if parent.is_empty() {
+        return;
+    }
+    let have_per = lenses
+        .iter()
+        .any(|lens| !lens.audio.as_deref().unwrap_or("").trim().is_empty());
+    if have_per {
+        ensure_quotes_survive(lenses, parent);
+        return;
+    }
+    assign_turns_to_lenses(lenses, parent);
+    ensure_quotes_survive(lenses, parent);
+}
+
+fn brief_overflows(bounds: ClipBounds, brief: &ShotBriefDescription, max_speakers: usize) -> bool {
+    let blob = brief_audio_blob(brief);
+    if max_speakers > 0 && named_dialogue_speakers(&blob).len() > max_speakers {
+        return true;
+    }
+    crate::planning::unclamped_speech_need_secs(Some(&blob)) > bounds.max_secs()
+}
+
+fn explode_brief(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
+    if brief.beats.len() >= 2 {
+        let mut lenses = Vec::new();
+        let mut cams = Vec::new();
+        for beat in &brief.beats {
+            if beat.visual_desc.trim().is_empty() {
+                continue;
+            }
+            lenses.push(PromptLens {
+                visual: beat.visual_desc.clone(),
+                audio: beat.audio_desc.clone(),
+                cut: false,
+            });
+            cams.push(beat.cam_idx);
+        }
+        bind_audio_to_lenses(&mut lenses, brief.audio_desc.as_deref());
+        return lenses
+            .into_iter()
+            .zip(cams)
+            .map(|(lens, cam_idx)| ShotBriefBeat {
+                visual_desc: lens.visual,
+                audio_desc: lens.audio,
+                cam_idx,
+            })
+            .collect();
+    }
+    let visual = if brief.visual_desc.trim().is_empty() {
+        String::new()
+    } else {
+        brief.visual_desc.clone()
+    };
+    let parts = split_visual_on_cuts(&visual);
+    if parts.is_empty() {
+        return vec![ShotBriefBeat {
+            visual_desc: visual,
+            audio_desc: brief.audio_desc.clone(),
+            cam_idx: brief.cam_idx,
+        }];
+    }
+    let mut lenses: Vec<PromptLens> = parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, visual)| PromptLens {
+            visual,
+            audio: None,
+            cut: i > 0,
+        })
+        .collect();
+    bind_audio_to_lenses(&mut lenses, brief.audio_desc.as_deref());
+    lenses
+        .into_iter()
+        .map(|lens| ShotBriefBeat {
+            visual_desc: lens.visual,
+            audio_desc: lens.audio,
+            cam_idx: brief.cam_idx,
+        })
+        .collect()
+}
+
+fn atom_need_secs(bounds: ClipBounds, beat: &ShotBriefBeat) -> u32 {
+    crate::planning::estimate_shot_need_secs(
+        bounds,
+        beat.audio_desc.as_deref(),
+        &beat.visual_desc,
+        "small",
+    )
+}
+
+fn can_add_atom(
+    bounds: ClipBounds,
+    max_speakers: usize,
+    run: &[ShotBriefBeat],
+    next: &ShotBriefBeat,
+) -> bool {
+    if run.is_empty() {
+        return true;
+    }
+    let mut speakers = HashSet::new();
+    let mut need = 0u32;
+    for beat in run {
+        speakers.extend(named_dialogue_speakers(
+            beat.audio_desc.as_deref().unwrap_or(""),
+        ));
+        need = need.saturating_add(atom_need_secs(bounds, beat));
+    }
+    let next_speakers = named_dialogue_speakers(next.audio_desc.as_deref().unwrap_or(""));
+    if !can_join_voice_ref_speakers(&speakers, &next_speakers, max_speakers) {
+        return false;
+    }
+    need.saturating_add(atom_need_secs(bounds, next)) <= bounds.max_secs()
+}
+
+fn brief_from_atoms(
+    template: &ShotBriefDescription,
+    atoms: Vec<ShotBriefBeat>,
+) -> ShotBriefDescription {
+    let cam_idx = atoms.first().map(|a| a.cam_idx).unwrap_or(template.cam_idx);
+    let visual_desc = join_visual_with_cuts(atoms.iter().map(|a| (a.cam_idx, a.visual_desc.as_str())));
+    let audio_desc = {
+        let joined = join_distinct(atoms.iter().filter_map(|a| a.audio_desc.as_deref()), " ");
+        (!joined.is_empty()).then_some(joined)
+    };
+    let beats = if atoms.len() >= 2 {
+        atoms
+    } else {
+        Vec::new()
+    };
+    ShotBriefDescription {
+        idx: template.idx,
+        is_last: false,
+        cam_idx,
+        visual_desc,
+        audio_desc,
+        location_id: template.location_id.clone(),
+        beats,
+    }
+}
+
+fn split_turns_sharing_visual(
+    bounds: ClipBounds,
+    template: &ShotBriefDescription,
+    visual: &str,
+    audio: &str,
+    max_speakers: usize,
+) -> Vec<ShotBriefDescription> {
+    let (turns, trailing) = parse_spoken_turns(audio);
+    if turns.len() < 2 {
+        return vec![brief_with_visual_audio(template, visual, audio)];
+    }
+    let mut groups: Vec<Vec<&SpokenTurn>> = Vec::new();
+    let mut current: Vec<&SpokenTurn> = Vec::new();
+    let mut names: HashSet<String> = HashSet::new();
+    for turn in &turns {
+        let mut trial = names.clone();
+        if !turn.speaker.is_empty() {
+            trial.insert(turn.speaker.clone());
+        }
+        let trial_audio = current
+            .iter()
+            .chain(std::iter::once(&turn))
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let speech = crate::planning::unclamped_speech_need_secs(Some(&trial_audio));
+        let overflow_speakers = max_speakers > 0 && trial.len() > max_speakers;
+        let overflow_speech = speech > bounds.max_secs();
+        if !current.is_empty() && (overflow_speakers || overflow_speech) {
+            groups.push(std::mem::take(&mut current));
+            names.clear();
+        }
+        if !turn.speaker.is_empty() {
+            names.insert(turn.speaker.clone());
+        }
+        current.push(turn);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    if groups.len() < 2 {
+        return vec![brief_with_visual_audio(template, visual, audio)];
+    }
+    let last = groups.len() - 1;
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(i, group)| {
+            let mut audio = group
+                .iter()
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if i == last && !trailing.is_empty() {
+                audio.push(' ');
+                audio.push_str(&trailing);
+            }
+            brief_with_visual_audio(template, visual, &audio)
+        })
+        .collect()
+}
+
+fn brief_with_visual_audio(
+    template: &ShotBriefDescription,
+    visual: &str,
+    audio: &str,
+) -> ShotBriefDescription {
+    let audio = audio.trim();
+    ShotBriefDescription {
+        idx: template.idx,
+        is_last: false,
+        cam_idx: template.cam_idx,
+        visual_desc: visual.to_string(),
+        audio_desc: (!audio.is_empty()).then(|| audio.to_string()),
+        location_id: template.location_id.clone(),
+        beats: Vec::new(),
+    }
+}
+
+/// Split a published row that cannot fit the model's speaker slots or speech
+/// window. Never drops visual beats or quoted lines — extra files are preferred
+/// over 吞字 / missing voice refs.
+fn split_overflow_briefs(
+    bounds: ClipBounds,
+    briefs: Vec<ShotBriefDescription>,
+    max_speakers: usize,
+) -> Vec<ShotBriefDescription> {
+    let mut out = Vec::with_capacity(briefs.len());
+    for brief in briefs {
+        if !brief_overflows(bounds, &brief, max_speakers) {
+            out.push(brief);
+            continue;
+        }
+        let atoms = explode_brief(&brief);
+        if atoms.len() <= 1 {
+            push_split_atoms(&mut out, bounds, &brief, atoms, max_speakers);
+            continue;
+        }
+        let mut run: Vec<ShotBriefBeat> = Vec::new();
+        for atom in atoms {
+            if can_add_atom(bounds, max_speakers, &run, &atom) {
+                run.push(atom);
+                continue;
+            }
+            if run_is_carrier_only(&run) {
+                run.push(atom);
+                push_split_atoms(
+                    &mut out,
+                    bounds,
+                    &brief,
+                    std::mem::take(&mut run),
+                    max_speakers,
+                );
+                continue;
+            }
+            if !run.is_empty() {
+                push_split_atoms(
+                    &mut out,
+                    bounds,
+                    &brief,
+                    std::mem::take(&mut run),
+                    max_speakers,
+                );
+            }
+            run.push(atom);
+        }
+        if !run.is_empty() {
+            push_split_atoms(&mut out, bounds, &brief, run, max_speakers);
+        }
+    }
+    out
+}
+
+fn run_is_carrier_only(run: &[ShotBriefBeat]) -> bool {
+    !run.is_empty()
+        && run.iter().all(|beat| {
+            named_dialogue_speakers(beat.audio_desc.as_deref().unwrap_or("")).is_empty()
+        })
+}
+
+/// Flush a grouped run. If it still overflows (all speakers landed on one
+/// CUT TO part), split between speaker turns — never drop a quoted line.
+fn push_split_atoms(
+    out: &mut Vec<ShotBriefDescription>,
+    bounds: ClipBounds,
+    template: &ShotBriefDescription,
+    atoms: Vec<ShotBriefBeat>,
+    max_speakers: usize,
+) {
+    if atoms.is_empty() {
+        return;
+    }
+    if atoms.len() == 1 {
+        let visual = if atoms[0].visual_desc.trim().is_empty() {
+            template.visual_desc.clone()
+        } else {
+            atoms[0].visual_desc.clone()
+        };
+        let audio = atoms[0]
+            .audio_desc
+            .clone()
+            .or_else(|| template.audio_desc.clone())
+            .unwrap_or_default();
+        out.extend(split_turns_sharing_visual(
+            bounds,
+            template,
+            &visual,
+            &audio,
+            max_speakers,
+        ));
+        return;
+    }
+    let brief = brief_from_atoms(template, atoms);
+    if !brief_overflows(bounds, &brief, max_speakers) {
+        out.push(brief);
+        return;
+    }
+    let visual = brief.visual_desc.clone();
+    let audio = brief.audio_desc.clone().unwrap_or_default();
+    out.extend(split_turns_sharing_visual(
+        bounds,
+        &brief,
+        &visual,
+        &audio,
+        max_speakers,
+    ));
 }
 
 fn crosses_split(
@@ -996,18 +1709,8 @@ fn authored_beats(motion: &str) -> Vec<AuthoredBeat> {
     }
 }
 
-/// One visual beat the Seedance prompt should play, in order.
-///
-/// Seconds never belong in the prompt: this is prose plus optional per-beat
-/// audio, and a flag when the camera changes inside the generation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PromptLens {
-    pub visual: String,
-    pub audio: Option<String>,
-    pub cut: bool,
-}
-
-/// Packed `shot.beats` win; otherwise authored `0-4s:` segments in `motion_desc`.
+/// Packed `shot.beats` win; otherwise in-file CUT TO parts in `visual_desc`,
+/// then authored `0-4s:` segments in `motion_desc`.
 /// Empty means the compiler should use the clip's single `visual_desc` / `motion_desc`.
 pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
     if shot.beats.len() >= 2 {
@@ -1029,16 +1732,26 @@ pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
                 cut,
             });
         }
-        if out
-            .iter()
-            .all(|lens| lens.audio.as_deref().unwrap_or("").trim().is_empty())
-        {
-            if let Some(audio) = shot.audio_desc.as_ref().filter(|s| !s.trim().is_empty()) {
-                if let Some(first) = out.first_mut() {
-                    first.audio = Some(audio.clone());
-                }
-            }
-        }
+        bind_audio_to_lenses(&mut out, shot.audio_desc.as_deref());
+        return out;
+    }
+    let visual_src = if !shot.visual_desc.trim().is_empty() {
+        shot.visual_desc.as_str()
+    } else {
+        shot.motion_desc.as_str()
+    };
+    let cut_parts = split_visual_on_cuts(&strip_authored_timecodes(visual_src));
+    if cut_parts.len() >= 2 {
+        let mut out: Vec<PromptLens> = cut_parts
+            .into_iter()
+            .enumerate()
+            .map(|(i, visual)| PromptLens {
+                visual,
+                audio: None,
+                cut: i > 0,
+            })
+            .collect();
+        bind_audio_to_lenses(&mut out, shot.audio_desc.as_deref());
         return out;
     }
     let mut authored: Vec<PromptLens> = authored_beats(&shot.motion_desc)
@@ -1052,9 +1765,7 @@ pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
     if authored.len() < 2 {
         return Vec::new();
     }
-    if let Some(audio) = shot.audio_desc.as_ref().filter(|s| !s.trim().is_empty()) {
-        authored[0].audio = Some(audio.clone());
-    }
+    bind_audio_to_lenses(&mut authored, shot.audio_desc.as_deref());
     authored
 }
 
@@ -1082,7 +1793,7 @@ trait Beat {
 
 impl Beat for ShotDescription {
     fn motion(&self) -> &str {
-        &self.motion_desc
+        crate::planning::shot_need_visual(&self.visual_desc, &self.motion_desc)
     }
     fn audio(&self) -> Option<&str> {
         self.audio_desc.as_deref()
@@ -1299,19 +2010,7 @@ fn join_visual_with_cuts<'a>(parts: impl IntoIterator<Item = (i32, &'a str)>) ->
 /// Prefer the storyboard 画面描述 when it is a real brief; keep camera motion
 /// when `visual_desc` is a short stub (tests / empty decompose).
 fn beat_text_for_pack(visual: &str, motion: &str) -> String {
-    let v = visual.trim();
-    let m = motion.trim();
-    if v.is_empty() {
-        return m.to_string();
-    }
-    if m.is_empty() {
-        return v.to_string();
-    }
-    if v.chars().count() >= 12 && v.chars().count() >= m.chars().count() {
-        v.to_string()
-    } else {
-        m.to_string()
-    }
+    crate::planning::shot_need_visual(visual, motion).to_string()
 }
 
 /// A merged clip shows every beat's change, so it inherits the busiest
@@ -1589,6 +2288,21 @@ mod tests {
         assert!(clip_need_secs(SEEDANCE, &merged[0]) > one_beat);
     }
 
+    #[test]
+    fn clip_need_prices_storyboard_visual_when_motion_is_a_stub() {
+        let mut s = shot(
+            0,
+            0,
+            "nod",
+            Some("玄霄老祖开口 {千年了……本座,终于突破至大乘期。}"),
+        );
+        s.visual_desc = "仰拍:乌云翻涌如墨,九道天雷接连劈下。烟尘中白靴踏出。他御剑射向山巅。开口。"
+            .into();
+        let wan = ClipBounds::new(2, 30);
+        let need = clip_need_secs(wan, &s);
+        assert!(need >= 10, "need={need}");
+    }
+
     /// A spoken beat (17 CJK ⇒ ~8s) next to a silent one (model min 5s): 13s of
     /// content, still inside the 15s ceiling, so they merge.
     fn spoken_then_silent() -> ShotDescription {
@@ -1815,7 +2529,7 @@ mod tests {
         );
         let first_speakers = named_dialogue_speakers(&brief_audio_blob(&packed[0]));
         assert!(
-            first_speakers.len() <= MAX_PACKED_VOICE_REF_SPEAKERS,
+            first_speakers.len() <= DEFAULT_MAX_VOICE_REF_SPEAKERS,
             "{first_speakers:?}"
         );
     }
@@ -2020,8 +2734,171 @@ mod tests {
             PackOpts {
                 policy: PackPolicy::Dense,
                 split_needles: vec!["自行车".into(), "录取".into()],
+                max_voice_ref_speakers: DEFAULT_MAX_VOICE_REF_SPEAKERS,
             },
         );
         assert_eq!(packed.len(), 2);
+    }
+
+    const SIX_SPEAKER_VISUAL: &str =
+        "近景 <罗子君>正面。CUT TO <陈俊生>近景。CUT TO <唐晶>侧脸围观。";
+    const SIX_SPEAKER_AUDIO: &str = "\
+罗子君：「……陈俊生。」陈俊生：「不是我！我没点！」唐晶：「你别装了。」\
+凌玲：「卡片上写得很清楚。」贺建军：「大家冷静。」康总：「把监控调出来。」\
+弹幕刷屏；BGM:低音铺底";
+
+    fn quote_blob(briefs: &[ShotBriefDescription]) -> String {
+        briefs
+            .iter()
+            .flat_map(|brief| quoted_payloads(&brief_audio_blob(brief)))
+            .collect()
+    }
+
+    #[test]
+    fn one_row_six_named_speakers_splits_without_dropping_lines() {
+        let briefs = vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(SIX_SPEAKER_AUDIO))];
+        let packed = pack_scene_briefs(SEEDANCE, briefs);
+        assert!(
+            packed.len() >= 2,
+            "Seedance 3 voice-ref slots cannot bind 6 speakers: {packed:?}"
+        );
+        assert_eq!(
+            quote_blob(&packed),
+            quoted_payloads(SIX_SPEAKER_AUDIO).join(""),
+            "splitting must keep every quoted line"
+        );
+        for row in &packed {
+            let n = named_dialogue_speakers(&brief_audio_blob(row)).len();
+            assert!(
+                n <= DEFAULT_MAX_VOICE_REF_SPEAKERS,
+                "row {} has {n} speakers: {}",
+                row.idx,
+                brief_audio_blob(row)
+            );
+        }
+    }
+
+    #[test]
+    fn three_named_speakers_in_one_row_stay_one_clip() {
+        let audio = "罗子君：「……陈俊生。」陈俊生：「不是我！」唐晶：「你别装了。」";
+        let packed = pack_scene_briefs(
+            SEEDANCE,
+            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(audio))],
+        );
+        assert_eq!(packed.len(), 1, "{packed:?}");
+        assert_eq!(quote_blob(&packed), quoted_payloads(audio).join(""));
+    }
+
+    #[test]
+    fn wan_five_voice_slots_keep_five_speakers_together() {
+        let audio = "\
+罗子君：「一。」陈俊生：「二。」唐晶：「三。」凌玲：「四。」贺建军：「五。」";
+        let packed = pack_scene_briefs_with(
+            WAN3,
+            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(audio))],
+            PackOpts {
+                policy: PackPolicy::Dense,
+                split_needles: Vec::new(),
+                max_voice_ref_speakers: 5,
+            },
+        );
+        assert_eq!(packed.len(), 1, "{packed:?}");
+        let six = pack_scene_briefs_with(
+            WAN3,
+            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(SIX_SPEAKER_AUDIO))],
+            PackOpts {
+                policy: PackPolicy::Dense,
+                split_needles: Vec::new(),
+                max_voice_ref_speakers: 5,
+            },
+        );
+        assert!(six.len() >= 2, "{six:?}");
+        assert_eq!(
+            quote_blob(&six),
+            quoted_payloads(SIX_SPEAKER_AUDIO).join("")
+        );
+    }
+
+    #[test]
+    fn minimax_zero_voice_slots_does_not_split_on_speaker_count() {
+        let packed = pack_scene_briefs_with(
+            SEEDANCE,
+            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(SIX_SPEAKER_AUDIO))],
+            PackOpts {
+                policy: PackPolicy::Dense,
+                split_needles: Vec::new(),
+                max_voice_ref_speakers: 0,
+            },
+        );
+        assert_eq!(packed.len(), 1, "{packed:?}");
+        assert_eq!(
+            quote_blob(&packed),
+            quoted_payloads(SIX_SPEAKER_AUDIO).join("")
+        );
+    }
+
+    #[test]
+    fn fold_budget_cannot_drop_overflow_dialogue() {
+        let packed = pack_briefs_for_publish(
+            SEEDANCE,
+            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(SIX_SPEAKER_AUDIO))],
+            PackOpts::default(),
+            Some(1),
+            OverBudget::Fold,
+        );
+        assert!(
+            packed.len() >= 2,
+            "不丢戏 wins over the shot quota: {packed:?}"
+        );
+        assert_eq!(
+            quote_blob(&packed),
+            quoted_payloads(SIX_SPEAKER_AUDIO).join("")
+        );
+    }
+
+    #[test]
+    fn prompt_lenses_bind_named_turns_to_cut_to_parts() {
+        let mut s = shot(0, 0, "framing", Some(SIX_SPEAKER_AUDIO));
+        s.visual_desc = SIX_SPEAKER_VISUAL.into();
+        let lenses = prompt_lenses(&s);
+        assert_eq!(lenses.len(), 3, "{lenses:?}");
+        let a0 = lenses[0].audio.as_deref().unwrap_or("");
+        let a1 = lenses[1].audio.as_deref().unwrap_or("");
+        let a2 = lenses[2].audio.as_deref().unwrap_or("");
+        assert!(a0.contains("……陈俊生"), "{a0}");
+        assert!(a1.contains("不是我"), "{a1}");
+        assert!(a2.contains("你别装了"), "{a2}");
+        let joined = format!("{a0} {a1} {a2}");
+        for q in quoted_payloads(SIX_SPEAKER_AUDIO) {
+            assert!(joined.contains(&q), "missing `{q}` in {joined}");
+        }
+        assert!(
+            !a0.contains("低音铺底") && !a1.contains("低音铺底"),
+            "BGM must not ride along with the first speakers: {lenses:?}"
+        );
+    }
+
+    #[test]
+    fn speech_overflow_splits_between_turns_not_mid_quote() {
+        let a = "中".repeat(30);
+        let b = "乙".repeat(30);
+        let audio = format!("李薇：「{a}」阿琳：「{b}」");
+        let packed = pack_scene_briefs(SEEDANCE, vec![brief(0, 0, "对峙", Some(&audio))]);
+        assert_eq!(packed.len(), 2, "{packed:?}");
+        assert_eq!(quote_blob(&packed), quoted_payloads(&audio).join(""));
+
+        let long = format!("李薇：「{}」", "中".repeat(80));
+        let one = pack_scene_briefs(SEEDANCE, vec![brief(0, 0, "独白", Some(&long))]);
+        assert_eq!(one.len(), 1, "do not mid-cut a single 台词: {one:?}");
+        assert_eq!(quote_blob(&one), quoted_payloads(&long).join(""));
+    }
+
+    #[test]
+    fn format_inline_spoken_is_per_turn_braces() {
+        let inline = format_inline_spoken(SIX_SPEAKER_AUDIO);
+        assert!(inline.contains("罗子君开口 {……陈俊生。}"), "{inline}");
+        assert!(inline.contains("陈俊生开口 {不是我！我没点！}"), "{inline}");
+        assert!(!inline.contains("低音铺底"), "{inline}");
+        assert!(!inline.contains("弹幕"), "{inline}");
     }
 }

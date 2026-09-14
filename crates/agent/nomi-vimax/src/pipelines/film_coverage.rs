@@ -16,7 +16,11 @@ use super::clip_beats::{self, PackOpts};
 
 /// After every scene has drafted its own SCRIPT, insert missing hook/turn/payoff
 /// onto the scene that already owns them, then pack those boards once.
-pub(crate) async fn apply_film_coverage(film_root: &Path, clip: ClipBounds) -> VimaxResult<()> {
+pub(crate) async fn apply_film_coverage(
+    film_root: &Path,
+    clip: ClipBounds,
+    max_voice_refs: usize,
+) -> VimaxResult<()> {
     let Some(engine) = load_drama_engine(film_root) else {
         return Ok(());
     };
@@ -48,6 +52,7 @@ pub(crate) async fn apply_film_coverage(film_root: &Path, clip: ClipBounds) -> V
     let opts = PackOpts {
         policy: spec.pack_policy,
         split_needles,
+        max_voice_ref_speakers: max_voice_refs,
     };
     for i in dirty {
         let max_shots = scene_max_shots(&dirs[i], clip).await;

@@ -35,8 +35,8 @@ pub use aspect::{
 pub use clip_bounds::ClipBounds;
 pub use video_quality::{
     DEFAULT_VIDEO_FPS, DEFAULT_VIDEO_RESOLUTION, VIDEO_RESOLUTIONS, VideoModelCapabilities,
-    clip_bounds_for_model, normalize_fps_for_model, normalize_resolution_for_model,
-    video_model_capabilities,
+    clip_bounds_for_model, max_reference_audio, normalize_fps_for_model,
+    normalize_resolution_for_model, video_model_capabilities,
 };
 
 pub use artifact_edit::ImagePromptInfo;
