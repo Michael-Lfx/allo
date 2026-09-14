@@ -179,7 +179,7 @@ dependencies = [
  "nomifun-app-server",
  "nomifun-common",
  "nomifun-runtime",
- "open",
+ "nomifun-shell",
  "rust-embed",
  "serde_json",
  "tokio",
