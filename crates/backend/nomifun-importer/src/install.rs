@@ -12,7 +12,7 @@
 //!   (Preset + MCP config) — this module only supplies the copy primitive,
 //!   never executes content (docs/agent-store/02 §10).
 //!
-//! The module is deliberately shallow on orchestration and deep on *safety*:
+//! The module is deliberately shallow on coordination and deep on *safety*:
 //! it copies only files that exist inside the immutable snapshot and rejects
 //! anything outside the snapshot root.
 

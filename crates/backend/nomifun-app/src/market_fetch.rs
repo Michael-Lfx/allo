@@ -1,4 +1,4 @@
-//! Marketplace fetch orchestration (roadmap Phase 2, phase B).
+//! Marketplace fetch coordination (roadmap Phase 2, phase B).
 //!
 //! Bridges the low-level `market_source` primitives (clone / download /
 //! promote) with the directory probe installed in `app_server_marketplace`:
