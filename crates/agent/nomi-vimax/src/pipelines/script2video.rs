@@ -214,8 +214,19 @@ impl Script2VideoPipeline {
             };
             let board = async {
                 emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
-                self.design_storyboard(script, &characters, user_requirement, &plan_fp)
+                match self
+                    .design_storyboard(script, &characters, user_requirement, &plan_fp)
                     .await
+                {
+                    Ok(rows) => Ok(rows),
+                    Err(err) => {
+                        // Portraits/voice emit in parallel and can clobber this stage
+                        // name; restore it so a coverage failure is not reported as
+                        // voice_references_start.
+                        emit_pct(&progress, "design_storyboard", "分镜覆盖校验未通过", 40.0);
+                        Err(err)
+                    }
+                }
             };
             let ((), (), storyboard) = tokio::try_join!(portraits_voices, world, board)?;
             storyboard
