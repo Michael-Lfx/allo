@@ -606,7 +606,7 @@ Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码
 2. **投影进 `mcp_servers` 表**——不变（`21` D14 ②=C）。
 3. **`disabledTools` 覆盖 MCP resources / prompts**——见 §7.9.2 的已知边界（它们在我们这里变成 skill，不是工具）。
 4. **热更新墓碑态**（参考实现的 `removed`）——不变。
-5. **WebUI 设置页的 MCP 分区渲染**——读面已就绪；真做渲染时大概会想展示过滤条目与 `rejected`，那会引入一次读面变更（可能加 `cwd` / 过滤条目数），届时要一起算指纹。
+5. ~~**WebUI 设置页的 MCP 分区渲染**~~ → **已完成（2026-09-13）**：设置 nav 三→四，新增 `mcp` 分区（`web/src/components/dialogs/McpSettingsSection.tsx`），只读渲染 `config/get.mcp`（文件级 `error`、逐条 `rejected` 原因、已接受条目与计数），页面上没有任何写控件。**未扩读面**：`rejected` 的原因已经点名出问题的具体字段，比再加 `cwd` / 过滤条目数更有用，所以本次**零协议变更**（指纹未动）。渲染细节与踩到的 i18n 坑见 `16` §5.3 的 R16 追记。
 
 ---
 

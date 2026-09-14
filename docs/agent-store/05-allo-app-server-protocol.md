@@ -651,7 +651,8 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
   列表 + `error`。`env` / `headers` 的**值**（含明文凭据）永不进入此视图，只有 key 名会；
   声明的 `cwd`、`bearerTokenEnvVar` 与工具过滤条目同样**不上 wire**（视图只报 `name` /
   `transport` / `enabled`）。该文件**不在** `config/set` 的白名单里——它只能由用户手写，
-  `config/set` 只负责把写完后的投影读回来。
+  `config/set` 只负责把写完后的投影读回来；WebUI 设置页的 `mcp` 分区就是这段投影的
+  **只读**渲染（含逐条 `rejected` 原因），页面上没有任何写控件。
 
 `config/set` 只接受白名单字段（当前仅 `default_model`）：请求里出现 `api_key` /
 `base_url` / 路径等**任何**其他键都是 `invalid_request`（不是静默忽略）；值为空、

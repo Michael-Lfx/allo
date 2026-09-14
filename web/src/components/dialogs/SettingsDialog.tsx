@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Brain, Plug, Settings as SettingsIcon } from "lucide-react";
+import { Brain, Plug, Server, Settings as SettingsIcon } from "lucide-react";
 import { useAppStore } from "../../store/appStore";
 import { setLanguage } from "../../i18n";
 import { useTheme } from "../../ui/theme";
 import { DialogShell } from "./DialogShell";
 import { AgentSettingsSection } from "./AgentSettingsSection";
+import { McpSettingsSection } from "./McpSettingsSection";
 import { ProviderSettingsSection } from "./ProviderSettingsSection";
 
 /**
@@ -31,8 +32,14 @@ import { ProviderSettingsSection } from "./ProviderSettingsSection";
  * a switch with no consumer. The models/efforts facts it could have mirrored
  * still have a single owner — the composer's ModelPicker — so the section only
  * links there.
+ *
+ * `mcp` renders real data without writing any: `config/get` projects the host's
+ * `~/.agent-store/mcp.json` (accepted servers, refused entries with reasons, and
+ * the file-level parse error), and `config/set` deliberately has **no** key for
+ * that file — a declaration can start a local command, so it stays the host
+ * operator's hand-written statement rather than a settings toggle (`05` §4.10).
  */
-export const SETTINGS_SECTIONS = ["general", "provider", "agent"] as const;
+export const SETTINGS_SECTIONS = ["general", "provider", "agent", "mcp"] as const;
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
@@ -40,6 +47,7 @@ const SECTIONS: Array<{ key: SettingsSection; icon: React.ReactNode; labelKey: s
   { key: "general", icon: <SettingsIcon size={17} strokeWidth={1.7} />, labelKey: "settings.sectionGeneral" },
   { key: "provider", icon: <Plug size={17} strokeWidth={1.7} />, labelKey: "settings.sectionProvider" },
   { key: "agent", icon: <Brain size={17} strokeWidth={1.7} />, labelKey: "settings.sectionAgent" },
+  { key: "mcp", icon: <Server size={17} strokeWidth={1.7} />, labelKey: "settings.sectionMcp" },
 ];
 
 /** Dialog gate: the store owns whether it is open; the panel is pure props. */
@@ -145,6 +153,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           {section === "provider" && <ProviderSettingsSection />}
 
           {section === "agent" && <AgentSettingsSection />}
+
+          {section === "mcp" && <McpSettingsSection />}
         </div>
       </div>
     </DialogShell>

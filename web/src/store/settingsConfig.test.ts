@@ -29,6 +29,7 @@ const VIEW: AgentStoreConfigView = {
     { name: "retired", enabled: false, models: ["old-model"] },
   ],
   memory: null,
+  mcp: null,
 };
 
 /** A host that has an explicit `[memory] distill_enabled = false`. */
@@ -222,6 +223,7 @@ describe("defaultModelOptions / configFileCounts (W11 / R16)", () => {
       default_model: "opencode/mimo-v2.5-free",
       providers: [{ name: "opencode", enabled: true, models: ["mimo-v2.5-free"] }],
       memory: null,
+      mcp: null,
     };
     const options = defaultModelOptions(pruned, "legacy/older-model");
     expect(options[0]).toEqual({ value: "legacy/older-model", provider: "legacy", model: "older-model" });
@@ -234,6 +236,7 @@ describe("defaultModelOptions / configFileCounts (W11 / R16)", () => {
       default_model: null,
       providers: [{ name: "meta", enabled: true, models: ["llama/3"] }],
       memory: null,
+      mcp: null,
     };
     expect(defaultModelOptions(nested, "meta/llama/3").map((option) => option.value)).toEqual(["meta/llama/3"]);
   });
