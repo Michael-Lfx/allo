@@ -104,6 +104,45 @@ async fn app_server_handshake(
     connection_id
 }
 
+/// Every Preset the installer created, sorted so two reads are comparable.
+async fn agent_store_presets(app: axum::Router, token: &str) -> Vec<String> {
+    let presets = app
+        .oneshot(get_with_token("/api/presets", token))
+        .await
+        .unwrap();
+    assert_eq!(presets.status(), StatusCode::OK, "preset list must succeed");
+    let presets_json = body_json(presets).await;
+    let mut names: Vec<String> = presets_json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|preset| preset["name"].as_str())
+        .filter(|name| name.starts_with("agent-store: "))
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    names
+}
+
+/// Names of the MCP servers currently registered on this host, sorted.
+async fn mcp_server_names(app: axum::Router, token: &str) -> Vec<String> {
+    let servers = app
+        .oneshot(get_with_token("/api/mcp/servers", token))
+        .await
+        .unwrap();
+    assert_eq!(servers.status(), StatusCode::OK, "mcp server list must succeed");
+    let servers_json = body_json(servers).await;
+    let mut names: Vec<String> = servers_json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|server| server["name"].as_str())
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    names
+}
+
 #[tokio::test]
 async fn importer_end_to_end_imports_software_company() {
     let (mut app, services) = build_app().await;
@@ -331,6 +370,9 @@ async fn importer_install_registers_components_into_runtime() {
         .unwrap();
     assert_eq!(disabled_skill["state"], "disabled");
 
+    // Uninstall ONLY the skill component: its runtime artifact must actually go,
+    // while the expert Preset of the same snapshot stays. Component granularity
+    // is the contract here — this is not "uninstall the snapshot".
     let uninstall = app
         .clone()
         .oneshot(bearer_json(
@@ -343,6 +385,7 @@ async fn importer_install_registers_components_into_runtime() {
         ))
         .await
         .unwrap();
+    assert_eq!(uninstall.status(), StatusCode::OK, "uninstall must succeed");
     let uninstalled = body_json(uninstall).await;
     let uninstalled_skill = uninstalled["components"]
         .as_array()
@@ -352,15 +395,140 @@ async fn importer_install_registers_components_into_runtime() {
         .unwrap();
     assert_eq!(uninstalled_skill["state"], "not-installed");
 
-    // The actual skill file materialized under the managed skills root.
-    let managed = services
+    let managed_snapshot_root = services
         .skill_paths
         .user_skills_dir
         .join("agent-store")
-        .join(&snapshot_id)
-        .join("release-notes")
-        .join("SKILL.md");
-    assert!(managed.is_file(), "managed skill must exist on disk: {}", managed.display());
+        .join(&snapshot_id);
+    let managed = managed_snapshot_root.join("release-notes").join("SKILL.md");
+    assert!(
+        !managed.exists(),
+        "uninstall must remove the materialized skill directory, not just clear the flag: {}",
+        managed.display()
+    );
+    let after_partial = agent_store_presets(app.clone(), &token).await;
+    assert!(
+        after_partial.contains(&"agent-store: software-architect".to_owned()),
+        "a skill-only uninstall must leave the snapshot's expert Presets alone: {after_partial:?}"
+    );
+
+    // Now release everything that is left. Presets and the connector's MCP
+    // server registration must be gone, not merely marked as such.
+    let remaining: Vec<String> = uninstalled["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|component| component["state"] != "not-installed")
+        .map(|component| component["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(!remaining.is_empty(), "the snapshot still owns non-skill components");
+    let registered_before = mcp_server_names(app.clone(), &token).await;
+    assert!(
+        !registered_before.is_empty(),
+        "the connector component must have registered an MCP server"
+    );
+
+    let full = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/installs/{snapshot_id}/uninstall"),
+            serde_json::json!({ "component_ids": remaining }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(full.status(), StatusCode::OK, "full uninstall must succeed");
+    let full_json = body_json(full).await;
+    for component in full_json["components"].as_array().unwrap() {
+        assert_eq!(
+            component["state"], "not-installed",
+            "every component must be released: {component}"
+        );
+    }
+    assert!(
+        agent_store_presets(app.clone(), &token).await.is_empty(),
+        "uninstall must delete the Presets it created"
+    );
+    assert!(
+        mcp_server_names(app.clone(), &token).await.is_empty(),
+        "uninstall must delete the MCP server rows it registered"
+    );
+    assert!(
+        !managed_snapshot_root.exists(),
+        "the emptied managed snapshot root must not be left behind: {}",
+        managed_snapshot_root.display()
+    );
+}
+
+/// An empty component list must not read as "uninstall the whole snapshot":
+/// the call sites always pass an explicit selection, and a wipe is not
+/// something either of them could recover from.
+#[tokio::test]
+async fn importer_uninstall_requires_explicit_component_ids() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/imports",
+            serde_json::json!({
+                "source_path": SOFTWARE_COMPANY,
+                "source_kind": "codebuddy-plugin",
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let result = body_json(run).await;
+    let snapshot_id = result["snapshot_id"].as_str().unwrap().to_owned();
+
+    let install = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/installs",
+            serde_json::json!({ "snapshot_id": snapshot_id }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(install.status(), StatusCode::OK);
+
+    let refused = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/installs/{snapshot_id}/uninstall"),
+            serde_json::json!({ "component_ids": [] }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "an empty selection must be refused, not treated as 'everything'"
+    );
+    let refused_json = body_json(refused).await;
+    assert_eq!(refused_json["code"], "invalid_request", "{refused_json}");
+
+    // Nothing was released by the refusal.
+    assert!(
+        !agent_store_presets(app.clone(), &token).await.is_empty(),
+        "the refused call must not have released anything"
+    );
 }
 
 /// `install/run` must be re-entrant: a retry (the natural client reaction to a
@@ -369,26 +537,6 @@ async fn importer_install_registers_components_into_runtime() {
 /// absent, so idempotency can only come from the recorded `runtime_ref`.
 #[tokio::test]
 async fn importer_install_is_reentrant_for_agent_and_team_presets() {
-    /// Every Preset the installer created, sorted so two reads are comparable.
-    async fn agent_store_presets(app: axum::Router, token: &str) -> Vec<String> {
-        let presets = app
-            .oneshot(get_with_token("/api/presets", token))
-            .await
-            .unwrap();
-        assert_eq!(presets.status(), StatusCode::OK);
-        let presets_json = body_json(presets).await;
-        let mut names: Vec<String> = presets_json["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|preset| preset["name"].as_str())
-            .filter(|name| name.starts_with("agent-store: "))
-            .map(str::to_owned)
-            .collect();
-        names.sort();
-        names
-    }
-
     async fn install_once(
         app: axum::Router,
         token: &str,

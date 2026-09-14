@@ -745,10 +745,31 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                     .uninstall(&snapshot.snapshot_id, &installed_components)
                     .await
                 {
-                    Ok(_status) => {
-                        // The components we asked to uninstall are the ones
-                        // that lost their runtime registration.
-                        result.uninstalled_components.extend(installed_components.clone());
+                    Ok(status) => {
+                        // Only what actually lost its registration counts. A
+                        // release that failed keeps its install record and its
+                        // artifact, so listing it here would overstate the
+                        // cascade — and `status` reports the whole snapshot, so
+                        // the selection has to be intersected back in to avoid
+                        // counting components that were never installed.
+                        let released: Vec<String> = status
+                            .components
+                            .iter()
+                            .filter(|component| {
+                                component.state.as_str() == "not-installed"
+                                    && installed_components.contains(&component.id)
+                            })
+                            .map(|component| component.id.clone())
+                            .collect();
+                        if released.len() != installed_components.len() {
+                            result.warnings.push(format!(
+                                "cascade uninstall {}: released {} of {} components",
+                                snapshot.snapshot_id,
+                                released.len(),
+                                installed_components.len()
+                            ));
+                        }
+                        result.uninstalled_components.extend(released);
                     }
                     Err(error) => result
                         .warnings
