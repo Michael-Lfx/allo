@@ -5,6 +5,28 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.3.7 - 2026-09-14
+
+- Vimax skips last-frame likeness preflight at the finished-film stage and only repairs after a risk-control error.
+- Wan 3.0 reference audio is limited, planning thumbnails are cleaned up, and model catalogs load per app.
+
+## v1.3.6 - 2026-09-12
+
+- NSIS quotes DirectML ExecWait commands so Windows installers run them reliably.
+
+## v1.3.5 - 2026-09-12
+
+- DirectML detection is fixed, and the installer downloads the package with curl or PowerShell.
+
+## v1.3.4 - 2026-09-12
+
+- The installer downloads DirectML when `DMLCreateDevice1` is missing.
+
+## v1.3.3 - 2026-09-11
+
+- Windows NSIS embeds the WebView2 bootstrapper with branded install copy.
+- Canvas adds a generation-template shelf and keeps the node editor docked below.
+
 ## v1.3.2 - 2026-09-11
 
 - Video generation adds a blank-canvas entry and outer connect rails for wiring nodes from outside the card.
