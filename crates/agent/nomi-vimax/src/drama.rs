@@ -597,20 +597,82 @@ fn extract_quoted_promises(script: &str) -> Vec<String> {
     out
 }
 
+fn is_cjk(ch: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&ch)
+}
+
 fn is_locked_script_line(quote: &str) -> bool {
-    quote.chars().count() >= 4
+    spoken_payload_weight(quote) >= 4 && !looks_like_title_card(quote)
+}
+
+/// Episode titles / on-screen cards like 「正宫出征」 are quoted in scripts
+/// but are not spoken punchlines the storyboard must transcribe.
+fn looks_like_title_card(quote: &str) -> bool {
+    let cjk = quote.chars().filter(|c| is_cjk(*c)).count();
+    if !(4..=6).contains(&cjk) {
+        return false;
+    }
+    if quote.chars().any(|c| {
+        matches!(
+            c,
+            '，' | '。' | '！' | '？' | '…' | ',' | '!' | '?' | ';' | '；'
+        )
+    }) {
+        return false;
+    }
+    const SPEECH: &[char] = &['吧', '么', '吗', '呢', '嘛', '呀', '啊', '哦', '哼', '我', '你', '您'];
+    !quote.chars().any(|c| SPEECH.contains(&c))
+}
+
+fn quote_match_payload(quote: &str) -> &str {
+    strip_leading_article_label(quote.trim())
+}
+
+/// "第 1079 条：夫妻感情…" → the spoken payload after the clause number.
+fn strip_leading_article_label(s: &str) -> &str {
+    let rest = s.trim();
+    let Some(after_di) = rest.strip_prefix('第') else {
+        return rest;
+    };
+    let Some(tiao_at) = after_di.find('条') else {
+        return rest;
+    };
+    let between = &after_di[..tiao_at];
+    if between.is_empty()
+        || !between
+            .chars()
+            .all(|c| c.is_ascii_digit() || c.is_whitespace())
+    {
+        return rest;
+    }
+    after_di[tiao_at + '条'.len_utf8()..]
+        .trim_start()
+        .trim_start_matches(['：', ':', ' '])
 }
 
 fn quote_covered_in(blob: &str, quote: &str) -> bool {
     if blob.contains(quote) {
         return true;
     }
-    let cjk: String = quote
-        .chars()
-        .filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c))
-        .take(4)
-        .collect();
-    cjk.chars().count() >= 4 && blob.contains(&cjk)
+    let payload = quote_match_payload(quote);
+    if !payload.is_empty() && payload != quote && blob.contains(payload) {
+        return true;
+    }
+    let cjk_src = if payload.is_empty() { quote } else { payload };
+    let cjk: String = cjk_src.chars().filter(|c| is_cjk(*c)).take(4).collect();
+    if cjk.chars().count() >= 4 && blob.contains(&cjk) {
+        return true;
+    }
+    let needles = distinctive_needles(cjk_src);
+    if needles.is_empty() {
+        return false;
+    }
+    let hits = needles.iter().filter(|n| blob.contains(n.as_str())).count();
+    if needles.len() <= 1 {
+        hits == 1
+    } else {
+        hits >= 2
+    }
 }
 
 /// Scene whose script already contains this beat, if any.
@@ -715,6 +777,10 @@ fn board_blob(rows: &[ShotBriefDescription]) -> String {
         for beat in &row.beats {
             out.push_str(&beat.visual_desc);
             out.push('\n');
+            if let Some(audio) = &beat.audio_desc {
+                out.push_str(audio);
+                out.push('\n');
+            }
         }
     }
     out
@@ -1045,6 +1111,45 @@ mod tests {
         let script = "司机怒怼：「吃俩桃你不噎得慌么」";
         let rows = vec![brief("司机对着镜头说吃俩桃你不噎得慌么")];
         assert!(lint_script_promise_coverage(script, &rows).is_empty());
+    }
+
+    #[test]
+    fn script_promise_ignores_short_title_cards() {
+        let script = "黑屏打出：「正宫出征」\n下一张：「出轨证据」\n再下一张：「创业祭坛」\n女主拎包出门。";
+        let rows = vec![brief("女主拎着包推开家门走入夜色")];
+        assert!(lint_script_promise_coverage(script, &rows).is_empty());
+    }
+
+    #[test]
+    fn script_promise_matches_article_punchline_without_clause_number() {
+        let script = "法官宣读：「第 1079 条：夫妻感情确已破裂，调解无效，应准予离婚。P.S. 但如果能一起赚钱，建议再忍忍。」";
+        let rows = vec![brief(
+            "法官举起判决书宣读夫妻感情确已破裂，调解无效应准予离婚",
+        )];
+        assert!(lint_script_promise_coverage(script, &rows).is_empty());
+    }
+
+    #[test]
+    fn script_promise_flags_article_when_punchline_absent() {
+        let script = "法官宣读：「第 1079 条：夫妻感情确已破裂，调解无效，应准予离婚。P.S. 但如果能一起赚钱，建议再忍忍。」";
+        let rows = vec![brief("法官敲槌，全场起立")];
+        let issues = lint_script_promise_coverage(script, &rows);
+        assert!(
+            issues.iter().any(|i| i.contains("夫妻感情确已破裂")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn script_promise_counts_beat_audio_desc() {
+        let script = "司机怒怼：「吃俩桃你不噎得慌么」";
+        let mut row = brief("司机把手机支在仪表台上");
+        row.beats = vec![crate::domain::ShotBriefBeat {
+            visual_desc: "特写嘴型".into(),
+            audio_desc: Some("司机：「吃俩桃你不噎得慌么」".into()),
+            cam_idx: 0,
+        }];
+        assert!(lint_script_promise_coverage(script, &[row]).is_empty());
     }
 
     fn brief(visual: &str) -> ShotBriefDescription {
