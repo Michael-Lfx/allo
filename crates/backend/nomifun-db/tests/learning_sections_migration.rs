@@ -5,15 +5,15 @@ const CUSTOM_QUESTIONS: &str = include_str!("../migrations/029_learning_custom_q
 const FILL_IN_BLANK: &str = include_str!("../migrations/038_learning_fill_in_blank.sql");
 const ARCHIVE: &str = include_str!("../migrations/043_learning_archive.sql");
 const EDIT_PENDING: &str = include_str!("../migrations/044_learning_edit_pending.sql");
-const MIGRATION: &str = include_str!("../migrations/049_learning_sections_and_question_kinds.sql");
+const MIGRATION: &str = include_str!("../migrations/050_learning_sections_and_question_kinds.sql");
 
 const COURSE_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const LESSON_A: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
 const USER_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678906";
 const ENROLLMENT_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678905";
 
-/// 015 建基线 → 038/043/044 演进到 049 前的 activities/custom_questions
-/// 形状 → 插旧 kind 行 → 打 049。
+/// 015 建基线 → 038/043/044 演进到 050 前的 activities/custom_questions
+/// 形状 → 插旧 kind 行 → 打 050。
 async fn setup_with_legacy_rows() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     for sql in [BASELINE, CUSTOM_QUESTIONS, FILL_IN_BLANK, ARCHIVE, EDIT_PENDING, MIGRATION] {
@@ -173,7 +173,7 @@ async fn activity_kinds_widen_to_nine_and_carry_section_key() {
 async fn custom_questions_widen_and_legacy_rows_survive() {
     let pool = setup_with_legacy_rows().await;
 
-    // 旧 kind 行（打 049 前的合法值）在重建后原样保留。
+    // 旧 kind 行（打 050 前的合法值）在重建后原样保留。
     sqlx::query(
         "INSERT INTO learning_custom_questions \
          (custom_question_id, user_id, kind, prompt, config_json, due_at, created_at, updated_at, archived_at, edit_note) \

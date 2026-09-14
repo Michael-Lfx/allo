@@ -47,9 +47,9 @@
 learnhub「修复轮升思考档」的等价物）；生成循环保持 provider 默认档。
 
 课时内容支持断点续跑（失败/超时后草稿在 TTL 内存活，重试经
-lesson_id→draft 映射定位草稿接续，迁移 049 的承诺；ADR-0003）与单节
+lesson_id→draft 映射定位草稿接续，迁移 050 的承诺；ADR-0003）与单节
 重写（`POST /lessons/{id}/sections/{key}/rewrite`，确定性单节管线按落库
-的 `visual` 承诺质检，迁移 050；ADR-0003）。
+的 `visual` 承诺质检，迁移 051；ADR-0003）。
 
 两种生成的进行中状态/取消统一走 `generation_registry`（status/cancel
 端点的数据源）；学习图草稿在内存存活 1 小时（TTL），支持续建
@@ -70,7 +70,7 @@ agent 可以触发课程生成但不亲自执行生成：接缝
 保持率、权重与时区偏移；每日 02:00 翻日。复习流：
 `reviews/due → answer → rate`，支持 skip/archive/mark-edit。
 
-复习调度消费侧（迁移 051 起）：每次真实推进 FSRS 卡都在
+复习调度消费侧（迁移 052 起）：每次真实推进 FSRS 卡都在
 `learning_review_log` 落一行（rating 1-4、rating_source auto/self/synthetic、
 间隔日数与推进前 S·D·r_pred 快照、review_day）；种卡只落 synthetic 标记行，
 统计与优化训练一律排除。**到期门**：到期卡即可推进；当日尚未推进过的卡允许
@@ -87,9 +87,9 @@ progress/attempts/review_items）、`036` tags、`037` course_jobs、`039` 复�
 题目级重写、`040` on-demand 列（blueprint/samples 快照 + purpose +
 content_generated）、`042` 打卡 + review_events、`043` 归档、`044`
 edit-pending、`048_learning_graph.sql`（course_kind/goal/scope/graph_meta +
-课时级前置边表）、`049_learning_sections_and_question_kinds.sql`
-（分节表 + 9 种题型 + teaching_style）、`050_learning_section_visual.sql`
-（节 visual 承诺落库）、`051_learning_review_log.sql`（逐次复习日志
+课时级前置边表）、`050_learning_sections_and_question_kinds.sql`
+（分节表 + 9 种题型 + teaching_style）、`051_learning_section_visual.sql`
+（节 visual 承诺落库）、`052_learning_review_log.sql`（逐次复习日志
 `learning_review_log` + `learning_attempts.elapsed_ms`）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs:899` 挂载，实例 owner 保护）：
