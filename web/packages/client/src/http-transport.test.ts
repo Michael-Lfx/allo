@@ -247,13 +247,14 @@ describe("HttpTransport · doc drift guard (site docs §7.3)", () => {
     "team/get",
     // Host settings file (doc 16 R16): WebSocket-only host management surface,
     // like the catalogs above — and deliberately absent from this package's
-    // client (the Web UI calls it through its own transport helpers).
+    // client. Deliberately *not* an access boundary: the transport is public and
+    // the server gates on the on-disk origin, so the exclusion is about
+    // discoverability and stability rather than permission.
     "config/get",
     "config/set",
     // Skill write face (doc 16 R17 / W12): the host's own CRUD over user
-    // skills. A third-party consumer must not be able to write files into this
-    // host's skill tree, so it is WebSocket-only and absent from this package
-    // as well.
+    // skills. WebSocket-only and absent from this package for the same reason;
+    // its request/response shapes still live in `@flowy-agent-store/protocol`.
     "skill/create",
     "skill/update",
     "skill/delete",
