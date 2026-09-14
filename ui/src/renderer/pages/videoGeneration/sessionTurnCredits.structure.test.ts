@@ -16,6 +16,13 @@ describe('video generation session video credits', () => {
     expect(credits.includes('video_credits')).toBe(true);
   });
 
+  test('technical artifact tree is gated on developer mode', () => {
+    const page = source('./WorkspacePage.tsx');
+    expect(page.includes('useDeveloperModeGate')).toBe(true);
+    expect(page.includes('{developerMode && artifacts.length > 0 ? (')).toBe(true);
+    expect(page.includes("t('videoGeneration.studio.technicalDetails'")).toBe(true);
+  });
+
   test('artifact preview no longer offers local image replace', () => {
     const preview = source('./components/ArtifactPreviewPanel.tsx');
     expect(preview.includes('replaceImage')).toBe(false);

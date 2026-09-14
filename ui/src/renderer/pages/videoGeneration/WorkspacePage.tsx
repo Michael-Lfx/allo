@@ -20,6 +20,7 @@ import {
 import { ArrowLeft, Delete, Export, FolderOpen, Refresh, Share, VideoOne, Cube, Robot } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import { useDeveloperModeGate } from '@renderer/hooks/config/useDeveloperModeGate';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
@@ -156,6 +157,7 @@ const WorkspacePage: React.FC = () => {
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
   const { status: cloudStatus, logout } = useCloudAuth();
+  const { active: developerMode } = useDeveloperModeGate();
 
   const [session, setSession] = useState<VimaxSession | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -531,7 +533,7 @@ const WorkspacePage: React.FC = () => {
 
   // Load artifact preview when selection changes (blob URLs for media + auth).
   useEffect(() => {
-    if (!sessionId || !selectedPath) {
+    if (!developerMode || !sessionId || !selectedPath) {
       setPreview((prev) => {
         if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url);
         return null;
@@ -571,7 +573,7 @@ const WorkspacePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, selectedPath, previewEpoch]);
+  }, [developerMode, sessionId, selectedPath, previewEpoch]);
 
   // Final video via authenticated blob URL (relative path is not a public HTTP URL).
   useEffect(() => {
@@ -1628,7 +1630,7 @@ const WorkspacePage: React.FC = () => {
           </details>
         ) : null}
 
-        {artifacts.length > 0 ? (
+        {developerMode && artifacts.length > 0 ? (
           <details
             className={`${styles.studioPanel} px-14px py-12px`}
             open={artifactsPanelOpen}
@@ -1714,7 +1716,7 @@ const WorkspacePage: React.FC = () => {
             onCancel={() => void handleCancel()}
             onContinue={handleContinue}
             onFocusScene={setFocusSceneId}
-            onSelectArtifact={setSelectedPath}
+            onSelectArtifact={developerMode ? setSelectedPath : undefined}
             cameoEpoch={cameoRefreshToken}
             sourceDocumentName={sourceDocumentName}
           />
