@@ -57,6 +57,27 @@ fn is_seedance_fast_or_mini(model: &str) -> bool {
     b.contains("seedance") && (b.contains("fast") || b.contains("mini"))
 }
 
+/// Max `reference_audio` clips one generate call should bind for this model.
+///
+/// Seedance 2.0 documents 3 audio refs (Σ ≤ 15s). Wan 3.0 documents 5 files
+/// (Σ ≤ 15s). MiniMax-H3 does not take voice-timbre refs — `0` means packing
+/// must not split a row just to stay under a slot count.
+///
+/// Planning uses this as the unique-named-speaker cap per generated file so
+/// every speaking character can keep a timbre bible. Extra speakers become
+/// another row (story is kept; nothing is dropped).
+pub fn max_reference_audio(model: &str) -> usize {
+    if is_minimax_h3_model(model) {
+        0
+    } else if is_wan3_model(model) {
+        5
+    } else if is_seedance(model) {
+        3
+    } else {
+        3
+    }
+}
+
 /// Accepted single-clip duration window for a Flowy video model id or display name.
 ///
 /// Unknown ids fall back to [`ClipBounds::DEFAULT`], which every integrated model
@@ -278,6 +299,9 @@ mod tests {
         let wan3 = clip_bounds_for_model("flowy/wan3.0-video");
         assert_eq!((wan3.min_secs(), wan3.max_secs()), (2, 30));
         assert_eq!(clip_bounds_for_model("AIPC-wan3.0-video-prime"), wan3);
+        assert_eq!(max_reference_audio("flowy/wan3.0-video"), 5);
+        assert_eq!(max_reference_audio("AIPC-Doubao-Seedance-2.0"), 3);
+        assert_eq!(max_reference_audio("flowy/MiniMax-H3"), 0);
 
         assert_eq!(
             clip_bounds_for_model("some-unreleased-model"),
