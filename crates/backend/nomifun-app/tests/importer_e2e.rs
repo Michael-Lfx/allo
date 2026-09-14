@@ -363,6 +363,97 @@ async fn importer_install_registers_components_into_runtime() {
     assert!(managed.is_file(), "managed skill must exist on disk: {}", managed.display());
 }
 
+/// `install/run` must be re-entrant: a retry (the natural client reaction to a
+/// timeout) must not create a second Preset for the same component and orphan
+/// the first. `PresetService::create` mints a fresh id whenever `preset_id` is
+/// absent, so idempotency can only come from the recorded `runtime_ref`.
+#[tokio::test]
+async fn importer_install_is_reentrant_for_agent_and_team_presets() {
+    /// Every Preset the installer created, sorted so two reads are comparable.
+    async fn agent_store_presets(app: axum::Router, token: &str) -> Vec<String> {
+        let presets = app
+            .oneshot(get_with_token("/api/presets", token))
+            .await
+            .unwrap();
+        assert_eq!(presets.status(), StatusCode::OK);
+        let presets_json = body_json(presets).await;
+        let mut names: Vec<String> = presets_json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|preset| preset["name"].as_str())
+            .filter(|name| name.starts_with("agent-store: "))
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        names
+    }
+
+    async fn install_once(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        snapshot_id: &str,
+    ) -> serde_json::Value {
+        let response = app
+            .oneshot(bearer_json(
+                "POST",
+                "/api/app-server/installs",
+                serde_json::json!({ "snapshot_id": snapshot_id }),
+                token,
+                csrf,
+                Some(connection_id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "install must succeed");
+        body_json(response).await
+    }
+
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    let run = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/imports",
+            serde_json::json!({
+                "source_path": SOFTWARE_COMPANY,
+                "source_kind": "codebuddy-plugin",
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    let result = body_json(run).await;
+    assert_eq!(result["status"], "completed", "{result}");
+    let snapshot_id = result["snapshot_id"].as_str().unwrap().to_owned();
+
+    install_once(app.clone(), &token, &csrf, &connection_id, &snapshot_id).await;
+    let after_first = agent_store_presets(app.clone(), &token).await;
+    assert!(
+        !after_first.is_empty(),
+        "installing software-company must create agent-store presets"
+    );
+
+    // The retry: same snapshot, same call. Nothing new may appear.
+    let second = install_once(app.clone(), &token, &csrf, &connection_id, &snapshot_id).await;
+    assert_eq!(
+        second["snapshot_id"], snapshot_id,
+        "the retry reports the same snapshot: {second}"
+    );
+    let after_second = agent_store_presets(app.clone(), &token).await;
+    assert_eq!(
+        after_second, after_first,
+        "a retried install must reuse the recorded Presets instead of creating duplicates"
+    );
+}
+
 #[tokio::test]
 async fn importer_store_lists_aggregated_entries_with_install_state() {
     let (mut app, services) = build_app().await;

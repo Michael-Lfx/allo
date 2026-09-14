@@ -52,6 +52,18 @@ pub trait PresetRegistrar: Send + Sync {
         agent_id: Option<&str>,
         model: Option<nomifun_api_types::ModelPreference>,
     ) -> Result<String, AppError>;
+
+    /// Whether a Preset the installer recorded for a component still resolves.
+    ///
+    /// Install must be re-entrant: `PresetService::create` mints a fresh id
+    /// whenever `preset_id` is absent, so a client retry (the natural reaction
+    /// to a timeout) would otherwise mint a second Preset and orphan the first,
+    /// whose id was overwritten in the record. The recorded id is the only
+    /// admissible evidence of reuse — see the reuse branch in `install`.
+    ///
+    /// `NotFound` answers `false` (the user deleted it by hand; recreate), any
+    /// other failure is reported so the caller can surface it.
+    async fn preset_exists(&self, preset_id: &str) -> Result<bool, AppError>;
 }
 
 /// Production MCP registrar over `nomifun_mcp::McpConfigService`.
@@ -140,6 +152,14 @@ impl PresetRegistrar for AppServerPresetRegistrar {
             .await?;
         Ok(response.preset_id.clone())
     }
+
+    async fn preset_exists(&self, preset_id: &str) -> Result<bool, AppError> {
+        match self.service.get(preset_id).await {
+            Ok(_) => Ok(true),
+            Err(AppError::NotFound(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 /// Composition-root Installer. Owns the runtime seams; the InstallerService in
@@ -179,6 +199,20 @@ impl InstallProvider for AppServerInstallProvider {
         let components = self.repo.get_components(&snapshot_id).await.map_err(AppError::from)?;
         let mut skipped = Vec::new();
         let mut warnings = Vec::new();
+
+        // What this snapshot already registered on this host. Install is
+        // re-entrant, so every kind consults this before creating anything:
+        // `PresetService::create` mints a new id when none is given, and the
+        // MCP registrar upserts by name. Both are only idempotent if the
+        // *recorded* reference is honoured (see the agent/team branch).
+        let installed_state: std::collections::HashMap<String, nomifun_db::PluginSnapshotComponentRow> =
+            self.repo
+                .list_installation_state(Some(&snapshot_id))
+                .await
+                .map_err(AppError::from)?
+                .into_iter()
+                .map(|row| (row.component_id.clone(), row))
+                .collect();
 
         // Registrations accumulate as owned strings first; the borrowed
         // ComponentRuntimeRef vec is built last inside one scope so the
@@ -233,9 +267,39 @@ impl InstallProvider for AppServerInstallProvider {
         // App Server compatibility surface accepts) so `agent/run` can resolve
         // it to a Nomi Runtime Agent; the model stays unbound and the run
         // layer falls back to the owner's first enabled provider/model.
+        //
+        // Re-entrancy: a component that already owns a Preset keeps it. The
+        // recorded id is the only admissible evidence — adopting a Preset by
+        // *name* is unsafe, because two snapshots may legitimately declare the
+        // same display name and the second install would silently rebind this
+        // component to the other snapshot's Preset.
         for component in &components {
             if component.kind != "agent" && component.kind != "team" {
                 continue;
+            }
+            if let Some(preset_id) = recorded_preset_id(installed_state.get(&component.component_id)) {
+                match self.presets.preset_exists(preset_id).await {
+                    Ok(true) => {
+                        pending.push(Pending {
+                            component_id: component.component_id.clone(),
+                            runtime_type: "preset",
+                            location: preset_id.to_owned(),
+                            mcp_server_id: None,
+                        });
+                        continue;
+                    }
+                    // The user deleted the Preset by hand: recreate it below
+                    // rather than leave the component pointing at nothing.
+                    Ok(false) => {}
+                    Err(error) => {
+                        warnings.push(format!(
+                            "preset lookup failed for {}: {error}",
+                            component.component_id
+                        ));
+                        skipped.push(component.component_id.clone());
+                        continue;
+                    }
+                }
             }
             let payload = decode_payload(&component.payload_json);
             let description = payload.get("description").and_then(|v| v.as_str());
@@ -397,6 +461,21 @@ fn project_status(snapshot_id: String, rows: &[nomifun_db::PluginSnapshotCompone
 
 fn decode_payload(json: &str) -> serde_json::Value {
     serde_json::from_str(json).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+/// The Preset id this component is already bound to, if any.
+///
+/// Only an `installed` row counts: a row that was uninstalled has had its refs
+/// nulled, and a row that was never installed has none. Empty strings are
+/// rejected because `mark_components_installed` binds `""` for every runtime
+/// type that is not a Preset (`sqlite_plugin_snapshot.rs`), so `""` means
+/// "not a preset component", not "a preset with an empty id".
+fn recorded_preset_id(row: Option<&nomifun_db::PluginSnapshotComponentRow>) -> Option<&str> {
+    let row = row?;
+    if row.installed != 1 {
+        return None;
+    }
+    row.preset_id.as_deref().map(str::trim).filter(|id| !id.is_empty())
 }
 
 /// Derive an MCP transport JSON from a connector component payload. The
