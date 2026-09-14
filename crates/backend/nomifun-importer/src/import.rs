@@ -1,4 +1,4 @@
-//! Import orchestration (docs/agent-store/02 §2 flow, §11 result contract).
+//! Import coordination (docs/agent-store/02 §2 flow, §11 result contract).
 //!
 //! `ImporterService::run_import` performs: locate source → parse manifest →
 //! path validation → copy to the versioned immutable cache + digest →
