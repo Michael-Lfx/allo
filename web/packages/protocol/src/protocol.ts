@@ -528,6 +528,12 @@ export interface SkillSummary {
   compatibility_status: CompatibilityStatus;
   enabled: boolean;
   required_connectors: string[];
+  /**
+   * Marketplace icon URL for a product installed from a marketplace
+   * (`/api/app-server/store/{mkt}/entries/{entry}/assets/…`). Absent for
+   * builtin / user skills and for markets that ship no icon for the entry.
+   */
+  avatar_url?: string | null;
 }
 
 /** Where a skill lives on the host (`SkillSummary.origin`). */
@@ -566,6 +572,11 @@ export interface ConnectorSummary {
   auth_mode: string;
   enabled: boolean;
   status: ConnectorStatus;
+  /**
+   * Marketplace icon URL for a connector installed from a marketplace.
+   * Absent for builtin hosts and for markets that ship no icon for the entry.
+   */
+  avatar_url?: string | null;
 }
 
 export interface ConnectorTool {
@@ -925,6 +936,10 @@ export interface StoreInstallResult {
   installed_count: number;
   warnings: string[];
   errors: string[];
+  /** Per-component outcome, forwarded from the installer's own report so a
+   *  store install is as branchable as a direct `install/run`. Absent on a host
+   *  that predates the field. */
+  outcomes?: InstallOutcome[];
 }
 
 // ---------------------------------------------------------------------------

@@ -814,6 +814,7 @@ impl FakeStoreProvider {
                 installed_count: 3,
                 warnings: vec![],
                 errors: vec![],
+                outcomes: vec![],
             },
         }
     }
