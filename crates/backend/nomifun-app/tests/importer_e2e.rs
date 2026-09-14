@@ -1048,6 +1048,190 @@ async fn importer_install_is_reentrant_for_agent_and_team_presets() {
     );
 }
 
+/// Installing an entry whose marketplace has moved on must deliver the
+/// *current* version, not the stale snapshot.
+///
+/// The wire has no update verb (`store/update-entry` does not exist), so
+/// "uninstall, then install again" is the only upgrade path a client has. Before
+/// this, that path faithfully reinstalled the version that was imported first,
+/// because `install_entry` reused an existing snapshot unconditionally — an
+/// upgrade that could never happen.
+///
+/// The other half of the contract is pinned too: while the entry is *installed*,
+/// `store/install-entry` must stay a no-op (reuse), because silently re-importing
+/// there would make "install" a hidden upgrade.
+#[tokio::test]
+async fn importer_store_install_entry_picks_up_a_new_version() {
+    async fn store_item(app: axum::Router, token: &str, csrf: &str, connection_id: &str, entry: &str) -> serde_json::Value {
+        let store = app
+            .oneshot(bearer_get("/api/app-server/store", token, csrf, connection_id))
+            .await
+            .unwrap();
+        assert_eq!(store.status(), StatusCode::OK, "store list must succeed");
+        let store_json = body_json(store).await;
+        store_json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["entry_name"] == entry)
+            .unwrap_or_else(|| panic!("entry {entry} missing from the store: {store_json}"))
+            .clone()
+    }
+
+    async fn install_entry(
+        app: axum::Router,
+        token: &str,
+        csrf: &str,
+        connection_id: &str,
+        marketplace_id: &str,
+        entry: &str,
+    ) -> serde_json::Value {
+        let response = app
+            .oneshot(bearer_json(
+                "POST",
+                &format!("/api/app-server/store/{marketplace_id}/entries/{entry}/install"),
+                serde_json::json!({}),
+                token,
+                csrf,
+                Some(connection_id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "store install-entry must succeed");
+        body_json(response).await
+    }
+
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let connection_id = app_server_handshake(&mut app, &token, &csrf).await;
+
+    // A one-entry plugin market, the smallest shape that exercises the path.
+    let market_root = std::env::temp_dir().join(format!("as-version-market-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(market_root.join(".codebuddy-plugin")).unwrap();
+    std::fs::create_dir_all(market_root.join("plugins/team-tools/.codebuddy-plugin")).unwrap();
+    std::fs::create_dir_all(market_root.join("plugins/team-tools/agents")).unwrap();
+    std::fs::write(
+        market_root.join(".codebuddy-plugin/marketplace.json"),
+        r#"{
+            "name": "tools",
+            "version": "0.1.0",
+            "plugins": [
+                { "name": "team-tools", "source": "./plugins/team-tools", "description": "Team tools" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    let write_plugin_json = |version: &str| {
+        std::fs::write(
+            market_root.join("plugins/team-tools/.codebuddy-plugin/plugin.json"),
+            format!(
+                r#"{{ "name": "team-tools", "version": "{version}", "agents": ["./agents"] }}"#
+            ),
+        )
+        .unwrap();
+    };
+    write_plugin_json("1.0.0");
+    std::fs::write(
+        market_root.join("plugins/team-tools/agents/lead.md"),
+        "---\nname: lead\ndescription: Lead\n---\n\nLead body.\n",
+    )
+    .unwrap();
+
+    let add = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/app-server/markets",
+            serde_json::json!({
+                "source_kind": "directory",
+                "source": market_root.to_string_lossy(),
+            }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(add.status(), StatusCode::OK, "market add must succeed");
+    let marketplace_id = body_json(add).await["marketplace_id"].as_str().unwrap().to_owned();
+
+    // 1.0.0 goes in.
+    let first = install_entry(app.clone(), &token, &csrf, &connection_id, &marketplace_id, "team-tools").await;
+    assert_eq!(first["version"], "1.0.0", "{first}");
+    let first_snapshot = first["snapshot_id"].as_str().unwrap().to_owned();
+    let installed_item = store_item(app.clone(), &token, &csrf, &connection_id, "team-tools").await;
+    assert_eq!(installed_item["installed"], true, "{installed_item}");
+    assert_eq!(installed_item["update_available"], false, "{installed_item}");
+
+    // The marketplace publishes 2.0.0.
+    write_plugin_json("2.0.0");
+    let stale_item = store_item(app.clone(), &token, &csrf, &connection_id, "team-tools").await;
+    assert_eq!(stale_item["version"], "2.0.0", "{stale_item}");
+    assert_eq!(stale_item["installed_version"], "1.0.0", "{stale_item}");
+    assert_eq!(
+        stale_item["update_available"], true,
+        "list must advertise the pending update: {stale_item}"
+    );
+
+    // While installed, install-entry stays a no-op: no silent upgrade.
+    let again = install_entry(app.clone(), &token, &csrf, &connection_id, &marketplace_id, "team-tools").await;
+    assert_eq!(again["reused"], true, "an installed entry must not be silently upgraded: {again}");
+    assert_eq!(again["snapshot_id"], first_snapshot, "{again}");
+    assert_eq!(again["version"], "1.0.0", "{again}");
+
+    // Release it, then install again — the only upgrade path the wire offers.
+    let status = app
+        .clone()
+        .oneshot(bearer_get(
+            &format!("/api/app-server/installs/{first_snapshot}"),
+            &token,
+            &csrf,
+            &connection_id,
+        ))
+        .await
+        .unwrap();
+    let component_ids: Vec<String> = body_json(status).await["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|component| component["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(!component_ids.is_empty(), "the snapshot must have installed components");
+    let uninstall = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/app-server/installs/{first_snapshot}/uninstall"),
+            serde_json::json!({ "component_ids": component_ids }),
+            &token,
+            &csrf,
+            Some(&connection_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(uninstall.status(), StatusCode::OK, "uninstall must succeed");
+
+    let upgraded = install_entry(app.clone(), &token, &csrf, &connection_id, &marketplace_id, "team-tools").await;
+    assert_eq!(
+        upgraded["version"], "2.0.0",
+        "re-installing must deliver the version the marketplace now offers: {upgraded}"
+    );
+    let upgraded_snapshot = upgraded["snapshot_id"].as_str().unwrap().to_owned();
+    assert_ne!(
+        upgraded_snapshot, first_snapshot,
+        "a new version is a new immutable snapshot; the old one keeps its history"
+    );
+    assert!(upgraded["installed_count"].as_u64().unwrap() > 0, "{upgraded}");
+
+    let settled_item = store_item(app.clone(), &token, &csrf, &connection_id, "team-tools").await;
+    assert_eq!(settled_item["installed"], true, "{settled_item}");
+    assert_eq!(settled_item["installed_version"], "2.0.0", "{settled_item}");
+    assert_eq!(
+        settled_item["update_available"], false,
+        "the catalogue must agree that the upgrade landed: {settled_item}"
+    );
+}
+
 #[tokio::test]
 async fn importer_store_lists_aggregated_entries_with_install_state() {
     let (mut app, services) = build_app().await;
