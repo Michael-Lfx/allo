@@ -17,6 +17,14 @@
       "group": "test",
       "desc": "Validate the repository-local human-only Git attribution policy."
     },
+    "test:docs-sync": {
+      "group": "test",
+      "desc": "Unit-test the site documentation drift checker."
+    },
+    "test:market": {
+      "group": "test",
+      "desc": "Unit-test the Agent Store marketplace manifest checker."
+    },
     "check:process-runtime-boundary": {
       "group": "check",
       "desc": "Enforce the supervised process runtime boundary and exact hand-off allowlist."
@@ -32,6 +40,14 @@
     "check:codemirror-runtime": {
       "group": "check",
       "desc": "Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package."
+    },
+    "check:docs-sync": {
+      "group": "check",
+      "desc": "Verify the site documentation matches the implementation (9 pages × 2 languages, zero drift)."
+    },
+    "check:market": {
+      "group": "check",
+      "desc": "Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject."
     },
     "check:ux-baseline": {
       "group": "check",
