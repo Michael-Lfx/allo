@@ -901,8 +901,12 @@ const UpdateModal: React.FC = () => {
         {status === 'downloaded' && (
           <>
             <div className='flex min-w-0 items-start gap-10px text-13px leading-19px text-t-secondary' aria-live='polite'>
-              <span className='inline-flex h-24px w-24px shrink-0 items-center justify-center rounded-full bg-[rgb(var(--success-6))]/12 text-[rgb(var(--success-6))]'>
-                <CheckOne theme='filled' size='15' />
+              <span className='inline-flex h-24px w-24px shrink-0 items-center justify-center rounded-full bg-[rgb(var(--primary-6))]/12 text-[var(--flowy-accent,rgb(var(--primary-6)))]'>
+                <CheckOne
+                  theme='multi-color'
+                  size='15'
+                  fill={['currentColor', 'currentColor', 'var(--flowy-accent-fg,#fff)', 'var(--flowy-accent-fg,#fff)']}
+                />
               </span>
               <div>
                 <div className='text-13px font-550 leading-19px text-t-primary'>{t('update.readyToInstall')}</div>
