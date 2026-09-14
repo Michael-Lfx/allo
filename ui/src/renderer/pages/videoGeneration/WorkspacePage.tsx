@@ -94,7 +94,6 @@ import {
   saveStudioSessionCollapsed,
   saveStudioSessionWidthRatio,
 } from './studioAgentSession/sessionPanelStorage';
-import { clampDuration } from './durationBounds';
 import styles from './index.module.css';
 import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
 import WorkspaceTitleField from './components/WorkspaceTitleField';
@@ -670,7 +669,6 @@ const WorkspacePage: React.FC = () => {
         launchDraft?.verticalSkillIds && launchDraft.verticalSkillIds.length > 0
           ? launchDraft.verticalSkillIds
           : undefined;
-      const prefs = launchDraft?.preferences;
       const body = {
         [sourceField]: trimmed,
         user_requirement: requirement.trim() || undefined,
@@ -682,10 +680,6 @@ const WorkspacePage: React.FC = () => {
         llm_model: models.llm_model.trim() || undefined,
         image_model: models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
-        target_duration_secs:
-          prefs?.mediaKind === 'video' && prefs.specifyTargetDuration
-            ? clampDuration(prefs.targetDurationSecs)
-            : undefined,
       };
       await planSession(sessionId, body);
       message.success(t('videoGeneration.workspace.planStarted', { defaultValue: '已开始规划' }));

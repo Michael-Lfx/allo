@@ -81,16 +81,11 @@ export interface GenerationPreferences {
   resolution: VideoResolution;
   fps: number;
   /**
-   * Agent film length in seconds. Only sent when `specifyTargetDuration` is on;
-   * otherwise ViMax lets the model size the film from the story.
+   * Generate / creation clip length in seconds (window follows the selected
+   * video model). Agent / short-drama planning omits a duration budget so
+   * ViMax sizes the film from the story.
    */
   targetDurationSecs: number;
-  /**
-   * Agent-only: when false (default), omit duration budget so planning decides.
-   * Generate / creation modes always use `targetDurationSecs` as clip length
-   * (window follows the selected video model).
-   */
-  specifyTargetDuration: boolean;
   models: VimaxModelSelection;
 }
 

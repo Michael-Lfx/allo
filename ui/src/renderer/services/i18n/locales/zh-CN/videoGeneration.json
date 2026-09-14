@@ -281,10 +281,7 @@
       "imageModel": "图片模型",
       "modelAndResolution": "模型与清晰度",
       "resolutionAria": "清晰度",
-      "targetDuration": "目标时长",
       "clipDuration": "单段时长",
-      "specifyDuration": "指定时长",
-      "specifyDurationOffHint": "关闭时由短剧工坊根据故事内容自主决定成片时长。",
       "planningModel": "规划模型",
       "loading": "加载中…",
       "noModelSelected": "未选模型"
