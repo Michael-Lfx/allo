@@ -4,7 +4,7 @@
 >
 > 最后维护：2026-09-15
 >
-> 探索分支：`docs/upstream-contract-drift-investigation`
+> 探索分支：`fix/upstream-contract-drift`
 >
 > 证据范围：用户反馈日志、本机开发数据目录、工作区数据、`you.com` MCP 在线探针
 
@@ -153,39 +153,211 @@ you-discover
 | 2026-09-12 | `any_of[0].required: only allowed for OBJECT type` | schema 清洗不处理嵌套组合关键字 | 未修复 |
 | 08-03 ~ 09-15 | 托管搜索 provider 失败累计 31 次（08-03:2、08-14:2、08-19:2、08-25:17、09-02:4、09-15:4） | parallel 超时 + you 契约漂移 | 未修复（案例 B） |
 
-## 5. 修复方案（纯客户端）
+## 5. 推荐修复方案与取舍（供交叉审查）
 
-### P0 托管搜索（改动最小、可立即验证）
+### 5.1 修复项索引
 
-1. **放宽 you 契约**：删除 `tools.len() != 1` 硬约束，按名字查找 `you-search`；
-   找不到才算 `ToolMissing`；额外工具（如 `you-discover`）不应导致失败。
-2. **可恢复的兼容失败**：`SchemaMismatch` 从永久禁用改为"冷却后允许重新探测"
-   （或每次搜索允许一次 re-probe），并补一条 INFO 日志说明 provider 被跳过及原因。
-3. **预算与对冲**：`PARALLEL_SLOT_BUDGET`/`YOU_SLOT_BUDGET` 各 3 s 串行 →
-   收紧到 1.5 s，或在 parallel 超时后让 you + ddg 并行（hedge），
-   把搜索从 6.6–8.1 s 降到约 2–3 s。
-4. **DDG 兜底可用性**：最后一跳失败即整体失败（`managed.rs:761`），且返回给模型的
-   是"本 turn 不要重复搜索"。DDG 增加一次内部重试或更长预算，降低"全 provider
-   不可用"的概率。
-5. **回归测试**：工具列表为 2 个时仍选中 `you-search`；工具列表变化后可自动恢复；
-   全 provider 失败时返回结构与降级路径稳定。
+**P0（先做，覆盖两处现场）**
 
-### P1 模型网关与 schema
+| 项 | 对应问题 | 改动位置 | 一句话 |
+| --- | --- | --- | --- |
+| P0-1 | 问题 1（§5.3） | `nomi-providers` | 带 tools 时命中 effort 拒绝 → 改用 `none` 重发一次并记忆 |
+| P0-2 | 问题 2（§5.4） | `flowy-web/remote.rs` | 删除 you "恰好 1 个工具"硬约束，按名取 `you-search` |
+| P0-3 | 问题 2（§5.4） | `flowy-web/managed.rs` | `SchemaMismatch` 从永久禁用改为冷却后可重新探测 |
+| P0-4 | 问题 3（§5.5） | `flowy-web/managed.rs` | 预算收紧/对冲 + DDG 有界重试，不放大总预算 |
 
-6. **effort 降级**：当请求带 tools 且上游返回
-   `Function tools with reasoning_effort are not supported` 时，一次性改用
-   `reasoning_effort: "none"` 并记忆到 provider 实例；同时把该错误从"瞬时 500 重试"
-   中排除，避免 2 次无意义重试。
-7. **输出上限协商**：命中 `maxOutputTokens … supported range …` 时按错误中的上限收紧
-   并重发，后续请求沿用（修复 Gemini 类问题）。
-8. **嵌套 schema 清洗**：`sanitize_json_schema` 对嵌套 `anyOf/oneOf` 做投影
-   （修复 Gemini `any_of[0].required`）；回归验证 Read 顶层 `oneOf` 在当前构建已修复。
-9. **未广告工具进度不应终止 turn**：`crates/agent/nomi-agent/src/engine/mod.rs:2218`
-   对未广告工具的 progress 预览直接抛 `AgentError::ApiError`；建议忽略该预览
-   （真正未广告的 ToolCall 仍拒绝），避免一个 UI 预览断掉整个回合。
-10. **传输层重试**：`retry.rs:60` 目前只重试 `err.is_connect()`；
-    对 `peer closed connection without sending TLS close_notify`（意外 EOF）与
-    `operation timed out` 增加一次有界重试，可改善 08-05/08-31/09-04 类失败。
+**P1**
+
+| 项 | 对应问题 | 改动位置 | 一句话 |
+| --- | --- | --- | --- |
+| P1-1 | 问题 5（§5.6） | `nomifun-ai-agent`/`nomi-providers` | 按 `supported range` 报错协商 `max_tokens` |
+| P1-2 | 问题 6（§5.7） | `nomi-config/compat.rs` | 嵌套 `anyOf/oneOf` 投影 |
+| P1-3 | 问题 8（§5.8） | `nomi-agent/engine` | 未广告工具的进度预览降级为忽略 |
+| P1-4 | 问题 9（§5.9） | `nomi-providers/retry.rs` | TLS EOF / 超时增加一次有界重试 |
+
+### 5.2 总原则
+
+1. **错误驱动协商**：只在收到上游明确拒绝（错误正文给出修复指令）后才改变请求形状并
+   重发一次；不做模型名/供应商名单预判。
+2. **学习式降级**：协商结果记在 provider 实例上（沿用
+   `sanitize_tool_schemas: AtomicBool` 的既有模式，`openai.rs:27`），本次进程内不再
+   发送已知会被拒的请求；不改全局配置。
+3. **有界重试**：任何新增重试都必须有次数上限，与现有
+   `MAX_INITIAL_REQUEST_RETRIES = 2`、`MAX_STREAM_RETRIES = 2`
+   （`retry.rs:13-14`）同级；不允许无界重试。
+4. **不动权限边界**：只处理参数形状/展示型事件/兜底预算；不放松工具执行授权。
+
+### 5.3 问题 1：tools + `reasoning_effort` 被拒
+
+**推荐**：在 `openai.rs` 的协商循环（`openai.rs:855-931`，已有 `stream_options` 与
+tool schema 两项）新增第三项：命中
+`Function tools with reasoning_effort are not supported` 时，把 `reasoning_effort`
+改为 `"none"` 重发一次并记忆；同时把该错误从瞬时 500 重试中排除（`retry.rs:63`）。
+
+**理由**
+
+- 上游错误正文本身就是修复指令（"set reasoning_effort to 'none'"），语义明确；
+- 复用既有协商循环与学习标志，没有新概念、改动最小；
+- 只影响"带 tools 且被实际拒绝"的请求，对 deepseek 等正常支持该组合的模型零回归。
+
+**备选方案与拒绝原因**
+
+| 备选 | 拒绝原因 |
+| --- | --- |
+| 运营侧去掉目录里的 `reasoning_effort` 声明 | 无权限；且下一个新模型仍会漂移，客户端继续挂 |
+| 所有带 tools 的请求都不发 `reasoning_effort` | 会连累正常支持该组合的模型，属产品能力回退 |
+| 按模型名/供应商硬编码屏蔽 | 名单会腐烂；错误驱动不依赖名单 |
+| 改走 `/v1/responses` | 需要上游通道支持 + provider 协议切换，超出本次范围；可留作中期议题 |
+| 重发时直接省略字段（而不是 `none`） | 省略后上游可能仍按默认开启推理而被拒；错误明确要求 `none` |
+
+**风险/开放问题**：若某通道不接受字面值 `none`，需要第二次协商（回退到省略字段）；
+实现以"重试一次仍失败即终止"封顶。
+
+### 5.4 问题 2：`you` 单一工具硬约束 + 永久禁用
+
+**推荐**：`remote.rs:649` 删除 `tools.len() != 1`，改为按名查找 `you-search` 并校验
+其 schema（`validate_tool_schema` / `validate_output_schema` 已存在）；`managed.rs:219`
+的 `SchemaMismatch` 改为"冷却后允许重新探测"，并补 INFO 日志说明 provider 被跳过。
+
+**理由**
+
+- 在线探针实测：you.com 现在暴露 2 个工具（`you-search`、`you-discover`），且
+  `you-search` 的 required/properties/outputSchema 完全满足现有校验 → 放宽后立即可用；
+- `parallel` 适配器本来就是"按名查找"（`remote.rs:654-666`），you 的计数约束是唯一
+  特例，删除可消除不一致；
+- 计数约束没有安全价值，只是过度拟合 vendor 旧的端形态。
+
+**备选方案与拒绝原因**
+
+| 备选 | 拒绝原因 |
+| --- | --- |
+| 把期望值从 1 改成 2 | 下一次 vendor 增删工具又会坏，治标不治本 |
+| 永久弃用 you（`ddg_only`） | 少一个 provider 直接放大问题 3（DDG 独自承压）的全失败概率 |
+| 只允许"重启后恢复" | 用户会话内无法自愈；09-01/09-04/09-15 证明漂移长期存在 |
+| 客户端先过滤工具列表再按 1 个校验 | 与"按名查找"等价但更绕，不如直接按名取 |
+| 运营/服务端把工具改回 1 个 | 无权限，且不可控 |
+
+**风险/开放问题**：冷却时长取值（建议 10 分钟）；是否把"工具数变化"单独记日志以观察
+vendor 行为。
+
+### 5.5 问题 3：搜索全 provider 超时（含 DDG）
+
+**推荐**：在 `TOTAL_BUDGET = 12s`（`managed.rs:70`）不变的前提下：
+`PARALLEL_SLOT_BUDGET` / `YOU_SLOT_BUDGET` 各 3 s → 1.5 s，为 DDG 保留足够预算；
+parallel 超时后让 you 与 DDG 并行（hedge）；DDG 失败后做一次有界内部重试。
+
+**理由**
+
+- 实测 DDG 成功耗时 1.6–2.1 s（09-15）；parallel/you 在 09-04 全失败、09-15 仍有
+  失败 —— 预算应倾斜给真正工作的通道；
+- 12 s 上限不变，工具延迟不恶化；hedge 可把 09-15 观测的 6.6–8.1 s 降到约 2–3 s；
+- 不改 provider 实现，只在调度层调整。
+
+**备选方案与拒绝原因**
+
+| 备选 | 拒绝原因 |
+| --- | --- |
+| 所有预算等比放大（如 10/10/10） | 全挂时单次搜索 30 s，工具延迟爆炸 |
+| 超时也按永久禁用处理 | 超时是瞬态的；把唯一工作的 DDG 因网络抖动禁用会制造更大故障 |
+| 依赖模型自行重试（现状 `do not repeat`） | 09-04 观测到模型转去 `web_extract`（也超时），浪费更多 turn |
+| 搜索改服务端/网关侧 | 不在本仓库可控范围 |
+| 增加新 provider | 成本/合规/密钥，短期不可行 |
+
+**风险/开放问题**：需确认 `web_search` 工具外层是否还有独立超时（目前只看到 managed
+层 12 s）；DDG 重试与其反爬限流的相互作用（观测 `result_count=8` 正常，风险低）。
+
+### 5.6 问题 5：`maxOutputTokens` 超出上游范围
+
+**推荐**：命中 `supported range is from 1 to N` 时解析 N，按 N 收紧重发一次，
+并记住（provider+model）；与 §5.3 共用同一协商框架。
+
+**理由**：错误即精确上限，无需猜测；一次协商即可长期受益。
+
+**备选方案与拒绝原因**
+
+| 备选 | 拒绝原因 |
+| --- | --- |
+| 全局把 `max_tokens` 压到固定值（如 32k） | 会砍掉 deepseek 等模型的合法长输出，产品能力回退 |
+| 只改云端目录 | 无权限；且新模型/新通道还会漂移 |
+| 直接信任 models.dev 输出上限 | Flowy 内建 provider 的目录优先规则已存在，本次错误正来自该路径 |
+
+### 5.7 问题 6：嵌套 `anyOf` / `oneOf`
+
+**推荐**：扩展 `sanitize_json_schema`（`nomi-config/compat.rs:251`）的投影到嵌套层级，
+对非 object 节点的 `required` 做投影/剔除；仅在已知被拒后的 sanitize 分支启用。
+
+**理由**：清洗路径已存在且是"学习后启用"；改动局部、可单测
+（`compat.rs` 已有 827/864 等投影测试可参照）。
+
+**备选方案与拒绝原因**
+
+| 备选 | 拒绝原因 |
+| --- | --- |
+| 从工具集中删除被拒工具 | 直接损失能力，不可取 |
+| 全局强制所有 schema 先清洗 | 牺牲正常 provider 的 schema 保真度（约束被投影弱化） |
+| 按 Gemini/供应商特判 | 共享协议路径下按供应商分支脆弱，且名单会腐烂 |
+
+**风险/开放问题**：投影会弱化参数约束，需保证"仅在被拒后启用"的现有语义不被破坏。
+
+### 5.8 问题 8：未广告工具的进度预览终止 turn
+
+**推荐**：`engine/mod.rs:2218` 对 progress 预览命中未广告工具时降级为 warn/忽略；
+**真正的未广告 ToolCall 仍保持硬失败**。
+
+**理由**：进度预览是纯展示事件（无副作用），让它杀死整个回合与产品目标不符；
+权限封锁点应留在执行路径上。
+
+**备选方案与拒绝原因**
+
+| 备选 | 拒绝原因 |
+| --- | --- |
+| 保持现状（整轮失败） | 一个 UI 预览就能让用户回合失败，已实际发生两次 |
+| 自动把该工具加入本次允许集 | 突破工具权限 ceiling，违反仓库安全约定 |
+| 所有未广告事件（含 ToolCall）都忽略 | 会放松执行授权边界，安全风险不可接受 |
+
+### 5.9 问题 9：网关连接中断（TLS EOF / 超时）无重试
+
+**推荐**：对 `peer closed connection without sending TLS close_notify` 与
+`operation timed out` 的**初始发送**增加一次有界重试，复用
+`with_initial_request_retry`（`retry.rs:22`）。
+
+**理由**：发送尚未进入响应阶段即失败，重试成本低；08-31/09-04 观测到 90 s/120 s
+挂起后才失败，用户体验极差。
+
+**备选方案与拒绝原因**
+
+| 备选 | 拒绝原因 |
+| --- | --- |
+| 不做重试，依赖用户手动重发 | 90 s+ 等待后用户往往已放弃（09-04 实测） |
+| 无界/多次重试 | 放大上游故障，且可能叠加现有 5xx 重试形成多次计费请求 |
+| 按"上下文溢出"处理（compact 后重试） | 与真实原因无关，不解决问题 |
+
+**风险/开放问题**：与现有 `MAX_INITIAL_REQUEST_RETRIES=2` 叠加后的总次数需明确上限；
+重试的计费幂等性假设与现有 5xx 重试同级（需 reviewer 确认可接受）。
+
+### 5.10 落地顺序与验证
+
+1. P0-2/P0-3（you 契约）→ 单测：2 工具时选中 `you-search`、`SchemaMismatch` 冷却后
+   可恢复；
+2. P0-4（预算/hedge）→ 单测：deadline 不被突破、hedge 触发条件、DDG 重试上限；
+3. P0-1（effort 协商）→ wiremock 模式（参照 `openai.rs:3337-3380`）：
+   首次 200 被 500 拒绝 → 断言第二次请求含 `reasoning_effort:"none"`；
+4. P1-1…P1-4 依次；
+5. 回归：`cargo test -p flowy-web`、`cargo test -p nomi-providers`、
+   `cargo test -p nomi-config`、`cargo test -p nomi-agent`；
+6. 真实验收：qwen3.8-flash 复测 `web_search`（如深圳天气），确认日志中
+   `you` 从 `schema_mismatch` 恢复为正常 attempt；GPT5.6-Sol 复测带工具对话，
+   确认不再出现 23 s 重试后失败。
+
+### 5.11 开放问题（需 reviewer 决策）
+
+1. 学习式标记是否需要跨重启持久化到 DB？当前建议进程内（与 `sanitize_tool_schemas`
+   一致），避免引入新的持久化契约。
+2. `SchemaMismatch` 的冷却时长与探测频率取多少（建议 10 分钟 + 每次搜索最多一次
+   re-probe）？
+3. 未广告工具的进度预览：忽略（建议）还是仅记录 warn 保留可观测性？
+4. 传输层重试是否接受潜在重复计费（与现有 5xx 重试同级）？
+5. 是否把 `/v1/responses` 作为推理模型的中期路线（取决于网关侧支持，需单独调研）？
 
 ## 6. 备份项目（D:\workSpace\allo）环境核对与关联发现
 
