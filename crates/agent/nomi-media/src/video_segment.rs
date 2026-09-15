@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use nomi_config::RuntimeDep;
+use nomi_process_runtime::hidden_command;
 use nomi_types::ToolError;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -15,15 +16,8 @@ use tokio::process::Command;
 use crate::assets::persist_bytes;
 use crate::progress::report_media_progress;
 
-/// Spawn ffmpeg/ffprobe without flashing a console on Windows GUI hosts.
 fn media_command(bin: impl AsRef<Path>) -> Command {
-    let mut cmd = Command::new(bin.as_ref());
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
+    hidden_command(bin.as_ref())
 }
 
 /// Per-model maximum seconds for a single generation request.

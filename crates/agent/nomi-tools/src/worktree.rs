@@ -17,20 +17,15 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use nomi_process_runtime::hidden_std_command;
+
 /// Monotonic suffix so concurrent worktrees get distinct dir names without
 /// needing a clock or RNG (both unavailable / nondeterministic).
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Spawn `git` without flashing a console on Windows GUI hosts.
 fn git_command() -> Command {
-    let mut cmd = Command::new("git");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
+    hidden_std_command("git")
 }
 
 /// True if `root` is inside a git working tree.

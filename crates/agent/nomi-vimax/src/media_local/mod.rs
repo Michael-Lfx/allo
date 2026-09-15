@@ -11,21 +11,14 @@ use std::sync::Arc;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, Rgba, RgbaImage};
+use nomi_process_runtime::hidden_command;
 use tokio::process::Command;
 
 use crate::error::{VimaxError, VimaxResult};
 
 /// Spawn ffmpeg/ffprobe without flashing a console on Windows GUI hosts.
 fn ffmpeg_command(bin: impl AsRef<Path>) -> Command {
-    let mut cmd = Command::new(bin.as_ref());
-    // CREATE_NO_WINDOW (0x08000000): Allo is a GUI app; bare `Command::new(ffmpeg)`
-    // otherwise pops a CMD window on every last-frame extract / concat.
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
+    hidden_command(bin.as_ref())
 }
 
 /// PNG / JPEG / WEBP magic — used to reject HTML error bodies saved as `.png`.

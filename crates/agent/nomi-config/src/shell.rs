@@ -220,11 +220,8 @@ pub fn shell_command_args(command_str: &str) -> Vec<String> {
 
 pub fn shell_command_builder(command_str: &str) -> Command {
     let info = shell_info();
-    let mut cmd = Command::new(info.program);
+    let mut cmd = nomi_process_runtime::hidden_command(info.program);
     cmd.args(shell_command_args(command_str));
-    // CREATE_NO_WINDOW: don't flash a console window when the host is a GUI app.
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
     cmd
 }
 

@@ -1,91 +1,46 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
-  checkLspSource,
-  checkMediaSource,
+  checkCallSiteUsesRuntime,
+  checkRuntimeOwnsHide,
   checkShellTransportSource,
-  checkWorktreeSource,
-  findBareCommandSpawns,
 } from './check-windows-console-hide.mjs';
 
 describe('windows console-hide contract', () => {
-  test('accepts worktree hide helper', () => {
-    const source = `
+  test('runtime must own hide helpers', () => {
+    const good = `
+pub fn apply_hidden_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+}
+pub fn apply_hidden_console_std(command: &mut std::process::Command) {}
+pub fn hidden_command(program: impl AsRef<OsStr>) -> Command { Command::new(program) }
+pub fn hidden_std_command(program: impl AsRef<OsStr>) -> std::process::Command {
+    std::process::Command::new(program)
+}
+`;
+    expect(checkRuntimeOwnsHide(good)).toEqual([]);
+  });
+
+  test('call sites must use runtime helpers without local flags', () => {
+    const good = `
+fn git_command() -> Command {
+    nomi_process_runtime::hidden_std_command("git")
+}
+`;
+    expect(checkCallSiteUsesRuntime(good)).toEqual([]);
+
+    const bad = `
 fn git_command() -> Command {
     let mut cmd = Command::new("git");
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
-}
-
-fn is_git_repo(root: &Path) -> bool {
-    git_command().arg("-C").arg(root).output().is_ok()
-}
-`;
-    expect(checkWorktreeSource(source)).toEqual([]);
-  });
-
-  test('rejects bare git Command::new', () => {
-    const source = `
-fn is_git_repo(root: &Path) -> bool {
-    Command::new("git").arg("-C").arg(root).output().is_ok()
-}
-`;
-    expect(checkWorktreeSource(source).length).toBeGreaterThan(0);
-  });
-
-  test('accepts lsp spawn with creation_flags', () => {
-    const source = `
-let mut cmd = tokio::process::Command::new(program);
-cmd.args(args);
-#[cfg(windows)]
-{
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW);
-}
-let mut child = cmd.spawn()?;
-`;
-    expect(checkLspSource(source)).toEqual([]);
-  });
-
-  test('rejects lsp spawn without hide', () => {
-    const source = `
-let mut child = tokio::process::Command::new(program)
-    .args(args)
-    .spawn()?;
-`;
-    expect(checkLspSource(source).length).toBeGreaterThan(0);
-  });
-
-  test('accepts media_command helper', () => {
-    const source = `
-fn media_command(bin: impl AsRef<Path>) -> Command {
-    let mut cmd = Command::new(bin.as_ref());
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
     cmd
 }
-
-async fn run(ffmpeg: &Path) {
-    let _ = media_command(ffmpeg).output().await;
-}
 `;
-    expect(checkMediaSource(source)).toEqual([]);
-  });
-
-  test('rejects bare ffmpeg Command::new', () => {
-    const source = `
-async fn run(ffmpeg: &Path) {
-    let _ = Command::new(ffmpeg).output().await;
-}
-`;
-    expect(checkMediaSource(source).length).toBeGreaterThan(0);
+    expect(checkCallSiteUsesRuntime(bad).length).toBeGreaterThan(0);
   });
 
   test('requires Windows shell_transport to force Pipe', () => {
@@ -113,21 +68,5 @@ pub(crate) fn shell_transport(requested_tty: bool) -> Transport {
 }
 `;
     expect(checkShellTransportSource(bad).length).toBeGreaterThan(0);
-  });
-
-  test('findBareCommandSpawns ignores hide helpers', () => {
-    const source = `
-fn media_command(bin: &Path) -> Command {
-    let mut cmd = Command::new(bin);
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd
-}
-fn other() {
-    Command::new("git");
-}
-`;
-    const hits = findBareCommandSpawns(source, { helperNameRe: /media_command/ });
-    expect(hits).toHaveLength(1);
-    expect(hits[0].snippet).toContain('Command::new("git")');
   });
 });

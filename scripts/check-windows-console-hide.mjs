@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * Prevent Windows GUI hosts from flashing console windows when agent tools
- * spawn git / LSP / ffmpeg, and keep agent shell on Pipe (not ConPTY).
+ * Keep Windows GUI hosts from flashing consoles when tools spawn processes.
  *
- * Guarded regressions:
- * - worktree/lsp/video_segment must hide consoles via CREATE_NO_WINDOW
- * - windows_shell::shell_transport must force Transport::Pipe on Windows
+ * Contract:
+ * 1. One-shot hide helpers live only in nomi-process-runtime
+ *    (`hidden_command` / `hidden_std_command` / `apply_hidden_console*`).
+ * 2. Guarded call sites must use those helpers — no local CREATE_NO_WINDOW.
+ * 3. Agent shell transport must force Transport::Pipe on Windows (not ConPTY).
  */
 
 import { readFileSync } from 'node:fs';
@@ -15,131 +16,61 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+const RUNTIME_HIDE = 'crates/shared/nomi-process-runtime/src/command_builder.rs';
 const GUARDED = {
   worktree: 'crates/agent/nomi-tools/src/worktree.rs',
   lsp: 'crates/agent/nomi-tools/src/lsp.rs',
   media: 'crates/agent/nomi-media/src/video_segment.rs',
+  vimaxMedia: 'crates/agent/nomi-vimax/src/media_local/mod.rs',
+  grep: 'crates/agent/nomi-tools/src/grep.rs',
+  shellConfig: 'crates/agent/nomi-config/src/shell.rs',
+  ffmpegHw: 'crates/agent/nomi-config/src/ffmpeg_hw.rs',
   shell: 'crates/agent/nomi-tools/src/windows_shell.rs',
 };
 
-const CREATE_NO_WINDOW_RE = /CREATE_NO_WINDOW|creation_flags\s*\(/;
-const COMMAND_NEW_RE = /(?:tokio::process::|std::process::)?Command::new\s*\(/g;
+const LOCAL_HIDE_RE = /CREATE_NO_WINDOW|creation_flags\s*\(\s*0x0800_?0000\s*\)/;
+const RUNTIME_HELPER_RE =
+  /\b(?:hidden_command|hidden_std_command|apply_hidden_console(?:_std)?)\b/;
 
 function readRel(rel) {
   return readFileSync(resolve(ROOT, rel), 'utf8');
 }
 
-function lineOf(source, index) {
-  return source.slice(0, index).split(/\r?\n/).length;
+export function checkRuntimeOwnsHide(source) {
+  const problems = [];
+  if (!/\bfn\s+hidden_command\s*\(/.test(source)) {
+    problems.push('missing pub fn hidden_command');
+  }
+  if (!/\bfn\s+hidden_std_command\s*\(/.test(source)) {
+    problems.push('missing pub fn hidden_std_command');
+  }
+  if (!/\bfn\s+apply_hidden_console\s*\(/.test(source)) {
+    problems.push('missing pub fn apply_hidden_console');
+  }
+  if (!LOCAL_HIDE_RE.test(source) && !/CREATE_NO_WINDOW/.test(source)) {
+    problems.push('runtime hide helpers must set CREATE_NO_WINDOW on Windows');
+  }
+  return problems;
 }
 
-/**
- * Every Command::new outside a hide helper must sit near creation_flags.
- * Helpers named *command / no_window_* that themselves set CREATE_NO_WINDOW
- * may construct Command::new once.
- */
-export function findBareCommandSpawns(source, { helperNameRe } = {}) {
+export function checkCallSiteUsesRuntime(source, { requireHelper = true } = {}) {
   const problems = [];
-  const helperRanges = [];
-
-  if (helperNameRe) {
-    const fnRe = new RegExp(
-      String.raw`fn\s+(${helperNameRe.source})\s*\([^)]*\)[^{]*\{`,
-      'g',
+  if (LOCAL_HIDE_RE.test(source)) {
+    problems.push(
+      'local CREATE_NO_WINDOW / creation_flags(0x08000000) — use nomi_process_runtime helpers',
     );
-    let match;
-    while ((match = fnRe.exec(source)) !== null) {
-      const start = match.index;
-      const bodyStart = source.indexOf('{', start);
-      if (bodyStart < 0) continue;
-      let depth = 0;
-      let end = bodyStart;
-      for (; end < source.length; end += 1) {
-        const ch = source[end];
-        if (ch === '{') depth += 1;
-        else if (ch === '}') {
-          depth -= 1;
-          if (depth === 0) {
-            end += 1;
-            break;
-          }
-        }
-      }
-      const body = source.slice(bodyStart, end);
-      if (CREATE_NO_WINDOW_RE.test(body)) {
-        helperRanges.push([start, end]);
-      }
-    }
   }
-
-  let match;
-  COMMAND_NEW_RE.lastIndex = 0;
-  while ((match = COMMAND_NEW_RE.exec(source)) !== null) {
-    const at = match.index;
-    if (helperRanges.some(([start, end]) => at >= start && at < end)) {
-      continue;
-    }
-    const window = source.slice(at, Math.min(source.length, at + 600));
-    if (CREATE_NO_WINDOW_RE.test(window)) {
-      continue;
-    }
-    problems.push({
-      line: lineOf(source, at),
-      snippet: source.slice(at, at + 48).replace(/\s+/g, ' '),
-    });
-  }
-  return problems;
-}
-
-export function checkWorktreeSource(source) {
-  const problems = [];
-  if (!/fn\s+git_command\s*\(/.test(source)) {
-    problems.push('missing git_command() hide helper');
-  }
-  if (!CREATE_NO_WINDOW_RE.test(source)) {
-    problems.push('missing CREATE_NO_WINDOW / creation_flags');
-  }
-  for (const hit of findBareCommandSpawns(source, {
-    helperNameRe: /git_command/,
-  })) {
-    problems.push(`bare Command::new at line ${hit.line}: ${hit.snippet}`);
-  }
-  return problems;
-}
-
-export function checkLspSource(source) {
-  const problems = [];
-  if (!/tokio::process::Command::new\s*\(/.test(source)) {
-    problems.push('expected tokio::process::Command::new for LSP spawn');
-  }
-  if (!CREATE_NO_WINDOW_RE.test(source)) {
-    problems.push('missing CREATE_NO_WINDOW / creation_flags near LSP spawn');
-  }
-  for (const hit of findBareCommandSpawns(source)) {
-    problems.push(`bare Command::new at line ${hit.line}: ${hit.snippet}`);
-  }
-  return problems;
-}
-
-export function checkMediaSource(source) {
-  const problems = [];
-  if (!/fn\s+media_command\s*\(/.test(source)) {
-    problems.push('missing media_command() hide helper');
-  }
-  if (!CREATE_NO_WINDOW_RE.test(source)) {
-    problems.push('missing CREATE_NO_WINDOW / creation_flags');
-  }
-  for (const hit of findBareCommandSpawns(source, {
-    helperNameRe: /media_command/,
-  })) {
-    problems.push(`bare Command::new at line ${hit.line}: ${hit.snippet}`);
+  if (requireHelper && !RUNTIME_HELPER_RE.test(source)) {
+    problems.push(
+      'must call hidden_command / hidden_std_command / apply_hidden_console*',
+    );
   }
   return problems;
 }
 
 /**
  * Agent Bash/exec_command must force Pipe on Windows. ConPTY flashes a
- * console host under GUI apps (regression from forcing Transport::Pty).
+ * console host under GUI apps.
  */
 export function checkShellTransportSource(source) {
   const problems = [];
@@ -169,17 +100,35 @@ export function checkShellTransportSource(source) {
 }
 
 export function checkAll(sources = {
+  runtime: readRel(RUNTIME_HIDE),
   worktree: readRel(GUARDED.worktree),
   lsp: readRel(GUARDED.lsp),
   media: readRel(GUARDED.media),
+  vimaxMedia: readRel(GUARDED.vimaxMedia),
+  grep: readRel(GUARDED.grep),
+  shellConfig: readRel(GUARDED.shellConfig),
+  ffmpegHw: readRel(GUARDED.ffmpegHw),
   shell: readRel(GUARDED.shell),
 }) {
   return [
-    ...checkWorktreeSource(sources.worktree).map(
+    ...checkRuntimeOwnsHide(sources.runtime).map((p) => `${RUNTIME_HIDE}: ${p}`),
+    ...checkCallSiteUsesRuntime(sources.worktree).map(
       (p) => `${GUARDED.worktree}: ${p}`,
     ),
-    ...checkLspSource(sources.lsp).map((p) => `${GUARDED.lsp}: ${p}`),
-    ...checkMediaSource(sources.media).map((p) => `${GUARDED.media}: ${p}`),
+    ...checkCallSiteUsesRuntime(sources.lsp).map((p) => `${GUARDED.lsp}: ${p}`),
+    ...checkCallSiteUsesRuntime(sources.media).map(
+      (p) => `${GUARDED.media}: ${p}`,
+    ),
+    ...checkCallSiteUsesRuntime(sources.vimaxMedia).map(
+      (p) => `${GUARDED.vimaxMedia}: ${p}`,
+    ),
+    ...checkCallSiteUsesRuntime(sources.grep).map((p) => `${GUARDED.grep}: ${p}`),
+    ...checkCallSiteUsesRuntime(sources.shellConfig).map(
+      (p) => `${GUARDED.shellConfig}: ${p}`,
+    ),
+    ...checkCallSiteUsesRuntime(sources.ffmpegHw).map(
+      (p) => `${GUARDED.ffmpegHw}: ${p}`,
+    ),
     ...checkShellTransportSource(sources.shell).map(
       (p) => `${GUARDED.shell}: ${p}`,
     ),
@@ -190,13 +139,13 @@ function main() {
   const problems = checkAll();
   if (problems.length > 0) {
     console.error(
-      'Windows console-hide contract failed (agent tool spawns must stay hidden):\n',
+      'Windows console-hide contract failed (hide belongs in nomi-process-runtime):\n',
     );
     for (const problem of problems) {
       console.error(`  - ${problem}`);
     }
     console.error(
-      '\nUse a hide helper (CREATE_NO_WINDOW / creation_flags) or keep Windows shell on Transport::Pipe.',
+      '\nUse hidden_command / hidden_std_command / apply_hidden_console*, and keep Windows shell on Transport::Pipe.',
     );
     process.exit(1);
   }

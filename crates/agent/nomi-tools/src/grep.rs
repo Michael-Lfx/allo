@@ -9,6 +9,7 @@ use tokio::process::Command;
 
 use nomi_protocol::events::ToolCategory;
 use nomi_types::tool::{JsonSchema, ToolResult};
+use nomi_process_runtime::hidden_command;
 
 use crate::Tool;
 
@@ -408,7 +409,7 @@ async fn try_ripgrep(
     })?;
 
     // CRITICAL: all flags MUST precede PATTERN and PATH.
-    let mut cmd = Command::new(&rg_bin);
+    let mut cmd = hidden_command(&rg_bin);
     cmd.arg("--color=never")
         .arg("-n")
         .arg("--no-heading")
@@ -519,7 +520,7 @@ async fn try_grep(
 ) -> ToolResult {
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = if cfg!(windows) {
-        let mut c = Command::new("findstr");
+        let mut c = hidden_command("findstr");
         c.arg("/S")
             .arg("/N")
             .arg("/R")
@@ -530,7 +531,7 @@ async fn try_grep(
         }
         c
     } else {
-        let mut c = Command::new("grep");
+        let mut c = hidden_command("grep");
         c.arg("-rn").arg(pattern).arg(path);
         if case_insensitive {
             c.arg("-i");
@@ -556,8 +557,6 @@ async fn try_grep(
         }
         c
     };
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
 
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())

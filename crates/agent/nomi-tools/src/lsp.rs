@@ -228,19 +228,12 @@ pub mod client {
             let (program, args) = command
                 .split_first()
                 .ok_or_else(|| "empty LSP server command".to_string())?;
-            let mut cmd = tokio::process::Command::new(program);
+            let mut cmd = nomi_process_runtime::hidden_command(program);
             cmd.args(args)
                 .current_dir(root)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null());
-            // CREATE_NO_WINDOW: language servers (rust-analyzer, etc.) are
-            // console-subsystem binaries; bare spawn flashes under a GUI host.
-            #[cfg(windows)]
-            {
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                cmd.creation_flags(CREATE_NO_WINDOW);
-            }
             let mut child = cmd
                 .spawn()
                 .map_err(|e| format!("failed to spawn LSP server '{program}': {e}"))?;

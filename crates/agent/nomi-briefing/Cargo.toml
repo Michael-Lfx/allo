@@ -10,6 +10,7 @@ repository.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 nomi-config.workspace = true
+nomi-process-runtime.workspace = true
 nomi-protocol.workspace = true
 nomi-tools.workspace = true
 nomi-types.workspace = true

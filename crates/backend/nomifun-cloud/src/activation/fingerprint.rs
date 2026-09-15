@@ -1,5 +1,6 @@
 //! Device fingerprint collection for activation reporting.
 
+#[cfg(not(target_os = "windows"))]
 use std::process::Command;
 
 use sha2::{Digest, Sha256};
@@ -279,11 +280,8 @@ fn read_cpu_chip_id() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn run_powershell(script: &str) -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = Command::new("powershell")
+    let out = nomi_process_runtime::hidden_std_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
     if !out.status.success() {

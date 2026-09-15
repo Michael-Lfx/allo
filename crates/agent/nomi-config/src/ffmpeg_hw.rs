@@ -605,13 +605,7 @@ async fn run_captured<A: AsRef<std::ffi::OsStr> + Send + Sync>(
 
 /// Spawn ffmpeg without flashing a console on Windows GUI hosts.
 fn hw_command(bin: &Path) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(bin);
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
+    nomi_process_runtime::hidden_command(bin)
 }
 
 // ---------------------------------------------------------------------------

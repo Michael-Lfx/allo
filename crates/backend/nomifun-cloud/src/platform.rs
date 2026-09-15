@@ -61,12 +61,8 @@ fn parse_sw_vers(output: &str) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn windows_release_hint() -> String {
-    use std::os::windows::process::CommandExt;
-    use std::process::Command;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    Command::new("cmd")
+    nomi_process_runtime::hidden_std_command("cmd")
         .args(["/C", "ver"])
-        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
