@@ -4,8 +4,13 @@
 
 - 日期:2026-09-15
 - 工作分支:`feat/chat-model-picker-showcase`(从 main `241c3023a` 切出,含已合并的图片发送松绑 PR #217)
-- 当前状态:仅含本计划文档;实施未开始,后续修改全部在此分支进行
-- Git 约束:commit 无 AI 署名;hooks 不绕过;回退 = 整分支删除
+- 当前状态:**第一期已实施完毕,4 个 commit 提交完成,待实机验证**(见验证清单);未推送、未建 PR。
+  - `10247da29` refactor:图标兜底逻辑上移共享 utils(并补 minimax 品牌映射)
+  - `f8e3c96bb` feat:桌面选择器 图标+定位语+推荐置顶(modelShowcase 注册表、视图模型投影、菜单双行、i18n 键)
+  - `b7809c90a` feat:移动端 sheet 图标槽位 + 定位语
+  - `b8d098251` test:结构测试锁定 + 定位语双语对称测试
+- 自动化验证:相关测试 158 pass / 0 fail(34 文件);`check:i18n` 10812 键 up to date;改动文件 typecheck 零错误(预存错误仅 videoCanvas/canvas-project-dialogs 与 analytics 测试);`check:button-layout-contract` 仅剩预存 MeetingPage.tsx:98。
+- Git 约束:commit 无 AI 署名;hooks 不绕过;回退 = 整分支删除或按序 revert。
 
 ## 背景与目标
 
