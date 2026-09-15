@@ -73,7 +73,7 @@ import {
 const FALLBACK_WS_URL = "ws://127.0.0.1:8787/api/app-server/ws";
 /** Pre-fix hardcoded default. Used only to migrate stale persisted values. */
 const LEGACY_DEFAULT_WS_URL = FALLBACK_WS_URL;
-const STORAGE_KEY = "allo-app-server-chat-settings-v1";
+const STORAGE_KEY = "flowy-agent-store-chat-settings-v1";
 
 /**
  * Default WS URL for the App Server.
@@ -1064,7 +1064,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         client = new AppServerClient({
           wsUrl: wsUrl.trim(),
           token: token.trim() || undefined,
-          client: { name: "allo-app-server-chat", version: "0.3.0" },
+          client: { name: "flowy-agent-store-chat", version: "0.3.0" },
           capabilities: { events: true },
           requestTimeoutMs: 20_000,
         });

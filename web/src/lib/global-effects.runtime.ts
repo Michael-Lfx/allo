@@ -28,7 +28,7 @@ import {
   type NoticeRuntime,
 } from "./notice-performers";
 
-const CHANNEL_NAME = "allo-global-effects";
+const CHANNEL_NAME = "flowy-agent-store-global-effects";
 
 function translate(key: string, params?: Record<string, unknown>): string {
   return String(i18n.t(key, { ...(params ?? {}) }));

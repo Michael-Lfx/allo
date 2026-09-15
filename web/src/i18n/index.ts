@@ -19,7 +19,7 @@ import enUS from "./en-US";
 
 export type Language = "zh-CN" | "en-US";
 
-const STORAGE_KEY = "allo-lang";
+const STORAGE_KEY = "flowy-agent-store-lang";
 
 function detectLanguage(): Language {
   const saved = localStorage.getItem(STORAGE_KEY);

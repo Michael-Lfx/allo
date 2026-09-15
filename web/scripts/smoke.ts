@@ -521,7 +521,7 @@ async function runWorkspaceLifecycle(client: AppServerClient, workspaceId: strin
 
   // --- user-path registration is idempotent per canonical root --------------
   const root = (process.env.TEMP ?? "/tmp").replace(/[\\/]+$/, "");
-  const demoPath = `${root}${/^[A-Za-z]:[\\/]/.test(root) ? "\\" : "/"}allo-smoke-${Date.now()}`;
+  const demoPath = `${root}${/^[A-Za-z]:[\\/]/.test(root) ? "\\" : "/"}flowy-agent-store-smoke-${Date.now()}`;
   const created = await client.workspaces.create(demoPath);
   if (created.workspace_id.length === 36 && created.name.length > 0 && created.canonical_path === demoPath) {
     ok(`workspace/create registers a user-chosen path (${created.name})`);

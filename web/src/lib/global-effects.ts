@@ -115,9 +115,9 @@ export interface GlobalEffectGate {
 }
 
 /** One lock name for the whole profile: it serializes every global effect. */
-const LOCK_NAME = "allo:global-effect";
+const LOCK_NAME = "flowy-agent-store:global-effect";
 const DEFAULT_LOCK_TIMEOUT_MS = 1_500;
-const REGISTRY_KEY = "allo-global-effects-v1";
+const REGISTRY_KEY = "flowy-agent-store-global-effects-v1";
 /** Bounded so the shared registry can never grow without limit. */
 const REGISTRY_LIMIT = 128;
 const ANNOUNCE_TYPE = "handled";
