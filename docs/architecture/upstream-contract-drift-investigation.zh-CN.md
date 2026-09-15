@@ -574,3 +574,38 @@ reuters 返回 401、bbc 返回 404），模型最后改用本地 `curl` 绕过�
 评审    SEP-1 未广告工具进度预览的处置（安全/产品契约）
 评审    SEP-2 初始请求总 deadline 与 timeout 重试策略
 ```
+
+## 9. OBS-1 基线（历史样本，预修复）
+
+### 9.1 采样说明
+
+- 样本来源：本机两个开发环境的历史 `managed_search` 结构化日志
+  （`D:\tmp\flowy-dev\logs` 与 `Nomi-dev\logs`，2026-08-03 … 2026-09-15 日志集合）。
+- 这是**预修复**的可比历史基线，用于对照；不包含修复后的真实调用，也未执行
+  受控探针。按执行计划 §6，主决策样本必须 ≥100 条**修复后真实调用 + 可比历史**，
+  因此本基线只用于记录现状，不触发 Stage 8。
+- 提取命令（可复现）：
+
+```text
+rg 'managed web search (succeeded|provider failed|completed with no results|all managed web search providers were unavailable)' <logs>
+```
+
+### 9.2 历史结果
+
+| 指标 | 数值 |
+| --- | --- |
+| 成功搜索 | 102 |
+| 全 provider 失败 | 7 |
+| 总体成功率 | 93.6% |
+| parallel | 成功 27（P50 1951 ms / P95 2675 ms）；timeout 30 |
+| you | 成功 11（P50 2291 ms / P95 2673 ms）；timeout 23、schema_mismatch 6 |
+| duckduckgo | 成功 64（P50 1351 ms / P95 3276 ms）；timeout 7 |
+| provider skipped 日志 | 0（修复前 skip 为 debug 级，无法回溯） |
+
+### 9.3 当前判定与后续
+
+- 修复前的 provider 失败结构中，You 的 `schema_mismatch`（6 次）属于本次已修复的
+  分类；parallel/you 的 timeout 与 DDG 的 timeout 属外部网络/上游问题。
+- 因为缺少修复后真实样本，OBS-1 结论暂记"证据不足"，**Stage 8 保持关闭**；
+  修复上线后继续采集真实调用样本，达 100 条再按 §5.5 的量化门槛决策。
+
