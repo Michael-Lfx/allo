@@ -499,9 +499,36 @@ cargo check -p nomifun-cloud                 → Finished（无新增告警）
 
 ### 15.3 尚未完成（需真实环境或后续决策）
 
-- 真实验收：GPT5.6-Sol（effort）、qwen3.8-flash（You 恢复/冷却自愈）、
-  gemini-3.5-flash（65536 + 嵌套 schema）、90s deadline 与 failover —— 均需真实网关
-  与账号，本轮未执行。
+- 真实验收：GPT5.6-Sol（effort）已在 §16 完成；qwen3.8-flash 的托管搜索链在 web
+  宿主不可用（见 §16.2），已用实时适配器探针替代；gemini 上限拒绝在该账号通道不适用。
 - OBS-1 主样本仍需修复后真实调用累计到 100 条，才能决定 Stage 8。
 - PR 尚未创建（分支 `fix/upstream-contract-drift` 未推送）。
+
+## 16. 真实验收记录（2026-09-15）
+
+### 16.1 方法
+
+- **B（确定性）**：本地黑洞监听 + 真实 socket，验证 90s 初始协商 deadline。
+- **A（真实网关）**：隔离数据目录（temp 内新建、独立端口 18787、
+  `nomifun-web --api-only --insecure-no-auth`），从源数据目录按行导入 Flowy provider
+  凭证后，用 REST 驱动真实对话；不写用户开发数据目录，验收结束删除副本。
+- **C（实时上游契约）**：`flowy-web` 适配器直连 `you.com` MCP 的 `#[ignore]` 探针。
+
+### 16.2 结果
+
+| 场景 | 结果 | 证据 |
+| --- | --- | --- |
+| A1 GPT5.6-Sol（注入 `reasoning_effort` 档位复现 09-12 目录配置） | ✅ 通过 | 14:51:47 首次发送 → 14:51:54 工具 schema 拒绝并降级重发 → 14:51:57 `provider requires reasoning_effort='none' with function tools; retrying with effort disabled` → 14:52:05 `terminal: ok`；全程未出现 `all_channel_models_failed` |
+| A2 qwen3.8-flash + web_search | ✅ 默认 DDG 路径成功；托管搜索链不适用 | web 宿主 `AppHostCapabilities::default().managed_search = false` → `SearchProviderBinding::DefaultDdg`；web_search 1.11s 成功。托管链的 You 契约由 C 覆盖 |
+| A3 gemini-3.5-flash 输出上限协商 | ⚠️ 该账号通道接受 128000，现场拒绝不可复现 | 14:57:27 发送 `max_tokens=128000` → 工具 schema 拒绝重发（仍 128000）→ `terminal: ok`；65536 路径仅由 wiremock 覆盖 |
+| B 90s deadline | ✅ 实测 90.03s | `initial_request_deadline_against_blackhole_listener`（≈90s，<120s，无重试叠加） |
+| C you.com 实时契约 | ✅ | `live_you_endpoint_discovery_and_search`：按名发现 + 真实 `you-search` 调用解码成功，2.66s，非空 hits |
+| failover（超时故障） | ✅ | `service_test::failover` 9/9，含 `UserLlmProviderTimeout` 端到端转移 |
+
+### 16.3 边界与未覆盖
+
+- A3 的"真实 65537 exclusive 拒绝"依赖上游通道具备该上限；本账号通道无此限制，
+  故只能声明 wiremock 覆盖，不能声明线上复现。
+- UI 错误卡与用户视角文案未做人工界面验收（错误码映射已由单测覆盖）。
+- 隔离副本、黑洞监听与临时账号数据均在验收后清理；未改动用户开发数据目录。
 
