@@ -405,11 +405,6 @@ const NomiSendBox: React.FC<{
   }, [hasContextUsage, hasStrategySlot, hideModeSelector, current_model?.use_model]);
 
   const { atPath, uploadFile, setAtPath, setUploadFile, content, contentRevision, setContent } = useSendBoxDraft(conversation_id);
-  const hasImageAttachments = useMemo(
-    () => collectSelectedFiles(uploadFile, atPath).some(isImageAttachment),
-    [atPath, uploadFile]
-  );
-  const autoModelHasImageAttachments = selectedChatModelOption?.family === 'auto' && hasImageAttachments;
 
   const handleAutoTierSelect = useCallback(
     async (option: Parameters<React.ComponentProps<typeof AutoTierSelector>['onSelect']>[0]) => {
@@ -574,19 +569,12 @@ const NomiSendBox: React.FC<{
     [warnImageAttachmentLimit]
   );
 
+  // Image-bearing sends rely on the backend self-healing chain (image_analyze
+  // fallback + strip-and-rebuild on image-unsupported 400); the frontend only
+  // enforces the per-message image count limit here.
   const canSendModelFiles = useCallback(
-    (files: string[], notify = true) => {
-      if (selectedChatModelOption?.family === 'auto' && files.some(isImageAttachment)) {
-        if (notify) {
-          Message.warning(t('conversation.modelPicker.autoTextOnly', {
-            defaultValue: 'Auto models currently support text only',
-          }));
-        }
-        return false;
-      }
-      return canSendImageAttachments(files, notify);
-    },
-    [canSendImageAttachments, selectedChatModelOption?.family, t]
+    (files: string[], notify = true) => canSendImageAttachments(files, notify),
+    [canSendImageAttachments]
   );
 
   const handleNomiFilesAdded = useCallback(
@@ -873,13 +861,6 @@ const NomiSendBox: React.FC<{
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
 
-    if (autoModelHasImageAttachments) {
-      Message.warning(t('conversation.modelPicker.autoTextOnly', {
-        defaultValue: 'Auto models currently support text only',
-      }));
-      throw new Error('Auto models do not support image attachments');
-    }
-
     const queued = enqueue({ input: message, files: filesToSend, workspace_path: workspacePath });
     if (!queued) {
       // Queue validation/storage failure must reject the composer send so the
@@ -893,13 +874,6 @@ const NomiSendBox: React.FC<{
   const onSendWithSkillsHandler = useCallback(
     async (message: string, injectSkills: string[]) => {
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
-
-      if (autoModelHasImageAttachments) {
-        Message.warning(t('conversation.modelPicker.autoTextOnly', {
-          defaultValue: 'Auto models currently support text only',
-        }));
-        throw new Error('Auto models do not support image attachments');
-      }
 
       // The queue stores plain commands only. A selected Skill is an atomic
       // snapshot load for this turn, so reject it while a turn is busy and let
@@ -919,7 +893,7 @@ const NomiSendBox: React.FC<{
       clearFiles();
       emitter.emit('nomi.selected.file.clear');
     },
-    [atPath, autoModelHasImageAttachments, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
+    [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
   );
 
   // 编辑最近一条用户消息并截断重跑。每一个结果都先经过后端 receipt +
@@ -1469,33 +1443,26 @@ const NomiSendBox: React.FC<{
   const handleSheetModelSelect = useCallback(
     (value: string) => {
       if (modelSelectionDisabled) return;
-      const catalogOptions = allChatModelOptions(modelSelection.modelPicker, { hasImageAttachments });
+      const catalogOptions = allChatModelOptions(modelSelection.modelPicker);
       const selected =
         value === 'flowy-auto-family'
           ? findChatModelOption(
               modelSelection.modelPicker,
               modelSelection.current_model?.id,
-              modelSelection.current_model?.use_model,
-              { hasImageAttachments }
+              modelSelection.current_model?.use_model
             )?.family === 'auto'
             ? findChatModelOption(
                 modelSelection.modelPicker,
                 modelSelection.current_model?.id,
-                modelSelection.current_model?.use_model,
-                { hasImageAttachments }
+                modelSelection.current_model?.use_model
               )
             : modelSelection.modelPicker.autoModels.find((option) => option.autoTier === 'balance') ??
               modelSelection.modelPicker.autoModels[0]
           : catalogOptions.find((option) => option.key === value);
-      const safeSelected =
-        value === 'flowy-auto-family' && hasImageAttachments && selected?.family === 'auto'
-          ? undefined
-          : selected;
-      if (!safeSelected || safeSelected.disabled) return;
-      void modelSelection.handleSelectModel(safeSelected.provider, safeSelected.model);
+      if (!selected) return;
+      void modelSelection.handleSelectModel(selected.provider, selected.model);
     },
     [
-      hasImageAttachments,
       modelSelection.current_model?.id,
       modelSelection.current_model?.use_model,
       modelSelection.handleSelectModel,
@@ -1540,7 +1507,7 @@ const NomiSendBox: React.FC<{
       active: currentMode === mode.value,
     }));
 
-    const catalogOptions = allChatModelOptions(modelSelection.modelPicker, { hasImageAttachments });
+    const catalogOptions = allChatModelOptions(modelSelection.modelPicker);
     const autoTierLabel = (tier: AutoTier | undefined) =>
       t(`conversation.modelPicker.autoTier.${tier ?? 'unknown'}`, {
         defaultValue: tier ? AUTO_TIER_LABEL_FALLBACK[tier] : 'Auto',
@@ -1548,8 +1515,7 @@ const NomiSendBox: React.FC<{
     const currentCatalogOption = findChatModelOption(
       modelSelection.modelPicker,
       modelSelection.current_model?.id,
-      modelSelection.current_model?.use_model,
-      { hasImageAttachments }
+      modelSelection.current_model?.use_model
     );
     const autoFamilyOption = modelSelection.modelPicker.autoModels[0];
     const toMobileModelOption = (option: (typeof catalogOptions)[number]): MobileActionSheetOption => {
@@ -1558,15 +1524,10 @@ const NomiSendBox: React.FC<{
       return {
         key: option.key,
         label: option.label,
-        description: option.disabled
-          ? t('conversation.modelPicker.visionRequired', { defaultValue: 'This model does not accept images' })
-          : creditRate
-            ? `${providerName} · ${creditRate}`
-            : providerName,
+        description: creditRate ? `${providerName} · ${creditRate}` : providerName,
         active:
           modelSelection.current_model?.id === option.provider.id &&
           modelSelection.current_model?.use_model === option.model,
-        disabled: option.disabled,
       };
     };
     const autoModelOptions: MobileActionSheetOption[] = autoFamilyOption
@@ -1574,15 +1535,10 @@ const NomiSendBox: React.FC<{
           {
             key: 'flowy-auto-family',
             label: t('conversation.modelPicker.auto', { defaultValue: 'Auto' }),
-            description: hasImageAttachments
-              ? t('conversation.modelPicker.autoTextOnly', {
-                  defaultValue: 'Auto models currently support text only',
-                })
-              : `${t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto mode' })} · ${autoTierLabel(
-                  currentCatalogOption?.family === 'auto' ? currentCatalogOption.autoTier : 'balance'
-                )}`,
+            description: `${t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto mode' })} · ${autoTierLabel(
+              currentCatalogOption?.family === 'auto' ? currentCatalogOption.autoTier : 'balance'
+            )}`,
             active: currentCatalogOption?.family === 'auto',
-            disabled: hasImageAttachments,
           },
         ]
       : [];
@@ -1638,7 +1594,6 @@ const NomiSendBox: React.FC<{
             label: autoTierLabel(option.autoTier),
             description: option.model,
             active: option.autoTier === selectedAutoTier,
-            disabled: hasImageAttachments,
           }))
         : reasoningEffortLevels.map((effort) => ({
             key: effort,
@@ -1670,10 +1625,9 @@ const NomiSendBox: React.FC<{
               onSelect: (key) => {
                 if (currentCatalogOption.family === 'auto') {
                   if (modelSelectionDisabled) return;
-                  if (hasImageAttachments) return;
                   const option = strategyOptions.find((item) => item.key === key);
                   const autoOption = modelSelection.modelPicker.autoModels.find((item) => item.key === option?.key);
-                  if (autoOption && !autoOption.disabled) {
+                  if (autoOption) {
                     void modelSelection.handleSelectModel(autoOption.provider, autoOption.model);
                   }
                 } else {
@@ -1760,7 +1714,6 @@ const NomiSendBox: React.FC<{
     loadedMcpStatuses,
     modelSelectionDisabled,
     modelSelection,
-    hasImageAttachments,
     reasoningEffortLevels,
     effectiveReasoningEffort,
     providerLabel,
@@ -1920,16 +1873,6 @@ const NomiSendBox: React.FC<{
           }
         />
       )}
-      {autoModelHasImageAttachments && (
-        <Alert
-          className='mb-8px'
-          type='warning'
-          data-testid='nomi-auto-image-warning'
-          content={t('conversation.modelPicker.autoTextOnly', {
-            defaultValue: 'Auto models currently support text only',
-          })}
-        />
-      )}
       {editTargetChangedNotice && (
         <Alert
           className='mb-8px'
@@ -2038,7 +1981,6 @@ const NomiSendBox: React.FC<{
                     <AutoTierSelector
                       options={modelSelection.modelPicker.autoModels}
                       selected={selectedChatModelOption}
-                      hasImageAttachments={hasImageAttachments}
                       disabled={modelSelectionDisabled}
                       popupVisible={activeChatPopup === 'strategy'}
                       onPopupVisibleChange={handleStrategyPopupVisibleChange}
@@ -2069,7 +2011,6 @@ const NomiSendBox: React.FC<{
                   <NomiModelSelector
                     selection={modelSelection}
                     disabled={modelSelectionDisabled}
-                    hasImageAttachments={hasImageAttachments}
                     popupVisible={activeChatPopup === 'model'}
                     onPopupVisibleChange={handleModelPopupVisibleChange}
                     className='nomi-sendbox-model-btn'
