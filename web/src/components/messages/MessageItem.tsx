@@ -58,7 +58,7 @@ export const MessageItem = memo(function MessageItem({
   if (message.role === "assistant" && message.message_type === "error") {
     const retryable = messageRetryable(message);
     return <article className="message-row error-message">
-      <div className="assistant-meta"><span>Allo</span><span>{t("message.replyFailed")}</span></div>
+      <div className="assistant-meta"><span>Flowy Agent Store</span><span>{t("message.replyFailed")}</span></div>
       <div className="assistant-divider" />
       <div className="error-card" role="alert">
         <strong>{t("message.cannotGenerate")}</strong>

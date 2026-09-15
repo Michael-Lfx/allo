@@ -20,7 +20,7 @@ import { IconButton } from "../IconButton";
 export function DialogShell({
   onClose,
   labelledBy,
-  eyebrow = "ALLO APP SERVER",
+  eyebrow = "FLOWY AGENT STORE",
   title,
   titleId,
   width = "default",

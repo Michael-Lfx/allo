@@ -125,7 +125,7 @@ export function Sidebar() {
       <div className="sidebar-topline">
         <button className="workspace-switcher" type="button" aria-label={sidebarCompact ? t("topbar.showSidebar") : t("sidebar.openWorkspaceMenu")} onClick={sidebarCompact ? toggleSidebarCompact : undefined}>
           <span className="product-logo" aria-hidden="true"><Bot size={19} strokeWidth={1.8} /></span>
-          <span className="product-name">Allo</span>
+          <span className="product-name">Flowy Agent Store</span>
         </button>
         <IconButton label={sidebarCompact ? t("topbar.showSidebar") : t("topbar.hideSidebar")} className="utility-button" onClick={toggleSidebarCompact}><PanelLeft size={17} strokeWidth={1.7} /></IconButton>
       </div>
@@ -164,7 +164,7 @@ export function Sidebar() {
         <span className="sidebar-section-actions" aria-hidden="true">⋯</span>
       </div>
 
-      <section className="project-group" aria-label="Allo App Server 项目">
+      <section className="project-group" aria-label="Flowy Agent Store 项目">
         {workspaceGroups.map(({ workspaceId, label, items }) => {
               const groupLabel = workspaceId === UNGROUPED_WORKSPACE
                 ? t("sidebar.ungrouped")
