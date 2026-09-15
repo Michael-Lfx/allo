@@ -118,6 +118,10 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
       })
     : t('common.userMenu.contactSupport', { defaultValue: '联系客服' });
 
+  const stopAccountTrigger = (event: React.SyntheticEvent) => {
+    event.stopPropagation();
+  };
+
   const menuContent = (
     <div className='w-192px flex flex-col gap-1px p-4px'>
       <div className='flex items-center justify-between gap-8px h-30px px-8px text-12px'>
@@ -284,22 +288,23 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           <span className='block h-16px truncate text-12px font-500 leading-16px text-t-primary'>{displayName}</span>
           <span
             className={classNames(
-              'block h-14px truncate text-11px leading-14px text-t-tertiary',
-              !planText && 'invisible'
+              'flex items-center gap-10px h-14px min-w-0',
+              !authenticated && 'invisible'
             )}
-            aria-hidden={!planText}
-            data-sider-plan-slot
+            aria-hidden={!authenticated}
+            data-sider-credits
           >
-            {planText || '\u00a0'}
+            <span className='truncate text-11px leading-14px text-t-tertiary tabular-nums'>{creditsText}</span>
+            {authenticated ? (
+              <span
+                className='inline-flex shrink-0'
+                onClick={stopAccountTrigger}
+                onMouseDown={stopAccountTrigger}
+              >
+                <CreditsWebsiteButton size='xs' className='!size-14px' />
+              </span>
+            ) : null}
           </span>
-        </span>
-      )}
-      {!collapsed && authenticated && (
-        <span
-          data-sider-credits
-          className='shrink-0 pr-4px text-11px leading-14px text-t-tertiary tabular-nums'
-        >
-          {creditsText}
         </span>
       )}
     </div>
