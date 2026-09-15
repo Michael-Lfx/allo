@@ -9,7 +9,7 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Input, Spin } from '@arco-design/web-react';
-import { CheckSmall, Plus, Upload } from '@icon-park/react';
+import { Plus, Upload } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
@@ -30,8 +30,13 @@ import type {
   VimaxCloudSkillStatus,
   VerticalSkillSummary,
 } from '../types';
-import homeStyles from './home.module.css';
 import styles from './verticalSkillHub.module.css';
+import {
+  isWorkshopFeaturedName,
+  skillBareName,
+  workshopRank,
+  WORKSHOP_SKILL_GROUPS,
+} from './workshopSkills';
 
 type MenuTab = 'all' | 'user' | 'hub';
 
@@ -68,6 +73,23 @@ function cloudStatusLabel(
     default:
       return t('videoGeneration.skills.cloudStatus.local', { defaultValue: '仅本地' });
   }
+}
+
+function MenuCheck({ on }: { on: boolean }) {
+  return (
+    <i className={`${styles.checkMark} ${on ? styles.checkMarkOn : ''}`} aria-hidden='true'>
+      <svg viewBox='0 0 12 12' width='12' height='12'>
+        <path
+          d='M2.15 6.2 4.85 8.85 9.9 3.2'
+          fill='none'
+          stroke='currentColor'
+          strokeWidth='1.7'
+          strokeLinecap='round'
+          strokeLinejoin='round'
+        />
+      </svg>
+    </i>
+  );
 }
 
 function cloudStatusClass(status: VimaxCloudSkillStatus | string | undefined): string {
@@ -202,26 +224,45 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
     const q = query.trim().toLowerCase();
     let rows = localRows;
     if (tab === 'all') {
-      // Featured = official builtins only (my creations stay in 我的).
+      // Featured = official short-drama directors / craft. Ads, travel, MV
+      // stay searchable but do not dominate the workshop shelf.
       rows = rows.filter((skill) => skill.source === 'builtin');
+      if (!q) {
+        rows = rows.filter((skill) => {
+          const name = skillBareName(skill.id);
+          return isWorkshopFeaturedName(name) || selectedIds.includes(skill.id);
+        });
+      }
     } else if (tab === 'user') {
       rows = rows.filter((skill) => skill.source === 'user');
     }
-    if (!q || tab === 'hub') return rows;
-    return rows.filter((skill) => {
-      const hay = [
-        skill.display_name,
-        skill.name,
-        skill.description,
-        skill.category,
-        ...skill.tags,
-        skill.cloud?.status ?? '',
-      ]
-        .join(' ')
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }, [localRows, query, tab]);
+    if (q && tab !== 'hub') {
+      rows = rows.filter((skill) => {
+        const hay = [
+          skill.display_name,
+          skill.name,
+          skill.description,
+          skill.category,
+          ...skill.tags,
+          skill.cloud?.status ?? '',
+        ]
+          .join(' ')
+          .toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    return rows.toSorted(
+      (a, b) => workshopRank(skillBareName(a.id)) - workshopRank(skillBareName(b.id))
+    );
+  }, [localRows, query, selectedIds, tab]);
+
+  const groupedRows = useMemo(() => {
+    if (tab !== 'all') return [];
+    return WORKSHOP_SKILL_GROUPS.map((group) => ({
+      ...group,
+      rows: filteredRows.filter((row) => group.names.includes(skillBareName(row.id))),
+    })).filter((group) => group.rows.length > 0);
+  }, [filteredRows, tab]);
 
   const installedByName = useMemo(() => {
     const map = new Map<string, VerticalSkillSummary>();
@@ -381,7 +422,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
         </div>
       );
     }
-    return filteredRows.map((skill) => {
+    const renderRow = (skill: LocalSkillRow) => {
       const active = selectedIds.includes(skill.id);
       const cloud = skill.cloud;
       const showCloudStatus = skill.source === 'user';
@@ -391,35 +432,24 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
           type='button'
           role='option'
           aria-selected={active}
-          className={`${homeStyles.slashMenuItem} ${styles.skillItem} ${
-            active ? homeStyles.slashMenuItemActive : ''
-          }`}
+          className={`${styles.skillItem} ${
+            active ? styles.skillItemSelected : ''
+          } ${skill.source === 'user' ? styles.skillItemWithAction : ''}`}
           onClick={() => toggle(skill.id)}
         >
-          <span className={styles.checkSlot} aria-hidden='true'>
-            {active ? <CheckSmall size={14} /> : null}
-          </span>
           <span className={styles.skillText}>
             <strong>{skill.display_name}</strong>
             <small>
               <span className={styles.skillDesc}>{skill.description}</span>
-              <span className={styles.metaDiamond} aria-hidden='true' />
               {showCloudStatus ? (
                 <span className={`${styles.sourceBadge} ${cloudStatusClass(cloud?.status)}`}>
                   {cloudStatusLabel(cloud?.status, t)}
                 </span>
-              ) : (
-                <span className={styles.sourceBadge}>
-                  {t('videoGeneration.skills.source.builtin', { defaultValue: '官方' })}
-                </span>
-              )}
+              ) : null}
               {cloud?.rejectReason && (cloud.status || '').toLowerCase() === 'offline' ? (
-                <>
-                  <span className={styles.metaDiamond} aria-hidden='true' />
-                  <span className={styles.rejectHint} title={cloud.rejectReason}>
-                    {t('videoGeneration.skills.rejected', { defaultValue: '未通过' })}
-                  </span>
-                </>
+                <span className={styles.rejectHint} title={cloud.rejectReason}>
+                  {t('videoGeneration.skills.rejected', { defaultValue: '未通过' })}
+                </span>
               ) : null}
             </small>
           </span>
@@ -438,9 +468,24 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
               {busyId === `cloud:${skill.id}` ? '…' : publishActionLabel(cloud)}
             </em>
           ) : null}
+          <MenuCheck on={active} />
         </button>
       );
-    });
+    };
+
+    if (tab === 'all' && groupedRows.length > 0) {
+      return groupedRows.map((group) => (
+        <div key={group.id} className={styles.groupBlock}>
+          <div className={styles.groupLabel}>
+            {t(`videoGeneration.skills.groups.${group.labelKey}`, {
+              defaultValue: group.defaultLabel,
+            })}
+          </div>
+          {group.rows.map(renderRow)}
+        </div>
+      ));
+    }
+    return filteredRows.map(renderRow);
   };
 
   const renderCloudList = () => {
@@ -474,21 +519,17 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
           type='button'
           role='option'
           aria-selected={active}
-          className={`${homeStyles.slashMenuItem} ${styles.skillItem} ${
-            active ? homeStyles.slashMenuItemActive : ''
-          }`}
+          className={`${styles.skillItem} ${
+            active ? styles.skillItemSelected : ''
+          } ${styles.skillItemWithAction}`}
           onClick={() => {
             if (installed) toggle(installed.id);
           }}
         >
-          <span className={styles.checkSlot} aria-hidden='true'>
-            {active ? <CheckSmall size={14} /> : null}
-          </span>
           <span className={styles.skillText}>
             <strong>{cloud.displayName}</strong>
             <small>
               <span className={styles.skillDesc}>{cloud.description || ''}</span>
-              <span className={styles.metaDiamond} aria-hidden='true' />
               <span className={styles.sourceBadge}>
                 {cloud.isMine || myCloudByName.has(cloud.name)
                   ? t('videoGeneration.skills.source.minePublished', {
@@ -518,6 +559,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
                   ? t('videoGeneration.skills.syncMine', { defaultValue: '同步本地' })
                   : t('videoGeneration.skills.install', { defaultValue: '安装' })}
           </em>
+          <MenuCheck on={active} />
         </button>
       );
     });
@@ -527,7 +569,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
     <>
       {messageHolder}
       <div
-        className={`${homeStyles.slashMenu} ${styles.menuShell}`}
+        className={styles.menuShell}
         role='listbox'
         aria-label={t('videoGeneration.skills.menuAria', {
           defaultValue: '选择 Skill',
@@ -561,7 +603,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
           value={query}
           onChange={setQuery}
           placeholder={t('videoGeneration.skills.searchPlaceholder', {
-            defaultValue: '搜索技能…',
+            defaultValue: '搜索题材、场面或广告/MV…',
           })}
         />
 
@@ -582,14 +624,22 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
             <span>
               {t('videoGeneration.skills.selectedCount', {
                 count: selectedIds.length,
-                defaultValue: '已选 {{count}} 个',
+                defaultValue: '已选 {{count}} 项',
               })}
             </span>
             <button type='button' onClick={() => onChangeSelected([])}>
               {t('videoGeneration.skills.clearSelected', { defaultValue: '清空' })}
             </button>
           </div>
-        ) : null}
+        ) : (
+          <div className={styles.selectedHint}>
+            <span>
+              {t('videoGeneration.skills.defaultHint', {
+                defaultValue: '未选时默认：短剧导演 + 场面导演',
+              })}
+            </span>
+          </div>
+        )}
 
         <div className={styles.menuFooter}>
           <button
@@ -611,7 +661,8 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
         </div>
         <p className={styles.cloudHint}>
           {t('videoGeneration.skills.cloudPublishHint', {
-            defaultValue: '自己创建的 Skill 在「我的」；上架状态会显示审核中 / 已上架 / 已下架。',
+            defaultValue:
+              '推荐里是短剧题材与场面手册。广告 / 旅拍 / MV 可搜索。自己的 Skill 在「我的」。',
           })}
         </p>
       </div>

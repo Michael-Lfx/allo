@@ -42,9 +42,12 @@ describe("craft catalog", () => {
     });
 
     test("playbooks include vimax builtins and canvas-native manuals", () => {
-        expect(BUILTIN_PLAYBOOKS).toHaveLength(16);
+        expect(BUILTIN_PLAYBOOKS).toHaveLength(21);
         expect(BUILTIN_PLAYBOOKS.every((item) => item.qualifiedId.startsWith("builtin:"))).toBe(true);
         expect(BUILTIN_PLAYBOOKS.some((item) => item.id === "short-drama")).toBe(true);
+        expect(BUILTIN_PLAYBOOKS.some((item) => item.id === "scene-directing")).toBe(true);
+        expect(BUILTIN_PLAYBOOKS.some((item) => item.id === "revenge-rise")).toBe(true);
+        expect(BUILTIN_PLAYBOOKS.some((item) => item.id === "costume-romance")).toBe(true);
         expect(BUILTIN_PLAYBOOKS.some((item) => item.id === "character-bible")).toBe(true);
         expect(findPlaybook("cinematic")).toBeUndefined();
         expect(findPlaybook("builtin:short-drama")?.id).toBe("short-drama");
@@ -86,8 +89,9 @@ describe("craft catalog", () => {
 
     test("agent catalog lists builtins even on empty canvas", () => {
         const listed = listAgentPlaybooks([]);
-        expect(listed.length).toBe(16);
+        expect(listed.length).toBe(21);
         expect(getAgentPlaybook([], "builtin:short-drama")?.instruction).toContain("钩子");
+        expect(getAgentPlaybook([], "", "场面导演")?.skillId).toBe("builtin:scene-directing");
         expect(getAgentPlaybook([], "", "角色圣经")?.skillId).toBe("builtin:character-bible");
     });
 });

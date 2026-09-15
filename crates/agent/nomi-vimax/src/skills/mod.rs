@@ -7,7 +7,9 @@ mod overlay;
 mod package;
 mod parse;
 
-pub use builtin::DEFAULT_SHORT_DRAMA_SKILL_ID;
+pub use builtin::{
+    default_idea2video_skill_ids, DEFAULT_SHORT_DRAMA_SKILL_ID, SCENE_DIRECTING_SKILL_ID,
+};
 pub use catalog::SkillCatalog;
 pub use model::{
     sanitize_skill_name, DirectorSpec, OverBudget, PackPolicy, SkillId, SkillOverlay, SkillSource,

@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Input } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
-import { CloseSmall, FileText } from '@icon-park/react';
+import { FileText } from '@icon-park/react';
 import { AttachCloseIcon, AttachPlusIcon } from './ComposerIcons';
 import type { TFunction } from 'i18next';
 import { displayFileStem } from './documentUpload';
@@ -264,17 +264,20 @@ export function PromptComposer({
           )}
           <div className={styles.promptEditor}>
             {mode === 'agent' && selectedVerticalSkills.length > 0 ? (
-              <div className={styles.skillChips}>
-                {selectedVerticalSkills.map((skill, index) => (
-                  <React.Fragment key={skill.id}>
-                    {index > 0 ? (
-                      <span className={styles.skillDiamond} aria-hidden='true' />
-                    ) : null}
+              <div
+                className={styles.skillChips}
+                role='list'
+                aria-label={t('videoGeneration.skills.selected', { defaultValue: '已选 Skill' })}
+              >
+                {selectedVerticalSkills.map((skill) => (
                     <button
+                      key={skill.id}
                       type='button'
+                      role='listitem'
                       className={styles.skillTag}
                       disabled={loading}
                       title={skill.label}
+                      aria-pressed='true'
                       aria-label={t('videoGeneration.skills.removeSelected', {
                         name: skill.label,
                         defaultValue: '移除 Skill {{name}}',
@@ -289,9 +292,10 @@ export function PromptComposer({
                       }}
                     >
                       <strong>{skill.label}</strong>
-                      <CloseSmall size={11} />
+                      <span className={styles.skillTagDismiss} aria-hidden='true'>
+                        <SkillTagClose />
+                      </span>
                     </button>
-                  </React.Fragment>
                 ))}
               </div>
             ) : null}
@@ -311,6 +315,19 @@ export function PromptComposer({
         </div>
       </div>
     </div>
+  );
+}
+
+function SkillTagClose() {
+  return (
+    <svg width='8' height='8' viewBox='0 0 8 8' fill='none'>
+      <path
+        d='M1.6 1.6l4.8 4.8M6.4 1.6l-4.8 4.8'
+        stroke='currentColor'
+        strokeWidth='1.2'
+        strokeLinecap='round'
+      />
+    </svg>
   );
 }
 

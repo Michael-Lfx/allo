@@ -1162,7 +1162,8 @@ fn shot_continuity_lines() -> String {
 not as a reason to add a row. Camera moves inside a row are CUT TO in that row's visual_desc.\n\
            * IDENTITY (always): cast faces, wardrobe, hair, props, set dressing, time of day, \
 weather, and lighting mood carry over unchanged between adjacent shots unless the story explicitly \
-changes them.\n\
+changes them. A plot prop named in visual_desc must have a start state and an exit state; the next \
+row opens on that exit unless the story changes it.\n\
            * SAME opening cam_idx = SAME TAKE into the next *row*: that next file continues this \
 row's exit framing — open exactly where this row ended and move on from there. Keep each named \
 person on the SAME screen side (left/right).\n\
@@ -2238,6 +2239,7 @@ mod tests {
         assert!(s.contains("30"));
         assert!(s.contains("THIS SCENE budget"));
         assert!(s.contains("SHOT CONTINUITY"));
+        assert!(s.contains("exit state"));
         assert!(s.contains("CROSS-SCENE OPENING"));
         assert!(s.contains("DIRECTOR_DENSITY"));
         assert!(s.contains("BGM_CONTINUITY"));

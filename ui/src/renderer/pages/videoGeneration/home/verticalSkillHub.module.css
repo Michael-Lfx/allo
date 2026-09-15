@@ -1,64 +1,80 @@
 .menuShell {
   display: flex;
-  width: 340px;
-  max-width: calc(100vw - 32px);
-  max-height: 320px;
+  width: 100%;
+  max-width: none;
+  max-height: 440px;
   flex-direction: column;
   gap: 8px;
   overflow: hidden;
   box-sizing: border-box;
+  padding: 2px;
+}
+
+.groupBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.groupBlock + .groupBlock {
+  margin-top: 4px;
 }
 
 .groupLabel {
   position: sticky;
   top: 0;
   z-index: 1;
-  margin: 6px 2px 2px;
-  padding: 4px 6px;
+  margin: 2px 0 3px;
+  padding: 5px 8px 3px;
   color: var(--color-text-4);
   background: var(--color-bg-2);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  font-weight: 590;
+  letter-spacing: 0.01em;
 }
 
 .tabs {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 0 2px;
+  gap: 1px;
+  margin: 0;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--color-fill-2);
 }
 
 .tab {
+  flex: 1 1 0;
   border: 0;
-  border-radius: 999px;
-  padding: 4px 11px;
+  border-radius: 6px;
+  padding: 5px 8px;
   background: transparent;
   color: var(--color-text-3);
   font: inherit;
   font-size: 11px;
+  font-weight: 500;
   letter-spacing: -0.01em;
   cursor: pointer;
   transition:
     background 140ms ease,
-    color 140ms ease;
+    color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .tab:hover {
   color: var(--color-text-1);
-  background: var(--color-fill-2);
 }
 
 .tabActive {
-  background: rgba(var(--primary-6), 0.1);
-  color: rgb(var(--primary-6));
+  background: var(--color-bg-2);
+  color: var(--color-text-1);
   font-weight: 600;
+  box-shadow: 0 0.5px 1px color-mix(in srgb, var(--color-text-1) 12%, transparent);
 }
 
 .search {
   flex: none;
-  margin: 0 2px;
+  margin: 0;
 }
 
 .search :global(.arco-input-inner-wrapper) {
@@ -75,39 +91,76 @@
 
 .listScroll {
   display: block;
-  flex: none;
-  height: 168px;
-  max-height: 168px;
+  flex: 1 1 auto;
+  height: 220px;
+  max-height: 220px;
   overflow-x: hidden;
   overflow-y: auto;
-  padding-right: 2px;
+  padding-right: 0;
+  scrollbar-gutter: auto;
 }
 
 .skillItem {
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  grid-template-rows: auto auto;
+  align-items: center;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  border-radius: 10px;
+  gap: 2px 8px;
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 4px 7px 8px;
+  color: var(--color-text-2);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.skillItemWithAction {
+  grid-template-columns: minmax(0, 1fr) auto 14px;
+}
+
+.skillItem:hover {
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+}
+
+.skillItemSelected,
+.skillItemSelected:hover {
+  color: var(--color-text-1);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 8%, transparent);
+}
+
+.skillItem.skillItemSelected:hover {
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, transparent);
 }
 
 .skillText {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 3px;
-  overflow: hidden;
+  display: contents;
 }
 
 .skillText strong {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
   overflow: hidden;
+  color: var(--color-text-1);
+  font-size: 12px;
+  font-weight: 590;
+  letter-spacing: -0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .skillText small {
   display: flex;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
   align-items: center;
   gap: 6px;
   overflow: hidden;
@@ -117,28 +170,12 @@
 }
 
 .skillDesc {
-  display: -webkit-box;
+  display: block;
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
   text-overflow: ellipsis;
-  word-break: break-word;
-}
-
-.metaDiamond {
-  display: inline-block;
-  width: 4px;
-  height: 4px;
-  flex: none;
-  border-radius: 0.5px;
-  background: linear-gradient(
-    135deg,
-    rgba(var(--primary-6), 0.5),
-    rgba(var(--primary-6), 0.18)
-  );
-  transform: rotate(45deg);
+  white-space: nowrap;
 }
 
 .sourceBadge {
@@ -174,24 +211,56 @@
   white-space: nowrap;
 }
 
-.checkSlot {
+.checkMark {
   display: grid;
-  width: 16px;
-  height: 16px;
+  grid-column: 2;
+  grid-row: 1;
+  width: 14px;
+  height: 14px;
   flex: none;
   place-items: center;
-  margin-top: 1px;
+  margin: 0;
   color: rgb(var(--primary-6));
+  font-style: normal;
+  opacity: 0;
+  transform: scale(0.92);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.checkMark svg {
+  display: block;
+}
+
+.checkMarkOn {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .checkMark,
+  .skillItem,
+  .tab {
+    transition: none;
+  }
+}
+
+.skillItemWithAction .checkMark {
+  grid-column: 3;
 }
 
 .inlineAction {
+  grid-column: 2;
+  grid-row: 1;
   flex: none;
-  margin-left: auto;
-  padding: 3px 7px;
-  border-radius: 7px;
+  margin: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
   color: var(--color-text-3);
   font-size: 10px;
   font-style: normal;
+  white-space: nowrap;
   cursor: pointer;
   transition:
     color 140ms ease,
@@ -261,18 +330,23 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 2px 8px 0;
-  color: var(--color-text-3);
+  padding: 1px 8px 0;
+  color: var(--color-text-4);
   font-size: 11px;
+  letter-spacing: -0.01em;
 }
 
 .selectedHint button {
   border: 0;
   background: transparent;
-  color: rgb(var(--primary-6));
+  color: var(--color-text-3);
   font: inherit;
   font-size: 11px;
   cursor: pointer;
+}
+
+.selectedHint button:hover {
+  color: var(--color-text-1);
 }
 
 .menuFooter {
