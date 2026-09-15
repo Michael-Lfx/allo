@@ -33,16 +33,25 @@ use nomifun_mcp::{McpConfigService, McpConnectionTestService, McpOAuthService};
 /// Read-only Skill catalog over the system skill corpus.
 ///
 /// `source` / `compatibility_status` are derived until the Agent Store
-/// Importer/PluginSnapshot layer lands (roadmap Phase 1): builtin skills map
-/// to `compatible`, custom/extension content to `compatible-with-adapter`.
 #[derive(Clone)]
 pub struct AppServerSkillCatalog {
     paths: SkillPaths,
+    /// Marketplace icon resolver for installed products (installed panel).
+    assets: Option<crate::app_server_entry_assets::AppServerEntryAssets>,
 }
 
 impl AppServerSkillCatalog {
     pub fn new(paths: SkillPaths) -> Self {
-        Self { paths }
+        Self { paths, assets: None }
+    }
+
+    /// Wire marketplace icon resolution (composition root).
+    pub fn with_assets(
+        mut self,
+        assets: crate::app_server_entry_assets::AppServerEntryAssets,
+    ) -> Self {
+        self.assets = Some(assets);
+        self
     }
 
     async fn list_items(&self) -> Result<Vec<SkillListItem>, AppError> {
@@ -50,9 +59,22 @@ impl AppServerSkillCatalog {
             .await
             .map_err(|error| AppError::Internal(format!("list agent-store skills: {error}")))
     }
+
+    /// Avatar URL for one skill: marketplace products borrow their market
+    /// entry icon; builtin / user skills have none.
+    async fn avatar_for(&self, location: &str) -> Option<String> {
+        let assets = self.assets.as_ref()?;
+        let (snapshot_id, slug) = managed_snapshot_provenance(&self.paths, Path::new(location))?;
+        assets.avatar_for_snapshot_slug(&snapshot_id, Some(&slug)).await
+    }
 }
 
-fn skill_summary(item: SkillListItem, origin: SkillOrigin, writable: bool) -> AppServerSkillSummary {
+fn skill_summary(
+    item: SkillListItem,
+    origin: SkillOrigin,
+    writable: bool,
+    avatar_url: Option<String>,
+) -> AppServerSkillSummary {
     let (source, compatibility) = match item.source {
         SkillSource::Builtin => ("builtin", AppServerCompatibilityStatus::Compatible),
         SkillSource::Extension => ("extension", AppServerCompatibilityStatus::CompatibleWithAdapter),
@@ -75,23 +97,41 @@ fn skill_summary(item: SkillListItem, origin: SkillOrigin, writable: bool) -> Ap
         compatibility_status: compatibility,
         enabled: true,
         required_connectors: Vec::new(),
+        avatar_url,
     }
+}
+
+/// Marketplace provenance of an installed skill, read from its on-disk
+/// location (`{user_skills_dir}/agent-store/<snapshot_id>/<slug>`):
+/// `Some((snapshot_id, slug))` for a market product, `None` for builtin and
+/// user skills (which have no marketplace entry to borrow an icon from).
+fn managed_snapshot_provenance(
+    paths: &SkillPaths,
+    location: &Path,
+) -> Option<(String, String)> {
+    let relative = location.strip_prefix(&paths.user_skills_dir).ok()?;
+    let mut components = relative.components();
+    let marker = components.next()?.as_os_str().to_str()?;
+    if marker != "agent-store" {
+        return None;
+    }
+    let snapshot_id = components.next()?.as_os_str().to_str()?.to_owned();
+    let slug = components.next()?.as_os_str().to_str()?.to_owned();
+    Some((snapshot_id, slug))
 }
 
 #[async_trait]
 impl SkillCatalogProvider for AppServerSkillCatalog {
     async fn list(&self) -> Result<Vec<AppServerSkillSummary>, AppError> {
-        Ok(self
-            .list_items()
-            .await?
-            .into_iter()
-            .map(|item| {
-                let origin = skill_service::skill_origin_of(&self.paths, Path::new(&item.location));
-                let writable =
-                    skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
-                skill_summary(item, origin, writable)
-            })
-            .collect())
+        let mut out = Vec::new();
+        for item in self.list_items().await? {
+            let origin = skill_service::skill_origin_of(&self.paths, Path::new(&item.location));
+            let writable =
+                skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
+            let avatar_url = self.avatar_for(&item.location).await;
+            out.push(skill_summary(item, origin, writable, avatar_url));
+        }
+        Ok(out)
     }
 
     async fn get(&self, id: &str) -> Result<AppServerSkillDetail, AppError> {
@@ -104,6 +144,7 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
         let origin = skill_service::skill_origin_of(&self.paths, Path::new(&item.location));
         let writable =
             skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
+        let avatar_url = self.avatar_for(&item.location).await;
         // Public body is a bounded, trimmed summary. Internal routing rules,
         // credentials and the full raw Markdown stay behind the seam.
         //
@@ -117,7 +158,7 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
         .map(|body| body.trim().chars().take(1200).collect::<String>())
         .filter(|body| !body.is_empty());
         Ok(AppServerSkillDetail {
-            summary: skill_summary(item, origin, writable),
+            summary: skill_summary(item, origin, writable, avatar_url),
             mode: "store-agent".into(),
             invocation_policy: "model-auto".into(),
             instructions_summary,
@@ -180,6 +221,7 @@ fn connector_summary(
     enabled: bool,
     transport: &McpTransport,
     last_test: McpServerStatus,
+    avatar_url: Option<String>,
 ) -> AppServerConnectorSummary {
     let (kind, transport_summary) = transport_kind(transport);
     let auth_mode = auth_mode_for(transport);
@@ -192,6 +234,7 @@ fn connector_summary(
         auth_mode: auth_mode.to_owned(),
         enabled,
         status: summary_status(enabled, last_test, auth_mode),
+        avatar_url,
     }
 }
 
@@ -218,6 +261,8 @@ pub struct AppServerConnectorCatalog {
     config: McpConfigService,
     connection_test: McpConnectionTestService,
     oauth: McpOAuthService,
+    /// Marketplace icon resolver for connectors installed from a market.
+    assets: Option<crate::app_server_entry_assets::AppServerEntryAssets>,
 }
 
 impl AppServerConnectorCatalog {
@@ -226,7 +271,16 @@ impl AppServerConnectorCatalog {
         connection_test: McpConnectionTestService,
         oauth: McpOAuthService,
     ) -> Self {
-        Self { config, connection_test, oauth }
+        Self { config, connection_test, oauth, assets: None }
+    }
+
+    /// Wire marketplace icon resolution (composition root).
+    pub fn with_assets(
+        mut self,
+        assets: crate::app_server_entry_assets::AppServerEntryAssets,
+    ) -> Self {
+        self.assets = Some(assets);
+        self
     }
 
     async fn get_server(&self, connector_id: &str) -> Result<nomifun_api_types::McpServerResponse, AppError> {
@@ -248,20 +302,24 @@ impl AppServerConnectorCatalog {
 impl ConnectorCatalogProvider for AppServerConnectorCatalog {
     async fn list(&self) -> Result<Vec<AppServerConnectorSummary>, AppError> {
         let servers = self.config.list_servers().await.map_err(AppError::from)?;
-        Ok(servers
-            .into_iter()
-            .map(|server| {
-                let id = server.mcp_server_id.as_str().to_owned();
-                connector_summary(
-                    id,
-                    server.name,
-                    server.description,
-                    server.enabled,
-                    &server.transport,
-                    server.last_test_status,
-                )
-            })
-            .collect())
+        let mut out = Vec::with_capacity(servers.len());
+        for server in servers {
+            let id = server.mcp_server_id.as_str().to_owned();
+            let avatar_url = match self.assets.as_ref() {
+                Some(assets) => assets.avatar_for_mcp_server(&id).await,
+                None => None,
+            };
+            out.push(connector_summary(
+                id,
+                server.name,
+                server.description,
+                server.enabled,
+                &server.transport,
+                server.last_test_status,
+                avatar_url,
+            ));
+        }
+        Ok(out)
     }
 
     async fn get(&self, id: &str) -> Result<AppServerConnectorDetail, AppError> {
@@ -269,6 +327,10 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
         let connector_id = server.mcp_server_id.as_str().to_owned();
         let transport = server.transport;
         let auth_mode = auth_mode_for(&transport);
+        let avatar_url = match self.assets.as_ref() {
+            Some(assets) => assets.avatar_for_mcp_server(&connector_id).await,
+            None => None,
+        };
         let summary = connector_summary(
             connector_id.clone(),
             server.name.clone(),
@@ -276,6 +338,7 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
             server.enabled,
             &transport,
             server.last_test_status,
+            avatar_url,
         );
         let auth_status = if auth_mode == "oauth" {
             self.oauth_authenticated(&transport).await.map(|authenticated| AppServerOAuthStatusView {

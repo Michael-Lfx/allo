@@ -751,6 +751,33 @@ pub struct AppServerMarketplaceRefreshResult {
 
 /// One store item: a marketplace entry projected into the unified store
 /// catalog with its display metadata (plugin.json fidelity) plus the current
+/// `config/get-mcp` response: the declaration file's **raw text**.
+///
+/// The one read face that returns the file verbatim, and it exists for exactly
+/// one purpose — the settings dialog's file editor. It is deliberately a
+/// separate method rather than another field on `config/get`: that view
+/// describes the file's *verdict* (`servers` / `rejected` / `error`) and carries
+/// no `env` / `headers` value, and every caller of `config/get` — the whole
+/// settings dialog, on open — would otherwise receive the text whether or not it
+/// asked.
+///
+/// `exists: false` + `source: None` is the normal answer for a host that never
+/// created the file. The text comes back whether or not it parses: editing a
+/// broken file is the point of the editor, and `config/get` already reports the
+/// parse verdict next to it.
+///
+/// **This is the one place a declaration's own values reach a client** (`21`
+/// D17, superseding the blanket "values never cross" clause of `05` §4.10): the
+/// operator is editing their own file on their own machine, and a read-only
+/// viewer cannot edit. The read-modify-write loop here is therefore explicit
+/// rather than accidental, and it is gated exactly like the write face.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerMcpSourceView {
+    pub exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
 /// local installation state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerStoreItem {
@@ -776,6 +803,15 @@ pub struct AppServerStoreItem {
     pub tags: Vec<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quick_prompts: Vec<AppServerLocalizedText>,
+    /// The market entry's own `publishedAt`, `YYYY-MM-DD` (`18` §3).
+    ///
+    /// A *calendar date*, not an instant, and never a derived one: a host that
+    /// has no date for this entry omits the field rather than guessing from the
+    /// import time or the snapshot's `added_at`. Absent therefore means "this
+    /// market did not declare a date", which is why the client must not render
+    /// a placeholder for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
     /// Public avatar URL (store asset endpoint); relative to the API host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,

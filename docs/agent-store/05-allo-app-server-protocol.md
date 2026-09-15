@@ -1,7 +1,14 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 日期：2026-09-15（2026-09-15：安装器五动词**真正释放/移动运行时产物**并回报结构化 `outcomes`；协议指纹 `2026-09-14` → `2026-09-15`，无方法增删）
+> 日期：2026-09-18（2026-09-18：`mcp.json` 补上读面 `config/get-mcp`——编辑器无法编辑它看不见
+> 的文件，而「凭据值不上 wire」这条从此精确化为「**verdict 视图**不含取值，文件文本只经这
+> 一个按需读面出去」；指纹 `2026-09-17` → `2026-09-18`。2026-09-17：`mcp.json` 新增写面
+> `config/set-mcp` / `config/set-mcp-enabled`——写前用同一解析器验、失败零写入、开关是文本级
+> 最小编辑；指纹 `2026-09-16` → `2026-09-17`，**新增两个方法**，无 HTTP 绑定。2026-09-16：
+> `store/list` 条目新增 `published_at`（市场声明的发布日期，`YYYY-MM-DD`，绝不派生）；指纹
+> `2026-09-15` → `2026-09-16`。2026-09-15：安装器五动词**真正释放/移动运行时产物**并回报结构化
+> `outcomes`；协议指纹 `2026-09-14` → `2026-09-15`，无方法增删）
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-allo-runtime-adapter.md`
 > 目标：建立 SDK、CLI、MCP、Web/Flowy 的唯一公共兼容边界
 
@@ -594,6 +601,7 @@ items[] {
   description,
   avatar_url,                          # store 资产端点相对 URL
   version, source_kind,
+  published_at,                        # 市场声明的发布日期 YYYY-MM-DD，缺席=未声明（§5 规则）
   installed,                           # provenance 下快照组件已注册进运行时
   update_available,                    # 条目可用版本 ≠ 已装快照版本
   snapshot_id, installed_version       # 已装时非空
@@ -612,6 +620,12 @@ items[] {
   jpeg/webp/gif）；
 - `installed` 由 `marketplace_id + entry_name` provenance 查快照，再查组件
   `installed=1`；`update_available` = 快照版本 ≠ 条目版本；
+- `published_at` 是**市场自己声明的**发布日期（`18` §4.2）：服务端只接受严格
+  `YYYY-MM-DD` 且月/日真实存在，其余一律丢弃且**不阻断条目**；**绝不派生**
+  （不用导入时间 / 快照 `added_at` / 市场刷新时间顶上）。缺席 = 这个市场没有
+  声明日期，客户端不得渲染占位。真实市场（普查 2026-09-10）尚未携带该字段，
+  因此 WebUI 的「最新」排序在该 kind 一条日期都没有时**不出现**——没有数据的
+  排序控件是死控件；
 - `store/install-entry` 幂等且**版本感知**：wire 上**没有**更新动词
   （`store/update-entry` 不存在），所以客户端唯一的升级路径就是「卸载，再安装
   一次」。因此：条目**已安装** → 仍是 no-op（`reused=true`）——在这里重新导入
@@ -740,16 +754,53 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
 - `default_model` 无声明时是显式 `null`，与「尚未读取」区分。
 - `providers` 是**文件里声明的事实**（config-only 投影，与 `models/list` 的 config
   分支同源），不含 `api_key` / `base_url`，也不含已注册 provider 行。
-- `mcp` 是 `~/.agent-store/mcp.json` 的**只读投影**（§4.5.1）：`servers` 是按 key 排序的
+- `mcp` 是 `~/.agent-store/mcp.json` 的投影（§4.5.1）：`servers` 是按 key 排序的
   已接受条目（`transport` ∈ `stdio|http|sse`），`rejected` 是逐条目拒绝的原因（**未知**
   字段、放错传输的字段、超时越界、非法 key、结构冲突），`error` 则是**整份文件**读不成
   声明时的原因（JSON 非法、顶层不是对象）——没有它，一个写坏的文件与一个空文件在界面上
   完全一样。`mcp.json` 缺失时该字段是显式 `null`；文件存在但读不动时 `exists:true` + 空
   列表 + `error`。`env` / `headers` 的**值**（含明文凭据）永不进入此视图，只有 key 名会；
   声明的 `cwd`、`bearerTokenEnvVar` 与工具过滤条目同样**不上 wire**（视图只报 `name` /
-  `transport` / `enabled`）。该文件**不在** `config/set` 的白名单里——它只能由用户手写，
-  `config/set` 只负责把写完后的投影读回来；WebUI 设置页的 `mcp` 分区就是这段投影的
-  **只读**渲染（含逐条 `rejected` 原因），页面上没有任何写控件。
+  `transport` / `enabled`）。**这份 verdict 视图仍然不含任何凭据值**；文件自己的文本只经
+  **一个**读面 `config/get-mcp` 出去（见下），它是编辑器专用、由编辑器按需调用——不是把
+  整份文件塞进每次 `config/get`。该文件仍**不在** `config/set` 的白名单里——它有自己的
+  读/写方法（见下），因为它们写的是**另一份文件**、失败原因必须带行列号、响应要是 `mcp`
+  视图而不是 config.toml 视图。
+- **`mcp.json` 的读/写面（读 `2026-09-18`、写 `2026-09-17` 加入）**：与 `config/*` 同口径
+  ——**仅 WebSocket、无 HTTP 绑定、不进 SDK 包**，走同一条 `require_ready` owner 闸门，
+  **没有任何路径参数**（文件由宿主自己的配置位置 + 同级 `mcp.json` 推出，读写面共用同一个
+  `mcp_declaration_path`，不可能指向两份文件）。
+
+  ```text
+  WS   config/get-mcp          {}
+  WS   config/set-mcp          { "source": "<mcp.json 全文>" }
+  WS   config/set-mcp-enabled  { "name": "<server key>", "enabled": true | false }
+  ```
+
+  - `config/get-mcp` 返回 `{ exists, source? }`：**唯一**把声明的取值交给客户端的读面，
+    存在的唯一理由是**编辑器无法编辑它看不见的文件**（操作者编辑的是自己机器上的自己那份
+    文件）。它刻意不做成 `config/get` 的又一个字段——那个视图描述文件的**裁决**，而每个
+    设置对话框一打开就会调它。文件缺失是 `exists:false`（正常答案，与 `config/get` 一致）；
+    读不动是错误而不是空串——**静默从 "" 开始的编辑器会覆盖一个只是读不到的文件**。文本
+    无论能否解析都返回：编辑一个写坏的文件正是编辑器的用途，而 `config/get` 会在旁边报出
+    解析裁决；
+  - `config/set-mcp` 写**全文**，但**先用自己的解析器验一遍**：解析不过就**一个字节都不写**，
+    把解析器原始原因（含行列号）回给调用方。这是写面与读面的关键差别——读面 fail-open
+    （坏文件照样投影出来给你看），写面 **fail-closed**（不接受制造出那个状态的请求）；
+  - `config/set-mcp-enabled` 只改那一条目的 `enabled` 成员（**不是** `disabled`：那个键是
+    未知字段，会让整条被拒），且是**文本级最小编辑**：值就地替换；成员缺失且要禁用时按文件
+    自己的换行与缩进插入；成员缺失且要启用是**零改动**（缺省即启用）。文件是手写的，开关没有
+    资格重新缩进、重排键或删掉用户写的行——与 `config/set` 用 `toml_edit` 是同一个理由。
+    定位不明确时**拒绝**而不是悄悄重排版；无字节变化时**根本不写盘**（重复调用不动 mtime）；
+  - 只允许切换**已接受**的条目：被解析器拒绝过的条目报 `mcp_server_rejected`——对一条宿主
+    根本不读的条目回「切换成功」是最坏的答复。`mcp.json` 不存在时报 `mcp_server_not_declared`；
+  - 两者都返回**写后重读**的 `AppServerConfigView`（与 `config/set` 同一条落点规则：调用方
+    看到的是磁盘上的内容，不是请求的回声）；
+  - **稳定错误码**：`mcp_source_invalid`、`mcp_server_not_declared`、`mcp_server_rejected`、
+    `mcp_source_not_surgically_editable`、`mcp_write_failed`；
+  - **代价**：这条写面让 WebUI 的一个请求可以导致宿主启动本地命令（`stdio` 声明）。防线全部
+    复用既有面：owner 闸门、仅回环 WS、无路径参数、同目录临时文件 + `rename` 原子写；界面上
+    `adopted` 三态照旧显式呈现，回答「这份文件在本机到底有没有被读」。
 - **`adopted` 描述宿主，不描述文件**（2026-09-14 加入，指纹随之 bump 到 `2026-09-14`）：
   `servers` / `rejected` / `error` 都只说这份**文件**里有什么，而读盘是无条件的——宿主没开
   `--adopt-store-mcp-declarations` 时也照样投影。于是「宿主根本不读这份文件」与「宿主把
@@ -758,7 +809,9 @@ WS   config/set  { "default_model": "<provider_key>/<model>" }
   构建）——不折叠成 `false`，因为 `apps/agent-store` 在该字段存在之前就已采用声明，折叠
   会把「不知道」写成「没采用」。`exists:true, adopted:false` 是合法且有意义的组合。
 
-`config/set` 只接受白名单字段（当前仅 `default_model`）：请求里出现 `api_key` /
+`config/set` 只接受白名单字段（`default_model` / `memory.distill_enabled` / `tools.*`——
+本文档此处原先写作「当前仅 `default_model`」，与代码早已不符，2026-09-17 一并订正）：
+请求里出现 `api_key` /
 `base_url` / 路径等**任何**其他键都是 `invalid_request`（不是静默忽略）；值为空、
 不含 `/`、或 provider key 不在 `[providers.<key>]` 中同样被拒——**运行时解析不了
 的默认值不写**（未声明的 *model* 允许，运行时按请求注册它）。
@@ -1357,4 +1410,24 @@ execution/session/attempt ID。事件流 lag 时发送
 
 - 等级：P1
 - 断言：SDK 使用稳定 error code，不依赖 message 文本；retryable 语义正确
+
+#### TC-API-005：MCP 声明文件的读/写面（2026-09-17 / 2026-09-18 加入）
+
+- 等级：P1（宿主管理面：仅 WS、无 HTTP 绑定、不进 SDK 包）
+- 操作与断言（`05` §4.10、`21` D17）：
+  1. `config/get-mcp`：文件缺失 → `exists:false` 且无 `source`；**读不动 → 报错，绝不回空串**
+     （静默从 `""` 开始的编辑器会覆盖一个只是读不到的文件）；文本能否解析**都要**返回；
+  2. `config/set-mcp` **fail-closed**：写一段解析不过的文本 → 稳定码 `mcp_source_invalid`、
+     message 带解析器自己的行列号，且**断言磁盘字节未变**；写合法文本 → 响应是**写后重读**的
+     `config/get` 视图；
+  3. `config/set-mcp-enabled` 是**文本级最小编辑**：值就地替换；成员缺失且要禁用 → 按文件自己的
+     换行与缩进插入 `"enabled": false`；成员缺失且要启用 → **零改动**；重复同一请求 → **字节与
+     mtime 都不变**；定位不明确 → `mcp_source_not_surgically_editable`（不重排版）；
+  4. 只接受**被解析器接受**的条目：`{}`（无传输）或含未知字段 `disabled` 的条目 →
+     `mcp_server_rejected`；不存在的 key → `mcp_server_not_declared`；
+  5. `config/get.mcp` 的 verdict 视图**仍不含**任何 `env` / `headers` 取值（原文只经
+     `config/get-mcp` 出去）；
+  6. 三个方法都**没有路径参数**：没有任何请求能指定被读写的文件。
+- 自动化落点：`nomifun-api-types --lib mcp_declarations`（30 例，含 7 例扫描器/拒绝语义）、
+  `nomifun-app-server --lib`（123 例）；见 `16` §8.3。
 

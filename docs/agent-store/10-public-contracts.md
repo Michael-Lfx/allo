@@ -177,6 +177,25 @@ preset_disabled           # 解析出的目标 Preset 处于 disabled 状态
 agent_not_installed       # 目标 AgentDefinition 尚未安装（无 preset）
 ```
 
+宿主管理面专有（`config/*` · `skill/*` · MCP 声明；`mcp_*` 五条 2026-09-17 / 2026-09-18 加入）：
+
+```text
+config_unavailable        # 宿主配置文件读不动（不是「文件没写」）
+invalid_request           # 白名单外的键 / 缺键 / 值不合法（含 config/set-mcp-enabled 的非法参数）
+unsupported_operation     # 该来源只读（skill 写面）
+conflict                  # 同名但来源不同，不静默覆盖（skill 写面）
+mcp_source_invalid        # config/set-mcp 的文本解析不过（原因含行列号）；零写入
+mcp_server_not_declared   # 该 server key 不在声明文件里（含文件不存在）
+mcp_server_rejected       # 条目被解析器拒绝（未知字段 / 放错传输 / 结构冲突），不「切换成功」
+mcp_source_not_surgically_editable  # 开关无法在不重排版的前提下定位成员；拒绝而非改写格式
+mcp_write_failed          # 读写声明文件失败（IO / 权限）
+```
+
+`mcp_*` 的语义（`21` D17、`05` §4.10）：**读面 fail-open**（坏文件照样投影出来给你看），
+**写面 fail-closed**（不接受制造出坏状态的请求，一个字节都不写）。因此 `mcp_source_invalid`
+的 `message` 必须带解析器自己的行列号，且**磁盘零变化**——「切换成功但文件没变」是最坏的
+答复，`mcp_server_rejected` / `mcp_source_not_surgically_editable` 就是为它单列的。
+
 `import_source_not_found`：`import/run` 的本地来源目录不存在或不可读（HTTP 404，对应 `NotFound`）；`import_blocked` / `import_failed`：快照因路径安全、清单身份缺失或 digest 冲突而阻断，或导入器内部失败。阻断原因以结构化 `ImportResult.errors` 返回，错误文本只含清单相对值与原因码，**不得包含绝对来源路径或凭据**（02 §9）。
 
 错误响应不得包含真实凭据、内部路径、内部 ID 或未脱敏的上游响应。

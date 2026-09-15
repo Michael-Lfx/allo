@@ -92,6 +92,13 @@ pub trait IPluginSnapshotRepository: Send + Sync {
         entry_name: &str,
     ) -> Result<Option<PluginSnapshotRow>, DbError>;
 
+    /// Snapshot that registered the given MCP server row (connector component
+    /// reverse lookup, so a catalog row can borrow its marketplace icon).
+    async fn find_snapshot_by_mcp_server_id(
+        &self,
+        mcp_server_id: &str,
+    ) -> Result<Option<PluginSnapshotRow>, DbError>;
+
     /// Persists a snapshot and its components atomically.
     async fn insert_snapshot_with_components(
         &self,

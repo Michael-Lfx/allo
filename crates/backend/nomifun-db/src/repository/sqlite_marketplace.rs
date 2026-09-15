@@ -304,6 +304,9 @@ mod tests {
             description: Some(format!("{name} plugin")),
             keywords: vec!["demo".into()],
             category: Some("dev".into()),
+            // A real value, so the `entries_json` round-trip covers the field
+            // rather than only its absence.
+            published_at: Some("2026-07-30".into()),
             localized: std::collections::BTreeMap::new(),
             strict: false,
             blocked_reason: None,

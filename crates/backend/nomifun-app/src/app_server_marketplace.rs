@@ -75,6 +75,13 @@ pub struct ScannedEntry {
     pub description: Option<String>,
     pub keywords: Vec<String>,
     pub category: Option<String>,
+    /// The market's own `publishedAt`, normalized to `YYYY-MM-DD` (doc `18`
+    /// §3). Dropped unless it is exactly a calendar date: this is third-party
+    /// data, and a bad date must not cost the entry its listing — an entry that
+    /// cannot be listed cannot be installed either. So the stored value always
+    /// means "the market declared this date", never "the market declared
+    /// something".
+    pub published_at: Option<String>,
     /// Localized `<field>_<lang>` variants from the manifest row, carried
     /// through to the registry and the public projection (doc `18` §4 /
     /// D8=A). The reader picks the language, never the server.
@@ -109,6 +116,53 @@ pub(crate) fn strict_entry_block(strict: bool, plugin_json_present: bool) -> Opt
          但该来源缺少此文件（02 §11.1 阻断规则）"
             .to_owned(),
     )
+}
+
+/// The manifest row's own `publishedAt`, normalized to `YYYY-MM-DD`.
+///
+/// Read once, where the other per-entry manifest fields are read, so every
+/// probe agrees on what counts: a calendar date, or nothing. See
+/// [`ScannedEntry::published_at`] for why a bad value is dropped instead of
+/// failing the row.
+pub(crate) fn published_at_of(item: &serde_json::Value) -> Option<String> {
+    let raw = item.get("publishedAt").and_then(|value| value.as_str())?.trim();
+    is_calendar_date(raw).then(|| raw.to_owned())
+}
+
+/// `YYYY-MM-DD` with a real month/day pair, checked without a date crate: the
+/// manifest value is a *calendar date*, not an instant, and `18` §3 defines the
+/// field that way (an RFC 3339 timestamp is a different value and is dropped).
+fn is_calendar_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    if !bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let (Ok(year), Ok(month), Ok(day)) = (
+        value[0..4].parse::<u32>(),
+        value[5..7].parse::<u32>(),
+        value[8..10].parse::<u32>(),
+    ) else {
+        return false;
+    };
+    if year == 0 {
+        return false;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=max_day).contains(&day)
 }
 
 /// Probe a local directory and derive its market kind + entries.
@@ -162,6 +216,9 @@ pub fn probe_directory(root: &Path) -> Result<(MarketKind, Vec<ScannedEntry>), A
                 description: None,
                 keywords: vec![],
                 category: None,
+                // A plain collection has no manifest row, hence no
+                // `publishedAt` either.
+                published_at: None,
                 localized: BTreeMap::new(),
                 // A plain collection has no manifest row, hence no `strict`
                 // declaration to honour.
@@ -195,6 +252,7 @@ fn scan_root_as_entry(root: &Path) -> ScannedEntry {
         description: None,
         keywords: vec![],
         category: None,
+        published_at: None,
         localized: BTreeMap::new(),
         strict: false,
         blocked_reason: None,
@@ -222,6 +280,7 @@ fn probe_connector_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
             description: item.get("description").and_then(|v| v.as_str()).map(str::to_owned),
             keywords: vec![],
             category: None,
+            published_at: published_at_of(item),
             localized: collect_localized_variants(item),
             // `strict` is a plugin-market field (`02` §8); connector rows do
             // not declare it and are never gated by it.
@@ -279,6 +338,7 @@ fn probe_skill_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {    l
                 .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default(),
             category: item.get("category").and_then(|v| v.as_str()).map(str::to_owned),
+            published_at: published_at_of(item),
             localized: collect_localized_variants(item),
             // Skill rows declare no `strict` (`02` §8): the rule is about a
             // plugin source carrying its own plugin.json.
@@ -350,6 +410,7 @@ fn probe_plugin_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
                 .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default(),
             category: item.get("category").and_then(|v| v.as_str()).map(str::to_owned),
+            published_at: published_at_of(item),
             localized: collect_localized_variants(item),
             strict,
             blocked_reason,
@@ -582,6 +643,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                 description: entry.description,
                 keywords: entry.keywords,
                 category: entry.category,
+                published_at: entry.published_at,
                 localized: entry.localized,
                 strict: entry.strict,
                 blocked_reason: entry.blocked_reason,
@@ -836,6 +898,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                     description: entry.description,
                     keywords: entry.keywords,
                     category: entry.category,
+                    published_at: entry.published_at,
                     localized: entry.localized,
                     strict: entry.strict,
                     blocked_reason: entry.blocked_reason,
@@ -1338,6 +1401,96 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `18` §3: the manifest field is a *calendar date*. A timestamp — what an
+    /// RSS-style feed would carry — is a different value and is dropped rather
+    /// than truncated to its date part.
+    #[test]
+    fn published_at_accepts_calendar_dates_only() {
+        for good in ["2026-07-30", "2024-02-29", "2000-02-29", "1999-12-31"] {
+            assert!(is_calendar_date(good), "{good} must be accepted");
+        }
+        for bad in [
+            "",
+            "2026-7-30",
+            "2026-07-3",
+            "2026-13-01",
+            "2026-00-10",
+            "2025-02-29",
+            "1900-02-29",
+            "2026-04-31",
+            "0000-01-01",
+            "2026-07-30T00:00:00Z",
+            "2026/07/30",
+            "abcd-ef-gh",
+        ] {
+            assert!(!is_calendar_date(bad), "{bad} must be refused");
+        }
+    }
+
+    /// Only a declared `publishedAt` that is a calendar date survives; absent,
+    /// mistyped and malformed values all become `None` instead of costing the
+    /// row its listing (an entry that cannot be listed cannot be installed).
+    #[test]
+    fn published_at_of_reads_only_a_declared_calendar_date() {
+        let read = |value: serde_json::Value| published_at_of(&value);
+        assert_eq!(
+            read(serde_json::json!({ "publishedAt": "2026-07-30" })).as_deref(),
+            Some("2026-07-30")
+        );
+        assert_eq!(
+            read(serde_json::json!({ "publishedAt": "  2026-07-30  " })).as_deref(),
+            Some("2026-07-30"),
+            "surrounding whitespace is trimmed; the value is not reinterpreted"
+        );
+        assert_eq!(read(serde_json::json!({})), None);
+        assert_eq!(read(serde_json::json!({ "publishedAt": null })), None);
+        assert_eq!(read(serde_json::json!({ "publishedAt": 20260730 })), None);
+        assert_eq!(read(serde_json::json!({ "publishedAt": "2026-07-30T00:00:00Z" })), None);
+        assert_eq!(
+            read(serde_json::json!({ "published_at": "2026-07-30" })),
+            None,
+            "the manifest field is camelCase, like `strict` and `source`"
+        );
+    }
+
+    /// The probe reads the field where it reads the rest of the manifest row, so
+    /// it reaches the stored projection — and therefore `store/list`.
+    #[test]
+    fn probe_plugin_market_carries_declared_published_at() {
+        let dir = std::env::temp_dir().join(format!("as-mkt-pub-{}", nomifun_common::generate_id()));
+        write(
+            &dir.join(".codebuddy-plugin/marketplace.json"),
+            r#"{
+                "name": "experts",
+                "plugins": [
+                    { "name": "dated", "source": "./plugins/dated", "publishedAt": "2026-07-30" },
+                    { "name": "undated", "source": "./plugins/undated" },
+                    { "name": "broken", "source": "./plugins/broken", "publishedAt": "30/07/2026" }
+                ]
+            }"#,
+        );
+        for name in ["dated", "undated", "broken"] {
+            write(
+                &dir.join(format!("plugins/{name}/.codebuddy-plugin/plugin.json")),
+                r#"{ "name": "demo" }"#,
+            );
+        }
+        let (_, entries) = probe_directory(&dir).unwrap();
+        let by_name = |name: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .expect("entry must be listed")
+                .clone()
+        };
+        assert_eq!(by_name("dated").published_at.as_deref(), Some("2026-07-30"));
+        assert_eq!(by_name("undated").published_at, None);
+        let broken = by_name("broken");
+        assert_eq!(broken.published_at, None, "a malformed date is dropped");
+        assert!(broken.blocked_reason.is_none(), "and the entry stays installable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn derive_marketplace_id_uses_name_then_source() {
         assert_eq!(derive_marketplace_id(Some("Company Tools"), "/tmp/x"), "Company-Tools");
@@ -1421,6 +1574,7 @@ mod tests {
             description: Some("PDF helpers".into()),
             keywords: vec![],
             category: None,
+            published_at: None,
             localized: BTreeMap::from([(
                 "description_zh".to_owned(),
                 LocalizedVariant::Text("PDF 工具集".to_owned()),
@@ -1473,6 +1627,7 @@ mod tests {
             description: None,
             keywords: vec![],
             category: None,
+            published_at: None,
             localized: BTreeMap::new(),
             strict: false,
             blocked_reason: None,
