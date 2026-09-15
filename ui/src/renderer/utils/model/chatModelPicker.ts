@@ -40,8 +40,6 @@ export interface ChatModelOption {
   supportsVision: boolean;
   supportsTools: boolean;
   health?: ModelHealthStatus;
-  disabled?: boolean;
-  disabledReason?: 'vision_required';
 }
 
 export interface ChatModelPickerViewModel {
@@ -49,10 +47,6 @@ export interface ChatModelPickerViewModel {
   cloudModels: ChatModelOption[];
   otherProviderGroups: TaskModelGroup[];
 }
-
-export type ChatModelPickerOptions = {
-  hasImageAttachments?: boolean;
-};
 
 const isModelTrait = (value: ModelTrait, expected: ModelTrait): boolean => value === expected;
 
@@ -75,18 +69,13 @@ const familyOf = (provider: IProvider, detail: ProviderModelResponse | undefined
   return stringParam(detail?.params, FLOWY_CATALOG_FAMILY_PARAM) === 'auto' ? 'auto' : 'cloud';
 };
 
-const modelOption = (
-  provider: IProvider,
-  model: string,
-  options: ChatModelPickerOptions
-): ChatModelOption => {
+const modelOption = (provider: IProvider, model: string): ChatModelOption => {
   const detail = detailForModel(provider, model);
   const family = familyOf(provider, detail);
   const autoTier = family === 'auto' ? autoTierOf(stringParam(detail?.params, FLOWY_CATALOG_AUTO_TIER_PARAM)) : undefined;
   const traits = detail?.traits ?? [];
   const supportsVision = traits.some((trait) => isModelTrait(trait, 'vision_input'));
   const supportsTools = traits.some((trait) => isModelTrait(trait, 'function_calling'));
-  const hasImageAttachments = options.hasImageAttachments === true;
 
   return {
     key: compositeKey(provider.id, model),
@@ -103,38 +92,11 @@ const modelOption = (
     supportsVision,
     supportsTools,
     health: modelHealthOf(provider, model),
-    disabled: hasImageAttachments && !supportsVision,
-    disabledReason: hasImageAttachments && !supportsVision ? 'vision_required' : undefined,
-  };
-};
-
-/**
- * Apply the only option-level state that can change after the view model has
- * been built. Keeping this as a shallow update preserves catalog metadata
- * (especially Auto family/tier) when a provider snapshot is incomplete.
- */
-const withAttachmentRestriction = (
-  option: ChatModelOption,
-  options: ChatModelPickerOptions,
-): ChatModelOption => {
-  if (options.hasImageAttachments === undefined) return option;
-
-  const requiresVision = options.hasImageAttachments && !option.supportsVision;
-  const disabledForAnotherReason = option.disabled === true && option.disabledReason !== 'vision_required';
-  return {
-    ...option,
-    disabled: requiresVision || disabledForAnotherReason,
-    disabledReason: requiresVision
-      ? 'vision_required'
-      : option.disabledReason === 'vision_required'
-        ? undefined
-        : option.disabledReason,
   };
 };
 
 export const buildChatModelPickerViewModel = (
-  groups: readonly TaskModelGroup[],
-  options: ChatModelPickerOptions = {}
+  groups: readonly TaskModelGroup[]
 ): ChatModelPickerViewModel => {
   const autoModels: ChatModelOption[] = [];
   const cloudModels: ChatModelOption[] = [];
@@ -147,7 +109,7 @@ export const buildChatModelPickerViewModel = (
     }
 
     for (const model of group.models) {
-      const option = modelOption(group.provider, model, options);
+      const option = modelOption(group.provider, model);
       if (option.family === 'auto') {
         autoModels.push(option);
       } else {
@@ -166,24 +128,22 @@ export const buildChatModelPickerViewModel = (
 };
 
 export const allChatModelOptions = (
-  viewModel: ChatModelPickerViewModel,
-  options: ChatModelPickerOptions = {}
+  viewModel: ChatModelPickerViewModel
 ): ChatModelOption[] => [
-  ...viewModel.autoModels.map((option) => withAttachmentRestriction(option, options)),
-  ...viewModel.cloudModels.map((option) => withAttachmentRestriction(option, options)),
+  ...viewModel.autoModels,
+  ...viewModel.cloudModels,
   ...viewModel.otherProviderGroups.flatMap((group) =>
-    group.models.map((model) => modelOption(group.provider, model, options))
+    group.models.map((model) => modelOption(group.provider, model))
   ),
 ];
 
 export const findChatModelOption = (
   viewModel: ChatModelPickerViewModel,
   providerId?: string,
-  model?: string,
-  options: ChatModelPickerOptions = {}
+  model?: string
 ): ChatModelOption | undefined => {
   if (!providerId || !model) return undefined;
-  return allChatModelOptions(viewModel, options).find(
+  return allChatModelOptions(viewModel).find(
     (option) => option.provider.id === providerId && option.model === model
   );
 };

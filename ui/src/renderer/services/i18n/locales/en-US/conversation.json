@@ -1117,9 +1117,7 @@
       "cost": "Economy",
       "unknown": "Auto"
     },
-    "empty": "No models available",
-    "autoTextOnly": "Auto models currently support text only",
-    "visionRequired": "This model does not accept images"
+    "empty": "No models available"
   },
   "taskProfile": {
     "label": "Work mode",

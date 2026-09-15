@@ -121,7 +121,6 @@ const CHAT_PROBE_SCENARIOS = [
   'cloud-expanded',
   'cloud-short',
   'cloud-single',
-  'auto-image-disabled',
   'model-popup',
   'strategy-popup',
   'context-popup',
@@ -793,7 +792,6 @@ type ProbeChatControlRowProps = {
   state: 'collapsed' | 'expanded' | 'model-popup' | 'strategy-popup' | 'context-popup';
   strategy: 'auto' | 'cloud' | 'single';
   model: string;
-  hasImageAttachments?: boolean;
   sending?: boolean;
 };
 
@@ -803,7 +801,6 @@ const ProbeChatControlRow: React.FC<ProbeChatControlRowProps> = ({
   state,
   strategy,
   model,
-  hasImageAttachments = false,
   sending = false,
 }) => {
   const modelOverlayOpen = state === 'expanded' || state === 'model-popup';
@@ -814,7 +811,6 @@ const ProbeChatControlRow: React.FC<ProbeChatControlRowProps> = ({
       <AutoTierSelector
         options={CHAT_PROBE_PICKER.autoModels}
         selected={CHAT_PROBE_PICKER.autoModels[1]}
-        hasImageAttachments={hasImageAttachments}
         popupVisible={state === 'strategy-popup'}
         onPopupVisibleChange={() => undefined}
         className={strategyOverlayOpen ? 'sendbox-responsive-control-open' : undefined}
@@ -849,7 +845,6 @@ const ProbeChatControlRow: React.FC<ProbeChatControlRowProps> = ({
           <div className='chat-model-picker-slot' data-layout-slot='model'>
             <NomiModelSelector
               selection={chatProbeSelection(model)}
-              hasImageAttachments={hasImageAttachments}
               popupVisible={state === 'model-popup'}
               onPopupVisibleChange={() => undefined}
               className={modelOverlayOpen ? 'sendbox-responsive-control-open' : undefined}
@@ -1018,14 +1013,6 @@ const ButtonLayoutProbe: React.FC = () => {
                     state='collapsed'
                     strategy='single'
                     model='GLM-5'
-                  />
-                  <ProbeChatControlRow
-                    id='auto-image-disabled'
-                    pair='auto-image-disabled'
-                    state='collapsed'
-                    strategy='auto'
-                    model='AIPC-auto-balance'
-                    hasImageAttachments
                   />
                   <ProbeChatControlRow
                     id='model-popup'
