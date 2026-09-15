@@ -1,6 +1,6 @@
-# allo 应用服务器 Web UI
+# Flowy Agent Store 应用服务器 Web UI
 
-面向 [Agent Store 应用服务器协议](../docs/agent-store/05-allo-app-server-protocol.md) 的独立 Web UI。它是一个协议消费方——只使用公开的应用服务器契约（JSON-RPC 2.0 WebSocket + 辅助 HTTP 接口），绝不触碰 allo 内部实现。
+面向 [Agent Store 应用服务器协议](../docs/agent-store/05-flowy-agent-store-app-server-protocol.md) 的独立 Web UI。它是一个协议消费方——只使用公开的应用服务器契约（JSON-RPC 2.0 WebSocket + 辅助 HTTP 接口），绝不触碰 Flowy Agent Store 内部实现。
 
 ## 快速开始（离线演示）
 
@@ -15,7 +15,7 @@ bun run mock
 bun run dev
 ```
 
-打开 http://localhost:5174，在连接设置中填写 WebSocket 地址后连接。Provider ID 和模型名称可以留空：后端会从 `~/.agent-store/config.toml` 解析 `default_model`（如 `opencode/mimo-v2.5-free`），并自动把 `[providers.<name>]` 注册进 Allo（凭据加密入库，幂等复用）。发送第一条消息会自动创建一个持久化的 presetless Nomi 对话；mock 服务器会推送用户消息、turn 状态和 assistant 回复事件。
+打开 http://localhost:5174，在连接设置中填写 WebSocket 地址后连接。Provider ID 和模型名称可以留空：后端会从 `~/.agent-store/config.toml` 解析 `default_model`（如 `opencode/mimo-v2.5-free`），并自动把 `[providers.<name>]` 注册进 Flowy Agent Store（凭据加密入库，幂等复用）。发送第一条消息会自动创建一个持久化的 presetless Nomi 对话；mock 服务器会推送用户消息、turn 状态和 assistant 回复事件。
 
 ## 连接到真实的应用服务器
 
@@ -47,7 +47,7 @@ bun scripts/smoke.ts --real                   # 连接真实 App Server 后端�
 cargo run -p nomifun-web -- --port 8787 --api-only --insecure-no-auth --data-dir <临时目录>
 ```
 
-真实后端验证覆盖握手、能力协商、工作区注册、技能/连接器目录和聊天协议表面。真实 Nomi 回复要求目标 Allo 数据目录中已注册、启用且具备可用凭据的 Provider/模型；有 `~/.agent-store/config.toml` 时 App Server 会自动注册其 provider 并解析 `default_model`，无需先用 Allo UI 手动配置（2026-09-01 已验证：`opencode/mimo-v2.5-free` 自动注册、消息持久化、模型真实流式响应）。Team、Skill 自动注入和 MCP 都由 App Server 聊天创建/运行时边界禁用。旧的 `agent/run` 启动成功路径仍依赖 `builtin-office` 预设；缺资产时它会以 `not_found` 干净失败。
+真实后端验证覆盖握手、能力协商、工作区注册、技能/连接器目录和聊天协议表面。真实 Nomi 回复要求目标 Flowy Agent Store 数据目录中已注册、启用且具备可用凭据的 Provider/模型；有 `~/.agent-store/config.toml` 时 App Server 会自动注册其 provider 并解析 `default_model`，无需先用 Flowy Agent Store UI 手动配置（2026-09-01 已验证：`opencode/mimo-v2.5-free` 自动注册、消息持久化、模型真实流式响应）。Team、Skill 自动注入和 MCP 都由 App Server 聊天创建/运行时边界禁用。旧的 `agent/run` 启动成功路径仍依赖 `builtin-office` 预设；缺资产时它会以 `not_found` 干净失败。
 
 ## 技能与连接器目录
 
@@ -80,4 +80,4 @@ scripts/mock-server.ts   支持聊天事件、旧 run 协议与技能/连接器�
 scripts/smoke.ts         端到端冒烟测试
 ```
 
-`src/lib` 模块刻意保持零依赖（不依赖 React，也不依赖 allo 内部），以便日后可按 `docs/agent-store/07-typescript-sdk.md` 抽取为可复用的 `@flowy-agent-store/client` 包。聊天 UI 不提供 Team、审批、附件或原始 `work_dir` 控件。
+`src/lib` 模块刻意保持零依赖（不依赖 React，也不依赖 Flowy Agent Store 内部），以便日后可按 `docs/agent-store/07-typescript-sdk.md` 抽取为可复用的 `@flowy-agent-store/client` 包。聊天 UI 不提供 Team、审批、附件或原始 `work_dir` 控件。

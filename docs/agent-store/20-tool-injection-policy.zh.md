@@ -3,7 +3,7 @@
 > 状态：设计规格 + 落地记录（2026-09-11 重构并实施；Step 1–7 已落地，逐批记录见 §9.1／§9.2／§9.2.1／§9.2.2；**未覆盖项**亦在各批登记）
 > 本次重构：① 表达层由「工厂硬编码 ceiling」改为「宿主策略文件 `~/.agent-store/config.toml [tools]` + 极薄会话求交」；② 补 §2「三份 config.toml 哪份对工具面生效」——这是全部取舍的前提；③ 逐项取舍表新增「表达层」列，区分「可配置」与「只能写在代码里」；④ 订正 5 处与代码不符的机制描述（见 §7.6 勘误表）；⑤ `[tools]` 的命名与匹配规则对齐参考实现 Kimi Code CLI（§7.8，含必须保留的差异）
 > 参考实现：Kimi Code CLI 配置文件 §`tools` —— <https://www.kimi.com/code/docs/kimi-code-cli/configuration/config-files.html#tools>（`enabled` / `disabled`、MCP glob、三条 no-match 告警、执行前复核）。对齐点与差异见 §7.8
-> 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-allo-runtime-adapter.md`、`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3／决策 5、`21-open-decisions.zh.md` D3
+> 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-flowy-agent-store-runtime-adapter.md`、`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3／决策 5、`21-open-decisions.zh.md` D3
 > 口径：本文只回答「哪些工具进入 Store 会话、在哪一层表达、为什么」；不定义公共协议，不替代测试总索引
 > 术语：文中 **Store 会话** = App Server 创建的 Nomi 会话（当前 `create_app_server_nomi_chat`，以及后续 `team/run` 的 Leader 会话）
 
@@ -662,7 +662,7 @@ Step 1–6 已落地。实现过程中发现并处理的偏差，均已在代码
 
 - 架构边界与决策总表：`00-architecture-decision.md`
 - 领域模型（工具取舍的判定依据）：`01-domain-model.md`
-- Runtime Adapter 与 Team 触发链：`04-allo-runtime-adapter.md`
+- Runtime Adapter 与 Team 触发链：`04-flowy-agent-store-runtime-adapter.md`
 - 公共契约（不改）：`10-public-contracts.md`
 - 决策记录（本文依据）：`16-sdk-webui-site-priority-plan.zh.md` §7 决策 3（Team 触发）、§7 决策 5（工具策略权威来源）
 - 同源先例（同一份宿主配置文件的另一段）：`21-open-decisions.zh.md` D3=B（`[approvals]`）

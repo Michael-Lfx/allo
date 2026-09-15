@@ -23,8 +23,8 @@
 | `01-domain-model.md` | 领域模型（Agent/Team/Skill/Connector、Execution） | 🧊 基线 |
 | `02-codebuddy-workbuddy-import-spec.md` | Importer 规格（CodeBuddy/WorkBuddy 导入） | ✅ 已实现 |
 | `03-codebuddy-compatibility-matrix.md` | 三态兼容矩阵与推导规则 | ✅ 规则已实现 |
-| `04-allo-runtime-adapter.md` | Runtime Adapter（Preset → ExecutionParticipant） | 🧊 基线（单 Agent 已实证） |
-| `05-allo-app-server-protocol.md` | **App Server 协议 v1**（发版前只有一个版本） | ✅ 现行正文（可改）+ 单 Agent 实测 |
+| `04-flowy-agent-store-runtime-adapter.md` | Runtime Adapter（Preset → ExecutionParticipant） | 🧊 基线（单 Agent 已实证） |
+| `05-flowy-agent-store-app-server-protocol.md` | **App Server 协议 v1**（发版前只有一个版本） | ✅ 现行正文（可改）+ 单 Agent 实测 |
 | `06-connector-oauth-security.md` | Connector OAuth 与安全模型 | 🧊 基线（OAuth 已实证） |
 | `07-typescript-sdk.md` | **TS SDK v1**（包名以 `12` 为准；发版前只有一个版本） | ✅ 现行正文（可改），主体已实现 |
 | `08-flowy-web-integration.md` | Flowy/Web 集成面 | 🧊 基线 |

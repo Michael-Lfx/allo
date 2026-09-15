@@ -4,7 +4,7 @@
 > 日期：2026-08-26
 > 更新：2026-09-09 —— 包名 `@flowy-agent-store/node` → `@flowy-agent-store/sdk`（以 `12` 为准）；TC 引用对齐测试总索引现有范围（001~003）
 > 更新：2026-09-15 —— 新增 §6.3：安装五动词经 SDK 可达（`AppServerClient` 扁平方法 + `.store` 子客户端状态机）；非目标补「不发明更新动词」与「宿主管理面只给类型、不给 typed method（可发现性/稳定性边界，非访问边界）」
-> 前置：`01-domain-model.md`、`05-allo-app-server-protocol.md`、`06-connector-oauth-security.md`、`10-public-contracts.md`
+> 前置：`01-domain-model.md`、`05-flowy-agent-store-app-server-protocol.md`、`06-connector-oauth-security.md`、`10-public-contracts.md`
 > 目标：提供 App Server Protocol 的 typed client；SDK 不直接依赖 allo 内部实现
 
 ## 1. 定位与边界
@@ -531,7 +531,7 @@ resource_version
 
 ## 11. 验收与实现顺序
 
-SDK 测试用例的唯一正文位于 `05-allo-app-server-protocol.md` §14（TC-SDK-001~003），本文件只声明 SDK 范围。实现顺序由路线图统一管理：
+SDK 测试用例的唯一正文位于 `05-flowy-agent-store-app-server-protocol.md` §14（TC-SDK-001~003），本文件只声明 SDK 范围。实现顺序由路线图统一管理：
 
 ```text
 Protocol Schema → generated types → Transport → Clients → reconnect → React wrapper

@@ -1,7 +1,7 @@
 //! Agent Store App Server public contract types — Skill / Connector catalog.
 //!
 //! These are the *public* Agent Store shapes consumed over the versioned App
-//! Server Protocol (`docs/agent-store/05-allo-app-server-protocol.md`), mapped
+//! Server Protocol (`docs/agent-store/05-flowy-agent-store-app-server-protocol.md`), mapped
 //! from the system Skill / MCP services. They intentionally carry no internal
 //! Allo IDs, credentials, filesystem paths or provider-private fields.
 //!

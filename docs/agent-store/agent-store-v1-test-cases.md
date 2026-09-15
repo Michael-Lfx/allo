@@ -72,7 +72,7 @@ NOT_RUN
 |---|---|
 | `TC-IMP-001`~`017`、`TC-INS-001`~`008` | `02-codebuddy-workbuddy-import-spec.md` §13（验收用例 TC-IMP / TC-INS） |
 | `TC-RT-001`~`010`、`TC-TEAM-001`~`009` | `13-p0-execution-plan.md` §10（Runtime 验收用例 TC-RT / TC-TEAM） |
-| `TC-API-001`~`004`、`TC-SDK-001`~`003` | `05-allo-app-server-protocol.md` §14（验收用例正文 TC-API / TC-SDK） |
+| `TC-API-001`~`004`、`TC-SDK-001`~`003` | `05-flowy-agent-store-app-server-protocol.md` §14（验收用例正文 TC-API / TC-SDK） |
 | `TC-CONN-001/002`、`TC-OAUTH-001`~`004`、`TC-CLI-001`、`TC-STDIO-001` | `06-connector-oauth-security.md` §11（验收用例正文 TC-OAUTH / TC-CONN / TC-CLI / TC-STDIO） |
 | `TC-WEB-001`~`004`、`TC-SEC-001`~`003`、`TC-CATALOG-001`~`005` | `19-webui-codex-alignment.zh.md` §9（验收用例 TC-WEB / TC-SEC / TC-CATALOG） |
 

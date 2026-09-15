@@ -9,7 +9,7 @@
 > `store/list` 条目新增 `published_at`（市场声明的发布日期，`YYYY-MM-DD`，绝不派生）；指纹
 > `2026-09-15` → `2026-09-16`。2026-09-15：安装器五动词**真正释放/移动运行时产物**并回报结构化
 > `outcomes`；协议指纹 `2026-09-14` → `2026-09-15`，无方法增删）
-> 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-allo-runtime-adapter.md`
+> 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-flowy-agent-store-runtime-adapter.md`
 > 目标：建立 SDK、CLI、MCP、Web/Flowy 的唯一公共兼容边界
 
 ## 1. 协议定位
@@ -150,7 +150,7 @@ Server Request   服务端向客户端请求审批/输入/确认
 ```json
 {
   "protocol_version": "2026-09-11",
-  "server": {"name": "allo-agent-store", "version": "0.1.0"},
+  "server": {"name": "flowy-agent-store", "version": "0.1.0"},
   "auth_context": {
     "principal_id": "principal_01...",
     "issuer": "local-agent-store",

@@ -106,7 +106,7 @@ fn manifest_base_url(manifest_url: &str) -> Option<String> {
 
 fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent("allo-agent-store/1.0")
+        .user_agent("flowy-agent-store/1.0")
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|error| format!("build http client: {error}"))

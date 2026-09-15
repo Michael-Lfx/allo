@@ -3,7 +3,7 @@
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——本规范在发版前只有一个版本（统一称 v1），不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。覆盖范围：目录布局与发现优先级（§3）、条目模型（§4）、获取与晋升不变式（§5）、`_files.txt`（§6）、注册表与命名空间（§7）、发布自检（§8）、客户端契约（§9），以及机器可校验形态（`docs/agent-store/schemas/marketplace.schema.json` + `scripts/check-agent-store-market.mjs`）。
 > 已知偏差见 §11：**D1–D8 全部已处理**（D8 与 D4 于 2026-09-10 批 1 实现，属「实现对齐正文」而非改规范）。**保留的约束**：任何变更走**显式修订 + 偏差登记**，不静默修改本规范。
 > 定位：定义**市场的目录形态、清单发现、远程获取与晋升、发布流程、客户端契约**。依 `16` §4 Q5 决策，当前只覆盖 CodeBuddy / WorkBuddy 兼容格式，**不定义 Agent Store 原生市场格式**。
-> 代码事实来源：`crates/backend/nomifun-app/src/market_source.rs`、`market_fetch.rs`、`app_server_marketplace.rs`、`scripts/serve-agent-store-market.mjs`、`05-allo-app-server-protocol.md`。
+> 代码事实来源：`crates/backend/nomifun-app/src/market_source.rs`、`market_fetch.rs`、`app_server_marketplace.rs`、`scripts/serve-agent-store-market.mjs`、`05-flowy-agent-store-app-server-protocol.md`。
 
 ---
 
@@ -172,7 +172,7 @@ cli.json
 ### 5.2 HTTP 源（`url`）
 
 1. **条件请求短路（revision 比对兜底）**：清单请求按上次记录的**原始校验值**发条件头——有 `ETag` 发 `If-None-Match`，有 `Last-Modified` 发 `If-Modified-Since`（两者都有则都发）。服务器返回 `304` → `Unchanged`；若仍返回 `200`，再比对 revision **摘要**（`sha256(ETag|Last-Modified)`，规则未变）——相同同样按 `Unchanged` 处理，作为「忽略条件头的服务器」的兜底；
-2. 客户端：User-Agent `allo-agent-store/1.0`，超时 **15s**——清单抓取、`_files.txt` 探测与整树镜像**共用同一个 client 工厂**（§11 D5）；
+2. 客户端：User-Agent `flowy-agent-store/1.0`，超时 **15s**——清单抓取、`_files.txt` 探测与整树镜像**共用同一个 client 工厂**（§11 D5）；
 3. `304 Not Modified` → `Unchanged`（保留 last-good）；
 4. `Fresh` → 全量校验清单 → 与当前 revision 相同则丢弃；否则晋升；
 5. **若源暴露 `_files.txt`**，镜像整棵条目树（见 §6）；否则条目保持 `manifest-only`，按条目类型标记来源：`skills` / `connectors` 条目解析不到时标 **`external`**（不可镜像），`plugins[]` 条目保留 `directory` + 相对 `source`（导入时再解析并给出缺失报错，§11 D6）。
@@ -269,7 +269,7 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 
 - 能力协商：`capabilities.marketplaces`；
 - 幂等：重复 `market/add` 同一源不产生重复注册；相同内容重复导入返回已有快照；
-- 协议面细节以 `05-allo-app-server-protocol.md` 为唯一正文。
+- 协议面细节以 `05-flowy-agent-store-app-server-protocol.md` 为唯一正文。
 
 ### 9.1 Store 一键安装的版本语义（2026-09-15）
 

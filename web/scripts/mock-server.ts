@@ -668,7 +668,7 @@ function handleWsMessage(socket: ServerWebSocket, raw: string) {
     case "initialize":
       respond(socket, id, {
         protocol_version: PROTOCOL_VERSION,
-        server: { name: "allo-agent-store (mock)", version: "0.1.0" },
+        server: { name: "flowy-agent-store (mock)", version: "0.1.0" },
         auth_context: {
           principal_id: "0190f5fe-7c00-7a00-8000-00000000000a",
           issuer: "local-agent-store",
@@ -921,7 +921,7 @@ const server = Bun.serve({
       return new Response(
         JSON.stringify({
           protocol_version: PROTOCOL_VERSION,
-          server: { name: "allo-agent-store (mock)", version: "0.1.0" },
+          server: { name: "flowy-agent-store (mock)", version: "0.1.0" },
           auth_context: {
             principal_id: "0190f5fe-7c00-7a00-8000-00000000000a",
             issuer: "local-agent-store",

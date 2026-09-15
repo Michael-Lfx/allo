@@ -2,7 +2,7 @@
 
 > 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；OAuth 链路已实证（本文件 §12）；发布阻断
 > 日期：2026-08-26
-> 前置：`01-domain-model.md`、`02-codebuddy-workbuddy-import-spec.md`、`04-allo-runtime-adapter.md`、`05-allo-app-server-protocol.md`
+> 前置：`01-domain-model.md`、`02-codebuddy-workbuddy-import-spec.md`、`04-flowy-agent-store-runtime-adapter.md`、`05-flowy-agent-store-app-server-protocol.md`
 > 目标：定义 Connector 运行边界、凭据隔离、OAuth 全链路和高风险操作控制
 
 ## 1. 安全原则
