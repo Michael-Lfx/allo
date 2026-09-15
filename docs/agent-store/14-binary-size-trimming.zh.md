@@ -138,7 +138,7 @@ feature unification 注意：nomifun-app-server/gateway/shell 直连 `nomifun-sy
 
 ## 3. 附带修复（同会话，非体积目标）
 
-- **B 兜底市场源**（nomifun-app-server）：config.toml 缺失/无 `[default_marketplaces]` 时自动注册内置三源（experts/skills/connectors，VPS 公网 manifest）
+- **B 兜底市场源**（nomifun-app-server）：config.toml 缺失/无 `[default_marketplaces]` 时自动注册内置三源（experts/skills/connectors，当时指向 VPS 公网 manifest `http://111.170.173.22:10072/…`；**2026-09-15 起改为官网站点 `https://agent-store.flowyaipc.cn/source/…`**，见 `18` §11 D1）
 - **A `agent-store init` 子命令**（apps/agent-store/src/init.rs 新文件）：`--template-only` 非交互生成模板；交互式收集 provider（API key 只从 `AGENT_STORE_INIT_API_KEY` 环境变量读）；`--force` 覆盖已存在文件
 - **agent_store_config 默认路径**：agent-store 二进制此前从不设置 `agent_store_config`（web 主机有设），兜底机制对它不生效——现在启动默认指向 `~/.agent-store/config.toml`
 - 测试：agent-store 7/7、nomifun-app-server 59/59 全绿（含新增 builtin 源完整性测试）

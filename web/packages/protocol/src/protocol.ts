@@ -10,9 +10,10 @@
  * previous value on any wire change at all, additive included. `2026-09-16`
  * carried `StoreItem.published_at`; `2026-09-17` added the two MCP declaration
  * write methods (`config/set-mcp`, `config/set-mcp-enabled`); `2026-09-18` adds
- * `config/get-mcp`, the file editor's read of the same file.
+ * `config/get-mcp`, the file editor's read of the same file; `2026-09-19` adds
+ * the `conversation/list-changed` notification.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "2026-09-18";
+export const APP_SERVER_PROTOCOL_VERSION = "2026-09-19";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -58,11 +59,27 @@ export interface ConversationResyncRequiredNotification {
   params: { conversation_ids: string[]; reason: string };
 }
 
+/**
+ * 会话**列表**投影变更（`conversation/list-changed`，2026-09-19 加入）。
+ *
+ * 与 `conversation/event` 是两件事：那些是某条被订阅会话的转写帧、带 `sequence`；
+ * 这一条改的是侧栏那一整份列表（自动标题、重命名、删除），所以：
+ *   - 不要求订阅该会话（用户此刻可能正看着另一个会话）；
+ *   - **不带 `sequence`**，客户端不得据此推进 `lastSeenSequence`；
+ *   - 尽力而为：丢一条只是让界面晚一步刷新，`conversation/list` 始终是权威。
+ */
+export interface ConversationListChangedNotification {
+  jsonrpc: "2.0";
+  method: "conversation/list-changed";
+  params: { conversation_id: string; action: "created" | "updated" | "deleted" };
+}
+
 export type ServerNotification =
   | JsonRpcEventNotification
   | ResyncRequiredNotification
   | ConversationEventNotification
-  | ConversationResyncRequiredNotification;
+  | ConversationResyncRequiredNotification
+  | ConversationListChangedNotification;
 
 export interface WireError {
   code: string;

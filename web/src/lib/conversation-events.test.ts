@@ -2,15 +2,35 @@ import { describe, expect, it } from "vitest";
 import {
   conversationStreamReducer,
   initialConversationStream,
+  isTurnStoppedEvent,
   mergeMessagesById,
   persistedTurnUsage,
   type ConversationStreamState,
 } from "./conversation-events";
-import type { ContextUsage, ConversationMessage } from "./protocol";
+import type { ContextUsage, ConversationEvent, ConversationMessage } from "./protocol";
 
 function msg(id: string, created_at: number, role: ConversationMessage["role"] = "user"): ConversationMessage {
   return { message_id: id, conversation_id: "c", role, content: id, message_type: "text", created_at };
 }
+
+describe("isTurnStoppedEvent", () => {
+  const event = (eventType: string, payload: Record<string, unknown>): ConversationEvent =>
+    ({ conversation_id: "c", sequence: 1, event_type: eventType, payload }) as ConversationEvent;
+
+  it("is true only for a turn that stopped running", () => {
+    expect(isTurnStoppedEvent(event("turn.status", { status: "running" }))).toBe(false);
+    for (const status of ["completed", "failed", "cancelled"]) {
+      expect(isTurnStoppedEvent(event("turn.status", { status }))).toBe(true);
+    }
+  });
+
+  it("ignores other event types", () => {
+    // 收尾心跳（`turn_completed`）说明模型答完了，但服务端仍在收尾：
+    // 此刻 processing 还是真，重读也拿不到终态。
+    expect(isTurnStoppedEvent(event("message.activity", { kind: "turn_completed" }))).toBe(false);
+    expect(isTurnStoppedEvent(event("message.delta", { content: "hi" }))).toBe(false);
+  });
+});
 
 describe("mergeMessagesById", () => {
   it("dedups by message_id and sorts ascending by created_at", () => {
@@ -94,6 +114,15 @@ describe("conversationStreamReducer · 收尾标记", () => {
       state = conversationStreamReducer({ ...state, wrapUp: false }, { type: "event", event: activity(kind) });
       expect(state.wrapUp).toBe(false);
     }
+  });
+
+  it("agent_status 心跳也不进 transcript（每轮一条的模型活动行）", () => {
+    let state: ConversationStreamState = { ...initialConversationStream, isProcessing: true };
+    state = conversationStreamReducer(state, { type: "event", event: activity("agent_status") });
+    // 粒度与 `turn_completed` 不同：它也不该顺带把忙态升级成「收尾中」。
+    expect(state.messages).toEqual([]);
+    expect(state.wrapUp).toBe(false);
+    expect(state.isProcessing).toBe(true);
   });
 
   it("回合真正结束（turn.status 非 running）会清掉标记", () => {

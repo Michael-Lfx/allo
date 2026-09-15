@@ -1,17 +1,15 @@
 /**
- * W1b 命令面板 V2（R19）—— 「会话动作 + 模型 / 思考等级」并入同一面板的数据层。
+ * W1b 命令面板 —— `/` 模式只保留引擎侧命令 `/compact`。
  *
- * 交互（焦点始终留在 textarea、IME 守卫、↑↓ 光标、Esc 清半截触发符）仍在
+ * 面板的交互（焦点始终留在 textarea、IME 守卫、↑↓ 光标、Esc 清半截触发符）仍在
  * `Composer.tsx`；这里只回答「该列哪些行、怎么过滤、选中后要做什么」，因此可以单测。
  *
- * **刻意不做「归档」**：协议里没有归档 / 回收站（`11` §2.2 未做，`16` §3.5 方向四），
- * 面板里放一个点了没反应的「归档」比不放更糟——R19 的行文提到它，但落地按现状收敛。
+ * `/compact` 不是前端行为：它作为一条普通消息发出去，由后端 nomi 引擎在**任何 LLM
+ * 调用之前**拦截并压缩会话上下文（与桌面端同一套引擎命令）。
  */
 
-import type { ModelSummary, ProviderWithModel, ReasoningEffort } from "@flowy-agent-store/protocol";
-
 /** 面板行的语义分类（图标与分组由组件决定）。 */
-export type PaletteItemKind = "action" | "prompt" | "agent" | "skill" | "connector" | "session" | "model" | "effort";
+export type PaletteItemKind = "compact" | "agent" | "skill" | "connector";
 
 export interface PaletteItem {
   /** Stable key; for catalog items this is the mention id. */
@@ -24,12 +22,8 @@ export interface PaletteItem {
   groupKey?: string;
   /** 额外可搜文本（模型 id / provider / 动作别名），不参与渲染。 */
   keywords?: string;
-  /** `action` / `session` 行选中后执行的语义 id。 */
+  /** 选中后执行的语义 id。 */
   actionId?: string;
-  /** `model` 行：`provider/model` 选择键。 */
-  modelKey?: string;
-  /** `effort` 行：`""` 表示「默认」。 */
-  effort?: ReasoningEffort | "";
   disabled?: boolean;
   /** 禁用原因（i18n key）；禁用行不吞掉点击，而是明确说明为什么不可用。 */
   disabledReasonKey?: string;
@@ -40,113 +34,27 @@ export type PaletteTranslate = (key: string, params?: Record<string, unknown>) =
 
 export const PALETTE_GROUP_KEYS = {
   command: "palette.groupCommands",
-  prompt: "palette.groupPrompts",
-  session: "palette.groupSession",
-  model: "palette.groupModels",
-  effort: "palette.groupEfforts",
   mention: "palette.groupMentions",
 } as const;
 
-/** 思考等级从「默认」到「超高」，顺序固定（面板里不按字母排）。 */
-export const EFFORT_LEVELS: readonly (ReasoningEffort | "")[] = ["", "low", "medium", "high", "xhigh", "max"];
-
-const EFFORT_LABEL_KEYS: Record<string, string> = {
-  "": "modelPicker.effortDefault",
-  low: "modelPicker.effortLow",
-  medium: "modelPicker.effortMedium",
-  high: "modelPicker.effortHigh",
-  xhigh: "modelPicker.effortXhigh",
-  max: "modelPicker.effortMax",
-};
-
-export interface PaletteContext {
-  /** 有选中会话才允许重命名 / 删除 / 分享；没有会话时行仍在，但被禁用并说明原因。 */
-  hasConversation: boolean;
-  models: ModelSummary[];
-  selectedModelKey: string | null;
-  currentModel: ProviderWithModel | null;
-  /** 当前思考等级；`""` = 默认。 */
-  currentEffort: string;
-}
-
 /**
- * 会话动作行：重命名 / 删除 / 分享 / 复制会话 ID。
- * 没有选中会话时全部禁用（仍然显示，让用户知道这些动作存在且为何不可用）。
- */
-export function sessionPaletteRows(context: PaletteContext, t: PaletteTranslate): PaletteItem[] {
-  const disabled = !context.hasConversation;
-  const rows: Array<{ id: string; labelKey: string }> = [
-    { id: "session.rename", labelKey: "palette.renameConversation" },
-    { id: "session.delete", labelKey: "palette.deleteConversation" },
-    { id: "session.share", labelKey: "palette.shareConversation" },
-    { id: "session.copyId", labelKey: "palette.copySessionId" },
-  ];
-  return rows.map((row) => ({
-    id: row.id,
-    kind: "session",
-    actionId: row.id,
-    groupKey: PALETTE_GROUP_KEYS.session,
-    label: t(row.labelKey),
-    keywords: row.id.split(".")[1],
-    disabled,
-    disabledReasonKey: disabled ? "palette.needsConversation" : undefined,
-  }));
-}
-
-/** 模型行：来自 `models/list` 的公开目录；当前选中项标「当前」。 */
-export function modelPaletteRows(context: PaletteContext, t: PaletteTranslate): PaletteItem[] {
-  const currentKey = context.selectedModelKey
-    ?? (context.currentModel ? `${context.currentModel.provider_id}/${context.currentModel.model}` : null);
-  return context.models.map((model) => {
-    const key = `${model.provider_id}/${model.model}`;
-    const name = model.display_name ?? model.model;
-    const isCurrent = key === currentKey;
-    return {
-      id: `model.${key}`,
-      kind: "model" as const,
-      modelKey: key,
-      groupKey: PALETTE_GROUP_KEYS.model,
-      label: name,
-      hint: isCurrent ? `${model.provider_name} · ${t("palette.current")}` : model.provider_name,
-      keywords: `${model.provider_id} ${model.model} ${model.display_name ?? ""}${model.is_default ? " default" : ""}`,
-    };
-  });
-}
-
-/** 思考等级行：默认 + 五档；当前档位标「当前」。 */
-export function effortPaletteRows(currentEffort: string, t: PaletteTranslate): PaletteItem[] {
-  const current = currentEffort === "default" ? "" : currentEffort;
-  return EFFORT_LEVELS.map((effort) => {
-    const label = t(EFFORT_LABEL_KEYS[effort] ?? String(effort));
-    const isCurrent = effort === current;
-    return {
-      id: `effort.${effort === "" ? "default" : effort}`,
-      kind: "effort" as const,
-      effort,
-      groupKey: PALETTE_GROUP_KEYS.effort,
-      label,
-      hint: isCurrent ? t("palette.current") : undefined,
-      keywords: effort,
-    };
-  });
-}
-
-/**
- * `Cmd/Ctrl+K` 与 `/` 的面板内容：命令 → 提示 → 会话 → 模型 → 思考等级。
+ * `/` 模式的唯一一行：`/compact`。
  *
- * 顺序即优先级：用户按 Cmd+K 多数是想执行一个动作，模型 / 等级切换排在后面。
+ * 没有选中会话时仍然显示，但禁用并说明原因——压缩需要一个会话才能落到历史上。
  */
-export function commandPaletteRows(
-  context: PaletteContext,
-  t: PaletteTranslate,
-  extras: { actions: PaletteItem[]; prompts: PaletteItem[] },
-): PaletteItem[] {
+export function compactPaletteRows(hasConversation: boolean, t: PaletteTranslate): PaletteItem[] {
+  const disabled = !hasConversation;
   return [
-    ...extras.actions,
-    ...extras.prompts,
-    ...sessionPaletteRows(context, t),
-    ...modelPaletteRows(context, t),
-    ...effortPaletteRows(context.currentEffort, t),
+    {
+      id: "compact",
+      kind: "compact",
+      actionId: "compact",
+      groupKey: PALETTE_GROUP_KEYS.command,
+      label: t("palette.compact"),
+      hint: "/compact",
+      disabled,
+      disabledReasonKey: disabled ? "palette.needsConversation" : undefined,
+    },
   ];
 }
 

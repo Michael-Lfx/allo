@@ -212,6 +212,7 @@ impl IMarketplaceRepository for SqliteMarketplaceRepository {
         entries: &[MarketplaceEntry],
         content_digest: &str,
         version: Option<&str>,
+        auto_update: bool,
     ) -> Result<(), DbError> {
         let entries_json = serde_json::to_string(entries)
             .map_err(|error| DbError::Init(format!("encode entries: {error}")))?;
@@ -220,7 +221,9 @@ impl IMarketplaceRepository for SqliteMarketplaceRepository {
             "UPDATE plugin_marketplaces \
              SET source_kind = ?, source_uri = ?, removed_at = NULL, enabled = 1, \
                  entries_json = ?, content_digest = ?, version = ?, updated_at = ?, \
-                 last_checked_at = ? \
+                 last_checked_at = ?, \
+                 auto_update = CASE WHEN source_kind = ? AND source_uri = ? \
+                                    THEN auto_update ELSE ? END \
              WHERE marketplace_id = ?",
         )
         .bind(source_kind)
@@ -230,6 +233,13 @@ impl IMarketplaceRepository for SqliteMarketplaceRepository {
         .bind(version)
         .bind(now)
         .bind(now)
+        // SQLite evaluates every SET expression against the *original* row, so
+        // this CASE really does compare the stored source with the incoming one:
+        // re-sourced rows take the source-class default, unchanged ones keep the
+        // operator's toggle (see the trait doc).
+        .bind(source_kind)
+        .bind(source_uri)
+        .bind(if auto_update { 1_i64 } else { 0_i64 })
         .bind(marketplace_id)
         .execute(&self.pool)
         .await?;
@@ -469,6 +479,7 @@ mod tests {
             &[sample_entry("formatter")],
             "digest-x",
             None,
+            false,
         )
         .await
         .unwrap();
@@ -486,6 +497,62 @@ mod tests {
             .is_some());
         let listed = repo.list_marketplaces().await.unwrap();
         assert_eq!(listed.len(), 1);
+    }
+
+    /// Regression for the re-point case (doc 18 D1): the old code never touched
+    /// `auto_update` on reactivation, so a market re-pointed from a local/dev
+    /// source to the official one stayed `auto_update = 0` and silently dropped
+    /// out of the auto-update sweep. A re-source now takes the source-class
+    /// default; an unchanged source keeps whatever the operator toggled.
+    #[tokio::test]
+    async fn reactivate_recomputes_auto_update_only_when_the_source_changes() {
+        const OFFICIAL: &str = "https://agent-store.flowyaipc.cn/source/experts/.codebuddy-plugin/marketplace.json";
+        let (repo, _db) = setup().await;
+        repo.insert_marketplace(sample("experts", "/tmp/experts-dev"))
+            .await
+            .unwrap();
+        // Registered from a non-official source: third-party default.
+        assert_eq!(
+            repo.get_marketplace("experts").await.unwrap().unwrap().auto_update,
+            0
+        );
+
+        // Re-pointed at the official source → the caller's default applies.
+        repo.reactivate_marketplace(
+            "experts",
+            "url",
+            OFFICIAL,
+            &[sample_entry("formatter")],
+            "digest-official",
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let row = repo.get_marketplace("experts").await.unwrap().unwrap();
+        assert_eq!(row.source_kind, "url");
+        assert_eq!(row.source_uri, OFFICIAL);
+        assert_eq!(row.auto_update, 1, "a re-sourced row takes the new default");
+
+        // The operator turns it off, then the market is removed and re-added
+        // under the *same* source: the explicit choice must survive.
+        repo.set_auto_update("experts", false).await.unwrap();
+        repo.soft_remove_marketplace("experts", 99).await.unwrap();
+        repo.reactivate_marketplace(
+            "experts",
+            "url",
+            OFFICIAL,
+            &[sample_entry("formatter")],
+            "digest-official-2",
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let row = repo.get_marketplace("experts").await.unwrap().unwrap();
+        assert_eq!(row.removed_at, None);
+        assert_eq!(row.enabled, 1);
+        assert_eq!(row.auto_update, 0, "an unchanged source keeps the stored flag");
     }
 
     #[tokio::test]

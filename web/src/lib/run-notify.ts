@@ -1,22 +1,20 @@
 /**
- * Background-Run terminal notices (W8 余项, docs/agent-store/16 R13).
+ * 后台运行（Run）的终端提示（W8 余项，docs/agent-store/16 R13）。
  *
- * A Run is projected as `run/events`; `run.status_changed` carries
- * `{status}` and is the only place the client learns that a Run stopped moving.
- * Everything in this module is derived from the event stream alone — no separate
- * run-status polling, so the notice can never disagree with what the review
- * surface shows.
+ * 一个 Run 被投影为 `run/events`；`run.status_changed` 携带 `{status}`，是客户端
+ * 得知一个 Run 停止推进的唯一途径。本模块一切都仅从事件流派生——没有独立的运行
+ * 状态轮询，因此提示绝不会与 review 界面所展示的内容相左。
  *
- * Two notices come out of one terminal status:
- *   - an in-tab toast (the landed toast channel, per tab — see the ownership
- *     model in `global-effects.ts`; every tab keeps its own subscription), and
- *   - a *global* reminder (desktop notification + sound) which is only raised
- *     when the tab is in the background, and is elected once per profile.
+ * 同一个终端状态会产出两类提示：
+ *   - 一个标签页内的 toast（已落地的 toast 通道，每标签页一份——见 `global-effects.ts`
+ *     中的归属模型；每个标签页持有自己的订阅），以及
+ *   - 一个*全局*提醒（桌面通知 + 声音），仅当标签页处于后台时才触发，且每个 profile
+ *     选举一次。
  */
 
 import type { RunEvent, RunStatus } from "@flowy-agent-store/protocol";
 
-/** Statuses the engine will not move again. */
+/** 引擎不会再推进的状态。 */
 export const TERMINAL_RUN_STATUSES = [
   "completed",
   "completed_with_failures",
@@ -26,7 +24,7 @@ export const TERMINAL_RUN_STATUSES = [
 
 export type TerminalRunStatus = (typeof TERMINAL_RUN_STATUSES)[number];
 
-/** i18n keys of the in-tab toast per terminal status (both locales). */
+/** 按终端状态的标签页内 toast 的 i18n 键（两种语言环境）。 */
 export const RUN_TERMINAL_TOAST_KEYS: Record<TerminalRunStatus, string> = {
   completed: "toast.runCompleted",
   completed_with_failures: "toast.runCompletedWithFailures",
@@ -34,7 +32,7 @@ export const RUN_TERMINAL_TOAST_KEYS: Record<TerminalRunStatus, string> = {
   cancelled: "toast.runCancelled",
 };
 
-/** Toast tone per terminal status (the store maps it to the landed `pushToast`). */
+/** 按终端状态的 toast 语气（store 将其映射到已落地的 `pushToast`）。 */
 export const RUN_TERMINAL_TONES: Record<TerminalRunStatus, "success" | "error"> = {
   completed: "success",
   completed_with_failures: "success",
@@ -46,13 +44,12 @@ export function isTerminalRunStatus(status: string): status is TerminalRunStatus
   return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
 }
 
-/** Run-event types that carry a run-level status. */
+/** 携带运行级状态的 Run 事件类型。 */
 const STATUS_EVENT_TYPES = new Set(["run.started", "run.status_changed"]);
 
 /**
- * The latest status the stream reported for a run, ordered by `sequence` (live
- * events are best-effort and a catch-up replays overlapping sequences, so
- * arrival order is not trustworthy).
+ * 流所上报的、某个 run 的最新状态，按 `sequence` 排序（实时事件是尽力而为，而一次
+ * 追赶会重放重叠的序列，因此到达顺序不可信）。
  */
 export function latestRunStatus(events: RunEvent[]): RunStatus | string | null {
   let latest: { sequence: number; status: string } | null = null;
@@ -65,15 +62,15 @@ export function latestRunStatus(events: RunEvent[]): RunStatus | string | null {
   return latest?.status ?? null;
 }
 
-/** The run's terminal status, or `null` while it may still move. */
+/** 该 run 的终端状态；只要它可能仍在推进，就为 `null`。 */
 export function terminalRunStatus(events: RunEvent[]): TerminalRunStatus | null {
   const status = latestRunStatus(events);
   return typeof status === "string" && isTerminalRunStatus(status) ? status : null;
 }
 
 /**
- * Idempotency key for the reminder of one run reaching one terminal status —
- * the value two tabs must agree on to elect a single reminder.
+ * 一个 run 到达某个终端状态时的提醒所使用幂等键——两个标签页必须据此达成一致的那个
+ * 值，以选举出唯一的提醒。
  */
 export function runTerminalNoticeKey(runId: string, status: TerminalRunStatus): string {
   return `run:${runId}:terminal:${status}`;
@@ -85,16 +82,14 @@ export interface TabVisibility {
 }
 
 /**
- * A "background Run" is one that ends while the user is looking elsewhere: the
- * in-tab toast is then invisible, which is exactly when the global reminder
- * (notification + sound) earns its keep. Focused-and-visible tabs stay silent on
- * the global channels.
+ * “后台 Run”是指用户正看着别处时结束的 run：此时标签页内的 toast 不可见，恰恰是全局
+ * 提醒（通知 + 声音）发挥作用的时候。已聚焦且可见的标签页在全局通道上保持沉默。
  */
 export function isBackgroundRun(visibility: TabVisibility): boolean {
   return visibility.hidden || !visibility.focused;
 }
 
-/** Reads the live tab visibility; the DOM access is isolated to this function. */
+/** 读取实时标签页可见性；DOM 访问被隔离到此函数。 */
 export function currentTabVisibility(): TabVisibility {
   return { hidden: document.hidden, focused: document.hasFocus() };
 }

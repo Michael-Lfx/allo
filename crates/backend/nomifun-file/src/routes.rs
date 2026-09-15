@@ -19,6 +19,7 @@ use nomifun_common::constants::UPLOAD_MAX_SIZE;
 use nomifun_auth::CurrentUser;
 
 use crate::browse;
+use crate::PathAuthority;
 use crate::traits::{FileServiceRef, FileWatchServiceRef, SnapshotServiceRef};
 use crate::types::{
     CompareResult, CopyResult, FileChangeInfo, FileMetadata, SnapshotInfo, SnapshotMode, WorkspaceFlatFile,
@@ -142,7 +143,25 @@ async fn list_workspace_files(
     body: Result<Json<ListWorkspaceFilesRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<Vec<WorkspaceFlatFileResponse>>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let items = state.file_service.list_workspace_files(&req.root).await?;
+    // The `root` of a list request **is** that request's workspace, so this
+    // route runs under the same `allowed_roots ∪ workspace` authority its
+    // siblings do (`read` / `metadata` / `zip` hand theirs over as
+    // `extra_root`). `IFileService::list_workspace_files` keeps its
+    // `allowed_roots`-only sandbox — the Channel/Remote gateway path
+    // (`caps_files::list_workspace_files` with `auth: None`) relies on it — so
+    // the widening stays here, on the UI file route.
+    //
+    // Without it, any conversation workspace the owner registered outside
+    // temp/home/data-dir (a project on another drive, `C:\tmp`) 403s every
+    // `/api/fs/list` — and that is the Artifact panel's only data path
+    // (`web/src/components/ArtifactPanel.tsx`).
+    let mut roots = state.allowed_roots.clone();
+    roots.push(std::path::PathBuf::from(&req.root));
+    let authority = PathAuthority::Confined(roots);
+    let items = state
+        .file_service
+        .list_workspace_files_scoped(&req.root, &authority)
+        .await?;
     let response: Vec<WorkspaceFlatFileResponse> = items.into_iter().map(to_flat_file_response).collect();
     Ok(Json(ApiResponse::ok(response)))
 }

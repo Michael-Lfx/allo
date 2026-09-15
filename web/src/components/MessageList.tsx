@@ -157,7 +157,7 @@ export function MessageList() {
                     isLastUserTurn={virtualItem.index === lastUserIndex}
                     isLastAssistantTurn={virtualItem.index === lastAssistantIndex}
                   />
-                : <div className="assistant-thinking"><span /><span /><span /> {t(wrapUp ? "common.wrappingUp" : "common.processing")}</div>}
+                : <div className="sr-only">{t(wrapUp ? "common.wrappingUp" : "common.processing")}</div>}
             </div>
           ))}
         </div>

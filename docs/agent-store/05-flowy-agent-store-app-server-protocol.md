@@ -1,14 +1,17 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 日期：2026-09-18（2026-09-18：`mcp.json` 补上读面 `config/get-mcp`——编辑器无法编辑它看不见
-> 的文件，而「凭据值不上 wire」这条从此精确化为「**verdict 视图**不含取值，文件文本只经这
-> 一个按需读面出去」；指纹 `2026-09-17` → `2026-09-18`。2026-09-17：`mcp.json` 新增写面
-> `config/set-mcp` / `config/set-mcp-enabled`——写前用同一解析器验、失败零写入、开关是文本级
-> 最小编辑；指纹 `2026-09-16` → `2026-09-17`，**新增两个方法**，无 HTTP 绑定。2026-09-16：
-> `store/list` 条目新增 `published_at`（市场声明的发布日期，`YYYY-MM-DD`，绝不派生）；指纹
-> `2026-09-15` → `2026-09-16`。2026-09-15：安装器五动词**真正释放/移动运行时产物**并回报结构化
-> `outcomes`；协议指纹 `2026-09-14` → `2026-09-15`，无方法增删）
+> 日期：2026-09-19（2026-09-19：新增**通知** `conversation/list-changed`——会话**列表**投影
+> 变更（自动标题 / 重命名 / 删除）此前只发给宿主通道，App Server 侧完全看不到，于是侧栏会
+> 一直停在客户端 `send()` 时的乐观快照上（名字空白、processing 不落）；指纹 `2026-09-18` →
+> `2026-09-19`，**只加一条通知，无方法增删**。2026-09-18：`mcp.json` 补上读面 `config/get-mcp`
+> ——编辑器无法编辑它看不见的文件，而「凭据值不上 wire」这条从此精确化为「**verdict 视图**不含
+> 取值，文件文本只经这一个按需读面出去」；指纹 `2026-09-17` → `2026-09-18`。2026-09-17：
+> `mcp.json` 新增写面 `config/set-mcp` / `config/set-mcp-enabled`——写前用同一解析器验、失败零
+> 写入、开关是文本级最小编辑；指纹 `2026-09-16` → `2026-09-17`，**新增两个方法**，无 HTTP 绑定。
+> 2026-09-16：`store/list` 条目新增 `published_at`（市场声明的发布日期，`YYYY-MM-DD`，绝不派生）；
+> 指纹 `2026-09-15` → `2026-09-16`。2026-09-15：安装器五动词**真正释放/移动运行时产物**并回报
+> 结构化 `outcomes`；协议指纹 `2026-09-14` → `2026-09-15`，无方法增删）
 > 前置：`00-architecture-decision.md`、`01-domain-model.md`、`04-flowy-agent-store-runtime-adapter.md`
 > 目标：建立 SDK、CLI、MCP、Web/Flowy 的唯一公共兼容边界
 
@@ -1335,6 +1338,30 @@ occupancy gauge，`window_tokens` 为有效窗口，二者均为服务端在
 事件载荷只包含公开 conversation/message/turn ID，绝不携带内部
 execution/session/attempt ID。事件流 lag 时发送
 `conversation/resync-required`，客户端用 `conversation/messages` 补拉。
+
+#### 12.3.1 列表投影通知（`conversation/list-changed`，2026-09-19 加入）
+
+转写事件之外，服务端还会推**列表投影**的变更——侧栏展示的是整份会话列表，与「某条被订阅
+会话的转写」是两件事：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "conversation/list-changed",
+  "params": { "conversation_id": "<uuidv7>", "action": "created | updated | deleted" }
+}
+```
+
+三个不变量：
+
+- **不要求订阅**该会话：用户此刻往往正看着另一个会话，而列表是全局的；
+- **不带 `sequence`**，客户端不得据此推进 `lastSeenSequence`（它不是转写帧，也不参与
+  §12.3 的缺口检测）；
+- **尽力而为**：丢一条只是界面晚一步刷新，`conversation/list` 始终是权威来源。
+
+`action` 只承认上述三态（`created` / `updated` / `deleted`；将来新增第四态属于 wire 变更，
+要动协议指纹）。触发场景：`conversation/create` → `created`；重命名与**自动标题**（首条消息
+几秒后由服务端异步生成）→ `updated`；`conversation/delete` → `deleted`。
 
 ### 12.4 能力边界
 

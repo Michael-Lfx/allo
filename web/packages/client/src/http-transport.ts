@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "2026-09-18";
+const PROTOCOL_VERSION = "2026-09-19";
 
 type Verb = "GET" | "POST" | "DELETE";
 
@@ -523,10 +523,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Turn an HTTP failure body into the SDK error model.
  *
  * Shared by this transport and by host-side helpers (webui `lib/client.ts`) so
- * a second spelling of the wire-error mapping cannot drift: the App Server
- * emits `{code, message, retryable, details, request_id}` (`into_wire_error`),
- * which is exactly the `AppServerError` shape. Anything else becomes a
- * retryable-on-5xx `TransportError`.
+ * a second spelling of the wire-error mapping cannot drift. Two wire contracts
+ * reach this function, both of them `AppError` on the server:
+ *
+ * - the App Server emits `{code, message, retryable, details, request_id}`
+ *   (`into_wire_error`), which is exactly the `AppServerError` shape;
+ * - the standalone host file service (`/api/fs/*`) emits the `ErrorResponse`
+ *   envelope `{success: false, error, code, details?}` — same error, another
+ *   spelling: `error` carries the human message, and there is no retry hint, so
+ *   a 5xx status stays the retry signal.
+ *
+ * Anything else becomes a retryable-on-5xx `TransportError`.
  */
 export function appServerErrorFromWire(payload: unknown, status: number, context = "request"): unknown {
   if (isRecord(payload) && typeof payload.code === "string" && typeof payload.message === "string") {
@@ -535,6 +542,20 @@ export function appServerErrorFromWire(payload: unknown, status: number, context
       message: payload.message,
       retryable: payload.retryable === true,
       request_id: (payload.request_id as string | null) ?? null,
+      details: isRecord(payload.details) ? payload.details : {},
+    });
+  }
+  if (
+    isRecord(payload) &&
+    payload.success === false &&
+    typeof payload.code === "string" &&
+    typeof payload.error === "string"
+  ) {
+    return new AppServerError({
+      code: payload.code,
+      message: payload.error,
+      retryable: status >= 500,
+      request_id: null,
       details: isRecord(payload.details) ? payload.details : {},
     });
   }

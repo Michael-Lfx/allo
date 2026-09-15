@@ -17,7 +17,7 @@ import type { ServerWebSocket } from "bun";
 import { decodeHistoryCursor } from "../src/lib/history-cursor";
 
 const PORT = Number(process.argv[2] ?? 17860);
-const PROTOCOL_VERSION = "2026-09-18";
+const PROTOCOL_VERSION = "2026-09-19";
 const AGENT_ID = "0190f5fe-7c00-7a00-8000-000000000004";
 
 interface MockRun {
@@ -390,6 +390,18 @@ function reject(socket: ServerWebSocket, id: unknown, code: string, message: str
   );
 }
 
+/**
+ * 会话**列表**投影变更（2026-09-19 加入）：与 `conversation/event` 不同，它不要求
+ * 订阅该会话，也不带 `sequence`——侧栏展示的是整份列表。
+ */
+function sendConversationListChanged(socket: ServerWebSocket, conversationId: string, action: "created" | "updated" | "deleted") {
+  socket.send(JSON.stringify({
+    jsonrpc: "2.0",
+    method: "conversation/list-changed",
+    params: { conversation_id: conversationId, action },
+  }));
+}
+
 function sendConversationEvent(conversation: MockConversation, eventType: string, payload: Record<string, unknown>) {
   const event = {
     conversation_id: conversation.id,
@@ -623,6 +635,9 @@ function handleConversationMethod(socket: ServerWebSocket, id: unknown, method: 
     }
     conversation.modified_at = Date.now();
     respond(socket, id, conversationView(conversation));
+    // 真实服务端在会话改名后广播 `conversation.listChanged(updated)`（自动标题走的
+    // 是同一条），这里照发，好让客户端的列表更新路径在 mock 上也被走到。
+    sendConversationListChanged(socket, conversation.id, "updated");
   }
   else if (method === "conversation/messages" && conversation) respond(socket, id, conversationMessages(conversation, { page_size: params?.page_size, cursor: params?.cursor }));
   else if (method === "conversation/send" && conversation) {

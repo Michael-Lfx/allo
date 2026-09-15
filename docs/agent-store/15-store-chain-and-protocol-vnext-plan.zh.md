@@ -35,7 +35,7 @@
 | 连接器 | 安装 → `connectors.list` 可见 → enable → run mention 校验通过 + 工具列举 | 默认 `enabled=false` 属预期 UX；真实工具调用用本地 mock MCP 烟测；OAuth 运行时证据并入本链 |
 | 专家团 | 下载 → 安装 → `teams.list` 可见 | **运行时为 Phase 2**，受 §12 门禁约束（P0-A/B 关闭前不立项 Team Spike） |
 
-下载源：本地 fixture 为主（可重复），另加一条 VPS-A 真实市场（8305 / 公网 10072）冒烟；`ensure_default_marketplaces` 的超时放宽（120s→600s）随该冒烟验证。
+下载源：本地 fixture 为主（可重复），另加一条 VPS-A 真实市场（8305 / 公网 10072）冒烟；`ensure_default_marketplaces` 的超时放宽（120s→600s）随该冒烟验证。✅ **订正（2026-09-15）：VPS-A 的两条公网入口已退役**——默认市场源改为官网站点 `https://agent-store.flowyaipc.cn/source/…`（见 `18` §11 D1、`14` §3），`:10072` 明文镜像与 `:10014/downloads/` 旧产物目录都不再是对外入口；本条保留为当时的冒烟记录。
 
 ## 4. 目标 2：协议词汇与概念对齐（原称「协议 vNext」；方向已拍板）
 

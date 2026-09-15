@@ -662,6 +662,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
                     &entries,
                     &digest,
                     None,
+                    is_official_source(source_kind, &request.source),
                 )
                 .await
                 .map_err(AppError::from)?;

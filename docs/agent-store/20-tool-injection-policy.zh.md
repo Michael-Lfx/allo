@@ -229,6 +229,8 @@ requirement = false
 goal = false
 ```
 
+另有**进程级覆盖**：环境变量 `AGENT_STORE_TOOLS`（JSON，整份替换上面的 `[tools]` 表，供自己 spawn 宿主的调用方/CI 使用）——见 §7.10。
+
 与引擎字段的落点映射（改错层就会失效，见 §7.6 ①②③）：
 
 | Store 策略 | 引擎落点 | 落在哪一层 |
@@ -424,6 +426,18 @@ slug = sanitize("{server_name}__{tool_name}") 截断
 第四批拒绝了 `bearerTokenEnvVar` 并把 header 凭据指向 `secret:NAME`，于是**声明路径**必须真的解析 header 里的引用；但 DB 行（`row_to_mcp_server_config`）与会话快照路径当时只解析 `env`，把 `headers` 原样下发。这个不一致是**静默的**：写到 header 里的引用会被当字面量发出去，远端 401，本地没有任何线索。
 
 本批把三条路径统一走 `resolve_header_secrets`（`factory/nomi.rs`）：按整值引用解析（`secret_ref::parse_secret_ref` 是**整值**精确匹配），解析不到的条目**丢弃并点名**，普通值原样透传。另外补一条针对最常见误写的告警：值里**含** `secret:` 但**不是**整值引用（典型 `Authorization: Bearer secret:TOKEN`）会原样发出，故 warn 出 server 名与 header 名——**只记 header 名，不记值**。这个形状的正确写法是 `bearerTokenEnvVar`，或把 `Bearer ` 前缀放进凭据值本身。
+
+### 7.10 环境变量覆盖：`AGENT_STORE_TOOLS`
+
+`apps/agent-store` 解析 `[tools]` 时先看环境变量 `AGENT_STORE_TOOLS`：存在且可解析就用它，文件里的 `[tools]` **整张被忽略**（`resolve_host_tool_policy`，`crates/backend/nomifun-app/src/services.rs`）。
+
+- **值就是策略文档**（JSON，形状与 `[tools]` 表一致，即 `NomiToolPolicy` 的 serde）：`{"web":true,"domains":{"cron":false}}`；`{}` 是显式的「全部默认开」（不受限）。
+- **整份替换，不是合并**。合并只能收窄（各层策略都是减项，见 §7.2），那就永远无法把模板关掉的域重新打开——而这正是「调用方自己 spawn 一个宿主」需要的；并且「部分合并」会让调用方没点名的键静默回落，比「这个值就是策略」更难预期。替换还让被 spawn 的宿主变确定：SDK 后端拿到它要的 toolset，而不是开发者本机 `~/.agent-store/config.toml` 恰好写着什么。
+- **与文件同一个 opt-in 闸门**（`--adopt-store-tool-policy`，只有 `apps/agent-store` 打开）：桌面 / Web 宿主两样都不采纳，所以也无法通过环境变量收窄它们。
+- **不可解析 → warn 后回落文件**（与「文件不可用回落宽松默认」同一条 fail-open 口径）；**空值 = 未设置**，不是「全禁」，要全禁请写具体策略。
+- 环境变量优先于文件，因此只要它还在，UI 经 `config/set` 写的 `tools.*` 在下次启动**也不会生效**（启动日志会点名来源，便于判断）。
+- 启动日志：`host tool policy taken from AGENT_STORE_TOOLS; the config file's [tools] table is ignored`，紧跟着仍是 `agent-store [tools] policy adopted for this host enabled=… disabled=… unrestricted=…`。
+- **SDK 侧无需新 API**：`launchClient` 的 `SpawnOptions.env` 已经合并进子进程环境，直接传即可（见 `web/packages/sdk/README.md`）。
 
 ---
 

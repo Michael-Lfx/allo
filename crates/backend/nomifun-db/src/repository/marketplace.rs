@@ -108,6 +108,15 @@ pub trait IMarketplaceRepository: Send + Sync {
     /// *current* source afterwards. The row keeps its opaque id (the id column
     /// is unique, so re-adding a source reuses the row instead of inserting a
     /// duplicate).
+    ///
+    /// `auto_update` is the source-class default (`is_official_source`) and is
+    /// applied **only when the row is being re-sourced**, i.e. the incoming
+    /// `source_kind` / `source_uri` differ from the stored pair. A re-source is
+    /// a new registration under an old id — the stored flag was computed for the
+    /// *old* address (e.g. a default source moved from a dev host to the
+    /// official site), so carrying it over would silently keep an official
+    /// market out of the auto-update sweep. Un-removing the *same* source keeps
+    /// the stored flag, so an operator's explicit toggle is never reset.
     async fn reactivate_marketplace(
         &self,
         marketplace_id: &str,
@@ -116,6 +125,7 @@ pub trait IMarketplaceRepository: Send + Sync {
         entries: &[MarketplaceEntry],
         content_digest: &str,
         version: Option<&str>,
+        auto_update: bool,
     ) -> Result<(), DbError>;
 
     /// Snapshots imported from this marketplace entry (provenance lookup),

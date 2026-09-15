@@ -14,6 +14,7 @@ import {
   Plus,
   Search,
   SlidersHorizontal,
+  Square,
   Wrench,
   X,
 } from "lucide-react";
@@ -26,7 +27,7 @@ import { ComposerCatalogMenu } from "./ComposerCatalogMenu";
 import { CommandPalette } from "./CommandPalette";
 import {
   PALETTE_GROUP_KEYS,
-  commandPaletteRows,
+  compactPaletteRows,
   filterPaletteItems,
   type PaletteItem,
   type PaletteItemKind,
@@ -92,13 +93,13 @@ export function Composer(props: {
   const setDraft = useAppStore((s) => s.setDraft);
   const send = useAppStore((s) => s.send);
   const newChat = useAppStore((s) => s.newChat);
-  const openSettings = useAppStore((s) => s.openSettings);
   const toggleComposerMenu = useAppStore((s) => s.toggleComposerMenu);
   const closeComposerMenu = useAppStore((s) => s.closeComposerMenu);
   const toggleModelPicker = useAppStore((s) => s.toggleModelPicker);
   const chooseModel = useAppStore((s) => s.chooseModel);
   const chooseEffort = useAppStore((s) => s.chooseEffort);
   const closeModelPicker = useAppStore((s) => s.closeModelPicker);
+  const cancel = useAppStore((s) => s.cancel);
 
   /** Which catalog submenu (agents/skills/connectors) is expanded, if any. */
   const [catalogMenu, setCatalogMenu] = useState<"agents" | "skills" | "connectors" | null>(null);
@@ -161,13 +162,6 @@ export function Composer(props: {
    *  working, and deleting the inserted token can drop the structured mention.
    */
   const client = useAppStore((s) => s.client);
-  const toggleCatalog = useAppStore((s) => s.toggleCatalog);
-  const shareConversation = useAppStore((s) => s.shareConversation);
-  const toggleArtifactPanel = useAppStore((s) => s.toggleArtifactPanel);
-  // W1b（R19）：会话动作并入同一面板——动作仍是原 store action（重命名/删除仍走既有
-  // 弹窗流程，不在面板里另建一套），面板只是入口之一。
-  const openRename = useAppStore((s) => s.openRename);
-  const requestDelete = useAppStore((s) => s.requestDelete);
   const pushToast = useAppStore((s) => s.pushToast);
   const [palette, setPalette] = useState<{ mode: "command" | "mention"; start: number; active: number } | null>(null);
   const [catalogs, setCatalogs] = useState<{
@@ -175,7 +169,6 @@ export function Composer(props: {
     skills: SkillSummary[];
     connectors: ConnectorSummary[];
   } | null>(null);
-  const [palettePrompts, setPalettePrompts] = useState<PaletteItem[]>([]);
   const [paletteLoading, setPaletteLoading] = useState(false);
   /** Caret index, tracked outside React state (read synchronously on keydown). */
   const cursorRef = useRef(0);
@@ -203,34 +196,6 @@ export function Composer(props: {
       });
     return () => { cancelled = true; };
   }, [palette?.mode, catalogs, client]);
-
-  // Command mode: offer the quick prompts / default init prompt of the experts
-  // already mentioned in the draft — that mention is the composer's only
-  // expert binding (docs/agent-store/05 §4.7).
-  useEffect(() => {
-    if (palette?.mode !== "command" || !client) return;
-    const agentIds = (composerMentions ?? []).filter((m) => m.kind === "agent").map((m) => m.id);
-    if (agentIds.length === 0) {
-      setPalettePrompts([]);
-      return;
-    }
-    let cancelled = false;
-    void Promise.all(agentIds.map((id) => client.agents.get(id).catch(() => null))).then((details) => {
-      if (cancelled) return;
-      const items: PaletteItem[] = [];
-      for (const detail of details) {
-        if (!detail) continue;
-        const init = localize(detail.default_init_prompt);
-        if (init) items.push({ id: `init:${detail.id}`, kind: "prompt", label: init, hint: detail.name, groupKey: PALETTE_GROUP_KEYS.prompt });
-        (detail.quick_prompts ?? []).forEach((prompt, index) => {
-          const text = localize(prompt);
-          if (text) items.push({ id: `qp:${detail.id}:${index}`, kind: "prompt", label: text, hint: detail.name, groupKey: PALETTE_GROUP_KEYS.prompt });
-        });
-      }
-      setPalettePrompts(items);
-    });
-    return () => { cancelled = true; };
-  }, [palette?.mode, composerMentions, client]);
 
   // The store clears mentions after a send / draft reset: drop the token map too.
   useEffect(() => {
@@ -286,32 +251,8 @@ export function Composer(props: {
         label: localize((row as { display_name?: LocalizedText | null }).display_name) || row.name,
       }));
     if (palette.mode === "command") {
-      const actions: PaletteItem[] = [
-        { id: "newChat", kind: "action", label: t("palette.newChat"), actionId: "newChat", groupKey: PALETTE_GROUP_KEYS.command },
-        { id: "newChatFolder", kind: "action", label: t("palette.newChatFolder"), actionId: "newChatFolder", groupKey: PALETTE_GROUP_KEYS.command },
-        { id: "store", kind: "action", label: t("palette.store"), actionId: "store", groupKey: PALETTE_GROUP_KEYS.command },
-        { id: "artifacts", kind: "action", label: t("palette.artifacts"), actionId: "artifacts", groupKey: PALETTE_GROUP_KEYS.command },
-        { id: "settings", kind: "action", label: t("palette.settings"), actionId: "settings", groupKey: PALETTE_GROUP_KEYS.command },
-        { id: "share", kind: "action", label: t("palette.share"), actionId: "share", groupKey: PALETTE_GROUP_KEYS.command },
-      ];
-      // W1b（R19）：会话动作与模型 / 思考等级并入同一列表；上下文在这里现算，避免
-      // 把 `currentConversation` / `currentModel` 的 memo 提到本 memo 之前。
-      const activeConversation = conversations.find((item) => item.conversation_id === selectedConversationId) ?? null;
-      const activeModel = activeConversation?.model ?? (providerId && model ? { provider_id: providerId, model } : null);
-      return filterPaletteItems(
-        commandPaletteRows(
-          {
-            hasConversation: selectedConversationId !== null,
-            models: modelDirectory,
-            selectedModelKey,
-            currentModel: activeModel,
-            currentEffort: selectedEffort,
-          },
-          t,
-          { actions, prompts: palettePrompts },
-        ),
-        paletteQuery,
-      );
+      // `/` 模式只剩引擎侧的 `/compact`；其他斜杠命令已移除。
+      return filterPaletteItems(compactPaletteRows(selectedConversationId !== null, t), paletteQuery);
     }
     if (!catalogs) return [];
     return filterPaletteItems(
@@ -322,7 +263,7 @@ export function Composer(props: {
       ],
       paletteQuery,
     );
-  }, [palette, paletteQuery, palettePrompts, catalogs, t, conversations, selectedConversationId, providerId, model, modelDirectory, selectedModelKey, selectedEffort]);
+  }, [palette, paletteQuery, catalogs, t, selectedConversationId, lang]);
 
   /** Swap the typed `/query` or `@query` (trigger → caret) for `inserted`. */
   const replaceTrigger = (inserted: string) => {
@@ -331,41 +272,15 @@ export function Composer(props: {
     setDraft(`${draft.slice(0, palette.start)}${inserted}${draft.slice(cursor)}`);
   };
 
-  const runPaletteAction = (id: string) => {
-    switch (id) {
-      case "newChat": void newChat(); break;
-      case "newChatFolder": openNewChatDialog(); break;
-      case "store": toggleCatalog(); break;
-      case "artifacts": toggleArtifactPanel(); break;
-      case "settings": openSettings(); break;
-      case "share": void shareConversation(); break;
-      // W1b（R19）：会话动作——重命名 / 删除仍走既有弹窗，面板只做入口。
-      case "session.rename": if (selectedConversationId) openRename(selectedConversationId); break;
-      case "session.delete": if (selectedConversationId) requestDelete(selectedConversationId); break;
-      case "session.share": void shareConversation(); break;
-      case "session.copyId":
-        if (selectedConversationId) {
-          void navigator.clipboard?.writeText(selectedConversationId);
-          pushToast("success", "palette.sessionIdCopied");
-        }
-        break;
-      default: break;
-    }
-  };
-
   const pickPaletteItem = (item: PaletteItem) => {
     const current = palette;
     if (!current) return;
-    // 不可用的行（例如没有会话时的会话动作）即使被键盘选中也不执行。
+    // 不可用的行（例如没有会话时的 `/compact`）即使被键盘选中也不执行。
     if (item.disabled) return;
     if (current.mode === "command") {
-      const insertsText = item.kind === "prompt";
-      replaceTrigger(insertsText ? item.label : "");
+      // `/compact` 与桌面端一致：插入命令文本，由用户回车发送；压缩由后端引擎完成。
+      replaceTrigger("/compact ");
       setPalette(null);
-      if (insertsText) return;
-      if (item.kind === "action" || item.kind === "session") runPaletteAction(item.actionId ?? item.id);
-      else if (item.kind === "model" && item.modelKey) chooseModel(item.modelKey);
-      else if (item.kind === "effort") chooseEffort(item.effort ?? "");
       return;
     }
     const kind: MentionKind = item.kind === "agent" ? "agent" : item.kind === "skill" ? "skill" : "connector";
@@ -591,7 +506,7 @@ export function Composer(props: {
         }
         disabled={!connected || isSending || isProcessing || runSteerBusy}
         rows={3}
-        aria-label="消息内容"
+        aria-label={t("composer.messageAria")}
         aria-keyshortcuts="Enter"
       />
       {palette && (
@@ -667,6 +582,21 @@ export function Composer(props: {
           <button className="voice-button" type="button" aria-label={t("composer.voice")} title={t("composer.voice")}>
             <Mic size={17} strokeWidth={1.8} />
           </button>
+          {/* 回合进行中：同一个位置换成「停止生成」。此前这里只是把发送按钮置灰，而输入框
+              此时也是 disabled，于是整条底部没有任何中断入口——只有顶栏那个按钮能停。
+              动作是 `cancel()`（`conversation/cancel`），不是「暂停」：协议没有暂停语义，
+              运行状态里的 `paused` 是另一回事（目标暂停），恢复不了当前这轮。 */}
+          {isProcessing && connected && !steering ? (
+            <button
+              className="send-button is-stop"
+              type="button"
+              onClick={() => void cancel()}
+              aria-label={t("composer.stopGenerating")}
+              title={t("composer.stopGenerating")}
+            >
+              <Square aria-hidden="true" size={13} fill="currentColor" strokeWidth={2} />
+            </button>
+          ) : (
           <button
             className="send-button"
             type="button"
@@ -677,6 +607,7 @@ export function Composer(props: {
           >
             <ArrowUp size={18} strokeWidth={2} />
           </button>
+          )}
         </div>
       </div>
       {/* W3: while a Run is live the composer is in steer mode; the hint states

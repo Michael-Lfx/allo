@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronRight, Lightbulb } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Activity, ThinkingData } from "../../lib/activity";
@@ -17,9 +17,24 @@ export function ThinkingItem({ activity, thinking: parsed }: { activity: Activit
     status: activity.status ?? parsed.status,
   };
   const isDone = thinking.status === "done" || thinking.status === "finish" || thinking.status === "completed";
-  const [expanded, setExpanded] = useState(true);
+  // 思考段跑完（`isDone`）就收起，运行中保持展开。展开与否是**派生**的：`null` 表示
+  // 用户还没手动切过，此时完全由运行状态决定；一旦手动切换就以用户为准，不再被自动收起
+  // 覆盖——否则用户正想看一段旧思考，会被下一次状态推进重新折回去。
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+  const expanded = userExpanded ?? !isDone;
   const label = thinking.subject || (isDone ? t("thinking.process") : t("thinking.now"));
-  return <details className={`thinking-card ${expanded ? "is-expanded" : ""}`} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+  return <details
+    className={`thinking-card ${expanded ? "is-expanded" : ""}`}
+    open={expanded}
+    // 用 `toggle` 而不是 `summary.onClick`：`open` 是受控的，React 会在点击的处理函数
+    // 之后、浏览器执行默认切换动作之前完成重渲染，两者会互相抵消，DOM 与状态就此错位。
+    // `toggle` 只在 `open` 真正变化后触发，读到的就是最终值；自动收起导致的触发与当前
+    // `expanded` 相等，因此不会被误记成「用户手动切换」。
+    onToggle={(event) => {
+      const nowOpen = event.currentTarget.open;
+      if (nowOpen !== expanded) setUserExpanded(nowOpen);
+    }}
+  >
     <summary>
       <span className="thinking-icon" aria-hidden="true"><Lightbulb size={14} strokeWidth={1.7} /></span>
       <span className="thinking-label">{label}</span>

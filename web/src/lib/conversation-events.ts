@@ -110,6 +110,19 @@ export const initialConversationStream: ConversationStreamState = {
   loadingOlder: false,
 };
 
+/**
+ * 该事件是否代表「回合在服务端已经结束」（`turn.status` 且状态不是 running）。
+ *
+ * 侧栏那一行的 `is_processing` 只是发送时的乐观快照：服务端既不为它推通知，
+ * 也不会在事件里带上它。`turn.status` 非 running 是客户端唯一能确定服务端
+ * `processing` 已翻假的时刻，据此重读一次会话投影（见 store 的
+ * `syncConversationRow`），顺带取回服务端异步生成的标题。
+ */
+export function isTurnStoppedEvent(event: ConversationEvent): boolean {
+  const decoded = decodeConversationEvent(event);
+  return decoded.kind === "turn.status" && !decoded.running;
+}
+
 export function conversationStreamReducer(
   state: ConversationStreamState,
   action: ConversationStreamAction,

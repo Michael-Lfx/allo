@@ -175,8 +175,15 @@ button:disabled { cursor: default; opacity: .48; }
 .thread-menu-anchor { position: relative; display: inline-flex; }
 .thread-menu { top: 38px; left: 0; transform-origin: top left; }
 .topbar-left { position: relative; }
-.conversation-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-.processing-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green)26; }
+/* `flex: 1` 让标题吸收行内剩余空间，状态标签与时间才能靠右成组（否则
+   `space-between` 会把标签甩到行的中间）。 */
+.conversation-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+/* 会话状态标签：只在活跃会话行出现（纯展示，不参与点击目标布局）。 */
+.conversation-status-tag { flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: 999px; padding: 1px 7px; color: var(--muted); font-size: 10px; font-weight: 560; white-space: nowrap; }
+.conversation-status-tag.is-active { border-color: var(--link-border); color: var(--link); }
+.conversation-status-tag.is-attention { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
+.conversation-status-tag.is-ok { border-color: var(--green); background: var(--green-soft); color: var(--green-deep); }
+.conversation-status-tag.is-bad { border-color: var(--destructive-border); background: var(--destructive-soft); color: var(--destructive-text); }
 .sidebar-empty { margin: 4px 12px; color: var(--muted-light); font-size: 13px; line-height: 1.45; }
 .sidebar-spacer { flex: 1; min-height: 24px; }
 .sidebar-recent-heading { min-height: 35px; align-items: center; padding-bottom: 0; color: var(--muted); }
@@ -208,8 +215,6 @@ button:disabled { cursor: default; opacity: .48; }
 .thread-more { width: 32px; height: 32px; }
 .topbar-icon { width: 34px; height: 34px; }
 .mobile-menu-button { display: none; }
-.stop-button { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; border: 1px solid var(--destructive-border); border-radius: 7px; background: var(--destructive-soft); color: var(--destructive); padding: 0 10px; font-size: 12px; }
-.stop-button:hover { background: var(--destructive-soft); }
 .share-button { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--primary); padding: 0 12px; font-size: 12px; transition: border-color .14s ease, background .14s ease, color .14s ease; }
 .share-button:hover:not(:disabled) { border-color: var(--muted-faint); background: var(--surface-raised); color: var(--ink-strong); }
 .share-button:disabled { opacity: .42; }
@@ -230,7 +235,7 @@ button:disabled { cursor: default; opacity: .48; }
 .quiet-button:hover:not(:disabled) { border-color: var(--muted-faint); background: var(--surface-raised); }
 
 .message-row { min-width: 0; }
-.user-message { display: flex; justify-content: flex-end; margin: 12px 0 40px; }
+.user-message { display: flex; flex-direction: column; align-items: flex-end; margin: 12px 0 40px; }
 .user-message .message-bubble { color: var(--ink); }
 .message-bubble { max-width: min(620px, 78%); border-radius: 18px; background: var(--border); padding: 12px 18px; color: var(--ink-strong); }
 .message-bubble .message-text { font-size: 15px; line-height: 1.58; }
@@ -253,12 +258,19 @@ button:disabled { cursor: default; opacity: .48; }
 .error-card-actions .retry-button { display: inline-flex; align-items: center; gap: 5px; }
 .error-card-badge { align-self: center; border: 1px solid var(--destructive-border); border-radius: 999px; color: var(--destructive); padding: 1px 8px; font-size: 10.5px; }
 .error-card-badge.is-retryable { border-color: var(--border-strong); color: var(--muted); }
-.user-message .message-actions { align-items: flex-end; flex-direction: column; margin-top: 6px; }
-.message-edit { display: flex; flex-direction: column; gap: 8px; min-width: min(520px, 60vw); }
-.message-edit-input { width: 100%; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--ink-strong); padding: 8px 10px; font: inherit; font-size: 14px; line-height: 1.55; resize: vertical; }
-.message-edit-input:focus { outline: none; border-color: var(--muted-faint); box-shadow: 0 0 0 3px var(--shadow-solid); }
-.message-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.message-edit-hint { color: var(--muted-light); font-size: 11px; }
+.user-message .message-actions { margin-top: 6px; }
+/* `/compact` 是引擎命令，不是用户消息：不出现气泡，只留一条居中的轻量提示。 */
+.compact-notice { display: flex; justify-content: center; margin: 12px 0 40px; }
+.compact-notice-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--muted); padding: 3px 12px; font-size: 12px; }
+/* 行内编辑：单独一个表面，不再嵌在只读气泡里面（DESIGN.md：禁止嵌套卡片）。
+   与 `.composer-shell` 共用同一套语言——同样的 16px 圆角、focus-within 环、无边框输入。 */
+.message-editor { display: flex; width: min(620px, 78%); flex-direction: column; gap: 8px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface); padding: 12px 14px 10px; box-shadow: 0 10px 30px var(--shadow-solid); transition: border-color .14s ease, box-shadow .14s ease; }
+.message-editor:focus-within { border-color: var(--muted-faint); box-shadow: 0 0 0 4px var(--shadow-solid), 0 10px 30px var(--shadow-solid); }
+.message-editor-input { display: block; width: 100%; min-height: 76px; max-height: 40vh; resize: none; border: 0; outline: 0; background: transparent; color: var(--ink-strong); padding: 2px 2px 0; font: inherit; font-size: 15px; line-height: 1.55; }
+.message-editor-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.message-editor-hint { min-width: 0; color: var(--muted-light); font-size: 11px; line-height: 1.4; }
+.message-editor-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.message-editor-actions .quiet-button, .message-editor-actions .primary-button { min-height: 30px; padding: 0 12px; font-size: 12px; }
 .retry-button { min-height: 30px; border-color: var(--destructive-border); color: var(--destructive); padding: 0 10px; font-size: 11px; }
 .retry-button:hover { border-color: var(--destructive-border-strong); background: var(--destructive-soft); }
 .message-error .assistant-divider { margin-bottom: 18px; }
@@ -289,6 +301,21 @@ button:disabled { cursor: default; opacity: .48; }
 .thinking-live span:nth-child(2) { animation-delay: .15s; }
 .thinking-live span:nth-child(3) { animation-delay: .3s; }
 .thinking-duration { color: var(--muted-light); font-size: 10px; }
+/* ── 当前计划面板（输入框上方常驻；与 .approval-card 同一列宽） ── */
+.plan-panel { width: min(920px, calc(100% - 80px)); margin: 0 auto 10px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: 0 6px 20px var(--shadow-solid); overflow: hidden; }
+.plan-panel-head { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--ink-strong); padding: 10px 14px; font: inherit; text-align: left; cursor: pointer; }
+.plan-panel-head:hover { background: var(--surface-soft); }
+.plan-panel-icon { flex: 0 0 auto; color: var(--muted); }
+.plan-panel-title { flex: 0 0 auto; font-size: 13px; font-weight: 560; }
+.plan-panel-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.plan-panel-caret { flex: 0 0 auto; margin-left: auto; color: var(--muted); }
+.plan-panel-steps { display: grid; gap: 6px; margin: 0; padding: 0 14px 12px 33px; list-style: none; }
+.plan-panel-step { display: flex; min-width: 0; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.6; }
+.plan-panel-glyph { flex: 0 0 auto; margin-top: 3px; color: var(--muted-faint); }
+.plan-panel-step.is-completed .plan-panel-glyph { color: var(--green); }
+.plan-panel-step.is-in-progress .plan-panel-glyph { color: var(--amber); }
+.plan-panel-step.is-completed .plan-panel-step-text { color: var(--muted); }
+.plan-panel-step-text { min-width: 0; color: var(--ink-strong); word-break: break-word; }
 .tip-card { margin: -20px 0 24px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); color: var(--ink-strong); overflow: hidden; }
 .tip-card summary { display: flex; min-height: 43px; align-items: center; gap: 9px; cursor: pointer; list-style: none; padding: 0 12px; font-size: 12px; }
 .tip-card summary::-webkit-details-marker { display: none; }
@@ -304,10 +331,9 @@ button:disabled { cursor: default; opacity: .48; }
 .tip-body { border-top: 1px solid var(--border); background: var(--surface-raised); color: var(--muted); padding: 12px 14px; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 .tip-warning .tip-body { border-top-color: var(--amber-soft); background: var(--amber-soft); }
 .tip-error .tip-body { border-top-color: var(--destructive-border); background: var(--destructive-soft); }
-.assistant-thinking { display: flex; align-items: center; gap: 5px; margin: -22px 0 28px; color: var(--muted); font-size: 12px; }
-.assistant-thinking span { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); animation: pulse 1.1s ease-in-out infinite; }
-.assistant-thinking span:nth-child(2) { animation-delay: .15s; }
-.assistant-thinking span:nth-child(3) { animation-delay: .3s; }
+/* 只给读屏：占 1px 但不可见。不能用 `display:none` / `visibility:hidden` —— 那会把节点从
+   无障碍树里一并移除，等于没写。当前用在：忙态播报行、计划步骤的状态词。 */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 @keyframes pulse { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.1); } }
 
 .tool-call { margin: -20px 0 23px; border: 0; border-radius: 0; background: transparent; color: var(--ink-strong); overflow: hidden; }
@@ -445,7 +471,6 @@ button:disabled { cursor: default; opacity: .48; }
 .run-raw-table td { border-bottom: 1px solid var(--border-soft); color: var(--ink-strong); padding: 3px 6px; vertical-align: top; }
 .run-raw-scope, .run-raw-payload { font-family: var(--font-mono); }
 .run-raw-payload { color: var(--muted); word-break: break-all; }
-.run-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 999px; background: var(--link); box-shadow: 0 0 0 2px var(--link-border); }
 .composer-run-hint { margin: 6px 2px 0; color: var(--muted); font-size: 11.5px; }
 .composer-context-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 2px 0; color: var(--amber); font-size: 11.5px; }
 .composer-context-hint button { min-height: 24px; padding: 0 8px; font-size: 11px; }
@@ -600,6 +625,10 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .send-button:hover:not(:disabled) { background: var(--ink-strong); }
 .send-button:active:not(:disabled) { transform: scale(.95); }
 .send-button:disabled { background: var(--border); color: var(--muted-faint); opacity: 1; }
+/* 回合进行中的同一个按钮换成「停止」：危险语义既靠颜色也靠方形图标表达，
+   这里要落在圆形按钮里。 */
+.send-button.is-stop { background: var(--destructive); }
+.send-button.is-stop:hover { background: var(--destructive-hover); }
 .voice-button { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--primary); transition: background .14s ease, color .14s ease; }
 .voice-button:hover { background: var(--surface-raised); color: var(--primary); }
 .composer-disclaimer { width: min(920px, calc(100% - 80px)); margin: 7px auto 0; color: var(--muted-light); text-align: center; font-size: 10px; }
@@ -756,6 +785,10 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
   .message-stack { width: calc(100% - 30px); padding-top: 26px; padding-bottom: 40px; }
   .message-bubble { max-width: 84%; padding: 11px 15px; }
   .message-bubble .message-text, .message-text { font-size: 14px; line-height: 1.68; }
+  /* 窄屏：编辑表占满可用宽度，按钮换行到提示下面。 */
+  .message-editor { width: 100%; padding: 11px 12px 9px; }
+  .message-editor-bar { flex-direction: column-reverse; align-items: stretch; gap: 8px; }
+  .message-editor-actions { justify-content: flex-end; }
   .assistant-message { margin-bottom: 36px; }
   .composer-area { padding: 9px 12px max(9px, env(safe-area-inset-bottom)); }
   .composer-shell { width: calc(100% - 24px); border-radius: 16px; padding: 11px 10px 7px; }

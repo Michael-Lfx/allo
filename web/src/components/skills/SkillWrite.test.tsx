@@ -110,7 +110,7 @@ describe("SkillWriteActionsView (W12 / R17)", () => {
 
     // The marketplace case points at the installer/market chain instead of
     // pretending the skill is editable from here.
-    expect(renderActions(marketSkill)).toContain("请在应用商店里卸载");
+    expect(renderActions(marketSkill)).toContain("请在应用商店中卸载");
   });
 
   it("treats a host that never reported the origin as read-only", () => {

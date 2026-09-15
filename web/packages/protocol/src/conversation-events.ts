@@ -30,6 +30,21 @@ export type ToolCallData = {
   status: string | null;
 };
 
+/**
+ * One plan step's status.
+ *
+ * The producer declares exactly these three (`nomi-tools/src/update_plan.rs`
+ * `StepStatus`), and its doc comment names the frontend as the reason for the
+ * snake_case spelling — so this mirrors a stated contract rather than guessing
+ * at a vocabulary.
+ */
+export type PlanStepStatus = "pending" | "in_progress" | "completed";
+
+export type PlanEntry = { content: string; status: PlanStepStatus };
+
+/** Shape a plan body (`message_type` `plan`): the step list. */
+export type PlanData = { entries: PlanEntry[] };
+
 export function stringValue(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -137,6 +152,31 @@ export function toolCallData(value: unknown): ToolCallData | null {
     output: candidate.output ?? candidate.result,
     status: stringValue(candidate.status),
   };
+}
+
+/**
+ * Shape a plan body; `null` when there is no usable step list.
+ *
+ * `step` is accepted as an alias of `content`: the tool's own argument is named
+ * `step`, and the producer normalizes it to `content` for the plan row — a row
+ * written before that normalization (or by a producer that skipped it) would
+ * otherwise render as an empty plan.
+ */
+export function planData(value: unknown): PlanData | null {
+  const candidate = unwrapContent(value);
+  if (!isRecord(candidate) || !Array.isArray(candidate.entries)) return null;
+  const entries = candidate.entries.flatMap((raw): PlanEntry[] => {
+    if (!isRecord(raw)) return [];
+    const content = stringValue(raw.content) ?? stringValue(raw.step);
+    if (!content) return [];
+    return [{ content, status: planStepStatus(raw.status) }];
+  });
+  return entries.length > 0 ? { entries } : null;
+}
+
+/** Unknown/absent step statuses read as `pending` — never as "done". */
+function planStepStatus(value: unknown): PlanStepStatus {
+  return value === "completed" || value === "in_progress" ? value : "pending";
 }
 
 /** Shape a `context.usage` payload; `null` when nothing was actually measured. */

@@ -302,12 +302,12 @@ describe("SettingsDialog sections (W11 / R16)", () => {
 
   it("distinguishes 'no declaration file' from 'a file that declares nothing'", () => {
     const missing = renderMcp();
-    expect(missing).toContain("没有 ~/.agent-store/mcp.json");
-    expect(missing).not.toContain("文件里还没有 mcpServers 声明");
+    expect(missing).toContain("未找到 ~/.agent-store/mcp.json");
+    expect(missing).not.toContain("文件中尚无 mcpServers 声明");
 
     const empty = renderMcp({ view: { ...VIEW, mcp: { exists: true, servers: [], rejected: [] } } });
-    expect(empty).toContain("文件里还没有 mcpServers 声明");
-    expect(empty).not.toContain("没有 ~/.agent-store/mcp.json");
+    expect(empty).toContain("文件中尚无 mcpServers 声明");
+    expect(empty).not.toContain("未找到 ~/.agent-store/mcp.json");
   });
 
   it("shows the parser's own reason for every refused entry", () => {
@@ -355,7 +355,7 @@ describe("SettingsDialog sections (W11 / R16)", () => {
     expect(html).toContain("mcp.json is not valid JSON");
     // A file the host could not read must never look like a file that declares
     // nothing — that is the whole reason the wire carries `error`.
-    expect(html).not.toContain("文件里还没有 mcpServers 声明");
+    expect(html).not.toContain("文件中尚无 mcpServers 声明");
   });
 
   it("shows a failed read with a retry and no declaration state", () => {
@@ -366,7 +366,7 @@ describe("SettingsDialog sections (W11 / R16)", () => {
 
     expect(html).toContain("config_unavailable");
     expect(html).toContain("重试");
-    expect(html).not.toContain("没有 ~/.agent-store/mcp.json");
+    expect(html).not.toContain("未找到 ~/.agent-store/mcp.json");
   });
 
   it("says whether this host actually uses the file, and never guesses", () => {
@@ -378,7 +378,7 @@ describe("SettingsDialog sections (W11 / R16)", () => {
     const inert = renderMcp({
       view: { ...VIEW, mcp: { exists: true, adopted: false, servers: declared, rejected: [] } },
     });
-    expect(inert).toContain("未使用：本宿主不读这份声明");
+    expect(inert).toContain("未使用：本宿主不会读取该声明");
     expect(inert).not.toContain("使用中：");
     expect(inert).toContain("filesystem");
 

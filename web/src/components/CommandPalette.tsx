@@ -1,28 +1,11 @@
-import {
-  AtSign,
-  Brain,
-  Copy,
-  Files,
-  FolderPlus,
-  Lamp,
-  Layers,
-  MessageSquarePlus,
-  Pencil,
-  Share2,
-  Settings,
-  SlidersHorizontal,
-  Sparkles,
-  Terminal,
-  Trash2,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
+import { AtSign, Lamp, Minimize2, Wrench, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { PaletteItem, PaletteItemKind } from "../lib/palette-model";
 
 /**
- * W1 command palette V1 + V2 (doc 19 §3 W1 / W1b).
+ * W1 command palette（doc 19 §3 W1）—— 收敛后 `/` 模式只剩 `/compact`，`@` 模式
+ * 仍是 agents / skills / connectors 三组目录。
  *
  * Presentational only: the composer keeps DOM focus in the textarea and owns
  * the query (derived from the draft after the `/` or `@` trigger) plus the
@@ -30,35 +13,16 @@ import type { PaletteItem, PaletteItemKind } from "../lib/palette-model";
  * separate input here would break IME composition and the "delete the token →
  * drop the structured mention" invariant.
  *
- * V2 (R19) adds three sections — session actions, models, reasoning levels —
- * which arrive as ordinary rows: this component only renders `groupKey` headers
+ * Rows arrive as ordinary data: this component only renders `groupKey` headers
  * and per-kind icons, so a row the data layer adds tomorrow needs no change here.
  */
 export type { PaletteItem, PaletteItemKind };
 
 const ICONS: Record<PaletteItemKind, LucideIcon> = {
-  action: Terminal,
-  prompt: Sparkles,
+  compact: Minimize2,
   agent: Lamp,
   skill: Wrench,
   connector: AtSign,
-  session: Layers,
-  model: SlidersHorizontal,
-  effort: Brain,
-};
-
-/** Per-action icons, so the built-in list does not read as one grey column. */
-const ACTION_ICONS: Record<string, LucideIcon> = {
-  newChat: MessageSquarePlus,
-  newChatFolder: FolderPlus,
-  store: Layers,
-  settings: Settings,
-  artifacts: Files,
-  share: Share2,
-  "session.rename": Pencil,
-  "session.delete": Trash2,
-  "session.share": Share2,
-  "session.copyId": Copy,
 };
 
 export function CommandPalette({
@@ -95,7 +59,7 @@ export function CommandPalette({
         {!note &&
           !loading &&
           items.map((item, index) => {
-            const Icon = ACTION_ICONS[item.actionId ?? item.id] ?? ICONS[item.kind];
+            const Icon = ICONS[item.kind];
             // A section header is emitted whenever the group changes, so the
             // cursor stays a flat index over `items` (keyboard needs no tree).
             const startsGroup = index === 0 || items[index - 1].groupKey !== item.groupKey;

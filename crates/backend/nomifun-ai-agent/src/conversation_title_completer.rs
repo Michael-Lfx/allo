@@ -15,7 +15,17 @@ use crate::factory::provider_config::{
 };
 use nomi_config::config::Config;
 
-const TITLE_MAX_TOKENS: u32 = 128;
+/// Output ceiling for the single title request.
+///
+/// The title itself is ≤ [`TITLE_MAX_CHARS`] characters, so the ceiling is not
+/// about the answer — it is headroom for providers that ignore
+/// `thinking: Disabled` and spend the budget on a reasoning preamble before
+/// ever writing the `TITLE:` line. At the previous 128 the live traces were cut
+/// mid-thought (204 / 503 / 218 reasoning characters, content never reached),
+/// which is exactly what pushed them onto the reasoning-fallback path. A ceiling
+/// costs nothing when unused — providers bill actual output — so it only has to
+/// be large enough for a short preamble plus one line.
+const TITLE_MAX_TOKENS: u32 = 1024;
 const TITLE_MAX_CHARS: usize = 24;
 const TITLE_IDEAL_MAX_CHARS: usize = 16;
 
@@ -137,6 +147,9 @@ fn is_meta_title_line(line: &str) -> bool {
         "标题可以是",
         "所以标题",
         "最终标题",
+        // 提示词回声：`TITLE_SYSTEM_ZH` 要求「不要直接照抄用户输入」，而实测
+        // 模型（mimo-v2.5）会把这句话本身当作输出回敬回来。
+        "照抄用户输入",
         "我需要",
         "让我想",
         "让我来",
@@ -166,6 +179,13 @@ fn is_meta_title_line(line: &str) -> bool {
         "cannot help",
     ];
     MARKERS.iter().any(|m| line.contains(m) || lower.contains(m))
+}
+
+/// A title has to carry at least one word character (letter / digit / CJK).
+/// Punctuation-only output is a model hiccup, never a title: live runs stored a
+/// lone `,` as a conversation name before this guard existed.
+fn has_title_word(text: &str) -> bool {
+    text.chars().any(char::is_alphanumeric)
 }
 
 fn is_placeholder_title(line: &str) -> bool {
@@ -354,7 +374,23 @@ fn last_chars(raw: &str, max_chars: usize) -> &str {
         .unwrap_or(raw)
 }
 
-fn pick_title_candidate(raw: &str) -> Option<String> {
+/// Pick a title out of a raw model response.
+///
+/// The structural candidates (a `TITLE:` tag, a "the title is …" marker, a
+/// quoted / `「」` span) are deliberate title signals and are honored on **both**
+/// channels. The free-form segment scan below is only sound for the `content`
+/// channel, where the model was answering the title request: there, a bare
+/// short line is plausibly the title itself.
+///
+/// `allow_unstructured = false` is the reasoning channel, where the very same
+/// scan is destructive — it mines arbitrary chain-of-thought fragments. Live
+/// evidence (model `mimo-v2.5`, which ignores `thinking: Disabled` and streams
+/// everything into reasoning): 204 / 503 / 218 reasoning chars were turned into
+/// the conversation names `开头`, `,` and `不要照抄用户输入，所以不能` — the last
+/// being an echo of this module's own system prompt, cut mid-sentence by the
+/// then-128-token output ceiling. Reasoning therefore has to be *structured* to
+/// count.
+fn pick_title_candidate(raw: &str, allow_unstructured: bool) -> Option<String> {
     if let Some(t) = extract_tagged_title(raw) {
         return Some(t);
     }
@@ -384,6 +420,11 @@ fn pick_title_candidate(raw: &str) -> Option<String> {
         .collect();
     if let Some(t) = pick_best_short_candidate(bracketed) {
         return Some(t);
+    }
+
+    // 自由片段扫描只对 content 通道成立；reasoning 通道到此为止。
+    if !allow_unstructured {
+        return None;
     }
 
     for seg in split_segments(tail).iter().rev().chain(split_segments(raw).iter().rev()) {
@@ -434,19 +475,20 @@ fn normalize_reasoning_output(raw: &str) -> String {
     normalize_title_output_with_mode(raw, false)
 }
 
-fn normalize_title_output_with_mode(raw: &str, allow_long_unstructured: bool) -> String {
-    let candidate = match pick_title_candidate(raw) {
+fn normalize_title_output_with_mode(raw: &str, allow_unstructured: bool) -> String {
+    let candidate = match pick_title_candidate(raw, allow_unstructured) {
         Some(t) => t,
-        None => {
+        // content 通道：模型就是在答复标题请求，整段短输出可以当作标题。
+        None if allow_unstructured => {
             let trimmed = raw.trim();
-            if trimmed.is_empty()
-                || is_meta_title_line(trimmed)
-                || (!allow_long_unstructured && trimmed.chars().count() > TITLE_MAX_CHARS)
-            {
+            if trimmed.is_empty() || is_meta_title_line(trimmed) {
                 return String::new();
             }
             trimmed.to_owned()
         }
+        // reasoning 通道：没有结构化标题就**不猜**——返回空让会话保留
+        // 首条用户消息（`autoTitleState=failed`），而不是把思考碎片当标题。
+        None => return String::new(),
     };
 
     let mut collapsed = String::new();
@@ -474,7 +516,7 @@ fn normalize_title_output_with_mode(raw: &str, allow_long_unstructured: bool) ->
         .trim()
         .trim_end_matches(['。', '.', '！', '!', '？', '?']);
     let out = clamp_title(stripped);
-    if is_meta_title_line(&out) || is_placeholder_title(&out) {
+    if is_meta_title_line(&out) || is_placeholder_title(&out) || !has_title_word(&out) {
         String::new()
     } else {
         out
@@ -635,6 +677,57 @@ mod tests {
     fn rejects_instruction_echo_reasoning() {
         let raw = "我们被要求生成一个短标题，3-7个词，描述对话的主题。";
         assert_eq!(normalize_reasoning_output(raw), "");
+    }
+
+    /// 线上证据（mimo-v2.5，2026-09-15）：该模型无视 `thinking: Disabled`，
+    /// 把内容全放进 reasoning 通道，于是走了 reasoning 兜底。旧逻辑从思考文本里
+    /// 「倒着挑一个 ≤16 字的片段」，把 204 / 503 / 218 字的思考变成了会话名
+    /// `开头` / `,` / `不要照抄用户输入，所以不能`（最后一条是本模块系统提示词
+    /// 自身的回声，被当时 128 token 的输出上限截成半句）。
+    ///
+    /// 这三条必须继续被拒——reasoning 只有给出结构化标题才可用。
+    #[test]
+    fn rejects_reasoning_fragments_seen_in_live_runs() {
+        // 「不要照抄用户输入，所以不能」：末段就是提示词回声。
+        let instruction_echo = "我需要生成一个标题。不要照抄用户输入，所以不能。";
+        assert_eq!(normalize_reasoning_output(instruction_echo), "");
+
+        // 「开头」：思考的最后一段是一个孤立短句。
+        let orphan_tail = "用户只是简单地打了声招呼。开头";
+        assert_eq!(normalize_reasoning_output(orphan_tail), "");
+
+        // 「,」：思考被 max_tokens 截断，末尾只剩一个标点片段。
+        let truncated = "用户只是打了个招呼。\n,";
+        assert_eq!(normalize_reasoning_output(truncated), "");
+
+        // 但 reasoning 里给了结构化标题时仍然可用（这条通道不能被一并废掉）。
+        let structured = "让我想想标题。\nTITLE: 打招呼";
+        assert_eq!(normalize_reasoning_output(structured), "打招呼");
+    }
+
+    /// content 通道的自由片段扫描是有意保留的：模型直接回答了标题请求。
+    /// 纯标点的答复不在此列。
+    #[test]
+    fn rejects_punctuation_only_titles() {
+        assert_eq!(normalize_title_output(","), "");
+        assert_eq!(normalize_title_output("TITLE: ,"), "");
+        assert_eq!(normalize_title_output("TITLE: ，"), "");
+        assert_eq!(normalize_title_output("。"), "");
+        // 正常标题不受影响。
+        assert_eq!(normalize_title_output("TITLE: 修复登录问题"), "修复登录问题");
+    }
+
+    /// 提示词回声在 content 通道也要拦住（reasoning 通道已由结构化要求兜住）。
+    #[test]
+    fn rejects_prompt_echo_on_the_content_channel() {
+        assert_eq!(normalize_title_output("不要照抄用户输入"), "");
+        assert_eq!(normalize_title_output("TITLE: 不要直接照抄用户输入"), "");
+    }
+
+    #[test]
+    fn keeps_bare_short_line_from_the_content_channel() {
+        // content 通道整段短输出仍可当标题：模型没有按格式回答，但它确实在回答。
+        assert_eq!(normalize_title_output("Simple Greeting"), "Simple Greeting");
     }
 
     #[test]

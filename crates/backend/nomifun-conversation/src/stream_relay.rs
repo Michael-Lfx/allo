@@ -2685,12 +2685,12 @@ impl StreamRelay {
                             }
                             self.finalize_active_plans(
                                 &mut active_plan_ids,
-                                Self::plan_terminal_status(&event),
+                                Self::plan_terminal_status(),
                             )
                             .await;
                             self.finalize_active_agent_status(
                                 &mut active_agent_status,
-                                Self::plan_terminal_status(&event),
+                                Self::agent_status_terminal_status(&event),
                             )
                             .await;
                             let outcome = self
@@ -3535,12 +3535,12 @@ impl StreamRelay {
                             .await;
                         self.finalize_active_plans(
                             &mut active_plan_ids,
-                            Self::plan_terminal_status(&terminal_event),
+                            Self::plan_terminal_status(),
                         )
                         .await;
                         self.finalize_active_agent_status(
                             &mut active_agent_status,
-                            Self::plan_terminal_status(&terminal_event),
+                            Self::agent_status_terminal_status(&terminal_event),
                         )
                         .await;
                         let text_persistence_complete = self
@@ -5467,7 +5467,11 @@ impl StreamRelay {
         }
     }
 
-    fn plan_terminal_status(event: &AgentStreamEvent) -> &'static str {
+    /// Terminal status for the **agent-status pill**.
+    ///
+    /// An abnormal terminal really does leave the agent in an error state, so
+    /// this keeps the `error` reading.
+    fn agent_status_terminal_status(event: &AgentStreamEvent) -> &'static str {
         match event {
             AgentStreamEvent::Finish(data)
                 if matches!(
@@ -5477,6 +5481,23 @@ impl StreamRelay {
             AgentStreamEvent::Finish(_) | AgentStreamEvent::Error(_) => "error",
             _ => "error",
         }
+    }
+
+    /// Terminal status for a **plan row**.
+    ///
+    /// A plan is a statement of intent, not an execution result. When the turn
+    /// ends — for any reason — the plan has simply stopped being live, which is
+    /// `finish`. What actually became of the plan is carried by its own
+    /// `entries`, not by this column.
+    ///
+    /// This used to share [`Self::agent_status_terminal_status`], so an
+    /// enclosing turn that was cancelled / truncated / failed stamped `error`
+    /// onto plans that had not failed at all — their `entries` still read
+    /// `in_progress`. That is why the UI showed a plan with an error badge.
+    /// (It also matches `boot.rs`, which terminalizes a leftover `work` row to
+    /// `finish` rather than to `error`.)
+    fn plan_terminal_status() -> &'static str {
+        "finish"
     }
 
     async fn finalize_active_plans(&self, active_plan_ids: &mut HashSet<String>, status: &str) {
@@ -8553,6 +8574,80 @@ mod tests {
             Some(Some("finish"))
         );
         assert!(outcome.emitted_response);
+    }
+
+    /// 计划是**陈述**，不是执行结果：回合异常收尾（取消 / 触顶 / 报错）之后，计划本身
+    /// 并没有失败，只是不再活跃 —— 状态列必须是 `finish`。
+    ///
+    /// 回归：这两个收尾状态此前共用 `plan_terminal_status`，其 `_ => "error"` 兜底会把
+    /// `Cancelled` / `MaxTokens` / `Error` 全部盖成 `error`，界面上就出现了一张
+    /// `entries` 里写着 `in_progress`、却挂着红色 error 徽章的计划（现场数据的第 15 行）。
+    #[tokio::test]
+    async fn cancelled_turn_finishes_its_plan_without_calling_it_a_failure() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Plan(PlanEventData {
+            session_id: Some("session-cancelled".into()),
+            source_call_id: None,
+            entries: vec![json!({ "content": "step one", "status": "in_progress" })],
+        }))
+        .unwrap();
+        // 非 EndTurn 的收尾：这一轮确实没跑完，但计划没失败。
+        tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::Cancelled),
+        }))
+        .unwrap();
+
+        let _ = relay.consume(rx).await;
+
+        let plan_id = repo
+            .take_inserts()
+            .iter()
+            .find(|m| m.r#type == "plan")
+            .expect("plan row must be persisted")
+            .message_id
+            .clone();
+        let terminal = repo
+            .take_updates()
+            .into_iter()
+            .find(|(id, update)| id == &plan_id && update.status.is_some())
+            .expect("the plan must be closed with the turn");
+        assert_eq!(
+            terminal.1.status.as_ref().map(|status| status.as_deref()),
+            Some(Some("finish")),
+            "a cancelled turn does not make the plan itself fail"
+        );
+    }
+
+    /// 药丸是**另一回事**：异常收尾确实是 agent 的错误状态，不能被上面那次拆分带偏。
+    #[test]
+    fn agent_status_pill_still_reports_abnormal_terminals_as_error() {
+        let cancelled = AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::Cancelled),
+        });
+        assert_eq!(StreamRelay::agent_status_terminal_status(&cancelled), "error");
+
+        let normal = AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::EndTurn),
+        });
+        assert_eq!(StreamRelay::agent_status_terminal_status(&normal), "finish");
+
+        // 计划侧不再看事件，任何收尾都只代表「不再活跃」。
+        assert_eq!(StreamRelay::plan_terminal_status(), "finish");
     }
 
     #[tokio::test]

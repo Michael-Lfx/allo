@@ -1,20 +1,17 @@
 /**
- * W12 skill write face (`16` R17): the store behind the WebUI's skill
- * management surface — list by origin, create / edit / delete / copy.
+ * W12 技能写入面（`16` R17）：WebUI 技能管理界面背后的 store——按来源列出、
+ * 创建 / 编辑 / 删除 / 复制。
  *
- * The rules this store exists to keep:
+ * 本 store 旨在守住的规则：
  *
- * - **Nothing is optimistic.** Every action's landing spot is the server's own
- *   re-read (`skill/create|update|copy` answer with `skill/get`'s view,
- *   `skill/delete` with what the id now resolves to). The store never invents a
- *   value the host did not confirm, and the caller refreshes its list
- *   afterwards — the store does not splice results into a cached array.
- * - **Read-only is a first-class answer, not a hidden button.** The server
- *   enforces origin ownership with `policy_denied`; the store surfaces that
- *   message verbatim so a refused write is visible and explains itself.
- * - **One write at a time.** `busy` is a skill id (or `"create"`), so a second
- *   click cannot race the first, and the UI can disable exactly the row in
- *   flight.
+ * - **不做任何乐观处理。** 每个动作的落点都是服务端自身的回读（`skill/create|update|copy`
+ *   以 `skill/get` 的视图作答，`skill/delete` 以该 id 现在解析到的结果作答）。store
+ *   绝不臆造宿主未确认的值，调用方随后自行刷新列表——store 不会把结果拼接到
+ *   缓存数组里。
+ * - **只读是一种一等公民式的回应，而非一个隐藏按钮。** 服务端用 `policy_denied`
+ *   强制来源归属；store 原样暴露该消息，使被拒绝的写入可见且能自我说明。
+ * - **同一时刻只写一个。** `busy` 是某个技能 id（或 `"create"`），因此第二次点击
+ *   不会与第一次竞态，UI 也能精确禁用正在写入的那一行。
  */
 
 import { create } from "zustand";
@@ -27,7 +24,7 @@ import type {
 } from "../lib/client";
 import { formatError } from "../lib/errors";
 
-/** The four host-only calls this store needs (the WebUI client satisfies it). */
+/** 本 store 需要的、仅宿主侧的四个调用（由 WebUI 客户端满足）。 */
 export interface SkillAdminClient {
   createSkill: (input: SkillCreateInput) => Promise<SkillDetail>;
   updateSkill: (input: SkillUpdateInput) => Promise<SkillDetail>;
@@ -35,22 +32,22 @@ export interface SkillAdminClient {
   copySkill: (skillId: string, newName: string) => Promise<SkillDetail>;
 }
 
-/** What the store reports after a successful write. */
+/** store 在一次成功写入后汇报的内容。 */
 export interface SkillAdminOutcome {
-  /** `create` | `update` | `delete` | `copy`. */
+  /** `create` | `update` | `delete` | `copy`。 */
   action: "create" | "update" | "delete" | "copy";
-  /** The skill id the action was applied to (the new one, for create/copy). */
+  /** 动作所作用的技能 id（create/copy 时为新建的那个）。 */
   skillId: string;
-  /** `skill/delete` only: what the id resolves to now (`null` = nothing). */
+  /** 仅 `skill/delete`：该 id 现在解析到的结果（`null` = 无）。 */
   revealedOrigin?: string | null;
 }
 
 export interface SkillAdminState {
-  /** Id of the skill being written (or `"create"`); `null` = idle. */
+  /** 正在被写入的技能 id（或 `"create"`）；`null` = 空闲。 */
   busy: string | null;
-  /** Last failure: an i18n key or the server's own `code: message`. */
+  /** 最近一次失败：i18n 键或服务端自身的 `code: message`。 */
   error: string | null;
-  /** Last confirmed outcome; cleared when a new action starts. */
+  /** 最近一次已确认的结果；新动作启动时清空。 */
   outcome: SkillAdminOutcome | null;
 
   create: (client: SkillAdminClient | null, input: SkillCreateInput) => Promise<boolean>;
@@ -61,7 +58,7 @@ export interface SkillAdminState {
 }
 
 export const useSkillAdmin = create<SkillAdminState>()((set, get) => {
-  /** Shared prologue: one write at a time, no fabricated result. */
+  /** 共享前奏：同一时刻只写一个，不臆造结果。 */
   const begin = (key: string): boolean => {
     if (get().busy) return false;
     set({ busy: key, error: null, outcome: null });
@@ -121,8 +118,8 @@ export const useSkillAdmin = create<SkillAdminState>()((set, get) => {
           outcome: {
             action: "delete",
             skillId: result.skill_id,
-            // `undefined` and `null` both mean "nothing visible there now"; the
-            // UI says so instead of inventing an origin.
+            // `undefined` 与 `null` 都表示“那里现在什么都没有可见的”；
+            // UI 会如实说明，而非臆造一个来源。
             revealedOrigin: result.revealed_origin ?? null,
           },
         });
