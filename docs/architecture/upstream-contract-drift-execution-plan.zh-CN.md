@@ -459,11 +459,12 @@ bun run check
 | 6 | `28e47613a` | 未广告 ToolUseDelta 忽略；最终未广告 ToolUse 仍拒绝 |
 | 7 | `d3dfdbfdb` | 90s 初始协商绝对 deadline + 超时映射 |
 | 8 | 未提交 | OBS-1 主样本 <100，按计划保持关闭并记录"不修改" |
+| 9 | `173edda48` / `bcc752921` | 证据回填；补齐边界回归测试（溢出、动态字段、向下钳制、attribution、本地 schema 不变） |
 
 ### 15.2 验证结果
 
 ```text
-cargo test -p nomi-providers                 → 186 + 13 + 17 + 25 passed; 0 failed
+cargo test -p nomi-providers                 → 187 + 13 + 17 + 26 passed; 0 failed
 cargo test -p flowy-web                      → 188 passed; 0 failed
 cargo test -p nomi-agent                     → 787 + 11 + 32 passed；1 既有失败
 cargo test -p nomi-config                    → 216 passed；1 既有失败
@@ -478,9 +479,16 @@ cargo check -p nomifun-cloud                 → Finished（无新增告警）
 - `nomi-agent badcase_regression_test::a_round_that_keeps_truncating_stops_at_three_passes`：
   在本分支 HEAD~（未含本次改动）上同样失败。
 
-`cargo check --workspace` 在本机 40 分钟未完成（编译量大），改为按依赖面核对：
-`ProviderError` 的全部消费方（nomi-agent/nomifun-ai-agent 已由测试覆盖，
-nomifun-cloud 已 check 通过；其余仅引用类型、无穷尽匹配）。
+工具链限制：
+
+- `rustfmt.toml` 设置了 `disable_all_formatting = true`，`cargo fmt` 是本仓库的既定
+  no-op；本次按现有风格手写，未启用全仓格式化。
+- `cargo check --workspace` 在本机 40 分钟未完成（编译量大），改为按依赖面核对：
+  `ProviderError` 的全部消费方（nomi-agent/nomifun-ai-agent 已由测试覆盖，
+  nomifun-cloud 已 check 通过；其余仅引用类型、无穷尽匹配）。
+- `bun run check` 在既有 UI typecheck 阶段失败（`videoCanvas`、
+  `analytics/*.test.ts`），本分支 `origin/main...HEAD` 未触及任何 UI 文件，
+  属基线问题。
 
 ### 15.3 尚未完成（需真实环境或后续决策）
 
