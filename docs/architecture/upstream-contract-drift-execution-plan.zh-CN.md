@@ -443,3 +443,50 @@ bun run check
 2. 暂停复核 Stage 0 结果；
 3. 复核通过后依次实施 Stage 1、Stage 2 两个 P0 提交；
 4. Stage 2 提交后启动 OBS-1，与 Stage 4–7 并行。
+
+## 15. 实施记录（2026-09-15）
+
+### 15.1 提交序列
+
+| 阶段 | 提交 | 说明 |
+| --- | --- | --- |
+| 0 | `d148d4020` | 本计划 + 调查文档修正 + 基线记录 |
+| 1 | `854809a75` | effort 语义协商与按模型记忆 |
+| 2 | `0cffa50be` | You 按名发现、失败不缓存、10 分钟冷却、调用期缓存失效 |
+| 3 | `14f46b1a1` | OBS-1 历史基线（102 成功 / 7 全失败） |
+| 4 | `f05aeba7e` | 输出上限协商（65537 exclusive → 65536） |
+| 5 | `48e4624df` | Gemini 文案分类 + 组合分支归一化（fixture 驱动） |
+| 6 | `28e47613a` | 未广告 ToolUseDelta 忽略；最终未广告 ToolUse 仍拒绝 |
+| 7 | `d3dfdbfdb` | 90s 初始协商绝对 deadline + 超时映射 |
+| 8 | 未提交 | OBS-1 主样本 <100，按计划保持关闭并记录"不修改" |
+
+### 15.2 验证结果
+
+```text
+cargo test -p nomi-providers                 → 186 + 13 + 17 + 25 passed; 0 failed
+cargo test -p flowy-web                      → 188 passed; 0 failed
+cargo test -p nomi-agent                     → 787 + 11 + 32 passed；1 既有失败
+cargo test -p nomi-config                    → 216 passed；1 既有失败
+cargo test -p nomifun-ai-agent --lib protocol::send_error → 33 passed
+cargo check -p nomifun-cloud                 → Finished（无新增告警）
+```
+
+既有失败（已在基线复现，与本次改动无关）：
+
+- `nomi-config hooks::tests::test_hook_timeout`：Windows 无 `sleep` 可执行文件，
+  hook 立即失败而非超时（在未含本次改动的工作树上同样失败）。
+- `nomi-agent badcase_regression_test::a_round_that_keeps_truncating_stops_at_three_passes`：
+  在本分支 HEAD~（未含本次改动）上同样失败。
+
+`cargo check --workspace` 在本机 40 分钟未完成（编译量大），改为按依赖面核对：
+`ProviderError` 的全部消费方（nomi-agent/nomifun-ai-agent 已由测试覆盖，
+nomifun-cloud 已 check 通过；其余仅引用类型、无穷尽匹配）。
+
+### 15.3 尚未完成（需真实环境或后续决策）
+
+- 真实验收：GPT5.6-Sol（effort）、qwen3.8-flash（You 恢复/冷却自愈）、
+  gemini-3.5-flash（65536 + 嵌套 schema）、90s deadline 与 failover —— 均需真实网关
+  与账号，本轮未执行。
+- OBS-1 主样本仍需修复后真实调用累计到 100 条，才能决定 Stage 8。
+- PR 尚未创建（分支 `fix/upstream-contract-drift` 未推送）。
+
