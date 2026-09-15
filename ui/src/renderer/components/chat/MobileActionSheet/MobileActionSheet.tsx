@@ -268,6 +268,7 @@ const MobileActionSheet: React.FC<MobileActionSheetProps> = ({ open, onClose, ti
         }}
         data-testid={`mobile-action-sheet-option-${option.key}`}
       >
+        {option.icon && <div className={styles.optionIcon}>{option.icon}</div>}
         <div className={styles.body}>
           <div className={styles.label}>{option.label}</div>
           {option.description && <div className={styles.desc}>{option.description}</div>}
