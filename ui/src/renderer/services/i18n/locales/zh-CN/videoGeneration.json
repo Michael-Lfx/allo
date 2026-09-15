@@ -9,13 +9,9 @@
     "creationLabel": "无限画布",
     "agentHint": "短剧工坊：一句话规划分镜并渲染成片。",
     "canvasHint": "Canvas 模式（dev）：节点画布精准控制生成参数与链路。",
-    "generateMenuDesc": "参考图 + 提示词，直接生成视频片段",
-    "agentMenuDesc": "自动规划分镜并渲染成片",
     "actionLabel": "动作仿拍",
     "actionMenuDesc": "角色图 + 参考视频，模仿动作成片",
-    "creationMenuDesc": "描述故事，上传角色或场景，进入分镜与画布",
-    "briefingLabel": "资讯口播",
-    "briefingMenuDesc": "可溯源调研 + 口播成片，不发明今日新闻"
+    "briefingLabel": "资讯口播"
   },
   "nav": {
     "entry": "视频生成",

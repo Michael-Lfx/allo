@@ -844,7 +844,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 }
                 setModeMenuOpen(open);
               }}
-              width={260}
+              width={188}
+              estimatedHeight={160}
               trigger={
                 <CanvasChromeButton
                   expanded={modeMenuOpen}
