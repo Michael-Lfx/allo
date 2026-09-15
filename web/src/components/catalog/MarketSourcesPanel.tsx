@@ -30,7 +30,7 @@ import type {
   StoreItem,
 } from "../../lib/protocol";
 import { DialogShell } from "../dialogs/DialogShell";
-import { InitialBadge, MetaRow } from "./shared";
+import { InitialBadge, MetaRow, marketKindLabel } from "./shared";
 
 export function MarketSourcesPanel() {
   const { t } = useTranslation();
@@ -345,14 +345,14 @@ export function MarketSourcesPanel() {
         {markets !== null && markets.length > 0 && (
           <div className="market-list">
             {markets.map((market) => (
-              <button className="market-card" type="button" key={market.marketplace_id}
+              <button className={`market-card${marketDetail?.marketplace_id === market.marketplace_id ? " is-active" : ""}`} type="button" key={market.marketplace_id}
                 onClick={() => void openMarket(market.marketplace_id)}>
                 <div className="market-card-top">
                   <InitialBadge name={market.name} />
                   <div className="market-card-main">
                     <span className="market-card-title">{market.name}</span>
                     <span className="market-card-sub">
-                      {market.source_kind} · {t("catalog.marketEntries", { count: market.entry_count })}
+                      {marketKindLabel(t, market.source_kind)} · {t("catalog.marketEntries", { count: market.entry_count })}
                       {market.auto_update ? ` · ${t("catalog.marketAutoUpdate")}` : ""}
                     </span>
                   </div>
@@ -368,28 +368,45 @@ export function MarketSourcesPanel() {
             <div className="market-market-detail-head">
               <div>
                 <h3>{marketDetail.name}</h3>
+                {/* The version is optional on the wire, so it is dropped rather
+                    than rendered as `v?`. */}
                 <span className="market-card-sub">
-                  {marketDetail.source_kind} · v{marketDetail.version ?? "?"}
+                  {[marketKindLabel(t, marketDetail.source_kind), marketDetail.version ? `v${marketDetail.version}` : null]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </span>
               </div>
               <div className="market-market-detail-actions">
-                <button
-                  className={`secondary-button${marketDetail.auto_update ? " is-on" : ""}`}
-                  type="button"
-                  aria-pressed={marketDetail.auto_update}
-                  disabled={marketBusy}
-                  onClick={() => void toggleMarketAutoUpdate(marketDetail.marketplace_id, !marketDetail.auto_update)}
-                >
-                  {marketDetail.auto_update ? t("catalog.marketAutoUpdateToggleOn") : t("catalog.marketAutoUpdateToggleOff")}
-                </button>
-                <button className="secondary-button" type="button"
+                {/* A switch, not a button whose label is its own state: the MCP
+                    分区的 per-server switch is the same control, so both read
+                    the same way. The state text stays as the tooltip. */}
+                <span className="market-switch-row">
+                  <span>{t("catalog.marketAutoUpdate")}</span>
+                  <button
+                    className={`switch-pill${marketDetail.auto_update ? " is-on" : ""}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={marketDetail.auto_update}
+                    aria-label={t("catalog.marketAutoUpdate")}
+                    title={marketDetail.auto_update
+                      ? t("catalog.marketAutoUpdateToggleOn")
+                      : t("catalog.marketAutoUpdateToggleOff")}
+                    disabled={marketBusy}
+                    onClick={() => void toggleMarketAutoUpdate(marketDetail.marketplace_id, !marketDetail.auto_update)}
+                  >
+                    <span className="switch-pill-knob" aria-hidden="true" />
+                  </button>
+                </span>
+                <button className="quiet-button" type="button"
                   disabled={marketRefreshBusy === marketDetail.marketplace_id}
                   onClick={() => void refreshMarket(marketDetail.marketplace_id)}>
                   {marketRefreshBusy === marketDetail.marketplace_id
                     ? t("catalog.marketRefreshing")
                     : t("catalog.marketRefresh")}
                 </button>
-                <button className="danger-button" type="button" disabled={marketBusy}
+                {/* Outline, not a solid red block: removal is confirmed in a
+                    dialog anyway, and this row's other controls are quiet. */}
+                <button className="quiet-button is-destructive" type="button" disabled={marketBusy}
                   onClick={() => void openRemoveDialog(marketDetail.marketplace_id)}>
                   {t("catalog.marketRemove")}
                 </button>
@@ -462,6 +479,13 @@ export function MarketSourcesPanel() {
                         </span>
                       )}
                       {installed && <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>}
+                    </div>
+                    {/* The actions get their own line. This card is ~315px wide
+                        inside the settings dialog and both buttons are
+                        `flex-shrink: 0`, which used to squeeze the text column
+                        down to about two characters — entry names rendered as
+                        「腾讯…」 and descriptions wrapped every second glyph. */}
+                    <div className="market-entry-actions">
                       {!installed && (
                         <button
                           className="primary-button market-entry-import"
@@ -477,7 +501,7 @@ export function MarketSourcesPanel() {
                           touching install state (`store/install-entry` above is
                           the install path). */}
                       <button
-                        className="secondary-button market-entry-import"
+                        className="quiet-button market-entry-import"
                         type="button"
                         disabled={entryBusy || Boolean(blocked)}
                         title={blocked ?? undefined}

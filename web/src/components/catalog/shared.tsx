@@ -54,6 +54,15 @@ export const SEMANTIC_KEYS: Record<string, string> = {
   pending_legal_review: "catalog.semantic_pending_legal_review",
 };
 
+/** `source_kind` is a wire enum (`directory` / `github` / `git` / `url`), not a
+ *  label — the registry surfaces printed it raw, so a zh-CN panel read `url`. */
+export const MARKET_KIND_KEYS: Record<string, string> = {
+  directory: "catalog.marketKindDirectory",
+  github: "catalog.marketKindGithub",
+  git: "catalog.marketKindGit",
+  url: "catalog.marketKindUrl",
+};
+
 type Translate = (key: string, opts?: Record<string, unknown>) => string;
 
 export function stateLabel(t: Translate, keys: Record<string, string>, value: string): string {
@@ -69,6 +78,11 @@ export function semanticLabel(t: Translate, value: string): string {
 export function importStatusLabel(t: Translate, status: string): string {
   const key = IMPORT_STATUS_KEYS[status];
   return key ? t(key) : t("catalog.stateOther", { status });
+}
+
+export function marketKindLabel(t: Translate, kind: string): string {
+  const key = MARKET_KIND_KEYS[kind];
+  return key ? t(key) : kind;
 }
 
 export function installStateLabel(t: ReturnType<typeof useTranslation>["t"], state: InstallState): string {

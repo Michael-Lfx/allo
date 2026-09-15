@@ -658,13 +658,14 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .mcp-editor { width: 100%; min-height: 260px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--ink-strong); padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; tab-size: 2; }
 .mcp-editor:focus { border-color: var(--muted); outline: none; }
 .mcp-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-/* Per-server switch (`role="switch"`): a pill whose knob moves, so the state is
-   readable without comparing two labels. */
-.mcp-toggle { flex: 0 0 auto; position: relative; width: 38px; height: 22px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-2); padding: 0; transition: background .14s ease, border-color .14s ease; }
-.mcp-toggle.is-on { border-color: var(--green-deep); background: var(--green-deep); }
-.mcp-toggle:disabled { cursor: wait; }
-.mcp-toggle-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .14s ease; }
-.mcp-toggle.is-on .mcp-toggle-knob { transform: translateX(16px); }
+/* A switch (`role="switch"`): a pill whose knob moves, so the state is readable
+   without comparing two labels. Shared — the MCP 分区's per-server switch and
+   市场源's auto-update switch are the same control. */
+.switch-pill { flex: 0 0 auto; position: relative; width: 38px; height: 22px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-raised); padding: 0; transition: background .14s ease, border-color .14s ease; }
+.switch-pill.is-on { border-color: var(--green-deep); background: var(--green-deep); }
+.switch-pill:disabled { cursor: wait; }
+.switch-pill-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .14s ease; }
+.switch-pill.is-on .switch-pill-knob { transform: translateX(16px); }
 .settings-row-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 .settings-row-status { min-height: 56px; }
 /* W11 provider section (doc 16 R16): inline read/save feedback for the one
@@ -776,31 +777,30 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 
 .market-view { display: flex; min-width: 0; height: 100dvh; min-height: 0; flex-direction: column; overflow: hidden; background: var(--surface); }
 
-/* header */
-.market-header { display: flex; min-width: 0; height: 58px; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.market-header-left { display: flex; min-width: 0; align-items: center; gap: 10px; }
-.market-back { margin-left: -8px; }
-.market-glyph { color: var(--primary); }
-.market-title { display: flex; min-width: 0; flex-direction: column; }
-.market-title span { overflow: hidden; color: var(--ink); font-size: 15px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+/* The page's single toolbar row: noun segments · the 专家 split · search · sort
+   · this noun's actions · reload. It absorbed the old 58px title header (whose
+   text repeated the sidebar entry *and* the tabs below it) and the 46px row
+   that carried nothing but the sort on the tabs with no split of their own.
+   `flex-wrap` keeps it honest at narrow widths: the wrap is a second full line,
+   not the old empty band. */
+.market-toolbar-store { display: flex; min-height: 54px; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface); padding: 8px 18px; }
 
-/* segmented tabs */
-.market-tabs { display: flex; height: 54px; flex: 0 0 auto; align-items: center; gap: 2px; padding: 0 18px; overflow-x: auto; border-bottom: 0; background: var(--surface); scrollbar-width: none; }
-.market-tabs::-webkit-scrollbar { display: none; }
-.market-tab { display: inline-flex; min-height: 34px; flex: 0 0 auto; align-items: center; gap: 7px; border: 0; border-radius: 9px; background: transparent; padding: 0 13px; color: var(--primary); font-size: 13.5px; }
-.market-tab:hover { color: var(--ink-strong); }
-.market-tab.is-active { background: var(--ink); color: #fff; font-weight: 620; }
-.market-tabs .market-search-inline { flex-shrink: 0; margin-left: auto; max-width: 340px; }
-.market-mine { display: inline-flex; flex: 0 0 auto; min-height: 34px; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); padding: 0 12px; color: var(--ink-strong); font-size: 13px; }
-.market-mine:hover { border-color: var(--border-strong); background: var(--surface-raised); }
-.market-mine.is-active { border-color: var(--ink); background: var(--ink); color: var(--on-accent); font-weight: 580; }
-.market-mine.is-active:hover { border-color: var(--ink); background: var(--ink); }
-/* Right-hand side of the noun tab row: the inventory toggle and the add
-   buttons. They sit after the search box, which is what pushes the pair to the
-   far right (`margin-left: auto` on `.market-search-inline`). */
-.market-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-left: 8px; }
-/* Pushes the sort group to the right when the tab has no segmented control. */
-.market-toolbar-spacer { flex: 1 1 auto; }
+/* Segmented noun tabs: one soft track with the active item filled on it. The
+   row also carries this noun's actions, so the tabs must not be yet more pills
+   of the same shape — that is what made the old row read as five equal
+   choices. */
+.market-seg { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; border-radius: 10px; background: var(--surface-raised); padding: 3px; }
+.market-seg-item { display: inline-flex; min-height: 30px; flex: 0 0 auto; align-items: center; gap: 7px; border: 0; border-radius: 8px; background: transparent; padding: 0 12px; color: var(--muted); font-size: 13px; }
+.market-seg-item:hover { color: var(--ink); }
+.market-seg-item.is-active { background: var(--ink); color: var(--on-accent); font-weight: 620; }
+
+/* Right-hand cluster: this noun's actions, then reload. Secondary to the tabs,
+   so borderless text+icon buttons rather than a second row of pills. */
+.market-action { display: inline-flex; min-height: 30px; flex: 0 0 auto; align-items: center; gap: 7px; border: 0; border-radius: 8px; background: transparent; padding: 0 10px; color: var(--muted); font-size: 13px; }
+.market-action:hover { background: var(--surface-raised); color: var(--ink-strong); }
+.market-action.is-active { background: var(--surface-raised); color: var(--ink); font-weight: 580; }
+.market-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+
 /* The marketplace registry renders inside the settings dialog now, which is
    narrower than the page was: two columns instead of three. */
 .market-sources-panel .market-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -811,17 +811,19 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 
 /* toolbar: search + category chips */
 .market-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 18px 4px; }
-.market-toolbar-store { min-height: 46px; flex: 0 0 auto; padding: 6px 18px; border-bottom: 1px solid var(--border); align-items: center; }
 .market-search { display: inline-flex; min-width: 200px; flex: 1 1 240px; max-width: 420px; align-items: center; gap: 8px; height: 36px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-soft); padding: 0 12px; color: var(--muted-light); }
-.market-search-inline { height: 34px; border: 0; background: var(--surface-soft); border-radius: 9px; flex: 0 1 auto; min-width: 220px; }
+/* `margin-left: auto` is what pushes the sort + actions + reload cluster to the
+   far right, leaving the search between the tabs and that cluster. */
+.market-search-inline { height: 34px; border: 0; background: var(--surface-soft); border-radius: 9px; flex: 0 1 auto; min-width: 220px; max-width: 320px; margin-left: auto; }
 .market-search:focus-within { border-color: var(--primary); }
 .market-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13px; }
-.market-cats { display: flex; flex: 1 1 auto; gap: 4px; overflow-x: auto; scrollbar-width: none; }
-.market-cats::-webkit-scrollbar { display: none; }
+/* 专家's own split (专家 / 专家团): kept inside the 专家 tab by a hairline
+   rather than becoming a second track of its own. */
+.market-cats { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; border-left: 1px solid var(--border); margin-left: 4px; padding-left: 10px; }
 .market-chip { flex: 0 0 auto; min-height: 30px; border: 0; border-radius: 999px; background: transparent; padding: 4px 13px; color: var(--primary); font-size: 12.5px; }
 .market-chip:hover { background: var(--surface-raised); color: var(--ink-strong); }
-.market-chip.is-active { background: var(--ink); color: #fff; font-weight: 580; }
-.market-sort { display: flex; flex: 0 0 auto; gap: 2px; margin-left: 8px; }
+.market-chip.is-active { background: var(--ink); color: var(--on-accent); font-weight: 580; }
+.market-sort { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; }
 .market-sort-chip { min-height: 28px; padding: 3px 10px; color: var(--muted); font-size: 12px; }
 .market-sort-chip.is-active { background: transparent; color: var(--ink); font-weight: 580; }
 
@@ -837,7 +839,7 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .market-card:active { transform: scale(.995); }
 .market-card-top { display: flex; min-width: 0; align-items: flex-start; gap: 10px; }
 .market-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 50%; color: var(--badge-on-brand); font-weight: 620; letter-spacing: -.02em; }
-.market-avatar { width: 40px; height: 40px; object-fit: cover; background: var(--surface-2); }
+.market-avatar { width: 40px; height: 40px; object-fit: cover; background: var(--surface-raised); }
 .market-card-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .market-card-title { overflow: hidden; font-size: 15px; font-weight: 620; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
 .market-card-title small { color: var(--muted-light); font-weight: 500; }
@@ -848,14 +850,10 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .market-card-foot { display: flex; gap: 8px; padding: 0 14px 14px; margin-top: 12px; }
 .market-card-foot .market-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .market-card-arrow { flex: 0 0 auto; margin-top: 3px; color: var(--muted-light); }
-.market-card-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-top: auto; }
-.market-card-type { color: var(--muted); font-size: 11.5px; font-weight: 500; }
-.market-card-version { color: var(--muted-light); font-size: 11.5px; }
-.market-card-type.is-tag { overflow: hidden; color: var(--muted-light); text-overflow: ellipsis; white-space: nowrap; }
 
 /* tags */
 .market-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.market-tag { padding: 2px 8px; border-radius: 999px; background: var(--border); color: var(--ink-strong); font-size: 11px; line-height: 1.6; }
+.market-tag { flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--border); color: var(--ink-strong); font-size: 11px; line-height: 1.6; white-space: nowrap; }
 .market-tag.is-extra { background: var(--surface-raised); color: var(--muted-light); }
 .market-tag.is-muted { background: var(--surface-raised); color: var(--muted-light); }
 .market-tag.is-status { background: var(--border); color: var(--ink-strong); font-weight: 560; }
@@ -899,14 +897,35 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .market-empty-action { min-height: 32px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--ink); color: #fff; padding: 0 16px; font-size: 13px; font-weight: 560; }
 .market-empty-action:hover { background: var(--ink-strong); }
 
-/* marketplace panel (imports tab) */
-.market-market-panel { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px dashed var(--border-strong); border-radius: 12px; background: var(--surface-raised); }
-.market-market-detail { display: flex; flex-direction: column; gap: 12px; }
-.market-market-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.market-market-detail-head h3 { margin: 0; font-size: 15px; font-weight: 650; color: var(--ink); }
-.market-market-detail-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* marketplace panel (settings → 市场源) */
+/* Solid, not dashed — a dashed frame is a drop zone, and this is a section
+   container. The fill matches the dialog's own `.settings-card` idiom so this
+   grouping reads like the sections around it. */
+.market-market-panel { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); }
+/* The detail is opened *by* a card in the grid above, so it needs a surface of
+   its own — it used to be a bare stack with a single rule on top, which read as
+   part of whatever card happened to precede it. */
+.market-market-detail { display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 14px; }
+/* `wrap` so a long market name cannot be squeezed into a two-line stack by the
+   action cluster next to it (`workbuddy-skills` did exactly that). */
+.market-market-detail-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 12px; }
+.market-market-detail-head > div:first-child { min-width: 0; flex: 1 1 220px; }
+.market-market-detail-head h3 { margin: 0; font-size: 15px; font-weight: 650; color: var(--ink); overflow-wrap: anywhere; }
+.market-market-detail-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.market-switch-row { display: inline-flex; align-items: center; gap: 8px; margin-right: 2px; color: var(--muted); font-size: 12.5px; }
 .market-entry-card { min-height: 0; padding: 12px 14px; }
+/* Action row of an entry card. The two buttons are `flex-shrink: 0`, so they
+   leave the text column the card's full width once they own a line. */
+.market-entry-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .market-entry-import { flex-shrink: 0; min-height: 32px; padding: 0 12px; font-size: 12.5px; }
+/* Entry names carry the identity of the row, so they wrap to a second line
+   instead of truncating to 「腾讯…」 like `.market-card-title` does. */
+.market-sources-panel .market-entry-card .market-card-title { display: -webkit-box; overflow: hidden; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+/* These cards carry two lines, not the store card's four, so they lose the
+   92px floor. The active one is the card whose detail is open below — without a
+   marker the detail is just a name with no visible origin. */
+.market-sources-panel .market-card { min-height: 0; padding: 12px 14px; }
+.market-sources-panel .market-card.is-active { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
 
 /* store cards (winget-style: content + install action) */
 .market-store-card { padding: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; }
@@ -935,17 +954,19 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .drawer-head h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.01em; color: var(--ink); }
 .drawer-head h2 small { color: var(--muted-light); font-weight: 500; font-size: 13px; margin-left: 4px; }
 .drawer-subtitle { margin: 2px 0 0; color: var(--muted-light); font-size: 12.5px; }
-.drawer-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; background: var(--surface-2); }
+.drawer-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; background: var(--surface-raised); }
 .drawer-quick-prompts { margin: 14px 0 0; }
 .drawer-quick-prompts h3 { margin: 0 0 8px; font-size: 12.5px; font-weight: 620; color: var(--ink); }
 .drawer-quick-prompts ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
-.drawer-quick-prompts li { color: var(--ink-strong); font-size: 12.5px; line-height: 1.5; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; }
+.drawer-quick-prompts li { color: var(--ink-strong); font-size: 12.5px; line-height: 1.5; padding: 8px 10px; background: var(--surface-raised); border-radius: 8px; }
 .drawer-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .drawer-desc { margin: 0; color: var(--ink-strong); font-size: 13.5px; line-height: 1.55; }
 .drawer-hint { margin: 0; color: var(--muted-light); font-size: 12.5px; }
 .drawer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0; }
 
-.market-meta { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr); gap: 7px 14px; margin: 0; padding: 12px 0; border-top: 1px solid var(--border); }
+/* Label column hugs its text: at the old 1:2 split the values started half way
+   across the dialog, far from the labels they belong to. */
+.market-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 14px; margin: 0; padding: 12px 0; border-top: 1px solid var(--border); }
 .market-meta-row { display: contents; }
 .market-meta-row dt { color: var(--muted-light); font-size: 11.5px; letter-spacing: .02em; padding-top: 1px; }
 .market-meta-row dd { margin: 0; color: var(--ink-strong); font-size: 12.5px; font-weight: 560; word-break: break-all; }
