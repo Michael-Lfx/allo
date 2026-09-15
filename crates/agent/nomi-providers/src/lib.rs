@@ -174,6 +174,30 @@ impl ProviderError {
         has_schema_error && has_top_level_restriction && has_composition_keyword
     }
 
+    /// Whether an API rejection requires tool-bearing requests to disable their
+    /// OpenAI-style `reasoning_effort`. Observed on the Flowy Cloud gateway:
+    /// `Function tools with reasoning_effort are not supported ... set
+    /// reasoning_effort to 'none'`. Only tool-bearing requests may act on it;
+    /// the caller must keep the configured effort for tool-free requests.
+    pub(crate) fn is_tools_with_reasoning_effort_incompatible(&self) -> bool {
+        let ProviderError::Api { message, .. } = self else {
+            return false;
+        };
+        let lower = message.to_ascii_lowercase();
+        let names_tools = lower.contains("function tool") || lower.contains("tools");
+        let names_effort =
+            lower.contains("reasoning_effort") || lower.contains("reasoning effort");
+        let rejects_parameter = [
+            "not supported",
+            "unsupported",
+            "isn't supported",
+            "not allowed",
+        ]
+        .iter()
+        .any(|signal| lower.contains(signal));
+        names_tools && names_effort && rejects_parameter
+    }
+
     /// Whether an API rejection narrowly identifies an expired or otherwise
     /// unavailable Responses API parent. Generic 404s must never enter this
     /// path: they usually mean the configured endpoint does not serve
@@ -754,6 +778,54 @@ mod retryable_tests {
             errors
                 .iter()
                 .all(|error| !error.is_tool_schema_incompatible())
+        );
+    }
+
+    #[test]
+    fn tools_effort_classifier_accepts_gateway_wording() {
+        // Verbatim body from the 2026-09-12 Flowy Cloud incident.
+        let body = r#"{"code":500,"msg":"Model call failed. Please try again later: Function tools with reasoning_effort are not supported for gpt-5.6-sol-tec-do in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","error_key":"error.all_channel_models_failed"}"#;
+        assert!(
+            ProviderError::Api {
+                status: 500,
+                message: body.into(),
+            }
+            .is_tools_with_reasoning_effort_incompatible()
+        );
+        assert!(
+            ProviderError::Api {
+                status: 400,
+                message: "tools with reasoning effort unsupported".into(),
+            }
+            .is_tools_with_reasoning_effort_incompatible()
+        );
+    }
+
+    #[test]
+    fn tools_effort_classifier_rejects_unrelated_failures() {
+        let errors = [
+            ProviderError::Api {
+                status: 500,
+                message: "upstream unavailable".into(),
+            },
+            ProviderError::Api {
+                status: 500,
+                message: "reasoning_effort is not supported".into(),
+            },
+            ProviderError::Api {
+                status: 500,
+                message: "tools are not supported for this model".into(),
+            },
+            ProviderError::Api {
+                status: 500,
+                message: "function tools with reasoning_effort failed".into(),
+            },
+            ProviderError::Connection("tools reset".into()),
+        ];
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.is_tools_with_reasoning_effort_incompatible())
         );
     }
 

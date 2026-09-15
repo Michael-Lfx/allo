@@ -1063,3 +1063,334 @@ async fn test_openai_stream_empty_content_delta_skipped() {
         e => panic!("expected Done, got: {:?}", e),
     }
 }
+
+// ---------------------------------------------------------------------------
+// tools + reasoning_effort negotiation
+// ---------------------------------------------------------------------------
+
+/// Verbatim gateway rejection observed on 2026-09-12 (Flowy Cloud hardware user).
+const TOOLS_EFFORT_INCOMPATIBLE_BODY: &str = r#"{"code":500,"msg":"Model call failed. Please try again later: Function tools with reasoning_effort are not supported for gpt-5.6-sol-tec-do in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","error_key":"error.all_channel_models_failed"}"#;
+
+/// Rejects tool-bearing requests that carry an effort other than `none`,
+/// mirroring the gateway that rejected `AIPC-GPT5.6-Sol`.
+#[derive(Clone)]
+struct ToolsEffortIncompatResponder;
+
+impl Respond for ToolsEffortIncompatResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let has_tools = body
+            .get("tools")
+            .and_then(|value| value.as_array())
+            .is_some_and(|tools| !tools.is_empty());
+        let effort = body.get("reasoning_effort").and_then(|value| value.as_str());
+        if has_tools && effort.is_some() && effort != Some("none") {
+            return ResponseTemplate::new(500).set_body_string(TOOLS_EFFORT_INCOMPATIBLE_BODY);
+        }
+        let chunk = json!({
+            "choices": [{ "delta": { "content": "Recovered" }, "finish_reason": null }]
+        })
+        .to_string();
+        let finish = json!({
+            "choices": [{ "delta": {}, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        })
+        .to_string();
+        ResponseTemplate::new(200)
+            .set_body_raw(build_sse_body(&[&chunk, &finish]), "text/event-stream")
+    }
+}
+
+fn request_with_tool_and_effort(model: &str, effort: Option<&str>) -> LlmRequest {
+    let mut request = make_request();
+    request.model = model.to_string();
+    request.reasoning_effort = effort.map(str::to_owned);
+    request.tools.push(ToolDef {
+        name: "Read".into(),
+        description: "Read one file".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": { "file_path": { "type": "string" } },
+            "required": ["file_path"]
+        }),
+        deferred: false,
+    });
+    request
+}
+
+fn recorded_efforts(received: &[Request]) -> Vec<Option<String>> {
+    received
+        .iter()
+        .map(|request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            body.get("reasoning_effort")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn openai_gateway_negotiates_reasoning_effort_none_for_tool_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ToolsEffortIncompatResponder)
+        .expect(3)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let request = request_with_tool_and_effort("gpt-5.6-sol", Some("medium"));
+
+    for _ in 0..2 {
+        let events = collect_events(provider.stream(&request).await.unwrap()).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+        );
+    }
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(
+        recorded_efforts(&received),
+        vec![
+            Some("medium".to_string()),
+            Some("none".to_string()),
+            Some("none".to_string())
+        ],
+        "first request keeps the requested effort, the retry uses none, and the second turn remembers it"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_effort_fallback_keeps_effort_for_requests_without_tools() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ToolsEffortIncompatResponder)
+        .expect(3)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+
+    let with_tools = request_with_tool_and_effort("gpt-5.6-sol", Some("medium"));
+    let events = collect_events(provider.stream(&with_tools).await.unwrap()).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+
+    let mut without_tools = request_with_tool_and_effort("gpt-5.6-sol", Some("medium"));
+    without_tools.tools.clear();
+    let events = collect_events(provider.stream(&without_tools).await.unwrap()).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(
+        recorded_efforts(&received),
+        vec![
+            Some("medium".to_string()),
+            Some("none".to_string()),
+            Some("medium".to_string())
+        ],
+        "requests without tools must keep the user-selected effort"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_effort_fallback_is_isolated_per_model() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ToolsEffortIncompatResponder)
+        .expect(4)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+
+    for model in ["gpt-5.6-sol", "gpt-5.6-other"] {
+        let request = request_with_tool_and_effort(model, Some("medium"));
+        let events = collect_events(provider.stream(&request).await.unwrap()).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+        );
+    }
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(
+        recorded_efforts(&received),
+        vec![
+            Some("medium".to_string()),
+            Some("none".to_string()),
+            Some("medium".to_string()),
+            Some("none".to_string())
+        ],
+        "the learned effort policy must not leak to another model"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_gateway_does_not_effort_retry_an_unrelated_500() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("upstream unavailable"))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let error = provider
+        .stream(&request_with_tool_and_effort("gpt-5.6-sol", Some("medium")))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProviderError::Api { status: 500, .. }));
+    server.verify().await;
+}
+
+/// Negotiates usage options, tool schemas, and reasoning_effort in one bounded
+/// loop: each incompatible extension is removed once and the request succeeds.
+#[derive(Clone)]
+struct LayeredNegotiationResponder;
+
+impl Respond for LayeredNegotiationResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        if body.get("stream_options").is_some() {
+            return ResponseTemplate::new(400).set_body_json(json!({
+                "error": { "message": "unknown parameter: stream_options" }
+            }));
+        }
+        let schema = &body["tools"][0]["function"]["parameters"];
+        if schema.get("oneOf").is_some() {
+            return ResponseTemplate::new(500).set_body_string(
+                r#"{"error":{"message":"Invalid schema for function 'Read': In context=('oneOf',), schema must have type 'object' at the top level.","type":"invalid_request_error"}}"#,
+            );
+        }
+        let effort = body.get("reasoning_effort").and_then(|value| value.as_str());
+        if effort.is_some() && effort != Some("none") {
+            return ResponseTemplate::new(500).set_body_string(TOOLS_EFFORT_INCOMPATIBLE_BODY);
+        }
+        let chunk = json!({
+            "choices": [{ "delta": { "content": "Recovered" }, "finish_reason": null }]
+        })
+        .to_string();
+        let finish = json!({
+            "choices": [{ "delta": {}, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        })
+        .to_string();
+        ResponseTemplate::new(200)
+            .set_body_raw(build_sse_body(&[&chunk, &finish]), "text/event-stream")
+    }
+}
+
+#[tokio::test]
+async fn openai_negotiates_usage_schema_and_effort_exactly_once_each() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(LayeredNegotiationResponder)
+        .expect(4)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let mut request = request_with_composed_tool_schema();
+    request.reasoning_effort = Some("medium".to_string());
+
+    let events = collect_events(provider.stream(&request).await.unwrap()).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 4, "one request per negotiation step");
+    let shapes: Vec<(bool, bool, Option<String>)> = received
+        .iter()
+        .map(|request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            (
+                body.get("stream_options").is_some(),
+                body["tools"][0]["function"]["parameters"]
+                    .get("oneOf")
+                    .is_some(),
+                body.get("reasoning_effort")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shapes,
+        vec![
+            (true, true, Some("medium".to_string())),
+            (false, true, Some("medium".to_string())),
+            (false, false, Some("medium".to_string())),
+            (false, false, Some("none".to_string())),
+        ],
+        "each extension is removed once, in order, and the loop stays bounded"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_effort_rejection_never_rewrites_requests_without_tools() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string(TOOLS_EFFORT_INCOMPATIBLE_BODY))
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let mut request = request_with_tool_and_effort("gpt-5.6-sol", Some("medium"));
+    request.tools.clear();
+
+    let error = provider.stream(&request).await.unwrap_err();
+    assert!(matches!(error, ProviderError::Api { status: 500, .. }));
+
+    let received = server.received_requests().await.unwrap();
+    let efforts = recorded_efforts(&received);
+    assert!(!efforts.is_empty());
+    assert!(
+        efforts
+            .iter()
+            .all(|effort| effort.as_deref() == Some("medium")),
+        "a request without tools must never be rewritten to reasoning_effort=none: {efforts:?}"
+    );
+}
