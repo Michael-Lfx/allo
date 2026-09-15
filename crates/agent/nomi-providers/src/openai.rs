@@ -3533,6 +3533,20 @@ mod tests {
         assert!(body.get("max_tokens").is_none());
     }
 
+    #[test]
+    fn test_output_cap_applies_to_dynamic_max_tokens_field() {
+        let compat = ProviderCompat {
+            max_tokens_field: Some("max_completion_tokens".into()),
+            ..Default::default()
+        };
+        let provider = OpenAIProvider::new("key", "http://localhost", compat);
+        let mut req = simple_request();
+        req.max_tokens = Some(200);
+        let body = provider.build_request_body(&req, false, true, false, Some(100));
+        assert_eq!(body["max_completion_tokens"], 100);
+        assert!(body.get("max_tokens").is_none());
+    }
+
     // --- temperature ---
 
     #[test]

@@ -938,6 +938,8 @@ mod retryable_tests {
             "supported range is from 1 (inclusive) to 0 (exclusive)",
             "supported range is from 10 (inclusive) to 5 (inclusive)",
             "supported range is from 1 (inclusive) to 1 (exclusive)",
+            "supported range is from 1 (inclusive) to 4294967296 (exclusive)",
+            "supported range is from 4294967296 (inclusive) to 4294967297 (exclusive)",
         ] {
             assert_eq!(parse_supported_output_range(message), None, "{message}");
         }

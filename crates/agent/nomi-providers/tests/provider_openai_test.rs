@@ -1165,6 +1165,20 @@ async fn openai_gateway_negotiates_reasoning_effort_none_for_tool_requests() {
         ],
         "first request keeps the requested effort, the retry uses none, and the second turn remembers it"
     );
+    let authorization: Vec<Option<String>> = received
+        .iter()
+        .map(|request| {
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        })
+        .collect();
+    assert!(
+        authorization.windows(2).all(|pair| pair[0] == pair[1]),
+        "negotiation must keep the same attribution headers: {authorization:?}"
+    );
     server.verify().await;
 }
 
@@ -1555,6 +1569,45 @@ async fn openai_output_limit_at_supported_max_is_accepted_without_negotiation() 
 }
 
 #[tokio::test]
+async fn openai_output_limit_never_increases_a_smaller_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(OutputLimitResponder)
+        .expect(3)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+
+    let large = request_with_max_tokens("gemini-3.5-flash", 128_000);
+    let events = collect_events(provider.stream(&large).await.unwrap()).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+
+    let small = request_with_max_tokens("gemini-3.5-flash", 4_096);
+    let events = collect_events(provider.stream(&small).await.unwrap()).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+
+    assert_eq!(
+        recorded_max_tokens(&server.received_requests().await.unwrap()),
+        vec![Some(128_000), Some(SUPPORTED_OUTPUT_CEILING), Some(4_096)],
+        "a learned ceiling must clamp only downward and never rewrite a smaller request"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn openai_gateway_does_not_output_limit_retry_an_unrelated_500() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1646,17 +1699,16 @@ async fn openai_gateway_sanitizes_gemini_object_only_branches() {
         ProviderCompat::openai_defaults(),
     );
 
-    let events = collect_events(
-        provider
-            .stream(&request_with_composed_tool_schema())
-            .await
-            .unwrap(),
-    )
-    .await;
+    let request = request_with_composed_tool_schema();
+    let events = collect_events(provider.stream(&request).await.unwrap()).await;
     assert!(
         events
             .iter()
             .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+    assert!(
+        request.tools[0].input_schema.get("oneOf").is_some(),
+        "the local execution schema must stay composed after provider-facing sanitizing"
     );
 
     let received = server.received_requests().await.unwrap();
