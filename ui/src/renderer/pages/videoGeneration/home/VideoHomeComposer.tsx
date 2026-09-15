@@ -678,6 +678,13 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       : draft.workflow === 'novel2video'
         ? <BookOpen size={14} />
         : <VideoOne size={14} />;
+  const skillSelected = draft.verticalSkillIds.length > 0;
+  const skillTriggerLabel =
+    selectedVerticalSkills.length === 0
+      ? verticalSkillLabel
+      : selectedVerticalSkills.length === 1
+        ? selectedVerticalSkills[0].label
+        : `${selectedVerticalSkills[0].label} +${selectedVerticalSkills.length - 1}`;
   const submitDisabled =
     loading ||
     (isAction
@@ -957,16 +964,16 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   }
                   setSkillHubOpen(open);
                 }}
-                width={380}
-                estimatedHeight={480}
+                width={360}
+                estimatedHeight={560}
                 padded={false}
                 trigger={
                   <CanvasChromeButton
-                    className='is-icon'
+                    className={`is-icon ${styles.skillMount}`}
                     expanded={skillHubOpen}
-                    aria-pressed={draft.verticalSkillIds.length > 0}
-                    title={verticalSkillLabel}
-                    aria-label={verticalSkillLabel}
+                    aria-pressed={skillSelected}
+                    title={skillTriggerLabel}
+                    aria-label={skillTriggerLabel}
                     onMouseEnter={prefetchVerticalSkillMenu}
                     onFocus={prefetchVerticalSkillMenu}
                     onClick={() => {
@@ -978,6 +985,15 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                     }}
                   >
                     <Star size={14} />
+                    {skillSelected ? (
+                      selectedVerticalSkills.length > 1 ? (
+                        <i className={styles.skillMountBadge}>
+                          {selectedVerticalSkills.length}
+                        </i>
+                      ) : (
+                        <i className={styles.skillMountPip} />
+                      )
+                    ) : null}
                   </CanvasChromeButton>
                 }
               >

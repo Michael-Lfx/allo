@@ -53,7 +53,7 @@ fn live_status<'a>(
 /// mid-film (user sees 8 shots, then 15 at clip 6).
 fn plan_skill_ids(record: &SessionRecord) -> Vec<String> {
     if record.vertical_skill_ids.is_empty() && record.workflow == WorkflowKind::Idea2Video {
-        vec![crate::skills::DEFAULT_SHORT_DRAMA_SKILL_ID.to_string()]
+        crate::skills::default_idea2video_skill_ids()
     } else {
         record.vertical_skill_ids.clone()
     }
@@ -1298,9 +1298,9 @@ impl VimaxService {
         // Render must compose the same string or sidecars miss and the board
         // is redesigned after the user already signed off on 「故事分镜」.
         // Idea-driven films with no explicitly chosen skill get the built-in
-        // short-drama director: drama-density rules only (requirement overlay,
-        // no style overlay), so it never overrides a user-picked vertical or
-        // the user's visual style.
+        // short-drama director plus in-frame scene craft (requirement overlay
+        // only, no style overlay), so they never override a user-picked
+        // vertical or the user's visual style.
         let skill_ids = plan_skill_ids(&record);
         let skill_overlay = self.skills.compose_for_plan(
             record.workflow,
