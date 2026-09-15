@@ -687,6 +687,56 @@
   color: rgba(255, 255, 255, 0.45);
 }
 
+.storyInspectorOpen {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 -8px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.storyInspectorOpen:hover,
+.storyInspectorOpen:focus-visible {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.storyInspectorOpen:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.28);
+}
+
+.storyInspectorLabelRow {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.storyInspectorExpand {
+  flex-shrink: 0;
+  opacity: 0.45;
+}
+
+.storyInspectorOpen:hover .storyInspectorExpand,
+.storyInspectorOpen:focus-visible .storyInspectorExpand {
+  opacity: 0.85;
+}
+
+.storyInspectorBody {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .storyInspectorSubLabel {
   margin: 0;
   font-size: 10px;
@@ -730,9 +780,19 @@
   min-height: 0;
 }
 
+.storyInspectorVisual .storyInspectorScroll {
+  flex: 1 1 0;
+  min-height: 4.5em;
+}
+
 .storyInspectorAudio {
-  flex: 0 1 auto;
-  max-height: 28%;
+  flex: 0 0 auto;
+  min-height: 92px;
+  max-height: 42%;
+}
+
+.storyInspectorAudio .storyInspectorScroll {
+  min-height: 3.6em;
 }
 
 .storyInspectorActions {

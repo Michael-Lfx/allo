@@ -1567,7 +1567,7 @@ const WorkspacePage: React.FC = () => {
                 <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.storyboard.hint', {
                     defaultValue:
-                      '胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。如需修改镜头，请打开到 Canvas 精调。',
+                      '胶片可左右滑动。规划完成时列出的镜头就是成片清单，生成时不会再补戏。点击画面描述或台词可展开编辑；整表精调仍可打开 Canvas。',
                   })}
                 </p>
               </div>
