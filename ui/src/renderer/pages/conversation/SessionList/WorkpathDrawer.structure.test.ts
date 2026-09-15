@@ -22,6 +22,9 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes("data-testid='workpath-create-interactive-btn'")).toBe(true);
     expect(source.includes("<button\n              type='button'\n              data-testid='workpath-create-interactive-btn'" )).toBe(true);
     expect(source.includes("<button\n                type='button'\n                data-testid='workpath-more-actions-btn'" )).toBe(true);
+    expect(source.includes("size-20px rd-4px sider-action-btn workpath-action-btn")).toBe(true);
+    expect(source.includes("style={{ lineHeight: 0 }}")).toBe(true);
+    expect(source.includes("inline-flex size-20px shrink-0 items-center justify-center leading-[0]")).toBe(true);
     expect(source.includes("role='button'\n              tabIndex={0}")).toBe(false);
     expect(source.includes('<CopyIconButton')).toBe(false);
     expect(source.includes('always visible (real workpaths only)')).toBe(false);

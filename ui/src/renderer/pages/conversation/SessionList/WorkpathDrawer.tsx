@@ -353,22 +353,29 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             used by conversation rows. */}
         {!batchMode && (
           <span
-            className='absolute right-8px top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-4px opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
+            className='absolute right-8px top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-4px leading-[0] opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
             onClick={(e) => e.stopPropagation()}
           >
             <button
               type='button'
               data-testid='workpath-create-interactive-btn'
               aria-label={t('sessionList.newInteractive')}
-              className='flex-center cursor-pointer appearance-none border-none bg-transparent p-0 transition-colors text-t-tertiary hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn'
+              className='flex-center cursor-pointer appearance-none border-none bg-transparent p-0 transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
               onClick={(e) => {
                 e.stopPropagation();
                 onCreateInteractive(node);
               }}
             >
-              <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
+              <Plus
+                theme='outline'
+                size='14'
+                fill='currentColor'
+                className='block leading-none shrink-0'
+                style={{ lineHeight: 0 }}
+              />
             </button>
-            <Dropdown
+            <span className='inline-flex size-20px shrink-0 items-center justify-center leading-[0]'>
+              <Dropdown
               droplist={
                 <Menu
                   onClickMenuItem={(key) => {
@@ -429,9 +436,16 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
                 className='flex-center cursor-pointer appearance-none border-none bg-transparent p-0 transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
                 onClick={(e) => e.stopPropagation()}
               >
-                <MoreOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
+                <MoreOne
+                  theme='outline'
+                  size='14'
+                  fill='currentColor'
+                  className='block leading-none shrink-0'
+                  style={{ lineHeight: 0 }}
+                />
               </button>
-            </Dropdown>
+              </Dropdown>
+            </span>
           </span>
         )}
       </div>
