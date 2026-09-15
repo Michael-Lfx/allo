@@ -171,7 +171,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setActionCharacter,
     setActionVideo,
     removeCanvasReference,
-    updateCanvasReference,
     removeCameo,
   } = useHomeUpload({
     draft,
@@ -802,7 +801,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             setDocumentName={setDocumentName}
             canvasReferences={draft.canvasReferences}
             removeCanvasReference={removeCanvasReference}
-            updateCanvasReference={updateCanvasReference}
             cameos={draft.cameos}
             removeCameo={removeCameo}
             selectedVerticalSkills={selectedVerticalSkills}
