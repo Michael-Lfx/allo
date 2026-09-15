@@ -2,9 +2,10 @@ import { useLayoutEffect, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useTranslation } from "react-i18next";
 import { Check, X } from "lucide-react";
-import { EmptyChatPanel, WelcomePanel } from "./messages/EmptyStates";
+import { EmptyChatPanel } from "./messages/EmptyStates";
 import { MessageItem } from "./messages/MessageItem";
 import { useAppStore } from "../store/appStore";
+import { isConnectionFailureKey } from "../lib/connect-error";
 import type { ProviderWithModel } from "../lib/protocol";
 
 /** Stay pinned to the bottom until the user scrolls more than this far from it. */
@@ -23,7 +24,6 @@ export function MessageList() {
   const loadingOlder = useAppStore((s) => s.stream.loadingOlder);
   const loadOlderHistory = useAppStore((s) => s.loadOlderHistory);
 
-  const connected = useAppStore((s) => s.phase === "online");
   const conversations = useAppStore((s) => s.conversations);
   const selectedConversationId = useAppStore((s) => s.selectedConversationId);
   const providerId = useAppStore((s) => s.providerId);
@@ -130,9 +130,7 @@ export function MessageList() {
 
   return <div className={`chat-content ${selectedConversationId === null ? "is-empty" : ""}`}>
     <div ref={scrollerRef} className="message-scroller" role="log" aria-live="polite" aria-label={t("messageList.ariaLabel")} tabIndex={0}>
-      {!connected ? (
-        <WelcomePanel onConnect={openSettings} />
-      ) : !hasTranscript && !isProcessing ? (
+      {!hasTranscript && !isProcessing ? (
         <EmptyChatPanel
           model={currentModel}
           isNew={isNewConversation}
@@ -171,6 +169,7 @@ export function MessageList() {
         const errorText = error === "connectFirst" ? t("common.connectFirst")
           : error === "providerModelPair" ? t("common.providerModelPair")
           : error === "nameRequired" ? t("common.nameRequired")
+          : isConnectionFailureKey(error) ? t(error)
           : error;
         return (
           <div className="chat-alert" role="alert">

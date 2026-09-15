@@ -19,6 +19,7 @@ import {
 } from "../lib/conversation-events";
 import { encodeHistoryCursor } from "../lib/history-cursor";
 import { formatError } from "../lib/errors";
+import { connectionFailureMessage } from "../lib/connect-error";
 import { getGlobalEffectGate } from "../lib/global-effects.runtime";
 import {
   RUN_TERMINAL_TONES,
@@ -286,8 +287,21 @@ export type AppState = {
   client: AppServerClient | null;
   /** Endpoint (`wsUrl` + token) the live client was built for (W8: reconnect reuses it). */
   clientEndpoint: string | null;
-  /** An established connection was lost; the banner offers a manual reconnect. */
+  /**
+   * 已建立的连接掉了（`phase` 同时回到 `offline`）。
+   *
+   * 没有横幅了，但它仍有两个用处：`connect()` 靠它区分「首连」与「重连」（重连要重挂
+   * 订阅、回填断线窗口），`LoadingOverlay` 靠它决定要不要盖全屏（重连时让连接门自己
+   * 显示进度，画面不闪）。
+   */
   connectionLost: boolean;
+  /**
+   * 首次自动连接已经落定（成功或失败）。
+   *
+   * 连接门要等它为 `true` 才可能显示：自动连接在途时 `phase` 还是 `offline`，光看
+   * `phase` 会让每次刷新都先闪一下「未连接」的门，而用户根本没来得及连。
+   */
+  bootstrapped: boolean;
   /** Transient notices (`ToastHost`); kept out of the render path's state shape. */
   toasts: Toast[];
 
@@ -317,6 +331,12 @@ export type AppState = {
 
   // ── UI / view switches ────────────────────────────────────────────────
   settingsOpen: boolean;
+  /**
+   * Which settings section the dialog should open on, when the caller that
+   * opened it knows better than "general" (the catalog page's marketplace empty
+   * state sends the user straight to 市场源). `null` = the default section.
+   */
+  settingsSection: string | null;
   sidebarOpen: boolean;
   sidebarCompact: boolean;
   projectOpen: boolean;
@@ -433,8 +453,6 @@ export type AppState = {
   // ── Actions ───────────────────────────────────────────────────────────
   connect: () => Promise<void>;
   disconnect: () => void;
-  /** Hide the disconnect banner without reconnecting. */
-  dismissConnectionLost: () => void;
   /** Push a transient notice (i18n key + optional params, resolved by `ToastHost`). */
   pushToast: (tone: ToastTone, messageKey: string, params?: Record<string, unknown>) => void;
   dismissToast: (id: string) => void;
@@ -487,7 +505,7 @@ export type AppState = {
   persistSettings: () => void;
 
   // ── UI setters ────────────────────────────────────────────────────────
-  openSettings: () => void;
+  openSettings: (section?: string) => void;
   closeSettings: () => void;
   setWsUrl: (value: string) => void;
   setToken: (value: string) => void;
@@ -609,6 +627,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   client: null,
   clientEndpoint: null,
   connectionLost: false,
+  bootstrapped: false,
   toasts: [],
 
   conversations: [],
@@ -627,6 +646,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   composerAttachments: [],
 
   settingsOpen: false,
+  settingsSection: null,
   sidebarOpen: false,
   sidebarCompact: false,
   projectOpen: true,
@@ -1067,6 +1087,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         workspaces: workspaceList,
         phase: "online",
         connectionLost: false,
+        bootstrapped: true,
         settingsOpen: false,
       });
 
@@ -1097,7 +1118,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
         get().dispatchStream({ type: "reset", messages: [] });
       }
     } catch (caught) {
-      set({ phase: "offline", error: formatError(caught) });
+      // `bootstrapped` 与成功分支一样要落定：首连失败才是连接门最该出现的时刻。
+      // 文案走 `connectionFailureMessage`：我们自己的传输错误换成 i18n key（否则连接
+      // 对话框里会露出一段英文原文），宿主自己的话才原样保留。
+      set({ phase: "offline", bootstrapped: true, error: connectionFailureMessage(caught) });
       if (lost) get().pushToast("error", "connection.restoreFailed");
     }
     // Settings persistence is owned by the effect below, which already wrote
@@ -1120,7 +1144,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     detachLifecycle?.();
     detachLifecycle = null;
     get().client?.close();
-    set({ client: null, clientEndpoint: null, connectionLost: false, phase: "offline", conversations: [], selectedConversationId: null });
+    // 断开后主页面一律不可用，连接门会盖上来；此时留着设置对话框没有意义（它会被门
+    // 挡住且点不动），一并关掉，让「离线 ⇒ 屏幕上只有连接门」这个不变量成立。
+    set({ client: null, clientEndpoint: null, connectionLost: false, phase: "offline", conversations: [], selectedConversationId: null, settingsOpen: false });
     get().dispatchStream({ type: "reset", messages: [], isProcessing: false });
     set({
       workspaces: [],
@@ -1511,7 +1537,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   // ── UI setters ────────────────────────────────────────────────────────
-  openSettings: () => set({ settingsOpen: true }),
+  openSettings: (section) => set({ settingsOpen: true, settingsSection: section ?? null }),
   closeSettings: () => set({ settingsOpen: false }),
   setWsUrl: (value) => set({ wsUrl: value }),
   setToken: (value) => set({ token: value }),
@@ -1770,7 +1796,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   dismissError: () => set({ error: null }),
   dismissResync: () => set({ resyncNotice: null }),
   dismissShare: () => set({ shareNotice: null }),
-  dismissConnectionLost: () => set({ connectionLost: false }),
   pushToast: (tone, messageKey, params) => {
     const id = crypto.randomUUID();
     set((s) => ({ toasts: [...s.toasts, { id, tone, messageKey, params }] }));

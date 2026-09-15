@@ -3,6 +3,8 @@
 > Gate: `bun run check:dead-css` (`scripts/check-dead-css-utilities.mjs`) is a **ratchet**
 > (not a hard ban yet). Existing violations are baselined; new or worsened uses fail.
 > When a file is cleaned to zero, remove it from `BASELINE` in that script.
+> Note: this gate is **not** part of `bun run check` any more — `ui/` frontend gates
+> were moved out of the aggregate chain, so run it by hand (`bun run check:dead-css`).
 
 ## `-b-` direction trap
 

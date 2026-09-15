@@ -223,7 +223,6 @@ button:disabled { cursor: default; opacity: .48; }
 .chat-main.is-new .empty-state p { margin: 0; font-size: 12.5px; white-space: nowrap; }
 .empty-state h1 { margin: 0; color: var(--ink-strong); font-size: clamp(25px, 3vw, 34px); font-weight: 570; letter-spacing: -.045em; }
 .empty-state p { max-width: 420px; margin: 12px 0 21px; color: var(--muted); font-size: 14px; line-height: 1.65; }
-.welcome-state { padding-top: 17vh; }
 .primary-button, .quiet-button { min-height: 38px; border-radius: 8px; padding: 0 15px; font-size: 13px; transition: background .14s ease, border-color .14s ease, color .14s ease; }
 .primary-button { border: 1px solid var(--primary); background: var(--primary); color: var(--on-accent); font-weight: 620; }
 .primary-button:hover:not(:disabled) { border-color: var(--ink-strong); background: var(--ink-strong); }
@@ -619,6 +618,14 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .settings-backdrop { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--overlay); backdrop-filter: blur(3px); }
 .settings-dialog { width: min(570px, 100%); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: 13px; background: var(--surface); padding: 23px; box-shadow: 0 24px 70px var(--shadow-pop); overflow: hidden; }
 .settings-dialog.is-wide { width: min(860px, calc(100vw - 40px)); padding: 0; overflow: hidden; }
+/* 连接门：单列，但比默认宽一档——只有一组配置，撑到 wide 的 860px 会显得空。 */
+.settings-dialog.is-large { width: min(760px, calc(100vw - 40px)); padding: 30px 32px 28px; }
+.settings-dialog.is-large .dialog-header h1 { font-size: 24px; }
+.settings-dialog.is-large .dialog-intro { margin: 15px 0 22px; font-size: 13px; }
+.settings-dialog.is-large .settings-row { min-height: 72px; gap: 20px; }
+.settings-dialog.is-large .settings-row-input { width: min(340px, 46%); min-height: 40px; font-size: 12px; }
+.settings-dialog.is-large .settings-row-title { font-size: 14px; }
+.settings-dialog.is-large .settings-row-desc { font-size: 12.5px; }
 .settings-dialog.is-wide .dialog-header { padding: 22px 26px 16px; }
 .settings-dialog.is-wide .dialog-header h1 { font-size: 20px; }
 .settings-dialog .dialog-header { flex: 0 0 auto; }
@@ -641,9 +648,23 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .settings-row-title { color: var(--ink-strong); font-size: 13px; font-weight: 580; }
 .settings-row-title small { color: var(--muted-light); font-weight: 400; font-size: 10px; }
 .settings-row-desc { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+/* A failed connect shows the host's own message in the status row, in place. */
+.settings-row-desc.is-error { color: var(--destructive-text); overflow-wrap: anywhere; }
 .settings-row-input { min-width: 0; width: min(280px, 42%); min-height: 36px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--ink-strong); padding: 0 10px; font-family: var(--font-mono); font-size: 11px; }
 .settings-row-input::placeholder { color: var(--muted-light); }
 .settings-row-input:focus { border-color: var(--muted); }
+/* MCP declaration editor (`21` D17): the one place a settings file's own text is
+   shown, so it gets a monospace box and nothing else. */
+.mcp-editor { width: 100%; min-height: 260px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--ink-strong); padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; tab-size: 2; }
+.mcp-editor:focus { border-color: var(--muted); outline: none; }
+.mcp-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+/* Per-server switch (`role="switch"`): a pill whose knob moves, so the state is
+   readable without comparing two labels. */
+.mcp-toggle { flex: 0 0 auto; position: relative; width: 38px; height: 22px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-2); padding: 0; transition: background .14s ease, border-color .14s ease; }
+.mcp-toggle.is-on { border-color: var(--green-deep); background: var(--green-deep); }
+.mcp-toggle:disabled { cursor: wait; }
+.mcp-toggle-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .14s ease; }
+.mcp-toggle.is-on .mcp-toggle-knob { transform: translateX(16px); }
 .settings-row-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 .settings-row-status { min-height: 56px; }
 /* W11 provider section (doc 16 R16): inline read/save feedback for the one
@@ -774,6 +795,15 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .market-mine:hover { border-color: var(--border-strong); background: var(--surface-raised); }
 .market-mine.is-active { border-color: var(--ink); background: var(--ink); color: var(--on-accent); font-weight: 580; }
 .market-mine.is-active:hover { border-color: var(--ink); background: var(--ink); }
+/* Right-hand side of the noun tab row: the inventory toggle and the add
+   buttons. They sit after the search box, which is what pushes the pair to the
+   far right (`margin-left: auto` on `.market-search-inline`). */
+.market-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-left: 8px; }
+/* Pushes the sort group to the right when the tab has no segmented control. */
+.market-toolbar-spacer { flex: 1 1 auto; }
+/* The marketplace registry renders inside the settings dialog now, which is
+   narrower than the page was: two columns instead of three. */
+.market-sources-panel .market-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 /* alert */
 .market-alert { display: flex; align-items: center; gap: 8px; margin: 10px 18px 0; padding: 9px 12px; border: 1px solid var(--destructive-border); border-radius: 8px; background: var(--destructive-soft); color: var(--destructive); font-size: 13px; }
@@ -1054,7 +1084,6 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 
 /* ── W13 marketplace management ── */
 .market-pending-note { margin: 0 0 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); color: var(--muted); padding: 8px 11px; font-size: 12px; line-height: 1.6; }
-.secondary-button.is-on { border-color: var(--green); background: var(--green-soft); color: var(--green-deep); }
 .market-remove-list { margin: 0 0 4px; padding: 10px 12px 10px 26px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); color: var(--ink-strong); font-size: 12px; line-height: 1.7; }
 .market-remove-list-title { list-style: none; margin-left: -14px; color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: .05em; }
 

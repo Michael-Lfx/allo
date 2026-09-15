@@ -1,16 +1,6 @@
-import { Bot, Sparkles } from "lucide-react";
+import { Bot } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ProviderWithModel } from "../../lib/protocol";
-
-export function WelcomePanel({ onConnect }: { onConnect: () => void }) {
-  const { t } = useTranslation();
-  return <div className="empty-state welcome-state">
-    <div className="empty-symbol" aria-hidden="true"><Sparkles size={25} strokeWidth={1.45} /></div>
-    <h1>{t("empty.welcomeTitle")}</h1>
-    <p>{t("empty.welcomeBody")}</p>
-    <button className="primary-button" type="button" onClick={onConnect}>{t("empty.connectAppServer")}</button>
-  </div>;
-}
 
 export function EmptyChatPanel({ model, isNew, onSettings }: { model: ProviderWithModel | null; isNew: boolean; onSettings: () => void }) {
   const { t } = useTranslation();

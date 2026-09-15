@@ -44,7 +44,7 @@ backend crates without a feature gate and documented reason.
 | `bun run build:ui` | Build the React SPA to `ui/dist/`. |
 | `bun run test` | Run `cargo test` (full Rust suite). |
 | `bun run test:fast` | Run `cargo nextest` (faster Rust tests). |
-| `bun run check` | All quality gates: typecheck + i18n + theme + icons + process-runtime-boundary + agent-vocabulary + script-registry. |
+| `bun run check` | Repo-level quality gates: error-surface contract + process-runtime-boundary + browser-platform-boundary + market manifest + script-registry. |
 | `bun run typecheck` | TypeScript type check for `ui/`. |
 | `bun run fmt` | Format Rust code (`cargo fmt`). |
 | `bun run clean` | Deep reclaim of build space. |
@@ -61,15 +61,22 @@ Run the smallest check that covers your change. See
 
 | Change type | Minimum check |
 | --- | --- |
-| Frontend TypeScript | `bun run typecheck` |
-| Frontend feature | `bun run check` |
-| i18n / theme / icons | `bun run check:i18n` / `check:theme` / `check:icons` |
+| Frontend TypeScript (`ui/`) | `bun run typecheck` |
+| Agent Store frontend (`web/`) | `cd web && bun run typecheck && bun run test` |
+| Frontend checks (`ui/`) | `bun run check:i18n` / `check:theme` / `check:icons` — `bun run check` no longer covers the frontend |
 | Rust compile | `cargo check -p <crate>` |
 | Rust behavior | `cargo test -p <crate>` |
 | Database migration | Migration test + `cargo test -p nomifun-db` |
 | Root scripts | `bun run help --check` |
 
 Broad pre-PR pass: `cargo check --workspace && bun run check`
+
+> `bun run check` runs **repo-level** gates only (error-surface contract · process
+> runtime boundary · browser platform boundary · market manifest · script
+> registry). The `ui/` frontend gates still exist as scripts
+> (`check:dead-css`, `check:button-layout-contract`, `check:codemirror-runtime`,
+> `check:agent-vocabulary`, …) but are deliberately **outside** that chain — run
+> them by hand when you work in `ui/`.
 
 ## High-Risk Areas
 

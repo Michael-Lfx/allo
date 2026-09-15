@@ -38,7 +38,7 @@
 
 import { create } from "zustand";
 
-import type { AgentStoreConfigPatch, AgentStoreConfigView } from "../lib/client";
+import type { AgentStoreConfigPatch, AgentStoreConfigView, McpSourceView } from "../lib/client";
 import { formatError } from "../lib/errors";
 
 /**
@@ -65,6 +65,23 @@ function hostMessage(caught: unknown): ConfigMessage {
 export interface AgentStoreConfigClient {
   getAgentStoreConfig: () => Promise<AgentStoreConfigView>;
   setAgentStoreConfig: (patch: AgentStoreConfigPatch) => Promise<AgentStoreConfigView>;
+}
+
+/**
+ * The MCP declaration face (`21` D17), as its own seam.
+ *
+ * Deliberately separate from `AgentStoreConfigClient`: the two faces are used by
+ * different panels, and keeping them apart means a read-only double for the
+ * provider section stays a two-method object instead of growing three methods it
+ * never calls. The WebUI client satisfies both.
+ */
+export interface AgentStoreMcpClient {
+  /** `config/get-mcp`: the file's own text, for the editor. */
+  getAgentStoreMcpSource: () => Promise<McpSourceView>;
+  /** `config/set-mcp`: write it verbatim (host validates before writing). */
+  setAgentStoreMcpSource: (source: string) => Promise<AgentStoreConfigView>;
+  /** `config/set-mcp-enabled`: flip one accepted entry's `enabled` in place. */
+  setAgentStoreMcpEnabled: (name: string, enabled: boolean) => Promise<AgentStoreConfigView>;
 }
 
 /** One selectable `<provider>/<model>` default. */
@@ -135,11 +152,34 @@ export interface SettingsConfigState {
   /** `[memory] distill_enabled` the host confirmed on the last save. */
   memorySavedValue: boolean | null;
 
+  /** `config/get-mcp` result; `null` = not read (yet, or the read failed). */
+  mcpSource: McpSourceView | null;
+  mcpSourceLoading: boolean;
+  /** Read failure for the editor's own read (distinct from `error`). */
+  mcpSourceError: ConfigMessage | null;
+  /** The editor's buffer, seeded from the host's own text. */
+  mcpDraft: string;
+  mcpSaving: boolean;
+  mcpSaveError: ConfigMessage | null;
+  /** `true` once a save has been confirmed by the host's re-read. */
+  mcpSaved: boolean;
+
   load: (client: AgentStoreConfigClient | null) => Promise<void>;
   select: (value: string) => void;
   save: (client: AgentStoreConfigClient | null) => Promise<void>;
   /** Write the `[memory] distill_enabled` switch (host re-read lands in `view`). */
   setDistill: (client: AgentStoreConfigClient | null, enabled: boolean) => Promise<void>;
+  /** Read the declaration file's own text for the editor. */
+  loadMcpSource: (client: AgentStoreMcpClient | null) => Promise<void>;
+  editMcpDraft: (value: string) => void;
+  /** Write the editor's buffer verbatim (host validates before writing). */
+  saveMcpSource: (client: AgentStoreMcpClient | null) => Promise<void>;
+  /** Toggle one accepted entry's `enabled` member in place. */
+  setMcpEnabled: (
+    client: AgentStoreMcpClient | null,
+    name: string,
+    enabled: boolean,
+  ) => Promise<void>;
 }
 
 export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
@@ -153,6 +193,13 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
   memorySaving: false,
   memoryError: null,
   memorySavedValue: null,
+  mcpSource: null,
+  mcpSourceLoading: false,
+  mcpSourceError: null,
+  mcpDraft: "",
+  mcpSaving: false,
+  mcpSaveError: null,
+  mcpSaved: false,
 
   load: async (client) => {
     if (!client) {
@@ -250,6 +297,109 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
       });
     } catch (caught) {
       set({ memorySaving: false, memoryError: hostMessage(caught) });
+    }
+  },
+
+  /**
+   * Read the declaration file's own text (`config/get-mcp`).
+   *
+   * A read failure leaves `mcpSource` null and the draft **empty**, never a
+   * fabricated blank file: an editor that silently starts from "" over a file
+   * the host merely could not read would overwrite it on the next save.
+   */
+  loadMcpSource: async (client) => {
+    if (!client) {
+      set({
+        mcpSource: null,
+        mcpDraft: "",
+        mcpSourceLoading: false,
+        mcpSourceError: i18nMessage("settings.providerOffline"),
+      });
+      return;
+    }
+    set({ mcpSourceLoading: true, mcpSourceError: null });
+    try {
+      const source = await client.getAgentStoreMcpSource();
+      set({
+        mcpSource: source,
+        mcpDraft: source.source ?? "",
+        mcpSourceLoading: false,
+        mcpSourceError: null,
+        mcpSaveError: null,
+        mcpSaved: false,
+      });
+    } catch (caught) {
+      set({
+        mcpSource: null,
+        mcpDraft: "",
+        mcpSourceLoading: false,
+        mcpSourceError: hostMessage(caught),
+      });
+    }
+  },
+
+  editMcpDraft: (value) => set({ mcpDraft: value, mcpSaveError: null, mcpSaved: false }),
+
+  /**
+   * Write the buffer verbatim, then re-read it.
+   *
+   * The landing spot is the host's own re-read, as everywhere else in this
+   * store — and the buffer is re-seeded from it, so what the editor shows after
+   * a save is the file, not the request. A rejected text is **not** a failed
+   * save in the "try again" sense: the host refused it and wrote nothing, so the
+   * buffer is kept exactly as the operator typed it and the parser's own reason
+   * (line and column included) is shown beside it.
+   */
+  saveMcpSource: async (client) => {
+    const { mcpDraft, mcpSaving } = get();
+    if (mcpSaving) return;
+    if (!client) {
+      set({ mcpSaveError: i18nMessage("settings.providerOffline") });
+      return;
+    }
+    set({ mcpSaving: true, mcpSaveError: null });
+    try {
+      const view = await client.setAgentStoreMcpSource(mcpDraft);
+      const source = await client.getAgentStoreMcpSource();
+      set({
+        view,
+        mcpSource: source,
+        mcpDraft: source.source ?? "",
+        mcpSaving: false,
+        mcpSaveError: null,
+        mcpSaved: true,
+        error: null,
+      });
+    } catch (caught) {
+      set({ mcpSaving: false, mcpSaveError: hostMessage(caught) });
+    }
+  },
+
+  /**
+   * Toggle one entry in place.
+   *
+   * The source is re-read only when the buffer holds **no unsaved edits**
+   * (`mcpDraft === mcpSource.source`); otherwise a switch flipped outside the
+   * editor would silently discard what the operator is typing.
+   */
+  setMcpEnabled: async (client, name, enabled) => {
+    const { mcpSaving, mcpDraft, mcpSource } = get();
+    if (mcpSaving) return;
+    if (!client) {
+      set({ mcpSaveError: i18nMessage("settings.providerOffline") });
+      return;
+    }
+    set({ mcpSaving: true, mcpSaveError: null });
+    try {
+      const view = await client.setAgentStoreMcpEnabled(name, enabled);
+      const dirty = mcpSource !== null && mcpDraft !== (mcpSource.source ?? "");
+      set({ view, mcpSaving: false, mcpSaveError: null, mcpSaved: false, error: null });
+      if (!dirty) {
+        const source = await client.getAgentStoreMcpSource();
+        set({ mcpSource: source, mcpDraft: source.source ?? "" });
+      }
+    } catch (caught) {
+      set({ mcpSaving: false, mcpSaveError: hostMessage(caught) });
     }
   },
 }));

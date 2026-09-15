@@ -36,7 +36,7 @@ const [
   { SETTINGS_SECTIONS, SettingsPanel },
   { ProviderSettingsView },
   { AgentSettingsView },
-  { McpSettingsView },
+  { McpManagerView },
   { default: i18n },
 ] = await Promise.all([
   import("react-dom/server"),
@@ -93,13 +93,26 @@ function renderProvider(patch: Partial<Parameters<typeof ProviderSettingsView>[0
   );
 }
 
-function renderMcp(patch: Partial<Parameters<typeof McpSettingsView>[0]> = {}): string {
+function renderMcp(patch: Partial<Parameters<typeof McpManagerView>[0]> = {}): string {
   return renderToStaticMarkup(
-    createElement(McpSettingsView, {
+    createElement(McpManagerView, {
       view: VIEW,
       loading: false,
       error: null,
       onRetry: noop,
+      // The editor's own read is a separate wire call (`config/get-mcp`) asked
+      // for only when the editor opens; these defaults are the "list" pane.
+      source: null,
+      sourceLoading: false,
+      sourceError: null,
+      draft: "",
+      saving: false,
+      saveError: null,
+      saved: false,
+      onLoadSource: noop,
+      onDraftChange: noop,
+      onSave: noop,
+      onToggle: noop,
       ...patch,
     }),
   );
@@ -109,14 +122,18 @@ describe("SettingsDialog sections (W11 / R16)", () => {
   it("offers only the sections that have real data behind them", () => {
     // The nav is exactly the sections that read/write something real.
     // `agent` joined them once its switch became host-consumed *and* writable;
-    // `mcp` joined as a read-only projection of `~/.agent-store/mcp.json`.
-    expect([...SETTINGS_SECTIONS]).toEqual(["general", "provider", "agent", "mcp"]);
+    // `mcp` joined as a read-only projection of `~/.agent-store/mcp.json`;
+    // `market` joined when the catalog page became three noun tabs and the
+    // marketplace registry — host-level configuration, whose removal cascades
+    // into uninstalls — had no place left in it.
+    expect([...SETTINGS_SECTIONS]).toEqual(["general", "provider", "agent", "market", "mcp"]);
 
     const html = renderToStaticMarkup(createElement(SettingsPanel, { onClose: noop }));
 
     expect(html).toContain("通用");
     expect(html).toContain("供应商");
     expect(html).toContain("智能体");
+    expect(html).toContain("市场源");
     expect(html).toContain("MCP");
     // The empty shells are gone, and with them the "coming soon" placeholder.
     for (const gone of ["账户", "插件", "实验室", "已归档", "该设置项暂未开放"]) {

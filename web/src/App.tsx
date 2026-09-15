@@ -4,7 +4,6 @@ import { ApprovalCard } from "./components/ApprovalCard";
 import { ArtifactPanel } from "./components/ArtifactPanel";
 import { CatalogView } from "./components/CatalogView";
 import { Composer } from "./components/Composer";
-import { ConnectionBanner } from "./components/ConnectionBanner";
 import { MessageList } from "./components/MessageList";
 import { RunDetail } from "./components/RunDetail";
 import { LoadingOverlay } from "./components/LoadingOverlay";
@@ -12,6 +11,7 @@ import { ToastHost } from "./components/ToastHost";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { DeleteDialog } from "./components/dialogs/DeleteDialog";
+import { ConnectionGateDialog } from "./components/dialogs/ConnectionGateDialog";
 import { NewChatDialog } from "./components/dialogs/NewChatDialog";
 import { RenameDialog } from "./components/dialogs/RenameDialog";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
@@ -25,7 +25,7 @@ export default function App() {
   const mainView = useAppStore((s) => s.mainView);
   const selectedConversationId = useAppStore((s) => s.selectedConversationId);
   const connecting = useAppStore((s) => s.phase === "connecting");
-  const connectionLost = useAppStore((s) => s.connectionLost);
+  const bootstrapped = useAppStore((s) => s.bootstrapped);
   const openMenu = useAppStore((s) => s.openMenu);
   const contextUsage = useAppStore((s) => s.stream.contextUsage);
   const connect = useAppStore((s) => s.connect);
@@ -116,13 +116,15 @@ export default function App() {
       <RenameDialog />
       <DeleteDialog />
       <WorkspaceRemoveDialog />
-      <ConnectionBanner />
+      {/* 离线时唯一的入口状态：挡在主界面前面，没有关闭出口（连不上就进不去）。 */}
+      <ConnectionGateDialog />
       {/* W5: workspace-scoped artifact drawer, opened from the topbar. */}
       <ArtifactPanel />
       <ToastHost />
-      {/* The full-screen overlay is for the first connect; a reconnect keeps the
-          banner (and its progress state) visible instead. */}
-      {connecting && !connectionLost && <LoadingOverlay />}
+      {/* Full-screen overlay for the very first connect only — before the gate can
+          be up (`bootstrapped`). Afterwards the gate is on screen and shows its own
+          progress, so a second overlay would just flash on top of it. */}
+      {connecting && !bootstrapped && <LoadingOverlay />}
     </main>
   );
 }

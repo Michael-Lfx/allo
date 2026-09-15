@@ -47,6 +47,13 @@ function resetStore(): void {
     memorySaving: false,
     memoryError: null,
     memorySavedValue: null,
+    mcpSource: null,
+    mcpSourceLoading: false,
+    mcpSourceError: null,
+    mcpDraft: "",
+    mcpSaving: false,
+    mcpSaveError: null,
+    mcpSaved: false,
   });
 }
 
@@ -252,5 +259,119 @@ describe("defaultModelOptions / configFileCounts (W11 / R16)", () => {
   it("counts what the file declares, not what the directory has", () => {
     expect(configFileCounts(VIEW)).toEqual({ providers: 2, models: 3 });
     expect(configFileCounts(null)).toEqual({ providers: 0, models: 0 });
+  });
+});
+
+/**
+ * The MCP declaration face (`21` D17): the editor's read, its verbatim write,
+ * and the in-place toggle.
+ *
+ * The rules pinned here are the ones that decide whether an operator can lose
+ * work: the buffer is only ever seeded from the host, a refused save keeps what
+ * was typed, and a switch flipped outside the editor never discards unsaved
+ * edits.
+ */
+const DECLARED = '{\n  "mcpServers": {\n    "alpha": { "command": "npx" }\n  }\n}\n';
+
+/** Client stub: records both write shapes and answers with the re-read view. */
+function fakeMcpClient(initial: string | null = DECLARED) {
+  const writes: Array<{ kind: "source"; source: string } | { kind: "toggle"; name: string; enabled: boolean }> = [];
+  let current = initial;
+  return {
+    writes,
+    client: {
+      getAgentStoreMcpSource: async () => ({ exists: current !== null, source: current }),
+      setAgentStoreMcpSource: async (next: string) => {
+        writes.push({ kind: "source", source: next });
+        // The host stores a normalized text, so a re-read is distinguishable
+        // from an echo of the request.
+        current = next.trim();
+        return VIEW;
+      },
+      setAgentStoreMcpEnabled: async (name: string, enabled: boolean) => {
+        writes.push({ kind: "toggle", name, enabled });
+        return VIEW;
+      },
+    },
+  };
+}
+
+describe("settingsConfig store · MCP declarations (D17)", () => {
+  beforeEach(resetStore);
+
+  it("seeds the editor from the host's own text", async () => {
+    const { client } = fakeMcpClient();
+    await useSettingsConfig.getState().loadMcpSource(client);
+
+    const state = useSettingsConfig.getState();
+    expect(state.mcpSource).toEqual({ exists: true, source: DECLARED });
+    expect(state.mcpDraft).toBe(DECLARED);
+    expect(state.mcpSourceError).toBeNull();
+    expect(state.mcpSaved).toBe(false);
+  });
+
+  it("a failed read leaves no fabricated blank file behind", async () => {
+    const { client } = fakeMcpClient();
+    const failing = {
+      ...client,
+      getAgentStoreMcpSource: async () => {
+        throw new Error("failed to read ~/.agent-store/mcp.json: EACCES");
+      },
+    };
+    await useSettingsConfig.getState().loadMcpSource(failing);
+
+    const state = useSettingsConfig.getState();
+    // An editor that silently starts from "" would overwrite a file the host
+    // merely could not read on the next save.
+    expect(state.mcpSource).toBeNull();
+    expect(state.mcpDraft).toBe("");
+    expect(state.mcpSourceError?.kind).toBe("server");
+  });
+
+  it("lands on the host's re-read rather than on the request", async () => {
+    const { client, writes } = fakeMcpClient();
+    await useSettingsConfig.getState().loadMcpSource(client);
+    // Trailing whitespace the host's own normalizing write drops: the buffer
+    // after the save must be the *re-read*, not what was typed, or the two are
+    // indistinguishable here.
+    useSettingsConfig.getState().editMcpDraft('  {"mcpServers":{}}  ');
+    await useSettingsConfig.getState().saveMcpSource(client);
+
+    expect(writes).toEqual([{ kind: "source", source: '  {"mcpServers":{}}  ' }]);
+    const state = useSettingsConfig.getState();
+    expect(state.mcpSaved).toBe(true);
+    expect(state.view).toEqual(VIEW);
+    expect(state.mcpDraft).toBe('{"mcpServers":{}}');
+  });
+
+  it("keeps the operator's text when the host refuses it", async () => {
+    const { client } = fakeMcpClient();
+    await useSettingsConfig.getState().loadMcpSource(client);
+    const typed = "{ broken json";
+    useSettingsConfig.getState().editMcpDraft(typed);
+    const refusing = {
+      ...client,
+      setAgentStoreMcpSource: async () => {
+        throw new Error("mcp.json was not written: mcp.json is not valid JSON: expected value at line 1 column 3");
+      },
+    };
+    await useSettingsConfig.getState().saveMcpSource(refusing);
+
+    const state = useSettingsConfig.getState();
+    expect(state.mcpSaveError?.kind).toBe("server");
+    expect(state.mcpDraft).toBe(typed);
+    expect(state.mcpSaved).toBe(false);
+  });
+
+  it("a toggle outside the editor never discards unsaved edits", async () => {
+    const { client, writes } = fakeMcpClient();
+    await useSettingsConfig.getState().loadMcpSource(client);
+    useSettingsConfig.getState().editMcpDraft('{"mcpServers":{"alpha":{"command":"npx"}}}');
+    await useSettingsConfig.getState().setMcpEnabled(client, "alpha", false);
+
+    expect(writes).toEqual([{ kind: "toggle", name: "alpha", enabled: false }]);
+    const state = useSettingsConfig.getState();
+    expect(state.mcpDraft).toBe('{"mcpServers":{"alpha":{"command":"npx"}}}');
+    expect(state.view).toEqual(VIEW);
   });
 });

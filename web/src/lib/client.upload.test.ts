@@ -41,6 +41,8 @@ describe("AppServerClient · uploadFileToWorkspace（R15）", () => {
     const client = new AppServerClient({
       httpBaseUrl: "http://127.0.0.1:8787/api/app-server",
       wsUrl: "ws://127.0.0.1:8787/api/app-server/ws",
+      // 握手（initialize）必带 ClientInfo；本用例不关心它的取值，故用独立标识而不是抄宿主的。
+      client: { name: "client-upload-test", version: "0.0.0" },
     });
     const file = new File([new Uint8Array([1, 2, 3])], "drop.png", { type: "image/png" });
 

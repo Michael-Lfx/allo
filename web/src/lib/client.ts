@@ -45,10 +45,12 @@ export type {
   AgentStoreConfigPatch,
   AgentStoreConfigProvider,
   AgentStoreConfigView,
+  McpSourceView,
   SkillCreateInput,
   SkillDeleteResult,
   SkillUpdateInput,
 } from "@flowy-agent-store/protocol";
+import type { McpSourceView } from "@flowy-agent-store/protocol";
 import type { FileChangeOperation, SnapshotCompare, SnapshotInfo } from "./artifact-changes";
 
 export * from "@flowy-agent-store/client";
@@ -322,6 +324,49 @@ export class AppServerClient extends BaseClient {
    */
   async setAgentStoreConfig(patch: AgentStoreConfigPatch): Promise<AgentStoreConfigView> {
     return this.transport.request<AgentStoreConfigView>("config/set", patch);
+  }
+
+  /**
+   * Read the MCP declaration file's **own text** (`config/get-mcp`), for the
+   * file editor (`21` D17).
+   *
+   * A method of its own rather than a field on `config/get` on purpose: that
+   * view describes the file's *verdict* (`mcp.servers` / `rejected` / `error`)
+   * and carries no `env` / `headers` value, and every settings dialog calls it
+   * on open. This is the one read that returns a declaration's values, and it
+   * exists because an editor cannot edit what it cannot see — the operator is
+   * editing their own file on their own machine.
+   *
+   * The text comes back whether or not it parses: editing a broken file is what
+   * the editor is for, and `config/get` reports the parse verdict beside it.
+   */
+  async getAgentStoreMcpSource(): Promise<McpSourceView> {
+    return this.transport.request<McpSourceView>("config/get-mcp", {});
+  }
+
+  /**
+   * Replace the MCP declaration file with `source` (`config/set-mcp`).
+   *
+   * The host validates it with **its own parser** before writing: a text it
+   * cannot read is refused with the parser's own reason and **nothing is
+   * written**. The response is the `config/get` view re-read from disk, so the
+   * caller sees the landing spot rather than an echo.
+   */
+  async setAgentStoreMcpSource(source: string): Promise<AgentStoreConfigView> {
+    return this.transport.request<AgentStoreConfigView>("config/set-mcp", { source });
+  }
+
+  /**
+   * Flip one entry's `enabled` member in place (`config/set-mcp-enabled`).
+   *
+   * Only an entry the host **accepted** can be toggled: one the parser refused
+   * comes back as `mcp_server_rejected`, because reporting success for an entry
+   * nothing reads would be the worst possible answer. The host edits the text
+   * surgically (value in place, indentation reused, no-op when nothing changes),
+   * so a switch never reformats the operator's file.
+   */
+  async setAgentStoreMcpEnabled(name: string, enabled: boolean): Promise<AgentStoreConfigView> {
+    return this.transport.request<AgentStoreConfigView>("config/set-mcp-enabled", { name, enabled });
   }
 
   /**
