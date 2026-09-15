@@ -270,7 +270,7 @@ export function Sidebar() {
 
       <div className="sidebar-spacer" />
       <div className="sidebar-footer">
-        <button className="connection-row" type="button" onClick={openSettings}>
+        <button className="connection-row" type="button" onClick={() => openSettings()}>
           <span className="connection-avatar" aria-hidden="true"><User size={16} strokeWidth={1.8} /></span>
           <span className="connection-user">{t("sidebar.guest")}</span>
           <Settings aria-hidden="true" size={15} strokeWidth={1.7} className="connection-settings" />

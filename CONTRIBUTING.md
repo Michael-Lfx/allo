@@ -286,15 +286,23 @@ PR.
 | --- | --- |
 | Markdown/docs only | `git diff --check`; click or inspect changed links when possible. |
 | Root script/help changes | `bun run help --check`. |
-| Frontend TypeScript | `bun run typecheck`. |
+| Frontend TypeScript (`ui/`) | `bun run typecheck`. |
+| Agent Store frontend (`web/`) | `cd web && bun run typecheck && bun run test`. |
 | i18n changes | `bun run check:i18n`. |
 | Theme/token changes | `bun run check:theme`. |
-| Frontend feature | `bun run check`; add screenshots for visible surfaces. |
+| Frontend feature | The focused frontend checks for the surface you touched (see the two rows above) — `bun run check` no longer covers the frontend; add screenshots for visible surfaces. |
 | Rust compile path | `cargo check --workspace` or a narrower `cargo check -p <crate>`. |
 | Rust behavior | `cargo test -p <crate>` or the focused test target that covers the change. |
 | Database/schema/identifier change | Follow the [Data and Identifier Standards](docs/contributing/data-and-identifier-standards.md); run the affected schema-contract, repository, reset, or restore tests plus `cargo test -p nomifun-db` when practical. |
 | Packaging/release | The relevant build script plus the release docs you changed. |
 | Security-sensitive path | Focused tests, threat-model notes in the PR, and no public vulnerability details if disclosure is private. |
+
+> `bun run check` runs **repo-level** gates only: error-surface contract, process
+> runtime boundary, browser platform boundary, market manifest, script registry.
+> The `ui/` frontend gates remain available as scripts (`check:dead-css`,
+> `check:button-layout-contract`, `check:codemirror-runtime`,
+> `check:agent-vocabulary`, …) but are deliberately outside that chain — run them
+> by hand when you work in `ui/`.
 
 For a broad pre-PR pass, run:
 

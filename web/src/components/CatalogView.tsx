@@ -1,41 +1,47 @@
 /**
- * Agent Store catalog view — marketplace-style card surface.
+ * Agent Store catalog view — three noun tabs (专家 / 技能 / 连接器), each with a
+ * *browse* surface (the store projection) and an *installed* surface that the
+ * tab's right-hand button switches to.
  *
  * A pure protocol consumer over the App Server link (`src/lib/client.ts`).
- * Four catalog tabs (skills / connectors / agents / teams) plus the importer
- * list render as market cards: circular initial badges, two-line clamps,
- * at most two metadata tags and a right-side detail drawer. Every value is
- * real protocol data; nothing is fabricated by the client.
+ * Cards are a circular initial badge (or the entry's own avatar), two-line
+ * clamps, at most two metadata tags, plus a right-side detail drawer. Every
+ * value is real protocol data; nothing is fabricated by the client.
  *
- * Capabilities are server-driven: tabs only appear when `initialize`
- * advertised them.
+ * Two surfaces this page used to own live elsewhere now, because they are
+ * configuration rather than browsing: the marketplace registry is the settings
+ * dialog's 市场源 section (`catalog/MarketSourcesPanel`), and the import form
+ * with its history opens as a dialog (`catalog/ImportPanel`) from the 技能 /
+ * 连接器 tabs' buttons.
+ *
+ * Capabilities are server-driven: a noun tab only appears when `initialize`
+ * advertised it.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Bot,
   Check,
   ChevronRight,
   CircleAlert,
-  Globe,
   LoaderCircle,
+  Plug,
   Plus,
   RefreshCw,
   Search,
-  Store,
+  Server,
+  Sparkles,
   Upload,
-  Users,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { formatError, isRetryableError } from "../lib/errors";
+import { hasAnyPublishedAt, sortNewestFirst } from "../lib/store-sort";
 import {
-  pickEntryTags,
-  pickEntryText,
   pickLocalized,
   pickLocalizedList,
   useLocalizedLang,
-  type LocalizedLang,
 } from "../ui/localize";
 import { useAppStore } from "../store/appStore";
 import {
@@ -48,197 +54,59 @@ import {
 import type {
   AgentDetail,
   AgentSummary,
-  CompatibilityTriple,
   ConnectorDetail,
-  ConnectorStatus,
   ConnectorSummary,
-  ImportDetail,
-  ImportResult,
   ImportSourceKind,
-  ImportSummary,
-  InstallResult,
-  InstallState,
-  InstallStatus,
-  MarketplaceDetail,
-  MarketplaceSourceKind,
-  MarketplaceSummary,
   SkillDetail,
   SkillSummary,
   StoreInstallResult,
   StoreItem,
   StoreItemKind,
-  StoreList,
   TeamDetail,
   TeamSummary,
 } from "../lib/protocol";
 import { DialogShell } from "./dialogs/DialogShell";
+import { McpManagerDialog } from "./dialogs/McpSettingsSection";
+import { ImportPanel } from "./catalog/ImportPanel";
+import {
+  AUTH_STATE_KEYS,
+  AgentBadge,
+  AvatarBadge,
+  CONNECTOR_STATE_KEYS,
+  CompatChips,
+  InitialBadge,
+  MetaList,
+  MetaRow,
+  SEMANTIC_KEYS,
+  StoreBadge,
+  Tags,
+  agentDisplayName,
+  connectorStateClass,
+  importStatusLabel,
+  installStateClass,
+  installStateLabel,
+  semanticLabel,
+  stateLabel,
+  type InstallToggleKind,
+} from "./catalog/shared";
 
-type CatalogTab = "store" | "sources" | "installed" | "imports";
-type PanelKind = "store" | "skill" | "connector" | "agent" | "team" | "import";
-type InstalledKind = "skills" | "connectors" | "agents" | "teams";
+/**
+ * Top-level noun tabs: one per component family. Deliberately *nouns*, not the
+ * verbs the page used to expose (`store` / `sources` / `installed` / `imports`)
+ * — the marketplace registry now lives in the settings dialog and the import
+ * surface opens from the contextual buttons, so the page itself is about the
+ * three families of thing.
+ */
+type CatalogNoun = "experts" | "skills" | "connectors";
+/** The 专家 tab's own split (`catalog.kindAgent` / `catalog.kindTeam`). */
+type ExpertKind = "experts" | "teams";
+/** Browse the store catalog vs. the installed inventory of the same noun. */
+type CatalogSurface = "browse" | "installed";
+type PanelKind = "store" | "skill" | "connector" | "agent" | "team";
 
 // ---------------------------------------------------------------------------
 // semantic helpers
 // ---------------------------------------------------------------------------
-
-const CONNECTOR_STATE_KEYS: Record<string, string> = {
-  installed: "catalog.stateInstalled",
-  configured: "catalog.stateConfigured",
-  authorization_required: "catalog.stateAuthRequired",
-  authenticated: "catalog.stateAuthenticated",
-  connected: "catalog.stateConnected",
-  degraded: "catalog.stateDegraded",
-  error: "catalog.stateError",
-  reauthorization_required: "catalog.stateReauthRequired",
-};
-
-const AUTH_STATE_KEYS: Record<string, string> = {
-  authenticated: "catalog.authAuthenticated",
-  not_authenticated: "catalog.authNotAuthenticated",
-  reauthorization_required: "catalog.authReauthRequired",
-};
-
-const IMPORT_STATUS_KEYS: Record<string, string> = {
-  completed: "catalog.importStatusCompleted",
-  "completed-with-warnings": "catalog.importStatusWarnings",
-  blocked: "catalog.importStatusBlocked",
-  failed: "catalog.importStatusFailed",
-};
-
-const SEMANTIC_KEYS: Record<string, string> = {
-  compatible: "catalog.semantic_compatible",
-  compatible_with_adapter: "catalog.semantic_compatible_with_adapter",
-  manual_review: "catalog.semantic_manual_review",
-  unsupported: "catalog.semantic_unsupported",
-  pending_legal_review: "catalog.semantic_pending_legal_review",
-};
-
-/** Deterministic badge hues so the same item keeps its color across renders. */
-const BADGE_HUES = [
-  "#3b6ea5", "#2f7d5a", "#8a5a2e", "#5b5f7d", "#9a3f6b", "#4d7f8a",
-];
-
-function badgeColor(seed: string): string {
-  let hash = 0;
-  for (const char of seed) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return BADGE_HUES[hash % BADGE_HUES.length];
-}
-
-function connectorStateClass(status: ConnectorStatus | string): string {
-  switch (status) {
-    case "connected":
-      return "is-success";
-    case "error":
-    case "degraded":
-      return "is-error";
-    case "authorization_required":
-    case "reauthorization_required":
-      return "is-warn";
-    default:
-      return "";
-  }
-}
-
-function importStatusClass(status: string): string {
-  switch (status) {
-    case "completed":
-      return "is-success";
-    case "completed-with-warnings":
-      return "is-warn";
-    case "blocked":
-    case "failed":
-      return "is-error";
-    default:
-      return "";
-  }
-}
-
-function stateLabel(
-  t: (key: string, opts?: Record<string, unknown>) => string,
-  keys: Record<string, string>,
-  value: string,
-): string {
-  const key = keys[value];
-  return key ? t(key) : t("catalog.stateOther", { status: value });
-}
-
-function semanticLabel(t: (key: string, opts?: Record<string, unknown>) => string, value: string): string {
-  const key = SEMANTIC_KEYS[value];
-  return key ? t(key) : value;
-}
-
-/** Icon to the left of each card row. */
-function InitialBadge({ name, size = 40 }: { name: string; size?: number }) {
-  const initial = (name.trim()[0] ?? "?").toUpperCase();
-  return (
-    <span
-      className="market-badge"
-      style={{ width: size, height: size, background: badgeColor(name), fontSize: size * 0.4 }}
-      aria-hidden="true"
-    >
-      {initial}
-    </span>
-  );
-}
-
-/** Market display name for an agent (resolved by UI language, D8=A). */
-function agentDisplayName(agent: AgentSummary, lang: LocalizedLang): string {
-  return pickLocalized(agent.display_name, lang) || agent.name;
-}
-
-/** Badge with the agent avatar when declared, else the initial. */
-function AgentBadge({ agent, size = 40 }: { agent: AgentSummary; size?: number }) {
-  const lang = useLocalizedLang();
-  const name = agentDisplayName(agent, lang);
-  if (agent.avatar_url) {
-    return (
-      <img className="market-badge market-avatar" width={size} height={size} src={agent.avatar_url} alt={name} loading="lazy" />
-    );
-  }
-  return <InitialBadge name={name} size={size} />;
-}
-
-/** Store item tag strings (wire may omit empty arrays). */
-/** Badge from an absolute/relative avatar URL, else the initial letter. */
-function AvatarBadge({
-  name,
-  avatarUrl,
-  size = 40,
-  rootUrl,
-}: {
-  name: string;
-  avatarUrl?: string | null;
-  size?: number;
-  rootUrl?: string;
-}) {
-  const avatar = avatarUrl
-    ? avatarUrl.startsWith("http://") || avatarUrl.startsWith("https://")
-      ? avatarUrl
-      : rootUrl
-        ? `${rootUrl}${avatarUrl.startsWith("/") ? "" : "/"}${avatarUrl}`
-        : avatarUrl
-    : null;
-  if (avatar) {
-    return (
-      <img
-        className="market-badge market-avatar"
-        width={size}
-        height={size}
-        src={avatar}
-        alt={name}
-        loading="lazy"
-      />
-    );
-  }
-  return <InitialBadge name={name} size={size} />;
-}
-
-/** Store item badge: avatar when declared, else the initial. */
-function StoreBadge({ item, size = 40, rootUrl }: { item: StoreItem; size?: number; rootUrl?: string }) {
-  const lang = useLocalizedLang();
-  const name = pickLocalized(item.display_name, lang) || item.name;
-  return <AvatarBadge name={name} avatarUrl={item.avatar_url} size={size} rootUrl={rootUrl} />;
-}
 
 /** Install / installed / update action attached to a store card. */
 function StoreInstallAction({
@@ -297,38 +165,6 @@ function StoreInstallAction({
   );
 }
 
-function Tags({ tags }: { tags: string[] }) {
-  const { t } = useTranslation();
-  const visible = tags.slice(0, 2);
-  const extra = tags.length - visible.length;
-  return (
-    <div className="market-tags">
-      {visible.map((tag) => (
-        <span className="market-tag" key={tag}>{tag}</span>
-      ))}
-      {extra > 0 && <span className="market-tag is-extra">+{extra}</span>}
-    </div>
-  );
-}
-
-function CompatChips({ triple }: { triple: CompatibilityTriple }) {
-  const { t } = useTranslation();
-  if (!triple) return null;
-  return (
-    <div className="market-compat">
-      <span className="market-tag">{semanticLabel(t, triple.semantic_status)}</span>
-      <span className="market-tag is-muted">{t("catalog.compatRuntime")}: {triple.runtime_status}</span>
-      <span className="market-tag is-muted">{t("catalog.compatDistribution")}: {triple.distribution_status}</span>
-      {triple.reasons.length > 0 && (
-        <details className="market-reasons">
-          <summary>{t("catalog.compatReasons")}</summary>
-          <ul>{triple.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
-        </details>
-      )}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Catalog view
 // ---------------------------------------------------------------------------
@@ -340,16 +176,37 @@ export function CatalogView() {
   const capabilities = useAppStore((s) => s.client?.initializeInfo?.capabilities ?? null);
   const onBack = useAppStore((s) => s.toggleCatalog);
   const pushToast = useAppStore((s) => s.pushToast);
+  const openSettings = useAppStore((s) => s.openSettings);
 
-  const [tab, setTab] = useState<CatalogTab>("store");
+  const [nounState, setNoun] = useState<CatalogNoun>("experts");
+  const [surface, setSurface] = useState<CatalogSurface>("browse");
+  const [expertKind, setExpertKind] = useState<ExpertKind>("experts");
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<string>("all");
-  const [installedKind, setInstalledKind] = useState<InstalledKind>("agents");
+  /** Which import dialog is open, and with which source kind preselected. */
+  const [importFor, setImportFor] = useState<ImportSourceKind | null>(null);
+  /** The MCP declarations dialog (连接器 tab): the same manager the settings
+   *  dialog hosts, opened where the operator is already looking at servers. */
+  const [mcpOpen, setMcpOpen] = useState(false);
+
+  /**
+   * Noun tabs the host actually advertised — the same `!== false` convention the
+   * installed chips used (a missing flag means "not said", not "no").
+   */
+  const visibleNouns = useMemo<CatalogNoun[]>(() => {
+    const nouns: CatalogNoun[] = [];
+    if (capabilities?.agents !== false || capabilities?.teams !== false) nouns.push("experts");
+    if (capabilities?.skills !== false) nouns.push("skills");
+    if (capabilities?.connectors !== false) nouns.push("connectors");
+    return nouns;
+  }, [capabilities]);
+
+  /** The selection, clamped to the advertised set: the tab that owns the body
+   *  is always one of the tabs on screen. */
+  const noun: CatalogNoun = visibleNouns.includes(nounState) ? nounState : (visibleNouns[0] ?? "experts");
 
   // store (winget-style aggregated catalog)
   const [storeItems, setStoreItems] = useState<StoreItem[] | null>(null);
-  const [storeKind, setStoreKind] = useState<"all" | StoreItemKind>("all");
-  const [sortBy, setSortBy] = useState<"default" | "name">("default");
+  const [sortBy, setSortBy] = useState<"default" | "name" | "newest">("default");
   const [storeInstallBusy, setStoreInstallBusy] = useState<string | null>(null);
   /** True while the builtin marketplaces are still mirroring in the background
    *  (D-SDK-1 ①): the catalog is legitimately incomplete, not empty. */
@@ -360,8 +217,6 @@ export function CatalogView() {
   const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [teams, setTeams] = useState<TeamSummary[] | null>(null);
-  const [imports, setImports] = useState<ImportSummary[] | null>(null);
-  const [markets, setMarkets] = useState<MarketplaceSummary[] | null>(null);
 
   // detail drawer
   const [drawer, setDrawer] = useState<PanelKind | null>(null);
@@ -371,9 +226,6 @@ export function CatalogView() {
   const [connectorDetail, setConnectorDetail] = useState<ConnectorDetail | null>(null);
   const [agentDetail, setAgentDetail] = useState<AgentDetail | null>(null);
   const [teamDetail, setTeamDetail] = useState<TeamDetail | null>(null);
-  const [importDetail, setImportDetail] = useState<ImportDetail | null>(null);
-  const [installStatus, setInstallStatus] = useState<InstallStatus | null>(null);
-  const [installResult, setInstallResult] = useState<InstallResult | null>(null);
   const [detailBusy, setDetailBusy] = useState<string | null>(null);
 
   // store drawer (winget-style item detail + install)
@@ -383,23 +235,6 @@ export function CatalogView() {
   // connector auth state map (id -> oauth state)
   const [authMap, setAuthMap] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
-
-  // importer form
-  const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [importPath, setImportPath] = useState("");
-  const [importKind, setImportKind] = useState<ImportSourceKind>("codebuddy-plugin");
-  const [importBusy, setImportBusy] = useState(false);
-
-  // marketplace panel
-  const [marketPath, setMarketPath] = useState("");
-  const [marketKind, setMarketKind] = useState<MarketplaceSourceKind>("directory");
-  const [marketBusy, setMarketBusy] = useState(false);
-  const [marketDetail, setMarketDetail] = useState<MarketplaceDetail | null>(null);
-  const [marketRefreshBusy, setMarketRefreshBusy] = useState<string | null>(null);
-  /** `<marketplace_id>/<entry>` whose entry-level import is in flight (W13). */
-  const [marketEntryBusy, setMarketEntryBusy] = useState<string | null>(null);
-  /** Cascade-remove confirmation target; null = dialog closed (W13). */
-  const [marketRemoveFor, setMarketRemoveFor] = useState<string | null>(null);
 
   const [reloadTick, setReloadTick] = useState(0);
   const activeRef = useRef(true);
@@ -421,27 +256,25 @@ export function CatalogView() {
     setConnectors(null);
     setAgents(null);
     setTeams(null);
-    setImports(null);
-    setMarkets(null);
     setError(null);
     setReloadTick((tick) => tick + 1);
   }, []);
 
-  // One effect loads all catalog slices; a single slice failing (notably the
-  // HTTP-backed imports channel) must never blank the rest.
+  // One effect loads the catalog slices it renders; a single slice failing must
+  // never blank the rest. The import history and the marketplace registry have
+  // their own readers (`ImportPanel` / `MarketSourcesPanel`), so they are not
+  // fetched here any more.
   useEffect(() => {
     if (!client) return;
     let cancelled = false;
     const load = async () => {
       try {
-        const [storeList, skillList, connectorList, agentList, teamList, importList, marketList] = await Promise.all([
+        const [storeList, skillList, connectorList, agentList, teamList] = await Promise.all([
           capabilities?.store ? client.listStore().catch(() => null) : Promise.resolve(null),
           capabilities?.skills ? client.skills.list().catch(() => []) : Promise.resolve([]),
           capabilities?.connectors ? client.connectors.list().catch(() => []) : Promise.resolve([]),
           capabilities?.agents ? client.agents.list().catch(() => []) : Promise.resolve([]),
           capabilities?.teams ? client.teams.list().catch(() => []) : Promise.resolve([]),
-          capabilities?.imports ? client.listImports().catch(() => []) : Promise.resolve([]),
-          capabilities?.marketplaces ? client.listMarketplaces().catch(() => []) : Promise.resolve([]),
         ]);
         if (cancelled || !activeRef.current) return;
         setStoreItems(storeList?.items ?? null);
@@ -450,8 +283,6 @@ export function CatalogView() {
         setConnectors(connectorList);
         setAgents(agentList);
         setTeams(teamList);
-        setImports(importList);
-        setMarkets(marketList);
       } catch (caught) {
         if (cancelled || !activeRef.current) return;
         reportError(caught);
@@ -460,7 +291,6 @@ export function CatalogView() {
         setConnectors(null);
         setAgents(null);
         setTeams(null);
-        setImports(null);
       }
     };
     void load();
@@ -629,257 +459,6 @@ export function CatalogView() {
     }
   }, [client]);
 
-  const openImport = useCallback(async (snapshotId: string) => {
-    if (!client) return;
-    setDrawer("import");
-    setDetailBusy(snapshotId);
-    setImportDetail(null);
-    setInstallStatus(null);
-    try {
-      const detail = await client.getImport(snapshotId);
-      if (!activeRef.current) return;
-      setImportDetail(detail);
-      // Load the installation state alongside the catalog detail (Phase 2).
-      try {
-        const status = await client.getInstallStatus(snapshotId);
-        if (activeRef.current) setInstallStatus(status);
-      } catch {
-        if (activeRef.current) setInstallStatus(null);
-      }
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setDetailBusy(null);
-    }
-  }, [client]);
-
-  const runInstall = useCallback(async (snapshotId: string) => {
-    if (!client) return;
-    setDetailBusy(snapshotId);
-    try {
-      const result = await client.runInstall({ snapshot_id: snapshotId });
-      if (!activeRef.current) return;
-      setInstallResult(result);
-      const status = await client.getInstallStatus(snapshotId);
-      if (activeRef.current) setInstallStatus(status);
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setDetailBusy(null);
-    }
-  }, [client]);
-
-  const toggleInstall = useCallback(async (kind: "enable" | "disable" | "uninstall", snapshotId: string, componentId: string) => {
-    if (!client) return;
-    setDetailBusy(`${kind}:${componentId}`);
-    try {
-      const status = kind === "enable"
-        ? await client.enableInstall(snapshotId, [componentId])
-        : kind === "disable"
-          ? await client.disableInstall(snapshotId, [componentId])
-          : await client.uninstallInstall(snapshotId, [componentId]);
-      if (!activeRef.current) return;
-      setInstallStatus(status);
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setDetailBusy(null);
-    }
-  }, [client]);
-
-  const runImport = useCallback(async () => {
-    if (!client || importPath.trim().length === 0) {
-      setError(t("catalog.importEmptySource"));
-      return;
-    }
-    setImportBusy(true);
-    setImportResult(null);
-    try {
-      const result = await client.runImport({ source_path: importPath.trim(), source_kind: importKind });
-      if (!activeRef.current) return;
-      setImportResult(result);
-      const list = await client.listImports();
-      if (!activeRef.current) return;
-      setImports(list);
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setImportBusy(false);
-    }
-  }, [client, importPath, importKind, t]);
-
-  const addMarket = useCallback(async () => {
-    if (!client) return;
-    const path = marketPath.trim();
-    if (!path) {
-      setError(t("catalog.marketPathRequired"));
-      return;
-    }
-    setMarketBusy(true);
-    setError(null);
-    try {
-      const summary = await client.addMarketplace({ source_kind: marketKind, source: path });
-      const list = await client.listMarketplaces();
-      if (!activeRef.current) return;
-      setMarkets(list);
-      setMarketPath("");
-      const detail = await client.getMarketplace(summary.marketplace_id);
-      if (!activeRef.current) return;
-      setMarketDetail(detail);
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setMarketBusy(false);
-    }
-  }, [client, marketPath, marketKind, t]);
-
-  const refreshMarket = useCallback(async (marketplaceId: string) => {
-    if (!client) return;
-    setMarketRefreshBusy(marketplaceId);
-    setError(null);
-    try {
-      const result = await client.refreshMarketplace(marketplaceId);
-      const [list, detail] = await Promise.all([
-        client.listMarketplaces(),
-        client.getMarketplace(marketplaceId).catch(() => null),
-      ]);
-      if (!activeRef.current) return;
-      setMarkets(list);
-      if (detail) setMarketDetail(detail);
-      // W8 余项: a refresh used to be visible only through `last_checked_at`.
-      pushToast(
-        "success",
-        result.changed ? "catalog.marketRefreshDone" : "catalog.marketRefreshUnchanged",
-        {
-          name: markets?.find((item) => item.marketplace_id === marketplaceId)?.name ?? marketplaceId,
-          count: result.entry_count,
-        },
-      );
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setMarketRefreshBusy(null);
-    }
-  }, [client, markets, pushToast]);
-
-  const openMarket = useCallback(async (marketplaceId: string) => {
-    if (!client) return;
-    setDetailBusy(marketplaceId);
-    setError(null);
-    try {
-      const detail = await client.getMarketplace(marketplaceId);
-      if (!activeRef.current) return;
-      setMarketDetail(detail);
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setDetailBusy(null);
-    }
-  }, [client]);
-
-  /**
-   * W13: cascade removal is confirmed through a dialog that lists the entries it
-   * will uninstall (`marketRemoveFor`) instead of a bare `window.confirm`.
-   */
-  const confirmRemoveMarket = useCallback(async () => {
-    const marketplaceId = marketRemoveFor;
-    if (!client || !marketplaceId) return;
-    setMarketBusy(true);
-    setError(null);
-    try {
-      await client.removeMarketplace(marketplaceId, true);
-      const [list, importsList] = await Promise.all([client.listMarketplaces(), client.listImports()]);
-      if (!activeRef.current) return;
-      setMarkets(list);
-      setImports(importsList);
-      setMarketDetail(null);
-      setMarketRemoveFor(null);
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setMarketBusy(false);
-    }
-  }, [client, marketRemoveFor]);
-
-  /**
-   * R21: open the cascade confirmation on a **fresh** `market/get`. The impact
-   * list is the server's pre-removal projection (per-entry snapshots) rather
-   * than a re-derivation over the aggregated store listing, so the detail has
-   * to be current before the user commits (`16` D-W13-1 ①).
-   */
-  const openRemoveDialog = useCallback(async (marketplaceId: string) => {
-    if (client) {
-      try {
-        const detail = await client.getMarketplace(marketplaceId);
-        if (!activeRef.current) return;
-        setMarketDetail(detail);
-      } catch {
-        // A failed refresh must not block the dialog — the user can still
-        // cancel, and the list falls back to the detail already on screen.
-      }
-    }
-    if (activeRef.current) setMarketRemoveFor(marketplaceId);
-  }, [client]);
-
-  /** W13: flip `auto_update`, then read `market/list` back (no optimistic guess). */
-  const toggleMarketAutoUpdate = useCallback(async (marketplaceId: string, enabled: boolean) => {
-    if (!client) return;
-    setMarketBusy(true);
-    setError(null);
-    try {
-      const updated = await client.setMarketplaceAutoUpdate(marketplaceId, enabled);
-      const list = await client.listMarketplaces();
-      if (!activeRef.current) return;
-      setMarkets(list);
-      setMarketDetail((current) =>
-        current && current.marketplace_id === marketplaceId
-          ? { ...current, auto_update: updated.auto_update, enabled: updated.enabled }
-          : current,
-      );
-      pushToast("success", updated.auto_update ? "catalog.marketAutoUpdateOnToast" : "catalog.marketAutoUpdateOffToast");
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setMarketBusy(false);
-    }
-  }, [client, pushToast]);
-
-  /**
-   * W13: entry-level import. Deliberately distinct from `store/install-entry`
-   * (`runStoreInstall`): this only imports the provenance-linked snapshot and
-   * leaves the install state untouched.
-   */
-  const importMarketEntry = useCallback(async (marketplaceId: string, entryName: string) => {
-    if (!client) return;
-    setMarketEntryBusy(`${marketplaceId}/${entryName}`);
-    setError(null);
-    try {
-      const result = await client.importMarketplaceEntry(marketplaceId, entryName);
-      const [importsList, detail] = await Promise.all([
-        client.listImports(),
-        client.getMarketplace(marketplaceId).catch(() => null),
-      ]);
-      if (!activeRef.current) return;
-      setImports(importsList);
-      if (detail) setMarketDetail(detail);
-      pushToast("success", result.reused ? "catalog.marketEntryImportReused" : "catalog.marketEntryImportDone");
-    } catch (caught) {
-      if (!activeRef.current) return;
-      reportError(caught);
-    } finally {
-      if (activeRef.current) setMarketEntryBusy(null);
-    }
-  }, [client, pushToast]);
-
   const openStoreItem = useCallback((item: StoreItem) => {
     setDrawer("store");
     setStoreDrawerItem(item);
@@ -927,8 +506,6 @@ export function CatalogView() {
     setConnectorDetail(null);
     setAgentDetail(null);
     setTeamDetail(null);
-    setImportDetail(null);
-    setInstallStatus(null);
   }, []);
 
   // Escape closes the drawer; click on the mask closes it too.
@@ -949,20 +526,12 @@ export function CatalogView() {
     });
   }, [skills, query]);
 
-  const skillCategories = useMemo(() => {
-    return Array.from(new Set((skills ?? []).map((skill) => skill.source))).sort();
-  }, [skills]);
-
   const visibleConnectors = useMemo(() => {
     return (connectors ?? []).filter((connector) => {
       const text = `${connector.name} ${connector.description ?? ""} ${connector.kind} ${connector.auth_mode}`.toLowerCase();
       return text.includes(query.toLowerCase());
     });
   }, [connectors, query]);
-
-  const connectorCategories = useMemo(() => {
-    return Array.from(new Set((connectors ?? []).map((connector) => connector.kind))).sort();
-  }, [connectors]);
 
   const visibleAgents = useMemo(() => {
     return (agents ?? []).filter((agent) => {
@@ -971,10 +540,6 @@ export function CatalogView() {
     });
   }, [agents, query]);
 
-  const agentCategories = useMemo(() => {
-    return Array.from(new Set((agents ?? []).map((agent) => agent.source))).sort();
-  }, [agents]);
-
   const visibleTeams = useMemo(() => {
     return (teams ?? []).filter((team) => {
       const text = `${team.name} ${team.description ?? ""} ${team.source}`.toLowerCase();
@@ -982,24 +547,17 @@ export function CatalogView() {
     });
   }, [teams, query]);
 
-  const teamCategories = useMemo(() => {
-    return Array.from(new Set((teams ?? []).map((team) => team.source))).sort();
-  }, [teams]);
+  /** The store kind the current noun tab browses (the 专家 tab splits in two). */
+  const storeKindForNoun: StoreItemKind =
+    noun === "experts"
+      ? (expertKind === "experts" ? "agent" : "team")
+      : noun === "skills"
+        ? "skill"
+        : "connector";
 
-  const visibleImports = useMemo(() => {
-    return (imports ?? []).filter((item) => {
-      const text = `${item.name} ${item.version} ${item.source_kind} ${item.status}`.toLowerCase();
-      return text.includes(query.toLowerCase());
-    });
-  }, [imports, query]);
-
-  const importsFiltered =
-    category === "all" ? visibleImports : visibleImports.filter((item) => item.source_kind === category);
-
-  // Store items: filter by kind chips + search across display metadata.
+  // Store items: the current noun's kind + search across display metadata.
   const visibleStoreItems = useMemo(() => {
-    const all = storeItems ?? [];
-    const byKind = storeKind === "all" ? all : all.filter((item) => item.kind === storeKind);
+    const byKind = (storeItems ?? []).filter((item) => item.kind === storeKindForNoun);
     const needle = query.trim().toLowerCase();
     // The search index deliberately keeps *both* languages (plus the
     // baseline fields): a Chinese reader may still type an English term from
@@ -1027,28 +585,64 @@ export function CatalogView() {
         ),
       );
     }
+    if (sortBy === "newest") {
+      // Ordering rules live in `lib/store-sort` so they can be unit-tested
+      // without a connected client; the comparison is deliberately not inlined.
+      return sortNewestFirst(filtered, (item) => pickLocalized(item.display_name, lang) || item.name, lang);
+    }
     return filtered;
-  }, [storeItems, storeKind, query, sortBy]);
+    // `lang` is a dependency because both name comparisons use the *rendered*
+    // label, which is language-resolved.
+  }, [storeItems, storeKindForNoun, query, sortBy, lang]);
 
-  const storeKinds = useMemo(() => {
-    const kinds = new Set<StoreItemKind>();
-    (storeItems ?? []).forEach((item) => kinds.add(item.kind));
-    return (["agent", "team", "skill", "connector"] as const).filter((kind) =>
-      kinds.has(kind),
-    );
-  }, [storeItems]);
+  /**
+   * Whether this noun's catalog carries any date at all.
+   *
+   * The 最新 sort is offered only then: a sort control over a field no entry
+   * has is a control that does nothing, and today's real markets declare no
+   * `publishedAt` — so without this the option would be a visibly dead button.
+   * Computed over the kind (not the search results), so typing in the search
+   * box cannot make the control appear and disappear.
+   */
+  const hasPublishedDates = useMemo(
+    () => hasAnyPublishedAt((storeItems ?? []).filter((item) => item.kind === storeKindForNoun)),
+    [storeItems, storeKindForNoun],
+  );
+
+  /** Store teams, used as the 精选场景 row of the 专家 tab's browse surface. */
+  const visibleStoreTeams = useMemo(
+    () => (storeItems ?? []).filter((item) => item.kind === "team"),
+    [storeItems],
+  );
 
   const connectorDetailAuth = connectorDetail ? authMap.get(connectorDetail.id) : undefined;
 
-  // ---------- segmented tabs (专家 / 技能 / 连接器 / 我的专家) ----------
-  // Top tabs removed: kind filtering is done by the category row (storeKind).
+  /**
+   * The search box's placeholder for whatever the current tab+surface shows.
+   * (The tab version asked `searchPlaceholder[tab]` against a `Record` that
+   * only knew about tabs: the `installed` entry always said "search experts"
+   * whatever kind was on screen, and `sources` claimed an imports search box
+   * that tab never rendered.)
+   */
+  const searchPlaceholder =
+    noun === "skills"
+      ? t("catalog.searchSkills")
+      : noun === "connectors"
+        ? t("catalog.searchConnectors")
+        : expertKind === "teams"
+          ? t("catalog.searchTeams")
+          : t("catalog.searchAgents");
 
-  const searchPlaceholder: Record<CatalogTab, string> = {
-    store: t("catalog.storeSearch"),
-    sources: t("catalog.searchImports"),
-    installed: t("catalog.searchAgents"),
-    imports: t("catalog.searchImports"),
-  };
+  /** Installed count for the tab's right-hand button, when it has one. The 专家
+   *  tab counts whichever of its two kinds is on screen. */
+  const installedCount =
+    noun === "skills"
+      ? skills?.length
+      : noun === "connectors"
+        ? connectors?.length
+        : expertKind === "experts"
+          ? agents?.length
+          : teams?.length;
 
   return (
     <section className="market-view" aria-label={t("catalog.ariaLabel")}>
@@ -1067,63 +661,80 @@ export function CatalogView() {
         </button>
       </header>
 
-      {/* Segmented tabs — the entry point for every catalog page. `sources`
-          (market management) and `imports` (import history) render below but
-          previously had no control that reached them: they were only linked
-          from a grid's empty state, so on a non-empty store the whole
-          marketplace-management surface was unreachable. */}
-      <div className="market-tabs" role="tablist" aria-label={t("catalog.typeLabel")}>
-        <button
-          className={`market-mine ${tab === "store" ? "is-active" : ""}`}
-          type="button"
-          role="tab"
-          aria-selected={tab === "store"}
-          onClick={() => { setTab("store"); }}
-        >
-          <Store size={15} strokeWidth={1.7} />
-          <span>{t("catalog.tabStore")}</span>
-        </button>
-        <button
-          className={`market-mine ${tab === "sources" ? "is-active" : ""}`}
-          type="button"
-          role="tab"
-          aria-selected={tab === "sources"}
-          onClick={() => { setTab("sources"); }}
-        >
-          <Globe size={15} strokeWidth={1.7} />
-          <span>{t("catalog.tabSources")}</span>
-        </button>
-        <button
-          className={`market-mine ${tab === "imports" ? "is-active" : ""}`}
-          type="button"
-          role="tab"
-          aria-selected={tab === "imports"}
-          onClick={() => { setTab("imports"); }}
-        >
-          <Upload size={15} strokeWidth={1.7} />
-          <span>{t("catalog.tabImports")}</span>
-        </button>
-        <button
-          className={`market-mine ${tab === "installed" ? "is-active" : ""}`}
-          type="button"
-          role="tab"
-          aria-selected={tab === "installed"}
-          onClick={() => { setTab("installed"); }}
-        >
-          <Users size={15} strokeWidth={1.7} />
-          <span>{t("catalog.tabInstalled")}</span>
-        </button>
-        {(tab === "store" || tab === "installed") && (
-          <label className="market-search market-search-inline">
-            <Search size={15} strokeWidth={1.7} />
-            <input
-              type="search"
-              value={query}
-              placeholder={searchPlaceholder[tab]}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-        )}
+      {/* Noun tabs — one per component family. The page used to expose four
+          verbs (`应用商店 / 市场源 / 导入 / 已安装`); the marketplace registry
+          moved to the settings dialog's 市场源 section and the import surface
+          opens from the tab's own right-hand buttons, so what remains is what
+          the page is about.
+
+          Reachability note, kept because it is the invariant that keeps getting
+          broken: every surface needs a control that reaches it on a *non-empty*
+          store, not only a button in some empty state. That is why the two
+          right-hand buttons below are rendered unconditionally rather than only
+          when the corresponding list happens to be empty. */}
+      <div className="market-tabs market-tabs-nouns" role="tablist" aria-label={t("catalog.nounTabsLabel")}>
+        {([
+          { key: "experts" as const, icon: <Bot size={15} strokeWidth={1.7} />, label: t("catalog.tabExperts") },
+          { key: "skills" as const, icon: <Sparkles size={15} strokeWidth={1.7} />, label: t("catalog.tabSkills") },
+          { key: "connectors" as const, icon: <Plug size={15} strokeWidth={1.7} />, label: t("catalog.tabConnectors") },
+        ] as { key: CatalogNoun; icon: React.ReactNode; label: string }[])
+          .filter((entry) => visibleNouns.includes(entry.key))
+          .map((entry) => (
+          <button
+            key={entry.key}
+            className={`market-mine ${noun === entry.key ? "is-active" : ""}`}
+            type="button"
+            role="tab"
+            aria-selected={noun === entry.key}
+            onClick={() => { setNoun(entry.key); setSurface("browse"); setQuery(""); }}
+          >
+            {entry.icon}
+            <span>{entry.label}</span>
+          </button>
+        ))}
+        <label className="market-search market-search-inline">
+          <Search size={15} strokeWidth={1.7} />
+          <input
+            type="search"
+            value={query}
+            placeholder={searchPlaceholder}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+
+        {/* Contextual actions: this noun's inventory, plus the way to add
+            something to it. They belong to the page because they change *what
+            it lists*; a settings dialog would make them a two-step detour. */}
+        <div className="market-actions">
+          <button
+            className={`market-mine ${surface === "installed" ? "is-active" : ""}`}
+            type="button"
+            aria-pressed={surface === "installed"}
+            onClick={() => { setSurface(surface === "installed" ? "browse" : "installed"); setQuery(""); }}
+          >
+            {noun === "experts"
+              ? t("catalog.myExperts")
+              : t("catalog.myInstalled", { count: installedCount ?? 0 })}
+          </button>
+          {noun === "skills" && (
+            <button className="market-mine" type="button" onClick={() => setImportFor("workbuddy-skill-market")}>
+              <Upload size={15} strokeWidth={1.7} />
+              <span>{t("catalog.addSkill")}</span>
+            </button>
+          )}
+          {noun === "connectors" && (
+            <>
+              <button className="market-mine" type="button" onClick={() => setMcpOpen(true)}>
+                <Server size={15} strokeWidth={1.7} />
+                <span>{t("catalog.mcpManage")}</span>
+              </button>
+              <button className="market-mine" type="button" onClick={() => setImportFor("workbuddy-connector-market")}>
+                <Plus size={15} strokeWidth={1.7} />
+                <span>{t("catalog.customConnector")}</span>
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -1134,28 +745,37 @@ export function CatalogView() {
         </div>
       )}
 
-      {/* Toolbar: search + category chips (sources/imports use their own forms) */}
-      {tab === "store" && (
-        <div className="market-toolbar market-toolbar-store">
-          <div className="market-cats" role="group" aria-label={t("catalog.typeLabel")}>
+      {/* Sub-toolbar: the 专家 tab's own split, plus the sort. Only 专家 has a
+          second real axis to split on (专家 vs 专家团 are two wire kinds); 技能
+          and 连接器 have none. The reference's 「推荐 | SkillHub | 套件」 triple
+          is deliberately not reproduced: 推荐 needs a curation flag we do not
+          have, 套件 has no entity at all, and SkillHub is one specific upstream
+          marketplace — a segmented control over no data is a control that lies. */}
+      <div className="market-toolbar market-toolbar-store">
+        {noun === "experts" && (
+          <div className="market-cats" role="group" aria-label={t("catalog.expertKindLabel")}>
             <button
-              className={`market-chip ${storeKind === "all" ? "is-active" : ""}`}
+              className={`market-chip ${expertKind === "experts" ? "is-active" : ""}`}
               type="button"
-              onClick={() => setStoreKind("all")}
+              aria-pressed={expertKind === "experts"}
+              onClick={() => { setExpertKind("experts"); setQuery(""); }}
             >
-              {t("catalog.storeAll")}
+              {t("catalog.kindAgent")}
             </button>
-            {storeKinds.map((kind) => (
-              <button
-                key={kind}
-                className={`market-chip ${storeKind === kind ? "is-active" : ""}`}
-                type="button"
-                onClick={() => setStoreKind(kind)}
-              >
-                {kind === "agent" ? t("catalog.kindAgent") : kind === "team" ? t("catalog.kindTeam") : kind === "skill" ? t("catalog.kindSkill") : t("catalog.kindConnector")}
-              </button>
-            ))}
+            <button
+              className={`market-chip ${expertKind === "teams" ? "is-active" : ""}`}
+              type="button"
+              aria-pressed={expertKind === "teams"}
+              onClick={() => { setExpertKind("teams"); setQuery(""); }}
+            >
+              {t("catalog.kindTeam")}
+            </button>
           </div>
+        )}
+        <div className="market-toolbar-spacer" />
+        {/* Sorting only applies to the store projection (the installed lists
+            have no ordering of their own on the wire). */}
+        {surface === "browse" && (
           <div className="market-sort" role="group" aria-label={t("catalog.sortLabel")}>
             <button
               className={`market-chip market-sort-chip ${sortBy === "default" ? "is-active" : ""}`}
@@ -1164,6 +784,16 @@ export function CatalogView() {
             >
               {t("catalog.sortDefault")}
             </button>
+            {/* Only when the data can answer it — see `hasPublishedDates`. */}
+            {hasPublishedDates && (
+              <button
+                className={`market-chip market-sort-chip ${sortBy === "newest" ? "is-active" : ""}`}
+                type="button"
+                onClick={() => setSortBy("newest")}
+              >
+                {t("catalog.sortNewest")}
+              </button>
+            )}
             <button
               className={`market-chip market-sort-chip ${sortBy === "name" ? "is-active" : ""}`}
               type="button"
@@ -1172,48 +802,54 @@ export function CatalogView() {
               {t("catalog.sortName")}
             </button>
           </div>
-        </div>
-      )}
-
-      {tab === "installed" && (
-        <div className="market-toolbar market-toolbar-store">
-          <div className="market-cats" role="group" aria-label={t("catalog.typeLabel")}>
-            {([
-              { key: "agents" as const, label: t("catalog.kindAgent") },
-              { key: "teams" as const, label: t("catalog.kindTeam") },
-              { key: "skills" as const, label: t("catalog.kindSkill") },
-              { key: "connectors" as const, label: t("catalog.kindConnector") },
-            ] as { key: InstalledKind; label: string }[]).filter((entry) =>
-              entry.key === "skills" ? capabilities?.skills !== false
-                : entry.key === "connectors" ? capabilities?.connectors !== false
-                  : entry.key === "agents" ? capabilities?.agents !== false
-                    : capabilities?.teams !== false,
-            ).map((entry) => (
-              <button
-                key={entry.key}
-                className={`market-chip ${installedKind === entry.key ? "is-active" : ""}`}
-                type="button"
-                onClick={() => { setInstalledKind(entry.key); setCategory("all"); }}
-              >
-                {entry.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Body */}
       <div className="market-body">
-        {tab === "store" && (
-          <MarketGrid
-            loading={!client || storeItems === null}
-            empty={storePending ? t("catalog.storePending") : t("catalog.storeEmpty")}
-            emptyAction={(
-              <button className="market-empty-action" type="button" onClick={() => setTab("sources")}>
-                {t("catalog.emptyGoSources")}
-              </button>
+        {surface === "browse" && (
+          <>
+            {/* 精选场景 — the reference's top row. It reuses the committed
+                pattern (teams rendered as scene cards) but sources it from the
+                *store* projection, so the row exists before anything is
+                installed.
+
+                Deviation from the reference, stated rather than faked: a store
+                team carries no member list (`members` rides in the market
+                manifest and is dropped by the projection) and no cover image, so
+                the card shows the marketplace it comes from plus its own
+                description on the existing gradient — not a photo, and not a
+                member collage we cannot fill. */}
+            {noun === "experts" && expertKind === "experts" && visibleStoreTeams.length > 0 && (
+              <>
+                <h2 className="market-section">{t("catalog.featuredScenes")}</h2>
+                <div className="market-scenes" role="list">
+                  {visibleStoreTeams.map((item) => (
+                    <button className="market-scene" type="button" role="listitem" key={item.id} onClick={() => openStoreItem(item)}>
+                      <div className="market-scene-head">
+                        <span className="market-scene-title">{pickLocalized(item.display_name, lang) || item.name}</span>
+                        <span className="market-scene-count">{item.marketplace_name}</span>
+                      </div>
+                      <div className="market-scene-body">
+                        {pickLocalized(item.display_description, lang) || item.description || t("catalog.noDescription")}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
             )}
-            items={visibleStoreItems}
+            {noun === "experts" && expertKind === "experts" && (
+              <h2 className="market-section">{t("catalog.experts")}</h2>
+            )}
+            <MarketGrid
+              loading={!client || storeItems === null}
+              empty={storePending ? t("catalog.storePending") : t("catalog.storeEmpty")}
+              emptyAction={(
+                <button className="market-empty-action" type="button" onClick={() => openSettings("market")}>
+                  {t("catalog.emptyGoSources")}
+                </button>
+              )}
+              items={visibleStoreItems}
             renderItem={(item) => (
               <div className="market-card market-store-card" key={item.id}>
                 <div
@@ -1253,6 +889,13 @@ export function CatalogView() {
                     {pickLocalizedList(item.tags, lang).slice(0, 3).map((text) => {
                       return text ? <span className="market-tag" key={text}>{text}</span> : null;
                     })}
+                    {/* The market's own publication date, shown only when it
+                        declared one — never a placeholder, and never derived
+                        from the import time. It is muted because it explains
+                        the 最新 sort rather than describing the entry. */}
+                    {item.published_at ? (
+                      <span className="market-tag is-muted">{item.published_at}</span>
+                    ) : null}
                   </div>
                 </div>
                 <StoreInstallAction
@@ -1263,20 +906,21 @@ export function CatalogView() {
               </div>
             )}
           />
+          </>
         )}
 
-        {tab === "installed" && installedKind === "skills" && (
+        {surface === "installed" && noun === "skills" && (
           <>
             <SkillWriteToolbarView onCreated={() => setSkillWrite({ kind: "create" })} />
             <MarketGrid
               loading={!client || skills === null}
               empty={t("catalog.noSkills")}
               emptyAction={
-                <button className="market-empty-action" type="button" onClick={() => setTab("store")}>
+                <button className="market-empty-action" type="button" onClick={() => setSurface("browse")}>
                   {t("catalog.emptyGoStore")}
                 </button>
               }
-              items={category === "all" ? visibleSkills : visibleSkills.filter((skill) => skill.source === category)}
+              items={visibleSkills}
               renderItem={(skill) => (
                 // `div role="button"` rather than `<button>`: the row carries its
                 // own write actions (W12), and nesting buttons is invalid HTML.
@@ -1318,16 +962,16 @@ export function CatalogView() {
           </>
         )}
 
-        {tab === "installed" && installedKind === "connectors" && (
+        {surface === "installed" && noun === "connectors" && (
           <MarketGrid
             loading={!client || connectors === null}
             empty={t("catalog.noConnectors")}
             emptyAction={(
-              <button className="market-empty-action" type="button" onClick={() => setTab("store")}>
+              <button className="market-empty-action" type="button" onClick={() => setSurface("browse")}>
                 {t("catalog.emptyGoStore")}
               </button>
             )}
-            items={category === "all" ? visibleConnectors : visibleConnectors.filter((connector) => connector.kind === category)}
+            items={visibleConnectors}
             renderItem={(connector) => (
               <button className="market-card" type="button" key={connector.id} onClick={() => void openConnector(connector.id)}>
                 <div className="market-card-top">
@@ -1344,16 +988,16 @@ export function CatalogView() {
           />
         )}
 
-        {tab === "installed" && installedKind === "agents" && (
+        {surface === "installed" && noun === "experts" && expertKind === "experts" && (
           <MarketGrid
             loading={!client || agents === null}
             empty={t("catalog.noAgents")}
             emptyAction={(
-              <button className="market-empty-action" type="button" onClick={() => setTab("store")}>
+              <button className="market-empty-action" type="button" onClick={() => setSurface("browse")}>
                 {t("catalog.emptyGoStore")}
               </button>
             )}
-            items={category === "all" ? visibleAgents : visibleAgents.filter((agent) => agent.source === category)}
+            items={visibleAgents}
             renderItem={(agent) => (
               <button className="market-card" type="button" key={agent.id} onClick={() => void openAgent(agent.id)}>
                 <div className="market-card-top">
@@ -1374,372 +1018,34 @@ export function CatalogView() {
           />
         )}
 
-        {tab === "installed" && installedKind === "teams" && (
-          <>
-            {visibleTeams.length > 0 && (
-              <>
-                <h2 className="market-section">{t("catalog.featuredScenes")}</h2>
-                <div className="market-scenes" role="list">
-                  {visibleTeams.map((team) => (
-                    <button className="market-scene" type="button" role="listitem" key={team.id} onClick={() => void openTeam(team.id)}>
-                      <div className="market-scene-head">
-                        <span className="market-scene-title">{team.name}</span>
-                        <span className="market-scene-count">{team.member_agent_ids.length + 1} {t("catalog.teamMembers")}</span>
-                      </div>
-                      <div className="market-scene-body">
-                        {team.description ?? t("catalog.noDescription")}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-            {(!client || agents === null || visibleAgents.length > 0) && (
-              <h2 className="market-section">{t("catalog.experts")}</h2>
-            )}
-            <MarketGrid
-              loading={!client || agents === null}
-              empty={t("catalog.noAgents")}
-              emptyAction={(
-                <button className="market-empty-action" type="button" onClick={() => setTab("store")}>
-                  {t("catalog.emptyGoStore")}
-                </button>
-              )}
-              items={visibleAgents}
-              renderItem={(agent) => (
-                <button className="market-card" type="button" key={agent.id} onClick={() => void openAgent(agent.id)}>
-                  <div className="market-card-top">
-                    <AgentBadge agent={agent} />
-                    <div className="market-card-main">
-                      <span className="market-card-title">{agentDisplayName(agent, lang)}</span>
-                      {agent.description && <span className="market-card-sub">{agent.description}</span>}
-                    </div>
-                    <ChevronRight size={15} strokeWidth={1.7} className="market-card-arrow" />
-                  </div>
-                  <Tags tags={[agent.source, ...(agent.model_summary ? [agent.model_summary] : [])]} />
-                </button>
-              )}
-            />
-          </>
-        )}
-
-        {tab === "sources" && (
-          <div className="market-imports">
-            {/* Marketplace source panel: add (http/git first) + list + detail */}
-            <div className="market-market-panel">
-              <div className="market-import-form">
-                <label htmlFor="market-path">{t("catalog.marketSource")}</label>
-                <div className="market-import-row">
-                  <select
-                    className="market-select"
-                    value={marketKind}
-                    onChange={(event) => setMarketKind(event.target.value as MarketplaceSourceKind)}
-                  >
-                    <option value="github">{t("catalog.marketKindGithub")}</option>
-                    <option value="git">{t("catalog.marketKindGit")}</option>
-                    <option value="url">{t("catalog.marketKindUrl")}</option>
-                    <option value="directory">{t("catalog.marketKindDirectory")}</option>
-                  </select>
-                  <input
-                    className="market-input"
-                    type="text"
-                    id="market-path"
-                    placeholder={marketKind === "directory"
-                      ? t("catalog.marketPathPlaceholder")
-                      : marketKind === "github"
-                        ? t("catalog.marketGithubPlaceholder")
-                        : marketKind === "git"
-                          ? t("catalog.marketGitPlaceholder")
-                          : t("catalog.marketUrlPlaceholder")}
-                    value={marketPath}
-                    onChange={(event) => setMarketPath(event.target.value)}
-                    onKeyDown={(event) => { if (event.key === "Enter") void addMarket(); }}
-                  />
-                  <button className="primary-button" type="button" disabled={marketBusy} onClick={() => void addMarket()}>
-                    {marketBusy ? t("catalog.marketAdding") : t("catalog.marketAdd")}
-                  </button>
-                </div>
-              </div>
-
-              {markets === null && <p className="market-empty">{t("catalog.loadingMarkets")}</p>}
-              {markets !== null && markets.length === 0 && (
-                <p className="market-empty">
-                  {storePending ? t("catalog.storePending") : t("catalog.noMarkets")}
-                </p>
-              )}
-              {/* Partial catalog during the background warm-up (D-SDK-1 ①): the
-                  list is non-empty but the builtin markets may still be
-                  arriving. */}
-              {storePending && markets !== null && markets.length > 0 && (
-                <p className="market-pending-note">{t("catalog.storePending")}</p>
-              )}
-              {markets !== null && markets.length > 0 && (
-                <div className="market-list">
-                  {markets.map((market) => (
-                    <button className="market-card" type="button" key={market.marketplace_id}
-                      onClick={() => void openMarket(market.marketplace_id)}>
-                      <div className="market-card-top">
-                        <InitialBadge name={market.name} />
-                        <div className="market-card-main">
-                          <span className="market-card-title">{market.name}</span>
-                          <span className="market-card-sub">
-                            {market.source_kind} · {t("catalog.marketEntries", { count: market.entry_count })}
-                            {market.auto_update ? ` · ${t("catalog.marketAutoUpdate")}` : ""}
-                          </span>
-                        </div>
-                        <ChevronRight size={15} strokeWidth={1.7} className="market-card-arrow" />
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {marketDetail && (
-                <div className="market-market-detail">
-                  <div className="market-market-detail-head">
-                    <div>
-                      <h3>{marketDetail.name}</h3>
-                      <span className="market-card-sub">
-                        {marketDetail.source_kind} · v{marketDetail.version ?? "?"}
-                      </span>
-                    </div>
-                    <div className="market-market-detail-actions">
-                      <button
-                        className={`secondary-button${marketDetail.auto_update ? " is-on" : ""}`}
-                        type="button"
-                        aria-pressed={marketDetail.auto_update}
-                        disabled={marketBusy}
-                        onClick={() => void toggleMarketAutoUpdate(marketDetail.marketplace_id, !marketDetail.auto_update)}
-                      >
-                        {marketDetail.auto_update ? t("catalog.marketAutoUpdateToggleOn") : t("catalog.marketAutoUpdateToggleOff")}
-                      </button>
-                      <button className="secondary-button" type="button"
-                        disabled={marketRefreshBusy === marketDetail.marketplace_id}
-                        onClick={() => void refreshMarket(marketDetail.marketplace_id)}>
-                        {marketRefreshBusy === marketDetail.marketplace_id
-                          ? t("catalog.marketRefreshing")
-                          : t("catalog.marketRefresh")}
-                      </button>
-                      <button className="danger-button" type="button" disabled={marketBusy}
-                        onClick={() => void openRemoveDialog(marketDetail.marketplace_id)}>
-                        {t("catalog.marketRemove")}
-                      </button>
-                    </div>
-                  </div>
-                  {/* W13: only the registry fields the wire actually carries —
-                      `revision` / last-checked are absent from the summary type
-                      (deviation D-W13-1). */}
-                  <dl className="market-meta">
-                    <MetaRow label={t("catalog.marketIdLabel")} value={marketDetail.marketplace_id} mono />
-                    <MetaRow
-                      label={t("catalog.marketEnabled")}
-                      value={marketDetail.enabled ? t("catalog.marketEnabledOn") : t("catalog.marketEnabledOff")}
-                    />
-                    <MetaRow label={t("catalog.marketEntriesLabel")} value={String(marketDetail.entry_count)} />
-                    <MetaRow label={t("catalog.marketAddedAt")} value={new Date(marketDetail.added_at).toLocaleString()} />
-                    <MetaRow label={t("catalog.marketRevision")} value={marketDetail.resolved_revision} mono />
-                    {/* `last_checked_at` is written by refresh only, so a freshly
-                        added market legitimately has none — show it explicitly
-                        rather than dropping the row silently. */}
-                    <MetaRow
-                      label={t("catalog.marketLastChecked")}
-                      value={marketDetail.last_checked_at ? new Date(marketDetail.last_checked_at).toLocaleString() : "—"}
-                    />
-                  </dl>
-                  <div className="market-list">
-                    {marketDetail.entries.map((entry) => {
-                      const storeItem = (storeItems ?? []).find(
-                        (item) => item.marketplace_id === marketDetail.marketplace_id && item.entry_name === entry.name,
-                      );
-                      const busy = storeInstallBusy === `${marketDetail.marketplace_id}/${entry.name}`;
-                      const entryBusy = marketEntryBusy === `${marketDetail.marketplace_id}/${entry.name}`;
-                      // Install state comes from the server-projected entry
-                      // snapshot on `market/get` — the same source the cascade
-                      // dialog reads — instead of the aggregated store listing
-                      // (`16` D-W13-1 ①). `storeItem` is still needed for the
-                      // install *action*, which addresses the store entry.
-                      const installed = (entry.snapshot?.installed_count ?? 0) > 0;
-                      // R28 / D8=A: the manifest's `name_{lang}` /
-                      // `description_{lang}` variants fall back to the
-                      // baseline fields, resolved by the UI language.
-                      const entryName = pickEntryText(entry.localized, "name", lang, entry.name) ?? entry.name;
-                      const entryTags = pickEntryTags(entry.localized, lang) ?? entry.keywords ?? [];
-                      // `02` §11.1: the entry is listed so the reason is
-                      // readable, but neither action can succeed.
-                      const blocked = entry.blocked_reason ?? null;
-                      return (
-                        <div className="market-card market-entry-card" key={`${marketDetail.marketplace_id}/${entry.name}`}>
-                          <div className="market-card-top">
-                            <InitialBadge name={entryName} />
-                            <div className="market-card-main">
-                              <span className="market-card-title">{entryName}</span>
-                              <span className="market-card-sub">
-                                {pickEntryText(entry.localized, "description", lang, entry.description) ??
-                                  entry.source}
-                              </span>
-                              {entryTags.length > 0 && (
-                                <span className="market-tags">
-                                  {entryTags.slice(0, 3).map((tag) => (
-                                    <span className="market-tag" key={tag}>
-                                      {tag}
-                                    </span>
-                                  ))}
-                                </span>
-                              )}
-                            </div>
-                            {blocked && (
-                              <span className="market-tag is-blocked" title={blocked}>
-                                {t("catalog.storeBlocked")}
-                              </span>
-                            )}
-                            {installed && <span className="market-tag is-status is-success">{t("catalog.storeInstalled")}</span>}
-                            {!installed && (
-                              <button
-                                className="primary-button market-entry-import"
-                                type="button"
-                                disabled={busy || !storeItem || Boolean(blocked)}
-                                title={blocked ?? undefined}
-                                onClick={() => { if (storeItem) void runStoreInstall(storeItem); }}
-                              >
-                                {busy ? t("catalog.storeInstalling") : t("catalog.storeInstall")}
-                              </button>
-                            )}
-                            {/* W13: import-only — a provenance-linked snapshot
-                                without touching install state (`store/install-entry`
-                                above is the install path). */}
-                            <button
-                              className="secondary-button market-entry-import"
-                              type="button"
-                              disabled={entryBusy || Boolean(blocked)}
-                              title={blocked ?? undefined}
-                              onClick={() => void importMarketEntry(marketDetail.marketplace_id, entry.name)}
-                            >
-                              {entryBusy ? t("catalog.marketEntryImporting") : t("catalog.marketEntryImport")}
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {marketRemoveFor && (
-                <DialogShell
-                  onClose={() => setMarketRemoveFor(null)}
-                  labelledBy="market-remove-title"
-                  titleId="market-remove-title"
-                  title={t("catalog.marketRemoveTitle")}
-                >
-                  <p className="dialog-intro">
-                    {t("catalog.marketRemoveBody", { name: marketDetail?.name ?? marketRemoveFor })}
-                  </p>
-                  {(() => {
-                    // Cascade target list is the server's pre-removal
-                    // projection — `market/get` entries carry
-                    // `snapshot.installed_count`, refreshed by
-                    // `openRemoveDialog` — instead of a re-derivation over the
-                    // aggregated store listing (R21).
-                    const affected = (marketDetail?.entries ?? []).filter(
-                      (entry) => (entry.snapshot?.installed_count ?? 0) > 0,
-                    );
-                    if (affected.length === 0) {
-                      return <p className="dialog-intro">{t("catalog.marketRemoveNone")}</p>;
-                    }
-                    return (
-                      <ul className="market-remove-list">
-                        <li className="market-remove-list-title">{t("catalog.marketRemoveSnapshotsLabel")}</li>
-                        {affected.map((entry) => (
-                          <li key={entry.name}>{entry.name}</li>
-                        ))}
-                      </ul>
-                    );
-                  })()}
-                  <div className="dialog-actions">
-                    <button className="quiet-button" type="button" onClick={() => setMarketRemoveFor(null)}>
-                      {t("common.cancel")}
-                    </button>
-                    <button className="danger-button" type="button" disabled={marketBusy} onClick={() => void confirmRemoveMarket()}>
-                      {marketBusy ? t("catalog.marketRemoving") : t("catalog.marketRemove")}
-                    </button>
-                  </div>
-                </DialogShell>
-              )}
-            </div>
-          </div>
-        )}
-
-        {tab === "imports" && (
-          <div className="market-imports">
-            <div className="market-import-form">
-              <label htmlFor="import-kind">{t("catalog.importSource")}</label>
-              <div className="market-import-row">
-                <select
-                  id="import-kind"
-                  className="market-select"
-                  value={importKind}
-                  onChange={(event) => setImportKind(event.target.value as ImportSourceKind)}
-                >
-                  <option value="codebuddy-plugin">{t("catalog.importKindPlugin")}</option>
-                  <option value="workbuddy-skill-market">{t("catalog.importKindSkills")}</option>
-                  <option value="workbuddy-connector-market">{t("catalog.importKindConnectors")}</option>
-                  <option value="workbuddy-cli-connector">{t("catalog.importKindCliConnector")}</option>
-                </select>
-                <input
-                  className="market-input"
-                  type="text"
-                  placeholder={t("catalog.importPathPlaceholder")}
-                  value={importPath}
-                  onChange={(event) => setImportPath(event.target.value)}
-                  onKeyDown={(event) => { if (event.key === "Enter") void runImport(); }}
-                />
-                <button className="primary-button" type="button" disabled={importBusy} onClick={() => void runImport()}>
-                  {importBusy ? t("catalog.importing") : t("catalog.importRun")}
-                </button>
-              </div>
-            </div>
-
-            {importResult && (
-              <button className="market-card market-import-result" type="button" onClick={() => void openImport(importResult.snapshot_id)}>
-                <div className="market-card-top">
-                  <InitialBadge name={importResult.name} />
-                  <div className="market-card-main">
-                    <span className="market-card-title">{importResult.name} <small>v{importResult.version}</small></span>
-                    <span className="market-card-sub">
-                      {importResult.source_kind} · {t("catalog.importComponents", { count: importResult.component_count })}
-                    </span>
-                  </div>
-                  <span className={`status-dot ${importStatusClass(importResult.status)}`} aria-hidden="true" />
-                </div>
-                <Tags tags={[
-                  importStatusLabel(t, importResult.status),
-                  ...(importResult.reused ? [t("catalog.importReused")] : []),
-                  ...(importResult.errors.length > 0 ? importResult.errors.slice(0, 1) : []),
-                ]} />
+        {/* Installed 专家团. The 精选场景 row lives on the browse surface only —
+            repeating it here would show the same teams twice on one tab. */}
+        {surface === "installed" && noun === "experts" && expertKind === "teams" && (
+          <MarketGrid
+            loading={!client || teams === null}
+            empty={t("catalog.noTeams")}
+            emptyAction={(
+              <button className="market-empty-action" type="button" onClick={() => setSurface("browse")}>
+                {t("catalog.emptyGoStore")}
               </button>
             )}
-
-            <div className="market-list">
-              {!client && <p className="market-empty">{t("catalog.connectFirst")}</p>}
-              {client && imports === null && <p className="market-empty">{t("catalog.loadingImports")}</p>}
-              {client && imports !== null && importsFiltered.length === 0 && (
-                <p className="market-empty">{t("catalog.noImports")}</p>
-              )}
-              {importsFiltered.map((item) => (
-                <button className="market-card" type="button" key={item.snapshot_id} onClick={() => void openImport(item.snapshot_id)}>
-                  <div className="market-card-top">
-                    <InitialBadge name={item.name} />
-                    <div className="market-card-main">
-                      <span className="market-card-title">{item.name} <small>v{item.version}</small></span>
-                      <span className="market-card-sub">{item.source_kind} · {t("catalog.importComponents", { count: item.component_count })}</span>
-                    </div>
-                    <span className={`status-dot ${importStatusClass(item.status)}`} aria-hidden="true" />
+            items={visibleTeams}
+            renderItem={(team) => (
+              <button className="market-card" type="button" key={team.id} onClick={() => void openTeam(team.id)}>
+                <div className="market-card-top">
+                  <InitialBadge name={team.name} />
+                  <div className="market-card-main">
+                    <span className="market-card-title">{team.name}</span>
+                    <span className="market-card-sub">
+                      {team.member_agent_ids.length + 1} {t("catalog.teamMembers")}
+                    </span>
                   </div>
-                  <Tags tags={[importStatusLabel(t, item.status)]} />
-                </button>
-              ))}
-            </div>
-          </div>
+                  <ChevronRight size={15} strokeWidth={1.7} className="market-card-arrow" />
+                </div>
+                <Tags tags={[team.description ?? t("catalog.noDescription")]} />
+              </button>
+            )}
+          />
         )}
       </div>
 
@@ -1760,6 +1066,30 @@ export function CatalogView() {
           return { description: detail?.description ?? "" };
         }}
       />
+
+      {/* Import dialog — opened by the 技能 tab's 「添加技能」 and the 连接器
+          tab's 「自定义连接器」, with the source kind preselected. The panel owns
+          the import history and the per-snapshot install state, and renders its
+          own detail overlay (which is `position: fixed`, so it covers this
+          dialog and closing it returns here). */}
+      {importFor && (
+        <DialogShell
+          onClose={() => setImportFor(null)}
+          labelledBy="import-title"
+          titleId="import-title"
+          title={importFor === "workbuddy-skill-market"
+            ? t("catalog.addSkill")
+            : t("catalog.customConnector")}
+        >
+          <ImportPanel initialKind={importFor} />
+        </DialogShell>
+      )}
+
+      {/* MCP declarations dialog — the same manager the settings dialog hosts,
+          opened from the 连接器 tab where the operator is already looking at
+          servers. It is a dialog rather than a fourth tab because it configures
+          the *host*, not this catalog. */}
+      {mcpOpen && <McpManagerDialog onClose={() => setMcpOpen(false)} />}
 
       {/* Detail drawer */}
       {drawer && (
@@ -1791,17 +1121,7 @@ export function CatalogView() {
             )}
             {drawer === "agent" && agentDetail && <AgentDrawer detail={agentDetail} />}
             {drawer === "team" && teamDetail && <TeamDrawer detail={teamDetail} />}
-            {drawer === "import" && importDetail && (
-              <ImportDrawer
-                detail={importDetail}
-                installStatus={installStatus}
-                installResult={installResult}
-                busy={detailBusy}
-                onInstall={() => void runInstall(importDetail.snapshot_id)}
-                onToggle={(kind, componentId) => void toggleInstall(kind, importDetail.snapshot_id, componentId)}
-              />
-            )}
-            {detailBusy && !storeDrawerItem && !skillDetail && !connectorDetail && !agentDetail && !teamDetail && !importDetail && (
+            {detailBusy && !storeDrawerItem && !skillDetail && !connectorDetail && !agentDetail && !teamDetail && (
               <p className="market-empty">{t("catalog.loading")}</p>
             )}
           </aside>
@@ -1814,11 +1134,6 @@ export function CatalogView() {
 // ---------------------------------------------------------------------------
 // grid + shared pieces
 // ---------------------------------------------------------------------------
-
-function importStatusLabel(t: (key: string, opts?: Record<string, unknown>) => string, status: string): string {
-  const key = IMPORT_STATUS_KEYS[status];
-  return key ? t(key) : t("catalog.stateOther", { status });
-}
 
 function MarketGrid<T>({
   loading,
@@ -1855,26 +1170,6 @@ function MarketGrid<T>({
 // ---------------------------------------------------------------------------
 // drawers
 // ---------------------------------------------------------------------------
-
-function MetaRow({ label, value, mono }: { label: string; value?: string | null; mono?: boolean }) {
-  if (value === undefined || value === null || value === "") return null;
-  return (
-    <div className="market-meta-row">
-      <dt>{label}</dt>
-      <dd className={mono ? "is-mono" : ""}>{value}</dd>
-    </div>
-  );
-}
-
-function MetaList({ label, values }: { label: string; values: string[] }) {
-  if (values.length === 0) return null;
-  return (
-    <div className="market-meta-row">
-      <dt>{label}</dt>
-      <dd>{values.join(", ")}</dd>
-    </div>
-  );
-}
 
 function StoreDrawer({
   item,
@@ -2154,137 +1449,4 @@ function TeamDrawer({ detail }: { detail: TeamDetail }) {
   );
 }
 
-type InstallToggleKind = "enable" | "disable" | "uninstall";
 
-function installStateLabel(t: ReturnType<typeof useTranslation>["t"], state: InstallState): string {
-  switch (state) {
-    case "installed": return t("catalog.installStateInstalled");
-    case "disabled": return t("catalog.installStateDisabled");
-    default: return t("catalog.installStateNotInstalled");
-  }
-}
-
-function ImportDrawer({
-  detail,
-  installStatus,
-  installResult,
-  busy,
-  onInstall,
-  onToggle,
-}: {
-  detail: ImportDetail;
-  installStatus: InstallStatus | null;
-  installResult: InstallResult | null;
-  busy: string | null;
-  onInstall: () => void;
-  onToggle: (kind: InstallToggleKind, componentId: string) => void;
-}) {
-  const { t } = useTranslation();
-  const statusText = importStatusLabel(t, detail.status);
-  const stateByComponent = new Map<string, InstallState>();
-  installStatus?.components.forEach((component) => stateByComponent.set(component.id, component.state));
-  const anyInstalled = installStatus?.components.some((component) => component.state !== "not-installed") ?? false;
-
-  return (
-    <div className="drawer-body">
-      <div className="drawer-head">
-        <InitialBadge name={detail.name} size={44} />
-        <div>
-          <h2>{detail.name} <small>v{detail.version}</small></h2>
-          <div className="drawer-chips">
-            <span className={`market-tag is-status ${importStatusClass(detail.status)}`}>{statusText}</span>
-            <span className="market-tag">{detail.source_kind}</span>
-          </div>
-        </div>
-      </div>
-      <div className="drawer-actions">
-        {!anyInstalled && (
-          <button
-            className="primary-button"
-            type="button"
-            disabled={busy !== null}
-            onClick={onInstall}
-          >
-            {busy === detail.snapshot_id
-              ? t("catalog.installing")
-              : t("catalog.installRun")}
-          </button>
-        )}
-        {installResult && (
-          <span className="market-tag is-status is-success">
-            {t("catalog.installDone", { count: installResult.installed_count })}
-          </span>
-        )}
-        {installResult && installResult.skipped.length > 0 && (
-          <span className="market-tag is-status is-warn">
-            {t("catalog.installSkipped", { count: installResult.skipped.length })}
-          </span>
-        )}
-      </div>
-      <dl className="market-meta">
-        <MetaRow label={t("catalog.importDigest")} value={detail.content_digest} mono />
-        <MetaRow label={t("catalog.importComponents", { count: detail.components.length })} value={String(detail.components.length)} />
-      </dl>
-      <CompatChips triple={detail.component_status} />
-      {detail.warnings.length > 0 && (
-        <details className="drawer-details" open>
-          <summary>{t("catalog.importWarnings", { count: detail.warnings.length })}</summary>
-          <ul className="drawer-notes">{detail.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
-        </details>
-      )}
-      {detail.errors.length > 0 && (
-        <details className="drawer-details" open>
-          <summary>{t("catalog.importErrors", { count: detail.errors.length })}</summary>
-          <ul className="drawer-notes">{detail.errors.map((error, index) => <li key={index}>{error}</li>)}</ul>
-        </details>
-      )}
-      <details className="drawer-details" open>
-        <summary>{t("catalog.importComponents", { count: detail.components.length })}</summary>
-        <ul className="drawer-tools">
-          {detail.components.map((component) => {
-            const state = stateByComponent.get(component.id) ?? "not-installed";
-            return (
-              <li key={component.id}>
-                <div className="drawer-tool-row">
-                  <code>{component.kind}: {component.name}</code>
-                  <span className={`market-tag is-status ${installStateClass(state)}`}>
-                    {installStateLabel(t, state)}
-                  </span>
-                  <div className="drawer-tool-actions">
-                    {state === "installed" && (
-                      <button className="quiet-button" type="button" disabled={busy !== null}
-                        onClick={() => onToggle("disable", component.id)}>
-                        {t("catalog.installDisable")}
-                      </button>
-                    )}
-                    {state === "disabled" && (
-                      <button className="quiet-button" type="button" disabled={busy !== null}
-                        onClick={() => onToggle("enable", component.id)}>
-                        {t("catalog.installEnable")}
-                      </button>
-                    )}
-                    {state !== "not-installed" && (
-                      <button className="quiet-button" type="button" disabled={busy !== null}
-                        onClick={() => onToggle("uninstall", component.id)}>
-                        {t("catalog.installUninstall")}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <CompatChips triple={component.compatibility} />
-              </li>
-            );
-          })}
-        </ul>
-      </details>
-    </div>
-  );
-}
-
-function installStateClass(state: InstallState): string {
-  switch (state) {
-    case "installed": return "is-success";
-    case "disabled": return "is-warn";
-    default: return "";
-  }
-}

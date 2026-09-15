@@ -513,6 +513,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run serve:web` | 启动 Web 服务器，托管已构建的前端 |
 | **测试** | |
 | `bun run test:git-attribution` | Validate the repository-local human-only Git attribution policy. |
+| `bun run test:market` | Unit-test the Agent Store marketplace manifest checker. |
 | `bun run test` | 运行全部 Rust 测试（含 doctest） |
 | `bun run test:fast` | 用 nextest 快速跑 Rust 测试（日常） |
 | `bun run test:crate` | 运行单个 Rust crate：bun run test:crate <crate> [cargo 参数] |
@@ -525,12 +526,13 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run check:browser-platform-boundary` | Enforce the single BrowserSessionHub ownership boundary and reject private browser launch paths. |
 | `bun run check:agent-vocabulary` | Enforce AgentExecution as the only active collaboration aggregate and permit only exact migration fences. |
 | `bun run check:codemirror-runtime` | Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package. |
+| `bun run check:market` | Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject. |
 | `bun run check:ux-baseline` | 校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线） |
 | `bun run check:button-layout` | 使用 Windows Edge 矩阵验证 Arco 与 Icon Park 按钮的横向布局和对齐契约 |
 | `bun run check:error-surface` | 使用 Windows Edge 矩阵验证错误诊断摘要、详情展开、复制入口和窄屏溢出 |
 | `bun run check:error-surface-contract` | 静态校验错误面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限 |
 | `bun run check:button-layout-contract` | 扫描所有 Arco 图标文字按钮并校验共享横向布局契约 |
-| `bun run check` | 聚合静态门禁：typecheck + i18n + 主题契约 + 图标导入 + 进程运行时边界 + Agent 词汇边界 + 脚本登记 |
+| `bun run check` | 聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑） |
 | `bun run typecheck` | 前端 TypeScript 类型检查（tsc --noEmit） |
 | `bun run check:i18n` | 校验 i18n 类型与 locale 键是否一致 |
 | `bun run check:theme` | 校验预设 CSS 主题契约 |

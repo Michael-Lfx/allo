@@ -17,10 +17,6 @@
       "group": "test",
       "desc": "Validate the repository-local human-only Git attribution policy."
     },
-    "test:docs-sync": {
-      "group": "test",
-      "desc": "Unit-test the site documentation drift checker."
-    },
     "test:market": {
       "group": "test",
       "desc": "Unit-test the Agent Store marketplace manifest checker."
@@ -40,10 +36,6 @@
     "check:codemirror-runtime": {
       "group": "check",
       "desc": "Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package."
-    },
-    "check:docs-sync": {
-      "group": "check",
-      "desc": "Verify the site documentation matches the implementation (9 pages × 2 languages, zero drift)."
     },
     "check:market": {
       "group": "check",
@@ -99,7 +91,7 @@
     "test:desktop":  { "group": "test",  "desc": "运行桌面壳测试，不监听或打包 ui/dist 资源" },
     "test:browser":  { "group": "test",  "desc": "运行 browser-use 门控的 Rust 测试（browser-platform 全量 + gateway/ai-agent/nomi-agent/app 开启 --features browser-use；crate/core 车道会静默跳过这些）" },
     "test:ui":       { "group": "test",  "desc": "运行前端单元测试（bun test，收集 ui/src 下全部 *.test.ts/tsx）" },
-    "check":         { "group": "check", "desc": "聚合静态门禁：typecheck + i18n + 主题契约 + 图标导入 + 进程运行时边界 + Agent 词汇边界 + 脚本登记" },
+    "check":         { "group": "check", "desc": "聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑）" },
     "typecheck":     { "group": "check", "desc": "前端 TypeScript 类型检查（tsc --noEmit）" },
     "check:i18n":    { "group": "check", "desc": "校验 i18n 类型与 locale 键是否一致" },
     "check:theme":   { "group": "check", "desc": "校验预设 CSS 主题契约" },

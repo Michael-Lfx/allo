@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Brain, Plug, Server, Settings as SettingsIcon } from "lucide-react";
+import { Brain, Globe, Plug, Server, Settings as SettingsIcon } from "lucide-react";
 import { useAppStore } from "../../store/appStore";
 import { setLanguage } from "../../i18n";
 import { useTheme } from "../../ui/theme";
 import { DialogShell } from "./DialogShell";
 import { AgentSettingsSection } from "./AgentSettingsSection";
+import { ConnectionSettingsSection } from "./ConnectionSettingsSection";
 import { McpSettingsSection } from "./McpSettingsSection";
+import { MarketSettingsSection } from "./MarketSettingsSection";
 import { ProviderSettingsSection } from "./ProviderSettingsSection";
 
 /**
@@ -24,6 +26,13 @@ import { ProviderSettingsSection } from "./ProviderSettingsSection";
  * - `advanced` / `lab` / `archived`: no host setting, no feature flag, no
  *   archive API to read or write.
  *
+ * `market` **is** in the nav, and that is not a contradiction of the `plugin`
+ * verdict above: the marketplace *registry* is host-level configuration
+ * (`market/add` writes the host's own registry, and removing one cascades into
+ * uninstalling everything that came from it), and the catalog page became three
+ * noun tabs (专家 / 技能 / 连接器), which left the registry with no place in it.
+ * The store *browsing* face still belongs to the page, so `plugin` stays out.
+ *
  * `agent` is back in the nav (**R16 A 档, 2026-09-11**): its one candidate
  * switch `[memory] distill_enabled` is now genuinely consumed by the host
  * (`apps/agent-store` reads it at startup and forwards it to
@@ -39,7 +48,7 @@ import { ProviderSettingsSection } from "./ProviderSettingsSection";
  * that file — a declaration can start a local command, so it stays the host
  * operator's hand-written statement rather than a settings toggle (`05` §4.10).
  */
-export const SETTINGS_SECTIONS = ["general", "provider", "agent", "mcp"] as const;
+export const SETTINGS_SECTIONS = ["general", "provider", "agent", "market", "mcp"] as const;
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
@@ -47,6 +56,7 @@ const SECTIONS: Array<{ key: SettingsSection; icon: React.ReactNode; labelKey: s
   { key: "general", icon: <SettingsIcon size={17} strokeWidth={1.7} />, labelKey: "settings.sectionGeneral" },
   { key: "provider", icon: <Plug size={17} strokeWidth={1.7} />, labelKey: "settings.sectionProvider" },
   { key: "agent", icon: <Brain size={17} strokeWidth={1.7} />, labelKey: "settings.sectionAgent" },
+  { key: "market", icon: <Globe size={17} strokeWidth={1.7} />, labelKey: "settings.sectionMarket" },
   { key: "mcp", icon: <Server size={17} strokeWidth={1.7} />, labelKey: "settings.sectionMcp" },
 ];
 
@@ -62,17 +72,18 @@ export function SettingsDialog() {
 /** The panel itself: nav + sections, driven by `onClose` only. */
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { t, i18n } = useTranslation();
-  const wsUrl = useAppStore((s) => s.wsUrl);
-  const token = useAppStore((s) => s.token);
-  const phase = useAppStore((s) => s.phase);
-  const connected = useAppStore((s) => s.phase === "online");
-  const setWsUrl = useAppStore((s) => s.setWsUrl);
-  const setToken = useAppStore((s) => s.setToken);
-  const connect = useAppStore((s) => s.connect);
-  const disconnect = useAppStore((s) => s.disconnect);
 
   const { theme, setTheme: setThemeValue } = useTheme();
-  const [section, setSection] = useState<SettingsSection>("general");
+  // The gate stores which section the caller wanted (`openSettings("market")`);
+  // a value that is not one of ours falls back to the first section rather than
+  // rendering an empty pane. Read once, on mount: the dialog unmounts when it
+  // closes, so this is exactly "the section it was opened on".
+  const requestedSection = useAppStore((s) => s.settingsSection);
+  const [section, setSection] = useState<SettingsSection>(
+    SETTINGS_SECTIONS.includes(requestedSection as SettingsSection)
+      ? (requestedSection as SettingsSection)
+      : "general",
+  );
 
   const lang = i18n.language === "en-US" ? "en-US" : "zh-CN";
 
@@ -121,38 +132,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </div>
 
               <h2 className="settings-group-title">{t("settings.groupConnection")}</h2>
-              <div className="settings-card">
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <span className="settings-row-title">{t("settings.wsUrl")}</span>
-                    <span className="settings-row-desc">{t("settings.wsUrlDesc")}</span>
-                  </div>
-                  <input className="settings-row-input" value={wsUrl} onChange={(event) => setWsUrl(event.target.value)} spellCheck={false} autoComplete="url" />
-                </div>
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <span className="settings-row-title">{t("settings.token")} <small>{t("settings.optional")}</small></span>
-                    <span className="settings-row-desc">{t("settings.tokenDesc")}</span>
-                  </div>
-                  <input className="settings-row-input" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="current-password" />
-                </div>
-                <div className="settings-row settings-row-status">
-                  <div className="settings-row-text">
-                    <span className="settings-row-title">{t("settings.connectionStatus")}</span>
-                    <span className="settings-row-desc">{connected ? t("settings.connected") : phase === "connecting" ? t("settings.connecting") : t("settings.disconnected")}</span>
-                  </div>
-                  <div className="settings-row-actions">
-                    {connected && <button className="quiet-button" type="button" onClick={disconnect}>{t("settings.disconnect")}</button>}
-                    {!connected && <button className="primary-button" type="button" onClick={() => void connect()} disabled={phase === "connecting" || !wsUrl.trim()}>{phase === "connecting" ? t("settings.connectingBtn") : t("settings.connect")}</button>}
-                  </div>
-                </div>
-              </div>
+              <ConnectionSettingsSection />
             </>
           )}
 
           {section === "provider" && <ProviderSettingsSection />}
 
           {section === "agent" && <AgentSettingsSection />}
+
+          {section === "market" && <MarketSettingsSection />}
 
           {section === "mcp" && <McpSettingsSection />}
         </div>
