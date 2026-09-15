@@ -10,6 +10,7 @@
   - `b7809c90a` feat:移动端 sheet 图标槽位 + 定位语
   - `b8d098251` test:结构测试锁定 + 定位语双语对称测试
 - 自动化验证:相关测试 158 pass / 0 fail(34 文件);`check:i18n` 10812 键 up to date;改动文件 typecheck 零错误(预存错误仅 videoCanvas/canvas-project-dialogs 与 analytics 测试);`check:button-layout-contract` 仅剩预存 MeetingPage.tsx:98。
+- 代码审查(deep,三轮)修复已并入:菜单行垂直对齐回归 —— Arco `.arco-menu-vertical .arco-menu-item`(特异性 0,2,0)的 `padding: 0 12px`/`line-height: 40px` 会压掉单类规则,行内文本改显式 leading 后内容不再撑满 40px 而块级容器不居中;修复 = 菜单项 `display: flex; align-items: center;` + `padding-block !important`(与同文件既有 Arco 覆盖惯例一致)。另:推荐徽章并入 `aria-label`(读屏可见)、注册表键规范化自检与菜单项 CSS 回归锁定各 +1 测试。
 - Git 约束:commit 无 AI 署名;hooks 不绕过;回退 = 整分支删除或按序 revert。
 
 ## 背景与目标

@@ -22,6 +22,17 @@ describe('normalizeShowcaseModelId', () => {
   });
 });
 
+describe('MODEL_SHOWCASE registry', () => {
+  // Lookups run on normalized ids; a key stored in any other form would never
+  // match and would silently lose its tagline.
+  test('keeps every registry key in normalized form', () => {
+    const unnormalized = Object.keys(MODEL_SHOWCASE).filter(
+      (key) => normalizeShowcaseModelId(key) !== key
+    );
+    expect(unnormalized).toEqual([]);
+  });
+});
+
 describe('resolveModelShowcase', () => {
   test('matches registered models exactly', () => {
     const showcase = resolveModelShowcase('AIPC-glm-5.2');

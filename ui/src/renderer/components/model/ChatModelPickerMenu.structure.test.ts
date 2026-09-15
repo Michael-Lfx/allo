@@ -54,4 +54,16 @@ describe('ChatModelPickerMenu structure', () => {
     expect(sendboxCss.includes('.chat-model-recommended-badge')).toBe(true);
     expect(sendboxCss.includes('.chat-model-picker-menu-tagline')).toBe(true);
   });
+
+  test('centers two-line rows without losing the vertical padding to Arco', () => {
+    const ruleStart = sendboxCss.indexOf('.chat-model-picker-menu-item {');
+    const rule = sendboxCss.slice(ruleStart, sendboxCss.indexOf('}', ruleStart));
+    // Arco's `.arco-menu-vertical .arco-menu-item { padding: 0 12px }` outranks
+    // a single-class rule, and a block item would top-align the shorter content
+    // of two-line rows — both regressions the review caught.
+    expect(rule.includes('display: flex')).toBe(true);
+    expect(rule.includes('align-items: center')).toBe(true);
+    expect(rule.includes('padding-top: 6px !important')).toBe(true);
+    expect(rule.includes('padding-bottom: 6px !important')).toBe(true);
+  });
 });

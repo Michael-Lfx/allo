@@ -867,10 +867,16 @@
 
 .chat-model-picker-menu-item {
   box-sizing: border-box;
+  /* Arco's `.arco-menu-vertical .arco-menu-item` (padding: 0 12px) outranks a
+   * single-class rule, so the vertical padding needs !important — same as
+   * `.chat-model-picker-menu-list` below. Flex centering is what keeps the
+   * two-line rows (brand icon + name + tagline) vertically aligned. */
+  display: flex;
+  align-items: center;
   min-height: 40px;
   height: auto;
-  padding-top: 6px;
-  padding-bottom: 6px;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
 }
 
 .chat-model-picker-menu-meta {

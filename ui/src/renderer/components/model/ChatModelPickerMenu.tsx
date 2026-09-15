@@ -88,7 +88,17 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
   const modelRow = (option: ChatModelOption, testId: string) => {
     const isSelected = selectedOption?.key === option.key;
     const dot = healthDotColor(option);
-    const fullLabel = option.label === option.model ? option.model : `${option.label} (${option.model})`;
+    const recommendedLabel = option.showcase.recommended
+      ? t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })
+      : undefined;
+    // The row's aria-label overrides its visible content, so the recommendation
+    // has to be part of the label for assistive tech to announce it.
+    const fullLabel = [
+      option.label === option.model ? option.model : `${option.label} (${option.model})`,
+      recommendedLabel,
+    ]
+      .filter(Boolean)
+      .join(' · ');
     const tagline = option.showcase.taglineKey ? t(option.showcase.taglineKey) : undefined;
     return (
       <Menu.Item
@@ -112,10 +122,8 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
                 >
                   {option.label}
                 </span>
-                {option.showcase.recommended && (
-                  <span className='chat-model-recommended-badge shrink-0'>
-                    {t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })}
-                  </span>
+                {recommendedLabel && (
+                  <span className='chat-model-recommended-badge shrink-0'>{recommendedLabel}</span>
                 )}
               </div>
               {tagline && (
