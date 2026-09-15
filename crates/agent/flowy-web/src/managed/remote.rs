@@ -1903,6 +1903,37 @@ mod tests {
         );
     }
 
+    /// Manual, network-real probe of the live You.com MCP endpoint. Verifies
+    /// name-based discovery and decoding against the vendor's current tool list.
+    /// Run with:
+    /// `cargo test -p flowy-web --lib -- --ignored live_you_endpoint`
+    #[tokio::test]
+    #[ignore = "manual verification: calls the live you.com MCP endpoint"]
+    async fn live_you_endpoint_discovery_and_search() {
+        let adapter = RemoteSearchAdapter::you().expect("offline construction");
+        let deadline = || Instant::now() + Duration::from_secs(20);
+
+        adapter
+            .ensure_compatible(deadline())
+            .await
+            .expect("live discovery must satisfy the adapter contract");
+
+        let query = SearchQuery {
+            query: "深圳今天天气".to_owned(),
+            count: 5,
+        };
+        let outcome = adapter
+            .search_attempt_with_diagnostics(&query, deadline())
+            .await
+            .expect("live you-search call must decode");
+        assert_eq!(outcome.result.provider, "you");
+        assert!(
+            !outcome.result.hits.is_empty(),
+            "live search returned no hits: {:?}",
+            outcome.result
+        );
+    }
+
     #[tokio::test]
     async fn concurrent_rediscovery_after_terminal_failure_is_single_flight() {
         let state = Arc::new(std::sync::Mutex::new(YouMockState {
