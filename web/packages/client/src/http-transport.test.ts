@@ -217,6 +217,21 @@ describe("HttpTransport · shared surface (doc 16 R2)", () => {
     expect(asAppError).toBeInstanceOf(AppServerError);
     expect((asAppError as AppServerError).code).toBe("workspace_denied");
 
+    // The host file service spells the same AppError differently
+    // (`ErrorResponse`: `error` is the message, no retry hint). Recognising it
+    // is what keeps a 403 from surfacing as "without a wire error body".
+    const asHostFileError = appServerErrorFromWire(
+      { success: false, error: "Forbidden: path 'C:\\tmp' is outside the allowed sandbox", code: "PATH_OUTSIDE_SANDBOX" },
+      403,
+      "host file service",
+    );
+    expect(asHostFileError).toBeInstanceOf(AppServerError);
+    expect((asHostFileError as AppServerError).code).toBe("PATH_OUTSIDE_SANDBOX");
+    expect((asHostFileError as AppServerError).message).toContain("outside the allowed sandbox");
+    expect((asHostFileError as AppServerError).retryable).toBe(false);
+    // No retry hint on that envelope, so the 5xx status stays the signal.
+    expect((appServerErrorFromWire({ success: false, error: "boom", code: "INTERNAL_ERROR" }, 500) as AppServerError).retryable).toBe(true);
+
     const asTransportError = appServerErrorFromWire(null, 502, "browse");
     expect(asTransportError).toMatchObject({ name: "TransportError", retryable: true });
     expect(String((asTransportError as Error).message)).toContain("browse");
@@ -226,12 +241,14 @@ describe("HttpTransport · shared surface (doc 16 R2)", () => {
 
 describe("HttpTransport · route table count guard", () => {
   /**
-   * The route table is 46 mapped / 22 without an HTTP binding. The developer
-   * guide's §7.3 quotes the same split in prose and lists the same 22 methods,
-   * but that guide now lives in the standalone `agent-store-site` repository, so
-   * nothing here can read it any more. Mapping a new method (or dropping one)
-   * fails this test — update the guide by hand in the site repository in the
-   * same change.
+   * The route table is 46 mapped / 22 without an HTTP binding. The TypeScript
+   * SDK reference page's "HTTP binding" section (`§5.3` of
+   * `agent-store-site/content/docs/<lang>/typescript-sdk.md`, renumbered when the
+   * examples moved to `examples-sdk.md`) quotes the same split in prose and
+   * lists the same 22 methods, but that guide lives in the standalone
+   * `agent-store-site` repository, so nothing here can read it any more.
+   * Mapping a new method (or dropping one) fails this test — update the guide
+   * by hand in the site repository in the same change.
    */
   const DOCUMENTED_UNMAPPED = [
     "initialize",

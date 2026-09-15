@@ -1,39 +1,30 @@
 /**
- * W11 provider settings (`16` R16 / `21` Q6=①): the **only** write face for the
- * host's `~/.agent-store/config.toml` default model.
+ * W11 提供方设置（`16` R16 / `21` Q6=①）：宿主 `~/.agent-store/config.toml`
+ * 默认模型的**唯一**写入入口。
  *
- * Why a store of its own: this state is loaded from the host file over
- * `config/get` / `config/set` and has nothing in common with the chat/session
- * state in `appStore.ts`. Before R16 the dialog edited two local-only fields
- * (`providerId` / `model`) that never reached the host — the "fake switch" §6
- * forbids. There is now exactly one source for the default model: this store,
- * seeded by the server's own read-back.
+ * 为什么单独用一个 store：此状态通过 `config/get` / `config/set` 从宿主文件读取，
+ * 与 `appStore.ts` 中的聊天/会话状态毫无关系。在 R16 之前，对话框修改的是两个
+ * 仅存在于本地的字段（`providerId` / `model`），从未真正写入宿主——这正是 §6
+ * 所禁止的“假开关”。现在默认模型只有一个来源：本 store，由服务端自身回读来播种。
  *
- * Failure policy: a failed read leaves `view` null (nothing is fabricated) and
- * a failed save leaves the loaded view untouched (no optimistic echo), so the
- * UI can never display a value the host does not actually hold.
+ * 失败策略：读取失败则令 `view` 为 null（不臆造任何值），保存失败则保持已加载的
+ * 视图不变（不做乐观回显），这样 UI 永远无法显示一个宿主实际并不持有的值。
  *
- * Errors are a `ConfigMessage`, never a bare string. A message is either one of
- * our own i18n keys or the host's own prose, and the two need **opposite**
- * treatment — one string field cannot serve both, which is why the tag is part
- * of the value:
+ * 错误统一为 `ConfigMessage`，而非裸字符串。消息既可能是我们自己的 i18n 键，
+ * 也可能是宿主自己的原文，二者需要**相反**的处理——单一字符串字段无法同时服务
+ * 两者，因此标签是值的一部分：
  *
- * - `t()` on the host's prose silently destroys it. i18next treats a
- *   colon-bearing string that `looksLikeObjectPath` — its first dot comes before
- *   its first space, the tell of a message that starts with a file name — as
- *   `namespace:key`, and returns only the half after the colon. The host's own
- *   `mcp.json is not valid JSON: expected value at line 1 column 1` therefore
- *   rendered as `" expected value at line 1 column 1"`: cause gone, stray
- *   leading space kept.
- * - `{ nsSeparator: false }` is the cheaper fix and was rejected: it silences
- *   the split, but the string still goes through i18next's lookup, so prose that
- *   happens to equal a translation path renders as somebody else's sentence.
- *   Two kinds of text need **opposite** handling, and one string field cannot
- *   say which is which — hence the tag.
+ * - 对宿主原文调用 `t()` 会悄悄毁掉它。i18next 会把“首个点号早于首个空格”的、
+ *   形似对象路径的字符串（其特征是消息以文件名开头）当作 `namespace:key`，
+ *   只返回冒号之后的部分。于是宿主的 `mcp.json is not valid JSON: expected value
+ *   at line 1 column 1` 被渲染成 `" expected value at line 1 column 1"`：
+ *   原因丢失，还留了个多余的头部空格。
+ * - `{ nsSeparator: false }` 是更省事的修法，但被否决：它只是关掉了拆分，字符串
+ *   仍会经过 i18next 查找，于是恰好等于某条翻译路径的原文会被渲染成别人的句子。
+ *   两类文本需要**相反**的处理，单一字符串字段无法说明它是哪一类——因此用标签。
  *
- * Tagging at the source (here) is what makes the host's prose unreachable from
- * i18next altogether: `ConfigMessageText` renders `server` text as a plain
- * string and never looks it up.
+ * 在源头（此处）打标签，使宿主原文对 i18next 完全不可达：`ConfigMessageText`
+ * 把 `server` 文本当作纯字符串渲染，从不查找它。
  */
 
 import { create } from "zustand";
@@ -42,67 +33,62 @@ import type { AgentStoreConfigPatch, AgentStoreConfigView, McpSourceView } from 
 import { formatError } from "../lib/errors";
 
 /**
- * A message this store wants shown, tagged with who wrote it.
+ * 本 store 想要展示的消息，附带“由谁书写”的标签。
  *
- * `i18n` is a key of ours and must be translated; `server` is the host's own
- * prose and must be shown verbatim (see the module doc for what `t()` does to
- * it). The tag is set where the message is created, so no component has to
- * guess and no rendering path can get it wrong by default.
+ * `i18n` 是我们自己的键，必须翻译；`server` 是宿主自己的原文，必须原样展示
+ * （`t()` 对它的处理见模块说明）。标签在消息创建处设定，因此任何组件都无需猜测，
+ * 也不会在默认渲染路径上出错。
  */
 export type ConfigMessage = { kind: "i18n"; key: string } | { kind: "server"; text: string };
 
-/** One of our own translation keys (local validation / offline states). */
+/** 我们自己的某个翻译键（本地校验 / 离线状态）。 */
 function i18nMessage(key: string): ConfigMessage {
   return { kind: "i18n", key };
 }
 
-/** The host's own prose, via the shared `formatError` spelling. */
+/** 宿主自己的原文，经由共享的 `formatError` 拼写。 */
 function hostMessage(caught: unknown): ConfigMessage {
   return { kind: "server", text: formatError(caught) };
 }
 
-/** The two host-only calls this store needs (the WebUI client satisfies it). */
+/** 本 store 需要的、仅宿主侧的两个调用（由 WebUI 客户端满足）。 */
 export interface AgentStoreConfigClient {
   getAgentStoreConfig: () => Promise<AgentStoreConfigView>;
   setAgentStoreConfig: (patch: AgentStoreConfigPatch) => Promise<AgentStoreConfigView>;
 }
 
 /**
- * The MCP declaration face (`21` D17), as its own seam.
+ * MCP 声明面（`21` D17），自成一条边界。
  *
- * Deliberately separate from `AgentStoreConfigClient`: the two faces are used by
- * different panels, and keeping them apart means a read-only double for the
- * provider section stays a two-method object instead of growing three methods it
- * never calls. The WebUI client satisfies both.
+ * 刻意与 `AgentStoreConfigClient` 分开：两面由不同面板使用，分开后提供方区域的
+ * 只读副本仍是只有两个方法的对象，而不会膨胀出它从不调用的第三个方法。WebUI
+ * 客户端同时满足两者。
  */
 export interface AgentStoreMcpClient {
-  /** `config/get-mcp`: the file's own text, for the editor. */
+  /** `config/get-mcp`：文件本身的文本，供编辑器使用。 */
   getAgentStoreMcpSource: () => Promise<McpSourceView>;
-  /** `config/set-mcp`: write it verbatim (host validates before writing). */
+  /** `config/set-mcp`：原样写入（宿主在写入前做校验）。 */
   setAgentStoreMcpSource: (source: string) => Promise<AgentStoreConfigView>;
-  /** `config/set-mcp-enabled`: flip one accepted entry's `enabled` in place. */
+  /** `config/set-mcp-enabled`：就地翻转某个已接受条目的 `enabled`。 */
   setAgentStoreMcpEnabled: (name: string, enabled: boolean) => Promise<AgentStoreConfigView>;
 }
 
-/** One selectable `<provider>/<model>` default. */
+/** 一个可选的 `<provider>/<model>` 默认值。 */
 export interface DefaultModelOption {
-  /** Written verbatim into `default_model`. */
+  /** 原样写入 `default_model`。 */
   value: string;
-  /** `[providers.<name>]` key the option belongs to. */
+  /** 选项所属的 `[providers.<name>]` 键。 */
   provider: string;
-  /** Model name as declared in the file. */
+  /** 文件中声明的模型名。 */
   model: string;
 }
 
 /**
- * The selectable default models, derived from the **server's** view of the file
- * — no second provider list is invented here.
+ * 可选的默认模型，派生自**服务端**对该文件的视图——此处不另造一份提供方列表。
  *
- * A provider switched off in the file is not offered (its `enabled = false` is
- * an explicit host decision). The value currently stored must stay visible even
- * when the directory cannot re-derive it (hand-edited selection, provider
- * declared without any `[models.*]` entry): it is kept as the first option
- * instead of being silently replaced.
+ * 文件中被关闭的提供方不提供选择（其 `enabled = false` 是宿主的明确决定）。当前
+ * 已存的值即便目录无法重新派生也要保持可见（手动编辑的选择、声明了却没有
+ * `[models.*]` 条目的提供方）：把它作为第一个选项保留，而非悄悄替换。
  */
 export function defaultModelOptions(
   view: AgentStoreConfigView | null,
@@ -123,7 +109,7 @@ export function defaultModelOptions(
   return options;
 }
 
-/** How many providers / models the file itself declares (the file row's facts). */
+/** 文件自身声明了多少提供方 / 模型（文件这一行的客观事实）。 */
 export function configFileCounts(view: AgentStoreConfigView | null): { providers: number; models: number } {
   const providers = view?.providers ?? [];
   return {
@@ -133,48 +119,48 @@ export function configFileCounts(view: AgentStoreConfigView | null): { providers
 }
 
 export interface SettingsConfigState {
-  /** Last view returned by the host; `null` = not read (or the read failed). */
+  /** 宿主返回的最近视图；`null` = 尚未读取（或读取失败）。 */
   view: AgentStoreConfigView | null;
   loading: boolean;
-  /** Read failure, i18n key or the host's prose. Never a fabricated default. */
+  /** 读取失败，i18n 键或宿主原文。绝不臆造默认值。 */
   error: ConfigMessage | null;
-  /** Working value of the select; seeded from the server's `default_model`. */
+  /** 选择器的工作值，由服务端的 `default_model` 播种。 */
   draft: string | null;
   saving: boolean;
-  /** Write failure (or local pre-condition), rendered next to the control. */
+  /** 写入失败（或本地前置条件），渲染在控件旁。 */
   saveError: ConfigMessage | null;
-  /** `default_model` the host confirmed on the last successful save. */
+  /** 上次成功保存时宿主确认的 `default_model`。 */
   savedValue: string | null;
-  /** `[memory] distill_enabled` write in flight. */
+  /** `[memory] distill_enabled` 写入进行中。 */
   memorySaving: boolean;
-  /** Write failure for the memory switch (i18n key or the host's prose). */
+  /** memory 开关的写入失败（i18n 键或宿主原文）。 */
   memoryError: ConfigMessage | null;
-  /** `[memory] distill_enabled` the host confirmed on the last save. */
+  /** 上次保存时宿主确认的 `[memory] distill_enabled`。 */
   memorySavedValue: boolean | null;
 
-  /** `config/get-mcp` result; `null` = not read (yet, or the read failed). */
+  /** `config/get-mcp` 的结果；`null` = 尚未读取（或读取失败）。 */
   mcpSource: McpSourceView | null;
   mcpSourceLoading: boolean;
-  /** Read failure for the editor's own read (distinct from `error`). */
+  /** 编辑器自身读取的失败（与 `error` 区分）。 */
   mcpSourceError: ConfigMessage | null;
-  /** The editor's buffer, seeded from the host's own text. */
+  /** 编辑器的缓冲区，由宿主自身文本播种。 */
   mcpDraft: string;
   mcpSaving: boolean;
   mcpSaveError: ConfigMessage | null;
-  /** `true` once a save has been confirmed by the host's re-read. */
+  /** 一旦保存被宿主回读确认，即为 `true`。 */
   mcpSaved: boolean;
 
   load: (client: AgentStoreConfigClient | null) => Promise<void>;
   select: (value: string) => void;
   save: (client: AgentStoreConfigClient | null) => Promise<void>;
-  /** Write the `[memory] distill_enabled` switch (host re-read lands in `view`). */
+  /** 写入 `[memory] distill_enabled` 开关（宿主回读落入 `view`）。 */
   setDistill: (client: AgentStoreConfigClient | null, enabled: boolean) => Promise<void>;
-  /** Read the declaration file's own text for the editor. */
+  /** 为编辑器读取声明文件的自身文本。 */
   loadMcpSource: (client: AgentStoreMcpClient | null) => Promise<void>;
   editMcpDraft: (value: string) => void;
-  /** Write the editor's buffer verbatim (host validates before writing). */
+  /** 原样写入编辑器缓冲区（宿主在写入前做校验）。 */
   saveMcpSource: (client: AgentStoreMcpClient | null) => Promise<void>;
-  /** Toggle one accepted entry's `enabled` member in place. */
+  /** 就地切换某个已接受条目的 `enabled` 成员。 */
   setMcpEnabled: (
     client: AgentStoreMcpClient | null,
     name: string,
@@ -203,7 +189,7 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
 
   load: async (client) => {
     if (!client) {
-      // Offline: visible, retryable, and *not* an empty-looking file.
+      // 离线：可见、可重试，且*不是*一个看起来空空的文件。
       set({
         view: null,
         draft: null,
@@ -252,8 +238,7 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
     }
     set({ saving: true, saveError: null });
     try {
-      // The landing spot is the host's re-read of the file, not an echo of the
-      // request: `savedValue` is therefore what is actually on disk.
+      // 落点是宿主对文件的回读，而非请求的回显：因此 `savedValue` 就是磁盘上的实际内容。
       const view = await client.setAgentStoreConfig({ default_model: value });
       set({
         view,
@@ -264,19 +249,18 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
         savedValue: view.default_model,
       });
     } catch (caught) {
-      // Nothing is written optimistically: the previous view stands.
+      // 不做任何乐观写入：保留上一次的视图。
       set({ saving: false, saveError: hostMessage(caught) });
     }
   },
 
   /**
-   * The `[memory] distill_enabled` switch.
+   * `[memory] distill_enabled` 开关。
    *
-   * Same landing-spot rule as `save`: the store keeps the host's **re-read** of
-   * the file, so the UI can only ever show a value that is really on disk. The
-   * switch is deliberately not optimistic — the host reads this key at startup
-   * (`apps/agent-store` → `set_distill_host_override`), so `memorySavedValue`
-   * means "written and read back", and the section says so in prose.
+   * 与 `save` 相同的落点规则：本 store 保留宿主对文件的**回读**，因此 UI 只能展示
+   * 真正落在磁盘上的值。该开关刻意不做乐观处理——宿主在启动时读取此键
+   * （`apps/agent-store` → `set_distill_host_override`），因此 `memorySavedValue`
+   * 意为“已写入并被回读”，该区域在文案中也会这样说明。
    */
   setDistill: async (client, enabled) => {
     const { memorySaving } = get();
@@ -301,11 +285,10 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
   },
 
   /**
-   * Read the declaration file's own text (`config/get-mcp`).
+   * 读取声明文件自身的文本（`config/get-mcp`）。
    *
-   * A read failure leaves `mcpSource` null and the draft **empty**, never a
-   * fabricated blank file: an editor that silently starts from "" over a file
-   * the host merely could not read would overwrite it on the next save.
+   * 读取失败则令 `mcpSource` 为 null、缓冲区为**空**，绝不臆造一个空白文件：
+   * 编辑器若在一个宿主只是暂时无法读取的文件上悄悄以 "" 起步，下次保存就会覆盖它。
    */
   loadMcpSource: async (client) => {
     if (!client) {
@@ -341,14 +324,12 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
   editMcpDraft: (value) => set({ mcpDraft: value, mcpSaveError: null, mcpSaved: false }),
 
   /**
-   * Write the buffer verbatim, then re-read it.
+   * 原样写入缓冲区，然后回读。
    *
-   * The landing spot is the host's own re-read, as everywhere else in this
-   * store — and the buffer is re-seeded from it, so what the editor shows after
-   * a save is the file, not the request. A rejected text is **not** a failed
-   * save in the "try again" sense: the host refused it and wrote nothing, so the
-   * buffer is kept exactly as the operator typed it and the parser's own reason
-   * (line and column included) is shown beside it.
+   * 落点是宿主自身的回读，与本 store 其他处一致——缓冲区也由它重新播种，因此保存后
+   * 编辑器展示的是文件，而非请求。被拒绝的文本**并非**“重试”意义上的保存失败：
+   * 宿主拒绝它且什么都没写，因此缓冲区保持操作员键入原样，并在其旁展示解析器自身
+   * 给出的理由（含行号与列号）。
    */
   saveMcpSource: async (client) => {
     const { mcpDraft, mcpSaving } = get();
@@ -376,11 +357,10 @@ export const useSettingsConfig = create<SettingsConfigState>()((set, get) => ({
   },
 
   /**
-   * Toggle one entry in place.
+   * 就地切换某个条目。
    *
-   * The source is re-read only when the buffer holds **no unsaved edits**
-   * (`mcpDraft === mcpSource.source`); otherwise a switch flipped outside the
-   * editor would silently discard what the operator is typing.
+   * 仅当缓冲区**没有未保存的编辑**（`mcpDraft === mcpSource.source`）时才回读
+   * 源；否则在编辑器之外翻转的开关会悄悄丢弃操作员正在输入的文本。
    */
   setMcpEnabled: async (client, name, enabled) => {
     const { mcpSaving, mcpDraft, mcpSource } = get();

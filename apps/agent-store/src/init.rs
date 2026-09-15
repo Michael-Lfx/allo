@@ -2,7 +2,9 @@
 //!
 //! Creates `~/.agent-store/config.toml` (or the `--config` path) with the
 //! builtin public marketplace sources wired in, so a fresh install can
-//! browse the store immediately. Optionally collects one provider (name /
+//! browse the store immediately, plus the host defaults a fresh install should
+//! start from (memory distillation off, and the host's tool ceiling — see
+//! [`TEMPLATE_DEFAULTS`]). Optionally collects one provider (name /
 //! type / base URL / model) interactively; API keys are never echoed — take
 //! them from the `AGENT_STORE_INIT_API_KEY` env or leave the field for a
 //! later manual edit.
@@ -53,8 +55,48 @@ const TEMPLATE_BODY: &str = r#"
 # capabilities = ["thinking", "tool_use"]
 
 # ── Marketplace sources ────────────────────────────────────────
-# Registered automatically before the first store/market call.
+# The three sources above are the official ones, hosted by the product's own
+# market site (https://agent-store.flowyaipc.cn/source/<market>/…); each ships
+# a _files.txt listing, so the whole entry tree is mirrored, not just the
+# manifest. Registered automatically before the first store/market call.
 # Remove a line to stop using that source; add your own mirrors here.
+"#;
+
+/// Live defaults written by `init`. Unlike [`TEMPLATE_BODY`] — examples, every
+/// line commented out — these lines are real TOML: they are the settings a
+/// fresh Store host should start from, and deleting a line is how a host opts
+/// back in to the permissive behaviour.
+const TEMPLATE_DEFAULTS: &str = r#"
+# ── Host defaults ──────────────────────────────────────────────
+# Session-end memory distillation is off: that extra model call is awaited
+# *before* the turn's terminal Finish, so leaving it on shows up as a 6-15s
+# "still processing" tail after the answer is already complete.
+[memory]
+distill_enabled = false
+
+# Host tool policy. Only the Agent Store host adopts this table — the desktop
+# and web hosts read this same file for providers/marketplaces and ignore
+# [tools].
+#
+# Every key here is a **ceiling, not a default**: `false` takes that capability
+# away from every session on this host, and the only way back is to delete the
+# line and restart. A missing key keeps its permissive default. The basic
+# file/shell tools (Read / Write / Edit / Glob / Grep / Bash) are not part of
+# this table and are unaffected — what follows subtracts the product families
+# this host has no surface to manage or consume.
+[tools]
+web = true          # WebSearch / WebExtract — searching and reading the web is basic assistance
+computer = false    # desktop control (keyboard / mouse / UIA): no approval surface here
+browser = false     # browser automation, which runs with the operator's profiles and logins
+
+[tools.domains]
+cron = false          # cron_create / cron_list / cron_delete — no scheduler UI on this host
+meeting = false       # meeting.* — no meeting surface
+knowledge = false     # knowledge_search / knowledge_read / knowledge_write + knowledge mounts
+learning = false      # learning_generate_course / learning_course_status — no course surface
+media = false         # Flowy media generation (today only image_generate); video lives in the vimax UI
+companion = false     # recall_memories / propose_companion_memory + in-session summon
+requirement = false   # requirement_complete / requirement_update_status (AutoWork)
 "#;
 
 /// Build the full template with the builtin marketplace sources.
@@ -66,6 +108,8 @@ fn template_with_markets(markets: &[(String, String, String)]) -> String {
         out.push_str(&format!("source_kind = \"{kind}\"\n"));
         out.push_str(&format!("source = \"{source}\"\n\n"));
     }
+    out.push_str(TEMPLATE_DEFAULTS.trim_start_matches('\n'));
+    out.push('\n');
     out.push_str(TEMPLATE_BODY.trim_start_matches('\n'));
     out
 }
@@ -182,6 +226,7 @@ fn confirm(question: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomifun_app_server::agent_store::AgentStoreConfig;
 
     #[test]
     fn template_includes_builtin_markets() {
@@ -194,6 +239,84 @@ mod tests {
             assert!(template.contains(&format!("source = \"{source}\"")));
         }
         assert!(template.contains("default_model"));
+    }
+
+    /// The template's whole point beyond the markets: distillation and the
+    /// capability ceiling are the settings a fresh Store host starts from — and
+    /// **nothing else** moved. Asserted through the host's own parser (not by
+    /// string matching), so a template that is syntactically broken — or whose
+    /// keys land inside the wrong table — fails here rather than on a user's
+    /// first launch.
+    #[test]
+    fn template_defaults_pin_the_store_tool_policy() {
+        let template =
+            template_with_markets(&AgentStoreConfig::builtin_default_marketplaces());
+        let config = AgentStoreConfig::from_source(&template).expect("template must be valid TOML");
+        let policy = config.tool_policy();
+
+        // Off: the two host-control switches (they act on the operator's own
+        // desktop / browser profiles) and the families this host has no
+        // surface to manage or consume.
+        assert!(!policy.computer, "desktop control must start off");
+        assert!(!policy.browser, "browser automation must start off");
+        for (name, on) in [
+            ("cron", policy.domains.cron),
+            ("meeting", policy.domains.meeting),
+            ("knowledge", policy.domains.knowledge),
+            ("learning", policy.domains.learning),
+            ("media", policy.domains.media),
+            ("companion", policy.domains.companion),
+            ("requirement", policy.domains.requirement),
+        ] {
+            assert!(!on, "{name} must start off");
+        }
+
+        // On: web is stated on purpose, and every key the template does not
+        // name keeps its permissive default — an edit here must not silently
+        // narrow an unrelated tool.
+        assert!(policy.web, "web search/extract stays on");
+        assert!(policy.plan && policy.lsp, "plan mode and LSP keep their defaults");
+        assert!(
+            policy.domains.goal,
+            "goal stays on: the Store UI renders goal activity"
+        );
+        assert!(policy.enabled.is_empty() && policy.disabled.is_empty());
+
+        // Not "unrestricted": that flag is what the host's startup log reports,
+        // so a template that silently stopped parsing would be visible there.
+        assert!(!policy.is_unrestricted());
+
+        // Absent `[memory].distill_enabled` means the upstream default (ON), so
+        // the template has to state the value rather than omit the table.
+        assert_eq!(
+            config.memory.as_ref().and_then(|memory| memory.distill_enabled),
+            Some(false)
+        );
+    }
+
+    /// The wizard appends `[providers.*]` / `[models."…"]` *after* the live
+    /// defaults, which is the path a user who answers the prompts actually gets.
+    #[test]
+    fn template_with_a_wizard_provider_block_still_parses() {
+        let mut template =
+            template_with_markets(&AgentStoreConfig::builtin_default_marketplaces());
+        template.push_str(&provider_block(
+            "p",
+            "openai",
+            "https://api.example.com/v1",
+            "m",
+            "My M",
+            "",
+        ));
+        let config = AgentStoreConfig::from_source(&template).expect("wizard output must parse");
+        assert!(config.providers.contains_key("p"));
+        assert!(config.models.contains_key("p/m"));
+        // The defaults survive a provider being added.
+        assert!(!config.tool_policy().domains.knowledge);
+        assert_eq!(
+            config.memory.as_ref().and_then(|memory| memory.distill_enabled),
+            Some(false)
+        );
     }
 
     #[test]

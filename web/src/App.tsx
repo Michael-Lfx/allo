@@ -5,6 +5,7 @@ import { ArtifactPanel } from "./components/ArtifactPanel";
 import { CatalogView } from "./components/CatalogView";
 import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
+import { PlanPanel } from "./components/PlanPanel";
 import { RunDetail } from "./components/RunDetail";
 import { LoadingOverlay } from "./components/LoadingOverlay";
 import { ToastHost } from "./components/ToastHost";
@@ -107,6 +108,8 @@ export default function App() {
           <RunDetail />
           {/* W2: the run's pending decision, answered in place above the composer. */}
           <ApprovalCard />
+          {/* 当前计划：与 ApprovalCard 同址常驻（放进会话流就会随历史滚走）。 */}
+          <PlanPanel />
           <Composer composerRef={composerRef} />
         </section>
       )}

@@ -41,6 +41,22 @@ await session.close();
 规则（P0 实测结论）：
 
 - 子进程固定 `--host 127.0.0.1 --no-open`；非回环一律拒绝（`isLoopbackUrl`）。
+- 工具面不用改宿主自己的 `~/.agent-store/config.toml`：`env.AGENT_STORE_TOOLS` 直接指定，值是 JSON（形状同 `[tools]` 表），**整份替换**文件里的策略，`{}` = 全开。它只在 Store 宿主生效（桌面 / Web 宿主不采纳 `[tools]`），且子进程启动时读一次。
+
+  ```ts
+  const session = await launchClient({
+    client: { name: "my-app", version: "0.1.0" },
+    env: {
+      // 只要基础能力：关掉桌面控制/浏览器与几个域
+      AGENT_STORE_TOOLS: JSON.stringify({
+        web: true,
+        computer: false,
+        browser: false,
+        domains: { cron: false, knowledge: false, media: false },
+      }),
+    },
+  });
+  ```
 - 默认自带临时 `--data-dir` 并在 `close()` 删除；传自己的目录即表示独占——后端单实例锁会 fail-fast。
 - 二进制定位：`bin` 参数 → `AGENT_STORE_BIN` → 平台 runtime 包的 `vendor/` → `PATH`；找不到直接报错（**不下载**，见 P2）。
 - 就绪行 `protocol_version` 与 SDK 不一致时杀掉子进程并报错（含两端版本）。该值是**契约指纹**，不是版本号：任何 wire 变更都会 bump。

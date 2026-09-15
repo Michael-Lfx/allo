@@ -446,30 +446,37 @@ impl AgentStoreConfig {
     }
 
     /// Builtin marketplace sources used when `~/.agent-store/config.toml` is
-    /// missing (or has no `[default_marketplaces]`): the official public
-    /// mirror, so a fresh install can browse the store before touching any
+    /// missing (or has no `[default_marketplaces]`): the product's own public
+    /// market site, so a fresh install can browse the store before touching any
     /// config. `id -> (source_kind, source)`.
     ///
-    /// NOTE: the public mirror host is expected to move to a domain-backed
-    /// HTTPS endpoint (`https://market.flowyaipc.cn/...`) once DNS/SSL are
-    /// wired up; the fallback short-circuits whenever the user declares their
-    /// own `[default_marketplaces]`.
+    /// The site repo (`agent-store-site`) owns these three trees and serves
+    /// them under `/source/<market>/…`, each with a pre-generated `_files.txt`,
+    /// so every source below is a full-tree mirror rather than manifest-only.
+    /// The fallback short-circuits whenever the user declares their own
+    /// `[default_marketplaces]`.
+    ///
+    /// This list is the release default **and** the definition of "official":
+    /// `is_official_source` compares the `(source_kind, source)` pair against
+    /// it, and official rows are the ones that default to `auto_update = true`
+    /// and are covered by the auto-update sweep. Moving a URL here therefore
+    /// re-classifies the old address as third-party.
     pub fn builtin_default_marketplaces() -> Vec<(String, String, String)> {
         vec![
             (
                 "experts".to_owned(),
                 "url".to_owned(),
-                "http://111.170.173.22:10072/experts/.codebuddy-plugin/marketplace.json".to_owned(),
+                "https://agent-store.flowyaipc.cn/source/experts/.codebuddy-plugin/marketplace.json".to_owned(),
             ),
             (
                 "skills".to_owned(),
                 "url".to_owned(),
-                "http://111.170.173.22:10072/skills/.codebuddy-skill/marketplace.json".to_owned(),
+                "https://agent-store.flowyaipc.cn/source/skills/.codebuddy-skill/marketplace.json".to_owned(),
             ),
             (
                 "connectors".to_owned(),
                 "url".to_owned(),
-                "http://111.170.173.22:10072/connectors/.codebuddy-connector/connectors.json".to_owned(),
+                "https://agent-store.flowyaipc.cn/source/connectors/.codebuddy-connector/connectors.json".to_owned(),
             ),
         ]
     }
@@ -1067,6 +1074,21 @@ model = "mimo-v2.5-free"
             assert!(source.ends_with("marketplace.json") || source.ends_with("connectors.json"));
             assert!(source.starts_with("http"), "{id} source must be absolute: {source}");
         }
+        // The release default is the product's own market site over HTTPS.
+        // Pinned because a typo'd or moved host would (a) point every fresh
+        // install at a dead mirror and (b) silently re-classify the real
+        // sources as third-party via `is_official_source` (auto-update off).
+        // Paths are the site's published `/source/<market>/…` mount, each
+        // carrying a `_files.txt` listing.
+        let sources: Vec<&str> = builtin.iter().map(|(_, _, source)| source.as_str()).collect();
+        assert_eq!(
+            sources,
+            [
+                "https://agent-store.flowyaipc.cn/source/experts/.codebuddy-plugin/marketplace.json",
+                "https://agent-store.flowyaipc.cn/source/skills/.codebuddy-skill/marketplace.json",
+                "https://agent-store.flowyaipc.cn/source/connectors/.codebuddy-connector/connectors.json",
+            ]
+        );
     }
 
     #[test]

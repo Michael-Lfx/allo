@@ -405,6 +405,10 @@ pub async fn register_remote(
                 &entries,
                 &fetched.revision,
                 None,
+                // A re-pointed row takes the *current* source's class default
+                // (doc 18 D1): keeping the old flag would leave a market that
+                // just moved to an official source out of the auto-update sweep.
+                crate::app_server_marketplace::is_official_source(source_kind, source),
             )
             .await
             .map_err(AppError::from)?;

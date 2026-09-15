@@ -111,6 +111,29 @@
    `changelog` §4）；顺带把 `changelog` §4 那张未发布表的「协议方法面增量」一行补上三个 MCP 方法
    与 `store/list` 的 `published_at`。**版本号口径未动**：工作区仍是 `0.1.0-beta.3`，与文档
    「本文与仓库当前对应 `0.1.0-beta.3`」一致——有张力的是 **wire 面**，不是版本号。
+
+## 本轮（2026-09-19）
+
+1. **新增通知 `conversation/list-changed`**（`05` §12.3.1）：会话**列表**投影的变更（`created` /
+   `updated` / `deleted`）此前只发宿主通道，App Server 侧看不见——于是**自动标题**（首条消息几秒
+   后由服务端异步生成）与 `is_processing` 的翻转都到不了界面，侧栏一直停在客户端 `send()` 时的
+   乐观快照上（名字空白、一直「正在处理」）。投影取自既有的 `conversation.listChanged`，**不设
+   订阅门槛**（列表是全局的）、**不带 `sequence`**（不是转写帧，不参与缺口检测）、尽力而为
+   （`conversation/list` 仍是权威）。指纹 `2026-09-18` → **`2026-09-19`**，**无方法增删**，方法
+   计数守卫（46 映射 / 22 无 HTTP 绑定）不动。
+   **落点**（按 `16` §8.1 记的「指纹落点比三处更广」全量同步）：`nomifun-app-server` 的
+   `PROTOCOL_VERSION`、`web/packages/protocol` 的 `APP_SERVER_PROTOCOL_VERSION`、
+   `web/packages/client/src/http-transport.ts`、`web/scripts/mock-server.ts`、`web/scripts/smoke.ts`
+   （2 处）、`web/packages/sdk/src/readiness.test.ts`（2 处）。**跨仓已同步**（`agent-store-site`）：
+   `typescript-sdk.md` §2 的常量示例 `"2026-09-18"` → `"2026-09-19"`（中英各一处；该页在站点仓已
+   重编号为 §2 / §5.3，旧文的 §3 / §7.3 引用一并订正）；`ServerNotification` 的导出说明补上
+   `conversation/list-changed`；§6.2 补一条**不变量**（该通知不带 `sequence`，不得推进 `lastSeen`、
+   不参与缺口判定）；`changelog` §4 的未发布台账与 §2 的「协议面口径」注同步登记。复跑站点守卫：
+   `check:docs-sync` **10 页 0 drift**、`--self-test` 9/9、`test:docs-sync` 16/16。
+2. **客户端接线**（`web/src/store/appStore.ts`）：`connect()` 时挂接通知监听（换 client / 断开时
+   解挂），`deleted` 走整份 `conversation/list` 重读（「读一行」表达不了「少一行」），其余走单行
+   重读。**前一轮的兜底保留**：`turn.status` 非 running 时也重读该行——那条管 `is_processing`，
+   这条管标题的**及时性**（实测标题在发消息后约 5s 就绪，回合 14s 才结束）。
 5. **仓库级收尾**（`16` §8.6，均为用户点名）：① `ui/` 门禁退出 `bun run check`（**13 → 5 环**，
    脚本与登记保留）——聚合门禁此前红在**第 1 环** `typecheck`（`--filter=./ui`）且**从不检查
    `web/`**，改后 **exit 0**；链的描述在 `AGENTS.md` / `CONTRIBUTING.md` /

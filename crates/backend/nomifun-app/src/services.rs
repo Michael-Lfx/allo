@@ -1566,6 +1566,25 @@ impl std::error::Error for RetainedStartupCleanupError {
     }
 }
 
+/// Environment override for the host's `[tools]` policy.
+///
+/// The value is a JSON object with the same shape as the config table (the
+/// `NomiToolPolicy` serde), e.g. `{"web":true,"domains":{"cron":false}}`; `{}`
+/// asks for the permissive default (every family on).
+///
+/// It **replaces** the file's `[tools]` table wholesale instead of merging.
+/// Merging can only ever narrow — every policy layer is subtractive — so it
+/// could never switch a family the template turned off back on, which is exactly
+/// what a caller spawning its own host wants (the SDK's `launchClient` passes it
+/// through `SpawnOptions.env`). A *partial* merge would also reset every key the
+/// caller did not name; replacement keeps a spawned host deterministic — it gets
+/// the toolset it asked for, not whatever the developer's
+/// `~/.agent-store/config.toml` happens to say.
+///
+/// Gated by the same `adopt` flag as the file, so the desktop and web hosts
+/// cannot be narrowed through the environment either.
+const TOOLS_ENV: &str = "AGENT_STORE_TOOLS";
+
 /// Resolve this host's global tool policy from the agent-store config file.
 ///
 /// Two deliberate properties, both load-bearing:
@@ -1578,13 +1597,37 @@ impl std::error::Error for RetainedStartupCleanupError {
 ///   no `[tools]` table, yields [`NomiToolPolicy::default`], which constrains
 ///   nothing. A broken hand-edit must not be able to strip a host's tool surface.
 ///
+/// `env` is the value of [`TOOLS_ENV`], passed in rather than read here so the
+/// rule stays testable without mutating the process environment.
+///
 /// Kept pure so the rule above is testable without booting a database.
 fn resolve_host_tool_policy(
     adopt: bool,
     path: Option<&std::path::Path>,
+    env: Option<&str>,
 ) -> nomifun_api_types::NomiToolPolicy {
     if !adopt {
         return nomifun_api_types::NomiToolPolicy::default();
+    }
+    // An empty value means "unset", not "deny everything": the permissive
+    // default is spelled `{}`, which is what serde makes of it anyway.
+    if let Some(raw) = env.map(str::trim).filter(|raw| !raw.is_empty()) {
+        match serde_json::from_str::<nomifun_api_types::NomiToolPolicy>(raw) {
+            Ok(policy) => {
+                tracing::info!(
+                    target: "agent_store_tools",
+                    "host tool policy taken from {TOOLS_ENV}; the config file's [tools] table is ignored"
+                );
+                return policy;
+            }
+            // Fail open to the file, exactly like an unusable file fails open to
+            // the default: the operator's own declared policy beats silently
+            // narrowing the surface because of a typo.
+            Err(error) => tracing::warn!(
+                target: "agent_store_tools",
+                "{TOOLS_ENV} is not a valid tool policy ({error}); falling back to the config file"
+            ),
+        }
     }
     path.and_then(nomifun_app_server::agent_store::AgentStoreConfig::load_ok)
         .map(|stored| stored.tool_policy())
@@ -3086,10 +3129,14 @@ impl AppServices {
         // config file (`[tools]`), mirroring `[memory]`. Only the dedicated
         // Store host opts in: the desktop and web hosts read the same file for
         // providers/marketplaces, and adopting its tool policy there would
-        // silently narrow their sessions too.
+        // silently narrow their sessions too. `AGENT_STORE_TOOLS` (JSON) takes
+        // precedence over the file, so a spawned host — the SDK's
+        // `launchClient` via `SpawnOptions.env` — picks its own toolset.
+        let tools_env = std::env::var(TOOLS_ENV).ok();
         let tool_policy = resolve_host_tool_policy(
             config.adopt_store_tool_policy,
             config.agent_store_config_path.as_deref(),
+            tools_env.as_deref(),
         );
         if config.adopt_store_tool_policy {
             // Syntactic problems are host-level and knowable now, so report them
@@ -3785,11 +3832,11 @@ mod tests {
 
         // Not opted in: the file is readable and does contain `[tools]`, but the
         // host ignores it.
-        let ignored = resolve_host_tool_policy(false, Some(&path));
+        let ignored = resolve_host_tool_policy(false, Some(&path), None);
         assert!(ignored.is_unrestricted(), "{ignored:?}");
 
         // Opted in: the policy is adopted.
-        let adopted = resolve_host_tool_policy(true, Some(&path));
+        let adopted = resolve_host_tool_policy(true, Some(&path), None);
         assert_eq!(adopted.disabled, vec!["remember".to_owned()]);
         assert!(!adopted.computer);
         assert!(!adopted.domains.cron);
@@ -3803,19 +3850,90 @@ mod tests {
     fn tool_policy_fails_open_when_the_file_is_unusable() {
         let dir = tempfile::TempDir::new().unwrap();
         let missing = dir.path().join("absent.toml");
-        assert!(resolve_host_tool_policy(true, Some(&missing)).is_unrestricted());
+        assert!(resolve_host_tool_policy(true, Some(&missing), None).is_unrestricted());
 
         let broken = dir.path().join("broken.toml");
         std::fs::write(&broken, "not = = toml\n").unwrap();
-        assert!(resolve_host_tool_policy(true, Some(&broken)).is_unrestricted());
+        assert!(resolve_host_tool_policy(true, Some(&broken), None).is_unrestricted());
 
         // No path at all (tests / hosts without the convention).
-        assert!(resolve_host_tool_policy(true, None).is_unrestricted());
+        assert!(resolve_host_tool_policy(true, None, None).is_unrestricted());
 
         // A file with no `[tools]` table is the pre-policy shape.
         let plain = dir.path().join("plain.toml");
         std::fs::write(&plain, "default_model = \"opencode/mimo\"\n").unwrap();
-        assert!(resolve_host_tool_policy(true, Some(&plain)).is_unrestricted());
+        assert!(resolve_host_tool_policy(true, Some(&plain), None).is_unrestricted());
+    }
+
+    /// `AGENT_STORE_TOOLS` is what lets a caller spawning its own host pick the
+    /// toolset. It **replaces** the file's table wholesale, so it can switch a
+    /// family the file turned off back on, and every key it does not name falls
+    /// back to the permissive default rather than inheriting the file's value.
+    #[test]
+    fn tool_policy_env_replaces_the_file_policy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[tools]\nbrowser = false\n\n[tools.domains]\nknowledge = false\nmedia = false\n",
+        )
+        .unwrap();
+
+        // The file alone: all three are off.
+        let from_file = resolve_host_tool_policy(true, Some(&path), None);
+        assert!(!from_file.browser && !from_file.domains.knowledge && !from_file.domains.media);
+
+        // The env document replaces it. `browser` comes back on (impossible
+        // under the subtractive overlay rule, which is the point), `media` stays
+        // off because the document says so, and `knowledge` — never mentioned —
+        // returns to the permissive default instead of inheriting the file's
+        // `false`.
+        let policy = resolve_host_tool_policy(
+            true,
+            Some(&path),
+            Some(r#"{"browser":true,"domains":{"media":false}}"#),
+        );
+        assert!(policy.browser, "env may widen: {policy:?}");
+        assert!(!policy.domains.media, "{policy:?}");
+        assert!(policy.domains.knowledge, "{policy:?}");
+
+        // `{}` is the explicit "permissive default" spelling.
+        let everything = resolve_host_tool_policy(true, Some(&path), Some("{}"));
+        assert!(everything.is_unrestricted(), "{everything:?}");
+    }
+
+    /// The env override rides the same opt-in as the file: a host that never
+    /// adopted `[tools]` cannot be narrowed through the environment either.
+    #[test]
+    fn tool_policy_env_requires_the_same_opt_in_as_the_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_model = \"opencode/mimo\"\n").unwrap();
+
+        let ignored = resolve_host_tool_policy(false, Some(&path), Some(r#"{"computer":false}"#));
+        assert!(ignored.is_unrestricted(), "{ignored:?}");
+    }
+
+    /// An unusable value falls back to the file — never a silently narrowed
+    /// surface, and an empty value means "unset" rather than "deny everything".
+    #[test]
+    fn tool_policy_env_falls_back_to_the_file_when_unusable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[tools]\ncomputer = false\n").unwrap();
+
+        // Reading the file is what `!computer` proves: the permissive default
+        // would have left it on.
+        let malformed = resolve_host_tool_policy(true, Some(&path), Some("not json"));
+        assert!(!malformed.computer, "{malformed:?}");
+        let blank = resolve_host_tool_policy(true, Some(&path), Some("   "));
+        assert!(!blank.computer, "{blank:?}");
+
+        // Unusable value and no usable file at all: the permissive default.
+        let missing = dir.path().join("absent.toml");
+        assert!(
+            resolve_host_tool_policy(true, Some(&missing), Some("not json")).is_unrestricted()
+        );
     }
 
     /// Same ownership rule for the MCP declaration file: it is read only by the

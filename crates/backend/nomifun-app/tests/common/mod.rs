@@ -110,10 +110,34 @@ pub async fn build_app_with_noop_opener() -> (axum::Router, AppServices) {
 }
 
 pub async fn build_app_with_file_roots(allowed_roots: Vec<std::path::PathBuf>) -> (axum::Router, AppServices) {
+    // An absolute root, exactly like `build_app`: the App Server workspace
+    // resolver rejects a relative work dir, and `create_router_with_states`
+    // expects that resolver at startup — a bare `AppConfig::default()` (whose
+    // `work_dir` is the relative `"data"`) panics before any route is served.
+    let root = tempfile::Builder::new()
+        .prefix("nomifun-app-file-roots-")
+        .tempdir()
+        .unwrap()
+        .keep();
     let db = nomifun_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(
+        db,
+        &AppConfig {
+            data_dir: root.join("data"),
+            work_dir: root.join("work"),
+            ..AppConfig::default()
+        },
+    )
+    .await
+    .unwrap();
     let (mut states, _) = build_module_states(&services).await;
-    states.file.file_service = std::sync::Arc::new(FileService::new(services.event_bus.clone(), allowed_roots));
+    states.file.file_service =
+        std::sync::Arc::new(FileService::new(services.event_bus.clone(), allowed_roots.clone()));
+    // `FileRouterState` keeps its own copy of the roots — the UI file routes
+    // resolve their authority against it (`routes.rs` `/api/fs/list`,
+    // `/api/fs/zip`). Swapping only the service would leave the route state on
+    // the production defaults, so a test could not tighten the route sandbox.
+    states.file.allowed_roots = allowed_roots;
     let router = create_router_with_states(&services, states);
     (router, services)
 }

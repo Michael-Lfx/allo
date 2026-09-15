@@ -1,21 +1,18 @@
 import type { ConversationMessage } from "./protocol";
 
 /**
- * Keyset cursor for `conversation/messages` history pagination.
+ * 用于 `conversation/messages` 历史分页的键集（keyset）游标。
  *
- * The cursor is the opaque `"<created_at_ms>:<message_id>"` string the App
- * Server expects — see `ListMessagesQuery.cursor` / `parse_message_cursor` in
- * the backend. `created_at` is the message's ms timestamp, `message_id` a valid
- * `MessageId`; the colon is the only separator. The mock server mirrors this
- * exact format (and reuses `decodeHistoryCursor`), so there is a single source
- * of truth.
+ * 游标就是 App Server 期望的不透明 `"<created_at_ms>:<message_id>"` 字符串——参见
+ * 后端中的 `ListMessagesQuery.cursor` / `parse_message_cursor`。`created_at` 是消息的
+ * 毫秒时间戳，`message_id` 是一个合法的 `MessageId`；冒号是唯一的分隔符。mock 服务
+ * 端复刻了完全一致的格式（并复用了 `decodeHistoryCursor`），因此只有单一事实来源。
  *
- * Direction (matches the backend keyset path, which reverses its SQL result to
- * ascending before responding): the cursor is always the OLDEST currently-loaded
- * message. The server returns the page strictly OLDER than it, ascending, so the
- * next cursor is simply `page[0]` of the returned page.
+ * 方向（与后端键集路径一致，后端在响应前将其 SQL 结果反转为升序）：游标永远是当前
+ * 已加载的最旧消息。服务端返回严格比它更旧的一页、按升序，因此下一个游标就是返回页
+ * 的 `page[0]`。
  *
- * The first ("latest window") page is requested with an empty cursor (`""`).
+ * 第一页（“最新窗口”）以空游标（`""`）请求。
  */
 export function encodeHistoryCursor(message: Pick<ConversationMessage, "created_at" | "message_id">): string {
   return `${message.created_at}:${message.message_id}`;

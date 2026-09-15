@@ -77,3 +77,14 @@
 - **依赖要求**：依赖数组必须与 effect 内实际引用保持一致，避免缺失依赖或无效依赖导致重复执行或陈旧闭包问题。
 - **注释强制**：每个 `useEffect` 前必须添加中文注释，说明“为何必须使用 effect、同步的外部系统是什么、为何不能使用 `ahooks` 替代（如适用）、不使用 effect 的替代方案为何不适用”。
 - **注释模板**：`// useEffect必要性：<外部系统>；目的：<同步内容>`。
+
+## 5. 协议指纹与跨仓同步
+
+**动 App Server wire 面 = 换指纹 + 两仓一起改。** 指纹是 `APP_SERVER_PROTOCOL_VERSION`（`web/packages/protocol`）与 `PROTOCOL_VERSION`（`nomifun-app-server`）：握手与 SDK 对它做**严格相等**校验，取值只需「与上一次不同」，同日第二次变更取次日戳、不得复用同一个值。
+
+触发分支（**增量也算**）：方法增删改名、现有 DTO 加字段、事件 payload 变化、新增通知。
+
+1. 先改两个常量，再用**旧值全仓 grep** 收尾——落点比「三个权威位置」更广，`web/scripts/mock-server.ts`、`web/scripts/smoke.ts`、`web/packages/sdk/src/readiness.test.ts` 这类夹具最容易漏（历次落点与偏差登记见 `docs/agent-store/16` §7 决策 4）。
+2. 正文同步：`docs/agent-store/05-flowy-agent-store-app-server-protocol.md`（头部指纹 + 对应章节）与 `docs/agent-store/README.md` 的本轮记录。
+3. **跨仓改独立仓 `C:\workspace\agent-store-site`**：`content/docs/{zh-CN,en-US}/typescript-sdk.md` 的 §2 常量示例随指纹改（中英各一处），方法计数、`ServerNotification` 枚举与 `changelog` §4 的未发布台账按本次改动同步；两语言结构必须一致。
+4. 完成标准：旧值在本仓代码里归零（只剩历史散文）；`cargo test -p nomifun-app-server` 与 `cd web && bun run typecheck && bun run test` 绿；站点仓 `bun run check:docs-sync` 报 `0 drift`、`bun run test:docs-sync` 通过。

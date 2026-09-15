@@ -143,6 +143,23 @@ describe("runTurnAction · retry", () => {
   });
 });
 
+describe("send · optimistic row", () => {
+  it("appends exactly one row for a plain send", async () => {
+    seed([]);
+    seedClient();
+    useAppStore.setState({ draft: "hello", selectedConversationId: "conv-1" });
+
+    await useAppStore.getState().send();
+
+    // Two rows would carry the same id (both start as `pending:<key>` and the
+    // receipt rewrites both), so the transcript would show the turn twice.
+    const rows = useAppStore.getState().stream.messages.filter(
+      (entry) => entry.role === "user" && entry.content === "hello",
+    );
+    expect(rows).toHaveLength(1);
+  });
+});
+
 describe("runTurnAction · resend after a lost receipt", () => {
   it("reuses the original idempotency key so the server cannot execute twice", async () => {
     seed([]);

@@ -3,7 +3,7 @@ import { parseReadinessLine } from "./readiness";
 
 const LINE =
   '{"agent_store":"listening","host":"127.0.0.1","port":54211,' +
-  '"url":"http://127.0.0.1:54211/","protocol_version":"2026-09-18",' +
+  '"url":"http://127.0.0.1:54211/","protocol_version":"2026-09-19",' +
   '"version":"1.0.11","auth":"disabled-local"}';
 
 describe("parseReadinessLine", () => {
@@ -12,7 +12,7 @@ describe("parseReadinessLine", () => {
       host: "127.0.0.1",
       port: 54211,
       url: "http://127.0.0.1:54211/",
-      protocol_version: "2026-09-18",
+      protocol_version: "2026-09-19",
       version: "1.0.11",
       auth: "disabled-local",
     });

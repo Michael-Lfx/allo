@@ -98,8 +98,11 @@ use tokio::sync::mpsc;
 /// change on the same day takes the next day's stamp rather than reusing it.
 /// `2026-09-16` carried `store/list`'s `published_at`; `2026-09-17` added the
 /// two MCP declaration write methods; `2026-09-18` adds `config/get-mcp`, the
-/// editor's read of the same file (`21` D17).
-pub const PROTOCOL_VERSION: &str = "2026-09-18";
+/// editor's read of the same file (`21` D17); `2026-09-19` adds the
+/// `conversation/list-changed` notification — the sidebar's half of the
+/// conversation list projection (auto-title, rename, delete), which until now
+/// only reached the host channel.
+pub const PROTOCOL_VERSION: &str = "2026-09-19";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1299,7 +1302,16 @@ fn workspace_view(row: AppServerWorkspaceRow) -> WorkspaceView {
     WorkspaceView {
         workspace_id: row.workspace_id,
         name: workspace_display_name(&row.root_path),
-        canonical_path: row.root_path,
+        // Durable rows hold `fs::canonicalize` output (the repository
+        // normalizes through `canonical_directory`), which on Windows is a
+        // verbatim extended-length `\\?\C:\...` spelling. That is correct for
+        // filesystem syscalls and wrong for every consumer of this projection:
+        // the Artifact panel renders `canonical_path` as its workspace
+        // breadcrumb and round-trips it back as `POST /api/fs/list {root}`.
+        // Project the simplified spelling (`nomifun-common::paths` rule) —
+        // doing it here also repairs rows written before the rule, so no
+        // migration is needed.
+        canonical_path: nomifun_common::paths::marker_string(FsPath::new(&row.root_path)),
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
@@ -5262,6 +5274,32 @@ fn conversation_event_sequence(
     Some(*sequence)
 }
 
+/// `conversation.listChanged`（第一方会话列表投影）→ App Server 通知。
+///
+/// 与 [`project_conversation_notification`] 不同，这一条**不属于**某条被订阅的
+/// 转写流：它改的是侧栏那一整份列表（自动标题、重命名、删除都由它带出来）。
+/// 因此它不设订阅门槛（用户此刻很可能正看着另一个会话），也不占用
+/// `conversation_events` 的序号——它不是转写帧，客户端不得据此推进
+/// `lastSeenSequence`。
+fn project_conversation_list_changed(
+    event: &nomifun_api_types::WebSocketMessage<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let conversation_id = event
+        .data
+        .get("conversation_id")
+        .and_then(serde_json::Value::as_str)?;
+    // 公开契约只承认这三态：将来新增一种 action 属于 wire 变更（要动协议指纹），
+    // 所以未知取值不原样透出，按「这一行需要重读」保守处理。
+    let action = match event.data.get("action").and_then(serde_json::Value::as_str) {
+        Some(action @ ("created" | "updated" | "deleted")) => action,
+        _ => "updated",
+    };
+    Some(ws_notification(
+        "conversation/list-changed",
+        serde_json::json!({ "conversation_id": conversation_id, "action": action }),
+    ))
+}
+
 /// Project first-party Conversation events into a small, stable App Server
 /// notification contract. The implementation intentionally does not relay raw
 /// agent/runtime payloads: opaque runtime/session/tool identifiers and backend
@@ -5284,7 +5322,16 @@ fn project_conversation_notification(
     {
         return None;
     }
-    let sequence = conversation_event_sequence(subscriptions, conversation_id)?;
+    // 未被投影的事件**不得**消耗序列号，所以序号在 `event.name` 的 match **之后**才取。
+    //
+    // 原实现把 `conversation_event_sequence` 放在 match 之前，而 match 的 `_ => return None`
+    // 会带着已自增的计数直接返回——`confirmation.remove` 这类「带 `conversation_id`、未
+    // `hidden`、但没有投影分支」的事件因此吃掉一个序号却不发帧，客户端
+    // `lastSeenSequence` 与下一个真实帧之间就出现空洞（`conversations.ts` 据此上报
+    // `onResync("gap")`，界面显示「实时内容已重新同步：gap」）。这与上面 `hidden` 早退处
+    // 「Do not even advance the public sequence」是同一条不变量。
+    // （`conversation.listChanged` 曾是同一类事件，现已由
+    // `project_conversation_list_changed` 单独投影，且不经此处、不占序号。）
     let message_id = event
         .data
         .get("msg_id")
@@ -5359,6 +5406,34 @@ fn project_conversation_notification(
                         "retryable": event.data.pointer("/data/retryable").cloned().unwrap_or(serde_json::Value::Null),
                     }),
                 ),
+                // 计划与 agent 状态此前只投影了 `kind`，载荷整段丢掉——于是**流式**中的
+                // 计划行没有任何步骤（客户端解不出来，掉进兜底行「Agent 活动：plan」，
+                // 输入框上方的计划面板只能继续显示上一条旧计划），而 agent 状态药丸也
+                // 只能凭空猜一个「已暂停」。同一条会话重新加载时，同一行却带着载荷
+                // （`persist_plan` / `persist_agent_status` 落库的形状），两者不一致。
+                //
+                // 与上面 `tool_call` 同一条不变量：**实时行必须渲染成重新加载后的那一行**，
+                // 所以这里照落库形状带上载荷。`plan` 的 `source_call_id` 是内部 id，留在
+                // 缝后面（`entries` / `session_id` 与落库内容逐字一致）。
+                "plan" => (
+                    "message.activity",
+                    serde_json::json!({
+                        "message_id": message_id,
+                        "kind": kind,
+                        "content": {
+                            "session_id": event.data.pointer("/data/session_id").cloned().unwrap_or(serde_json::Value::Null),
+                            "entries": event.data.pointer("/data/entries").cloned().unwrap_or(serde_json::Value::Null),
+                        },
+                    }),
+                ),
+                "agent_status" => (
+                    "message.activity",
+                    serde_json::json!({
+                        "message_id": message_id,
+                        "kind": kind,
+                        "content": event.data.pointer("/data").cloned().unwrap_or(serde_json::Value::Null),
+                    }),
+                ),
                 // W9（R14）：把运行时的逐轮用量带上 wire。引擎的 `TurnCompleted`
                 // 事件本来就带本轮的 `input_tokens` / `output_tokens`，此前在这个投影里
                 // 被降级成「活动标记」、载荷整段丢掉，于是客户端只有**会话级**占用
@@ -5404,6 +5479,8 @@ fn project_conversation_notification(
         ),
         _ => return None,
     };
+    // Only now that the event has a public projection: allocate the sequence.
+    let sequence = conversation_event_sequence(subscriptions, conversation_id)?;
 
     Some(ws_notification(
         "conversation/event",
@@ -5474,6 +5551,17 @@ async fn forward_app_server_events(
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         };
         if envelope.user_id != owner_id.as_str() {
+            continue;
+        }
+        // 会话列表投影变更（自动标题 / 重命名 / 删除）：发给该用户的每条连接，
+        // 不要求它订阅了这个会话，也不消耗转写序列号。
+        if envelope.event.name == "conversation.listChanged" {
+            let Some(notification) = project_conversation_list_changed(&envelope.event) else {
+                continue;
+            };
+            if !send_ws_output(&outbound_gate, &outbound_tx, notification).await {
+                break;
+            }
             continue;
         }
         if let Some(notification) = project_conversation_notification(&envelope.event, &subscriptions) {
@@ -7515,6 +7603,101 @@ mod tests {
         task.abort();
     }
 
+    /// 会话列表投影变更（自动标题 / 重命名 / 删除）走一条**不设订阅门槛**的通知：
+    /// 侧栏展示的是整份列表，用户此刻往往正看着另一个会话。但它绝不能占用转写
+    /// 序列号——它不是转写帧。
+    #[tokio::test]
+    async fn conversation_list_changed_is_pushed_without_a_subscription() {
+        let bus = BroadcastEventBus::new(16);
+        let owner = UserId::new();
+        // 刻意不订阅任何会话。
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions::default()));
+        let (tx, mut rx) = mpsc::channel::<String>(16);
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        let task = tokio::spawn(forward_app_server_events(
+            bus.subscribe_user(),
+            AppServerRouterState::default(),
+            owner.clone(),
+            subscriptions,
+            gate,
+            tx,
+        ));
+
+        // 别人的列表变更不得越过这条连接。
+        bus.send_to_user(
+            "other-owner",
+            WebSocketMessage::new(
+                "conversation.listChanged",
+                serde_json::json!({
+                    "conversation_id": "0190f5fe-7c00-7a00-8000-00000000ffff",
+                    "action": "updated",
+                }),
+            ),
+        );
+        // 自动标题落库后服务端发的就是这一条（`service.rs` 的 `broadcast_list_changed`）。
+        bus.send_to_user(
+            owner.as_str(),
+            WebSocketMessage::new(
+                "conversation.listChanged",
+                serde_json::json!({
+                    "conversation_id": "0190f5fe-7c00-7a00-8000-00000000000a",
+                    "action": "updated",
+                    "source": "nomifun",
+                }),
+            ),
+        );
+
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("list change must be delivered")
+            .expect("channel stays open");
+        let value: serde_json::Value = serde_json::from_str(&frame).expect("frame is JSON");
+        assert_eq!(value["method"], "conversation/list-changed");
+        assert_eq!(value["params"]["conversation_id"], "0190f5fe-7c00-7a00-8000-00000000000a");
+        assert_eq!(value["params"]["action"], "updated");
+        // 转写序列号属于 `conversation/event`，这一条不带、也不推进它。
+        assert!(value["params"].get("sequence").is_none());
+        assert!(rx.try_recv().is_err(), "the foreign owner's change stays on its own connection");
+        task.abort();
+    }
+
+    #[test]
+    fn conversation_list_changed_projection_keeps_the_three_documented_actions() {
+        let event = |action: serde_json::Value| {
+            WebSocketMessage::new(
+                "conversation.listChanged",
+                serde_json::json!({
+                    "conversation_id": "0190f5fe-7c00-7a00-8000-00000000000a",
+                    "action": action,
+                }),
+            )
+        };
+
+        for action in ["created", "updated", "deleted"] {
+            let notification = project_conversation_list_changed(&event(serde_json::json!(action)))
+                .expect("the three documented actions are projected");
+            assert_eq!(notification["method"], "conversation/list-changed");
+            assert_eq!(notification["params"]["action"], action);
+        }
+
+        // 未知取值不原样透出：契约只承认那三态，按「这一行需要重读」保守处理。
+        let unknown = project_conversation_list_changed(&event(serde_json::json!("renamed")))
+            .expect("an unknown action still means the row is stale");
+        assert_eq!(unknown["params"]["action"], "updated");
+        let missing = project_conversation_list_changed(&event(serde_json::Value::Null))
+            .expect("a missing action is still a list change");
+        assert_eq!(missing["params"]["action"], "updated");
+
+        // 没有 conversation_id 的事件不成通知。
+        assert!(
+            project_conversation_list_changed(&WebSocketMessage::new(
+                "conversation.listChanged",
+                serde_json::json!({ "action": "updated" }),
+            ))
+            .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn event_forwarding_lag_reports_resync_for_subscribed_runs() {
         let bus = BroadcastEventBus::new(4);
@@ -7668,6 +7851,104 @@ mod tests {
         assert_eq!(done["params"]["sequence"], 2);
         assert_eq!(done["params"]["payload"]["status"], "done");
         assert_eq!(done["params"]["payload"]["duration"], 842);
+    }
+
+    /// 未被投影的事件**不得**消耗序列号。
+    ///
+    /// `conversation_event_sequence` 在 `event.name` 的 match **之前**自增，而该 match 的
+    /// `_ => return None` 会带着已经自增的计数直接返回。于是 `confirmation.remove`
+    /// 这类「带 `conversation_id`、未 `hidden`、但投影器没有对应分支」的事件会吃掉一个
+    /// 序号却不发出任何帧——客户端 `lastSeenSequence` 与下一个真实帧之间就出现空洞，
+    /// `conversations.ts` 据此上报 `onResync("gap")`，用户看到
+    /// 「实时内容已重新同步：gap」。计数器必须只在真正发出通知时才前进。
+    #[test]
+    fn unprojected_conversation_event_must_not_burn_a_sequence_number() {
+        let conversation_id = "0190f5fe-7c00-7a00-8000-000000000009";
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions {
+            conversations: HashSet::from([conversation_id.to_owned()]),
+            ..Default::default()
+        }));
+
+        // 有 `conversation_id`、没 `hidden`，但投影器没有 `confirmation.remove` 分支。
+        let unprojected = WebSocketMessage::new("confirmation.remove", serde_json::json!({
+            "conversation_id": conversation_id,
+            "id": "0190f5fe-7c00-7a00-0000-0000000000conf",
+        }));
+        assert!(
+            project_conversation_notification(&unprojected, &subscriptions).is_none(),
+            "no public projection exists for this event"
+        );
+
+        let public = WebSocketMessage::new("message.stream", serde_json::json!({
+            "conversation_id": conversation_id,
+            "msg_id": "0190f5fe-7c00-7a00-0000-000000000011",
+            "type": "content",
+            "data": {"content": "hi"},
+        }));
+        let notification =
+            project_conversation_notification(&public, &subscriptions).expect("content is public");
+        assert_eq!(
+            notification["params"]["sequence"], 1,
+            "an unprojected event must not consume a sequence number"
+        );
+    }
+
+    /// 实时计划行必须带上步骤，和重新加载后的那一行一致。
+    ///
+    /// 投影器此前只发 `kind: "plan"`，客户端 `planData()` 解不出步骤，于是流式中的计划
+    /// 掉进兜底行「Agent 活动：plan」，输入框上方的计划面板只能继续显示上一条旧计划；
+    /// 而 `conversation/messages` 回来的同一行却带着 `entries`。`update_plan` 的
+    /// `source_call_id` 是内部 id，不能借这条投影泄漏出去。
+    #[test]
+    fn live_plan_and_agent_status_frames_carry_their_payload() {
+        let conversation_id = "0190f5fe-7c00-7a00-8000-00000000000a";
+        let subscriptions = Arc::new(RwLock::new(WsSubscriptions {
+            conversations: HashSet::from([conversation_id.to_owned()]),
+            ..Default::default()
+        }));
+
+        let plan = WebSocketMessage::new("message.stream", serde_json::json!({
+            "conversation_id": conversation_id,
+            "msg_id": "0190f5fe-7c00-7a00-0000-0000000000plan",
+            "type": "plan",
+            "data": {
+                "session_id": "update_plan",
+                "source_call_id": "internal-call-id",
+                "entries": [
+                    { "content": "创建示例计划", "status": "in_progress" },
+                    { "content": "演示计划更新", "status": "pending" },
+                ],
+            },
+        }));
+        let projected = project_conversation_notification(&plan, &subscriptions).expect("plan is public");
+        assert_eq!(projected["params"]["event_type"], "message.activity");
+        assert_eq!(projected["params"]["payload"]["kind"], "plan");
+        assert_eq!(projected["params"]["payload"]["message_id"], "0190f5fe-7c00-7a00-0000-0000000000plan");
+        let entries = projected["params"]["payload"]["content"]["entries"]
+            .as_array()
+            .expect("a live plan must carry its steps");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["status"], "in_progress");
+        assert_eq!(
+            projected["params"]["payload"]["content"]["session_id"], "update_plan",
+            "the live row must carry what the reloaded row carries"
+        );
+        assert!(
+            projected["params"]["payload"]["content"].get("source_call_id").is_none(),
+            "the plan's internal source call id must stay behind the seam"
+        );
+
+        let status = WebSocketMessage::new("message.stream", serde_json::json!({
+            "conversation_id": conversation_id,
+            "msg_id": "0190f5fe-7c00-7a00-0000-0000000000stat",
+            "type": "agent_status",
+            "data": { "backend": "nomi", "status": "error", "agent_name": "Nomi", "session_id": null },
+        }));
+        let projected = project_conversation_notification(&status, &subscriptions).expect("status is public");
+        assert_eq!(
+            projected["params"]["payload"]["content"]["status"], "error",
+            "without the payload the status pill can only guess a state"
+        );
     }
 
     #[tokio::test]

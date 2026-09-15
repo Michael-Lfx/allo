@@ -13,6 +13,7 @@ import { planStepAnchor, scrollToAnchor } from "../lib/run-plan";
 import {
   conversationStreamReducer,
   initialConversationStream,
+  isTurnStoppedEvent,
   persistedTurnUsage,
   type ConversationStreamState,
   upsertConversation,
@@ -49,6 +50,7 @@ import type { ConnectionPhase } from "../ui/connection";
 import type { OpenMenu } from "../ui/menu";
 import type {
   ContextUsage,
+  ConversationListChangedNotification,
   ConversationModelOptions,
   ConversationView,
   MentionRef,
@@ -458,6 +460,19 @@ export type AppState = {
   dismissToast: (id: string) => void;
   /** Re-read a transcript without touching its subscription (reconnect backfill). */
   refreshConversation: (conversationId: string) => Promise<void>;
+  /**
+   * Re-read one conversation's projection (name / processing) and write it back
+   * into the sidebar list, leaving transcript and subscription alone.
+   */
+  syncConversationRow: (conversationId: string) => Promise<void>;
+  /** Re-read the whole sidebar list — a row was added or removed elsewhere. */
+  refreshConversationList: () => Promise<void>;
+  /**
+   * Land one `conversation/list-changed` notification: a deleted row has no
+   * single-row read, so it takes the whole-list path; anything else re-reads
+   * that row.
+   */
+  applyConversationListChanged: (change: ConversationListChangedNotification["params"]) => Promise<void>;
   loadConversation: (conversationId: string, follow?: boolean) => Promise<void>;
   /**
    * Follow the Run started from a composer `@agent` mention (W2 approval card).
@@ -594,6 +609,23 @@ const initial = savedSettings();
 /** Detaches the lifecycle listener of the live client. Module-scoped plumbing:
  *  it is never render state, so it must not live inside the store snapshot. */
 let detachLifecycle: (() => void) | null = null;
+
+/** Detaches the `conversation/list-changed` listener of the live client. */
+let detachListChanges: (() => void) | null = null;
+
+/**
+ * 服务端在会话**列表**投影变化时推 `conversation/list-changed`（自动标题、重命名、
+ * 删除都走这一条）。侧栏据此把那一行拉回服务端投影——在此之前，客户端只在
+ * `send()` 时乐观写过一次，异步生成的标题根本没有通道能到达界面。
+ *
+ * 通知尽力而为且不带 `sequence`：丢一条只是晚一步刷新，`conversation/list` 仍是权威。
+ */
+function attachListChanges(client: AppServerClient): () => void {
+  return client.onNotification((notification) => {
+    if (notification.method !== "conversation/list-changed") return;
+    void useAppStore.getState().applyConversationListChanged(notification.params);
+  });
+}
 
 /**
  * Wire the transport lifecycle into the store (T8 / W8).
@@ -953,7 +985,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
         return;
       }
       set({ subscription });
-      subscription.onEvent((event) => get().dispatchStream({ type: "event", event }));
+      subscription.onEvent((event) => {
+        get().dispatchStream({ type: "event", event });
+        // 回合结束：侧栏那一行还停在 `send()` 时的乐观快照，服务端既不为
+        // `is_processing` 推通知，异步生成的标题也没有推送通道，所以重读一次
+        // 该会话的投影（一次 `conversation/get`）。
+        if (isTurnStoppedEvent(event)) void get().syncConversationRow(conversationId);
+      });
       subscription.onResync((reason) => {
         set({ resyncNotice: reason });
         void get().loadConversation(conversationId);
@@ -1000,6 +1038,45 @@ export const useAppStore = create<AppState>()((set, get) => ({
     } catch (caught) {
       set({ error: formatError(caught) });
     }
+  },
+
+  /**
+   * 重读**一个会话的投影**（名字 / processing）并回写列表行，不碰转写与订阅。
+   *
+   * 服务端会在回合之外改这一行：自动标题任务在首条消息几秒后改名（`TITLE_MAX_TOKENS`
+   * 那次调用），回合收尾时 `is_processing` 翻假——两者都没有 App Server 协议的推送
+   * 通道（`conversation.listChanged` 只发给宿主通道）。不重读，侧栏就一直停在
+   * `send()` 那一刻的乐观快照上。
+   */
+  syncConversationRow: async (conversationId) => {
+    const client = get().client;
+    if (!client) return;
+    try {
+      const view = await client.conversations.get(conversationId);
+      set((s) => ({ conversations: upsertConversation(s.conversations, view) }));
+    } catch {
+      // 一次读失败不该打断会话；下一轮回合结束会再试。
+    }
+  },
+
+  /** 重取整份侧栏列表：`conversation/list-changed` 说这一行是新增或删除，
+   *  「读一行」表达不了「多一行 / 少一行」。 */
+  refreshConversationList: async () => {
+    const client = get().client;
+    if (!client) return;
+    try {
+      set({ conversations: await client.conversations.list(100) });
+    } catch {
+      // 一次读失败不该清空侧栏；下一次列表变更会再试。
+    }
+  },
+
+  applyConversationListChanged: async (change) => {
+    if (change.action === "deleted") {
+      await get().refreshConversationList();
+      return;
+    }
+    await get().syncConversationRow(change.conversation_id);
   },
 
   loadOlderHistory: async () => {
@@ -1060,6 +1137,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
         // somewhere else, so it has to go.
         detachLifecycle?.();
         detachLifecycle = null;
+        detachListChanges?.();
+        detachListChanges = null;
         client?.close();
         client = new AppServerClient({
           wsUrl: wsUrl.trim(),
@@ -1069,6 +1148,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           requestTimeoutMs: 20_000,
         });
         detachLifecycle = attachLifecycle(client, set);
+        detachListChanges = attachListChanges(client);
         set({ client, clientEndpoint: endpoint });
       }
       // Reusing the live client makes this a real reconnect (W8): the transport
@@ -1143,6 +1223,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
     detachLifecycle?.();
     detachLifecycle = null;
+    detachListChanges?.();
+    detachListChanges = null;
     get().client?.close();
     // 断开后主页面一律不可用，连接门会盖上来；此时留着设置对话框没有意义（它会被门
     // 挡住且点不动），一并关掉，让「离线 ⇒ 屏幕上只有连接门」这个不变量成立。
@@ -1340,10 +1422,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
 
     const conversationId = selectedConversationId;
-    get().dispatchStream({
-      type: "appendPending",
-      message: { message_id: `pending:${key}`, conversation_id: conversationId, role: "user", content, message_type: "text", status: "sending", created_at: Date.now() },
-    });
+    // The optimistic row is appended by `submitTurn` (the single orchestration
+    // all four turn actions share) — appending one here too would add a second
+    // row under the same `pending:<key>` id, and `appendPending` does not dedup.
     set({ draft: "" });
     try {
       await submitTurn(set, get, { conversationId, content, idempotencyKey: key, attachments: composerAttachments });

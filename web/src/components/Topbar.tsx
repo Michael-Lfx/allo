@@ -1,9 +1,8 @@
 import { useMemo } from "react";
 import {
-  Files,
   Folder,
   Menu,
-  Square,
+  PanelRight,
 } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { useTranslation } from "react-i18next";
@@ -14,10 +13,8 @@ export function Topbar() {
   const { t } = useTranslation();
   const conversations = useAppStore((s) => s.conversations);
   const selectedConversationId = useAppStore((s) => s.selectedConversationId);
-  const isProcessing = useAppStore((s) => s.stream.isProcessing);
 
   const setSidebarOpen = useAppStore((s) => s.setSidebarOpen);
-  const cancel = useAppStore((s) => s.cancel);
   const toggleArtifactPanel = useAppStore((s) => s.toggleArtifactPanel);
 
   const currentConversation = useMemo<ConversationView | null>(
@@ -34,8 +31,7 @@ export function Topbar() {
       </div>
     </div>
     <div className="topbar-actions">
-      <IconButton label={t("topbar.artifacts")} onClick={toggleArtifactPanel}><Files aria-hidden="true" size={17} strokeWidth={1.7} /></IconButton>
-      {isProcessing && <button className="stop-button" type="button" onClick={() => void cancel()}><Square aria-hidden="true" size={11} fill="currentColor" /> {t("topbar.stop")}</button>}
+      <IconButton label={t("topbar.artifacts")} onClick={toggleArtifactPanel}><PanelRight aria-hidden="true" size={17} strokeWidth={1.7} /></IconButton>
     </div>
   </header>;
 }
