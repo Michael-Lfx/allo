@@ -908,6 +908,7 @@ impl LlmProvider for OpenAIProvider {
             .max_tokens
             .and_then(|_| self.learned_output_cap(&request.model));
         let mut negotiated_output_cap: Option<u32> = None;
+        let initial_deadline = tokio::time::Instant::now() + crate::INITIAL_REQUEST_DEADLINE;
 
         // Negotiate the four optional OpenAI extensions independently. A
         // gateway can reject stream usage metadata, rich tool schemas, the
@@ -954,9 +955,11 @@ impl LlmProvider for OpenAIProvider {
                 "outgoing request summary"
             );
 
-            match self
-                .send_initial_with_key_rotation(&client, &url, &body)
-                .await
+            match crate::send_with_deadline(
+                initial_deadline,
+                self.send_initial_with_key_rotation(&client, &url, &body),
+            )
+            .await
             {
                 Ok((response, headers)) => break (response, headers, body),
                 Err(error)

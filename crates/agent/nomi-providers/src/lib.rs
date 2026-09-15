@@ -93,6 +93,27 @@ pub(crate) fn request_body_with_extra(
     body
 }
 
+/// Absolute deadline for the complete OpenAI-compatible initial-request
+/// negotiation. Created once per `stream()` call and shared by connect,
+/// retries, backoff, key rotation, and compatibility negotiation, so a stalled
+/// gateway cannot multiply the wait by the number of attempts.
+pub(crate) const INITIAL_REQUEST_DEADLINE: Duration = Duration::from_secs(90);
+
+/// Bound an initial-request operation by an absolute deadline. The operation's
+/// future is dropped (its in-flight request cancelled) when the deadline
+/// expires, and the resulting error is not retryable.
+pub(crate) async fn send_with_deadline<T>(
+    deadline: tokio::time::Instant,
+    operation: impl std::future::Future<Output = Result<T, ProviderError>>,
+) -> Result<T, ProviderError> {
+    match tokio::time::timeout_at(deadline, operation).await {
+        Ok(result) => result,
+        Err(_) => Err(ProviderError::InitialRequestTimeout(
+            "initial negotiation deadline exceeded".to_owned(),
+        )),
+    }
+}
+
 /// Parse the strict `supported range is from L (inclusive|exclusive) to U
 /// (inclusive|exclusive)` wording (observed on the Flowy Cloud gateway) into the
 /// largest allowed output ceiling. Returns `None` for malformed, inverted, or
@@ -145,6 +166,12 @@ pub enum ProviderError {
     PromptTooLong(String),
     #[error("Connection error: {0}")]
     Connection(String),
+    /// The complete initial-request negotiation (connect, retries, backoff, key
+    /// rotation, and compatibility negotiation) exceeded its absolute deadline.
+    /// Not retryable: the internal budget is exhausted, and an upper layer must
+    /// not replay the send.
+    #[error("Initial request timeout: {0}")]
+    InitialRequestTimeout(String),
     /// The HTTP transport closed cleanly, but the provider never emitted the
     /// protocol's commit marker. Retryable only while no replay-unsafe content
     /// has crossed the provider boundary (see stream outcome empty/partial).
@@ -656,11 +683,13 @@ pub fn create_provider(config: &Config) -> Arc<dyn LlmProvider> {
 
 #[cfg(test)]
 mod retryable_tests {
+    use std::time::Duration;
+
     use super::ProviderError;
     use super::{
-        is_api_key_rotation_error, parse_api_keys, parse_retry_after_ms,
-        parse_supported_output_range, parse_tool_call_arguments,
-        MAX_DOUBLE_ENCODED_TOOL_ARGUMENT_BYTES,
+        INITIAL_REQUEST_DEADLINE, is_api_key_rotation_error, parse_api_keys,
+        parse_retry_after_ms, parse_supported_output_range, parse_tool_call_arguments,
+        send_with_deadline, MAX_DOUBLE_ENCODED_TOOL_ARGUMENT_BYTES,
         is_context_overflow_text,
     };
 
@@ -858,6 +887,35 @@ mod retryable_tests {
             }
             .is_tools_with_reasoning_effort_incompatible()
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_with_deadline_bounds_retries_and_backoff_with_one_deadline() {
+        let deadline = tokio::time::Instant::now() + INITIAL_REQUEST_DEADLINE;
+        let outcome = send_with_deadline(deadline, async {
+            // Simulates two slow attempts plus backoff that together exceed the
+            // single per-stream budget.
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok::<(), ProviderError>(())
+        })
+        .await;
+        assert!(matches!(
+            outcome,
+            Err(ProviderError::InitialRequestTimeout(_))
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_with_deadline_passes_through_fast_results() {
+        let deadline = tokio::time::Instant::now() + INITIAL_REQUEST_DEADLINE;
+        let outcome = send_with_deadline(deadline, async { Ok::<_, ProviderError>(7) }).await;
+        assert_eq!(outcome.expect("fast result"), 7);
+    }
+
+    #[test]
+    fn initial_request_timeout_is_not_retryable() {
+        assert!(!ProviderError::InitialRequestTimeout("deadline".into()).is_retryable());
     }
 
     #[test]
