@@ -42,4 +42,16 @@ describe('ChatModelPickerMenu structure', () => {
     expect(autoRow.includes("<span aria-hidden='true'>›</span>")).toBe(false);
     expect(autoRow.includes('labelForTier(autoTierForDisplay, t)')).toBe(true);
   });
+
+  test('renders the showcase brand icon, tagline, and recommended badge from the registry', () => {
+    expect(source.includes('ModelBrandIcon')).toBe(true);
+    expect(source.includes('src={option.showcase.icon}')).toBe(true);
+    expect(source.includes('chat-model-picker-menu-tagline')).toBe(true);
+    expect(source.includes('chat-model-recommended-badge')).toBe(true);
+    expect(source.includes("t('conversation.modelPicker.recommended'")).toBe(true);
+    // The Auto row follows the tier it currently displays.
+    expect(source.includes('autoTierTaglineKey(autoTierForDisplay)')).toBe(true);
+    expect(sendboxCss.includes('.chat-model-recommended-badge')).toBe(true);
+    expect(sendboxCss.includes('.chat-model-picker-menu-tagline')).toBe(true);
+  });
 });
