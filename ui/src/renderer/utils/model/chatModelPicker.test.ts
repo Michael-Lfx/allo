@@ -164,4 +164,69 @@ describe('chat model picker view model', () => {
       supportsTools: true,
     });
   });
+
+  test('projects showcase metadata and pins the recommended Cloud model first', () => {
+    const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [
+      { model: 'AIPC-glm-5', params: { _flowy_catalog_family: 'cloud' }, traits: [] },
+      {
+        model: 'AIPC-deepseek-v4.1-flash',
+        params: { _flowy_catalog_family: 'cloud' },
+        traits: ['vision_input'],
+      },
+      { model: 'AIPC-deepseek-v4-pro', params: { _flowy_catalog_family: 'cloud' }, traits: [] },
+      {
+        model: 'AIPC-auto-balance',
+        params: { _flowy_catalog_family: 'auto', _flowy_catalog_auto_tier: 'balance' },
+        traits: ['function_calling'],
+      },
+    ]);
+    const viewModel = buildChatModelPickerViewModel([
+      group(flowy, [
+        'AIPC-glm-5',
+        'AIPC-deepseek-v4.1-flash',
+        'AIPC-deepseek-v4-pro',
+        'AIPC-auto-balance',
+      ]),
+    ]);
+
+    expect(viewModel.cloudModels.map((option) => option.model)).toEqual([
+      'AIPC-deepseek-v4.1-flash',
+      'AIPC-glm-5',
+      'AIPC-deepseek-v4-pro',
+    ]);
+    const recommended = viewModel.cloudModels[0];
+    expect(recommended?.showcase.recommended).toBe(true);
+    expect(recommended?.showcase.taglineKey).toBe(
+      'conversation.modelPicker.tagline.deepseek-v4-1-flash'
+    );
+    expect(recommended?.showcase.icon).toContain('/ai-major/deepseek.svg');
+    expect(viewModel.cloudModels[1]?.showcase.recommended).toBe(false);
+    expect(viewModel.autoModels[0]?.showcase.taglineKey).toBe(
+      'conversation.modelPicker.tagline.auto-balance'
+    );
+  });
+
+  test('keeps the synced catalog order when the recommended model is absent', () => {
+    const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [
+      { model: 'AIPC-glm-5', params: { _flowy_catalog_family: 'cloud' }, traits: [] },
+      { model: 'AIPC-deepseek-v4-pro', params: { _flowy_catalog_family: 'cloud' }, traits: [] },
+    ]);
+    const viewModel = buildChatModelPickerViewModel([
+      group(flowy, ['AIPC-glm-5', 'AIPC-deepseek-v4-pro']),
+    ]);
+
+    expect(viewModel.cloudModels.map((option) => option.model)).toEqual([
+      'AIPC-glm-5',
+      'AIPC-deepseek-v4-pro',
+    ]);
+  });
+
+  test('degrades unregistered Cloud models to an empty showcase', () => {
+    const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [
+      { model: 'AIPC-cloud', params: { _flowy_catalog_family: 'cloud' }, traits: [] },
+    ]);
+    const option = buildChatModelPickerViewModel([group(flowy, ['AIPC-cloud'])]).cloudModels[0];
+
+    expect(option?.showcase).toEqual({ icon: '', taglineKey: undefined, recommended: false });
+  });
 });

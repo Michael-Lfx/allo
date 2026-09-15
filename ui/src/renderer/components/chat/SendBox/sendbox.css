@@ -868,11 +868,33 @@
 .chat-model-picker-menu-item {
   box-sizing: border-box;
   min-height: 40px;
-  height: 40px;
+  height: auto;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .chat-model-picker-menu-meta {
   min-width: 52px;
+}
+
+/* Positioning tagline under the model name; rows without one keep the
+ * single-line height (min-height above). */
+.chat-model-picker-menu-tagline {
+  margin-top: 1px;
+}
+
+/* Recommended-model chip next to the name (pinned to the top of the group). */
+.chat-model-recommended-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  color: rgb(var(--primary-6, 22 93 255));
+  background: rgb(var(--primary-6, 22 93 255) / 12%);
 }
 
 .chat-model-picker-menu-status {

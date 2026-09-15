@@ -6,7 +6,9 @@
 
 import type { IProvider } from '@/common/config/storage';
 import { compositeKey } from '@/common/utils/compositeKey';
+import ModelBrandIcon from '@/renderer/components/model/ModelBrandIcon';
 import ModelCreditRateHint from '@/renderer/components/model/ModelCreditRateHint';
+import { autoTierTaglineKey } from '@/renderer/utils/model/modelShowcase';
 import { useTranslation } from 'react-i18next';
 import { Menu } from '@arco-design/web-react';
 import React, { type CSSProperties } from 'react';
@@ -72,6 +74,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
     autoOptions[0];
   const autoTierForDisplay =
     selectedOption?.family === 'auto' ? currentAutoOption?.autoTier : currentAutoOption?.autoTier ?? 'balance';
+  const autoTaglineKey = autoTierTaglineKey(autoTierForDisplay);
   const selectedKey =
     selectedOption?.family === 'auto' ? FLOWY_AUTO_FAMILY_MENU_KEY : selectedOption?.key;
 
@@ -86,6 +89,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
     const isSelected = selectedOption?.key === option.key;
     const dot = healthDotColor(option);
     const fullLabel = option.label === option.model ? option.model : `${option.label} (${option.model})`;
+    const tagline = option.showcase.taglineKey ? t(option.showcase.taglineKey) : undefined;
     return (
       <Menu.Item
         key={option.key}
@@ -98,13 +102,28 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
         <div className='flex min-w-0 w-full items-center justify-between gap-8px'>
           <div className='flex min-w-0 items-center gap-8px'>
             {dot && <span className={`h-6px w-6px shrink-0 rounded-full ${dot}`} aria-hidden='true' />}
-            <span
-              className='min-w-0 flex-1 truncate'
-              title={option.model}
-              aria-label={fullLabel}
-            >
-              {option.label}
-            </span>
+            <ModelBrandIcon src={option.showcase.icon} />
+            <div className='min-w-0 flex-1'>
+              <div className='flex min-w-0 items-center gap-6px'>
+                <span
+                  className='min-w-0 flex-1 truncate text-13px leading-18px'
+                  title={option.model}
+                  aria-label={fullLabel}
+                >
+                  {option.label}
+                </span>
+                {option.showcase.recommended && (
+                  <span className='chat-model-recommended-badge shrink-0'>
+                    {t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })}
+                  </span>
+                )}
+              </div>
+              {tagline && (
+                <div className='chat-model-picker-menu-tagline truncate text-11px leading-15px text-t-tertiary'>
+                  {tagline}
+                </div>
+              )}
+            </div>
           </div>
           <span className='chat-model-picker-menu-meta flex w-52px shrink-0 justify-end'>
             <ModelCreditRateHint provider={option.provider} modelName={option.model} />
@@ -145,9 +164,16 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
               )}`}
             >
               <div className='flex min-w-0 w-full items-center justify-between gap-8px'>
-                <span className='min-w-0 flex-1 truncate'>
-                  {t('conversation.modelPicker.auto', { defaultValue: 'Auto' })}
-                </span>
+                <div className='min-w-0 flex-1'>
+                  <div className='min-w-0 truncate text-13px leading-18px'>
+                    {t('conversation.modelPicker.auto', { defaultValue: 'Auto' })}
+                  </div>
+                  {autoTaglineKey && (
+                    <div className='chat-model-picker-menu-tagline truncate text-11px leading-15px text-t-tertiary'>
+                      {t(autoTaglineKey)}
+                    </div>
+                  )}
+                </div>
                 <span className='chat-model-picker-menu-meta flex w-88px shrink-0 items-center justify-end gap-8px text-12px text-t-tertiary'>
                   <span className='truncate'>
                     {labelForTier(autoTierForDisplay, t)}

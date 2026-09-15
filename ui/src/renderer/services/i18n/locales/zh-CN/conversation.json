@@ -1117,6 +1117,25 @@
       "cost": "经济",
       "unknown": "自动"
     },
+    "recommended": "推荐",
+    "tagline": {
+      "auto-intelligence": "强力推理 · 复杂任务",
+      "auto-balance": "日常首选 · 均衡省心",
+      "auto-cost": "轻量任务 · 省积分",
+      "deepseek-v4-flash": "轻快应答 · 高性价比",
+      "deepseek-v4-flash-vision-exp": "高性价比 · 支持视觉",
+      "deepseek-v4-1-flash": "高性价比 · 支持视觉",
+      "deepseek-v4-pro": "深度推理 · 复杂写作",
+      "glm-5": "均衡通用",
+      "glm-5-2": "旗舰通用 · 长上下文",
+      "kimi-k2-5": "视觉理解 · 长文档",
+      "kimi-k2-6": "进阶视觉推理",
+      "minimax-m2-7": "经济实用",
+      "minimax-m3": "多模态全能",
+      "qwen3-7-plus": "全能视觉",
+      "qwen3-7-max": "顶配性能",
+      "qwen3-8-flash": "极致性价比 · 支持图片"
+    },
     "empty": "暂无可用模型"
   },
   "taskProfile": {

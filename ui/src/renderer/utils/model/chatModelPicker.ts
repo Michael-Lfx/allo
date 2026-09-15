@@ -13,6 +13,7 @@ import type { TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
 import { catalogCreditRateForModel } from './creditRate';
 import { formatModelLabelForProvider } from './cloudModelLabel';
 import { catalogReasoningEffortForModel } from './reasoningEffort';
+import { resolveModelShowcase, warnMissingShowcaseEntry, type ModelShowcase } from './modelShowcase';
 
 export const FLOWY_CATALOG_FAMILY_PARAM = '_flowy_catalog_family';
 export const FLOWY_CATALOG_AUTO_TIER_PARAM = '_flowy_catalog_auto_tier';
@@ -40,6 +41,8 @@ export interface ChatModelOption {
   supportsVision: boolean;
   supportsTools: boolean;
   health?: ModelHealthStatus;
+  /** Brand icon + tagline + recommendation, resolved from the client registry. */
+  showcase: ModelShowcase;
 }
 
 export interface ChatModelPickerViewModel {
@@ -92,6 +95,7 @@ const modelOption = (provider: IProvider, model: string): ChatModelOption => {
     supportsVision,
     supportsTools,
     health: modelHealthOf(provider, model),
+    showcase: resolveModelShowcase(model),
   };
 };
 
@@ -114,6 +118,7 @@ export const buildChatModelPickerViewModel = (
         autoModels.push(option);
       } else {
         cloudModels.push(option);
+        if (!option.showcase.taglineKey) warnMissingShowcaseEntry(option.model);
       }
     }
   }
@@ -124,7 +129,15 @@ export const buildChatModelPickerViewModel = (
     return leftIndex - rightIndex || left.label.localeCompare(right.label);
   });
 
-  return { autoModels, cloudModels, otherProviderGroups };
+  // The recommended catalog model leads the Cloud group. When the catalog does
+  // not offer it (the prod and dev catalogs drift), the order stays as synced.
+  const recommendedCloudModels = cloudModels.filter((option) => option.showcase.recommended);
+  const orderedCloudModels =
+    recommendedCloudModels.length > 0
+      ? [...recommendedCloudModels, ...cloudModels.filter((option) => !option.showcase.recommended)]
+      : cloudModels;
+
+  return { autoModels, cloudModels: orderedCloudModels, otherProviderGroups };
 };
 
 export const allChatModelOptions = (
