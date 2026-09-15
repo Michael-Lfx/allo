@@ -1904,6 +1904,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_rediscovery_after_terminal_failure_is_single_flight() {
+        let state = Arc::new(std::sync::Mutex::new(YouMockState {
+            available_tools: vec![you_search_tool()],
+            unknown_tool_failures_remaining: 2,
+            ..YouMockState::default()
+        }));
+        let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
+        let deadline = || Instant::now() + Duration::from_secs(5);
+
+        adapter
+            .ensure_compatible(deadline())
+            .await
+            .expect("initial discovery succeeds");
+        assert!(matches!(
+            adapter
+                .search_attempt_with_diagnostics(&you_query(), deadline())
+                .await,
+            Err(SearchAttemptError::ToolMissing)
+        ));
+        let calls_after_failure = state.lock().expect("you mock state").tools_list_calls;
+        assert_eq!(calls_after_failure, 2);
+
+        let adapter = Arc::new(adapter);
+        let (first, second) = tokio::join!(
+            adapter.ensure_compatible(deadline()),
+            adapter.ensure_compatible(deadline()),
+        );
+        first.expect("rediscovery after invalidation");
+        second.expect("rediscovery after invalidation");
+        assert_eq!(
+            state.lock().expect("you mock state").tools_list_calls,
+            calls_after_failure + 1,
+            "concurrent rediscovery after cache invalidation must share one tools/list"
+        );
+    }
+
+    #[tokio::test]
     async fn you_discovery_failure_is_not_cached_and_peer_cache_is_dropped() {
         let state = Arc::new(std::sync::Mutex::new(YouMockState::default()));
         let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
