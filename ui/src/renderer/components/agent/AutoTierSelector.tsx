@@ -16,7 +16,6 @@ import { AUTO_TIER_LABEL_FALLBACK, AUTO_TIER_ORDER } from '@/renderer/utils/mode
 export interface AutoTierSelectorProps {
   options: readonly ChatModelOption[];
   selected?: ChatModelOption;
-  hasImageAttachments?: boolean;
   disabled?: boolean;
   className?: string;
   /** Optional parent-owned popup state for mutually exclusive chat controls. */
@@ -28,7 +27,6 @@ export interface AutoTierSelectorProps {
 const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
   options,
   selected,
-  hasImageAttachments = false,
   disabled = false,
   className,
   popupVisible: popupVisibleProp,
@@ -98,7 +96,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
           <div className='px-12px pt-10px pb-6px text-12px text-t-tertiary'>{autoTierTitle}</div>
           <Menu selectedKeys={[current.key]}>
             {orderedOptions.map((option) => {
-              const optionDisabled = disabled || (hasImageAttachments && !option.supportsVision);
+              const optionDisabled = disabled;
               return (
                 <Menu.Item
                   key={option.key}
@@ -122,13 +120,6 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
               );
             })}
           </Menu>
-          {hasImageAttachments && (
-            <div className='px-12px pb-10px pt-6px text-12px text-t-tertiary'>
-              {t('conversation.modelPicker.autoTextOnly', {
-                defaultValue: 'Auto models currently support text only',
-              })}
-            </div>
-          )}
         </div>
       }
     >

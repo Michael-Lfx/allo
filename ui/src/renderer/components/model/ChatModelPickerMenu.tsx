@@ -21,7 +21,6 @@ import {
 export interface ChatModelPickerMenuProps {
   viewModel: ChatModelPickerViewModel;
   selectedOption?: ChatModelOption;
-  hasImageAttachments?: boolean;
   isLoading?: boolean;
   catalogError?: Error;
   onSelect: (option: ChatModelOption) => void;
@@ -55,7 +54,6 @@ const healthDotColor = (option: ChatModelOption): string | null => {
 const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
   viewModel,
   selectedOption,
-  hasImageAttachments = false,
   isLoading = false,
   catalogError,
   onSelect,
@@ -63,7 +61,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
   providerLabel,
 }) => {
   const { t } = useTranslation();
-  const options = allChatModelOptions(viewModel, { hasImageAttachments });
+  const options = allChatModelOptions(viewModel);
   const optionsByKey = new Map(options.map((option) => [option.key, option]));
   const autoOptions = options.filter((option) => option.family === 'auto');
   const cloudOptions = options.filter((option) => option.family === 'cloud');
@@ -80,7 +78,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
   const handleMenuItemClick = (key: string) => {
     const option =
       key === FLOWY_AUTO_FAMILY_MENU_KEY ? currentAutoOption : optionsByKey.get(key);
-    if (!option || option.disabled) return;
+    if (!option) return;
     onSelect(option);
   };
 
@@ -93,8 +91,6 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
         key={option.key}
         data-testid={testId}
         className={`chat-model-picker-menu-item ${isSelected ? '!bg-2' : ''}`.trim()}
-        disabled={option.disabled}
-        aria-disabled={option.disabled}
         aria-selected={isSelected}
         aria-label={fullLabel}
         title={option.model}
@@ -142,20 +138,11 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
               key={FLOWY_AUTO_FAMILY_MENU_KEY}
               data-testid='chat-model-option-auto'
               className={`chat-model-picker-menu-item ${selectedOption?.family === 'auto' ? '!bg-2' : ''}`.trim()}
-              disabled={hasImageAttachments || currentAutoOption?.disabled}
-              aria-disabled={hasImageAttachments || currentAutoOption?.disabled}
               aria-selected={selectedOption?.family === 'auto'}
               aria-label={`${t('conversation.modelPicker.auto', { defaultValue: 'Auto' })} · ${labelForTier(
                 autoTierForDisplay,
                 t,
               )}`}
-              title={
-                hasImageAttachments
-                  ? t('conversation.modelPicker.autoTextOnly', {
-                      defaultValue: 'Auto models currently support text only',
-                    })
-                  : undefined
-              }
             >
               <div className='flex min-w-0 w-full items-center justify-between gap-8px'>
                 <span className='min-w-0 flex-1 truncate'>

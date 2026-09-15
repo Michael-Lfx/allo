@@ -25,7 +25,14 @@ describe('ChatModelPickerMenu structure', () => {
     expect(source.includes('aria-label={fullLabel}')).toBe(true);
     expect(source.includes('min-w-0 flex-1 truncate')).toBe(true);
     expect(source.includes('chat-model-picker-menu-meta')).toBe(true);
-    expect(source.includes('hasImageAttachments')).toBe(true);
+  });
+
+  test('keeps every model selectable regardless of image attachments', () => {
+    // Image-bearing sends are covered by the backend image-analysis
+    // self-healing chain, so the menu must not carry attachment-based gates.
+    expect(source.includes('hasImageAttachments')).toBe(false);
+    expect(source.includes('autoTextOnly')).toBe(false);
+    expect(source.includes('visionRequired')).toBe(false);
   });
 
   test('does not advertise a submenu for the Auto family row', () => {

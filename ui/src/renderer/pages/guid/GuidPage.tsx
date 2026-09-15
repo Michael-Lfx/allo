@@ -65,7 +65,6 @@ import { preloadCommercialPathChunks } from '@/renderer/utils/motion/flowyMotion
 import { ensureBackendMcpCatalog, isMcpServerSelectable } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
 import { findChatModelOption } from '@/renderer/utils/model/chatModelPicker';
-import { isImageAttachment } from '@/renderer/utils/file/imageAttachments';
 import { addRecentWorkspace } from '@/renderer/components/workspace';
 import { trackFunnelEvent, hasFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import { markLaunchInteractive } from '@/renderer/utils/analytics/launchTelemetry';
@@ -73,7 +72,7 @@ import {
   resolveGuidReadiness,
   type GuidTaskIntentId,
 } from './readiness/guidReadiness';
-import { Alert, ConfigProvider } from '@arco-design/web-react';
+import { ConfigProvider } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Aiming, Paperclip } from '@icon-park/react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -263,21 +262,17 @@ const GuidPage: React.FC = () => {
   const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
     onFilesSelected: guidInput.handleFilesUploaded,
   });
-  const hasImageAttachments = useMemo(() => guidInput.files.some(isImageAttachment), [guidInput.files]);
   const selectedChatModelOption = useMemo(
     () =>
       findChatModelOption(
         modelSelection.modelPicker,
         modelSelection.current_model?.id,
-        modelSelection.current_model?.use_model,
-        { hasImageAttachments }
+        modelSelection.current_model?.use_model
       ),
-    [hasImageAttachments, modelSelection.current_model?.id, modelSelection.current_model?.use_model, modelSelection.modelPicker]
+    [modelSelection.current_model?.id, modelSelection.current_model?.use_model, modelSelection.modelPicker]
   );
   const chatModelContextKey = `${modelSelection.current_model?.id ?? ''}\0${modelSelection.current_model?.use_model ?? ''}`;
   const previousChatModelContextKeyRef = useRef(chatModelContextKey);
-  const autoModelHasImageAttachments =
-    isNomiAgent && selectedChatModelOption?.family === 'auto' && hasImageAttachments;
 
   const reasoningEffortResolution = useMemo(() => {
     if (!isGeminiMode || !modelSelection.current_model?.use_model) {
@@ -618,7 +613,6 @@ const GuidPage: React.FC = () => {
     selectedAcpModel: agentSelection.selectedAcpModel,
     current_model: modelSelection.current_model,
     reasoningEffort: effectiveReasoningEffort,
-    autoModelHasImageAttachments,
     taskProfile: selectedTaskProfile,
 
     // Agent helpers
@@ -980,7 +974,6 @@ const GuidPage: React.FC = () => {
       defaultModelUnavailable={modelSelection.defaultModelUnavailable}
       setCurrentModel={modelSelection.setCurrentModel}
       modelPicker={modelSelection.modelPicker}
-      hasImageAttachments={hasImageAttachments}
       isModelCatalogLoading={modelSelection.isModelCatalogLoading}
       modelCatalogError={modelSelection.modelCatalogError}
       refreshModelCatalog={modelSelection.refreshModelCatalog}
@@ -1004,7 +997,6 @@ const GuidPage: React.FC = () => {
       <AutoTierSelector
         options={modelSelection.modelPicker.autoModels}
         selected={selectedChatModelOption}
-        hasImageAttachments={hasImageAttachments}
         popupVisible={activeChatPopup === 'strategy'}
         onPopupVisibleChange={handleStrategyPopupVisibleChange}
         onSelect={(option) =>
@@ -1146,15 +1138,6 @@ const GuidPage: React.FC = () => {
                 guidInput.setInput(text);
               }}
             />
-
-            {autoModelHasImageAttachments && (
-              <Alert
-                className={styles.guidAutoImageWarning}
-                type="warning"
-                data-testid="guid-auto-image-warning"
-                content={t('conversation.modelPicker.autoTextOnly')}
-              />
-            )}
 
             <GuidInputCard
               containerRef={guidInputCardRef}

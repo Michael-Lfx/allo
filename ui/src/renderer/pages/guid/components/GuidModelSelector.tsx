@@ -37,7 +37,6 @@ type GuidModelSelectorProps = {
   defaultModelUnavailable?: boolean;
   setCurrentModel: (model: TProviderWithModel) => Promise<void>;
   modelPicker?: ChatModelPickerViewModel;
-  hasImageAttachments?: boolean;
   isModelCatalogLoading?: boolean;
   modelCatalogError?: Error;
   refreshModelCatalog?: () => void;
@@ -130,7 +129,6 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   defaultModelUnavailable = false,
   setCurrentModel,
   modelPicker,
-  hasImageAttachments = false,
   isModelCatalogLoading = false,
   modelCatalogError,
   refreshModelCatalog,
@@ -206,8 +204,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   const selectedChatModelOption = findChatModelOption(
     enabledPicker,
     current_model?.id,
-    current_model?.use_model,
-    { hasImageAttachments }
+    current_model?.use_model
   );
   const autoTierLabel = (tier: AutoTier | undefined) =>
     tier
@@ -272,7 +269,6 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
           <ChatModelPickerMenu
             viewModel={enabledPicker}
             selectedOption={selectedChatModelOption}
-            hasImageAttachments={hasImageAttachments}
             isLoading={isModelCatalogLoading}
             catalogError={modelCatalogError}
             onSelect={(option) => {

@@ -15,16 +15,15 @@ describe('AutoTierSelector structure', () => {
     expect(source.includes("data-testid='auto-tier-selector'" )).toBe(true);
     expect(source.includes("data-testid='auto-tier-selector-popup'" )).toBe(true);
     expect(source.includes("sendbox-responsive-reasoning-btn flowy-icon-text-btn")).toBe(true);
-    expect(source.includes('popupVisible={popupVisible}')).toBe(true);
+    expect(source.includes('popupVisible={effectivePopupVisible}')).toBe(true);
     expect(source.includes('onVisibleChange={handlePopupVisibleChange}')).toBe(true);
     expect(source.includes('popupVisible?: boolean')).toBe(true);
     expect(source.includes('useId')).toBe(true);
     expect(source.includes('sendbox-responsive-control-open')).toBe(true);
-    expect(source.includes('aria-expanded={popupVisible}')).toBe(true);
+    expect(source.includes('aria-expanded={effectivePopupVisible}')).toBe(true);
     expect(source.includes("data-layout-part='leading-icon'")).toBe(true);
     expect(source.includes("data-layout-part='chevron'")).toBe(true);
     expect(source.includes("size='11'")).toBe(true);
-    expect(source.includes('autoTextOnly')).toBe(true);
     expect(source.includes('AUTO_TIER_LABEL_FALLBACK')).toBe(true);
     expect(source.includes('auto-tier-trigger-label-slot')).toBe(true);
     expect(source.includes("className='sendbox-responsive-chevron shrink-0'")).toBe(true);
@@ -54,7 +53,7 @@ describe('AutoTierSelector structure', () => {
     expect(guidSource.includes('reasoning_effort: \'auto\'' )).toBe(false);
   });
 
-  test('guards the Nomi and Guid image-bearing send paths', () => {
+  test('relies on the backend image self-healing chain instead of frontend send gates', () => {
     const nomiSource = readFileSync(
       new URL('../../pages/conversation/platforms/nomi/NomiSendBox.tsx', import.meta.url),
       'utf8',
@@ -62,10 +61,20 @@ describe('AutoTierSelector structure', () => {
     const guidSource = readFileSync(new URL('../../pages/guid/GuidPage.tsx', import.meta.url), 'utf8');
     const guidSendSource = readFileSync(new URL('../../pages/guid/hooks/useGuidSend.ts', import.meta.url), 'utf8');
 
-    expect(guidSource.includes('isNomiAgent && selectedChatModelOption?.family === \'auto\'')).toBe(true);
-    expect(guidSendSource.includes('autoModelHasImageAttachments')).toBe(true);
+    // The per-message image count limit stays the only frontend attachment gate.
     expect(nomiSource.includes('const canSendModelFiles')).toBe(true);
     expect(nomiSource.includes('if (!canSendModelFiles(filesToSend))')).toBe(true);
-    expect(nomiSource.includes('if (!canSendModelFiles(files)')).toBe(true);
+    expect(nomiSource.includes('if (!canSendModelFiles(files, execution === undefined))')).toBe(true);
+
+    // Image-bearing sends must not be blocked over the selected model: the
+    // backend image_analyze fallback covers text-only and Auto-family models.
+    expect(nomiSource.includes('autoModelHasImageAttachments')).toBe(false);
+    expect(nomiSource.includes('autoTextOnly')).toBe(false);
+    expect(nomiSource.includes('nomi-auto-image-warning')).toBe(false);
+    expect(guidSource.includes('autoModelHasImageAttachments')).toBe(false);
+    expect(guidSource.includes('autoTextOnly')).toBe(false);
+    expect(guidSource.includes('guid-auto-image-warning')).toBe(false);
+    expect(guidSendSource.includes('autoModelHasImageAttachments')).toBe(false);
+    expect(guidSendSource.includes('autoTextOnly')).toBe(false);
   });
 });

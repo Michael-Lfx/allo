@@ -29,7 +29,6 @@ const EMPTY_MODEL_PICKER: ChatModelPickerViewModel = {
 const NomiModelSelector: React.FC<{
   selection?: NomiModelSelection;
   disabled?: boolean;
-  hasImageAttachments?: boolean;
   compact?: boolean;
   className?: string;
   popupVisible?: boolean;
@@ -37,7 +36,6 @@ const NomiModelSelector: React.FC<{
 }> = ({
   selection,
   disabled = false,
-  hasImageAttachments = false,
   compact: compactProp,
   className,
   popupVisible: popupVisibleProp,
@@ -146,7 +144,6 @@ const NomiModelSelector: React.FC<{
         <ChatModelPickerMenu
           viewModel={modelPicker}
           selectedOption={selectedOption}
-          hasImageAttachments={hasImageAttachments}
           isLoading={isCatalogLoading}
           catalogError={selection?.modelCatalogError}
           onSelect={(option) => void handleSelectModel(option.provider, option.model)}

@@ -103,7 +103,7 @@ describe('chat model picker view model', () => {
     expect(viewModel.otherProviderGroups[0]?.models).toEqual(['AIPC-auto-cost']);
   });
 
-  test('keeps Cloud effort metadata and disables text-only models when images are attached', () => {
+  test('keeps Cloud effort metadata and never disables models over image attachments', () => {
     const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [
       {
         model: 'AIPC-auto-balance',
@@ -122,34 +122,19 @@ describe('chat model picker view model', () => {
       },
     ]);
     const viewModel = buildChatModelPickerViewModel(
-      [group(flowy, ['AIPC-auto-balance', 'AIPC-text-cloud', 'AIPC-vision-cloud'])],
-      { hasImageAttachments: true }
+      [group(flowy, ['AIPC-auto-balance', 'AIPC-text-cloud', 'AIPC-vision-cloud'])]
     );
 
     expect(viewModel.autoModels[0]?.reasoningLevels).toEqual([]);
-    expect(viewModel.autoModels[0]?.disabled).toBe(true);
     expect(viewModel.cloudModels[0]?.reasoningLevels).toEqual(['low', 'medium', 'xhigh']);
-    expect(viewModel.cloudModels[0]?.disabled).toBe(true);
-    expect(viewModel.cloudModels[1]?.disabled).toBe(false);
+    // Image-bearing sends are handled by the backend image-analysis self-healing
+    // chain; the picker must stay agnostic and leave every model selectable.
+    expect(
+      allChatModelOptions(viewModel).every((option) => !('disabled' in option))
+    ).toBe(true);
     expect(findChatModelOption(viewModel, FLOWY_BUILTIN_PROVIDER_ID, 'AIPC-auto-balance')?.model).toBe(
       'AIPC-auto-balance'
     );
-  });
-
-  test('recomputes attachment restrictions when a cached picker is reused', () => {
-    const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [
-      { model: 'AIPC-auto-balance', params: { _flowy_catalog_family: 'auto' }, traits: [] },
-      { model: 'AIPC-text-cloud', params: { _flowy_catalog_family: 'cloud' }, traits: [] },
-      { model: 'AIPC-vision-cloud', params: { _flowy_catalog_family: 'cloud' }, traits: ['vision_input'] },
-    ]);
-    const viewModel = buildChatModelPickerViewModel([
-      group(flowy, ['AIPC-auto-balance', 'AIPC-text-cloud', 'AIPC-vision-cloud']),
-    ]);
-    const withImages = allChatModelOptions(viewModel, { hasImageAttachments: true });
-
-    expect(withImages.find((option) => option.model === 'AIPC-auto-balance')?.disabled).toBe(true);
-    expect(withImages.find((option) => option.model === 'AIPC-text-cloud')?.disabled).toBe(true);
-    expect(withImages.find((option) => option.model === 'AIPC-vision-cloud')?.disabled).toBe(false);
   });
 
   test('preserves normalized Auto metadata when provider details are temporarily unavailable', () => {
@@ -170,14 +155,13 @@ describe('chat model picker view model', () => {
       otherProviderGroups: [],
     };
 
-    const options = allChatModelOptions(viewModel, { hasImageAttachments: true });
+    const options = allChatModelOptions(viewModel);
 
     expect(options[0]).toMatchObject({
       family: 'auto',
       autoTier: 'balance',
       reasoningLevels: [],
       supportsTools: true,
-      disabled: true,
     });
   });
 });
