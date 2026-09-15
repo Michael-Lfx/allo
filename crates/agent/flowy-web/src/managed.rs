@@ -71,6 +71,10 @@ const TOTAL_BUDGET: Duration = Duration::from_secs(12);
 const PARALLEL_SLOT_BUDGET: Duration = Duration::from_secs(3);
 const YOU_SLOT_BUDGET: Duration = Duration::from_secs(3);
 const DDG_SLOT_BUDGET: Duration = Duration::from_secs(6);
+/// Fixed cooldown for compatibility failures (`ToolMissing`/`SchemaMismatch`).
+/// These are recoverable after the upstream tool list changes or recovers, so
+/// they must not disable the provider for the rest of the process.
+const DISCOVERY_FAILURE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 const MAX_TITLE_CHARS: usize = 300;
 const MAX_URL_BYTES: usize = 2048;
 const MAX_SNIPPET_CHARS: usize = 2000;
@@ -156,8 +160,6 @@ trait ManagedSearchProvider: Send + Sync {
 enum DisableReason {
     Unauthorized,
     RpcMethodUnavailable,
-    ToolMissing,
-    SchemaMismatch,
     RateLimitUntilRestart,
 }
 
@@ -192,6 +194,11 @@ impl SearchProviderHealth {
         self.availability(now) == ProviderAvailability::Ready
     }
 
+    fn cooldown_remaining(&self, now: Instant) -> Option<Duration> {
+        self.cooldown_until
+            .and_then(|until| until.checked_duration_since(now))
+    }
+
     fn record_success(&mut self, provider: SearchProviderId) {
         self.consecutive_failures = 0;
         self.cooldown_until = None;
@@ -213,11 +220,12 @@ impl SearchProviderHealth {
             SearchAttemptError::RpcMethodUnavailable => {
                 self.disable_reason = Some(DisableReason::RpcMethodUnavailable);
             }
-            SearchAttemptError::ToolMissing => {
-                self.disable_reason = Some(DisableReason::ToolMissing);
-            }
-            SearchAttemptError::SchemaMismatch => {
-                self.disable_reason = Some(DisableReason::SchemaMismatch);
+            SearchAttemptError::ToolMissing | SearchAttemptError::SchemaMismatch => {
+                // Recoverable: the upstream tool list may change or recover, so
+                // only cool the provider down. The adapter never caches a failed
+                // discovery, which lets the post-cooldown attempt re-run
+                // `tools/list` and heal without an app restart.
+                self.cooldown_until = Some(now + DISCOVERY_FAILURE_COOLDOWN);
             }
             SearchAttemptError::Forbidden => {
                 self.cooldown_until = Some(now + Duration::from_secs(10 * 60));
@@ -585,15 +593,22 @@ impl ManagedSearchService {
                 last_class = Some("timeout");
                 break;
             }
-            let availability = slot.health.lock().await.availability(now);
+            let (availability, cooldown_remaining_ms) = {
+                let health = slot.health.lock().await;
+                (
+                    health.availability(now),
+                    health.cooldown_remaining(now).map(|left| left.as_millis()),
+                )
+            };
             if availability != ProviderAvailability::Ready {
                 fallback_count += 1;
-                tracing::debug!(
+                tracing::info!(
                     target: "managed_search",
                     request_id = %request_id,
                     provider = slot.adapter.id().as_str(),
                     attempt,
                     availability = ?availability,
+                    cooldown_remaining_ms = cooldown_remaining_ms.map(|left| left as u64),
                     fallback_count,
                     "managed web search provider skipped"
                 );
@@ -964,6 +979,45 @@ mod tests {
         })
     }
 
+    /// Adapter that returns scripted results in order and counts attempts, so
+    /// cooldown/recovery behaviour can be asserted across several searches.
+    struct SequencedAdapter {
+        id: SearchProviderId,
+        results: Mutex<VecDeque<Result<SearchResult, SearchAttemptError>>>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ManagedSearchProvider for SequencedAdapter {
+        fn id(&self) -> SearchProviderId {
+            self.id
+        }
+
+        async fn search_attempt(
+            &self,
+            _query: &SearchQuery,
+            _deadline: Instant,
+        ) -> Result<SearchResult, SearchAttemptError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.results
+                .lock()
+                .await
+                .pop_front()
+                .expect("sequenced adapter ran out of scripted results")
+        }
+    }
+
+    fn sequenced(
+        id: SearchProviderId,
+        results: Vec<Result<SearchResult, SearchAttemptError>>,
+    ) -> Arc<SequencedAdapter> {
+        Arc::new(SequencedAdapter {
+            id,
+            results: Mutex::new(results.into()),
+            calls: AtomicUsize::new(0),
+        })
+    }
+
     fn successful(provider: &str) -> SearchResult {
         SearchResult {
             provider: provider.to_owned(),
@@ -1197,6 +1251,32 @@ mod tests {
         health.record_error(SearchProviderId::Parallel, &SearchAttemptError::Forbidden, now);
         assert!(health.disable_reason.is_none());
         assert!(health.cooldown_until > Some(now));
+    }
+
+    #[test]
+    fn discovery_failures_cool_down_instead_of_disabling() {
+        let now = Instant::now();
+        for error in [
+            SearchAttemptError::SchemaMismatch,
+            SearchAttemptError::ToolMissing,
+        ] {
+            let mut health = SearchProviderHealth::default();
+            health.record_error(SearchProviderId::You, &error, now);
+            assert_eq!(
+                health.disable_reason, None,
+                "{error:?} must stay recoverable"
+            );
+            assert_eq!(
+                health.cooldown_until,
+                Some(now + DISCOVERY_FAILURE_COOLDOWN)
+            );
+            assert_eq!(health.availability(now), ProviderAvailability::Cooldown);
+            assert_eq!(
+                health.availability(now + DISCOVERY_FAILURE_COOLDOWN + Duration::from_secs(1)),
+                ProviderAvailability::Ready,
+                "{error:?} must become eligible again after the cooldown"
+            );
+        }
     }
 
     #[test]
@@ -1738,6 +1818,80 @@ mod tests {
             .expect("retrying shutdown caller")
             .expect("retry shutdown succeeds");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn schema_mismatch_cools_down_then_recovers_after_ten_minutes() {
+        let adapter = sequenced(
+            SearchProviderId::You,
+            vec![
+                Err(SearchAttemptError::SchemaMismatch),
+                Ok(successful("you")),
+            ],
+        );
+        let service = ManagedSearchService::from_adapters(vec![(
+            Arc::clone(&adapter) as Arc<dyn ManagedSearchProvider>,
+            Duration::from_secs(1),
+        )]);
+        let query = || SearchQuery {
+            query: "test".to_owned(),
+            count: 5,
+        };
+
+        assert!(
+            service.search(query()).await.is_err(),
+            "the first discovery failure must surface"
+        );
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+
+        assert!(
+            service.search(query()).await.is_err(),
+            "the provider stays skipped during the cooldown"
+        );
+        assert_eq!(
+            adapter.calls.load(Ordering::SeqCst),
+            1,
+            "no provider attempt may run inside the cooldown window"
+        );
+
+        tokio::time::advance(DISCOVERY_FAILURE_COOLDOWN + Duration::from_secs(1)).await;
+
+        let recovered = service
+            .search(query())
+            .await
+            .expect("the provider recovers after the cooldown");
+        assert_eq!(recovered.provider, "you");
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tool_missing_cools_down_then_recovers_after_ten_minutes() {
+        let adapter = sequenced(
+            SearchProviderId::You,
+            vec![Err(SearchAttemptError::ToolMissing), Ok(successful("you"))],
+        );
+        let service = ManagedSearchService::from_adapters(vec![(
+            Arc::clone(&adapter) as Arc<dyn ManagedSearchProvider>,
+            Duration::from_secs(1),
+        )]);
+        let query = || SearchQuery {
+            query: "test".to_owned(),
+            count: 5,
+        };
+
+        assert!(service.search(query()).await.is_err());
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+        assert!(service.search(query()).await.is_err());
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+
+        tokio::time::advance(DISCOVERY_FAILURE_COOLDOWN + Duration::from_secs(1)).await;
+
+        let recovered = service
+            .search(query())
+            .await
+            .expect("the provider recovers after the cooldown");
+        assert_eq!(recovered.provider, "you");
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
     }
 
 }
