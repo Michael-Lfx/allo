@@ -459,16 +459,23 @@ bun run check
 | 6 | `28e47613a` | 未广告 ToolUseDelta 忽略；最终未广告 ToolUse 仍拒绝 |
 | 7 | `d3dfdbfdb` | 90s 初始协商绝对 deadline + 超时映射 |
 | 8 | 未提交 | OBS-1 主样本 <100，按计划保持关闭并记录"不修改" |
-| 9 | `173edda48` / `bcc752921` | 证据回填；补齐边界回归测试（溢出、动态字段、向下钳制、attribution、本地 schema 不变） |
+| 9 | `173edda48` / `bcc752921` / `b6f2de954` | 证据回填；补齐边界回归测试（溢出、动态字段、向下钳制、attribution、本地 schema 不变）；工具链与基线限制说明 |
+| 9+ | `cacb18ba3` / `d6f89fc97` | 超时故障的端到端模型转移；缓存失效后的并发重发现单飞 |
+
+补充说明：原列的"违规调用仍由本地 schema 拒绝"无需新增缺口修复——它由两层既有/新增
+锁共同覆盖：`nomi-tools` 的 union/root-object 严格校验测试（如
+`prepare_input_keeps_strict_union_and_root_object_boundaries`）保持有效，且新测试断言
+provider-facing sanitize 不回写本地原始 schema（`bcc752921`）。
 
 ### 15.2 验证结果
 
 ```text
 cargo test -p nomi-providers                 → 187 + 13 + 17 + 26 passed; 0 failed
-cargo test -p flowy-web                      → 188 passed; 0 failed
+cargo test -p flowy-web                      → 189 passed; 0 failed
 cargo test -p nomi-agent                     → 787 + 11 + 32 passed；1 既有失败
 cargo test -p nomi-config                    → 216 passed；1 既有失败
 cargo test -p nomifun-ai-agent --lib protocol::send_error → 33 passed
+cargo test -p nomifun-conversation --lib service_test::failover → 9 passed
 cargo check -p nomifun-cloud                 → Finished（无新增告警）
 ```
 
