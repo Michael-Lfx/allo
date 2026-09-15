@@ -66,4 +66,15 @@ describe('ChatModelPickerMenu structure', () => {
     expect(rule.includes('padding-top: 6px !important')).toBe(true);
     expect(rule.includes('padding-bottom: 6px !important')).toBe(true);
   });
+
+  test('keeps the recommended badge colors in Arco comma rgb form', () => {
+    const ruleStart = sendboxCss.indexOf('.chat-model-recommended-badge {');
+    const rule = sendboxCss.slice(ruleStart, sendboxCss.indexOf('}', ruleStart));
+    // `--primary-6` is comma-separated (`22,93,255`) in arco.css and every theme
+    // preset; `rgb(var(--primary-6) / 12%)` mixes legacy commas with the modern
+    // slash alpha, parses invalid, and the badge silently loses its tint.
+    expect(rule.includes('rgb(var(--primary-6, 22, 93, 255))')).toBe(true);
+    expect(rule.includes('rgba(var(--primary-6, 22, 93, 255), 0.12)')).toBe(true);
+    expect(rule.includes('/ 12%')).toBe(false);
+  });
 });

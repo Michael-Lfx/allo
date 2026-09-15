@@ -889,7 +889,10 @@
   margin-top: 1px;
 }
 
-/* Recommended-model chip next to the name (pinned to the top of the group). */
+/* Recommended-model chip next to the name (pinned to the top of the group).
+ * `--primary-6` is a comma-separated triple (`22,93,255`) in arco.css and every
+ * theme preset, so the alpha must go through legacy `rgba(...)` — the modern
+ * `rgb(... / 12%)` form would parse invalid and silently drop the tint. */
 .chat-model-recommended-badge {
   display: inline-flex;
   align-items: center;
@@ -899,8 +902,8 @@
   font-size: 10px;
   font-weight: 500;
   line-height: 1;
-  color: rgb(var(--primary-6, 22 93 255));
-  background: rgb(var(--primary-6, 22 93 255) / 12%);
+  color: rgb(var(--primary-6, 22, 93, 255));
+  background: rgba(var(--primary-6, 22, 93, 255), 0.12);
 }
 
 .chat-model-picker-menu-status {
