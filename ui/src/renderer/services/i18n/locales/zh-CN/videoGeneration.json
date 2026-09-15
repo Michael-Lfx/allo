@@ -288,12 +288,15 @@
     },
     "composer": {
       "ideaPlaceholder": "描述你想看到的故事、情绪或产品画面…",
-      "scriptPlaceholder": "粘贴剧本，Flowy 会自动拆成可编辑镜头…",
-      "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…",
-      "creationPlaceholder": "描述故事。可上传角色、场景或道具，再进入分镜…",
-      "generatePlaceholder": "描述你想生成的画面与运动，可上传参考图…",
+      "scriptPlaceholder": "粘贴剧本；自动按集/场拆分。上传参考图后输入 @ 可引用图片。",
+      "novelPlaceholder": "粘贴小说片段。上传参考图后输入 @ 可引用图片。",
+      "creationPlaceholder": "描述故事。可上传角色、场景或道具，上传后输入 @ 可引用图片…",
+      "generatePlaceholder": "描述你想生成的画面与运动，可上传参考图，上传后输入 @ 可引用图片…",
       "briefingPlaceholder": "输入早报话题，例如「今日芯片出口管制」。来源链接可选，引擎会自行检索。",
-      "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 切换 Mode…"
+      "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 切换 Mode，上传后输入 @ 可引用图片…",
+      "mentionMenuAria": "引用已上传的图片",
+      "mentionEmpty": "没有匹配的图片",
+      "insertMention": "插入 {{label}}"
     },
     "upload": {
       "aria": "上传参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）",

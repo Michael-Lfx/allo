@@ -59,6 +59,7 @@ import StoryboardBoard from './components/StoryboardBoard';
 import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceActionAssets from './components/WorkspaceActionAssets';
 import type { VideoCreateDraft } from './home/types';
+import { appendHomeImageLegend } from './home/imageMentions';
 import { findStoryboardPath } from './artifactPresentation';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
@@ -671,8 +672,21 @@ const WorkspacePage: React.FC = () => {
         launchDraft?.verticalSkillIds && launchDraft.verticalSkillIds.length > 0
           ? launchDraft.verticalSkillIds
           : undefined;
+      let cameoNames = (launchDraft?.cameos ?? []).map(
+        (cameo, index) => cameo.characterName.trim() || `参考图${index + 1}`,
+      );
+      if (cameoNames.length === 0) {
+        try {
+          const photos = await listCameos(sessionId);
+          cameoNames = photos.map(
+            (photo, index) => photo.character_name.trim() || `参考图${index + 1}`,
+          );
+        } catch {
+          cameoNames = [];
+        }
+      }
       const body = {
-        [sourceField]: trimmed,
+        [sourceField]: appendHomeImageLegend(trimmed, cameoNames),
         user_requirement: requirement.trim() || undefined,
         style: style.trim() || undefined,
         vertical_skill_ids: fromSession ?? fromLaunch,

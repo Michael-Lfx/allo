@@ -50,6 +50,7 @@ import type { BriefingSessionSummary } from './briefing/api';
 import { parseVideoHomeMode, type VideoCreateDraft, type VideoHomeMode } from './home/types';
 import { resolveLookIdentity } from './styleCatalog/lookIdentity';
 import { composeClipPrompt, lookById } from './styleCatalog/looks';
+import { materializeHomeImageMentions } from './home/imageMentions';
 import { parseTvShowTab } from './campaign';
 import { clampClipDurationForModel } from './durationBounds';
 import {
@@ -617,7 +618,10 @@ const VideoGenerationListPage: React.FC = () => {
           draft.preferences.targetDurationSecs
         );
 
-        const prompt = composeClipPrompt(draft.creationPrompt, draft.style);
+        const prompt = composeClipPrompt(
+          materializeHomeImageMentions(draft.creationPrompt),
+          draft.style,
+        );
 
         const task = await createGenerationTask({
           mode: 'video',

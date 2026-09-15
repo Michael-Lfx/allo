@@ -288,12 +288,15 @@
     },
     "composer": {
       "ideaPlaceholder": "Describe the story, mood, or product visuals you want to see…",
-      "scriptPlaceholder": "Paste a script and Flowy will turn it into editable shots…",
-      "novelPlaceholder": "Paste a novel excerpt and Flowy will shape the story into shots…",
-      "creationPlaceholder": "Describe the story. Upload a character, scene, or prop, then storyboard…",
-      "generatePlaceholder": "Describe the scene and motion you want — you can upload a reference image…",
+      "scriptPlaceholder": "Paste a script. After uploading a reference, type @ to mention it.",
+      "novelPlaceholder": "Paste a novel excerpt. After uploading a reference, type @ to mention it.",
+      "creationPlaceholder": "Describe the story. Upload a character, scene, or prop, then type @ to mention it…",
+      "generatePlaceholder": "Describe the scene and motion. Upload a reference, then type @ to mention it…",
       "briefingPlaceholder": "Enter a briefing topic, e.g. today's chip export controls. Source URLs are optional — the engine will research.",
-      "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / to switch Mode…"
+      "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / to switch Mode, or @ after uploading an image…",
+      "mentionMenuAria": "Mention an uploaded image",
+      "mentionEmpty": "No matching images",
+      "insertMention": "Insert {{label}}"
     },
     "upload": {
       "aria": "Upload reference images, scripts, or documents (PNG / JPEG / WEBP / DOCX / TXT / Markdown, etc.)",

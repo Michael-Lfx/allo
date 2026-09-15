@@ -45,6 +45,7 @@ import { useVerticalSkillHub } from './useVerticalSkillHub';
 import type { VimaxWorkflow } from '../types';
 import type { VideoCreateDraft, VideoHomeMode } from './types';
 import { usesCanvasReferences, usesLookPicker } from './types';
+import { retargetMentionsAfterRemove } from './imageMentions';
 import { generationPreferencesSummary } from '../preferenceSummary';
 import {
   hasSelectedVisualStyle,
@@ -417,23 +418,23 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         })
       : mode === 'generate'
       ? t('videoGeneration.create.composer.generatePlaceholder', {
-          defaultValue: '描述你想生成的画面与运动，可上传参考图…',
+          defaultValue: '描述你想生成的画面与运动，可上传参考图，上传后输入 @ 可引用图片…',
         })
       : mode === 'creation'
         ? t('videoGeneration.create.composer.creationPlaceholder', {
-            defaultValue: '描述故事。可上传角色、场景或道具，再进入分镜…',
+            defaultValue: '描述故事。可上传角色、场景或道具，上传后输入 @ 可引用图片…',
           })
         : draft.workflow === 'script2video'
           ? t('videoGeneration.create.composer.scriptPlaceholder', {
               defaultValue:
-                '粘贴剧本；自动按集/场拆分，默认拍全集。需求可写「拍第N集」「前N场」',
+                '粘贴剧本；自动按集/场拆分。上传参考图后输入 @ 可引用图片。',
             })
           : draft.workflow === 'novel2video'
             ? t('videoGeneration.create.composer.novelPlaceholder', {
-                defaultValue: '粘贴小说片段，Flowy 会提炼剧情并设计分镜…',
+                defaultValue: '粘贴小说片段。上传参考图后输入 @ 可引用图片。',
               })
             : t('videoGeneration.create.composer.ideaPlaceholderSlash', {
-                defaultValue: '输入一个想法、故事或产品画面，支持 / 切换 Mode…',
+                defaultValue: '输入一个想法、故事或产品画面，支持 / 切换 Mode，上传后输入 @ 可引用图片…',
               });
 
   const setActiveText = (value: string) => {
@@ -1119,7 +1120,25 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             <CameoCastEditor
               value={draft.cameos}
               disabled={loading}
-              onChange={(cameos) => setDraft((current) => ({ ...current, cameos }))}
+              onChange={(cameos) =>
+                setDraft((current) => {
+                  const removedIndex = current.cameos.findIndex(
+                    (item) => !cameos.some((next) => next.localId === item.localId),
+                  );
+                  const removedOne = cameos.length === current.cameos.length - 1 && removedIndex >= 0;
+                  return {
+                    ...current,
+                    cameos,
+                    sourceText: removedOne
+                      ? retargetMentionsAfterRemove(
+                          current.sourceText,
+                          removedIndex,
+                          current.cameos.length,
+                        )
+                      : current.sourceText,
+                  };
+                })
+              }
             />
           </Suspense>
         </div>

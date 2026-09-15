@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Input } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { FileText } from '@icon-park/react';
@@ -9,6 +9,20 @@ import type { CameoDraftItem } from '../types';
 import type { CanvasReferenceDraft, VideoHomeMode } from './types';
 import { usesCanvasReferences } from './types';
 import type { CreationSubjectKind } from '@renderer/pages/videoCanvas/lib/creation-ir';
+import {
+  detectHomeImageMentionQuery,
+  filterHomeImageMentionCandidates,
+  homeImageLabel,
+  insertHomeImageMention,
+  splitHomeImageMentionParts,
+} from './imageMentions';
+import {
+  getTextareaCaretViewportRect,
+  setHomeMentionTextareaFill,
+  syncHomeMentionHighlightOverlay,
+  type TextareaCaretRect,
+} from './mentionCaret';
+import { ImageMentionMenu, type HomeImageMentionCandidate } from './ImageMentionMenu';
 import styles from './home.module.css';
 
 const TextArea = Input.TextArea;
@@ -67,6 +81,13 @@ export function PromptComposer({
   const [fanOpen, setFanOpen] = useState(false);
   const enteredIdsRef = useRef(new Set<string>());
   const [enteringIds, setEnteringIds] = useState<Set<string>>(() => new Set());
+  const promptEditorRef = useRef<HTMLDivElement>(null);
+  const promptInputShellRef = useRef<HTMLDivElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
+  const cursorRef = useRef(0);
+  const [mentionQuery, setMentionQuery] = useState<{ start: number; query: string } | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionCaret, setMentionCaret] = useState<TextareaCaretRect | null>(null);
 
   const imageItems: AttachImageItem[] = mode === 'briefing'
     ? []
@@ -95,6 +116,28 @@ export function PromptComposer({
           : []
       );
 
+  const mentionCandidates = useMemo<HomeImageMentionCandidate[]>(
+    () =>
+      imageItems.map((item, index) => ({
+        index,
+        label: homeImageLabel(index),
+        name: item.name,
+        previewUrl: item.previewUrl,
+      })),
+    [imageItems],
+  );
+
+  const visibleMentions = useMemo(
+    () =>
+      mentionQuery && mentionCandidates.length > 0
+        ? filterHomeImageMentionCandidates(mentionCandidates, mentionQuery.query)
+        : [],
+    [mentionCandidates, mentionQuery],
+  );
+
+  const mentionParts = useMemo(() => splitHomeImageMentionParts(activeText), [activeText]);
+  const highlightMentions = mentionParts.some((part) => part.type === 'mention');
+
   const stackedCount = imageItems.length + (documentName ? 1 : 0);
   const itemIdsKey =
     imageItems.map((item) => item.id).join('|') + (documentName ? '|__doc__' : '');
@@ -113,10 +156,152 @@ export function PromptComposer({
     if (stackedCount === 0) setFanOpen(false);
   }, [stackedCount]);
 
+  useEffect(() => {
+    if (mentionCandidates.length === 0) setMentionQuery(null);
+  }, [mentionCandidates.length]);
+
+  useEffect(() => {
+    setMentionIndex(0);
+  }, [mentionQuery?.start, mentionQuery?.query, visibleMentions.length]);
+
+  useEffect(() => {
+    if (!mentionQuery) return undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (promptEditorRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest(`.${styles.mentionMenu}`)) return;
+      setMentionQuery(null);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [mentionQuery]);
+
+  const textareaEl = () => promptEditorRef.current?.querySelector('textarea') ?? null;
+
+  useLayoutEffect(() => {
+    if (!mentionQuery) {
+      setMentionCaret(null);
+      return undefined;
+    }
+    const measure = () => {
+      const textarea = textareaEl();
+      if (!textarea) {
+        setMentionCaret(null);
+        return;
+      }
+      setMentionCaret(getTextareaCaretViewportRect(textarea, mentionQuery.start));
+    };
+    measure();
+    const textarea = textareaEl();
+    window.addEventListener('resize', measure);
+    textarea?.addEventListener('scroll', measure);
+    return () => {
+      window.removeEventListener('resize', measure);
+      textarea?.removeEventListener('scroll', measure);
+    };
+  }, [mentionQuery, activeText]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaEl();
+    const highlight = highlightRef.current;
+    const shell = promptInputShellRef.current;
+    if (!textarea) return undefined;
+    if (!highlightMentions || !highlight || !shell) {
+      setHomeMentionTextareaFill(textarea, false);
+      return undefined;
+    }
+    const sync = () => {
+      syncHomeMentionHighlightOverlay(textarea, highlight, shell);
+      setHomeMentionTextareaFill(textarea, true);
+    };
+    sync();
+    textarea.addEventListener('scroll', sync);
+    window.addEventListener('resize', sync);
+    return () => {
+      textarea.removeEventListener('scroll', sync);
+      window.removeEventListener('resize', sync);
+    };
+  }, [highlightMentions, activeText]);
+
+  const rememberCursor = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLTextAreaElement)) return;
+    cursorRef.current = target.selectionStart ?? cursorRef.current;
+  };
+
+  const syncMention = (value: string, cursor: number) => {
+    cursorRef.current = cursor;
+    if (mentionCandidates.length === 0) {
+      setMentionQuery(null);
+      return;
+    }
+    setMentionQuery(detectHomeImageMentionQuery(value, cursor));
+  };
+
+  const applyText = (next: string, cursor: number) => {
+    setActiveText(next);
+    cursorRef.current = cursor;
+    requestAnimationFrame(() => {
+      const textarea = textareaEl();
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+      syncMention(next, cursor);
+    });
+  };
+
+  const insertMention = (index: number) => {
+    const cursor = textareaEl()?.selectionStart ?? cursorRef.current;
+    const next = insertHomeImageMention(activeText, cursor, index);
+    setMentionQuery(null);
+    applyText(next.text, next.cursor);
+  };
+
   const removeWithoutReload = (event: React.MouseEvent, remove: () => void) => {
     event.preventDefault();
     event.stopPropagation();
     remove();
+  };
+
+  const onPromptKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    rememberCursor(event.currentTarget);
+    if (mentionQuery && mentionCandidates.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMentionIndex((current) =>
+          visibleMentions.length === 0 ? 0 : (current + 1) % visibleMentions.length,
+        );
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMentionIndex((current) =>
+          visibleMentions.length === 0
+            ? 0
+            : (current - 1 + visibleMentions.length) % visibleMentions.length,
+        );
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
+        const picked = visibleMentions[mentionIndex];
+        if (picked) {
+          event.preventDefault();
+          insertMention(picked.index);
+          return;
+        }
+      }
+      if (event.key === 'Tab' && visibleMentions[mentionIndex]) {
+        event.preventDefault();
+        insertMention(visibleMentions[mentionIndex].index);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMentionQuery(null);
+        return;
+      }
+    }
+    handlePromptKeyDown(event);
   };
 
   return (
@@ -145,9 +330,24 @@ export function PromptComposer({
                       ['--tilt' as string]: `${FAN_TILTS[index % FAN_TILTS.length]}deg`,
                     }}
                   >
-                    <span className={styles.attachPhotoFace}>
-                      <img src={item.previewUrl} alt='' />
-                    </span>
+                    <button
+                      type='button'
+                      className={styles.attachPhotoFaceButton}
+                      disabled={loading}
+                      aria-label={t('videoGeneration.create.composer.insertMention', {
+                        label: homeImageLabel(index),
+                        defaultValue: '插入 {{label}}',
+                      })}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => insertMention(index)}
+                    >
+                      <span className={styles.attachPhotoFace}>
+                        <img src={item.previewUrl} alt='' />
+                        {imageItems.length > 1 ? (
+                          <span className={styles.attachIndexBadge}>{index + 1}</span>
+                        ) : null}
+                      </span>
+                    </button>
                     <button
                       type='button'
                       className={styles.attachRemove}
@@ -262,7 +462,7 @@ export function PromptComposer({
             )}
           </div>
           )}
-          <div className={styles.promptEditor}>
+          <div className={styles.promptEditor} ref={promptEditorRef}>
             {mode === 'agent' && selectedVerticalSkills.length > 0 ? (
               <div
                 className={styles.skillChips}
@@ -299,9 +499,31 @@ export function PromptComposer({
                 ))}
               </div>
             ) : null}
-            <TextArea
+            <div
+              ref={promptInputShellRef}
+              className={`${styles.promptInputShell} ${highlightMentions ? styles.promptInputShellHighlight : ''}`}
+            >
+              {highlightMentions ? (
+                <div ref={highlightRef} className={styles.promptHighlight} aria-hidden>
+                  {mentionParts.map((part, index) =>
+                    part.type === 'mention' ? (
+                      <span key={index} className={styles.promptMention}>
+                        {part.value}
+                      </span>
+                    ) : (
+                      <span key={index}>{part.value}</span>
+                    ),
+                  )}
+                  {activeText.endsWith('\n') ? '\n' : null}
+                </div>
+              ) : null}
+              <TextArea
               value={activeText}
-              onChange={setActiveText}
+              onChange={(value, event) => {
+                setActiveText(value);
+                const target = event?.target as HTMLTextAreaElement | undefined;
+                syncMention(value, target?.selectionStart ?? value.length);
+              }}
               placeholder={
                 mode === 'agent' && selectedVerticalSkills.length > 0
                   ? ''
@@ -309,8 +531,25 @@ export function PromptComposer({
               }
               disabled={loading}
               className={styles.promptInput}
-              onKeyDown={handlePromptKeyDown}
+              onKeyDown={onPromptKeyDown}
+              onClick={(event) => {
+                rememberCursor(event.target);
+                syncMention(activeText, cursorRef.current);
+              }}
+              onKeyUp={(event) => {
+                rememberCursor(event.currentTarget);
+                syncMention(activeText, event.currentTarget.selectionStart ?? cursorRef.current);
+              }}
             />
+            </div>
+            {mentionQuery && mentionCandidates.length > 0 && mentionCaret ? (
+              <ImageMentionMenu
+                caret={mentionCaret}
+                candidates={visibleMentions}
+                activeIndex={mentionIndex}
+                onSelect={insertMention}
+              />
+            ) : null}
           </div>
         </div>
       </div>

@@ -33,6 +33,7 @@ import {
   type CreationSubjectKind,
 } from './creation-ir';
 import { resolveLookIdentity } from '@renderer/pages/videoGeneration/styleCatalog/lookIdentity';
+import { materializeHomeImageMentions, rewriteHomeImageMentionsToNodeTokens } from '@renderer/pages/videoGeneration/home/imageMentions';
 import { resolveCanvasStylePreset } from '@oc/lib/canvas/canvas-style-system';
 
 export type CanvasHomeLaunch = {
@@ -78,22 +79,26 @@ function connection(fromNodeId: string, toNodeId: string): CanvasConnection {
   };
 }
 
-function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLaunch): CanvasProject {
+export function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLaunch): CanvasProject {
   const intent = launch.intent ?? 'creation';
   const isGenerate = intent === 'generate';
   const autoAgent = isCanvasHomeAgentLaunch({ intent, autoAgent: launch.autoAgent });
   const skill = launch.skill;
   const referenceNodes = homeReferenceNodes(launch, autoAgent);
+  const nodeIds = referenceNodes.map((node) => node.id);
+  const plotPrompt = materializeHomeImageMentions(launch.prompt);
+  const agentPrompt = rewriteHomeImageMentionsToNodeTokens(launch.prompt, nodeIds);
+  const graphLaunch = { ...launch, prompt: plotPrompt };
   const seeded = autoAgent
-    ? seedHomeAgentConstraintGraph(launch, skill, referenceNodes)
-    : seedLegacyHomeGraph(launch, isGenerate, skill, referenceNodes);
+    ? seedHomeAgentConstraintGraph(graphLaunch, skill, referenceNodes)
+    : seedLegacyHomeGraph(graphLaunch, isGenerate, skill, referenceNodes);
   const homeLaunch = {
     schema: 1 as const,
     intent,
     autoGenerate: Boolean(launch.autoGenerate),
     autoAgent,
     agentBriefSent: false,
-    prompt: launch.prompt,
+    prompt: agentPrompt,
     requirement: launch.requirement,
     mediaKind: launch.mediaKind,
     skill,
@@ -103,7 +108,7 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
   };
   const creation = autoAgent
     ? buildCreationIrFromLaunch({
-        prompt: launch.prompt,
+        prompt: plotPrompt,
         mediaKind: launch.mediaKind,
         preferences: launch.preferences,
         skill: skill ? { id: skill.id, label: skill.label } : undefined,

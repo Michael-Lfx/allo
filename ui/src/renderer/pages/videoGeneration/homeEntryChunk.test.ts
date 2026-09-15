@@ -63,5 +63,9 @@ describe('video generation home entry chunk', () => {
     expect(composer.includes('onPasteCapture')).toBe(true);
     expect(composer.includes('filesFromClipboardData')).toBe(true);
     expect(upload.includes("from 'fflate'")).toBe(false);
+
+    const promptComposer = source('./home/PromptComposer.tsx');
+    expect(promptComposer.includes('canvas-resource-mention-textarea')).toBe(false);
+    expect(promptComposer.includes('ImageMentionMenu')).toBe(true);
   });
 });

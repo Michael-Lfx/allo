@@ -18,6 +18,7 @@ import type {
   VideoHomeMode,
 } from './types';
 import { usesCanvasReferences } from './types';
+import { retargetMentionsAfterRemove } from './imageMentions';
 
 const MAX_REFERENCES = 8;
 
@@ -211,12 +212,19 @@ export function useHomeUpload({
   const removeCanvasReference = (localId: string) => {
     const target = draft.canvasReferences.find((item) => item.localId === localId);
     if (target) URL.revokeObjectURL(target.previewUrl);
-    setDraft((current) => ({
-      ...current,
-      canvasReferences: current.canvasReferences.filter(
-        (item) => item.localId !== localId
-      ),
-    }));
+    setDraft((current) => {
+      const removedIndex = current.canvasReferences.findIndex((item) => item.localId === localId);
+      if (removedIndex < 0) return current;
+      return {
+        ...current,
+        canvasReferences: current.canvasReferences.filter((item) => item.localId !== localId),
+        creationPrompt: retargetMentionsAfterRemove(
+          current.creationPrompt,
+          removedIndex,
+          current.canvasReferences.length,
+        ),
+      };
+    });
   };
 
   const updateCanvasReference = (
@@ -234,10 +242,19 @@ export function useHomeUpload({
   const removeCameo = (localId: string) => {
     const target = draft.cameos.find((item) => item.localId === localId);
     if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
-    setDraft((current) => ({
-      ...current,
-      cameos: current.cameos.filter((item) => item.localId !== localId),
-    }));
+    setDraft((current) => {
+      const removedIndex = current.cameos.findIndex((item) => item.localId === localId);
+      if (removedIndex < 0) return current;
+      return {
+        ...current,
+        cameos: current.cameos.filter((item) => item.localId !== localId),
+        sourceText: retargetMentionsAfterRemove(
+          current.sourceText,
+          removedIndex,
+          current.cameos.length,
+        ),
+      };
+    });
   };
 
   return {
