@@ -4182,9 +4182,10 @@ mod tests {
     }
 
     /// Advertises the production `Write` route for stream-boundary tests that
-    /// never commit or execute the call. Tool progress from an unadvertised
-    /// name is intentionally rejected by the engine, so those fixtures must
-    /// model the same request authority as a real desktop Nomi session.
+    /// never commit or execute the call. Unadvertised tool *progress* is only
+    /// warned and ignored by the engine (SEP-1), while a final unadvertised
+    /// `ToolUse` is still rejected, so those fixtures must model the same
+    /// request authority as a real desktop Nomi session.
     struct PreviewOnlyWriteTool;
 
     #[async_trait::async_trait]

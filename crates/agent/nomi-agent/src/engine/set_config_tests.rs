@@ -1824,7 +1824,7 @@ async fn tool_delta_identity_must_match_the_completed_call() {
 }
 
 #[tokio::test]
-async fn unadvertised_tool_delta_fails_before_running_preview() {
+async fn unadvertised_tool_delta_is_ignored_without_running_preview() {
     let output = Arc::new(ToolLifecycleRecordingOutput::default());
     let mut engine = make_engine("unadvertised-tool-delta-model");
     engine.output = output.clone();
@@ -1838,13 +1838,39 @@ async fn unadvertised_tool_delta_fails_before_running_preview() {
         .await;
 
     assert!(
-        matches!(&result, Err(AgentError::ApiError(message)) if message.contains("was not advertised in this request")),
-        "an unadvertised delta must fail at the provider boundary: {result:?}"
+        result.is_ok(),
+        "an unadvertised progress preview must not fail the turn: {result:?}"
     );
     assert_eq!(
         output.tool_calls.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "an unauthorized call must never enter the Running preview lifecycle"
+        "an unauthorized preview must never enter the Running preview lifecycle"
+    );
+}
+
+#[tokio::test]
+async fn unadvertised_preview_then_final_tool_use_still_fails_closed() {
+    let output = Arc::new(ToolLifecycleRecordingOutput::default());
+    let mut engine = make_engine("unadvertised-final-tool-use-model");
+    engine.output = output.clone();
+    engine.provider = Arc::new(PreviewThenCompleteProvider {
+        turns: std::sync::atomic::AtomicUsize::new(0),
+        preview: ("x", "not_advertised"),
+        complete: ("x", "not_advertised"),
+    });
+
+    let result = engine
+        .execute_turn("stream the call", "msg-unadvertised-final-tool-use")
+        .await;
+
+    assert!(
+        matches!(&result, Err(AgentError::ApiError(message)) if message.contains("was not advertised in this request")),
+        "a final unadvertised ToolUse must still be rejected: {result:?}"
+    );
+    assert_eq!(
+        output.tool_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the unauthorized call must never enter the Running lifecycle"
     );
 }
 

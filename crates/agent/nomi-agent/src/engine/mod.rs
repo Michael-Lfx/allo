@@ -2216,10 +2216,19 @@ impl AgentEngine {
                             )));
                         }
                         if !tool_authority.advertises(&name) {
-                            efficiency.observe_calls(&self.tools, &tool_calls);
-                            return Err(AgentError::ApiError(format!(
-                                "provider stream protocol violation: tool progress '{name}' ({id}) was not advertised in this request"
-                            )));
+                            // A progress preview carries no executable intent:
+                            // ignore it (with a protocol warning) instead of
+                            // failing the whole turn. The commit boundary below
+                            // still rejects any final unadvertised ToolUse, and
+                            // the execution layer keeps its own authority check.
+                            tracing::warn!(
+                                target: "nomi_agent",
+                                tool = %name,
+                                tool_use_id = %id,
+                                model = %self.model,
+                                "ignored_unadvertised_progress"
+                            );
+                            continue;
                         }
                         if let Some(preview_name) = previewed_tool_calls.get(&id) {
                             if preview_name != &name {
