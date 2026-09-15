@@ -101,4 +101,6 @@ Thumbs.db
 
 # Local absorb scratch (never commit)
 .absorb_tmp/
+# Staged ffmpeg archives for CDN upload (large binaries, never commit)
+.ffmpeg-upload/
 .jspace/
