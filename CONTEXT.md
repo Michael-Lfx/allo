@@ -1,4 +1,4 @@
-# Allo Agent Store Context
+# Flowy Agent Store Context
 
 本上下文统一 Agent Store 在产品定义、运行实例与团队规划之间的领域语言，避免把产品级 Agent、运行时执行者和单次规划输入混为一谈。
 
