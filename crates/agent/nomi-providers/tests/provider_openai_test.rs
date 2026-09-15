@@ -1394,3 +1394,184 @@ async fn openai_effort_rejection_never_rewrites_requests_without_tools() {
         "a request without tools must never be rewritten to reasoning_effort=none: {efforts:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// output token ceiling negotiation
+// ---------------------------------------------------------------------------
+
+/// Verbatim gateway rejection observed on 2026-09-12 (Gemini 3.5 Flash).
+const OUTPUT_RANGE_REJECTION_BODY: &str = r#"{"code":500,"msg":"Unable to submit request because it has a maxOutputTokens value of 128000 but the supported range is from 1 (inclusive) to 65537 (exclusive). Update the value and try again.","error_key":"error.all_channel_models_failed"}"#;
+
+const SUPPORTED_OUTPUT_CEILING: u64 = 65_536;
+
+#[derive(Clone)]
+struct OutputLimitResponder;
+
+impl Respond for OutputLimitResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let requested = body
+            .get("max_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        if requested > SUPPORTED_OUTPUT_CEILING {
+            return ResponseTemplate::new(500).set_body_string(OUTPUT_RANGE_REJECTION_BODY);
+        }
+        let chunk = json!({
+            "choices": [{ "delta": { "content": "Recovered" }, "finish_reason": null }]
+        })
+        .to_string();
+        let finish = json!({
+            "choices": [{ "delta": {}, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        })
+        .to_string();
+        ResponseTemplate::new(200)
+            .set_body_raw(build_sse_body(&[&chunk, &finish]), "text/event-stream")
+    }
+}
+
+fn request_with_max_tokens(model: &str, max_tokens: u32) -> LlmRequest {
+    let mut request = make_request();
+    request.model = model.to_string();
+    request.max_tokens = Some(max_tokens);
+    request
+}
+
+fn recorded_max_tokens(received: &[Request]) -> Vec<Option<u64>> {
+    received
+        .iter()
+        .map(|request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            body.get("max_tokens").and_then(|value| value.as_u64())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn openai_gateway_negotiates_output_limit_from_supported_range() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(OutputLimitResponder)
+        .expect(3)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let request = request_with_max_tokens("gemini-3.5-flash", 128_000);
+
+    for _ in 0..2 {
+        let events = collect_events(provider.stream(&request).await.unwrap()).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+        );
+    }
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(
+        recorded_max_tokens(&received),
+        vec![
+            Some(128_000),
+            Some(SUPPORTED_OUTPUT_CEILING),
+            Some(SUPPORTED_OUTPUT_CEILING)
+        ],
+        "exclusive 65537 becomes 65536, and later turns reuse the learned ceiling"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_output_limit_is_isolated_per_model() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(OutputLimitResponder)
+        .expect(4)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+
+    for model in ["gemini-3.5-flash", "gemini-other"] {
+        let request = request_with_max_tokens(model, 128_000);
+        let events = collect_events(provider.stream(&request).await.unwrap()).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+        );
+    }
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(
+        recorded_max_tokens(&received),
+        vec![
+            Some(128_000),
+            Some(SUPPORTED_OUTPUT_CEILING),
+            Some(128_000),
+            Some(SUPPORTED_OUTPUT_CEILING)
+        ],
+        "the learned ceiling must not leak to another model"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_output_limit_at_supported_max_is_accepted_without_negotiation() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(OutputLimitResponder)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let request = request_with_max_tokens("gemini-3.5-flash", SUPPORTED_OUTPUT_CEILING as u32);
+
+    let events = collect_events(provider.stream(&request).await.unwrap()).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+    assert_eq!(
+        recorded_max_tokens(&server.received_requests().await.unwrap()),
+        vec![Some(SUPPORTED_OUTPUT_CEILING)]
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_gateway_does_not_output_limit_retry_an_unrelated_500() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("upstream unavailable"))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let error = provider
+        .stream(&request_with_max_tokens("gemini-3.5-flash", 128_000))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProviderError::Api { status: 500, .. }));
+    server.verify().await;
+}

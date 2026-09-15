@@ -93,6 +93,32 @@ pub(crate) fn request_body_with_extra(
     body
 }
 
+/// Parse the strict `supported range is from L (inclusive|exclusive) to U
+/// (inclusive|exclusive)` wording (observed on the Flowy Cloud gateway) into the
+/// largest allowed output ceiling. Returns `None` for malformed, inverted, or
+/// out-of-range wordings so callers fall back to the original error.
+pub(crate) fn parse_supported_output_range(message: &str) -> Option<u32> {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)supported range is from\s+(\d+)\s*\(\s*(inclusive|exclusive)\s*\)\s*to\s+(\d+)\s*\(\s*(inclusive|exclusive)\s*\)",
+        )
+        .expect("supported-range regex is valid")
+    });
+    let captures = pattern.captures(message)?;
+    let lower: u32 = captures.get(1)?.as_str().parse().ok()?;
+    let upper: u32 = captures.get(3)?.as_str().parse().ok()?;
+    let upper_bound = match captures.get(4)?.as_str().to_ascii_lowercase().as_str() {
+        "inclusive" => upper,
+        "exclusive" => upper.checked_sub(1)?,
+        _ => return None,
+    };
+    if upper_bound == 0 || lower > upper_bound {
+        return None;
+    }
+    Some(upper_bound)
+}
+
 /// Unified interface for LLM API providers
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -196,6 +222,15 @@ impl ProviderError {
         .iter()
         .any(|signal| lower.contains(signal));
         names_tools && names_effort && rejects_parameter
+    }
+
+    /// Whether an API rejection identifies an output-token ceiling above the
+    /// upstream supported range, together with the largest allowed ceiling.
+    pub(crate) fn output_limit_rejection(&self) -> Option<u32> {
+        let ProviderError::Api { message, .. } = self else {
+            return None;
+        };
+        parse_supported_output_range(message)
     }
 
     /// Whether an API rejection narrowly identifies an expired or otherwise
@@ -615,7 +650,8 @@ mod retryable_tests {
     use super::ProviderError;
     use super::{
         is_api_key_rotation_error, parse_api_keys, parse_retry_after_ms,
-        parse_tool_call_arguments, MAX_DOUBLE_ENCODED_TOOL_ARGUMENT_BYTES,
+        parse_supported_output_range, parse_tool_call_arguments,
+        MAX_DOUBLE_ENCODED_TOOL_ARGUMENT_BYTES,
         is_context_overflow_text,
     };
 
@@ -798,6 +834,49 @@ mod retryable_tests {
                 message: "tools with reasoning effort unsupported".into(),
             }
             .is_tools_with_reasoning_effort_incompatible()
+        );
+    }
+
+    #[test]
+    fn output_range_parser_handles_inclusive_and_exclusive_bounds() {
+        let observed = r#"{"code":500,"msg":"Unable to submit request because it has a maxOutputTokens value of 128000 but the supported range is from 1 (inclusive) to 65537 (exclusive). Update the value and try again."}"#;
+        assert_eq!(parse_supported_output_range(observed), Some(65536));
+        assert_eq!(
+            parse_supported_output_range(
+                "supported range is from 1 (inclusive) to 65536 (inclusive)"
+            ),
+            Some(65536)
+        );
+    }
+
+    #[test]
+    fn output_range_parser_rejects_malformed_or_inverted_ranges() {
+        for message in [
+            "upstream unavailable",
+            "supported range is from 1 to 65537",
+            "supported range is from 1 (inclusive) to 0 (exclusive)",
+            "supported range is from 10 (inclusive) to 5 (inclusive)",
+            "supported range is from 1 (inclusive) to 1 (exclusive)",
+        ] {
+            assert_eq!(parse_supported_output_range(message), None, "{message}");
+        }
+    }
+
+    #[test]
+    fn output_limit_classifier_only_accepts_api_errors() {
+        let message = "supported range is from 1 (inclusive) to 65537 (exclusive)".to_string();
+        assert_eq!(
+            ProviderError::Api {
+                status: 500,
+                message: message.clone(),
+            }
+            .output_limit_rejection(),
+            Some(65536)
+        );
+        assert!(
+            ProviderError::Connection(message)
+                .output_limit_rejection()
+                .is_none()
         );
     }
 

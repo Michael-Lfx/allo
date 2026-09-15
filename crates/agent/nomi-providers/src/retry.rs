@@ -63,6 +63,7 @@ fn is_retryable_initial_request_error(error: &ProviderError) -> bool {
             matches!(status, 500 | 502 | 503 | 504)
                 && !error.is_tool_schema_incompatible()
                 && !error.is_tools_with_reasoning_effort_incompatible()
+                && error.output_limit_rejection().is_none()
         }
         _ => false,
     }
