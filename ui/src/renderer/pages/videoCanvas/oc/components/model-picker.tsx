@@ -12,7 +12,7 @@ import { cn } from "@oc/lib/utils";
 import { modelDisplayName, modelIconUrl, modelOptionLabel, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
-import { isMonochromeLogo, resolveModelFallbackIcon } from "@renderer/pages/videoCanvas/lib/catalogIcon";
+import { isMonochromeLogo, resolveModelFallbackIcon } from "@renderer/utils/model/modelLogos";
 
 type ModelPickerProps = {
     config: AiConfig;
