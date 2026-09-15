@@ -51,6 +51,7 @@ export function canvasGenerationRequestOptions(config: AiConfig, mode: CanvasNod
                 vquality: config.vquality,
                 videoGenerateAudio: videoBooleans.videoGenerateAudio === "true",
                 videoWatermark: videoBooleans.videoWatermark === "true",
+                count: Number(config.count),
             };
         }
         case "audio":

@@ -37,8 +37,9 @@ describe("canvas project world layers isolation", () => {
         expect(/\bselectionBox\b/.test(page)).toBe(false);
         expect(/\bmouseWorld\b/.test(page)).toBe(false);
         expect(page.includes("HideWhileSelectionBox")).toBe(true);
-        expect(page.includes("onReplaceMedia={handleReplaceMedia}")).toBe(true);
-        expect(page.includes("onReplaceMedia={(node) => handleUploadRequest(node.id)}")).toBe(false);
+        expect(page.includes("onReplaceMedia=")).toBe(false);
+        const node = source("../../components/canvas/canvas-node.tsx");
+        expect(node.includes("videoCanvas.nodeUi.replace")).toBe(false);
     });
 
     test("keeps the bottom dock in the stage and the node strip in canvas chrome", () => {

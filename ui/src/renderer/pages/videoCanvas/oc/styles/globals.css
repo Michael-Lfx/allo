@@ -2949,7 +2949,7 @@
     
 
     .canvas-preset-picker-menu {
-        padding: 6px;
+        padding: 8px;
     }
 
     .canvas-preset-picker-search.ant-input-affix-wrapper {
@@ -2972,15 +2972,15 @@
         align-items: center;
         background: transparent;
         border: 0;
-        border-radius: 7px;
+        border-radius: 14px;
         cursor: pointer;
         display: flex;
-        gap: 9px;
-        min-height: 48px;
+        gap: 10px;
+        min-height: 56px;
         outline: none;
-        padding: 6px 8px;
+        padding: 6px;
         text-align: left;
-        transition: background-color var(--motion-instant) ease-out;
+        transition: background-color var(--motion-instant) ease-out, transform 120ms ease-out;
         width: 100%;
     }
 
@@ -2988,6 +2988,32 @@
     .canvas-preset-picker-option:focus-visible {
         background: color-mix(in srgb, var(--workspace-accent) 9%, transparent);
         outline: none;
+        transform: translateY(-1px);
+    }
+
+    .canvas-preset-picker-recents {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding: 2px 2px 8px;
+    }
+
+    .canvas-preset-picker-recent {
+        display: flex;
+        width: 88px;
+        flex: none;
+        flex-direction: column;
+        gap: 6px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+        text-align: left;
+        color: inherit;
+    }
+
+    .canvas-preset-picker-recent:hover {
+        transform: translateY(-1px);
     }
 
     .canvas-preset-picker-option-icon {

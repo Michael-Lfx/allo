@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Image } from "antd";
-import { FileText, Image as ImageIcon, Music2, Pencil, Video, X } from "lucide-react";
+import { FileText, Image as ImageIcon, LayoutTemplate, Music2, Pencil, Video, X } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -17,6 +17,7 @@ import { skillToken } from "@oc/lib/canvas/canvas-skill-mentions";
 import { CanvasStyleCoverSwatch } from "./canvas-style-cover";
 import { createCraftAttachmentChipElement, recipeAttachmentChip, skillAttachmentChip } from "./canvas-craft-token-chip";
 import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-picker";
+import { CanvasComposerPill } from "./canvas-composer-pill";
 import { CanvasTemplateSlotBar } from "./canvas-template-slot-bar";
 import type { CanvasGenerationMode, CanvasNodeMetadata, CanvasWorkspaceMode } from "@oc/types/canvas";
 
@@ -211,9 +212,11 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                     {onOpenTemplates ? (
-                        <Button size="small" type="text" className="!h-7 !px-2 !text-[var(--fs-label)]" onClick={onOpenTemplates} style={{ color: theme.accent.primary }}>
-                            {canvasT("videoCanvas.craft.tabTemplate", "模板")}
-                        </Button>
+                        <CanvasComposerPill
+                            icon={<LayoutTemplate />}
+                            label={canvasT("videoCanvas.craft.tabTemplate", "模板")}
+                            onClick={onOpenTemplates}
+                        />
                     ) : null}
                     <CanvasPresetPicker mode={generationMode || "image"} open={presetOpen} onOpenChange={setPresetOpen} onSelect={insertPreset} onOpenLibrary={onOpenLibrary} />
                     <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />

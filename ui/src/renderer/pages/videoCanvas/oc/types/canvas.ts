@@ -192,6 +192,17 @@ export type CanvasNodeMetadata = {
     quality?: string;
     transparentBackground?: string;
     count?: number;
+    cameraEnabled?: string;
+    cameraBody?: string;
+    cameraLens?: string;
+    cameraFocal?: string;
+    cameraAperture?: string;
+    cameraAngle?: string;
+    cameraShot?: string;
+    /** Video prompt polish. `"false"` turns it off; missing or `"true"` keeps it on. */
+    promptOptimize?: string;
+    /** Per-output sampler seed for batch diversity. Backends may ignore it. */
+    seed?: number;
     /** Text generation copy count (decoupled from image batch count). */
     textCount?: number;
     seconds?: string;

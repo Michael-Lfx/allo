@@ -1,9 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "antd";
-import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound, Wrench, X, XCircle } from "lucide-react";
+import { CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound, Wrench, X, XCircle } from "lucide-react";
 
 import { CanvasChromeButton } from "@oc/components/canvas/canvas-overlay";
+import { CanvasComposerSendButton } from "@oc/components/canvas/canvas-composer-send-button";
 import { canvasOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -325,19 +326,11 @@ export function AgentChatComposer({
                         ) : null}
                         {left}
                     </div>
-                    <button
-                        type="button"
-                        className="canvas-send-token"
+                    <CanvasComposerSendButton
                         disabled={!canSubmit}
-                        style={{
-                            background: canSubmit ? theme.node.activeStroke : theme.toolbar.itemHover,
-                            color: canSubmit ? theme.canvas.background : theme.node.faint,
-                        }}
+                        sending={sending}
                         onClick={() => void onSubmit()}
-                        aria-label={canvasT("videoCanvas.agent.send", "发送")}
-                    >
-                        {sending ? <LoaderCircle className="size-3 animate-spin" /> : <ArrowUp className="size-3" />}
-                    </button>
+                    />
                 </div>
             </div>
         </div>

@@ -9,7 +9,7 @@ import { anchoredOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@oc/lib/model-capabilities";
 import { cn } from "@oc/lib/utils";
-import { modelDisplayName, modelIconUrl, modelOptionLabel, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
+import { modelDisplayName, modelIconUrl, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { isMonochromeLogo, resolveModelFallbackIcon } from "@renderer/pages/videoCanvas/lib/catalogIcon";
@@ -122,9 +122,11 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             {optionGroups.length ? (
                 optionGroups.map((group) => (
                     <section key={group.key} className="canvas-model-picker-group min-w-0 overflow-hidden">
-                        <div className="canvas-model-picker-group-label" style={{ color: theme.node.muted }}>
-                            <span className="truncate">{group.label}</span>
-                        </div>
+                        {optionGroups.length > 1 ? (
+                            <div className="canvas-model-picker-group-label" style={{ color: theme.node.muted }}>
+                                <span className="truncate">{group.label}</span>
+                            </div>
+                        ) : null}
                         <div className="grid min-w-0 gap-1">
                             {group.models.map((model) => {
                                 const selected = model === current;
@@ -167,7 +169,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 aria-haspopup="listbox"
                 aria-expanded={open}
                 aria-label={resolvedPlaceholder}
-                title={current ? modelOptionLabel(config, current) : resolvedPlaceholder}
+                title={current ? modelDisplayName(config, current) : resolvedPlaceholder}
                 onClick={() => setPickerOpen(!open)}
                 onKeyDown={handleTriggerKeyDown}
             >
@@ -175,7 +177,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     <span className="canvas-model-picker-trigger-icon" style={{ background: theme.toolbar.itemHover }}>
                         <ModelIcon config={config} model={current} />
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{current ? (creationVariant ? modelDisplayName(config, current) : modelOptionLabel(config, current)) : resolvedPlaceholder}</span>
+                    <span className="min-w-0 flex-1 truncate">{current ? modelDisplayName(config, current) : resolvedPlaceholder}</span>
                     {showSelectedPrice && creditsEnabled ? <ModelPrice compact price={currentPrice} /> : null}
                 </span>
                 <ChevronDown className={cn("canvas-model-picker-chevron", open && "is-open")} aria-hidden="true" />

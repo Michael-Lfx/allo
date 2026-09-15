@@ -11,17 +11,19 @@ describe("normalizeImageQuickToolIds", () => {
 describe("resolveImageDockLayout", () => {
     test("always pins delete and groups selected edit/portrait tools", () => {
         const layout = resolveImageDockLayout(defaultImageQuickToolIds);
-        expect(layout.pin).toEqual(["delete"]);
+        expect(layout.pin).toEqual(["delete", "replace"]);
         expect(layout.editGroup).toEqual(["maskEdit", "crop"]);
         expect(layout.portraitGroup).toEqual(["emotion", "portraitTexture"]);
         expect(layout.angle).toBe(true);
         expect(layout.singles).toEqual(["info", "download"]);
         expect(imageDockVisibleIds(layout)).toContain("delete");
+        expect(imageDockVisibleIds(layout)).toContain("replace");
         expect(imageDockVisibleIds(layout)).not.toContain("split");
     });
 
     test("hides unselected groups", () => {
         const layout = resolveImageDockLayout(["download"]);
+        expect(layout.pin).toEqual(["delete", "replace"]);
         expect(layout.editGroup).toEqual([]);
         expect(layout.portraitGroup).toEqual([]);
         expect(layout.angle).toBe(false);

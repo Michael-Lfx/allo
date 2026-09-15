@@ -113,7 +113,6 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         onOpenTaskDetails,
         onOpenVersions,
         onViewImage,
-        onReplaceMedia,
         onOpenTextEditor,
         onOpenDirector,
         onOpenDrawing,
@@ -283,7 +282,6 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onOpenTaskDetails={onOpenTaskDetails}
                                     onOpenVersions={onOpenVersions}
                                     onViewImage={onViewImage}
-                                    onReplaceMedia={onReplaceMedia}
                                     onOpenTextEditor={onOpenTextEditor}
                                     onOpenDirector={onOpenDirector}
                                     onOpenDrawing={onOpenDrawing}

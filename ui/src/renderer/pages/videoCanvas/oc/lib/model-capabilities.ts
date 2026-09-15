@@ -78,6 +78,7 @@ export type ImageCapabilityConfig = {
     defaultQuality: string;
     transparentBackground: boolean;
     customPixels: boolean;
+    /** Provider `n` for a single request. Canvas batch count is separate (`CANVAS_*_BATCH_MAX_COUNT`). */
     maxCount: number;
 };
 

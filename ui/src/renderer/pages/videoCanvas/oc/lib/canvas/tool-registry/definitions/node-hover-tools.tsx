@@ -199,7 +199,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         toolbar: "node-hover",
         category: "node-state",
         label: (ctx) => hasVideo(ctx) ? canvasT("videoCanvas.toolbar.replaceVideo", "替换视频") : canvasT("videoCanvas.toolbar.uploadVideo", "上传视频"),
-        displayLabel: (ctx) => hasVideo(ctx) ? canvasT("videoCanvas.toolbar.replaceVideo", "替换视频") : canvasT("videoCanvas.toolbar.uploadVideo", "上传视频"),
+        displayLabel: (ctx) => hasVideo(ctx) ? canvasT("videoCanvas.nodeUi.replace", "替换") : canvasT("videoCanvas.toolbar.uploadVideo", "上传视频"),
         icon: <Video className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 140,

@@ -12,6 +12,8 @@ import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
 import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
 import { expandRecipeTokens } from "@oc/lib/canvas/craft/tokens";
+import { enhanceCanvasGenerationPrompt, isCanvasPromptOptimizeEnabled, polishVideoPrompt } from "@oc/lib/canvas/canvas-generation-enhance";
+import { compileCameraRigPrompt, cameraRigFingerprint, readCameraRig } from "@oc/lib/canvas/canvas-camera-rig";
 import { canvasVideoSessionProps } from "@oc/lib/canvas/craft/video-telemetry";
 import { modelPromptLengthError } from "@oc/lib/model-capabilities";
 import { generationFailureMetadata, logCanvasGenerationFailure } from "@oc/lib/generation-error";
@@ -159,6 +161,16 @@ export function useCanvasGenerationExecutor({
 
             const expandedPrompt = expandSkillMentions(expandRecipeTokens(rawGenerationContext.prompt), mergeSkillLists(addedSkills, collectCanvasSkills(nodesRef.current)));
             let effectivePrompt = expandedPrompt.trim();
+            const promptOptimize = mode !== "video" || isCanvasPromptOptimizeEnabled(sourceNode?.metadata?.promptOptimize);
+            if (mode === "image" || (mode === "video" && promptOptimize)) {
+                effectivePrompt = enhanceCanvasGenerationPrompt(effectivePrompt, mode).prompt;
+            }
+            if (mode === "image") {
+                effectivePrompt = compileCameraRigPrompt(effectivePrompt, readCameraRig(sourceNode?.metadata));
+            }
+            if (mode === "video" && promptOptimize) {
+                effectivePrompt = polishVideoPrompt(effectivePrompt);
+            }
             if (mode === "video") {
                 effectivePrompt = enrichPromptWithVimaxVoiceGuards(
                     effectivePrompt,
@@ -193,7 +205,11 @@ export function useCanvasGenerationExecutor({
                 mode,
                 prompt: effectivePrompt,
                 model: generationConfig.model,
-                options: canvasGenerationRequestOptions(generationConfig, mode),
+                options: {
+                    ...canvasGenerationRequestOptions(generationConfig, mode),
+                    ...(mode === "image" ? cameraRigFingerprint(readCameraRig(sourceNode?.metadata)) : {}),
+                    ...(mode === "video" ? { promptOptimize } : {}),
+                },
                 operation: sourceNode?.metadata?.videoEditOperation,
                 audioInstructions: generationConfig.audioInstructions,
                 promptTemplateOperation: sourceNode?.metadata?.promptTemplateOperation,

@@ -10,7 +10,7 @@ import { canvasThemes } from "@oc/lib/canvas-theme";
 import { canvasResourceNodePreviewUrl, type CanvasResourceKind, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { buildCanvasAgentAliasMap, canvasAgentShortId } from "@oc/lib/canvas/canvas-agent-ids";
 import { getNodeResourceKind } from "@oc/lib/canvas/node-registry";
-import { modelDisplayName, resolveModelChannel, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
+import { modelDisplayName, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { LocalUser } from "@oc/stores/use-user-store";
 import { CanvasNodeType, type CanvasAssistantMessage, type CanvasAssistantReference, type CanvasAssistantSession, type CanvasNodeData } from "@oc/types/canvas";
@@ -40,16 +40,16 @@ export function AgentTextModelPicker({ config, value, onChange }: { config: AiCo
                 listHeight={280}
                 getPopupContainer={() => document.body}
                 classNames={{ popup: { root: "agent-text-model-select-dropdown" } }}
-                options={options.map((model) => ({ value: model, label: `${modelDisplayName(config, model)} ${resolveModelChannel(config, model).name}` }))}
+                options={options.map((model) => ({ value: model, label: modelDisplayName(config, model) }))}
                 notFoundContent={<span className="block py-2 text-center text-xs text-foreground/48">{canvasT("videoCanvas.agent.noTextModels", "暂无文本模型")}</span>}
                 optionRender={(option) => {
                     const model = String(option.value);
-                    return <span className="flex min-w-0 items-center gap-2"><ModelIcon config={config} model={model} /><span className="min-w-0 flex-1 truncate">{modelDisplayName(config, model)}</span><span className="shrink-0 text-xs opacity-55">{resolveModelChannel(config, model).name}</span></span>;
+                    return <span className="flex min-w-0 items-center gap-2"><ModelIcon config={config} model={model} /><span className="min-w-0 flex-1 truncate">{modelDisplayName(config, model)}</span></span>;
                 }}
-                labelRender={() => <span className="flex min-w-0 items-center gap-1.5"><ModelIcon config={config} model={current} /><span className="min-w-0 truncate">{current ? modelDisplayName(config, current) : canvasT("videoCanvas.agent.selectTextModel", "选择文本模型")}</span>{current ? <span className="shrink-0 opacity-55">{resolveModelChannel(config, current).name}</span> : null}</span>}
+                labelRender={() => <span className="flex min-w-0 items-center gap-1.5"><ModelIcon config={config} model={current} /><span className="min-w-0 truncate">{current ? modelDisplayName(config, current) : canvasT("videoCanvas.agent.selectTextModel", "选择文本模型")}</span></span>}
                 onChange={onChange}
                 aria-label={canvasT("videoCanvas.agent.selectAgentModelAria", "选择 Agent 文本模型")}
-                title={current ? `${modelDisplayName(config, current)} · ${resolveModelChannel(config, current).name}` : canvasT("videoCanvas.agent.selectTextModel", "选择文本模型")}
+                title={current ? modelDisplayName(config, current) : canvasT("videoCanvas.agent.selectTextModel", "选择文本模型")}
             />
         </div>
     );

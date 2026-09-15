@@ -16,7 +16,7 @@ export function resolveNodeDockPrimaryIds(input: NodeDockKindInput, imageVisible
     if (input.isImage && !input.hasImage) return ["uploadImage", "edit", "info", "delete"];
     if (input.isImage) return imageVisibleIds;
     if (input.isVideo && !input.hasVideo) return ["uploadVideo", "edit", "info", "delete"];
-    if (input.isVideo) return ["delete", "download", "edit", "subtitles", "timeline", "extractFrames", "uploadVideo"];
+    if (input.isVideo) return ["delete", "download", "uploadVideo", "edit", "subtitles", "timeline", "extractFrames"];
     if (input.isAudio && !input.hasAudio) return ["uploadAudio", "info", "delete"];
     if (input.isAudio) return ["delete", "download", "timeline", "uploadAudio"];
     if (input.isEditableText) return ["delete", "edit", "editText", "decreaseFont", "increaseFont", "generateImage", "saveAsset"];

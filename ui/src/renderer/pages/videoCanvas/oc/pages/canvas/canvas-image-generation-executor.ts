@@ -2,10 +2,12 @@ import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { canGenerateImageInPlace, findAvailableGenerationGroupPosition, imageGenerationChildPosition, imageGenerationGroupSize } from "@oc/lib/canvas/canvas-generation-layout";
+import { CANVAS_IMAGE_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
+import { canvasGenerationSeed, detectCanvasGenerationIntent, varyCanvasGenerationPrompt } from "@oc/lib/canvas/canvas-generation-enhance";
 import { buildImageGenerationNodeTitle } from "@oc/lib/canvas/canvas-generation-title";
 import { imageMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { fitNodeSize, nodeSizeFromRatio } from "@oc/lib/canvas/canvas-node-size";
-import { buildImageGenerationMetadata, getGenerationCount, isGenerationCanceled, runBackendCanvasGenerationTask } from "@oc/lib/canvas/canvas-project-generation";
+import { buildImageGenerationMetadata, isGenerationCanceled, runBackendCanvasGenerationTask } from "@oc/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, generationFailureMetadata, type GenerationFailureMetadata } from "@oc/lib/generation-error";
 import { uploadImage } from "@oc/services/image-storage";
 import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
@@ -39,7 +41,9 @@ export async function executeImageGeneration({
     showError,
     registerPendingNodeIds,
 }: CanvasGenerationExecution) {
-    const count = getGenerationCount(generationConfig.count);
+    const count = getCanvasBatchCount(generationConfig.count, CANVAS_IMAGE_BATCH_MAX_COUNT);
+    const intent = detectCanvasGenerationIntent(effectivePrompt);
+    const batchSalt = Math.floor(Math.random() * 0x7fffffff);
     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
     const isImageNode = sourceNode?.type === CanvasNodeType.Image;
     const reuseSourceNode = canGenerateImageInPlace(sourceNode);
@@ -103,7 +107,7 @@ export async function executeImageGeneration({
         position: imageGenerationChildPosition(rootNode.position, rootNode.width, outputNodeSize, index),
         width: outputNodeSize.width,
         height: outputNodeSize.height,
-        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, ...generationMetadata, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined },
+        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, ...generationMetadata, seed: canvasGenerationSeed(index, batchSalt), generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined },
     }));
     const batchConnections = directCopiedBatch
         ? childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))
@@ -147,17 +151,19 @@ export async function executeImageGeneration({
     let hasFailure = false;
     let representativeFailure: GenerationFailureMetadata | undefined;
     await Promise.all(
-        targetIds.map(async (targetId) => {
+        targetIds.map(async (targetId, batchIndex) => {
             try {
+                const seed = canvasGenerationSeed(batchIndex, batchSalt);
+                const samplePrompt = varyCanvasGenerationPrompt(effectivePrompt, batchIndex, count, intent, "image");
                 const result = await runBackendCanvasGenerationTask({
                     projectId,
                     nodeId: targetId,
                     mode: "image",
-                    prompt: effectivePrompt,
+                    prompt: samplePrompt,
                     config: { ...generationConfig, count: "1" },
                     referenceImages,
                     signal: controller.signal,
-                    metadata: { sourceNodeId: nodeId, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, promptTemplateOperation: sourceNode?.metadata?.promptTemplateOperation, promptTemplateVariables: sourceNode?.metadata?.promptTemplateVariables },
+                    metadata: { sourceNodeId: nodeId, seed, batchIndex, batchCount: count, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, promptTemplateOperation: sourceNode?.metadata?.promptTemplateOperation, promptTemplateVariables: sourceNode?.metadata?.promptTemplateVariables },
                     onTaskCreated: (task) => bindGenerationTask(targetId, task),
                 });
                 const image = result.images?.[0];

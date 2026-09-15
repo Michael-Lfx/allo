@@ -37,6 +37,23 @@ export function imageGenerationChildPosition(rootPosition: Position, rootWidth: 
     };
 }
 
+export function generationGridPosition(origin: Position, itemSize: Size, index: number, columns = 2): Position {
+    return {
+        x: origin.x + (index % columns) * (itemSize.width + BATCH_CHILD_GAP),
+        y: origin.y + Math.floor(index / columns) * (itemSize.height + BATCH_CHILD_GAP),
+    };
+}
+
+export function generationGridSize(itemSize: Size, count: number, columns = 2): Size {
+    if (count <= 0) return { width: 0, height: 0 };
+    const cols = Math.min(count, columns);
+    const rows = Math.ceil(count / columns);
+    return {
+        width: cols * itemSize.width + (cols - 1) * BATCH_CHILD_GAP,
+        height: rows * itemSize.height + (rows - 1) * BATCH_CHILD_GAP,
+    };
+}
+
 export function findAvailableGenerationGroupPosition(nodes: CanvasNodeData[], preferred: Position, groupSize: Size): Position {
     const down = resolveCollisions(nodes, preferred, groupSize, "down");
     const right = resolveCollisions(nodes, preferred, groupSize, "right");
