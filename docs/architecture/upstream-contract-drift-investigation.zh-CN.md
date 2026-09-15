@@ -21,10 +21,12 @@
 证据来源：
 
 ```text
-反馈日志：D:\AllDownload\2026-07\0a88947a-e8c6-42c0-a53e-4183c52d0921\
-本机日志：D:\tmp\flowy-dev\logs\
-会话数据：D:\tmp\flowy-dev\nomi-sessions\、D:\tmp\flowy-dev\flowy-backend.db
-工作区  ：D:\tmp\777\（仅会话工作目录，无日志）
+反馈日志  ：D:\AllDownload\2026-07\0a88947a-e8c6-42c0-a53e-4183c52d0921\
+本仓库环境：D:\tmp\flowy-dev\（日志/DB/nomi-sessions），工作区 D:\tmp\777\
+备用项目  ：D:\workSpace\allo\（branch feat/chat-auto-image-unblock）
+  数据目录：C:\Users\38788\AppData\Local\Flowy\Nomi-dev\
+  工作区  ：D:\d\tmp\
+  日志    ：C:\Users\38788\AppData\Local\Flowy\Nomi-dev\logs\
 ```
 
 ## 2. 案例 A：`AIPC-GPT5.6-Sol` 的 tools + reasoning_effort 组合被上游通道拒绝
@@ -162,23 +164,113 @@ you-discover
 3. **预算与对冲**：`PARALLEL_SLOT_BUDGET`/`YOU_SLOT_BUDGET` 各 3 s 串行 →
    收紧到 1.5 s，或在 parallel 超时后让 you + ddg 并行（hedge），
    把搜索从 6.6–8.1 s 降到约 2–3 s。
-4. **回归测试**：工具列表为 2 个时仍选中 `you-search`；工具列表变化后可自动恢复。
+4. **DDG 兜底可用性**：最后一跳失败即整体失败（`managed.rs:761`），且返回给模型的
+   是"本 turn 不要重复搜索"。DDG 增加一次内部重试或更长预算，降低"全 provider
+   不可用"的概率。
+5. **回归测试**：工具列表为 2 个时仍选中 `you-search`；工具列表变化后可自动恢复；
+   全 provider 失败时返回结构与降级路径稳定。
 
 ### P1 模型网关与 schema
 
-5. **effort 降级**：当请求带 tools 且上游返回
+6. **effort 降级**：当请求带 tools 且上游返回
    `Function tools with reasoning_effort are not supported` 时，一次性改用
    `reasoning_effort: "none"` 并记忆到 provider 实例；同时把该错误从"瞬时 500 重试"
    中排除，避免 2 次无意义重试。
-6. **输出上限协商**：命中 `maxOutputTokens … supported range …` 时按错误中的上限收紧
+7. **输出上限协商**：命中 `maxOutputTokens … supported range …` 时按错误中的上限收紧
    并重发，后续请求沿用（修复 Gemini 类问题）。
-7. **嵌套 schema 清洗**：`sanitize_json_schema` 对嵌套 `anyOf/oneOf` 做投影
+8. **嵌套 schema 清洗**：`sanitize_json_schema` 对嵌套 `anyOf/oneOf` 做投影
    （修复 Gemini `any_of[0].required`）；回归验证 Read 顶层 `oneOf` 在当前构建已修复。
+9. **未广告工具进度不应终止 turn**：`crates/agent/nomi-agent/src/engine/mod.rs:2218`
+   对未广告工具的 progress 预览直接抛 `AgentError::ApiError`；建议忽略该预览
+   （真正未广告的 ToolCall 仍拒绝），避免一个 UI 预览断掉整个回合。
+10. **传输层重试**：`retry.rs:60` 目前只重试 `err.is_connect()`；
+    对 `peer closed connection without sending TLS close_notify`（意外 EOF）与
+    `operation timed out` 增加一次有界重试，可改善 08-05/08-31/09-04 类失败。
 
-## 6. 验证边界
+## 6. 备份项目（D:\workSpace\allo）环境核对与关联发现
+
+### 6.1 工作区与数据目录定位
+
+`D:\workSpace\allo` 与当前工作仓库同 remote，是备用 checkout
+（branch `feat/chat-auto-image-unblock`，最近构建
+`D:\workSpace\allo\target\debug\Flowy.exe`，2026-09-08 20:29）。
+
+该构建运行时使用的是 dev 通道默认数据目录
+`C:\Users\38788\AppData\Local\Flowy\Nomi-dev`：
+
+```json
+// C:\Users\38788\AppData\Local\Flowy\Nomi-dev\.nomifun-work-root-binding.json
+{ "data_root": "C:\\Users\\38788\\AppData\\Local\\Flowy\\Nomi-dev",
+  "work_root": "D:\\d\\tmp" }
+```
+
+- 工作区：`D:\d\tmp`（含 `conversations/`，63 个会话工作目录，最近 2026-09-07 21:07）；
+- 日志：`C:\Users\38788\AppData\Local\Flowy\Nomi-dev\logs\`（2026-08-05 … 2026-09-08）；
+- 会话数据：`Nomi-dev\flowy-backend.db`、`Nomi-dev\nomi-sessions\`。
+
+对照：2026-09-15 实际运行的是本工作仓库构建
+`D:\workSpace\git_clone_test\allo\build.noindex\debug\deps\Flowy.exe`（15:08），
+其数据目录是 `D:\tmp\flowy-dev`、工作区 `D:\tmp\777`（即第 3 节）。
+
+### 6.2 关联发现：备份环境正是"qwen3.8-flash 搜索报错"的现场
+
+2026-09-04，备份环境在 `AIPC-qwen3.8-flash` 上集中测试搜索/抓取，出现
+**全部搜索 provider 失败**：
+
+```text
+03:39:35  all managed web search providers were unavailable  error_class=timeout
+03:49:24  all managed web search providers were unavailable  error_class=timeout
+03:51:47  all managed web search providers were unavailable  error_class=timeout ×2
+03:56:21  all managed web search providers were unavailable  error_class=timeout
+03:56:56  all managed web search providers were unavailable  error_class=timeout ×2
+```
+
+每次都是 `parallel timeout(3s) → you timeout(3s) → duckduckgo timeout(6s)`，
+最终工具返回：
+
+```text
+web_search failed: provider error: web search is temporarily unavailable; do not repeat the same search this turn
+```
+
+`flowy-backend.db` 中可确认以下会话的 `web_search` `tool_call` 均为 `status: error`：
+
+```text
+01a06a7e  帮我搜今天的天气                    （AIPC-qwen3.8-flash）
+01a06a88  使用web_fetch帮我查一下巴黎的天气    （AIPC-qwen3.8-flash）
+01a06a8a  查询国际新闻                      （AIPC-qwen3.8-flash）
+01a06a8f  搜美国国际新闻                    （AIPC-qwen3.8-flash）
+01a06a8d  国际新闻 / 搜索国际新闻             （qwen3.8-flash / deepseek-v4-flash-vision-exp）
+```
+
+这与用户反馈的"qwen3.8-flash 在使用 web search 工具的数据返回阶段出现过报错"
+完全对应：不是模型报错，而是托管搜索在 provider 数据返回阶段全部超时。
+
+同一批会话里 `web_extract` 也大面积失败（wttr.in / open-meteo / news RSS 超时，
+reuters 返回 401、bbc 返回 404），模型最后改用本地 `curl` 绕过。
+另外 09-01、09-04 也出现了与案例 B 相同的 `you … schema_mismatch`。
+
+### 6.3 备份环境中的其它同族问题
+
+| 现象 | 证据 | 归因 |
+| --- | --- | --- |
+| `provider stream protocol violation: tool progress 'web_fetch' (call_…) was not advertised in this request` | 会话 `01a05702`（`AIPC-auto-balance`），09-01 08:52、09-03 03:24，UI 报 `USER_LLM_PROVIDER_GATEWAY_ERROR` | 客户端对未广告工具的进度预览直接终止 turn（P1-9） |
+| `peer closed connection without sending TLS close_notify` / `operation timed out` | 08-05、08-31、09-04 的 `execute_turn() failed`，UI 报 `USER_LLM_PROVIDER_NETWORK_ERROR` | 传输层抖动；当前无重试（P1-10） |
+| `API error 401 … invalid_or_expired_token` | 08-24 会话 `01a03321` | 鉴权过期，属外部 |
+
+### 6.4 与当前环境的关系
+
+- 案例 B 的 `you` 契约漂移在备份环境 09-01/09-04 已出现，说明该问题跨环境、跨构建长期存在；
+- 用户记忆中"qwen3.8-flash + web_search 报错"来自备份环境的 09-04 测试，其根因是
+  搜索 provider 链整体超时（含 DDG），与 09-15 本仓库环境看到的
+  `you schema_mismatch` 是同一系统的两个层面：**契约漂移 + 兜底预算不足**；
+- 因此 P0-1…P0-4 与 P1-9/P1-10 需要一起解决，才能同时覆盖两处现象。
+
+## 7. 验证边界
 
 - 本记录创建前没有修改业务代码；P0/P1 均未实施。
 - 案例 B 的根因已由在线探针证实；案例 A 的根因由客户端代码路径 + 上游错误语义证实，
   未重新调用真实网关复现。
+- 备份环境（第 6 节）的结论来自只读日志与 DB 查询，没有重新运行该构建；
+  09-04 的"全 provider 超时"是否由当时本机网络抖动引起，未做链路级取证。
 - 反馈日志中的 `claude-fable-5` 缺货、代理层 502 等属于外部可用性问题，本记录不展开。
 - 未对托管搜索预算做压测；上述 6.6–8.1 s 数字来自一次会话内两次搜索的实测。
