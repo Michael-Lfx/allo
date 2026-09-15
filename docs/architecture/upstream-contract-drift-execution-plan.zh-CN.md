@@ -501,7 +501,9 @@ cargo check -p nomifun-cloud                 → Finished（无新增告警）
 
 - 真实验收：GPT5.6-Sol（effort）已在 §16 完成；qwen3.8-flash 的托管搜索链在 web
   宿主不可用（见 §16.2），已用实时适配器探针替代；gemini 上限拒绝在该账号通道不适用。
-- OBS-1 主样本仍需修复后真实调用累计到 100 条，才能决定 Stage 8。
+- OBS-1：受控采样已完成（30 次探针，见
+  [运行时影响说明与 OBS-1 记录](upstream-contract-drift-runtime-impact.zh-CN.md) §3），
+  决策门判定"保持串行调度、Stage 8 关闭"；主样本仍 <100，结论不作为长期依据。
 - PR 尚未创建（分支 `fix/upstream-contract-drift` 未推送）。
 
 ## 16. 真实验收记录（2026-09-15）
@@ -531,4 +533,6 @@ cargo check -p nomifun-cloud                 → Finished（无新增告警）
   故只能声明 wiremock 覆盖，不能声明线上复现。
 - UI 错误卡与用户视角文案未做人工界面验收（错误码映射已由单测覆盖）。
 - 隔离副本、黑洞监听与临时账号数据均在验收后清理；未改动用户开发数据目录。
+- 运行时行为影响与 OBS-1 采样结论见
+  [运行时影响说明与 OBS-1 记录](upstream-contract-drift-runtime-impact.zh-CN.md)。
 
