@@ -5,7 +5,7 @@ export type Theme = "light" | "dark";
 /** Resolved effective theme, after system preference is applied. */
 export type ResolvedTheme = Theme;
 
-const STORAGE_KEY = "allo-theme";
+const STORAGE_KEY = "flowy-agent-store-theme";
 
 function systemPrefersDark(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;

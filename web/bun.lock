@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "allo-app-server-web",
+      "name": "flowy-agent-store-web",
       "dependencies": {
         "@flowy-agent-store/client": "workspace:*",
         "@flowy-agent-store/protocol": "workspace:*",
@@ -38,25 +38,32 @@
     },
     "packages/client": {
       "name": "@flowy-agent-store/client",
-      "version": "0.1.0",
+      "version": "0.1.0-beta.3",
       "dependencies": {
-        "@flowy-agent-store/protocol": "0.1.0",
+        "@flowy-agent-store/protocol": "0.1.0-beta.3",
       },
     },
     "packages/protocol": {
       "name": "@flowy-agent-store/protocol",
-      "version": "0.1.0",
+      "version": "0.1.0-beta.3",
     },
     "packages/runtime": {
       "name": "@flowy-agent-store/runtime-win32-x64",
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.3",
     },
     "packages/sdk": {
       "name": "@flowy-agent-store/sdk",
-      "version": "0.1.0",
+      "version": "0.1.0-beta.3",
       "dependencies": {
-        "@flowy-agent-store/client": "0.1.0",
-        "@flowy-agent-store/protocol": "0.1.0",
+        "@flowy-agent-store/client": "0.1.0-beta.3",
+        "@flowy-agent-store/protocol": "0.1.0-beta.3",
+      },
+      "optionalDependencies": {
+        "@flowy-agent-store/runtime-darwin-arm64": "0.1.0-beta.3",
+        "@flowy-agent-store/runtime-darwin-x64": "0.1.0-beta.3",
+        "@flowy-agent-store/runtime-linux-arm64": "0.1.0-beta.3",
+        "@flowy-agent-store/runtime-linux-x64": "0.1.0-beta.3",
+        "@flowy-agent-store/runtime-win32-x64": "0.1.0-beta.3",
       },
     },
   },

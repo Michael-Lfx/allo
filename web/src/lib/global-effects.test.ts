@@ -128,7 +128,7 @@ describe("createGlobalEffectGate · election", () => {
 
     expect([...outcomes].sort()).toEqual(["already-handled", "fired"]);
     expect(calls).toHaveLength(1);
-    expect(locks.requests).toEqual(["allo:global-effect", "allo:global-effect"]);
+    expect(locks.requests).toEqual(["flowy-agent-store:global-effect", "flowy-agent-store:global-effect"]);
   });
 
   it("keeps suppressing the same key for a later tab (reload included)", async () => {

@@ -1,7 +1,7 @@
 # Agent Store CLI（cli/ 目录）
 
 把 Agent Store 的 **Rust 核心后端** 与 **@web 前端 UI**（`web/`，即
-`allo-app-server-web`，App Server 协议的消费方）打包为**单个可执行文件**
+`flowy-agent-store-web`，App Server 协议的消费方）打包为**单个可执行文件**
 `agent-store.exe`。用户通过本目录即可启动「前后端一体」的服务——后端 API 与
 内嵌 Web UI 在**同一端口**服务，浏览器零配置连接（UI 默认 WS 地址
 `ws://127.0.0.1:8787/api/app-server/ws` 与该 host 默认端口一致，无需改设置）。
