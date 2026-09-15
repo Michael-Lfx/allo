@@ -805,7 +805,7 @@ pub fn format_scene_bgm_paren(brief: &str) -> String {
     format!("({clipped})")
 }
 
-/// Pull the first `(…)` music caption from storyboard `audio_desc` values, if any.
+/// Pull the first `(…)` music caption from storyboard `audio_descs` values, if any.
 pub fn extract_bgm_paren_from_audio_descs<'a, I>(audio_descs: I) -> Option<String>
 where
     I: IntoIterator<Item = Option<&'a str>>,
@@ -815,13 +815,96 @@ where
             continue;
         };
         if let Some(paren) = first_paren_span(raw) {
-            // Skip tiny non-music parentheses (e.g. emotion cues).
-            if paren.chars().count() >= 12 {
+            if paren_looks_like_bgm(&paren) {
                 return Some(format_scene_bgm_paren(&paren));
             }
         }
     }
     None
+}
+
+/// True when a `(…)` span is underscore/music, not an acting parenthetical.
+///
+/// `(激动带哭腔,语速偏快)` is a performance cue; treating it as scene BGM
+/// leaks into later silent clips as `音效：(激动带哭腔…)`.
+pub fn paren_looks_like_bgm(paren: &str) -> bool {
+    let inner = paren
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim_start_matches('（')
+        .trim_end_matches('）')
+        .trim();
+    if inner.is_empty() {
+        return false;
+    }
+    if looks_like_performance_paren(inner) && !looks_like_music_paren(inner) {
+        return false;
+    }
+    looks_like_music_paren(inner)
+}
+
+fn looks_like_music_paren(inner: &str) -> bool {
+    const MUSIC: &[&str] = &[
+        "bgm",
+        "music",
+        "score",
+        "soundtrack",
+        "underscore",
+        "motif",
+        "piano",
+        "strings",
+        "violin",
+        "cello",
+        "orchestra",
+        "edm",
+        "ost",
+        "remix",
+        "melody",
+        "choir",
+        "bassline",
+        "音乐",
+        "配乐",
+        "弦乐",
+        "鼓点",
+        "交响",
+        "管弦",
+        "钢琴",
+        "铜管",
+        "拨奏",
+        "片尾",
+        "主题乐",
+    ];
+    let lower = inner.to_ascii_lowercase();
+    MUSIC.iter().any(|k| {
+        if k.is_ascii() {
+            lower.contains(k)
+        } else {
+            inner.contains(k)
+        }
+    })
+}
+
+fn looks_like_performance_paren(inner: &str) -> bool {
+    const ACTING: &[&str] = &[
+        "语速",
+        "哭腔",
+        "声线",
+        "尾音",
+        "一字一顿",
+        "哽咽",
+        "沉声",
+        "威压",
+        "直播腔",
+        "音量",
+        "激动带",
+        "愣怔",
+        "怒意",
+        "杀气",
+        "字字如钉",
+        "声音发",
+    ];
+    ACTING.iter().any(|k| inner.contains(k))
 }
 
 fn first_paren_span(s: &str) -> Option<String> {
@@ -2570,6 +2653,13 @@ eleven twelve thirteen fourteen";
             resolve_scene_bgm_paren(Some("warm strings underscore"), &[]),
             "(warm strings underscore)"
         );
+        let acting = [Some("苏小翠:「拜见祖师！」(激动带哭腔,语速偏快)")];
+        assert!(
+            extract_bgm_paren_from_audio_descs(acting).is_none(),
+            "performance parentheticals must not become scene BGM"
+        );
+        assert!(!paren_looks_like_bgm("(倒吸一口凉气)"));
+        assert!(paren_looks_like_bgm("(gentle piano motif, steady tempo)"));
     }
 
     #[test]

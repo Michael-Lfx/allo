@@ -2286,8 +2286,7 @@ fn shot_cast_idxs(shot: &ShotDescription, characters: &[CharacterInScene]) -> Ve
         }
     }
     for ch in characters {
-        let name = ch.identifier_in_scene.trim();
-        if name.chars().count() >= 2 && blob.contains(name) {
+        if crate::domain::character_mentioned_in(&blob, ch, characters) {
             push(ch.idx);
         }
     }
@@ -3019,10 +3018,7 @@ fn speaker_idxs_for_shot(shot: &ShotDescription, characters: &[CharacterInScene]
     let audio = shot_audio_source(shot);
     let mut idxs: Vec<i32> = characters
         .iter()
-        .filter(|ch| {
-            let name = ch.identifier_in_scene.trim();
-            name.chars().count() >= 2 && audio.contains(name)
-        })
+        .filter(|ch| crate::domain::character_mentioned_in(&audio, ch, characters))
         .map(|ch| ch.idx)
         .collect();
     idxs.sort_unstable();
@@ -3190,18 +3186,22 @@ fn split_unmarked_dialogue_and_sfx(raw: &str) -> (String, String) {
     (line, sfx)
 }
 
-/// Force the scene-stable `(music)` caption: replace any existing `(…)` span,
-/// otherwise append.
+/// Force the scene-stable `(music)` caption: replace an existing music `(…)`
+/// span, otherwise append. Acting/SFX parentheses (`(倒吸一口凉气)`) stay.
 fn replace_or_append_bgm_paren(voiced: &str, scene_bgm: &str) -> String {
     let bgm = crate::planning::format_scene_bgm_paren(scene_bgm);
     if let Some(start) = voiced.find('(') {
         if let Some(rel_end) = voiced[start + 1..].find(')') {
             let end = start + 1 + rel_end;
-            let mut out = String::with_capacity(voiced.len() + bgm.len());
-            out.push_str(&voiced[..start]);
-            out.push_str(&bgm);
-            out.push_str(&voiced[end + 1..]);
-            return out;
+            let existing = &voiced[start..=end];
+            if crate::planning::paren_looks_like_bgm(existing) {
+                let mut out = String::with_capacity(voiced.len() + bgm.len());
+                out.push_str(&voiced[..start]);
+                out.push_str(&bgm);
+                out.push_str(&voiced[end + 1..]);
+                return out;
+            }
+            return format!("{voiced} {bgm}");
         }
     }
     format!("{voiced} {bgm}")
@@ -4109,6 +4109,72 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         ];
         let idxs = shot_cast_idxs(&s, &chars);
         assert!(idxs.contains(&0) && idxs.contains(&1), "{idxs:?}");
+    }
+
+    #[test]
+    fn honorific_alias_binds_protagonist_portrait() {
+        let mut s = shot(0, 0);
+        s.ff_vis_char_idxs.clear();
+        s.lf_vis_char_idxs.clear();
+        s.visual_desc = "中景:老祖指了指密室逃脱的牌子。王胖子倒吸一口凉气。".into();
+        s.audio_desc = Some("(倒吸一口凉气)".into());
+        let chars = vec![
+            CharacterInScene {
+                idx: 0,
+                identifier_in_scene: "玄霄老祖".into(),
+                is_visible: true,
+                static_features: "成年男性".into(),
+                dynamic_features: None,
+                voice_profile: None,
+            },
+            CharacterInScene {
+                idx: 2,
+                identifier_in_scene: "王胖子".into(),
+                is_visible: true,
+                static_features: "成年男性".into(),
+                dynamic_features: None,
+                voice_profile: None,
+            },
+        ];
+        let idxs = shot_cast_idxs(&s, &chars);
+        assert!(idxs.contains(&0), "老祖 must bind 玄霄老祖: {idxs:?}");
+        assert!(idxs.contains(&2), "{idxs:?}");
+    }
+
+    #[test]
+    fn sfx_paren_is_kept_when_scene_bgm_is_appended() {
+        let mut s = shot(0, 0);
+        s.visual_desc = "中景:<玄霄老祖>指了指牌子。<王胖子>倒吸一口凉气。".into();
+        s.motion_desc = s.visual_desc.clone();
+        s.audio_desc = Some("(倒吸一口凉气)".into());
+        let chars = [CharacterInScene {
+            idx: 0,
+            identifier_in_scene: "玄霄老祖".into(),
+            is_visible: true,
+            static_features: "成年男性".into(),
+            dynamic_features: None,
+            voice_profile: None,
+        }];
+        let prompt = i2v_motion_prompt(
+            &s,
+            &chars,
+            "cinematic",
+            &[],
+            2,
+            SpliceSeam::Cut,
+            "(soft continuous cinematic atmospheric underscore, same motif)",
+            false,
+            &[],
+            "",
+        );
+        assert!(
+            prompt.contains("倒吸一口凉气"),
+            "shot SFX must not be replaced by scene BGM: {prompt}"
+        );
+        assert!(
+            !prompt.contains("激动带哭腔"),
+            "{prompt}"
+        );
     }
 
     #[test]
