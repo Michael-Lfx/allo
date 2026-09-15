@@ -17,8 +17,8 @@ Agent Store 的 Agent 是产品层定义，在 allo 中通过 Preset/`ResolvedPr
 | 对象、状态、事件 | `01-domain-model.md` 与本文 |
 | 导入规则 | `02-codebuddy-workbuddy-import-spec.md` |
 | 兼容性 | `03-codebuddy-compatibility-matrix.md` 与本文 |
-| allo 映射、恢复 | `04-allo-runtime-adapter.md` |
-| Protocol | `05-allo-app-server-protocol.md` 与本文 |
+| allo 映射、恢复 | `04-flowy-agent-store-runtime-adapter.md` |
+| Protocol | `05-flowy-agent-store-app-server-protocol.md` 与本文 |
 | 凭据、安全 | `06-connector-oauth-security.md` |
 | SDK | `07-typescript-sdk.md` |
 | Web/Flowy | `08-flowy-web-integration.md` |

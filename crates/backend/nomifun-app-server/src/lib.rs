@@ -324,7 +324,7 @@ impl ConnectionState {
         Ok(InitializeResult {
             protocol_version: PROTOCOL_VERSION,
             server: ServerInfo {
-                name: "allo-agent-store",
+                name: "flowy-agent-store",
                 version: env!("CARGO_PKG_VERSION"),
             },
             auth_context: context.view(),
@@ -7470,7 +7470,7 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["auth_context"]["issuer"], "local-agent-store");
         assert_eq!(payload["auth_context"]["audience"], "agent-store");
-        assert_eq!(payload["server"]["name"], "allo-agent-store");
+        assert_eq!(payload["server"]["name"], "flowy-agent-store");
         assert_eq!(payload["connection_id"], connection_id);
     }
 

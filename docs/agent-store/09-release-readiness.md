@@ -69,7 +69,7 @@ V1 的范围和延期能力以 `00-architecture-decision.md` 为准；公共状�
 - run/get 与 run_result 返回一致的持久化状态；尽力而为通知丢失不影响一致性；event 去重通过；
 - 幂等键不会重复创建 Run；
 - 错误使用稳定 code，不泄露敏感信息；
-- `05-allo-app-server-protocol.md` §14 中 TC-API-001~004、TC-SDK-001~003 全部 PASS；其中 team/run 必须验证 Planning Context 摘要和成员 Prompt 隔离。
+- `05-flowy-agent-store-app-server-protocol.md` §14 中 TC-API-001~004、TC-SDK-001~003 全部 PASS；其中 team/run 必须验证 Planning Context 摘要和成员 Prompt 隔离。
 
 ### Gate 4：Connector 与 OAuth
 

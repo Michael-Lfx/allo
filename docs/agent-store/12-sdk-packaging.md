@@ -3,7 +3,7 @@
 > 状态：P0 已实现并实测；P1-1/P1-2/P1-3 主体已落地（tsdown 编译 + npm dry-run 通过）；P1-4 已决策延后；P2 未开始
 > 更新：2026-09-04（P0 状态行此前写“P1/P2 未开始”，已过期更正）
 > 日期：2026-09-04
-> 前置：`00-architecture-decision.md`、`05-allo-app-server-protocol.md`（§2.1.1 传输绑定）、`07-typescript-sdk.md`、`10-public-contracts.md`
+> 前置：`00-architecture-decision.md`、`05-flowy-agent-store-app-server-protocol.md`（§2.1.1 传输绑定）、`07-typescript-sdk.md`、`10-public-contracts.md`
 > 目标：以 `agent-store` 独立二进制为 runtime，提供可发布的 TS/Python SDK；SDK 与 Web 同走一套协议方法
 
 ## 1. 背景与结论

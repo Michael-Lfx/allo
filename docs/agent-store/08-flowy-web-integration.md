@@ -2,7 +2,7 @@
 
 > 状态：架构基线（Phase 0；发版前可改，非冻结，见 `16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）；Web/Flowy 待实现验证；发布阻断
 > 日期：2026-08-26
-> 前置：`05-allo-app-server-protocol.md`、`06-connector-oauth-security.md`、`07-typescript-sdk.md`、`10-public-contracts.md`
+> 前置：`05-flowy-agent-store-app-server-protocol.md`、`06-connector-oauth-security.md`、`07-typescript-sdk.md`、`10-public-contracts.md`
 > 目标：定义 Web/Flowy 如何通过 SDK 使用 Agent Store，不直接依赖 allo 内部实现
 
 ## 1. 集成边界

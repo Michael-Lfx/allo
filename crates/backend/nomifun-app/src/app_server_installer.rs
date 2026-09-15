@@ -917,7 +917,7 @@ async fn release_component(
 ///
 /// `skill` is deliberately a no-op: the skill corpus is plain directories with
 /// no state to flip, so for a skill the flag stays a catalogue marker
-/// (`05-allo-app-server-protocol.md` §4.5). Everything else must actually move,
+/// (`05-flowy-agent-store-app-server-protocol.md` §4.5). Everything else must actually move,
 /// or the catalogue would claim a state the runtime never entered.
 async fn set_component_runtime_enabled(
     presets: &dyn PresetRegistrar,
