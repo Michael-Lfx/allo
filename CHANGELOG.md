@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.3.8 - 2026-09-15
+
+- Canvas camera controls become independent four-column rollers, with tighter generation chrome.
+- Chat and home modes can send images with auto/models, mention uploaded stills with `@`, and show account credits with a purchase entry.
+- Vimax packs closing reactions into dialogue shots, covers script lines without treating title cards as gaps, and downloads FFmpeg from ModelScope first.
+
 ## v1.3.7 - 2026-09-14
 
 - Vimax skips last-frame likeness preflight at the finished-film stage and only repairs after a risk-control error.
