@@ -957,3 +957,388 @@ mod tests {
         assert!(env.is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------
+// surgical source edits
+// ---------------------------------------------------------------------------
+
+/// Why a surgical toggle could not be made.
+///
+/// Every variant becomes its own stable error code at the call site; the strings
+/// are for humans and nothing parses them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpSourceEditError {
+    /// The text is not a valid declarations file — the parser's own reason.
+    NotDeclarations(String),
+    /// There is no `mcpServers.<name>` entry.
+    ServerMissing,
+    /// The entry is declared but the parser **refused** it (an unknown field, a
+    /// misplaced one). Toggling it would "succeed" while changing nothing about
+    /// what runs, so it is reported as its own case: the fix belongs in the raw
+    /// editor, not in a switch.
+    ServerRejected,
+    /// The file parses and the entry is accepted, but the member could not be
+    /// located unambiguously. Nothing was written.
+    NotSurgicallyEditable,
+}
+
+/// One member of a JSON object: where its key and value sit, in bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JsonMember {
+    key: String,
+    /// Offset of the key's opening quote.
+    key_start: usize,
+    /// Offset of the first byte of the value.
+    value_start: usize,
+    /// Offset **one past** the last byte of the value.
+    value_end: usize,
+}
+
+/// Set or clear one entry's `enabled` member **in the source text**.
+///
+/// The member is `enabled`, not `disabled`: that is the field this parser
+/// accepts (a `disabled` key is an unknown field and gets the whole entry
+/// refused — see `ACCEPTED_FIELDS`), and it is also what a `disabled`-shaped
+/// edit would silently fail to reach.
+///
+/// A surgical text edit rather than a parse → re-serialize round-trip, for the
+/// same reason `config/set` edits `config.toml` with `toml_edit`: this file is
+/// hand-written, and a settings toggle has no business re-indenting it,
+/// reordering its keys or dropping its blank lines. The parse still comes first
+/// — an invalid file is refused before anything is written — but the edit only
+/// ever touches the one member's value.
+///
+/// Rules, all chosen so the smallest possible change is made:
+///
+/// - the member is present → only its **value** is rewritten (`true` /
+///   `false`), never removed, so a switch flip cannot silently delete a line the
+///   operator wrote;
+/// - the member is absent and the entry is to be **disabled** → the member is
+///   inserted as the entry's first member, matching the surrounding layout;
+/// - the member is absent and the entry is to be **enabled** → nothing changes,
+///   because absence already means enabled (`enabled.unwrap_or(true)`). That is
+///   also why repeating a request is byte-for-byte a no-op.
+pub fn set_server_enabled_in_source(
+    source: &str,
+    name: &str,
+    enabled: bool,
+) -> Result<String, McpSourceEditError> {
+    // Validity first: a file this parser cannot read must not be edited at all
+    // (a "successful" toggle on a broken file would be the worst outcome).
+    let declarations =
+        NomiMcpDeclarations::parse(source).map_err(McpSourceEditError::NotDeclarations)?;
+
+    // The raw `mcpServers` map below also holds entries the parser *refused*.
+    // Editing one of those would return Ok while changing nothing about what
+    // runs, so only an accepted entry is editable and the two refusals are told
+    // apart.
+    if !declarations.servers.iter().any(|server| server.name == name) {
+        return Err(
+            if declarations.rejected.iter().any(|rejection| rejection.name == name) {
+                McpSourceEditError::ServerRejected
+            } else {
+                McpSourceEditError::ServerMissing
+            },
+        );
+    }
+
+    let root = first_object_start(source).ok_or(McpSourceEditError::NotSurgicallyEditable)?;
+    let root_members =
+        object_members(source, root).ok_or(McpSourceEditError::NotSurgicallyEditable)?;
+    let servers = root_members
+        .iter()
+        .find(|member| member.key == "mcpServers")
+        .ok_or(McpSourceEditError::NotSurgicallyEditable)?;
+    let server_members = object_members(source, servers.value_start)
+        .ok_or(McpSourceEditError::NotSurgicallyEditable)?;
+    let entry = server_members
+        .iter()
+        .find(|member| member.key == name)
+        .ok_or(McpSourceEditError::ServerMissing)?;
+    let entry_members =
+        object_members(source, entry.value_start).ok_or(McpSourceEditError::NotSurgicallyEditable)?;
+
+    let Some(member) = entry_members.iter().find(|member| member.key == "enabled") else {
+        if enabled {
+            // Absent already means enabled: no byte changes.
+            return Ok(source.to_owned());
+        }
+        // Insert as the first member. The gap between `{` and the first member
+        // already carries the file's own line break and indentation, so reusing
+        // it keeps a pretty-printed file pretty and a compact file compact.
+        // An accepted entry always declares `command` or `url`, so an empty
+        // object here means the text is not what it appeared to be.
+        let first = entry_members.first().ok_or(McpSourceEditError::NotSurgicallyEditable)?;
+        let gap = &source[entry.value_start + 1..first.key_start];
+        let prefix = if gap.contains('\n') {
+            format!("{gap}\"enabled\": false,")
+        } else {
+            "\"enabled\": false, ".to_owned()
+        };
+        let mut edited = String::with_capacity(source.len() + prefix.len());
+        edited.push_str(&source[..entry.value_start + 1]);
+        edited.push_str(&prefix);
+        edited.push_str(&source[entry.value_start + 1..]);
+        return Ok(edited);
+    };
+
+    // Present: replace exactly the value bytes. Writing `true` over an existing
+    // `"enabled": true` reproduces the same text, so a repeat is still a no-op.
+    let value = if enabled { "true" } else { "false" };
+    let mut edited = String::with_capacity(source.len() + value.len());
+    edited.push_str(&source[..member.value_start]);
+    edited.push_str(value);
+    edited.push_str(&source[member.value_end..]);
+    Ok(edited)
+}
+
+/// Offset of the top-level object's `{`. JSON allows nothing but whitespace
+/// before it, so this needs no scanner.
+fn first_object_start(source: &str) -> Option<usize> {
+    let offset = source.find(|character: char| !character.is_whitespace())?;
+    (source.as_bytes()[offset] == b'{').then_some(offset)
+}
+
+/// The members of the object whose `{` is at `open`, in source order.
+///
+/// `None` = a shape this editor does not understand; the caller refuses instead
+/// of guessing. Keys are compared exactly as they appear in the text: the parser
+/// has already enforced `[A-Za-z0-9_-]{1,40}` on them, so no escape sequence can
+/// hide inside one.
+fn object_members(source: &str, open: usize) -> Option<Vec<JsonMember>> {
+    let bytes = source.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        return None;
+    }
+    let mut members = Vec::new();
+    let mut index = open + 1;
+    loop {
+        index = skip_whitespace(bytes, index);
+        match bytes.get(index)? {
+            b'}' => return Some(members),
+            b'"' => {
+                let key_start = index;
+                let key_end = string_end(source, key_start)?;
+                let key = source.get(key_start + 1..key_end)?.to_owned();
+                index = skip_whitespace(bytes, key_end + 1);
+                if bytes.get(index)? != &b':' {
+                    return None;
+                }
+                index = skip_whitespace(bytes, index + 1);
+                let value_start = index;
+                let value_end = value_end(source, value_start)?;
+                members.push(JsonMember { key, key_start, value_start, value_end });
+                index = skip_whitespace(bytes, value_end);
+                match bytes.get(index)? {
+                    b',' => index += 1,
+                    b'}' => return Some(members),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Offset of the closing quote of the string starting at `open`.
+fn string_end(source: &str, open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    if bytes.get(open) != Some(&b'"') {
+        return None;
+    }
+    let mut index = open + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            // Every escape is ASCII, so stepping over two bytes cannot split a
+            // multi-byte character (continuation bytes are >= 0x80).
+            b'\\' => index += 2,
+            b'"' => return Some(index),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+/// Offset one past the last byte of the value starting at `start`.
+fn value_end(source: &str, start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    match bytes.get(start)? {
+        open @ (b'{' | b'[') => {
+            let close = if *open == b'{' { b'}' } else { b']' };
+            let mut index = start + 1;
+            let mut depth = 1usize;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'"' => index = string_end(source, index)? + 1,
+                    byte if byte == *open => {
+                        depth += 1;
+                        index += 1;
+                    }
+                    byte if byte == close => {
+                        depth -= 1;
+                        index += 1;
+                        if depth == 0 {
+                            return Some(index);
+                        }
+                    }
+                    _ => index += 1,
+                }
+            }
+            None
+        }
+        b'"' => Some(string_end(source, start)? + 1),
+        _ => {
+            // A scalar runs to the next `,` or closing bracket.
+            let mut index = start;
+            while index < bytes.len() && !matches!(bytes[index], b',' | b'}' | b']') {
+                index += 1;
+            }
+            Some(skip_whitespace_back(bytes, start, index))
+        }
+    }
+}
+
+fn skip_whitespace(bytes: &[u8], mut index: usize) -> usize {
+    while matches!(bytes.get(index), Some(byte) if byte.is_ascii_whitespace()) {
+        index += 1;
+    }
+    index
+}
+
+fn skip_whitespace_back(bytes: &[u8], start: usize, mut end: usize) -> usize {
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    end
+}
+
+#[cfg(test)]
+mod source_edit_tests {
+    use super::*;
+
+    fn parsed(source: &str) -> NomiMcpDeclarations {
+        NomiMcpDeclarations::parse(source).expect("fixture must parse")
+    }
+
+    fn enabled_of(source: &str, name: &str) -> bool {
+        parsed(source)
+            .servers
+            .into_iter()
+            .find(|server| server.name == name)
+            .expect("server")
+            .enabled
+    }
+
+    const PRETTY: &str = r#"{
+  "mcpServers": {
+    "alpha": {
+      "command": "npx",
+      "args": ["-y", "alpha-server"]
+    },
+    "beta": {
+      "url": "https://example.test/mcp",
+      "headers": { "note": "a } brace, a \" quote and a , comma" }
+    }
+  }
+}
+"#;
+
+    #[test]
+    fn disabling_inserts_the_member_and_leaves_the_rest_untouched() {
+        let edited = set_server_enabled_in_source(PRETTY, "alpha", false).expect("edit");
+        assert!(!enabled_of(&edited, "alpha"));
+        // Everything but the inserted member is byte-identical.
+        let stripped = edited
+            .lines()
+            .filter(|line| !line.contains("\"enabled\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let original = PRETTY.lines().collect::<Vec<_>>().join("\n");
+        assert_eq!(stripped, original);
+        // The member joined the file's own indentation rather than its own.
+        assert!(edited.contains("\n      \"enabled\": false,\n"), "{edited}");
+    }
+
+    #[test]
+    fn enabling_rewrites_the_value_in_place_instead_of_deleting_the_line() {
+        let disabled = set_server_enabled_in_source(PRETTY, "alpha", false).expect("disable");
+        let enabled = set_server_enabled_in_source(&disabled, "alpha", true).expect("enable");
+        assert!(enabled_of(&enabled, "alpha"));
+        assert!(enabled.contains(r#""enabled": true"#), "{enabled}");
+        assert_eq!(
+            enabled.lines().count(),
+            disabled.lines().count(),
+            "a switch flip must not remove a line the operator wrote"
+        );
+    }
+
+    #[test]
+    fn a_repeated_request_changes_nothing() {
+        let once = set_server_enabled_in_source(PRETTY, "alpha", false).expect("disable");
+        let twice = set_server_enabled_in_source(&once, "alpha", false).expect("disable again");
+        assert_eq!(once, twice);
+        // Enabling an entry that declares no `enabled` member is already the
+        // requested shape: absent means enabled.
+        assert_eq!(
+            set_server_enabled_in_source(PRETTY, "beta", true).expect("no-op"),
+            PRETTY
+        );
+    }
+
+    #[test]
+    fn compact_files_stay_compact() {
+        let compact = r#"{"mcpServers":{"alpha":{"command":"npx"}}}"#;
+        let edited = set_server_enabled_in_source(compact, "alpha", false).expect("edit");
+        assert_eq!(
+            edited,
+            r#"{"mcpServers":{"alpha":{"enabled": false, "command":"npx"}}}"#
+        );
+        assert!(!enabled_of(&edited, "alpha"));
+    }
+
+    #[test]
+    fn a_rejected_entry_is_not_surreptitiously_editable() {
+        // `{}` has no transport, so the parser refuses this entry. The raw map
+        // still contains it — which is exactly why the edit path checks the
+        // accepted set first: an edit here would look successful and change
+        // nothing about what runs.
+        assert_eq!(
+            set_server_enabled_in_source(r#"{"mcpServers":{"alpha":{}}}"#, "alpha", false),
+            Err(McpSourceEditError::ServerRejected)
+        );
+        // Same for an unknown field: the file parses, the entry does not.
+        assert_eq!(
+            set_server_enabled_in_source(
+                r#"{"mcpServers":{"alpha":{"command":"x","disabled":true}}}"#,
+                "alpha",
+                true
+            ),
+            Err(McpSourceEditError::ServerRejected)
+        );
+    }
+
+    #[test]
+    fn a_missing_entry_and_an_invalid_file_are_two_different_refusals() {
+        assert_eq!(
+            set_server_enabled_in_source(PRETTY, "gamma", false),
+            Err(McpSourceEditError::ServerMissing)
+        );
+        assert!(matches!(
+            set_server_enabled_in_source("not json", "alpha", false),
+            Err(McpSourceEditError::NotDeclarations(_))
+        ));
+        assert!(matches!(
+            set_server_enabled_in_source(r#"{"mcpServers":[]}"#, "alpha", false),
+            Err(McpSourceEditError::NotDeclarations(_))
+        ));
+    }
+    #[test]
+    fn strings_that_look_like_structure_do_not_confuse_the_scanner() {
+        // `beta`'s header value holds a brace, an escaped quote and a comma;
+        // `alpha` must still be found, and `beta` must survive byte-identically.
+        let edited = set_server_enabled_in_source(PRETTY, "beta", false).expect("edit");
+        assert!(!enabled_of(&edited, "beta"));
+        assert!(edited.contains(r#"a } brace, a \" quote and a , comma"#));
+        assert!(edited.contains("\"alpha\""));
+    }
+}

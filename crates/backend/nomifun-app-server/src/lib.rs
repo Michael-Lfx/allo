@@ -66,7 +66,7 @@ use nomifun_common::{MessagePosition, MessageType, ProviderWithModel, UserId, ge
 use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerConfigMcpRejectionView,
     AppServerConfigMcpServerView, AppServerConfigMcpView, AppServerConfigMemoryView,
-    AppServerConfigProviderView, AppServerConfigView,
+    AppServerConfigProviderView, AppServerConfigView, AppServerMcpSourceView,
     AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
@@ -92,7 +92,14 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 /// App Server wire protocol version, negotiated by `initialize`.
-pub const PROTOCOL_VERSION: &str = "2026-09-15";
+///
+/// Not a version number: a **contract fingerprint**. It must differ from the
+/// previous value on any wire change at all, additive included — and a second
+/// change on the same day takes the next day's stamp rather than reusing it.
+/// `2026-09-16` carried `store/list`'s `published_at`; `2026-09-17` added the
+/// two MCP declaration write methods; `2026-09-18` adds `config/get-mcp`, the
+/// editor's read of the same file (`21` D17).
+pub const PROTOCOL_VERSION: &str = "2026-09-18";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3715,6 +3722,17 @@ fn agent_store_config_file(
         })
 }
 
+/// The declaration file that sits next to the resolved config file.
+///
+/// One function for the read face and both write faces: they must never be able
+/// to disagree about which file they mean.
+fn mcp_declaration_path(config_path: &std::path::Path) -> std::path::PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join("mcp.json")
+}
+
 /// Project the parsed file into its wire view. Sorted, credential-free, and no
 /// fact that is not actually in the file.
 ///
@@ -3775,10 +3793,7 @@ fn mcp_declaration_view(
     config_path: &std::path::Path,
     adopted: Option<bool>,
 ) -> Option<AppServerConfigMcpView> {
-    let path = config_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new(""))
-        .join("mcp.json");
+    let path = mcp_declaration_path(config_path);
     let source = std::fs::read_to_string(&path).ok()?;
     let (servers, rejected, error) = match nomifun_api_types::NomiMcpDeclarations::parse(&source) {
         Ok(declarations) => (
@@ -3907,26 +3922,150 @@ fn execute_config_set(
     execute_config_get(state)
 }
 
-/// Minimal, atomic write: a sibling temp file replaces the target (`rename`
-/// overwrites on Windows too), so an interrupted save can never leave a
-/// half-written config file behind.
-fn write_config_source(path: &std::path::Path, source: &str) -> Result<(), AppServerError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            config_unavailable(format!(
-                "failed to create {}: {error}",
-                parent.display()
-            ))
+/// `config/get-mcp`: the declaration file's raw text, for the file editor.
+///
+/// Missing file = `exists: false` (a normal answer, exactly like
+/// `config/get`'s). Unreadable = an error rather than an empty string: an editor
+/// that silently starts from "" would overwrite a file it merely could not read
+/// (`21` D17).
+fn execute_config_get_mcp(
+    state: &AppServerRouterState,
+) -> Result<AppServerMcpSourceView, AppServerError> {
+    let path = mcp_declaration_path(&agent_store_config_file(state)?);
+    match std::fs::read_to_string(&path) {
+        Ok(source) => Ok(AppServerMcpSourceView { exists: true, source: Some(source) }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(AppServerMcpSourceView { exists: false, source: None })
+        }
+        Err(error) => Err(config_unavailable(format!(
+            "failed to read {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+/// `config/set-mcp`: replace the declaration file with the text the operator
+/// supplied, after proving the host can read it back.
+///
+/// **Fail-closed, unlike the read face.** `config/get` reports an unreadable
+/// file as a view (a file-level `error`, empty lists) so a broken hand-edit
+/// stays visible rather than being silently ignored; a *write* of something the
+/// parser refuses would create exactly that state, so it is refused with the
+/// parser's own reason (which carries the line and column) and **nothing is
+/// written**. The response is the same re-read `config/get` view the other write
+/// faces return, so the caller sees the landing spot.
+fn execute_config_set_mcp(
+    state: &AppServerRouterState,
+    source: String,
+) -> Result<AppServerConfigView, AppServerError> {
+    if let Err(reason) = nomifun_api_types::NomiMcpDeclarations::parse(&source) {
+        return Err(AppServerError::new(
+            "mcp_source_invalid",
+            format!("mcp.json was not written: {reason}"),
+            StatusCode::BAD_REQUEST,
+            false,
+        ));
+    }
+    let path = mcp_declaration_path(&agent_store_config_file(state)?);
+    write_source_atomically(&path, &source, "json.tmp").map_err(|message| {
+        AppServerError::new("mcp_write_failed", message, StatusCode::SERVICE_UNAVAILABLE, false)
+    })?;
+    execute_config_get(state)
+}
+
+/// `config/set-mcp-enabled`: flip one entry's `enabled` member **in place**.
+///
+/// The edit itself lives in `nomifun_api_types::set_server_enabled_in_source`,
+/// which touches only that member's value and refuses (rather than reformats)
+/// anything it cannot locate unambiguously — this file is hand-written, and a
+/// switch has no business re-indenting it. An edit that changes no bytes is not
+/// written at all, so a repeated call leaves the file's mtime alone.
+fn execute_config_set_mcp_enabled(
+    state: &AppServerRouterState,
+    name: String,
+    enabled: bool,
+) -> Result<AppServerConfigView, AppServerError> {
+    let path = mcp_declaration_path(&agent_store_config_file(state)?);
+    let source = std::fs::read_to_string(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppServerError::new(
+                "mcp_server_not_declared",
+                format!("{} does not exist, so `{name}` is not declared", path.display()),
+                StatusCode::NOT_FOUND,
+                false,
+            )
+        } else {
+            AppServerError::new(
+                "mcp_write_failed",
+                format!("failed to read {}: {error}", path.display()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                false,
+            )
+        }
+    })?;
+
+    let edited = nomifun_api_types::set_server_enabled_in_source(&source, &name, enabled)
+        .map_err(|failure| match failure {
+            nomifun_api_types::McpSourceEditError::NotDeclarations(reason) => AppServerError::new(
+                "mcp_source_invalid",
+                format!("{} is not a valid declaration file: {reason}", path.display()),
+                StatusCode::BAD_REQUEST,
+                false,
+            ),
+            nomifun_api_types::McpSourceEditError::ServerMissing => AppServerError::new(
+                "mcp_server_not_declared",
+                format!("`{name}` is not declared in {}", path.display()),
+                StatusCode::NOT_FOUND,
+                false,
+            ),
+            nomifun_api_types::McpSourceEditError::ServerRejected => AppServerError::new(
+                "mcp_server_rejected",
+                format!("`{name}` is declared but the host refused it — fix it in the file editor"),
+                StatusCode::BAD_REQUEST,
+                false,
+            ),
+            nomifun_api_types::McpSourceEditError::NotSurgicallyEditable => AppServerError::new(
+                "mcp_source_not_surgically_editable",
+                "this file's formatting cannot be edited by a switch safely — use the file editor",
+                StatusCode::BAD_REQUEST,
+                false,
+            ),
+        })?;
+
+    if edited != source {
+        write_source_atomically(&path, &edited, "json.tmp").map_err(|message| {
+            AppServerError::new("mcp_write_failed", message, StatusCode::SERVICE_UNAVAILABLE, false)
         })?;
     }
-    let temp = path.with_extension("toml.tmp");
-    std::fs::write(&temp, source).map_err(|error| {
-        config_unavailable(format!("failed to write {}: {error}", temp.display()))
-    })?;
+    execute_config_get(state)
+}
+
+/// Minimal, atomic write: a sibling temp file replaces the target (`rename`
+/// overwrites on Windows too), so an interrupted save can never leave a
+/// half-written file behind. `temp_extension` keeps two files' writers from
+/// racing on one temp name. Errors come back as prose; each caller maps them to
+/// its own stable code.
+fn write_source_atomically(
+    path: &std::path::Path,
+    source: &str,
+    temp_extension: &str,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    let temp = path.with_extension(temp_extension);
+    std::fs::write(&temp, source)
+        .map_err(|error| format!("failed to write {}: {error}", temp.display()))?;
     std::fs::rename(&temp, path).map_err(|error| {
         let _ = std::fs::remove_file(&temp);
-        config_unavailable(format!("failed to write {}: {error}", path.display()))
+        format!("failed to write {}: {error}", path.display())
     })
+}
+
+/// Minimal, atomic write of `config.toml`.
+fn write_config_source(path: &std::path::Path, source: &str) -> Result<(), AppServerError> {
+    write_source_atomically(path, source, "toml.tmp").map_err(config_unavailable)
 }
 
 fn model_selection_error(model: Option<&ProviderWithModel>) -> AppServerError {
@@ -5869,6 +6008,41 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode config view: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // `config/get-mcp` / `config/set-mcp` / `config/set-mcp-enabled`: the
+        // host-management read and write faces of `~/.agent-store/mcp.json`
+        // (`05` §4.10, `21` D17). Same owner gate, same no-path-parameter rule as
+        // `config/set` — the file is resolved from the host's own config
+        // location, so no request can name one.
+        //
+        // `get-mcp` is the only read that returns the file's own text: the
+        // editor cannot edit what it cannot see, and the operator is editing
+        // their own file on their own machine. It is a separate method so that
+        // `config/get` — which every settings dialog calls on open — keeps
+        // carrying the file's *verdict* only.
+        "config/get-mcp" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            parse_ws_params::<WsConfigQuery>(params)?;
+            let view = execute_config_get_mcp(state)?;
+            Ok(ws_response(request_id, serde_json::to_value(view).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode mcp source view: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "config/set-mcp" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConfigMcpWrite>(params)?;
+            let view = execute_config_set_mcp(state, params.source)?;
+            Ok(ws_response(request_id, serde_json::to_value(view).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode config view: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "config/set-mcp-enabled" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConfigMcpToggle>(params)?;
+            let view = execute_config_set_mcp_enabled(state, params.name, params.enabled)?;
+            Ok(ws_response(request_id, serde_json::to_value(view).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode config view: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         // ---------------- Public model directory ----------------
         "models/list" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
@@ -6265,6 +6439,25 @@ struct WsSnapshotQuery {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WsConfigQuery {}
+
+/// `config/set-mcp` params: the **whole file** the operator wants on disk,
+/// verbatim. There is no path parameter and no per-entry shape: the host
+/// validates the text with its own parser before writing it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConfigMcpWrite {
+    source: String,
+}
+
+/// `config/set-mcp-enabled` params. `name` must be an **accepted** server key —
+/// an entry the parser refused is reported as its own refusal rather than
+/// quietly edited.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConfigMcpToggle {
+    name: String,
+    enabled: bool,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -8830,6 +9023,7 @@ model = "mimo-v2.5-free"
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::Compatible,
             enabled: true,
             required_connectors: vec![],
+            avatar_url: None,
         }
     }
 
@@ -8843,6 +9037,7 @@ model = "mimo-v2.5-free"
             auth_mode: "none".into(),
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
+            avatar_url: None,
         }
     }
 
@@ -9460,6 +9655,9 @@ model = "mimo-v2.5-free"
                             nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
                         enabled: true,
                         required_connectors: vec![],
+                        // 这个测试替身只枚举磁盘上的技能；市场图标的解析在
+                        // `nomifun-app`（`app_server_entry_assets`），不在这里。
+                        avatar_url: None,
                     }
                 })
                 .collect())

@@ -88,6 +88,7 @@ cli.json
 | `source` | **一律相对市场根**的路径（不暴露绝对路径） |
 | `version` | 条目声明版本（可缺省） |
 | `description` / `keywords` / `category` | 展示元数据（基线字段，单语言） |
+| `publishedAt` | 条目**发布时间**，严格 `YYYY-MM-DD` 日历日（§4.2） |
 | `localized` | 清单里 `<字段>_<语言>` 形式的本地化变体，**原样透传**（§4.1） |
 | `snapshot` | 该条目导入后的快照与安装计数（D8，可缺省） |
 
@@ -132,8 +133,27 @@ cli.json
 | `legacy_tags_zh` / `legacy_tags_en` | 154 / 154 | ✅ 已收编（降级为 `tags_*` 的兜底） |
 | `examples_zh` / `examples_en` | 268 / 268 | ⏳ 已透传、**UI 未展示**（无对应展示位，不新造控件） |
 | `featured` | 3 | ⏳ 未收编；注意是**数字**而非布尔 |
+| `publishedAt` | 0 | ✅ 已收编（§4.2）；**真实市场普查（2026-09-10）里一条都没有**，故 UI 的「最新」排序在有数据前不出现 |
 
 > 复现：`node scripts/check-agent-store-market.mjs --census --market <name>=<dir>`。市场清单层面的 `owner`（`{name,email}`）见 §11 D3；marketplace 清单字段的完整普查结果见 §11 D7。
+
+### 4.2 发布时间（`publishedAt`，已收编）
+
+条目可声明 `publishedAt`——**一个日历日**（`YYYY-MM-DD`），**不是**时间戳。它只表示「这个市场说这条是什么时候发布的」，没有任何本地事实可以替代它。
+
+**采集与规范化**（服务端一次完成，`published_at_of` / `is_calendar_date`，`nomifun-app/src/app_server_marketplace.rs`）：
+
+- 只接受严格的 `YYYY-MM-DD`，且月/日真实存在（闰年按格里高利规则：`2024-02-29` 收，`2025-02-29` 与 `1900-02-29` 拒），年份非 `0000`；
+- 值先 `trim()`，再整体判定——**不做任何重新解释**：`2026-07-30T00:00:00Z`（时间戳是另一种值，不截断成日期）、`2026/07/30`、`2026-7-30`、数字、`null`、蛇形 `published_at`（清单字段是 camelCase，与 `strict` / `source` 一致）**一律丢弃**；
+- **丢弃不阻断条目**：坏日期只是让该行没有日期。第三方数据里一个坏日期不该让条目消失——列不出来的条目也装不了。
+
+**绝不派生**：宿主不会用导入时间、快照 `added_at` 或市场刷新时间顶上。字段缺席就是「这个市场没有声明日期」。
+
+**wire 形状**：`store/list` 条目的 `published_at?: string`，缺席即未声明（`market/get` 的条目投影当前不含此字段）。
+
+**消费面**：商店卡片的 muted 日期标签；「最新」排序——**只有当该 kind 至少有一条带日期时才渲染**。真实市场普查（2026-09-10）里 `publishedAt` **出现 0 次**，所以上线初期这个排序不出现，市场补齐数据后自动出现；不做一个看得见却不排序的控件。
+
+**存储与前向兼容**：条目投影存在 `plugin_marketplaces.entries_json`（JSON blob）里，字段是**纯加法**，旧行反序列化为 `None`，**无须迁移**；但旧行要等 `market/refresh` 重新探测才会长出日期（缓存 blob 不会自己更新），因此 UI 不得替它编造。
 
 ---
 
@@ -279,6 +299,31 @@ staging 目录由本次获取独占：正常完成时晋升并解除守卫；提
 （§9.1 的「卸载再安装」）。
 
 ---
+
+### 9.3 条目发布时间的投影（2026-09-16）
+
+**背景**：WebUI 的排序需要「最新」。本仓**没有任何发布时间**——`StoreItem` 只有 `version` /
+`installed_version`，唯一的 `imported_at` 是**导入时间**而非发布时间。所以按「不派生、不假造」
+的原则，只能把发布时间做成市场自己声明的字段。
+
+**落地**：条目新增可选 `publishedAt`（`YYYY-MM-DD` 日历日，规格见 §4.2），投影到
+`store/list` 的 `published_at`。
+
+- **规范化在服务端一次完成**（`published_at_of` / `is_calendar_date`，`nomifun-app/src/app_server_marketplace.rs`）：
+  只接受严格 `YYYY-MM-DD` 且月/日真实存在（闰年按格里高利规则），时间戳 / 数字 / 蛇形 /
+  非法日期**一律丢弃**，且**不阻断条目**；
+- **绝不派生**：不用导入时间、快照 `added_at`、市场刷新时间顶上。缺席 = 这个市场没声明；
+- **存储无迁移**：条目投影在 `plugin_marketplaces.entries_json`（JSON blob）里，字段是纯加法，
+  旧行反序列化为 `None`；但旧行要等 `market/refresh` 重新探测才会长出日期；
+- **消费面**：商店卡片的 muted 日期标签 + 「最新」排序，且**只有当该 kind 至少一条带日期时
+  才渲染该排序**。真实市场普查（§D7，2026-09-10）里 `publishedAt` 出现 **0 次**，所以上线
+  初期这个排序不出现——不做看得见却不排序的死控件；
+- **校验脚本同步**：`scripts/check-agent-store-market.mjs` 的 `KNOWN_ENTRY_FIELDS` 收编该字段。
+
+**真实读数**：`nomifun-app --lib app_server_marketplace` **17 passed**（+3：日历日表、只读声明值、
+探针带走声明日期）；`nomifun-db --lib models::plugin_marketplace` **2 passed**（旧行反序列化 +
+往返且缺席不写 `null`）；`nomifun-app --test importer_e2e` **15 passed**；web `store-sort` **7 passed**；
+`check:market` 自检 **17/17**。协议指纹 `2026-09-15` → `2026-09-16`（现有 DTO 加字段，方法计数不变）。
 
 ## 10. 非目标与演进
 

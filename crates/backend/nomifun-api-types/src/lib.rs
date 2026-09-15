@@ -73,7 +73,7 @@ pub use app_server::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityStatus,
     AppServerCompatibilityTriple, AppServerConfigMcpRejectionView, AppServerConfigMcpServerView,
     AppServerConfigMcpView, AppServerConfigMemoryView, AppServerConfigProviderView,
-    AppServerConfigView,
+    AppServerConfigView, AppServerMcpSourceView,
     AppServerConnectorDetail, AppServerConnectorProbeResult,
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerConnectorTool, AppServerImportComponent, AppServerImportDetail,
@@ -256,7 +256,8 @@ pub use mcp::{
 pub use mcp::oauth_state;
 pub use mcp_declarations::{
     MAX_DECLARATION_KEY_LEN, MAX_STARTUP_TIMEOUT_MS, MAX_TOOL_TIMEOUT_MS, MIN_STARTUP_TIMEOUT_MS,
-    MIN_TOOL_TIMEOUT_MS, NomiMcpDeclarationRejection, NomiMcpDeclarations, ResolvedNomiMcpServer,
+    MIN_TOOL_TIMEOUT_MS, McpSourceEditError, NomiMcpDeclarationRejection, NomiMcpDeclarations,
+    ResolvedNomiMcpServer, set_server_enabled_in_source,
 };
 pub use media::{
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,

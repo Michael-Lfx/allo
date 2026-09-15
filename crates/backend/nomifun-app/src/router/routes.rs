@@ -1004,6 +1004,15 @@ pub fn create_router_with_all_state(
         plugin_snapshot_repository.clone(),
     )
     .with_strict_dependencies(super::state::strict_dependencies_enabled(services));
+    // One marketplace-asset resolver shared by the store and the read-side
+    // catalogs: an installed product (skill on disk / connector in mcp_servers)
+    // borrows the icon of the market entry it came from, so the installed
+    // panel renders real icons instead of initial badges.
+    let app_server_entry_assets =
+        crate::app_server_entry_assets::AppServerEntryAssets::new(
+            plugin_snapshot_repository.clone(),
+            services.work_dir.join("agent-store-markets"),
+        );
     let app_server_state = AppServerRouterState {
         registry: app_server_registry,
             runtime: Some(AgentRuntimeAdapter::new(states.agent_execution.clone())),
@@ -1038,11 +1047,13 @@ pub fn create_router_with_all_state(
             // Agent Store Skill/Connector catalog over the system services.
             // `None` keeps the capabilities off and yields
             // `unsupported_operation` on the protocol surface; production
-            // always wires them.
+            // always wires them. Both catalogs share one marketplace-asset
+            // resolver so an installed product shows its market icon.
             skills: Some(Arc::new(
                 crate::app_server_catalog::AppServerSkillCatalog::new(
                     states.skill.skill_paths.clone(),
-                ),
+                )
+                .with_assets(app_server_entry_assets.clone()),
             )),
             // Skill write face (`skill/create|update|delete`, `16` R17 / W12).
             // Same `SkillPaths` as the read catalog, so the id the write face
@@ -1055,7 +1066,8 @@ pub fn create_router_with_all_state(
                     states.mcp.config_service.clone(),
                     states.mcp.connection_test_service.clone(),
                     states.mcp.oauth_service.clone(),
-                ),
+                )
+                .with_assets(app_server_entry_assets.clone()),
             )),
             connector_auth: Some(Arc::new(
                 crate::app_server_catalog::AppServerConnectorAuth::new(

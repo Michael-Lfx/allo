@@ -307,6 +307,10 @@ impl StoreProvider for AppServerStoreProvider {
                             m.quick_prompts.iter().filter_map(|p| localized_or_none(p)).collect()
                         })
                         .unwrap_or_default(),
+                    // Carried verbatim from the market's own manifest row; the
+                    // discovery layer already dropped anything that was not a
+                    // calendar date (`18` §3), so this needs no second check.
+                    published_at: entry.published_at.clone(),
                     avatar_url: avatar.map(|path| {
                         format!(
                             "/api/app-server/store/{}/entries/{}/assets/{}",

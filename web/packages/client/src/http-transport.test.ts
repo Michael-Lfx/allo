@@ -224,12 +224,14 @@ describe("HttpTransport · shared surface (doc 16 R2)", () => {
   });
 });
 
-describe("HttpTransport · doc drift guard (site docs §7.3)", () => {
+describe("HttpTransport · route table count guard", () => {
   /**
-   * The developer guide states "covers 46 / 65 methods" and lists the 19
-   * without an HTTP binding. Both numbers live in prose and in this table, so
-   * mapping a new method (or dropping one) must fail this test and force the
-   * guide to be updated in the same change.
+   * The route table is 46 mapped / 22 without an HTTP binding. The developer
+   * guide's §7.3 quotes the same split in prose and lists the same 22 methods,
+   * but that guide now lives in the standalone `agent-store-site` repository, so
+   * nothing here can read it any more. Mapping a new method (or dropping one)
+   * fails this test — update the guide by hand in the site repository in the
+   * same change.
    */
   const DOCUMENTED_UNMAPPED = [
     "initialize",
@@ -252,6 +254,14 @@ describe("HttpTransport · doc drift guard (site docs §7.3)", () => {
     // discoverability and stability rather than permission.
     "config/get",
     "config/set",
+    // The MCP declaration file's read/write face (2026-09-17 / 2026-09-18): the
+    // same host management surface, WebSocket-only and absent from this package
+    // for the same reason. `get-mcp` is the editor's read of the file's own
+    // text; `set-mcp` writes it verbatim; `set-mcp-enabled` edits one entry's
+    // `enabled` member in place.
+    "config/get-mcp",
+    "config/set-mcp",
+    "config/set-mcp-enabled",
     // Skill write face (doc 16 R17 / W12): the host's own CRUD over user
     // skills. WebSocket-only and absent from this package for the same reason;
     // its request/response shapes still live in `@flowy-agent-store/protocol`.
@@ -263,10 +273,10 @@ describe("HttpTransport · doc drift guard (site docs §7.3)", () => {
     "skill/copy",
   ];
 
-  it("keeps the documented 46-mapped / 19-unmapped split", () => {
+  it("keeps the documented 46-mapped / 22-unmapped split", () => {
     const table = httpRouteTable();
     expect(Object.keys(table)).toHaveLength(46);
-    expect(DOCUMENTED_UNMAPPED).toHaveLength(19);
+    expect(DOCUMENTED_UNMAPPED).toHaveLength(22);
     for (const method of DOCUMENTED_UNMAPPED) {
       expect(Object.keys(table), `${method} must stay unmapped`).not.toContain(method);
     }

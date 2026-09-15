@@ -1300,7 +1300,7 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
    - **决策 2 被本记录取代的部分**：原写「V1 之后破坏性升级公共协议为 v2」不成立——`thread/turn/item` 词汇与概念对齐属**协议 v1 内部**调整，不是"下一版"。**目标不变**（概念模型对齐 Codex app-server、保留 `initialize` 与 `dispatch_connection_request` 唯一分发、stdio 维持排除、动工前先产出 Codex app-server 概念比对）。
    - **`17` §8「届时本规范升级为 v2」是范围问题而非版本问题**：原生格式尚未定义，将来以**新增章节或独立文档**落地，兼容层降为导入源。
    - **保留两条纪律**：① 任何变更走**显式修订 + 偏差登记**，不静默修改（原「不静默修改本冻结版本」的有效部分）；② **已发布 npm 包的版本号与 `changelog` 公告义务（D10=A）不变**——那是**发行机制**的版本，不是规范 / 协议的版本。
-   - **`PROTOCOL_VERSION` 不是版本号，而是契约指纹**（`nomifun-app-server/src/lib.rs:94`、`web/packages/protocol/src/protocol.ts:8`、`web/packages/client/src/http-transport.ts:43`）：任何 wire 改动（方法增删改名、现有 DTO 加字段、事件 payload 变化）都必须同步 bump 三处。**该常量已于 2026-09-11 随 `config/get`·`config/set` 视图新增 `tools` 字段一并 bump**（`2026-08-26` → `2026-09-11`），**并于同日随 `team/run` + `team_runtime` 能力位 + `TeamDetail.connectors` bump 到 `2026-09-12`**（指纹要点是「与上一次不同」，同日第二次变更按次日戳记，不能因为日期相同就复用同一个值）。**实测落点比「三处」更广：8 处代码/夹具 + 2 处站点文档**——三个权威位置之外还有 `web/scripts/mock-server.ts`（mock 握手；客户端 `client.ts:131` 与 `sdk/src/spawn.ts:25` 做**严格相等**校验，漏改即 mock 流程与 spawn 校验失败）、`web/scripts/smoke.ts`（2 处）、`web/packages/sdk/src/readiness.test.ts`（2 处）。为根治该类漂移，两处 Rust e2e 夹具（`nomifun-app/tests/importer_e2e.rs`、`agent_execution_decision_e2e.rs`）与 SDK 的 `spawn.test.ts` 已改为**引用常量本身**（`nomifun_app_server::PROTOCOL_VERSION` / `APP_SERVER_PROTOCOL_VERSION`）而非复制字面量；`site/content/docs/{zh-CN,en-US}/typescript-sdk.md` 的示例串同步更新（`check:docs-sync` 9 页 0 drift）。另有一类**内容**漂移由 `web/packages/client/src/{http-transport,docs-drift}.test.ts` 守卫：路由表条目数与站点文档引用的「已映射/未映射」计数必须同时改（`team/run` 落地时由 `45 / 64` 改为 `46 / 65`）。**再于同日随 `AppServerConfigView.mcp`（`21` D14 的 MCP 声明读面）bump 到 `2026-09-13`**——同样按「与上一次不同」的原则取次日戳；本次是现有 DTO **加字段**、未新增方法，故 `46 / 65` 的计数守卫不动，落点仍是那 8 处代码/夹具 + 2 处站点文档。**再于 2026-09-14 随 `AppServerConfigMcpView.adopted`（「宿主是否采用 `mcp.json`」）bump 到 `2026-09-14`**——同一类「现有 DTO 加字段、不新增方法」，落点与计数守卫同样不变（8 + 2；两批的落地记录分别见 `20` §9.3 与 §9.5）。**再于 2026-09-15 随安装器 `outcomes`（`AppServerInstallResult` / `AppServerInstallStatus` / `AppServerStoreInstallResult` 三个 DTO 加字段）bump 到 `2026-09-15`**——仍是「现有 DTO 加字段、不新增方法」，落点仍是那 8 处代码/夹具 + 2 处站点文档，`46 / 65` 计数守卫未动（本批落地记录见 §5.3，规格见 `05` §4.5 / §4.5.2）。
+   - **`PROTOCOL_VERSION` 不是版本号，而是契约指纹**（`nomifun-app-server/src/lib.rs:94`、`web/packages/protocol/src/protocol.ts:8`、`web/packages/client/src/http-transport.ts:43`）：任何 wire 改动（方法增删改名、现有 DTO 加字段、事件 payload 变化）都必须同步 bump 三处。**该常量已于 2026-09-11 随 `config/get`·`config/set` 视图新增 `tools` 字段一并 bump**（`2026-08-26` → `2026-09-11`），**并于同日随 `team/run` + `team_runtime` 能力位 + `TeamDetail.connectors` bump 到 `2026-09-12`**（指纹要点是「与上一次不同」，同日第二次变更按次日戳记，不能因为日期相同就复用同一个值）。**实测落点比「三处」更广：8 处代码/夹具 + 2 处站点文档**——三个权威位置之外还有 `web/scripts/mock-server.ts`（mock 握手；客户端 `client.ts:131` 与 `sdk/src/spawn.ts:25` 做**严格相等**校验，漏改即 mock 流程与 spawn 校验失败）、`web/scripts/smoke.ts`（2 处）、`web/packages/sdk/src/readiness.test.ts`（2 处）。为根治该类漂移，两处 Rust e2e 夹具（`nomifun-app/tests/importer_e2e.rs`、`agent_execution_decision_e2e.rs`）与 SDK 的 `spawn.test.ts` 已改为**引用常量本身**（`nomifun_app_server::PROTOCOL_VERSION` / `APP_SERVER_PROTOCOL_VERSION`）而非复制字面量；`site/content/docs/{zh-CN,en-US}/typescript-sdk.md` 的示例串同步更新（`check:docs-sync` 9 页 0 drift）。另有一类**内容**漂移由 `web/packages/client/src/{http-transport,docs-drift}.test.ts` 守卫：路由表条目数与站点文档引用的「已映射/未映射」计数必须同时改（`team/run` 落地时由 `45 / 64` 改为 `46 / 65`）。**再于同日随 `AppServerConfigView.mcp`（`21` D14 的 MCP 声明读面）bump 到 `2026-09-13`**——同样按「与上一次不同」的原则取次日戳；本次是现有 DTO **加字段**、未新增方法，故 `46 / 65` 的计数守卫不动，落点仍是那 8 处代码/夹具 + 2 处站点文档。**再于 2026-09-14 随 `AppServerConfigMcpView.adopted`（「宿主是否采用 `mcp.json`」）bump 到 `2026-09-14`**——同一类「现有 DTO 加字段、不新增方法」，落点与计数守卫同样不变（8 + 2；两批的落地记录分别见 `20` §9.3 与 §9.5）。**再于 2026-09-15 随安装器 `outcomes`（`AppServerInstallResult` / `AppServerInstallStatus` / `AppServerStoreInstallResult` 三个 DTO 加字段）bump 到 `2026-09-15`**——仍是「现有 DTO 加字段、不新增方法」，落点仍是那 8 处代码/夹具 + 2 处站点文档，`46 / 65` 计数守卫未动（本批落地记录见 §5.3，规格见 `05` §4.5 / §4.5.2）。**再于 2026-09-16 随 `store/list` 的 `published_at`（现有 DTO 加字段）bump 到 `2026-09-16`**——落点仍是那 8 处代码/夹具 + 2 处站点文档，计数守卫未动。**再于 2026-09-17 / 2026-09-18 随 MCP 声明的两个写方法与一个读方法 bump 到 `2026-09-17` → `2026-09-18`**——这是本记录之后**第一次真正新增方法**，守卫因此由 `46 / 65` 改为 **`46 / 68`**（46 映射 / 22 无 HTTP 绑定）；**站点文档侧的那份计数这次没跟上**，因为站点已迁为独立仓，见 §8.4 第 1 条。**订正**：上文反复出现的「8 处代码/夹具 + 2 处站点文档」落点清单，自站点迁出（`772890fed`）起**只剩本仓的 8 处**；站点那 2 处只能在 `agent-store-site` 改。同一轮收尾还删掉了 `web/packages/client/src/docs-drift.test.ts`，故本仓的方法计数守卫**只剩 `http-transport.test.ts` 一道**（46 映射 / 22 无 HTTP 绑定）。
    - **连带订正 D6 落地口径**：原「逃生口默认关（不破坏现有可安装性）」的前提是规范已发布；规范未发版、无既有消费者，但按用户 2026-09-11 决定落地为**严格依赖检查默认关（`[import].strict_dependencies` 默认 `false`），保留现状行为**（逃生口保留是因为它本身有产品价值，不是为兼容）；原写「阻断默认开」已被同决定订正，见 §5.2 R23 / R24 行与 §5.3 落地记录。
    - **本记录不改写历史证据页**：`13-p0-execution-plan.md` §15 / `13-p0-execution-plan.md` §14 / `13-p0-execution-plan.md` / `agent-store-v1-test-cases.md` 里的「版本冻结」指的是**被安装 Agent 的版本冻结语义（TC-RT-002）**，与本记录无关，一字不动。
 5. **Store 会话工具面的表达层定为 `~/.agent-store/config.toml` 的 `[tools]`**（2026-09-11）：决策 3 解决「Team 怎么触发」，本决策解决「工具面在哪一层表达」。
@@ -1311,3 +1311,182 @@ Phase 6 → TC-OAUTH-*、TC-CONN-*、TC-SEC-*
     - **配套需要一个「减项」**：既有 `builtin_allowlist` 会连带滤掉 Connector 代理工具、且其语义（空 = 全放行）是为极小集合设计的，无法表达「保留大多数、去掉少数」；因此需为 `ToolsConfig`/`ToolRegistry` 增加注册黑名单（对 bootstrap 之后动态注册同样生效）。
     - **命名与匹配规则对齐参考实现**：`[tools]` 的 `enabled`（非空才约束）/ `disabled`（在 `enabled` 之后应用）双列表、内置名精确匹配、MCP 用 `mcp__<server>__*` glob（我们的 canonical 名形如 `mcp__{slug≤42}__{hash16}`，故前缀 glob 稳定）、以及「匹配不到任何工具的三类写法启动告警」，对齐 Kimi Code CLI 配置文件 §`tools`（<https://www.kimi.com/code/docs/kimi-code-cli/configuration/config-files.html#tools>）。必须保留的差异（产品域开关 `[tools.domains]`、注册期移除强于广告过滤、不引入第三种 Agent 级写法）见 `20` §7.8。
     - 逐项取舍表、机制勘误与实施步骤见 `20-tool-injection-policy.zh.md`（2026-09-11 重构：第 9 节 Step 1–7）。
+
+---
+
+## 8. 本轮落地记录（2026-09-16 ~ 2026-09-18）
+
+三个批次，都是同一会话内落地。**唯一没绿的门禁与一个跨仓事项**写在 §8.4，不掩饰。
+
+### 8.1 批次一 · 目录页改为「三名词 tab」
+
+**改了什么**：`web/src/components/CatalogView.tsx`（2307 → 约 1350 行）从「四动词 tab
+（应用商店 / 市场源 / 导入 / 已安装）」改为 **专家 / 技能 / 连接器** 三个名词 tab；每个 tab 有
+`browse`（商店投影）与 `installed`（已安装）两个面，由右上角随 tab 变的按钮切换；专家 tab 下有
+**专家 | 专家团** 二段控件（真实数据轴：`kind` ∈ agent / team）；搜索框按当前面给出正确占位符
+（旧的 `Record<CatalogTab, string>` 在「已安装」永远说「搜索专家」，且给「市场源」配了一个
+它从来不渲染的导入搜索框）。
+
+**同时搬走两个面**（都做成自持状态，因为新宿主看不到目录页的 error 条——页面级 error 在设置
+对话框里根本不可见，这是真 bug 而非洁癖）：市场注册表 → 设置对话框新增的「市场源」分区
+（`catalog/MarketSourcesPanel.tsx`）；导入表单 + 历史 → 技能 tab「添加技能」/ 连接器 tab
+「自定义连接器」打开的对话框（`catalog/ImportPanel.tsx`）。公共小件抽到 `catalog/shared.tsx`，
+`dialogs/MarketSettingsSection.tsx` 只是接线层。
+
+**被本批取代的既有结论（修正，不是回退）**：
+
+- **D-W13-2**（`16` §5.2：四页签是 W13 可达性的修复形态）被三名词 tab 取代；`sources` /
+  `imports` 的可达性改由「设置里的市场源分区 + 两个上下文按钮」承担。两处代码注释都写明新的
+  承载点，免得下一个读者当成回归；
+- 「市场源不进设置」的旧判断作废：三名词 tab 化后它在页面上真的无处可放，而它本来就是宿主级
+  配置（`market/add` 写宿主注册表、移除会级联卸载）。`SettingsDialog` 的 JSDoc 里那段
+  「商店面已有 app-store 页、无设置语义」被改写成区分——**浏览面归页面，注册表归设置**。
+
+**顺手修掉的三个既有缺陷**：搜索框在没有搜索框的 tab 上残留过滤（`query` 被四个 body 共用；
+现在切 tab 清空）；`category` 那条**永久死过滤**（全文件没有任何控件能把它设成非 `all`，
+四处过滤已删）；「名称」排序缺 `lang` 依赖（语言切换后排序不更新）。
+
+**有意偏离参考图的地方**（写在代码注释里，不是遗漏）：
+
+- **技能 tab 不做「推荐 | SkillHub | 套件」三段控件**：推荐要策展位、套件在本仓没有实体、
+  SkillHub 是一个具体上游市场——没有数据的分段控件是在撒谎；
+- **精选场景用「专家团」当场景、不引入封面图**：商店投影没有成员表（`members` 在清单里但被
+  投影丢掉）也没有封面资源，卡片显示市场名 + 描述、沿用既有渐变底。成员拼贴与照片封面需要
+  真实市场补数据，登记为后续数据侧事项——**不预先读一个没人写的字段**；
+- **已安装的专家团改成普通网格**：精选场景只在浏览面出现，否则同一 tab 上同一批团队会出现两次。
+
+**读数**：新增 `catalog/shared.tsx` 238 行、`catalog/MarketSourcesPanel.tsx` 518 行、
+`catalog/ImportPanel.tsx` 395 行、`dialogs/MarketSettingsSection.tsx` 24 行；web `typecheck`
+本批当时除既有 `src/lib/client.upload.test.ts:41`（`AppServerClientOptions.client` 缺失，早于
+本批）外零错误——**该条已于后续收尾修掉，现为 0 错误**（见 §8.6 第 3 条）；i18n 键双向零差。
+**本批无协议变更**，指纹不动。
+
+### 8.2 批次二 · 条目发布时间 `publishedAt`
+
+规格与读数见 `18` §9.3（字段语义在 §4.2）。要点：五层投影（`ScannedEntry` → `entries_json` →
+`AppServerStoreItem` → `store/list` → `StoreItem`）、**只接受严格 `YYYY-MM-DD` 日历日**、
+**绝不派生**（不用导入时间顶上）、**无迁移**（JSON blob 加字段）、UI 侧**没有日期就不渲染
+「最新」排序**。
+
+### 8.3 批次三 · MCP 声明文件从只读变可读可写
+
+决策与残余风险见 `21` D17，契约见 `05` §4.10，校验规格的单一事实源见 `20` §7.9。
+
+- 三个方法：`config/get-mcp`（**唯一**返回原文的读面，编辑器按需调用）、`config/set-mcp`
+  （全文，写前用同一解析器验、不过则**零写入**）、`config/set-mcp-enabled`（只改一条目的
+  `enabled`，**文本级最小编辑**：值就地替换 / 按文件自己的缩进插入 / 无变化不写盘 / 定位不明确
+  就拒绝）；
+- **一个必须记住的格式事实**：参考实现里的 `disabled` 在本仓是**未知字段**，会让**整条**被
+  解析器拒绝（`deny_unknown_fields`）。我们的字段是 **`enabled`**；
+- **凭据边界被精确化**：原判「`env`/`headers` 的值永不上 wire」把 *verdict 视图* 与 *文件原文*
+  混成一件。verdict 视图（`config/get.mcp`）继续不含任何取值；原文只经 `config/get-mcp` 这一个
+  按需读面出去——理由是**编辑器无法编辑它看不见的文件**，且全程只在回环 + owner 闸门内。残余
+  风险（原文进前端内存、可能进截图/日志）已在 `21` D17 明确登记；
+- **UI**：`McpManagerView` 纯视图 + 两个宿主（设置分区、连接器 tab 的对话框），逐条
+  `role="switch"` 开关 + 「配置 MCP」原文件编辑器；`settingsConfig` 新增 4 个动作，规则由
+  5 例单测钉住（缓冲区只从宿主来 / 被拒的保存保留操作者原文 / 编辑器外的开关不丢未保存改动 /
+  落点是宿主回读而不是请求回声）。
+
+### 8.4 未完成与未验证（登记，不掩饰）
+
+1. **站点迁出后的守卫收尾（原条＝「跨仓未同步」，已按「守卫跟着对象走」处理）。** 站点已迁为
+   独立仓（`C:\workspace\agent-store-site`；本仓提交 `772890fed` 移除了站点源码、`deploy-site.yml`
+   与 `site/` 的 gitignore 条目），本仓 `site/` 只剩一个指向说明。与本仓耦合的两道守卫**已删除**
+   而不是留着：
+   - `scripts/check-docs-sync.mjs`（含 `scripts/check-docs-sync.test.mjs`）——站点目录消失后 CLI
+     读数变成 `0 page(s) in 2 language(s), 0 drift(s)` 而**恒绿**，同文件的磁盘用例（「本仓站点
+     文档 9 页 0 drift」）则 **15 pass / 1 fail** 直接红。一个对象不在本仓的守卫只有两种状态——
+     说谎或报错——两种都不该留在 `check` 链里；
+   - `web/packages/client/src/docs-drift.test.ts`——`ENOENT: site\content\docs\zh-CN\typescript-sdk.md`。
+
+   `bun run check` 的链与 `scripts/scripts.json` 的两条登记同步移除（`bun run help --check` 仍绿）。
+   本仓能证明的只有自己的路由表，那条**本地**计数守卫留在 `http-transport.test.ts`（46 映射 /
+   22 无 HTTP 绑定）。**两条跨仓待办——已办（站点仓）**：① 中英结构同步守卫已在 `agent-store-site`
+   重建（`scripts/check-docs-sync.mjs` + `scripts/check-docs-sync.test.mjs`，按那边的约定加
+   `check:docs-sync`（`node` 起）与 `test:docs-sync`（`bun test`）两个脚本；`DOCS_DIR` 由
+   `site/content/docs` 改为 `content/docs`，头注与 shebang 改为该仓口径）。**实跑读数**：
+   `node scripts/check-docs-sync.mjs` → **9 page(s) in 2 language(s), 0 drift(s)**（9 页与旧测试
+   里的期望清单逐字相同）；`--self-test` → **9/9 as expected**；`bun test
+   scripts/check-docs-sync.test.mjs` → **16 pass / 0 fail**（含那条磁盘用例）。② 站点文档 §7.3 的
+   「覆盖 46 / 65 个方法 / 19 个无绑定」已改为 **`46 / 68` / 22 个**（中英各一处，尾部补
+   `config/get-mcp`、`config/set-mcp`、`config/set-mcp-enabled`），并补一条与相邻 `config/*`、
+   `skill/*` 同格式的宿主管理面说明（含「写面失败即不写」「开关是文本级最小编辑」「`config/get-mcp`
+   是唯一返回原文的读面」三条口径）。改后复跑：**9 页 0 drift**、单测 **16/16**。
+   **两处相邻过期已一并订正（口径＝「协议面以源码为准」）**：① `typescript-sdk.md` §3 的
+   `APP_SERVER_PROTOCOL_VERSION` 示例 `"2026-09-15"` → **`"2026-09-18"`**（中英各一处）；
+   ② 同页头部补一条**协议面口径**：§3 的常量示例与 §7.3 的方法计数按**仓库工作区（源码）**取值，
+   工作区已领先于任何已发布版本（三个 MCP 方法与 `store/list` 的 `published_at` 尚未随版本发布），
+   未发布差异指向 `upgrade` §8 与 `changelog` §4；③ 顺带把 `changelog` §4 那张未发布表的
+   「协议方法面增量」一行补全（三个 MCP 方法 + `published_at`，原文只有「等」），让 ② 指向的那份
+   台账不再漏项。**版本号口径未动，且与文档自洽**：工作区三个包仍是 `0.1.0-beta.3`，与「本文与
+   仓库当前对应 `0.1.0-beta.3`」一致——有张力的是 **wire 面**（源码领先），不是版本号。
+2. **`cargo check --workspace --all-targets` 在本机不可信**：与并发写入者的构建缓存争用会报出
+   源码里不存在的字段（`avatar_url`），而 `-p <crate>` 是绿的。本记录所有 Rust 结论都按**分组**
+   给出，不冒充整仓结论。
+3. **前端像素未验证**：三批都只到「编译 + 单测 + 逐行核对」。三名词 tab 的层级、二段控件与排序
+   同排的观感、`MCP 服务管理` 对话框与开关的实际手感，都需要跑起来看。
+4. **未提交**：`style.css`、两个 i18n、`appStore.ts`、`SettingsDialog.tsx`、`Sidebar.tsx`、
+   `DialogShell.tsx` 都同时含本会话与另一位写入者的未提交改动，因此**本会话没有 stage / commit
+   任何东西**；提交需要按 hunk 挑，或等对方先提交。
+
+### 8.5 既有死代码：谁清、谁留
+
+按「只清理自己制造的混乱」，本会话分两类处置（明细与读数见 §8.6 第 2 条）：
+
+- **已清（用户指令「D 问题修复下」）**：`CatalogView.tsx` 的 4 个从未被引用的 `*Categories` memo
+  与 i18n 的 `catalog.catAll`。它们在 **HEAD 上就已经**是「只有定义、没有消费者」（成因见 §8.6
+  第 2 条），本会话原本按惯例留着，本轮按要求删除；
+- **仍留（不是本会话造的）**：`style.css` 的 `.market-tab`（**在 HEAD 上就只有那三条规则、没有任何
+  tsx 消费者**——`git grep` 实证；上一版记录里「本批中途用过」是误记，本批用的是复数
+  `market-tabs` / `market-tabs-nouns`）与另一位写入者删 `ConnectionBanner.tsx` 后留下的
+  `.connection-banner` / `-actions` / `-text` / `.connection-note` 四条（对方在建，不动）。提醒：
+  `web/` **没有**死 CSS 门禁（`check:dead-css` 只扫 `ui/src`），这一类目前只能靠抽查发现。
+
+### 8.6 收尾（§8.1–§8.5 之后的仓库级整理）
+
+三件与本轮功能无关、但都属于「把话说真」的收尾，均为用户点名要求：
+
+1. **`ui/` 门禁退出聚合链（指令「ui 门禁取 A」）**。`bun run check` 由 13 环减到 **5 环**（错误
+   面板契约 · 进程运行时边界 · 浏览器平台边界 · 市场清单 · 脚本登记），移出的是 6 个**只扫
+   `ui/`** 的环：`typecheck` / `check:i18n` / `check:theme` / `check:icons` /
+   `check:codemirror-runtime` / `check:agent-vocabulary`；**脚本与 `scripts.json` 登记全部保留**，
+   按需手动跑。动因不是「少查点」而是**查错了对象**：`check` 的 `typecheck` 是
+   `bun run --filter=./ui typecheck`，聚合门禁**一个字都不碰 `web/`**（产品前端），而它此前红在
+   **第 1 环**（`ui/src/renderer/**` 约 15 条 TS 错）——那个门禁根本没机会走到仓级检查。
+   **改后 `bun run check` exit 0**（error-surface-contract passed · process-runtime-boundary
+   passed · browser-platform-boundary passed · market **17/17** · `help --check` ✓）。链的描述
+   同步改真，否则 `help` 与贡献文档会撒谎：`scripts/scripts.json` 的 `check` 说明、`AGENTS.md`
+   （Commands 表 + Verification Ladder + 一条说明）、`CONTRIBUTING.md`（ladder 两行 + 一条说明）、
+   `docs/contributing/development.zh.md`、`ui/src/renderer/styles/MIGRATION.md`（原写
+   「Gate: `bun run check:dead-css`」，现注明已不在链内）；`bun run help --readme` 重生两个
+   README 的脚本目录表——顺带补上**原本就漏掉**的 `test:market` / `check:market` 两行（它们此前
+   已与 `scripts.json` 漂移）。**有意保留 `check:error-surface-contract`**：它不扫 ui 源码，只
+   静态校验我们自己的 Edge 矩阵脚本（进程清理 / 回环 URL / 次数上限），且是绿的。
+   **未做（缺一次决定）**：把 `typecheck:web` / `test:web` 接进 `check`——`web/` 至今不在任何
+   仓级门禁里，前提（第 3 条）现已具备。
+2. **清掉本会话自己造的两处孤儿（指令「C、D 问题修复下」）**。
+   **C**：`web/src/style.css` 的 `.secondary-button.is-on`——全仓引用数 0。**顺带纠正一个我上轮
+   说错的判断**：`secondary-button` **从来没有基类**（`style.css` 里 button 的地基只有
+   `button { cursor: pointer }` + focus/disabled），HEAD 上那三个用它按钮本来就只靠元素样式；
+   Batch 1 删掉那三个消费者后，`.is-on` 才变成孤儿——**是本会话造成的**，不是「既有」。同批还
+   带出 5 个 i18n 孤儿：`catalog.kindSkill` / `kindConnector` / `tabImports` /
+   `marketAutoUpdateToggleOn` / `marketAutoUpdateToggleOff`（后四个是我上轮**漏报**的，用
+   「从 `git diff HEAD` 抽出 93 个被删键、逐个查还有谁在用」的办法找齐——只看键名清单会漏）。
+   **D**：`CatalogView.tsx` 的 4 个 `*Categories` memo 与 `catalog.catAll`。这两个确属**早于本批**：
+   `git show HEAD:` 里它们就只有定义、没有使用，且 uncommitted diff 根本没碰它们；成因是
+   `61d56f6bc chore: 同步并行工作区剩余改动`（2026-09-04）**只把定义与 i18n 键收进来、没带
+   消费者**——一次并行工作区的半截收敛，故「出生即死」。
+   **读数**：改后 zh/en 键 **676 : 676、键集合双向 diff 0 / 0**；被删的 6 个键 + `secondary-button`
+   + 4 个 memo 名全仓残留引用 **0**；`CatalogView.tsx` 里 `useMemo` 仍有 9 处使用（未留孤立
+   import）；web 全量 **57 files / 448 passed | 1 skipped**，`web` typecheck 不受影响。
+3. **`web` typecheck 归零（指令「修 web 那条既有 typecheck 错」）**。既有红是
+   `src/lib/client.upload.test.ts:41` 的 **TS2741**：`web/src/lib/client.ts` 的
+   `AppServerClientOptions` 经 `Omit<BaseOptions, "transport">` 继承了包里**必需**的
+   `client: ClientInfo`（握手 `initialize` 的归属字段，`packages/client/src/client.ts:49`）；
+   真实调用点 `web/src/store/appStore.ts:1067` 传了它，这个用例没传。**修法是让用例补齐，而不是
+   把字段放宽**——放宽等于改已发布包的契约，`client` 是握手必带字段，不该为一条测试松动。补齐时
+   用**独立标识** `{ name: "client-upload-test", version: "0.0.0" }`，刻意**不**抄宿主的
+   `{ name: "allo-app-server-chat", version: "0.3.0" }`——否则宿主的版本字面量会被钉在第二个地方，
+   迟早漂移（这与 §7 决策 4 对 `PROTOCOL_VERSION` 的处理同一口径）。
+   **读数**：`cd web && bun run typecheck` → **exit 0（0 错误）**；`bun x vitest run` →
+   **57 files / 448 passed | 1 skipped（449 例）**，其中该用例 **1 passed**。

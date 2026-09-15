@@ -29,6 +29,12 @@ pub struct MarketplaceEntry {
     pub keywords: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// The market's own `publishedAt` (`YYYY-MM-DD`, doc `18` §3), carried
+    /// through verbatim. The **discovery layer** normalizes it before storing:
+    /// a row written before this field deserializes to `None`, and a malformed
+    /// value never reaches here (see `app_server_marketplace::published_at_of`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
     /// Localized `<field>_<lang>` variants carried by the market manifest
     /// (`description_zh` / `description_en`, `tags_zh` / `legacy_tags_en`, …),
     /// passed through verbatim so each client can fall back by its own UI
@@ -96,5 +102,38 @@ impl PluginMarketplaceRow {
     /// Decode the entries projection.
     pub fn entries(&self) -> Vec<MarketplaceEntry> {
         serde_json::from_str(&self.entries_json).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The entry projection is a JSON blob, so this is the only place its shape
+    /// is pinned: rows written before `published_at` existed must keep
+    /// deserializing (absence means "this market declared no date").
+    #[test]
+    fn entries_written_before_published_at_still_deserialize() {
+        let legacy = r#"[{"name":"pdf","source_kind":"directory","source_uri":"skills/pdf"}]"#;
+        let entries: Vec<MarketplaceEntry> = serde_json::from_str(legacy).expect("legacy row");
+        assert_eq!(entries[0].published_at, None);
+    }
+
+    /// A declared date survives the round-trip, and an absent one stays
+    /// **omitted** rather than serializing as `null` — the wire distinguishes
+    /// the two (`AppServerStoreItem::published_at` is `skip_serializing_if`).
+    #[test]
+    fn published_at_round_trips_and_is_omitted_when_absent() {
+        let mut entry: MarketplaceEntry =
+            serde_json::from_str(r#"{"name":"pdf","source_kind":"directory","source_uri":"skills/pdf"}"#)
+                .expect("row");
+        assert!(!serde_json::to_string(&entry).expect("serialize").contains("published_at"));
+
+        entry.published_at = Some("2026-07-30".into());
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains(r#""published_at":"2026-07-30""#));
+
+        let back: MarketplaceEntry = serde_json::from_str(&json).expect("round-trip");
+        assert_eq!(back.published_at.as_deref(), Some("2026-07-30"));
     }
 }

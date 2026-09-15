@@ -322,6 +322,8 @@ export const KNOWN_ENTRY_FIELDS = new Set([
   "name", "source", "version", "strict", "commands", "agents", "skills", "hooks",
   "mcpServers", "lspServers", "userConfig", "dependencies", "avatar", "description",
   "keywords", "category", "id", "tags_zh", "tags_en",
+  // doc 18 §4.2 — the entry's own publication date (`YYYY-MM-DD`)
+  "publishedAt",
 ]);
 
 function noteTypes(bucket, value, pointer, sample) {

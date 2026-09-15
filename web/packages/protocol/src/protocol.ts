@@ -5,7 +5,14 @@
  * execution/session/step/attempt IDs never appear in this module.
  */
 
-export const APP_SERVER_PROTOCOL_VERSION = "2026-09-15";
+/**
+ * A contract **fingerprint**, not a version number: it must differ from the
+ * previous value on any wire change at all, additive included. `2026-09-16`
+ * carried `StoreItem.published_at`; `2026-09-17` added the two MCP declaration
+ * write methods (`config/set-mcp`, `config/set-mcp-enabled`); `2026-09-18` adds
+ * `config/get-mcp`, the file editor's read of the same file.
+ */
+export const APP_SERVER_PROTOCOL_VERSION = "2026-09-18";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -658,6 +665,21 @@ export interface AgentStoreConfigMcp {
   error?: string;
 }
 
+/**
+ * `config/get-mcp`: the declaration file's own text, for the file editor.
+ *
+ * The only read that returns a declaration's values, and the reason it is a
+ * method of its own: `AgentStoreConfigMcp` describes the file's *verdict* and
+ * carries no `env` / `headers` value, while an editor cannot edit what it
+ * cannot see. `exists: false` (with `source` absent) is the normal answer for a
+ * host that never created the file; the text comes back whether or not it
+ * parses, because editing a broken file is the point.
+ */
+export interface McpSourceView {
+  exists: boolean;
+  source?: string | null;
+}
+
 /** `[memory]` in the host settings file, as far as the wire exposes it. */
 export interface AgentStoreConfigMemory {
   /** `null` = the table exists without the key (upstream default applies). */
@@ -1052,6 +1074,15 @@ export interface StoreItem {
    * Treat as optional: `item.tags ?? []`. */
   tags?: LocalizedText[] | null;
   quick_prompts?: LocalizedText[] | null;
+  /**
+   * The market entry's own `publishedAt`, `YYYY-MM-DD` (`18` §3).
+   *
+   * A calendar date the *market* declared, never a derived one: absent means
+   * "this market declares no date", so a client must not substitute the import
+   * time or render a placeholder. The host normalizes it on the way in and
+   * drops anything that is not a calendar date.
+   */
+  published_at?: string | null;
   /** Public avatar URL (store asset endpoint); relative to the API host. */
   avatar_url?: string | null;
   version: string;

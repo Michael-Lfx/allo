@@ -796,6 +796,7 @@ impl FakeStoreProvider {
                 display_description: None,
                 tags: vec![],
                 quick_prompts: vec![],
+                published_at: None,
                 avatar_url: None,
                 version: "2.1.0".into(),
                 source_kind: "directory".into(),
@@ -859,6 +860,7 @@ mod tests {
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::Compatible,
             enabled: true,
             required_connectors: vec![],
+            avatar_url: None,
         }
     }
 
@@ -872,6 +874,7 @@ mod tests {
             auth_mode: "none".into(),
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
+            avatar_url: None,
         }
     }
 
