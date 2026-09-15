@@ -197,7 +197,16 @@ impl ProviderError {
         let has_composition_keyword = ["oneof", "allof", "anyof"]
             .iter()
             .any(|keyword| lower.contains(keyword));
-        has_schema_error && has_top_level_restriction && has_composition_keyword
+        if has_schema_error && has_top_level_restriction && has_composition_keyword {
+            return true;
+        }
+
+        // Gemini's flattened tool errors name the offending branch directly
+        // (`parameters.any_of[0].required: only allowed for OBJECT type`)
+        // without the OpenAI "top level" wording.
+        let names_object_only_branch = lower.contains("only allowed for object type")
+            || lower.contains("parameters.any_of");
+        names_object_only_branch && lower.contains("parameters") && lower.contains("function")
     }
 
     /// Whether an API rejection requires tool-bearing requests to disable their
@@ -787,6 +796,20 @@ mod retryable_tests {
         };
         assert!(screenshot.is_tool_schema_incompatible());
         assert!(object_type.is_tool_schema_incompatible());
+    }
+
+    #[test]
+    fn tool_schema_classifier_accepts_gemini_object_only_branch_wording() {
+        let gemini = ProviderError::Api {
+            status: 500,
+            message: r#"{"code":500,"msg":"Model call failed. Please try again later: * GenerateContentRequest.tools[0].function_declarations[10].parameters.any_of[0].required: only allowed for OBJECT type","error_key":"error.all_channel_models_failed"}"#.into(),
+        };
+        let wording = ProviderError::Api {
+            status: 500,
+            message: "tool function parameters.anyOf required is only allowed for OBJECT type".into(),
+        };
+        assert!(gemini.is_tool_schema_incompatible());
+        assert!(wording.is_tool_schema_incompatible());
     }
 
     #[test]

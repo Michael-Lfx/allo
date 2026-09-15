@@ -1575,3 +1575,106 @@ async fn openai_gateway_does_not_output_limit_retry_an_unrelated_500() {
     assert!(matches!(error, ProviderError::Api { status: 500, .. }));
     server.verify().await;
 }
+
+// ---------------------------------------------------------------------------
+// Gemini object-only composition branches
+// ---------------------------------------------------------------------------
+
+/// Verbatim Gemini wording observed on 2026-09-12.
+const GEMINI_ANY_OF_REJECTION_BODY: &str = r#"{"code":500,"msg":"Model call failed. Please try again later: * GenerateContentRequest.tools[0].function_declarations[10].parameters.any_of[0].required: only allowed for OBJECT type","error_key":"error.all_channel_models_failed"}"#;
+
+/// Rejects tool schemas that still carry object-only keywords on branches
+/// without `type: object`, mirroring Gemini's validation.
+fn gemini_unsafe_schema(schema: &serde_json::Value) -> bool {
+    match schema {
+        serde_json::Value::Object(map) => {
+            let has_object_only =
+                map.contains_key("required") || map.contains_key("properties");
+            let allows_object = match map.get("type") {
+                Some(serde_json::Value::String(kind)) => kind == "object",
+                Some(serde_json::Value::Array(kinds)) => {
+                    kinds.iter().any(|kind| kind.as_str() == Some("object"))
+                }
+                _ => false,
+            };
+            if has_object_only && !allows_object {
+                return true;
+            }
+            map.values().any(gemini_unsafe_schema)
+        }
+        serde_json::Value::Array(items) => items.iter().any(gemini_unsafe_schema),
+        _ => false,
+    }
+}
+
+#[derive(Clone)]
+struct GeminiAnyOfResponder;
+
+impl Respond for GeminiAnyOfResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let parameters = &body["tools"][0]["function"]["parameters"];
+        if gemini_unsafe_schema(parameters) {
+            return ResponseTemplate::new(500).set_body_string(GEMINI_ANY_OF_REJECTION_BODY);
+        }
+        let chunk = json!({
+            "choices": [{ "delta": { "content": "Recovered" }, "finish_reason": null }]
+        })
+        .to_string();
+        let finish = json!({
+            "choices": [{ "delta": {}, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        })
+        .to_string();
+        ResponseTemplate::new(200)
+            .set_body_raw(build_sse_body(&[&chunk, &finish]), "text/event-stream")
+    }
+}
+
+#[tokio::test]
+async fn openai_gateway_sanitizes_gemini_object_only_branches() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(GeminiAnyOfResponder)
+        .expect(2)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+
+    let events = collect_events(
+        provider
+            .stream(&request_with_composed_tool_schema())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(
+        received.len(),
+        2,
+        "the Gemini schema rejection must skip the transient 500 retries"
+    );
+    let first: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert!(
+        first["tools"][0]["function"]["parameters"]
+            .get("oneOf")
+            .is_some()
+    );
+    let second: serde_json::Value = serde_json::from_slice(&received[1].body).unwrap();
+    let sanitized = &second["tools"][0]["function"]["parameters"];
+    assert!(sanitized.get("oneOf").is_none());
+    assert!(sanitized.get("anyOf").is_none());
+    assert!(!gemini_unsafe_schema(sanitized));
+    server.verify().await;
+}
