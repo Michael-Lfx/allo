@@ -18603,6 +18603,66 @@ async fn failover_pre_response_fault_rebuilds_with_next_model_and_resends() {
 }
 
 #[tokio::test]
+async fn failover_switches_on_provider_timeout_fault() {
+    // The `UserLlmProviderTimeout` code is what `nomi-providers`'
+    // `ProviderError::InitialRequestTimeout` maps to (see
+    // `nomifun-ai-agent/src/protocol/send_error.rs`). A pre-response timeout
+    // fault must be eligible for model failover exactly like any other
+    // provider-fault code.
+    let (svc, _broadcaster, repo, provider_repo) =
+        make_failover_service(vec![test_provider(PROVIDER_ID_1, &["m1"]), test_provider(PROVIDER_ID_2, &["m2"])]);
+    let conv_id = seed_nomi_failover_conversation(
+        &repo,
+        pwm(PROVIDER_ID_1, "m1"),
+        json!({ "enabled": true, "queue": [{"provider_id": PROVIDER_ID_2, "model": "m2"}] }),
+    )
+    .await;
+
+    let scripted = Arc::new(
+        ScriptedAgent::new(
+            &conv_id,
+            vec![
+                vec![AgentStreamEvent::Error(ErrorEventData::legacy(
+                    "initial request timeout",
+                    Some(AgentErrorCode::UserLlmProviderTimeout),
+                ))],
+                vec![
+                    AgentStreamEvent::Text(TextEventData {
+                        content: "recovered after timeout".into(),
+                    }),
+                    AgentStreamEvent::Finish(FinishEventData::default()),
+                ],
+            ],
+        )
+        .with_agent_type(AgentType::Nomi),
+    );
+    let runtime_registry = Arc::new(PersistentScriptedRuntimeRegistry::new(scripted));
+    let runtime_registry_dyn: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+
+    send_message_with_test_key(
+        &svc,
+        TEST_USER_1,
+        &conv_id,
+        "failover-provider-timeout",
+        make_send_req(),
+        &runtime_registry_dyn,
+    )
+    .await
+    .unwrap();
+    wait_for_turn_released(&svc, &conv_id).await;
+
+    assert_eq!(runtime_registry.sent_contents().len(), 2);
+    assert_eq!(runtime_registry.termination_count(), 1);
+    let row = repo.get(&conv_id).await.unwrap().unwrap();
+    let model: ProviderWithModel = serde_json::from_str(row.model.as_deref().unwrap()).unwrap();
+    assert_eq!(model.provider_id, PROVIDER_ID_2);
+    assert_eq!(model.model, "m2");
+    let writes = provider_repo.health_writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].0, PROVIDER_ID_1);
+}
+
+#[tokio::test]
 async fn failover_successful_pre_response_recovery_surfaces_no_error_to_user() {
     // Gap #8 (safety-critical): on a SUCCESSFUL pre-response failover the user
     // must see ONLY the backup model's turn — never the swallowed fault. The
