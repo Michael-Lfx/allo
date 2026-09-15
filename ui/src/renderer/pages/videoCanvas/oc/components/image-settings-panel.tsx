@@ -2,7 +2,9 @@ import { useTranslation } from "react-i18next";
 import { type ReactNode, useState } from "react";
 
 import { CanvasToggle } from "@oc/components/canvas/canvas-overlay";
+import { GenerationCountField } from "@oc/components/generation-count-field";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { CANVAS_IMAGE_BATCH_MAX_COUNT, CANVAS_IMAGE_QUICK_COUNTS, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
 import { type CanvasTheme } from "@oc/lib/canvas-theme";
 import { imageCapabilityConfigFor, persistImageAspectValue, type ImageAspectOption, type ImageCapabilityConfig } from "@oc/lib/model-capabilities";
 import { type AiConfig } from "@oc/stores/use-config-store";
@@ -26,18 +28,26 @@ type ImageSettingsPanelProps = {
     showCount?: boolean;
     className?: string;
     maxCount?: number;
-    quickCount?: number;
+    quickCounts?: readonly number[];
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, showCount = true, className = "w-[304px] space-y-2.5 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 3 }: ImageSettingsPanelProps) {
+export function ImageSettingsPanel({
+    config,
+    onConfigChange,
+    theme,
+    showTitle = true,
+    showCount = true,
+    className = "w-[304px] space-y-2.5 rounded-2xl px-1 py-0.5",
+    maxCount = CANVAS_IMAGE_BATCH_MAX_COUNT,
+    quickCounts = CANVAS_IMAGE_QUICK_COUNTS,
+}: ImageSettingsPanelProps) {
     useTranslation();
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const profile = imageCapabilityConfigFor(config, config.model);
     const aspectOptions = profile.aspects;
     const quality = profile.qualities.includes(config.quality || "") ? config.quality : profile.defaultQuality;
     const transparentBackground = profile.transparentBackground && config.transparentBackground === "true";
-    const countLimit = Math.min(maxCount, profile.maxCount);
-    const count = Math.max(1, Math.min(countLimit, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const count = getCanvasBatchCount(config.count, maxCount);
     const activeSize = config.size || profile.defaultSize;
     const selectedAspect = findSelectedAspect(aspectOptions, activeSize);
     const dimensions = readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
@@ -124,16 +134,16 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </SettingsSection>
                 {showCount ? (
-                    <SettingsSection title={canvasT("videoCanvas.settings.genCount", "生成张数")} theme={theme}>
-                        <div className="grid grid-cols-4 gap-1.5">
-                            {Array.from({ length: Math.min(quickCount, countLimit) }, (_, index) => index + 1).map((value) => (
-                                <ChoiceChip key={value} selected={count === value} theme={theme} onClick={() => onConfigChange("count", String(value))}>
-                                    {value}
-                                </ChoiceChip>
-                            ))}
-                            {countLimit > quickCount ? <CountInput value={count} quickCount={quickCount} max={countLimit} theme={theme} onChange={(value) => onConfigChange("count", String(value || 1))} /> : null}
-                        </div>
-                    </SettingsSection>
+                    <GenerationCountField
+                        value={count}
+                        max={maxCount}
+                        quickCounts={quickCounts}
+                        title={canvasT("videoCanvas.settings.genCount", "生成张数")}
+                        hint={canvasT("videoCanvas.settings.genCountHint", "每张独立请求，可一次出多份探索。")}
+                        ariaLabel={canvasT("videoCanvas.settings.customCountAria", "自定义生成张数")}
+                        theme={theme}
+                        onChange={(value) => onConfigChange("count", String(value))}
+                    />
                 ) : null}
             </div>
         </ImageSettingsTheme>
@@ -176,34 +186,6 @@ function DimensionInput({ prefix, value, disabled, theme, alignToStep, onChange 
                 className="min-w-0 flex-1 bg-transparent px-2 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 defaultValue={value || ""}
                 key={`${prefix}-${value}`}
-                onBlur={(event) => commit(event.currentTarget)}
-                onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur();
-                }}
-                onMouseDown={(event) => event.stopPropagation()}
-            />
-        </label>
-    );
-}
-
-function CountInput({ value, quickCount, max, theme, onChange }: { value: number; quickCount: number; max: number; theme: CanvasTheme; onChange: (value: number | null) => void }) {
-    const commit = (input: HTMLInputElement) => {
-        const next = Math.max(1, Math.min(max, Math.floor(Number(input.value) || 1)));
-        input.value = String(next);
-        onChange(next);
-    };
-    return (
-        <label className="flex h-8 overflow-hidden rounded-full border text-xs" style={{ background: theme.canvas.background, borderColor: theme.node.stroke, color: theme.node.text }}>
-            <input
-                key={value > quickCount ? `custom-${value}` : "quick"}
-                type="number"
-                min={1}
-                max={max}
-                aria-label={canvasT("videoCanvas.settings.customCountAria", "自定义生成张数")}
-                placeholder={canvasT("videoCanvas.settings.inputPlaceholder", "输入")}
-                className="min-w-0 flex-1 bg-transparent px-2 text-center outline-none placeholder:text-current placeholder:opacity-55 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                style={{ color: theme.node.text, WebkitTextFillColor: theme.node.text }}
-                defaultValue={value > quickCount ? value : ""}
                 onBlur={(event) => commit(event.currentTarget)}
                 onKeyDown={(event) => {
                     if (event.key === "Enter") event.currentTarget.blur();

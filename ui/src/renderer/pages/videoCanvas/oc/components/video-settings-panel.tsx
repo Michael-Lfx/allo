@@ -1,8 +1,10 @@
 import { useTranslation } from "react-i18next";
 
 import { CanvasToggle } from "@oc/components/canvas/canvas-overlay";
+import { GenerationCountField } from "@oc/components/generation-count-field";
 import { ImageSettingsTheme } from "@oc/components/image-settings-panel";
 import { AspectChoice, ChoiceChip, SettingsPanelHeader, SettingsSection } from "@oc/components/generation-settings-chrome";
+import { CANVAS_VIDEO_BATCH_MAX_COUNT, CANVAS_VIDEO_QUICK_COUNTS, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
 import { boolConfig, isSeedanceVideoModel, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@oc/lib/seedance-video";
 import { normalizeMiniMaxH3Duration } from "@oc/lib/minimax-h3-video";
 import { isMiniMaxH3VideoModel, isWan3VideoModel, normalizeMiniMaxH3Resolution } from "@renderer/services/videoModelCapabilities";
@@ -24,25 +26,28 @@ function sizeOptions() {
     ];
 }
 
+type VideoSettingKey = "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "count" | "promptOptimize";
+
 type VideoSettingsPanelProps = {
     config: AiConfig;
-    onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark", value: string) => void;
+    onConfigChange: (key: VideoSettingKey, value: string) => void;
+    promptOptimize?: boolean;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
 };
 
-export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-2.5" }: VideoSettingsPanelProps) {
+export function VideoSettingsPanel({ config, onConfigChange, promptOptimize = true, theme, showTitle = true, className = "w-[292px] space-y-2.5" }: VideoSettingsPanelProps) {
     useTranslation();
     const profile = modelCapabilityConfigFor(config, config.model).video!;
     if (resolveModelRequestConfig(config, config.model).interfaceType === "volcengine-jimeng-video") {
-        return <JiMengVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+        return <JiMengVideoSettingsPanel config={config} profile={profile} promptOptimize={promptOptimize} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
     if (isMiniMaxH3VideoModel(modelOptionName(config.model || config.videoModel))) {
-        return <MiniMaxH3VideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+        return <MiniMaxH3VideoSettingsPanel config={config} profile={profile} promptOptimize={promptOptimize} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
     if (isSeedanceVideoModel(modelOptionName(config.model || config.videoModel)) && !isWan3VideoModel(modelOptionName(config.model || config.videoModel))) {
-        return <SeedanceVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+        return <SeedanceVideoSettingsPanel config={config} profile={profile} promptOptimize={promptOptimize} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 
     const seconds = Number(config.videoSeconds) || profile.duration.default;
@@ -59,6 +64,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <SettingsPanelHeader title={canvasT("videoCanvas.settings.videoTitle", "视频设置")} subtitle={canvasT("videoCanvas.settings.videoSubtitle", "分辨率、画幅与时长会写入这次生成。")} theme={theme} /> : null}
+                <PromptOptimizeSection enabled={promptOptimize} theme={theme} onConfigChange={onConfigChange} />
                 {profile.resolutions.length ? <SettingsSection title={canvasT("videoCanvas.settings.resolution", "分辨率")} theme={theme}>
                     <div className="grid grid-cols-3 gap-1.5">
                         {profile.resolutions.map((value) => (
@@ -109,12 +115,13 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     )}
                 </SettingsSection>
                 {profile.generateAudio.supported || profile.watermark.supported ? <SettingsSection title={canvasT("videoCanvas.settings.output", "输出")} theme={theme}><div className="grid grid-cols-2 gap-3">{profile.generateAudio.supported ? <SwitchRow label={canvasT("videoCanvas.settings.genAudio", "生成声音")} checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}{profile.watermark.supported ? <SwitchRow label={canvasT("videoCanvas.settings.watermark", "添加水印")} checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} /> : null}</div></SettingsSection> : null}
+                <VideoCountSection config={config} onConfigChange={onConfigChange} theme={theme} />
             </div>
         </ImageSettingsTheme>
     );
 }
 
-function MiniMaxH3VideoSettingsPanel({ config, profile, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
+function MiniMaxH3VideoSettingsPanel({ config, profile, promptOptimize = true, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
     const resolution = normalizeMiniMaxH3Resolution(config.vquality);
     const ratio = profile.ratios.includes(config.size) ? config.size : profile.defaultRatio;
     const duration = normalizeMiniMaxH3Duration(config.videoSeconds);
@@ -124,6 +131,7 @@ function MiniMaxH3VideoSettingsPanel({ config, profile, onConfigChange, theme, s
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <SettingsPanelHeader title={canvasT("videoCanvas.settings.videoTitle", "视频设置")} subtitle={canvasT("videoCanvas.settings.videoSubtitle", "分辨率、画幅与时长会写入这次生成。")} theme={theme} /> : null}
+                <PromptOptimizeSection enabled={promptOptimize} theme={theme} onConfigChange={onConfigChange} />
                 <SettingsSection title={canvasT("videoCanvas.settings.resolution", "分辨率")} theme={theme}>
                     <div className="grid grid-cols-2 gap-1.5">
                         {profile.resolutions.map((value) => (
@@ -153,18 +161,20 @@ function MiniMaxH3VideoSettingsPanel({ config, profile, onConfigChange, theme, s
                         onChange={(value) => onConfigChange("videoSeconds", String(value))}
                     />
                 </SettingsSection>
+                <VideoCountSection config={config} onConfigChange={onConfigChange} theme={theme} />
             </div>
         </ImageSettingsTheme>
     );
 }
 
-function JiMengVideoSettingsPanel({ config, profile, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
+function JiMengVideoSettingsPanel({ config, profile, promptOptimize = true, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
     const seconds = normalizeVideoDuration(config.videoSeconds);
     const durationOptions = videoDurationOptions(profile);
     return (
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <SettingsPanelHeader title={canvasT("videoCanvas.settings.videoTitle", "视频设置")} subtitle={canvasT("videoCanvas.settings.videoSubtitle", "分辨率、画幅与时长会写入这次生成。")} theme={theme} /> : null}
+                <PromptOptimizeSection enabled={promptOptimize} theme={theme} onConfigChange={onConfigChange} />
                 <SettingsSection title={canvasT("videoCanvas.settings.ratio", "比例")} theme={theme}>
                     <div className="grid grid-cols-3 gap-1.5">
                 {profile.ratios.map((value) => <ChoiceChip key={value} selected={config.size === value} theme={theme} onClick={() => onConfigChange("size", value)}>{value}</ChoiceChip>)}
@@ -181,12 +191,13 @@ function JiMengVideoSettingsPanel({ config, profile, onConfigChange, theme, show
                         onChange={(value) => onConfigChange("videoSeconds", String(value))}
                     />
                 </SettingsSection>
+                <VideoCountSection config={config} onConfigChange={onConfigChange} theme={theme} />
             </div>
         </ImageSettingsTheme>
     );
 }
 
-function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
+function SeedanceVideoSettingsPanel({ config, profile, promptOptimize = true, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
     const model = modelOptionName(config.model || config.videoModel);
     const resolution = normalizeSeedanceResolution(config.vquality, model);
     const ratio = normalizeSeedanceRatio(config.size);
@@ -199,6 +210,7 @@ function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, sh
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <SettingsPanelHeader title={canvasT("videoCanvas.settings.videoTitle", "视频设置")} subtitle={canvasT("videoCanvas.settings.videoSubtitle", "分辨率、画幅与时长会写入这次生成。")} theme={theme} /> : null}
+                <PromptOptimizeSection enabled={promptOptimize} theme={theme} onConfigChange={onConfigChange} />
                 <SettingsSection title={canvasT("videoCanvas.settings.resolution", "分辨率")} theme={theme}>
                     <div className="grid grid-cols-3 gap-1.5">
                         {profile.resolutions.map((value) => {
@@ -242,6 +254,7 @@ function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, sh
                         {profile.watermark.supported ? <SwitchRow label={canvasT("videoCanvas.settings.watermark", "添加水印")} checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} /> : null}
                     </div>
                 </SettingsSection>
+                <VideoCountSection config={config} onConfigChange={onConfigChange} theme={theme} />
             </div>
         </ImageSettingsTheme>
     );
@@ -272,6 +285,41 @@ export function videoSizeLabel(value: string) {
 
 export function videoSecondsLabel(value: string) {
     return `${normalizeVideoDuration(value)}s`;
+}
+
+function PromptOptimizeSection({ enabled, theme, onConfigChange }: { enabled?: boolean; theme: CanvasTheme; onConfigChange: VideoSettingsPanelProps["onConfigChange"] }) {
+    return (
+        <SettingsSection
+            title={canvasT("videoCanvas.settings.promptOptimize", "提示词优化")}
+            hint={canvasT("videoCanvas.settings.promptOptimizeHint", "按可拍摄镜头补全运镜、光线与空间关系，不改写你已写明的内容。")}
+            extra={(
+                <span title={canvasT("videoCanvas.settings.promptOptimizeHint", "按可拍摄镜头补全运镜、光线与空间关系，不改写你已写明的内容。")} onMouseDown={(event) => event.stopPropagation()}>
+                    <CanvasToggle
+                        theme={theme}
+                        checked={enabled !== false}
+                        ariaLabel={canvasT("videoCanvas.settings.promptOptimize", "提示词优化")}
+                        onChange={(checked) => onConfigChange("promptOptimize", checked ? "true" : "false")}
+                    />
+                </span>
+            )}
+            theme={theme}
+        />
+    );
+}
+
+function VideoCountSection({ config, onConfigChange, theme }: Pick<VideoSettingsPanelProps, "config" | "onConfigChange" | "theme">) {
+    return (
+        <GenerationCountField
+            value={getCanvasBatchCount(config.count, CANVAS_VIDEO_BATCH_MAX_COUNT)}
+            max={CANVAS_VIDEO_BATCH_MAX_COUNT}
+            quickCounts={CANVAS_VIDEO_QUICK_COUNTS}
+            title={canvasT("videoCanvas.settings.videoCount", "生成条数")}
+            hint={canvasT("videoCanvas.settings.videoCountHint", "每条独立请求，便于探索不同成片。")}
+            ariaLabel={canvasT("videoCanvas.settings.customVideoCountAria", "自定义生成条数")}
+            theme={theme}
+            onChange={(value) => onConfigChange("count", String(value))}
+        />
+    );
 }
 
 export function normalizeVideoSizeValue(value: string) {

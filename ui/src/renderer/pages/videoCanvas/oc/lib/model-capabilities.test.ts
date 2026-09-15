@@ -164,6 +164,7 @@ describe("image model capability profiles", () => {
         expect(profile.qualities).toEqual([]);
         expect(profile.customPixels).toBe(false);
         expect(profile.transparentBackground).toBe(false);
+        expect(profile.maxCount).toBe(1);
         expect(normalizeImageValue(profile, { size: "1024x1024", quality: "high" })).toEqual({ size: "1:1", quality: "auto" });
     });
 

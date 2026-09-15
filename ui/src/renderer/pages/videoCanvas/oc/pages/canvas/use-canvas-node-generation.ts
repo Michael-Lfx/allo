@@ -3,7 +3,7 @@ import type { Dispatch, RefObject, SetStateAction } from "react";
 import { nanoid } from "nanoid";
 import { getNodeSpec } from "@oc/constant/canvas";
 import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
-import { getGenerationCount } from "@oc/lib/canvas/canvas-project-generation";
+import { CANVAS_IMAGE_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { App } from "antd";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
@@ -67,7 +67,7 @@ export function useCanvasNodeGenerationActions(input: CanvasNodeGenerationInput)
                     size: effectiveConfig.size,
                     quality: effectiveConfig.quality,
                     transparentBackground: effectiveConfig.transparentBackground,
-                    count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
+                    count: getCanvasBatchCount(effectiveConfig.canvasImageCount || effectiveConfig.count, CANVAS_IMAGE_BATCH_MAX_COUNT),
                 },
             );
             imageNode.title = canvasT("videoCanvas.toast.imageGeneration", "图片生成");

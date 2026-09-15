@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowUp, Maximize2, Minimize2, Square } from "lucide-react";
+import { LayoutTemplate, Maximize2, Minimize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@oc/components/model-picker";
@@ -12,6 +12,7 @@ import { canvasModelSpecPatch } from "@oc/lib/model-capabilities";
 import { buildGenerationConfig } from "@oc/lib/canvas/canvas-project-generation";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { CanvasCameraPicker } from "./canvas-camera-picker";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasChromeButton } from "./canvas-overlay";
@@ -21,7 +22,11 @@ import { CanvasVideoPromptTools } from "./canvas-video-prompt-tools";
 import { listedRecipeIds, removeRecipeToken, stripRecipeTokens } from "@oc/lib/canvas/craft/tokens";
 import { mergeCraftAttachments } from "@oc/lib/canvas/craft/catalog";
 import { listedSkillIds, removeSkillToken, stripSkillTokens } from "@oc/lib/canvas/canvas-skill-mentions";
+import { readCameraRig } from "@oc/lib/canvas/canvas-camera-rig";
+import { isCanvasPromptOptimizeEnabled } from "@oc/lib/canvas/canvas-generation-enhance";
 import { CanvasCraftTokenChip, recipeAttachmentChip, skillAttachmentChip } from "./canvas-craft-token-chip";
+import { CanvasComposerPill } from "./canvas-composer-pill";
+import { CanvasComposerSendButton } from "./canvas-composer-send-button";
 import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-picker";
 import { CanvasTemplateSlotBar } from "./canvas-template-slot-bar";
 import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover";
@@ -163,14 +168,18 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
 
             <div className="canvas-composer-footer">
                 {onOpenTemplates ? (
-                    <CanvasChromeButton className="h-7 px-2 text-[var(--fs-label)] font-medium" style={{ color: theme.accent.primary }} onClick={onOpenTemplates} title={canvasT("videoCanvas.craft.tabTemplate", "模板")} aria-label={canvasT("videoCanvas.craft.tabTemplate", "模板")}>
-                        {canvasT("videoCanvas.craft.tabTemplate", "模板")}
-                    </CanvasChromeButton>
+                    <CanvasComposerPill
+                        icon={<LayoutTemplate />}
+                        label={canvasT("videoCanvas.craft.tabTemplate", "模板")}
+                        title={canvasT("videoCanvas.craft.tabTemplate", "模板")}
+                        aria-label={canvasT("videoCanvas.craft.tabTemplate", "模板")}
+                        onClick={onOpenTemplates}
+                    />
                 ) : null}
                 {isPortraitTexture ? (
                     <CanvasPortraitTexturePopover value={node.metadata?.portraitTexture} placement="topLeft" onChange={(portraitTexture) => onConfigChange(node.id, { portraitTexture })} />
                 ) : (
-                    <CanvasPresetPicker mode={mode} open={presetOpen} onOpenChange={setPresetOpen} onSelect={applyPreset} onOpenLibrary={onOpenLibrary} compact />
+                    <CanvasPresetPicker mode={mode} open={presetOpen} onOpenChange={setPresetOpen} onSelect={applyPreset} onOpenLibrary={onOpenLibrary} />
                 )}
                 <div className="min-w-0 flex-1">
                     <ModelPicker
@@ -203,15 +212,23 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         className="canvas-chrome-token inline-flex h-7 w-10 px-1 text-center tabular-nums"
                     />
                 ) : mode === "image" ? (
-                    <CanvasImageSettingsPopover
-                        config={config}
-                        placement="topLeft"
-                        onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
-                        onOpenChange={onImageSettingsOpenChange}
-                    />
+                    <>
+                        <CanvasImageSettingsPopover
+                            config={config}
+                            placement="topLeft"
+                            onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
+                            onOpenChange={onImageSettingsOpenChange}
+                        />
+                        <CanvasCameraPicker
+                            rig={readCameraRig(node.metadata)}
+                            placement="top"
+                            onChange={(patch) => onConfigChange(node.id, patch)}
+                        />
+                    </>
                 ) : mode === "video" ? (
                     <CanvasVideoSettingsPopover
                         config={config}
+                        promptOptimize={isCanvasPromptOptimizeEnabled(node.metadata?.promptOptimize)}
                         onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))}
                     />
                 ) : mode === "audio" ? (
@@ -231,19 +248,11 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                             {expanded ? <Minimize2 className="size-3" /> : <Maximize2 className="size-3" />}
                         </CanvasChromeButton>
                     ) : null}
-                    <button
-                        type="button"
-                        className="grid size-7 shrink-0 place-items-center rounded-full outline-none disabled:opacity-40"
+                    <CanvasComposerSendButton
                         disabled={isSubmitDisabled}
-                        style={{
-                            background: isSubmitDisabled ? theme.toolbar.itemHover : isRunning ? theme.accent.danger : theme.node.activeStroke,
-                            color: isSubmitDisabled ? theme.node.faint : theme.canvas.background,
-                        }}
+                        running={isRunning}
                         onClick={() => (isRunning ? onStop(node.id) : submit())}
-                        aria-label={isRunning ? canvasT("videoCanvas.config.stop", "停止") : canvasT("videoCanvas.config.generate", "生成")}
-                    >
-                        {isRunning ? <Square className="size-2.5 fill-current" /> : <ArrowUp className="size-3" />}
-                    </button>
+                    />
                 </span>
             </div>
         </div>
@@ -261,6 +270,7 @@ function videoConfigPatch(key: CanvasVideoSettingKey, value: string) {
     if (key === "videoSeconds") return { seconds: value };
     if (key === "videoGenerateAudio") return { generateAudio: value };
     if (key === "videoWatermark") return { watermark: value };
+    if (key === "count") return { count: Number(value) || 1 };
     return { [key]: value };
 }
 

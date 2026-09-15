@@ -61,7 +61,7 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
         id: "replace",
         defaultVisible: true,
         panelLabel: () => canvasT("videoCanvas.imageTools.replace", "替换图片"),
-        label: () => canvasT("videoCanvas.imageTools.replace", "替换图片"),
+        label: () => canvasT("videoCanvas.nodeUi.replace", "替换"),
         title: () => canvasT("videoCanvas.imageTools.replace", "替换图片"),
         icon: () => <Upload className="size-3.5" />,
         run: (node, handlers) => handlers.onUpload(node),
@@ -196,10 +196,11 @@ export function normalizeImageQuickToolIds(value: unknown[]) {
 export function resolveImageDockLayout(quickIds: readonly ImageQuickToolId[]): ImageDockLayout {
     const selected = new Set(normalizeImageQuickToolIds([...quickIds]));
     selected.add("delete");
+    selected.add("replace");
     selected.delete("edit");
     return {
-        pin: ["delete"],
-        singles: [...selected].filter((id) => id !== "delete" && id !== "angle" && !IMAGE_EDIT_GROUP_IDS.includes(id) && !IMAGE_PORTRAIT_GROUP_IDS.includes(id)),
+        pin: ["delete", "replace"],
+        singles: [...selected].filter((id) => id !== "delete" && id !== "replace" && id !== "angle" && !IMAGE_EDIT_GROUP_IDS.includes(id) && !IMAGE_PORTRAIT_GROUP_IDS.includes(id)),
         editGroup: IMAGE_EDIT_GROUP_IDS.filter((id) => selected.has(id)),
         portraitGroup: IMAGE_PORTRAIT_GROUP_IDS.filter((id) => selected.has(id)),
         angle: selected.has("angle"),

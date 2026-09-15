@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, BookOpenCheck, Bookmark, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Download, RefreshCw, Replace, ScanSearch, Settings2, Square, Star, Type, Video } from "lucide-react";
+import { AlertCircle, BookOpenCheck, Bookmark, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Download, RefreshCw, ScanSearch, Settings2, Square, Star, Type, Video } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { craftCover, PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/catalog";
@@ -88,7 +88,6 @@ type CanvasNodeProps = {
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
     onOpenVersions?: (node: CanvasNodeData) => void;
     onViewImage?: (node: CanvasNodeData) => void;
-    onReplaceMedia?: (node: CanvasNodeData) => void;
     onOpenTextEditor?: (node: CanvasNodeData) => void;
     onOpenDirector?: (node: CanvasNodeData) => void;
     onOpenDrawing?: (node: CanvasNodeData) => void;
@@ -160,7 +159,6 @@ export const CanvasNode = React.memo(function CanvasNode({
     onOpenTaskDetails,
     onOpenVersions,
     onViewImage,
-    onReplaceMedia,
     onOpenTextEditor,
     onOpenDirector,
     onOpenDrawing,
@@ -463,25 +461,6 @@ export const CanvasNode = React.memo(function CanvasNode({
                         className="pointer-events-none absolute inset-0 z-[var(--node-z-content)] rounded-[inherit]"
                         style={{ boxShadow: `inset 0 0 0 1px ${mediaBorderColor}` }}
                     />
-                ) : null}
-
-                {(hasImageContent || hasVideoContent) && !readOnly ? (
-                    <div
-                        className={`absolute bottom-[10%] left-1/2 z-[var(--node-z-overlay)] -translate-x-1/2 motion-safe:transition motion-safe:duration-200 ${isSelected ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-3 opacity-0"}`}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                    >
-                        <button
-                            type="button"
-                            className="inline-flex h-9 items-center gap-2 rounded-full border px-4 text-xs font-semibold shadow-lg backdrop-blur-xl transition hover:-translate-y-0.5 hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:hover:translate-y-0"
-                            style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text, outlineColor: theme.accent.primary }}
-                            onClick={(event) => { event.stopPropagation(); onReplaceMedia?.(data); }}
-                            aria-label={canvasT("videoCanvas.nodeUi.replaceMedia", "替换媒体")}
-                        >
-                            <Replace className="size-3.5" />
-                            {canvasT("videoCanvas.nodeUi.replace", "替换")}
-                        </button>
-                    </div>
                 ) : null}
 
                 {data.type === CanvasNodeType.Text && data.metadata?.workflowKind !== "character" && !readOnly ? (

@@ -7,20 +7,22 @@ import { VideoSettingsPanel, videoResolutionLabel, videoSecondsLabel, videoSizeL
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { anchoredOverlayStyle, type OverlayPlacement } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { CANVAS_VIDEO_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
 import { modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue } from "@oc/lib/model-capabilities";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { AiConfig } from "@oc/stores/use-config-store";
 
-export type CanvasVideoSettingKey = "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark";
+export type CanvasVideoSettingKey = "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "count" | "promptOptimize";
 
 type CanvasVideoSettingsPopoverProps = {
     config: AiConfig;
+    promptOptimize?: boolean;
     onConfigChange: (key: CanvasVideoSettingKey, value: string) => void;
     buttonClassName?: string;
     placement?: OverlayPlacement;
 };
 
-export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft" }: CanvasVideoSettingsPopoverProps) {
+export function CanvasVideoSettingsPopover({ config, promptOptimize = true, onConfigChange, buttonClassName, placement = "topLeft" }: CanvasVideoSettingsPopoverProps) {
     useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLButtonElement>(null);
@@ -31,13 +33,15 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
     const sizeSupported = Boolean(videoProfile?.ratios.length);
     const resolution = videoProfile ? resolveVideoResolutionValue(videoProfile, config.vquality) : "";
     const size = videoProfile ? resolveVideoRatioValue(videoProfile, config.size) : "";
+    const count = getCanvasBatchCount(config.count, CANVAS_VIDEO_BATCH_MAX_COUNT);
     const summary = [
         ...(sizeSupported ? [size.includes(":") ? size : videoSizeLabel(size)] : resolutionSupported ? [videoResolutionLabel(resolution)] : []),
         videoSecondsLabel(config.videoSeconds),
+        ...(count > 1 ? [`×${count}`] : []),
     ].join(" · ");
     const close = useCallback(() => setOpen(false), []);
     const rect = useAnchoredOverlay(open, buttonRef, panelRef, close);
-    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 380, placement, estimatedHeight: 420 }) : null;
+    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 380, placement, estimatedHeight: 520 }) : null;
 
     return (
         <>
@@ -60,7 +64,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
                         onPointerDown={(event) => event.stopPropagation()}
                         onMouseDown={(event) => event.stopPropagation()}
                     >
-                        <VideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={false} className="space-y-2.5" />
+                        <VideoSettingsPanel config={config} promptOptimize={promptOptimize} onConfigChange={onConfigChange} theme={theme} showTitle={false} className="space-y-2.5" />
                     </div>,
                     document.body,
                 )

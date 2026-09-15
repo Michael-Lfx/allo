@@ -27,9 +27,12 @@ describe("resolveNodeDockPrimaryIds", () => {
         expect(resolveNodeDockPrimaryIds({ ...base, isVideo: true }, [])).toEqual(["uploadVideo", "edit", "info", "delete"]);
     });
 
-    test("filled video keeps generation settings on the primary row", () => {
-        expect(resolveNodeDockPrimaryIds({ ...base, isVideo: true, hasVideo: true }, [])).toContain("edit");
-        expect(resolveNodeDockPrimaryIds({ ...base, isVideo: true, hasVideo: true }, [])).toContain("subtitles");
+    test("filled video keeps replace and generation settings on the primary row", () => {
+        const ids = resolveNodeDockPrimaryIds({ ...base, isVideo: true, hasVideo: true }, []);
+        expect(ids).toContain("uploadVideo");
+        expect(ids.indexOf("uploadVideo")).toBeLessThan(ids.indexOf("edit"));
+        expect(ids).toContain("edit");
+        expect(ids).toContain("subtitles");
     });
 
     test("empty audio exposes upload, info, and delete", () => {

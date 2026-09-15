@@ -10,6 +10,7 @@ import { looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@oc/lib/canv
 import { compileCanvasApplyOps, compileCanvasRepairOps } from "@oc/lib/canvas/canvas-agent-intent";
 import { compileSpecApplyOps, compileStoryboardApplyOps } from "@oc/lib/canvas/creation-agent-intent";
 import { normalizeModelOptionValue, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
+import { CANVAS_IMAGE_BATCH_MAX_COUNT, CANVAS_VIDEO_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
 import { encodeToolArguments, parseToolArguments } from "@oc/lib/canvas/canvas-tool-arguments";
 import { type CanvasAgentFunctionTool as ResponseFunctionTool, type CanvasAgentInputMessage as ResponseInputMessage, type CanvasAgentToolCall as ResponseToolCall } from "@oc/lib/canvas/canvas-agent-llm";
 import { CANVAS_AGENT_CONSTITUTION, CANVAS_AGENT_MAX_STEPS, CANVAS_AGENT_READ_TOOLS } from "@oc/lib/canvas/canvas-agent-harness";
@@ -277,7 +278,11 @@ function generationTargetNodeOp(id: string, input: Record<string, unknown>, x: n
             size: stringOptional(input.size) || config.size,
             quality: stringOptional(input.quality) || config.quality,
             transparentBackground: stringOptional(input.transparentBackground) || config.transparentBackground,
-            count: numberOptional(input.count) ?? generationCount(mode === "image" ? config.canvasImageCount || config.count : config.count),
+            count: numberOptional(input.count) ?? (mode === "image"
+                ? getCanvasBatchCount(config.canvasImageCount || config.count, CANVAS_IMAGE_BATCH_MAX_COUNT)
+                : mode === "video"
+                    ? getCanvasBatchCount(config.count, CANVAS_VIDEO_BATCH_MAX_COUNT)
+                    : generationCount(config.count)),
             seconds: stringOptional(input.seconds) || config.videoSeconds,
             vquality: stringOptional(input.vquality) || config.vquality,
             generateAudio: stringOptional(input.generateAudio) || config.videoGenerateAudio,

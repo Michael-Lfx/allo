@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
+import { Image as ImageIcon, MessageSquare, Music2, Play, Settings2, Video } from "lucide-react";
 import { Button, InputNumber, Segmented, Select } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -11,10 +11,12 @@ import { canvasModelSpecPatch, modelCapabilityConfigFor, videoDurationAllowed } 
 import { buildGenerationConfig } from "@oc/lib/canvas/canvas-project-generation";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { CanvasCameraPicker } from "./canvas-camera-picker";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover, type CanvasVideoSettingKey } from "./canvas-video-settings-popover";
 import { defaultVideoOperation } from "@oc/lib/canvas/canvas-config-defaults";
+import { readCameraRig } from "@oc/lib/canvas/canvas-camera-rig";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoEditOperation, CanvasWorkspaceMode } from "@oc/types/canvas";
 
 type CanvasConfigNodePanelProps = {
@@ -164,7 +166,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 </div>
             ) : null}
 
-            <div className={`mb-2 grid min-w-0 cursor-default items-center gap-2 ${mode === "image" || mode === "video" || mode === "audio" || mode === "text" ? "grid-cols-[minmax(0,1fr)_148px]" : "grid-cols-1"}`} onMouseDown={(event) => event.stopPropagation()}>
+            <div className={`mb-2 grid min-w-0 cursor-default items-center gap-2 ${mode === "image" ? "grid-cols-[minmax(0,1fr)_196px]" : mode === "video" || mode === "audio" || mode === "text" ? "grid-cols-[minmax(0,1fr)_148px]" : "grid-cols-1"}`} onMouseDown={(event) => event.stopPropagation()}>
                     <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model, ...canvasModelSpecPatch(globalConfig, model, mode, mediaSpecValues(node)) })} capability={mode} onMissingConfig={() => navigateToSettings({ continueCreation: true })} fullWidth showSelectedPrice={false} />
                     {mode === "text" ? (
                         <div className="flex h-10 min-w-0 cursor-default items-center justify-between gap-2 rounded-lg border px-2.5" style={{ borderColor: theme.node.stroke, background: theme.node.fill }} data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
@@ -172,9 +174,19 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                             <InputNumber size="small" min={1} max={15} value={textCountValue} onChange={(value) => onConfigChange(node.id, { textCount: Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 1))) })} aria-label={canvasT("videoCanvas.prompt.textCountHint", "文本生成份数（默认 1，可在生成配置中调整）")} />
                         </div>
                     ) : mode === "video" ? (
-                        <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                        <CanvasVideoSettingsPopover config={config} promptOptimize={node.metadata?.promptOptimize !== "false"} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                     ) : mode === "image" ? (
-                        <CanvasImageSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
+                        <div className="flex min-w-0 items-center gap-1">
+                            <div className="min-w-0 flex-1">
+                                <CanvasImageSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
+                            </div>
+                            <CanvasCameraPicker
+                                rig={readCameraRig(node.metadata)}
+                                placement="topRight"
+                                buttonClassName="canvas-compact-control !h-10 !w-10 !justify-center !rounded-lg !px-0"
+                                onChange={(patch) => onConfigChange(node.id, patch)}
+                            />
+                        </div>
                     ) : mode === "audio" ? (
                         <CanvasAudioSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
                     ) : null}
@@ -184,17 +196,16 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
 
             <Button
                 type="primary"
-                className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
-                danger={isRunning}
+                className="mt-auto !h-10 !w-full !cursor-pointer !rounded-full"
+                danger={false}
                 disabled={!isRunning && !canGenerate}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => (isRunning ? onStop(node.id) : onGenerate(node.id))}
             >
-                <span className="inline-flex items-center gap-1.5">
+                <span className="inline-flex items-center gap-2">
                     {isRunning ? (
                         <>
-                            <LoaderCircle className="size-4 animate-spin" />
-                            <Square className="size-3.5 fill-current" />
+                            <span className="canvas-send-token-stop" />
                             <span>{canvasT("videoCanvas.config.stop", "停止")}</span>
                         </>
                     ) : (
@@ -234,6 +245,7 @@ function videoConfigPatch(key: CanvasVideoSettingKey, value: string) {
     if (key === "videoSeconds") return { seconds: value };
     if (key === "videoGenerateAudio") return { generateAudio: value };
     if (key === "videoWatermark") return { watermark: value };
+    if (key === "count") return { count: Number(value) || 1 };
     return { [key]: value };
 }
 

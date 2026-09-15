@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { CanvasChromeButton, overlayPanelStyle, useAnchoredOverlay } from "@oc/components/canvas/canvas-overlay";
 import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@oc/components/image-settings-panel";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { CANVAS_IMAGE_BATCH_MAX_COUNT, getCanvasBatchCount } from "@oc/lib/canvas/canvas-generation-count";
 import { imageCapabilityConfigFor } from "@oc/lib/model-capabilities";
 import { anchoredOverlayStyle, type OverlayPlacement } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -29,7 +30,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);
     const quality = config.quality || "auto";
-    const count = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count) || 1))));
+    const count = getCanvasBatchCount(config.count, CANVAS_IMAGE_BATCH_MAX_COUNT);
     const activeSize = config.size || "auto";
     const summary = compactImageToken(config, quality, activeSize, showCount ? count : 1);
     const close = useCallback(() => {
@@ -37,7 +38,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
         onOpenChange?.(false);
     }, [onOpenChange]);
     const rect = useAnchoredOverlay(open, buttonRef, panelRef, close);
-    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 440, placement }) : null;
+    const geometry = rect ? anchoredOverlayStyle(rect, { width: window.innerWidth, height: window.innerHeight }, { width: 448, placement, estimatedHeight: 480 }) : null;
 
     return (
         <>
@@ -64,7 +65,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
                         onPointerDown={(event) => event.stopPropagation()}
                         onMouseDown={(event) => event.stopPropagation()}
                     >
-                        <ImageSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={false} showCount={showCount} className="space-y-2.5" />
+                        <ImageSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={false} showCount={showCount} className="thin-scrollbar max-h-[min(72vh,640px)] space-y-2.5 overflow-y-auto pr-0.5" />
                     </div>,
                     document.body,
                 )

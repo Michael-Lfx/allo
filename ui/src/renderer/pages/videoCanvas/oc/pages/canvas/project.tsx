@@ -466,7 +466,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         openCanvasNodeTaskDetails,
         openCanvasNodeVersions,
         viewCanvasNodeImage,
-        handleReplaceMedia,
         locateProjectStyleNode,
     } = useCanvasNodeActions({
         ...interactionSetters,
@@ -474,7 +473,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         setSelectedNodeIds,
         setSelectedConnectionId,
         openNodeTaskDetails,
-        handleUploadRequest,
         nodesRef,
         focusCanvasNode,
         message,
@@ -970,7 +968,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         {...directorActions}
                         {...canvasInteraction}
                         {...worldLayerHandlers}
-                        onReplaceMedia={handleReplaceMedia}
                         renderModel={renderModel}
                         collapsingBatchIds={collapsingBatchIds}
                         openingBatchIds={openingBatchIds}
