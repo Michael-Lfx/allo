@@ -1730,3 +1730,51 @@ async fn openai_gateway_sanitizes_gemini_object_only_branches() {
     assert!(!gemini_unsafe_schema(sanitized));
     server.verify().await;
 }
+
+// ---------------------------------------------------------------------------
+// Manual: real 90s initial-negotiation deadline (network-real, not mocked)
+// ---------------------------------------------------------------------------
+
+/// Run with:
+/// `cargo test -p nomi-providers --test provider_openai_test -- --ignored initial_request_deadline`
+///
+/// A black-hole listener accepts the connection and never responds. The shared
+/// per-stream deadline must fire once at ~90s instead of stacking retries
+/// (30s connect / 120s idle-read must not be the bound here).
+#[tokio::test]
+#[ignore = "manual verification: waits out the real 90s initial-negotiation deadline"]
+async fn initial_request_deadline_against_blackhole_listener() {
+    use std::time::Instant as StdInstant;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &format!("http://{addr}"),
+        ProviderCompat::openai_defaults(),
+    );
+
+    let started = StdInstant::now();
+    let error = provider.stream(&make_request()).await.unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(error, ProviderError::InitialRequestTimeout(_)),
+        "expected the deadline error, got: {error:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_secs(90),
+        "deadline fired too early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(120),
+        "wait must not stack retries on top of one deadline: {elapsed:?}"
+    );
+}
