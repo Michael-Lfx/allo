@@ -108,6 +108,7 @@ pub(crate) fn pack_scene_briefs_with(
     }
     flush_briefs(&mut out, run);
     let mut out = split_overflow_briefs(bounds, out, opts.max_voice_ref_speakers);
+    out = absorb_reaction_leftovers(bounds, out);
     reindex_briefs(&mut out);
     out
 }
@@ -130,6 +131,7 @@ pub(crate) fn pack_briefs_for_publish(
     // overflow. Split again so every script line still has a home, even if the
     // film then has more clips than the duration quota.
     let mut out = split_overflow_briefs(bounds, budgeted, opts.max_voice_ref_speakers);
+    out = absorb_reaction_leftovers(bounds, out);
     reindex_briefs(&mut out);
     out
 }
@@ -514,10 +516,18 @@ fn can_pack_briefs(
     bounds: ClipBounds,
     opts: &PackOpts,
 ) -> bool {
-    if prev.is_merged() || brief.is_merged() {
+    if crate::domain::location_changed(&prev.location_id, &brief.location_id) {
         return false;
     }
-    if crate::domain::location_changed(&prev.location_id, &brief.location_id) {
+    // A gasp / point / glance that the LLM (or overflow-split) parked as its
+    // own row still belongs on the previous spoken beat. Do not let turn/payoff
+    // needles or an already-merged prev keep it as a 2s orphan.
+    if is_reaction_leftover_brief(brief)
+        && !named_dialogue_speakers(&brief_audio_blob(prev)).is_empty()
+    {
+        return run_need + need <= bounds.max_secs();
+    }
+    if prev.is_merged() || brief.is_merged() {
         return false;
     }
     if crosses_split(prev, brief, &opts.split_needles) {
@@ -1293,10 +1303,92 @@ fn split_overflow_briefs(
             run.push(atom);
         }
         if !run.is_empty() {
+            if run_is_carrier_only(&run)
+                && fold_trailing_carrier_into_last(&mut out, &brief, &run, bounds)
+            {
+                continue;
+            }
             push_split_atoms(&mut out, bounds, &brief, run, max_speakers);
         }
     }
     out
+}
+
+/// Fold a trailing action/SFX atom (pointing, gasp) back onto the last spoken
+/// clip of the same overflow split instead of billing a leftover min-length file.
+fn fold_trailing_carrier_into_last(
+    out: &mut Vec<ShotBriefDescription>,
+    template: &ShotBriefDescription,
+    carrier: &[ShotBriefBeat],
+    bounds: ClipBounds,
+) -> bool {
+    if carrier.is_empty() || !run_is_carrier_only(carrier) {
+        return false;
+    }
+    let Some(last) = out.last() else {
+        return false;
+    };
+    if crate::domain::location_changed(&last.location_id, &template.location_id) {
+        return false;
+    }
+    let extra = brief_from_atoms(template, carrier.to_vec());
+    let need = brief_need_secs(bounds, last).saturating_add(brief_need_secs(bounds, &extra));
+    if need > bounds.max_secs() {
+        return false;
+    }
+    let prev = out.pop().expect("len checked");
+    out.push(collapse_briefs(vec![prev, extra]));
+    true
+}
+
+/// After pack/split: merge leftover reaction rows into the previous spoken clip.
+fn absorb_reaction_leftovers(
+    bounds: ClipBounds,
+    briefs: Vec<ShotBriefDescription>,
+) -> Vec<ShotBriefDescription> {
+    let mut out: Vec<ShotBriefDescription> = Vec::with_capacity(briefs.len());
+    for brief in briefs {
+        let joins = out.last().is_some_and(|prev| {
+            !crate::domain::location_changed(&prev.location_id, &brief.location_id)
+                && is_reaction_leftover_brief(&brief)
+                && !named_dialogue_speakers(&brief_audio_blob(prev)).is_empty()
+                && brief_need_secs(bounds, prev).saturating_add(brief_need_secs(bounds, &brief))
+                    <= bounds.max_secs()
+        });
+        if joins {
+            let prev = out.pop().expect("len checked");
+            out.push(collapse_briefs(vec![prev, brief]));
+        } else {
+            out.push(brief);
+        }
+    }
+    out
+}
+
+/// Parenthetical / foley-only leftover with no named speaker — not a new story beat.
+fn is_reaction_leftover_brief(brief: &ShotBriefDescription) -> bool {
+    if brief.is_merged() {
+        return false;
+    }
+    if !named_dialogue_speakers(&brief_audio_blob(brief)).is_empty() {
+        return false;
+    }
+    audio_is_reaction_or_sfx(&brief_audio_blob(brief))
+}
+
+fn audio_is_reaction_or_sfx(audio: &str) -> bool {
+    let t = audio.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t.contains('「') || t.contains('」') || t.contains('"') || t.contains('“') || t.contains('”')
+    {
+        return false;
+    }
+    let inner = t
+        .trim_matches(|c| c == '(' || c == ')' || c == '（' || c == '）')
+        .trim();
+    inner.chars().count() <= 24
 }
 
 fn run_is_carrier_only(run: &[ShotBriefBeat]) -> bool {
@@ -2900,5 +2992,65 @@ mod tests {
         assert!(inline.contains("陈俊生开口 {不是我！我没点！}"), "{inline}");
         assert!(!inline.contains("低音铺底"), "{inline}");
         assert!(!inline.contains("弹幕"), "{inline}");
+    }
+
+    #[test]
+    fn gasp_leftover_absorbs_into_previous_spoken_clip_despite_needles() {
+        let briefs = vec![
+            brief(
+                24,
+                25,
+                "中景:<玄霄老祖>站在雕像前,手里掂着开光手链。<王胖子>从画面右侧凑过来。",
+                Some(
+                    "玄霄老祖:「叫\"老祖教你过天劫\"。通关者,本座亲自为他挡一道雷。」 王胖子:「老祖,那票价得翻十倍！」",
+                ),
+            ),
+            brief(
+                25,
+                25,
+                "中景:老祖指了指密室逃脱的牌子,一本正经地开口。王胖子倒吸一口凉气,眼睛瞪大。",
+                Some("(倒吸一口凉气)"),
+            ),
+        ];
+        let packed = pack_scene_briefs_with(
+            WAN3,
+            briefs,
+            PackOpts {
+                policy: PackPolicy::Dense,
+                split_needles: vec!["密室".into(), "牌子".into(), "老祖".into()],
+                max_voice_ref_speakers: DEFAULT_MAX_VOICE_REF_SPEAKERS,
+            },
+        );
+        assert_eq!(packed.len(), 1, "2s gasp must not stay its own clip: {packed:?}");
+        let blob = format!(
+            "{} {}",
+            packed[0].visual_desc,
+            packed[0].audio_desc.as_deref().unwrap_or("")
+        );
+        assert!(blob.contains("密室逃脱") || blob.contains("牌子"), "{blob}");
+        assert!(blob.contains("倒吸一口凉气"), "{blob}");
+        assert!(blob.contains("票价"), "{blob}");
+    }
+
+    #[test]
+    fn overflow_cut_to_does_not_orphan_trailing_gasp() {
+        let speech = format!("玄霄老祖：「{}」 王胖子：「那票价得翻十倍！」 (倒吸一口凉气)", "规矩要改。".repeat(22));
+        let visual = "中景:<玄霄老祖>站在雕像前,手里掂着开光手链。<王胖子>从画面右侧凑过来。CUT TO 中景:老祖指了指密室逃脱的牌子,一本正经地开口。王胖子倒吸一口凉气,眼睛瞪大。";
+        let packed = pack_scene_briefs(WAN3, vec![brief(0, 0, visual, Some(&speech))]);
+        assert!(
+            packed.iter().all(|b| {
+                let audio = b.audio_desc.as_deref().unwrap_or("");
+                !(audio.trim() == "(倒吸一口凉气)"
+                    && !audio.contains('「')
+                    && b.visual_desc.contains("牌子"))
+            }),
+            "trailing gasp visual must ride with speech, not a leftover file: {packed:?}"
+        );
+        let all_audio: String = packed
+            .iter()
+            .filter_map(|b| b.audio_desc.as_deref())
+            .collect();
+        assert!(all_audio.contains("倒吸一口凉气"), "{all_audio}");
+        assert!(all_audio.contains("票价"), "{all_audio}");
     }
 }

@@ -57,12 +57,46 @@ fn lite_mirror(url: &'static str, format: ArchiveFormat) -> FfmpegMirror {
     }
 }
 
-fn platform_mirrors() -> Vec<FfmpegMirror> {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
+/// Hosted copies of the platform zips. `?view=false` makes ModelScope return
+/// the file instead of the dataset preview page.
+fn modelscope_zip(filename: &'static str) -> FfmpegMirror {
+    match filename {
+        "ffmpeg-windows-x86_64.zip" => mirror(
+            "https://www.modelscope.cn/datasets/NanoModel/ffmpeg/resolve/master/ffmpeg-windows-x86_64.zip?view=false",
+            ArchiveFormat::Zip,
+        ),
+        "ffmpeg-windows-aarch64.zip" => mirror(
+            "https://www.modelscope.cn/datasets/NanoModel/ffmpeg/resolve/master/ffmpeg-windows-aarch64.zip?view=false",
+            ArchiveFormat::Zip,
+        ),
+        "ffmpeg-linux-x86_64.zip" => mirror(
+            "https://www.modelscope.cn/datasets/NanoModel/ffmpeg/resolve/master/ffmpeg-linux-x86_64.zip?view=false",
+            ArchiveFormat::Zip,
+        ),
+        "ffmpeg-linux-aarch64.zip" => mirror(
+            "https://www.modelscope.cn/datasets/NanoModel/ffmpeg/resolve/master/ffmpeg-linux-aarch64.zip?view=false",
+            ArchiveFormat::Zip,
+        ),
+        "ffmpeg-macos-x86_64.zip" => mirror(
+            "https://www.modelscope.cn/datasets/NanoModel/ffmpeg/resolve/master/ffmpeg-macos-x86_64.zip?view=false",
+            ArchiveFormat::Zip,
+        ),
+        "ffmpeg-macos-aarch64.zip" => mirror(
+            "https://www.modelscope.cn/datasets/NanoModel/ffmpeg/resolve/master/ffmpeg-macos-aarch64.zip?view=false",
+            ArchiveFormat::Zip,
+        ),
+        _ => unreachable!("unknown hosted ffmpeg zip: {filename}"),
+    }
+}
 
+fn platform_mirrors() -> Vec<FfmpegMirror> {
+    mirrors_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn mirrors_for(os: &str, arch: &str) -> Vec<FfmpegMirror> {
     match (os, arch) {
         ("windows", "x86_64") => vec![
+            modelscope_zip("ffmpeg-windows-x86_64.zip"),
             mirror(
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
                 ArchiveFormat::Zip,
@@ -74,6 +108,7 @@ fn platform_mirrors() -> Vec<FfmpegMirror> {
             ),
         ],
         ("windows", "aarch64") => vec![
+            modelscope_zip("ffmpeg-windows-aarch64.zip"),
             mirror(
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-gpl.zip",
                 ArchiveFormat::Zip,
@@ -84,6 +119,7 @@ fn platform_mirrors() -> Vec<FfmpegMirror> {
             ),
         ],
         ("linux", "x86_64") => vec![
+            modelscope_zip("ffmpeg-linux-x86_64.zip"),
             // johnvansickle static builds typically lack NVENC/VAAPI drivers.
             lite_mirror(
                 "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
@@ -95,6 +131,7 @@ fn platform_mirrors() -> Vec<FfmpegMirror> {
             ),
         ],
         ("linux", "aarch64") => vec![
+            modelscope_zip("ffmpeg-linux-aarch64.zip"),
             lite_mirror(
                 "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
                 ArchiveFormat::TarXz,
@@ -105,6 +142,7 @@ fn platform_mirrors() -> Vec<FfmpegMirror> {
             ),
         ],
         ("macos", "x86_64") => vec![
+            modelscope_zip("ffmpeg-macos-x86_64.zip"),
             mirror(
                 "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip",
                 ArchiveFormat::Zip,
@@ -115,6 +153,7 @@ fn platform_mirrors() -> Vec<FfmpegMirror> {
             ),
         ],
         ("macos", "aarch64") => vec![
+            modelscope_zip("ffmpeg-macos-aarch64.zip"),
             mirror(
                 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
                 ArchiveFormat::Zip,
@@ -277,12 +316,12 @@ to enable hardware acceleration."
 }
 
 fn archive_filename(mirror: FfmpegMirror) -> String {
-    mirror
+    let last = mirror
         .url
         .rsplit('/')
         .next()
-        .unwrap_or("ffmpeg-archive")
-        .to_string()
+        .unwrap_or("ffmpeg-archive");
+    last.split('?').next().unwrap_or(last).to_string()
 }
 
 async fn download_file(client: &Client, url: &str, dest: &Path) -> Result<(), FfmpegInstallError> {
@@ -379,6 +418,42 @@ fn extract_from_tar_xz(archive_path: &Path, dest: &Path) -> Result<(), FfmpegIns
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_mirrors_listed_first_for_all_targets() {
+        let targets = [
+            ("windows", "x86_64", "ffmpeg-windows-x86_64.zip"),
+            ("windows", "aarch64", "ffmpeg-windows-aarch64.zip"),
+            ("linux", "x86_64", "ffmpeg-linux-x86_64.zip"),
+            ("linux", "aarch64", "ffmpeg-linux-aarch64.zip"),
+            ("macos", "x86_64", "ffmpeg-macos-x86_64.zip"),
+            ("macos", "aarch64", "ffmpeg-macos-aarch64.zip"),
+        ];
+        for (os, arch, filename) in targets {
+            let mirrors = mirrors_for(os, arch);
+            assert!(
+                mirrors.len() >= 2,
+                "{os}/{arch} should keep public fallbacks"
+            );
+            assert!(
+                mirrors[0].url.contains(filename),
+                "{os}/{arch} first mirror should be the hosted {filename}"
+            );
+            assert!(
+                mirrors[0]
+                    .url
+                    .starts_with("https://www.modelscope.cn/datasets/NanoModel/ffmpeg/"),
+                "{os}/{arch} first mirror should be ModelScope"
+            );
+            assert_eq!(mirrors[0].format, ArchiveFormat::Zip);
+        }
+    }
+
+    #[test]
+    fn archive_filename_strips_query_string() {
+        let mirror = modelscope_zip("ffmpeg-windows-x86_64.zip");
+        assert_eq!(archive_filename(mirror), "ffmpeg-windows-x86_64.zip");
+    }
 
     #[test]
     fn windows_x64_has_zip_mirrors() {
