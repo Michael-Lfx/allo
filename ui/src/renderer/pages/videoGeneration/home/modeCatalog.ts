@@ -11,23 +11,14 @@ export function agentModesFor(t: TFunction): AgentModeDefinition[] {
     {
       id: 'idea2video',
       label: t('videoGeneration.create.modes.idea', { defaultValue: '一个想法' }),
-      description: t('videoGeneration.create.modes.ideaDesc', {
-        defaultValue: '从一句灵感扩写成完整影片',
-      }),
     },
     {
       id: 'script2video',
       label: t('videoGeneration.create.modes.script', { defaultValue: '完整剧本' }),
-      description: t('videoGeneration.create.modes.scriptDesc', {
-        defaultValue: '按剧情结构自动拆解镜头',
-      }),
     },
     {
       id: 'novel2video',
       label: t('videoGeneration.create.modes.novel', { defaultValue: '小说文本' }),
-      description: t('videoGeneration.create.modes.novelDesc', {
-        defaultValue: '提炼长文情节并设计分镜',
-      }),
     },
   ];
 }

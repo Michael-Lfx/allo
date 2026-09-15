@@ -239,9 +239,6 @@
       "script": "Full script",
       "novel": "Novel text",
       "action": "Action imitation",
-      "ideaDesc": "Expand one spark into a complete film",
-      "scriptDesc": "Break the plot into editable shots",
-      "novelDesc": "Extract the storyline and design shots",
       "actionDesc": "Character still + reference video, imitate the motion"
     },
     "skills": {

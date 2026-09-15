@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Broadcast, Platte, RobotOne, VideoOne } from '@icon-park/react';
 import { CanvasMenuRow } from '@oc/components/canvas/canvas-overlay';
+import styles from './home.module.css';
 import type { VideoHomeMode } from './types';
 
 export interface ModeMenuProps {
@@ -46,7 +47,11 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   const { t } = useTranslation();
 
   return (
-    <div role='listbox' aria-label={t('videoGeneration.create.modesMenuAria', { defaultValue: '选择 Mode' })}>
+    <div
+      role='listbox'
+      className={styles.modeMenu}
+      aria-label={t('videoGeneration.create.modesMenuAria', { defaultValue: '选择 Mode' })}
+    >
       {MODES.map((item) => (
         <CanvasMenuRow
           key={item.id}

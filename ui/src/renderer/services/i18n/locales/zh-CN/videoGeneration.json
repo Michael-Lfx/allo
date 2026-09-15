@@ -239,9 +239,6 @@
       "script": "完整剧本",
       "novel": "小说文本",
       "action": "动作模仿",
-      "ideaDesc": "从一句灵感扩写成完整影片",
-      "scriptDesc": "按剧情结构自动拆解镜头",
-      "novelDesc": "提炼长文情节并设计分镜",
       "actionDesc": "角色图 + 参考视频，模仿动作成片"
     },
     "skills": {

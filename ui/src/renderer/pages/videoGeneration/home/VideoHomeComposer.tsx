@@ -924,7 +924,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 }
                 setSlashMenuOpen(open);
               }}
-              width={280}
+              width={188}
+              estimatedHeight={140}
               trigger={
                 <CanvasChromeButton
                   expanded={slashMenuOpen}

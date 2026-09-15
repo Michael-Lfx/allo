@@ -1104,10 +1104,11 @@
 
 .modeMenu {
   display: flex;
-  width: 250px;
+  width: 100%;
+  box-sizing: border-box;
   flex-direction: column;
   gap: 4px;
-  padding: 4px;
+  padding: 2px;
 }
 
 .modeMenuItem {
