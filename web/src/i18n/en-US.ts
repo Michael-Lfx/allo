@@ -27,7 +27,7 @@ const enUS: Resources = {
     operationFailed: "Could not complete the operation",
   },
   sidebar: {
-    navLabel: "Allo navigation",
+    navLabel: "Flowy Agent Store navigation",
     openWorkspaceMenu: "Open workspace menu",
     search: "Search conversations",
     notifications: "Notifications",
@@ -117,7 +117,7 @@ const enUS: Resources = {
       manage: "Manage {{label}}",
     },
     send: "Send message",
-    disclaimer: "Allo may make mistakes; verify important information.",
+    disclaimer: "Flowy Agent Store may make mistakes; verify important information.",
   },
   modelPicker: {
     ariaLabel: "Select model and reasoning level",
@@ -236,8 +236,6 @@ const enUS: Resources = {
   },
   catalog: {
     ariaLabel: "Agent Store app store",
-    backToChat: "Back to chat",
-    subtitle: "Experts · Skills · Connectors",
     reloadTitle: "Reload store",
     reload: "Reload",
     nounTabsLabel: "Sections",
@@ -370,6 +368,8 @@ const enUS: Resources = {
     noMarkets: "No marketplaces yet. Add one to discover installable components.",
     marketEntries: "entries ({{count}})",
     marketAutoUpdate: "auto-update",
+    marketAutoUpdateToggleOn: "Auto-update: on",
+    marketAutoUpdateToggleOff: "Auto-update: off",
     marketRefresh: "Check updates",
     marketRefreshing: "Checking…",
     marketRemove: "Remove marketplace",
@@ -637,7 +637,7 @@ const enUS: Resources = {
   },
   connectionGate: {
     title: "Connect to App Server",
-    intro: "Allo's conversations, models and expert capabilities all come from the App Server. Connect to start chatting.",
+    intro: "Flowy Agent Store's conversations, models and expert capabilities all come from the App Server. Connect to start chatting.",
   },
   palette: {
     commandTitle: "Commands",

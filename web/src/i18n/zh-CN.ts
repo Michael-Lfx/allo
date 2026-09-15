@@ -26,7 +26,7 @@ const zhCN = {
     operationFailed: "无法完成操作",
   },
   sidebar: {
-    navLabel: "Allo 导航",
+    navLabel: "Flowy Agent Store 导航",
     openWorkspaceMenu: "打开工作区菜单",
     search: "搜索会话",
     notifications: "通知",
@@ -116,7 +116,7 @@ const zhCN = {
       manage: "管理{{label}}",
     },
     send: "发送消息",
-    disclaimer: "Allo 可能会出错，请检查重要信息。",
+    disclaimer: "Flowy Agent Store 可能会出错，请检查重要信息。",
   },
   modelPicker: {
     ariaLabel: "选择模型和思考等级",
@@ -237,8 +237,6 @@ const zhCN = {
   },
   catalog: {
     ariaLabel: "Agent Store 应用商店",
-    backToChat: "返回聊天",
-    subtitle: "专家·技能·连接器",
     reloadTitle: "重新加载商店",
     reload: "刷新",
     nounTabsLabel: "内容分类",
@@ -370,6 +368,8 @@ const zhCN = {
     noMarkets: "还没有市场。添加一个市场来发现可安装组件。",
     marketEntries: "条目（{{count}}）",
     marketAutoUpdate: "自动更新",
+    marketAutoUpdateToggleOn: "自动更新：开",
+    marketAutoUpdateToggleOff: "自动更新：关",
     marketRefresh: "检查更新",
     marketRefreshing: "检查中…",
     marketRemove: "移除市场",
@@ -636,7 +636,7 @@ const zhCN = {
   },
   connectionGate: {
     title: "连接 App Server",
-    intro: "Allo 的会话、模型与专家能力都由 App Server 提供，连接后才能开始对话。",
+    intro: "Flowy Agent Store 的会话、模型与专家能力都由 App Server 提供，连接后才能开始对话。",
   },
   palette: {
     commandTitle: "命令",

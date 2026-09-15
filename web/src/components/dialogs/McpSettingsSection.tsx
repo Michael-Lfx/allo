@@ -238,7 +238,7 @@ export function McpManagerView({
                       </span>
                     </div>
                     <button
-                      className={`mcp-toggle ${server.enabled ? "is-on" : ""}`}
+                      className={`switch-pill ${server.enabled ? "is-on" : ""}`}
                       type="button"
                       role="switch"
                       aria-checked={server.enabled}
@@ -246,7 +246,7 @@ export function McpManagerView({
                       disabled={saving}
                       onClick={() => onToggle(server.name, !server.enabled)}
                     >
-                      <span className="mcp-toggle-knob" aria-hidden="true" />
+                      <span className="switch-pill-knob" aria-hidden="true" />
                     </button>
                   </div>
                 ))}

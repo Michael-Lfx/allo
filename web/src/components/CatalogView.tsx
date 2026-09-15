@@ -20,12 +20,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeft,
   Bot,
   Check,
   ChevronRight,
   CircleAlert,
   LoaderCircle,
+  Menu,
   Plug,
   Plus,
   RefreshCw,
@@ -65,6 +65,7 @@ import type {
   TeamDetail,
   TeamSummary,
 } from "../lib/protocol";
+import { IconButton } from "./IconButton";
 import { DialogShell } from "./dialogs/DialogShell";
 import { McpManagerDialog } from "./dialogs/McpSettingsSection";
 import { ImportPanel } from "./catalog/ImportPanel";
@@ -174,7 +175,7 @@ export function CatalogView() {
   const lang = useLocalizedLang();
   const client = useAppStore((s) => s.client);
   const capabilities = useAppStore((s) => s.client?.initializeInfo?.capabilities ?? null);
-  const onBack = useAppStore((s) => s.toggleCatalog);
+  const setSidebarOpen = useAppStore((s) => s.setSidebarOpen);
   const pushToast = useAppStore((s) => s.pushToast);
   const openSettings = useAppStore((s) => s.openSettings);
 
@@ -646,22 +647,19 @@ export function CatalogView() {
 
   return (
     <section className="market-view" aria-label={t("catalog.ariaLabel")}>
-      {/* Page header */}
-      <header className="market-header">
-        <div className="market-header-left">
-          <button className="icon-button market-back" type="button" aria-label={t("catalog.backToChat")} title={t("catalog.backToChat")} onClick={onBack}>
-            <ArrowLeft size={19} strokeWidth={1.7} />
-          </button>
-          <div className="market-title">
-            <span>{t("catalog.subtitle")}</span>
-          </div>
-        </div>
-        <button className="icon-button" type="button" aria-label={t("catalog.reload")} title={t("catalog.reloadTitle")} onClick={reload}>
-          <RefreshCw size={16} strokeWidth={1.7} />
-        </button>
-      </header>
+      {/* The page's whole toolbar, in one row. It replaced three stacked bands:
+          a 58px title header, a 54px tab row, and a second 46px row that carried
+          nothing but the sort on the tabs with no split of their own. The header
+          went first because its text repeated the sidebar's own
+          「专家·技能·连接器」 entry (which toggles back to chat) *and* the three
+          tabs below it; with it gone the back control had nothing left to do
+          either, so reload moved to the right end of this row.
 
-      {/* Noun tabs — one per component family. The page used to expose four
+          The noun tabs are a segmented control rather than three more bordered
+          buttons: the same row also carries this noun's actions, and when both
+          wore the same pill the row read as five equal choices.
+
+          The tabs are one per component family. The page used to expose four
           verbs (`应用商店 / 市场源 / 导入 / 已安装`); the marketplace registry
           moved to the settings dialog's 市场源 section and the import surface
           opens from the tab's own right-hand buttons, so what remains is what
@@ -669,89 +667,44 @@ export function CatalogView() {
 
           Reachability note, kept because it is the invariant that keeps getting
           broken: every surface needs a control that reaches it on a *non-empty*
-          store, not only a button in some empty state. That is why the two
-          right-hand buttons below are rendered unconditionally rather than only
-          when the corresponding list happens to be empty. */}
-      <div className="market-tabs market-tabs-nouns" role="tablist" aria-label={t("catalog.nounTabsLabel")}>
-        {([
-          { key: "experts" as const, icon: <Bot size={15} strokeWidth={1.7} />, label: t("catalog.tabExperts") },
-          { key: "skills" as const, icon: <Sparkles size={15} strokeWidth={1.7} />, label: t("catalog.tabSkills") },
-          { key: "connectors" as const, icon: <Plug size={15} strokeWidth={1.7} />, label: t("catalog.tabConnectors") },
-        ] as { key: CatalogNoun; icon: React.ReactNode; label: string }[])
-          .filter((entry) => visibleNouns.includes(entry.key))
-          .map((entry) => (
-          <button
-            key={entry.key}
-            className={`market-mine ${noun === entry.key ? "is-active" : ""}`}
-            type="button"
-            role="tab"
-            aria-selected={noun === entry.key}
-            onClick={() => { setNoun(entry.key); setSurface("browse"); setQuery(""); }}
-          >
-            {entry.icon}
-            <span>{entry.label}</span>
-          </button>
-        ))}
-        <label className="market-search market-search-inline">
-          <Search size={15} strokeWidth={1.7} />
-          <input
-            type="search"
-            value={query}
-            placeholder={searchPlaceholder}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </label>
-
-        {/* Contextual actions: this noun's inventory, plus the way to add
-            something to it. They belong to the page because they change *what
-            it lists*; a settings dialog would make them a two-step detour. */}
-        <div className="market-actions">
-          <button
-            className={`market-mine ${surface === "installed" ? "is-active" : ""}`}
-            type="button"
-            aria-pressed={surface === "installed"}
-            onClick={() => { setSurface(surface === "installed" ? "browse" : "installed"); setQuery(""); }}
-          >
-            {noun === "experts"
-              ? t("catalog.myExperts")
-              : t("catalog.myInstalled", { count: installedCount ?? 0 })}
-          </button>
-          {noun === "skills" && (
-            <button className="market-mine" type="button" onClick={() => setImportFor("workbuddy-skill-market")}>
-              <Upload size={15} strokeWidth={1.7} />
-              <span>{t("catalog.addSkill")}</span>
-            </button>
-          )}
-          {noun === "connectors" && (
-            <>
-              <button className="market-mine" type="button" onClick={() => setMcpOpen(true)}>
-                <Server size={15} strokeWidth={1.7} />
-                <span>{t("catalog.mcpManage")}</span>
-              </button>
-              <button className="market-mine" type="button" onClick={() => setImportFor("workbuddy-connector-market")}>
-                <Plus size={15} strokeWidth={1.7} />
-                <span>{t("catalog.customConnector")}</span>
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {error && (
-        <div className="market-alert" role="alert">
-          <CircleAlert size={15} strokeWidth={1.8} />
-          <span>{error}</span>
-          <button type="button" aria-label={t("common.closeError")} onClick={() => setError(null)}>✕</button>
-        </div>
-      )}
-
-      {/* Sub-toolbar: the 专家 tab's own split, plus the sort. Only 专家 has a
-          second real axis to split on (专家 vs 专家团 are two wire kinds); 技能
-          and 连接器 have none. The reference's 「推荐 | SkillHub | 套件」 triple
-          is deliberately not reproduced: 推荐 needs a curation flag we do not
-          have, 套件 has no entity at all, and SkillHub is one specific upstream
-          marketplace — a segmented control over no data is a control that lies. */}
+          store, not only a button in some empty state. That is why the actions
+          below are rendered unconditionally rather than only when the
+          corresponding list happens to be empty. */}
       <div className="market-toolbar market-toolbar-store">
+        {/* ≤680px the sidebar slides off-canvas, so this page needs its own way
+            back to it — the same `.mobile-menu-button` the chat topbar shows. */}
+        <IconButton label={t("topbar.openNav")} className="mobile-menu-button" onClick={() => setSidebarOpen(true)}>
+          <Menu size={19} strokeWidth={1.7} />
+        </IconButton>
+
+        <div className="market-seg" role="tablist" aria-label={t("catalog.nounTabsLabel")}>
+          {([
+            { key: "experts" as const, icon: <Bot size={15} strokeWidth={1.7} />, label: t("catalog.tabExperts") },
+            { key: "skills" as const, icon: <Sparkles size={15} strokeWidth={1.7} />, label: t("catalog.tabSkills") },
+            { key: "connectors" as const, icon: <Plug size={15} strokeWidth={1.7} />, label: t("catalog.tabConnectors") },
+          ] as { key: CatalogNoun; icon: React.ReactNode; label: string }[])
+            .filter((entry) => visibleNouns.includes(entry.key))
+            .map((entry) => (
+            <button
+              key={entry.key}
+              className={`market-seg-item ${noun === entry.key ? "is-active" : ""}`}
+              type="button"
+              role="tab"
+              aria-selected={noun === entry.key}
+              onClick={() => { setNoun(entry.key); setSurface("browse"); setQuery(""); }}
+            >
+              {entry.icon}
+              <span>{entry.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Sub-toolbar: the 专家 tab's own split. Only 专家 has a second real
+            axis (专家 vs 专家团 are two wire kinds); 技能 and 连接器 have none.
+            The reference's 「推荐 | SkillHub | 套件」 triple is deliberately not
+            reproduced: 推荐 needs a curation flag we do not have, 套件 has no
+            entity at all, and SkillHub is one specific upstream marketplace — a
+            segmented control over no data is a control that lies. */}
         {noun === "experts" && (
           <div className="market-cats" role="group" aria-label={t("catalog.expertKindLabel")}>
             <button
@@ -772,7 +725,17 @@ export function CatalogView() {
             </button>
           </div>
         )}
-        <div className="market-toolbar-spacer" />
+
+        <label className="market-search market-search-inline">
+          <Search size={15} strokeWidth={1.7} />
+          <input
+            type="search"
+            value={query}
+            placeholder={searchPlaceholder}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+
         {/* Sorting only applies to the store projection (the installed lists
             have no ordering of their own on the wire). */}
         {surface === "browse" && (
@@ -803,7 +766,53 @@ export function CatalogView() {
             </button>
           </div>
         )}
+
+        {/* Contextual actions: this noun's inventory, plus the way to add
+            something to it. They belong to the page because they change *what
+            it lists*; a settings dialog would make them a two-step detour. */}
+        <div className="market-actions">
+          <button
+            className={`market-action ${surface === "installed" ? "is-active" : ""}`}
+            type="button"
+            aria-pressed={surface === "installed"}
+            onClick={() => { setSurface(surface === "installed" ? "browse" : "installed"); setQuery(""); }}
+          >
+            {noun === "experts"
+              ? t("catalog.myExperts")
+              : t("catalog.myInstalled", { count: installedCount ?? 0 })}
+          </button>
+          {noun === "skills" && (
+            <button className="market-action" type="button" onClick={() => setImportFor("workbuddy-skill-market")}>
+              <Upload size={15} strokeWidth={1.7} />
+              <span>{t("catalog.addSkill")}</span>
+            </button>
+          )}
+          {noun === "connectors" && (
+            <>
+              <button className="market-action" type="button" onClick={() => setMcpOpen(true)}>
+                <Server size={15} strokeWidth={1.7} />
+                <span>{t("catalog.mcpManage")}</span>
+              </button>
+              <button className="market-action" type="button" onClick={() => setImportFor("workbuddy-connector-market")}>
+                <Plus size={15} strokeWidth={1.7} />
+                <span>{t("catalog.customConnector")}</span>
+              </button>
+            </>
+          )}
+        </div>
+
+        <button className="icon-button" type="button" aria-label={t("catalog.reload")} title={t("catalog.reloadTitle")} onClick={reload}>
+          <RefreshCw size={16} strokeWidth={1.7} />
+        </button>
       </div>
+
+      {error && (
+        <div className="market-alert" role="alert">
+          <CircleAlert size={15} strokeWidth={1.8} />
+          <span>{error}</span>
+          <button type="button" aria-label={t("common.closeError")} onClick={() => setError(null)}>✕</button>
+        </div>
+      )}
 
       {/* Body */}
       <div className="market-body">
