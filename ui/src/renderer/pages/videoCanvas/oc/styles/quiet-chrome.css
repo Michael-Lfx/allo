@@ -164,6 +164,31 @@
     opacity: 0.4;
 }
 
+/* App dark mode is data-theme / arco-theme; canvas `--workspace-surface-strong` stays light without html.dark. */
+[data-theme='dark'] .canvas-chrome-token,
+body[arco-theme='dark'] .canvas-chrome-token {
+    background: color-mix(
+        in srgb,
+        var(--color-bg-2) 94%,
+        var(--color-text-1) 6%
+    );
+}
+
+[data-theme='dark'] .canvas-chrome-token:hover,
+[data-theme='dark'] .canvas-chrome-token:focus-visible,
+[data-theme='dark'] .canvas-chrome-token[aria-expanded="true"],
+[data-theme='dark'] .canvas-chrome-token[aria-pressed="true"],
+body[arco-theme='dark'] .canvas-chrome-token:hover,
+body[arco-theme='dark'] .canvas-chrome-token:focus-visible,
+body[arco-theme='dark'] .canvas-chrome-token[aria-expanded="true"],
+body[arco-theme='dark'] .canvas-chrome-token[aria-pressed="true"] {
+    background: color-mix(
+        in srgb,
+        var(--color-bg-2) 86%,
+        var(--color-text-1) 14%
+    );
+}
+
 .canvas-composer-shell {
     display: flex;
     flex-direction: column;
