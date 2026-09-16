@@ -137,6 +137,9 @@ const NomiModelSelector: React.FC<{
   return (
     <Dropdown
       trigger='click'
+      // The sendbox trigger is on the left, so the default 'bl' growth is
+      // correct; boundaryDistance only guards narrow windows from edge-hugging.
+      triggerProps={{ popupAlign: { bottom: 8 }, boundaryDistance: { right: 12, bottom: 12 } }}
       getPopupContainer={() => document.body}
       popupVisible={modelPickerOpen}
       onVisibleChange={handleModelPickerVisibleChange}
