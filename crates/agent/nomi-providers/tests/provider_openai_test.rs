@@ -1227,6 +1227,73 @@ async fn openai_effort_fallback_keeps_effort_for_requests_without_tools() {
     server.verify().await;
 }
 
+/// Models a gateway that defaults reasoning for tool calls and therefore
+/// rejects any tool-bearing request without an explicit `reasoning_effort:
+/// "none"`, even when the client never configured an effort.
+#[derive(Clone)]
+struct ToolsRequireEffortNoneResponder;
+
+impl Respond for ToolsRequireEffortNoneResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let has_tools = body
+            .get("tools")
+            .and_then(|value| value.as_array())
+            .is_some_and(|tools| !tools.is_empty());
+        let effort = body.get("reasoning_effort").and_then(|value| value.as_str());
+        if has_tools && effort != Some("none") {
+            return ResponseTemplate::new(500).set_body_string(TOOLS_EFFORT_INCOMPATIBLE_BODY);
+        }
+        let chunk = json!({
+            "choices": [{ "delta": { "content": "Recovered" }, "finish_reason": null }]
+        })
+        .to_string();
+        let finish = json!({
+            "choices": [{ "delta": {}, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        })
+        .to_string();
+        ResponseTemplate::new(200)
+            .set_body_raw(build_sse_body(&[&chunk, &finish]), "text/event-stream")
+    }
+}
+
+#[tokio::test]
+async fn openai_explicit_none_heals_tool_requests_without_configured_effort() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ToolsRequireEffortNoneResponder)
+        .expect(2)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let request = request_with_tool_and_effort("gpt-5.6-sol", None);
+    assert!(
+        request.reasoning_effort.is_none(),
+        "this case models a gateway that defaults reasoning server-side"
+    );
+
+    let events = collect_events(provider.stream(&request).await.unwrap()).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+    );
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(
+        recorded_efforts(&received),
+        vec![None, Some("none".to_string())],
+        "the retry must carry an explicit none instead of resending the same body"
+    );
+    server.verify().await;
+}
+
 #[tokio::test]
 async fn openai_effort_fallback_is_isolated_per_model() {
     let server = MockServer::start().await;

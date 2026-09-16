@@ -497,12 +497,12 @@ impl OpenAIProvider {
             ));
         }
 
-        if let Some(effort) = &request.reasoning_effort {
-            let effort = if force_effort_none {
-                "none"
-            } else {
-                effort.as_str()
-            };
+        if force_effort_none {
+            // The gateway requires an explicit `none` once it rejected the
+            // tools + effort combination, even when the caller never
+            // configured an effort for this model.
+            body["reasoning_effort"] = json!("none");
+        } else if let Some(effort) = &request.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
         }
 
@@ -900,8 +900,7 @@ impl LlmProvider for OpenAIProvider {
         let mut sanitize_tool_schemas = self.should_sanitize_tool_schemas();
         let mut include_stream_usage = true;
         let mut learned_schema_fallback = false;
-        let mut force_effort_none = request.reasoning_effort.is_some()
-            && !request.tools.is_empty()
+        let mut force_effort_none = !request.tools.is_empty()
             && self.requires_effort_none_with_tools(&request.model);
         let mut learned_effort_fallback = false;
         let mut output_cap = request
@@ -1009,17 +1008,21 @@ impl LlmProvider for OpenAIProvider {
                     let Some(rejected_cap) = error.output_limit_rejection() else {
                         return Err(error);
                     };
-                    let current = output_cap
-                        .or(request.max_tokens)
+                    let requested = request
+                        .max_tokens
                         .expect("guarded by request.max_tokens.is_some()");
-                    if rejected_cap >= current {
+                    // Compare against the ceiling actually sent, so a learned
+                    // cap above a smaller request cannot trigger a retry that
+                    // would resend the same body.
+                    let sent = output_cap.map_or(requested, |cap| requested.min(cap));
+                    if rejected_cap >= sent {
                         return Err(error);
                     }
                     tracing::warn!(
                         target: "nomi_providers",
                         provider = "openai",
                         model = %request.model,
-                        requested = current,
+                        sent,
                         negotiated = rejected_cap,
                         "provider rejected an output ceiling above its supported range; retrying with the negotiated limit"
                     );
@@ -3545,6 +3548,19 @@ mod tests {
         let body = provider.build_request_body(&req, false, true, false, Some(100));
         assert_eq!(body["max_completion_tokens"], 100);
         assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn test_forced_effort_none_is_written_without_request_effort() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let req = simple_request();
+        assert!(req.reasoning_effort.is_none());
+
+        let body = provider.build_request_body(&req, false, true, true, None);
+        assert_eq!(
+            body["reasoning_effort"], "none",
+            "a gateway that demands effort=none for tools must receive it even when the caller configured no effort"
+        );
     }
 
     // --- temperature ---

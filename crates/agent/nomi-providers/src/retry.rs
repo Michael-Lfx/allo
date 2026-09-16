@@ -16,10 +16,49 @@ const MAX_BACKOFF: Duration = Duration::from_secs(15);
 const INITIAL_REQUEST_BACKOFF: Duration = Duration::from_millis(300);
 const MAX_INITIAL_REQUEST_BACKOFF: Duration = Duration::from_secs(2);
 
+/// Request-shape signals that decide whether a transient 5xx is better
+/// retried or handed to the provider's compatibility negotiation.
+///
+/// The negotiation loop can only fix rejections for extensions the request
+/// actually carries (tools, an output ceiling), so the exclusions in
+/// [`is_retryable_initial_request_error`] apply only when the matching signal
+/// is present. A request without the signal keeps the standard transient
+/// retry policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitialRequestContext {
+    pub has_tools: bool,
+    pub has_output_ceiling: bool,
+}
+
+impl InitialRequestContext {
+    /// Derive the context from a serialized request body. Unknown custom
+    /// ceiling field names fall back to `false`, which only widens the retry
+    /// policy — the negotiation still sees the final error.
+    pub fn from_json_body(body: &Value) -> Self {
+        Self {
+            has_tools: body
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| !tools.is_empty()),
+            has_output_ceiling: [
+                "max_tokens",
+                "max_completion_tokens",
+                "max_output_tokens",
+                "maxOutputTokens",
+            ]
+            .iter()
+            .any(|field| body.get(*field).is_some()),
+        }
+    }
+}
+
 /// Retry bounded, side-effect-free initial request failures: connection
 /// failures and transient gateway/service 500/502/503/504 responses. Client
 /// errors and rate limits are surfaced immediately.
-pub async fn with_initial_request_retry<F, Fut, T>(f: F) -> Result<T, ProviderError>
+pub async fn with_initial_request_retry<F, Fut, T>(
+    context: InitialRequestContext,
+    f: F,
+) -> Result<T, ProviderError>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, ProviderError>>,
@@ -28,7 +67,7 @@ where
     for attempt in 0..=MAX_INITIAL_REQUEST_RETRIES {
         match f().await {
             Ok(val) => return Ok(val),
-            Err(e) if is_retryable_initial_request_error(&e) && attempt < MAX_INITIAL_REQUEST_RETRIES => {
+            Err(e) if is_retryable_initial_request_error(&e, context) && attempt < MAX_INITIAL_REQUEST_RETRIES => {
                 let (error_kind, status) = retry_log_classification(&e);
                 tracing::warn!(
                     attempt = attempt + 1,
@@ -55,15 +94,19 @@ fn retry_log_classification(error: &ProviderError) -> (&'static str, Option<u16>
     }
 }
 
-fn is_retryable_initial_request_error(error: &ProviderError) -> bool {
+fn is_retryable_initial_request_error(
+    error: &ProviderError,
+    context: InitialRequestContext,
+) -> bool {
     match error {
         ProviderError::Http(err) => err.is_connect(),
         ProviderError::Connection(_) => true,
         ProviderError::Api { status, .. } => {
             matches!(status, 500 | 502 | 503 | 504)
-                && !error.is_tool_schema_incompatible()
-                && !error.is_tools_with_reasoning_effort_incompatible()
-                && error.output_limit_rejection().is_none()
+                && !(context.has_tools
+                    && (error.is_tool_schema_incompatible()
+                        || error.is_tools_with_reasoning_effort_incompatible()))
+                && !(context.has_output_ceiling && error.output_limit_rejection().is_some())
         }
         _ => false,
     }
@@ -207,7 +250,7 @@ mod tests {
         tokio::time::pause();
 
         let counter = Arc::new(AtomicU32::new(0));
-        let result = with_initial_request_retry(|| {
+        let result = with_initial_request_retry(InitialRequestContext::default(), || {
             let counter = Arc::clone(&counter);
             async move {
                 let attempt = counter.fetch_add(1, Ordering::SeqCst);
@@ -227,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn test_initial_connect_retry_does_not_retry_rate_limit() {
         let counter = Arc::new(AtomicU32::new(0));
-        let result = with_initial_request_retry(|| {
+        let result = with_initial_request_retry(InitialRequestContext::default(), || {
             let counter = Arc::clone(&counter);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
@@ -253,7 +296,7 @@ mod tests {
     async fn test_initial_request_retries_transient_502_then_succeeds() {
         tokio::time::pause();
         let counter = Arc::new(AtomicU32::new(0));
-        let result = with_initial_request_retry(|| {
+        let result = with_initial_request_retry(InitialRequestContext::default(), || {
             let counter = Arc::clone(&counter);
             async move {
                 let attempt = counter.fetch_add(1, Ordering::SeqCst);
@@ -276,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn test_initial_request_does_not_retry_400() {
         let counter = Arc::new(AtomicU32::new(0));
-        let result = with_initial_request_retry(|| {
+        let result = with_initial_request_retry(InitialRequestContext::default(), || {
             let counter = Arc::clone(&counter);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
@@ -290,6 +333,84 @@ mod tests {
 
         assert!(matches!(result, Err(ProviderError::Api { status: 400, .. })));
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn compatibility_exclusions_apply_only_when_the_request_can_carry_them() {
+        let effort_rejection = ProviderError::Api {
+            status: 500,
+            message: "Function tools with reasoning_effort are not supported; set reasoning_effort to 'none'".into(),
+        };
+        let schema_rejection = ProviderError::Api {
+            status: 500,
+            message: "Invalid schema for function 'read': top-level oneOf is not supported".into(),
+        };
+        let ceiling_rejection = ProviderError::Api {
+            status: 500,
+            message: "supported range is from 1 (inclusive) to 65537 (exclusive)".into(),
+        };
+        let toolful = InitialRequestContext {
+            has_tools: true,
+            has_output_ceiling: false,
+        };
+        let ceiling = InitialRequestContext {
+            has_tools: false,
+            has_output_ceiling: true,
+        };
+
+        for (error, context, expected) in [
+            (&effort_rejection, toolful, false),
+            (&effort_rejection, InitialRequestContext::default(), true),
+            (&schema_rejection, toolful, false),
+            (&schema_rejection, InitialRequestContext::default(), true),
+            (&ceiling_rejection, ceiling, false),
+            (&ceiling_rejection, InitialRequestContext::default(), true),
+        ] {
+            assert_eq!(
+                is_retryable_initial_request_error(error, context),
+                expected,
+                "context={context:?} error={error}"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_500_without_negotiable_context_stays_retryable() {
+        let transient = ProviderError::Api {
+            status: 500,
+            message: "upstream unavailable".into(),
+        };
+        assert!(is_retryable_initial_request_error(
+            &transient,
+            InitialRequestContext {
+                has_tools: true,
+                has_output_ceiling: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn context_derives_tools_and_ceiling_from_the_serialized_body() {
+        let body = serde_json::json!({
+            "tools": [{"type": "function"}],
+            "max_completion_tokens": 4096
+        });
+        assert_eq!(
+            InitialRequestContext::from_json_body(&body),
+            InitialRequestContext {
+                has_tools: true,
+                has_output_ceiling: true,
+            }
+        );
+        assert_eq!(
+            InitialRequestContext::from_json_body(&serde_json::json!({"tools": []})),
+            InitialRequestContext::default()
+        );
+        assert_eq!(
+            InitialRequestContext::from_json_body(&serde_json::json!({"generationConfig": {"maxOutputTokens": 64}})),
+            InitialRequestContext::default(),
+            "only top-level ceiling fields are recognized"
+        );
     }
 
     // --- evaluate_outcome tests ---

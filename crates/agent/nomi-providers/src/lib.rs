@@ -230,9 +230,11 @@ impl ProviderError {
 
         // Gemini's flattened tool errors name the offending branch directly
         // (`parameters.any_of[0].required: only allowed for OBJECT type`)
-        // without the OpenAI "top level" wording.
+        // without the OpenAI "top level" wording. Accept both the snake_case
+        // and camelCase spellings of the branch keyword.
         let names_object_only_branch = lower.contains("only allowed for object type")
-            || lower.contains("parameters.any_of");
+            || lower.contains("parameters.any_of")
+            || lower.contains("parameters.anyof");
         names_object_only_branch && lower.contains("parameters") && lower.contains("function")
     }
 
@@ -398,33 +400,36 @@ pub(crate) async fn send_initial(
     headers: &HeaderMap,
     body: &Value,
 ) -> Result<reqwest::Response, ProviderError> {
-    retry::with_initial_request_retry(|| async {
-        let response = client
-            .post(url)
-            .headers(headers.clone())
-            .json(body)
-            .send()
-            .await?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
-        }
-        let retry_after_ms = parse_retry_after_ms(response.headers()).unwrap_or(5000);
-        let body_text = response.text().await.unwrap_or_default();
-        if status.as_u16() == 429 {
-            return Err(ProviderError::RateLimited {
-                retry_after_ms,
-                message: non_empty_rate_limit_message(body_text),
-            });
-        }
-        if is_context_overflow_status_body(status.as_u16(), &body_text) {
-            return Err(ProviderError::PromptTooLong(body_text));
-        }
-        Err(ProviderError::Api {
-            status: status.as_u16(),
-            message: body_text,
-        })
-    })
+    retry::with_initial_request_retry(
+        retry::InitialRequestContext::from_json_body(body),
+        || async {
+            let response = client
+                .post(url)
+                .headers(headers.clone())
+                .json(body)
+                .send()
+                .await?;
+            let status = response.status();
+            if status.is_success() {
+                return Ok(response);
+            }
+            let retry_after_ms = parse_retry_after_ms(response.headers()).unwrap_or(5000);
+            let body_text = response.text().await.unwrap_or_default();
+            if status.as_u16() == 429 {
+                return Err(ProviderError::RateLimited {
+                    retry_after_ms,
+                    message: non_empty_rate_limit_message(body_text),
+                });
+            }
+            if is_context_overflow_status_body(status.as_u16(), &body_text) {
+                return Err(ProviderError::PromptTooLong(body_text));
+            }
+            Err(ProviderError::Api {
+                status: status.as_u16(),
+                message: body_text,
+            })
+        },
+    )
     .await
 }
 
@@ -837,8 +842,18 @@ mod retryable_tests {
             status: 500,
             message: "tool function parameters.anyOf required is only allowed for OBJECT type".into(),
         };
+        let camel_case_only = ProviderError::Api {
+            status: 500,
+            message:
+                "GenerateContentRequest.tools[0].function_declarations[3].parameters.anyOf[2].required: unsupported keyword"
+                    .into(),
+        };
         assert!(gemini.is_tool_schema_incompatible());
         assert!(wording.is_tool_schema_incompatible());
+        assert!(
+            camel_case_only.is_tool_schema_incompatible(),
+            "camelCase parameters.anyOf must classify without the object-type phrase"
+        );
     }
 
     #[test]
