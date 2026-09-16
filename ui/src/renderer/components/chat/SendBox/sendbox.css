@@ -929,11 +929,12 @@
 
 /* One type scale across the composer menus: caption 12px / row 13px /
  * metadata 11px. Arco sets `font-size: 14px` on the `.arco-menu` root and
- * lets items and group titles inherit it, which made the auto-tier rows the
- * largest text in the composer surface and the picker's group captions
- * bigger than the rows they introduce. */
+ * lets items and group titles inherit it, which made the picker's group
+ * captions bigger than the rows they introduce. The compact auto tier popup
+ * instead keeps its three short rows at the same 12px as its title — the
+ * gray caption color still distinguishes the two. */
 .auto-tier-selector-popup .arco-menu {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .chat-model-picker-menu .arco-menu-group-title {

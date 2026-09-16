@@ -95,10 +95,11 @@ describe('ChatModelPickerMenu structure', () => {
     expect(rule.includes('padding-top: 12px')).toBe(true);
   });
 
-  test('keeps one caption-row-metadata type scale across the composer menus', () => {
+  test('keeps menu captions at 12px and the auto tier popup uniform', () => {
     // Arco inherits its 14px root font-size into both menu items and group
-    // titles; the composer menus standardize on caption 12px / row 13px /
-    // metadata 11px instead.
+    // titles. Picker group captions step down to 12px; the compact auto tier
+    // popup keeps its three short rows at the same 12px as its title (the
+    // gray caption color still distinguishes the title from the options).
     expect(sendboxCss.includes('.chat-model-picker-menu .arco-menu-group-title {')).toBe(true);
     expect(sendboxCss.includes('.auto-tier-selector-popup .arco-menu {')).toBe(true);
     const captionStart = sendboxCss.indexOf('.chat-model-picker-menu .arco-menu-group-title {');
@@ -106,6 +107,6 @@ describe('ChatModelPickerMenu structure', () => {
     expect(captionRule.includes('font-size: 12px')).toBe(true);
     const tierStart = sendboxCss.indexOf('.auto-tier-selector-popup .arco-menu {');
     const tierRule = sendboxCss.slice(tierStart, sendboxCss.indexOf('}', tierStart));
-    expect(tierRule.includes('font-size: 13px')).toBe(true);
+    expect(tierRule.includes('font-size: 12px')).toBe(true);
   });
 });
