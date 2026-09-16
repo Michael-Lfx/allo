@@ -1,4 +1,4 @@
-use crate::types::SkillMetadata;
+use crate::types::{LoadedFrom, SkillMetadata};
 
 /// A parsed permission rule for skill name matching.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,7 +84,15 @@ impl SkillPermissionChecker {
         // Step 3: safe-properties.
         // Note: hooks_raw is Option<serde_json::Value> (None check),
         // allowed_tools is Vec<String> (is_empty check). The two differ by design.
-        let is_safe = skill.hooks_raw.is_none() && skill.allowed_tools.is_empty();
+        // A body containing embedded ```! blocks or !`inline` commands can
+        // execute shell with no per-command approval, so it is as privileged as
+        // a hook. MCP-sourced skills never execute embedded shell at runtime
+        // (shell.rs short-circuits them), so they stay exempt here.
+        let has_shell_body = skill.loaded_from != LoadedFrom::Mcp
+            && crate::shell::has_embedded_shell_commands(&skill.content);
+        let is_safe = skill.hooks_raw.is_none()
+            && skill.allowed_tools.is_empty()
+            && !has_shell_body;
         if is_safe {
             return SkillPermission::Allow;
         }
@@ -102,21 +110,27 @@ impl SkillPermissionChecker {
 
 /// Build a human-readable reason string for why a skill needs confirmation.
 fn build_ask_reason(skill: &SkillMetadata) -> String {
-    match (skill.hooks_raw.is_some(), !skill.allowed_tools.is_empty()) {
-        (true, true) => format!(
+    let has_shell_body = skill.loaded_from != LoadedFrom::Mcp
+        && crate::shell::has_embedded_shell_commands(&skill.content);
+    match (skill.hooks_raw.is_some(), !skill.allowed_tools.is_empty(), has_shell_body) {
+        (true, true, _) => format!(
             "Skill '{}' declares hooks and allowed-tools which grant elevated privileges.",
             skill.name
         ),
-        (true, false) => format!(
+        (true, false, _) => format!(
             "Skill '{}' declares hooks which may run arbitrary shell commands.",
             skill.name
         ),
-        (false, true) => format!(
+        (false, true, _) => format!(
             "Skill '{}' declares allowed-tools ({}) which grant elevated tool access.",
             skill.name,
             skill.allowed_tools.join(", ")
         ),
-        (false, false) => {
+        (false, false, true) => format!(
+            "Skill '{}' embeds shell commands in its body which may run arbitrary commands.",
+            skill.name
+        ),
+        (false, false, false) => {
             // Should not reach here (safe-properties would have allowed), but be defensive.
             format!("Skill '{}' requires user approval.", skill.name)
         }
@@ -323,6 +337,74 @@ mod tests {
             assert!(
                 reason.contains("allowed-tools") || reason.contains("Bash"),
                 "reason should mention tool: {reason}"
+            );
+        } else {
+            panic!("expected Ask");
+        }
+    }
+
+    // P5-16: body with inline shell command and empty frontmatter → Ask
+    #[test]
+    fn p5_16_shell_body_requires_ask() {
+        let mut skill = make_skill("shelly");
+        skill.content = "Run this: !`echo hi`".to_string();
+        let checker = SkillPermissionChecker::new(vec![], vec![], false);
+        assert!(matches!(
+            checker.check(&skill),
+            SkillPermission::Ask { .. }
+        ));
+    }
+
+    // P5-17: body with ```! block and empty frontmatter → Ask
+    #[test]
+    fn p5_17_shell_block_body_requires_ask() {
+        let mut skill = make_skill("blocky");
+        skill.content = "```!\necho hi\n```".to_string();
+        let checker = SkillPermissionChecker::new(vec![], vec![], false);
+        assert!(matches!(
+            checker.check(&skill),
+            SkillPermission::Ask { .. }
+        ));
+    }
+
+    // P5-18: shell body with auto_approve → Allow (consistent with hooks)
+    #[test]
+    fn p5_18_shell_body_auto_approve_allows() {
+        let mut skill = make_skill("shelly");
+        skill.content = "!`echo hi`".to_string();
+        let checker = SkillPermissionChecker::new(vec![], vec![], true);
+        assert_eq!(checker.check(&skill), SkillPermission::Allow);
+    }
+
+    // P5-19: MCP-sourced skill with shell body stays exempt (never executed)
+    #[test]
+    fn p5_19_mcp_shell_body_exempt() {
+        let mut skill = make_skill("remote");
+        skill.loaded_from = LoadedFrom::Mcp;
+        skill.content = "!`echo hi`".to_string();
+        let checker = SkillPermissionChecker::new(vec![], vec![], false);
+        assert_eq!(checker.check(&skill), SkillPermission::Allow);
+    }
+
+    // P5-20: plain-text skill with no frontmatter and no shell body → Allow
+    #[test]
+    fn p5_20_safe_body_still_safe() {
+        let mut skill = make_skill("plain");
+        skill.content = "Just instructions, no shell.\n```rust\nfn main() {}\n```".to_string();
+        let checker = SkillPermissionChecker::new(vec![], vec![], false);
+        assert_eq!(checker.check(&skill), SkillPermission::Allow);
+    }
+
+    // Reason string mentions embedded shell
+    #[test]
+    fn ask_reason_mentions_shell_body() {
+        let mut skill = make_skill("shelly");
+        skill.content = "!`echo hi`".to_string();
+        let checker = SkillPermissionChecker::new(vec![], vec![], false);
+        if let SkillPermission::Ask { reason } = checker.check(&skill) {
+            assert!(
+                reason.contains("shell"),
+                "reason should mention shell: {reason}"
             );
         } else {
             panic!("expected Ask");
