@@ -206,8 +206,10 @@ const CATALOG_OUTPUT_CAP_CEILINGS: &[(&str, u32)] = &[("gemini", 65_536)];
 
 /// Lower a catalog-advertised output cap to the smallest known ceiling for the
 /// model family. The family token must be a whole `[a-z0-9]+` segment of the
-/// model id (so `notgemini` never matches). Unknown families keep the catalog
-/// value untouched.
+/// model id (so `notgemini` never matches); ids without separators (for example
+/// `gemini3.5-flash`) are deliberately not tokenized and stay unclamped, which
+/// keeps the runtime negotiation as their safety net. Unknown families keep
+/// the catalog value untouched.
 fn clamp_catalog_output_cap(model: &str, catalog_cap: Option<u32>) -> Option<u32> {
     let catalog_cap = catalog_cap?;
     let ceiling = CATALOG_OUTPUT_CAP_CEILINGS

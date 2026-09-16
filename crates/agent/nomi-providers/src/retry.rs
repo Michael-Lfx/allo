@@ -31,9 +31,11 @@ pub struct InitialRequestContext {
 }
 
 impl InitialRequestContext {
-    /// Derive the context from a serialized request body. Unknown custom
-    /// ceiling field names fall back to `false`, which only widens the retry
-    /// policy — the negotiation still sees the final error.
+    /// Derive the context from a serialized request body. A compat-customized
+    /// ceiling field name (a bespoke `max_tokens_field`) is not recognized, and
+    /// unknown custom fields fall back to `false`; such a request keeps the
+    /// standard transient retry before the negotiation loop sees the final
+    /// rejection, which only widens the retry policy.
     pub fn from_json_body(body: &Value) -> Self {
         Self {
             has_tools: body
