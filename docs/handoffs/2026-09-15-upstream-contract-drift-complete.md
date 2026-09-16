@@ -3,7 +3,8 @@
 > 用途：上下文压缩/换会话后的恢复入口。所有结论与证据均已落盘在
 > `docs/architecture/` 三份文档中，本文件只做索引、状态与待办。
 >
-> 分支：`fix/upstream-contract-drift`（相对 `origin/main` 共 23 个提交，未推送）
+> 分支：`fix/upstream-contract-drift`（未推送；提交数量以
+> `git rev-list --count origin/main..HEAD` 为准，清单见 §2）
 >
 > 工作树：干净；基线：`f0e33897d`（main）
 
@@ -45,6 +46,9 @@ b6f2de954 docs(architecture): 补充工具链与基线限制说明
 0288700b8 docs(architecture): 记录补充测试提交与覆盖说明
 c8d7cf42e docs(architecture): 回填真实验收记录
 60953f132 docs(architecture): 整理运行时影响说明与 OBS-1 采样记录
+
+# 交接
+1a1444218 docs(handoffs): 记录上游契约漂移修复完成交接
 ```
 
 改动范围：19 个文件，+3438 / -51（4 个 Rust crate + 3 份文档 + 1 个 example）。
@@ -158,6 +162,6 @@ OBS-1 受控采样（30 次探针）：
 
 ```text
 git status --short --branch                  # 期望：fix/upstream-contract-drift，干净
-git log --oneline origin/main..HEAD          # 期望：23 个提交
-cargo test -p nomi-providers -p flowy-web    # 期望：243 + 189，1 ignored/每个套件
+git log --oneline origin/main..HEAD          # 期望：§2 的完整提交序列
+cargo test -p nomi-providers -p flowy-web    # 期望：243 + 189，各 1 ignored
 ```
