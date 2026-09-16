@@ -301,10 +301,13 @@ button:disabled { cursor: default; opacity: .48; }
 .thinking-live span:nth-child(2) { animation-delay: .15s; }
 .thinking-live span:nth-child(3) { animation-delay: .3s; }
 .thinking-duration { color: var(--muted-light); font-size: 10px; }
-/* ── 当前计划面板（输入框上方常驻；与 .approval-card 同一列宽） ── */
+/* ── 当前计划面板（输入框上方；与 .approval-card 同一列宽） ── */
 .plan-panel { width: min(920px, calc(100% - 80px)); margin: 0 auto 10px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: 0 6px 20px var(--shadow-solid); overflow: hidden; }
-.plan-panel-head { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--ink-strong); padding: 10px 14px; font: inherit; text-align: left; cursor: pointer; }
+.plan-panel-head { display: flex; width: 100%; box-sizing: border-box; align-items: center; }
+.plan-panel-toggle { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--ink-strong); padding: 10px 14px; font: inherit; text-align: left; cursor: pointer; }
 .plan-panel-head:hover { background: var(--surface-soft); }
+.plan-panel-close { flex: 0 0 auto; display: grid; width: 30px; height: 30px; margin-right: 7px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+.plan-panel-close:hover { background: var(--surface-raised); color: var(--ink-strong); }
 .plan-panel-icon { flex: 0 0 auto; color: var(--muted); }
 .plan-panel-title { flex: 0 0 auto; font-size: 13px; font-weight: 560; }
 .plan-panel-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }

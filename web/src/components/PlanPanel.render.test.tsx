@@ -18,7 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {}, removeItem: () => {} });
 vi.stubGlobal("navigator", { language: "zh-CN" });
 
-const [{ renderToStaticMarkup }, { createElement }, { PlanPanelCard }, { latestPlan }, { planData }, { default: i18n }] =
+const [{ renderToStaticMarkup }, { createElement }, { PlanPanelCard }, { latestPlan, planPanelVisible }, { planData }, { default: i18n }] =
   await Promise.all([
     import("react-dom/server"),
     import("react"),
@@ -47,10 +47,10 @@ function message(entries: unknown[], status: string | null, messageId = "plan-1"
   };
 }
 
-function render(entries: unknown[]) {
+function render(entries: unknown[], onClose?: () => void) {
   const plan = planData({ entries });
   if (!plan) throw new Error("fixture must decode as a plan");
-  return renderToStaticMarkup(createElement(PlanPanelCard, { plan }));
+  return renderToStaticMarkup(createElement(PlanPanelCard, onClose ? { plan, onClose } : { plan }));
 }
 
 describe("latestPlan · 取当前计划", () => {
@@ -74,6 +74,32 @@ describe("latestPlan · 取当前计划", () => {
   it("没有计划就是 null（面板整块不渲染）", () => {
     expect(latestPlan([])).toBeNull();
     expect(latestPlan([message([], "work")] as never[])).toBeNull();
+  });
+});
+
+describe("planPanelVisible · 什么时候该出现", () => {
+  const current = () => latestPlan([message(ENTRIES, "work")] as never[]);
+  const allDone = () => latestPlan([message(ENTRIES.map((e) => ({ ...e, status: "completed" })), "finish")] as never[]);
+
+  it("回合在跑 + 还有未完成步骤 → 显示", () => {
+    expect(planPanelVisible(current(), true, null)).toBe(true);
+  });
+
+  it("回合结束就不显示（否则留下的是一份没人推进的旧计划）", () => {
+    expect(planPanelVisible(current(), false, null)).toBe(false);
+  });
+
+  it("计划全部完成就不显示（没有待办可说）", () => {
+    expect(planPanelVisible(allDone(), true, null)).toBe(false);
+  });
+
+  it("用户关掉的那一份不再显示；新计划（新 id）照常显示", () => {
+    expect(planPanelVisible(current(), true, "plan-1")).toBe(false);
+    expect(planPanelVisible(current(), true, "plan-9")).toBe(true);
+  });
+
+  it("没有计划就没什么可显示", () => {
+    expect(planPanelVisible(null, true, null)).toBe(false);
   });
 });
 
@@ -124,5 +150,14 @@ describe("PlanPanelCard · 渲染", () => {
     const html = render([{ content: "状态词没见过", status: "weird" }]);
     expect(html).toContain("1 待开始");
     expect(html).toContain('aria-expanded="true"');
+  });
+
+  it("给了 onClose 才有「关闭计划」按钮，且它与折叠键是兄弟（按钮不嵌按钮）", () => {
+    const closable = render(ENTRIES, () => {});
+    expect(closable).toContain('aria-label="关闭计划"');
+    expect(closable).toContain('class="plan-panel-close"');
+    // 折叠键与关闭键平级：`</button>` 之后才出现关闭键，没有嵌套。
+    expect(closable.indexOf('class="plan-panel-close"')).toBeGreaterThan(closable.indexOf("plan-panel-toggle"));
+    expect(render(ENTRIES)).not.toContain("plan-panel-close");
   });
 });

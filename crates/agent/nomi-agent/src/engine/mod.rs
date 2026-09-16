@@ -3337,6 +3337,17 @@ impl AgentEngine {
                         "Autocompact: summarized {} messages ({} tokens → compact)",
                         result.messages_summarized, result.pre_compact_tokens
                     ));
+                    if result.mechanical_fold {
+                        // 摘要降级为确定性占位符：上下文确实释放了，但用户必须知道这段
+                        // 历史是被丢弃而不是被总结的（见 `CompactResult::mechanical_fold`）。
+                        self.output.emit_warning(&format!(
+                            "Autocompact: the summary is a placeholder ({})",
+                            result
+                                .mechanical_reason
+                                .as_deref()
+                                .unwrap_or("no reason recorded")
+                        ));
+                    }
                     self.messages = result.messages;
                     self.editable_turn = None;
                     self.cache_detector.notify_compaction();

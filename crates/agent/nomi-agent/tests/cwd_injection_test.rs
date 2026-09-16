@@ -68,9 +68,17 @@ async fn grep_tool_searches_relative_to_injected_cwd() {
     )
     .unwrap();
 
+    // `path: "."` is a broad search root, and a broad root without a `glob`
+    // auto-limits to `DEFAULT_SOURCE_GLOBS` — which has no `*.txt`. Pass the glob
+    // explicitly so this test stays about cwd injection rather than about that
+    // default list.
     let tool = GrepTool::new(workspace.path().to_path_buf());
     let result = tool
-        .execute(json!({"pattern": "unique_cwd_injection_marker_99", "path": "."}))
+        .execute(json!({
+            "pattern": "unique_cwd_injection_marker_99",
+            "path": ".",
+            "glob": "*.txt"
+        }))
         .await;
 
     assert!(!result.is_error, "unexpected error: {}", result.content);

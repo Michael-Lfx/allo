@@ -1,7 +1,7 @@
 import { useId, useMemo, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Circle, ListChecks, Loader2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Circle, ListChecks, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { latestPlan } from "../lib/plan";
+import { latestPlan, planPanelVisible } from "../lib/plan";
 import type { PlanData, PlanStepStatus } from "../lib/activity";
 import { useAppStore } from "../store/appStore";
 
@@ -16,23 +16,32 @@ function StepGlyph({ status }: { status: PlanStepStatus }) {
 }
 
 /**
- * 输入框上方的常驻任务面板（`update_plan` 的步骤清单）。
+ * 输入框上方的任务面板（`update_plan` 的步骤清单）。
  *
  * 计划原本作为一条会话行渲染（`messages/PlanItem`），会随历史滚走；而「这一轮还剩
- * 哪几步」是**当下状态**，不是历史内容，所以放到输入框上方常驻，与 `ApprovalCard`
+ * 哪几步」是**当下状态**，不是历史内容，所以放到输入框上方，与 `ApprovalCard`
  * 同一个位置、同一套容器宽度。
  *
- * `key` 用计划行的 `message_id`：新计划回到默认展开态，不继承上一条计划的折叠选择。
+ * 什么时候出现由 `lib/plan.ts` 的 `planPanelVisible` 决定（回合结束 / 计划走完 /
+ * 用户关掉都不再出现）。`key` 用计划行的 `message_id`：新计划回到默认展开态，
+ * 也不继承上一条的关闭与折叠。
  */
 export function PlanPanel() {
   const messages = useAppStore((s) => s.stream.messages);
+  const isProcessing = useAppStore((s) => s.stream.isProcessing);
   const current = useMemo(() => latestPlan(messages), [messages]);
-  if (!current) return null;
-  return <PlanPanelCard key={current.message.message_id} plan={current.plan} />;
+  const [dismissedId, setDismissedId] = useState<string | null>(null);
+  if (!current || !planPanelVisible(current, isProcessing, dismissedId)) return null;
+  const { plan, message } = current;
+  return <PlanPanelCard
+    key={message.message_id}
+    plan={plan}
+    onClose={() => setDismissedId(message.message_id)}
+  />;
 }
 
-/** 面板本体：只认 `plan`，取数由 `PlanPanel` 负责。 */
-export function PlanPanelCard({ plan }: { plan: PlanData }) {
+/** 面板本体：只认 `plan`（与可选的关闭回调），取数与可见性由 `PlanPanel` 负责。 */
+export function PlanPanelCard({ plan, onClose }: { plan: PlanData; onClose?: () => void }) {
   const { t } = useTranslation();
   const stepsId = useId();
   const counts: Record<PlanStepStatus, number> = { completed: 0, in_progress: 0, pending: 0 };
@@ -50,20 +59,32 @@ export function PlanPanelCard({ plan }: { plan: PlanData }) {
   const expanded = userExpanded ?? live;
 
   return <section className="plan-panel">
-    <button
-      type="button"
-      className="plan-panel-head"
-      aria-expanded={expanded}
-      aria-controls={stepsId}
-      onClick={() => setUserExpanded(!expanded)}
-    >
-      <ListChecks className="plan-panel-icon" size={15} strokeWidth={1.7} aria-hidden="true" />
-      <span className="plan-panel-title">{t("activity.plan")}</span>
-      <span className="plan-panel-summary">{summary}</span>
-      {expanded
-        ? <ChevronDown className="plan-panel-caret" size={15} strokeWidth={1.7} aria-hidden="true" />
-        : <ChevronRight className="plan-panel-caret" size={15} strokeWidth={1.7} aria-hidden="true" />}
-    </button>
+    {/* 关闭键必须是折叠键的**兄弟**：按钮不能嵌在按钮里。 */}
+    <div className="plan-panel-head">
+      <button
+        type="button"
+        className="plan-panel-toggle"
+        aria-expanded={expanded}
+        aria-controls={stepsId}
+        onClick={() => setUserExpanded(!expanded)}
+      >
+        <ListChecks className="plan-panel-icon" size={15} strokeWidth={1.7} aria-hidden="true" />
+        <span className="plan-panel-title">{t("activity.plan")}</span>
+        <span className="plan-panel-summary">{summary}</span>
+        {expanded
+          ? <ChevronDown className="plan-panel-caret" size={15} strokeWidth={1.7} aria-hidden="true" />
+          : <ChevronRight className="plan-panel-caret" size={15} strokeWidth={1.7} aria-hidden="true" />}
+      </button>
+      {onClose && <button
+        type="button"
+        className="plan-panel-close"
+        aria-label={t("activity.planClose")}
+        title={t("activity.planClose")}
+        onClick={onClose}
+      >
+        <X size={14} strokeWidth={1.8} aria-hidden="true" />
+      </button>}
+    </div>
     {expanded && <ol className="plan-panel-steps" id={stepsId}>
       {plan.entries.map((entry, index) => (
         <li className={`plan-panel-step is-${entry.status.replace(/_/g, "-")}`} key={`${index}:${entry.content}`}>

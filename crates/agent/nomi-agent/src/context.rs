@@ -136,7 +136,12 @@ not after each individual tool call or internal sub-step. Use a few user-relevan
 milestone transition, send one full snapshot that marks the previous milestone completed and the \
 next in_progress. Do not send an unchanged snapshot. Before the final response, complete remaining \
 plan steps or replace the plan to match the user's real ask, then send a final all-completed \
-update_plan snapshot when the work is done.
+update_plan snapshot when the work is done. Plan steps name work you DO (read, write, run, \
+check); they are never the answer itself — \"explain/provide/summarize X\" is your reply, not a \
+step, so when only that kind of step is left, write the reply and close the plan in one \
+all-completed snapshot instead of re-planning. A new snapshot must follow real progress (a step \
+you actually completed, or a course change the user asked for): never send one that only rewords \
+or re-splits the steps still open.
  - After changing code, verify before reporting done: run the project's build \
 and tests (or the narrowest verification command that exercises your change) with Bash, and \
 fix what you broke. Don't claim something works that you haven't run.",
@@ -1112,6 +1117,31 @@ mod tests {
         assert!(
             result.contains("verification"),
             "tool guidance should require verification before finalizing"
+        );
+    }
+
+    /// 回归：计划步骤写成「交付物本身」时，模型会为了「计划全完成」反复重规划
+    /// （现场：chat 里「提供日程安排/给出建议」这类步骤永远收不了尾，一轮空转数次）。
+    #[test]
+    fn tool_guidance_forbids_planning_the_answer_itself() {
+        let result = build_system_prompt(
+            &mut SystemPromptCache::new(),
+            None,
+            "/tmp",
+            "test-model",
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        assert!(
+            result.contains("never the answer itself"),
+            "tool guidance must say a deliverable is not a plan step"
+        );
+        assert!(
+            result.contains("only rewords"),
+            "tool guidance must say a reworded snapshot is not progress"
         );
     }
 

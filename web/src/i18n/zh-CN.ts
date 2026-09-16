@@ -226,6 +226,7 @@ const zhCN = {
     goalPaused: "目标已暂停",
     goalFailed: "目标异常结束",
     plan: "计划",
+    planClose: "关闭计划",
     // 键名直接沿用 wire 上的 `entry.status`（`pending` / `in_progress` / `completed`），
     // 少一层映射就少一处会走偏的地方。
     planStep: {

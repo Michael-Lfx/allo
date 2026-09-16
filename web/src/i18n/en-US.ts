@@ -225,6 +225,7 @@ const enUS: Resources = {
     goalPaused: "Goal paused",
     goalFailed: "Goal ended abnormally",
     plan: "Plan",
+    planClose: "Close plan",
     // Key names reuse the wire `entry.status` values (`pending` / `in_progress` /
     // `completed`) so there is no mapping layer to drift.
     planStep: {
