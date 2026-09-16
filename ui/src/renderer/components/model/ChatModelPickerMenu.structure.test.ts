@@ -54,6 +54,10 @@ describe('ChatModelPickerMenu structure', () => {
     // The health dot overlays the brand icon's corner so late-arriving health
     // data never shifts the icon column.
     expect(source.includes('absolute -bottom-1px -right-1px')).toBe(true);
+    // Icon-to-name pair gap: filled brand glyphs carry more visual weight than
+    // line icons, so the pair needs 10px — wider than the composer buttons'
+    // 6px line-icon rhythm.
+    expect(source.includes('items-center gap-10px')).toBe(true);
     expect(sendboxCss.includes('.chat-model-recommended-badge')).toBe(true);
     expect(sendboxCss.includes('.chat-model-picker-menu-tagline')).toBe(true);
   });

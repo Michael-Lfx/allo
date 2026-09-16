@@ -110,10 +110,13 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
         title={option.model}
       >
         <div className='flex min-w-0 w-full items-center justify-between gap-8px'>
-          <div className='flex min-w-0 items-center gap-8px'>
+          <div className='flex min-w-0 items-center gap-10px'>
             {/* Fixed 16px leading slot: the health dot overlays the brand
               * icon's corner instead of shifting the icon when health data
-              * arrives; iconless rows keep the dot centered in the slot. */}
+              * arrives; iconless rows keep the dot centered in the slot. 10px
+              * to the name column: filled brand glyphs carry more visual
+              * weight than line icons, so they need a wider pair gap than the
+              * 6px icon-label rhythm used by the composer buttons. */}
             <div className='relative flex h-16px w-16px shrink-0 items-center justify-center'>
               <ModelBrandIcon src={option.showcase.icon} />
               {dot && (
