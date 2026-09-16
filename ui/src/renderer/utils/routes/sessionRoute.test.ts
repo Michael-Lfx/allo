@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from 'bun:test';
 
-import { parseSessionRoute } from './sessionRoute';
+import { parseSessionRoute, routePathnameFromHref } from './sessionRoute';
 
 const CONVERSATION_ID = '0190f5fe-7c00-7a00-8000-000000000001';
 const TERMINAL_ID = '0190f5fe-7c00-7a00-8000-000000000002';
@@ -45,5 +45,29 @@ describe('parseSessionRoute', () => {
     ]) {
       expect(parseSessionRoute(pathname)).toBeNull();
     }
+  });
+});
+
+describe('routePathnameFromHref', () => {
+  test('reads the hash route used by the desktop shell, query stripped', () => {
+    expect(routePathnameFromHref(`https://tauri.localhost/#/conversation/${CONVERSATION_ID}`)).toBe(
+      `/conversation/${CONVERSATION_ID}`
+    );
+    expect(
+      routePathnameFromHref(
+        `https://tauri.localhost/#/conversation/${CONVERSATION_ID}?attention_id=conversation:${CONVERSATION_ID}:turn:abc`
+      )
+    ).toBe(`/conversation/${CONVERSATION_ID}`);
+  });
+
+  test('falls back to the real pathname when the hash carries no route', () => {
+    expect(routePathnameFromHref(`http://127.0.0.1:5173/conversation/${CONVERSATION_ID}?x=1`)).toBe(
+      `/conversation/${CONVERSATION_ID}`
+    );
+    expect(routePathnameFromHref('http://127.0.0.1:5173/')).toBe('/');
+  });
+
+  test('never throws on malformed hrefs', () => {
+    expect(routePathnameFromHref('not a url')).toBe('/');
   });
 });

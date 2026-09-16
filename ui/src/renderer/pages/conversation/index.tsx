@@ -10,6 +10,7 @@ import MessageListSkeleton from './Messages/components/MessageListSkeleton';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { tryParseEntityId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
+import { clearConversationAttention } from '@/renderer/utils/attention';
 
 const ChatConversationIndex: React.FC = () => {
   const { id } = useParams();
@@ -22,7 +23,6 @@ const ChatConversationIndex: React.FC = () => {
   const navigate = useNavigate();
   const notFoundHandledIdRef = useRef<string | undefined>(undefined);
   const deletedHandledIdRef = useRef<string | undefined>(undefined);
-  const clearedAttentionKeyRef = useRef<string | undefined>(undefined);
 
   const { data, isLoading, mutate } = useSWR(conversationId ? `conversation/${conversationId}` : null, () => {
     return getConversationOrNull(conversationId!);
@@ -38,21 +38,18 @@ const ChatConversationIndex: React.FC = () => {
       // A supplied but foreign/malformed attention id must never fall back to
       // a conversation-wide clear: another turn may still need attention.
       if (requestedAttentionId !== null && !exactAttentionId) return;
-      const clearKey = exactAttentionId ?? `conversation-scope:${conversationId}`;
-      if (clearedAttentionKeyRef.current === clearKey) return;
-      clearedAttentionKeyRef.current = clearKey;
-      void (exactAttentionId
-        ? ipcBridge.attention.clear.invoke({ attention_id: exactAttentionId })
-        : ipcBridge.attention.clearScope.invoke({
-            source: 'conversation',
-            entity_id: String(conversationId),
-          })
-      ).catch(() => {
-        // Keep native attention if the renderer cannot confirm the page load.
-        if (clearedAttentionKeyRef.current === clearKey) {
-          clearedAttentionKeyRef.current = undefined;
-        }
-      });
+      // Always re-issue the clear. The native attention set can gain an item
+      // while this page is mounted but the app is unfocused, and the shell-side
+      // clears are idempotent no-ops when nothing matches. De-duplicating once
+      // per mount prevented the badge number from ever clearing when the user
+      // returned to the still-open conversation without clicking the toast.
+      if (exactAttentionId) {
+        void ipcBridge.attention.clear.invoke({ attention_id: exactAttentionId }).catch(() => {
+          // Keep native attention if the renderer cannot confirm the page load.
+        });
+        return;
+      }
+      void clearConversationAttention(conversationId);
     };
 
     // If a completion arrived while another app had focus, the page was

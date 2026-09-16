@@ -35,6 +35,7 @@ import {
 import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShortcuts';
+import { useActiveConversationRouteSync } from '@renderer/hooks/ui/useActiveConversationRouteSync';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { tauriUpdateCurrentVersion } from '@/common/adapter/tauriUpdater';
 import { trackUpdateCheckCompleted } from '@/renderer/utils/analytics/updateTelemetry';
@@ -151,6 +152,7 @@ const Layout: React.FC<{
   useNotificationClick();
   useConversationDesktopNotify();
   useAutoWorkDesktopNotify();
+  useActiveConversationRouteSync();
   const navigate = useNavigate();
   useConversationShortcuts({ navigate });
   const location = useLocation();

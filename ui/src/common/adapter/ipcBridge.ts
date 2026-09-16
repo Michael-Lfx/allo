@@ -23,6 +23,7 @@ import {
   tauriClearAllAttention,
   tauriClearAttention,
   tauriClearAttentionScope,
+  tauriIsAppFocused,
   tauriIsAutostartEnabled,
   tauriOpenDialog,
   tauriSaveDialog,
@@ -2882,6 +2883,11 @@ export const windowControls = {
   close: shellProvider<void, void>(() => tauriWindowClose(), undefined),
   isMaximized: shellProvider<boolean, void>(() => tauriWindowIsMaximized(), false),
   maximizedChanged: shellEmitter<{ is_maximized: boolean }>((cb) => subscribeWindowMaximized(cb)),
+  // App-level focus across every Flowy window; DOM focus is the web fallback.
+  isAppFocused: shellProvider<boolean, void>(
+    () => tauriIsAppFocused(),
+    () => (typeof document !== 'undefined' ? document.hasFocus() : false)
+  ),
 };
 
 // ---------------------------------------------------------------------------

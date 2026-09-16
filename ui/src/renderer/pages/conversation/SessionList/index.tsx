@@ -97,7 +97,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     isConversationGenerating,
     hasCompletionUnread,
     clearCompletionUnread,
-    setActiveConversation,
   } = useConversationHistoryContext();
   const ui = useWorkpathUiState();
   const [emptyProjectWorkpaths, setEmptyProjectWorkpaths] = useState<string[]>(() => getProjectWorkpaths());
@@ -117,18 +116,16 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
   const activeConversationId = activeRoute?.kind === 'conversation' ? activeRoute.id : null;
 
-  // Sync active-conversation bookkeeping + scroll it into view on route change
-  // (carried over from GroupedHistory / useConversations).
+  // Cron bookkeeping + scroll the row into view on route change (carried over
+  // from GroupedHistory / useConversations). The conversation-list active id is
+  // synced by the persistent layout (`useActiveConversationRouteSync`), which
+  // stays mounted while this sidebar can be collapsed or replaced.
   useEffect(() => {
-    if (!activeConversationId) {
-      setActiveConversation(null);
-      return;
-    }
-    setActiveConversation(activeConversationId);
+    if (!activeConversationId) return;
     setCronActiveConversation(activeConversationId);
     clearCompletionUnread(activeConversationId);
     return scrollSidebarItemIntoView('c-' + activeConversationId);
-  }, [activeConversationId, setActiveConversation, setCronActiveConversation, clearCompletionUnread]);
+  }, [activeConversationId, setCronActiveConversation, clearCompletionUnread]);
 
   /* ------------------------------- batch selection ------------------------------- */
 
