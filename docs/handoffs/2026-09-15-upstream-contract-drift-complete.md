@@ -11,7 +11,8 @@
 ## 1. 一句话状态
 
 六个客户端修复 + 目录输出上限钳制已实现、单测与真实网络验收通过；OBS-1 受控
-采样完成并判定"保持串行调度"；**新提交已落本地，需补一次推送**（再加 PR）。
+采样完成并判定"保持串行调度"；一轮边界复审的 5 项修复已落地（0 Required）；
+**新提交已落本地，需补一次推送**（再加 PR）。
 
 ## 2. 提交清单（按时间顺序）
 
@@ -23,7 +24,7 @@
 54f991db2 docs: reconcile fix plan with cross review findings
 d148d4020 docs(architecture): 制定上游契约漂移修复计划
 
-# 六个修复
+# 修复（6 + 目录钳制 + 边界复审 5）
 854809a75 fix(provider): 协商工具请求的 reasoning_effort
 0cffa50be fix(web): 按名称发现 You 工具并恢复失败探测
 f05aeba7e fix(provider): 协商模型输出 token 上限
@@ -31,6 +32,11 @@ f05aeba7e fix(provider): 协商模型输出 token 上限
 28e47613a fix(agent): 忽略未广告工具的纯进度预览
 d3dfdbfdb fix(provider): 限制初始请求总等待时间
 76d13f9bc fix(cloud): 同步时钳制目录中已知超限的输出上限
+8d1e1e121 fix(provider): 收紧协商边界与重试上下文
+44c82ddaa fix(web): 约束发现锁等待并复用冷却常量
+d823f2397 fix(agent): 未广告进度告警按调用 id 去重
+54c7cf6ae fix(cloud): 目录上限家族匹配改为词元
+f93ecc56e chore: 深度截断日志与 OBS 统计清理
 
 # 测试与验证
 bcc752921 test(provider): 补齐契约协商边界回归
@@ -52,7 +58,7 @@ c8d7cf42e docs(architecture): 回填真实验收记录
 1a1444218 docs(handoffs): 记录上游契约漂移修复完成交接
 ```
 
-改动范围：19 个文件，+3438 / -51（4 个 Rust crate + 3 份文档 + 1 个 example）。
+改动范围：21 个文件（含 docs）。
 
 ## 3. 文档索引（恢复时先读这三份）
 
@@ -74,11 +80,11 @@ c8d7cf42e docs(architecture): 回填真实验收记录
 自动化（除既有失败外全绿，见 §6）：
 
 ```text
-nomi-providers                 243 passed（187+13+17+26），1 ignored
-flowy-web                      189 passed，1 ignored
-nomi-agent                     830 passed（787+11+32）
-nomi-config                    216 passed
-nomifun-cloud                  175 passed；1 既有失败（fingerprint Windows 源扫描）
+nomi-providers                 248 passed（191+13+17+27），1 ignored
+flowy-web                      190 passed，1 ignored
+nomi-agent                     830 passed（787 本轮复验 + 11 + 32）
+nomi-config                    216 passed（compat 31 本轮复验）；1 既有失败
+nomifun-cloud                  175 passed（provider_sync 22 本轮复验）；1 既有失败
 nomifun-ai-agent send_error    33 passed
 nomifun-conversation failover  9 passed
 ```
@@ -106,7 +112,7 @@ OBS-1 受控采样（30 次探针）：
 ## 5. 恢复后的待办
 
 1. **推送新提交 + PR**
-   - `git push`（远端已有该分支；本地领先 2 个提交：`76d13f9bc` 修复 + 本次 docs）
+   - `git push`（远端已有该分支；本地领先提交见 §2，含目录钳制、边界复审 5 项与文档）
    - PR 描述草稿见 §7；合并前确认仓库 Git 归属规则（无 AI attribution）
 2. **OBS-1 长期采样（未来工作，不阻塞合并）**
    - 修复上线后真实使用中累计 ≥100 条，再跑
@@ -148,11 +154,14 @@ OBS-1 受控采样（30 次探针）：
 - fix(agent): 未广告 ToolUseDelta 仅告警忽略；最终未广告 ToolUse 仍硬拒绝；
 - fix(provider): chat/completions 初始协商 90s 绝对 deadline（不可重试）；
 - fix(cloud): 同步时把目录中已知超限的输出上限向下钳制（gemini → 65536），
-  首个请求即使用被接受的 ceiling，不再白吃一次 supported-range 拒绝。
+  首个请求即使用被接受的 ceiling，不再白吃一次 supported-range 拒绝；
+- 边界复审修复：瞬时重试排除按请求上下文生效、camelCase `parameters.anyOf` 分类、
+  effort 记忆后显式发送 none、发现锁等待受 attempt deadline 约束、未广告进度告警去重、
+  目录家族词元匹配。
 
 ## 验证
-- 单测：nomi-providers 243、flowy-web 189、nomi-agent 830、nomi-config 216、
-  nomifun-cloud 175（provider_sync 22/22）、send_error 33、failover 9；
+- 单测：nomi-providers 248（191+13+17+27）、flowy-web 190、nomi-agent 830、
+  nomi-config 216、nomifun-cloud 175（provider_sync 22/22）、send_error 33、failover 9；
 - 真实网络：90s deadline 实测 90.03s；GPT5.6-Sol 双协商成功；you.com 实时
   发现+检索成功；超时故障 failover 成功；
 - OBS-1：30 次受控探针，parallel 20/20、you 10/10、0 schema_mismatch，
@@ -169,5 +178,5 @@ OBS-1 受控采样（30 次探针）：
 ```text
 git status --short --branch                  # 期望：fix/upstream-contract-drift，干净
 git log --oneline origin/main..HEAD          # 期望：§2 的完整提交序列
-cargo test -p nomi-providers -p flowy-web    # 期望：243 + 189，各 1 ignored
+cargo test -p nomi-providers -p flowy-web    # 期望：248 + 190，各 1 ignored
 ```
