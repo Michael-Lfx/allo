@@ -54,7 +54,9 @@ python-sdk              Popen spawn + reader 线程 + typed 方法（对标 Code
 
 ## 6. P2：发行与文档
 
-- **二进制分发**（已定案 2026-09-09，走 npm optionalDependencies）：发布一组按平台的 runtime 包（`@flowy-agent-store/runtime-<platform>-<arch>`，如 `runtime-win32-x64`，每个包内置 `agent-store[.exe]`），作为 `@flowy-agent-store/sdk` 的 `optionalDependencies` 加载；`resolveAppServerBin` 查找顺序改为：`bin` 参数 → `AGENT_STORE_BIN` 环境变量 → **`require.resolve` 定位 platform 包内二进制** → PATH。runtime 包与 `protocol/client/sdk` 同版本锁步，客户额外传入 `bin` 时跳过包查找。这解决“SDK 已发布但代码库外拿不到 `agent-store` 可执行文件”的核心缺口。备选（GitHub releases + checksum 下载缓存）不采用。
+> **实际操作步骤见 `25-release-runbook.zh.md`**（npm 四包 + 站点仓 GitHub Release + 站点上线的有序清单与不变量）；本节只定义发行形态与取舍，不重复步骤。
+
+- **二进制分发**（已定案 2026-09-09，走 npm optionalDependencies）：发布一组按平台的 runtime 包（`@flowy-agent-store/runtime-<platform>-<arch>`，如 `runtime-win32-x64`，每个包内置 `agent-store[.exe]`），作为 `@flowy-agent-store/sdk` 的 `optionalDependencies` 加载；`resolveAppServerBin` 查找顺序改为：`bin` 参数 → `AGENT_STORE_BIN` 环境变量 → **`require.resolve` 定位 platform 包内二进制** → PATH。runtime 包与 `protocol/client/sdk` 同版本锁步，客户额外传入 `bin` 时跳过包查找。这解决“SDK 已发布但代码库外拿不到 `agent-store` 可执行文件”的核心缺口。备选（GitHub releases + checksum 下载缓存）不采用。**实现现状（2026-09-16 实测）**：四包锁步与 pin 由 `bun run check:release-sync` 守着；但只有 `runtime-win32-x64` 这一条路径真实成立（包名 / `os` / `cpu` 是固定字面量，发布脚本不改名），多平台见 `25` §7 第 1 条。
 - **版本政策**：协议版本起 changelog；Team 完整能力、事件 cursor 追平（V2）等未稳能力在 SDK 层标 experimental（参考 Codex `experimental_api`），可暂不暴露。
 - **同机声明**：`import/run`、`workspace/create`、`market/* directory` 要求 client 与 server 同文件系统；文档明确，远端场景 SDK 对这类方法前置拒绝。
 - **文档三件套**：getting-started / api-reference / examples（对标 Codex SDK 的 `docs/` + `examples/` 布局）。

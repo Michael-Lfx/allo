@@ -528,12 +528,15 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run check:codemirror-runtime` | Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package. |
 | `bun run check:market` | Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject. |
 | `bun run check:fingerprint` | Verify the App Server protocol fingerprint is identical at every landing point, here and in the docs site. |
+| `bun run check:release-sync` | Verify the release version is locked across the four npm manifests and the docs site, and that the documented route-table split matches the site guide. |
+| `bun run release:check` | Agent Store release gate: repo gates + web typecheck/tests + App Server protocol tests (docs/agent-store/25). |
+| `bun run release:check:site` | Agent Store release gate, docs-site half: docs-sync + market gates + typecheck in the sibling agent-store-site checkout. |
 | `bun run check:ux-baseline` | 校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线） |
 | `bun run check:button-layout` | 使用 Windows Edge 矩阵验证 Arco 与 Icon Park 按钮的横向布局和对齐契约 |
 | `bun run check:error-surface` | 使用 Windows Edge 矩阵验证错误诊断摘要、详情展开、复制入口和窄屏溢出 |
 | `bun run check:error-surface-contract` | 静态校验错误面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限 |
 | `bun run check:button-layout-contract` | 扫描所有 Arco 图标文字按钮并校验共享横向布局契约 |
-| `bun run check` | 聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑） |
+| `bun run check` | 聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 协议指纹 + 跨仓发布同步 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑） |
 | `bun run typecheck` | 前端 TypeScript 类型检查（tsc --noEmit） |
 | `bun run check:i18n` | 校验 i18n 类型与 locale 键是否一致 |
 | `bun run check:theme` | 校验预设 CSS 主题契约 |

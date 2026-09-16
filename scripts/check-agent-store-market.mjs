@@ -1,27 +1,26 @@
 #!/usr/bin/env node
 /**
- * Validate a WorkBuddy/CodeBuddy marketplace tree against docs `17` / `18` (T19).
+ * 对照文档 `17` / `18`（T19）校验一个 WorkBuddy/CodeBuddy 市场目录树。
  *
- * What it checks (each finding carries a field-level pointer):
- *   1. `18` §3 manifest discovery priority — a market is a tree whose root carries
- *      one of the "looks like market" manifests; otherwise it is not a market.
- *   2. `17` §3 / `18` §4 manifest fields, via `docs/agent-store/schemas/*.json`:
- *      `name` is the only required field, unknown keys tolerated, tolerant
- *      shapes (string | localized object | list) normalized rather than rejected.
- *   3. `18` §4 hard constraints — entry `source`, when present, must be a
- *      **relative** path (no absolute/UNC, no `..`, no backslash), must resolve
- *      inside the tree, and entry names must be unique within the market.
- *   4. `18` §6 `_files.txt` — one relative path per line, blank lines ignored,
- *      must exclude itself, must not contain illegal paths, every listed path
- *      must exist, and (publishing self-check `18` §8.4) the listing must cover
- *      every file in the tree. A missing listing is reported as `manifest-only`,
- *      which is a legal state (§6 semantics), not an error.
+ * 校验项（每一条结论都带有字段级指针）：
+ *   1. `18` §3 清单发现优先级 —— 市场是一棵其根目录携带了某份"形似市场"清单的目录树；
+ *      否则它就不是市场。
+ *   2. `17` §3 / `18` §4 清单字段，依据 `docs/agent-store/schemas/*.json`：
+ *      `name` 是唯一必填字段，容忍未知键，对宽容形态
+ *      （字符串 | 本地化对象 | 列表）做归一化而非直接拒绝。
+ *   3. `18` §4 硬性约束 —— 条目 `source` 若存在，必须是**相对**路径
+ *      （禁止绝对路径/UNC、禁止 `..`、禁止反斜杠），必须解析到目录树内部，
+ *      且条目名称在市场内必须唯一。
+ *   4. `18` §6 `_files.txt` —— 每行一条相对路径，忽略空行，必须排除自身，
+ *      不得包含非法路径，列出的每条路径都必须存在，且（发布自检 `18` §8.4）
+ *      清单必须覆盖目录树中的每个文件。缺失清单会被报告为 `manifest-only`，
+ *      这是合法状态（§6 语义），而非错误。
  *
- * Usage:
+ * 用法：
  *   node scripts/check-agent-store-market.mjs --market experts=<dir> [--market …] [--json]
- *   node scripts/check-agent-store-market.mjs --self-test      # invalid samples must be rejected
+ *   node scripts/check-agent-store-market.mjs --self-test      # 非法样本必须被拒绝
  *
- * Exit codes: 0 = no errors, 1 = findings, 2 = usage / self-test failure.
+ * 退出码：0 = 无错误，1 = 有结论，2 = 用法错误 / 自检测试失败。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -33,7 +32,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_DIR = path.join(ROOT, "docs", "agent-store", "schemas");
 
-/** doc 18 §3: fixed discovery order, first hit wins. */
+/** 文档 18 §3：固定的发现顺序，先命中者优先。 */
 export const DISCOVERY = [
   { rel: ".codebuddy-connector/connectors.json", kind: "connector-market", schema: "marketplace.schema.json" },
   { rel: ".codebuddy-skill/marketplace.json", kind: "skill-market", schema: "marketplace.schema.json" },
@@ -42,15 +41,15 @@ export const DISCOVERY = [
   { rel: "cli.json", kind: "cli-connector", schema: "marketplace.schema.json", ref: "#/$defs/entry" },
 ];
 
-/** doc 18 §6. */
+/** 文档 18 §6。 */
 export const LISTING = "_files.txt";
 
-/** Entry arrays the marketplace schema knows about. */
+/** 市场清单 schema 所认知的条目数组。 */
 const ENTRY_KEYS = ["plugins", "skills", "connectors"];
 
 /**
- * doc 18 §4 / §6: relative-path rule. Returns a rule suffix when the value is
- * illegal, `null` when it is a legal market-root-relative path.
+ * 文档 18 §4 / §6：相对路径规则。当取值非法时返回一个规则后缀，
+ * 当它是合法的、相对于市场根目录的路径时返回 `null`。
  */
 export function relativePathViolation(value) {
   if (typeof value !== "string" || value.length === 0) return "not-a-string";
@@ -61,8 +60,8 @@ export function relativePathViolation(value) {
   return null;
 }
 
-// ── minimal JSON Schema subset (type / required / properties / items / anyOf /
-//    pattern / minLength / additionalProperties / local $ref) ────────────────
+// ── 最小化的 JSON Schema 子集（type / required / properties / items / anyOf /
+//    pattern / minLength / additionalProperties / 本地 $ref） ────────────────
 
 function typeMatches(type, value) {
   switch (type) {
@@ -94,9 +93,9 @@ function resolveRef(root, ref) {
 }
 
 /**
- * Validate `value` against `schema`, appending `{rule, pointer, message}`.
- * `pointer` is a field-level locator (`#/plugins/3/source`) so a finding can be
- * acted on without reading the whole manifest.
+ * 用 `schema` 校验 `value`，并向其中追加 `{rule, pointer, message}`。
+ * `pointer` 是字段级定位符（`#/plugins/3/source`），这样无需通读整个清单
+ * 也能定位并处理每一条结论。
  */
 export function validateSchema(schema, value, pointer, findings, root = schema) {
   if (schema == null) return;
@@ -147,7 +146,7 @@ export function validateSchema(schema, value, pointer, findings, root = schema) 
   }
 }
 
-// ── market tree validation ──────────────────────────────────────────────────
+// ── 市场目录树校验 ───────────────────────────────────────────────────────────
 
 function walkFiles(dir, base = dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -175,8 +174,8 @@ function schemaFor(file) {
 }
 
 /**
- * Validate one market tree. Returns `{ manifest, kind, findings }` where every
- * finding is `{ level, rule, file, pointer, message }`.
+ * 校验一棵市场目录树。返回 `{ manifest, kind, findings }`，其中每一条
+ * 结论都是 `{ level, rule, file, pointer, message }` 形态。
  */
 export function validateMarketTree({ name, dir }) {
   const findings = [];
@@ -187,7 +186,7 @@ export function validateMarketTree({ name, dir }) {
     return { name, manifest: null, kind: null, findings };
   }
 
-  // 1. discovery (doc 18 §3)
+  // 1. 发现（文档 18 §3）
   const hit = DISCOVERY.find((candidate) => existsSync(path.join(dir, candidate.rel)));
   if (!hit) {
     add(
@@ -200,7 +199,7 @@ export function validateMarketTree({ name, dir }) {
     return { name, manifest: null, kind: null, findings };
   }
 
-  // 2. parse + schema (doc 17 §3 / 18 §4)
+  // 2. 解析 + 校验 schema（文档 17 §3 / 18 §4）
   const manifestPath = path.join(dir, hit.rel);
   let manifest;
   try {
@@ -217,11 +216,11 @@ export function validateMarketTree({ name, dir }) {
     finding.file = hit.rel;
   }
 
-  // A listing marks full-tree mirror mode (doc 18 §6 semantics); without it the
-  // market is manifest-only and entry sources stay external.
+  // 清单标记了"整树镜像"模式（文档 18 §6 语义）；没有清单时市场为
+  // manifest-only，条目源保持为外部引用。
   const mirrorsTree = existsSync(path.join(dir, LISTING));
 
-  // 3. entries (doc 18 §4)
+  // 3. 条目（文档 18 §4）
   const seen = new Map();
   for (const key of ENTRY_KEYS) {
     const entries = manifest[key];
@@ -248,9 +247,9 @@ export function validateMarketTree({ name, dir }) {
           if (!inside) {
             add("error", "entry.source.escapes-tree", hit.rel, `${pointer}/source`, `"${entry.source}" resolves outside the market root`);
           } else if (mirrorsTree && !existsSync(target)) {
-            // Existence is only required in full-tree mirror mode (doc 18 §5.2
-            // step 5): without a listing the market stays manifest-only and its
-            // entries are `external`, so a missing local directory is legal.
+            // 存在性仅在整树镜像模式下才被要求（文档 18 §5.2 第 5 步）：
+            // 没有清单时市场保持 manifest-only，其条目为 `external`，
+            // 因此缺失本地目录是合法的。
             add("error", "entry.source.missing", hit.rel, `${pointer}/source`, `"${entry.source}" does not exist in the market tree`);
           }
         }
@@ -258,7 +257,7 @@ export function validateMarketTree({ name, dir }) {
     });
   }
 
-  // 4. listing (doc 18 §6 + §8.4)
+  // 4. 清单（文档 18 §6 + §8.4）
   const listingPath = path.join(dir, LISTING);
   if (!existsSync(listingPath)) {
     add("info", "listing.absent", LISTING, "#", "no _files.txt — market stays manifest-only (entries are external)");
@@ -284,9 +283,8 @@ export function validateMarketTree({ name, dir }) {
       }
     });
     for (const file of walkFiles(dir)) {
-      // The listing itself is excluded by §6; the discovered manifest is
-      // fetched directly by the fetcher, so omitting it from the mirror list is
-      // legal (listing it is legal too — any listed path must exist instead).
+      // 清单本身依据 §6 被排除；被发现的清单由抓取器直接获取，因此不把它放进
+      // 镜像清单是合法的（列进去也合法——只是所列路径都必须真实存在）。
       if (file === LISTING || file === hit.rel || listed.has(file)) continue;
       add("error", "listing.coverage", LISTING, "#", `"${file}" exists but is not listed (mirroring would drop it)`);
     }
@@ -296,33 +294,33 @@ export function validateMarketTree({ name, dir }) {
   return { name, manifest, kind: hit.kind, findings };
 }
 
-// ── field census (T20 reverse verification) ─────────────────────────────────
+// ── 字段普查（T20 逆向验证） ────────────────────────────────────────────────
 
 /**
- * Fields the specs name explicitly — doc 17 §3 (plugin manifest), doc 18
- * §3/§4/§7 (market manifest + entry model). Anything the real markets carry
- * outside this set is reported as "spec-silent": doc 18 §3 defers field-level
- * truth to doc 02 §8, which may name more, so a spec-silent field is a
- * REVIEW ITEM (register it or document it), not automatically a defect.
+ * 规格中显式点名的字段 —— 文档 17 §3（插件清单）、文档 18
+ * §3/§4/§7（市场清单 + 条目模型）。真实市场携带但不在本集合内的字段会被
+ * 报告为"spec-silent"（规格未提及）：文档 18 §3 将字段级事实推迟到文档 02 §8，
+ * 后者可能点名更多字段，因此 spec-silent 字段是一条复核项（登记它或文档化它），
+ * 并不自动构成缺陷。
  */
 export const KNOWN_MANIFEST_FIELDS = new Set([
-  // doc 17 §3
+  // 文档 17 §3
   "name", "version", "description", "author", "agents", "skills", "commands", "hooks",
   "mcpServers", "lspServers", "userConfig", "dependencies", "teamInfo", "displayName",
   "profession", "displayDescription", "defaultInitPrompt", "quickPrompts", "tags", "avatar",
   "expertType", "categoryId", "agentName", "defaultEnabled", "channels", "strict",
-  // doc 18 §3/§4/§7
+  // 文档 18 §3/§4/§7
   "plugins", "connectors", "owner", "source", "source_kind", "keywords", "category",
   "marketplace_id", "auto_update", "enabled", "entry_count", "added_at",
   "tags_zh", "tags_en", "auth_injection_rules", "teamInfo",
 ]);
 
 export const KNOWN_ENTRY_FIELDS = new Set([
-  // doc 18 §4 entry model + §3 line naming the manifest entry fields
+  // 文档 18 §4 条目模型 + §3 中给条目字段命名的行
   "name", "source", "version", "strict", "commands", "agents", "skills", "hooks",
   "mcpServers", "lspServers", "userConfig", "dependencies", "avatar", "description",
   "keywords", "category", "id", "tags_zh", "tags_en",
-  // doc 18 §4.2 — the entry's own publication date (`YYYY-MM-DD`)
+  // 文档 18 §4.2 —— 条目自身的发布日期（`YYYY-MM-DD`）
   "publishedAt",
 ]);
 
@@ -337,9 +335,8 @@ function noteTypes(bucket, value, pointer, sample) {
 }
 
 /**
- * Inventory of every field the market carries, at manifest level and entry
- * level, with value-type distributions. Used by T20 to compare `17`/`18`
- * against real market data without eyeballing JSON.
+ * 对市场携带的每一个字段做盘点，区分清单级与条目级，并附带取值类型分布。
+ * T20 借此将 `17`/`18` 与真实市场数据做比对，而无需肉眼审阅 JSON。
  */
 export function censusMarketTree({ name, dir }) {
   const manifestFields = new Map();
@@ -356,7 +353,7 @@ export function censusMarketTree({ name, dir }) {
     }
   };
 
-  // The discovered manifest plus any nested manifests (entry roots).
+  // 被发现的清单，外加任何嵌套清单（条目根目录）。
   const nested = walkFiles(dir).filter(
     (file) =>
       file !== hit.rel &&
@@ -404,7 +401,7 @@ export function censusMarketTree({ name, dir }) {
   };
 }
 
-// ── CLI ─────────────────────────────────────────────────────────────────────
+// ── 命令行入口 ───────────────────────────────────────────────────────────────
 
 function parseMarkets(argv) {
   const markets = [];
@@ -423,7 +420,7 @@ function parseMarkets(argv) {
   return markets;
 }
 
-/** Invalid + valid samples; every invalid one must be rejected with its rule. */
+/** 非法 + 合法的样本；每个非法样本都必须按对应规则被拒绝。 */
 export function selfTestCases() {
   const write = (dir, rel, body) => {
     const target = path.join(dir, rel);
@@ -459,12 +456,12 @@ export function selfTestCases() {
     "invalid-source-parent": (dir) => write(dir, ".codebuddy-plugin/marketplace.json", { name: "m", plugins: [{ name: "a", source: "../outside" }] }),
     "invalid-source-backslash": (dir) => write(dir, ".codebuddy-plugin/marketplace.json", { name: "m", plugins: [{ name: "a", source: "plugins\\a" }] }),
     "invalid-source-missing": (dir) => {
-      // A listing marks full-tree mirror mode, where every entry source must exist.
+      // 清单标记了整树镜像模式，其中每个条目源都必须存在。
       write(dir, ".codebuddy-plugin/marketplace.json", { name: "m", plugins: [{ name: "a", source: "./plugins/nope" }] });
       write(dir, "_files.txt", "");
     },
     "invalid-duplicate-entry": (dir) => {
-      // `source` must resolve so the only finding is the duplicate name.
+      // `source` 必须能解析，这样唯一的结论就是重复的名称。
       write(dir, ".codebuddy-plugin/marketplace.json", { name: "m", plugins: [{ name: "a", source: "./p" }, { name: "a", source: "./p" }] });
       write(dir, "p/marker.txt", "x");
     },
@@ -497,9 +494,8 @@ export function selfTestCases() {
 }
 
 /**
- * Rules that can only be located at file level: malformed JSON / no manifest at
- * all have no field to point at, and a coverage gap points at the listing file
- * (there is no line for a path that was never written).
+ * 只能定位到文件级的规则：JSON 畸形 / 根本没有清单时无处指向具体字段，
+ * 而覆盖缺口指向清单文件（对于从未被写入的路径，也就没有对应的行可指）。
  */
 const FILE_LEVEL_RULES = new Set([
   "manifest.json",

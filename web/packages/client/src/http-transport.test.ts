@@ -241,15 +241,21 @@ describe("HttpTransport · shared surface (doc 16 R2)", () => {
 
 describe("HttpTransport · route table count guard", () => {
   /**
-   * The route table is 46 mapped / 22 without an HTTP binding. The TypeScript
-   * SDK reference page's "HTTP binding" section (`§5.3` of
-   * `agent-store-site/content/docs/<lang>/typescript-sdk.md`, renumbered when the
-   * examples moved to `examples-sdk.md`) quotes the same split in prose and
-   * lists the same 22 methods, but that guide lives in the standalone
-   * `agent-store-site` repository, so nothing here can read it any more.
-   * Mapping a new method (or dropping one) fails this test — update the guide
-   * by hand in the site repository in the same change.
+   * The documented split — `mapped` methods have an HTTP binding, `unmapped`
+   * ones deliberately do not (`DOCUMENTED_UNMAPPED` below).
+   *
+   * This constant is the **source of truth for the prose**: the TypeScript SDK
+   * reference page's "HTTP binding" section (`§5.3` of
+   * `agent-store-site/content/docs/<lang>/typescript-sdk.md`) quotes the same
+   * numbers as `覆盖 **48 / 71** 个方法` / `Covers **48 / 71** methods`, and
+   * `scripts/check-agent-store-release-sync.mjs` reads this constant **by
+   * identifier** to compare the two repositories. That guide lives in the
+   * standalone `agent-store-site` repository, so nothing here can read it.
+   * Mapping a new method (or dropping one) fails the assertions below — update
+   * the guide in the same change.
    */
+  const DOCUMENTED_ROUTE_SPLIT = { mapped: 48, unmapped: 23 } as const;
+
   const DOCUMENTED_UNMAPPED = [
     "initialize",
     "initialized",
@@ -296,10 +302,10 @@ describe("HttpTransport · route table count guard", () => {
     "skill/file",
   ];
 
-  it("keeps the documented 48-mapped / 23-unmapped split", () => {
+  it(`keeps the documented ${DOCUMENTED_ROUTE_SPLIT.mapped}-mapped / ${DOCUMENTED_ROUTE_SPLIT.unmapped}-unmapped split`, () => {
     const table = httpRouteTable();
-    expect(Object.keys(table)).toHaveLength(48);
-    expect(DOCUMENTED_UNMAPPED).toHaveLength(23);
+    expect(Object.keys(table)).toHaveLength(DOCUMENTED_ROUTE_SPLIT.mapped);
+    expect(DOCUMENTED_UNMAPPED).toHaveLength(DOCUMENTED_ROUTE_SPLIT.unmapped);
     for (const method of DOCUMENTED_UNMAPPED) {
       expect(Object.keys(table), `${method} must stay unmapped`).not.toContain(method);
     }

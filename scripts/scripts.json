@@ -45,6 +45,18 @@
       "group": "check",
       "desc": "Verify the App Server protocol fingerprint is identical at every landing point, here and in the docs site."
     },
+    "check:release-sync": {
+      "group": "check",
+      "desc": "Verify the release version is locked across the four npm manifests and the docs site, and that the documented route-table split matches the site guide."
+    },
+    "release:check": {
+      "group": "check",
+      "desc": "Agent Store release gate: repo gates + web typecheck/tests + App Server protocol tests (docs/agent-store/25)."
+    },
+    "release:check:site": {
+      "group": "check",
+      "desc": "Agent Store release gate, docs-site half: docs-sync + market gates + typecheck in the sibling agent-store-site checkout."
+    },
     "check:ux-baseline": {
       "group": "check",
       "desc": "校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线）"
@@ -95,7 +107,7 @@
     "test:desktop":  { "group": "test",  "desc": "运行桌面壳测试，不监听或打包 ui/dist 资源" },
     "test:browser":  { "group": "test",  "desc": "运行 browser-use 门控的 Rust 测试（browser-platform 全量 + gateway/ai-agent/nomi-agent/app 开启 --features browser-use；crate/core 车道会静默跳过这些）" },
     "test:ui":       { "group": "test",  "desc": "运行前端单元测试（bun test，收集 ui/src 下全部 *.test.ts/tsx）" },
-    "check":         { "group": "check", "desc": "聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑）" },
+    "check":         { "group": "check", "desc": "聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 协议指纹 + 跨仓发布同步 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑）" },
     "typecheck":     { "group": "check", "desc": "前端 TypeScript 类型检查（tsc --noEmit）" },
     "check:i18n":    { "group": "check", "desc": "校验 i18n 类型与 locale 键是否一致" },
     "check:theme":   { "group": "check", "desc": "校验预设 CSS 主题契约" },
