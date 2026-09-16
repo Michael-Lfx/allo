@@ -2,9 +2,10 @@
 
 > 状态：修复与验收完成；OBS-1 采样完成并给出"不修改调度"结论
 >
-> 最后维护：2026-09-15
+> 最后维护：2026-09-16
 >
-> 分支：`fix/upstream-contract-drift`
+> 分支：`fix/upstream-contract-drift`（PR #219；已 rebase 至 `fb0cba264`，
+> 提交哈希见 §1）
 >
 > 关联：[调查记录](upstream-contract-drift-investigation.zh-CN.md) ·
 > [执行计划](upstream-contract-drift-execution-plan.zh-CN.md)
@@ -13,14 +14,14 @@
 
 | 提交 | 内容 |
 | --- | --- |
-| `854809a75` | 工具请求的 `reasoning_effort` 语义协商（按模型记忆） |
-| `0cffa50be` | You 按名称发现、失败不缓存、10 分钟冷却、调用期缓存失效 |
-| `f05aeba7e` | 输出 token 上限协商（`65537 exclusive → 65536`） |
-| `48e4624df` | Gemini 文案分类 + 组合分支归一化（fixture 驱动） |
-| `28e47613a` | 未广告 `ToolUseDelta` 忽略；最终未广告 `ToolUse` 仍拒绝 |
-| `d3dfdbfdb` | 初始协商 90s 绝对 deadline（chat/completions） |
-| `76d13f9bc` | 目录输出上限钳制（同步时按模型家族向下收敛） |
-| `8d1e1e121`…`f93ecc56e` | 边界复审修复（协商上下文、锁等待、告警去重、词元匹配、日志清理） |
+| `091853d23` | 工具请求的 `reasoning_effort` 语义协商（按模型记忆） |
+| `55c966ac2` | You 按名称发现、失败不缓存、10 分钟冷却、调用期缓存失效 |
+| `fe9097b28` | 输出 token 上限协商（`65537 exclusive → 65536`） |
+| `ceb3347ef` | Gemini 文案分类 + 组合分支归一化（fixture 驱动） |
+| `a9a8920f9` | 未广告 `ToolUseDelta` 忽略；最终未广告 `ToolUse` 仍拒绝 |
+| `fa3c8d1c9` | 初始协商 90s 绝对 deadline（chat/completions） |
+| `c1f329f3b` | 目录输出上限钳制（同步时按模型家族向下收敛） |
+| `5eeed73eb`…`d1a6b3598` | 边界复审修复与收尾（协商上下文、锁等待归类、告警去重、词元匹配、日志清理、边界注释） |
 
 ## 2. 对 agent runtime 的影响
 

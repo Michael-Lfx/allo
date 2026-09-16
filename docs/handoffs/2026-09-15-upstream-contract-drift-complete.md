@@ -3,10 +3,10 @@
 > 用途：上下文压缩/换会话后的恢复入口。所有结论与证据均已落盘在
 > `docs/architecture/` 三份文档中，本文件只做索引、状态与待办。
 >
-> 分支：`fix/upstream-contract-drift`（未推送；提交数量以
-> `git rev-list --count origin/main..HEAD` 为准，清单见 §2）
+> 分支：`fix/upstream-contract-drift`（已推送；PR #219，提交清单见 §2）
 >
-> 工作树：干净；基线：`f0e33897d`（main）
+> 工作树：干净；原基线 `f0e33897d`，2026-09-16 已 rebase 至
+> `fb0cba264`（origin/main, v1.3.8；rebase 后哈希已更新）
 
 ## 1. 一句话状态
 
@@ -19,49 +19,55 @@
 
 ```text
 # 调查与计划（4 + 1）
-86bbffe2b docs: record upstream contract drift investigation findings
-570b30b74 docs: add backup dev environment findings to contract drift record
-442a8641d docs: expand fix rationale and rejected alternatives for review
-54f991db2 docs: reconcile fix plan with cross review findings
-d148d4020 docs(architecture): 制定上游契约漂移修复计划
+10f672317 docs: record upstream contract drift investigation findings
+cbacd51a4 docs: add backup dev environment findings to contract drift record
+71e736cf4 docs: expand fix rationale and rejected alternatives for review
+cafec181e docs: reconcile fix plan with cross review findings
+21ce240bc docs(architecture): 制定上游契约漂移修复计划
 
-# 修复（6 + 目录钳制 + 边界复审 5）
-854809a75 fix(provider): 协商工具请求的 reasoning_effort
-0cffa50be fix(web): 按名称发现 You 工具并恢复失败探测
-f05aeba7e fix(provider): 协商模型输出 token 上限
-48e4624df fix(provider): 兼容 Gemini 嵌套工具 schema
-28e47613a fix(agent): 忽略未广告工具的纯进度预览
-d3dfdbfdb fix(provider): 限制初始请求总等待时间
-76d13f9bc fix(cloud): 同步时钳制目录中已知超限的输出上限
-8d1e1e121 fix(provider): 收紧协商边界与重试上下文
-44c82ddaa fix(web): 约束发现锁等待并复用冷却常量
-d823f2397 fix(agent): 未广告进度告警按调用 id 去重
-54c7cf6ae fix(cloud): 目录上限家族匹配改为词元
-f93ecc56e chore: 深度截断日志与 OBS 统计清理
-72ac1e5b7 fix(web): 发现锁等待超时归入队列繁忙
-048bb5f5f chore(provider): 补充输出字段与家族匹配的边界注释
+# 修复（6 + 目录钳制 + 边界复审与收尾 9）
+091853d23 fix(provider): 协商工具请求的 reasoning_effort
+55c966ac2 fix(web): 按名称发现 You 工具并恢复失败探测
+fe9097b28 fix(provider): 协商模型输出 token 上限
+ceb3347ef fix(provider): 兼容 Gemini 嵌套工具 schema
+a9a8920f9 fix(agent): 忽略未广告工具的纯进度预览
+fa3c8d1c9 fix(provider): 限制初始请求总等待时间
+c1f329f3b fix(cloud): 同步时钳制目录中已知超限的输出上限
+5eeed73eb fix(provider): 收紧协商边界与重试上下文
+d84a70a89 fix(web): 约束发现锁等待并复用冷却常量
+a23c0ea89 fix(agent): 未广告进度告警按调用 id 去重
+5040e600e fix(cloud): 目录上限家族匹配改为词元
+737469b06 chore: 深度截断日志与 OBS 统计清理
+90742922f fix(web): 发现锁等待超时归入队列繁忙
+d1a6b3598 chore(provider): 补充输出字段与家族匹配的边界注释
 
 # 测试与验证
-bcc752921 test(provider): 补齐契约协商边界回归
-cacb18ba3 test(conversation): 覆盖超时故障的模型转移
-d6f89fc97 test(web): 覆盖冷却后并发重发现的单飞
-a04d609be test(provider): 增加 90s 初始协商 deadline 手动验收
-aa8a1a7d1 test(web): 增加 you.com 实时契约手动验收
-275a8144f test(web): 增加 OBS-1 受控采样工具
+db9a313fd test(provider): 补齐契约协商边界回归
+52f5ce7ca test(conversation): 覆盖超时故障的模型转移
+c94f0c211 test(web): 覆盖冷却后并发重发现的单飞
+af9bef7c0 test(provider): 增加 90s 初始协商 deadline 手动验收
+ab1d2ab70 test(web): 增加 you.com 实时契约手动验收
+b80a05e0f test(web): 增加 OBS-1 受控采样工具
 
-# 文档回填
-14f46b1a1 docs(architecture): 记录 OBS-1 历史基线
-173edda48 docs(architecture): 回填上游契约漂移修复证据
-b6f2de954 docs(architecture): 补充工具链与基线限制说明
-0288700b8 docs(architecture): 记录补充测试提交与覆盖说明
-c8d7cf42e docs(architecture): 回填真实验收记录
-60953f132 docs(architecture): 整理运行时影响说明与 OBS-1 采样记录
-
-# 交接
-1a1444218 docs(handoffs): 记录上游契约漂移修复完成交接
+# 文档回填与交接
+c4d817f96 docs(architecture): 记录 OBS-1 历史基线
+665a399dd docs(architecture): 回填上游契约漂移修复证据
+2e27e8bb2 docs(architecture): 补充工具链与基线限制说明
+5eea237db docs(architecture): 记录补充测试提交与覆盖说明
+a1ea0f24c docs(architecture): 回填真实验收记录
+9f192b0fa docs(architecture): 整理运行时影响说明与 OBS-1 采样记录
+47cf6e416 docs(handoffs): 记录上游契约漂移修复完成交接
+aa92152e0 docs(handoffs): 修正交接文件提交计数与清单
+172f360e4 docs(architecture): 记录目录输出上限钳制的运行时影响与验证
+f106e0ab8 docs(architecture): 回填边界复审修复与回归结果
+a874ace4e docs(architecture): 回填复审修复状态、计数与 PR 链接
 ```
 
-改动范围：23 个文件，+4058/−116（含 docs）。
+> 2026-09-16 已 rebase 至 `origin/main` v1.3.8（`fb0cba264`），以上为 rebase
+> 后哈希；完整顺序以 `git log --oneline origin/main..HEAD` 为准。
+
+改动范围：23 个文件（含 docs）；行数随文档同步变化，以
+`git diff --stat origin/main...HEAD` 为准（当前约 +4.1k/−0.1k）。
 
 ## 3. 文档索引（恢复时先读这三份）
 

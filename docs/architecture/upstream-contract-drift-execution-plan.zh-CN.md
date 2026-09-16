@@ -1,10 +1,11 @@
 # 上游契约漂移修复执行计划
 
-> 状态：定稿，等待按阶段实施
+> 状态：已实施完成（见 §15、§16）
 >
-> 最后维护：2026-09-15
+> 最后维护：2026-09-16
 >
-> 分支：`fix/upstream-contract-drift`（基线 `54f991db2`）
+> 分支：`fix/upstream-contract-drift`（原基线 `54f991db2`，2026-09-16 rebase 至
+> `fb0cba264` / v1.3.8；PR #219）
 >
 > 依据：[upstream-contract-drift-investigation.zh-CN.md](upstream-contract-drift-investigation.zh-CN.md)（第 5、8 节）
 >
@@ -74,7 +75,7 @@ cargo test -p nomi-providers
 
 ```text
 分支          fix/upstream-contract-drift
-origin/main..HEAD  4 个文档提交（86bbffe2b..54f991db2）
+origin/main..HEAD  4 个文档提交（10f672317..cafec181e；rebase 后哈希）
 提交身份      hoye <hoyework@qq.com>
 hooks         .githooks/commit-msg, .githooks/pre-push（core.hooksPath 未设置）
 
@@ -450,24 +451,28 @@ bun run check
 
 | 阶段 | 提交 | 说明 |
 | --- | --- | --- |
-| 0 | `d148d4020` | 本计划 + 调查文档修正 + 基线记录 |
-| 1 | `854809a75` | effort 语义协商与按模型记忆 |
-| 2 | `0cffa50be` | You 按名发现、失败不缓存、10 分钟冷却、调用期缓存失效 |
-| 3 | `14f46b1a1` | OBS-1 历史基线（102 成功 / 7 全失败） |
-| 4 | `f05aeba7e` | 输出上限协商（65537 exclusive → 65536） |
-| 5 | `48e4624df` | Gemini 文案分类 + 组合分支归一化（fixture 驱动） |
-| 6 | `28e47613a` | 未广告 ToolUseDelta 忽略；最终未广告 ToolUse 仍拒绝 |
-| 7 | `d3dfdbfdb` | 90s 初始协商绝对 deadline + 超时映射 |
+| 0 | `21ce240bc` | 本计划 + 调查文档修正 + 基线记录 |
+| 1 | `091853d23` | effort 语义协商与按模型记忆 |
+| 2 | `55c966ac2` | You 按名发现、失败不缓存、10 分钟冷却、调用期缓存失效 |
+| 3 | `c4d817f96` | OBS-1 历史基线（102 成功 / 7 全失败） |
+| 4 | `fe9097b28` | 输出上限协商（65537 exclusive → 65536） |
+| 5 | `ceb3347ef` | Gemini 文案分类 + 组合分支归一化（fixture 驱动） |
+| 6 | `a9a8920f9` | 未广告 ToolUseDelta 忽略；最终未广告 ToolUse 仍拒绝 |
+| 7 | `fa3c8d1c9` | 90s 初始协商绝对 deadline + 超时映射 |
 | 8 | 未提交 | OBS-1 主样本 <100，按计划保持关闭并记录"不修改" |
-| 9 | `173edda48` / `bcc752921` / `b6f2de954` | 证据回填；补齐边界回归测试（溢出、动态字段、向下钳制、attribution、本地 schema 不变）；工具链与基线限制说明 |
-| 9+ | `cacb18ba3` / `d6f89fc97` | 超时故障的端到端模型转移；缓存失效后的并发重发现单飞 |
-| 10 | `76d13f9bc` | 目录输出上限同步钳制（gemini → 65536，按词元匹配家族） |
-| 11 | `8d1e1e121` / `44c82ddaa` / `d823f2397` / `54c7cf6ae` / `f93ecc56e` | 边界复审修复（重试上下文门控、发现锁等待归类、告警去重、家族词元匹配、日志清理） |
+| 9 | `665a399dd` / `db9a313fd` / `2e27e8bb2` | 证据回填；补齐边界回归测试（溢出、动态字段、向下钳制、attribution、本地 schema 不变）；工具链与基线限制说明 |
+| 9+ | `52f5ce7ca` / `c94f0c211` | 超时故障的端到端模型转移；缓存失效后的并发重发现单飞 |
+| 10 | `c1f329f3b` | 目录输出上限同步钳制（gemini → 65536，按词元匹配家族） |
+| 11 | `5eeed73eb` / `d84a70a89` / `a23c0ea89` / `5040e600e` / `737469b06` | 边界复审修复（重试上下文门控、发现锁等待归类、告警去重、家族词元匹配、日志清理） |
+| 12 | `90742922f` / `d1a6b3598` | 复审收尾（锁等待超时归入队列繁忙、边界注释） |
+
+> 2026-09-16 已 rebase 至 `origin/main` v1.3.8（`fb0cba264`），上表为 rebase
+> 后哈希；文档同步提交以 `git log` 为准。
 
 补充说明：原列的"违规调用仍由本地 schema 拒绝"无需新增缺口修复——它由两层既有/新增
 锁共同覆盖：`nomi-tools` 的 union/root-object 严格校验测试（如
 `prepare_input_keeps_strict_union_and_root_object_boundaries`）保持有效，且新测试断言
-provider-facing sanitize 不回写本地原始 schema（`bcc752921`）。
+provider-facing sanitize 不回写本地原始 schema（`db9a313fd`）。
 
 ### 15.2 验证结果
 
