@@ -11,8 +11,9 @@
 ## 1. 一句话状态
 
 六个客户端修复 + 目录输出上限钳制已实现、单测与真实网络验收通过；OBS-1 受控
-采样完成并判定"保持串行调度"；一轮边界复审的 5 项修复已落地（0 Required）；
-**新提交已落本地，需补一次推送**（再加 PR）。
+采样完成并判定"保持串行调度"；一轮边界复审的 5 项修复与收尾修复已落地
+（0 Required）；**分支已推送，PR #219 已创建**
+（https://github.com/Michael-Lfx/allo/pull/219）。
 
 ## 2. 提交清单（按时间顺序）
 
@@ -37,6 +38,8 @@ d3dfdbfdb fix(provider): 限制初始请求总等待时间
 d823f2397 fix(agent): 未广告进度告警按调用 id 去重
 54c7cf6ae fix(cloud): 目录上限家族匹配改为词元
 f93ecc56e chore: 深度截断日志与 OBS 统计清理
+72ac1e5b7 fix(web): 发现锁等待超时归入队列繁忙
+048bb5f5f chore(provider): 补充输出字段与家族匹配的边界注释
 
 # 测试与验证
 bcc752921 test(provider): 补齐契约协商边界回归
@@ -58,7 +61,7 @@ c8d7cf42e docs(architecture): 回填真实验收记录
 1a1444218 docs(handoffs): 记录上游契约漂移修复完成交接
 ```
 
-改动范围：21 个文件（含 docs）。
+改动范围：23 个文件，+4058/−116（含 docs）。
 
 ## 3. 文档索引（恢复时先读这三份）
 
@@ -111,9 +114,10 @@ OBS-1 受控采样（30 次探针）：
 
 ## 5. 恢复后的待办
 
-1. **推送新提交 + PR**
-   - `git push`（远端已有该分支；本地领先提交见 §2，含目录钳制、边界复审 5 项与文档）
-   - PR 描述草稿见 §7；合并前确认仓库 Git 归属规则（无 AI attribution）
+1. **推送与 PR（已完成）**
+   - 分支已推送至 `origin/fix/upstream-contract-drift`；PR #219：
+     https://github.com/Michael-Lfx/allo/pull/219
+   - 描述按仓库模板撰写（Summary/Type/Scope/Verification/Docs/Safety/Notes）
 2. **OBS-1 长期采样（未来工作，不阻塞合并）**
    - 修复上线后真实使用中累计 ≥100 条，再跑
      `cargo run -p flowy-web --example obs_sampling` 复核决策门；若触发

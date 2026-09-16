@@ -461,6 +461,8 @@ bun run check
 | 8 | 未提交 | OBS-1 主样本 <100，按计划保持关闭并记录"不修改" |
 | 9 | `173edda48` / `bcc752921` / `b6f2de954` | 证据回填；补齐边界回归测试（溢出、动态字段、向下钳制、attribution、本地 schema 不变）；工具链与基线限制说明 |
 | 9+ | `cacb18ba3` / `d6f89fc97` | 超时故障的端到端模型转移；缓存失效后的并发重发现单飞 |
+| 10 | `76d13f9bc` | 目录输出上限同步钳制（gemini → 65536，按词元匹配家族） |
+| 11 | `8d1e1e121` / `44c82ddaa` / `d823f2397` / `54c7cf6ae` / `f93ecc56e` | 边界复审修复（重试上下文门控、发现锁等待归类、告警去重、家族词元匹配、日志清理） |
 
 补充说明：原列的"违规调用仍由本地 schema 拒绝"无需新增缺口修复——它由两层既有/新增
 锁共同覆盖：`nomi-tools` 的 union/root-object 严格校验测试（如
@@ -470,13 +472,13 @@ provider-facing sanitize 不回写本地原始 schema（`bcc752921`）。
 ### 15.2 验证结果
 
 ```text
-cargo test -p nomi-providers                 → 187 + 13 + 17 + 26 passed; 0 failed
-cargo test -p flowy-web                      → 189 passed; 0 failed
-cargo test -p nomi-agent                     → 787 + 11 + 32 passed；1 既有失败
+cargo test -p nomi-providers                 → 248 passed（191+13+17+27，1 ignored）；0 failed
+cargo test -p flowy-web                      → 190 passed（1 ignored）；0 failed
+cargo test -p nomi-agent                     → 830 passed（787+11+32）；1 既有失败
 cargo test -p nomi-config                    → 216 passed；1 既有失败
+cargo test -p nomifun-cloud                  → 175 passed（provider_sync 22/22）；1 既有失败
 cargo test -p nomifun-ai-agent --lib protocol::send_error → 33 passed
 cargo test -p nomifun-conversation --lib service_test::failover → 9 passed
-cargo check -p nomifun-cloud                 → Finished（无新增告警）
 ```
 
 既有失败（已在基线复现，与本次改动无关）：
@@ -504,7 +506,8 @@ cargo check -p nomifun-cloud                 → Finished（无新增告警）
 - OBS-1：受控采样已完成（30 次探针，见
   [运行时影响说明与 OBS-1 记录](upstream-contract-drift-runtime-impact.zh-CN.md) §3），
   决策门判定"保持串行调度、Stage 8 关闭"；主样本仍 <100，结论不作为长期依据。
-- PR 尚未创建（分支 `fix/upstream-contract-drift` 未推送）。
+- 分支已推送至 `origin/fix/upstream-contract-drift`；PR 已创建：
+  https://github.com/Michael-Lfx/allo/pull/219（Stage 9 交付完成）。
 
 ## 16. 真实验收记录（2026-09-15）
 
@@ -531,6 +534,8 @@ cargo check -p nomifun-cloud                 → Finished（无新增告警）
 
 - A3 的"真实 65537 exclusive 拒绝"依赖上游通道具备该上限；本账号通道无此限制，
   故只能声明 wiremock 覆盖，不能声明线上复现。
+- §12 真实验收矩阵中的 progress 行由单测覆盖（`set_config_tests` 两个用例：
+  未广告预览被忽略、终局未广告 `ToolUse` 仍失败），无真实网关可复现路径。
 - UI 错误卡与用户视角文案未做人工界面验收（错误码映射已由单测覆盖）。
 - 隔离副本、黑洞监听与临时账号数据均在验收后清理；未改动用户开发数据目录。
 - 运行时行为影响与 OBS-1 采样结论见

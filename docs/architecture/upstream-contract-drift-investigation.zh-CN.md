@@ -161,7 +161,7 @@ if self.id == SearchProviderId::You && tools.len() != 1 {
 
 | 日期 | 现象 | 归因 | 现状 |
 | --- | --- | --- | --- |
-| 2026-08-18 | GPT5.6-Sol `Invalid schema for function 'Read': … oneOf … at the top level`，4 轮失败出错误卡 | 当时构建未触发 schema 降级（只有瞬时 500 重试） | 当前代码已含降级重试（09-12 gemini 案例已触发）；Read 场景待回归 |
+| 2026-08-18 | GPT5.6-Sol `Invalid schema for function 'Read': … oneOf … at the top level`，4 轮失败出错误卡 | 当时构建未触发 schema 降级（只有瞬时 500 重试） | 已由本分支覆盖：分类器用例与 layered 协商 wiremock 均使用该原文措辞 |
 | 2026-09-12 | tools + `reasoning_effort` 被通道拒绝 | 目录声明 + 默认 `medium` + chat/completions | 未修复（案例 A） |
 | 2026-09-12 | `maxOutputTokens 128000 > 65537` | 目录输出上限失真 | 未修复 |
 | 2026-09-12 | `any_of[0].required: only allowed for OBJECT type` | schema 清洗不处理嵌套组合关键字 | 未修复 |
@@ -444,6 +444,7 @@ cargo test -p nomi-agent（若 SEP-1 变更）
 4. 未广告工具进度预览：忽略还是仅记录 warn？该变更属安全边界评审（SEP-1）。
 5. timeout 类错误是否需要重试，取决于总 deadline 方案；需产品确认可接受的最坏等待。
 6. 是否把 `/v1/responses` 作为推理模型的中期路线（取决于网关侧支持，需单独调研）。
+   处置：维持 open，待网关侧支持后再单独调研，本分支不做。
 
 ## 6. 备份项目（D:\workSpace\allo）环境核对与关联发现
 
