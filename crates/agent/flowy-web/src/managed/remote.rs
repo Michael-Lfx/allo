@@ -10,7 +10,7 @@ use nomi_mcp::{
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout_at};
 
 use crate::provider::extract_policy::prepare_remote_url;
 use crate::types::{MAX_EXTRACT_URLS, SearchQuery, SearchResult, WebError};
@@ -639,7 +639,12 @@ impl RemoteSearchAdapter {
     }
 
     async fn ensure_compatible(&self, deadline: Instant) -> Result<(), SearchAttemptError> {
-        let mut cache = self.discovery.lock().await;
+        // Waiting on another attempt's in-flight discovery must not outlive
+        // this attempt's own deadline: the outer slot timeout would otherwise
+        // cancel a healthy provider and record a misleading Timeout.
+        let mut cache = timeout_at(deadline, self.discovery.lock())
+            .await
+            .map_err(|_| SearchAttemptError::Timeout)?;
         if cache.is_some() {
             return Ok(());
         }
@@ -1736,6 +1741,9 @@ mod tests {
         tools_list_calls: usize,
         tool_calls: usize,
         unknown_tool_failures_remaining: usize,
+        /// Artificial `tools/list` latency, used to exercise lock-wait
+        /// behaviour while another attempt holds the discovery mutex.
+        tools_list_delay_ms: u64,
     }
 
     /// Single MCP endpoint responder that serves the handshake, a mutable
@@ -1796,11 +1804,17 @@ mod tests {
                     let mut state = self.state.lock().expect("you mock state");
                     state.tools_list_calls += 1;
                     let tools = state.available_tools.clone();
-                    ResponseTemplate::new(200).set_body_json(json!({
+                    let delay = state.tools_list_delay_ms;
+                    let response = ResponseTemplate::new(200).set_body_json(json!({
                         "jsonrpc": "2.0",
                         "id": id,
                         "result": { "tools": tools }
-                    }))
+                    }));
+                    if delay > 0 {
+                        response.set_delay(Duration::from_millis(delay))
+                    } else {
+                        response
+                    }
                 }
                 "tools/call" => {
                     let mut state = self.state.lock().expect("you mock state");
@@ -1900,6 +1914,45 @@ mod tests {
             state.lock().expect("you mock state").tools_list_calls,
             1,
             "concurrent first discoveries must share one tools/list call"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_lock_wait_is_bounded_by_the_attempt_deadline() {
+        let state = Arc::new(std::sync::Mutex::new(YouMockState {
+            available_tools: vec![you_search_tool()],
+            tools_list_delay_ms: 750,
+            ..YouMockState::default()
+        }));
+        let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
+        let adapter = Arc::new(adapter);
+
+        let holder = {
+            let adapter = Arc::clone(&adapter);
+            tokio::spawn(async move {
+                adapter
+                    .ensure_compatible(Instant::now() + Duration::from_secs(5))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let waiter = adapter
+            .ensure_compatible(Instant::now() + Duration::from_millis(100))
+            .await;
+        assert!(
+            matches!(waiter, Err(SearchAttemptError::Timeout)),
+            "a waiter must not outlive its own deadline: {waiter:?}"
+        );
+
+        holder
+            .await
+            .expect("holder task must not panic")
+            .expect("the holder discovery must still succeed");
+        assert_eq!(
+            state.lock().expect("you mock state").tools_list_calls,
+            1,
+            "the timed-out waiter must not start a second tools/list"
         );
     }
 

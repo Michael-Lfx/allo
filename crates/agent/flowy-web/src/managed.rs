@@ -75,6 +75,10 @@ const DDG_SLOT_BUDGET: Duration = Duration::from_secs(6);
 /// These are recoverable after the upstream tool list changes or recovers, so
 /// they must not disable the provider for the rest of the process.
 const DISCOVERY_FAILURE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+/// Cooldown for `Forbidden` rejections (the endpoint is reachable but refuses
+/// this caller). Unlike unauthorized/method errors this is retried after the
+/// cooldown, so it needs its own named duration.
+const FORBIDDEN_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 const MAX_TITLE_CHARS: usize = 300;
 const MAX_URL_BYTES: usize = 2048;
 const MAX_SNIPPET_CHARS: usize = 2000;
@@ -228,7 +232,7 @@ impl SearchProviderHealth {
                 self.cooldown_until = Some(now + DISCOVERY_FAILURE_COOLDOWN);
             }
             SearchAttemptError::Forbidden => {
-                self.cooldown_until = Some(now + Duration::from_secs(10 * 60));
+                self.cooldown_until = Some(now + FORBIDDEN_COOLDOWN);
             }
             SearchAttemptError::RateLimited(retry_after) => {
                 let delay = if provider == SearchProviderId::You {
