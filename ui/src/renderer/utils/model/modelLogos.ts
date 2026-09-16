@@ -54,5 +54,11 @@ export function resolveModelFallbackIcon(model: string): string {
 }
 
 export function isMonochromeLogo(src: string): boolean {
-  return src.includes('/ai-major/openai.svg') || src.includes('/ai-major/xai.svg');
+  // These ship as `fill="currentColor"` glyphs, which render solid black inside
+  // an <img> document; `dark:invert` keeps them visible on dark themes.
+  return (
+    src.includes('/ai-major/openai.svg') ||
+    src.includes('/ai-major/xai.svg') ||
+    src.includes('/ai-china/kimi.svg')
+  );
 }

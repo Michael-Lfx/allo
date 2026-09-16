@@ -11,6 +11,7 @@
   - `b8d098251` test:结构测试锁定 + 定位语双语对称测试
 - 自动化验证:相关测试 158 pass / 0 fail(34 文件);`check:i18n` 10812 键 up to date;改动文件 typecheck 零错误(预存错误仅 videoCanvas/canvas-project-dialogs 与 analytics 测试);`check:button-layout-contract` 仅剩预存 MeetingPage.tsx:98。
 - 代码审查(deep,三轮)修复已并入:菜单行垂直对齐回归 —— Arco `.arco-menu-vertical .arco-menu-item`(特异性 0,2,0)的 `padding: 0 12px`/`line-height: 40px` 会压掉单类规则,行内文本改显式 leading 后内容不再撑满 40px 而块级容器不居中;修复 = 菜单项 `display: flex; align-items: center;` + `padding-block !important`(与同文件既有 Arco 覆盖惯例一致)。另:推荐徽章并入 `aria-label`(读屏可见)、注册表键规范化自检与菜单项 CSS 回归锁定各 +1 测试。
+- 收尾审查 + 实机反馈修复已并入:① 推荐徽章底色误用 `rgb(var(--primary-6) / 12%)`(全主题 `--primary-6` 为逗号三元组,斜杠 alpha 解析无效被丢弃),改逗号 `rgba(var(--primary-6), 0.12)` 并加结构锁定;② 实机发现 `deepseek.svg`/`zhipu.svg` 本地资产实为手绘占位符(deepseek 是 ⊕ 加号圆圈、zhipu 是文字框),且 `fill="currentColor"` 在 `<img>` 隔离文档中解析为纯黑致深色主题隐身 —— 已替换为 lobe-icons 彩色版(与 qwen 同源,文件名不变、前端零改动);kimi 是真实单色 logo 但同为 currentColor 黑,已纳入 `isMonochromeLogo` 暗色反白名单(同 openai/xai)。**注意:nomifun-assets 经 RustEmbed 编译期嵌入,实机验证前需重建后端**。其余占位符(volcengine 闪电/tencent 对勾/anthropic(死资产,无引用)/stepfun/lingyiwanwu)仅作 videoCanvas 兜底,本分支不动。
 - Git 约束:commit 无 AI 署名;hooks 不绕过;回退 = 整分支删除或按序 revert。
 
 ## 背景与目标
