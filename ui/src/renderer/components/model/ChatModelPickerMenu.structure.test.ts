@@ -80,4 +80,18 @@ describe('ChatModelPickerMenu structure', () => {
     expect(rule.includes('rgba(var(--primary-6, 22, 93, 255), 0.12)')).toBe(true);
     expect(rule.includes('/ 12%')).toBe(false);
   });
+
+  test('keeps a transparent viewport top gap for upward-clamped popups', () => {
+    // Arco's autoFit clamps a top-blocked popup to `style.top = boundary.top`
+    // (0 with a body container) and boundaryDistance cannot offset that clamp
+    // for 'bl'/'br' positions. The padding lives inside the measured outer
+    // frame gated on the popup wrapper's post-flip `trigger-placement`, so
+    // normal upward opens are pixel-identical and only the window-edge clamp
+    // materializes the 12px gap.
+    expect(sendboxCss.includes("[trigger-placement='tl'] > .chat-model-picker-menu")).toBe(true);
+    expect(sendboxCss.includes("[trigger-placement='tr'] > .chat-model-picker-menu")).toBe(true);
+    const ruleStart = sendboxCss.indexOf("[trigger-placement='tl'] > .chat-model-picker-menu");
+    const rule = sendboxCss.slice(ruleStart, sendboxCss.indexOf('}', ruleStart));
+    expect(rule.includes('padding-top: 12px')).toBe(true);
+  });
 });

@@ -858,6 +858,22 @@
   max-width: calc(100vw - 24px);
 }
 
+/* Viewport top safety gap for upward-opening popups. Arco's autoFit clamps a
+ * top-blocked popup flush to the window edge (`style.top = boundary.top`,
+ * which is 0 with a body container), and `boundaryDistance` only shrinks the
+ * viewport height used by the flip decision — it cannot offset that clamp
+ * (`getBoundingClientRect` ignores it entirely for 'bl'/'br' positions). The
+ * popup wrapper carries `trigger-placement` with the post-flip position, and
+ * Arco measures this outer frame, so padding here is transparent headroom:
+ * normal upward opens keep the exact card position and 8px trigger gap (the
+ * measured height simply lifts style.top by the same 12px), and only the
+ * edge-clamped case materializes the gap below the window's top edge. */
+[trigger-placement='top'] > .chat-model-picker-menu,
+[trigger-placement='tl'] > .chat-model-picker-menu,
+[trigger-placement='tr'] > .chat-model-picker-menu {
+  padding-top: 12px;
+}
+
 .chat-model-picker-menu-list {
   min-height: 0;
   overflow-x: hidden !important;
