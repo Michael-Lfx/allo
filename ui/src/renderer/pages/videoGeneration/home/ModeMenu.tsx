@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Broadcast, Platte, RobotOne, VideoOne } from '@icon-park/react';
 import { CanvasMenuRow } from '@oc/components/canvas/canvas-overlay';
+import styles from './home.module.css';
 import type { VideoHomeMode } from './types';
 
 export interface ModeMenuProps {
@@ -14,40 +15,30 @@ const MODES: Array<{
   icon: ReactNode;
   labelKey: string;
   labelFallback: string;
-  descKey: string;
-  descFallback: string;
 }> = [
   {
     id: 'generate',
     icon: <VideoOne theme='outline' size={14} />,
     labelKey: 'videoGeneration.mode.generateLabel',
     labelFallback: '即刻出片',
-    descKey: 'videoGeneration.mode.generateMenuDesc',
-    descFallback: '参考图 + 提示词，直接生成视频片段',
   },
   {
     id: 'agent',
     icon: <RobotOne theme='outline' size={14} />,
     labelKey: 'videoGeneration.mode.agentLabel',
     labelFallback: '短剧工坊',
-    descKey: 'videoGeneration.mode.agentMenuDesc',
-    descFallback: '自动规划分镜并渲染成片',
   },
   {
     id: 'creation',
     icon: <Platte theme='outline' size={14} />,
     labelKey: 'videoGeneration.mode.creationLabel',
     labelFallback: '无限画布',
-    descKey: 'videoGeneration.mode.creationMenuDesc',
-    descFallback: '描述故事，上传角色或场景，进入分镜与画布',
   },
   {
     id: 'briefing',
     icon: <Broadcast theme='outline' size={14} />,
     labelKey: 'videoGeneration.mode.briefingLabel',
     labelFallback: '资讯口播',
-    descKey: 'videoGeneration.mode.briefingMenuDesc',
-    descFallback: '可溯源调研 + 口播成片，不发明今日新闻',
   },
 ];
 
@@ -56,13 +47,16 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   const { t } = useTranslation();
 
   return (
-    <div role='listbox' aria-label={t('videoGeneration.create.modesMenuAria', { defaultValue: '选择 Mode' })}>
+    <div
+      role='listbox'
+      className={styles.modeMenu}
+      aria-label={t('videoGeneration.create.modesMenuAria', { defaultValue: '选择 Mode' })}
+    >
       {MODES.map((item) => (
         <CanvasMenuRow
           key={item.id}
           icon={item.icon}
           label={t(item.labelKey, { defaultValue: item.labelFallback })}
-          detail={t(item.descKey, { defaultValue: item.descFallback })}
           active={mode === item.id}
           onClick={() => onSelect(item.id)}
         />

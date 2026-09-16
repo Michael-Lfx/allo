@@ -691,7 +691,7 @@ async fn execute_single_without_deadline(
             // a separate process.
             let execution_context =
                 ToolExecutionContext::from_scoped_tool_call(execution_scope, id);
-            let r = match AssertUnwindSafe(
+            let mut r = match AssertUnwindSafe(
                 tool.execute_with_context(input.clone(), &execution_context),
             )
             .catch_unwind()
@@ -717,7 +717,12 @@ async fn execute_single_without_deadline(
             } else {
                 tool.context_modifier_for(input)
             };
-            let content = truncate_result(&r.content, max_size, hooks.map(|h| h.cwd()));
+            // Scrub secrets BEFORE truncation: an oversized result is persisted
+            // to a content_ref file on disk, so redacting only after would let
+            // secret-bearing output hit disk first. Idempotent with the final
+            // defense-in-depth pass below.
+            let raw = nomi_redact::redact_secrets_owned(std::mem::take(&mut r.content));
+            let content = truncate_result(&raw, max_size, hooks.map(|h| h.cwd()));
             let content = nomi_compact::compact_output(&content, compaction_level);
             let content = if toon_enabled {
                 nomi_compact::compact_output_toon(&content)
@@ -1430,6 +1435,46 @@ mod tests {
         assert!(result.contains("[content_ref"));
         assert!(result.contains("ReadContentRef"));
         assert!(result.contains("truncated"));
+    }
+
+    /// N3: redaction must happen BEFORE the content_ref file is written, so a
+    /// secret in an oversized output never reaches disk in plaintext.
+    #[test]
+    fn redaction_precedes_content_ref_persistence() {
+        // `sk-` + >=20 alphanumerics matches the redactor's key pattern.
+        let secret = "sk-antapi0300000000000000000000000000000000000000";
+        let mut body = "padding-".repeat(600);
+        body.push_str(secret);
+        body.push_str(&"-padding".repeat(600));
+
+        // Simulate the execution path: scrub first, then truncate.
+        let scrubbed = nomi_redact::redact_secrets_owned(body.clone());
+        let result = truncate_result(&scrubbed, 200, None);
+
+        // The locator is still emitted so the model can page the output.
+        assert!(result.contains("[content_ref"));
+        // And the secret never made it into the persisted artifact.
+        let id = nomi_tools::content_ref::content_id(&scrubbed);
+        let path = std::env::temp_dir()
+            .join("nomi-content-refs")
+            .join(&id);
+        if path.exists() {
+            let on_disk = std::fs::read_to_string(&path).expect("read content_ref");
+            assert!(
+                !on_disk.contains(secret),
+                "secret must not be persisted in plaintext"
+            );
+        }
+        // Redaction actually transformed the payload.
+        assert!(!scrubbed.contains(secret));
+    }
+
+    #[test]
+    fn redaction_leaves_normal_output_intact() {
+        let body = "ls -la\n".repeat(200);
+        let scrubbed = nomi_redact::redact_secrets_owned(body.clone());
+        // Non-secret content passes through unchanged.
+        assert_eq!(scrubbed, body);
     }
 
     #[test]

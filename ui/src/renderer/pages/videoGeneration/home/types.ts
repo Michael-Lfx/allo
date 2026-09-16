@@ -121,7 +121,6 @@ export interface VideoCreateDraft {
 export interface AgentModeDefinition {
   id: VimaxWorkflow;
   label: string;
-  description: string;
 }
 
 /** @deprecated Use AgentModeDefinition — kept for transitional imports. */

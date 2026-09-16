@@ -126,6 +126,14 @@ fn inline_whitespace_regex() -> &'static Regex {
 // extract_shell_matches
 // ---------------------------------------------------------------------------
 
+/// Whether the content contains embedded shell commands (```! blocks or
+/// !`inline`). Used by the permission chain: a skill whose body can execute
+/// shell must not be treated as safe-by-properties even with an empty
+/// frontmatter, since those commands run with no per-command approval.
+pub fn has_embedded_shell_commands(content: &str) -> bool {
+    !extract_shell_matches(content).is_empty()
+}
+
 /// Extract all shell command matches from content, ordered by start position.
 fn extract_shell_matches(content: &str) -> Vec<ShellMatch> {
     let mut matches: Vec<ShellMatch> = Vec::new();

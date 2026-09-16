@@ -171,7 +171,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setActionCharacter,
     setActionVideo,
     removeCanvasReference,
-    updateCanvasReference,
     removeCameo,
   } = useHomeUpload({
     draft,
@@ -802,7 +801,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             setDocumentName={setDocumentName}
             canvasReferences={draft.canvasReferences}
             removeCanvasReference={removeCanvasReference}
-            updateCanvasReference={updateCanvasReference}
             cameos={draft.cameos}
             removeCameo={removeCameo}
             selectedVerticalSkills={selectedVerticalSkills}
@@ -844,7 +842,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 }
                 setModeMenuOpen(open);
               }}
-              width={260}
+              width={188}
+              estimatedHeight={160}
               trigger={
                 <CanvasChromeButton
                   expanded={modeMenuOpen}
@@ -925,7 +924,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 }
                 setSlashMenuOpen(open);
               }}
-              width={280}
+              width={188}
+              estimatedHeight={140}
               trigger={
                 <CanvasChromeButton
                   expanded={slashMenuOpen}

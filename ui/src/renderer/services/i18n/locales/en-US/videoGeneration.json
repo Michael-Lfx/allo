@@ -9,13 +9,9 @@
     "creationLabel": "Infinite canvas",
     "agentHint": "Drama studio: plan storyboards from a prompt and render a film.",
     "canvasHint": "Canvas mode (dev): node-based canvas for precise generation control.",
-    "generateMenuDesc": "Reference image + prompt to generate a video clip",
-    "agentMenuDesc": "Auto-plan storyboards and render a film",
     "actionLabel": "Motion match",
     "actionMenuDesc": "Character still + reference video to imitate motion",
-    "creationMenuDesc": "Describe the story, upload characters or scenes, then storyboard",
-    "briefingLabel": "Spoken briefing",
-    "briefingMenuDesc": "Cited research plus a spoken briefing. Never invent today's news"
+    "briefingLabel": "Spoken briefing"
   },
   "nav": {
     "entry": "Video Generation",
@@ -243,9 +239,6 @@
       "script": "Full script",
       "novel": "Novel text",
       "action": "Action imitation",
-      "ideaDesc": "Expand one spark into a complete film",
-      "scriptDesc": "Break the plot into editable shots",
-      "novelDesc": "Extract the storyline and design shots",
       "actionDesc": "Character still + reference video, imitate the motion"
     },
     "skills": {
