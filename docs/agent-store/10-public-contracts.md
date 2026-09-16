@@ -196,6 +196,21 @@ mcp_write_failed          # 读写声明文件失败（IO / 权限）
 的 `message` 必须带解析器自己的行列号，且**磁盘零变化**——「切换成功但文件没变」是最坏的
 答复，`mcp_server_rejected` / `mcp_source_not_surgically_editable` 就是为它单列的。
 
+读面配额与调用代理专有（`skill/*` 2026-09-20；`connector/*` 2026-09-21 加入）：
+
+```text
+response_too_large        # 读到的内容超出该面的响应上限（技能文件 2 MiB / 工具结果 1 MiB）
+connector_call_timeout    # 连接器在预算内没有应答（可重试）
+connector_call_failed     # 调用在到达工具之前就失败了：传输 / 协议 / 服务端（可重试）
+```
+
+`response_too_large` 的语义（`05` §4.3.1 / §4.3.2）：**先判后读、拒绝而不截断**。截断过的
+内容会被调用方当成完整内容去用（例如按清单里的 digest 校验一个被截短的正文），那比明确拒绝
+危险得多。`connector_call_failed` 与工具级失败**不是一回事**：上游 `isError: true` 是**成功
+的调用**，走结果对象里的 `is_error` 字段，不产生错误码——把两者混为一谈会让调用方分不清
+「工具说不行」和「根本没够着工具」。
+
+
 `import_source_not_found`：`import/run` 的本地来源目录不存在或不可读（HTTP 404，对应 `NotFound`）；`import_blocked` / `import_failed`：快照因路径安全、清单身份缺失或 digest 冲突而阻断，或导入器内部失败。阻断原因以结构化 `ImportResult.errors` 返回，错误文本只含清单相对值与原因码，**不得包含绝对来源路径或凭据**（02 §9）。
 
 错误响应不得包含真实凭据、内部路径、内部 ID 或未脱敏的上游响应。

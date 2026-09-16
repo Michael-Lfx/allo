@@ -7,13 +7,30 @@
 
 /**
  * A contract **fingerprint**, not a version number: it must differ from the
- * previous value on any wire change at all, additive included. `2026-09-16`
- * carried `StoreItem.published_at`; `2026-09-17` added the two MCP declaration
- * write methods (`config/set-mcp`, `config/set-mcp-enabled`); `2026-09-18` adds
- * `config/get-mcp`, the file editor's read of the same file; `2026-09-19` adds
- * the `conversation/list-changed` notification.
+ * previous value on any wire change at all, additive included. The shape is
+ * `fp-<n>` — a plain counter, so a bump just increments it and no value is ever
+ * reused by accident.
+ *
+ * So it is a **label, not a version**: neither a release number nor a date.
+ * Until `fp-1` the values were date stamps (kept below as history), and those
+ * dates were **not** the day of the change: consecutive changes advanced the
+ * stamp a day each, so they ran ahead of the calendar. The list below is keyed
+ * by *value* — read it as "which wire change is this?", never as "when did this
+ * ship".
+ *
+ * `2026-09-16` carried `StoreItem.published_at`; `2026-09-17` added the two MCP
+ * declaration write methods (`config/set-mcp`, `config/set-mcp-enabled`);
+ * `2026-09-18` adds `config/get-mcp`, the file editor's read of the same file;
+ * `2026-09-19` adds the `conversation/list-changed` notification; `2026-09-20`
+ * adds the Skill **file tree** read face (`skill/files`, `skill/file`) so a
+ * Skill's companion files are readable, not just its bounded manifest summary;
+ * `2026-09-21` adds the connector **call proxy** (`connector/call`), so a third
+ * party can run an installed MCP tool while the connection and its credentials
+ * stay on the host. **`fp-1` changes the shape only** (date stamp → counter): a
+ * `2026-…` value invites being read as a release date, and no wire behaviour
+ * changed with the rename.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "2026-09-19";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-1";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -121,7 +138,25 @@ export interface Capabilities {
   teams: boolean;
   team_runtime: boolean;
   skills: boolean;
+  /**
+   * The Skill **file tree** read face (`skill/files` / `skill/file`).
+   *
+   * Separate from `skills` on purpose: a host can wire the catalog without the
+   * file provider, so `skills: true` alone does not mean `skill/files` will
+   * answer. Check this before offering file access.
+   */
+  skill_files: boolean;
   connectors: boolean;
+  /**
+   * The connector **call proxy** (`connector/call`, doc 24 §5).
+   *
+   * Separate from `connectors` on purpose: the catalog can be wired without the
+   * proxy, and — more importantly — a host may wire the proxy while its
+   * `[connector_proxy]` allowlist is empty, in which case every call answers
+   * `policy_denied`. This flag says the *method* exists, not that any tool is
+   * callable; only the host operator can make a pair callable.
+   */
+  connector_calls: boolean;
   run_notifications: boolean;
   approvals: boolean;
   artifacts: boolean;
@@ -577,6 +612,54 @@ export interface SkillDetail extends SkillSummary {
   instructions_summary?: string | null;
 }
 
+/**
+ * One file inside a Skill directory (`skill/files`, doc 24 §4).
+ *
+ * A Skill is a *directory*, not a single document: `SKILL.md` plus whatever it
+ * ships alongside (`references/`, `scripts/`, `templates/`, `assets/`).
+ * `SkillDetail.instructions_summary` is a bounded summary of the manifest, so
+ * this is the read face for everything else.
+ */
+export interface SkillFile {
+  /** Path relative to the skill directory, POSIX-separated. */
+  path: string;
+  size: number;
+  /** Single-file sha256, lowercase hex. */
+  digest: string;
+}
+
+/** `skill/files` response: the readable inventory of one Skill. */
+export interface SkillFileList {
+  skill_id: string;
+  /** Sorted by `path`; directories are not listed. */
+  files: SkillFile[];
+  /**
+   * Tree digest of **this skill directory** (sorted relative paths + per-file
+   * sha256).
+   *
+   * Deliberately **not** the snapshot's `content_digest`, which covers the
+   * whole imported source tree — the two coincide only when the snapshot holds
+   * exactly this directory. Do not compare it against `import/get`.
+   */
+  content_digest: string;
+  /** The inventory hit its ceiling and is incomplete. Never silently truncated. */
+  truncated: boolean;
+}
+
+/**
+ * `skill/file` over the WebSocket binding: base64, because JSON has no byte
+ * string. The HTTP binding returns the raw body with a `content-type` header
+ * instead, so prefer `skills.readFile()` (HTTP) for bytes and this shape only
+ * when you are already on a socket.
+ */
+export interface SkillFileContent {
+  skill_id: string;
+  path: string;
+  content_type: string;
+  encoding: "base64";
+  content: string;
+}
+
 // ---------------------------------------------------------------------------
 // Host-management faces (docs/agent-store/16 R16 / R17, 05 §4.11)
 // ---------------------------------------------------------------------------
@@ -822,6 +905,29 @@ export interface OAuthStartResult {
   connector_id: string;
   state: "started" | "error" | string;
   error?: string | null;
+}
+
+/**
+ * `connector/call` (doc 24 §5.2): the result of running one MCP tool on the
+ * host's connection.
+ *
+ * **A tool-level failure is a result, not a rejection.** When the server
+ * answers `isError: true` the promise still resolves, with `is_error` set; only
+ * transport, protocol and budget failures reject. Branch on `is_error` to tell
+ * "the tool said no" from "we never reached the tool".
+ */
+export interface ConnectorCallResult {
+  /** The upstream `isError` flag (`false` when the server omitted it). */
+  is_error: boolean;
+  /**
+   * The upstream `tools/call` result object, **verbatim** — `content`,
+   * `structuredContent` and anything a newer server adds all survive.
+   *
+   * It carries no transport, header or env value: the connection and its
+   * credentials stay on the host. That is the whole point of a proxy — there is
+   * deliberately no `connector/export`.
+   */
+  result: unknown;
 }
 
 export interface ConnectorQueryParams {

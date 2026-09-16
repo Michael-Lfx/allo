@@ -1055,6 +1055,14 @@ pub fn create_router_with_all_state(
                 )
                 .with_assets(app_server_entry_assets.clone()),
             )),
+            // Skill file tree read face (`skill/files` / `skill/file`, doc 24 §4).
+            // Same `SkillPaths` as the catalog so an id the catalog publishes
+            // always resolves here; the id space intentionally cannot drift.
+            skill_files: Some(Arc::new(
+                crate::app_server_skill_files::AppServerSkillFiles::new(
+                    states.skill.skill_paths.clone(),
+                ),
+            )),
             // Skill write face (`skill/create|update|delete`, `16` R17 / W12).
             // Same `SkillPaths` as the read catalog, so the id the write face
             // resolves and the id `skill/get` serves can never disagree.
@@ -1073,6 +1081,17 @@ pub fn create_router_with_all_state(
                 crate::app_server_catalog::AppServerConnectorAuth::new(
                     states.mcp.config_service.clone(),
                     states.mcp.oauth_service.clone(),
+                ),
+            )),
+            // Connector call proxy (`connector/call`, doc 24 §5). Wired
+            // unconditionally, but the provider's first gate is the host's
+            // `[connector_proxy]` policy — an opted-out host refuses every call
+            // without touching the database, so "wired" never means "callable".
+            connector_calls: Some(Arc::new(
+                crate::app_server_connector_call::AppServerConnectorCall::new(
+                    states.mcp.config_service.clone(),
+                    states.mcp.connection_test_service.clone(),
+                    services.connector_proxy_policy.clone(),
                 ),
             )),
             // Agent Store Importer / PluginSnapshot catalog (roadmap Phase 1).

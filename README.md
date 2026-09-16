@@ -527,6 +527,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run check:agent-vocabulary` | Enforce AgentExecution as the only active collaboration aggregate and permit only exact migration fences. |
 | `bun run check:codemirror-runtime` | Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package. |
 | `bun run check:market` | Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject. |
+| `bun run check:fingerprint` | Verify the App Server protocol fingerprint is identical at every landing point, here and in the docs site. |
 | `bun run check:ux-baseline` | 校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线） |
 | `bun run check:button-layout` | 使用 Windows Edge 矩阵验证 Arco 与 Icon Park 按钮的横向布局和对齐契约 |
 | `bun run check:error-surface` | 使用 Windows Edge 矩阵验证错误诊断摘要、详情展开、复制入口和窄屏溢出 |

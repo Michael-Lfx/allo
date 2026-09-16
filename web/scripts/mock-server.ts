@@ -17,7 +17,7 @@ import type { ServerWebSocket } from "bun";
 import { decodeHistoryCursor } from "../src/lib/history-cursor";
 
 const PORT = Number(process.argv[2] ?? 17860);
-const PROTOCOL_VERSION = "2026-09-19";
+const PROTOCOL_VERSION = "fp-1";
 const AGENT_ID = "0190f5fe-7c00-7a00-8000-000000000004";
 
 interface MockRun {
@@ -113,7 +113,12 @@ function capabilities() {
     teams: false,
     team_runtime: false,
     skills: true,
+    // Both false, honestly: this mock implements neither the Skill file tree
+    // nor the connector call proxy, and a capability flag that claims otherwise
+    // would send a caller at a method that does not exist here.
+    skill_files: false,
     connectors: true,
+    connector_calls: false,
     run_notifications: true,
     approvals: false,
     artifacts: false,

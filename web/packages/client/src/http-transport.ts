@@ -40,7 +40,7 @@ import type { Transport, NotificationListener } from "./transport";
 const CONNECTION_HEADER = "x-app-server-connection-id";
 
 /** Protocol version this binding announces on the one-shot handshake. */
-const PROTOCOL_VERSION = "2026-09-19";
+const PROTOCOL_VERSION = "fp-1";
 
 type Verb = "GET" | "POST" | "DELETE";
 
@@ -175,6 +175,16 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
   // -- catalogs -------------------------------------------------------------
   "skill/list": { verb: "GET", path: "/skills", source: "list_skills_route() -> list_skills_impl" },
   "skill/get": { verb: "GET", path: "/skills/:skill_id", source: "get_skill_route() -> get_skill_impl" },
+  // The skill *file tree* inventory (doc 24 §4). JSON, so it rides the normal
+  // binding. Its sibling `skill/file` deliberately does NOT appear in this
+  // table: that route answers with raw bytes plus a `content-type`, which is
+  // not a JSON request/response and so is not something this transport
+  // models — see DOCUMENTED_UNMAPPED in `http-transport.test.ts`.
+  "skill/files": {
+    verb: "GET",
+    path: "/skills/:skill_id/files",
+    source: "list_skill_files_route() -> list_skill_files_impl",
+  },
   "connector/list": {
     verb: "GET",
     path: "/connectors",
@@ -195,6 +205,13 @@ const HTTP_ROUTES: Record<string, HttpRoute> = {
     verb: "POST",
     path: "/connectors/:connector_id/test",
     source: "connector_test_route() -> connector_test_impl",
+  },
+  // The connector call proxy (doc 24 §5). JSON in, JSON out, so it rides the
+  // normal binding like every other connector method.
+  "connector/call": {
+    verb: "POST",
+    path: "/connectors/:connector_id/call",
+    source: "connector_call_route() -> connector_call_impl",
   },
   "connector/auth/start": {
     verb: "POST",

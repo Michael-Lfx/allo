@@ -187,6 +187,10 @@ path = "tests/vimax_cameo_e2e.rs"
 name = "importer_e2e"
 path = "tests/importer_e2e.rs"
 
+[[test]]
+name = "skill_files_e2e"
+path = "tests/skill_files_e2e.rs"
+
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot", "bedrock", "silero-vad"]
 telegram = ["nomifun-channel/telegram"]

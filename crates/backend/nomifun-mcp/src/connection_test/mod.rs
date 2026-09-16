@@ -1,4 +1,8 @@
+mod pool;
 mod protocol;
+mod session;
+
+pub use pool::McpToolCallPool;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -17,16 +21,60 @@ use crate::oauth_service::McpOAuthService;
 use crate::error::McpError;
 use protocol::{
     JsonRpcRequest, JsonRpcResponse, SseEvent, build_http_headers, build_initialize_request,
-    build_initialized_notification, build_tools_list_request, error_result, read_sse_events, rpc_error_result,
-    run_stdio_protocol, spawn_error_result, success_result, timeout_result, wait_for_endpoint,
-    wait_for_jsonrpc_response,
+    build_initialized_notification, build_tools_call_request, build_tools_list_request, error_result,
+    read_sse_events, rpc_error_result, run_stdio_protocol, spawn_error_result, success_result,
+    timeout_result, tool_call_reply, wait_for_endpoint, wait_for_jsonrpc_response,
 };
+use session::{StdioCallError, StdioIdentity, StdioToolSession};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+// ---------------------------------------------------------------------------
+// Tool calling (the connector call proxy's execution seam)
+// ---------------------------------------------------------------------------
+
+/// The upstream reply to one MCP tool call.
+///
+/// `result` is the server's own result object, verbatim (`content`,
+/// `structuredContent`, …). This layer lifts exactly one field out of it —
+/// [`Self::is_error`] — because a tool-level failure is something the caller
+/// **branches on**, whereas a transport failure is something it catches. Those
+/// two must never collapse into one another.
+#[derive(Debug, Clone)]
+pub struct McpToolCallOutcome {
+    /// The upstream `isError` flag (`false` when the server omitted it).
+    pub is_error: bool,
+    /// The upstream result object, unmodified.
+    pub result: serde_json::Value,
+}
+
+/// Why one MCP tool call produced no result.
+///
+/// Carries no credential: the messages come from the same transport layer as
+/// the probe's, which reports response-side facts (status, WWW-Authenticate
+/// presence, protocol errors) and never request headers or env values.
+#[derive(Debug)]
+pub enum McpToolCallError {
+    /// The call did not finish inside the budget.
+    Timeout(Duration),
+    /// Transport, protocol, or server failure. Human-readable, never parsed.
+    Failed(String),
+}
+
+impl std::fmt::Display for McpToolCallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout(budget) => {
+                write!(formatter, "MCP tool call timed out after {}s", budget.as_secs())
+            }
+            Self::Failed(message) => write!(formatter, "{message}"),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // McpConnectionTestService
@@ -92,6 +140,299 @@ impl McpConnectionTestService {
             McpServerTransport::Http { url, headers } => self.test_http(url, headers).await,
             McpServerTransport::Sse { url, headers } => self.test_sse(url, headers).await,
         }
+    }
+
+    // -- Tool calling -----------------------------------------------------
+
+    /// Call one tool on a configured MCP server and return its raw result.
+    ///
+    /// **This opens a session and closes it again — one call, one connection.**
+    /// The service is the stateless transport seam; caching a connection is a
+    /// separate concern with its own lifetime rules, and lives in
+    /// [`McpToolCallPool`], which wraps this method. Reusing the agent engine's
+    /// `McpManager` here instead would import a Nomi session's lifetime into a
+    /// surface that has no session at all.
+    ///
+    /// Transport and credential handling are the probe's, not a copy of it:
+    /// `secret:` env resolution, OAuth bearer injection with the 401-refresh
+    /// retry, and process-tree cleanup all come from the same code the
+    /// connection test uses.
+    pub async fn call_tool(
+        &self,
+        transport: &McpServerTransport,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallOutcome, McpToolCallError> {
+        let budget = self.timeout;
+        match tokio::time::timeout(budget, self.call_tool_inner(transport, tool, arguments)).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(McpToolCallError::Timeout(budget)),
+        }
+    }
+
+    async fn call_tool_inner(
+        &self,
+        transport: &McpServerTransport,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallOutcome, McpToolCallError> {
+        match transport {
+            McpServerTransport::Stdio { command, args, env } => {
+                self.call_stdio(command, args, env, tool, arguments).await
+            }
+            McpServerTransport::Http { url, headers } => {
+                self.call_http(url, headers, tool, arguments).await
+            }
+            // The legacy `sse` transport: handshake over a streamed GET plus
+            // POSTed JSON-RPC, exactly as the probe does it.
+            McpServerTransport::Sse { url, headers } => {
+                self.call_sse(url, headers, tool, arguments).await
+            }
+        }
+    }
+
+    async fn call_sse(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallOutcome, McpToolCallError> {
+        let client = self.http_client();
+        let (mut req_headers, oauth_managed) =
+            self.request_headers(url, headers).await.map_err(call_failure)?;
+
+        // 1. Open the stream, with the same one-shot 401 refresh the probe uses.
+        let mut refreshed = false;
+        let resp = loop {
+            let response = client
+                .get(url)
+                .headers(req_headers.clone())
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .send()
+                .await
+                .map_err(|error| {
+                    McpToolCallError::Failed(format!("SSE connection failed: {error}"))
+                })?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED && oauth_managed && !refreshed {
+                let Some(oauth_service) = self.oauth_service.as_ref() else {
+                    break response;
+                };
+                let token = oauth_service
+                    .refresh_access_token(url)
+                    .await
+                    .map_err(|error| McpToolCallError::Failed(error.to_string()))?;
+                req_headers.insert(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                        .expect("OAuth access token must be a valid header value"),
+                );
+                refreshed = true;
+                continue;
+            }
+            break response;
+        };
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(McpToolCallError::Failed(
+                "the SSE server requires authorization".to_owned(),
+            ));
+        }
+        if !resp.status().is_success() {
+            return Err(McpToolCallError::Failed(format!(
+                "HTTP {} from SSE server",
+                resp.status()
+            )));
+        }
+
+        // 2. Reader task, aborted on every exit path below.
+        let (event_tx, mut event_rx) = mpsc::channel::<SseEvent>(16);
+        let reader_handle = tokio::spawn(read_sse_events(resp, event_tx));
+        req_headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json".parse().expect("valid header"),
+        );
+
+        let result = self
+            .run_sse_tool_call(&client, url, &mut req_headers, oauth_managed, &mut event_rx, tool, &arguments)
+            .await;
+        reader_handle.abort();
+        result
+    }
+
+    /// `initialize → initialized → tools/call` over an already-open SSE stream.
+    ///
+    /// A sibling of `run_sse_protocol` for the same reason
+    /// [`run_stdio_tool_call`] is a sibling of `run_stdio_protocol`: the probe's
+    /// per-stage result details are its existing behaviour.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_sse_tool_call(
+        &self,
+        client: &reqwest::Client,
+        base_url: &str,
+        headers: &mut reqwest::header::HeaderMap,
+        oauth_managed: bool,
+        event_rx: &mut mpsc::Receiver<SseEvent>,
+        tool: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<McpToolCallOutcome, McpToolCallError> {
+        let endpoint = wait_for_endpoint(event_rx, base_url)
+            .await
+            .map_err(|error| McpToolCallError::Failed(format!("SSE endpoint: {error}")))?;
+
+        self.sse_post_with_auth(
+            client,
+            base_url,
+            &endpoint,
+            headers,
+            oauth_managed,
+            &build_initialize_request(1),
+            "initialize_send",
+        )
+        .await
+        .map_err(call_failure)?;
+        let init_resp = wait_for_jsonrpc_response(event_rx)
+            .await
+            .map_err(|error| McpToolCallError::Failed(format!("initialize response: {error}")))?;
+        if let Some(error) = init_resp.error {
+            return Err(McpToolCallError::Failed(format!(
+                "initialize rejected: {} (code {})",
+                error.message, error.code
+            )));
+        }
+
+        let _ = self
+            .sse_post_with_auth(
+                client,
+                base_url,
+                &endpoint,
+                headers,
+                oauth_managed,
+                &build_initialized_notification(),
+                "initialized_send",
+            )
+            .await;
+
+        self.sse_post_with_auth(
+            client,
+            base_url,
+            &endpoint,
+            headers,
+            oauth_managed,
+            &build_tools_call_request(2, tool, arguments),
+            "tools_call_send",
+        )
+        .await
+        .map_err(call_failure)?;
+        let call_resp = wait_for_jsonrpc_response(event_rx)
+            .await
+            .map_err(|error| McpToolCallError::Failed(format!("tools/call response: {error}")))?;
+        if let Some(error) = call_resp.error {
+            return Err(McpToolCallError::Failed(format!(
+                "tools/call rejected: {} (code {})",
+                error.message, error.code
+            )));
+        }
+
+        let reply = tool_call_reply(call_resp.result.unwrap_or(serde_json::Value::Null));
+        Ok(McpToolCallOutcome {
+            is_error: reply.is_error,
+            result: reply.result,
+        })
+    }
+
+    /// One stdio call on a session that is opened and closed around it.
+    ///
+    /// This is the non-pooled path: it is what the pool falls back to when it
+    /// cannot (or should not) keep a session, and it is the path the pool's
+    /// `AtCapacity` branch takes. Sharing [`StdioToolSession`] with the pool
+    /// means the handshake, the framing and the process cleanup cannot drift
+    /// between the two.
+    async fn call_stdio(
+        &self,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallOutcome, McpToolCallError> {
+        let identity = StdioIdentity::new(command, args, env);
+        let mut session = StdioToolSession::connect(identity)
+            .await
+            .map_err(McpToolCallError::Failed)?;
+        let reply = session.call(tool, &arguments).await;
+        // Always reaped, success or failure: a stdio MCP server is a child
+        // process, and leaving one behind per call would leak a process tree.
+        session.close().await;
+
+        let reply = reply.map_err(StdioCallError::into_message).map_err(McpToolCallError::Failed)?;
+        Ok(McpToolCallOutcome { is_error: reply.is_error, result: reply.result })
+    }
+
+    async fn call_http(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallOutcome, McpToolCallError> {
+        let client = self.http_client();
+        let (mut req_headers, oauth_managed) =
+            self.request_headers(url, headers).await.map_err(call_failure)?;
+        req_headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json".parse().expect("valid header"),
+        );
+        req_headers.insert(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream".parse().expect("valid header"),
+        );
+
+        let init_resp = self
+            .http_post_mcp_with_auth(&client, url, &mut req_headers, oauth_managed, &build_initialize_request(1))
+            .await
+            .map_err(call_failure)?;
+        if let Some(error) = init_resp.rpc.error {
+            return Err(McpToolCallError::Failed(format!(
+                "initialize rejected: {} (code {})",
+                error.message, error.code
+            )));
+        }
+        if let Some(session_id) = init_resp.session_id
+            && let Ok(value) = reqwest::header::HeaderValue::from_str(&session_id)
+        {
+            req_headers.insert("mcp-session-id", value);
+        }
+
+        // Fire-and-forget, exactly as the probe does.
+        let _ = client
+            .post(url)
+            .headers(req_headers.clone())
+            .json(&build_initialized_notification())
+            .send()
+            .await;
+
+        let call_resp = self
+            .http_post_mcp_with_auth(
+                &client,
+                url,
+                &mut req_headers,
+                oauth_managed,
+                &build_tools_call_request(2, tool, &arguments),
+            )
+            .await
+            .map_err(call_failure)?;
+        if let Some(error) = call_resp.rpc.error {
+            return Err(McpToolCallError::Failed(format!(
+                "tools/call rejected: {} (code {})",
+                error.message, error.code
+            )));
+        }
+
+        let reply = tool_call_reply(call_resp.rpc.result.unwrap_or(serde_json::Value::Null));
+        Ok(McpToolCallOutcome {
+            is_error: reply.is_error,
+            result: reply.result,
+        })
     }
 
     // -- Stdio transport --------------------------------------------------
@@ -610,7 +951,20 @@ impl McpConnectionTestService {
     }
 }
 
-fn resolve_stdio_command(command: &str) -> OsString {
+/// Collapse a probe-shaped failure into a call failure.
+///
+/// The transport layer reports failures as an `McpConnectionTestResult`; a call
+/// only needs the reason. Reusing that shape (rather than re-deriving one) is
+/// what keeps the two paths' error reporting from drifting apart.
+fn call_failure(result: McpConnectionTestResult) -> McpToolCallError {
+    McpToolCallError::Failed(
+        result
+            .error
+            .unwrap_or_else(|| "MCP transport failure with no message".to_owned()),
+    )
+}
+
+pub(super) fn resolve_stdio_command(command: &str) -> OsString {
     if !command.is_empty()
         && !command.contains('/')
         && !command.contains('\\')
@@ -647,6 +1001,217 @@ mod tests {
     fn service_with_timeout() {
         let svc = McpConnectionTestService::new(reqwest::Client::new()).with_timeout(Duration::from_secs(5));
         assert_eq!(svc.timeout, Duration::from_secs(5));
+    }
+
+    // ---- Tool calling ----------------------------------------------------
+
+    #[test]
+    fn tools_call_request_names_the_tool_and_passes_arguments_through() {
+        let request = super::protocol::build_tools_call_request(
+            2,
+            "create_issue",
+            &serde_json::json!({ "title": "t", "nested": { "n": 1 } }),
+        );
+        assert_eq!(request.method, "tools/call");
+        assert_eq!(request.id, "2");
+        let params = request.params.expect("tools/call always carries params");
+        assert_eq!(params["name"], "create_issue");
+        // Arguments are opaque: whatever the tool's schema says, this layer
+        // forwards it untouched.
+        assert_eq!(params["arguments"]["title"], "t");
+        assert_eq!(params["arguments"]["nested"]["n"], 1);
+    }
+
+    #[test]
+    fn tool_call_reply_lifts_is_error_and_keeps_the_rest_verbatim() {
+        let reply = super::protocol::tool_call_reply(
+            serde_json::json!({ "content": [], "isError": true, "structuredContent": { "k": 1 } }),
+        );
+        assert!(reply.is_error);
+        assert_eq!(reply.result["structuredContent"]["k"], 1, "the result is not reshaped");
+
+        // Omitting `isError` means "not an error" (the MCP default).
+        assert!(!super::protocol::tool_call_reply(serde_json::json!({ "content": [] })).is_error);
+        // A server that returns nothing must not panic the lift.
+        assert!(!super::protocol::tool_call_reply(serde_json::Value::Null).is_error);
+    }
+
+    /// Behaviour the fake MCP server should exhibit for `tools/call`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FakeMcp {
+        Ok,
+        ToolError,
+        RpcError,
+        Slow,
+    }
+
+    /// Spawn a fake Streamable-HTTP MCP server and return its endpoint.
+    async fn spawn_fake_mcp(behaviour: FakeMcp) -> String {
+        use axum::response::IntoResponse;
+
+        async fn handler(
+            axum::extract::State(behaviour): axum::extract::State<FakeMcp>,
+            axum::Json(body): axum::Json<serde_json::Value>,
+        ) -> axum::response::Response {
+            let id = body.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or_default();
+            match method {
+                "initialize" => axum::Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "serverInfo": { "name": "fake-mcp", "version": "1" }
+                    }
+                }))
+                .into_response(),
+                "notifications/initialized" => axum::http::StatusCode::ACCEPTED.into_response(),
+                "tools/call" => match behaviour {
+                    FakeMcp::Ok => axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": "pong" }],
+                            "isError": false,
+                            "structuredContent": { "echo": 42 }
+                        }
+                    }))
+                    .into_response(),
+                    FakeMcp::ToolError => axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": "boom" }],
+                            "isError": true
+                        }
+                    }))
+                    .into_response(),
+                    FakeMcp::RpcError => axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": "bad arguments" }
+                    }))
+                    .into_response(),
+                    FakeMcp::Slow => {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {} }))
+                            .into_response()
+                    }
+                },
+                other => axum::Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32601, "message": format!("unexpected method {other}") }
+                }))
+                .into_response(),
+            }
+        }
+
+        let app = axum::Router::new()
+            .route("/mcp", axum::routing::post(handler))
+            .with_state(behaviour);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+        let address = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{address}/mcp")
+    }
+
+    /// `no_proxy()` on purpose: this host runs a system HTTP proxy, and a
+    /// loopback test must never be routed through it.
+    fn test_service() -> McpConnectionTestService {
+        let client = reqwest::Client::builder().no_proxy().build().expect("test client");
+        McpConnectionTestService::new(client)
+    }
+
+    fn http_transport(url: &str) -> McpServerTransport {
+        McpServerTransport::Http { url: url.to_owned(), headers: HashMap::new() }
+    }
+
+    #[tokio::test]
+    async fn http_tool_call_returns_the_upstream_result_verbatim() {
+        let url = spawn_fake_mcp(FakeMcp::Ok).await;
+        let outcome = test_service()
+            .call_tool(&http_transport(&url), "echo", serde_json::json!({ "n": 1 }))
+            .await
+            .expect("the call succeeds");
+
+        assert!(!outcome.is_error);
+        assert_eq!(outcome.result["content"][0]["text"], "pong");
+        // Not just `content`: a field this layer knows nothing about survives,
+        // which is the difference between proxying and reinterpreting.
+        assert_eq!(outcome.result["structuredContent"]["echo"], 42);
+    }
+
+    #[tokio::test]
+    async fn http_tool_level_failure_is_a_result_not_a_transport_error() {
+        let url = spawn_fake_mcp(FakeMcp::ToolError).await;
+        let outcome = test_service()
+            .call_tool(&http_transport(&url), "echo", serde_json::json!({}))
+            .await
+            .expect("a tool-level failure is still a completed call");
+
+        assert!(outcome.is_error, "`isError` must be lifted, never swallowed");
+        assert_eq!(outcome.result["content"][0]["text"], "boom");
+    }
+
+    #[tokio::test]
+    async fn http_jsonrpc_error_becomes_a_failed_call() {
+        let url = spawn_fake_mcp(FakeMcp::RpcError).await;
+        let error = test_service()
+            .call_tool(&http_transport(&url), "echo", serde_json::json!({}))
+            .await
+            .expect_err("a JSON-RPC error is a call failure");
+
+        match error {
+            McpToolCallError::Failed(message) => {
+                assert!(message.contains("tools/call rejected"), "got {message}");
+                assert!(message.contains("bad arguments"), "got {message}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_tool_call_hits_its_budget() {
+        let url = spawn_fake_mcp(FakeMcp::Slow).await;
+        let service = test_service().with_timeout(Duration::from_millis(200));
+        let error = service
+            .call_tool(&http_transport(&url), "echo", serde_json::json!({}))
+            .await
+            .expect_err("a hung server must hit the budget");
+
+        assert!(matches!(error, McpToolCallError::Timeout(_)), "got {error:?}");
+    }
+
+    #[tokio::test]
+    async fn sse_calls_reach_the_transport_rather_than_being_refused() {
+        // SSE is supported for calls (see the fixture tests in
+        // `tests/connection_test_integration.rs`). This only pins that the
+        // dispatch does not refuse it up front: an unreachable endpoint must
+        // fail as a *connection* failure, which is a different thing from a
+        // transport that this layer declines to speak.
+        let error = test_service()
+            .call_tool(
+                &McpServerTransport::Sse {
+                    url: "http://127.0.0.1:1/sse".to_owned(),
+                    headers: HashMap::new(),
+                },
+                "echo",
+                serde_json::json!({}),
+            )
+            .await
+            .expect_err("an unreachable SSE endpoint cannot succeed");
+
+        match error {
+            McpToolCallError::Failed(message) => assert!(
+                !message.contains("not supported"),
+                "SSE must not be refused by name any more: {message}"
+            ),
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 
     #[cfg(unix)]

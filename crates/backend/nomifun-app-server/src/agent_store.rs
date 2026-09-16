@@ -100,6 +100,26 @@ pub struct AgentStoreConfig {
     /// and the runtime shape cannot drift apart.
     #[serde(default)]
     pub tools: Option<NomiToolPolicy>,
+    /// `[connector_proxy]` — which MCP tools this host will **call on a third
+    /// party's behalf** (doc `24` §5).
+    ///
+    /// ```toml
+    /// [connector_proxy]
+    /// enabled = true
+    /// allow = ["github__create_issue", "docs__search"]   # "<name>__<tool>" or "<id>__<tool>"
+    /// ```
+    ///
+    /// **Fail-closed, and deliberately opt-in.** An absent table, an absent
+    /// `enabled`, or an empty `allow` all mean *no tool may be called*: MCP
+    /// tools carry no danger annotation of their own, so there is nothing to
+    /// infer a default from. The only way a tool becomes callable is for the
+    /// host's own operator to write it down.
+    ///
+    /// Like `[tools]`, **only the `agent-store` host adopts this**; the desktop
+    /// and web hosts read the same file for providers/marketplaces and never
+    /// expose a call proxy.
+    #[serde(default)]
+    pub connector_proxy: Option<AgentStoreConnectorProxy>,
     /// `[credentials]` — values for `secret:NAME` references (`17` §6 / `21`
     /// D5=C).
     ///
@@ -117,6 +137,101 @@ pub struct AgentStoreConfig {
     /// that in-memory map, and the values are never persisted.
     #[serde(default)]
     pub credentials: HashMap<String, String>,
+}
+
+/// `[connector_proxy]` in `~/.agent-store/config.toml` (doc `24` §5.1).
+///
+/// Hand-edited, and **not** on the `config/set` whitelist: this table decides
+/// what a third party is allowed to execute through this host, which is not a
+/// setting a remote caller should be able to widen. Kept out of `config/get`'s
+/// projection for the same reason `[credentials]` is.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentStoreConnectorProxy {
+    /// Absent or `false` = the call proxy is off entirely.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Entries of the form `<connector>__<tool>`, where `<connector>` is either
+    /// the connector's registered **name** (what `connector/list` shows) or its
+    /// **id** (the unambiguous spelling).
+    ///
+    /// No wildcards: an allowlist that can be widened by a typo is not an
+    /// allowlist. Absent or empty = nothing callable.
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
+}
+
+/// The `[connector_proxy]` table, resolved into the form the call gate uses.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConnectorProxyPolicy {
+    enabled: bool,
+    allow: std::collections::HashSet<String>,
+}
+
+impl ConnectorProxyPolicy {
+    /// The fail-closed default: no tool may be called.
+    pub fn deny_all() -> Self {
+        Self::default()
+    }
+
+    /// Build from the declared table.
+    pub fn from_declared(declared: &AgentStoreConnectorProxy) -> Self {
+        Self {
+            enabled: declared.enabled.unwrap_or(false),
+            allow: declared
+                .allow
+                .as_ref()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(|entry| entry.trim().to_owned())
+                        .filter(|entry| !entry.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// May `tool` be called on this connector?
+    ///
+    /// `Ok(())` only for an explicitly allowlisted pair. The connector may be
+    /// named by **id** (precise) or by **name** (convenient) — id is offered
+    /// because Agent Store upserts MCP servers *by name*, so a later install
+    /// can legitimately take over a name and would otherwise inherit its
+    /// permission.
+    pub fn decide(&self, connector_id: &str, connector_name: &str, tool: &str) -> Result<(), String> {
+        if !self.enabled {
+            return Err(
+                "the connector call proxy is disabled on this host; set [connector_proxy] enabled = true"
+                    .to_owned(),
+            );
+        }
+        let by_id = format!("{connector_id}__{tool}");
+        let by_name = format!("{connector_name}__{tool}");
+        if self.allow.contains(&by_id) || self.allow.contains(&by_name) {
+            return Ok(());
+        }
+        Err(format!(
+            "tool `{tool}` on connector `{connector_name}` is not in [connector_proxy].allow"
+        ))
+    }
+}
+
+impl AgentStoreConfig {
+    /// The `[connector_proxy]` policy, defaults filled in.
+    ///
+    /// Absent table → [`ConnectorProxyPolicy::deny_all`]. There is deliberately
+    /// no "unset means permissive" arm: the permissive reading is what would
+    /// turn every installed connector into a callable surface.
+    pub fn connector_proxy_policy(&self) -> ConnectorProxyPolicy {
+        match self.connector_proxy.as_ref() {
+            Some(declared) => ConnectorProxyPolicy::from_declared(declared),
+            None => ConnectorProxyPolicy::deny_all(),
+        }
+    }
 }
 
 /// `[import]` in `~/.agent-store/config.toml` (`16` R23 / `17` §7).
@@ -854,6 +969,83 @@ impl AgentStoreConfigPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- [connector_proxy] (doc 24 §5.1) --------------------------------
+
+    fn declared(enabled: bool, allow: &[&str]) -> AgentStoreConnectorProxy {
+        AgentStoreConnectorProxy {
+            enabled: Some(enabled),
+            allow: Some(allow.iter().map(|entry| (*entry).to_owned()).collect()),
+        }
+    }
+
+    #[test]
+    fn connector_proxy_denies_everything_by_default() {
+        // The whole point of the table: an absent one grants nothing.
+        let policy = ConnectorProxyPolicy::deny_all();
+        assert!(!policy.is_enabled());
+        assert!(policy.decide("id-1", "github", "create_issue").is_err());
+    }
+
+    #[test]
+    fn an_absent_table_denies_everything() {
+        // `AgentStoreConfig::default()` has no `[connector_proxy]` table, which
+        // must read as "off" rather than "permissive".
+        let config = AgentStoreConfig::default();
+        assert!(!config.connector_proxy_policy().is_enabled());
+    }
+
+    #[test]
+    fn enabling_without_an_allowlist_still_grants_nothing() {
+        // `enabled = true` alone is not a wildcard.
+        let policy = ConnectorProxyPolicy::from_declared(&declared(true, &[]));
+        assert!(policy.is_enabled());
+        assert!(policy.decide("id-1", "github", "create_issue").is_err());
+    }
+
+    #[test]
+    fn an_allowlisted_pair_is_callable_by_name_or_by_id() {
+        let by_name = ConnectorProxyPolicy::from_declared(&declared(true, &["github__create_issue"]));
+        assert!(by_name.decide("some-id", "github", "create_issue").is_ok());
+        // A different tool on the same connector is not covered.
+        assert!(by_name.decide("some-id", "github", "delete_repo").is_err());
+        // Nor is the same tool on a different connector.
+        assert!(by_name.decide("some-id", "gitlab", "create_issue").is_err());
+
+        // The id spelling is offered because servers are upserted *by name*: a
+        // later install can take over a name, and the id form is the pin that
+        // survives it.
+        let by_id = ConnectorProxyPolicy::from_declared(&declared(true, &["some-id__create_issue"]));
+        assert!(by_id.decide("some-id", "github", "create_issue").is_ok());
+        assert!(by_id.decide("some-id", "renamed-later", "create_issue").is_ok());
+    }
+
+    #[test]
+    fn a_disabled_proxy_refuses_even_an_allowlisted_pair() {
+        let policy = ConnectorProxyPolicy::from_declared(&declared(false, &["github__create_issue"]));
+        assert!(policy.decide("id-1", "github", "create_issue").is_err());
+    }
+
+    #[test]
+    fn blank_allowlist_entries_are_not_wildcards() {
+        let policy = ConnectorProxyPolicy::from_declared(&declared(true, &["", "   "]));
+        assert!(policy.decide("id-1", "github", "create_issue").is_err());
+    }
+
+    #[test]
+    fn the_declared_table_parses_from_toml() {
+        // End-to-end through the file shape an operator actually writes.
+        let source = r#"
+[connector_proxy]
+enabled = true
+allow = ["github__create_issue"]
+"#;
+        let config: AgentStoreConfig = toml::from_str(source).expect("config parses");
+        let policy = config.connector_proxy_policy();
+        assert!(policy.is_enabled());
+        assert!(policy.decide("id", "github", "create_issue").is_ok());
+        assert!(policy.decide("id", "github", "other").is_err());
+    }
 
     const SAMPLE: &str = r#"
 default_plan_mode = false

@@ -192,16 +192,8 @@ async fn full_system_flow_e2e() {
             "platform": "openai",
             "name": "OpenAI",
             "base_url": "https://api.openai.com/v1",
-            "auth_scheme": "bearer",
-            "credentials": { "api_keys": ["sk-proj-test-key-1234"] },
-            "initial_model": {
-                "model": "gpt-4o",
-                "capabilities": [{
-                    "task": "chat",
-                    "protocol": "openai.chat_text",
-                    "connection_role": "default"
-                }]
-            }
+            "api_key": "sk-proj-test-key-1234",
+            "models": ["gpt-4o"]
         }),
         &token,
         &csrf,
@@ -210,9 +202,13 @@ async fn full_system_flow_e2e() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     let json = body_json(resp).await;
     let provider_id = json["data"]["provider_id"].as_str().unwrap().to_string();
-    // Credentials are write-only: the response reports only that they exist.
-    assert_eq!(json["data"]["has_credentials"], true);
-    assert!(json["data"].get("api_key").is_none());
+    // `POST /api/providers` takes a plain `api_key`: the DTO is
+    // `deny_unknown_fields`, so the older `credentials` / `auth_scheme` /
+    // `initial_model` payload was rejected with a 400 rather than silently
+    // ignored. The key is read back decrypted, which is what the edit form
+    // needs (there is no `has_credentials`).
+    assert_eq!(json["data"]["api_key"], "sk-proj-test-key-1234");
+    assert_eq!(json["data"]["base_url"], "https://api.openai.com/v1");
 
     // 7. List providers
     let resp = app

@@ -1,7 +1,21 @@
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 日期：2026-09-19（2026-09-19：新增**通知** `conversation/list-changed`——会话**列表**投影
+> 指纹：**`fp-1`** —— 2026-09-21 起由日期戳改为 **`fp-<n>` 计数器**（改前是 `2026-09-21`）。
+> 这是**形状变更，不改任何 wire 行为**；但校验是严格相等，所以每个客户端都必须跟着更新。
+> 动机：`2026-…` 会被误读成发布日期——日期戳本来就只是标签，连续改动每次加一天，常超前于
+> 日历。旧值在下方历史里保留。
+> 日期：2026-09-21（2026-09-21：新增**连接器调用代理** `connector/call`——外部 agent 要用
+> 已装 MCP 连接器，缺的是**调用面**：连接参数与凭据协议刻意不给（`transport_summary` 是
+> 展示摘要、token 永不跨界），于是改为**宿主持有连接与凭据、替调用方执行**。默认全关
+> （`[connector_proxy]` opt-in + 显式 allowlist），工具级失败走 `is_error` 而非 wire 错误，
+> 审计不记 arguments；指纹 `2026-09-20` → `2026-09-21`，**新增一个方法**（WS + HTTP 各一侧）。
+> 规格见本文 §4.3.2，方案与验收见 `24-external-agent-skill-and-mcp-access.zh.md` §5）
+> 历史：2026-09-20：新增**技能文件读面** `skill/files` / `skill/file`——技能是
+> **目录**（`SKILL.md` + `references/` / `scripts/` / `templates/` / `assets/`，`02` §5、`17` §5），
+> 而 `skill/get` 只回 ≤1200 字的正文摘要，附属文件此前**没有任何读面**；指纹 `2026-09-19` →
+> `2026-09-20`，**新增两个方法**，HTTP 侧各一条路由。规格见本文 §4.3.1。
+> 2026-09-19：新增**通知** `conversation/list-changed`——会话**列表**投影
 > 变更（自动标题 / 重命名 / 删除）此前只发给宿主通道，App Server 侧完全看不到，于是侧栏会
 > 一直停在客户端 `send()` 时的乐观快照上（名字空白、processing 不落）；指纹 `2026-09-18` →
 > `2026-09-19`，**只加一条通知，无方法增删**。2026-09-18：`mcp.json` 补上读面 `config/get-mcp`
@@ -82,6 +96,11 @@ HTTP 侧是 **body 字段**，缺省 `true`）；任一侧新增方法必须同�
 
 公开资产 `GET`（快照/store 头像）与 `/api/fs/browse`
 不是协议方法：前者是 `<img>` 直链（带不上连接头），后者是独立文件服务。
+
+> 例外说明（2026-09-20）：`skill/file` 的 HTTP 绑定（§4.3.1）回的是**原始字节 + `content-type`**，
+> 不是 JSON 信封。它仍是协议方法（WS 侧同一方法回 base64 JSON），但正因为它不是 JSON 请求/响应，
+> `@flowy-agent-store/client` 的 `HttpTransport`（JSON 绑定）**没有**为它建 typed 路由；
+> 要走 HTTP 取字节就用 `fetch` 直连该路由，否则用 WS 侧。
 
 ### 2.2 消息类型
 
@@ -165,7 +184,9 @@ Server Request   服务端向客户端请求审批/输入/确认
     "teams": false,
     "team_runtime": false,
     "skills": false,
+    "skill_files": false,
     "connectors": false,
+    "connector_calls": false,
     "run_notifications": true,
     "approvals": false,
     "artifacts": false,
@@ -174,7 +195,7 @@ Server Request   服务端向客户端请求审批/输入/确认
 }
 ```
 
-`run_notifications` 仅在 WebSocket 传输且服务端事件源可用时为 `true`；`agents` 在 Runtime 或 Agent Catalog provider 注入时为 `true`。`skills`/`connectors`/`oauth` 仅在对应 Catalog/OAuth provider 注入时启用（生产装配注入系统 Skill/MCP 服务适配器）；`imports` 仅在 Importer provider 注入时启用，`teams` 仅在 Team Catalog provider 注入时启用；未注入时对应方法返回 `unsupported_operation`。Approval、Artifact 能力在当前单 Agent Phase 保持 `false`，由后续 Phase 逐个启用。
+`run_notifications` 仅在 WebSocket 传输且服务端事件源可用时为 `true`；`agents` 在 Runtime 或 Agent Catalog provider 注入时为 `true`。`skills`/`connectors`/`oauth` 仅在对应 Catalog/OAuth provider 注入时启用（生产装配注入系统 Skill/MCP 服务适配器）；**`skill_files` 与 `connector_calls` 各自独立**（§4.3.1 / §4.3.2）：前者对应技能**文件树**读面、后者对应**连接器调用代理**，两者都刻意不与同名目录位合并——查 `skills` 不足以判断 `skill/files` 是否可用，查 `connectors` 同样不足以判断 `connector/call` 是否可用（且调用代理还有一个上游闸门：宿主 `[connector_proxy]` 的 allowlist 为空时，方法在但每个调用都回 `policy_denied`）；`imports` 仅在 Importer provider 注入时启用，`teams` 仅在 Team Catalog provider 注入时启用；未注入时对应方法返回 `unsupported_operation`。Approval、Artifact 能力在当前单 Agent Phase 保持 `false`，由后续 Phase 逐个启用。
 
 `team_runtime=true` 仅表示 V1 最小 Team Runtime：固定成员、Planning Context、planned DAG、局部并行、retry/replan；不表示完整 Mailbox/成员直连能力。
 
@@ -275,6 +296,130 @@ connector/status
 ```
 
 Connector 返回工具摘要、认证状态和策略摘要，不返回 Token/API Key。工具名必须为命名空间后的公开名称。
+
+#### 4.3.1 技能文件读面（`skill/files` · `skill/file`，2026-09-20 加入）
+
+技能是**目录**，不是单个文档：`SKILL.md` 之外还有 `references/` / `scripts/` /
+`templates/` / `assets/`（`02` §5、`17` §5 的组件映射原话是「含 `SKILL.md` 与其附属文件」，
+安装时**递归**拷贝）。而 `skill/get` 的 `instructions_summary` 是**有界摘要**
+（`app_server_skill_files` 之外的 `AppServerSkillCatalog` 取正文前 1200 字），因此附属文件
+此前没有任何读面——外部 agent 即使看到技能名，也拿不到它的附属内容。
+
+```text
+WS   skill/files  { skill_id }              → AppServerSkillFileList
+HTTP GET  /api/app-server/skills/{skill_id}/files
+WS   skill/file   { skill_id, path }        → base64 + content_type
+HTTP GET  /api/app-server/skills/{skill_id}/files/{*path}   → 原始字节 + content-type
+```
+
+响应：
+
+```text
+files[] {
+  path,              # 技能目录内相对路径，POSIX 分隔符，按 path 排序
+  size,              # 字节数
+  digest             # 单文件 sha256（小写 hex）
+}
+content_digest       # 该**技能目录**的树摘要（排序后的相对路径 + 逐文件 sha256）
+truncated            # 清单触顶（2000 项）时为 true——绝不静默截断
+```
+
+**`content_digest` 的语义边界（易错，先读这条）**：它覆盖的是**这一个技能目录**，
+与快照的 `content_digest` **不是同一个东西**——后者覆盖整棵导入来源树
+（`nomifun-importer/src/import.rs` 的 `tree_digest(&files)` 作用于整份 import 的文件清单）。
+两者**仅当快照里恰好只有这一个技能目录、别无他物**时才相等；**不要**拿它去和 `import/get`
+对账。算法相同（同一 `tree_digest` 规则）是为了让调用方能据此钉住自己读到的版本。
+
+规则：
+
+- **两个方法都在 WS 与 HTTP 两侧有绑定**（`skill/file` 的 HTTP 绑定回**原始字节**而不是 JSON）；
+- **能力位是独立的 `skill_files`**，不与 `skills` 合并：宿主可以只接目录不接文件面，
+  此时这两个方法回 `unsupported_operation`。客户端在提供文件访问前应先查 `capabilities.skill_files`；
+- **`path` 只接受技能目录内的相对路径**。绝对路径、盘符 / UNC、`..` 段、反斜杠一律
+  `invalid_request`；解析后再经 `canonicalize` + `starts_with` 二次确认，**符号链接一律不跟随、
+  不列出**。注意 `Path::components` 会把内部 `.` 归一化掉，故 `a/./b` 等价于 `a/b` 被接受
+  （它在目录内），真正兜底的是 canonicalize 那一遍；
+- **单文件上限 2 MiB**：从 `metadata` **先判后读**，超限回 `response_too_large`，
+  不静默截断（截断过的文件会被调用方当完整内容去 hash）；
+- **必须持有就绪连接**（`require_ready`）。这与公开的展示资产路由
+  （`/api/app-server/imports/{snapshot}/assets/{path}`，为 `<img>` 设计、无连接头、只服务图片）
+  **是两条不同的路**，刻意不复用；
+- **不得把绝对路径放进 wire**：DTO 里只有相对路径，宿主自行把 id 解析到磁盘。
+
+> **这是便利性与稳定性边界，不是保密边界**：同机同用户的进程本来就能直接读这些文件。
+> 要求认证 + 穿越校验的目的只有一个——**不让它退化成一个未认证的任意文件读本地原语**。
+> 同一条口径也适用于「`scripts/` 只回字节、绝不执行」：与 `02` §5 / `17` §6
+> 「导入只复制与解析，不执行任何脚本或命令」一致，执行与否是调用方自己的责任。
+>
+> **已知不对称（不在本次范围内）**：`skill/list` 公布的 `id` 是**技能名**，而
+> `agent/list` 的 `id` 是组件 id（`wb-<plugin>-<slug>`）。统一二者是破坏性变更
+> （同时冲击 mention 挂载、写面按名 join 与 `writable` 判定），故本次只在正文写明。
+
+#### 4.3.2 连接器调用代理（`connector/call`，2026-09-21 加入）
+
+外部 agent 要用一个已装 MCP 连接器，需要三件事：**连接参数**、**凭据**、**调用面**。
+前两件协议刻意不给（`connector/get` 的 `transport_summary` 是展示用摘要，注释原文
+「Never a raw shell command the client may execute」；token 按 `06` 永不跨界），
+所以只补第三件——**由宿主持有连接与凭据，替调用方执行**：
+
+```text
+WS   connector/call  { connector_id, tool, arguments } → AppServerConnectorCallResult
+HTTP POST /api/app-server/connectors/{connector_id}/call   body: { tool, arguments }
+```
+
+```text
+{ is_error,             # 上游 isError 原样透出
+  result }              # 上游 tools/call 结果对象，**逐字透传**
+```
+
+**`result` 是逐字的**：`content`、`structuredContent` 以及更新的 server 将来加的任何字段
+都原样带出——这一层没有资格改写 MCP server 的返回。它**不含**任何 transport / header / env
+取值：连接与凭据留在宿主，这正是代理的全部意义，也是**没有** `connector/export` 的原因。
+
+**三道门，缺一不可**（顺序即求值顺序）：
+
+| # | 门 | 不过时的码 |
+|---|---|---|
+| 1 | 宿主 `[connector_proxy]` 策略；未声明即关 | `policy_denied` |
+| 2 | 显式 allowlist 命中该 连接器/工具 对 | `policy_denied` |
+| 3 | 连接器已注册**且已启用** | `connector_unavailable` |
+
+- **默认全关且 opt-in**：MCP 工具自身没有危险度标注（`DangerTier` 是 gateway 那套
+  自建能力的词汇），所以没有可推断的默认值——唯一让某个工具可调的办法，就是宿主操作者
+  把它写下来。allowlist 条目形如 `<连接器>__<工具>`，连接器可用**注册名**或 **id** 表示
+  （id 是精确写法：MCP server 按**名字** upsert，后来安装的同名者会接管名字并因此继承
+  授权）。
+- **调用方只能点名一个已注册的 `connector_id`**：请求里给 `url` / `command` / `headers` /
+  `env` 一律 `invalid_request`（`deny_unknown_fields`），因此这条通路**不构成 SSRF**
+  ——地址永远来自宿主自己的配置。
+- **工具级失败 ≠ wire 错误**：上游 `isError: true` 是**成功的调用**，走 `is_error` 字段让
+  调用方分支；只有传输 / 协议 / 超时才升级为 `connector_call_failed` /
+  `connector_call_timeout`。合并两者会让调用方分不清「工具说不行」与「没够着工具」。
+- **上限与清理**：单次调用超时默认 30s（`connector_call_timeout`）；结果序列化后
+  ≤ 1 MiB（超出 `response_too_large`，**不静默截断**）。成功失败都回收连接（stdio 连接器
+  是子进程，漏掉就是每次调用泄漏一棵进程树）。
+- **审计不含参数**：审计行记连接器、工具、结果、字节数与耗时，**不记 arguments**
+  （那是调用方数据），也不记任何 header / env 取值。**不承诺结果脱敏**：MCP 结果是任意
+  schema，只做体积上限——半脱敏的载荷比经审计的原样载荷更危险。
+- **鉴权**：与其它 `/api/app-server/*` 一致，需就绪连接（`require_ready`）。
+- **能力位是独立的 `connector_calls`**：它表示**方法存在**，不表示有工具可调——宿主可以
+  接了代理而 allowlist 为空，此时每次调用都回 `policy_denied`。这是**默认状态**，不是配错。
+- **三种传输都支持**：stdio、Streamable HTTP 与 legacy SSE。SSE 的调用面与探针共用同一套
+  流式握手（`wait_for_endpoint` / `sse_post_with_auth` / `wait_for_jsonrpc_response`），
+  并同样带一次性 401 刷新重试；三者都走同一份「一个客户端、两个入口」的实现，不是三份客户端。
+
+**stdio 会话在调用之间保留**——这是实现细节，**wire 面不变**（没有新增方法、字段或错误码，
+指纹不动）。第二次调用只付一次 `tools/call`，不再重付解释器启动与握手；空转 5 分钟回收、
+池上限 8，回收按**进程树**做。**HTTP / SSE 刻意不复用**：远端会话 id 由**对端**决定何时
+过期，缓存它等于用「稳定成功的调用」换「省一次往返」，而 `reqwest` 本就在底下复用 TCP/TLS
+——**只池化我们自己拥有的东西**（stdio 子进程是我们 spawn 的，生命周期完全可控）。
+
+会话按**连接器 id + 配置与凭据**定位，两个选择都是刻意的：用 **id 而不是注册名**，因为
+MCP server 按名字 upsert，后来安装的同名者会接管名字并因此继承前一个留下的会话（与
+allowlist 收 id 同一条理由）；**env 按 `secret:` 解析后的值比较**，所以轮换凭据（
+引用名不变、值变了）会换新会话，而不是拿旧凭据继续跑。调用**超时**或管道**断裂**时该会话
+被丢弃：那时请求/响应是否还对得上已无从判断，复用会让**下一次**调用读到上一次还留在管道里
+的答复。池满且都在忙时退回**一次性调用**——复用是优化，从来不是正确性前提。
 
 ### 4.4 Import 与 PluginSnapshot（roadmap Phase 1）
 
@@ -660,11 +805,17 @@ Composer 的 `@` 引用以**结构化 mention** 传入 `agent/run`，客户端�
   "goal": "总结仓库并生成 release notes",
   "mentions": [
     {"kind": "agent", "id": "wb-demo-software-architect"},
-    {"kind": "skill", "id": "wb-demo-release-notes"},
+    {"kind": "skill", "id": "release-notes"},
     {"kind": "connector", "id": "0190f5fe-...-000000000020"}
   ]
 }
 ```
+
+> **`id` 的来源按 kind 不同（易错）**：`agent` 用 `agent/list` 的条目 id（`wb-<plugin>-<slug>`
+> 形态）；**`skill` 用 `skill/list` 公布的 `id`，也就是技能名本身**——`skill/list` 目前把
+> `id` 设为技能名（`AppServerSkillCatalog`），**不是** `install/status` 里的组件 id。
+> 传组件 id 会被 `SkillId::parse` 判为非规范、降级成 `legacy:<组件id>`，随后按名查不到，
+> **静默不挂载**（不是报错）。`connector` 用 `connector/list` 的 MCP server id（UUIDv7）。
 
 每类 mention 的运行时语义：
 

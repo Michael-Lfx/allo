@@ -430,14 +430,33 @@ impl InstallProvider for AppServerInstallProvider {
                         .unwrap_or(false);
                     by_path || component.name == location.slug
                 })
-                .map(|component| component.component_id.clone());
+                .map(|component| (component.component_id.clone(), component.kind.clone()));
             match component_id {
-                Some(component_id) => pending.push(Pending {
-                    component_id,
-                    runtime_type: "skill",
-                    location: location.location.display().to_string(),
-                    mcp_server_id: None,
-                }),
+                Some((component_id, kind)) => {
+                    // Every registered component gets a report line, skills
+                    // included. Skipping it here made `installed_count` and
+                    // `outcomes` disagree: a snapshot of nothing but skills
+                    // reported `installed_count: 1` with an empty list, so a
+                    // caller branching on the report saw a successful install
+                    // as no install at all.
+                    let action = if installed_state
+                        .get(&component_id)
+                        .is_some_and(|row| row.installed == 1)
+                    {
+                        // Already recorded as installed: the runtime artifact
+                        // was re-materialized in place, not created afresh.
+                        "reused"
+                    } else {
+                        "created"
+                    };
+                    outcomes.push(ok_outcome(&component_id, &kind, action));
+                    pending.push(Pending {
+                        component_id,
+                        runtime_type: "skill",
+                        location: location.location.display().to_string(),
+                        mcp_server_id: None,
+                    });
+                }
                 None => {
                     // The snapshot materialized a skill that no component row
                     // claims. It is on disk but unregistered and therefore

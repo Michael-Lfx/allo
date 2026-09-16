@@ -295,7 +295,15 @@ mod tests {
             .join("hello")
             .join("SKILL.md");
         assert!(expected.is_file(), "skill must be copied into the managed root");
-        assert!(outcome.skills[0].location.join("extra.txt").exists(), "peers copied too? no - only SKILL.md is copied by materialize_skills; adjust if needed");
+        // A Skill is a directory, not a single file: `copy_dir_into` recurses,
+        // so `SKILL.md`'s companions come along. The message here used to claim
+        // the opposite ("only SKILL.md is copied"), which contradicted both the
+        // code and this assertion — `02` §5 / `17` §5 promise
+        // "SKILL.md 与其附属文件".
+        assert!(
+            outcome.skills[0].location.join("extra.txt").exists(),
+            "a skill's companion files must be copied with it"
+        );
     }
 
     #[tokio::test]

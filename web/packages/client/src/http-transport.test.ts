@@ -288,12 +288,18 @@ describe("HttpTransport · route table count guard", () => {
     // Deriving a new user skill from any origin (2026-09-11): the same host-only
     // face, WebSocket-only for the same reason.
     "skill/copy",
+    // `skill/file` (doc 24 §4): the route exists over HTTP, but it answers with
+    // raw bytes and a `content-type` rather than a JSON body. `HttpTransport`
+    // is a JSON request/response binding (`accept: application/json`,
+    // `response.text()`), so this method has no typed HTTP binding — read a
+    // skill file through the WebSocket binding (base64) instead.
+    "skill/file",
   ];
 
-  it("keeps the documented 46-mapped / 22-unmapped split", () => {
+  it("keeps the documented 48-mapped / 23-unmapped split", () => {
     const table = httpRouteTable();
-    expect(Object.keys(table)).toHaveLength(46);
-    expect(DOCUMENTED_UNMAPPED).toHaveLength(22);
+    expect(Object.keys(table)).toHaveLength(48);
+    expect(DOCUMENTED_UNMAPPED).toHaveLength(23);
     for (const method of DOCUMENTED_UNMAPPED) {
       expect(Object.keys(table), `${method} must stay unmapped`).not.toContain(method);
     }

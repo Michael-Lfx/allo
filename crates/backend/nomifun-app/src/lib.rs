@@ -5,10 +5,12 @@
 
 mod config;
 pub mod app_server_catalog;
+pub mod app_server_connector_call;
 pub mod app_server_delegate;
 pub mod app_server_entry_assets;
 pub mod app_server_importer;
 pub mod app_server_installer;
+pub mod app_server_skill_files;
 pub mod app_server_marketplace;
 pub mod app_server_store;
 pub mod market_fetch;

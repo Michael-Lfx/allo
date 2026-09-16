@@ -41,6 +41,10 @@
       "group": "check",
       "desc": "Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject."
     },
+    "check:fingerprint": {
+      "group": "check",
+      "desc": "Verify the App Server protocol fingerprint is identical at every landing point, here and in the docs site."
+    },
     "check:ux-baseline": {
       "group": "check",
       "desc": "校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线）"

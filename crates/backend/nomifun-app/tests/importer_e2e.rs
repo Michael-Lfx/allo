@@ -398,6 +398,27 @@ async fn importer_install_registers_components_into_runtime() {
     assert_eq!(skill["state"], "installed");
     assert!(skill["runtime_location"].as_str().is_some(), "skill records its runtime path");
 
+    // Every registered component must also appear in the install report. The
+    // two are written from the same pass, so a component that is registered but
+    // unreported makes `installed_count` and `outcomes` disagree — skills did
+    // exactly that, and a snapshot of nothing but skills came back with an empty
+    // list, which a caller branching on the report reads as "nothing installed".
+    let reported: std::collections::HashSet<&str> = install_outcomes
+        .iter()
+        .filter_map(|outcome| outcome["component_id"].as_str())
+        .collect();
+    for component in components {
+        let kind = component["kind"].as_str().unwrap_or_default();
+        if !matches!(kind, "skill" | "agent" | "team" | "connector") {
+            continue;
+        }
+        let id = component["id"].as_str().unwrap_or_default();
+        assert!(
+            reported.contains(id),
+            "a registered {kind} component must be reported in `outcomes`: {component}"
+        );
+    }
+
     // Disable / re-enable / uninstall round-trip on the skill component.
     let skill_id = skill["id"].as_str().unwrap().to_owned();
     let disable = app

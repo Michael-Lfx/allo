@@ -8,6 +8,7 @@
 
 import type { Transport } from "./transport";
 import type {
+  ConnectorCallResult,
   ConnectorDetail,
   ConnectorProbeResult,
   ConnectorStatusView,
@@ -67,5 +68,28 @@ export class ConnectorClient {
     return this.transport.request<{ logged_out: boolean }>("connector/auth/logout", {
       connector_id: connectorId,
     }).then(() => undefined);
+  }
+
+  /**
+   * Run one tool on a registered connector, through the host's own connection.
+   *
+   * The host holds the transport, its headers and its OAuth token; this sends a
+   * tool name and an argument object and nothing else — you cannot name a URL,
+   * a command or a header. Whether the pair is callable at all is the host's
+   * `[connector_proxy]` allowlist, so expect `policy_denied` on a host whose
+   * operator has not listed this tool (that is the default, not a
+   * misconfiguration).
+   *
+   * Resolves even when the tool itself failed — check `is_error`. It rejects
+   * only when the call never reached the tool: `connector_call_timeout`,
+   * `connector_call_failed`, `response_too_large`, `connector_unavailable`,
+   * `policy_denied`, `not_found`.
+   */
+  call(connectorId: string, tool: string, args: unknown = {}): Promise<ConnectorCallResult> {
+    return this.transport.request<ConnectorCallResult>("connector/call", {
+      connector_id: connectorId,
+      tool,
+      arguments: args,
+    });
   }
 }

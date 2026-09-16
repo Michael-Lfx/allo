@@ -80,11 +80,12 @@
 
 ## 5. 协议指纹与跨仓同步
 
-**动 App Server wire 面 = 换指纹 + 两仓一起改。** 指纹是 `APP_SERVER_PROTOCOL_VERSION`（`web/packages/protocol`）与 `PROTOCOL_VERSION`（`nomifun-app-server`）：握手与 SDK 对它做**严格相等**校验，取值只需「与上一次不同」，同日第二次变更取次日戳、不得复用同一个值。
+**动 App Server wire 面 = 换指纹 + 两仓一起改。** 指纹是 `APP_SERVER_PROTOCOL_VERSION`（`web/packages/protocol`）与 `PROTOCOL_VERSION`（`nomifun-app-server`）：握手与 SDK 对它做**严格相等**校验，取值只需「与上一次不同」。**现行形状是 `fp-<n>`（从 `fp-1` 起）的计数器**——每次 bump 递增，**不得复用任何历史值**。它**不是版本号、不是发布日期、也不是变更日期**：`fp-1` 之前用的是日期戳，日期戳同样只是标签（连续改动每次加一天，所以常超前于日历），换成计数器就是为了一次性去掉这层误读。
 
 触发分支（**增量也算**）：方法增删改名、现有 DTO 加字段、事件 payload 变化、新增通知。
 
 1. 先改两个常量，再用**旧值全仓 grep** 收尾——落点比「三个权威位置」更广，`web/scripts/mock-server.ts`、`web/scripts/smoke.ts`、`web/packages/sdk/src/readiness.test.ts` 这类夹具最容易漏（历次落点与偏差登记见 `docs/agent-store/16` §7 决策 4）。
+   **这步现在有机械门禁**：`bun run check:fingerprint`（`scripts/check-protocol-fingerprint.mjs`，已进 `bun run check`）按**标识符**比对全部落点——不按形状扫，因为仓库里另有 MCP 协议版本 `2025-11-25`、`published_at` 夹具与故意的 `2000-01-01`，形状相近但语义无关：本仓 6 个文件 9 处 + 站点 2 处（站点不在时跳过并提示）。**任一落点不一致会失败；某个抽取模式一处都匹配不到也会失败**——后者是刻意的：模式失配意味着门禁其实什么都没查，那比没有门禁更糟。新增落点 = 往脚本的 `MIRRORS` 表（站点在 `SITE_MIRRORS`）加一行，形状常量是脚本里的 `FP_SHAPE`。
 2. 正文同步：`docs/agent-store/05-flowy-agent-store-app-server-protocol.md`（头部指纹 + 对应章节）与 `docs/agent-store/README.md` 的本轮记录。
 3. **跨仓改独立仓 `C:\workspace\agent-store-site`**：`content/docs/{zh-CN,en-US}/typescript-sdk.md` 的 §2 常量示例随指纹改（中英各一处），方法计数、`ServerNotification` 枚举与 `changelog` §4 的未发布台账按本次改动同步；两语言结构必须一致。
-4. 完成标准：旧值在本仓代码里归零（只剩历史散文）；`cargo test -p nomifun-app-server` 与 `cd web && bun run typecheck && bun run test` 绿；站点仓 `bun run check:docs-sync` 报 `0 drift`、`bun run test:docs-sync` 通过。
+4. 完成标准：旧值在本仓代码里归零（只剩历史散文），且 `bun run check:fingerprint` 绿（第 1 步那条门禁的机械形式，已进 `bun run check`）；`cargo test -p nomifun-app-server` 与 `cd web && bun run typecheck && bun run test` 绿；站点仓 `bun run check:docs-sync` 报 `0 drift`、`bun run test:docs-sync` 通过。

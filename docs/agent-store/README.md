@@ -2,7 +2,7 @@
 
 > 最后核对：2026-09-15（**安装面五动词「做真事」：`install/run` 可重入（同快照不产生第二个 Preset）、`uninstall` 真正释放产物（skill 目录 / Preset / `mcp_servers` 行，已不在算成功、失败保留 `installed=1`）、`disable`/`enable` 真正移动运行时状态（skill 例外＝目录标记 `skill_disable_flag_only`）、新增结构化 `outcomes`（`action` 八值 + 稳定 `code` 闭集）、`store/install-entry` 版本感知（升级只有「卸载再安装」一条路）、client 新增 `store` 子客户端（20 例）、宿主管理面类型搬进 `protocol`、商店假「更新」控件已摘除；**协议指纹 bump 到 `2026-09-15`**（现有 DTO 加字段，8 处代码/夹具 + 2 处站点文档，方法计数不变）**；同日：**`agent/run` 加稳定码 `preset_disabled`、`team/run` 加 `agent_disabled`（点名成员，检查在 `resolve_team_members` 每次运行、先于 Connector 栅栏）**；2026-09-14：**`20` §9.5 + `16` §5.3：`config/get.mcp` 新增 `adopted`（宿主是否真的把这批声明注入会话——`servers` 描述文件、`adopted` 描述宿主），设置页据此分出「使用中 / 未使用 / 无法判断」三态；**协议指纹 bump 到 `2026-09-14`**（8 处代码/夹具 + 2 处站点文档，方法计数不变）**；同日：**`16` R16 追记 · 消息渲染：设置页三个错误字段改判别式联合 `ConfigMessage`，宿主散文不再过 `t()`（i18next 的 `looksLikeObjectPath` 会把 `mcp.json is not valid JSON: …` 截成冒号后半段）**；2026-09-13：**`16` R16 追记 + `20` §9.4：设置页新增只读 `mcp` 分区渲染 `config/get.mcp`（nav 三→四；该批零协议变更）；同日上一轮：`20` §7.9.1–§7.9.3/§9.4 补齐参考实现文档里的全部可选字段（`cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools`）并把 `headers` 的 `secret:NAME` 语义在三条装配路径收敛为一个函数；server 级工具过滤在注册**之前**裁剪；**无协议变更**，指纹保持 `2026-09-13`**；再上一轮 2026-09-12：**`21` D14 + `20` §7.9/§9.3：Agent Store 支持 Kimi 式 `~/.agent-store/mcp.json` 声明 MCP（用户级、纯内存注入、不投影进 `mcp_servers`），协议指纹 bump 到 `2026-09-13`**；更早 2026-09-11：新增 `22-webui-productionization.zh.md`；`16` C 档二次复核改判；**版本框架订正：发版前只有一个版本，统一称 v1，见 `16` §7 决策 4**；引用/口径统一 + 证据与 `TC-*` 正文并入编号文档；**`20` 重构：工具面表达层定为 `~/.agent-store/config.toml [tools]`，新增 `16` §7 决策 5**；**`20` Step 7 全部落地：`team/run` + Team 层委派放行，协议指纹 bump 到 `2026-09-12`**）
 > 用途：本目录文档的地图、权威顺序与状态图例。新会话/新成员先读本文，再按需深入。
-> 维护约定：新增文档编号顺延（当前到 `22`）；状态变更时同步更新本索引与文档头部“更新”行；公共契约变更先写 `16-sdk-webui-site-priority-plan.zh.md` §7（决策记录），再改基线文档。
+> 维护约定：新增文档编号顺延（当前到 `24`）；状态变更时同步更新本索引与文档头部“更新”行；公共契约变更先写 `16-sdk-webui-site-priority-plan.zh.md` §7（决策记录），再改基线文档。
 
 ## 状态图例
 
@@ -40,6 +40,7 @@
 | `16-sdk-webui-site-priority-plan.zh.md` | **当前执行顺序（四方向）**：① SDK + 站点（配对） ② 插件与市场规范 ③ WebUI ④ 待立项 | 🔧 批 0–7 已收口（三闭环验收通过、`17`/`18` 现行正文）；剩余见 §5.2 剩余任务总表 **R1–R34**（✅ 23 · 🟡 4 · ⏸ 7）；C 档已于 2026-09-11 二次复核改判 |
 | `21-open-decisions.zh.md` | **开放决策书**：D1–D16，逐条带 ⭐ 默认建议与解锁范围（`16` §5.2 剩余任务总表的拍板入口） | ✅ 已拍板（2026-09-10；D13 卡点四档已批准，含 2026-09-11 C 档二次复核改判；D14 MCP 声明文件接入路径 2026-09-12 拍板 ①A ②C ③C；D15 skill 的 `disable` ＝目录标记、D16 商店假「更新」控件摘除，均 2026-09-15） |
 | `22-webui-productionization.zh.md` | **WebUI 生产化立项**（方向四 + WP-5 协议词汇与概念对齐，来源 `16` R33）：11 项拆为**安全类 / 可观测类 / 功能类 / 协议词汇对齐**，逐条给「可验收条目 + 边界 + 依赖」；含**不做假保护**红线与 V1–V4 未决 | 📋 已立项（2026-09-11），未排期 |
+| `24-external-agent-skill-and-mcp-access.zh.md` | **外部 Agent 使用已安装 Skill / MCP**：Skill 文件读面（`skill/files`·`skill/file`）+ MCP 调用代理（`connector/call`，allowlist 默认全关、凭据不出宿主）；含非目标、验收口径、指纹与跨仓步骤 | 🔧 阶段 1 已落地；阶段 2 进行中（MCP 工具调用能力已落地并验证，策略/路由/TS/指纹未接通） |
 | `19-webui-codex-alignment.zh.md` | **WebUI 子计划**：Codex app 体验对齐基线 + 四层工作包 W1–W14 | 🔧 部分落地（W1 / W5 / W8 / W13 已交付；其余见 R 表） |
 | `15-store-chain-and-protocol-vnext-plan.zh.md` | 四链路闭环 + 协议词汇与概念对齐（WP-1~WP-7；原称「协议 vNext」） | 🔧 WP-1/2/3/4/6 完成，WP-7 模型选择器完成；WP-5 顺延至 `16` |
 | `13-p0-execution-plan.md` | P0-A/B/C/D 执行细则与出口条件 | 🔧 P0-A/B 已关闭；P0-C/D 的 OAuth 运行时证据已完成（`06-connector-oauth-security.md` §12，26/26 PASS） |
@@ -111,6 +112,88 @@
    `changelog` §4）；顺带把 `changelog` §4 那张未发布表的「协议方法面增量」一行补上三个 MCP 方法
    与 `store/list` 的 `published_at`。**版本号口径未动**：工作区仍是 `0.1.0-beta.3`，与文档
    「本文与仓库当前对应 `0.1.0-beta.3`」一致——有张力的是 **wire 面**，不是版本号。
+
+## 本轮（2026-09-21）
+
+1. **新增连接器调用代理 `connector/call`**（规格：`05` §4.3.2；方案与验收：
+   `24-external-agent-skill-and-mcp-access.zh.md` §5）。外部 agent 要用已装 MCP 连接器，
+   缺的是**调用面**——连接参数与凭据协议刻意不给（`transport_summary` 是展示摘要、token
+   永不跨界），于是改为**宿主持有连接与凭据、替调用方执行**。
+   **指纹 `2026-09-20` → `2026-09-21`，新增一个方法**（WS + HTTP 各一侧）；方法计数守卫
+   由 `47 / 23` 改为 **`48 / 23`**（`connector/call` 是 JSON 进出，走正常 HTTP 绑定）。
+   **设计要点**：三道门（宿主 `[connector_proxy]` opt-in → 显式 allowlist → 连接器已启用），
+   **默认全关**；`result` 逐字透传上游结果对象；工具级失败走 `is_error` 而非 wire 错误；
+   调用方只能点名已注册的 `connector_id`（给 `url`/`command`/`headers` 一律 `invalid_request`，
+   因此**不构成 SSRF**）；审计记连接器/工具/结果/字节数/耗时，**不记 arguments**；结果
+   ≤1 MiB、超时 30s。**三种传输全部支持**（stdio / Streamable HTTP / SSE）——SSE 起初被
+   我以「仓库没有 SSE 夹具」为由跳过，那条理由是**错的**（夹具就在
+   `tests/connection_test_integration.rs`），随即实现并验证，订正记录见 `24` §9.1。
+   **跨仓已同步**（`agent-store-site`）：`typescript-sdk.md` §2 常量、§7.3 计数 `48 / 23`、
+   `connectors` 子客户端新增 `call`、错误码；`examples-sdk.md` 补用法；`changelog` §4 台账。
+2. **补上一处遗漏**：阶段 1 引入的 `response_too_large`（技能文件面）当时**没有**登记进
+   `10` §7 的公共错误码——我当时的判断是「没新增 `AppError` 变体所以不必改」，这混淆了
+   **实现层枚举**与**wire 公共码**：`10` §7 管的是后者。本轮连同 `connector_call_timeout` /
+   `connector_call_failed` 一起补齐，并写明「先判后读、拒绝而不截断」的语义。
+3. **stdio 会话复用**（纯实现层：**无新增方法/字段/错误码，指纹不变，站点无需改**；规格：
+   `05` §4.3.2 末段；记录：`24` §9.1）。阶段 2 把「按连接器 id 的空转会话池」列为延后项，
+   本轮补上并**只做 stdio**——理由是**池化我们拥有的**：stdio 子进程是我们 spawn 的，而
+   HTTP/SSE 的会话 id 由对端决定何时过期，缓存它等于用「稳定成功的调用」换「省一次往返」
+   （`reqwest` 本就在底下复用 TCP/TLS）。三条不显然的规则：身份 = **连接器 id + 解析后凭据**
+   （用 id 而非注册名，轮换凭据即换新会话）；**超时或管道断裂必须丢弃会话**（池化引入的新
+   风险：管道里可能还留着上一次的答复，复用会让下一次调用归错因）；池满且都在忙时**退回
+   一次性调用**。新增跨平台真 MCP stdio 夹具
+   （`crates/backend/nomifun-mcp/tests/fixtures/fake_stdio_mcp.mjs`——既有 stdio 夹具是
+   `#[cfg(unix)]`）与 12 条测试（该文件 13 → 25 条）；其中「杀进程」一条用**心跳文件**把
+   「真的被杀」与「因 EOF 自己退出」区分开，且该尺子本身先被单独验证过。
+   **真实链路读数**：两次真 `connector/call` 为 **586 ms → 3 ms**，夹具侧 `initialize` 只出现
+   1 次、两条 `call` 同 pid、两次结果各自正确（没有归错因），`server.close()` 后无残留进程
+   ——这条验的是**接线**（池在 router 构造期只建一次），单测覆盖不到。
+4. **协议指纹形状变更：日期戳 → `fp-<n>` 计数器**（`2026-09-21` → **`fp-1`**）。**不改任何
+   wire 行为**，但校验是严格相等，所以每个客户端都必须跟着更新。动机是日期戳会被误读：它
+   **既不是变更日、也不是发布日期**，连续改动每次加一天、常超前于日历（改前是 `2026-09-21`，
+   而当天是 `09-16`）。计数器保留了日期唯一的优点——**自排序**——同时不再像日期/像版本。
+   落点仍 8 处（本仓）+ 2 处（站点）；`scripts/check-protocol-fingerprint.mjs` 的形状常量
+   `FP_SHAPE` 一并改掉。**这一改必须赶在 `beta.4` 之前**：`2026-09-21` 尚未随任何版本发布，
+   现在换零额外代价；发出去之后再换就是对真实用户的破坏性变更。
+
+## 本轮（2026-09-20）
+
+1. **新增技能文件读面 `skill/files` · `skill/file`**（方案与验收：`24-external-agent-skill-and-mcp-access.zh.md`
+   §4；规格：`05` §4.3.1）。技能是**目录**（`SKILL.md` + `references/` / `scripts/` /
+   `templates/` / `assets/`，`02` §5、`17` §5），而 `skill/get` 只回 ≤1200 字的正文摘要，
+   附属文件此前**没有任何读面**——外部 agent 看到技能名也拿不到内容。
+   **指纹 `2026-09-19` → `2026-09-20`，新增两个方法**（HTTP 各一条路由）。本仓落点 8 处
+   代码/夹具；方法计数守卫由 `46 / 22` 改为 **`47 / 23`**（新增 `skill/files` 映射；
+   `skill/file` 因 HTTP 侧回原始字节、非 JSON 信封，**刻意不进** JSON 传输的路由表，计入无绑定）。
+   **跨仓已同步**（`agent-store-site`）：`typescript-sdk.md` §2 常量示例（中英各一处）、§7.3 计数
+   `47 / 23`、`skill/*` 子客户端新增 `files` / `readFile`、`changelog` §4 未发布台账；
+   `examples-sdk.md` 补「读技能附属文件」用法。
+   **顺带订正两处既有偏差**：① `05` §4.8 的 mention 示例里 `skill` 用了**组件 id**
+   （`wb-demo-release-notes`），而 `skill/list` 公布的是**技能名**——照抄会静默不挂载
+   （`SkillId::parse` 降级为 `legacy:<组件id>` 后按名查不到），已改为技能名并补一节来源说明；
+   ② `nomifun-importer/src/install.rs` 的 `materialize_skills_copies_under_managed_prefix`
+   断言消息写着「only SKILL.md is copied」，与代码（`copy_dir_into` 递归）和它自己的断言相反，
+   已改正。
+2. **一处门禁盲区的实证**：`crates/backend/nomifun-app/tests/common/mod.rs` 的
+   `build_app_with_skill_paths` 用 `AppConfig::default()`（相对 `work_dir`），而
+   `create_router_with_states` 启动时构建 App Server workspace 注册表、**拒绝非绝对根**，
+   因此该 helper **每次调用都会 panic**。本次新增的 `skill_files_e2e` 使它第一次被
+   真正调用，遂修掉（改用绝对 `data_dir`/`work_dir`）。
+   **订正（2026-09-21）**：当时我写的理由是「唯一使用它的 `tests/extension_e2e.rs`
+   没有登记进 `Cargo.toml` 的 `[[test]]`（不参与编译）」——**这条是错的**。我当时只按
+   `name` 搜了 `[[test]]`，漏了 `tests/suites/content.rs` 的 `grouped_tests!`：
+   `extension_e2e.rs` 是以**模块**形式编进 `content_e2e_suite` 目标的，一直在编译、一直在跑，
+   并在 **13 处**调用这个 helper——所以那处 panic 一直在让这 13 条测试失败，helper 修好后
+   `extension_e2e` 实测 **49 passed / 0 failed**。`Cargo.toml` 里
+   「a new top-level test file cannot be silently omitted」不是空话：`content.rs` 有一条
+   `every_top_level_integration_test_is_registered` 门禁做集合相等断言。
+   **同族缺陷已一并修掉（2026-09-21）**：`build_app_with_noop_opener`（`shell_e2e`）、
+   `build_app_with_mock_version`（`system_version_e2e`）、`build_app_with_mock_agents`
+   （`message_e2e`）也都传了相对 `work_dir`，全部改为绝对路径。读数：`shell_e2e` **27/27**、
+   `system_version_e2e` **5/5**、`message_e2e` **38/38**。其中 `shell_e2e` 的 STT 两条是另一个
+   原因（provider `base_url` 漏了 `/v1`，`st7` 因只断言 502 而一直空过）；`system_version_e2e`
+   的 `full_system_flow_e2e` 用的是早已作废的 provider 请求体（`credentials`/`auth_scheme`/
+   `initial_model`，DTO 是 `deny_unknown_fields`，故 400）。
 
 ## 本轮（2026-09-19）
 

@@ -10,7 +10,8 @@ use async_trait::async_trait;
 
 use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityTriple,
-    AppServerConnectorDetail, AppServerConnectorProbeResult, AppServerConnectorStatusView,
+    AppServerConnectorCallResult, AppServerConnectorDetail, AppServerConnectorProbeResult,
+    AppServerConnectorStatusView,
     AppServerConnectorSummary, AppServerImportDetail, AppServerImportRequest,
     AppServerImportResult, AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
@@ -18,7 +19,7 @@ use nomifun_api_types::{
     AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
     AppServerModelList,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, AppServerStoreInstallResult,
+    AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary, AppServerStoreInstallResult,
     AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };
 use nomifun_common::{AppError, LocalizedVariant};
@@ -29,6 +30,62 @@ use std::collections::BTreeMap;
 pub trait SkillCatalogProvider: Send + Sync {
     async fn list(&self) -> Result<Vec<AppServerSkillSummary>, AppError>;
     async fn get(&self, id: &str) -> Result<AppServerSkillDetail, AppError>;
+}
+
+/// One skill file's bytes plus the metadata the wire needs to describe them.
+///
+/// Not a wire DTO: HTTP hands back the raw body with a `content-type` header,
+/// so the content type travels beside the bytes rather than inside them. The
+/// WS binding is the one that has to encode, and it does so at its own edge.
+pub struct SkillFileBytes {
+    pub bytes: Vec<u8>,
+    pub content_type: String,
+}
+
+/// Largest single file the skill file face will serve.
+///
+/// A Skill's scripts and references are prose and small assets; anything this
+/// large is not something a caller should pull through the protocol. The cap
+/// lives at this seam rather than in the adapter because it is a **wire-shape**
+/// decision: the size is read from metadata *before* the bytes are read, so an
+/// oversized file is refused rather than loaded and then rejected.
+pub const MAX_SKILL_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Why a skill file operation failed, at the seam.
+///
+/// A dedicated type rather than [`AppError`]: the wire distinguishes
+/// `response_too_large` from `invalid_request` and `not_found` (`05` §4.3.1),
+/// and `AppError` has no way to carry that third case without widening the
+/// shared enum for every crate that matches on it. The protocol layer maps
+/// these onto stable codes.
+#[derive(Debug)]
+pub enum SkillFileError {
+    NotFound(String),
+    InvalidRequest(String),
+    /// Refused before reading: `size` is the file's own length.
+    TooLarge { size: u64, limit: u64 },
+    Internal(String),
+}
+
+/// Read-side Skill *file tree* (`skill/files`, `skill/file`).
+///
+/// Separate from [`SkillCatalogProvider`] because the two answer different
+/// questions: the catalog describes a Skill as a catalog entry, this one serves
+/// the directory it lives in. `skill/get` can only ever return a bounded
+/// summary of the manifest, so without this seam the rest of a Skill's files
+/// (`references/`, `scripts/`, `templates/`, `assets/`) have no read face at
+/// all — see `docs/agent-store/24-external-agent-skill-and-mcp-access.zh.md`.
+///
+/// Implementations are responsible for path safety: an implementation that
+/// trusts `path` turns this into an arbitrary local file read for any
+/// authenticated caller. The protocol layer does not re-check it.
+#[async_trait]
+pub trait SkillFileProvider: Send + Sync {
+    /// Every readable file inside the skill directory, plus its tree digest.
+    async fn files(&self, skill_id: &str) -> Result<AppServerSkillFileList, SkillFileError>;
+
+    /// One file's bytes, addressed by its skill-relative `path`.
+    async fn read(&self, skill_id: &str, path: &str) -> Result<SkillFileBytes, SkillFileError>;
 }
 
 /// Read-side Connector catalog + status/probe (`connector/list|get|status|test`).
@@ -48,6 +105,65 @@ pub trait ConnectorAuthProvider: Send + Sync {
     /// Kick off the browser flow on the trusted host and return immediately.
     async fn auth_start(&self, id: &str) -> Result<AppServerOAuthStartResult, AppError>;
     async fn logout(&self, id: &str) -> Result<(), AppError>;
+}
+
+/// Largest serialized tool result the call proxy will return.
+///
+/// A tool result is a payload for a caller to use, not a bulk data channel; and
+/// a refusal is better than a silently shortened JSON document, which the
+/// caller would parse and believe.
+pub const MAX_CONNECTOR_CALL_RESULT_BYTES: usize = 1024 * 1024;
+
+/// Why a connector call produced no result, at the seam.
+///
+/// A dedicated type rather than [`AppError`] for the same reason as
+/// [`SkillFileError`]: the wire separates `policy_denied`,
+/// `connector_unavailable`, `connector_call_timeout`, `connector_call_failed`
+/// and `response_too_large`, and [`AppError`] has no way to carry those without
+/// widening the shared enum for every crate that matches on it. The protocol
+/// layer maps these onto stable codes.
+#[derive(Debug)]
+pub enum ConnectorCallError {
+    /// The request itself is unusable (e.g. an empty tool name).
+    InvalidRequest(String),
+    /// No such connector on this host.
+    NotFound(String),
+    /// The connector is registered but switched off.
+    Unavailable(String),
+    /// The host's `[connector_proxy]` policy refuses this connector/tool pair.
+    PolicyDenied(String),
+    /// The call did not finish inside the budget.
+    Timeout { seconds: u64 },
+    /// The upstream result exceeded [`MAX_CONNECTOR_CALL_RESULT_BYTES`].
+    TooLarge { size: usize, limit: usize },
+    /// Transport, protocol, or server failure.
+    Failed(String),
+}
+
+/// The **call proxy** seam (`connector/call`, doc `24` §5).
+///
+/// Deliberately separate from [`ConnectorCatalogProvider`]: that one *describes*
+/// connectors, this one *executes* on them, and only this one can be a security
+/// boundary. Everything an MCP call needs — the transport, its credentials, the
+/// OAuth token, the child process — stays behind this interface; what crosses it
+/// is a tool name, an argument object, and the server's own result.
+///
+/// Implementations own the two gates, because only they can see the connector
+/// row and the host policy:
+///
+/// 1. the connector must be registered **and enabled**;
+/// 2. the `[connector_proxy]` allowlist must name the connector/tool pair.
+///
+/// A caller may not name a URL, a command, or a header: the addressable surface
+/// is one registered connector id.
+#[async_trait]
+pub trait ConnectorCallProvider: Send + Sync {
+    async fn call(
+        &self,
+        connector_id: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<AppServerConnectorCallResult, ConnectorCallError>;
 }
 
 /// Import pipeline seam (`import/run`, `import/list`, `import/get`). The

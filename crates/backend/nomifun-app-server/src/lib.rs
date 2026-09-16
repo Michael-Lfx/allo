@@ -17,9 +17,12 @@ pub use agent_store::{
     AgentStoreProvider,
 };
 pub use catalog::{
-    AgentCatalogProvider, ConnectorAuthProvider, ConnectorCatalogProvider, ImportProvider,
-    InstallProvider, MarketplaceProvider, ModelCatalogProvider, SkillCatalogProvider,
-    StoreProvider, TeamCatalogProvider,
+    AgentCatalogProvider, ConnectorAuthProvider, ConnectorCallError, ConnectorCallProvider,
+    ConnectorCatalogProvider, ImportProvider,
+    InstallProvider, MarketplaceProvider, ModelCatalogProvider, MAX_CONNECTOR_CALL_RESULT_BYTES,
+    MAX_SKILL_FILE_BYTES,
+    SkillCatalogProvider, SkillFileBytes, SkillFileError, SkillFileProvider, StoreProvider,
+    TeamCatalogProvider,
 };
 pub use workspace_resolver::{
     FilesystemWorkspaceResolver, ResolvedWorkspace, WorkspaceResolver,
@@ -37,6 +40,9 @@ use std::path::Path as FsPath;
 use std::sync::{Arc, RwLock};
 
 use sha2::{Digest, Sha256};
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
 use nomifun_db::{
     AppServerIdempotencyCommit, AppServerIdempotencyLookup, AppServerIdempotencyScope,
@@ -67,6 +73,7 @@ use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerConfigMcpRejectionView,
     AppServerConfigMcpServerView, AppServerConfigMcpView, AppServerConfigMemoryView,
     AppServerConfigProviderView, AppServerConfigView, AppServerMcpSourceView,
+    AppServerConnectorCallResult,
     AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
@@ -75,7 +82,7 @@ use nomifun_api_types::{
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
     AppServerMarketplaceSummary, AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillSummary,
+    AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary,
     AppServerStoreInstallResult,
     AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
     AnswerExecutionDecisionRequest, CreateProviderRequest, ListMessagesQuery, MessageResponse,
@@ -94,15 +101,31 @@ use tokio::sync::mpsc;
 /// App Server wire protocol version, negotiated by `initialize`.
 ///
 /// Not a version number: a **contract fingerprint**. It must differ from the
-/// previous value on any wire change at all, additive included — and a second
-/// change on the same day takes the next day's stamp rather than reusing it.
+/// previous value on any wire change at all, additive included. The shape is
+/// `fp-<n>` — a plain counter, so a bump just increments it and no value is ever
+/// reused by accident.
+///
+/// So it is a **label, not a version**: neither a release number nor a date.
+/// Until `fp-1` the values were date stamps (kept below as history), and those
+/// dates were **not** the day of the change: consecutive changes advanced the
+/// stamp a day each, so they ran ahead of the calendar. The list below is keyed
+/// by *value* — read it as "which wire change is this?", never as "when did this
+/// ship".
+///
 /// `2026-09-16` carried `store/list`'s `published_at`; `2026-09-17` added the
 /// two MCP declaration write methods; `2026-09-18` adds `config/get-mcp`, the
 /// editor's read of the same file (`21` D17); `2026-09-19` adds the
 /// `conversation/list-changed` notification — the sidebar's half of the
 /// conversation list projection (auto-title, rename, delete), which until now
-/// only reached the host channel.
-pub const PROTOCOL_VERSION: &str = "2026-09-19";
+/// only reached the host channel. `2026-09-20` adds the Skill **file tree**
+/// read face (`skill/files`, `skill/file`), so a Skill's companions are
+/// readable instead of only its 1200-char manifest summary (doc 24 §4).
+/// `2026-09-21` adds the connector **call proxy** (`connector/call`), so a third
+/// party can run an installed MCP tool while the connection, its headers and its
+/// credentials stay on the host (doc 24 §5). **`fp-1` changes the shape only**
+/// (date stamp → counter): a `2026-…` value invites being read as a release date,
+/// and no wire behaviour changed with the rename.
+pub const PROTOCOL_VERSION: &str = "fp-1";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +220,12 @@ pub struct CapabilityAvailability {
     pub runtime: bool,
     pub events: bool,
     pub skills: bool,
+    /// `skill/files` / `skill/file` readiness — the *file tree* seam, which is
+    /// wired independently of the catalog (`05` §4.3.1).
+    pub skill_files: bool,
     pub connectors: bool,
+    /// `connector/call` readiness (the call proxy seam).
+    pub connector_calls: bool,
     pub oauth: bool,
     pub imports: bool,
     pub installs: bool,
@@ -219,7 +247,9 @@ impl CapabilityAvailability {
             runtime: state.runtime.is_some(),
             events: state.event_bus.is_some(),
             skills: state.skills.is_some(),
+            skill_files: state.skill_files.is_some(),
             connectors: state.connectors.is_some(),
+            connector_calls: state.connector_calls.is_some(),
             oauth: state.connector_auth.is_some(),
             imports: state.imports.is_some(),
             installs: state.installs.is_some(),
@@ -421,7 +451,16 @@ pub struct Capabilities {
     pub teams: bool,
     pub team_runtime: bool,
     pub skills: bool,
+    /// The Skill **file tree** read face (`skill/files` / `skill/file`).
+    ///
+    /// Separate from `skills` on purpose: a host can wire the catalog without
+    /// the file provider, and a client that only sees `skills: true` would
+    /// otherwise call `skill/files` and get `unsupported_operation`.
+    pub skill_files: bool,
     pub connectors: bool,
+    /// `connector/call` readiness — the **call proxy**, wired independently of
+    /// the connector catalog (doc 24 §5).
+    pub connector_calls: bool,
     pub run_notifications: bool,
     pub approvals: bool,
     pub artifacts: bool,
@@ -440,7 +479,9 @@ impl Capabilities {
             teams: availability.teams,
             team_runtime: availability.team_runtime,
             skills: availability.skills,
+            skill_files: availability.skill_files,
             connectors: availability.connectors,
+            connector_calls: availability.connector_calls,
             run_notifications: availability.runtime && availability.events,
             // Derived from the runtime, exactly like `run_notifications`: the
             // approval answer path (`run/answer-decision`) rides the same
@@ -1038,6 +1079,10 @@ pub struct AppServerRouterState {
     /// Agent Store Skill catalog provider. `None` keeps the `skills`
     /// capability off and returns `unsupported_operation` for `skill/*`.
     pub skills: Option<Arc<dyn SkillCatalogProvider>>,
+    /// Skill *file tree* read face (`skill/files`, `skill/file`). `None` keeps
+    /// those methods answering `unsupported_operation` and the `skill_files`
+    /// capability off.
+    pub skill_files: Option<Arc<dyn SkillFileProvider>>,
     /// Agent Store Skill write face (`skill/create|update|delete`, `16` R17).
     /// `None` keeps the write methods off (`unsupported_operation`); the read
     /// catalog stays available either way. Host management surface: no HTTP
@@ -1046,6 +1091,11 @@ pub struct AppServerRouterState {
     /// Agent Store Connector catalog provider. `None` keeps the `connectors`
     /// capability off and returns `unsupported_operation` for `connector/*`.
     pub connectors: Option<Arc<dyn ConnectorCatalogProvider>>,
+    /// The connector **call proxy** (`connector/call`, doc 24 §5). `None` keeps
+    /// the `connector_calls` capability off and the method answering
+    /// `unsupported_operation`; production wires it only on the agent-store
+    /// host, and only when `[connector_proxy]` allows something.
+    pub connector_calls: Option<Arc<dyn ConnectorCallProvider>>,
     /// Connector OAuth pass-through. `None` keeps the `oauth` capability off.
     pub connector_auth: Option<Arc<dyn ConnectorAuthProvider>>,
     /// Agent Store Importer/PluginSnapshot provider. `None` keeps the
@@ -1101,8 +1151,10 @@ impl Default for AppServerRouterState {
             agent_store_config_path: None,
             adopt_store_mcp_declarations: None,
             skills: None,
+            skill_files: None,
             skill_writes: None,
             connectors: None,
+            connector_calls: None,
             connector_auth: None,
             imports: None,
             installs: None,
@@ -1150,6 +1202,14 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         // Agent Store Skill catalog
         .route("/api/app-server/skills", get(list_skills_route))
         .route("/api/app-server/skills/{skill_id}", get(get_skill_route))
+        // Skill file tree (doc 24 §4). Distinct path segment from
+        // `{skill_id}` so a skill literally named "files" cannot shadow the
+        // sub-route.
+        .route("/api/app-server/skills/{skill_id}/files", get(list_skill_files_route))
+        .route(
+            "/api/app-server/skills/{skill_id}/files/{*path}",
+            get(read_skill_file_route),
+        )
         // Agent Store Connector catalog / status / probe / OAuth
         .route("/api/app-server/connectors", get(list_connectors_route))
         .route("/api/app-server/models", get(list_models_route))
@@ -1161,6 +1221,11 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         .route(
             "/api/app-server/connectors/{connector_id}/test",
             post(connector_test_route),
+        )
+        // Connector call proxy (doc 24 §5).
+        .route(
+            "/api/app-server/connectors/{connector_id}/call",
+            post(connector_call_route),
         )
         .route(
             "/api/app-server/connectors/{connector_id}/auth-start",
@@ -1559,6 +1624,70 @@ async fn get_skill_impl(
     skill_catalog_provider(state)?.get(skill_id).await.map_err(AppServerError::from)
 }
 
+/// `skill/files`: the readable file inventory of one Skill's directory.
+fn skill_file_provider(state: &AppServerRouterState) -> Result<Arc<dyn SkillFileProvider>, AppServerError> {
+    state.skill_files.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "the skill file read face is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+/// Map a seam-level skill file failure onto its stable wire code.
+fn skill_file_error(error: SkillFileError) -> AppServerError {
+    match error {
+        SkillFileError::NotFound(message) => {
+            AppServerError::new("not_found", message, StatusCode::NOT_FOUND, false)
+        }
+        SkillFileError::InvalidRequest(message) => {
+            AppServerError::new("invalid_request", message, StatusCode::BAD_REQUEST, false)
+        }
+        SkillFileError::TooLarge { size, limit } => AppServerError::new(
+            "response_too_large",
+            format!("skill file is {size} bytes; the limit is {limit}"),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+        ),
+        SkillFileError::Internal(message) => AppServerError::new(
+            "internal_error",
+            message,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            true,
+        ),
+    }
+}
+
+async fn list_skill_files_impl(
+    state: &AppServerRouterState,
+    skill_id: &str,
+) -> Result<AppServerSkillFileList, AppServerError> {
+    skill_file_provider(state)?
+        .files(skill_id)
+        .await
+        .map_err(skill_file_error)
+}
+
+/// `skill/file`: one skill-relative file's bytes.
+///
+/// The provider owns path safety (see the trait docs): the protocol layer
+/// deliberately does not second-guess the resolved path, because only the
+/// provider knows the skill directory it resolved the id to. The size cap is
+/// the provider's too — it refuses an oversized file from its metadata before
+/// reading it, so nothing large is ever loaded only to be rejected.
+async fn read_skill_file_impl(
+    state: &AppServerRouterState,
+    skill_id: &str,
+    path: &str,
+) -> Result<SkillFileBytes, AppServerError> {
+    skill_file_provider(state)?
+        .read(skill_id, path)
+        .await
+        .map_err(skill_file_error)
+}
+
 /// Write face seam (`skill/create|update|delete`). A host that wires the read
 /// catalog but not the write face answers `unsupported_operation` — never a
 /// silent no-op.
@@ -1682,6 +1811,70 @@ async fn get_connector_impl(
     connector_id: &str,
 ) -> Result<AppServerConnectorDetail, AppServerError> {
     connector_catalog_provider(state)?.get(connector_id).await.map_err(AppServerError::from)
+}
+
+/// `connector/call`: the call-proxy seam (doc 24 §5).
+fn connector_call_provider(state: &AppServerRouterState) -> Result<Arc<dyn ConnectorCallProvider>, AppServerError> {
+    state.connector_calls.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "the connector call proxy is not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+/// Map a seam-level call failure onto its stable wire code.
+///
+/// `Failed` is the catch-all on purpose: a transport or protocol failure is not
+/// something a caller can act on differently, whereas "not allowed", "switched
+/// off", "too slow" and "too big" each have a distinct next move.
+fn connector_call_error(error: ConnectorCallError) -> AppServerError {
+    match error {
+        ConnectorCallError::InvalidRequest(message) => {
+            AppServerError::new("invalid_request", message, StatusCode::BAD_REQUEST, false)
+        }
+        ConnectorCallError::NotFound(message) => {
+            AppServerError::new("not_found", message, StatusCode::NOT_FOUND, false)
+        }
+        ConnectorCallError::Unavailable(message) => {
+            AppServerError::new("connector_unavailable", message, StatusCode::BAD_REQUEST, false)
+        }
+        ConnectorCallError::PolicyDenied(message) => {
+            AppServerError::new("policy_denied", message, StatusCode::FORBIDDEN, false)
+        }
+        ConnectorCallError::Timeout { seconds } => AppServerError::new(
+            "connector_call_timeout",
+            format!("the connector did not answer within {seconds}s"),
+            StatusCode::GATEWAY_TIMEOUT,
+            true,
+        ),
+        ConnectorCallError::TooLarge { size, limit } => AppServerError::new(
+            "response_too_large",
+            format!("the tool result is {size} bytes; the limit is {limit}"),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+        ),
+        ConnectorCallError::Failed(message) => AppServerError::new(
+            "connector_call_failed",
+            message,
+            StatusCode::BAD_GATEWAY,
+            true,
+        ),
+    }
+}
+
+async fn connector_call_impl(
+    state: &AppServerRouterState,
+    connector_id: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> Result<AppServerConnectorCallResult, AppServerError> {
+    connector_call_provider(state)?
+        .call(connector_id, tool, arguments)
+        .await
+        .map_err(connector_call_error)
 }
 
 async fn connector_status_impl(
@@ -2568,6 +2761,35 @@ async fn get_skill_route(
     Ok(Json(get_skill_impl(&state, &skill_id).await?))
 }
 
+async fn list_skill_files_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(skill_id): Path<String>,
+) -> Result<Json<AppServerSkillFileList>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(list_skill_files_impl(&state, &skill_id).await?))
+}
+
+/// Serve one skill file as raw bytes.
+///
+/// Unlike the public display-asset route, this one **requires** a ready
+/// connection: it exposes skill bodies and scripts, not `<img>`-referenceable
+/// icons. Path safety lives in the provider.
+async fn read_skill_file_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path((skill_id, path)): Path<(String, String)>,
+) -> Result<impl IntoResponse, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    let file = read_skill_file_impl(&state, &skill_id, &path).await?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, file.content_type)],
+        file.bytes,
+    ))
+}
+
 async fn list_connectors_route(
     State(state): State<AppServerRouterState>,
     headers: HeaderMap,
@@ -2604,6 +2826,34 @@ async fn connector_status_route(
 ) -> Result<Json<AppServerConnectorStatusView>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(connector_status_impl(&state, &connector_id).await?))
+}
+
+/// `POST /api/app-server/connectors/{connector_id}/call`
+///
+/// The connector id is the only addressable thing: the caller supplies a tool
+/// name and an argument object, never a URL, a command or a header. Whether the
+/// pair is callable at all is the provider's gate, not this handler's.
+async fn connector_call_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+    Path(connector_id): Path<String>,
+    Json(body): Json<WsConnectorCallBody>,
+) -> Result<Json<AppServerConnectorCallResult>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(
+        connector_call_impl(&state, &connector_id, &body.tool, body.arguments).await?,
+    ))
+}
+
+/// Body of the one-shot HTTP binding: same fields as [`WsConnectorCall`],
+/// minus the connector id (it is in the path).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConnectorCallBody {
+    tool: String,
+    #[serde(default)]
+    arguments: serde_json::Value,
 }
 
 async fn connector_test_route(
@@ -6026,6 +6276,29 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode skill: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        "skill/files" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSkillQuery>(params)?;
+            let files = list_skill_files_impl(state, &params.skill_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(files).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode skill files: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "skill/file" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSkillFileQuery>(params)?;
+            let file = read_skill_file_impl(state, &params.skill_id, &params.path).await?;
+            // JSON has no byte string, so the WS binding base64s the body; the
+            // HTTP binding serves the raw bytes instead (see §4.3.1). Both
+            // carry the same `content_type`, so a caller can pick either.
+            Ok(ws_response(request_id, serde_json::json!({
+                "skill_id": params.skill_id,
+                "path": params.path,
+                "content_type": file.content_type,
+                "encoding": "base64",
+                "content": BASE64_STANDARD.encode(&file.bytes),
+            })))
+        }
         // ---------------- Skill write face (host management surface) ---------
         // `16` R17 / W12: the store's own CRUD over *user* skills. WebSocket
         // only and deliberately absent from the published SDK package — a
@@ -6067,6 +6340,15 @@ async fn dispatch_connection_request(
             })?))
         }
         // ---------------- Agent Store Connector catalog ----------------
+        // ---------------- Agent Store Connector catalog ----------------
+        "connector/call" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsConnectorCall>(params)?;
+            let result = connector_call_impl(state, &params.connector_id, &params.tool, params.arguments).await?;
+            Ok(ws_response(request_id, serde_json::to_value(result).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode call result: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         "connector/list" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let connectors = list_connectors_impl(state).await?;
@@ -6380,6 +6662,36 @@ struct WsConversationQuery {
 #[serde(deny_unknown_fields)]
 struct WsSkillQuery {
     skill_id: String,
+}
+
+/// `connector/call` (doc `24` §5.2).
+///
+/// `arguments` is `serde_json::Value` because an MCP tool's parameters are
+/// described by an arbitrary JSON Schema — there is nothing to type them
+/// against here, and imposing a shape would only reject valid calls.
+///
+/// `deny_unknown_fields` is load-bearing: a request carrying `url`, `command`,
+/// `headers` or `env` is `invalid_request`, so a caller cannot reach past the
+/// registered connector to the transport itself.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsConnectorCall {
+    connector_id: String,
+    tool: String,
+    #[serde(default)]
+    arguments: serde_json::Value,
+}
+
+/// `skill/file`: the skill id plus the file's skill-relative path.
+///
+/// `deny_unknown_fields` keeps the request honest: the provider — not the
+/// caller — decides what `path` may resolve to, and no field can name an
+/// absolute location or a snapshot.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsSkillFileQuery {
+    skill_id: String,
+    path: String,
 }
 
 /// `skill/create` (`16` R17 / W12).
@@ -9861,6 +10173,273 @@ model = "mimo-v2.5-free"
         assert_eq!(denied.code, "unsupported_operation");
         let denied_agents = list_agents_impl(&bare).await.unwrap_err();
         assert_eq!(denied_agents.code, "unsupported_operation");
+    }
+
+    // ---- Skill file tree: `skill/files` · `skill/file` (doc 24 §4) ----------
+    //
+    // The real path-safety logic lives in the host adapter
+    // (`nomifun-app/src/app_server_skill_files.rs`), which owns the filesystem.
+    // These tests pin the *protocol* layer's half of the contract: the
+    // capability bit is honest, an uninjected seam stays closed, and each seam
+    // error keeps its stable wire code — notably that `TooLarge` is
+    // `response_too_large` and not folded into `invalid_request`.
+
+    /// Skill file seam stub. `fail` is interior-mutable because the provider
+    /// trait takes `&self` (production implementations are stateless) while a
+    /// test needs to hand back a specific error once.
+    struct FakeSkillFiles {
+        fail: std::sync::Mutex<Option<SkillFileError>>,
+    }
+
+    impl FakeSkillFiles {
+        fn ok() -> Self {
+            Self { fail: std::sync::Mutex::new(None) }
+        }
+
+        fn failing(error: SkillFileError) -> Self {
+            Self { fail: std::sync::Mutex::new(Some(error)) }
+        }
+
+        fn take_failure(&self) -> Option<SkillFileError> {
+            self.fail.lock().expect("fake skill file lock").take()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SkillFileProvider for FakeSkillFiles {
+        async fn files(&self, skill_id: &str) -> Result<AppServerSkillFileList, SkillFileError> {
+            if let Some(error) = self.take_failure() {
+                return Err(error);
+            }
+            Ok(AppServerSkillFileList {
+                skill_id: skill_id.to_owned(),
+                files: vec![nomifun_api_types::AppServerSkillFile {
+                    path: "SKILL.md".into(),
+                    size: 12,
+                    digest: "abc".into(),
+                }],
+                content_digest: "tree".into(),
+                truncated: false,
+            })
+        }
+
+        async fn read(&self, _skill_id: &str, path: &str) -> Result<SkillFileBytes, SkillFileError> {
+            if let Some(error) = self.take_failure() {
+                return Err(error);
+            }
+            Ok(SkillFileBytes {
+                bytes: path.as_bytes().to_vec(),
+                content_type: "text/markdown; charset=utf-8".into(),
+            })
+        }
+    }
+
+    /// Assert an error's wire code without requiring `Debug` on the success
+    /// type: `SkillFileBytes` carries file contents and deliberately has none,
+    /// so a body can never reach a log or a panic message.
+    fn code_of<T>(result: Result<T, AppServerError>) -> &'static str {
+        match result {
+            Ok(_) => panic!("expected an error, got a success"),
+            Err(error) => error.code,
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_file_face_requires_its_own_capability() {
+        // The catalog alone must NOT advertise the file face: a client that saw
+        // `skills: true` and called `skill/files` would get
+        // `unsupported_operation` after the fact.
+        let catalog_only = AppServerRouterState {
+            skills: Some(Arc::new(crate::catalog::FakeSkillCatalog { skills: vec![] })),
+            ..Default::default()
+        };
+        let availability = CapabilityAvailability::from_state(&catalog_only);
+        assert!(availability.skills);
+        assert!(!availability.skill_files, "catalog alone must not advertise the file face");
+        assert!(!Capabilities::from_availability(availability).skill_files);
+
+        let wired = AppServerRouterState {
+            skill_files: Some(Arc::new(FakeSkillFiles::ok())),
+            ..Default::default()
+        };
+        let availability = CapabilityAvailability::from_state(&wired);
+        assert!(availability.skill_files);
+    }
+
+    #[tokio::test]
+    async fn skill_file_face_is_closed_without_a_provider() {
+        let bare = AppServerRouterState::default();
+        assert!(skill_file_provider(&bare).is_err());
+        assert_eq!(
+            code_of(list_skill_files_impl(&bare, "demo").await),
+            "unsupported_operation"
+        );
+        assert_eq!(
+            code_of(read_skill_file_impl(&bare, "demo", "SKILL.md").await),
+            "unsupported_operation"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_file_impls_round_trip_through_the_provider() {
+        let state = AppServerRouterState {
+            skill_files: Some(Arc::new(FakeSkillFiles::ok())),
+            ..Default::default()
+        };
+        let listing = list_skill_files_impl(&state, "demo").await.unwrap();
+        assert_eq!(listing.skill_id, "demo");
+        assert_eq!(listing.files[0].path, "SKILL.md");
+        assert!(!listing.truncated);
+
+        let file = read_skill_file_impl(&state, "demo", "hello").await.unwrap();
+        assert_eq!(file.bytes, b"hello");
+    }
+
+    #[tokio::test]
+    async fn skill_file_errors_keep_their_stable_codes() {
+        // `TooLarge` must stay distinguishable from the other two: a caller
+        // that saw `invalid_request` would treat a size refusal as a bad
+        // request and retry the same way forever.
+        let cases = [
+            (SkillFileError::NotFound("gone".into()), "not_found"),
+            (SkillFileError::InvalidRequest("bad path".into()), "invalid_request"),
+            (
+                SkillFileError::TooLarge { size: 10, limit: 5 },
+                "response_too_large",
+            ),
+        ];
+        for (error, expected) in cases {
+            let state = AppServerRouterState {
+                skill_files: Some(Arc::new(FakeSkillFiles::failing(error))),
+                ..Default::default()
+            };
+            assert_eq!(code_of(list_skill_files_impl(&state, "demo").await), expected);
+        }
+    }
+
+    // ---- Connector call proxy: `connector/call` (doc 24 §5) ---------------
+    //
+    // The gates and the execution live in the host adapter
+    // (`nomifun-app/src/app_server_connector_call.rs`). These pin the protocol
+    // layer's half: an honest capability bit, a closed seam when unwired, and —
+    // the part that matters most — that each seam error keeps its own wire code,
+    // so "not allowed", "switched off", "too slow" and "too big" never collapse
+    // into one indistinguishable failure.
+
+    struct FakeConnectorCalls {
+        fail: std::sync::Mutex<Option<ConnectorCallError>>,
+    }
+
+    impl FakeConnectorCalls {
+        fn ok() -> Self {
+            Self { fail: std::sync::Mutex::new(None) }
+        }
+
+        fn failing(error: ConnectorCallError) -> Self {
+            Self { fail: std::sync::Mutex::new(Some(error)) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ConnectorCallProvider for FakeConnectorCalls {
+        async fn call(
+            &self,
+            connector_id: &str,
+            tool: &str,
+            arguments: serde_json::Value,
+        ) -> Result<AppServerConnectorCallResult, ConnectorCallError> {
+            if let Some(error) = self.fail.lock().expect("fake call lock").take() {
+                return Err(error);
+            }
+            Ok(AppServerConnectorCallResult {
+                is_error: false,
+                result: serde_json::json!({
+                    "connector_id": connector_id,
+                    "tool": tool,
+                    "arguments": arguments,
+                }),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_call_face_requires_its_own_capability() {
+        // The catalog alone must not advertise the call proxy: a client that
+        // saw `connectors: true` and called `connector/call` would get
+        // `unsupported_operation` after the fact.
+        let catalog_only = AppServerRouterState {
+            connectors: Some(Arc::new(crate::catalog::FakeConnectorCatalog {
+                connectors: vec![],
+                auth_required_ids: vec![],
+                probe_fail_ids: vec![],
+            })),
+            ..Default::default()
+        };
+        let availability = CapabilityAvailability::from_state(&catalog_only);
+        assert!(availability.connectors);
+        assert!(!availability.connector_calls);
+        assert!(!Capabilities::from_availability(availability).connector_calls);
+
+        let wired = AppServerRouterState {
+            connector_calls: Some(Arc::new(FakeConnectorCalls::ok())),
+            ..Default::default()
+        };
+        assert!(CapabilityAvailability::from_state(&wired).connector_calls);
+    }
+
+    #[tokio::test]
+    async fn connector_call_face_is_closed_without_a_provider() {
+        let bare = AppServerRouterState::default();
+        assert!(connector_call_provider(&bare).is_err());
+        let error = connector_call_impl(&bare, "conn-1", "echo", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "unsupported_operation");
+    }
+
+    #[tokio::test]
+    async fn connector_call_errors_keep_their_stable_codes() {
+        let cases = [
+            (ConnectorCallError::InvalidRequest("".into()), "invalid_request"),
+            (ConnectorCallError::NotFound("nope".into()), "not_found"),
+            (ConnectorCallError::Unavailable("off".into()), "connector_unavailable"),
+            (ConnectorCallError::PolicyDenied("not listed".into()), "policy_denied"),
+            (ConnectorCallError::Timeout { seconds: 3 }, "connector_call_timeout"),
+            (
+                ConnectorCallError::TooLarge { size: 9, limit: 1 },
+                "response_too_large",
+            ),
+            (ConnectorCallError::Failed("boom".into()), "connector_call_failed"),
+        ];
+        for (error, expected) in cases {
+            let state = AppServerRouterState {
+                connector_calls: Some(Arc::new(FakeConnectorCalls::failing(error))),
+                ..Default::default()
+            };
+            let wire = connector_call_impl(&state, "conn-1", "echo", serde_json::json!({}))
+                .await
+                .unwrap_err();
+            assert_eq!(wire.code, expected, "wrong wire code for {expected}");
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_call_passes_the_tool_and_arguments_through() {
+        let state = AppServerRouterState {
+            connector_calls: Some(Arc::new(FakeConnectorCalls::ok())),
+            ..Default::default()
+        };
+        let result = connector_call_impl(
+            &state,
+            "conn-1",
+            "create_issue",
+            serde_json::json!({ "title": "t" }),
+        )
+        .await
+        .unwrap();
+        assert!(!result.is_error);
+        assert_eq!(result.result["tool"], "create_issue");
+        assert_eq!(result.result["arguments"]["title"], "t");
     }
 
     // ---- Skill write face: `skill/create` · `skill/update` · `skill/delete` --

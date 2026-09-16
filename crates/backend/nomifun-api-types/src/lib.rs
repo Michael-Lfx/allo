@@ -74,7 +74,7 @@ pub use app_server::{
     AppServerCompatibilityTriple, AppServerConfigMcpRejectionView, AppServerConfigMcpServerView,
     AppServerConfigMcpView, AppServerConfigMemoryView, AppServerConfigProviderView,
     AppServerConfigView, AppServerMcpSourceView,
-    AppServerConnectorDetail, AppServerConnectorProbeResult,
+    AppServerConnectorDetail, AppServerConnectorCallResult, AppServerConnectorProbeResult,
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
     AppServerConnectorTool, AppServerImportComponent, AppServerImportDetail,
     AppServerImportRequest, AppServerImportResult, AppServerImportSourceKind,
@@ -88,7 +88,8 @@ pub use app_server::{
     AppServerMarketplaceSourceKind, AppServerMarketplaceSummary,
     AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillSummary,
+    AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFile, AppServerSkillFileList,
+    AppServerSkillSummary,
     AppServerStoreInstallResult,
     AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };

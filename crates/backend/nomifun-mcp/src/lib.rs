@@ -15,7 +15,9 @@ pub use adapters::{
     ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, GeminiAdapter, NomiAdapter, NomifunAdapter, OpencodeAdapter,
     QwenAdapter,
 };
-pub use connection_test::McpConnectionTestService;
+pub use connection_test::{
+    McpConnectionTestService, McpToolCallError, McpToolCallOutcome, McpToolCallPool,
+};
 pub use error::McpError;
 pub use oauth_service::{MCP_PROTOCOL_VERSION, McpOAuthService};
 pub use routes::{McpRouterState, mcp_routes};

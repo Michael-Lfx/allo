@@ -1183,6 +1183,13 @@ pub struct AppServices {
     /// `[memory].distill_enabled`. Every host that does not opt in carries
     /// [`nomifun_api_types::NomiToolPolicy::default`], which constrains nothing.
     pub tool_policy: nomifun_api_types::NomiToolPolicy,
+    /// The host's `[connector_proxy]` policy, resolved once at startup (doc `24`
+    /// §5.1).
+    ///
+    /// Fail-closed: every host that does not declare the table carries
+    /// [`nomifun_app_server::agent_store::ConnectorProxyPolicy::deny_all`], so
+    /// the call proxy is off unless an operator wrote the allowlist down.
+    pub connector_proxy_policy: nomifun_app_server::agent_store::ConnectorProxyPolicy,
     /// The raw `--adopt-store-mcp-declarations` flag the resolved
     /// `mcp_declarations` below came from.
     ///
@@ -1584,6 +1591,63 @@ impl std::error::Error for RetainedStartupCleanupError {
 /// Gated by the same `adopt` flag as the file, so the desktop and web hosts
 /// cannot be narrowed through the environment either.
 const TOOLS_ENV: &str = "AGENT_STORE_TOOLS";
+
+/// Environment override for the connector call policy (`[connector_proxy]`).
+///
+/// Same shape and same whole-replacement rule as [`TOOLS_ENV`] / `[tools]`, and
+/// gated by the same adopt flag so the desktop and web hosts cannot be given a
+/// call proxy through the environment either.
+const CONNECTOR_PROXY_ENV: &str = "AGENT_STORE_CONNECTOR_PROXY";
+
+/// Resolve this host's connector call policy (doc `24` §5.1).
+///
+/// Two deliberate properties, both load-bearing:
+///
+/// - **Opt-in, not file-presence-driven.** Gated on the same `adopt` flag as
+///   `[tools]` (`--adopt-store-tool-policy`, set only by `apps/agent-store`), so
+///   the desktop and web hosts — which read the same file for providers and
+///   marketplaces — never expose a call proxy because of it.
+/// - **Fail-closed, unlike the tool policy.** A missing file, a missing table or
+///   an unparseable override all yield [`ConnectorProxyPolicy::deny_all`]. The
+///   tool policy fails *open* because it only ever subtracts from a surface the
+///   host already had; this one fails *closed* because it grants a third party
+///   the ability to execute tools on the host's connections. A typo must never
+///   be the difference between "nothing callable" and "everything callable".
+///
+/// Kept pure so the rule above is testable without booting a database.
+fn resolve_connector_proxy_policy(
+    adopt: bool,
+    path: Option<&std::path::Path>,
+    env: Option<&str>,
+) -> nomifun_app_server::agent_store::ConnectorProxyPolicy {
+    use nomifun_app_server::agent_store::{AgentStoreConfig, AgentStoreConnectorProxy, ConnectorProxyPolicy};
+
+    if !adopt {
+        return ConnectorProxyPolicy::deny_all();
+    }
+    if let Some(raw) = env.map(str::trim).filter(|raw| !raw.is_empty()) {
+        match serde_json::from_str::<AgentStoreConnectorProxy>(raw) {
+            Ok(declared) => {
+                tracing::info!(
+                    target: "agent_store_connector_proxy",
+                    "connector call policy taken from {CONNECTOR_PROXY_ENV}; the config file's [connector_proxy] table is ignored"
+                );
+                return ConnectorProxyPolicy::from_declared(&declared);
+            }
+            // Still fail closed: an unusable override does not fall back to a
+            // possibly-wider file, because "the operator's intent is unclear" is
+            // not a reason to grant execution.
+            Err(error) => tracing::warn!(
+                target: "agent_store_connector_proxy",
+                "{CONNECTOR_PROXY_ENV} is not a valid connector proxy policy ({error}); the call proxy stays off"
+            ),
+        }
+        return ConnectorProxyPolicy::deny_all();
+    }
+    path.and_then(AgentStoreConfig::load_ok)
+        .map(|stored| stored.connector_proxy_policy())
+        .unwrap_or_else(ConnectorProxyPolicy::deny_all)
+}
 
 /// Resolve this host's global tool policy from the agent-store config file.
 ///
@@ -3155,6 +3219,24 @@ impl AppServices {
             );
         }
 
+        // Host-owned connector call policy, read at startup from the same file
+        // (`[connector_proxy]`, doc `24` §5.1). Same host gating as `[tools]`:
+        // only the dedicated Store host exposes a call proxy, and only for the
+        // pairs its operator allowlisted. `AGENT_STORE_CONNECTOR_PROXY` (JSON)
+        // precedes the file so a spawned host gets the policy it asked for.
+        let proxy_env = std::env::var(CONNECTOR_PROXY_ENV).ok();
+        let connector_proxy_policy = resolve_connector_proxy_policy(
+            config.adopt_store_tool_policy,
+            config.agent_store_config_path.as_deref(),
+            proxy_env.as_deref(),
+        );
+        if config.adopt_store_tool_policy && connector_proxy_policy.is_enabled() {
+            tracing::info!(
+                target: "agent_store_connector_proxy",
+                "connector call proxy enabled for this host"
+            );
+        }
+
         // Host-owned MCP server declarations, read once at startup from
         // `mcp.json` next to the same config file (`20` §7.9 / `21` D14). Same
         // host gating as `[tools]`, and the same "report once here" posture:
@@ -3472,6 +3554,7 @@ impl AppServices {
             agent_store_config_path: config.agent_store_config_path.clone(),
             adopt_store_mcp_declarations: config.adopt_store_mcp_declarations,
             tool_policy,
+            connector_proxy_policy,
             mcp_declarations,
             delegate_sink_provider_slot,
             runtime_capabilities: capabilities.runtime_capabilities,

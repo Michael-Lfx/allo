@@ -80,6 +80,44 @@ pub struct AppServerSkillDetail {
     pub instructions_summary: Option<String>,
 }
 
+/// One file inside a skill directory (`skill/files`).
+///
+/// A Skill is a *directory*, not a single document: `SKILL.md` plus whatever
+/// it ships alongside (`references/`, `scripts/`, `templates/`, `assets/` —
+/// `02` §5, `17` §5). `skill/get` can only ever return a bounded summary of the
+/// manifest, so this is the read face for the rest of the tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerSkillFile {
+    /// Path relative to the skill directory, POSIX-separated, deterministic order.
+    pub path: String,
+    pub size: u64,
+    /// Single-file sha256, lowercase hex.
+    pub digest: String,
+}
+
+/// The readable file inventory of one Skill (`skill/files`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerSkillFileList {
+    pub skill_id: String,
+    /// Every readable file, sorted by `path`. Directories are not listed.
+    pub files: Vec<AppServerSkillFile>,
+    /// Tree digest of **this skill directory**, computed with the same
+    /// `tree_digest` rule the snapshot digest uses (sorted relative paths +
+    /// per-file sha256) so a caller can pin the exact version it read.
+    ///
+    /// Deliberately **not** the snapshot's `content_digest`, and not
+    /// interchangeable with it: the snapshot digest covers the whole imported
+    /// source tree (`import.rs`), while this one is scoped to the one skill
+    /// directory. The two coincide only when the snapshot holds exactly this
+    /// directory and nothing else — do not assume equality.
+    pub content_digest: String,
+    /// The inventory hit its entry ceiling and is incomplete. Reported rather
+    /// than silently truncated: a partial list that claims to be whole is the
+    /// failure mode this field exists to prevent.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 /// Result of `skill/delete` (`16` R17 / W12).
 ///
 /// Deleting a user skill can *reveal* a skill that was shadowed by it: the
@@ -199,6 +237,27 @@ pub struct AppServerConnectorProbeResult {
     /// Stable machine code (e.g. `MCP_CONNECTION_FAILED`); never raw internals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+}
+
+/// Result of one MCP tool call through the connector call proxy
+/// (`connector/call`, doc `24` §5.2).
+///
+/// **A tool-level failure is a result, not an error.** When an MCP server
+/// answers with `isError: true` the call still succeeded, so it comes back here
+/// with [`Self::is_error`] set; only transport, protocol and budget failures
+/// become wire errors. Collapsing the two would leave a caller unable to tell
+/// "the tool said no" from "we never reached the tool".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerConnectorCallResult {
+    /// The upstream `isError` flag (`false` when the server omitted it).
+    pub is_error: bool,
+    /// The upstream `tools/call` **result object, verbatim** — `content`,
+    /// `structuredContent` and anything a newer server adds all survive, because
+    /// this layer has no business reshaping what an MCP server returned.
+    ///
+    /// It carries no transport, header or env value: the connection and its
+    /// credentials stay on the host (that is the entire point of a proxy).
+    pub result: serde_json::Value,
 }
 
 /// OAuth state view. Never contains tokens, authorization codes or secrets.

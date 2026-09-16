@@ -59,7 +59,24 @@ pub fn acp_extra_with_workspace(workspace: impl Into<String>) -> serde_json::Val
 #[allow(dead_code)]
 pub async fn build_app_with_skill_paths(root: &std::path::Path) -> (axum::Router, AppServices, SkillPaths) {
     let db = nomifun_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    // Absolute `data_dir` / `work_dir`, for the same reason
+    // `build_app_with_file_roots` spells them out: `AppConfig::default()` uses
+    // the *relative* `"data"`, and `create_router_with_states` builds the App
+    // Server workspace registry at startup, which rejects a non-absolute root
+    // (`workspace policy denied: configured workspace root must be absolute`).
+    // This helper previously passed `AppConfig::default()` and so panicked on
+    // every call — `extension_e2e` calls it, so those tests failed at router
+    // construction rather than on anything they were testing.
+    let services = AppServices::from_config(
+        db,
+        &AppConfig {
+            data_dir: root.join("data"),
+            work_dir: root.join("work"),
+            ..AppConfig::default()
+        },
+    )
+    .await
+    .unwrap();
     let (mut states, _) = build_module_states(&services).await;
 
     let builtin_dir = root.join("builtin-skills");
@@ -99,8 +116,25 @@ pub async fn build_app_with_skill_paths(root: &std::path::Path) -> (axum::Router
 }
 
 pub async fn build_app_with_noop_opener() -> (axum::Router, AppServices) {
+    // Absolute `data_dir` / `work_dir`: a bare `AppConfig::default()` is the
+    // relative `"data"`, which the App Server workspace resolver rejects at
+    // router startup (see `build_app_with_file_roots`).
+    let root = tempfile::Builder::new()
+        .prefix("nomifun-app-shell-")
+        .tempdir()
+        .unwrap()
+        .keep();
     let db = nomifun_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(
+        db,
+        &AppConfig {
+            data_dir: root.join("data"),
+            work_dir: root.join("work"),
+            ..AppConfig::default()
+        },
+    )
+    .await
+    .unwrap();
     let (mut states, _) = build_module_states(&services).await;
     states.shell.shell_service = std::sync::Arc::new(nomifun_shell::ShellService::new(std::sync::Arc::new(
         nomifun_shell::NoopSystemOpener,
@@ -146,8 +180,23 @@ pub async fn build_app_with_mock_version(
     current_version: &str,
     mock_server: &MockServer,
 ) -> (axum::Router, AppServices) {
+    // Absolute dirs, same reason as `build_app_with_noop_opener`.
+    let root = tempfile::Builder::new()
+        .prefix("nomifun-app-version-")
+        .tempdir()
+        .unwrap()
+        .keep();
     let db = nomifun_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(
+        db,
+        &AppConfig {
+            data_dir: root.join("data"),
+            work_dir: root.join("work"),
+            ..AppConfig::default()
+        },
+    )
+    .await
+    .unwrap();
     let (mut states, _) = build_module_states(&services).await;
     let http_client = reqwest::Client::builder().no_proxy().build().unwrap();
     states.system.version_check_service =
@@ -161,7 +210,19 @@ pub async fn build_app_with_mock_version(
 /// Use for tests that exercise session warmup and send-message paths where
 /// spawning a real CLI process is not feasible.
 pub async fn build_app_with_mock_agents() -> (axum::Router, AppServices) {
-    build_app_with_mock_agents_config(AppConfig::default()).await
+    // Absolute dirs, same reason as `build_app_with_noop_opener`: delegating
+    // with a bare `AppConfig::default()` panicked at router construction.
+    let root = tempfile::Builder::new()
+        .prefix("nomifun-app-mock-agents-")
+        .tempdir()
+        .unwrap()
+        .keep();
+    build_app_with_mock_agents_config(AppConfig {
+        data_dir: root.join("data"),
+        work_dir: root.join("work"),
+        ..AppConfig::default()
+    })
+    .await
 }
 
 pub async fn build_isolated_app_with_mock_agents(
