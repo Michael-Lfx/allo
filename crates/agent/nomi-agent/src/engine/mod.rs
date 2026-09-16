@@ -1833,6 +1833,10 @@ impl AgentEngine {
             let mut provider_round_id: Option<String> = None;
             let mut tool_calls: Vec<ContentBlock>;
             let mut previewed_tool_calls: BTreeMap<String, String>;
+            // Ids of unadvertised tool previews already warned about this pass.
+            // Bounded by MAX_PROVIDER_TURN_TOOL_CALLS so a noisy or misbehaving
+            // provider cannot grow it without limit or spam one warn per delta.
+            let mut warned_unadvertised_progress: HashSet<String>;
             let mut stop_reason: StopReason;
             let mut truncated_calls: Vec<round::LedgerCutoff> = Vec::new();
             let mut saw_truncated_tool_use = false;
@@ -1950,6 +1954,7 @@ impl AgentEngine {
             provider_round_id = None;
             tool_calls = Vec::new();
             previewed_tool_calls = BTreeMap::new();
+            warned_unadvertised_progress = HashSet::new();
             stop_reason = StopReason::EndTurn;
             // Calls this pass's ceiling cut off. Declared beside `stop_reason`
             // so it resets on every provider pass: a cutoff belongs to the pass
@@ -2221,13 +2226,20 @@ impl AgentEngine {
                             // failing the whole turn. The commit boundary below
                             // still rejects any final unadvertised ToolUse, and
                             // the execution layer keeps its own authority check.
-                            tracing::warn!(
-                                target: "nomi_agent",
-                                tool = %name,
-                                tool_use_id = %id,
-                                model = %self.model,
-                                "ignored_unadvertised_progress"
-                            );
+                            // Warn once per call id so a streaming provider
+                            // cannot flood the log.
+                            if warned_unadvertised_progress.len()
+                                < MAX_PROVIDER_TURN_TOOL_CALLS
+                                && warned_unadvertised_progress.insert(id.clone())
+                            {
+                                tracing::warn!(
+                                    target: "nomi_agent",
+                                    tool = %name,
+                                    tool_use_id = %id,
+                                    model = %self.model,
+                                    "ignored_unadvertised_progress"
+                                );
+                            }
                             continue;
                         }
                         if let Some(preview_name) = previewed_tool_calls.get(&id) {
