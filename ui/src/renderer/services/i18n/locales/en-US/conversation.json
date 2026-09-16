@@ -1117,6 +1117,25 @@
       "cost": "Economy",
       "unknown": "Auto"
     },
+    "recommended": "Recommended",
+    "tagline": {
+      "auto-intelligence": "Powerful reasoning for hard tasks",
+      "auto-balance": "Everyday pick, balanced",
+      "auto-cost": "Light Q&A, quick replies",
+      "deepseek-v4-flash": "Light & steady, daily Q&A",
+      "deepseek-v4-flash-vision-exp": "Image Q&A, experimental",
+      "deepseek-v4-1-flash": "Fast answers, sees images",
+      "deepseek-v4-pro": "Deep reasoning & writing",
+      "glm-5": "Well-rounded, office writing",
+      "glm-5-2": "Flagship, long documents",
+      "kimi-k2-5": "Vision & long docs",
+      "kimi-k2-6": "Advanced vision & reasoning",
+      "minimax-m2-7": "Everyday light helper",
+      "minimax-m3": "Multimodal, image & text Q&A",
+      "qwen3-7-plus": "Vision Q&A, all-round",
+      "qwen3-7-max": "Top flagship, hard tasks",
+      "qwen3-8-flash": "Light & quick, sees images"
+    },
     "empty": "No models available"
   },
   "taskProfile": {

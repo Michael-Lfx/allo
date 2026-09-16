@@ -20,6 +20,7 @@ import type {
   ChatModelOption,
   ChatModelPickerViewModel,
 } from '@renderer/utils/model/chatModelPicker';
+import { resolveModelShowcase } from '@renderer/utils/model/modelShowcase';
 import { ensureThemeControlContract } from '@renderer/utils/theme/themeControlContract';
 import { processCustomCss } from '@renderer/utils/theme/customCssProcessor';
 import { PRESET_THEMES } from '@renderer/pages/settings/DisplaySettings/presets';
@@ -155,6 +156,7 @@ const chatProbeOption = (
   reasoningLevels: [],
   supportsVision: false,
   supportsTools: true,
+  showcase: resolveModelShowcase(model),
   ...config,
 });
 

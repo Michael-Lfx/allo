@@ -858,6 +858,22 @@
   max-width: calc(100vw - 24px);
 }
 
+/* Viewport top safety gap for upward-opening popups. Arco's autoFit clamps a
+ * top-blocked popup flush to the window edge (`style.top = boundary.top`,
+ * which is 0 with a body container), and `boundaryDistance` only shrinks the
+ * viewport height used by the flip decision — it cannot offset that clamp
+ * (`getBoundingClientRect` ignores it entirely for 'bl'/'br' positions). The
+ * popup wrapper carries `trigger-placement` with the post-flip position, and
+ * Arco measures this outer frame, so padding here is transparent headroom:
+ * normal upward opens keep the exact card position and 8px trigger gap (the
+ * measured height simply lifts style.top by the same 12px), and only the
+ * edge-clamped case materializes the gap below the window's top edge. */
+[trigger-placement='top'] > .chat-model-picker-menu,
+[trigger-placement='tl'] > .chat-model-picker-menu,
+[trigger-placement='tr'] > .chat-model-picker-menu {
+  padding-top: 12px;
+}
+
 .chat-model-picker-menu-list {
   min-height: 0;
   overflow-x: hidden !important;
@@ -867,17 +883,62 @@
 
 .chat-model-picker-menu-item {
   box-sizing: border-box;
+  /* Arco's `.arco-menu-vertical .arco-menu-item` (padding: 0 12px) outranks a
+   * single-class rule, so the vertical padding needs !important — same as
+   * `.chat-model-picker-menu-list` below. Flex centering is what keeps the
+   * two-line rows (brand icon + name + tagline) vertically aligned. */
+  display: flex;
+  align-items: center;
   min-height: 40px;
-  height: 40px;
+  height: auto;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
 }
 
 .chat-model-picker-menu-meta {
-  min-width: 52px;
+  min-width: 44px;
+}
+
+/* Positioning tagline under the model name; rows without one keep the
+ * single-line height (min-height above). */
+.chat-model-picker-menu-tagline {
+  margin-top: 1px;
+}
+
+/* Recommended-model chip next to the name (pinned to the top of the group).
+ * `--primary-6` is a comma-separated triple (`22,93,255`) in arco.css and every
+ * theme preset, so the alpha must go through legacy `rgba(...)` — the modern
+ * `rgb(... / 12%)` form would parse invalid and silently drop the tint. */
+.chat-model-recommended-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  color: rgb(var(--primary-6, 22, 93, 255));
+  background: rgba(var(--primary-6, 22, 93, 255), 0.12);
 }
 
 .chat-model-picker-menu-status {
   min-height: 40px;
   text-align: center;
+}
+
+/* One type scale across the composer menus: caption 12px / row 13px /
+ * metadata 11px. Arco sets `font-size: 14px` on the `.arco-menu` root and
+ * lets items and group titles inherit it, which made the picker's group
+ * captions bigger than the rows they introduce. The compact auto tier popup
+ * instead keeps its three short rows at the same 12px as its title — the
+ * gray caption color still distinguishes the two. */
+.auto-tier-selector-popup .arco-menu {
+  font-size: 12px;
+}
+
+.chat-model-picker-menu .arco-menu-group-title {
+  font-size: 12px;
 }
 
 /* The collaboration policy is intentionally an icon in the normal toolbar,

@@ -4,6 +4,8 @@ import type { ReactNode } from 'react';
 
 export interface MobileActionSheetOption {
   key: string;
+  /** Leading slot (e.g. a model brand logo) rendered before the label column. */
+  icon?: ReactNode;
   label: ReactNode;
   description?: ReactNode;
   active?: boolean;

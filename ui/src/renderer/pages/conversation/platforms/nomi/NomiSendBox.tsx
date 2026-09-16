@@ -18,6 +18,7 @@ import MobileActionSheet, {
   useAttachEntry,
 } from '@/renderer/components/chat/MobileActionSheet';
 import SendBox from '@/renderer/components/chat/SendBox';
+import ModelBrandIcon from '@/renderer/components/model/ModelBrandIcon';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
 import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
@@ -1521,10 +1522,21 @@ const NomiSendBox: React.FC<{
     const toMobileModelOption = (option: (typeof catalogOptions)[number]): MobileActionSheetOption => {
       const providerName = providerLabel(option.provider);
       const creditRate = formatCreditRateMultiplier(option.creditRate);
+      const tagline = option.showcase.taglineKey ? t(option.showcase.taglineKey) : undefined;
       return {
         key: option.key,
-        label: option.label,
-        description: creditRate ? `${providerName} · ${creditRate}` : providerName,
+        icon: option.showcase.icon ? <ModelBrandIcon src={option.showcase.icon} /> : undefined,
+        label: option.showcase.recommended ? (
+          <span className='flex min-w-0 items-center gap-6px'>
+            <span className='min-w-0 truncate'>{option.label}</span>
+            <span className='chat-model-recommended-badge shrink-0'>
+              {t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })}
+            </span>
+          </span>
+        ) : (
+          option.label
+        ),
+        description: [tagline ?? providerName, creditRate].filter(Boolean).join(' · '),
         active:
           modelSelection.current_model?.id === option.provider.id &&
           modelSelection.current_model?.use_model === option.model,
@@ -1592,7 +1604,7 @@ const NomiSendBox: React.FC<{
         ? modelSelection.modelPicker.autoModels.map((option) => ({
             key: option.key,
             label: autoTierLabel(option.autoTier),
-            description: option.model,
+            description: option.showcase.taglineKey ? t(option.showcase.taglineKey) : option.model,
             active: option.autoTier === selectedAutoTier,
           }))
         : reasoningEffortLevels.map((effort) => ({

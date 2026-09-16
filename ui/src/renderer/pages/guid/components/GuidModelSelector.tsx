@@ -262,6 +262,11 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
     return (
       <Dropdown
         trigger='click'
+        // The trigger sits in the composer's right-side config group: grow the
+        // panel leftward (right edges aligned) and keep a 12px viewport safety
+        // margin when autoFit kicks in, so it never hugs the window edge.
+        position='br'
+        triggerProps={{ popupAlign: { bottom: 8 }, boundaryDistance: { right: 12, bottom: 12 } }}
         getPopupContainer={() => document.body}
         popupVisible={modelPickerOpen}
         onVisibleChange={handleModelPickerVisibleChange}
@@ -298,6 +303,8 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
       return (
         <Dropdown
           trigger='click'
+          position='br'
+          triggerProps={{ popupAlign: { bottom: 8 }, boundaryDistance: { right: 12, bottom: 12 } }}
           getPopupContainer={() => document.body}
           droplist={
             <Menu

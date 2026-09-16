@@ -26,6 +26,9 @@ describe('AutoTierSelector structure', () => {
     expect(source.includes("size='11'")).toBe(true);
     expect(source.includes('AUTO_TIER_LABEL_FALLBACK')).toBe(true);
     expect(source.includes('auto-tier-trigger-label-slot')).toBe(true);
+    // The popup carries its own class so sendbox.css can align the Arco menu
+    // rows (14px by default) with the composer menus' 13px row tier.
+    expect(source.includes('auto-tier-selector-popup')).toBe(true);
     expect(source.includes("className='sendbox-responsive-chevron shrink-0'")).toBe(true);
     expect(source.includes('useChatModelTriggerExpansion')).toBe(true);
     expect(source.includes("cssVariablePrefix: 'strategy'")).toBe(true);
