@@ -268,8 +268,76 @@ pub fn sanitize_json_schema(schema: &Value) -> Value {
     }
 
     strip_additional_properties(&mut schema);
+    normalize_composition_branches(&mut schema);
     normalize_array_types(&mut schema);
     schema
+}
+
+/// Some strict providers (Gemini) reject object-only keywords (`required`,
+/// `properties`) on composition branches that do not declare `type: object`.
+/// Annotate semantically-object branches and drop object-only keywords from
+/// explicitly scalar branches. This only runs on the provider-facing copy after
+/// a real rejection; the original schema stays the execution authority.
+fn normalize_composition_branches(schema: &mut Value) {
+    normalize_composition_branches_at(schema, 0);
+}
+
+const MAX_COMPOSITION_BRANCH_DEPTH: usize = 32;
+
+fn normalize_composition_branches_at(schema: &mut Value, depth: usize) {
+    if depth > MAX_COMPOSITION_BRANCH_DEPTH {
+        tracing::debug!(
+            target: "nomi_config",
+            depth,
+            max_depth = MAX_COMPOSITION_BRANCH_DEPTH,
+            "schema composition normalization stopped at the depth limit; deeper branches stay unnormalized"
+        );
+        return;
+    }
+    match schema {
+        Value::Object(map) => {
+            for keyword in ["oneOf", "anyOf", "allOf"] {
+                if let Some(Value::Array(branches)) = map.get_mut(keyword) {
+                    for branch in branches.iter_mut() {
+                        normalize_composition_branch(branch);
+                        normalize_composition_branches_at(branch, depth + 1);
+                    }
+                }
+            }
+            for value in map.values_mut() {
+                normalize_composition_branches_at(value, depth + 1);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                normalize_composition_branches_at(item, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_composition_branch(branch: &mut Value) {
+    let Value::Object(map) = branch else {
+        return;
+    };
+    if !map.contains_key("required") && !map.contains_key("properties") {
+        return;
+    }
+    let allows_object = match map.get("type") {
+        None => true,
+        Some(Value::String(kind)) => kind == "object",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("object")),
+        _ => false,
+    };
+    if allows_object {
+        if map.get("type").is_none() {
+            map.insert("type".to_owned(), Value::String("object".to_owned()));
+        }
+    } else {
+        map.remove("required");
+        map.remove("properties");
+    }
 }
 
 const MAX_SCHEMA_PROJECTION_WORK: usize = 4_096;
@@ -685,6 +753,142 @@ mod tests {
         assert!(merged.ensure_alternation());
         assert!(merged.merge_same_role());
         assert!(merged.auto_tool_id());
+    }
+
+    #[test]
+    fn test_sanitize_schema_gemini_root_union_without_object_branches() {
+        // Equivalent of the shape Gemini rejected with
+        // `parameters.any_of[0].required: only allowed for OBJECT type`.
+        let schema = json!({
+            "anyOf": [
+                { "required": ["file_path"] },
+                { "required": ["file_paths"] }
+            ]
+        });
+        let sanitized = sanitize_json_schema(&schema);
+        assert_eq!(sanitized, json!({ "type": "object" }));
+    }
+
+    #[test]
+    fn test_sanitize_schema_gemini_exec_style_nested_not_anyof() {
+        // Real repository shape (exec_command): root oneOf with `not.anyOf`
+        // branches that only carry `required`.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "cmd": {"type": "string"},
+                "script": {"type": "string"},
+                "timeout": {"type": "integer"}
+            },
+            "oneOf": [
+                {
+                    "required": ["cmd"],
+                    "not": { "anyOf": [ {"required": ["script"]}, {"required": ["timeout"]} ] }
+                },
+                {
+                    "required": ["script", "timeout"],
+                    "not": { "anyOf": [ {"required": ["cmd"]} ] }
+                }
+            ],
+            "additionalProperties": false
+        });
+        let sanitized = sanitize_json_schema(&schema);
+        assert!(sanitized.get("oneOf").is_none());
+        assert!(sanitized.get("anyOf").is_none());
+        assert_eq!(sanitized["type"], "object");
+        assert_eq!(sanitized["properties"]["cmd"]["type"], "string");
+        assert_no_bare_object_keywords(&sanitized);
+    }
+
+    #[test]
+    fn test_sanitize_schema_annotates_nested_object_only_branches() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "where": {
+                    "anyOf": [
+                        { "required": ["city"] },
+                        { "required": ["zip"] }
+                    ]
+                }
+            }
+        });
+        let sanitized = sanitize_json_schema(&schema);
+        let branches = sanitized["properties"]["where"]["anyOf"]
+            .as_array()
+            .expect("nested union stays a union");
+        assert!(
+            branches
+                .iter()
+                .all(|branch| branch["type"] == "object"),
+            "object-only branches must declare type: object for Gemini: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_schema_drops_object_keywords_from_scalar_branches() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "anyOf": [
+                        {"type": "string", "required": ["ignored"]},
+                        {"type": "object", "properties": {"a": {"type": "string"}}}
+                    ]
+                }
+            }
+        });
+        let sanitized = sanitize_json_schema(&schema);
+        let branches = sanitized["properties"]["value"]["anyOf"]
+            .as_array()
+            .expect("nested union stays a union");
+        assert!(branches[0].get("required").is_none());
+        assert_eq!(branches[1]["type"], "object");
+    }
+
+    #[test]
+    fn test_sanitize_schema_keeps_legal_nullable_and_scalar_unions() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "nickname": { "anyOf": [ {"type": "string"}, {"type": "null"} ] }
+            }
+        });
+        let sanitized = sanitize_json_schema(&schema);
+        assert_eq!(
+            sanitized["properties"]["nickname"],
+            schema["properties"]["nickname"]
+        );
+    }
+
+    fn assert_no_bare_object_keywords(schema: &Value) {
+        match schema {
+            Value::Object(map) => {
+                let has_object_only =
+                    map.contains_key("required") || map.contains_key("properties");
+                let allows_object = match map.get("type") {
+                    None => false,
+                    Some(Value::String(kind)) => kind == "object",
+                    Some(Value::Array(kinds)) => {
+                        kinds.iter().any(|kind| kind.as_str() == Some("object"))
+                    }
+                    _ => false,
+                };
+                assert!(
+                    !has_object_only || allows_object,
+                    "object-only keyword on a non-object schema: {schema}"
+                );
+                for value in map.values() {
+                    assert_no_bare_object_keywords(value);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_no_bare_object_keywords(item);
+                }
+            }
+            _ => {}
+        }
     }
 
     #[test]

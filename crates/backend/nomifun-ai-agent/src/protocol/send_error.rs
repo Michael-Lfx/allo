@@ -1113,6 +1113,14 @@ mod tests {
     }
 
     #[test]
+    fn classifies_initial_request_timeout_as_provider_timeout() {
+        let raw = "Nomi agent error: Provider error: Initial request timeout: initial negotiation deadline exceeded";
+        let err = AgentSendError::from_app_error(AppError::BadGateway(raw.into()));
+
+        assert_eq!(err.code(), Some(AgentErrorCode::UserLlmProviderTimeout));
+    }
+
+    #[test]
     fn classifies_agent_lifecycle_before_bad_gateway_wrapper() {
         assert_classification(
             "Bad gateway: Agent process exited before initialize handshake completed (exit code 1)",

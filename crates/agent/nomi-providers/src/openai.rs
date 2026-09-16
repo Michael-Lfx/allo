@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -25,6 +27,14 @@ pub struct OpenAIProvider {
     base_url: String,
     compat: ProviderCompat,
     sanitize_tool_schemas: AtomicBool,
+    /// Models whose tool-bearing requests must send `reasoning_effort: "none"`.
+    /// Learned from an explicit gateway rejection (Flowy Cloud: "Function tools
+    /// with reasoning_effort are not supported ... set reasoning_effort to
+    /// 'none'"). Tool-free requests never consult this set.
+    learned_effort_none: Mutex<HashSet<String>>,
+    /// Per-model output ceilings learned from `supported range` rejections.
+    /// Later requests send `min(requested, learned)`.
+    learned_output_caps: Mutex<HashMap<String, u32>>,
 }
 
 impl OpenAIProvider {
@@ -35,11 +45,42 @@ impl OpenAIProvider {
             base_url: base_url.to_string(),
             compat,
             sanitize_tool_schemas: AtomicBool::new(false),
+            learned_effort_none: Mutex::new(HashSet::new()),
+            learned_output_caps: Mutex::new(HashMap::new()),
         }
     }
 
     fn should_sanitize_tool_schemas(&self) -> bool {
         self.compat.sanitize_schema() || self.sanitize_tool_schemas.load(Ordering::Acquire)
+    }
+
+    fn requires_effort_none_with_tools(&self, model: &str) -> bool {
+        self.learned_effort_none
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(model)
+    }
+
+    fn remember_effort_none_for_tools(&self, model: &str) {
+        self.learned_effort_none
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(model.to_owned());
+    }
+
+    fn learned_output_cap(&self, model: &str) -> Option<u32> {
+        self.learned_output_caps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(model)
+            .copied()
+    }
+
+    fn remember_output_cap(&self, model: &str, cap: u32) {
+        self.learned_output_caps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(model.to_owned(), cap);
     }
 
     fn build_headers(&self, api_key: &str) -> Result<HeaderMap, ProviderError> {
@@ -418,6 +459,8 @@ impl OpenAIProvider {
         request: &LlmRequest,
         sanitize_tool_schemas: bool,
         include_stream_usage: bool,
+        force_effort_none: bool,
+        output_cap: Option<u32>,
     ) -> Value {
         let max_tokens_field = self
             .compat
@@ -439,6 +482,7 @@ impl OpenAIProvider {
             body["stream_options"] = json!({ "include_usage": true });
         }
         if let Some(limit) = request.max_tokens {
+            let limit = output_cap.map_or(limit, |cap| limit.min(cap));
             body[max_tokens_field] = json!(limit);
         }
 
@@ -453,7 +497,12 @@ impl OpenAIProvider {
             ));
         }
 
-        if let Some(effort) = &request.reasoning_effort {
+        if force_effort_none {
+            // The gateway requires an explicit `none` once it rejected the
+            // tools + effort combination, even when the caller never
+            // configured an effort for this model.
+            body["reasoning_effort"] = json!("none");
+        } else if let Some(effort) = &request.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
         }
 
@@ -851,16 +900,28 @@ impl LlmProvider for OpenAIProvider {
         let mut sanitize_tool_schemas = self.should_sanitize_tool_schemas();
         let mut include_stream_usage = true;
         let mut learned_schema_fallback = false;
+        let mut force_effort_none = !request.tools.is_empty()
+            && self.requires_effort_none_with_tools(&request.model);
+        let mut learned_effort_fallback = false;
+        let mut output_cap = request
+            .max_tokens
+            .and_then(|_| self.learned_output_cap(&request.model));
+        let mut negotiated_output_cap: Option<u32> = None;
+        let initial_deadline = tokio::time::Instant::now() + crate::INITIAL_REQUEST_DEADLINE;
 
-        // Negotiate the two optional OpenAI extensions independently. A
-        // gateway can reject both stream usage metadata and rich tool schemas;
-        // a bounded loop lets us remove each incompatible extension once
-        // without retrying unrelated 4xx responses.
+        // Negotiate the four optional OpenAI extensions independently. A
+        // gateway can reject stream usage metadata, rich tool schemas, the
+        // tools + reasoning_effort combination, and an output ceiling above its
+        // supported range; a bounded loop lets us remove or lower each
+        // incompatible extension once without retrying unrelated 4xx
+        // responses.
         let (response, headers, body) = loop {
             let body = self.build_request_body(
                 request,
                 sanitize_tool_schemas,
                 include_stream_usage,
+                force_effort_none,
+                output_cap,
             );
             let max_tokens_field = self
                 .compat
@@ -889,12 +950,15 @@ impl LlmProvider for OpenAIProvider {
                 tool_count,
                 include_stream_usage,
                 sanitize_tool_schemas,
+                force_effort_none,
                 "outgoing request summary"
             );
 
-            match self
-                .send_initial_with_key_rotation(&client, &url, &body)
-                .await
+            match crate::send_with_deadline(
+                initial_deadline,
+                self.send_initial_with_key_rotation(&client, &url, &body),
+            )
+            .await
             {
                 Ok((response, headers)) => break (response, headers, body),
                 Err(error)
@@ -926,11 +990,56 @@ impl LlmProvider for OpenAIProvider {
                     sanitize_tool_schemas = true;
                     learned_schema_fallback = true;
                 }
+                Err(error)
+                    if !request.tools.is_empty()
+                        && !force_effort_none
+                        && error.is_tools_with_reasoning_effort_incompatible() =>
+                {
+                    tracing::warn!(
+                        target: "nomi_providers",
+                        provider = "openai",
+                        model = %request.model,
+                        "provider requires reasoning_effort='none' with function tools; retrying with effort disabled"
+                    );
+                    force_effort_none = true;
+                    learned_effort_fallback = true;
+                }
+                Err(error) if negotiated_output_cap.is_none() && request.max_tokens.is_some() => {
+                    let Some(rejected_cap) = error.output_limit_rejection() else {
+                        return Err(error);
+                    };
+                    let requested = request
+                        .max_tokens
+                        .expect("guarded by request.max_tokens.is_some()");
+                    // Compare against the ceiling actually sent, so a learned
+                    // cap above a smaller request cannot trigger a retry that
+                    // would resend the same body.
+                    let sent = output_cap.map_or(requested, |cap| requested.min(cap));
+                    if rejected_cap >= sent {
+                        return Err(error);
+                    }
+                    tracing::warn!(
+                        target: "nomi_providers",
+                        provider = "openai",
+                        model = %request.model,
+                        sent,
+                        negotiated = rejected_cap,
+                        "provider rejected an output ceiling above its supported range; retrying with the negotiated limit"
+                    );
+                    output_cap = Some(rejected_cap);
+                    negotiated_output_cap = Some(rejected_cap);
+                }
                 Err(error) => return Err(error),
             }
         };
         if learned_schema_fallback {
             self.sanitize_tool_schemas.store(true, Ordering::Release);
+        }
+        if learned_effort_fallback {
+            self.remember_effort_none_for_tools(&request.model);
+        }
+        if let Some(cap) = negotiated_output_cap {
+            self.remember_output_cap(&request.model, cap);
         }
 
         let (tx, rx) = mpsc::channel(64);
@@ -3217,6 +3326,8 @@ mod tests {
             &request,
             provider.should_sanitize_tool_schemas(),
             true,
+            false,
+            None,
         );
         let assistant = body["messages"]
             .as_array()
@@ -3244,6 +3355,8 @@ mod tests {
             &request,
             provider.should_sanitize_tool_schemas(),
             true,
+            false,
+            None,
         );
         assert!(
             body["messages"][0].get("reasoning_content").is_none(),
@@ -3395,7 +3508,7 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
         };
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["max_tokens"], 1024);
         assert!(body.get("max_completion_tokens").is_none());
     }
@@ -3418,9 +3531,36 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
         };
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["max_completion_tokens"], 2048);
         assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn test_output_cap_applies_to_dynamic_max_tokens_field() {
+        let compat = ProviderCompat {
+            max_tokens_field: Some("max_completion_tokens".into()),
+            ..Default::default()
+        };
+        let provider = OpenAIProvider::new("key", "http://localhost", compat);
+        let mut req = simple_request();
+        req.max_tokens = Some(200);
+        let body = provider.build_request_body(&req, false, true, false, Some(100));
+        assert_eq!(body["max_completion_tokens"], 100);
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn test_forced_effort_none_is_written_without_request_effort() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let req = simple_request();
+        assert!(req.reasoning_effort.is_none());
+
+        let body = provider.build_request_body(&req, false, true, true, None);
+        assert_eq!(
+            body["reasoning_effort"], "none",
+            "a gateway that demands effort=none for tools must receive it even when the caller configured no effort"
+        );
     }
 
     // --- temperature ---
@@ -3430,7 +3570,7 @@ mod tests {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let mut req = simple_request();
         req.temperature = Some(0.5);
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["temperature"], 0.5);
     }
 
@@ -3438,7 +3578,7 @@ mod tests {
     fn test_temperature_none_is_omitted() {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let req = simple_request();
-        let with_none = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let with_none = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert!(with_none.get("temperature").is_none());
     }
 
@@ -3449,7 +3589,7 @@ mod tests {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let mut req = simple_request();
         req.thinking = Some(ThinkingConfig::Disabled);
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["thinking"], json!({ "type": "disabled" }));
     }
 
@@ -3458,7 +3598,7 @@ mod tests {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let mut req = simple_request();
         req.thinking = Some(ThinkingConfig::Enabled { budget_tokens: 8000 });
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(
             body["thinking"],
             json!({ "type": "enabled", "budget_tokens": 8000 })
@@ -3469,7 +3609,7 @@ mod tests {
     fn test_thinking_none_is_omitted() {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let req = simple_request();
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert!(body.get("thinking").is_none());
     }
 
@@ -3740,14 +3880,14 @@ mod tests {
 
         provider.sanitize_tool_schemas.store(true, Ordering::Release);
 
-        let unsanitized = provider.build_request_body(&request, false, true);
+        let unsanitized = provider.build_request_body(&request, false, true, false, None);
         assert!(
             unsanitized["tools"][0]["function"]["parameters"]
                 .get("oneOf")
                 .is_some()
         );
 
-        let sanitized = provider.build_request_body(&request, true, true);
+        let sanitized = provider.build_request_body(&request, true, true, false, None);
         assert!(
             sanitized["tools"][0]["function"]["parameters"]
                 .get("oneOf")

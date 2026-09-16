@@ -280,31 +280,35 @@ impl LlmProvider for VertexProvider {
                 .map_err(|e| ProviderError::Connection(format!("Header error: {}", e)))?,
         );
 
-        let response = crate::retry::with_initial_request_retry(|| async {
-            let response = client
-                .post(&url)
-                .headers(headers.clone())
-                .json(&body)
-                .send()
-                .await?;
+        let response = crate::retry::with_initial_request_retry(
+            crate::retry::InitialRequestContext::from_json_body(&body),
+            || async {
+                let response = client
+                    .post(&url)
+                    .headers(headers.clone())
+                    .json(&body)
+                    .send()
+                    .await?;
 
-            let status = response.status();
-            if !status.is_success() {
-                let retry_after_ms = crate::parse_retry_after_ms(response.headers()).unwrap_or(5000);
-                let body_text = response.text().await.unwrap_or_default();
-                if status.as_u16() == 429 {
-                    return Err(ProviderError::RateLimited {
-                        retry_after_ms,
-                        message: crate::non_empty_rate_limit_message(body_text),
+                let status = response.status();
+                if !status.is_success() {
+                    let retry_after_ms =
+                        crate::parse_retry_after_ms(response.headers()).unwrap_or(5000);
+                    let body_text = response.text().await.unwrap_or_default();
+                    if status.as_u16() == 429 {
+                        return Err(ProviderError::RateLimited {
+                            retry_after_ms,
+                            message: crate::non_empty_rate_limit_message(body_text),
+                        });
+                    }
+                    return Err(ProviderError::Api {
+                        status: status.as_u16(),
+                        message: body_text,
                     });
                 }
-                return Err(ProviderError::Api {
-                    status: status.as_u16(),
-                    message: body_text,
-                });
-            }
-            Ok(response)
-        })
+                Ok(response)
+            },
+        )
         .await?;
 
         let (tx, rx) = mpsc::channel(64);

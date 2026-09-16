@@ -10,7 +10,7 @@ use nomi_mcp::{
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout_at};
 
 use crate::provider::extract_policy::prepare_remote_url;
 use crate::types::{MAX_EXTRACT_URLS, SearchQuery, SearchResult, WebError};
@@ -29,7 +29,10 @@ pub(super) struct RemoteSearchAdapter {
     required_properties: &'static [&'static str],
     optional_properties: &'static [&'static str],
     argument_builder: fn(&SearchQuery) -> Value,
-    discovery: Mutex<Option<Result<(), AdapterCompatibilityError>>>,
+    /// Compatibility cache: `Some(())` only after a successful discovery.
+    /// Failures are deliberately not cached so the health cooldown can retry
+    /// `tools/list` against a changed or recovering upstream.
+    discovery: Mutex<Option<()>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -594,7 +597,7 @@ impl RemoteSearchAdapter {
 
     fn new(
         id: SearchProviderId,
-        endpoint: &'static str,
+        endpoint: impl Into<String>,
         tool_name: &'static str,
         required_properties: &'static [&'static str],
         optional_properties: &'static [&'static str],
@@ -636,9 +639,16 @@ impl RemoteSearchAdapter {
     }
 
     async fn ensure_compatible(&self, deadline: Instant) -> Result<(), SearchAttemptError> {
-        let mut cache = self.discovery.lock().await;
-        if let Some(result) = *cache {
-            return result.map_err(map_compatibility_error);
+        // Waiting on another attempt's in-flight discovery must not outlive
+        // this attempt's own deadline. Report contention as QueueBusy rather
+        // than Timeout: the provider itself is healthy, so the service must
+        // not cool it down (Timeout feeds the exponential health backoff) and
+        // should simply move on to the next provider in the chain.
+        let mut cache = timeout_at(deadline, self.discovery.lock())
+            .await
+            .map_err(|_| SearchAttemptError::QueueBusy)?;
+        if cache.is_some() {
+            return Ok(());
         }
         let tools = self
             .peer
@@ -646,11 +656,9 @@ impl RemoteSearchAdapter {
             .await
             .map_err(map_peer_error)?;
 
-        if self.id == SearchProviderId::You && tools.len() != 1 {
-            let result = Err(AdapterCompatibilityError::SchemaMismatch);
-            *cache = Some(result);
-            return Err(SearchAttemptError::SchemaMismatch);
-        }
+        // Select the adapter's target tool by name. Extra or renamed sibling
+        // tools must not invalidate the adapter (the live You.com endpoint may
+        // expose more than one tool).
         let result = tools
             .iter()
             .find(|tool| tool.name == self.tool_name)
@@ -664,8 +672,27 @@ impl RemoteSearchAdapter {
                 validate_output_schema(tool)?;
                 Ok(())
             });
-        *cache = Some(result);
-        result.map_err(map_compatibility_error)
+        tracing::debug!(
+            target: "managed_search",
+            provider = self.id.as_str(),
+            tool_count = tools.len(),
+            target_found = result.is_ok(),
+            "managed search tool discovery"
+        );
+        match result {
+            Ok(()) => {
+                *cache = Some(());
+                Ok(())
+            }
+            Err(error) => {
+                // Never cache a failed discovery: after the health cooldown the
+                // provider must re-run `tools/list` so a changed or recovering
+                // upstream can self-heal. The peer-level tools cache must be
+                // dropped as well or the retry would replay the stale list.
+                self.peer.invalidate_tools_cache().await;
+                Err(map_compatibility_error(error))
+            }
+        }
     }
 
     async fn clear_compatibility(&self) {
@@ -790,6 +817,10 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                             tool_rediscovered = true;
                             continue;
                         }
+                        // Terminal ToolMissing: drop the compatibility cache so
+                        // the post-cooldown attempt re-runs `tools/list`
+                        // instead of replaying a stale successful discovery.
+                        self.clear_compatibility().await;
                         return Err(SearchAttemptError::ToolMissing);
                     }
                     return self.decode_result(&result, query.count as usize);
@@ -807,6 +838,15 @@ impl ManagedSearchProvider for RemoteSearchAdapter {
                         continue;
                     }
                     let mapped = map_peer_error(error);
+                    if matches!(
+                        mapped,
+                        SearchAttemptError::SchemaMismatch | SearchAttemptError::ToolMissing
+                    ) {
+                        // Same rule as the explicit ToolMissing path: a stale
+                        // successful discovery must not survive a terminal
+                        // compatibility failure.
+                        self.clear_compatibility().await;
+                    }
                     if let Some(client) = self.shared_client.as_ref()
                         && let Some(kind) = search_endpoint_failure_kind(&mapped)
                     {
@@ -1691,5 +1731,380 @@ mod tests {
             search_endpoint_failure_kind(&SearchAttemptError::Timeout),
             None
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // You adapter: name-based discovery, failure caching, and recovery
+    // -----------------------------------------------------------------------
+
+    #[derive(Default)]
+    struct YouMockState {
+        available_tools: Vec<Value>,
+        tools_list_calls: usize,
+        tool_calls: usize,
+        unknown_tool_failures_remaining: usize,
+        /// Artificial `tools/list` latency, used to exercise lock-wait
+        /// behaviour while another attempt holds the discovery mutex.
+        tools_list_delay_ms: u64,
+    }
+
+    /// Single MCP endpoint responder that serves the handshake, a mutable
+    /// `tools/list`, and scripted `tools/call` outcomes.
+    #[derive(Clone)]
+    struct YouMockResponder {
+        state: Arc<std::sync::Mutex<YouMockState>>,
+    }
+
+    fn you_search_tool() -> Value {
+        json!({
+            "name": "you-search",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "count": { "type": "integer" }
+                },
+                "required": ["query"]
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": { "results": { "type": "array" } }
+            }
+        })
+    }
+
+    fn you_call_success_result(id: &Value) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": "WEB RESULTS\nTitle: One result\nURL: https://example.com/one\nDescription: Useful summary\nPublished: 2026-07-30"
+                }]
+            }
+        })
+    }
+
+    impl wiremock::Respond for YouMockResponder {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let method = body.get("method").and_then(Value::as_str).unwrap_or("");
+            let id = body.get("id").cloned().unwrap_or(json!(1));
+            match method {
+                "initialize" => ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "serverInfo": {"name": "mock", "version": "1"}
+                    }
+                })),
+                "notifications/initialized" => ResponseTemplate::new(202),
+                "tools/list" => {
+                    let mut state = self.state.lock().expect("you mock state");
+                    state.tools_list_calls += 1;
+                    let tools = state.available_tools.clone();
+                    let delay = state.tools_list_delay_ms;
+                    let response = ResponseTemplate::new(200).set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "tools": tools }
+                    }));
+                    if delay > 0 {
+                        response.set_delay(Duration::from_millis(delay))
+                    } else {
+                        response
+                    }
+                }
+                "tools/call" => {
+                    let mut state = self.state.lock().expect("you mock state");
+                    state.tool_calls += 1;
+                    if state.unknown_tool_failures_remaining > 0 {
+                        state.unknown_tool_failures_remaining -= 1;
+                        ResponseTemplate::new(200).set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{
+                                    "type": "text",
+                                    "text": "unknown tool: you-search"
+                                }],
+                                "isError": true
+                            }
+                        }))
+                    } else {
+                        ResponseTemplate::new(200)
+                            .set_body_json(you_call_success_result(&id))
+                    }
+                }
+                _ => ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {}
+                })),
+            }
+        }
+    }
+
+    async fn you_test_adapter(
+        state: Arc<std::sync::Mutex<YouMockState>>,
+    ) -> (RemoteSearchAdapter, MockServer) {
+        let server = MockServer::start().await;
+        let responder = YouMockResponder {
+            state: Arc::clone(&state),
+        };
+        Mock::given(method("POST"))
+            .respond_with(responder)
+            .mount(&server)
+            .await;
+        let adapter = RemoteSearchAdapter::new(
+            SearchProviderId::You,
+            server.uri(),
+            "you-search",
+            &["query"],
+            &["count"],
+            |query| json!({ "query": query.query, "count": query.count }),
+        )
+        .expect("you adapter construction is offline");
+        (adapter, server)
+    }
+
+    fn you_query() -> SearchQuery {
+        SearchQuery {
+            query: "shenzhen weather".to_owned(),
+            count: 5,
+        }
+    }
+
+    #[tokio::test]
+    async fn you_discovery_selects_tool_by_name_ignoring_extra_tools() {
+        let state = Arc::new(std::sync::Mutex::new(YouMockState {
+            available_tools: vec![
+                you_search_tool(),
+                json!({"name": "you-discover", "inputSchema": {"type": "object"}}),
+            ],
+            ..YouMockState::default()
+        }));
+        let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
+
+        adapter
+            .ensure_compatible(Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("extra sibling tools must not invalidate the adapter");
+        assert_eq!(state.lock().expect("you mock state").tools_list_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_discovery_is_single_flight() {
+        let state = Arc::new(std::sync::Mutex::new(YouMockState {
+            available_tools: vec![you_search_tool()],
+            ..YouMockState::default()
+        }));
+        let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
+        let adapter = Arc::new(adapter);
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        let (first, second) = tokio::join!(
+            adapter.ensure_compatible(deadline),
+            adapter.ensure_compatible(deadline),
+        );
+        first.expect("first discovery");
+        second.expect("second discovery");
+        assert_eq!(
+            state.lock().expect("you mock state").tools_list_calls,
+            1,
+            "concurrent first discoveries must share one tools/list call"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_lock_contention_returns_queue_busy_within_the_deadline() {
+        let state = Arc::new(std::sync::Mutex::new(YouMockState {
+            available_tools: vec![you_search_tool()],
+            tools_list_delay_ms: 750,
+            ..YouMockState::default()
+        }));
+        let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
+        let adapter = Arc::new(adapter);
+
+        let holder = {
+            let adapter = Arc::clone(&adapter);
+            tokio::spawn(async move {
+                adapter
+                    .ensure_compatible(Instant::now() + Duration::from_secs(5))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let waiter = adapter
+            .ensure_compatible(Instant::now() + Duration::from_millis(100))
+            .await;
+        assert!(
+            matches!(waiter, Err(SearchAttemptError::QueueBusy)),
+            "a waiter must give up at its own deadline without penalty: {waiter:?}"
+        );
+
+        holder
+            .await
+            .expect("holder task must not panic")
+            .expect("the holder discovery must still succeed");
+        assert_eq!(
+            state.lock().expect("you mock state").tools_list_calls,
+            1,
+            "the timed-out waiter must not start a second tools/list"
+        );
+    }
+
+    /// Manual, network-real probe of the live You.com MCP endpoint. Verifies
+    /// name-based discovery and decoding against the vendor's current tool list.
+    /// Run with:
+    /// `cargo test -p flowy-web --lib -- --ignored live_you_endpoint`
+    #[tokio::test]
+    #[ignore = "manual verification: calls the live you.com MCP endpoint"]
+    async fn live_you_endpoint_discovery_and_search() {
+        let adapter = RemoteSearchAdapter::you().expect("offline construction");
+        let deadline = || Instant::now() + Duration::from_secs(20);
+
+        adapter
+            .ensure_compatible(deadline())
+            .await
+            .expect("live discovery must satisfy the adapter contract");
+
+        let query = SearchQuery {
+            query: "深圳今天天气".to_owned(),
+            count: 5,
+        };
+        let outcome = adapter
+            .search_attempt_with_diagnostics(&query, deadline())
+            .await
+            .expect("live you-search call must decode");
+        assert_eq!(outcome.result.provider, "you");
+        assert!(
+            !outcome.result.hits.is_empty(),
+            "live search returned no hits: {:?}",
+            outcome.result
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_rediscovery_after_terminal_failure_is_single_flight() {
+        let state = Arc::new(std::sync::Mutex::new(YouMockState {
+            available_tools: vec![you_search_tool()],
+            unknown_tool_failures_remaining: 2,
+            ..YouMockState::default()
+        }));
+        let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
+        let deadline = || Instant::now() + Duration::from_secs(5);
+
+        adapter
+            .ensure_compatible(deadline())
+            .await
+            .expect("initial discovery succeeds");
+        assert!(matches!(
+            adapter
+                .search_attempt_with_diagnostics(&you_query(), deadline())
+                .await,
+            Err(SearchAttemptError::ToolMissing)
+        ));
+        let calls_after_failure = state.lock().expect("you mock state").tools_list_calls;
+        assert_eq!(calls_after_failure, 2);
+
+        let adapter = Arc::new(adapter);
+        let (first, second) = tokio::join!(
+            adapter.ensure_compatible(deadline()),
+            adapter.ensure_compatible(deadline()),
+        );
+        first.expect("rediscovery after invalidation");
+        second.expect("rediscovery after invalidation");
+        assert_eq!(
+            state.lock().expect("you mock state").tools_list_calls,
+            calls_after_failure + 1,
+            "concurrent rediscovery after cache invalidation must share one tools/list"
+        );
+    }
+
+    #[tokio::test]
+    async fn you_discovery_failure_is_not_cached_and_peer_cache_is_dropped() {
+        let state = Arc::new(std::sync::Mutex::new(YouMockState::default()));
+        let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
+        let deadline = || Instant::now() + Duration::from_secs(5);
+
+        assert!(matches!(
+            adapter.ensure_compatible(deadline()).await,
+            Err(SearchAttemptError::ToolMissing)
+        ));
+        assert_eq!(state.lock().expect("you mock state").tools_list_calls, 1);
+
+        state
+            .lock()
+            .expect("you mock state")
+            .available_tools
+            .push(you_search_tool());
+        adapter
+            .ensure_compatible(deadline())
+            .await
+            .expect("a failed discovery must not be cached");
+        assert_eq!(
+            state.lock().expect("you mock state").tools_list_calls,
+            2,
+            "the retry must re-run tools/list instead of replaying the failure"
+        );
+
+        adapter
+            .ensure_compatible(deadline())
+            .await
+            .expect("successful discovery is cached");
+        assert_eq!(
+            state.lock().expect("you mock state").tools_list_calls,
+            2,
+            "a successful discovery must be cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_tool_missing_drops_successful_discovery_cache() {
+        let state = Arc::new(std::sync::Mutex::new(YouMockState {
+            available_tools: vec![you_search_tool()],
+            unknown_tool_failures_remaining: 2,
+            ..YouMockState::default()
+        }));
+        let (adapter, _server) = you_test_adapter(Arc::clone(&state)).await;
+        let deadline = || Instant::now() + Duration::from_secs(5);
+
+        adapter
+            .ensure_compatible(deadline())
+            .await
+            .expect("initial discovery succeeds");
+        assert_eq!(state.lock().expect("you mock state").tools_list_calls, 1);
+
+        let failed = adapter
+            .search_attempt_with_diagnostics(&you_query(), deadline())
+            .await;
+        assert!(matches!(failed, Err(SearchAttemptError::ToolMissing)));
+        assert_eq!(
+            state.lock().expect("you mock state").tool_calls,
+            2,
+            "one rediscovery retry is allowed before the terminal failure"
+        );
+
+        adapter
+            .ensure_compatible(deadline())
+            .await
+            .expect("terminal ToolMissing must not leave a stale success cache");
+        assert_eq!(
+            state.lock().expect("you mock state").tools_list_calls,
+            3,
+            "the post-cooldown attempt must re-run tools/list"
+        );
+
+        let recovered = adapter
+            .search_attempt_with_diagnostics(&you_query(), deadline())
+            .await
+            .expect("search recovers after the upstream tool list stabilizes");
+        assert_eq!(recovered.result.hits.len(), 1);
+        assert_eq!(state.lock().expect("you mock state").tool_calls, 3);
     }
 }

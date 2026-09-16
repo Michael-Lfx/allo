@@ -1,0 +1,192 @@
+# 上游契约漂移修复：完成交接（2026-09-15）
+
+> 用途：上下文压缩/换会话后的恢复入口。所有结论与证据均已落盘在
+> `docs/architecture/` 三份文档中，本文件只做索引、状态与待办。
+>
+> 分支：`fix/upstream-contract-drift`（已推送；PR #219，提交清单见 §2）
+>
+> 工作树：干净；原基线 `f0e33897d`，2026-09-16 已 rebase 至
+> `fb0cba264`（origin/main, v1.3.8；rebase 后哈希已更新）
+
+## 1. 一句话状态
+
+六个客户端修复 + 目录输出上限钳制已实现、单测与真实网络验收通过；OBS-1 受控
+采样完成并判定"保持串行调度"；一轮边界复审的 5 项修复与收尾修复已落地
+（0 Required）；**分支已推送，PR #219 已创建**
+（https://github.com/Michael-Lfx/allo/pull/219）。
+
+## 2. 提交清单（按时间顺序）
+
+```text
+# 调查与计划（4 + 1）
+10f672317 docs: record upstream contract drift investigation findings
+cbacd51a4 docs: add backup dev environment findings to contract drift record
+71e736cf4 docs: expand fix rationale and rejected alternatives for review
+cafec181e docs: reconcile fix plan with cross review findings
+21ce240bc docs(architecture): 制定上游契约漂移修复计划
+
+# 修复（6 + 目录钳制 + 边界复审与收尾 9）
+091853d23 fix(provider): 协商工具请求的 reasoning_effort
+55c966ac2 fix(web): 按名称发现 You 工具并恢复失败探测
+fe9097b28 fix(provider): 协商模型输出 token 上限
+ceb3347ef fix(provider): 兼容 Gemini 嵌套工具 schema
+a9a8920f9 fix(agent): 忽略未广告工具的纯进度预览
+fa3c8d1c9 fix(provider): 限制初始请求总等待时间
+c1f329f3b fix(cloud): 同步时钳制目录中已知超限的输出上限
+5eeed73eb fix(provider): 收紧协商边界与重试上下文
+d84a70a89 fix(web): 约束发现锁等待并复用冷却常量
+a23c0ea89 fix(agent): 未广告进度告警按调用 id 去重
+5040e600e fix(cloud): 目录上限家族匹配改为词元
+737469b06 chore: 深度截断日志与 OBS 统计清理
+90742922f fix(web): 发现锁等待超时归入队列繁忙
+d1a6b3598 chore(provider): 补充输出字段与家族匹配的边界注释
+
+# 测试与验证
+db9a313fd test(provider): 补齐契约协商边界回归
+52f5ce7ca test(conversation): 覆盖超时故障的模型转移
+c94f0c211 test(web): 覆盖冷却后并发重发现的单飞
+af9bef7c0 test(provider): 增加 90s 初始协商 deadline 手动验收
+ab1d2ab70 test(web): 增加 you.com 实时契约手动验收
+b80a05e0f test(web): 增加 OBS-1 受控采样工具
+
+# 文档回填与交接
+c4d817f96 docs(architecture): 记录 OBS-1 历史基线
+665a399dd docs(architecture): 回填上游契约漂移修复证据
+2e27e8bb2 docs(architecture): 补充工具链与基线限制说明
+5eea237db docs(architecture): 记录补充测试提交与覆盖说明
+a1ea0f24c docs(architecture): 回填真实验收记录
+9f192b0fa docs(architecture): 整理运行时影响说明与 OBS-1 采样记录
+47cf6e416 docs(handoffs): 记录上游契约漂移修复完成交接
+aa92152e0 docs(handoffs): 修正交接文件提交计数与清单
+172f360e4 docs(architecture): 记录目录输出上限钳制的运行时影响与验证
+f106e0ab8 docs(architecture): 回填边界复审修复与回归结果
+a874ace4e docs(architecture): 回填复审修复状态、计数与 PR 链接
+```
+
+> 2026-09-16 已 rebase 至 `origin/main` v1.3.8（`fb0cba264`），以上为 rebase
+> 后哈希；完整顺序以 `git log --oneline origin/main..HEAD` 为准。
+
+改动范围：23 个文件（含 docs）；行数随文档同步变化，以
+`git diff --stat origin/main...HEAD` 为准（当前约 +4.1k/−0.1k）。
+
+## 3. 文档索引（恢复时先读这三份）
+
+| 文档 | 内容 |
+| --- | --- |
+| `docs/architecture/upstream-contract-drift-investigation.zh-CN.md` | 背景、两处现场证据、同类问题矩阵、方案取舍、OBS 历史基线（§9） |
+| `docs/architecture/upstream-contract-drift-execution-plan.zh-CN.md` | v4 执行计划、实施记录（§15）、真实验收记录（§16）、决策基线 |
+| `docs/architecture/upstream-contract-drift-runtime-impact.zh-CN.md` | 运行时影响逐项说明、复现命令、OBS-1 采样方法与结论 |
+
+工具与手动用例：
+
+- `crates/agent/flowy-web/examples/obs_sampling.rs`：OBS-1 受控采样（真实托管搜索链）。
+- `nomi-providers` ignored 用例：90s 黑洞 deadline 计时。
+- `flowy-web` ignored 用例：you.com 实时契约探针。
+- OBS 原始捕获（本机临时目录）：`%TEMP%\obs-managed-search-*.jsonl`。
+
+## 4. 验证结果摘要
+
+自动化（除既有失败外全绿，见 §6）：
+
+```text
+nomi-providers                 248 passed（191+13+17+27），1 ignored
+flowy-web                      190 passed，1 ignored
+nomi-agent                     830 passed（787 本轮复验 + 11 + 32）
+nomi-config                    216 passed（compat 31 本轮复验）；1 既有失败
+nomifun-cloud                  175 passed（provider_sync 22 本轮复验）；1 既有失败
+nomifun-ai-agent send_error    33 passed
+nomifun-conversation failover  9 passed
+```
+
+真实网络验收：
+
+| 项 | 结果 |
+| --- | --- |
+| 90s 初始协商 deadline | ✅ 实测 90.03s，`InitialRequestTimeout`，无重试叠加 |
+| GPT5.6-Sol 工具 schema + effort 双协商 | ✅ 真实网关：两次降级后 `terminal: ok`，无 `all_channel_models_failed` |
+| qwen3.8-flash + web_search | ✅ 成功（web 宿主走默认 DDG；托管链由实时探针覆盖） |
+| you.com 实时契约 | ✅ 按名发现 + 真实 `you-search` 解码成功（2.66s，5 hits） |
+| gemini 输出上限 | ⚠️ 该账号通道接受 128000，现场拒绝不可复现；65536 仅 wiremock 覆盖 |
+| 超时故障模型转移 | ✅ failover 端到端用例（两次发送、一次 rebuild、写入下一候选） |
+
+OBS-1 受控采样（30 次探针）：
+
+```text
+样本 A 全链路 20 次：parallel 20/20，P50 1066ms / P95 2590ms，0 fallback / 0 全失败
+样本 B 禁用 parallel 直达 you 10 次：you 10/10，P50 1970ms / P95 2255ms，0 schema_mismatch
+决策门：P95 ≤ 6s 且全失败 0% → 保持串行调度，Stage 8 关闭
+主样本（≥100 条真实调用）未达到 → 标记“证据不足”，不作长期依据
+```
+
+## 5. 恢复后的待办
+
+1. **推送与 PR（已完成）**
+   - 分支已推送至 `origin/fix/upstream-contract-drift`；PR #219：
+     https://github.com/Michael-Lfx/allo/pull/219
+   - 描述按仓库模板撰写（Summary/Type/Scope/Verification/Docs/Safety/Notes）
+2. **OBS-1 长期采样（未来工作，不阻塞合并）**
+   - 修复上线后真实使用中累计 ≥100 条，再跑
+     `cargo run -p flowy-web --example obs_sampling` 复核决策门；若触发
+     "P95>6s + 串行等待≥50% + DDG 3s 成功率≥90%" 再考虑 Stage 8 hedge。
+3. A3 类验收（可选）：需要具备 65537 输出上限的通道/环境。
+
+## 6. 既有失败与环境限制（非本分支引入，勿误判）
+
+- `nomi-config hooks::tests::test_hook_timeout`：Windows 无 `sleep` 可执行文件，
+  基线同样失败。
+- `nomi-agent badcase_regression_test::a_round_that_keeps_truncating_stops_at_three_passes`：
+  基线同样失败。
+- `nomifun-cloud activation::fingerprint::tests::windows_collection_runs_readers_concurrently`：
+  Windows 专用源扫描用例，`end`（第 3 行的 cfg 标记）先于 `start`（第 73 行的函数）
+  导致切片越界；`origin/main` 同样布局，基线即失败。
+- `cargo check --workspace`：本机 40 分钟未完成，已改为依赖面核对
+  （`ProviderError` 消费方无新增风险）。
+- `bun run check`：在既有 UI typecheck 阶段失败（videoCanvas / analytics 测试），
+  本分支未触及 UI 文件。
+- `rustfmt.toml` 设置 `disable_all_formatting = true`，`cargo fmt` 是既定 no-op。
+
+## 7. PR 描述草稿（可直接粘贴）
+
+```text
+## 背景
+- 用户反馈（2026-09-12）：GPT5.6-Sol 带工具对话报"模型服务商暂不可用"，
+  实际是网关拒绝 tools + reasoning_effort（HTTP 500 → 被当瞬时错误重试 2 次）。
+- 本机复盘（2026-09-15）：托管搜索 You 通道因工具数量契约漂移被永久禁用；
+  另发现未广告工具进度会终止回合、初始请求最长可挂 90–231s。
+- 完整证据与取舍见 docs/architecture/upstream-contract-drift-*.zh-CN.md。
+
+## 修改（纯客户端，无 DB/接口/配置变更）
+- fix(provider): 工具请求命中 effort 拒绝时降级 reasoning_effort=none 并记忆；
+- fix(web): You 按名发现、发现只缓存成功、SchemaMismatch/ToolMissing 10 分钟冷却、
+  调用期清理陈旧缓存；
+- fix(provider): supported-range 拒绝时解析 inclusive/exclusive 并向下收敛 max_tokens；
+- fix(provider): 识别 Gemini parameters.any_of 文案 + 组合分支归一化（fixture 驱动）；
+- fix(agent): 未广告 ToolUseDelta 仅告警忽略；最终未广告 ToolUse 仍硬拒绝；
+- fix(provider): chat/completions 初始协商 90s 绝对 deadline（不可重试）；
+- fix(cloud): 同步时把目录中已知超限的输出上限向下钳制（gemini → 65536），
+  首个请求即使用被接受的 ceiling，不再白吃一次 supported-range 拒绝；
+- 边界复审修复：瞬时重试排除按请求上下文生效、camelCase `parameters.anyOf` 分类、
+  effort 记忆后显式发送 none、发现锁等待受 attempt deadline 约束、未广告进度告警去重、
+  目录家族词元匹配。
+
+## 验证
+- 单测：nomi-providers 248（191+13+17+27）、flowy-web 190、nomi-agent 830、
+  nomi-config 216、nomifun-cloud 175（provider_sync 22/22）、send_error 33、failover 9；
+- 真实网络：90s deadline 实测 90.03s；GPT5.6-Sol 双协商成功；you.com 实时
+  发现+检索成功；超时故障 failover 成功；
+- OBS-1：30 次受控探针，parallel 20/20、you 10/10、0 schema_mismatch，
+  决策门判定保持串行调度。
+
+## 未验证/限制
+- gemini 65537 上限拒绝需具备该限制的通道，当前仅 wiremock 覆盖；
+- 托管搜索在 web 宿主按设计关闭，桌面宿主端到端由实时探针替代；
+- OBS 长期结论需要 ≥100 条真实样本（Stage 8 暂关闭）。
+```
+
+## 8. 恢复检查清单
+
+```text
+git status --short --branch                  # 期望：fix/upstream-contract-drift，干净
+git log --oneline origin/main..HEAD          # 期望：§2 的完整提交序列
+cargo test -p nomi-providers -p flowy-web    # 期望：248 + 190，各 1 ignored
+```
