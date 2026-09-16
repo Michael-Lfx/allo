@@ -94,4 +94,18 @@ describe('ChatModelPickerMenu structure', () => {
     const rule = sendboxCss.slice(ruleStart, sendboxCss.indexOf('}', ruleStart));
     expect(rule.includes('padding-top: 12px')).toBe(true);
   });
+
+  test('keeps one caption-row-metadata type scale across the composer menus', () => {
+    // Arco inherits its 14px root font-size into both menu items and group
+    // titles; the composer menus standardize on caption 12px / row 13px /
+    // metadata 11px instead.
+    expect(sendboxCss.includes('.chat-model-picker-menu .arco-menu-group-title {')).toBe(true);
+    expect(sendboxCss.includes('.auto-tier-selector-popup .arco-menu {')).toBe(true);
+    const captionStart = sendboxCss.indexOf('.chat-model-picker-menu .arco-menu-group-title {');
+    const captionRule = sendboxCss.slice(captionStart, sendboxCss.indexOf('}', captionStart));
+    expect(captionRule.includes('font-size: 12px')).toBe(true);
+    const tierStart = sendboxCss.indexOf('.auto-tier-selector-popup .arco-menu {');
+    const tierRule = sendboxCss.slice(tierStart, sendboxCss.indexOf('}', tierStart));
+    expect(tierRule.includes('font-size: 13px')).toBe(true);
+  });
 });

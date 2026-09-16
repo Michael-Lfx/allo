@@ -87,7 +87,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
       droplist={
         <div
           id={popupId}
-          className='min-w-180px'
+          className='auto-tier-selector-popup min-w-180px'
           role='dialog'
           aria-label={autoTierTitle}
           data-testid='auto-tier-selector-popup'

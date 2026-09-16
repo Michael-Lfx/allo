@@ -927,6 +927,19 @@
   text-align: center;
 }
 
+/* One type scale across the composer menus: caption 12px / row 13px /
+ * metadata 11px. Arco sets `font-size: 14px` on the `.arco-menu` root and
+ * lets items and group titles inherit it, which made the auto-tier rows the
+ * largest text in the composer surface and the picker's group captions
+ * bigger than the rows they introduce. */
+.auto-tier-selector-popup .arco-menu {
+  font-size: 13px;
+}
+
+.chat-model-picker-menu .arco-menu-group-title {
+  font-size: 12px;
+}
+
 /* The collaboration policy is intentionally an icon in the normal toolbar,
  * but it participates in the same desktop hover-to-expand interaction. */
 .sendbox-responsive-config-group .nomi-sendbox-policy-btn {
