@@ -398,6 +398,29 @@ export async function subscribeWindowMaximized(
   });
 }
 
+/**
+ * App-level focus: any Flowy window (main, companion, memory panel, toast)
+ * currently holds OS focus. `document.hasFocus()` only reflects the calling
+ * webview, so a focused sibling window would otherwise read as "unfocused".
+ * Falls back to the main window, then to the DOM signal, if window
+ * enumeration is unavailable.
+ */
+export async function tauriIsAppFocused(): Promise<boolean> {
+  try {
+    const { getAllWindows } = await import('@tauri-apps/api/window');
+    const windows = await getAllWindows();
+    const focused = await Promise.all(windows.map((win) => win.isFocused().catch(() => false)));
+    return focused.some(Boolean);
+  } catch {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      return await getCurrentWindow().isFocused();
+    } catch {
+      return typeof document !== 'undefined' && document.hasFocus();
+    }
+  }
+}
+
 // ---- WebUI / LAN remote-access lifecycle (Tauri commands + status event) ----
 
 /** Invoke a Tauri command via `@tauri-apps/api/core`. */
