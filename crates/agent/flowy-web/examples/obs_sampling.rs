@@ -124,7 +124,7 @@ fn summarize(path: &str, wall_ms: &mut Vec<u128>) -> Result<(), Box<dyn std::err
     let mut empty = 0usize;
     let mut skipped = 0usize;
     let mut fallback_hist: BTreeMap<u64, usize> = BTreeMap::new();
-    let mut search_ids: BTreeMap<String, (usize, u128)> = BTreeMap::new();
+    let mut search_ids: BTreeMap<String, u128> = BTreeMap::new();
 
     for line in text.lines() {
         let Ok(row) = serde_json::from_str::<Value>(line) else {
@@ -156,7 +156,10 @@ fn summarize(path: &str, wall_ms: &mut Vec<u128>) -> Result<(), Box<dyn std::err
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        let serial = search_ids.entry(request_id).or_insert((0, 0));
+        if request_id.is_empty() {
+            continue;
+        }
+        let serial = search_ids.entry(request_id).or_default();
 
         let entry = providers.entry(provider.clone()).or_default();
         match message {
@@ -165,7 +168,7 @@ fn summarize(path: &str, wall_ms: &mut Vec<u128>) -> Result<(), Box<dyn std::err
                 entry.ok.push(elapsed);
                 let fallback = fields.get("fallback_count").and_then(Value::as_u64).unwrap_or(0);
                 *fallback_hist.entry(fallback).or_default() += 1;
-                serial.1 = serial.1.saturating_add(elapsed);
+                *serial = serial.saturating_add(elapsed);
             }
             "managed web search provider failed" => {
                 let class = fields
@@ -174,7 +177,7 @@ fn summarize(path: &str, wall_ms: &mut Vec<u128>) -> Result<(), Box<dyn std::err
                     .unwrap_or("unknown")
                     .to_owned();
                 *entry.fail.entry(class).or_default() += 1;
-                serial.1 = serial.1.saturating_add(elapsed);
+                *serial = serial.saturating_add(elapsed);
             }
             "managed web search provider skipped" => {
                 skipped += 1;
@@ -199,10 +202,7 @@ fn summarize(path: &str, wall_ms: &mut Vec<u128>) -> Result<(), Box<dyn std::err
             p95.push(percentile(&mut ok, 95.0));
         }
     }
-    let serial_waits: Vec<u128> = search_ids
-        .values()
-        .map(|(_, elapsed)| *elapsed)
-        .collect();
+    let serial_waits: Vec<u128> = search_ids.values().copied().collect();
 
     println!("\n== OBS-1 managed search summary ==");
     println!(

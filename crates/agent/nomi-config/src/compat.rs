@@ -286,6 +286,12 @@ const MAX_COMPOSITION_BRANCH_DEPTH: usize = 32;
 
 fn normalize_composition_branches_at(schema: &mut Value, depth: usize) {
     if depth > MAX_COMPOSITION_BRANCH_DEPTH {
+        tracing::debug!(
+            target: "nomi_config",
+            depth,
+            max_depth = MAX_COMPOSITION_BRANCH_DEPTH,
+            "schema composition normalization stopped at the depth limit; deeper branches stay unnormalized"
+        );
         return;
     }
     match schema {
