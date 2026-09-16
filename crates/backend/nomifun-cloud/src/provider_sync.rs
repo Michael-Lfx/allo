@@ -199,17 +199,24 @@ pub async fn sync_flowy_builtin_provider(
 /// most 65536). Lowering the value at sync time means the first request
 /// already carries an accepted ceiling; the runtime `supported range`
 /// negotiation stays as the safety net for channels this table does not know.
-/// Keep this list tiny and delete entries once the server catalog is fixed.
+/// Auto-tier ids (`AIPC-auto-*`) carry no family token and therefore stay on
+/// that runtime path. Keep this list tiny and delete entries once the server
+/// catalog is fixed.
 const CATALOG_OUTPUT_CAP_CEILINGS: &[(&str, u32)] = &[("gemini", 65_536)];
 
 /// Lower a catalog-advertised output cap to the smallest known ceiling for the
-/// model family. Unknown families keep the catalog value untouched.
+/// model family. The family token must be a whole `[a-z0-9]+` segment of the
+/// model id (so `notgemini` never matches). Unknown families keep the catalog
+/// value untouched.
 fn clamp_catalog_output_cap(model: &str, catalog_cap: Option<u32>) -> Option<u32> {
     let catalog_cap = catalog_cap?;
-    let lowered_model = model.to_ascii_lowercase();
     let ceiling = CATALOG_OUTPUT_CAP_CEILINGS
         .iter()
-        .filter(|(family, _)| lowered_model.contains(*family))
+        .filter(|(family, _)| {
+            model
+                .split(|character: char| !character.is_ascii_alphanumeric())
+                .any(|segment| segment.eq_ignore_ascii_case(family))
+        })
         .map(|(_, ceiling)| *ceiling)
         .min();
     Some(ceiling.map_or(catalog_cap, |ceiling| catalog_cap.min(ceiling)))
@@ -756,6 +763,7 @@ mod tests {
             catalog_entry("flowy/Gemini-2.5-pro", r#"{"max_tokens":32768}"#),
             catalog_entry("AIPC-auto-balance", r#"{"max_tokens":128000}"#),
             catalog_entry("AIPC-gemini-no-cap", r#"{"max_tokens":0}"#),
+            catalog_entry("AIPC-notgemini-x", r#"{"max_tokens":128000}"#),
         ];
 
         let seeds = build_profile_seeds(&entries, "openai").unwrap();
@@ -763,6 +771,11 @@ mod tests {
         assert_eq!(seeds[1].catalog_max_tokens, Some(32_768));
         assert_eq!(seeds[2].catalog_max_tokens, Some(128_000));
         assert_eq!(seeds[3].catalog_max_tokens, None);
+        assert_eq!(
+            seeds[4].catalog_max_tokens,
+            Some(128_000),
+            "a substring hit inside another token must not clamp"
+        );
     }
 
     #[test]
