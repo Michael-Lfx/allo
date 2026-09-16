@@ -640,11 +640,13 @@ impl RemoteSearchAdapter {
 
     async fn ensure_compatible(&self, deadline: Instant) -> Result<(), SearchAttemptError> {
         // Waiting on another attempt's in-flight discovery must not outlive
-        // this attempt's own deadline: the outer slot timeout would otherwise
-        // cancel a healthy provider and record a misleading Timeout.
+        // this attempt's own deadline. Report contention as QueueBusy rather
+        // than Timeout: the provider itself is healthy, so the service must
+        // not cool it down (Timeout feeds the exponential health backoff) and
+        // should simply move on to the next provider in the chain.
         let mut cache = timeout_at(deadline, self.discovery.lock())
             .await
-            .map_err(|_| SearchAttemptError::Timeout)?;
+            .map_err(|_| SearchAttemptError::QueueBusy)?;
         if cache.is_some() {
             return Ok(());
         }
@@ -1918,7 +1920,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovery_lock_wait_is_bounded_by_the_attempt_deadline() {
+    async fn discovery_lock_contention_returns_queue_busy_within_the_deadline() {
         let state = Arc::new(std::sync::Mutex::new(YouMockState {
             available_tools: vec![you_search_tool()],
             tools_list_delay_ms: 750,
@@ -1941,8 +1943,8 @@ mod tests {
             .ensure_compatible(Instant::now() + Duration::from_millis(100))
             .await;
         assert!(
-            matches!(waiter, Err(SearchAttemptError::Timeout)),
-            "a waiter must not outlive its own deadline: {waiter:?}"
+            matches!(waiter, Err(SearchAttemptError::QueueBusy)),
+            "a waiter must give up at its own deadline without penalty: {waiter:?}"
         );
 
         holder
