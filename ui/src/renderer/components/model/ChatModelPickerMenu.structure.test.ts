@@ -9,7 +9,7 @@ describe('ChatModelPickerMenu structure', () => {
     expect(source.includes("from '@arco-design/web-react'" )).toBe(true);
     expect(source.includes('Menu.ItemGroup')).toBe(true);
     expect(source.includes('onClickMenuItem={handleMenuItemClick}')).toBe(true);
-    expect(source.includes("width: 'min(300px, calc(100vw - 24px))'")).toBe(true);
+    expect(source.includes("width: 'min(320px, calc(100vw - 24px))'")).toBe(true);
     expect(source.includes("maxHeight: 'min(360px, max(160px, calc(100dvh - 96px)))'")).toBe(true);
     expect(sendboxCss.includes('max-height: min(360px, max(160px, calc(100dvh - 96px)));')).toBe(true);
     expect(source.includes('chat-model-picker-menu-list')).toBe(true);
@@ -51,6 +51,9 @@ describe('ChatModelPickerMenu structure', () => {
     expect(source.includes("t('conversation.modelPicker.recommended'")).toBe(true);
     // The Auto row follows the tier it currently displays.
     expect(source.includes('autoTierTaglineKey(autoTierForDisplay)')).toBe(true);
+    // The health dot overlays the brand icon's corner so late-arriving health
+    // data never shifts the icon column.
+    expect(source.includes('absolute -bottom-1px -right-1px')).toBe(true);
     expect(sendboxCss.includes('.chat-model-recommended-badge')).toBe(true);
     expect(sendboxCss.includes('.chat-model-picker-menu-tagline')).toBe(true);
   });

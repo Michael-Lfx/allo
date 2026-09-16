@@ -33,7 +33,7 @@ export interface ChatModelPickerMenuProps {
 export const FLOWY_AUTO_FAMILY_MENU_KEY = 'flowy-auto-family';
 
 const menuStyle: CSSProperties = {
-  width: 'min(300px, calc(100vw - 24px))',
+  width: 'min(320px, calc(100vw - 24px))',
   maxHeight: 'min(360px, max(160px, calc(100dvh - 96px)))',
 };
 
@@ -111,8 +111,20 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
       >
         <div className='flex min-w-0 w-full items-center justify-between gap-8px'>
           <div className='flex min-w-0 items-center gap-8px'>
-            {dot && <span className={`h-6px w-6px shrink-0 rounded-full ${dot}`} aria-hidden='true' />}
-            <ModelBrandIcon src={option.showcase.icon} />
+            {/* Fixed 16px leading slot: the health dot overlays the brand
+              * icon's corner instead of shifting the icon when health data
+              * arrives; iconless rows keep the dot centered in the slot. */}
+            <div className='relative flex h-16px w-16px shrink-0 items-center justify-center'>
+              <ModelBrandIcon src={option.showcase.icon} />
+              {dot && (
+                <span
+                  className={`h-6px w-6px rounded-full ${dot} ${
+                    option.showcase.icon ? 'absolute -bottom-1px -right-1px' : ''
+                  }`}
+                  aria-hidden='true'
+                />
+              )}
+            </div>
             <div className='min-w-0 flex-1'>
               <div className='flex min-w-0 items-center gap-6px'>
                 <span
@@ -127,13 +139,13 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
                 )}
               </div>
               {tagline && (
-                <div className='chat-model-picker-menu-tagline truncate text-11px leading-15px text-t-tertiary'>
+                <div className='chat-model-picker-menu-tagline truncate text-11px leading-15px text-t-secondary'>
                   {tagline}
                 </div>
               )}
             </div>
           </div>
-          <span className='chat-model-picker-menu-meta flex w-52px shrink-0 justify-end'>
+          <span className='chat-model-picker-menu-meta flex w-44px shrink-0 justify-end tabular-nums'>
             <ModelCreditRateHint provider={option.provider} modelName={option.model} />
           </span>
         </div>
@@ -177,7 +189,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
                     {t('conversation.modelPicker.auto', { defaultValue: 'Auto' })}
                   </div>
                   {autoTaglineKey && (
-                    <div className='chat-model-picker-menu-tagline truncate text-11px leading-15px text-t-tertiary'>
+                    <div className='chat-model-picker-menu-tagline truncate text-11px leading-15px text-t-secondary'>
                       {t(autoTaglineKey)}
                     </div>
                   )}

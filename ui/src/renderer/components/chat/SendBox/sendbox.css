@@ -880,7 +880,7 @@
 }
 
 .chat-model-picker-menu-meta {
-  min-width: 52px;
+  min-width: 44px;
 }
 
 /* Positioning tagline under the model name; rows without one keep the
