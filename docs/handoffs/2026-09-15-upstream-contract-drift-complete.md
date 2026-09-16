@@ -10,8 +10,8 @@
 
 ## 1. 一句话状态
 
-六个客户端修复已实现、单测与真实网络验收通过；OBS-1 受控采样完成并判定
-"保持串行调度"；**仅剩推送分支 + 创建 PR**（以及长期的 OBS 样本积累）。
+六个客户端修复 + 目录输出上限钳制已实现、单测与真实网络验收通过；OBS-1 受控
+采样完成并判定"保持串行调度"；**新提交已落本地，需补一次推送**（再加 PR）。
 
 ## 2. 提交清单（按时间顺序）
 
@@ -30,6 +30,7 @@ f05aeba7e fix(provider): 协商模型输出 token 上限
 48e4624df fix(provider): 兼容 Gemini 嵌套工具 schema
 28e47613a fix(agent): 忽略未广告工具的纯进度预览
 d3dfdbfdb fix(provider): 限制初始请求总等待时间
+76d13f9bc fix(cloud): 同步时钳制目录中已知超限的输出上限
 
 # 测试与验证
 bcc752921 test(provider): 补齐契约协商边界回归
@@ -70,16 +71,16 @@ c8d7cf42e docs(architecture): 回填真实验收记录
 
 ## 4. 验证结果摘要
 
-自动化（全绿；两个既有失败见 §6）：
+自动化（除既有失败外全绿，见 §6）：
 
 ```text
 nomi-providers                 243 passed（187+13+17+26），1 ignored
 flowy-web                      189 passed，1 ignored
 nomi-agent                     830 passed（787+11+32）
 nomi-config                    216 passed
+nomifun-cloud                  175 passed；1 既有失败（fingerprint Windows 源扫描）
 nomifun-ai-agent send_error    33 passed
 nomifun-conversation failover  9 passed
-cargo check -p nomifun-cloud   Finished
 ```
 
 真实网络验收：
@@ -104,8 +105,8 @@ OBS-1 受控采样（30 次探针）：
 
 ## 5. 恢复后的待办
 
-1. **推送 + PR（唯一可立即完成的交付动作）**
-   - `git push -u origin fix/upstream-contract-drift`
+1. **推送新提交 + PR**
+   - `git push`（远端已有该分支；本地领先 2 个提交：`76d13f9bc` 修复 + 本次 docs）
    - PR 描述草稿见 §7；合并前确认仓库 Git 归属规则（无 AI attribution）
 2. **OBS-1 长期采样（未来工作，不阻塞合并）**
    - 修复上线后真实使用中累计 ≥100 条，再跑
@@ -119,6 +120,9 @@ OBS-1 受控采样（30 次探针）：
   基线同样失败。
 - `nomi-agent badcase_regression_test::a_round_that_keeps_truncating_stops_at_three_passes`：
   基线同样失败。
+- `nomifun-cloud activation::fingerprint::tests::windows_collection_runs_readers_concurrently`：
+  Windows 专用源扫描用例，`end`（第 3 行的 cfg 标记）先于 `start`（第 73 行的函数）
+  导致切片越界；`origin/main` 同样布局，基线即失败。
 - `cargo check --workspace`：本机 40 分钟未完成，已改为依赖面核对
   （`ProviderError` 消费方无新增风险）。
 - `bun run check`：在既有 UI typecheck 阶段失败（videoCanvas / analytics 测试），
@@ -142,11 +146,13 @@ OBS-1 受控采样（30 次探针）：
 - fix(provider): supported-range 拒绝时解析 inclusive/exclusive 并向下收敛 max_tokens；
 - fix(provider): 识别 Gemini parameters.any_of 文案 + 组合分支归一化（fixture 驱动）；
 - fix(agent): 未广告 ToolUseDelta 仅告警忽略；最终未广告 ToolUse 仍硬拒绝；
-- fix(provider): chat/completions 初始协商 90s 绝对 deadline（不可重试）。
+- fix(provider): chat/completions 初始协商 90s 绝对 deadline（不可重试）；
+- fix(cloud): 同步时把目录中已知超限的输出上限向下钳制（gemini → 65536），
+  首个请求即使用被接受的 ceiling，不再白吃一次 supported-range 拒绝。
 
 ## 验证
 - 单测：nomi-providers 243、flowy-web 189、nomi-agent 830、nomi-config 216、
-  send_error 33、failover 9；
+  nomifun-cloud 175（provider_sync 22/22）、send_error 33、failover 9；
 - 真实网络：90s deadline 实测 90.03s；GPT5.6-Sol 双协商成功；you.com 实时
   发现+检索成功；超时故障 failover 成功；
 - OBS-1：30 次受控探针，parallel 20/20、you 10/10、0 schema_mismatch，

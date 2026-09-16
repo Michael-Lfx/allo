@@ -19,6 +19,7 @@
 | `48e4624df` | Gemini 文案分类 + 组合分支归一化（fixture 驱动） |
 | `28e47613a` | 未广告 `ToolUseDelta` 忽略；最终未广告 `ToolUse` 仍拒绝 |
 | `d3dfdbfdb` | 初始协商 90s 绝对 deadline（chat/completions） |
+| `76d13f9bc` | 目录输出上限钳制（同步时按模型家族向下收敛） |
 
 ## 2. 对 agent runtime 的影响
 
@@ -33,6 +34,7 @@
 | Gemini schema（`nomi-config/compat.rs`） | 组合分支补 `type: object`、标量分支移除 object-only 关键字；只作用于 provider-facing 副本 | Bedrock/Vertex 等默认 sanitize 通道同样看到归一化（语义保持）；执行期仍用本地原始 schema 校验 |
 | 未广告进度预览（`nomi-agent/engine`） | 展示型 `ToolUseDelta` 改为 warn + 忽略；**最终未广告 `ToolUse` 仍硬失败** | 少一类误报错误；工具执行授权边界不变 |
 | 90s deadline（`nomi-providers/openai.rs`） | 初始协商（连接/重试/退避/key rotation/各项协商）共享一个绝对 deadline；超时返回 `InitialRequestTimeout`（不可重试）→ `UserLlmProviderTimeout`，开启故障转移时可切模型 | 最坏等待由 90–231s 收敛到 90s；已建立的 SSE 流不受影响；未新增 TLS/timeout 重试 |
+| 目录上限钳制（`nomifun-cloud/provider_sync.rs`） | 同步投影 `extra.max_tokens` 时，按模型家族把已知超限值向下钳制（当前仅 gemini → 65536）；首次请求即携带被上游接受的上限，不再白吃一次 `supported range` 拒绝 | 只降不升；未知家族/更小值原样保留；运行时协商保留为兜底；本机显式 `output_limit` 列优先级仍高于目录值；表需随目录修正清理 |
 
 运行期最坏新增请求数是**有界的**：usage、schema、effort、输出上限四项扩展各至多协商一次；
 学习状态仅在 provider 实例内生效（`AtomicBool` + `Mutex<HashSet/HashMap<String,_>>`）。
