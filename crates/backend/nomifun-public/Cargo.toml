@@ -26,7 +26,7 @@ nomifun-browser-platform = { workspace = true, optional = true }
 # version is pinned to the lockfile-resolved 1.7 (nomifun-app declares "1.5" but
 # the workspace unifies to 1.7); the streamable-http-server transport feature is
 # OFF in nomifun-app and enabled only here.
-rmcp = { version = "1.7", features = ["server", "transport-streamable-http-server", "schemars"] }
+rmcp = { version = "2.0", features = ["server", "transport-streamable-http-server", "schemars"] }
 axum.workspace = true
 tokio.workspace = true
 futures.workspace = true

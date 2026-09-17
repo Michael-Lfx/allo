@@ -289,7 +289,7 @@ sha2.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 url.workspace = true
-rmcp = { version = "1.5", features = ["server", "transport-io", "schemars"] }
+rmcp = { version = "2.0", features = ["server", "transport-io", "schemars"] }
 anyhow.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
