@@ -256,6 +256,10 @@ experts 的体积高度集中：≥1 MiB 的 **77 个文件占 50.9%**，≥10 M
 | `market_source::normalize_source_url` | `other => Err(不支持的远程源)` | 显式 `zip` 分支 |
 | `market_fetch::fetch_remote` | 同上 | 显式 `zip` 分支 |
 
+**还有第四处，`fp-7` 当时漏了**：`AgentStoreMarketplace::resolved()` 里那份手抄的 kind 白名单（§9.8）。
+教训不是「补上第四行」，而是**新增 kind 的正确做法是全仓搜字面量**（`"directory"` / `"url"` 之类），
+而不是照着上表核对——上表本身就是「我以为的完整清单」。
+
 ### 9.3 已知风险：解压落点可能越过 Windows MAX_PATH（**未修，登记**）
 
 experts 树里最长的条目相对路径 **174 字符**，而解压落点是
@@ -350,12 +354,53 @@ test result: ok. 1 passed ... finished in 9.71s
 
 ### 9.7 仍未验证 / 已知风险
 
-- **只完整下载了 `connectors.zip`**（16.7 MiB）。`experts.zip`（289.6 MiB，14,713 条目）只验到
-  `HEAD` 摘要，没走过完整下载+解压。§9.4 已用真实归档的中央目录核对过它的条目数与未压缩体积，
-  但「289 MiB 在慢链路上能否在 900s 内下完」没有实测。
+- ~~**只完整下载了 `connectors.zip`**（16.7 MiB）~~ → **已补测（2026-09-17 晚，改用户 config 时顺带跑通）**：
+  宿主以 `zip` 注册三个默认市场，三个归档**全部**走完 `HEAD` → 下载 → sha256 校验 → 解压 → 晋升，
+  `experts.zip`（289.6 MiB，解压后 610.1 MiB / 14,713 文件）在内；三个市场按序在 ~90s 内注册完成，
+  **600s 外层上限余量充足**；解压后无 `download-*.zip` / `staging-*` 残留。读数见 §9.8。
 - §9.3 的 Windows 长路径风险（默认装机 `LongPathsEnabled=0` 时 experts 解压落点约 292 字符）。
 - `ensure_default_marketplaces` 的 **600s** 外层上限没跟着归档改大：单包比整树镜像小得多（1 请求 vs
   14,714 请求），但 289 MiB 仍然是带宽受限的。若真机首次开店超时，这里是第一个要调的数。
+
+### 9.8 第三个真缺陷：`resolved()` 自带第二份 kind 白名单（2026-09-17 晚，改用户 config 时暴露）
+
+`AgentStoreMarketplace::resolved()` 里有一份**手抄的 kind 白名单**：
+`matches!(kind, "url" | "github" | "git" | "directory")`——**不认识 `zip`**。于是形成一条完整的静默链：
+
+1. `ensure_default_marketplaces` 先 `resolved()` 过滤（`filter_map`）、后 `parse()`。`resolved()` 返回
+   `None` → 条目在第一步就被丢掉，**`parse()` 那段「未知 kind → 告警 + `complete = false`」永远走不到**
+   （§9.2 修好的分支，自 `fp-7` 起对 config 源就是死代码）；
+2. `default_marketplaces` **非空**，所以 builtin 兜底不触发（兜底条件是 `is_empty()`）；
+3. 三个源全丢 → `sources` 为空 → 循环空转 → **`complete = true`**：宿主报告「注册完成」，store 却是空的。
+
+**触发面比「用户手写 zip」大得多**：`agent-store init` 生成的模板，正是从 `builtin_default_marketplaces()`
+逐字写出的 `source_kind = "zip"` —— **向导产物必然得到空 store**。
+
+**为什么三处测试都没抓住**：`builtin_marketplaces_are_complete_and_resolvable` 名字里有 resolvable，
+却只断言 URL 字符串、**从没调用 `resolved()`**；`init` 两条模板测试，一条只做字符串包含，另一条虽然
+`from_source()` 解析成功却只看 `[tools]` 策略。缺陷正好从三者之间穿过。
+
+**修法**（不是「往白名单里加一行 `zip`」）：删掉 `resolved()` 的白名单，只保留「两字段都非空」，kind 判定权
+收归唯一权威 `AppServerMarketplaceSourceKind::parse`——它的文档注释恰好警告过这类第二份清单的漂移。副作用是
+`parse()` 的未知 kind 分支由死代码变活路径：现在写错（`zipp`）会告警 + 标记不完整 + 下轮重试，而不是静默空店。
+
+**回归钉**：`builtin_marketplaces_survive_the_config_loader`（把 builtin 列表拼成 TOML 喂回加载器——钉的是
+「释放默认值 ≡ 向导产物 ≡ 加载器接受」三者一致）、`unknown_source_kind_is_passed_through_not_dropped`、
+`init::template_includes_builtin_markets` 的往返断言（原测试的字符串包含断言全部保留）。
+
+**真机验证**（改完 `~/.agent-store/config.toml` + 重启宿主）：三个市场全部以 `source_kind = "zip"` 注册，
+`enabled = 1` / `removed_at = NULL`，且 `resolved_revision` 与发布侧摘要**逐字节相等**：
+
+| 市场 | 主机 `resolved_revision`（`X-Linked-Etag`） | 发布侧 | 条目 | 解压后 |
+| --- | --- | --- | --- | --- |
+| `experts` | `5cd0ab947c7ed497…` | `5cd0ab947c7ed497…` ✓ | 381 | 14,713 文件 / 610.1 MiB |
+| `workbuddy-skills` | `fca2fead19d91480…` | `fca2fead19d91480…` ✓ | 262 | 4,633 文件 / 41.6 MiB |
+| `connectors` | `4c35ed10007c60715…` | `4c35ed10007c60715…` ✓ | 228 | 3,263 文件 / 37.4 MiB |
+
+**残留（登记，不修）**：`connectors` / `workbuddy-skills` 两行的 `source_etag` 仍是 `url` 时代的旧值，`zip`
+分支不会覆盖它。对 `zip` 是惰性的——`fetch_remote` 的 zip 分支只读 `current_revision`、不读
+`current_validators`，且返回 `validators: None`，所以 `record_source_validators` 也不会被调到。若哪天把该行
+改回 `url`，这个陈旧 validator 会被当作条件请求凭证重新送出。
 
 ## 10. 明确不做
 

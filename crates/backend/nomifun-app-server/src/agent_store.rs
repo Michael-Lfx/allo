@@ -49,7 +49,7 @@ pub struct AgentStoreConfig {
     ///
     /// ```toml
     /// [default_marketplaces.experts]
-    /// source_kind = "url"      # url | github | git | directory
+    /// source_kind = "url"      # url | github | git | directory | zip
     /// source = "http://127.0.0.1:8300/marketplace.json"
     /// ```
     #[serde(default)]
@@ -403,7 +403,7 @@ impl AgentStoreMarketplaceSettings {
 /// One default marketplace source declared in `~/.agent-store/config.toml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AgentStoreMarketplace {
-    /// `url` | `github` | `git` | `directory`.
+    /// `url` | `github` | `git` | `directory` | `zip`.
     #[serde(default)]
     pub source_kind: Option<String>,
     #[serde(default)]
@@ -411,14 +411,20 @@ pub struct AgentStoreMarketplace {
 }
 
 impl AgentStoreMarketplace {
-    /// Resolve to `(source_kind, source)` when both are present and valid.
+    /// Resolve to `(source_kind, source)` when both are present and non-empty.
+    ///
+    /// Deliberately does **not** validate `source_kind`. This used to carry its
+    /// own `matches!(kind, "url" | "github" | "git" | "directory")` list — a
+    /// second copy of the kind set, and a silent one: when `zip` landed (doc
+    /// 30) this method rejected it, so the caller's `filter_map` dropped every
+    /// configured zip source before its unknown-kind warning could run, and a
+    /// config declaring *only* zip sources produced an empty store reported as
+    /// a complete run. The kind set is `AppServerMarketplaceSourceKind::parse`;
+    /// an unrecognised kind is passed through here so the caller can warn.
     pub fn resolved(&self) -> Option<(String, String)> {
         let kind = self.source_kind.as_deref()?.trim().to_owned();
         let source = self.source.as_deref()?.trim().to_owned();
         if kind.is_empty() || source.is_empty() {
-            return None;
-        }
-        if !matches!(kind.as_str(), "url" | "github" | "git" | "directory") {
             return None;
         }
         Some((kind, source))
@@ -1483,6 +1489,63 @@ model = "mimo-v2.5-free"
                 "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/connectors.zip",
             ]
         );
+    }
+
+    /// "Resolvable" is the half of `…_complete_and_resolvable` that a second,
+    /// hand-written kind list can silently break: these sources are `zip`, and
+    /// a config declaring them is exactly what `agent-store init` writes. The
+    /// round-trip below is the property that matters to a user — the loader
+    /// accepts what the release default (and the generated template) emits —
+    /// so a kind the loader refuses fails here instead of ending up as an
+    /// empty store that reports itself complete.
+    #[test]
+    fn builtin_marketplaces_survive_the_config_loader() {
+        let builtin = AgentStoreConfig::builtin_default_marketplaces();
+        let toml: String = builtin
+            .iter()
+            .map(|(id, kind, source)| {
+                format!(
+                    "[default_marketplaces.{id}]\nsource_kind = \"{kind}\"\nsource = \"{source}\"\n\n"
+                )
+            })
+            .collect();
+        let config = AgentStoreConfig::from_source(&toml).expect("builtin sources must parse");
+        assert_eq!(config.default_marketplaces.len(), builtin.len());
+        for (id, kind, source) in &builtin {
+            let entry = config
+                .default_marketplaces
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} must survive the load"));
+            assert_eq!(
+                entry.resolved().as_ref(),
+                Some(&(kind.clone(), source.clone())),
+                "{id} must resolve to what the builtin list declared"
+            );
+            // The kind string is only usable if the *other* authority — the one
+            // that resolves it into a real source — recognises it too.
+            assert!(
+                nomifun_api_types::AppServerMarketplaceSourceKind::parse(kind).is_some(),
+                "{id}: parse() must know kind `{kind}`"
+            );
+        }
+    }
+
+    /// A kind this build does not have must stay visible: `resolved()` passes
+    /// it through so the registration loop can warn and report the run
+    /// incomplete, rather than dropping the entry and reporting success.
+    #[test]
+    fn unknown_source_kind_is_passed_through_not_dropped() {
+        let config = AgentStoreConfig::from_source(
+            "[default_marketplaces.typo]\nsource_kind = \"zipp\"\nsource = \"https://example.com/m.zip\"\n",
+        )
+        .expect("config must parse");
+        let entry = config.default_marketplaces.get("typo").expect("entry kept");
+        assert_eq!(
+            entry.resolved(),
+            Some(("zipp".to_owned(), "https://example.com/m.zip".to_owned())),
+            "an unknown kind must reach the caller, which warns and marks the run incomplete"
+        );
+        assert!(nomifun_api_types::AppServerMarketplaceSourceKind::parse("zipp").is_none());
     }
 
     #[test]

@@ -239,6 +239,20 @@ mod tests {
             assert!(template.contains(&format!("source = \"{source}\"")));
         }
         assert!(template.contains("default_model"));
+
+        // String containment is not enough: the template is only worth writing
+        // if the loader accepts it. Asserted through the host's own parser, so
+        // a source kind the loader refuses (or a block that lands in the wrong
+        // table) fails here instead of shipping a config with no markets.
+        let config = AgentStoreConfig::from_source(&template).expect("template must parse");
+        assert_eq!(config.default_marketplaces.len(), markets.len());
+        for (id, kind, source) in &markets {
+            let entry = config
+                .default_marketplaces
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} must survive the load"));
+            assert_eq!(entry.resolved().as_ref(), Some(&(kind.clone(), source.clone())));
+        }
     }
 
     /// The template's whole point beyond the markets: distillation and the
