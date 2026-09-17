@@ -25,7 +25,14 @@ export default defineConfig({
     watch: {
       // Ignore editor temp-staging dirs (e.g. `.file.ts.1234.xyz.tmpdir/`) so a
       // locked temp file during an in-place write can never crash the watcher.
-      ignored: ['**/.*.tmpdir/**'],
+      //
+      // Also ignore the vendored runtime binary. `publish-packages.ts` copies a
+      // ~181 MiB `flowy-agent-store.exe` in there — dry runs included — and
+      // Windows locks the file mid-write, so the watcher dies with
+      // `EBUSY: resource busy or locked, watch '…/runtime/vendor/…exe'`, which is
+      // an unhandled FSWatcher error and takes the whole dev server down with it.
+      // Nothing in the app imports from this directory: it is release payload.
+      ignored: ['**/.*.tmpdir/**', '**/packages/runtime/vendor/**'],
     },
   },
 });
