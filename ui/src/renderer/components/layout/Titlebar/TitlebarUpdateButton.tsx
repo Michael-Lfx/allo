@@ -7,7 +7,7 @@ import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
 import { useUpdateAvailability } from '@renderer/hooks/system/useUpdateAvailability';
 import { isDesktopShell } from '@/renderer/utils/platform';
 
-/** Custom event Layout dispatches when a startup check finds an update. */
+/** Custom event Layout dispatches when a startup/interval check finds an update. */
 export const UPDATE_AVAILABLE_EVENT = 'nomifun-update-available';
 
 export interface UpdateAvailableDetail {
@@ -33,8 +33,8 @@ const UpdateBadge: React.FC = () => (
  * Desktop-only titlebar entry for in-app updates.
  *
  * Consumes the shared availability store (filled by Layout's deferred startup
- * check / UpdateModal). Does not hit ModelScope itself — that duplicate mount
- * check used to race the first paint.
+ * + hourly checks / UpdateModal). Does not hit ModelScope itself — that
+ * duplicate mount check used to race the first paint.
  */
 const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, strokeWidth, className }) => {
   const { t } = useTranslation();

@@ -31,4 +31,11 @@ describe('global update availability entry', () => {
     expect(modalSource.includes('reportUpdateAvailable(res.data.latest.version)')).toBe(true);
     expect(modalSource.includes('reportUpdateAvailable(evt.version)')).toBe(true);
   });
+
+  test('polls ModelScope hourly after the deferred startup check', () => {
+    expect(layoutSource.includes('UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000')).toBe(true);
+    expect(layoutSource.includes('window.setInterval')).toBe(true);
+    expect(layoutSource.includes("void runCheck('interval')")).toBe(true);
+    expect(layoutSource.includes("source === 'startup' || !previouslyAvailable")).toBe(true);
+  });
 });

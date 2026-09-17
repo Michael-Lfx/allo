@@ -8,6 +8,7 @@ import { trackFunnelEvent, trackFunnelEventOnce, type FunnelEvent } from './prod
 
 export type UpdateTelemetrySource =
   | 'startup'
+  | 'interval'
   | 'titlebar'
   | 'about'
   | 'menu'
@@ -117,6 +118,7 @@ function accessContextProps(extra?: UpdateTelemetryProps): UpdateTelemetryProps 
 export function normalizeUpdateTelemetrySource(raw?: string | null): UpdateTelemetrySource {
   switch (raw) {
     case 'startup':
+    case 'interval':
     case 'titlebar':
     case 'about':
     case 'menu':

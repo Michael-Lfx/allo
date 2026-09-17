@@ -1,5 +1,3 @@
-
-
 import { ipcBridge } from '@/common';
 import { httpGet } from '@/common/adapter/httpBridge';
 import { configService } from '@/common/config/configService';
@@ -21,6 +19,7 @@ import { useNotificationClick } from '@renderer/hooks/system/useNotificationClic
 import { useConversationDesktopNotify } from '@renderer/hooks/system/useConversationDesktopNotify';
 import { useAutoWorkDesktopNotify } from '@renderer/hooks/system/useAutoWorkDesktopNotify';
 import {
+  getUpdateAvailabilitySnapshot,
   reportNoUpdateAvailable,
   reportUpdateAvailable,
 } from '@renderer/hooks/system/useUpdateAvailability';
@@ -83,6 +82,9 @@ const useDebug = () => {
 };
 
 const UpdateModal = React.lazy(() => import('@/renderer/components/settings/UpdateModal'));
+
+/** How often a long-running desktop session re-checks ModelScope for OTA. */
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 // Primary rail width. Default slimmed from 216 → 184; the rail is now freely
 // resizable by dragging its right edge (clamped to [RAIL_MIN, RAIL_MAX]) and the
@@ -412,76 +414,93 @@ const Layout: React.FC<{
     return () => unsubscribe();
   }, []);
 
-  // Deferred startup update check (desktop only): wait for first paint + idle
-  // before hitting ModelScope so OTA network work does not compete with 秒开.
-  // When an update exists, badge first; open the modal shortly after so the
-  // initial route remains visible.
+  // Deferred startup update check (desktop only), then hourly polls while the
+  // shell stays open so long-running sessions still see new ModelScope releases.
+  // First paint + idle delay keeps OTA off the 秒开 path. New discoveries badge
+  // immediately; the modal opens once (startup always, interval only on first
+  // transition to available).
   useEffect(() => {
     if (!isDesktopShell()) return;
     let cancelled = false;
-    const includePrerelease = localStorage.getItem('update.includePrerelease') === 'true';
+    let inFlight = false;
     let modalTimer: number | null = null;
+    let intervalId: number | null = null;
 
-    const cancelDefer = scheduleDeferred(() => {
-      void (async () => {
-        const startedAt = performance.now();
-        let fromVersion = '';
-        try {
-          fromVersion = await tauriUpdateCurrentVersion();
-        } catch {
-          fromVersion = '';
-        }
-        try {
-          const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
-          if (cancelled) return;
-          const durationMs = performance.now() - startedAt;
-          if (res?.success && res.data?.updateInfo) {
-            // Modal re-check records `update_check_completed` + prompt for this path.
-            reportUpdateAvailable(res.data.updateInfo.version);
-            window.dispatchEvent(
-              new CustomEvent(UPDATE_AVAILABLE_EVENT, { detail: { version: res.data.updateInfo.version } }),
-            );
+    const runCheck = async (source: 'startup' | 'interval') => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      const includePrerelease = localStorage.getItem('update.includePrerelease') === 'true';
+      const previouslyAvailable = getUpdateAvailabilitySnapshot().available;
+      const startedAt = performance.now();
+      let fromVersion = '';
+      try {
+        fromVersion = await tauriUpdateCurrentVersion();
+      } catch {
+        fromVersion = '';
+      }
+      try {
+        const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
+        if (cancelled) return;
+        const durationMs = performance.now() - startedAt;
+        if (res?.success && res.data?.updateInfo) {
+          // Modal re-check records `update_check_completed` + prompt for this path.
+          reportUpdateAvailable(res.data.updateInfo.version);
+          window.dispatchEvent(
+            new CustomEvent(UPDATE_AVAILABLE_EVENT, { detail: { version: res.data.updateInfo.version } }),
+          );
+          const shouldOpenModal = source === 'startup' || !previouslyAvailable;
+          if (shouldOpenModal) {
             modalTimer = window.setTimeout(() => {
               if (cancelled) return;
               window.dispatchEvent(
-                new CustomEvent('nomifun-open-update-modal', { detail: { source: 'startup' } }),
+                new CustomEvent('nomifun-open-update-modal', { detail: { source } }),
               );
             }, 1_500);
-          } else if (res?.success) {
-            trackUpdateCheckCompleted({
-              source: 'startup',
-              status: 'up_to_date',
-              duration_ms: durationMs,
-              from_version: fromVersion,
-            });
-            reportNoUpdateAvailable();
-          } else {
-            trackUpdateCheckCompleted({
-              source: 'startup',
-              status: 'failed',
-              duration_ms: durationMs,
-              from_version: fromVersion,
-              error_code: 'unknown',
-            });
           }
-        } catch {
-          if (!cancelled) {
-            trackUpdateCheckCompleted({
-              source: 'startup',
-              status: 'failed',
-              duration_ms: performance.now() - startedAt,
-              from_version: fromVersion,
-              error_code: 'network',
-            });
-          }
-          /* offline / endpoint unreachable — silent; the About page button still works */
+        } else if (res?.success) {
+          trackUpdateCheckCompleted({
+            source,
+            status: 'up_to_date',
+            duration_ms: durationMs,
+            from_version: fromVersion,
+          });
+          reportNoUpdateAvailable();
+        } else {
+          trackUpdateCheckCompleted({
+            source,
+            status: 'failed',
+            duration_ms: durationMs,
+            from_version: fromVersion,
+            error_code: 'unknown',
+          });
         }
-      })();
+      } catch {
+        if (!cancelled) {
+          trackUpdateCheckCompleted({
+            source,
+            status: 'failed',
+            duration_ms: performance.now() - startedAt,
+            from_version: fromVersion,
+            error_code: 'network',
+          });
+        }
+        /* offline / endpoint unreachable — silent; the About page button still works */
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const cancelDefer = scheduleDeferred(() => {
+      void runCheck('startup');
     });
+    intervalId = window.setInterval(() => {
+      void runCheck('interval');
+    }, UPDATE_CHECK_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       cancelDefer();
+      if (intervalId != null) window.clearInterval(intervalId);
       if (modalTimer != null) window.clearTimeout(modalTimer);
     };
   }, []);

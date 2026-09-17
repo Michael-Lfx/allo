@@ -29,6 +29,7 @@ describe('update telemetry', () => {
 
   test('normalizes open sources', () => {
     expect(normalizeUpdateTelemetrySource('startup')).toBe('startup');
+    expect(normalizeUpdateTelemetrySource('interval')).toBe('interval');
     expect(normalizeUpdateTelemetrySource('titlebar')).toBe('titlebar');
     expect(normalizeUpdateTelemetrySource('nope')).toBe('unknown');
   });
