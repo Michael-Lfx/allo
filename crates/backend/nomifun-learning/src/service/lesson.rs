@@ -250,6 +250,7 @@ impl LearningService {
                         "title": lesson.title,
                         "activities": output.activities.len(),
                         "estimated_minutes": output.estimated_minutes,
+                        "visuals": crate::models::visual_distribution(&output.sections),
                     })),
                     Err(error) => self.emit_lesson_event(serde_json::json!({
                         "phase": "failed",
@@ -298,6 +299,7 @@ impl LearningService {
                             "title": lesson.title,
                             "activities": output.activities.len(),
                             "estimated_minutes": output.estimated_minutes,
+                            "visuals": crate::models::visual_distribution(&output.sections),
                         }));
                         output
                     }
@@ -435,6 +437,7 @@ impl LearningService {
                 "title": context.lesson_title,
                 "activities": output.activities.len(),
                 "estimated_minutes": output.estimated_minutes,
+                "visuals": crate::models::visual_distribution(&output.sections),
             })),
             Err(error) => self.emit_lesson_event(serde_json::json!({
                 "phase": "failed",
@@ -752,7 +755,8 @@ impl LearningService {
                 "sections": [section_key],
             }));
         }
-        self.persist_rewritten_section(lesson_id, section_key, &body).await?;
+        self.persist_rewritten_section(lesson_id, section_key, &body, degraded)
+            .await?;
 
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
@@ -809,7 +813,8 @@ impl LearningService {
             ));
         }
 
-        self.persist_rewritten_section(lesson_id, section_key, &request.body_md)
+        // 手动编辑视为接管：降级兜底标记随人工正文清除。
+        self.persist_rewritten_section(lesson_id, section_key, &request.body_md, false)
             .await?;
 
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
@@ -871,22 +876,26 @@ impl LearningService {
     }
 
     /// 单节落库：正文原地替换（version+1），summary 由全部节重新拼装
-    /// （双读回退的文本同步）。单事务——节更新与 summary 拼装同生共死。
+    /// （双读回退的文本同步）。`degraded` 标记当前正文是否为降级纯文字
+    /// 兜底（ADR-0008）——AI 重写降级时置位，兑现承诺的重写与手动编辑
+    /// 清除。单事务——节更新与 summary 拼装同生共死。
     async fn persist_rewritten_section(
         &self,
         lesson_id: &LearningLessonId,
         section_key: &str,
         body: &str,
+        degraded: bool,
     ) -> Result<(), AppError> {
         let now = now_ms();
         let body = crate::generation::fix_mermaid_quotes(body.trim());
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         let updated = sqlx::query(
             "UPDATE learning_lesson_sections \
-             SET body_md = ?, status = 'ready', version = version + 1, updated_at = ? \
+             SET body_md = ?, degraded = ?, status = 'ready', version = version + 1, updated_at = ? \
              WHERE lesson_id = ? AND section_key = ?",
         )
         .bind(&body)
+        .bind(degraded)
         .bind(now)
         .bind(lesson_id.as_str())
         .bind(section_key)
@@ -975,10 +984,14 @@ impl LearningService {
                 .await
                 .map_err(internal)?;
             for (position, section) in output.sections.iter().enumerate() {
+                let degraded = output
+                    .degraded_keys
+                    .iter()
+                    .any(|key| *key == section.section_key);
                 sqlx::query(
                     "INSERT INTO learning_lesson_sections \
-                     (section_key, lesson_id, kind, title, points, visual, body_md, status, version, position, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 1, ?, ?, ?)",
+                     (section_key, lesson_id, kind, title, points, visual, body_md, degraded, status, version, position, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', 1, ?, ?, ?)",
                 )
                 .bind(section.section_key.trim())
                 .bind(lesson_id.as_str())
@@ -987,6 +1000,7 @@ impl LearningService {
                 .bind(section.points.trim())
                 .bind(section.visual.trim())
                 .bind(section.body_md.trim())
+                .bind(degraded)
                 .bind(position as i64)
                 .bind(now)
                 .bind(now)

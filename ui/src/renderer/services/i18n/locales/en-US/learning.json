@@ -393,6 +393,7 @@
   "sectionStatusPending": "Pending",
   "sectionStatusReady": "Ready",
   "sectionStatusFailed": "Failed to generate",
+  "sectionDegradedWarning": "The visual promise for this section could not be delivered and it fell back to plain text; try an AI rewrite to restore the visual.",
   "sectionRewrite": "Rewrite this section",
   "sectionRewriteDone": "Section rewritten",
   "sectionRewriteAi": "AI rewrite",

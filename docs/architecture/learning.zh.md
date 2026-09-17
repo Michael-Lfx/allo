@@ -1,6 +1,6 @@
 # 学习域（Learning）
 
-> **最后维护：** 2026-09-08 · 核对基准：分支 `feat/zyj0907`（commit `ddc22ff71` 之后） ·
+> **最后维护：** 2026-09-16 · 核对基准：分支 `feat/zyj0907`（commit `730181b35` 之后） ·
 > 文档性质：现行架构文档（基于源码逐项核对）
 
 [`nomifun-learning`](../../crates/backend/nomifun-learning/) 是构建在知识库之上的
@@ -51,6 +51,13 @@ lesson_id→draft 映射定位草稿接续，迁移 050 的承诺；ADR-0003）�
 重写（`POST /lessons/{id}/sections/{key}/rewrite`，确定性单节管线按落库
 的 `visual` 承诺质检，迁移 051；ADR-0003）。
 
+可视化承诺的逃逸口治理（ADR-0008）：`ls_set_document` 单篇契约只保留在
+修复循环（生成必须走分节，单篇形状没有可视化承诺）；概念/例题节全部声明
+`visual=无` 时审计出 `visual_none_heavy` warning（软监督，不设硬配额）；
+发布帧与 completed 事件披露 visual 声明分布；降级兜底的节带 `degraded`
+标记落库（迁移 053），前端持久可见并提供 AI 重写入口，手动编辑即视为
+接管并清除标记。
+
 两种生成的进行中状态/取消统一走 `generation_registry`（status/cancel
 端点的数据源）；学习图草稿在内存存活 1 小时（TTL），支持续建
 （`/courses/generate/resume`，轮次日志注入恢复认知）。
@@ -90,7 +97,8 @@ edit-pending、`048_learning_graph.sql`（course_kind/goal/scope/graph_meta +
 课时级前置边表）、`050_learning_sections_and_question_kinds.sql`
 （分节表 + 9 种题型 + teaching_style）、`051_learning_section_visual.sql`
 （节 visual 承诺落库）、`052_learning_review_log.sql`（逐次复习日志
-`learning_review_log` + `learning_attempts.elapsed_ms`）。
+`learning_review_log` + `learning_attempts.elapsed_ms`）、
+`053_learning_section_degraded.sql`（节降级兜底标记落库，ADR-0008）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs:899` 挂载，实例 owner 保护）：
 `/api/learning/courses*`（列表/导入/生成/续建/状态/取消/删除/标签/注册/诊断）、

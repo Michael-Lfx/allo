@@ -492,7 +492,7 @@ impl LearningService {
         lesson_id: &LearningLessonId,
     ) -> Result<Vec<SectionView>, AppError> {
         let rows = sqlx::query(
-            "SELECT section_key, kind, title, points, visual, body_md, status, version, position \
+            "SELECT section_key, kind, title, points, visual, body_md, degraded, status, version, position \
              FROM learning_lesson_sections WHERE lesson_id = ? ORDER BY position, section_key",
         )
         .bind(lesson_id.as_str())
@@ -509,6 +509,7 @@ impl LearningService {
                 points: row.try_get("points").map_err(internal)?,
                 visual: row.try_get("visual").map_err(internal)?,
                 body_md: row.try_get("body_md").map_err(internal)?,
+                degraded: row.try_get::<i64, _>("degraded").map_err(internal)? != 0,
                 status: row.try_get("status").map_err(internal)?,
                 version: row.try_get("version").map_err(internal)?,
                 position: row.try_get("position").map_err(internal)?,

@@ -18,6 +18,7 @@ use crate::generation::{
 };
 use crate::models::{
     ActivityKind, ActivityPack, ConceptPack, SectionKind, SectionPack, VISUAL_OPTIONS,
+    visual_menu_text,
 };
 
 use crate::learning_graph::{SEV_DANGER, SEV_WARNING};
@@ -465,7 +466,9 @@ impl LessonDraft {
             ));
         }
         report.push_str(
-            "\n存在 [danger] 时发布会被门禁拒绝：逐条修复（ls_set_document / ls_set_section_manifest / ls_set_section_body / ls_patch_activities）后重新 ls_audit。",
+            "\n存在 [danger] 时发布会被门禁拒绝：逐条修复（ls_set_section_manifest / \
+             ls_set_section_body / ls_patch_activities，修复轮另有 ls_set_document 单篇契约）\
+             后重新 ls_audit。",
         );
         report
     }
@@ -640,13 +643,41 @@ fn audit_findings(
                         }
                     }
                 }
+                // 「无」声明监督（ADR-0008）：概念/例题节全部声明 visual=无
+                // 时给非阻断 warning——硬配额会误伤确实无法可视化的纯理论
+                // 课时，但整课零可视化的「承诺兑现」形同虚设，值得在审计
+                // 报告里点名，让修复轮与发布前自查都能看见。
+                let content_sections: Vec<&SectionPack> = manifest
+                    .iter()
+                    .filter(|section| {
+                        matches!(section.kind, SectionKind::Concept | SectionKind::Example)
+                    })
+                    .collect();
+                if !content_sections.is_empty()
+                    && content_sections
+                        .iter()
+                        .all(|section| section.visual.trim() == "无")
+                {
+                    findings.push(warning(
+                        "visual_none_heavy",
+                        format!(
+                            "全部 {} 个概念/例题节都声明了 visual=无——除非本课时内容确实\
+                             无法可视化，否则用 ls_set_section_manifest 重新规划，为承载核心\
+                             讲解的节声明具体形态（{}）",
+                            content_sections.len(),
+                            visual_menu_text()
+                        ),
+                    ));
+                }
             }
         }
     } else {
         match document {
             None => findings.push(danger(
                 "document_missing",
-                "学习内容尚未写入（先 ls_set_section_manifest 规划分节，或 ls_set_document 写单篇文档）".into(),
+                "学习内容尚未写入（先 ls_set_section_manifest 规划分节，再逐节 \
+                 ls_set_section_body 写正文）"
+                    .into(),
             )),
             Some(document) => {
                 if let Err(error) = validate_lesson_document(document) {
@@ -946,5 +977,60 @@ mod tests {
         let report = draft.apply_ops(vec![LessonOp::SetEstimatedMinutes { minutes: 20 }]);
         assert_eq!(report.revision, 1);
         assert_eq!(draft.estimated_minutes, 20);
+    }
+
+    fn manifest_pack(key: &str, kind: SectionKind, visual: &str) -> SectionPack {
+        SectionPack {
+            section_key: key.into(),
+            kind,
+            title: format!("t-{key}"),
+            points: String::new(),
+            visual: visual.into(),
+            body_md: String::new(),
+        }
+    }
+
+    /// 「无」声明监督（ADR-0008）：概念/例题节全部声明 visual=无 时审计给
+    /// 非阻断 warning 点名；只要有一节声明了具体形态，警告即消失。
+    #[test]
+    fn visual_none_heavy_warns_when_every_content_section_declares_none() {
+        let mut draft = LessonDraft::new(context());
+        draft
+            .apply_ops(vec![LessonOp::SetSectionManifest {
+                sections: vec![
+                    manifest_pack("s1", SectionKind::Concept, "无"),
+                    manifest_pack("s2", SectionKind::Example, "无"),
+                    manifest_pack("s3", SectionKind::Practice, "无"),
+                ],
+            }])
+            .accepted
+            .into_iter()
+            .next()
+            .expect("manifest accepted");
+        let warning = draft
+            .findings
+            .iter()
+            .find(|f| f.kind == "visual_none_heavy")
+            .expect("an all-无 manifest must be named");
+        assert_eq!(warning.severity, SEV_WARNING, "supervision warns, it never blocks");
+        assert!(warning.message.contains("visual=无"));
+
+        // 具体声明落位（练习节无关本检查）——警告消失。
+        draft
+            .apply_ops(vec![LessonOp::SetSectionManifest {
+                sections: vec![
+                    manifest_pack("s1", SectionKind::Concept, "表格"),
+                    manifest_pack("s2", SectionKind::Example, "公式"),
+                    manifest_pack("s3", SectionKind::Practice, "无"),
+                ],
+            }])
+            .accepted
+            .into_iter()
+            .next()
+            .expect("replan accepted");
+        assert!(!draft
+            .findings
+            .iter()
+            .any(|f| f.kind == "visual_none_heavy"));
     }
 }

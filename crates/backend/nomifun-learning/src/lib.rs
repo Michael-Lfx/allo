@@ -48,7 +48,8 @@ pub use models::{
     VISUAL_OPTIONS,
 };
 pub use models::{
-    PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_menu_text,
+    PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_distribution,
+    visual_menu_text,
 };
 pub use routes::learning_routes;
 pub use service::LearningService;

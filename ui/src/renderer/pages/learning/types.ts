@@ -19,6 +19,8 @@ export interface Section {
   title: string;
   points: string;
   body_md: string;
+  /** 当前正文是否为降级纯文字兜底（visual 承诺未兑现，ADR-0008） */
+  degraded?: boolean;
   status: 'pending' | 'ready' | 'failed';
   version: number;
   position: number;

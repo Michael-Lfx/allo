@@ -619,6 +619,16 @@ pub fn visual_menu_text() -> String {
     VISUAL_OPTIONS.join(" / ")
 }
 
+/// 节清单的 visual 声明分布（声明形态 → 节数），生成进度披露与问题定位
+/// 用（ADR-0008）：「无」独占整课即可疑的纯文字课时。
+pub fn visual_distribution(sections: &[SectionPack]) -> std::collections::BTreeMap<&str, usize> {
+    let mut distribution = std::collections::BTreeMap::new();
+    for section in sections {
+        *distribution.entry(section.visual.trim()).or_insert(0) += 1;
+    }
+    distribution
+}
+
 /// 文字预算规则的渲染（逐节正文提示词与 ls_set_section_body 工具描述共
 /// 用）：档位预算表即事实源，质检门下限同源（低档预算）。
 pub fn prose_budget_rules() -> String {
@@ -1342,6 +1352,9 @@ pub struct SectionView {
     /// 历史行为空串（未声明）。
     pub visual: String,
     pub body_md: String,
+    /// 当前正文是否为降级纯文字兜底（visual 承诺未兑现，迁移 053 起落库，
+    /// ADR-0008）；重写成功兑现承诺或手动编辑后清除。
+    pub degraded: bool,
     /// pending | ready | failed。
     pub status: String,
     pub version: i64,
